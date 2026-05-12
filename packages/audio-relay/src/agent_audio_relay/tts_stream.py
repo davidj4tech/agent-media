@@ -1,0 +1,930 @@
+"""tts-stream — incremental TTS for streaming model output.
+
+Reads text on stdin, segments it incrementally on sentence boundaries,
+renders each segment to audio in parallel (bounded), and dispatches the
+clips to mpv in order via the voice channel's IPC socket — so audio
+starts playing within ~1-2s of the first sentence completing instead
+of waiting for the whole response to finish.
+
+After the stream ends, the per-segment files are concatenated into a
+single full-response clip and handed to ``tts-drop`` to be archived
+with normal latest-symlink semantics — so replay/prev/next still walk
+*responses*, not segments. Per-segment files are ephemeral and live in
+``/tmp/tts-stream/<run-id>/``.
+
+Usage:
+    llm "explain X" | tts-stream [--engine edge|openai] [--voice NAME]
+                                 [--socket PATH] [--tag llm] [--session ID]
+                                 [--no-archive] [--max-workers N]
+
+Why a sibling to tts-drop instead of an extension of it: tts-drop's
+abstraction is "one clip → archive → latest". Stream segments aren't
+independently replayable units — forcing a `--no-latest` flag onto
+tts-drop just pushes the concept where it doesn't belong, and segments
+would still pay the drop-dir/forwarder/scp/relay cost when streaming
+needs to go straight to the local mpv socket. tts-stream owns its own
+pipeline; tts-drop runs *once* at the end with the concatenated blob.
+"""
+
+from __future__ import annotations
+
+import argparse
+import http.server
+import json
+import os
+import queue
+import re
+import shutil
+import socket
+import socketserver
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import uuid
+from concurrent.futures import Future, ThreadPoolExecutor
+from pathlib import Path
+from typing import List, Optional
+
+
+# --- Segmenter -------------------------------------------------------------
+
+# Sentence-ending punctuation followed by whitespace (or end of buffer).
+# `(?<![A-Z])` in front of `.` would help with single-letter abbreviations
+# but also breaks on legitimate sentence-final capital-letter words; skip.
+_SENTENCE_END_RE = re.compile(r"([.!?])(\s+|$)")
+
+# Abbreviations that end in `.` but don't terminate a sentence. Anything
+# longer than this list is a wash — perfect segmentation isn't the goal,
+# "good enough most of the time" is.
+_ABBREV = {
+    "mr.", "mrs.", "ms.", "dr.", "prof.", "sr.", "jr.", "st.",
+    "vs.", "etc.", "e.g.", "i.e.", "no.", "vol.", "fig.", "inc.",
+    "ltd.", "co.", "u.s.", "u.k.", "a.m.", "p.m.",
+}
+
+# Force a split when a chunk grows past this many chars without a sentence
+# boundary, so a code-free wall of comma-separated text doesn't stall the
+# whole pipeline. Splits at the last `,;:` + space inside the window.
+_MAX_CHUNK = 240
+_FORCE_SPLIT_RE = re.compile(r"[,;:]\s+")
+
+# Fenced code blocks (``` ... ```). Stripped wholesale — there's no
+# useful TTS rendering of code, and trying to read it character-by-
+# character produces noise that competes with the actual response.
+_CODE_FENCE_RE = re.compile(r"```[a-zA-Z0-9_+-]*\n.*?\n?```", re.DOTALL)
+
+
+def _strip_code_blocks(text: str) -> str:
+    return _CODE_FENCE_RE.sub("", text)
+
+
+def _strip_id3v2(data: bytes) -> bytes:
+    """Strip a leading ID3v2 tag from ``data`` if present, else return as-is.
+
+    ID3v2 layout: 10-byte header (`"ID3"` magic, version, flags, 28-bit
+    synchsafe size) followed by ``size`` bytes of tag content. If the
+    "footer present" flag (bit 4 of the flags byte) is set, an
+    additional 10-byte footer follows the tag content — rare in
+    practice but cheap to handle.
+
+    Used by tts-stream to strip per-segment headers when concatenating
+    edge-tts/openai-tts MP3s into a single byte stream, so mpv's MP3
+    demuxer doesn't resync at every segment boundary.
+    """
+    if len(data) < 10 or data[:3] != b"ID3":
+        return data
+    flags = data[5]
+    # Synchsafe integer: 4 bytes, 7 bits each, top bit always 0.
+    size = (data[6] << 21) | (data[7] << 14) | (data[8] << 7) | data[9]
+    tag_end = 10 + size + (10 if flags & 0x10 else 0)
+    if tag_end > len(data):
+        # Malformed / truncated — leave untouched rather than risk
+        # cutting frames off.
+        return data
+    return data[tag_end:]
+
+
+def _is_real_sentence_end(buf: str, pos: int) -> bool:
+    """``buf[pos]`` is `.!?` — return whether it actually ends a sentence
+    (i.e. isn't part of an abbreviation like ``Dr.``).
+
+    Multi-dot abbreviations (``p.m.``, ``e.g.``, ``U.S.``) need the walk-
+    back to traverse interior ``.`` so the lookup string matches the
+    full token. Without this, the walk stops at the first interior dot
+    and we look up only ``m.`` / ``g.`` / ``S.`` — all absent from
+    ``_ABBREV`` — and incorrectly treat the trailing ``.`` as a sentence
+    boundary, splitting "...at 3 p.m. tomorrow." into two sentences.
+    """
+    if buf[pos] != ".":
+        return True
+    # Walk backward to find the start of the current word, treating
+    # interior `.` as part of the token so e.g. "p.m." is recovered
+    # whole. Stops at any whitespace / non-alpha-non-dot char.
+    start = pos
+    while start > 0 and (buf[start - 1].isalpha() or buf[start - 1] == "."):
+        start -= 1
+    word = buf[start : pos + 1].lower()
+    return word not in _ABBREV
+
+
+def _split_segments(buf: str, *, drain: bool, eager_first: bool = False) -> tuple[list[str], str]:
+    """Pull complete segments out of ``buf``; return ``(segments, leftover)``.
+
+    When ``drain=True`` (stream ended), the entire leftover is returned as
+    a final segment regardless of whether it ended with sentence-final
+    punctuation.
+
+    When ``eager_first=True``, the *first* segment is allowed to cut at
+    the first soft boundary (``,;:`` + space) or word-break past a low
+    char threshold, without waiting for ``.!?``. This trades sentence-
+    perfect prosody for time-to-first-audio: a typical opening clause
+    can be playing within ~1-2s of the model emitting its first token,
+    instead of waiting for the whole opening sentence to complete (which
+    on a short llm response often coincides with the *end* of the
+    response). Subsequent segments use the normal sentence-boundary
+    rules so prosody stays natural after the first cut.
+    """
+    segments: list[str] = []
+    eager_threshold = 60  # chars before we'll soft-split the first segment
+
+    while True:
+        m = _SENTENCE_END_RE.search(buf)
+        if m and _is_real_sentence_end(buf, m.start()):
+            end = m.end()
+            chunk = buf[:end].strip()
+            if chunk:
+                segments.append(chunk)
+            buf = buf[end:]
+            continue
+
+        # Eager first-segment split: if no segments emitted yet AND no
+        # eager segment yet AND buf has enough content, cut at the first
+        # soft boundary past the threshold. Prefer comma/semicolon/colon;
+        # fall back to a word break if none exist.
+        if eager_first and not segments and len(buf) >= eager_threshold:
+            soft_matches = list(_FORCE_SPLIT_RE.finditer(buf, eager_threshold))
+            if soft_matches:
+                cut = soft_matches[0].end()
+                chunk = buf[:cut].strip()
+                if chunk:
+                    segments.append(chunk)
+                buf = buf[cut:]
+                continue
+            # No soft boundary visible yet — wait for more text rather
+            # than splitting mid-clause. We'll fall through to the
+            # MAX_CHUNK force-split if buf grows large.
+
+        # No sentence boundary — but if we've accumulated too much, force
+        # split at the latest soft boundary (`,;:`). Avoids a single
+        # comma-separated wall holding up the whole stream.
+        if len(buf) >= _MAX_CHUNK:
+            soft_matches = list(_FORCE_SPLIT_RE.finditer(buf, 0, _MAX_CHUNK))
+            if soft_matches:
+                cut = soft_matches[-1].end()
+                chunk = buf[:cut].strip()
+                if chunk:
+                    segments.append(chunk)
+                buf = buf[cut:]
+                continue
+            # No soft boundary either — force split at MAX_CHUNK on a
+            # whitespace boundary to avoid mid-word splits.
+            ws = buf.rfind(" ", 0, _MAX_CHUNK)
+            cut = ws + 1 if ws > _MAX_CHUNK // 2 else _MAX_CHUNK
+            chunk = buf[:cut].strip()
+            if chunk:
+                segments.append(chunk)
+            buf = buf[cut:]
+            continue
+
+        break
+
+    if drain and buf.strip():
+        segments.append(buf.strip())
+        buf = ""
+    return segments, buf
+
+
+# --- Engines ---------------------------------------------------------------
+# Engine logic lives in tts_render.py so tts-drop (bash) and tts-stream
+# (this module) share a single source of truth via the aar-tts-render
+# console script (tts-drop) or direct import (tts-stream).
+
+from .tts_render import render_text as _render_text  # noqa: E402
+
+
+# --- mpv IPC ---------------------------------------------------------------
+
+
+def _mpv_send(socket_path: Path, command: list) -> Optional[dict]:
+    """Send one mpv JSON-IPC command. Returns the parsed response or None."""
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.settimeout(2.0)
+            s.connect(str(socket_path))
+            payload = json.dumps({"command": command}).encode() + b"\n"
+            s.sendall(payload)
+            buf = b""
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline:
+                try:
+                    chunk = s.recv(4096)
+                except socket.timeout:
+                    break
+                if not chunk:
+                    break
+                buf += chunk
+                if b"\n" in buf:
+                    break
+        for line in buf.splitlines():
+            try:
+                msg = json.loads(line)
+            except ValueError:
+                continue
+            if "error" in msg:
+                return msg
+        return None
+    except OSError:
+        return None
+
+
+# --- HTTP stream server ----------------------------------------------------
+#
+# Modeled on sam-radio: per-invocation HTTP endpoint that mpv (anywhere on
+# the network) can `loadfile`. The producer (us) appends MP3 bytes to a
+# growable in-memory buffer; HTTP handlers serve from any byte offset
+# (Range-aware) so mpv can seek mid-stream. mpv handles cache, jitter,
+# and codec framing — we don't.
+#
+# Why not per-segment loadfile-by-path: mpv-voice runs on the phone, the
+# audio files exist on the producer host (homer/melr/sp4r). loadfile of a
+# local path on the producer side resolves on the *phone's* filesystem
+# where the file doesn't exist. HTTP fixes that without adding scp/sshfs.
+#
+# Why a buffer instead of a one-shot queue: mpv may make multiple
+# concurrent GETs (probe + play, then more on every seek). A queue
+# disperses bytes across whichever handler is reading at the moment;
+# a shared buffer lets each handler tap in at the offset it cares about.
+
+
+class _StreamBuffer:
+    """Growable byte buffer + EOF flag, with a condition variable so
+    consumers can block on "more bytes appeared OR producer is done".
+    Thread-safe under multiple concurrent readers + a single writer.
+    """
+
+    def __init__(self) -> None:
+        self.data = bytearray()
+        self.complete = False
+        self._cond = threading.Condition()
+
+    def append(self, chunk: bytes) -> None:
+        with self._cond:
+            self.data.extend(chunk)
+            self._cond.notify_all()
+
+    def finalize(self) -> None:
+        with self._cond:
+            self.complete = True
+            self._cond.notify_all()
+
+    def __len__(self) -> int:
+        with self._cond:
+            return len(self.data)
+
+    def read_from(self, offset: int, max_chunk: int = 65536):
+        """Generator: yield bytes from ``offset`` onward. Blocks for new
+        data when caught up to the producer; returns when ``finalize()``
+        has been called and ``offset`` has reached the end.
+        """
+        while True:
+            with self._cond:
+                while offset >= len(self.data) and not self.complete:
+                    self._cond.wait()
+                if offset >= len(self.data):  # complete and drained
+                    return
+                end = min(offset + max_chunk, len(self.data))
+                chunk = bytes(self.data[offset:end])
+            yield chunk
+            offset += len(chunk)
+
+
+class _StreamHandler(http.server.BaseHTTPRequestHandler):
+    # Per-server buffer + connection counter wired in by _start_stream_server.
+    stream_buffer: _StreamBuffer = None  # type: ignore[assignment]
+    active_handlers: list = None  # type: ignore[assignment]
+
+    def log_message(self, fmt: str, *args) -> None:  # silence default access log
+        pass
+
+    def _parse_range(self) -> int:
+        """Return the start offset for this request (0 if no Range header
+        or the request is a malformed open-ended range). We ignore the
+        end of the range — the response always streams to the current
+        end of the buffer (and beyond, until finalize)."""
+        rh = self.headers.get("Range", "")
+        if not rh.startswith("bytes="):
+            return 0
+        spec = rh[6:].split(",", 1)[0].strip()
+        start = spec.split("-", 1)[0].strip()
+        if not start:
+            return 0
+        try:
+            return max(0, int(start))
+        except ValueError:
+            return 0
+
+    def do_HEAD(self) -> None:
+        # Never advertise Accept-Ranges — see do_GET. Always Icecast-style.
+        self.send_response(200)
+        self.send_header("Content-Type", "audio/mpeg")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.end_headers()
+
+    def do_GET(self) -> None:
+        # We never advertise Accept-Ranges, regardless of whether the
+        # buffer is complete. The earlier "advertise once complete=True"
+        # design had a race: complete could flip between mpv's HEAD probe
+        # and its GET (or between two GETs for a short stream), making
+        # mpv treat the URL as seekable mid-flight and seek-back-to-zero
+        # after parsing the MP3 header. The result was the opening
+        # segment(s) being decoded and played twice — exactly the
+        # "tts segments are repeating" symptom users reported on long
+        # replies routed via tts-stream.
+        #
+        # We still parse Range — if a client explicitly asks for a byte
+        # range we honour it (popup seek-back stays functional for
+        # finalized streams) — but we don't tell mpv up front that
+        # ranges are available, which is the trigger for its
+        # speculative seek-back-to-zero probe.
+        is_range = self.headers.get("Range", "").startswith("bytes=")
+        start = self._parse_range() if is_range else 0
+        self.send_response(206 if is_range else 200)
+        self.send_header("Content-Type", "audio/mpeg")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        if is_range:
+            # Total length unknown until finalize. RFC 7233 allows `*`
+            # for unknown total. We give the current end as the high
+            # watermark; the response continues past it as the buffer
+            # grows.
+            buf_end = max(len(self.stream_buffer) - 1, start)
+            self.send_header(
+                "Content-Range",
+                f"bytes {start}-{buf_end}/*",
+            )
+        self.end_headers()
+
+        # Track active handlers so the producer can wait for everyone
+        # to drain before tearing the server down.
+        self.active_handlers.append(self)
+        try:
+            for chunk in self.stream_buffer.read_from(start):
+                self.wfile.write(chunk)
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            # Client closed (likely a seek — they'll reconnect with a
+            # new Range). Just exit cleanly so the next handler can
+            # take over.
+            pass
+        finally:
+            try:
+                self.active_handlers.remove(self)
+            except ValueError:
+                pass
+
+
+class _StreamServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
+def _start_stream_server(
+    host: str = "0.0.0.0",
+) -> tuple[_StreamServer, _StreamBuffer, int, list]:
+    """Bind a server on a random port. Returns (server, buffer, port,
+    active_handlers). Caller appends bytes via ``buffer.append(...)``,
+    finalizes via ``buffer.finalize()``, and waits for ``active_handlers``
+    to drain before tearing the server down.
+    """
+    buf = _StreamBuffer()
+    active_handlers: list = []
+    handler_cls = type(
+        "BoundStreamHandler",
+        (_StreamHandler,),
+        {"stream_buffer": buf, "active_handlers": active_handlers},
+    )
+    server = _StreamServer((host, 0), handler_cls)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, buf, port, active_handlers
+
+
+def _resolve_advertise_host(target_socket_path: Optional[Path]) -> str:
+    """Pick a hostname/IP that the playback host (typically the phone) can
+    reach back to us on. Strategy:
+      1. Explicit AAR_STREAM_HOST env override (best — operator knows).
+      2. socket.gethostname() — works when Tailscale MagicDNS or LAN DNS
+         resolves the hostname phone-side.
+      3. Fallback: a UDP "connect" to a public IP to discover the local
+         outbound interface IP (no packets sent).
+    Pick 1 wins outright. Pick 2/3 are best-effort guesses.
+    """
+    explicit = os.environ.get("AAR_STREAM_HOST")
+    if explicit:
+        return explicit
+    name = socket.gethostname()
+    if name and name != "localhost":
+        return name
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 1))
+        return s.getsockname()[0]
+    except OSError:
+        return "127.0.0.1"
+    finally:
+        s.close()
+
+
+# --- Main pipeline ---------------------------------------------------------
+
+
+class StreamRunner:
+    def __init__(self, args: argparse.Namespace) -> None:
+        self.args = args
+        self.run_id = uuid.uuid4().hex[:8]
+        self.work_dir = Path(args.work_dir or f"/tmp/tts-stream/{self.run_id}")
+        self.work_dir.mkdir(parents=True, exist_ok=True)
+        self.executor = ThreadPoolExecutor(max_workers=args.max_workers)
+        self._t0 = time.monotonic()
+        self.next_dispatch = 0
+        self.dispatch_lock = threading.Lock()
+        self.ready: dict[int, Path] = {}
+        self.dispatched: list[Path] = []
+        self.first_dispatch_done = threading.Event()
+        self.errors: list[str] = []
+        self._stream_server: Optional[_StreamServer] = None
+        self._stream_buffer: Optional[_StreamBuffer] = None
+        self._active_handlers: Optional[list] = None
+
+    # --- segment rendering -------------------------------------------------
+
+    def _render(self, seq: int, text: str) -> Optional[Path]:
+        # qwen produces wav, edge/openai produce mp3. mpv handles either,
+        # but file extension matters for the concat-archive path which
+        # passes through tts-drop expecting a single content type.
+        ext = "wav" if self.args.engine == "qwen" else "mp3"
+        outfile = self.work_dir / f"{seq:04d}.{ext}"
+
+        def _on_fallback(engine: str, err: str) -> None:
+            # Surface the original engine's error so silent fallback
+            # doesn't mask configuration problems (e.g. missing API key,
+            # missing openai module in chosen python).
+            self.errors.append(
+                f"seg {seq}: {engine} failed ({err or 'no stderr'}); "
+                f"falling back to edge"
+            )
+
+        ok, err = _render_text(
+            text, outfile,
+            engine=self.args.engine,
+            voice=self.args.voice,
+            edge_voice=self.args.edge_voice,
+            edge_bin=self.args.edge_bin,
+            openai_voice=self.args.openai_voice,
+            openai_model=self.args.openai_model,
+            openai_python=self.args.openai_python,
+            qwen_voice=self.args.qwen_voice,
+            qwen_model=self.args.qwen_model,
+            qwen_lang=self.args.qwen_lang,
+            qwen_base_url=self.args.qwen_base_url,
+            on_fallback=_on_fallback,
+        )
+        if not ok:
+            self.errors.append(f"seg {seq}: render failed: {err}")
+            return None
+        return outfile
+
+    def _on_render_done(self, seq: int, fut: Future) -> None:
+        try:
+            path = fut.result()
+        except Exception as e:  # noqa: BLE001
+            self.errors.append(f"render exc seg {seq}: {e}")
+            path = None
+        with self.dispatch_lock:
+            if path is not None:
+                self.ready[seq] = path
+            self._drain_locked()
+
+    def _drain_locked(self) -> None:
+        # Caller holds dispatch_lock.
+        while self.next_dispatch in self.ready:
+            seq = self.next_dispatch
+            path = self.ready.pop(seq)
+            self._dispatch_one(seq, path)
+            self.dispatched.append(path)
+            self.next_dispatch += 1
+
+    def _dispatch_one(self, seq: int, path: Path) -> None:
+        # Append the segment's MP3 bytes to the shared stream buffer.
+        # mpv (already connected via loadfile at run start) reads
+        # forward-only; the buffer also retains earlier bytes so any
+        # seek-back the user does in the popup can be served from
+        # memory.
+        #
+        # Strip leading ID3v2 tags from segments past seq 0. edge-tts
+        # (and openai-tts) prepend a fresh ID3v2 header to every MP3
+        # they emit. Naively concatenating produces a stream like
+        # `[ID3+frames₀][ID3+frames₁]…`; mpv's MP3 demuxer hits each
+        # mid-stream ID3, flushes its parser and resyncs on the next
+        # frame header — audibly a brief stutter at every segment
+        # boundary. Keeping seg 0's tag (so mpv gets codec params on
+        # the initial probe) and stripping the rest concatenates into
+        # a clean MP3 frame stream.
+        try:
+            data = path.read_bytes()
+        except OSError as e:
+            self.errors.append(f"read seg {seq}: {e}")
+            return
+        if self._stream_buffer is None:
+            self.errors.append(f"seg {seq}: stream server not running")
+            return
+        if seq > 0:
+            data = _strip_id3v2(data)
+        self._stream_buffer.append(data)
+        if seq == 0:
+            self.first_dispatch_done.set()
+        self._log(f"seg {seq} → stream ({len(data)} bytes, buf={len(self._stream_buffer)})")
+
+    # --- stream loop -------------------------------------------------------
+
+    def run(self) -> int:
+        if not self.args.socket.exists():
+            print(
+                f"tts-stream: voice socket not found: {self.args.socket}\n"
+                "  start aar-mpv-tunnel on this host (or pass --socket).",
+                file=sys.stderr,
+            )
+            return 2
+
+        # Start the HTTP stream server, tell mpv to connect to it. mpv
+        # reads from the buffer; we mark it complete (finalize) when all
+        # segments have been dispatched. mpv plays through, goes idle,
+        # and we wait for any ongoing handlers to drain before exiting.
+        self._stream_server, self._stream_buffer, port, self._active_handlers = _start_stream_server()
+        host = _resolve_advertise_host(self.args.socket)
+        url = f"http://{host}:{port}/stream.mp3"
+        self._log(f"stream URL = {url}")
+        # Hard-clear any prior playback state on the voice channel
+        # before loading our URL. Without this, content from a previous
+        # tts-stream run that was paused mid-cache (or never fully
+        # consumed) can replay alongside / after the new content — the
+        # user hears a leftover snippet from an earlier response.
+        # `stop` clears playlist + flushes demuxer cache + halts
+        # playback; `loadfile replace` then starts genuinely fresh.
+        _mpv_send(self.args.socket, ["stop"])
+        load_resp = _mpv_send(self.args.socket, ["loadfile", url, "replace"])
+        if load_resp and load_resp.get("error") and load_resp["error"] != "success":
+            self.errors.append(f"mpv loadfile {url}: {load_resp.get('error')}")
+            return 1
+        _mpv_send(self.args.socket, ["set_property", "pause", False])
+        # Tag the loaded URL with the producing tmux session so the
+        # status line / popup can attribute it (the URL itself carries
+        # no session info, unlike denote-stem'd archive paths).
+        if self.args.session:
+            _mpv_send(self.args.socket,
+                      ["set_property", "user-data/aar/session", self.args.session])
+
+        buf = ""
+        seq = 0
+        in_eof = False
+        # CRITICAL: read stdin via os.read(0, ...) instead of sys.stdin.read().
+        # Python's sys.stdin is wrapped in a TextIOWrapper that block-buffers
+        # (~8KB) when stdin is a pipe — so sys.stdin.read(N) waits for 8KB
+        # or EOF, defeating streaming entirely (a typical llm response is
+        # well under 8KB; you'd see nothing until the model finished). Raw
+        # os.read on fd 0 returns as soon as the kernel has any bytes for
+        # us, which is what streaming needs.
+        # Strip code blocks lazily: we operate on a "speakable" view of
+        # the buffer rather than the raw input, so we don't accidentally
+        # treat code-internal periods as sentence boundaries.
+        raw_buf = ""
+        while not in_eof:
+            try:
+                raw = os.read(0, 4096)
+            except OSError:
+                raw = b""
+            if not raw:
+                in_eof = True
+            else:
+                chunk = raw.decode("utf-8", errors="replace")
+                raw_buf += chunk
+                if self.args.tee:
+                    # Echo through unbuffered so the user sees text appear at
+                    # the same cadence as it streams through us — same UX as
+                    # `llm "..."` without tts-stream in the pipe.
+                    # Swallow BrokenPipeError so an early-closing downstream
+                    # consumer (e.g. `tee >(tts-stream >/dev/null)` where
+                    # tts-stream exits before llm finishes) doesn't trash
+                    # the user's terminal with a stack trace.
+                    try:
+                        sys.stdout.write(chunk)
+                        sys.stdout.flush()
+                    except BrokenPipeError:
+                        # Drop to no-op tee for the rest of the run.
+                        self.args.tee = False
+            # Re-strip on every iteration since a code fence may straddle
+            # chunk boundaries; the operation is cheap on text this small.
+            buf_view = _strip_code_blocks(raw_buf)
+            # Eager-first-segment is gated on "we haven't dispatched
+            # anything yet for this run" — once seg 0 is out the door,
+            # downstream segments use normal sentence-boundary rules so
+            # prosody stays clean.
+            eager = (seq == 0)
+            if in_eof:
+                # Drain remaining input as final segment regardless of
+                # whether it ended on punctuation.
+                segments, leftover = _split_segments(buf_view, drain=True, eager_first=eager)
+            else:
+                segments, leftover = _split_segments(buf_view, drain=False, eager_first=eager)
+                # If we've stripped code blocks we can't easily reconcile
+                # `leftover` back to a position in raw_buf. Simplest: only
+                # advance raw_buf when a *complete* code block was the
+                # only difference between raw_buf and buf_view (i.e. text
+                # content matches), otherwise wait. This approximation:
+                # consume from raw_buf the prefix that produced everything
+                # before `leftover` in buf_view. Since stripping only
+                # removes whole fenced blocks, we can splice raw_buf to
+                # match by finding the suffix of buf_view in raw_buf.
+                consumed = len(buf_view) - len(leftover)
+                if consumed > 0:
+                    # Find the position in raw_buf corresponding to
+                    # `consumed` chars of buf_view by walking forward and
+                    # skipping any code-block ranges.
+                    raw_buf = _advance_raw(raw_buf, consumed)
+            for chunk_text in segments:
+                self._log(f"seg {seq} cut ({len(chunk_text)} chars)")
+                fut = self.executor.submit(self._render, seq, chunk_text)
+                fut.add_done_callback(lambda f, s=seq: self._on_render_done(s, f))
+                seq += 1
+
+        # All segments queued. Wait for the executor to drain.
+        self.executor.shutdown(wait=True)
+        # One final dispatch pass in case the last render finished after
+        # the executor's last on_done fired but before shutdown returned.
+        with self.dispatch_lock:
+            self._drain_locked()
+
+        # Signal end-of-stream to the HTTP handler. mpv reads up to its
+        # buffer and then plays it out; when its buffer empties it goes
+        # idle. We don't wait for mpv to finish playing — the user's
+        # shell would feel stuck for the full audio duration. Instead we
+        # exit; mpv keeps playing what it's already buffered (which
+        # should be everything, since the stream completes faster than
+        # playback for typical responses).
+        # Mark the buffer complete. Any handler currently reading will
+        # drain to the buffer end and then EOF. New connections (e.g. a
+        # post-end seek) get the full buffer and finish.
+        if self._stream_buffer is not None:
+            self._stream_buffer.finalize()
+        # Wait for active handlers to drain so daemon threads don't get
+        # killed mid-write when main exits — that would truncate the
+        # tail of mpv's audio. Bound the wait so we can't hang forever
+        # on a wedged client.
+        deadline = time.monotonic() + 30
+        while self._active_handlers and time.monotonic() < deadline:
+            if not self._active_handlers:
+                break
+            time.sleep(0.1)
+        if self._stream_server is not None:
+            self._stream_server.shutdown()
+        self._log("stream closed")
+
+        # Archive the full response as a single concatenated clip via
+        # tts-drop, so replay/prev/next still walk *responses*.
+        if not self.args.no_archive and self.dispatched:
+            self._archive_concat()
+
+        if self.errors:
+            for e in self.errors:
+                print(f"tts-stream: {e}", file=sys.stderr)
+            return 1
+        return 0
+
+    # --- archive -----------------------------------------------------------
+
+    def _archive_concat(self) -> None:
+        """Drop a concatenated full-response clip into the watched dir.
+
+        tts-drop expects *text* on stdin and re-renders — it has no
+        from-file mode. Rather than re-render the whole response just for
+        archive (doubles TTS cost), we drop the concatenated audio file
+        directly into the watch dir with the standard stem format. The
+        forwarder picks it up like any other clip; the relay's mpv
+        backend on the phone writes the latest--<host>--<session>
+        symlinks the same way it does for tts-drop emissions.
+
+        Cheap concat: edge-tts and openai-tts both produce MP3s with
+        consistent codec params, and mp3 is a frame-stream format that
+        tolerates plain byte-concatenation. If quality issues appear
+        later we can swap in `ffmpeg -f concat`.
+        """
+        drop_dir = Path(self.args.drop_dir)
+        drop_dir.mkdir(parents=True, exist_ok=True)
+        stem = _make_stem(self.args.tag, self.args.kind, self.args.session)
+        # Stage outside the watched dir, then atomic rename in — same
+        # pattern as tts-drop, so the watcher doesn't see partial writes.
+        staging = drop_dir / f".{stem}.partial.mp3"
+        final = drop_dir / f"{stem}.mp3"
+        try:
+            with staging.open("wb") as out:
+                for p in self.dispatched:
+                    out.write(p.read_bytes())
+            staging.rename(final)
+            self._log(f"archived {final}")
+        except OSError as e:
+            self.errors.append(f"archive write: {e}")
+            staging.unlink(missing_ok=True)
+
+    def _log(self, msg: str) -> None:
+        if self.args.verbose:
+            elapsed = time.monotonic() - self._t0
+            print(f"tts-stream[{self.run_id}] +{elapsed:5.2f}s: {msg}",
+                  file=sys.stderr)
+
+
+# --- stem (mirrors shell/hooks/lib/denote-stem.sh) ------------------------
+
+_SLUG_RE = re.compile(r"[^A-Za-z0-9-]+")
+_DASHES_RE = re.compile(r"-+")
+
+
+def _slug(s: str) -> str:
+    s = _SLUG_RE.sub("-", s)
+    s = _DASHES_RE.sub("-", s)
+    return s.strip("-")
+
+
+def _make_stem(agent: str, kind: str, session_override: str = "") -> str:
+    """Mirror of denote-stem.sh's ``make_stem``.
+
+    Format: ``YYYYMMDDTHHMMSS--<host>--<session>__<persona>_<agent>_<kind>``
+
+    The host segment is encoded by the *producer* (us) so backends on
+    the playback host can disambiguate same-named sessions across hosts
+    without hostname() lookups at archive time.
+    """
+    ts = time.strftime("%Y%m%dT%H%M%S", time.gmtime())
+    host = _slug(socket.gethostname().split(".", 1)[0]) or "nohost"
+    session = session_override
+    if not session and os.environ.get("TMUX"):
+        try:
+            session = subprocess.check_output(
+                ["tmux", "display-message", "-p", "#S"],
+                stderr=subprocess.DEVNULL,
+            ).decode().strip()
+        except (OSError, subprocess.CalledProcessError):
+            pass
+    session = _slug(session) or "nosession"
+    persona = _slug(os.environ.get("USER", "")) or "nopersona"
+    agent_s = _slug(agent) or "noagent"
+    kind_s = _slug(kind) or "nokind"
+    return f"{ts}--{host}--{session}__{persona}_{agent_s}_{kind_s}"
+
+
+def _advance_raw(raw_buf: str, target_speakable_len: int) -> str:
+    """Return the suffix of ``raw_buf`` after consuming ``target_speakable_len``
+    characters of speakable text (i.e. excluding stripped code blocks).
+    """
+    consumed = 0
+    i = 0
+    while i < len(raw_buf) and consumed < target_speakable_len:
+        # Code fence start at this position?
+        if raw_buf.startswith("```", i):
+            end = raw_buf.find("```", i + 3)
+            if end == -1:
+                # Open fence with no close — wait for more input.
+                return raw_buf[i:]
+            i = end + 3
+            continue
+        i += 1
+        consumed += 1
+    return raw_buf[i:]
+
+
+# --- CLI -------------------------------------------------------------------
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="tts-stream",
+        description="Incremental TTS for streaming model output.",
+    )
+    # Default engine: respect explicit RELAY_TTS_ENGINE; otherwise prefer
+    # openai when OPENAI_API_KEY is present (it sounds noticeably better
+    # for long-form spoken content), and fall back to edge so the tool
+    # works out of the box without an API key.
+    _default_engine = os.environ.get("RELAY_TTS_ENGINE") or (
+        "openai" if os.environ.get("OPENAI_API_KEY") else "edge"
+    )
+    p.add_argument("--engine", default=_default_engine,
+                   choices=["edge", "openai", "qwen"])
+    p.add_argument("--voice", default=None,
+                   help="Engine-specific voice name (overrides per-engine default).")
+    p.add_argument("--edge-voice",
+                   default=os.environ.get("RELAY_EDGE_VOICE", "en-US-AriaNeural"))
+    p.add_argument("--edge-bin",
+                   default=os.environ.get("RELAY_EDGE_TTS_BIN", "edge-tts"))
+    p.add_argument("--openai-voice",
+                   default=os.environ.get("RELAY_OPENAI_VOICE", "marin"))
+    p.add_argument("--openai-model",
+                   default=os.environ.get("RELAY_OPENAI_MODEL", "gpt-4o-mini-tts"))
+    p.add_argument("--openai-python",
+                   default=os.environ.get("RELAY_OPENAI_PYTHON", "python3"))
+    p.add_argument("--qwen-voice",
+                   default=os.environ.get("RELAY_QWEN_VOICE", "Cherry"))
+    p.add_argument("--qwen-model",
+                   default=os.environ.get("RELAY_QWEN_MODEL",
+                                          "qwen3-tts-flash-2025-11-27"))
+    p.add_argument("--qwen-lang",
+                   default=os.environ.get("RELAY_QWEN_LANG", "English"))
+    p.add_argument("--qwen-base-url",
+                   default=os.environ.get("DASHSCOPE_BASE_URL",
+                                          "https://dashscope-intl.aliyuncs.com/api/v1"))
+    p.add_argument("--socket", type=Path,
+                   default=Path(os.environ.get(
+                       "AAR_VOICE_SOCKET",
+                       str(Path(os.environ.get("XDG_STATE_HOME",
+                                               Path.home() / ".local/state"))
+                           / "agent-audio-relay" / "mpv-voice.sock"))),
+                   help="mpv-voice IPC socket. Default: tunnel socket.")
+    p.add_argument("--max-workers", type=int, default=2,
+                   help="Bounded parallelism for TTS rendering.")
+    p.add_argument("--tag", default="llm",
+                   help="Agent tag for the archived full-response clip.")
+    p.add_argument("--kind", default="stream",
+                   help="Event kind for the archived clip.")
+    p.add_argument("--session", default="",
+                   help="Session ID for archive routing. Default: tmux session.")
+    p.add_argument("--drop-dir",
+                   default=os.environ.get("RELAY_LLM_DROP_DIR", "/tmp/tts-llm"),
+                   help="Drop-dir for the final archived full-response clip.")
+    p.add_argument("--no-archive", action="store_true",
+                   help="Skip the post-stream archive (segments are still played).")
+    p.add_argument("--work-dir", default=None,
+                   help="Per-run scratch dir for segment files. Default: /tmp/tts-stream/<run-id>/")
+    p.add_argument("--keep-work", action="store_true",
+                   help="Don't remove the per-run scratch dir after the stream ends.")
+    p.add_argument("--no-tee", dest="tee", action="store_false",
+                   help="Don't echo stdin to stdout. Default: tee everything "
+                        "through so the user sees the text in their terminal.")
+    p.add_argument("-v", "--verbose", action="store_true")
+    p.set_defaults(tee=True)
+    return p
+
+
+def main() -> None:
+    args = _build_parser().parse_args()
+    if args.engine == "openai":
+        # Reuse the autodetection from tts_render so we have one
+        # implementation that adapts as we add or rename pipx venvs.
+        from .tts_render import _default_openai_python
+        args.openai_python = _default_openai_python(args.openai_python)
+    if not args.session:
+        # Inherit tmux session if available — same convention as tts-drop.
+        if os.environ.get("TMUX"):
+            try:
+                out = subprocess.check_output(
+                    ["tmux", "display-message", "-p", "#S"],
+                    stderr=subprocess.DEVNULL,
+                ).decode().strip()
+                args.session = out
+            except (OSError, subprocess.CalledProcessError):
+                pass
+
+    runner = StreamRunner(args)
+    try:
+        rc = runner.run()
+    except BrokenPipeError:
+        # Final safety net: any flush at interpreter shutdown that hits
+        # a closed downstream pipe shouldn't print a traceback.
+        rc = 0
+    if not args.keep_work:
+        try:
+            shutil.rmtree(runner.work_dir, ignore_errors=True)
+        except OSError:
+            pass
+    # Avoid the "Exception ignored on flushing sys.stdout" message Python
+    # prints at shutdown when stdout is a broken pipe — close stdout so
+    # the interpreter doesn't try to flush it.
+    try:
+        sys.stdout.close()
+    except (BrokenPipeError, OSError):
+        pass
+    sys.exit(rc)
+
+
+if __name__ == "__main__":
+    main()

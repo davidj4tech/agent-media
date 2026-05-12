@@ -1,0 +1,1037 @@
+#!/bin/bash
+# Interactive tts-popup — meant to run inside `tmux display-popup -E`.
+# Designed as a tiny top-right key-capture overlay paired with the
+# status-line in tmux's status-right (which shows the progress bar).
+# The popup itself just shows the session and current state, and exists
+# mostly to put tmux in a key-capture mode for the duration. Suggested
+# tmux binding: `display-popup -E -w 20 -h 3 -x R -y 0`.
+#
+#   ▶ aar
+#
+# Single-key hotkeys (no on-screen hints — keep popup compact; see README):
+#   Space   toggle play/pause
+#   r       replay (current tmux session)
+#   0       seek to start of current clip
+#   h / l   seek -5s / +5s
+#   H / L   seek -30s / +30s
+#   - / =   volume -5 / +5
+#   p       alternate to Space (mpv default)
+#   1-9     seek to N×10% of current clip (mpv/VLC default)
+#   m       toggle mute
+#   [ / ]   slower / faster (speed × 1/1.1 / × 1.1)
+#   < / >   previous / next clip in this session's archive
+#   Del/BS  reset speed to 1.0
+#   v       toggle sentence-level highlight in caller pane via copy-mode
+#           (requires TTS_POPUP_PANE='#{pane_id}' from the tmux binding;
+#           reads `tts-ctl spoken-text` sidecar text and tracks time-pos)
+#   i       show clip info (pos/dur/path) in tmux status line
+#   ?       show keymap in tmux status line
+#   q / Esc close
+#
+# Auto-closes TTS_POPUP_AUTO_CLOSE seconds after playback ends (default 10;
+# set to 0 to disable). Only arms after we've observed mpv playing at least
+# once, so opening the popup while idle doesn't insta-close.
+set -u
+TTS_CTL="${TTS_CTL:-tts-ctl}"
+
+# Hide the cursor while the popup runs — without this the terminal cursor
+# briefly visible at top-left between frames reads as flicker. Restored
+# in _cleanup on EXIT.
+printf '\033[?25l'
+
+# Help text for the `?` hotkey. Written to a tempfile at startup so the
+# `?` binding can `cat` it inside a nested tmux popup without inline
+# heredoc quoting hell. Cleaned up in _cleanup.
+HELP_FILE=$(mktemp -t tts-popup-help.XXXXXX)
+cat > "$HELP_FILE" <<'EOF'
+ TTS popup hotkeys
+ ─────────────────
+   Space    play/pause; replay most recent clip
+   r        replay latest for session
+   0        seek to start (no reload)
+   h / l    seek -5s / +5s
+   H / L    seek -30s / +30s
+   - / =    volume -5 / +5
+   m        toggle mute
+   v        highlight spoken sentence
+            in caller pane (copy-mode)
+   ?        this help
+   q / Esc  close popup
+
+ Status bar shows live progress.
+
+ press Esc to dismiss this help
+EOF
+
+# Pin the popup to a specific tmux session so toggle/replay always target
+# this session's clip — never the global `latest` symlink, which on a shared
+# phone archive may point at some other host's session. The tmux binding
+# passes the session in via TTS_POPUP_SESSION; if missing we try to recover
+# from the inherited TMUX env, but the binding is the reliable path.
+SESSION="${TTS_POPUP_SESSION:-}"
+# Defensive: tmux's `display-popup` (unlike `run-shell`) doesn't format-
+# expand its shell-command argument, so a binding like
+#     display-popup -E "TTS_POPUP_SESSION='#{session_name}' tts-popup"
+# would pass the literal string `#{session_name}` through. Strip it.
+case "$SESSION" in
+    *'#{'*) SESSION="" ;;
+esac
+if [ -z "$SESSION" ] && [ -n "${TMUX:-}" ]; then
+    SESSION=$(tmux display-message -p '#S' 2>/dev/null || true)
+fi
+
+# Caller pane id, for the `v` highlight feature. The tmux binding sets
+# TTS_POPUP_PANE='#{pane_id}' at popup-launch time so we can drive
+# copy-mode selection in the user's working pane (the popup itself
+# isn't a real tmux pane). Same defensive `#{` strip as SESSION above
+# in case a binding forgot the set-environment hop.
+HL_PANE="${TTS_POPUP_PANE:-}"
+case "$HL_PANE" in
+    *'#{'*) HL_PANE="" ;;
+esac
+
+# When the mpv-tts socket isn't local, every tts-ctl keypress otherwise
+# pays a fresh ssh handshake. If the user's ssh config already provides
+# a working ControlMaster for the phone host, reuse it (do nothing).
+# Otherwise open one for the popup's lifetime.
+#
+# Channel discovery: the popup binds to one of three mpv channels (tts,
+# voice, music). Selection priority:
+#   1. AAR_MPV_SOCKET / MPV_TTS_SOCK env (caller knows what they want)
+#   2. probe each tunnel socket's idle-active; pick the first non-idle
+#      in priority order tts > voice > music (tts is most ephemeral and
+#      almost always what the user wants to interact with; voice >
+#      music because voice ducks/pauses for tts, so it's the foreground
+#      content when both are loaded)
+#   3. fall back to tts (preserves the historical default)
+# The probe is three local socat calls (~30ms total when the tunnel is
+# up) and runs once at popup startup — not refreshed mid-popup.
+_state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/agent-audio-relay"
+_tts_sock="$_state_dir/mpv-tts.sock"
+_voice_sock="$_state_dir/mpv-voice.sock"
+_music_sock="$_state_dir/mpv-music.sock"
+_termux_tmp="${PREFIX:-/data/data/com.termux/files/usr}/tmp"
+_phone_tts_sock="$_termux_tmp/mpv-tts.sock"
+# On the Termux playback host there may be no aar-mpv-tunnel sockets under
+# XDG_STATE_HOME; the real mpv IPC sockets live in $PREFIX/tmp. Fall back to
+# those so Tab can see voice/music locally instead of only the tts channel.
+[ -S "$_tts_sock" ]   || [ ! -S "$_termux_tmp/mpv-tts.sock" ]   || _tts_sock="$_termux_tmp/mpv-tts.sock"
+[ -S "$_voice_sock" ] || [ ! -S "$_termux_tmp/mpv-voice.sock" ] || _voice_sock="$_termux_tmp/mpv-voice.sock"
+[ -S "$_music_sock" ] || [ ! -S "$_termux_tmp/mpv-music.sock" ] || _music_sock="$_termux_tmp/mpv-music.sock"
+_music_backend="${AAR_MUSIC_BACKEND:-mpv}"
+
+_is_mopidy_music_sock() {
+    [ "$_music_backend" = "mopidy" ] && [ "$1" = "$_music_sock" ]
+}
+
+_music_available() {
+    if [ "$_music_backend" = "mopidy" ]; then
+        command -v python3 >/dev/null 2>&1
+    else
+        [ -S "$_music_sock" ]
+    fi
+}
+
+_probe_idle() {
+    # Returns "active", "idle", or "unknown" for the given socket.
+    # Keep stdin open for ~0.3s after sending the command so the
+    # response has time to make a full RTT through the SSH tunnel
+    # before socat half-closes — `socat -T 1` alone closes too fast
+    # on slow links and we see empty replies (popup defaulted to
+    # "(idle)" even when channels were active).
+    local sock="$1" r
+    if _is_mopidy_music_sock "$sock"; then
+        r=$("$TTS_CTL" --socket "$sock" get idle-active 2>/dev/null | head -n1)
+    else
+        [ -S "$sock" ] || { printf 'unknown'; return; }
+        r=$( (printf '%s\n' '{"command":["get_property","idle-active"]}'; sleep 0.3) \
+            | socat -t 2 - "UNIX-CONNECT:$sock" 2>/dev/null \
+            | jq -r 'select(.error=="success")|.data' 2>/dev/null | head -n1)
+    fi
+    case "$r" in
+        true)  printf 'idle' ;;
+        false) printf 'active' ;;
+        *)     printf 'unknown' ;;
+    esac
+}
+
+_probe_has_path() {
+    local sock="$1" r
+    if _is_mopidy_music_sock "$sock"; then
+        r=$("$TTS_CTL" --socket "$sock" get path 2>/dev/null | head -n1)
+    else
+        [ -S "$sock" ] || return 1
+        r=$( (printf '%s\n' '{"command":["get_property","path"]}'; sleep 0.3) \
+            | socat -t 2 - "UNIX-CONNECT:$sock" 2>/dev/null \
+            | jq -r 'select(.error=="success")|.data' 2>/dev/null | head -n1)
+    fi
+    [ -n "$r" ] && [ "$r" != "null" ]
+}
+
+CHANNEL="tts"
+_SOCK=""
+# Manual channel pin set by Tab. Empty = auto (priority pick).
+# Holds the channel name (tts/voice/music). _select_channel honours
+# this until the pinned channel goes idle, at which point the pin is
+# dropped and auto-pick resumes.
+_MANUAL_PIN=""
+# Set by _select_channel: 1 if at least one *other* channel besides
+# CHANNEL is non-idle. draw() uses this to show a `›` cycle-affordance
+# next to the channel marker.
+_HAS_ALT_CHANNEL=0
+
+# _select_channel: refresh _SOCK + CHANNEL based on the current state
+# of the three channel sockets. Called at startup, then again before
+# every keypress so a stream that starts after the popup opens still
+# routes Space/seek/etc. to the right mpv. ~30-90ms total over the
+# tunnel — well under any human-perceptible keypress floor.
+#
+# Honors AAR_MPV_SOCKET / MPV_TTS_SOCK as a sticky pin if the user
+# explicitly chose a channel; without those, picks the first non-idle
+# in priority order tts > voice > music.
+_select_channel() {
+    if [ -n "${AAR_MPV_SOCKET:-}" ]; then
+        _SOCK="$AAR_MPV_SOCKET"
+        case "$_SOCK" in
+            *mpv-music.sock) CHANNEL="music" ;;
+            *mpv-voice.sock) CHANNEL="voice" ;;
+            *) CHANNEL="tts" ;;
+        esac
+        return
+    fi
+    if [ -n "${MPV_TTS_SOCK:-}" ]; then
+        _SOCK="$MPV_TTS_SOCK"; CHANNEL="tts"
+        _HAS_ALT_CHANNEL=0
+        return
+    fi
+    # Manual pin from Tab. Held for the lifetime of the popup
+    # (cleared only by another Tab moving to a different channel).
+    # We deliberately don't release on idle — the whole point of Tab
+    # cycling through idle channels is to reach their last clip for
+    # replay; auto-snapping back would defeat that.
+    if [ -n "$_MANUAL_PIN" ]; then
+        local _pin_sock=""
+        case "$_MANUAL_PIN" in
+            tts)   _pin_sock="$_tts_sock" ;;
+            voice) _pin_sock="$_voice_sock" ;;
+            music) _pin_sock="$_music_sock" ;;
+        esac
+        if [ -n "$_pin_sock" ] && { [ -S "$_pin_sock" ] || _is_mopidy_music_sock "$_pin_sock"; }; then
+            _SOCK="$_pin_sock"; CHANNEL="$_MANUAL_PIN"
+            _refresh_alt_marker
+            return
+        fi
+        _MANUAL_PIN=""
+    fi
+    if [ -S "$_tts_sock" ] || [ -S "$_voice_sock" ] || _music_available; then
+        if [ "$(_probe_idle "$_tts_sock")" = "active" ]; then
+            _SOCK="$_tts_sock"; CHANNEL="tts"
+        elif [ "$(_probe_idle "$_voice_sock")" = "active" ]; then
+            _SOCK="$_voice_sock"; CHANNEL="voice"
+        elif [ "$(_probe_idle "$_music_sock")" = "active" ]; then
+            _SOCK="$_music_sock"; CHANNEL="music"
+        # Nothing actively playing — prefer a channel that has a clip
+        # loaded (paused/eof) so the popup opens on something replayable
+        # instead of a bare "(idle)". Same tts > voice > music priority.
+        elif _probe_has_path "$_tts_sock"; then
+            _SOCK="$_tts_sock"; CHANNEL="tts"
+        elif _probe_has_path "$_voice_sock"; then
+            _SOCK="$_voice_sock"; CHANNEL="voice"
+        elif _probe_has_path "$_music_sock"; then
+            _SOCK="$_music_sock"; CHANNEL="music"
+        elif [ -S "$_tts_sock" ]; then
+            _SOCK="$_tts_sock"; CHANNEL="tts"
+        elif [ -S "$_voice_sock" ]; then
+            _SOCK="$_voice_sock"; CHANNEL="voice"
+        elif _music_available; then
+            _SOCK="$_music_sock"; CHANNEL="music"
+        else
+            _SOCK="$_tts_sock"; CHANNEL="tts"
+        fi
+        _refresh_alt_marker
+        return
+    fi
+    _SOCK="$_phone_tts_sock"; CHANNEL="tts"
+    _HAS_ALT_CHANNEL=0
+}
+
+# Set _HAS_ALT_CHANNEL=1 if any other channel has a path loaded
+# (active OR paused-with-clip). The marker is meant to signal "Tab
+# will land on a channel that has something to interact with" — pure
+# idle-active would hide channels whose last clip just finished but
+# is still replayable.
+_refresh_alt_marker() {
+    _HAS_ALT_CHANNEL=0
+    local _ch _s _r
+    for _ch in tts voice music; do
+        [ "$_ch" = "$CHANNEL" ] && continue
+        case "$_ch" in
+            tts)   _s="$_tts_sock" ;;
+            voice) _s="$_voice_sock" ;;
+            music) _s="$_music_sock" ;;
+        esac
+        if _is_mopidy_music_sock "$_s"; then
+            _r=$("$TTS_CTL" --socket "$_s" get path 2>/dev/null | head -n1)
+        else
+            [ -S "$_s" ] || continue
+            _r=$(printf '%s\n' '{"command":["get_property","path"]}' \
+                | socat -T 1 - "UNIX-CONNECT:$_s" 2>/dev/null \
+                | jq -r 'select(.error=="success")|.data' 2>/dev/null | head -n1)
+        fi
+        if [ -n "$_r" ] && [ "$_r" != "null" ]; then
+            _HAS_ALT_CHANNEL=1
+            return
+        fi
+    done
+}
+
+# Tab handler: rotate to the next channel in tts→voice→music order
+# regardless of idle state, so the user can navigate to a channel
+# whose last clip has finished and replay/seek it. Skips channels
+# whose socket isn't present at all. Sets _MANUAL_PIN so subsequent
+# _select_channel calls don't snap back to the priority pick.
+_cycle_channel() {
+    local order=(tts voice music)
+    local n=${#order[@]} i start=0
+    for ((i=0; i<n; i++)); do
+        if [ "${order[i]}" = "$CHANNEL" ]; then start=$i; break; fi
+    done
+    for ((i=1; i<=n; i++)); do
+        local cand="${order[((start+i)%n)]}"
+        local sock=""
+        case "$cand" in
+            tts)   sock="$_tts_sock" ;;
+            voice) sock="$_voice_sock" ;;
+            music) sock="$_music_sock" ;;
+        esac
+        if [ "$cand" = "music" ]; then
+            _music_available || continue
+        else
+            [ -S "$sock" ] || continue
+        fi
+        _MANUAL_PIN="$cand"
+        _SOCK="$sock"; CHANNEL="$cand"
+        _refresh_alt_marker
+        return 0
+    done
+    return 1
+}
+
+_select_channel
+
+# All tts-ctl invocations route through ctl(), which re-reads $_SOCK
+# every call so a mid-popup channel-rebind (via _select_channel) takes
+# effect immediately for both the background fetcher and keypress
+# actions. Without the rebind, the popup pinned to whichever channel
+# was non-idle at startup — opening before a stream started meant
+# Space/seek hit the wrong mpv for the entire popup lifetime.
+ctl() { "$TTS_CTL" --socket "$_SOCK" "$@"; }
+_CTL_DIR=""
+_CTL_PATH=""
+_PHONE_HOST=""
+if [ ! -S "$_SOCK" ] && ! _is_mopidy_music_sock "$_SOCK"; then
+    _PHONE_HOST="${CLAUDE_TTS_PHONE_HOST:-p8ar}"
+    if ! ssh -o BatchMode=yes -O check "$_PHONE_HOST" 2>/dev/null; then
+        _CTL_DIR="$(mktemp -d -t tts-popup.XXXXXX)"
+        _CTL_PATH="$_CTL_DIR/ssh.sock"
+        if ssh -M -N -f \
+                -o ControlPath="$_CTL_PATH" \
+                -o ControlPersist=60 \
+                -o BatchMode=yes \
+                "$_PHONE_HOST" 2>/dev/null \
+            && [ -S "$_CTL_PATH" ]; then
+            export CLAUDE_TTS_SSH_OPTS="-o ControlPath=$_CTL_PATH"
+        else
+            rm -rf "$_CTL_DIR"
+            _CTL_DIR=""; _CTL_PATH=""
+        fi
+    fi
+fi
+# Single EXIT trap below also tears down the ssh ControlMaster (if any).
+
+fmt_time() {
+    local t="$1"
+    if [ -z "$t" ] || [ "$t" = "null" ]; then
+        printf -- '--:--'
+        return
+    fi
+    awk -v t="$t" 'BEGIN{ s=int(t); printf "%02d:%02d", s/60, s%60 }'
+}
+
+# Path → display label. Handles every shape mpv may report:
+#   latest.<ext>                                      → "global"
+#   latest--<host>--<session>.<ext>                   → "<session>"
+#   latest--<session>.<ext>                           → "<session>"
+#   latest--<session>__<agent>.<ext>                  → "<session>"
+#   <ts>--<host>--<session>__<persona>_<agent>_...    → "<session>"
+#   <ts>--<session>__<persona>_<agent>_<kind>.<ext>   → "<session>"  (legacy)
+#   anything else                                     → basename, no ext
+nowplaying_label() {
+    local path="$1" base left session
+    [ -z "$path" ] || [ "$path" = "null" ] && { printf '(idle)'; return; }
+    base="${path##*/}"
+    base="${base%.*}"
+    if [ "$base" = "latest" ]; then
+        printf 'global'
+        return
+    fi
+    # Strip everything from `__` onward (persona/agent/kind), then take
+    # the last `--` segment. Works for both `latest--…--<session>` symlinks
+    # and raw `<ts>--…--<session>__…` archive filenames.
+    left="${base%%__*}"
+    session="${left##*--}"
+    if [ -n "$session" ] && [ "$session" != "$base" ]; then
+        printf '%s' "$session"
+    else
+        printf '%s' "$base"
+    fi
+}
+
+bar() {
+    local pos="$1" dur="$2" width="$3" filled empty pad fill rest
+    if [ -z "$pos" ] || [ -z "$dur" ] || [ "$pos" = "null" ] || [ "$dur" = "null" ]; then
+        printf -v pad '%*s' "$width" ''
+        printf '%s' "${pad// /─}"
+        return
+    fi
+    filled=$(awk -v p="$pos" -v d="$dur" -v w="$width" \
+        'BEGIN{ if(d<=0){print 0; exit} f=int((p/d)*w); if(f<0)f=0; if(f>w)f=w; print f }')
+    empty=$((width - filled))
+    fill="" rest=""
+    if [ "$filled" -gt 0 ]; then
+        printf -v pad '%*s' "$filled" ''
+        fill="${pad// /█}"
+    fi
+    if [ "$empty" -gt 0 ]; then
+        printf -v pad '%*s' "$empty" ''
+        rest="${pad// /░}"
+    fi
+    printf '%s%s' "$fill" "$rest"
+}
+
+# draw() exports IDLE as a side-effect so the main loop can drive the
+# auto-close timer without a second IPC round-trip.
+IDLE=
+_LAST_FRAME=""
+# Visual feedback for the last key pressed. Shown as `[<label>]`
+# appended to the popup body for up to KEY_FEEDBACK_US microseconds,
+# then cleared. Bash 5's $EPOCHREALTIME gives us microsecond precision
+# without forking date.
+LAST_KEY=""
+LAST_KEY_AT=0
+KEY_FEEDBACK_US=700000  # 0.7 seconds
+
+# Marquee state. When the rendered label is wider than the available
+# column budget, draw() scrolls it one cell per tick like a news ticker.
+# Offset resets whenever the label text changes (new clip / new chapter)
+# so the start is always readable; SCROLL_HOLD_TICKS pauses briefly at
+# offset 0 before scrolling so a label that just-fits doesn't whip past.
+LAST_LABEL=""
+SCROLL_OFFSET=0
+SCROLL_HOLD_TICKS=6
+SCROLL_HOLD_COUNT=0
+
+# now_us — microseconds since epoch as an integer. EPOCHREALTIME is
+# "<sec>.<usec>"; stripping the dot gives us a usable unsigned integer.
+_now_us() { printf '%s' "${EPOCHREALTIME/./}"; }
+
+draw() {
+    # Build the full frame in a buffer and write atomically below.
+    local paused idle pos dur vol path mute state cols barw
+    # Read whatever the background fetcher most recently wrote. Stays
+    # non-blocking so keypresses are never gated on an in-flight ssh RTT.
+    if [ -s "$STATE_FILE" ]; then
+        mapfile -t STATE < "$STATE_FILE"
+    fi
+    paused="${STATE[0]:-}"; idle="${STATE[1]:-}"; pos="${STATE[2]:-}"
+    dur="${STATE[3]:-}";    vol="${STATE[4]:-}";  path="${STATE[5]:-}"
+    mute="${STATE[6]:-}"
+    local title="${STATE[7]:-}"
+    local chapter_title="${STATE[8]:-}"
+    local fetch_ts="${STATE[9]:-}"
+    IDLE="$idle"
+    # Interpolate time-pos between fetches so the progress bar moves
+    # smoothly. Only when actively playing — paused/idle/eof should hold.
+    if [ -n "$pos" ] && [ "$pos" != "null" ] \
+        && [ -n "$fetch_ts" ] \
+        && [ "$paused" = "false" ] && [ "$idle" = "false" ]; then
+        pos=$(awk -v p="$pos" -v t="$fetch_ts" -v now="$(date +%s.%N)" -v d="${dur:-0}" \
+            'BEGIN{
+                p = p + (now - t);
+                if (d > 0 && p > d) p = d;
+                printf "%.3f", p;
+            }')
+    fi
+    # Compact state glyph (one cell) so the popup line stays one-row.
+    if [ "$idle" = "true" ] || [ -z "$paused" ]; then
+        state='○'
+    elif [ "$paused" = "true" ]; then
+        state='⏸'
+    else
+        state='▶'
+    fi
+    # No bar inside the popup — the progress bar lives in tmux's
+    # status-right via tts-status-line. Popup is just a key-capture
+    # overlay, kept tiny so it doesn't visually compete with the
+    # status bar.
+    :
+
+    # Detect "we asked mpv to load and nothing happened" so the user knows
+    # Space did something — without it, a session that has no clip on the
+    # phone looks identical to Space being broken.
+    local label
+    if [ -n "${LOAD_PENDING_SINCE:-}" ]; then
+        if [ "$idle" != "true" ] && [ -n "$idle" ]; then
+            LOAD_PENDING_SINCE=  # mpv started a clip; clear pending state
+        elif [ $((SECONDS - LOAD_PENDING_SINCE)) -ge 2 ]; then
+            label="(no clip for session: ${SESSION:-?})"
+        fi
+    fi
+    if [ -z "${label:-}" ]; then
+        if [ -z "$path" ] || [ "$path" = "null" ]; then
+            # mpv is idle — surface the session this popup is pinned to so
+            # the user knows what Space-after-idle will load.
+            [ -n "$SESSION" ] && label="(idle: $SESSION)" || label="(idle)"
+        elif [ "$CHANNEL" = "tts" ]; then
+            label=$(nowplaying_label "$path")
+        else
+            # music/voice: prefer the current chapter title if mpv has
+            # one (yt-dlp turns YouTube chapter markers into mpv's chapter
+            # list, and chapter-metadata/title tracks the playhead). Fall
+            # back to media-title (real video title for YouTube, embedded
+            # tag or filename for local files), then to basename.
+            if [ -n "$title" ] && [ "$title" != "null" ]; then
+                label="$title"
+            else
+                local _b="${path##*/}"
+                label="${_b%.*}"
+            fi
+            if [ -n "$chapter_title" ] && [ "$chapter_title" != "null" ]; then
+                label="${label} › ${chapter_title}"
+            fi
+        fi
+    fi
+    # Channel marker — empty for tts when no other channel is also
+    # non-idle (preserves the historical tts-only look). When another
+    # channel is non-idle, append `›` to show Tab will cycle there.
+    local channel_prefix="" alt_marker=""
+    [ "$_HAS_ALT_CHANNEL" = "1" ] && alt_marker="›"
+    case "$CHANNEL" in
+        voice) channel_prefix="[v]${alt_marker} " ;;
+        music) channel_prefix="[m]${alt_marker} " ;;
+        tts)   [ -n "$alt_marker" ] && channel_prefix="[t]${alt_marker} " ;;
+    esac
+    local mute_suffix=""
+    [ "$mute" = "true" ] && mute_suffix=' [M]'
+    # Briefly show the last keypress for visual feedback. Cleared once
+    # KEY_FEEDBACK_US has elapsed since the press; subsequent draws
+    # then fall back to the plain `state label mute` body.
+    local key_suffix=""
+    if [ -n "$LAST_KEY" ]; then
+        local age=$(( $(_now_us) - LAST_KEY_AT ))
+        if [ "$age" -lt "$KEY_FEEDBACK_US" ]; then
+            key_suffix=" [${LAST_KEY}]"
+        else
+            LAST_KEY=""
+        fi
+    fi
+    # Marquee: if the assembled body would overflow the popup width,
+    # scroll the label one cell per draw tick. The visible window is
+    # cut from a ring buffer (label + separator) so it loops smoothly.
+    local _cols="${COLUMNS:-0}"
+    [ "$_cols" -le 0 ] && _cols=$(tput cols 2>/dev/null || echo 20)
+    local _fixed_w=$(( ${#state} + 1 + ${#channel_prefix} + ${#mute_suffix} + ${#key_suffix} ))
+    local _avail=$(( _cols - _fixed_w ))
+    [ "$_avail" -lt 4 ] && _avail=4
+    if [ "$label" != "$LAST_LABEL" ]; then
+        SCROLL_OFFSET=0
+        SCROLL_HOLD_COUNT=0
+        LAST_LABEL="$label"
+    fi
+    if [ "${#label}" -gt "$_avail" ]; then
+        local _sep="   ·   "
+        local _ring="${label}${_sep}"
+        local _rlen=${#_ring}
+        local _off=$(( SCROLL_OFFSET % _rlen ))
+        local _win="${_ring:_off}${_ring}"
+        label="${_win:0:$_avail}"
+        if [ "$SCROLL_OFFSET" -eq 0 ] && [ "$SCROLL_HOLD_COUNT" -lt "$SCROLL_HOLD_TICKS" ]; then
+            SCROLL_HOLD_COUNT=$(( SCROLL_HOLD_COUNT + 1 ))
+        else
+            SCROLL_OFFSET=$(( (SCROLL_OFFSET + 1) % _rlen ))
+            SCROLL_HOLD_COUNT=0
+        fi
+    fi
+
+    # Build the whole frame in one buffer and emit with a single printf.
+    # tmux's popup renderer applies the entire write atomically, so the
+    # user never sees the bar half-drawn or the label arrive before the
+    # state line — eliminates the visible flicker. \033[K (erase to EOL)
+    # keeps prior-frame residue from leaking past shorter new content;
+    # \033[J at the bottom wipes anything below the current frame.
+    # One-line layout. \033[K erases any prior-frame residue; \033[J
+    # below wipes anything that was drawn on lines 2+ by an older popup.
+    local frame=$'\033[H'
+    frame+="${state} ${channel_prefix}${label}${mute_suffix}${key_suffix}"
+    frame+=$'\033[K\033[J'
+    # Only emit if the rendered output changed. Bar cells only cross a
+    # boundary every ~(duration/width) seconds, but draw() runs every
+    # TICK (~0.15s) — without this gate we'd repaint identical frames
+    # 6-7×/sec, which the terminal renders as visible flicker on the
+    # bar cells. Comparing the whole frame string is cheap (no fork).
+    if [ "$frame" != "$_LAST_FRAME" ]; then
+        printf '%s' "$frame"
+        _LAST_FRAME="$frame"
+    fi
+}
+
+# --- Sentence highlight (v hotkey) -----------------------------------
+# Drives tmux copy-mode in $HL_PANE to background-color the sentence
+# currently being spoken. The text comes from `tts-ctl spoken-text`
+# (reads the `<stem>.txt` sidecar tts-drop writes), segmented into
+# `(char_start char_end text)` triples by `aar-spoken-text`. On each
+# tick we map mpv's time-pos onto the cumulative char range, find the
+# enclosing sentence, and re-issue the copy-mode selection if it
+# changed. tmux auto-scrolls to keep the cursor on-screen, which gives
+# us the auto-scroll-with-speech behavior for free.
+#
+# Caveats:
+#   - Sentence-level granularity only. Engine timestamps would be
+#     needed for word-level — out of scope for v1.
+#   - search-backward-text uses the sentence's first ~25 printable
+#     chars as the position anchor. If two sentences in the visible
+#     pane share that prefix, the most-recent (search-backward from
+#     history-bottom) wins, which is right for normal agent output.
+#   - If the agent text has scrolled out of pane history entirely,
+#     copy-mode just won't find it; the highlight silently no-ops for
+#     that sentence.
+HL_ENABLED=0
+HL_SENTENCES=()       # one entry per sentence: "<start>\t<end>\t<text>"
+HL_TOTAL_CHARS=0
+HL_LAST_IDX=-1        # last applied sentence index; -1 means "force apply next"
+
+# Wrapper for tmux send-keys -X to the caller pane. Swallows errors
+# (pane may have closed under us) so a single missing pane doesn't
+# crash the popup loop.
+_hl_pane_x() {
+    [ -n "$HL_PANE" ] || return 0
+    tmux send-keys -t "$HL_PANE" -X "$@" 2>/dev/null
+}
+
+_hl_search_prefix() {
+    # Trim newlines/tabs to spaces and leading whitespace, then take
+    # the first 25 chars. tmux's search-backward-text appears to match
+    # within visual lines only, so a multi-line sentence can't anchor
+    # on its full text — first-line prefix is the reliable anchor.
+    local s="$1"
+    s="${s//$'\n'/ }"
+    s="${s//$'\t'/ }"
+    s="${s#"${s%%[![:space:]]*}"}"
+    printf '%s' "${s:0:25}"
+}
+
+_hl_enable() {
+    if [ -z "$HL_PANE" ]; then
+        tmux display-message -d 4000 \
+            "tts: highlight needs TTS_POPUP_PANE — update tmux binding (set-environment TTS_POPUP_PANE '#{pane_id}')" \
+            2>/dev/null
+        return 1
+    fi
+    if ! command -v aar-spoken-text >/dev/null 2>&1; then
+        tmux display-message -d 3000 \
+            "tts: aar-spoken-text not on PATH — install/update agent-audio-relay" \
+            2>/dev/null
+        return 1
+    fi
+    local text
+    text=$(ctl spoken-text "$SESSION" 2>/dev/null)
+    if [ -z "$text" ]; then
+        tmux display-message -d 3000 \
+            "tts: no spoken-text sidecar for this clip (older producer?)" \
+            2>/dev/null
+        return 1
+    fi
+    HL_SENTENCES=()
+    while IFS= read -r line; do
+        [ -n "$line" ] && HL_SENTENCES+=("$line")
+    done < <(printf '%s' "$text" | aar-spoken-text)
+    if [ ${#HL_SENTENCES[@]} -eq 0 ]; then
+        tmux display-message -d 3000 \
+            "tts: spoken-text segmenter produced no sentences" 2>/dev/null
+        return 1
+    fi
+    HL_TOTAL_CHARS=${#text}
+    # Park the caller pane in copy-mode at history-bottom so the first
+    # search-backward starts from the freshest output.
+    tmux copy-mode -t "$HL_PANE" 2>/dev/null
+    _hl_pane_x clear-selection
+    _hl_pane_x history-bottom
+    HL_ENABLED=1
+    HL_LAST_IDX=-1
+    return 0
+}
+
+_hl_disable() {
+    [ "$HL_ENABLED" = "1" ] || return 0
+    _hl_pane_x cancel
+    HL_ENABLED=0
+    HL_LAST_IDX=-1
+}
+
+_hl_apply_for_pos() {
+    # No-op if highlight off or we don't have usable position data.
+    [ "$HL_ENABLED" = "1" ] || return
+    local pos="$1" dur="$2"
+    [ -z "$pos" ] || [ "$pos" = "null" ] && return
+    [ -z "$dur" ] || [ "$dur" = "null" ] && return
+    [ "$HL_TOTAL_CHARS" -gt 0 ] || return
+    # Time -> char position. We treat each character as taking equal
+    # time (poor man's prosody). Good enough for sentence granularity:
+    # short prosody jitter doesn't cross sentence boundaries.
+    local active_char
+    active_char=$(awk -v p="$pos" -v d="$dur" -v t="$HL_TOTAL_CHARS" \
+        'BEGIN{
+            if (d <= 0) { print 0; exit }
+            c = int((p / d) * t);
+            if (c < 0) c = 0;
+            if (c >= t) c = t - 1;
+            print c;
+        }')
+    # Linear scan — sentence count is ~dozens at most; binary search
+    # would be premature optimization here.
+    local idx=-1 i=0 entry s e txt
+    for entry in "${HL_SENTENCES[@]}"; do
+        IFS=$'\t' read -r s e txt <<< "$entry"
+        if [ "$active_char" -ge "$s" ] && [ "$active_char" -lt "$e" ]; then
+            idx=$i
+            break
+        fi
+        i=$((i + 1))
+    done
+    [ "$idx" -lt 0 ] && return
+    [ "$idx" = "$HL_LAST_IDX" ] && return
+    entry="${HL_SENTENCES[idx]}"
+    IFS=$'\t' read -r s e txt <<< "$entry"
+    local len=$((e - s))
+    local prefix
+    prefix=$(_hl_search_prefix "$txt")
+    [ -z "$prefix" ] && return
+    # Re-anchor each time: clear → bottom → search → select → extend.
+    # Doing it from history-bottom on every change keeps the highlight
+    # honest if the agent is still emitting output (search-backward
+    # from the latest line lands on the freshest occurrence). The
+    # cursor-right repeat extends the selection by `len` cells; tmux
+    # wraps cursor across visual newlines so multi-line sentences
+    # still get fully selected.
+    _hl_pane_x clear-selection
+    _hl_pane_x history-bottom
+    tmux send-keys -t "$HL_PANE" -X search-backward-text "$prefix" 2>/dev/null
+    _hl_pane_x begin-selection
+    if [ "$len" -gt 0 ]; then
+        tmux send-keys -t "$HL_PANE" -N "$len" -X cursor-right 2>/dev/null
+    fi
+    HL_LAST_IDX=$idx
+}
+
+REFRESH="${TTS_POPUP_REFRESH:-0.5}"   # how often the background fetcher polls mpv
+TICK="${TTS_POPUP_TICK:-0.15}"        # main-loop keypress timeout (UI responsiveness floor)
+AUTO_CLOSE_IDLE="${TTS_POPUP_AUTO_CLOSE:-10}"
+
+# Auto-close state: only fire after we've actually seen mpv playing, so
+# opening the popup while idle doesn't insta-close.
+EVER_PLAYED=0
+IDLE_SINCE=
+
+# Set by Space/r when we expect mpv to start playing. Cleared by draw()
+# once mpv reports non-idle. If still idle 2s later, draw() shows
+# "(no clip for session: ...)" so the user sees Space did *something*.
+LOAD_PENDING_SINCE=
+
+# State cache shared with the background fetcher. The fetcher does the
+# slow ssh+IPC round-trip (~700ms over Tailscale to the phone) while the
+# main loop reads stale-but-cached state non-blockingly — keypress
+# response is gated on $TICK (~150ms), not on the IPC RTT.
+STATE_FILE=$(mktemp -t tts-popup-state.XXXXXX)
+declare -a STATE
+
+# Channel-sync file. The background fetcher runs in a forked subshell,
+# so it can't see parent-side changes to $_SOCK after Tab cycles. The
+# parent writes the current socket path here each time the channel
+# changes; the fetcher re-reads it on every iteration so the displayed
+# ticker tracks the selected channel instead of staying pinned to
+# whatever was active when the popup opened.
+SOCK_FILE=$(mktemp -t tts-popup-sock.XXXXXX)
+_publish_sock() {
+    printf '%s\n' "$_SOCK" > "$SOCK_FILE.tmp" 2>/dev/null \
+        && mv -f "$SOCK_FILE.tmp" "$SOCK_FILE" 2>/dev/null
+}
+
+# Refetch state out-of-band. Used both by the periodic fetcher and as a
+# kick after every keypress (so the display updates promptly once the
+# action's effect lands on mpv, instead of waiting for the next REFRESH).
+# Appends a fetch-time epoch so draw() can interpolate time-pos between
+# fetches and the progress bar moves smoothly instead of jumping once
+# per REFRESH.
+_refetch_state() {
+    {
+        ctl get pause idle-active time-pos duration volume path mute media-title chapter-metadata/title \
+            && date +%s.%N
+    } > "$STATE_FILE.tmp" 2>/dev/null \
+        && mv -f "$STATE_FILE.tmp" "$STATE_FILE" 2>/dev/null
+}
+
+# Seed SOCK_FILE before forking the fetcher so its first iteration
+# already has the current channel.
+_publish_sock
+
+# Background fetcher: writes one full state snapshot per REFRESH seconds.
+# Re-reads SOCK_FILE each iteration so a Tab cycle in the parent shell
+# is picked up on the next tick (without this, the fetcher would keep
+# polling whichever channel was current at popup-open time).
+(
+    while true; do
+        if [ -s "$SOCK_FILE" ]; then
+            _SOCK=$(cat "$SOCK_FILE")
+        fi
+        _refetch_state
+        sleep "$REFRESH"
+    done
+) &
+FETCH_PID=$!
+
+_cleanup() {
+    # Restore cursor visibility (we hid it at startup to avoid mid-frame
+    # cursor blink showing as flicker).
+    printf '\033[?25h'
+    # Exit copy-mode in the caller pane if highlight was on. Without
+    # this, dismissing the popup would leave the pane stuck in
+    # copy-mode with our last selection — confusing UX.
+    _hl_disable
+    kill "$FETCH_PID" 2>/dev/null
+    rm -f "$STATE_FILE" "$STATE_FILE.tmp" "$SOCK_FILE" "$SOCK_FILE.tmp" "$HELP_FILE"
+    if [ -n "$_CTL_PATH" ] && [ -S "$_CTL_PATH" ]; then
+        ssh -O exit -o ControlPath="$_CTL_PATH" "$_PHONE_HOST" 2>/dev/null
+    fi
+    [ -n "$_CTL_DIR" ] && rm -rf "$_CTL_DIR"
+}
+trap _cleanup EXIT
+
+# Block briefly for the first snapshot so the very first frame isn't blank.
+for _ in 1 2 3 4 5 6 7 8; do
+    [ -s "$STATE_FILE" ] && break
+    sleep 0.1
+done
+
+while true; do
+    draw
+    # Drive sentence highlight from the cached time-pos/duration. Same
+    # data draw() reads, no extra IPC. STATE indices match the
+    # `mpv_batch_get` order in _refetch_state: 2=time-pos, 3=duration.
+    if [ "$HL_ENABLED" = "1" ]; then
+        _hl_apply_for_pos "${STATE[2]:-}" "${STATE[3]:-}"
+    fi
+    # Auto-close bookkeeping (uses $IDLE set as a side-effect of draw).
+    if [ "$IDLE" != "true" ] && [ -n "$IDLE" ]; then
+        EVER_PLAYED=1
+        IDLE_SINCE=
+    elif [ "$IDLE" = "true" ] && [ "$EVER_PLAYED" = "1" ]; then
+        : "${IDLE_SINCE:=$SECONDS}"
+        if [ "$AUTO_CLOSE_IDLE" -gt 0 ] \
+            && [ $((SECONDS - IDLE_SINCE)) -ge "$AUTO_CLOSE_IDLE" ]; then
+            exit 0
+        fi
+    fi
+
+    # Short keypress timeout — keypresses respond within ~$TICK, completely
+    # decoupled from the background fetcher's IPC RTT. Empty key on timeout
+    # just falls through to redraw.
+    IFS= read -r -s -n1 -t "$TICK" key
+    rc=$?
+    # rc=0: key pressed; rc>128: timeout (redraw); rc=1 with empty: stdin closed.
+    if [ $rc -gt 128 ]; then
+        continue
+    elif [ $rc -ne 0 ]; then
+        break
+    fi
+    # Multi-byte sequence detection. Arrow keys, Delete, Home, End all
+    # arrive as ESC-prefixed sequences (e.g. Delete = ESC[3~). Read any
+    # remaining bytes with a tiny timeout — bare Esc → quit, sequence →
+    # remap to a synthetic name we can dispatch in the case below.
+    if [ "$key" = $'\e' ]; then
+        IFS= read -r -s -t 0.05 escseq
+        case "$escseq" in
+            '')         key=$'\e' ;;          # bare escape — quit
+            '[3~')      key='DELETE' ;;
+            '[A')       key='UP' ;;
+            '[B')       key='DOWN' ;;
+            '[C')       key='RIGHT' ;;
+            '[D')       key='LEFT' ;;
+            '[H'|'OH')  key='HOME' ;;
+            '[F'|'OF')  key='END' ;;
+            *)          key='' ;;             # unknown sequence
+        esac
+    fi
+    # All actions fire in the background so the keypress loop never blocks
+    # on an ssh RTT. The next periodic fetch (or the explicit refetch below)
+    # picks up the resulting state change. We also set LAST_KEY so the
+    # next draw can show a brief "you pressed X" indicator.
+    #
+    # Re-probe channel selection on every keypress so a stream that
+    # started after the popup opened still gets routed correctly. The
+    # background fetcher uses whatever _SOCK is current on its next
+    # tick — no extra wiring needed.
+    _select_channel
+    _publish_sock
+    case "$key" in
+        ' '|p)
+            # tts: global latest toggle. Popup Space means "the most recent
+            # thing I heard", regardless of the tmux session name. Use `r` for
+            # session-pinned replay.
+            # music/voice: toggle if a clip is loaded; otherwise load the
+            # newest from per-channel history (mpv-mcp records every play).
+            if [ "$CHANNEL" = "tts" ]; then
+                ctl toggle latest >/dev/null 2>&1 & disown
+            else
+                _cur_path="${STATE[5]:-}"
+                if [ -n "$_cur_path" ] && [ "$_cur_path" != "null" ]; then
+                    ctl toggle >/dev/null 2>&1 & disown
+                else
+                    ctl play-latest-history >/dev/null 2>&1 & disown
+                fi
+            fi
+            LOAD_PENDING_SINCE=$SECONDS; LAST_KEY="space"
+            ;;
+        r)
+            # tts: replay this session's latest archived clip.
+            # music/voice: no archive — restart the currently-loaded track.
+            if [ "$CHANNEL" = "tts" ]; then
+                ctl replay "$SESSION" >/dev/null 2>&1 & disown
+                LOAD_PENDING_SINCE=$SECONDS; LAST_KEY="replay"
+            else
+                ctl start >/dev/null 2>&1 & disown; LAST_KEY="restart"
+            fi
+            ;;
+        0)   ctl start    >/dev/null 2>&1 & disown; LAST_KEY="start" ;;
+        h)   ctl seek -5  >/dev/null 2>&1 & disown; LAST_KEY="-5s" ;;
+        l)   ctl seek 5   >/dev/null 2>&1 & disown; LAST_KEY="+5s" ;;
+        H)   ctl seek -30 >/dev/null 2>&1 & disown; LAST_KEY="-30s" ;;
+        L)   ctl seek 30  >/dev/null 2>&1 & disown; LAST_KEY="+30s" ;;
+        '-') ctl volume -5 >/dev/null 2>&1 & disown; LAST_KEY="vol-" ;;
+        '=') ctl volume 5  >/dev/null 2>&1 & disown; LAST_KEY="vol+" ;;
+        m)   ctl mute     >/dev/null 2>&1 & disown; LAST_KEY="mute" ;;
+        '[') ctl slower   >/dev/null 2>&1 & disown; LAST_KEY="slower" ;;
+        ']') ctl faster   >/dev/null 2>&1 & disown; LAST_KEY="faster" ;;
+        '<')
+            # tts: walk this session's archive backward.
+            # music/voice: walk per-channel play history backward.
+            if [ "$CHANNEL" = "tts" ]; then
+                ctl prev "$SESSION" >/dev/null 2>&1 & disown
+            else
+                ctl prev-history >/dev/null 2>&1 & disown
+            fi
+            # Different clip → cached sentences no longer match. Drop
+            # the highlight; user can press `v` again to re-anchor.
+            _hl_disable
+            LOAD_PENDING_SINCE=$SECONDS; LAST_KEY="prev"
+            ;;
+        '>')
+            if [ "$CHANNEL" = "tts" ]; then
+                ctl next "$SESSION" >/dev/null 2>&1 & disown
+            else
+                ctl next-history >/dev/null 2>&1 & disown
+            fi
+            _hl_disable
+            LOAD_PENDING_SINCE=$SECONDS; LAST_KEY="next"
+            ;;
+        $'\t')
+            # Cycle to next non-idle channel (tts→voice→music→tts).
+            # Pins until the picked channel goes idle.
+            if _cycle_channel; then
+                _publish_sock
+                # Channel switch loads a different mpv (and music/voice
+                # clips have no `.txt` sidecar anyway) — drop any active
+                # highlight so we don't keep painting selections from
+                # the prior channel's text.
+                _hl_disable
+                LAST_KEY="ch:${CHANNEL}"
+            else
+                LAST_KEY="ch:none"
+            fi
+            ;;
+        v)
+            # Sentence-level highlight in the caller pane via copy-mode.
+            # Toggle: first press fetches text + segments and enters
+            # copy-mode; second press exits it. Auto-disabled on
+            # channel cycle / prev / next since those load a different
+            # clip whose text we haven't fetched.
+            if [ "$HL_ENABLED" = "1" ]; then
+                _hl_disable; LAST_KEY="hl off"
+            else
+                if _hl_enable; then
+                    LAST_KEY="hl on"
+                else
+                    LAST_KEY="hl?"
+                fi
+            fi
+            ;;
+        f)
+            # Open the fzf picker for the current channel. The current
+            # popup is too small (22×3) for fzf, and nesting
+            # display-popup from inside the still-active popup is
+            # rejected by tmux. Use `run-shell -b` to spawn a detached
+            # process that waits for our popup to close, then opens a
+            # fresh larger popup running the picker.
+            tmux run-shell -b "sh -c 'sleep 0.15; tmux display-popup -E -w 90% -h 70% \"TTS_POPUP_SESSION=\\\"$SESSION\\\" tts-pick $CHANNEL\"'"
+            exit 0
+            ;;
+        DELETE|$'\b'|$'\x7f') ctl speed 1 >/dev/null 2>&1 & disown; LAST_KEY="speed=1" ;;
+        # mpv/VLC convention: digits 1-9 jump to N×10% of the clip.
+        # 0 stays as seek-to-start (which is also 0% — consistent).
+        1) ctl seek-percent 10 >/dev/null 2>&1 & disown; LAST_KEY="10%" ;;
+        2) ctl seek-percent 20 >/dev/null 2>&1 & disown; LAST_KEY="20%" ;;
+        3) ctl seek-percent 30 >/dev/null 2>&1 & disown; LAST_KEY="30%" ;;
+        4) ctl seek-percent 40 >/dev/null 2>&1 & disown; LAST_KEY="40%" ;;
+        5) ctl seek-percent 50 >/dev/null 2>&1 & disown; LAST_KEY="50%" ;;
+        6) ctl seek-percent 60 >/dev/null 2>&1 & disown; LAST_KEY="60%" ;;
+        7) ctl seek-percent 70 >/dev/null 2>&1 & disown; LAST_KEY="70%" ;;
+        8) ctl seek-percent 80 >/dev/null 2>&1 & disown; LAST_KEY="80%" ;;
+        9) ctl seek-percent 90 >/dev/null 2>&1 & disown; LAST_KEY="90%" ;;
+        i)
+            # Clip info dump in the tmux status line. Reads cached state
+            # so this doesn't add an IPC round-trip.
+            [ -s "$STATE_FILE" ] && mapfile -t STATE < "$STATE_FILE"
+            _pos=$(fmt_time "${STATE[2]:-}")
+            _dur=$(fmt_time "${STATE[3]:-}")
+            _path="${STATE[5]:-}"
+            _base="${_path##*/}"
+            tmux display-message -d 5000 \
+                "tts: ${SESSION:-?}  ${_pos}/${_dur}  vol=${STATE[4]%.*}  ${_base}" \
+                2>/dev/null
+            LAST_KEY="info"
+            ;;
+        '?')
+            LAST_KEY="help"
+            # Help via tmux's display-message. Nested display-popup from
+            # inside an existing popup gets refused/killed instantly on at
+            # least some tmux versions (we logged display-popup exit=0
+            # within milliseconds even with `tail -f /dev/null`). display-
+            # message shows in the status area without nesting and with no
+            # geometry constraints. -d 0 means "stay until cleared by next
+            # status update" (which happens within status-interval).
+            tmux display-message -d 9000 \
+                "tts: Spc/p=togl r=replay 0=start 1-9=seek% h/l=±5s H/L=±30s -/=vol m=mute v=hl [/]=speed </>=prev/next Tab=channel Del=spd1 i=info q=quit" \
+                2>/dev/null
+            ;;
+        q|$'\e') exit 0 ;;
+        *)   continue ;;
+    esac
+    # Stamp the keypress feedback timestamp once per dispatch so the next
+    # draw can show LAST_KEY for KEY_FEEDBACK_US microseconds.
+    LAST_KEY_AT=$(_now_us)
+    # Kick an out-of-band refetch ~$REFRESH seconds before the next periodic
+    # one would fire, so the visible state updates promptly after an action
+    # lands on mpv (~700ms RTT after backgrounded action started).
+    ( sleep 0.8; _refetch_state ) & disown
+    # Any user activity rearms the idle timer.
+    IDLE_SINCE=
+done

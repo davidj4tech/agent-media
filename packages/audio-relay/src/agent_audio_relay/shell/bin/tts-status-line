@@ -1,0 +1,295 @@
+#!/bin/bash
+# Compact one-line TTS status for tmux's status-right (or any always-on
+# status bar). Empty output when mpv is idle, so the surrounding
+# status-right content (date/time/whatever) is unchanged when nothing
+# is playing.
+#
+# When a clip is loaded, prints something like:
+#     ▶ 00:08 ████░░░░░░░░ 00:55
+# or with mute:
+#     ▶ 00:08 ████░░░░░░░░ 00:55 [M]
+#
+# Suggested tmux integration (add to ~/.tmux.conf.local):
+#     set -g status-interval 1
+#     set -g status-right '#(tts-status-line) #[fg=default] %H:%M  %d-%b'
+#
+# Stale-while-revalidate cache: tmux calls this every status-interval
+# seconds and may run multiple clients concurrently. We back results
+# with a file cache (TTL 1s while playing, 5s while idle) and revalidate
+# in a background subshell so cache misses don't block tmux's redraw.
+#
+# Env:
+#   TTS_STATUS_BAR_WIDTH    Width of the █░ progress bar (default: 12)
+#   TTS_STATUS_HIDE_IDLE    "0" → emit "○" instead of empty when idle (default: "1")
+#   TTS_STATUS_TTL_PLAYING  Cache lifetime while a clip is loaded (default: 1s)
+#   TTS_STATUS_TTL_IDLE     Cache lifetime while idle (default: 5s)
+#   TTS_CTL                 Path to tts-ctl (default: tts-ctl from PATH)
+
+set -u
+TTS_CTL="${TTS_CTL:-tts-ctl}"
+BAR_WIDTH="${TTS_STATUS_BAR_WIDTH:-12}"
+HIDE_IDLE="${TTS_STATUS_HIDE_IDLE:-1}"
+TTL_PLAYING="${TTS_STATUS_TTL_PLAYING:-1}"
+TTL_IDLE="${TTS_STATUS_TTL_IDLE:-5}"
+
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/agent-audio-relay"
+# Cache is keyed on the *viewer's* tmux session so two clients in
+# different sessions don't share a cached "[othersess] " prefix
+# decision (which is computed by comparing the playback path's encoded
+# session to the viewer's session — see _render_channel).
+_viewer_session=$(tmux display-message -p '#S' 2>/dev/null | tr -c 'A-Za-z0-9-' '_')
+_viewer_session="${_viewer_session:-_nosess}"
+CACHE_FILE="$CACHE_DIR/status-line.${_viewer_session}.cache"
+LOCK_FILE="$CACHE_FILE.lock"
+mkdir -p "$CACHE_DIR" 2>/dev/null
+
+# Channel sockets — same set the popup probes. Priority order tts > voice
+# > music, matching the popup so the status-line and popup always agree
+# on which channel is "active enough" to surface.
+_state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/agent-audio-relay"
+_TTS_SOCK="$_state_dir/mpv-tts.sock"
+_VOICE_SOCK="$_state_dir/mpv-voice.sock"
+_MUSIC_SOCK="$_state_dir/mpv-music.sock"
+
+fmt_time() {
+    local t="$1"
+    if [ -z "$t" ] || [ "$t" = "null" ]; then
+        printf '%s' '--:--'
+        return
+    fi
+    awk -v t="$t" 'BEGIN{ s=int(t); printf "%02d:%02d", s/60, s%60 }'
+}
+
+bar() {
+    local pos="$1" dur="$2" width="$3" label="${4:-}" filled empty pad fill rest
+    if [ -z "$pos" ] || [ -z "$dur" ] || [ "$pos" = "null" ] || [ "$dur" = "null" ]; then
+        printf -v pad '%*s' "$width" ''
+        printf '%s' "${pad// /─}"
+        return
+    fi
+    filled=$(awk -v p="$pos" -v d="$dur" -v w="$width" \
+        'BEGIN{ if(d<=0){print 0; exit} f=int((p/d)*w); if(f<0)f=0; if(f>w)f=w; print f }')
+    # Overlay mode: when we have a label (source session != viewer
+    # session), render the bar as coloured background cells with the
+    # label's characters overlaid in the middle. Filled cells get a
+    # brighter bg, empty cells a dimmer bg, so the progress is visible
+    # *behind* the text. Falls back to the plain █░ rendering when no
+    # label — same look as before for the common same-session case.
+    if [ -n "$label" ]; then
+        local filled_bg="${TTS_STATUS_FILLED_BG:-colour240}"
+        local empty_bg="${TTS_STATUS_EMPTY_BG:-colour236}"
+        local lbl="$label"
+        [ "${#lbl}" -gt "$width" ] && lbl="${lbl:0:$width}"
+        local lpad=$(( (width - ${#lbl}) / 2 ))
+        local i ch bg out=""
+        for ((i=0; i<width; i++)); do
+            if [ "$i" -lt "$filled" ]; then bg="$filled_bg"; else bg="$empty_bg"; fi
+            if [ "$i" -ge "$lpad" ] && [ "$i" -lt "$((lpad + ${#lbl}))" ]; then
+                ch="${lbl:$((i-lpad)):1}"
+            else
+                ch=' '
+            fi
+            out+="#[bg=${bg}]${ch}"
+        done
+        out+="#[bg=default]"
+        printf '%s' "$out"
+        return
+    fi
+    empty=$((width - filled))
+    fill=""; rest=""
+    if [ "$filled" -gt 0 ]; then
+        printf -v pad '%*s' "$filled" ''
+        fill="${pad// /█}"
+    fi
+    if [ "$empty" -gt 0 ]; then
+        printf -v pad '%*s' "$empty" ''
+        rest="${pad// /░}"
+    fi
+    printf '%s%s' "$fill" "$rest"
+}
+
+# Fetch full state for one channel via tts-ctl --socket. Echoes the five
+# props on stdout, one per line (matching mapfile expectations below).
+_fetch_state() {
+    "$TTS_CTL" --socket "$1" get pause idle-active time-pos duration mute path user-data/aar/session 2>/dev/null
+}
+
+# Pull the source session out of the playing path. Two shapes to handle:
+#   YYYYMMDDTHHMMSS--<host>--<session>__<persona>_<agent>_<kind>.<ext>  (archived)
+#   latest--<host>--<session>.<ext>                                     (symlink)
+# Returns empty string if neither matches (e.g. tts-stream's
+# http://host:port/stream.mp3 URL).
+_session_from_path() {
+    local p="$1" base
+    [ -z "$p" ] && return 0
+    base="${p##*/}"
+    if [[ "$base" =~ ^latest--[^-]+--([^.]+)\. ]]; then
+        printf '%s' "${BASH_REMATCH[1]}"
+    elif [[ "$base" =~ --[^-]+--([^_]+)__ ]]; then
+        printf '%s' "${BASH_REMATCH[1]}"
+    fi
+}
+
+# Render one channel's state as a status-line string given the channel's
+# prefix and pre-fetched state lines. Three return states (matters for
+# cache-vs-blank decisions in render()):
+#   0 — rendered (printed a non-empty status string)
+#   1 — channel is genuinely idle (mpv responded, idle-active=true)
+#   2 — fetch failed (no response from mpv; don't trust as "idle")
+#
+# The 1-vs-2 distinction lets render() preserve the last-known status
+# during transient IPC blips — without it, a single failed probe would
+# wipe the cached status to empty and the bar would visibly disappear
+# until the next successful refresh.
+#
+# Note: live position is *not* included in the rendered string — only
+# duration. This keeps tmux from repainting status-right every second
+# (which reads as a slow flash, since each repaint clears+rewrites the
+# whole region). The bar advances visually whenever a cell boundary is
+# crossed, which is the only time the rendered string actually changes.
+_render_channel() {
+    local prefix="$1"; shift
+    local paused="${1:-}" idle="${2:-}" pos="${3:-}" dur="${4:-}" mute="${5:-}" path="${6:-}" tagged_session="${7:-}"
+    local state mute_suffix
+    # Source session goes into the bar as an overlay (see bar()) when it
+    # differs from the viewer's tmux session. Path-encoded session wins
+    # (tts-drop's denote stem); falls back to the loader-tagged
+    # user-data/aar/session (set by tts-stream and mpv-mcp on loadfile)
+    # when the path is unparseable (live URLs, YouTube streams, etc).
+    local src_session bar_label=""
+    src_session=$(_session_from_path "$path")
+    if [ -z "$src_session" ] && [ -n "$tagged_session" ] && [ "$tagged_session" != "null" ]; then
+        src_session="$tagged_session"
+    fi
+    if [ -n "$src_session" ] \
+        && [ "$src_session" != "nosession" ] \
+        && [ "$src_session" != "$_viewer_session" ]; then
+        bar_label="$src_session"
+    fi
+    # If both paused and idle-active came back empty, the IPC fetch
+    # failed (vs mpv answering "I'm idle" which would set idle=true).
+    if [ -z "$paused" ] && [ -z "$idle" ]; then
+        return 2
+    fi
+    if [ -z "$paused" ] || [ "$idle" = "true" ]; then
+        return 1
+    fi
+    if [ "$paused" = "true" ]; then state='⏸'; else state='▶'; fi
+    mute_suffix=""
+    [ "$mute" = "true" ] && mute_suffix=' [M]'
+    # Live HTTP stream (dur unknown) — show elapsed-time only. A regular
+    # bar wouldn't be meaningful since we can't position the playhead
+    # against an unknown total. Round to 5s so the displayed string only
+    # changes once every 5s, avoiding the per-second flash that hits
+    # tmux's status-right repaint logic.
+    if [ -z "$dur" ] || [ "$dur" = "null" ]; then
+        local pos5
+        pos5=$(awk -v p="$pos" 'BEGIN{ if(p=="") p=0; printf "%d", int(p/5)*5 }')
+        printf '%s%s live · %s%s' \
+            "$prefix" \
+            "$state" \
+            "$(fmt_time "$pos5")" \
+            "$mute_suffix"
+        return 0
+    fi
+    printf '%s%s %s %s%s' \
+        "$prefix" \
+        "$state" \
+        "$(bar "$pos" "$dur" "$BAR_WIDTH" "$bar_label")" \
+        "$(fmt_time "$dur")" \
+        "$mute_suffix"
+    return 0
+}
+
+# Format the active channel's state as one status-line string. Probes
+# tts → voice → music and short-circuits on the first non-idle one,
+# matching the popup's binding priority. Empty output when all channels
+# are idle (or "○" when HIDE_IDLE=0).
+#
+# Exit codes (caller uses these to decide cache-vs-preserve):
+#   0 — committed result printed (non-empty render OR confirmed idle)
+#   2 — all probes failed; caller should keep the cached value rather
+#       than overwrite it with a blank, otherwise the status line
+#       visibly drops out during transient IPC blips
+render() {
+    local v rc
+    local _had_failure=0
+    # Try tts first (no channel prefix — keeps the historical look when
+    # only tts is in use).
+    mapfile -t v < <(_fetch_state "$_TTS_SOCK")
+    _render_channel "" "${v[@]:0:7}"; rc=$?
+    [ $rc -eq 0 ] && return 0
+    [ $rc -eq 2 ] && _had_failure=1
+    # Then voice.
+    mapfile -t v < <(_fetch_state "$_VOICE_SOCK")
+    _render_channel "[v] " "${v[@]:0:7}"; rc=$?
+    [ $rc -eq 0 ] && return 0
+    [ $rc -eq 2 ] && _had_failure=1
+    # Then music.
+    mapfile -t v < <(_fetch_state "$_MUSIC_SOCK")
+    _render_channel "[m] " "${v[@]:0:7}"; rc=$?
+    [ $rc -eq 0 ] && return 0
+    [ $rc -eq 2 ] && _had_failure=1
+
+    # No channel rendered. If ANY probe failed (e.g. socat timed out
+    # while mpv was busy serving HTTP stream traffic), preserve the
+    # previous cache rather than committing a blank — the failed
+    # channel might actually be playing and we just couldn't tell.
+    if [ $_had_failure -eq 1 ]; then
+        return 2
+    fi
+    [ "$HIDE_IDLE" = "1" ] && return 0
+    printf '○'
+}
+
+# Refresh the cache file. flock prevents pile-ups when many tmux
+# clients invoke us concurrently; -n exits cleanly if another refresh
+# is already in flight.
+refresh_cache() {
+    (
+        flock -n 9 || exit 0
+        local out rc
+        out=$(render); rc=$?
+        # rc=2 means all probes failed — keep the existing cache rather
+        # than overwriting it with empty (which would visibly drop the
+        # bar from tmux's status-right during a transient blip).
+        [ $rc -eq 2 ] && exit 0
+        printf '%s' "$out" > "$CACHE_FILE.tmp" 2>/dev/null \
+            && mv -f "$CACHE_FILE.tmp" "$CACHE_FILE" 2>/dev/null
+    ) 9>"$LOCK_FILE"
+}
+
+# State-aware TTL: an empty cache file means the last refresh saw mpv
+# idle, so use the longer idle TTL. A non-empty cache (= playing or
+# paused) gets the short TTL for smooth bar updates.
+if [ -f "$CACHE_FILE" ] && [ ! -s "$CACHE_FILE" ]; then
+    ttl="$TTL_IDLE"
+else
+    ttl="$TTL_PLAYING"
+fi
+
+# Serve cache if fresh.
+if [ -f "$CACHE_FILE" ]; then
+    mtime=$(stat -c %Y "$CACHE_FILE" 2>/dev/null || echo 0)
+    age=$(( $(date +%s) - mtime ))
+    if [ "$age" -lt "$ttl" ]; then
+        cat "$CACHE_FILE"
+        exit 0
+    fi
+    # Stale-while-revalidate: emit cached value (may be empty) immediately,
+    # refresh in background so the next call sees fresh data.
+    cat "$CACHE_FILE"
+    refresh_cache &
+    disown 2>/dev/null
+    exit 0
+fi
+
+# First-ever invocation — no cache file yet. Synchronous fetch.
+out=$(render); rc=$?
+printf '%s' "$out"
+# Don't seed an empty cache from a failed first probe — leave it
+# missing so the next invocation retries synchronously.
+if [ $rc -ne 2 ]; then
+    printf '%s' "$out" > "$CACHE_FILE.tmp" 2>/dev/null \
+        && mv -f "$CACHE_FILE.tmp" "$CACHE_FILE" 2>/dev/null
+fi
