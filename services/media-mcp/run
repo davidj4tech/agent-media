@@ -9,7 +9,7 @@ while [ $i -lt 30 ]; do
   [ -S "$MUSIC" ] && [ -S "$VOICE" ] && [ -S "$TTS" ] && ifconfig 2>/dev/null | grep -q "$BIND" && break
   i=$((i+1)); sleep 1
 done
-cd "$HOME/mpv-mcp"
+cd "$HOME/media-mcp"
 export MPV_MUSIC_SOCKET="$MUSIC"
 export MPV_VOICE_SOCKET="$VOICE"
 export MPV_TTS_SOCKET="$TTS"

@@ -1,7 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/sh
-# Install/update mpv-mcp on Termux:
-#  - server.js + deps in $HOME/mpv-mcp
-#  - runit services: mpv (music), mpv-tts (clips), mpv-mcp (server),
+# Install/update media-mcp on Termux:
+#  - server.js + deps in $HOME/media-mcp
+#  - runit services: mpv (music), mpv-tts (clips), media-mcp (server),
 #    agent-audio-relay (clip watcher; optional)
 #  - Claude Code TTS Stop hook from agent-audio-relay (optional)
 # Idempotent. Re-run after a `git pull`.
@@ -9,14 +9,14 @@
 set -e
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
-APP_DIR="$HOME/mpv-mcp"
+APP_DIR="$HOME/media-mcp"
 SVDIR="$PREFIX/var/service"
 HOOK_DST="$HOME/.claude/claude-tts-hook.sh"
 RELAY_SRC="${RELAY_SRC:-}"  # path to agent-audio-relay checkout; opt-in (was $HOME/agent-audio-relay-src and silently downgraded the relay to a stale checkout's version on every install)
 
-echo "[mpv-mcp] repo: $REPO"
-echo "[mpv-mcp] app:  $APP_DIR"
-echo "[mpv-mcp] sv:   $SVDIR"
+echo "[media-mcp] repo: $REPO"
+echo "[media-mcp] app:  $APP_DIR"
+echo "[media-mcp] sv:   $SVDIR"
 
 # 1. App dir + deps
 mkdir -p "$APP_DIR"
@@ -36,7 +36,7 @@ exec $PREFIX/share/termux-services/svlogger
 EOF
   chmod +x "$1"
 }
-for svc in mpv mpv-tts mpv-mcp; do
+for svc in mpv mpv-tts media-mcp; do
   mkdir -p "$SVDIR/$svc/log"
   install -m 755 "$REPO/services/$svc/run" "$SVDIR/$svc/run"
   write_log_wrapper "$SVDIR/$svc/log/run"
@@ -54,7 +54,7 @@ fi
 # 3. agent-audio-relay (optional — only if the source checkout is present)
 RELAY_INSTALLED=0
 if [ -d "$RELAY_SRC" ] && [ -f "$RELAY_SRC/pyproject.toml" ]; then
-  echo "[mpv-mcp] agent-audio-relay: installing from $RELAY_SRC"
+  echo "[media-mcp] agent-audio-relay: installing from $RELAY_SRC"
   pip install --user --break-system-packages --upgrade --quiet "$RELAY_SRC"
   command -v inotifywait >/dev/null 2>&1 || pkg install -y inotify-tools
   command -v ffmpeg      >/dev/null 2>&1 || pkg install -y ffmpeg
@@ -71,7 +71,7 @@ if [ -d "$RELAY_SRC" ] && [ -f "$RELAY_SRC/pyproject.toml" ]; then
   cp -r "$RELAY_SRC/hooks/lib/." "$(dirname "$HOOK_DST")/lib"
   RELAY_INSTALLED=1
 else
-  echo "[mpv-mcp] agent-audio-relay: skipping (set RELAY_SRC=/path/to/agent-audio-relay to install)"
+  echo "[media-mcp] agent-audio-relay: skipping (set RELAY_SRC=/path/to/agent-audio-relay to install)"
   # Fallback: direct-IPC hook that pushes clips straight to the tts socket
   mkdir -p "$HOME/.claude"
   [ -f "$HOOK_DST" ] && [ ! -f "$HOOK_DST.legacy.bak" ] && cp "$HOOK_DST" "$HOOK_DST.legacy.bak"
@@ -83,12 +83,12 @@ sleep 6
 
 # 4. Enable + restart
 export SVDIR
-for svc in mpv mpv-tts mpv-mcp; do sv-enable "$svc" >/dev/null 2>&1 || true; done
+for svc in mpv mpv-tts media-mcp; do sv-enable "$svc" >/dev/null 2>&1 || true; done
 [ "$RELAY_INSTALLED" = "1" ] && sv-enable agent-audio-relay >/dev/null 2>&1 || true
-sv restart mpv-mcp >/dev/null 2>&1 || true
+sv restart media-mcp >/dev/null 2>&1 || true
 [ "$RELAY_INSTALLED" = "1" ] && sv restart agent-audio-relay >/dev/null 2>&1 || true
 
 sleep 3
-echo "[mpv-mcp] status:"
-sv status mpv mpv-tts mpv-mcp ${RELAY_INSTALLED:+agent-audio-relay} 2>/dev/null || true
-echo "[mpv-mcp] done. UI: http://$(ifconfig 2>/dev/null | awk '/inet 100\./{print $2; exit}'):8765/"
+echo "[media-mcp] status:"
+sv status mpv mpv-tts media-mcp ${RELAY_INSTALLED:+agent-audio-relay} 2>/dev/null || true
+echo "[media-mcp] done. UI: http://$(ifconfig 2>/dev/null | awk '/inet 100\./{print $2; exit}'):8765/"

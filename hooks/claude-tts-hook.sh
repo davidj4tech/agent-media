@@ -11,7 +11,7 @@ TTS_SOCK="${MPV_TTS_SOCKET:-$PREFIX/tmp/mpv-tts.sock}"
 mkdir -p "$CACHE_DIR"
 
 # Send a clip to the mpv-tts daemon. Replaces whatever's playing on that channel.
-# Ducking is handled server-side via the mpv-mcp idle-active watcher.
+# Ducking is handled server-side via the media-mcp idle-active watcher.
 play_clip() {
     local path="$1"
     [ -f "$path" ] || return 1

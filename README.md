@@ -1,6 +1,8 @@
-# mpv-mcp
+# media-mcp
 
-Multi-channel mpv control surface for Termux — exposed as an MCP server, an HTTP/JSON API, and a tiny mobile-first web UI. Designed to live on a phone and be driven from anywhere on the same Tailscale network.
+Multi-channel media control surface for Termux — exposed as an MCP server, an HTTP/JSON API, and a tiny mobile-first web UI. Wraps one or more `mpv` daemons with auto-ducking between channels. Designed to live on a phone and be driven from anywhere on the same Tailscale network.
+
+> Renamed from `mpv-mcp`. The repository still controls `mpv` channels; the broader name leaves room for additional media backends (e.g. Mopidy bridge) without another rename.
 
 Two playback channels by default:
 
@@ -22,7 +24,7 @@ When the **tts** channel is non-idle the server **ducks** the **music** channel 
       └─────┬───────────┘
             │
        ┌────┴─────┐
-       │ mpv-mcp  │   node server: MCP (HTTP), JSON API, web UI,
+       │ media-mcp│   node server: MCP (HTTP), JSON API, web UI,
        │ :8765    │   ducking watcher (subscribes to idle-active)
        └──────────┘
             │
@@ -44,15 +46,15 @@ All three runtimes (Claude Code, OpenCode, OpenClaw) connect with the same URL: 
 ## Install (Termux)
 
 ```sh
-git clone https://github.com/davidj4tech/mpv-mcp.git ~/projects/mpv-mcp
-cd ~/projects/mpv-mcp
+git clone https://github.com/davidj4tech/media-mcp.git ~/projects/media-mcp
+cd ~/projects/media-mcp
 ./install.sh
 ```
 
 The installer:
 
-- copies `server.js` + `package.json` to `~/mpv-mcp/`, runs `npm install`
-- writes `mpv`, `mpv-tts`, `mpv-mcp` into `$PREFIX/var/service/`
+- copies `server.js` + `package.json` to `~/media-mcp/`, runs `npm install`
+- writes `mpv`, `mpv-tts`, `media-mcp` into `$PREFIX/var/service/`
 - enables them under runit (auto-start via your existing `~/.termux/boot/start-services`)
 - installs the Claude Code Stop hook at `~/.claude/claude-tts-hook.sh` (legacy backed up to `*.legacy.bak`)
 
@@ -60,7 +62,7 @@ Re-run after a `git pull` to update.
 
 ## Configure
 
-Environment variables read by `services/mpv-mcp/run`:
+Environment variables read by `services/media-mcp/run`:
 
 | Var                 | Default                          |
 |---------------------|----------------------------------|
@@ -132,7 +134,7 @@ JSON snapshots) and `/api/cmd` (`{channel, name, args}`). Commands:
 ## Operations
 
 ```sh
-sv status   mpv mpv-tts mpv-mcp
-sv restart  mpv-mcp
-tail $PREFIX/var/log/sv/mpv-mcp/current
+sv status   mpv mpv-tts media-mcp
+sv restart  media-mcp
+tail $PREFIX/var/log/sv/media-mcp/current
 ```

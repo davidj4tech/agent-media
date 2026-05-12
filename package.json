@@ -1,9 +1,9 @@
 {
-  "name": "mpv-mcp",
+  "name": "media-mcp",
   "version": "0.2.0",
   "description": "MCP + HTTP/UI control surface for one or more mpv daemons, with multi-channel ducking. Built for Termux.",
   "type": "module",
-  "bin": { "mpv-mcp": "./server.js" },
+  "bin": { "media-mcp": "./server.js" },
   "scripts": {
     "start": "node server.js"
   },

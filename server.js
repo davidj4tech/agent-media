@@ -287,7 +287,7 @@ const ok = (text) => ({ content: [{ type: "text", text }] });
 const ChannelArg = z.enum(Object.keys(CHANNELS)).optional();
 
 function makeServer() {
-  const s = new McpServer({ name: "mpv-mcp", version: "0.2.0" });
+  const s = new McpServer({ name: "media-mcp", version: "0.2.0" });
 
   s.registerTool("play", {
     description: "Load and play URL/path on a channel (default music). Replaces current. " +
@@ -650,4 +650,4 @@ const http = createServer(async (req, res) => {
   }
 });
 
-http.listen(PORT, HOST, () => console.log(`mpv-mcp on http://${HOST}:${PORT}/mcp  channels=${Object.keys(CHANNELS).join(",")}`));
+http.listen(PORT, HOST, () => console.log(`media-mcp on http://${HOST}:${PORT}/mcp  channels=${Object.keys(CHANNELS).join(",")}`));
