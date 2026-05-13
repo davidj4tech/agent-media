@@ -118,7 +118,7 @@ The older alternative — running `agent-audio-relay` on the sender with
 still works for small setups (and now writes archives to the same
 `~/.local/state/agent-audio-relay/` location so `tts-ctl` resolves
 session-scoped replay identically). Skip it if you also want the
-multi-channel ducking that requires mpv-mcp on the player side.
+multi-channel ducking that requires media-mcp on the player side.
 
 ## Watcher daemon (core)
 
@@ -637,7 +637,7 @@ tts-ctl nowplaying       # current file path
 tts-ctl get PROP...      # one IPC round-trip; one line per property
 ```
 
-**Channels.** mpv-mcp on the phone runs three independent mpv instances
+**Channels.** media-mcp on the phone runs three independent mpv instances
 — `mpv-tts` (agent voice, baseline volume 100), `mpv-voice`
 (audiobooks/podcasts, baseline 85, paused while tts plays), and
 `mpv-music` (background music, baseline 50). `tts-ctl` defaults to the
@@ -658,7 +658,7 @@ with `--input-ipc-server=$PREFIX/tmp/mpv-tts.sock --idle=yes`. Override
 the socket with `AAR_MPV_SOCKET` if your daemon binds elsewhere
 (legacy `MPV_TTS_SOCK` is still honored).
 
-The companion project [mpv-mcp](https://github.com/davidj4tech/mpv-mcp)
+The companion project [media-mcp](https://github.com/davidj4tech/agent-media/tree/main/packages/media-mcp)
 (Node, runs in Termux) provisions both `mpv` channels as runit services,
 exposes the same controls as an MCP server + HTTP/JSON API, and serves
 an installable PWA at `http://<tailscale-ip>:8765/` with mpv-style

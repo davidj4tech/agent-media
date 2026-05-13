@@ -24,8 +24,8 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/davidj4tech/agent-audio-relay"
-Issues = "https://github.com/davidj4tech/agent-audio-relay/issues"
+Homepage = "https://github.com/davidj4tech/agent-media/tree/main/packages/audio-relay"
+Issues = "https://github.com/davidj4tech/agent-media/issues"
 
 [project.scripts]
 agent-audio-relay              = "agent_audio_relay.watcher:main"

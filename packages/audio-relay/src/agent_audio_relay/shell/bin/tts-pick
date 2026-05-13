@@ -62,7 +62,7 @@ case "$CHANNEL" in
         # Read history (compact JSON; mpv_get already passes -c).
         HIST=$("$TTS_CTL" --socket "$_SOCK" get user-data/aar/history)
         if [ -z "$HIST" ] || [ "$HIST" = "null" ]; then
-            echo "(empty $CHANNEL history — play something via mpv-mcp first)"
+            echo "(empty $CHANNEL history — play something via media-mcp first)"
             exit 1
         fi
         # Show indexed list, newest first. Format: "<idx>\t<url>" — the

@@ -888,7 +888,7 @@ while true; do
             # thing I heard", regardless of the tmux session name. Use `r` for
             # session-pinned replay.
             # music/voice: toggle if a clip is loaded; otherwise load the
-            # newest from per-channel history (mpv-mcp records every play).
+            # newest from per-channel history (media-mcp records every play).
             if [ "$CHANNEL" = "tts" ]; then
                 ctl toggle latest >/dev/null 2>&1 & disown
             else

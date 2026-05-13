@@ -154,7 +154,7 @@ _render_channel() {
     # Source session goes into the bar as an overlay (see bar()) when it
     # differs from the viewer's tmux session. Path-encoded session wins
     # (tts-drop's denote stem); falls back to the loader-tagged
-    # user-data/aar/session (set by tts-stream and mpv-mcp on loadfile)
+    # user-data/aar/session (set by tts-stream and media-mcp on loadfile)
     # when the path is unparseable (live URLs, YouTube streams, etc).
     local src_session bar_label=""
     src_session=$(_session_from_path "$path")

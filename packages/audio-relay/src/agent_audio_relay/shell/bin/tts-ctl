@@ -612,7 +612,7 @@ case "${1:-}" in
     playlist-next) mpv_cmd '{"command":["playlist-next"]}' >/dev/null ;;
     prev-history|next-history)
         # Walk the per-channel play history kept in mpv's user-data
-        # (populated by mpv-mcp on every play/queue). Mirrors the smart
+        # (populated by media-mcp on every play/queue). Mirrors the smart
         # behavior of `prev`/`next` for tts:
         #   prev when >5s into current clip → restart current
         #   next when at newest             → seek to end (dismiss)
@@ -632,7 +632,7 @@ case "${1:-}" in
         [ -z "$_hist_json" ] || [ "$_hist_json" = "null" ] && exit 0
         _len=$(printf '%s' "$_hist_json" | jq 'length' 2>/dev/null)
         [ -z "$_len" ] || [ "$_len" = "0" ] && exit 0
-        # Default cursor to newest if mpv-mcp didn't write one.
+        # Default cursor to newest if media-mcp didn't write one.
         case "$_cursor" in ''|null) _cursor=$((_len - 1)) ;; esac
         if [ "$direction" = "prev-history" ]; then
             _next=$((_cursor - 1))
