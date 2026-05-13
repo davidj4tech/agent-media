@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "astrotunes"
+version = "0.0.1"
+description = "Pick music that matches your transit chart, the time of day, and what you're up to."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [{ name = "David J" }]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia :: Sound/Audio",
+]
+dependencies = [
+    "kerykeion>=4",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+mpd = ["python-mpd2>=3"]
+
+[project.urls]
+Homepage = "https://github.com/davidj4tech/agent-media/tree/main/packages/astrotunes"
+Issues = "https://github.com/davidj4tech/agent-media/issues"
+
+[project.scripts]
+astrotunes = "astrotunes.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
