@@ -14,6 +14,7 @@ media-hook-claude-code = "agent_media_core.intake.hook_claude_code:main"
 media-hook-codex       = "agent_media_core.intake.hook_codex:main"
 media-intake-ha-sse    = "agent_media_core.intake.ha_sse:main"
 media-intake-matrix    = "agent_media_core.intake.matrix:main"
+media-setup            = "agent_media_core.setup:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_media_core"]
