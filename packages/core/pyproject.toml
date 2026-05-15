@@ -1,0 +1,13 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agent-media-core"
+version = "0.0.0"
+description = "Core lib for agent-media: intake/route/render/transcribe/capture/sinks/state"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent_media_core"]
