@@ -9,5 +9,8 @@ description = "Core lib for agent-media: intake/route/render/transcribe/capture/
 requires-python = ">=3.11"
 dependencies = []
 
+[project.scripts]
+media-hook-claude-code = "agent_media_core.intake.hook_claude_code:main"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_media_core"]
