@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from .._notify import notify
 from ..render import render_text
 from ..route import Coordinator
 from ..sinks.speech import SinkSpeech
@@ -108,13 +109,60 @@ def submit_event(event: Event,
     stamp = time.strftime("%Y%m%dT%H%M%S")
     outfile = audio_dir / f"{stamp}--{event.source.value}.{ext}"
 
+    fallback_info: dict = {}
+
+    def _on_fallback(failed_engine: str, err: str) -> None:
+        """Render engine failed; render_text will retry on edge. Record
+        the failure visibly so silent degradation gets a trail.
+        """
+        short = err.strip().splitlines()[0] if err else "no detail"
+        # Heuristic: collapse OpenAI quota errors to a clean label so
+        # the notification body stays human-readable.
+        kind = "render-fallback"
+        if "insufficient_quota" in err:
+            kind = "render-quota"
+        fallback_info.update({
+            "from_engine": failed_engine,
+            "fallback_engine": "edge",
+            "kind": kind,
+            "detail": short[:300],
+        })
+        log.warning("intake: %s engine failed (%s); falling back to edge",
+                    failed_engine, short)
+        state.log_error("intake",
+                        f"render {failed_engine} failed, fell back to edge",
+                        extras={"kind": kind, "engine": failed_engine,
+                                "detail": short[:300],
+                                "source": event.source.value})
+        # Throttled notification so the user sees it once per window.
+        if kind == "render-quota":
+            title = f"agent-media: {failed_engine} quota exhausted"
+            body = "Falling back to edge for now."
+        else:
+            title = f"agent-media: {failed_engine} render failed"
+            body = f"Falling back to edge. {short[:120]}"
+        notify(key=f"render-fallback-{failed_engine}",
+               title=title, content=body)
+
     started_at = time.time()
-    ok, err = render_text(text, outfile, engine=engine, voice=voice)
+    ok, err = render_text(text, outfile, engine=engine, voice=voice,
+                          on_fallback=_on_fallback)
     if not ok:
         log.warning("intake: render failed (%s): %s", engine, err)
         state.log_error("intake", f"render failed ({engine})",
                         extras={"err": err, "source": event.source.value})
         return None
+
+    # Fallback path: realtime/qwen pre-picked a .wav name but edge wrote
+    # MP3 bytes into it. Rename so the file name doesn't lie. mpv reads
+    # either way, so playback isn't affected.
+    if fallback_info and outfile.suffix == ".wav":
+        renamed = outfile.with_suffix(".mp3")
+        try:
+            outfile.rename(renamed)
+            outfile = renamed
+        except OSError:
+            pass
 
     coordinator.before_speech()
     try:
@@ -139,6 +187,11 @@ def submit_event(event: Event,
     finally:
         coordinator.after_speech()
 
+    extras = {"engine": engine, "voice": voice,
+              "priority": event.priority.value,
+              **(event.metadata or {})}
+    if fallback_info:
+        extras["fallback"] = fallback_info
     return state.add_history(
         sink="speech",
         uri=str(outfile),
@@ -147,7 +200,5 @@ def submit_event(event: Event,
         target=target.name,
         source=event.source.value,
         text=text,
-        extras={"engine": engine, "voice": voice,
-                "priority": event.priority.value,
-                **(event.metadata or {})},
+        extras=extras,
     )
