@@ -137,10 +137,11 @@ fi
 # it available to every hook automatically. tts-drop keeps owning the
 # orchestration: dedup, drop dir, atomic rename, latest-symlink stem.
 #
-# qwen produces wav, others mp3 — pick the file extension to match.
+# qwen and realtime emit WAV; edge/openai emit MP3. Match the extension
+# so consumers and `file(1)` see truthful types.
 case "$ENGINE" in
-    qwen) STAGING_EXT="wav" ;;
-    *)    STAGING_EXT="mp3" ;;
+    qwen|realtime) STAGING_EXT="wav" ;;
+    *)             STAGING_EXT="mp3" ;;
 esac
 
 # Stage outside the watched dir, then atomically rename. Avoids the
