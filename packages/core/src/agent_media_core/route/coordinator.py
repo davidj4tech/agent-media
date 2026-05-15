@@ -69,6 +69,7 @@ class Coordinator:
             except Exception:
                 pos_ms = None
             extras["pause_pos_ms"] = pos_ms
+            extras["lead_in_ms"] = policy.lead_in_ms
             extras["strategy"] = "pause"
             try:
                 self.music.pause(self.music_target)
@@ -105,6 +106,18 @@ class Coordinator:
 
         try:
             if strategy == "pause":
+                # Back up by the lead-in window so the listener doesn't
+                # miss the word they were on when speech cut in. Best
+                # effort — if seek fails or position wasn't captured,
+                # we just resume from where pause landed.
+                pos_ms = interruption.get("pause_pos_ms")
+                lead_in_ms = int(interruption.get("lead_in_ms") or 0)
+                if pos_ms is not None and lead_in_ms > 0:
+                    try:
+                        self.music.seek_cur(self.music_target,
+                                            max(0, int(pos_ms) - lead_in_ms))
+                    except Exception:
+                        pass
                 self.music.resume(self.music_target)
             elif strategy == "duck":
                 baseline = int(interruption.get("baseline_volume") or 45)

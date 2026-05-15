@@ -95,6 +95,18 @@ class SinkMusic:
                     return None
         return None
 
+    def seek_cur(self, target: Target = DEFAULT_TARGET,
+                 position_ms: int = 0) -> None:
+        """Seek the *current* track to an absolute position in ms.
+
+        Used by the coordinator's pause-and-resume path to back up by
+        the lead-in window so the listener doesn't miss the word that
+        was playing when speech interrupted.
+        """
+        secs = max(0.0, position_ms / 1000.0)
+        with _connect(target) as s:
+            _cmd(s, f"seekcur {secs:.3f}")
+
     def now_playing_uri(self, target: Target = DEFAULT_TARGET) -> Optional[str]:
         with _connect(target) as s:
             current = _cmd(s, "currentsong")
