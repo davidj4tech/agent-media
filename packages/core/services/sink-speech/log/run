@@ -1,2 +1,5 @@
 #!/data/data/com.termux/files/usr/bin/sh
-exec svlogd -tt "$HOME/.local/share/sv-log/sink-speech"
+# XDG-portable log dir — works on Termux and any Linux user-runit setup.
+LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/sv-log/sink-speech"
+mkdir -p "$LOG_DIR"
+exec svlogd -tt "$LOG_DIR"
