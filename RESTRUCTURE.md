@@ -122,13 +122,26 @@ Migrate hooks one at a time. Each becomes an intake adapter that posts an
    - Drop `termux-media-player`; pipe through `sink-speech`.
    - `!pause`/`!skip`/`!replay`/etc. become route-level commands shared with MCP.
 
-### Phase 5 — STT and dissolution
-- Pull `packages/voice-bridge/` apart:
-  - HA Assist subscriber → `core/intake/ha-stt`
-  - Audio handling → `core/transcribe/` (passthrough for HA today;
-    placeholder for local Whisper later)
-- Mic capture (was `termux-microphone-record` in sam-listener) → `core/capture/`.
-- Delete `packages/voice-bridge/`.
+### Phase 5 — STT structure (plan B: co-locate, don't merge)
+Original plan was to dissolve `packages/voice-bridge/` into core. On closer
+read, voice-bridge isn't an intake adapter for the speech pipeline —
+it's a peer system that *injects keystrokes* into tmux panes from HA
+Assist transcripts. The target tool's own Stop hook then produces the
+spoken reply via `core/intake`. Forcing those two responsibilities into
+one module tree obscures more than it clarifies.
+
+New plan:
+- **Keep `packages/voice-bridge/` as a sibling package** in the monorepo.
+  Its `/v1/chat/completions` HTTP shim and tmux paste-buffer injection
+  stay where they are.
+- `core/transcribe/` stays scaffolded as the slot for *future* STT
+  implementations that DO produce text-for-rendering (local Whisper,
+  push-to-talk, etc.). Docstring records why it's empty today.
+- `core/capture/` likewise — slot reserved for future mic capture
+  (push-to-talk, BT button, etc.). Matrix-side mic recording moved
+  there if/when the matrix adapter grows a record/send flow.
+- voice-bridge can adopt `core._notify` + `core.state` for observability
+  without merging.
 
 ### Phase 6 — MCP control surface + cleanup
 - MCP exposes:
