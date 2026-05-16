@@ -121,6 +121,141 @@ def cmd_install_hooks(args: argparse.Namespace) -> int:
     return 0
 
 
+# --- Env-var migration -----------------------------------------------------
+
+# Per RESTRUCTURE.md. Empty new-name means "drop the variable".
+ENV_RENAME = {
+    "CLAUDE_TTS_ENGINE":          "MEDIA_RENDER_ENGINE",
+    "CLAUDE_TTS_VOICE":           "MEDIA_RENDER_VOICE",
+    "CLAUDE_TTS_EDGE_VOICE":      "MEDIA_EDGE_VOICE",
+    "CLAUDE_TTS_OPENAI_MODEL":    "MEDIA_OPENAI_MODEL",
+    "CLAUDE_TTS_OPENAI_PYTHON":   "MEDIA_OPENAI_PYTHON",
+    "CLAUDE_TTS_REALTIME_PYTHON": "MEDIA_REALTIME_PYTHON",
+    "CLAUDE_TTS_DROP_DIR":        "MEDIA_DROP_DIR",
+    "CLAUDE_TTS_ENABLED":         "MEDIA_ENABLED",
+    "CLAUDE_TTS_LONG_THRESHOLD":  "",   # retired (single stream path)
+    "AAR_STREAM_HOST":            "MEDIA_STREAM_HOST",
+    "AAR_MOPIDY_DUCK_VOLUME":     "MEDIA_DUCK_VOLUME",
+    "RELAY_TTS_DROP_BIN":         "",   # retired
+    "RELAY_TTS_STREAM_BIN":       "",   # retired
+    "RELAY_LOG_FILE":             "MEDIA_LOG_FILE",
+    "RELAY_ENV_FILE":             "MEDIA_ENV_FILE",
+}
+
+
+def _rename_in_json_env(env: dict) -> tuple[dict, list[tuple[str, str | None]]]:
+    """Apply ENV_RENAME to a flat dict. Returns (new_env, [(old, new), ...]).
+
+    new=None for retired vars (dropped).
+    """
+    changes: list[tuple[str, str | None]] = []
+    out = dict(env)
+    for old, new in ENV_RENAME.items():
+        if old in out:
+            value = out.pop(old)
+            if new:
+                # Don't clobber a manually-set new-name entry.
+                if new not in out:
+                    out[new] = value
+                changes.append((old, new))
+            else:
+                changes.append((old, None))
+    return out, changes
+
+
+def cmd_migrate_env(args: argparse.Namespace) -> int:
+    """Rename CLAUDE_TTS_*/AAR_*/RELAY_* envs to MEDIA_* in the user's
+    settings.json and (if it exists) ~/.config/agent-audio-relay.env.
+    """
+    paths: list[tuple[str, Path]] = []
+
+    settings_path = Path(args.settings) if args.settings else claude_settings_path()
+    if settings_path.exists():
+        paths.append(("settings.json", settings_path))
+
+    relay_env = Path.home() / ".config" / "agent-audio-relay.env"
+    if relay_env.exists():
+        paths.append(("agent-audio-relay.env", relay_env))
+
+    if not paths:
+        print("media-setup: nothing to migrate (no settings.json or "
+              "agent-audio-relay.env)")
+        return 0
+
+    any_changed = False
+
+    for label, path in paths:
+        if path.suffix == ".json" or label == "settings.json":
+            data = _load_json(path)
+            env = data.get("env") or {}
+            new_env, changes = _rename_in_json_env(env)
+            if not changes:
+                print(f"  {label}: nothing to change")
+                continue
+            for old, new in changes:
+                arrow = f"-> {new}" if new else "-> (dropped)"
+                print(f"  {label}: {old} {arrow}")
+            if not args.dry_run:
+                if path.exists():
+                    backup = path.with_suffix(path.suffix + ".bak")
+                    shutil.copy2(str(path), str(backup))
+                data["env"] = new_env
+                tmp = path.with_suffix(path.suffix + ".tmp")
+                tmp.write_text(json.dumps(data, indent=2) + "\n")
+                tmp.replace(path)
+                print(f"  {label}: wrote {path} (backup at {backup})")
+            any_changed = True
+            continue
+
+        # Shell-style env file: simple line-by-line `KEY=VALUE` or
+        # `export KEY=VALUE`. Lines we don't recognize are preserved
+        # verbatim.
+        new_lines: list[str] = []
+        changes: list[tuple[str, str | None]] = []
+        for raw in path.read_text().splitlines(keepends=True):
+            stripped = raw.strip()
+            if not stripped or stripped.startswith("#"):
+                new_lines.append(raw)
+                continue
+            line = stripped
+            prefix = ""
+            if line.startswith("export "):
+                prefix = "export "
+                line = line[len("export "):]
+            if "=" not in line:
+                new_lines.append(raw)
+                continue
+            k, v = line.split("=", 1)
+            k = k.strip()
+            if k in ENV_RENAME:
+                new = ENV_RENAME[k]
+                if new:
+                    new_lines.append(f"{prefix}{new}={v}\n")
+                    changes.append((k, new))
+                else:
+                    changes.append((k, None))
+                continue
+            new_lines.append(raw)
+        if not changes:
+            print(f"  {label}: nothing to change")
+            continue
+        for old, new in changes:
+            arrow = f"-> {new}" if new else "-> (dropped)"
+            print(f"  {label}: {old} {arrow}")
+        if not args.dry_run:
+            backup = path.with_suffix(path.suffix + ".bak")
+            shutil.copy2(str(path), str(backup))
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_text("".join(new_lines))
+            tmp.replace(path)
+            print(f"  {label}: wrote {path} (backup at {backup})")
+        any_changed = True
+
+    if args.dry_run:
+        print("\n(dry-run — no files written)")
+    return 0
+
+
 # --- Service wiring (Termux runit) -----------------------------------------
 
 def services_dir() -> Path | None:
@@ -277,6 +412,14 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.add_argument("services", nargs="*",
                     help="Specific service names (default: all in repo)")
     sp.set_defaults(func=cmd_install_services)
+
+    sp = sub.add_parser("migrate-env",
+                        help="Rename CLAUDE_TTS_*/AAR_*/RELAY_* envs to "
+                             "MEDIA_* in settings.json + agent-audio-relay.env")
+    sp.add_argument("--settings", help="Path to settings.json (default: "
+                    "~/.claude/settings.json)")
+    sp.add_argument("--dry-run", action="store_true")
+    sp.set_defaults(func=cmd_migrate_env)
 
     sp = sub.add_parser("status",
                         help="Show current wiring")
