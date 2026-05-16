@@ -12,6 +12,7 @@ content-type aware, observable via the state store.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import Optional
 
@@ -25,6 +26,21 @@ from .policy import (
     detect_content_type,
     policy_for,
 )
+
+
+def _env_duck_level() -> Optional[int]:
+    """User override for the duck level. MEDIA_DUCK_VOLUME wins;
+    legacy AAR_MOPIDY_DUCK_VOLUME falls through. Returns None when
+    unset so the per-content-type policy default applies.
+    """
+    for var in ("MEDIA_DUCK_VOLUME", "AAR_MOPIDY_DUCK_VOLUME"):
+        v = os.environ.get(var)
+        if v:
+            try:
+                return max(0, min(100, int(v)))
+            except ValueError:
+                continue
+    return None
 
 
 log = logging.getLogger(__name__)
@@ -77,7 +93,8 @@ class Coordinator:
                 self._log_err("music: pause failed", str(e))
                 return
         else:
-            level = policy.duck_level
+            env_override = _env_duck_level()
+            level = env_override if env_override is not None else policy.duck_level
             extras["strategy"] = "duck"
             extras["duck_level"] = level
             extras["baseline_volume"] = policy.baseline_volume

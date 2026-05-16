@@ -33,8 +33,12 @@ class InterruptionStrategy(str, Enum):
 @dataclass(frozen=True)
 class InterruptionPolicy:
     strategy: InterruptionStrategy
-    duck_level: int = 18                # mpd setvol when ducking
-    deeper_duck_level: int = 8          # ambient
+    # Default duck level for MUSIC was 18; bumped down to 10 because
+    # the previous floor wasn't aggressive enough to keep speech
+    # intelligible over louder mixes. Override via MEDIA_DUCK_VOLUME
+    # (or legacy AAR_MOPIDY_DUCK_VOLUME) — read at coordinator time.
+    duck_level: int = 10
+    deeper_duck_level: int = 4          # ambient — even quieter
     lead_in_ms: int = 500               # pre-roll restored before pause-resume
     lead_out_ms: int = 500              # post-roll preserved before resuming
     baseline_volume: int = 45           # restored after un-duck if user
@@ -45,7 +49,7 @@ DEFAULT_POLICY = {
     ContentType.MUSIC:     InterruptionPolicy(InterruptionStrategy.DUCK),
     ContentType.DJ_SET:    InterruptionPolicy(InterruptionStrategy.DUCK),
     ContentType.AMBIENT:   InterruptionPolicy(InterruptionStrategy.DUCK,
-                                              duck_level=8),
+                                              duck_level=4),
     ContentType.AUDIOBOOK: InterruptionPolicy(InterruptionStrategy.PAUSE),
     ContentType.PODCAST:   InterruptionPolicy(InterruptionStrategy.PAUSE),
     ContentType.UNKNOWN:   InterruptionPolicy(InterruptionStrategy.DUCK),
