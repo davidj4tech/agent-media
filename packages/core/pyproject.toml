@@ -7,7 +7,9 @@ name = "agent-media-core"
 version = "0.0.0"
 description = "Core lib for agent-media: intake/route/render/transcribe/capture/sinks/state"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "mcp>=1.9",
+]
 
 [project.scripts]
 media-hook-claude-code = "agent_media_core.intake.hook_claude_code:main"
@@ -15,6 +17,7 @@ media-hook-codex       = "agent_media_core.intake.hook_codex:main"
 media-intake-ha-sse    = "agent_media_core.intake.ha_sse:main"
 media-intake-matrix    = "agent_media_core.intake.matrix:main"
 media-setup            = "agent_media_core.setup:main"
+media-mcp              = "agent_media_core.mcp_server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_media_core"]
