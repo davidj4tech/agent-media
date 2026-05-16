@@ -22,6 +22,11 @@ classifiers = [
     "Topic :: Home Automation",
     "Topic :: Multimedia :: Sound/Audio :: Speech",
 ]
+dependencies = [
+    # Render engines (edge/openai/qwen/realtime) live in the core lib as of
+    # the agent-media restructure. tts_render.py is now a CLI shim.
+    "agent-media-core",
+]
 
 [project.urls]
 Homepage = "https://github.com/davidj4tech/agent-media/tree/main/packages/audio-relay"

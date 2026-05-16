@@ -26,8 +26,8 @@ from typing import Tuple
 
 from .base import PlaybackBackend
 
-KNOWN_BACKENDS = ("ssh-termux", "mpv")
-DEFAULT_BACKEND = "mpv"
+KNOWN_BACKENDS = ("ssh-termux", "mpv", "sink-speech")
+DEFAULT_BACKEND = "sink-speech"
 
 
 def _default_control_file() -> Path:
@@ -135,6 +135,9 @@ def build_backend(name: str, target: str | None = None) -> PlaybackBackend:
     if name == "mpv":
         from .mpv import MpvBackend
         return MpvBackend(target=target)
+    if name == "sink-speech":
+        from .sink_speech import SinkSpeechBackend
+        return SinkSpeechBackend(target=target)
     print(f"error: unknown backend {name!r}. Options: {', '.join(KNOWN_BACKENDS)}",
           file=sys.stderr)
     sys.exit(1)

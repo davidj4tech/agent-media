@@ -1,0 +1,13 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# Speech sink: long-running mpv broker for TTS playback.
+# Socket: $XDG_STATE_HOME/agent-media/sink-speech.sock
+# AO: openal (proven to survive BT route changes 2026-05-14)
+exec 2>&1
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/agent-media"
+SOCK="$STATE/sink-speech.sock"
+mkdir -p "$STATE"
+rm -f "$SOCK"
+exec mpv --idle=yes --ao=openal --force-window=no \
+  --input-ipc-server="$SOCK" --volume=100 --keep-open=no \
+  --gapless-audio=no --audio-stream-silence=no --ytdl=no \
+  --network-timeout=60

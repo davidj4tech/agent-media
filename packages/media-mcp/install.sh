@@ -29,6 +29,10 @@ install -m 644 "$REPO/package.json" "$APP_DIR/package.json"
 # is launched by Termux:Boot rather than an interactive shell. That tight loop
 # pegs CPU, overheats the device, and on some phones triggers reboots.
 write_log_wrapper() {
+  # log/run is typically a symlink to $PREFIX/share/termux-services/svlogger;
+  # without the rm, `cat >` follows it and clobbers the shared svlogger script
+  # with a self-exec loop that wedges every service's logger.
+  rm -f "$1"
   cat > "$1" <<EOF
 #!$PREFIX/bin/sh
 export LOGDIR=$PREFIX/var/log

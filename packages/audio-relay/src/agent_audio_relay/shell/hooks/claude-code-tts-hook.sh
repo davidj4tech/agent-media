@@ -18,6 +18,14 @@
 
 [ "${CLAUDE_TTS_ENABLED:-1}" = "0" ] && exit 0
 
+# Source the user env file so per-host overrides + secrets
+# (OPENAI_API_KEY, DASHSCOPE_API_KEY, voice/model knobs) take precedence
+# over inherited Claude Code env. Lets settings.json stay free of
+# secrets while realtime/openai/qwen still find their keys.
+for envf in "${RELAY_ENV_FILE:-}" "$HOME/.config/agent-audio-relay.env"; do
+    [ -n "$envf" ] && [ -r "$envf" ] && set -a && . "$envf" && set +a && break
+done
+
 DROP_DIR="${CLAUDE_TTS_DROP_DIR:-/tmp/tts-claude}"
 STAMP_DIR="${CLAUDE_TTS_STAMP_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/agent-audio-relay}"
 mkdir -p "$STAMP_DIR" 2>/dev/null || true
