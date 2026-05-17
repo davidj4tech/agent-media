@@ -1,73 +1,77 @@
 # agent-media
 
-The agent's audio/music stack — a small family of tools that lives on a
-phone (or any Termux/Linux box) and gives coding agents a voice,
-playback control, and (soon) a sense of musical taste.
+The agent's audio/music stack — a small family of packages that gives
+coding agents a voice, playback control, and (soon) a sense of musical
+taste. Lives on a phone (Termux) or any Linux box.
 
 ```
-┌────────────────────────────────────┐
-│ packages/                          │
-│ ├── media-mcp/   playback control  │  Node, MCP server + HTTP/UI
-│ ├── audio-relay/ TTS clip delivery │  Python, agent voice clips
-│ └── astrotunes/  what to play      │  Python, transit-aware picks
-└────────────────────────────────────┘
-            │
-            ▼
-   one phone running mpv channels
-   (music + tts, with auto-ducking)
+┌──────────────────────────────────────────────────┐
+│ packages/                                        │
+│ ├── core/         intake → route → render → sink │  Python — the spine
+│ ├── audio-relay/  whole-house snapcast pipeline  │  Python — sp4r/rooms
+│ ├── voice-bridge/ STT (mic → text → intake)      │  Python — sibling
+│ └── astrotunes/   what to play                   │  Python — recommender
+└──────────────────────────────────────────────────┘
 ```
 
 ## Packages
 
-### [`media-mcp`](./packages/media-mcp/)
+### [`core/`](./packages/core/) — agent-media-core
 
-Multi-channel `mpv` control surface — MCP server, HTTP/JSON API, and a
-mobile-first PWA. Runs three mpv daemons (`music`, `tts`, `voice`) with
-property-event ducking. Designed to live on a phone on Tailscale.
+The spine. One package, five subdirs that mirror the data flow:
 
-> Renamed from `mpv-mcp`. Kept the broader name to leave room for video
-> channels and additional media backends.
+- `intake/` — event sources (Claude Code hook, Codex hook, HA-SSE, Matrix)
+- `route/` — policy + coordinator (content-type aware ducking / pause-resume)
+- `render/` — TTS engines (edge / openai / qwen / realtime) with fallback
+- `sinks/` — speech (mpv) and music (Mopidy/MPD)
+- `state/` — SQLite history, errors, now-playing
 
-### [`audio-relay`](./packages/audio-relay/)
+Plus an `mcp_server.py` exposing the control surface over MCP — stdio
+for local Claude Code (`claude mcp add media-mcp -s user -- media-mcp`)
+and streamable-HTTP for remote callers (`media-mcp-http` on
+`MEDIA_MCP_HOST:MEDIA_MCP_PORT`, default `127.0.0.1:8765`).
 
-The Python relay that captures agent TTS output (Claude Code Stop hook,
-Codex stdin, OpenCode session poller) and delivers clips to a playback
-target — typically `media-mcp`'s `tts` channel. Distributed on PyPI as
-`agent-audio-relay`.
+### [`audio-relay/`](./packages/audio-relay/)
 
-### `astrotunes` *(in progress)*
+The whole-house snapcast pipeline. Pumps p8ar's pipewire null-sinks
+(`aar`, `aar-music`) into snapcast FIFOs so every room hears agent
+voice + music. Also hosts the clip-server, mpv-tunnel, and the
+forwarder/watcher pair that fan TTS clips to remote hosts.
 
-Music recommendation tool. Given current planetary transits, time of
-day, mood, activity, and Melbourne weather, picks tracks and routes
-them to either `media-mcp` (local phone) or Mopidy (remote). Uses
-`kerykeion` for transit computation.
+Distributed on PyPI as `agent-audio-relay`.
+
+### [`voice-bridge/`](./packages/voice-bridge/)
+
+STT companion — mic capture → transcribe → submit into core's intake
+pipeline. Sibling to core, not nested under it.
+
+### [`astrotunes/`](./packages/astrotunes/) *(in progress)*
+
+Given current planetary transits, time of day, mood, activity, and
+Melbourne weather, picks tracks and queues them via core's music sink.
 
 ## Install
 
-Each package has its own install path:
-
 ```sh
-# media-mcp (Node, runit services on Termux)
-cd packages/media-mcp && ./install.sh
+# core (Python, editable) — provides media-mcp / media-hook-* / media-setup
+pip install --user -e packages/core
 
 # audio-relay (Python, pip-installable)
-pip install --user ./packages/audio-relay
-# or from PyPI:
-pip install --user agent-audio-relay
+pip install --user packages/audio-relay
 
-# astrotunes (Python, in progress)
-pip install --user ./packages/astrotunes
+# astrotunes (in progress)
+pip install --user packages/astrotunes
 ```
 
-A top-level installer that does all three may follow once `astrotunes`
-is past prototype.
+`media-setup` (from core) installs Claude Code hooks, runit services,
+and migrates legacy `CLAUDE_TTS_*` / `AAR_*` env keys to `MEDIA_*`.
 
 ## History
 
-`agent-media` was assembled in May 2026 from two previously separate
-repos:
+Assembled in May 2026 from previously separate repos:
 
-- `davidj4tech/mpv-mcp` (renamed → `media-mcp` → restructured into `packages/media-mcp/`)
-- `davidj4tech/agent-audio-relay` (subtree-imported with full history → `packages/audio-relay/`; old repo archived)
-
-`astrotunes` is new.
+- `davidj4tech/mpv-mcp` → `media-mcp` (Node) → retired May 2026 in
+  favor of `core.mcp_server` (Python, two-transport)
+- `davidj4tech/agent-audio-relay` → `packages/audio-relay/`
+- `davidj4tech/tmux-voice-bridge` → `packages/voice-bridge/`
+- `astrotunes` new
