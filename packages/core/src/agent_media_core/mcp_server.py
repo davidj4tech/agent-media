@@ -1,29 +1,39 @@
 """MCP control surface for agent-media.
 
-stdio-based server. Tools cover the in-flight surface RESTRUCTURE.md
-called for (speech.pause/resume/skip/replay_last/now_playing/history,
-music.play/pause/resume/stop/skip/prev/seek/volume/now_playing) plus a
-convenience `say` that submits a one-shot Event through the same
-intake pipeline the hooks use.
+Two entrypoints over the same tool definitions:
 
-Wired in Claude Code via .claude/mcp.json:
+  * `media-mcp`      — stdio transport, for Claude Code (user-scope
+                       registration via `claude mcp add`).
+  * `media-mcp-http` — streamable-HTTP transport, for remote callers
+                       (sp4r, HA, anything off-box). Bind via
+                       MEDIA_MCP_HOST / MEDIA_MCP_PORT (defaults
+                       127.0.0.1:8765 — set MEDIA_MCP_HOST to the
+                       Tailscale IP to expose on the tailnet).
 
-    {
-      "mcpServers": {
-        "agent-media": {
-          "command": "media-mcp"
-        }
-      }
-    }
+Tools cover the surface RESTRUCTURE.md called for: speech.{pause,
+resume,stop,now_playing,history,replay_last} and music.{play,pause,
+resume,stop,volume,now_playing,seek} plus a convenience `say` that
+submits a one-shot Event through the same intake pipeline the hooks
+use.
 
-Replaces the legacy Node `packages/media-mcp/server.js`. The Node one
-exposed HTTP + a web UI; this one is stdio first. An HTTP gateway can
-land later if a remote agent (HA Assist etc.) needs it.
+Replaces the legacy Node `packages/media-mcp/server.js` end-to-end.
 """
 
 import logging
+import os
 
 from mcp.server.fastmcp import FastMCP
+
+
+def _host() -> str:
+    return os.environ.get("MEDIA_MCP_HOST", "127.0.0.1")
+
+
+def _port() -> int:
+    try:
+        return int(os.environ.get("MEDIA_MCP_PORT", "8765"))
+    except ValueError:
+        return 8765
 
 from .sinks import SinkMusic, SinkSpeech
 from .state import StateStore
@@ -32,7 +42,7 @@ from .types import Event, Priority, Source, Target
 
 log = logging.getLogger(__name__)
 
-mcp = FastMCP("agent-media")
+mcp = FastMCP("agent-media", host=_host(), port=_port())
 
 
 # --- shared singletons ----------------------------------------------------
@@ -208,10 +218,22 @@ def music_seek(position_ms: int, target: str = "local") -> dict:
 
 # --- entrypoint -----------------------------------------------------------
 
-def main() -> None:
+def _configure_logging() -> None:
     logging.basicConfig(level=logging.WARNING,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+
+def main() -> None:
+    """stdio entrypoint — for Claude Code and other local MCP clients."""
+    _configure_logging()
     mcp.run()
+
+
+def main_http() -> None:
+    """streamable-HTTP entrypoint — for remote callers over Tailscale."""
+    _configure_logging()
+    log.info("media-mcp http listening on %s:%d", _host(), _port())
+    mcp.run(transport="streamable-http")
 
 
 if __name__ == "__main__":

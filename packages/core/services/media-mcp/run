@@ -1,0 +1,32 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# media-mcp HTTP transport — for remote callers (sp4r, HA, etc).
+# Local Claude Code uses the stdio entrypoint, registered separately via
+# `claude mcp add media-mcp -s user -- media-mcp`.
+#
+# Bind: MEDIA_MCP_HOST / MEDIA_MCP_PORT (defaults 127.0.0.1:8765).
+# For tailnet exposure, set MEDIA_MCP_HOST to the Tailscale IP — but
+# we wait for the address to actually exist before exec'ing so we don't
+# crashloop while wifi/Tailscale come up. See
+# [[project-media-mcp-tailscale-bind]] for the prior fragility.
+exec 2>&1
+: "${MEDIA_MCP_HOST:=127.0.0.1}"
+: "${MEDIA_MCP_PORT:=8765}"
+
+# Only gate on Tailscale when the user actually asked for a non-loopback
+# bind — loopback is always there, no point sleeping for it.
+case "$MEDIA_MCP_HOST" in
+  127.*|localhost|::1) ;;
+  *)
+    i=0
+    while [ $i -lt 30 ]; do
+      if ifconfig 2>/dev/null | grep -q "$MEDIA_MCP_HOST" || \
+         ip addr 2>/dev/null | grep -q "$MEDIA_MCP_HOST"; then
+        break
+      fi
+      i=$((i + 1)); sleep 1
+    done
+    ;;
+esac
+
+export MEDIA_MCP_HOST MEDIA_MCP_PORT
+exec media-mcp-http

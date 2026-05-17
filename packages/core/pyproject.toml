@@ -18,6 +18,7 @@ media-intake-ha-sse    = "agent_media_core.intake.ha_sse:main"
 media-intake-matrix    = "agent_media_core.intake.matrix:main"
 media-setup            = "agent_media_core.setup:main"
 media-mcp              = "agent_media_core.mcp_server:main"
+media-mcp-http         = "agent_media_core.mcp_server:main_http"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_media_core"]
