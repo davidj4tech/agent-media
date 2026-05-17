@@ -41,6 +41,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from .._paths import state_dir
 from ..state import StateStore
 from ..types import Event, Priority, Source
 from .submit import submit_event
@@ -86,10 +87,65 @@ def _load_env_file() -> None:
             return
 
 
+def _tmux(args: list[str], timeout: float = 2.0) -> str:
+    """Run a tmux command, return stripped stdout or empty string."""
+    import subprocess
+    try:
+        r = subprocess.run(["tmux", *args],
+                           capture_output=True, text=True, timeout=timeout)
+        return (r.stdout or "").strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _notif_label() -> str:
+    """Build a "where am I" prefix for the notification text.
+
+    Includes:
+      - hostname (short) when there's >1 tmux session running and
+        MEDIA_NOTIF_LABEL_HOST != "0" (default on).
+      - tmux session name (always, when in tmux)
+      - tmux window name when the session has >1 window
+
+    Returns "" outside tmux or when the user disabled labelling
+    (MEDIA_NOTIF_LABEL=0).
+    """
+    if os.environ.get("MEDIA_NOTIF_LABEL", "1") == "0":
+        return ""
+    pane = os.environ.get("TMUX_PANE")
+    if not pane:
+        return ""
+
+    sess = _tmux(["display-message", "-p", "-t", pane, "#{session_name}"])
+    win_name = _tmux(["display-message", "-p", "-t", pane, "#{window_name}"])
+    win_count_s = _tmux(["display-message", "-p", "-t", pane,
+                         "#{session_windows}"])
+    sess_count_s = _tmux(["list-sessions", "-F", "#{session_name}"])
+
+    parts: list[str] = []
+
+    sess_count = len([s for s in sess_count_s.splitlines() if s.strip()])
+    if sess_count > 1 and os.environ.get("MEDIA_NOTIF_LABEL_HOST", "1") != "0":
+        import socket
+        host = socket.gethostname().split(".")[0]
+        if host:
+            parts.append(host)
+
+    if sess:
+        parts.append(sess)
+
+    try:
+        win_count = int(win_count_s or "1")
+    except ValueError:
+        win_count = 1
+    if win_count > 1 and win_name:
+        parts.append(win_name)
+
+    return " / ".join(parts)
+
+
 def _stamp_dir() -> Path:
-    state = Path(os.environ.get("XDG_STATE_HOME",
-                                str(Path.home() / ".local" / "state")))
-    d = state / "agent-media" / "claude-stamps"
+    d = state_dir() / "claude-stamps"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -168,21 +224,9 @@ def _handle_notification(payload: dict) -> int:
     if not msg:
         return 0
 
-    # Annotate with the tmux session if we can see one.
-    tmux_pane = os.environ.get("TMUX_PANE")
-    if tmux_pane:
-        try:
-            import subprocess
-            r = subprocess.run(
-                ["tmux", "display-message", "-p", "-t", tmux_pane,
-                 "#{session_name}"],
-                capture_output=True, text=True, timeout=2,
-            )
-            sess = (r.stdout or "").strip()
-            if sess:
-                msg = f"Session {sess}: {msg}"
-        except Exception:  # noqa: BLE001
-            pass
+    label = _notif_label()
+    if label:
+        msg = f"{label}: {msg}"
 
     stamps = _stamp_dir()
     now = int(time.time())
