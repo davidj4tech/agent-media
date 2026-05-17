@@ -19,6 +19,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Optional
 
+from .._paths import state_dir
+
 
 SCHEMA_VERSION = 1
 
@@ -64,9 +66,7 @@ CREATE TABLE IF NOT EXISTS errors (
 
 
 def default_db_path() -> Path:
-    state = Path(os.environ.get("XDG_STATE_HOME",
-                                str(Path.home() / ".local" / "state")))
-    return state / "agent-media" / "state.db"
+    return state_dir() / "state.db"
 
 
 class StateStore:
