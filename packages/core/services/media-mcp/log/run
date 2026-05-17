@@ -1,0 +1,4 @@
+#!/data/data/com.termux/files/usr/bin/sh
+LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/sv-log/media-mcp"
+mkdir -p "$LOG_DIR"
+exec svlogd -tt "$LOG_DIR"
