@@ -144,6 +144,46 @@ def _notif_label() -> str:
     return " / ".join(parts)
 
 
+def _client_focused_recently(within_seconds: int) -> bool:
+    """True if our tmux pane's window is currently displayed by an
+    attached client whose user-input activity is within `within_seconds`.
+
+    Used to suppress the "Claude is waiting" notif when the user is
+    clearly at the screen and will see the prompt without an audio cue.
+    Uses `client_activity` (keystroke/mouse timestamp) — not session or
+    window activity, which bumps on assistant output too.
+    """
+    pane = os.environ.get("TMUX_PANE")
+    if not pane:
+        return False
+    state = _tmux(["display-message", "-p", "-t", pane,
+                   "#{window_active}:#{session_attached}"])
+    try:
+        win_active, sess_attached = state.split(":", 1)
+    except ValueError:
+        return False
+    if win_active != "1":
+        return False
+    try:
+        if int(sess_attached or "0") < 1:
+            return False
+    except ValueError:
+        return False
+    sess = _tmux(["display-message", "-p", "-t", pane, "#{session_name}"])
+    if not sess:
+        return False
+    out = _tmux(["list-clients", "-t", sess, "-F", "#{client_activity}"])
+    now = int(time.time())
+    for line in out.splitlines():
+        try:
+            ts = int(line.strip())
+        except ValueError:
+            continue
+        if now - ts < within_seconds:
+            return True
+    return False
+
+
 def _stamp_dir() -> Path:
     d = state_dir() / "claude-stamps"
     d.mkdir(parents=True, exist_ok=True)
@@ -222,6 +262,12 @@ def _handle_notification(payload: dict) -> int:
     """
     msg = (payload.get("message") or "").strip()
     if not msg:
+        return 0
+
+    # If the user has been at the screen recently, don't nag them with
+    # audio — they'll see the prompt. Tunable via env, 0 disables.
+    focus_window = int(os.environ.get("MEDIA_NOTIF_FOCUS_SUPPRESS", "180"))
+    if focus_window > 0 and _client_focused_recently(focus_window):
         return 0
 
     label = _notif_label()
