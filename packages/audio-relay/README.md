@@ -429,6 +429,9 @@ Register in `~/.claude/settings.json`:
 | `CLAUDE_TTS_DROP_DIR` | `/tmp/tts-claude` | Audio drop directory |
 | `CLAUDE_TTS_OPENAI_MODEL` | `gpt-4o-mini-tts` | OpenAI TTS model (only used when engine=`openai`) |
 | `CLAUDE_TTS_OPENAI_PYTHON` | `python3` | Python interpreter with the `openai` package installed (only used when engine=`openai`) |
+| `MEDIA_NOTIF_LABEL` | `1` | Set to `0` to drop the "host / session / window" prefix from notif messages |
+| `MEDIA_NOTIF_LABEL_HOST` | `1` | Set to `0` to drop just the hostname from the prefix (still labels with session/window) |
+| `MEDIA_NOTIF_FOCUS_SUPPRESS` | `180` | Seconds. Suppress the "Claude is waiting" notif when the user's tmux client has had keyboard/mouse input within this window AND is currently displaying our pane's window. `0` disables the focus check (always alert). Uses tmux `client_activity` so assistant output doesn't reset the clock. |
 
 When `CLAUDE_TTS_ENGINE=openai`, the hook needs `OPENAI_API_KEY` in its
 environment (set it via the `env` block on the hook entry in
