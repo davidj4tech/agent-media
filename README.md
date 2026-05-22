@@ -63,8 +63,10 @@ pip install --user packages/audio-relay
 pip install --user packages/astrotunes
 ```
 
-`media-setup` (from core) installs Claude Code hooks, runit services,
-and migrates legacy `CLAUDE_TTS_*` / `AAR_*` env keys to `MEDIA_*`.
+`media-setup` (from core) installs Claude Code hooks, services (runit on
+Termux / host-runit, systemd `--user` on regular Linux — auto-detected,
+override with `--backend`), and migrates legacy `CLAUDE_TTS_*` / `AAR_*`
+env keys to `MEDIA_*`.
 
 ## History
 

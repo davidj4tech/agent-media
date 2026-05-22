@@ -9,8 +9,11 @@ Subcommands:
   media-setup install-hooks [--dry-run] Merge hook entries into
                                         ~/.claude/settings.json.
   media-setup install-services [--dry-run]
-                                        Install runit services on
-                                        Termux (or print what would).
+                                        Install services for this host.
+                                        Auto-detects runit (Termux /
+                                        host-runit) vs systemd --user
+                                        (regular Linux); override with
+                                        --backend.
   media-setup status                    Summarize current wiring.
 
 Everything is idempotent. The settings.json writer makes a `.bak` copy
@@ -26,6 +29,7 @@ import os
 import shutil
 import subprocess
 import sys
+import sysconfig
 from pathlib import Path
 from typing import Iterable
 
@@ -256,7 +260,24 @@ def cmd_migrate_env(args: argparse.Namespace) -> int:
     return 0
 
 
-# --- Service wiring (Termux runit) -----------------------------------------
+# --- Service wiring (Termux runit + systemd --user) ------------------------
+
+def _service_backend(explicit: str | None) -> str:
+    """Pick the service supervisor for this host: 'runit' or 'systemd'.
+
+    'auto' (the default) prefers runit whenever a runit service root is
+    present (Termux, or host-runit at /etc/service), since those hosts
+    are supervised by runsvdir; otherwise falls back to systemd --user
+    when `systemctl` is available.
+    """
+    if explicit and explicit != "auto":
+        return explicit
+    if services_dir() is not None:
+        return "runit"
+    if shutil.which("systemctl") is not None:
+        return "systemd"
+    return "runit"  # last resort; cmd will surface the missing root
+
 
 def services_dir() -> Path | None:
     """Where runit looks for services on this host, or None when we
@@ -315,18 +336,128 @@ def _install_one_service(name: str, *, dry_run: bool,
     return True
 
 
+# systemd --user backend. We don't translate the run scripts into native
+# ExecStart lines — we point ExecStart at the very same `run` script so
+# the mpv flags / MCP bind logic stay in one place across both backends.
+# The shebang (Termux sh) is bypassed by invoking via `/bin/sh`.
+
+SYSTEMD_UNIT_TEMPLATE = """\
+[Unit]
+Description=agent-media {name}
+PartOf=default.target
+
+[Service]
+Type=simple
+Environment=PATH={bindir}:/usr/local/bin:/usr/bin:/bin
+ExecStart=/bin/sh {runscript}
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+"""
+
+
+def systemd_user_dir() -> Path:
+    base = os.environ.get("XDG_CONFIG_HOME")
+    root = Path(base) if base else Path.home() / ".config"
+    return root / "systemd" / "user"
+
+
+def _entrypoint_bindir() -> Path:
+    """Console-script dir of this install — so a venv install's
+    `media-mcp-http` resolves on the unit's PATH without the user having
+    it on their login PATH. Uses sysconfig (not `sys.executable`, whose
+    venv symlink resolves back to the base interpreter's bin).
+    """
+    return Path(sysconfig.get_path("scripts"))
+
+
+def _systemd_unit_name(name: str) -> str:
+    """Map a template dir name to a namespaced unit file name.
+
+    Collapses a redundant leading `media-` so `media-mcp` becomes
+    `agent-media-mcp.service`, while `sink-speech` becomes
+    `agent-media-sink-speech.service`.
+    """
+    stem = name[len("media-"):] if name.startswith("media-") else name
+    return f"agent-media-{stem}.service"
+
+
+def _systemctl_user(*argv: str) -> int:
+    return subprocess.call(["systemctl", "--user", *argv])
+
+
+def _install_one_systemd(name: str, *, dry_run: bool, root: Path) -> str | None:
+    """Write a systemd --user unit for `name`. Returns the unit file
+    name on success (so the caller can enable it), or None on failure.
+    """
+    src = service_templates_dir() / name
+    run = src / "run"
+    if not run.is_file():
+        print(f"media-setup: template missing: {run}", file=sys.stderr)
+        return None
+    unit = _systemd_unit_name(name)
+    dest = root / unit
+    content = SYSTEMD_UNIT_TEMPLATE.format(
+        name=name, bindir=_entrypoint_bindir(), runscript=run)
+    if dry_run:
+        print(f"# would write {dest}:")
+        print(content)
+        return unit
+    if dest.exists() and dest.read_text() == content:
+        print(f"media-setup: {unit} already up to date")
+        return unit
+    root.mkdir(parents=True, exist_ok=True)
+    dest.write_text(content)
+    print(f"media-setup: wrote {dest}")
+    return unit
+
+
+def _install_services_systemd(args: argparse.Namespace,
+                              names: list[str]) -> int:
+    root = systemd_user_dir()
+    units: list[str] = []
+    ok = True
+    for name in names:
+        unit = _install_one_systemd(name, dry_run=args.dry_run, root=root)
+        if unit is None:
+            ok = False
+        else:
+            units.append(unit)
+    if args.dry_run:
+        if units and args.now:
+            print(f"# would: systemctl --user daemon-reload && enable --now "
+                  f"{' '.join(units)}")
+        return 0 if ok else 1
+    if units:
+        _systemctl_user("daemon-reload")
+        if args.now:
+            ok = _systemctl_user("enable", "--now", *units) == 0 and ok
+        else:
+            print("media-setup: units written. Start them with:\n"
+                  f"  systemctl --user enable --now {' '.join(units)}")
+    return 0 if ok else 1
+
+
 def cmd_install_services(args: argparse.Namespace) -> int:
-    root = Path(args.root) if args.root else services_dir()
-    if root is None:
-        print("media-setup: no service root inferred — pass --root or "
-              "install systemd units instead", file=sys.stderr)
-        return 2
     templates = service_templates_dir()
     if not templates.is_dir():
         print(f"media-setup: service templates not found at {templates}",
               file=sys.stderr)
         return 1
     names = args.services or [p.name for p in templates.iterdir() if p.is_dir()]
+
+    backend = _service_backend(getattr(args, "backend", None))
+    if backend == "systemd":
+        return _install_services_systemd(args, names)
+
+    # runit
+    root = Path(args.root) if args.root else services_dir()
+    if root is None:
+        print("media-setup: no runit service root inferred — pass --root, "
+              "or use --backend systemd", file=sys.stderr)
+        return 2
     ok = True
     for name in names:
         ok = _install_one_service(name, dry_run=args.dry_run, root=root) and ok
@@ -371,17 +502,29 @@ def cmd_status(_: argparse.Namespace) -> int:
             groups = (data.get("hooks") or {}).get(event) or []
             cmds = [h.get("command") for g in groups for h in (g.get("hooks") or [])]
             print(f"hook {event}: {cmds or '(none)'}")
-    root = services_dir()
-    if root and root.is_dir():
-        templates = service_templates_dir()
-        for tpl in (sorted(templates.iterdir()) if templates.is_dir() else []):
-            if not tpl.is_dir():
+    templates = service_templates_dir()
+    names = ([p.name for p in sorted(templates.iterdir()) if p.is_dir()]
+             if templates.is_dir() else [])
+    backend = _service_backend(None)
+    print(f"service backend: {backend}")
+    if backend == "runit":
+        root = services_dir()
+        for name in names:
+            link = (root / name) if root else None
+            mark = ("installed" if link and (link.exists() or link.is_symlink())
+                    else "MISSING")
+            print(f"service {name}: {mark}")
+    else:  # systemd
+        sd = systemd_user_dir()
+        for name in names:
+            unit = _systemd_unit_name(name)
+            if not (sd / unit).exists():
+                print(f"service {unit}: MISSING")
                 continue
-            link = root / tpl.name
-            mark = "installed" if (link.exists() or link.is_symlink()) else "MISSING"
-            print(f"service {tpl.name}: {mark}")
-    else:
-        print("service root: not detected (non-Termux?)")
+            active = subprocess.run(
+                ["systemctl", "--user", "is-active", unit],
+                capture_output=True, text=True).stdout.strip() or "unknown"
+            print(f"service {unit}: installed ({active})")
     return 0
 
 
@@ -405,9 +548,15 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_install_hooks)
 
     sp = sub.add_parser("install-services",
-                        help="Install runit services on Termux")
-    sp.add_argument("--root", help="Service root (default: $PREFIX/var/service "
-                    "on Termux)")
+                        help="Install services (runit on Termux, systemd "
+                             "--user on regular Linux)")
+    sp.add_argument("--backend", choices=("auto", "runit", "systemd"),
+                    default="auto",
+                    help="Service supervisor (default: auto-detect)")
+    sp.add_argument("--root", help="runit service root (default: "
+                    "$PREFIX/var/service on Termux; ignored for systemd)")
+    sp.add_argument("--now", action="store_true",
+                    help="systemd: enable --now the units after writing")
     sp.add_argument("--dry-run", action="store_true")
     sp.add_argument("services", nargs="*",
                     help="Specific service names (default: all in repo)")
