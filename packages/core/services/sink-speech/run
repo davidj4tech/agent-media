@@ -1,13 +1,18 @@
 #!/data/data/com.termux/files/usr/bin/sh
 # Speech sink: long-running mpv broker for TTS playback.
 # Socket: $XDG_STATE_HOME/agent-media/sink-speech.sock
-# AO: openal (proven to survive BT route changes 2026-05-14)
+#
+# AO defaults to openal — proven to survive BT route changes on Termux
+# (2026-05-14). On a PipeWire/Pulse host, set MEDIA_SPEECH_AO=pulse so
+# per-clip `audio-device=pulse/<sink>` routing (decision 1C) works; the
+# openal AO doesn't understand pulse device ids.
 exec 2>&1
+: "${MEDIA_SPEECH_AO:=openal}"
 STATE="${XDG_STATE_HOME:-$HOME/.local/state}/agent-media"
 SOCK="$STATE/sink-speech.sock"
 mkdir -p "$STATE"
 rm -f "$SOCK"
-exec mpv --idle=yes --ao=openal --force-window=no \
+exec mpv --idle=yes --ao="$MEDIA_SPEECH_AO" --force-window=no \
   --input-ipc-server="$SOCK" --volume=100 --keep-open=no \
   --gapless-audio=no --audio-stream-silence=no --ytdl=no \
   --network-timeout=60
