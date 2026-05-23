@@ -99,7 +99,11 @@ def submit_event(event: Event,
     state = state or StateStore()
     coordinator = coordinator or Coordinator(state=state)
     sink = sink or SinkSpeech()
-    target = event.target or Target(name="local")
+    # Per-event target wins; otherwise the host's deployment default
+    # (mel sets MEDIA_SPEECH_DEFAULT_TARGET=rooms to feed Snapcast),
+    # falling back to local. Decision 1C.
+    target = event.target or Target(
+        name=os.environ.get("MEDIA_SPEECH_DEFAULT_TARGET", "local"))
 
     engine = _resolve_engine(event)
     voice = _resolve_voice(event)
