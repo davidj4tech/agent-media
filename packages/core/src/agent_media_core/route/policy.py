@@ -18,6 +18,7 @@ Interruption rules:
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
@@ -59,6 +60,67 @@ DEFAULT_POLICY = {
 def policy_for(content_type: Optional[ContentType]) -> InterruptionPolicy:
     return DEFAULT_POLICY.get(content_type or ContentType.UNKNOWN,
                               DEFAULT_POLICY[ContentType.UNKNOWN])
+
+
+# --- Decision 4C: sink-naming convention -----------------------------------
+#
+# Movies on sp4r play through its *default* pulse sink; the whole-house
+# music/agent feed plays through the `am` / `am-music` sinks. Ducking a
+# movie's dialogue is wrong — we want pause-and-resume. So the producing
+# sink's *name* decides duck vs pause, independent of content type:
+#
+#   sink in {am, am-music}  → DUCK   (continuous house audio)
+#   any other sink          → PAUSE  (default sink = movies/players)
+#
+# This is a policy layer; the *mechanism* that actually pauses a movie
+# (mpv IPC or `pactl` cork on the producing sink) is separate and applied
+# by the coordinator once it can observe the producing sink. Today the
+# coordinator only drives the Mopidy music sink (always duckable), so this
+# convention only changes behaviour for the future movie/default-sink path.
+
+DUCKABLE_SINKS: tuple[str, ...] = ("am", "am-music")
+
+
+def duckable_sinks() -> tuple[str, ...]:
+    """Sink names whose audio is duckable. Override with the comma list
+    `MEDIA_DUCKABLE_SINKS` (e.g. during the aar→am rename transition:
+    `am,am-music,aar,aar-music`).
+    """
+    env = os.environ.get("MEDIA_DUCKABLE_SINKS")
+    if env:
+        names = tuple(s.strip() for s in env.split(",") if s.strip())
+        if names:
+            return names
+    return DUCKABLE_SINKS
+
+
+def strategy_for_sink(sink_name: Optional[str]) -> Optional[InterruptionStrategy]:
+    """Decision 4C, raw: duck on a duckable sink, pause on any *named*
+    non-duckable sink. Returns None when the sink is unknown, so callers
+    fall back to content-type policy.
+    """
+    if sink_name is None:
+        return None
+    if sink_name in duckable_sinks():
+        return InterruptionStrategy.DUCK
+    return InterruptionStrategy.PAUSE
+
+
+_PAUSE_POLICY = InterruptionPolicy(InterruptionStrategy.PAUSE)
+
+
+def resolve_policy(content_type: Optional[ContentType],
+                   sink_name: Optional[str] = None) -> InterruptionPolicy:
+    """Combine the 4C sink convention with content-type policy.
+
+    A *named* non-duckable sink (the default sink → movies) forces PAUSE.
+    Otherwise content type decides — which is the only signal we have for
+    audio on the duckable house sinks, and the behaviour when the sink is
+    unknown (`sink_name=None`).
+    """
+    if strategy_for_sink(sink_name) is InterruptionStrategy.PAUSE:
+        return _PAUSE_POLICY
+    return policy_for(content_type)
 
 
 def detect_content_type(uri: Optional[str], *,
