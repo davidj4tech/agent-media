@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Interactive agent-media control popup — runs inside `tmux display-popup -E`.
+# A compact key-capture overlay; the live progress bar lives in the status
+# line (`media status`). Single-key hotkeys drive the `media` CLI:
+#
+#   Space   play/pause toggle          r   replay latest clip
+#   h / l   seek -5s / +5s             H / L   seek -30s / +30s
+#   - / =   volume -5 / +5             m   toggle mute
+#   [ / ]   slower / faster (0.1)      0   reset speed
+#   < / >   replay older / newer       v   show the spoken text in the pane
+#   ?       help                       q / Esc   close
+#
+# Caller pane for `v` comes from TTS_POPUP_PANE (set by the tmux binding).
+set -u
+MEDIA="${MEDIA:-media}"
+HL_PANE="${TTS_POPUP_PANE:-}"
+case "$HL_PANE" in *'#{'*) HL_PANE="" ;; esac
+
+speed=1.0
+hist_idx=1
+
+printf '\033[?25l'                       # hide cursor
+cleanup() { printf '\033[?25h'; }        # restore on exit
+trap cleanup EXIT
+
+draw() {
+    printf '\033[H\033[2J'               # home + clear
+    printf ' ♪ agent-media\r\n'
+    printf ' %s\r\n' "$($MEDIA status --show-idle 2>/dev/null)"
+}
+
+bump_speed() {        # $1 = +/- delta
+    speed=$(awk -v s="$speed" -v d="$1" 'BEGIN{v=s+d; if(v<0.3)v=0.3; if(v>3)v=3; printf "%.1f", v}')
+    $MEDIA speed "$speed" 2>/dev/null
+}
+
+draw
+while true; do
+    IFS= read -rsn1 key || break
+    case "$key" in
+        ' ') $MEDIA toggle ;;
+        r)   $MEDIA replay; hist_idx=1 ;;
+        h)   $MEDIA seek -5 ;;
+        l)   $MEDIA seek 5 ;;
+        H)   $MEDIA seek -30 ;;
+        L)   $MEDIA seek 30 ;;
+        '-') $MEDIA volume -5 ;;
+        '='|'+') $MEDIA volume 5 ;;
+        m)   $MEDIA mute ;;
+        '[') bump_speed -0.1 ;;
+        ']') bump_speed 0.1 ;;
+        0)   speed=1.0; $MEDIA speed reset ;;
+        '<') hist_idx=$((hist_idx + 1)); $MEDIA replay "$hist_idx" || hist_idx=$((hist_idx - 1)) ;;
+        '>') [ "$hist_idx" -gt 1 ] && hist_idx=$((hist_idx - 1)); $MEDIA replay "$hist_idx" ;;
+        v)   txt=$($MEDIA now 2>/dev/null)
+             [ -n "$HL_PANE" ] && [ -n "$txt" ] && \
+                 tmux display-message -t "$HL_PANE" "🗣 $txt" 2>/dev/null ;;
+        '?') tmux display-message "Space play/pause · r replay · h/l ±5s · -/= vol · m mute · [/] speed · < > history · v show text · q quit" 2>/dev/null ;;
+        q|$'\e') break ;;
+        *) : ;;
+    esac
+    draw
+done
