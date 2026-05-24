@@ -10,19 +10,14 @@
 #
 # Requires `media` and `media-popup` on PATH (installed in ~/.local/bin).
 
-# Enter the one-shot `media` key table.
-bind T switch-client -T media
-
-# t: pin the caller pane (for the popup's `v` show-text), then open the popup.
-# display-popup does not format-expand its command arg, so the pane id is
-# passed via the global environment (inherited by the popup's shell).
-bind -T media t \
+# prefix T → control popup (top-right), one keystroke. All controls live
+# inside the popup (Space play/pause, r replay, h/l seek, -/= volume,
+# m mute, [/] speed, v show spoken text, q close). The caller pane (for
+# the popup's `v`) is pinned via the global env; the popup also self-
+# resolves it, so this is belt-and-suspenders.
+bind T \
     set-environment -g TTS_POPUP_PANE "#{pane_id}" \; \
-    display-popup -E -w 46 -h 5 -x R -y 0 "media-popup"
-
-# One-shot controls straight from the table.
-bind -T media Space run-shell -b "media toggle"
-bind -T media r     run-shell -b "media replay"
+    display-popup -E -w 46 -h 6 -x R -y 0 "media-popup"
 
 # Live progress: add `#(media status 2>/dev/null)` to status-right. Under
 # oh-my-tmux, set it in tmux_conf_theme_status_right (the theme rebuilds
