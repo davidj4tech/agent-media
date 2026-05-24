@@ -80,5 +80,10 @@ def test_play_local_skips_device_set(monkeypatch):
     monkeypatch.setattr(speech.ipc, "command",
                         lambda sock, *args: calls.append(("cmd", *args)))
     speech.SinkSpeech().play("/tmp/x.mp3", Target("local"))
-    assert all(c[0] != "set" for c in calls)
+    # local uses the broker's default device — no audio-device switch...
+    assert not [c for c in calls if c[0] == "set" and c[1] == "audio-device"]
+    # ...loadfile comes first...
     assert calls[0] == ("cmd", "loadfile", "/tmp/x.mp3", "replace")
+    # ...and a fresh clip resets pause/mute so it's audible.
+    assert ("set", "pause", False) in calls
+    assert ("set", "mute", False) in calls
