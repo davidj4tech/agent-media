@@ -84,6 +84,16 @@ class SinkSpeech:
                 log.warning("sink-speech: set audio-device %s failed: %s",
                             device, e)
         ipc.command(sock, "loadfile", uri, "replace")
+        # A new clip must be audible regardless of a lingering pause/mute
+        # left on the broker (e.g. a popup Space/m while idle) — otherwise
+        # every future clip loads into a paused/muted broker and plays
+        # silently. The popup's keys still control the *currently* playing
+        # clip; this only resets state at the start of a fresh one.
+        for prop in ("pause", "mute"):
+            try:
+                ipc.set_property(sock, prop, False)
+            except ipc.MpvIpcError:
+                pass
 
     def pause(self, target: Target = DEFAULT_TARGET) -> None:
         ipc.set_property(_socket_for(target), "pause", True)
