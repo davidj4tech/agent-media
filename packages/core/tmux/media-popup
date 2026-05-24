@@ -67,17 +67,14 @@ while true; do
              else
                  $MEDIA jump end
              fi ;;
-        v)   txt=$($MEDIA now 2>/dev/null)
+        v)   txt=$($MEDIA text 2>/dev/null)
              if [ -n "$HL_PANE" ] && [ -n "$txt" ]; then
-                 # Highlight the spoken text in the caller pane via copy-mode:
-                 # enter copy-mode there and search-backward for a distinctive
-                 # snippet (first ~8 words, reduced to alnum+space so tmux's
-                 # regex search has no metacharacters to choke on). tmux
-                 # highlights the match in the pane (visible once the popup
-                 # closes); press q in the pane to leave copy-mode.
-                 snippet=$(printf '%s' "$txt" | tr '\n' ' ' \
-                     | tr -cs 'A-Za-z0-9 ' ' ' \
-                     | awk '{n=(NF<8?NF:8); for(i=1;i<=n;i++) printf "%s%s",(i>1?" ":""),$i}')
+                 # Highlight the spoken text in the caller pane via copy-mode.
+                 # Take the first 60 chars of the text (single line), then
+                 # escape regex metacharacters so tmux search-backward matches
+                 # the actual pane content (which retains #, *, (, ), etc.).
+                 snippet=$(printf '%s' "$txt" | tr '\n' ' ' | cut -c1-60 \
+                     | sed 's/[][(){}^$.*+?|\\]/\\&/g')
                  if [ -n "$snippet" ]; then
                      tmux copy-mode -t "$HL_PANE" 2>/dev/null
                      tmux send-keys -t "$HL_PANE" -X search-backward "$snippet" 2>/dev/null

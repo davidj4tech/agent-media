@@ -106,6 +106,22 @@ def cmd_now(a) -> int:
     return 0
 
 
+def cmd_text(a) -> int:
+    """Return the currently-speaking text, or the latest history entry if idle."""
+    np = _now_speaking()
+    if np:
+        txt = (np["extras"].get("text") or "").strip()
+        if txt:
+            print(txt)
+            return 0
+    rows = _speech_history(1)
+    if rows:
+        txt = (rows[0].get("text") or "").strip()
+        if txt:
+            print(txt)
+    return 0
+
+
 def cmd_toggle(a) -> int:
     # If nothing is loaded, "play" means replay the latest clip (matches the
     # old popup's Space = play/pause-or-replay). Otherwise flip pause.
@@ -227,6 +243,7 @@ def _build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_status)
 
     sub.add_parser("now", help="text currently being spoken").set_defaults(func=cmd_now)
+    sub.add_parser("text", help="spoken text (now-playing or latest history)").set_defaults(func=cmd_text)
     sub.add_parser("toggle", help="play/pause").set_defaults(func=cmd_toggle)
     sub.add_parser("pause").set_defaults(func=cmd_pause)
     sub.add_parser("resume").set_defaults(func=cmd_resume)
