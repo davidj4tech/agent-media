@@ -12,6 +12,7 @@ dependencies = [
 ]
 
 [project.scripts]
+media                  = "agent_media_core.cli:main"
 media-hook-claude-code = "agent_media_core.intake.hook_claude_code:main"
 media-hook-codex       = "agent_media_core.intake.hook_codex:main"
 media-intake-ha-sse    = "agent_media_core.intake.ha_sse:main"
