@@ -161,10 +161,12 @@ def _do_replay(index: int) -> int:
     if not uri:
         return 1
     SinkSpeech().play(uri, SPEECH_TARGET)
-    # A prior pause (e.g. Space while idle) would otherwise load the clip
-    # paused and play nothing — force playback on.
+    # "Replay" means "I want to hear this now": clear a lingering pause or
+    # mute (e.g. a stray Space/m while idle) that would otherwise make it
+    # load silently. `m` still toggles mute live while a clip is playing.
     try:
         ipc.set_property(_sock(), "pause", False)
+        ipc.set_property(_sock(), "mute", False)
     except ipc.MpvIpcError:
         pass
     return 0
