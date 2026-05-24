@@ -30,7 +30,7 @@ trap cleanup EXIT
 
 draw() {
     printf '\033[H\033[2J'               # home + clear
-    printf ' ♪  spc ▶/⏸  h/l  r  v  q\r\n'
+    printf ' ♪ spc h/l r v q\r\n'
 }
 
 bump_speed() {        # $1 = +/- delta
