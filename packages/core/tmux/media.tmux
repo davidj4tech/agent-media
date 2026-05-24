@@ -24,5 +24,8 @@ bind -T media t \
 bind -T media Space run-shell -b "media toggle"
 bind -T media r     run-shell -b "media replay"
 
-# Live progress in status-right (empty while idle, so it's invisible then).
-set -ag status-right " #(media status)"
+# Live progress: add `#(media status 2>/dev/null)` to status-right. Under
+# oh-my-tmux, set it in tmux_conf_theme_status_right (the theme rebuilds
+# status-right, clobbering an imperative `set -ag`). On a plain tmux,
+# uncomment the line below instead.
+# set -ag status-right " #(media status 2>/dev/null)"
