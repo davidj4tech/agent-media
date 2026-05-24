@@ -17,6 +17,10 @@ bind a \
     set-environment -g TTS_POPUP_PANE "#{pane_id}" \; \
     display-popup -E -w 46 -h 6 -x R -y 0 "media-popup"
 
+# Refresh the status bar every second so the `#(media status)` progress
+# bar advances smoothly (oh-my-tmux defaults to 10s — too coarse for it).
+set -g status-interval 1
+
 # Live progress: add `#(media status 2>/dev/null)` to status-right. Under
 # oh-my-tmux, set it in tmux_conf_theme_status_right (the theme rebuilds
 # status-right, clobbering an imperative `set -ag`). On a plain tmux,

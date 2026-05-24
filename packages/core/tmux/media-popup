@@ -41,7 +41,11 @@ bump_speed() {        # $1 = +/- delta
 
 draw
 while true; do
-    IFS= read -rsn1 key || break
+    # Time-limited read so the progress bar redraws ~1/s even with no key.
+    # rc=0 key pressed; rc>128 read timed out (just redraw); else EOF → quit.
+    IFS= read -rsn1 -t 1 key; rc=$?
+    if [ "$rc" -gt 128 ]; then draw; continue; fi
+    [ "$rc" -ne 0 ] && break
     case "$key" in
         ' ') $MEDIA toggle ;;
         r)   $MEDIA replay; hist_idx=1 ;;
@@ -55,17 +59,29 @@ while true; do
         '[') bump_speed -0.1 ;;
         ']') bump_speed 0.1 ;;
         0)   speed=1.0; $MEDIA speed reset ;;
+        # ⏮ older clip in history; ⏭ newer clip, or jump to end of the
+        # current clip when already on the latest.
         '<') hist_idx=$((hist_idx + 1)); $MEDIA replay "$hist_idx" || hist_idx=$((hist_idx - 1)) ;;
-        '>') [ "$hist_idx" -gt 1 ] && hist_idx=$((hist_idx - 1)); $MEDIA replay "$hist_idx" ;;
+        '>') if [ "$hist_idx" -gt 1 ]; then
+                 hist_idx=$((hist_idx - 1)); $MEDIA replay "$hist_idx"
+             else
+                 $MEDIA jump end
+             fi ;;
         v)   txt=$($MEDIA now 2>/dev/null)
              if [ -n "$HL_PANE" ] && [ -n "$txt" ]; then
-                 # tmux display-message format-expands '#': '#(cmd)' would
-                 # RUN a command and '#{..}' would expand. Spoken text is
-                 # untrusted markdown (full of '#'), so escape '#'->'##' to
-                 # show it literally and block tmux-format injection. Also
-                 # collapse newlines so the status line stays one line.
-                 esc=$(printf '%s' "$txt" | tr '\n' ' ' | sed 's/#/##/g')
-                 tmux display-message -t "$HL_PANE" "🗣 $esc" 2>/dev/null || true
+                 # Highlight the spoken text in the caller pane via copy-mode:
+                 # enter copy-mode there and search-backward for a distinctive
+                 # snippet (first ~8 words, reduced to alnum+space so tmux's
+                 # regex search has no metacharacters to choke on). tmux
+                 # highlights the match in the pane (visible once the popup
+                 # closes); press q in the pane to leave copy-mode.
+                 snippet=$(printf '%s' "$txt" | tr '\n' ' ' \
+                     | tr -cs 'A-Za-z0-9 ' ' ' \
+                     | awk '{n=(NF<8?NF:8); for(i=1;i<=n;i++) printf "%s%s",(i>1?" ":""),$i}')
+                 if [ -n "$snippet" ]; then
+                     tmux copy-mode -t "$HL_PANE" 2>/dev/null
+                     tmux send-keys -t "$HL_PANE" -X search-backward "$snippet" 2>/dev/null
+                 fi
              fi ;;
         '?') tmux display-message "Space play/pause · r replay · h/l ±5s · -/= vol · m mute · [/] speed · < > history · v show text · q quit" 2>/dev/null ;;
         q|$'\e') break ;;
