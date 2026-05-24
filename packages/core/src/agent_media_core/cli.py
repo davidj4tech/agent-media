@@ -107,6 +107,10 @@ def cmd_now(a) -> int:
 
 
 def cmd_toggle(a) -> int:
+    # If nothing is loaded, "play" means replay the latest clip (matches the
+    # old popup's Space = play/pause-or-replay). Otherwise flip pause.
+    if _get("idle-active"):
+        return _do_replay(1)
     ipc.set_property(_sock(), "pause", not bool(_get("pause")))
     return 0
 
@@ -148,16 +152,26 @@ def cmd_speed(a) -> int:
     return 0
 
 
-def cmd_replay(a) -> int:
-    rows = _speech_history(max(1, a.index))
-    if len(rows) < a.index:
+def _do_replay(index: int) -> int:
+    rows = _speech_history(max(1, index))
+    if len(rows) < index:
         print("media: no clip to replay", file=sys.stderr)
         return 1
-    uri = rows[a.index - 1].get("uri")
+    uri = rows[index - 1].get("uri")
     if not uri:
         return 1
     SinkSpeech().play(uri, SPEECH_TARGET)
+    # A prior pause (e.g. Space while idle) would otherwise load the clip
+    # paused and play nothing — force playback on.
+    try:
+        ipc.set_property(_sock(), "pause", False)
+    except ipc.MpvIpcError:
+        pass
     return 0
+
+
+def cmd_replay(a) -> int:
+    return _do_replay(a.index)
 
 
 def cmd_history(a) -> int:
