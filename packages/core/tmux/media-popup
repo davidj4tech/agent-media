@@ -13,8 +13,13 @@
 # Caller pane for `v` comes from TTS_POPUP_PANE (set by the tmux binding).
 set -u
 MEDIA="${MEDIA:-media}"
+# Caller pane for the `v` show-text. Prefer the binding's TTS_POPUP_PANE,
+# but fall back to asking tmux directly — inside a display-popup the
+# attached session's active pane *is* the caller, so the highlight works
+# even when the env hop didn't carry (the old popup's failure mode).
 HL_PANE="${TTS_POPUP_PANE:-}"
 case "$HL_PANE" in *'#{'*) HL_PANE="" ;; esac
+[ -z "$HL_PANE" ] && HL_PANE=$(tmux display-message -p '#{pane_id}' 2>/dev/null || true)
 
 speed=1.0
 hist_idx=1
@@ -53,8 +58,15 @@ while true; do
         '<') hist_idx=$((hist_idx + 1)); $MEDIA replay "$hist_idx" || hist_idx=$((hist_idx - 1)) ;;
         '>') [ "$hist_idx" -gt 1 ] && hist_idx=$((hist_idx - 1)); $MEDIA replay "$hist_idx" ;;
         v)   txt=$($MEDIA now 2>/dev/null)
-             [ -n "$HL_PANE" ] && [ -n "$txt" ] && \
-                 tmux display-message -t "$HL_PANE" "🗣 $txt" 2>/dev/null ;;
+             if [ -n "$HL_PANE" ] && [ -n "$txt" ]; then
+                 # tmux display-message format-expands '#': '#(cmd)' would
+                 # RUN a command and '#{..}' would expand. Spoken text is
+                 # untrusted markdown (full of '#'), so escape '#'->'##' to
+                 # show it literally and block tmux-format injection. Also
+                 # collapse newlines so the status line stays one line.
+                 esc=$(printf '%s' "$txt" | tr '\n' ' ' | sed 's/#/##/g')
+                 tmux display-message -t "$HL_PANE" "🗣 $esc" 2>/dev/null || true
+             fi ;;
         '?') tmux display-message "Space play/pause · r replay · h/l ±5s · -/= vol · m mute · [/] speed · < > history · v show text · q quit" 2>/dev/null ;;
         q|$'\e') break ;;
         *) : ;;
