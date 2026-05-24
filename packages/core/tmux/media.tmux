@@ -2,20 +2,18 @@
 # Source from your tmux.conf.local (after oh-my-tmux loads):
 #     source-file ~/.local/share/agent-media/media.tmux
 #
-# `prefix T` enters the `media` key table for one keystroke:
-#     t      → control popup (top-right)
-#     Space  → play/pause toggle
-#     r      → replay latest clip
-# and appends a live progress indicator to status-right.
+# `prefix a` opens the control popup (top-right). All controls live inside
+# the popup; live progress shows in status-right via tmux_conf_theme_status_right
+# (see README / tmux.conf.local).
 #
 # Requires `media` and `media-popup` on PATH (installed in ~/.local/bin).
 
-# prefix T → control popup (top-right), one keystroke. All controls live
+# prefix a → control popup (top-right), one keystroke. All controls live
 # inside the popup (Space play/pause, r replay, h/l seek, -/= volume,
 # m mute, [/] speed, v show spoken text, q close). The caller pane (for
 # the popup's `v`) is pinned via the global env; the popup also self-
 # resolves it, so this is belt-and-suspenders.
-bind T \
+bind a \
     set-environment -g TTS_POPUP_PANE "#{pane_id}" \; \
     display-popup -E -w 46 -h 6 -x R -y 0 "media-popup"
 
