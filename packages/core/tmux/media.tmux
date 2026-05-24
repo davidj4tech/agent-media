@@ -15,7 +15,7 @@
 # resolves it, so this is belt-and-suspenders.
 bind a \
     set-environment -g TTS_POPUP_PANE "#{pane_id}" \; \
-    display-popup -E -w 46 -h 3 -x R -y 0 "media-popup"
+    display-popup -E -w 28 -h 3 -x R -y 0 "media-popup"
 
 # Refresh the status bar every second so the `#(media status)` progress
 # bar advances smoothly (oh-my-tmux defaults to 10s — too coarse for it).
