@@ -152,6 +152,15 @@ def cmd_speed(a) -> int:
     return 0
 
 
+def cmd_jump(a) -> int:
+    """Seek to the start or end of the current clip."""
+    if a.where == "start":
+        ipc.command(_sock(), "seek", 0, "absolute")
+    else:  # end — finish the clip (skip forward)
+        ipc.command(_sock(), "seek", 100, "absolute-percent")
+    return 0
+
+
 def _do_replay(index: int) -> int:
     rows = _speech_history(max(1, index))
     if len(rows) < index:
@@ -235,6 +244,10 @@ def _build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("speed", help="set playback speed (factor or 'reset')")
     s.add_argument("factor")
     s.set_defaults(func=cmd_speed)
+
+    s = sub.add_parser("jump", help="seek to start|end of the current clip")
+    s.add_argument("where", choices=("start", "end"))
+    s.set_defaults(func=cmd_jump)
 
     s = sub.add_parser("replay", help="replay the Nth most recent clip (1=latest)")
     s.add_argument("index", nargs="?", type=int, default=1)
