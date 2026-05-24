@@ -107,6 +107,19 @@ class SinkMusic:
         with _connect(target) as s:
             _cmd(s, f"seekcur {secs:.3f}")
 
+    def next(self, target: Target = DEFAULT_TARGET) -> None:
+        with _connect(target) as s:
+            _cmd(s, "next")
+
+    def previous(self, target: Target = DEFAULT_TARGET) -> None:
+        with _connect(target) as s:
+            _cmd(s, "previous")
+
+    def toggle(self, target: Target = DEFAULT_TARGET) -> None:
+        """Play/pause toggle (MPD `pause` with no arg toggles state)."""
+        with _connect(target) as s:
+            _cmd(s, "pause")
+
     def now_playing_uri(self, target: Target = DEFAULT_TARGET) -> Optional[str]:
         with _connect(target) as s:
             current = _cmd(s, "currentsong")
