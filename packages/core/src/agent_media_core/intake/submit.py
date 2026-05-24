@@ -168,6 +168,20 @@ def submit_event(event: Event,
         except OSError:
             pass
 
+    # Spoken-text sidecar next to the clip + a live "now-speaking" record,
+    # so the tmux popup / pane highlighter can show and highlight the text
+    # being spoken. Reinstates the old tts.tmux `<stem>.txt` contract on the
+    # core path (the forwarder/watcher used to carry this; media-mcp didn't).
+    try:
+        outfile.with_suffix(".txt").write_text(text)
+    except OSError as e:  # noqa: BLE001
+        log.warning("intake: text sidecar write failed: %s", e)
+    state.set_now_playing(
+        "speech", uri=str(outfile), started_at=started_at,
+        target=target.name,
+        extras={"text": text, "source": event.source.value,
+                "engine": engine, "voice": voice})
+
     coordinator.before_speech()
     try:
         try:
@@ -190,6 +204,7 @@ def submit_event(event: Event,
             time.sleep(0.1)
     finally:
         coordinator.after_speech()
+        state.clear_now_playing("speech")
 
     extras = {"engine": engine, "voice": voice,
               "priority": event.priority.value,
