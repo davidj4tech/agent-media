@@ -19,7 +19,10 @@ MEDIA="${MEDIA:-media}"
 # even when the env hop didn't carry (the old popup's failure mode).
 HL_PANE="${TTS_POPUP_PANE:-}"
 case "$HL_PANE" in *'#{'*) HL_PANE="" ;; esac
-[ -z "$HL_PANE" ] && HL_PANE=$(tmux display-message -p '#{pane_id}' 2>/dev/null || true)
+[ -z "$HL_PANE" ] && {
+    _sess=$(tmux display-message -p '#{session_name}' 2>/dev/null)
+    [ -n "$_sess" ] && HL_PANE=$(tmux display-message -p -t "$_sess:" '#{pane_id}' 2>/dev/null || true)
+}
 
 speed=1.0
 hist_idx=1
