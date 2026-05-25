@@ -1,0 +1,11 @@
+{
+  "name": "agent-media-pi-tts",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./media-tts.ts"
+    ]
+  }
+}
