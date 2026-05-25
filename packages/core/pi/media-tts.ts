@@ -32,7 +32,7 @@ export default function (pi: ExtensionAPI) {
 		}
 		if (!text.trim()) return;
 
-		const hook = process.env.MEDIA_HOOK_BIN || "media-hook-codex";
+		const hook = process.env.MEDIA_HOOK_BIN || "media-hook-pi";
 		try {
 			const child = spawn(hook, [], {
 				stdio: ["pipe", "ignore", "ignore"],

@@ -1,4 +1,4 @@
-"""Codex (OpenAI CLI) intake — stdin-pipe hook."""
+"""pi coding-agent intake — stdin-pipe hook."""
 
 import sys
 from ..types import Source
@@ -6,7 +6,7 @@ from ._hook_stdin import run
 
 
 def main() -> int:
-    return run(Source.CODEX, "CODEX")
+    return run(Source.PI, "PI")
 
 
 if __name__ == "__main__":
