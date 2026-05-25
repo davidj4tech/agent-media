@@ -14,8 +14,7 @@
 # the popup's `v`) is pinned via the global env; the popup also self-
 # resolves it, so this is belt-and-suspenders.
 bind a \
-    set-environment -g TTS_POPUP_PANE "#{pane_id}" \; \
-    display-popup -E -w 24 -h 6 -x R -y 0 "media-popup"
+    display-popup -E -w 24 -h 6 -x R -y 0 "TTS_POPUP_PANE=#{pane_id} media-popup"
 
 # Refresh the status bar every second so the `#(media status)` progress
 # bar advances smoothly (oh-my-tmux defaults to 10s — too coarse for it).
