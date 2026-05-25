@@ -42,7 +42,7 @@ bump_speed() {        # $1 = +/- delta
 draw
 while true; do
     # Timed read so the status bar redraws ~1/s even with no keypress.
-    IFS= read -rsn1 -t 1 key; rc=$?
+    IFS= read -rsn1 -t 2 key; rc=$?
     if [ "$rc" -gt 128 ]; then draw; continue; fi
     [ "$rc" -ne 0 ] && break
     case "$key" in
