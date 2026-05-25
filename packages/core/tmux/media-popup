@@ -30,7 +30,8 @@ trap cleanup EXIT
 
 draw() {
     printf '\033[H\033[2J'               # home + clear
-    printf ' ♪ spc h/l r v q\r\n'
+    printf ' ♪ agent-media\r\n'
+    printf ' %s\r\n' "$($MEDIA status --show-idle 2>/dev/null)"
 }
 
 bump_speed() {        # $1 = +/- delta
@@ -40,7 +41,9 @@ bump_speed() {        # $1 = +/- delta
 
 draw
 while true; do
-    IFS= read -rsn1 key; rc=$?
+    # Timed read so the status bar redraws ~1/s even with no keypress.
+    IFS= read -rsn1 -t 1 key; rc=$?
+    if [ "$rc" -gt 128 ]; then draw; continue; fi
     [ "$rc" -ne 0 ] && break
     case "$key" in
         ' ') $MEDIA toggle ;;
