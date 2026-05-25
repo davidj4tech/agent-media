@@ -31,7 +31,7 @@ trap cleanup EXIT
 draw() {
     printf '\033[H\033[2J'               # home + clear
     printf ' ♪ agent-media\r\n'
-    printf ' %s\r\n' "$($MEDIA status --show-idle 2>/dev/null)"
+    printf ' %s\r\n' "$($MEDIA status --show-idle --width 8 2>/dev/null)"
 }
 
 bump_speed() {        # $1 = +/- delta
