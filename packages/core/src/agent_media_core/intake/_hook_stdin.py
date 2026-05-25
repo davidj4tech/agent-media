@@ -17,37 +17,10 @@ from .submit import submit_event
 
 log = logging.getLogger(__name__)
 
-_ENV_FILE_CANDIDATES = [
-    lambda: os.environ.get("RELAY_ENV_FILE") or "",
-    lambda: str(Path.home() / ".config" / "agent-audio-relay.env"),
-]
-
 
 def _load_env_file(label: str) -> None:
-    for candidate in _ENV_FILE_CANDIDATES:
-        path = candidate()
-        if not path:
-            continue
-        try:
-            with open(path) as f:
-                for raw in f:
-                    line = raw.strip()
-                    if not line or line.startswith("#"):
-                        continue
-                    if line.startswith("export "):
-                        line = line[len("export "):]
-                    if "=" not in line:
-                        continue
-                    k, v = line.split("=", 1)
-                    k, v = k.strip(), v.strip().strip('"').strip("'")
-                    if k and k not in os.environ:
-                        os.environ[k] = v
-            return
-        except FileNotFoundError:
-            continue
-        except OSError as e:
-            log.warning("%s: failed to read %s: %s", label, path, e)
-            return
+    from ._env import load_env_file
+    load_env_file(label)
 
 
 def run(source: Source, env_prefix: str) -> int:

@@ -38,53 +38,17 @@ import logging
 import os
 import sys
 import time
-from pathlib import Path
+from pathlib import Path  # still used by _stamp_dir, _latest_assistant_text
 from typing import Optional
 
 from .._paths import state_dir
 from ..state import StateStore
 from ..types import Event, Priority, Source
+from ._env import load_env_file
 from .submit import submit_event
 
 
 log = logging.getLogger(__name__)
-
-
-def _load_env_file() -> None:
-    """Load secrets from the user's relay env file into os.environ.
-
-    Same precedence as the legacy bash hook: RELAY_ENV_FILE > the
-    default at ~/.config/agent-audio-relay.env. Missing file → no-op.
-    Lines starting with `export ` are honored.
-    """
-    candidates = [
-        os.environ.get("RELAY_ENV_FILE") or "",
-        str(Path.home() / ".config" / "agent-audio-relay.env"),
-    ]
-    for path in candidates:
-        if not path:
-            continue
-        try:
-            with open(path, "r") as f:
-                for raw in f:
-                    line = raw.strip()
-                    if not line or line.startswith("#"):
-                        continue
-                    if line.startswith("export "):
-                        line = line[len("export "):]
-                    if "=" not in line:
-                        continue
-                    k, v = line.split("=", 1)
-                    k = k.strip()
-                    v = v.strip().strip('"').strip("'")
-                    if k and k not in os.environ:
-                        os.environ[k] = v
-            return
-        except FileNotFoundError:
-            continue
-        except OSError as e:
-            log.warning("hook: failed to read %s: %s", path, e)
-            return
 
 
 def _tmux(args: list[str], timeout: float = 2.0) -> str:
@@ -335,7 +299,7 @@ def main() -> int:
     if os.environ.get("CLAUDE_TTS_ENABLED", "1") == "0":
         return 0
 
-    _load_env_file()
+    load_env_file("hook-claude-code")
 
     try:
         raw = sys.stdin.read()
