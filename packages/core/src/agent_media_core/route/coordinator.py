@@ -19,6 +19,7 @@ from typing import Optional
 from ..sinks.music import SinkMusic
 from ..state import StateStore
 from ..types import ContentType, Target
+from . import _mpris
 from .policy import (
     DEFAULT_POLICY,
     InterruptionPolicy,
@@ -59,6 +60,7 @@ class Coordinator:
         self.music = music or SinkMusic()
         self.state = state or StateStore()
         self.music_target = music_target
+        self._mpris_paused: list[str] = []
 
     # ---- public API used by sink-speech --------------------------------
 
@@ -67,13 +69,18 @@ class Coordinator:
         playing. Records baseline volume + position so after_speech can
         restore.
         """
+        # MPRIS: pause browser/external players regardless of Mopidy state.
+        if _mpris.enabled():
+            self._mpris_paused = _mpris.playing_players()
+            _mpris.pause_players(self._mpris_paused)
+
         try:
             uri = self.music.now_playing_uri(self.music_target)
         except Exception as e:  # noqa: BLE001
             self._log_err("music: now_playing_uri failed", str(e))
             return
         if not uri:
-            return  # nothing to interrupt
+            return  # nothing to interrupt via Mopidy
 
         content_type = detect_content_type(uri)
         policy = policy_for(content_type)
@@ -145,6 +152,10 @@ class Coordinator:
             # Whether restore succeeded or not, clear the marker so a
             # stuck row doesn't poison the next clip.
             self.state.clear_now_playing("music")
+
+        if self._mpris_paused:
+            _mpris.resume_players(self._mpris_paused)
+            self._mpris_paused = []
 
     # ---- helpers --------------------------------------------------------
 
