@@ -287,6 +287,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None) -> int:
+    from .intake._env import load_env_file
+    load_env_file("media-cli")
     args = _build_parser().parse_args(argv)
     try:
         return args.func(args)
