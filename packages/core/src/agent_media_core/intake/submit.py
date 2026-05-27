@@ -148,6 +148,10 @@ def submit_event(event: Event,
         notify(key=f"render-fallback-{failed_engine}",
                title=title, content=body)
 
+    # Pre-warm SSH ControlMaster for remote MPRIS hosts in parallel with
+    # the TTS render so the connection is live before before_speech fires.
+    coordinator.warmup()
+
     started_at = time.time()
     ok, err = render_text(text, outfile, engine=engine, voice=voice,
                           on_fallback=_on_fallback)

@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+import threading
 from typing import Optional
 
 from ..sinks.music import SinkMusic
@@ -64,6 +65,19 @@ class Coordinator:
         self._mpris_remote_paused: dict[str, list[str]] = {}
 
     # ---- public API used by sink-speech --------------------------------
+
+    def warmup(self) -> None:
+        """Pre-warm SSH ControlMaster connections for configured remote hosts.
+
+        Call this in a daemon thread before rendering starts so the connection
+        is established by the time before_speech() fires.
+        """
+        if not _mpris.enabled():
+            return
+        for host in _mpris.ssh_hosts():
+            t = threading.Thread(target=_mpris.warmup_remote, args=(host,),
+                                 daemon=True)
+            t.start()
 
     def before_speech(self) -> None:
         """Apply interruption for whatever sink-music is currently
