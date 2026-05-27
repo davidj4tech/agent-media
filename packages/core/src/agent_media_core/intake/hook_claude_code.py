@@ -69,7 +69,8 @@ def _notif_label() -> str:
       - hostname (short) when there's >1 tmux session running and
         MEDIA_NOTIF_LABEL_HOST != "0" (default on).
       - tmux session name (always, when in tmux)
-      - tmux window name when the session has >1 window
+      - pane title when set (via `select-pane -T` or terminal escape); omitted
+        when empty or identical to the session name.
 
     Returns "" outside tmux or when the user disabled labelling
     (MEDIA_NOTIF_LABEL=0).
@@ -81,9 +82,7 @@ def _notif_label() -> str:
         return ""
 
     sess = _tmux(["display-message", "-p", "-t", pane, "#{session_name}"])
-    win_name = _tmux(["display-message", "-p", "-t", pane, "#{window_name}"])
-    win_count_s = _tmux(["display-message", "-p", "-t", pane,
-                         "#{session_windows}"])
+    pane_title = _tmux(["display-message", "-p", "-t", pane, "#{pane_title}"])
     sess_count_s = _tmux(["list-sessions", "-F", "#{session_name}"])
 
     parts: list[str] = []
@@ -98,12 +97,8 @@ def _notif_label() -> str:
     if sess:
         parts.append(sess)
 
-    try:
-        win_count = int(win_count_s or "1")
-    except ValueError:
-        win_count = 1
-    if win_count > 1 and win_name:
-        parts.append(win_name)
+    if pane_title and pane_title != sess:
+        parts.append(pane_title)
 
     return " / ".join(parts)
 
