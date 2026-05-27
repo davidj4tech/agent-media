@@ -61,6 +61,7 @@ class Coordinator:
         self.state = state or StateStore()
         self.music_target = music_target
         self._mpris_paused: list[str] = []
+        self._mpris_remote_paused: dict[str, list[str]] = {}
 
     # ---- public API used by sink-speech --------------------------------
 
@@ -73,6 +74,10 @@ class Coordinator:
         if _mpris.enabled():
             self._mpris_paused = _mpris.playing_players()
             _mpris.pause_players(self._mpris_paused)
+            for host in _mpris.ssh_hosts():
+                remote = _mpris.remote_playing_players(host)
+                self._mpris_remote_paused[host] = remote
+                _mpris.pause_remote(host, remote)
 
         try:
             uri = self.music.now_playing_uri(self.music_target)
@@ -125,6 +130,9 @@ class Coordinator:
         if self._mpris_paused:
             _mpris.resume_players(self._mpris_paused)
             self._mpris_paused = []
+        for host, names in self._mpris_remote_paused.items():
+            _mpris.resume_remote(host, names)
+        self._mpris_remote_paused = {}
 
         np = self.state.get_now_playing("music")
         if not np or not np.get("extras"):
