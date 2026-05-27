@@ -63,35 +63,53 @@ class Coordinator:
         self.music_target = music_target
         self._mpris_paused: list[str] = []
         self._mpris_remote_paused: dict[str, list[str]] = {}
+        self._remote_pause_done: Optional[threading.Event] = None
 
     # ---- public API used by sink-speech --------------------------------
 
-    def warmup(self) -> None:
-        """Pre-warm SSH ControlMaster connections for configured remote hosts.
+    def pre_pause_remote(self) -> None:
+        """Start remote MPRIS detect-and-pause in a background thread.
 
-        Call this in a daemon thread before rendering starts so the connection
-        is established by the time before_speech() fires.
+        Call this before render_text so the ~4.8s SSH cold-connect overlaps
+        with rendering.  before_speech() waits up to 6s for it to finish
+        before playing audio.
         """
-        if not _mpris.enabled():
+        if not _mpris.enabled() or not _mpris.ssh_hosts():
             return
-        for host in _mpris.ssh_hosts():
-            t = threading.Thread(target=_mpris.warmup_remote, args=(host,),
-                                 daemon=True)
-            t.start()
+        self._remote_pause_done = threading.Event()
+
+        def _work() -> None:
+            for host in _mpris.ssh_hosts():
+                try:
+                    remote = _mpris.remote_playing_players(host)
+                    self._mpris_remote_paused[host] = remote
+                    _mpris.pause_remote(host, remote)
+                except Exception:  # noqa: BLE001
+                    pass
+            self._remote_pause_done.set()
+
+        threading.Thread(target=_work, daemon=True).start()
 
     def before_speech(self) -> None:
         """Apply interruption for whatever sink-music is currently
         playing. Records baseline volume + position so after_speech can
         restore.
         """
-        # MPRIS: pause browser/external players regardless of Mopidy state.
+        # Local MPRIS: pause browser/external players on this host.
         if _mpris.enabled():
             self._mpris_paused = _mpris.playing_players()
             _mpris.pause_players(self._mpris_paused)
-            for host in _mpris.ssh_hosts():
-                remote = _mpris.remote_playing_players(host)
-                self._mpris_remote_paused[host] = remote
-                _mpris.pause_remote(host, remote)
+
+        # Remote MPRIS: wait for pre_pause_remote() background work to finish,
+        # or do it synchronously if it was never started.
+        if _mpris.enabled() and _mpris.ssh_hosts():
+            if self._remote_pause_done is not None:
+                self._remote_pause_done.wait(timeout=6)
+            else:
+                for host in _mpris.ssh_hosts():
+                    remote = _mpris.remote_playing_players(host)
+                    self._mpris_remote_paused[host] = remote
+                    _mpris.pause_remote(host, remote)
 
         try:
             uri = self.music.now_playing_uri(self.music_target)
