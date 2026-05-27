@@ -61,7 +61,38 @@ def pause_players(names: list[str]) -> None:
 
 
 def resume_players(names: list[str]) -> None:
+    """Resume players that were paused by pause_players.
+
+    Chromium unregisters its MPRIS interface when paused then re-registers
+    with a new instance suffix on the next interaction — so we can't rely
+    on the exact name. Strategy:
+      1. Try the exact stored name.
+      2. Fall back to matching by base name (strip .instanceNNN suffix).
+      3. Use play-pause (toggle) rather than play for broader compatibility.
+      4. Only send if the current status is Paused to avoid double-toggling.
+    """
+    if not names:
+        return
+    current_out = _run("--list-all") or ""
+    current = [n.strip() for n in current_out.splitlines() if n.strip()]
+
+    resumed = []
     for name in names:
-        _run("--player", name, "play")
-    if names:
-        log.debug("mpris: resumed %s", names)
+        target = name if name in current else _find_by_prefix(name, current)
+        if not target:
+            log.debug("mpris: %s no longer registered, skipping resume", name)
+            continue
+        if _run("--player", target, "status") == "Paused":
+            _run("--player", target, "play-pause")
+            resumed.append(target)
+    if resumed:
+        log.debug("mpris: resumed %s", resumed)
+
+
+def _find_by_prefix(name: str, current: list[str]) -> str | None:
+    """Match a stored player name against the current list by base name,
+    ignoring the .instanceNNN suffix that Chromium rotates on re-register.
+    """
+    base = name.split(".instance")[0] if ".instance" in name else name
+    return next((n for n in current if n == base or n.startswith(base + ".")),
+                None)

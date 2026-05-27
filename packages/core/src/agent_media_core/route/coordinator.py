@@ -122,6 +122,10 @@ class Coordinator:
 
     def after_speech(self) -> None:
         """Restore from whatever before_speech did."""
+        if self._mpris_paused:
+            _mpris.resume_players(self._mpris_paused)
+            self._mpris_paused = []
+
         np = self.state.get_now_playing("music")
         if not np or not np.get("extras"):
             return
@@ -152,10 +156,6 @@ class Coordinator:
             # Whether restore succeeded or not, clear the marker so a
             # stuck row doesn't poison the next clip.
             self.state.clear_now_playing("music")
-
-        if self._mpris_paused:
-            _mpris.resume_players(self._mpris_paused)
-            self._mpris_paused = []
 
     # ---- helpers --------------------------------------------------------
 
