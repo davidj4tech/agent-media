@@ -132,6 +132,27 @@ def _tmux_highlight_text(text: str, *, first: bool = False) -> None:  # noqa: AR
 
     snippet = re.sub(r'([][(){}^$.*+?|\\])', r'\\\1', snippet)
 
+    # Flash duration: the selection stays visible for this long, then is
+    # cleared while staying in copy-mode — pane stays scrolled to the
+    # spoken text but the highlight fades. 0 = no auto-clear (selection
+    # persists until the next sentence's highlight replaces it).
+    flash_ms = int(os.environ.get("MEDIA_HIGHLIGHT_FLASH_MS", "1500"))
+
+    # Per-pane PID file so each new highlight can kill the previous
+    # sentence's pending clear-timer before it races into our selection.
+    import signal as _signal
+    _pane_safe = re.sub(r"[^A-Za-z0-9_-]", "_", pane)
+    pidfile = f"/tmp/media-highlight-clear-{_pane_safe}.pid"
+    try:
+        with open(pidfile) as _f:
+            _old_pgid = int(_f.read().strip())
+        try:
+            os.killpg(_old_pgid, _signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+    except (OSError, ValueError):
+        pass
+
     try:
         subprocess.run(["tmux", "send-keys", "-t", pane, "-X", "cancel"],
                        capture_output=True)
@@ -149,6 +170,24 @@ def _tmux_highlight_text(text: str, *, first: bool = False) -> None:  # noqa: AR
             subprocess.run(["tmux", "send-keys", "-t", pane,
                             "-X", "-N", str(select_len), "cursor-right"],
                            capture_output=True)
+        if flash_ms > 0:
+            # Detached clear-selection after flash window. start_new_session
+            # makes this proc the session leader, so its PID is its pgid;
+            # we record it so the next highlight can killpg it cleanly.
+            proc = subprocess.Popen(
+                ["sh", "-c",
+                 f"sleep {flash_ms / 1000:.2f}; "
+                 f"tmux send-keys -t {pane} -X clear-selection 2>/dev/null"],
+                start_new_session=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            try:
+                with open(pidfile, "w") as _f:
+                    _f.write(str(proc.pid))
+            except OSError:
+                pass
     except Exception:  # noqa: BLE001
         pass
 
