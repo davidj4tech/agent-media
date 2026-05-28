@@ -192,7 +192,7 @@ def _wait_for_clip(sink: SinkSpeech, target: Target) -> None:
     for _ in range(1200):
         if sink.idle(target):
             idle_streak += 1
-            if idle_streak >= 2:
+            if idle_streak >= 3:
                 break
         else:
             idle_streak = 0
