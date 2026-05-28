@@ -137,8 +137,6 @@ def _tmux_highlight_text(text: str, *, first: bool = False) -> None:
 
     try:
         if first:
-            # Enter copy-mode fresh, anchor at the bottom, search backward
-            # to land at the first sentence of this response.
             subprocess.run(["tmux", "send-keys", "-t", pane, "-X", "cancel"],
                            capture_output=True)
             subprocess.run(["tmux", "copy-mode", "-t", pane],
@@ -149,8 +147,6 @@ def _tmux_highlight_text(text: str, *, first: bool = False) -> None:
                             "search-backward", snippet],
                            capture_output=True)
         else:
-            # Cursor is at the end of the previous selection — search forward
-            # to the next sentence without leaving copy-mode.
             subprocess.run(["tmux", "send-keys", "-t", pane, "-X",
                             "search-forward", snippet],
                            capture_output=True)
@@ -358,6 +354,13 @@ def submit_event(event: Event,
     durations = [_clip_duration(p) for _, p in clip_data]
     total_duration_s = sum(durations)
 
+    # After mpv reports idle, Snapcast still has buffered audio to drain.
+    # Delay the next highlight by this amount so it fires when the audio
+    # actually starts at the listener's end rather than when mpv finishes
+    # writing to the PipeWire sink.
+    _highlight_delay_s = float(
+        os.environ.get("MEDIA_SNAPCAST_LATENCY_MS", "500")) / 1000.0
+
     coordinator.before_speech()
     played_any = False
     try:
@@ -385,6 +388,10 @@ def submit_event(event: Event,
                 continue
             _wait_for_clip(sink, target)
             offset_s += dur
+            # Let Snapcast drain before firing the next highlight, so the
+            # visual matches what the listener is hearing.
+            if _highlight_delay_s > 0:
+                time.sleep(_highlight_delay_s)
     finally:
         coordinator.after_speech()
         state.clear_now_playing("speech")
