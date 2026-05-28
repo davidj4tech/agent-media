@@ -395,6 +395,7 @@ def submit_event(event: Event,
     extras = {"engine": engine, "voice": voice,
               "priority": event.priority.value,
               "clip_uris": [str(p) for _, p in clip_data],
+          "clip_sentences": [s for s, _ in clip_data],
           "clip_durations_s": durations,
               **(event.metadata or {})}
     if fallback_info:

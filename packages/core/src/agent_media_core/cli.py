@@ -15,6 +15,8 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import os
+import subprocess
 import sys
 import time
 from typing import Optional
@@ -225,21 +227,71 @@ def _do_replay(index: int) -> int:
         ipc.set_property(_sock(), "mute", False)
     except ipc.MpvIpcError:
         pass
-    # Persist clip durations in now_playing so cmd_status can compute a
-    # spanning progress bar by reading playlist-pos from mpv directly —
-    # no background thread needed.
+    clip_sentences: list[str] = ex.get("clip_sentences") or []
     if len(clip_uris) > 1 and len(clip_durations) == len(clip_uris):
+        # Persist durations so cmd_status can compute spanning progress bar.
         StateStore().set_now_playing(
             "speech", uri=clip_uris[0], started_at=time.time(),
             target=SPEECH_TARGET.name,
             extras={"text": replay_text,
                     "total_duration_s": sum(clip_durations),
                     "clip_durations_s": clip_durations})
+        # Spawn a detached highlight tracker so copy-mode follows along
+        # even though _do_replay returns immediately.
+        pane = os.environ.get("TMUX_PANE", "")
+        if pane and clip_sentences and len(clip_sentences) == len(clip_uris):
+            subprocess.Popen(
+                [sys.executable, "-m", "agent_media_core.cli",
+                 "replay-track",
+                 "--sentences", json.dumps(clip_sentences),
+                 "--pane", pane],
+                start_new_session=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
     return 0
 
 
 def cmd_replay(a) -> int:
     return _do_replay(a.index)
+
+
+def cmd_replay_track(a) -> int:
+    """Internal: poll playlist-pos and fire tmux highlights during replay.
+
+    Spawned detached by _do_replay so it outlives the media-replay process.
+    """
+    from .intake.submit import _tmux_highlight_text
+    sentences: list[str] = json.loads(a.sentences)
+    pane: str = a.pane
+    if not sentences or not pane:
+        return 0
+
+    last_pos = -1
+    idle_streak = 0
+    while True:
+        time.sleep(0.15)
+        try:
+            idle = bool(ipc.get_property(_sock(), "idle-active"))
+        except Exception:  # noqa: BLE001
+            idle_streak += 1
+            if idle_streak >= 5:
+                return 0
+            continue
+        idle_streak = 0
+        if idle:
+            return 0
+        try:
+            pos = int(ipc.get_property(_sock(), "playlist-pos") or 0)
+        except Exception:  # noqa: BLE001
+            continue
+        if pos != last_pos and 0 <= pos < len(sentences):
+            os.environ["TMUX_PANE"] = pane
+            os.environ["TMUX"] = os.environ.get("TMUX", "x")  # ensure truthy
+            _tmux_highlight_text(sentences[pos], first=(pos == 0))
+            last_pos = pos
+    return 0
 
 
 def cmd_history(a) -> int:
@@ -310,6 +362,11 @@ def _build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("replay", help="replay the Nth most recent clip (1=latest)")
     s.add_argument("index", nargs="?", type=int, default=1)
     s.set_defaults(func=cmd_replay)
+
+    s = sub.add_parser("replay-track", help=argparse.SUPPRESS)
+    s.add_argument("--sentences", required=True)
+    s.add_argument("--pane", required=True)
+    s.set_defaults(func=cmd_replay_track)
 
     s = sub.add_parser("history", help="list recent spoken clips")
     s.add_argument("n", nargs="?", type=int, default=20)
