@@ -148,26 +148,17 @@ def _tmux_highlight_text(text: str, *, first: bool = False) -> None:  # noqa: AR
         subprocess.run(["tmux", "send-keys", "-t", pane, "-X",
                         "search-backward", snippet],
                        capture_output=True)
+        # Forward selection then centre around the end position.  The
+        # viewport shows the tail of the sentence with upcoming content
+        # below — stable across all copy-mode variants.
+        subprocess.run(["tmux", "send-keys", "-t", pane, "-X",
+                        "begin-selection"],
+                       capture_output=True)
         if select_len > 0:
-            # Reverse selection: move to sentence end first, anchor there,
-            # then move left back to the start.  The cursor (active end) ends
-            # up at the sentence start so the viewport shows the beginning of
-            # the highlighted text rather than the end.
             subprocess.run(["tmux", "send-keys", "-t", pane,
                             "-X", "-N", str(select_len), "cursor-right"],
                            capture_output=True)
-            subprocess.run(["tmux", "send-keys", "-t", pane, "-X",
-                            "begin-selection"],
-                           capture_output=True)
-            subprocess.run(["tmux", "send-keys", "-t", pane,
-                            "-X", "-N", str(select_len), "cursor-left"],
-                           capture_output=True)
-        else:
-            subprocess.run(["tmux", "send-keys", "-t", pane, "-X",
-                            "begin-selection"],
-                           capture_output=True)
-        # Copycat centering: cursor-down N + cursor-up N from the start
-        # position shifts the viewport so the match isn't flush at the top.
+        # Copycat centering from the end position.
         subprocess.run(["tmux", "send-keys", "-t", pane,
                         "-X", "-N", str(_padding), "cursor-down"],
                        capture_output=True)
