@@ -102,20 +102,18 @@ MPRIS interface when paused and re-registering with a new instance number on
 resume. The coordinator uses base-name prefix matching to find the new
 instance.
 
-### Text display
+### Text highlight
 
-When a clip starts playing, a popup automatically appears showing the full
-spoken text. Press any key to dismiss; playback continues regardless.
+When a clip starts playing, the source tmux pane automatically enters
+copy-mode and jumps to the spoken text so you can read along while
+listening. Press `q` to exit copy-mode at any time; playback is unaffected.
 
-The `v` key in the tmux control popup (`prefix + a`) also opens this view
-on demand for the current or most recent clip.
+The `v` key in the control popup (`prefix + a`) re-triggers the same
+jump on demand.
 
 | Variable | Default | Description |
 |---|---|---|
-| `MEDIA_AUTO_TEXT_POPUP` | `1` | Set to `0` to disable the auto popup |
-| `MEDIA_TEXT_POPUP_WIDTH` | `70%` | tmux popup width |
-| `MEDIA_TEXT_POPUP_HEIGHT` | `70%` | tmux popup height |
-| `MEDIA_TEXT_POPUP_FOLD` | `78` | Line wrap column for the text |
+| `MEDIA_AUTO_HIGHLIGHT` | `1` | Set to `0` to disable auto copy-mode jump |
 
 ### Notifications (Claude Code hook)
 

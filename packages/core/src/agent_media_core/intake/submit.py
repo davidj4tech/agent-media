@@ -53,41 +53,49 @@ def _ext_for(engine: str) -> str:
     return "wav" if engine in ("qwen", "realtime") else "mp3"
 
 
-def _tmux_show_text(text: str, txt_file: Path) -> None:
-    """Open a tmux popup showing the full spoken text when a clip starts.
+def _tmux_highlight_text(text: str) -> None:
+    """Auto-enter copy-mode and search for the spoken text in the source pane.
 
-    Enabled when TMUX is set (i.e. we're inside a tmux session) and
-    MEDIA_AUTO_TEXT_POPUP != "0" (default on).  Uses the sidecar .txt
-    file so the popup reliably shows the same text as what's playing.
+    Enabled when TMUX_PANE is set (hook ran inside tmux) and
+    MEDIA_AUTO_HIGHLIGHT != "0" (default on).
 
-    The popup stays open until the user presses any key; playback is
-    not affected.  Set MEDIA_AUTO_TEXT_POPUP=0 to disable.
+    Uses the first substantial line as the search snippet — long enough
+    to be unique in the pane, short enough for tmux's regex engine.
+    After the search, copy-mode is active at the start of the response
+    so the user can read along; press q to exit copy-mode.
     """
     if not os.environ.get("TMUX"):
         return
-    if os.environ.get("MEDIA_AUTO_TEXT_POPUP", "1") == "0":
+    if os.environ.get("MEDIA_AUTO_HIGHLIGHT", "1") == "0":
         return
-    if not txt_file.exists():
-        try:
-            txt_file.write_text(text)
-        except OSError:
-            return
+    pane = os.environ.get("TMUX_PANE")
+    if not pane:
+        return
 
-    width = os.environ.get("MEDIA_TEXT_POPUP_WIDTH", "70%")
-    height = os.environ.get("MEDIA_TEXT_POPUP_HEIGHT", "70%")
-    # fold wraps at terminal width-2; the popup's interior width isn't easily
-    # known ahead of time so we use a conservative 78 cols.
-    fold_w = int(os.environ.get("MEDIA_TEXT_POPUP_FOLD", "78"))
-    cmd = (
-        f"fold -sw {fold_w} {str(txt_file)!r}; "
-        f"printf '\\n-- press any key --'; read -rsn1"
-    )
+    # Pick the first line with enough content to be a unique anchor.
+    snippet = ""
+    for line in text.splitlines():
+        line = line.strip()
+        if len(line) >= 20:
+            snippet = line[:120]
+            break
+    if not snippet:
+        snippet = text.replace("\n", " ").strip()[:120]
+    if not snippet:
+        return
+
+    # Escape tmux ERE metacharacters.
+    import re as _re
+    snippet = _re.sub(r'([][(){}^$.*+?|\\])', r'\\\1', snippet)
+
     try:
-        subprocess.Popen(
-            ["tmux", "display-popup", "-E",
-             "-w", width, "-h", height, "-x", "C", "-y", "C",
-             cmd],
-        )
+        subprocess.run(["tmux", "copy-mode", "-t", pane],
+                       capture_output=True)
+        subprocess.run(["tmux", "send-keys", "-t", pane, "-X", "history-bottom"],
+                       capture_output=True)
+        subprocess.run(["tmux", "send-keys", "-t", pane, "-X",
+                        "search-backward", snippet],
+                       capture_output=True)
     except Exception:  # noqa: BLE001
         pass
 
@@ -228,7 +236,7 @@ def submit_event(event: Event,
                 "engine": engine, "voice": voice})
 
     coordinator.before_speech()
-    _tmux_show_text(text, outfile.with_suffix(".txt"))
+    _tmux_highlight_text(text)
     try:
         try:
             sink.play(str(outfile), target)
