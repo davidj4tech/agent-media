@@ -177,14 +177,25 @@ def _audio_dir() -> Path:
 
 
 def _wait_for_clip(sink: SinkSpeech, target: Target) -> None:
-    """Wait for sink-speech to start then finish the current clip."""
+    """Wait for sink-speech to start then finish the current clip.
+
+    Requires two consecutive idle readings before declaring done — a
+    single True from sink.idle() can be a transient IPC error mid-play
+    (the method returns True on MpvIpcError), which would otherwise cause
+    the next clip to cut the current one short.
+    """
     for _ in range(20):
         if not sink.idle(target):
             break
         time.sleep(0.05)
+    idle_streak = 0
     for _ in range(1200):
         if sink.idle(target):
-            break
+            idle_streak += 1
+            if idle_streak >= 2:
+                break
+        else:
+            idle_streak = 0
         time.sleep(0.1)
 
 
@@ -295,7 +306,11 @@ def submit_event(event: Event,
     played_any = False
     try:
         for sentence, outfile, future in zip(sentences, outfiles, futures):
-            ok, err = future.result()  # waits only if render isn't done yet
+            try:
+                ok, err = future.result()  # waits only if render isn't done yet
+            except Exception as exc:  # noqa: BLE001
+                log.warning("intake: render future raised: %s", exc)
+                continue
             if not ok:
                 log.warning("intake: render failed for sentence (%s): %s",
                             engine, err)
