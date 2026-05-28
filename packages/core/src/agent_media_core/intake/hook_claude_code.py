@@ -187,7 +187,10 @@ def _latest_assistant_text(transcript_path: Path) -> str:
         for c in msg.get("content") or []:
             if isinstance(c, dict) and c.get("type") == "text":
                 parts.append(c.get("text") or "")
-        return "\n".join(p for p in parts if p)
+        text = "\n".join(p for p in parts if p)
+        if text:
+            return text
+        # Tool-use-only turn — keep searching backward for the last text turn.
     return ""
 
 
