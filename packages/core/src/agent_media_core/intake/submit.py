@@ -125,7 +125,7 @@ def _tmux_highlight_text(text: str, *, first: bool = False) -> None:  # noqa: AR
         return
 
     snippet = re.sub(r'([][(){}^$.*+?|\\])', r'\\\1', snippet)
-    select_len = max(0, len(text.strip()) + 1)
+    select_len = max(0, len(text.strip()) + 3)
 
     try:
         subprocess.run(["tmux", "send-keys", "-t", pane, "-X", "cancel"],
