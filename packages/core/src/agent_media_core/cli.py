@@ -92,10 +92,23 @@ def _speech_history(n: int = 20):
 # --- speech subcommands ----------------------------------------------------
 
 def cmd_status(a) -> int:
-    print(render_status(idle=_get("idle-active"), pos=_get("time-pos"),
-                        dur=_get("duration"), paused=_get("pause"),
-                        muted=_get("mute"), width=a.width,
-                        hide_idle=not a.show_idle))
+    idle = _get("idle-active")
+    pos = _get("time-pos")
+    dur = _get("duration")
+    # If now_playing carries multi-clip span info, show a single bar for the
+    # whole response rather than per-sentence progress.
+    if not idle:
+        np = _now_speaking()
+        if np:
+            ex = np.get("extras") or {}
+            offset = ex.get("clip_offset_s")
+            total = ex.get("total_duration_s")
+            if offset is not None and total:
+                pos = (offset + (pos or 0.0))
+                dur = total
+    print(render_status(idle=idle, pos=pos, dur=dur,
+                        paused=_get("pause"), muted=_get("mute"),
+                        width=a.width, hide_idle=not a.show_idle))
     return 0
 
 

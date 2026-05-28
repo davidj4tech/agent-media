@@ -176,6 +176,19 @@ def _audio_dir() -> Path:
     return d
 
 
+def _clip_duration(path: Path) -> float:
+    """Return audio duration in seconds via ffprobe, or 0.0 on failure."""
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+            capture_output=True, text=True, timeout=5,
+        )
+        return float(r.stdout.strip()) if r.returncode == 0 else 0.0
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
 def _wait_for_clip(sink: SinkSpeech, target: Target) -> None:
     """Wait for sink-speech to start then finish the current clip.
 
@@ -285,49 +298,63 @@ def submit_event(event: Event,
     # First clip path for sidecar / now_playing (render may still be in flight).
     first_clip = outfiles[0]
 
-    # Sidecar and now_playing use the first clip path unconditionally —
-    # they're set before playback starts so the popup can show the text.
+    # Sidecar lives next to the first clip so the popup can show the full text.
     try:
         first_clip.with_suffix(".txt").write_text(text)
     except OSError as e:  # noqa: BLE001
         log.warning("intake: text sidecar write failed: %s", e)
 
-    state.set_now_playing(
-        "speech", uri=str(first_clip), started_at=started_at,
-        target=target.name,
-        extras={"text": text, "source": event.source.value,
-                "engine": engine, "voice": voice})
-
     # Only highlight for hook sources — CLI text is never in the pane.
     from ..types import Source as _Source
     do_highlight = event.source not in (_Source.CLI,)
 
+    # Phase 1: resolve all render futures and collect clip durations.
+    # Parallel renders are mostly done by now; future.result() is instant
+    # for finished ones and waits briefly for the last stragglers.
+    clip_data: list[tuple[str, Path]] = []  # (sentence, clip_path)
+    for sentence, outfile, future in zip(sentences, outfiles, futures):
+        try:
+            ok, err = future.result()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("intake: render future raised: %s", exc)
+            continue
+        if not ok:
+            log.warning("intake: render failed for sentence (%s): %s", engine, err)
+            state.log_error("intake", f"render failed ({engine})",
+                            extras={"err": err, "source": event.source.value})
+            continue
+        clip_path = outfile
+        with _fallback_lock:
+            has_fallback = bool(fallback_info)
+        if has_fallback and clip_path.suffix == ".wav":
+            renamed = clip_path.with_suffix(".mp3")
+            try:
+                clip_path.rename(renamed)
+                clip_path = renamed
+            except OSError:
+                pass
+        clip_data.append((sentence, clip_path))
+
+    if not clip_data:
+        return None
+
+    # Compute per-clip offsets for a single spanning progress bar.
+    durations = [_clip_duration(p) for _, p in clip_data]
+    total_duration_s = sum(durations)
+
     coordinator.before_speech()
     played_any = False
     try:
-        for sentence, outfile, future in zip(sentences, outfiles, futures):
-            try:
-                ok, err = future.result()  # waits only if render isn't done yet
-            except Exception as exc:  # noqa: BLE001
-                log.warning("intake: render future raised: %s", exc)
-                continue
-            if not ok:
-                log.warning("intake: render failed for sentence (%s): %s",
-                            engine, err)
-                state.log_error("intake", f"render failed ({engine})",
-                                extras={"err": err, "source": event.source.value})
-                continue
-            # Fallback: qwen/realtime named .wav but edge wrote MP3 bytes.
-            clip_path = outfile
-            with _fallback_lock:
-                has_fallback = bool(fallback_info)
-            if has_fallback and clip_path.suffix == ".wav":
-                renamed = clip_path.with_suffix(".mp3")
-                try:
-                    clip_path.rename(renamed)
-                    clip_path = renamed
-                except OSError:
-                    pass
+        offset_s = 0.0
+        for (sentence, clip_path), dur in zip(clip_data, durations):
+            # Update now_playing so cmd_status can show a response-wide bar.
+            state.set_now_playing(
+                "speech", uri=str(clip_path), started_at=started_at,
+                target=target.name,
+                extras={"text": text, "source": event.source.value,
+                        "engine": engine, "voice": voice,
+                        "clip_offset_s": offset_s,
+                        "total_duration_s": total_duration_s})
             if do_highlight:
                 _tmux_highlight_text(sentence)
             try:
@@ -338,8 +365,10 @@ def submit_event(event: Event,
                 state.log_error("intake", "sink-speech play failed",
                                 extras={"detail": str(e),
                                         "source": event.source.value})
+                offset_s += dur
                 continue
             _wait_for_clip(sink, target)
+            offset_s += dur
     finally:
         coordinator.after_speech()
         state.clear_now_playing("speech")
