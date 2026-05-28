@@ -137,11 +137,6 @@ def _tmux_highlight_text(text: str, *, first: bool = False) -> None:  # noqa: AR
         subprocess.run(["tmux", "send-keys", "-t", pane, "-X",
                         "search-backward", snippet],
                        capture_output=True)
-        # Scroll up a few lines so the match sits a little below the top
-        # edge rather than flush against it, giving a few lines of context.
-        subprocess.run(["tmux", "send-keys", "-t", pane,
-                        "-X", "-N", "5", "scroll-up"],
-                       capture_output=True)
         subprocess.run(["tmux", "send-keys", "-t", pane, "-X",
                         "begin-selection"],
                        capture_output=True)
