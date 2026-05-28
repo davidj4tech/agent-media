@@ -336,7 +336,7 @@ def cmd_replay_track(a) -> int:
         except Exception:  # noqa: BLE001
             continue
         if pos != last_pos and 0 <= pos < len(sentences):
-            _tmux_highlight_text(sentences[pos])
+            _tmux_highlight_text(sentences[pos], first=(pos == 0))
             # Update now_playing so `media current-sentence` works during replay.
             try:
                 state = StateStore()
