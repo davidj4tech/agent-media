@@ -7,7 +7,7 @@
 #   h / l   seek -5s / +5s             H / L   seek -30s / +30s
 #   - / =   volume -5 / +5             m   toggle mute
 #   [ / ]   slower / faster (0.1)      0   reset speed
-#   < / >   replay older / newer       v   show the spoken text in the pane
+#   < / >   replay older / newer       v   show full spoken text in popup
 #   ?       help                       q / Esc   close
 #
 # Caller pane for `v` comes from TTS_POPUP_PANE (set by the tmux binding).
@@ -69,20 +69,20 @@ while true; do
              else
                  $MEDIA jump end
              fi ;;
-        v)   txt=$($MEDIA text 2>/dev/null)
-             if [ -n "$HL_PANE" ] && [ -n "$txt" ]; then
-                 # Highlight the spoken text in the caller pane via copy-mode.
-                 # Take the first 60 chars of the text (single line), then
-                 # escape regex metacharacters so tmux search-backward matches
-                 # the actual pane content (which retains #, *, (, ), etc.).
-                 snippet=$(printf '%s' "$txt" | tr '\n' ' ' | cut -c1-60 \
-                     | sed 's/[][(){}^$.*+?|\\]/\\&/g')
-                 if [ -n "$snippet" ]; then
-                     tmux copy-mode -t "$HL_PANE" 2>/dev/null
-                     tmux send-keys -t "$HL_PANE" -X search-backward "$snippet" 2>/dev/null
+        v)   # Show the full spoken text in a sub-popup.  Uses a temp file
+             # so quotes/special chars in the text don't break the shell.
+             _tmp=$(mktemp /tmp/media-text-XXXX.txt 2>/dev/null) || _tmp=""
+             if [ -n "$_tmp" ]; then
+                 $MEDIA text 2>/dev/null > "$_tmp"
+                 if [ -s "$_tmp" ]; then
+                     tmux display-popup -E -w "75%" -h "75%" -x C -y C \
+                         "fold -sw 78 '$_tmp'; printf '\n-- press any key --'; read -rsn1; rm -f '$_tmp'" \
+                         2>/dev/null
+                 else
+                     rm -f "$_tmp"
                  fi
              fi ;;
-        '?') tmux display-message "Space play/pause · r replay · h/l ±5s · -/= vol · m mute · [/] speed · < > history · v show text · q quit" 2>/dev/null ;;
+        '?') tmux display-message "Space play/pause · r replay · h/l ±5s · -/= vol · m mute · [/] speed · < > history · v full text popup · q quit" 2>/dev/null ;;
         q|$'\e') break ;;
         *) : ;;
     esac

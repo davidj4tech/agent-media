@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
 import tempfile
 import time
 from pathlib import Path
@@ -50,6 +51,45 @@ def _resolve_voice(event: Event) -> Optional[str]:
 def _ext_for(engine: str) -> str:
     """qwen / realtime emit WAV, others MP3."""
     return "wav" if engine in ("qwen", "realtime") else "mp3"
+
+
+def _tmux_show_text(text: str, txt_file: Path) -> None:
+    """Open a tmux popup showing the full spoken text when a clip starts.
+
+    Enabled when TMUX is set (i.e. we're inside a tmux session) and
+    MEDIA_AUTO_TEXT_POPUP != "0" (default on).  Uses the sidecar .txt
+    file so the popup reliably shows the same text as what's playing.
+
+    The popup stays open until the user presses any key; playback is
+    not affected.  Set MEDIA_AUTO_TEXT_POPUP=0 to disable.
+    """
+    if not os.environ.get("TMUX"):
+        return
+    if os.environ.get("MEDIA_AUTO_TEXT_POPUP", "1") == "0":
+        return
+    if not txt_file.exists():
+        try:
+            txt_file.write_text(text)
+        except OSError:
+            return
+
+    width = os.environ.get("MEDIA_TEXT_POPUP_WIDTH", "70%")
+    height = os.environ.get("MEDIA_TEXT_POPUP_HEIGHT", "70%")
+    # fold wraps at terminal width-2; the popup's interior width isn't easily
+    # known ahead of time so we use a conservative 78 cols.
+    fold_w = int(os.environ.get("MEDIA_TEXT_POPUP_FOLD", "78"))
+    cmd = (
+        f"fold -sw {fold_w} {str(txt_file)!r}; "
+        f"printf '\\n-- press any key --'; read -rsn1"
+    )
+    try:
+        subprocess.Popen(
+            ["tmux", "display-popup", "-E",
+             "-w", width, "-h", height, "-x", "C", "-y", "C",
+             cmd],
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _audio_dir() -> Path:
@@ -188,6 +228,7 @@ def submit_event(event: Event,
                 "engine": engine, "voice": voice})
 
     coordinator.before_speech()
+    _tmux_show_text(text, outfile.with_suffix(".txt"))
     try:
         try:
             sink.play(str(outfile), target)

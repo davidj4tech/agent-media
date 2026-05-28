@@ -102,6 +102,21 @@ MPRIS interface when paused and re-registering with a new instance number on
 resume. The coordinator uses base-name prefix matching to find the new
 instance.
 
+### Text display
+
+When a clip starts playing, a popup automatically appears showing the full
+spoken text. Press any key to dismiss; playback continues regardless.
+
+The `v` key in the tmux control popup (`prefix + a`) also opens this view
+on demand for the current or most recent clip.
+
+| Variable | Default | Description |
+|---|---|---|
+| `MEDIA_AUTO_TEXT_POPUP` | `1` | Set to `0` to disable the auto popup |
+| `MEDIA_TEXT_POPUP_WIDTH` | `70%` | tmux popup width |
+| `MEDIA_TEXT_POPUP_HEIGHT` | `70%` | tmux popup height |
+| `MEDIA_TEXT_POPUP_FOLD` | `78` | Line wrap column for the text |
+
 ### Notifications (Claude Code hook)
 
 | Variable | Default | Description |
