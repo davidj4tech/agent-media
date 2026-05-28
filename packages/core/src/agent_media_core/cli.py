@@ -238,7 +238,10 @@ def _do_replay(index: int) -> int:
                     "clip_durations_s": clip_durations})
         # Spawn a detached highlight tracker so copy-mode follows along
         # even though _do_replay returns immediately.
-        pane = os.environ.get("TMUX_PANE", "")
+        # TTS_POPUP_PANE is the original pane that opened the popup (set by
+        # the tmux binding). TMUX_PANE inside display-popup is the popup's
+        # own ephemeral pane, which disappears when the popup closes.
+        pane = os.environ.get("TTS_POPUP_PANE") or os.environ.get("TMUX_PANE", "")
         if pane and clip_sentences and len(clip_sentences) == len(clip_uris):
             subprocess.Popen(
                 [sys.executable, "-m", "agent_media_core.cli",
@@ -267,6 +270,10 @@ def cmd_replay_track(a) -> int:
     pane: str = a.pane
     if not sentences or not pane:
         return 0
+    # Ensure _tmux_highlight_text sees the right pane + a truthy TMUX.
+    os.environ["TMUX_PANE"] = pane
+    if not os.environ.get("TMUX"):
+        os.environ["TMUX"] = "x"  # fallback: truthy, tmux will resolve socket
 
     last_pos = -1
     idle_streak = 0
@@ -287,8 +294,6 @@ def cmd_replay_track(a) -> int:
         except Exception:  # noqa: BLE001
             continue
         if pos != last_pos and 0 <= pos < len(sentences):
-            os.environ["TMUX_PANE"] = pane
-            os.environ["TMUX"] = os.environ.get("TMUX", "x")  # ensure truthy
             _tmux_highlight_text(sentences[pos], first=(pos == 0))
             last_pos = pos
     return 0
