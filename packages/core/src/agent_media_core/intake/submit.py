@@ -132,11 +132,6 @@ def _tmux_highlight_text(text: str, *, first: bool = False) -> None:  # noqa: AR
 
     snippet = re.sub(r'([][(){}^$.*+?|\\])', r'\\\1', snippet)
 
-    # Flash duration: how long copy-mode stays active before auto-exit.
-    # After the flash, the pane snaps back to its live view so the user
-    # can type normally between sentences without copy-mode in the way.
-    flash_ms = int(os.environ.get("MEDIA_HIGHLIGHT_FLASH_MS", "1500"))
-
     try:
         subprocess.run(["tmux", "send-keys", "-t", pane, "-X", "cancel"],
                        capture_output=True)
@@ -154,19 +149,6 @@ def _tmux_highlight_text(text: str, *, first: bool = False) -> None:  # noqa: AR
             subprocess.run(["tmux", "send-keys", "-t", pane,
                             "-X", "-N", str(select_len), "cursor-right"],
                            capture_output=True)
-        # Schedule auto-exit so the pane returns to live view shortly.
-        # Detached subshell — fires even if our process moves on to the
-        # next sentence's audio. Set to 0 to disable auto-exit.
-        if flash_ms > 0:
-            subprocess.Popen(
-                ["sh", "-c",
-                 f"sleep {flash_ms / 1000:.2f}; "
-                 f"tmux send-keys -t {pane} -X cancel 2>/dev/null"],
-                start_new_session=True,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
     except Exception:  # noqa: BLE001
         pass
 
