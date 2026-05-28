@@ -127,16 +127,6 @@ def _tmux_highlight_text(text: str, *, first: bool = False) -> None:  # noqa: AR
     snippet = re.sub(r'([][(){}^$.*+?|\\])', r'\\\1', snippet)
     select_len = max(0, len(text.strip()) + 3)
 
-    # Scroll half a pane-height after the search so the matched sentence
-    # sits in the middle of the viewport rather than at the very top.
-    try:
-        _ph = subprocess.run(
-            ["tmux", "display-message", "-p", "#{pane_height}"],
-            capture_output=True, text=True).stdout.strip()
-        _scroll = max(1, int(_ph) // 2) if _ph.isdigit() else 10
-    except Exception:  # noqa: BLE001
-        _scroll = 10
-
     try:
         subprocess.run(["tmux", "send-keys", "-t", pane, "-X", "cancel"],
                        capture_output=True)
@@ -147,9 +137,10 @@ def _tmux_highlight_text(text: str, *, first: bool = False) -> None:  # noqa: AR
         subprocess.run(["tmux", "send-keys", "-t", pane, "-X",
                         "search-backward", snippet],
                        capture_output=True)
-        # Scroll up so the match is centred rather than pinned to the top.
+        # Scroll up a few lines so the match sits a little below the top
+        # edge rather than flush against it, giving a few lines of context.
         subprocess.run(["tmux", "send-keys", "-t", pane,
-                        "-X", "-N", str(_scroll), "scroll-up"],
+                        "-X", "-N", "5", "scroll-up"],
                        capture_output=True)
         subprocess.run(["tmux", "send-keys", "-t", pane, "-X",
                         "begin-selection"],
