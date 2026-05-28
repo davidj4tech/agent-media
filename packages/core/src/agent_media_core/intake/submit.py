@@ -129,7 +129,7 @@ def _tmux_highlight_text(text: str) -> None:
     # the selection reliably covers the full sentence — tmux's cursor-right
     # -N K selects K+1 chars from the anchor, and off-by-one varies by
     # version; a few extra chars of whitespace selection is harmless.
-    select_len = max(0, len(text.strip()) + 2)
+    select_len = max(0, len(text.strip()) + 1)
 
     try:
         # Cancel any existing copy-mode (clears selection + exits) then
