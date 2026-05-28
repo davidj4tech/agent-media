@@ -104,7 +104,7 @@ class Coordinator:
         # or do it synchronously if it was never started.
         if _mpris.enabled() and _mpris.ssh_hosts():
             if self._remote_pause_done is not None:
-                self._remote_pause_done.wait(timeout=6)
+                self._remote_pause_done.wait(timeout=14)
             else:
                 for host in _mpris.ssh_hosts():
                     remote = _mpris.remote_playing_players(host)

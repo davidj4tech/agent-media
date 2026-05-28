@@ -21,7 +21,9 @@ import subprocess
 log = logging.getLogger(__name__)
 
 _TIMEOUT = 2.0
-_SSH_TIMEOUT = 3.0
+_SSH_CONNECT_TIMEOUT = 8        # seconds; sp4r SSH takes ~4.8s cold
+_SSH_CMD_TIMEOUT = 12.0         # subprocess hard cap (connect + script)
+_SSH_CONTROL_PERSIST = 300      # keep ControlMaster alive 5 min between clips
 _EXCLUDE_PREFIX = ("Mopidy",)
 
 
@@ -34,10 +36,11 @@ def _run(*args: str) -> str | None:
         return None
 
 
-_SSH_OPTS = ["-o", "BatchMode=yes", "-o", f"ConnectTimeout={int(_SSH_TIMEOUT)}",
+_SSH_OPTS = ["-o", "BatchMode=yes",
+             "-o", f"ConnectTimeout={_SSH_CONNECT_TIMEOUT}",
              "-o", "ControlMaster=auto",
              "-o", "ControlPath=/tmp/ssh-am-%r@%h:%p",
-             "-o", "ControlPersist=120"]
+             "-o", f"ControlPersist={_SSH_CONTROL_PERSIST}"]
 
 
 def _ssh(host: str, script: str) -> str | None:
@@ -52,7 +55,7 @@ def _ssh(host: str, script: str) -> str | None:
         r = subprocess.run(
             ["ssh", *_SSH_OPTS, host, "bash -s"],
             input=full,
-            capture_output=True, text=True, timeout=_SSH_TIMEOUT + 2,
+            capture_output=True, text=True, timeout=_SSH_CMD_TIMEOUT,
         )
         return (r.stdout or "").strip() if r.returncode == 0 else None
     except Exception:  # noqa: BLE001
