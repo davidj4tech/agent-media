@@ -71,8 +71,10 @@ while true; do
              fi ;;
         v)   # Toggle auto-highlight (copy-mode follow-along) on/off.
              # When turned on, immediately fires for the current sentence
-             # so the user sees instant feedback.
-             TTS_POPUP_PANE="$HL_PANE" $MEDIA highlight-toggle 2>/dev/null ;;
+             # so the user sees instant feedback. The new state is shown
+             # in a tmux message so the user knows what just happened.
+             _hl_out=$(TTS_POPUP_PANE="$HL_PANE" $MEDIA highlight-toggle 2>/dev/null)
+             tmux display-message "♪ ${_hl_out:-highlight: ?}" 2>/dev/null ;;
         '?') tmux display-message "Space play/pause · r replay · h/l ±5s · -/= vol · m mute · [/] speed · < > history · v toggle highlight · q quit" 2>/dev/null ;;
         q|$'\e') break ;;
         *) : ;;
