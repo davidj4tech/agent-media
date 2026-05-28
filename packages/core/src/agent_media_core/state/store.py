@@ -170,7 +170,7 @@ class StateStore:
     def recent_history(self, *, sink: Optional[str] = None,
                        limit: int = 20) -> list[dict]:
         q = ("SELECT id, sink, uri, started_at, ended_at, target, source, "
-             "content_type, text FROM history")
+             "content_type, text, extras FROM history")
         args: tuple = ()
         if sink is not None:
             q += " WHERE sink = ?"
@@ -181,8 +181,17 @@ class StateStore:
             cur.execute(q, args)
             rows = cur.fetchall()
         cols = ["id", "sink", "uri", "started_at", "ended_at", "target",
-                "source", "content_type", "text"]
-        return [dict(zip(cols, r)) for r in rows]
+                "source", "content_type", "text", "extras"]
+        result = []
+        for r in rows:
+            row = dict(zip(cols, r))
+            if row.get("extras"):
+                try:
+                    row["extras"] = json.loads(row["extras"])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            result.append(row)
+        return result
 
     # ---- errors -----------------------------------------------------------
 

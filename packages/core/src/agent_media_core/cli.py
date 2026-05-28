@@ -200,11 +200,6 @@ def _do_replay(index: int) -> int:
     if not uri:
         return 1
     ex = row.get("extras") or {}
-    if isinstance(ex, str):
-        try:
-            ex = json.loads(ex)
-        except Exception:
-            ex = {}
     clip_uris: list[str] = ex.get("clip_uris") or [uri]
 
     sink = SinkSpeech()
