@@ -23,6 +23,10 @@ case "$HL_PANE" in *'#{'*) HL_PANE="" ;; esac
     _sess=$(tmux display-message -p '#{session_name}' 2>/dev/null)
     [ -n "$_sess" ] && HL_PANE=$(tmux display-message -p -t "$_sess:" '#{pane_id}' 2>/dev/null || true)
 }
+# Export so child processes (`media replay`, `media replay-track`) see the
+# resolved pane id rather than the literal '#{pane_id}' that some tmux
+# versions leave unexpanded.
+export TTS_POPUP_PANE="$HL_PANE"
 
 speed=1.0
 hist_idx=1

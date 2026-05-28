@@ -294,6 +294,15 @@ def _do_replay(index: int) -> int:
         # the tmux binding). TMUX_PANE inside display-popup is the popup's
         # own ephemeral pane, which disappears when the popup closes.
         pane = os.environ.get("TTS_POPUP_PANE") or os.environ.get("TMUX_PANE", "")
+        # If the binding left an unexpanded #{pane_id} literal, query tmux
+        # for the active pane instead.
+        if "#{" in pane:
+            try:
+                r = subprocess.run(["tmux", "display-message", "-p", "#{pane_id}"],
+                                   capture_output=True, text=True)
+                pane = r.stdout.strip() if r.returncode == 0 else ""
+            except Exception:  # noqa: BLE001
+                pane = ""
         if pane and clip_sentences and len(clip_sentences) == len(clip_uris):
             subprocess.Popen(
                 [sys.executable, "-m", "agent_media_core.cli",
