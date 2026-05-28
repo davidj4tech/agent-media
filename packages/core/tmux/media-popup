@@ -80,7 +80,11 @@ while true; do
                      [ "${#line}" -ge 20 ] && snippet="$line" && break
                  done <<< "$txt"
                  [ -z "$snippet" ] && snippet=$(printf '%s' "$txt" | tr '\n' ' ')
-                 snippet=$(printf '%s' "$snippet" | cut -c1-120 \
+                 # Trim to last word boundary within 50 chars so the snippet
+                 # stays within one visual line (tmux won't match across wraps).
+                 snippet=$(printf '%s' "$snippet" | cut -c1-50)
+                 snippet=$(printf '%s' "$snippet" | sed 's/ [^ ]*$//')
+                 snippet=$(printf '%s' "$snippet" \
                      | sed 's/[][(){}^$.*+?|\\]/\\&/g')
                  if [ -n "$snippet" ]; then
                      tmux copy-mode -t "$HL_PANE" 2>/dev/null

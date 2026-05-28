@@ -73,14 +73,23 @@ def _tmux_highlight_text(text: str) -> None:
         return
 
     # Pick the first line with enough content to be a unique anchor.
+    # Trim to the last word boundary within 50 chars so the snippet never
+    # splits a word that the terminal has wrapped onto the next visual line
+    # (tmux search-backward won't match strings that span a line wrap).
+    def _trim_to_word(s: str, limit: int = 50) -> str:
+        if len(s) <= limit:
+            return s
+        cut = s[:limit].rfind(" ")
+        return s[:cut] if cut > 15 else s[:limit]
+
     snippet = ""
     for line in text.splitlines():
         line = line.strip()
         if len(line) >= 20:
-            snippet = line[:120]
+            snippet = _trim_to_word(line)
             break
     if not snippet:
-        snippet = text.replace("\n", " ").strip()[:120]
+        snippet = _trim_to_word(text.replace("\n", " ").strip())
     if not snippet:
         return
 
