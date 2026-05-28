@@ -130,6 +130,28 @@ def cmd_now(a) -> int:
     return 0
 
 
+def cmd_current_sentence(a) -> int:
+    """Print the currently-spoken sentence (one of many in a response).
+
+    Designed for tmux status-line use: shows a karaoke-style indicator of
+    what's being read aloud right now, without touching the source pane.
+    Truncates to --width chars (default 80) with an ellipsis so it fits.
+    """
+    np = _now_speaking()
+    if not np:
+        return 0
+    ex = np.get("extras") or {}
+    sentence = (ex.get("current_sentence") or "").strip()
+    if not sentence:
+        return 0
+    sentence = " ".join(sentence.split())  # collapse whitespace
+    width = getattr(a, "width", 80) or 80
+    if len(sentence) > width:
+        sentence = sentence[: max(0, width - 1)].rstrip() + "…"
+    print(f"♪ {sentence}")
+    return 0
+
+
 def cmd_text(a) -> int:
     """Return the currently-speaking text, or the latest history entry if idle."""
     np = _now_speaking()
@@ -295,6 +317,21 @@ def cmd_replay_track(a) -> int:
             continue
         if pos != last_pos and 0 <= pos < len(sentences):
             _tmux_highlight_text(sentences[pos])
+            # Update now_playing so `media current-sentence` works during replay.
+            try:
+                state = StateStore()
+                np = state.get_now_playing("speech")
+                if np:
+                    ex = np.get("extras") or {}
+                    ex["current_sentence"] = sentences[pos]
+                    ex["current_sentence_idx"] = pos
+                    state.set_now_playing(
+                        "speech", uri=np.get("uri") or "",
+                        started_at=np.get("started_at") or time.time(),
+                        target=np.get("target") or SPEECH_TARGET.name,
+                        extras=ex)
+            except Exception:  # noqa: BLE001
+                pass
             last_pos = pos
     return 0
 
@@ -342,6 +379,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("now", help="text currently being spoken").set_defaults(func=cmd_now)
     sub.add_parser("text", help="spoken text (now-playing or latest history)").set_defaults(func=cmd_text)
+
+    s = sub.add_parser("current-sentence",
+                        help="active sentence (for status-line karaoke indicator)")
+    s.add_argument("--width", type=int, default=80,
+                    help="max chars before truncation (default 80)")
+    s.set_defaults(func=cmd_current_sentence)
     sub.add_parser("toggle", help="play/pause").set_defaults(func=cmd_toggle)
     sub.add_parser("pause").set_defaults(func=cmd_pause)
     sub.add_parser("resume").set_defaults(func=cmd_resume)

@@ -353,14 +353,17 @@ def submit_event(event: Event,
     try:
         offset_s = 0.0
         for i, ((sentence, clip_path), dur) in enumerate(zip(clip_data, durations)):
-            # Update now_playing so cmd_status can show a response-wide bar.
+            # Update now_playing so cmd_status can show a response-wide bar
+            # and `media current-sentence` can return the active sentence.
             state.set_now_playing(
                 "speech", uri=str(clip_path), started_at=started_at,
                 target=target.name,
                 extras={"text": text, "source": event.source.value,
                         "engine": engine, "voice": voice,
                         "clip_offset_s": offset_s,
-                        "total_duration_s": total_duration_s})
+                        "total_duration_s": total_duration_s,
+                        "current_sentence": sentence,
+                        "current_sentence_idx": i})
             if do_highlight:
                 _tmux_highlight_text(sentence)
             try:
