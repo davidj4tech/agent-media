@@ -127,6 +127,17 @@ def _tmux_highlight_text(text: str, *, first: bool = False) -> None:  # noqa: AR
     snippet = re.sub(r'([][(){}^$.*+?|\\])', r'\\\1', snippet)
     select_len = max(0, len(text.strip()) + 3)
 
+    # Copycat trick: after jumping to the match, move cursor down by padding
+    # lines then back up — viewport follows, centering the match on screen.
+    # Cap at min(pane_height//2, 10) so we never overshoot into old history.
+    try:
+        _ph = subprocess.run(
+            ["tmux", "display-message", "-p", "#{pane_height}"],
+            capture_output=True, text=True).stdout.strip()
+        _padding = max(1, min(int(_ph) // 2, 10)) if _ph.isdigit() else 5
+    except Exception:  # noqa: BLE001
+        _padding = 5
+
     try:
         subprocess.run(["tmux", "send-keys", "-t", pane, "-X", "cancel"],
                        capture_output=True)
@@ -136,6 +147,13 @@ def _tmux_highlight_text(text: str, *, first: bool = False) -> None:  # noqa: AR
                        capture_output=True)
         subprocess.run(["tmux", "send-keys", "-t", pane, "-X",
                         "search-backward", snippet],
+                       capture_output=True)
+        # Push viewport down so the match isn't pinned to the top edge.
+        subprocess.run(["tmux", "send-keys", "-t", pane,
+                        "-X", "-N", str(_padding), "cursor-down"],
+                       capture_output=True)
+        subprocess.run(["tmux", "send-keys", "-t", pane,
+                        "-X", "-N", str(_padding), "cursor-up"],
                        capture_output=True)
         subprocess.run(["tmux", "send-keys", "-t", pane, "-X",
                         "begin-selection"],
