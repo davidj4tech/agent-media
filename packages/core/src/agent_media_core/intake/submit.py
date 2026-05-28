@@ -88,6 +88,33 @@ def _split_sentences(text: str) -> list[str]:
     return result or [text.strip()]
 
 
+def _highlight_flag_path() -> Path:
+    """File flag controlling auto-highlight: contents "1" = on, anything else = off."""
+    state = Path(os.environ.get("XDG_STATE_HOME",
+                                str(Path.home() / ".local" / "state")))
+    return state / "agent-media" / "auto-highlight"
+
+
+def _is_auto_highlight_enabled() -> bool:
+    """Auto-highlight is opt-in. Env override wins; otherwise read flag file."""
+    env = os.environ.get("MEDIA_AUTO_HIGHLIGHT")
+    if env is not None:
+        return env != "0"
+    try:
+        return _highlight_flag_path().read_text().strip() == "1"
+    except OSError:
+        return False
+
+
+def toggle_auto_highlight() -> bool:
+    """Flip the auto-highlight flag. Returns the new state (True = on)."""
+    new_state = not _is_auto_highlight_enabled()
+    p = _highlight_flag_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("1" if new_state else "0")
+    return new_state
+
+
 def _tmux_highlight_text(text: str, *, first: bool = False) -> None:
     """Enter copy-mode in the source pane and jump to the spoken text.
 
@@ -97,11 +124,13 @@ def _tmux_highlight_text(text: str, *, first: bool = False) -> None:
     selection is capped at snippet length ~50 chars). This avoids the
     visual snap-to-bottom that history-bottom causes between sentences.
 
-    Enabled when TMUX_PANE is set and MEDIA_AUTO_HIGHLIGHT != "0".
+    Off by default — opt-in via the popup's `v` toggle (which writes to
+    `$XDG_STATE_HOME/agent-media/auto-highlight`). `MEDIA_AUTO_HIGHLIGHT=1`
+    in env can override on a per-host basis.
     """
     if not os.environ.get("TMUX"):
         return
-    if os.environ.get("MEDIA_AUTO_HIGHLIGHT", "1") == "0":
+    if not _is_auto_highlight_enabled():
         return
     pane = os.environ.get("TMUX_PANE")
     if not pane:

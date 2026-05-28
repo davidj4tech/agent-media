@@ -130,6 +130,36 @@ def cmd_now(a) -> int:
     return 0
 
 
+def cmd_highlight_toggle(a) -> int:
+    """Toggle auto-highlight on/off. Prints the new state."""
+    from .intake.submit import toggle_auto_highlight, _tmux_highlight_text
+    on = toggle_auto_highlight()
+    if on:
+        # If a sentence is currently playing, highlight it now so the user
+        # gets immediate feedback that the toggle took effect.
+        np = _now_speaking()
+        if np:
+            ex = np.get("extras") or {}
+            sentence = ex.get("current_sentence")
+            if sentence:
+                pane = os.environ.get("TTS_POPUP_PANE") or os.environ.get("TMUX_PANE", "")
+                if pane:
+                    os.environ["TMUX_PANE"] = pane
+                    if not os.environ.get("TMUX"):
+                        os.environ["TMUX"] = "x"
+                    _tmux_highlight_text(sentence, first=True)
+        print("highlight: ON")
+    else:
+        # Exit any active copy-mode in the caller pane.
+        pane = os.environ.get("TTS_POPUP_PANE") or os.environ.get("TMUX_PANE", "")
+        if pane:
+            import subprocess as _sp
+            _sp.run(["tmux", "send-keys", "-t", pane, "-X", "cancel"],
+                    capture_output=True)
+        print("highlight: OFF")
+    return 0
+
+
 def cmd_current_sentence(a) -> int:
     """Print the currently-spoken sentence (one of many in a response).
 
@@ -399,6 +429,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("now", help="text currently being spoken").set_defaults(func=cmd_now)
     sub.add_parser("text", help="spoken text (now-playing or latest history)").set_defaults(func=cmd_text)
+
+    sub.add_parser("highlight-toggle",
+                    help="toggle auto-highlight on/off (popup v key)"
+                    ).set_defaults(func=cmd_highlight_toggle)
 
     s = sub.add_parser("current-sentence",
                         help="active sentence (for status-line karaoke indicator)")

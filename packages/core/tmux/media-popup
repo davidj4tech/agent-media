@@ -7,7 +7,7 @@
 #   h / l   seek -5s / +5s             H / L   seek -30s / +30s
 #   - / =   volume -5 / +5             m   toggle mute
 #   [ / ]   slower / faster (0.1)      0   reset speed
-#   < / >   replay older / newer       v   jump to spoken text in copy-mode
+#   < / >   replay older / newer       v   toggle auto-highlight on/off
 #   ?       help                       q / Esc   close
 #
 # Caller pane for `v` comes from TTS_POPUP_PANE (set by the tmux binding).
@@ -69,30 +69,11 @@ while true; do
              else
                  $MEDIA jump end
              fi ;;
-        v)   # Re-trigger copy-mode search in the caller pane.
-             # Uses first substantial line (≥20 chars) as anchor, up to 120
-             # chars, ERE-escaped. Sends: history-bottom → search-backward.
-             if [ -n "$HL_PANE" ]; then
-                 txt=$($MEDIA text 2>/dev/null)
-                 snippet=""
-                 while IFS= read -r line; do
-                     line=$(printf '%s' "$line" | sed 's/^[[:space:]]*//')
-                     [ "${#line}" -ge 20 ] && snippet="$line" && break
-                 done <<< "$txt"
-                 [ -z "$snippet" ] && snippet=$(printf '%s' "$txt" | tr '\n' ' ')
-                 # Trim to last word boundary within 50 chars so the snippet
-                 # stays within one visual line (tmux won't match across wraps).
-                 snippet=$(printf '%s' "$snippet" | cut -c1-50)
-                 snippet=$(printf '%s' "$snippet" | sed 's/ [^ ]*$//')
-                 snippet=$(printf '%s' "$snippet" \
-                     | sed 's/[][(){}^$.*+?|\\]/\\&/g')
-                 if [ -n "$snippet" ]; then
-                     tmux copy-mode -t "$HL_PANE" 2>/dev/null
-                     tmux send-keys -t "$HL_PANE" -X history-bottom 2>/dev/null
-                     tmux send-keys -t "$HL_PANE" -X search-backward "$snippet" 2>/dev/null
-                 fi
-             fi ;;
-        '?') tmux display-message "Space play/pause · r replay · h/l ±5s · -/= vol · m mute · [/] speed · < > history · v jump to text · q quit" 2>/dev/null ;;
+        v)   # Toggle auto-highlight (copy-mode follow-along) on/off.
+             # When turned on, immediately fires for the current sentence
+             # so the user sees instant feedback.
+             TTS_POPUP_PANE="$HL_PANE" $MEDIA highlight-toggle 2>/dev/null ;;
+        '?') tmux display-message "Space play/pause · r replay · h/l ±5s · -/= vol · m mute · [/] speed · < > history · v toggle highlight · q quit" 2>/dev/null ;;
         q|$'\e') break ;;
         *) : ;;
     esac
