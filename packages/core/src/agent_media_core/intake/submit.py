@@ -124,8 +124,13 @@ def _tmux_highlight_text(text: str, *, first: bool = False) -> None:  # noqa: AR
     if not snippet:
         return
 
+    # Selection length = snippet length, capped so the highlight always fits
+    # within a single visual row. cursor-right N beyond the row would drag
+    # the viewport down, breaking the "viewport stays at sentence start"
+    # invariant. Plain snippet (pre-regex-escape) gives the visual char count.
+    select_len = len(snippet)
+
     snippet = re.sub(r'([][(){}^$.*+?|\\])', r'\\\1', snippet)
-    select_len = max(0, len(text.strip()) + 3)
 
     try:
         subprocess.run(["tmux", "send-keys", "-t", pane, "-X", "cancel"],
