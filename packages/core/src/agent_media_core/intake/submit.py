@@ -11,10 +11,12 @@ land here. The shape is intentionally narrow: take a populated
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import os
 import re
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -219,18 +221,13 @@ def submit_event(event: Event,
     started_at = time.time()
 
     fallback_info: dict = {}
+    _fallback_lock = threading.Lock()
 
     def _on_fallback(failed_engine: str, err: str) -> None:
         short = err.strip().splitlines()[0] if err else "no detail"
         kind = "render-fallback"
         if "insufficient_quota" in err:
             kind = "render-quota"
-        fallback_info.update({
-            "from_engine": failed_engine,
-            "fallback_engine": "edge",
-            "kind": kind,
-            "detail": short[:300],
-        })
         log.warning("intake: %s engine failed (%s); falling back to edge",
                     failed_engine, short)
         state.log_error("intake",
@@ -238,6 +235,13 @@ def submit_event(event: Event,
                         extras={"kind": kind, "engine": failed_engine,
                                 "detail": short[:300],
                                 "source": event.source.value})
+        with _fallback_lock:
+            fallback_info.update({
+                "from_engine": failed_engine,
+                "fallback_engine": "edge",
+                "kind": kind,
+                "detail": short[:300],
+            })
         if kind == "render-quota":
             title = f"agent-media: {failed_engine} quota exhausted"
             body = "Falling back to edge for now."
@@ -248,41 +252,30 @@ def submit_event(event: Event,
                title=title, content=body)
 
     # Start remote MPRIS detect-and-pause in background so SSH cold-connect
-    # (~4.8s) overlaps with all the sentence renders below.
+    # (~4.8s) overlaps with sentence rendering below.
     coordinator.pre_pause_remote()
 
-    # Render every sentence upfront. Edge TTS is fast (~0.5s per sentence)
-    # so the total pre-render time is well under the SSH connect time.
     sentences = _split_sentences(text)
-    sentence_clips: list[tuple[str, Path]] = []  # (sentence, audio_path)
 
-    for i, sentence in enumerate(sentences):
-        outfile = audio_dir / f"{stamp}--{event.source.value}--{i:03d}.{ext}"
-        ok, err = render_text(sentence, outfile, engine=engine, voice=voice,
-                              on_fallback=_on_fallback)
-        if not ok:
-            log.warning("intake: render failed for sentence %d (%s): %s",
-                        i, engine, err)
-            state.log_error("intake", f"render failed ({engine})",
-                            extras={"err": err, "source": event.source.value,
-                                    "sentence_index": i})
-            continue
-        # Fallback: qwen/realtime pre-named .wav but edge wrote MP3 bytes.
-        if fallback_info and outfile.suffix == ".wav":
-            renamed = outfile.with_suffix(".mp3")
-            try:
-                outfile.rename(renamed)
-                outfile = renamed
-            except OSError:
-                pass
-        sentence_clips.append((sentence, outfile))
+    # Submit all sentence renders in parallel. Sentence 0 starts playing as
+    # soon as its render finishes (~0.5s); the rest are done by then.
+    outfiles = [
+        audio_dir / f"{stamp}--{event.source.value}--{i:03d}.{ext}"
+        for i in range(len(sentences))
+    ]
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=len(sentences) or 1)
+    futures = [
+        executor.submit(render_text, sentence, outfile,
+                        engine=engine, voice=voice, on_fallback=_on_fallback)
+        for sentence, outfile in zip(sentences, outfiles)
+    ]
+    executor.shutdown(wait=False)  # don't block; futures stay live
 
-    if not sentence_clips:
-        return None
+    # First clip path for sidecar / now_playing (render may still be in flight).
+    first_clip = outfiles[0]
 
-    first_clip = sentence_clips[0][1]
-
-    # Full-text sidecar next to the first clip (popup + `media text` use it).
+    # Sidecar and now_playing use the first clip path unconditionally —
+    # they're set before playback starts so the popup can show the text.
     try:
         first_clip.with_suffix(".txt").write_text(text)
     except OSError as e:  # noqa: BLE001
@@ -299,12 +292,32 @@ def submit_event(event: Event,
     do_highlight = event.source not in (_Source.CLI,)
 
     coordinator.before_speech()
+    played_any = False
     try:
-        for sentence, clip_path in sentence_clips:
+        for sentence, outfile, future in zip(sentences, outfiles, futures):
+            ok, err = future.result()  # waits only if render isn't done yet
+            if not ok:
+                log.warning("intake: render failed for sentence (%s): %s",
+                            engine, err)
+                state.log_error("intake", f"render failed ({engine})",
+                                extras={"err": err, "source": event.source.value})
+                continue
+            # Fallback: qwen/realtime named .wav but edge wrote MP3 bytes.
+            clip_path = outfile
+            with _fallback_lock:
+                has_fallback = bool(fallback_info)
+            if has_fallback and clip_path.suffix == ".wav":
+                renamed = clip_path.with_suffix(".mp3")
+                try:
+                    clip_path.rename(renamed)
+                    clip_path = renamed
+                except OSError:
+                    pass
             if do_highlight:
                 _tmux_highlight_text(sentence)
             try:
                 sink.play(str(clip_path), target)
+                played_any = True
             except Exception as e:  # noqa: BLE001
                 log.warning("intake: sink-speech.play failed: %s", e)
                 state.log_error("intake", "sink-speech play failed",
@@ -315,6 +328,9 @@ def submit_event(event: Event,
     finally:
         coordinator.after_speech()
         state.clear_now_playing("speech")
+
+    if not played_any:
+        return None
 
     extras = {"engine": engine, "voice": voice,
               "priority": event.priority.value,
