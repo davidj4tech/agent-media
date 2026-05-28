@@ -297,6 +297,18 @@ def cmd_replay_track(a) -> int:
     if not os.environ.get("TMUX"):
         os.environ["TMUX"] = "x"  # fallback: truthy, tmux will resolve socket
 
+    # Wait for mpv to start playing the first clip — _do_replay's loadfile
+    # returns immediately and there's a brief idle window before playback
+    # kicks in. Without this, the tracker sees idle=True and exits before
+    # the first sentence ever fires.
+    for _ in range(40):  # up to ~2s
+        try:
+            if not bool(ipc.get_property(_sock(), "idle-active")):
+                break
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(0.05)
+
     last_pos = -1
     idle_streak = 0
     while True:
@@ -310,7 +322,15 @@ def cmd_replay_track(a) -> int:
             continue
         idle_streak = 0
         if idle:
-            return 0
+            # Require 2 consecutive idle readings to avoid race with playlist
+            # advancement (mpv flickers idle briefly between clips).
+            time.sleep(0.15)
+            try:
+                if bool(ipc.get_property(_sock(), "idle-active")):
+                    return 0
+            except Exception:  # noqa: BLE001
+                pass
+            continue
         try:
             pos = int(ipc.get_property(_sock(), "playlist-pos") or 0)
         except Exception:  # noqa: BLE001
