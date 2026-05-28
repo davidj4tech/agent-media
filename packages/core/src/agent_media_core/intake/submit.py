@@ -162,6 +162,11 @@ def _tmux_highlight_text(text: str, *, first: bool = False) -> None:  # noqa: AR
             subprocess.run(["tmux", "send-keys", "-t", pane,
                             "-X", "-N", str(select_len), "cursor-right"],
                            capture_output=True)
+            # cursor-right dragged the viewport to the end of the selection;
+            # cursor-left brings it back to the start while keeping the selection.
+            subprocess.run(["tmux", "send-keys", "-t", pane,
+                            "-X", "-N", str(select_len), "cursor-left"],
+                           capture_output=True)
     except Exception:  # noqa: BLE001
         pass
 
