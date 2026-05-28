@@ -16,6 +16,8 @@ import argparse
 import datetime
 import json
 import sys
+import threading
+import time
 from typing import Optional
 
 from .sinks import _mpv_ipc as ipc
@@ -190,6 +192,37 @@ def cmd_jump(a) -> int:
     return 0
 
 
+def _replay_progress_tracker(clip_uris: list[str], durations: list[float],
+                              text: str) -> None:
+    """Background thread: update now_playing with spanning offset during replay."""
+    total = sum(durations)
+    cum = [sum(durations[:i]) for i in range(len(durations))]
+    state = StateStore()
+    started_at = time.time()
+    state.set_now_playing(
+        "speech", uri=clip_uris[0], started_at=started_at,
+        target=SPEECH_TARGET.name,
+        extras={"text": text, "clip_offset_s": 0.0, "total_duration_s": total})
+    last_pos = 0
+    while True:
+        time.sleep(0.2)
+        try:
+            if bool(ipc.get_property(_sock(), "idle-active")):
+                state.clear_now_playing("speech")
+                return
+            pos = int(ipc.get_property(_sock(), "playlist-pos") or 0)
+        except Exception:  # noqa: BLE001
+            continue
+        if pos != last_pos and 0 <= pos < len(clip_uris):
+            last_pos = pos
+            state.set_now_playing(
+                "speech", uri=clip_uris[pos], started_at=started_at,
+                target=SPEECH_TARGET.name,
+                extras={"text": text,
+                        "clip_offset_s": cum[pos] if pos < len(cum) else total,
+                        "total_duration_s": total})
+
+
 def _do_replay(index: int) -> int:
     rows = _speech_history(max(1, index))
     if len(rows) < index:
@@ -201,6 +234,8 @@ def _do_replay(index: int) -> int:
         return 1
     ex = row.get("extras") or {}
     clip_uris: list[str] = ex.get("clip_uris") or [uri]
+    clip_durations: list[float] = ex.get("clip_durations_s") or []
+    replay_text: str = row.get("text") or ""
 
     sink = SinkSpeech()
     # Play first clip (replace), then queue the rest — mpv plays them
@@ -214,6 +249,13 @@ def _do_replay(index: int) -> int:
         ipc.set_property(_sock(), "mute", False)
     except ipc.MpvIpcError:
         pass
+    # Track per-clip progress so the status bar shows a single spanning bar.
+    if len(clip_uris) > 1 and len(clip_durations) == len(clip_uris):
+        threading.Thread(
+            target=_replay_progress_tracker,
+            args=(clip_uris, clip_durations, replay_text),
+            daemon=True,
+        ).start()
     return 0
 
 
