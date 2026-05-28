@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
-import tempfile
 import time
 from pathlib import Path
 from typing import Optional
@@ -53,16 +53,47 @@ def _ext_for(engine: str) -> str:
     return "wav" if engine in ("qwen", "realtime") else "mp3"
 
 
+def _split_sentences(text: str) -> list[str]:
+    """Split text into sentence-level chunks for progressive TTS + highlight.
+
+    Splits on paragraph breaks first, then on sentence-ending punctuation
+    within each paragraph. Common abbreviations are masked so they don't
+    produce spurious splits.
+    """
+    _ABBREV = re.compile(
+        r'\b(Mr|Mrs|Ms|Dr|Prof|Sr|Jr|vs|etc|e\.g|i\.e|'
+        r'Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec|[A-Z])\.'
+    )
+
+    def _sentences_in(para: str) -> list[str]:
+        masked = _ABBREV.sub(lambda m: m.group(0)[:-1] + '\x00', para)
+        parts = re.split(r'(?<=[.!?])\s+', masked.strip())
+        return [p.replace('\x00', '.').strip() for p in parts if p.strip()]
+
+    paragraphs = [p.strip() for p in re.split(r'\n{2,}', text) if p.strip()]
+    raw: list[str] = []
+    for para in paragraphs:
+        raw.extend(_sentences_in(para))
+
+    # Merge very short fragments (< 20 chars) into the preceding sentence
+    # so standalone words like "Yes." or "OK." don't become solo clips.
+    result: list[str] = []
+    for part in raw:
+        if len(part) < 20 and result:
+            result[-1] += ' ' + part
+        else:
+            result.append(part)
+    return result or [text.strip()]
+
+
 def _tmux_highlight_text(text: str) -> None:
-    """Auto-enter copy-mode and search for the spoken text in the source pane.
+    """Enter copy-mode in the source pane and jump to the spoken text.
 
-    Enabled when TMUX_PANE is set (hook ran inside tmux) and
-    MEDIA_AUTO_HIGHLIGHT != "0" (default on).
+    Called once per sentence during progressive playback so the pane
+    tracks the audio as it plays (karaoke-style). Press q to exit
+    copy-mode at any time; playback is unaffected.
 
-    Uses the first substantial line as the search snippet — long enough
-    to be unique in the pane, short enough for tmux's regex engine.
-    After the search, copy-mode is active at the start of the response
-    so the user can read along; press q to exit copy-mode.
+    Enabled when TMUX_PANE is set and MEDIA_AUTO_HIGHLIGHT != "0".
     """
     if not os.environ.get("TMUX"):
         return
@@ -72,10 +103,8 @@ def _tmux_highlight_text(text: str) -> None:
     if not pane:
         return
 
-    # Pick the first line with enough content to be a unique anchor.
-    # Trim to the last word boundary within 50 chars so the snippet never
-    # splits a word that the terminal has wrapped onto the next visual line
-    # (tmux search-backward won't match strings that span a line wrap).
+    # Trim to last word boundary within 50 chars so the snippet fits on
+    # a single visual line — tmux search-backward won't match across wraps.
     def _trim_to_word(s: str, limit: int = 50) -> str:
         if len(s) <= limit:
             return s
@@ -93,9 +122,7 @@ def _tmux_highlight_text(text: str) -> None:
     if not snippet:
         return
 
-    # Escape tmux ERE metacharacters.
-    import re as _re
-    snippet = _re.sub(r'([][(){}^$.*+?|\\])', r'\\\1', snippet)
+    snippet = re.sub(r'([][(){}^$.*+?|\\])', r'\\\1', snippet)
 
     try:
         subprocess.run(["tmux", "copy-mode", "-t", pane],
@@ -136,17 +163,30 @@ def _audio_dir() -> Path:
     return d
 
 
+def _wait_for_clip(sink: SinkSpeech, target: Target) -> None:
+    """Wait for sink-speech to start then finish the current clip."""
+    for _ in range(20):
+        if not sink.idle(target):
+            break
+        time.sleep(0.05)
+    for _ in range(1200):
+        if sink.idle(target):
+            break
+        time.sleep(0.1)
+
+
 def submit_event(event: Event,
                  *,
                  state: Optional[StateStore] = None,
                  coordinator: Optional[Coordinator] = None,
                  sink: Optional[SinkSpeech] = None) -> Optional[int]:
-    """Render `event` and play it through sink-speech.
+    """Render `event` sentence-by-sentence and play through sink-speech.
 
-    Returns the history-row id, or None if nothing was rendered (empty
-    text, render failure with no fallback, etc.).
+    Each sentence is rendered to its own clip and played in order. The
+    source tmux pane highlights the current sentence as it starts playing
+    (karaoke-style). Returns the history-row id, or None on failure.
 
-    Blocks until playback finishes. Callers that need fire-and-forget
+    Blocks until all clips finish. Callers that need fire-and-forget
     should run this in a thread.
     """
     text = event.text.strip()
@@ -156,9 +196,6 @@ def submit_event(event: Event,
     state = state or StateStore()
     coordinator = coordinator or Coordinator(state=state)
     sink = sink or SinkSpeech()
-    # Per-event target wins; otherwise the host's deployment default
-    # (mel sets MEDIA_SPEECH_DEFAULT_TARGET=rooms to feed Snapcast),
-    # falling back to local. Decision 1C.
     target = event.target or Target(
         name=os.environ.get("MEDIA_SPEECH_DEFAULT_TARGET", "local"))
 
@@ -168,17 +205,12 @@ def submit_event(event: Event,
 
     audio_dir = _audio_dir()
     stamp = time.strftime("%Y%m%dT%H%M%S")
-    outfile = audio_dir / f"{stamp}--{event.source.value}.{ext}"
+    started_at = time.time()
 
     fallback_info: dict = {}
 
     def _on_fallback(failed_engine: str, err: str) -> None:
-        """Render engine failed; render_text will retry on edge. Record
-        the failure visibly so silent degradation gets a trail.
-        """
         short = err.strip().splitlines()[0] if err else "no detail"
-        # Heuristic: collapse OpenAI quota errors to a clean label so
-        # the notification body stays human-readable.
         kind = "render-fallback"
         if "insufficient_quota" in err:
             kind = "render-quota"
@@ -195,7 +227,6 @@ def submit_event(event: Event,
                         extras={"kind": kind, "engine": failed_engine,
                                 "detail": short[:300],
                                 "source": event.source.value})
-        # Throttled notification so the user sees it once per window.
         if kind == "render-quota":
             title = f"agent-media: {failed_engine} quota exhausted"
             body = "Falling back to edge for now."
@@ -205,70 +236,71 @@ def submit_event(event: Event,
         notify(key=f"render-fallback-{failed_engine}",
                title=title, content=body)
 
-    # Start remote MPRIS detect-and-pause in a background thread so the
-    # ~4.8s SSH cold-connect overlaps with TTS rendering. before_speech()
-    # will wait for this to finish before audio starts.
+    # Start remote MPRIS detect-and-pause in background so SSH cold-connect
+    # (~4.8s) overlaps with all the sentence renders below.
     coordinator.pre_pause_remote()
 
-    started_at = time.time()
-    ok, err = render_text(text, outfile, engine=engine, voice=voice,
-                          on_fallback=_on_fallback)
-    if not ok:
-        log.warning("intake: render failed (%s): %s", engine, err)
-        state.log_error("intake", f"render failed ({engine})",
-                        extras={"err": err, "source": event.source.value})
+    # Render every sentence upfront. Edge TTS is fast (~0.5s per sentence)
+    # so the total pre-render time is well under the SSH connect time.
+    sentences = _split_sentences(text)
+    sentence_clips: list[tuple[str, Path]] = []  # (sentence, audio_path)
+
+    for i, sentence in enumerate(sentences):
+        outfile = audio_dir / f"{stamp}--{event.source.value}--{i:03d}.{ext}"
+        ok, err = render_text(sentence, outfile, engine=engine, voice=voice,
+                              on_fallback=_on_fallback)
+        if not ok:
+            log.warning("intake: render failed for sentence %d (%s): %s",
+                        i, engine, err)
+            state.log_error("intake", f"render failed ({engine})",
+                            extras={"err": err, "source": event.source.value,
+                                    "sentence_index": i})
+            continue
+        # Fallback: qwen/realtime pre-named .wav but edge wrote MP3 bytes.
+        if fallback_info and outfile.suffix == ".wav":
+            renamed = outfile.with_suffix(".mp3")
+            try:
+                outfile.rename(renamed)
+                outfile = renamed
+            except OSError:
+                pass
+        sentence_clips.append((sentence, outfile))
+
+    if not sentence_clips:
         return None
 
-    # Fallback path: realtime/qwen pre-picked a .wav name but edge wrote
-    # MP3 bytes into it. Rename so the file name doesn't lie. mpv reads
-    # either way, so playback isn't affected.
-    if fallback_info and outfile.suffix == ".wav":
-        renamed = outfile.with_suffix(".mp3")
-        try:
-            outfile.rename(renamed)
-            outfile = renamed
-        except OSError:
-            pass
+    first_clip = sentence_clips[0][1]
 
-    # Spoken-text sidecar next to the clip + a live "now-speaking" record,
-    # so the tmux popup / pane highlighter can show and highlight the text
-    # being spoken. Reinstates the old tts.tmux `<stem>.txt` contract on the
-    # core path (the forwarder/watcher used to carry this; media-mcp didn't).
+    # Full-text sidecar next to the first clip (popup + `media text` use it).
     try:
-        outfile.with_suffix(".txt").write_text(text)
+        first_clip.with_suffix(".txt").write_text(text)
     except OSError as e:  # noqa: BLE001
         log.warning("intake: text sidecar write failed: %s", e)
+
     state.set_now_playing(
-        "speech", uri=str(outfile), started_at=started_at,
+        "speech", uri=str(first_clip), started_at=started_at,
         target=target.name,
         extras={"text": text, "source": event.source.value,
                 "engine": engine, "voice": voice})
 
-    coordinator.before_speech()
-    # Only auto-highlight for hook sources — CLI `media say` text is never
-    # rendered in the pane so the search would find nothing.
+    # Only highlight for hook sources — CLI text is never in the pane.
     from ..types import Source as _Source
-    if event.source not in (_Source.CLI,):
-        _tmux_highlight_text(text)
+    do_highlight = event.source not in (_Source.CLI,)
+
+    coordinator.before_speech()
     try:
-        try:
-            sink.play(str(outfile), target)
-        except Exception as e:  # noqa: BLE001
-            log.warning("intake: sink-speech.play failed: %s", e)
-            state.log_error("intake", "sink-speech play failed",
-                            extras={"detail": str(e),
-                                    "source": event.source.value})
-            return None
-        # Wait for the broker to flip out of idle, then poll until done
-        # — keeps the coordinator's before/after symmetry tight.
-        for _ in range(20):
-            if not sink.idle(target):
-                break
-            time.sleep(0.05)
-        for _ in range(1200):
-            if sink.idle(target):
-                break
-            time.sleep(0.1)
+        for sentence, clip_path in sentence_clips:
+            if do_highlight:
+                _tmux_highlight_text(sentence)
+            try:
+                sink.play(str(clip_path), target)
+            except Exception as e:  # noqa: BLE001
+                log.warning("intake: sink-speech.play failed: %s", e)
+                state.log_error("intake", "sink-speech play failed",
+                                extras={"detail": str(e),
+                                        "source": event.source.value})
+                continue
+            _wait_for_clip(sink, target)
     finally:
         coordinator.after_speech()
         state.clear_now_playing("speech")
@@ -280,7 +312,7 @@ def submit_event(event: Event,
         extras["fallback"] = fallback_info
     return state.add_history(
         sink="speech",
-        uri=str(outfile),
+        uri=str(first_clip),
         started_at=started_at,
         ended_at=time.time(),
         target=target.name,
