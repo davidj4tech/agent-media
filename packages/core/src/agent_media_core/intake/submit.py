@@ -88,12 +88,20 @@ def _split_sentences(text: str) -> list[str]:
     return result or [text.strip()]
 
 
-def _tmux_highlight_text(text: str) -> None:
+def _tmux_highlight_text(text: str, *, first: bool = False) -> None:
     """Enter copy-mode in the source pane and jump to the spoken text.
 
     Called once per sentence during progressive playback so the pane
     tracks the audio as it plays (karaoke-style). Press q to exit
     copy-mode at any time; playback is unaffected.
+
+    For the first sentence: enter copy-mode fresh, go to history-bottom,
+    search-backward to find the sentence near the end of the buffer.
+
+    For subsequent sentences: stay in copy-mode and search-forward from
+    the current cursor position (end of previous selection). This avoids
+    the cancel+re-enter round-trip and prevents mis-matches from duplicate
+    snippets earlier in the session history.
 
     Enabled when TMUX_PANE is set and MEDIA_AUTO_HIGHLIGHT != "0".
     """
@@ -106,7 +114,7 @@ def _tmux_highlight_text(text: str) -> None:
         return
 
     # Trim to last word boundary within 50 chars so the snippet fits on
-    # a single visual line — tmux search-backward won't match across wraps.
+    # a single visual line — tmux search won't match across line wraps.
     def _trim_to_word(s: str, limit: int = 50) -> str:
         if len(s) <= limit:
             return s
@@ -125,24 +133,27 @@ def _tmux_highlight_text(text: str) -> None:
         return
 
     snippet = re.sub(r'([][(){}^$.*+?|\\])', r'\\\1', snippet)
-    # How many chars to select from the match start. Add a small buffer so
-    # the selection reliably covers the full sentence — tmux's cursor-right
-    # -N K selects K+1 chars from the anchor, and off-by-one varies by
-    # version; a few extra chars of whitespace selection is harmless.
     select_len = max(0, len(text.strip()) + 1)
 
     try:
-        # Cancel any existing copy-mode (clears selection + exits) then
-        # re-enter fresh — avoids history-bottom extending a live selection.
-        subprocess.run(["tmux", "send-keys", "-t", pane, "-X", "cancel"],
-                       capture_output=True)
-        subprocess.run(["tmux", "copy-mode", "-t", pane],
-                       capture_output=True)
-        subprocess.run(["tmux", "send-keys", "-t", pane, "-X", "history-bottom"],
-                       capture_output=True)
-        subprocess.run(["tmux", "send-keys", "-t", pane, "-X",
-                        "search-backward", snippet],
-                       capture_output=True)
+        if first:
+            # Enter copy-mode fresh, anchor at the bottom, search backward
+            # to land at the first sentence of this response.
+            subprocess.run(["tmux", "send-keys", "-t", pane, "-X", "cancel"],
+                           capture_output=True)
+            subprocess.run(["tmux", "copy-mode", "-t", pane],
+                           capture_output=True)
+            subprocess.run(["tmux", "send-keys", "-t", pane, "-X", "history-bottom"],
+                           capture_output=True)
+            subprocess.run(["tmux", "send-keys", "-t", pane, "-X",
+                            "search-backward", snippet],
+                           capture_output=True)
+        else:
+            # Cursor is at the end of the previous selection — search forward
+            # to the next sentence without leaving copy-mode.
+            subprocess.run(["tmux", "send-keys", "-t", pane, "-X",
+                            "search-forward", snippet],
+                           capture_output=True)
         subprocess.run(["tmux", "send-keys", "-t", pane, "-X",
                         "begin-selection"],
                        capture_output=True)
@@ -351,7 +362,7 @@ def submit_event(event: Event,
     played_any = False
     try:
         offset_s = 0.0
-        for (sentence, clip_path), dur in zip(clip_data, durations):
+        for i, ((sentence, clip_path), dur) in enumerate(zip(clip_data, durations)):
             # Update now_playing so cmd_status can show a response-wide bar.
             state.set_now_playing(
                 "speech", uri=str(clip_path), started_at=started_at,
@@ -361,7 +372,7 @@ def submit_event(event: Event,
                         "clip_offset_s": offset_s,
                         "total_duration_s": total_duration_s})
             if do_highlight:
-                _tmux_highlight_text(sentence)
+                _tmux_highlight_text(sentence, first=(i == 0))
             try:
                 sink.play(str(clip_path), target)
                 played_any = True
