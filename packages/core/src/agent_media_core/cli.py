@@ -16,7 +16,6 @@ import argparse
 import datetime
 import json
 import sys
-import threading
 import time
 from typing import Optional
 
@@ -97,16 +96,24 @@ def cmd_status(a) -> int:
     idle = _get("idle-active")
     pos = _get("time-pos")
     dur = _get("duration")
-    # If now_playing carries multi-clip span info, show a single bar for the
-    # whole response rather than per-sentence progress.
     if not idle:
         np = _now_speaking()
         if np:
             ex = np.get("extras") or {}
-            offset = ex.get("clip_offset_s")
             total = ex.get("total_duration_s")
-            if offset is not None and total:
-                pos = (offset + (pos or 0.0))
+            if total:
+                clip_durs = ex.get("clip_durations_s")
+                if clip_durs:
+                    # Replay path: compute offset from mpv playlist-pos so
+                    # no background thread is needed to track clip advances.
+                    try:
+                        ppos = max(0, int(ipc.get_property(_sock(), "playlist-pos") or 0))
+                    except Exception:  # noqa: BLE001
+                        ppos = 0
+                    offset = sum(clip_durs[:ppos])
+                else:
+                    offset = ex.get("clip_offset_s") or 0.0
+                pos = offset + (pos or 0.0)
                 dur = total
     print(render_status(idle=idle, pos=pos, dur=dur,
                         paused=_get("pause"), muted=_get("mute"),
@@ -192,37 +199,6 @@ def cmd_jump(a) -> int:
     return 0
 
 
-def _replay_progress_tracker(clip_uris: list[str], durations: list[float],
-                              text: str) -> None:
-    """Background thread: update now_playing with spanning offset during replay."""
-    total = sum(durations)
-    cum = [sum(durations[:i]) for i in range(len(durations))]
-    state = StateStore()
-    started_at = time.time()
-    state.set_now_playing(
-        "speech", uri=clip_uris[0], started_at=started_at,
-        target=SPEECH_TARGET.name,
-        extras={"text": text, "clip_offset_s": 0.0, "total_duration_s": total})
-    last_pos = 0
-    while True:
-        time.sleep(0.2)
-        try:
-            if bool(ipc.get_property(_sock(), "idle-active")):
-                state.clear_now_playing("speech")
-                return
-            pos = int(ipc.get_property(_sock(), "playlist-pos") or 0)
-        except Exception:  # noqa: BLE001
-            continue
-        if pos != last_pos and 0 <= pos < len(clip_uris):
-            last_pos = pos
-            state.set_now_playing(
-                "speech", uri=clip_uris[pos], started_at=started_at,
-                target=SPEECH_TARGET.name,
-                extras={"text": text,
-                        "clip_offset_s": cum[pos] if pos < len(cum) else total,
-                        "total_duration_s": total})
-
-
 def _do_replay(index: int) -> int:
     rows = _speech_history(max(1, index))
     if len(rows) < index:
@@ -249,13 +225,16 @@ def _do_replay(index: int) -> int:
         ipc.set_property(_sock(), "mute", False)
     except ipc.MpvIpcError:
         pass
-    # Track per-clip progress so the status bar shows a single spanning bar.
+    # Persist clip durations in now_playing so cmd_status can compute a
+    # spanning progress bar by reading playlist-pos from mpv directly —
+    # no background thread needed.
     if len(clip_uris) > 1 and len(clip_durations) == len(clip_uris):
-        threading.Thread(
-            target=_replay_progress_tracker,
-            args=(clip_uris, clip_durations, replay_text),
-            daemon=True,
-        ).start()
+        StateStore().set_now_playing(
+            "speech", uri=clip_uris[0], started_at=time.time(),
+            target=SPEECH_TARGET.name,
+            extras={"text": replay_text,
+                    "total_duration_s": sum(clip_durations),
+                    "clip_durations_s": clip_durations})
     return 0
 
 
