@@ -130,11 +130,11 @@ def _tmux_highlight_text(text: str) -> None:
     select_len = max(0, len(text.strip()) - 1)
 
     try:
-        subprocess.run(["tmux", "copy-mode", "-t", pane],
+        # Cancel any existing copy-mode (clears selection + exits) then
+        # re-enter fresh — avoids history-bottom extending a live selection.
+        subprocess.run(["tmux", "send-keys", "-t", pane, "-X", "cancel"],
                        capture_output=True)
-        # Clear any previous selection before moving — an active selection
-        # causes history-bottom to extend it rather than move the cursor.
-        subprocess.run(["tmux", "send-keys", "-t", pane, "-X", "clear-selection"],
+        subprocess.run(["tmux", "copy-mode", "-t", pane],
                        capture_output=True)
         subprocess.run(["tmux", "send-keys", "-t", pane, "-X", "history-bottom"],
                        capture_output=True)
