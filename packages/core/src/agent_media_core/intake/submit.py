@@ -236,7 +236,11 @@ def submit_event(event: Event,
                 "engine": engine, "voice": voice})
 
     coordinator.before_speech()
-    _tmux_highlight_text(text)
+    # Only auto-highlight for hook sources — CLI `media say` text is never
+    # rendered in the pane so the search would find nothing.
+    from ..types import Source as _Source
+    if event.source not in (_Source.CLI,):
+        _tmux_highlight_text(text)
     try:
         try:
             sink.play(str(outfile), target)
