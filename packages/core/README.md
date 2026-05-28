@@ -8,19 +8,198 @@ intake/  ─►  route/  ─►  render/  ─►  sinks/
                   └─────  state/  ◄───────┘
 ```
 
-See `../../RESTRUCTURE.md` for the full architecture and migration plan.
-This package is in **Phase 0 scaffold** state — no behaviour yet, just
-type contracts.
-
 ## Modules
 
-- `intake/` — event sources (hooks, CLI, MCP, HA, Matrix, legacy watcher).
-- `route/` — policy: pre-emption, per-source voice, content-type-aware
-  interruption (duck vs pause-and-resume), target selection.
-- `render/` — text → audio. Engines: edge, openai, qwen, realtime.
-- `transcribe/` — audio → text. HA passthrough today; Whisper later.
-- `capture/` — mic capture.
-- `sinks/` — `sink-speech` (mpv/openal), `sink-music` (Mopidy).
-- `state/` — SQLite-backed queue, now-playing, history, errors,
-  pause-resume positions.
-- `entrypoints/` — hook scripts, CLI, MCP server.
+- `intake/` — event sources: Claude Code hook, Codex hook, HA-SSE, Matrix, CLI.
+- `route/` — coordinator: content-type-aware interruption (duck vs pause-and-resume), MPRIS browser pause, remote host MPRIS via SSH.
+- `render/` — text → audio. Engines: edge (Edge TTS), openai, qwen, realtime.
+- `sinks/` — `sink-speech` (mpv broker), `sink-music` (Mopidy/MPD).
+- `state/` — SQLite-backed now-playing, history, errors.
+
+---
+
+## Pipeline
+
+1. An intake source (e.g. Claude Code Stop hook) calls `submit_event(event)`.
+2. `submit_event` resolves render engine/voice, starts remote MPRIS pause in a background thread, then calls `render_text` to produce an audio clip.
+3. Once the clip is ready, `coordinator.before_speech()` waits for the remote pause to finish, then handles local MPRIS + Mopidy interruption.
+4. The clip plays via `sink-speech` (mpv IPC broker).
+5. `coordinator.after_speech()` resumes everything that was paused/ducked.
+
+---
+
+## Configuration
+
+All settings are read from environment variables. Put them in
+`~/.config/agent-audio-relay.env` (sourced by every hook and the `media`
+CLI on startup).
+
+### TTS / render
+
+| Variable | Default | Description |
+|---|---|---|
+| `MEDIA_RENDER_ENGINE` | `edge` | TTS engine: `edge`, `openai`, `qwen`, `realtime` |
+| `MEDIA_RENDER_VOICE` | *(engine default)* | Voice name for the engine |
+| `OPENAI_API_KEY` | — | Required for `openai` / `realtime` engines |
+| `CLAUDE_TTS_ENABLED` | `1` | Set to `0` to silence all TTS |
+| `MEDIA_HOOK_ENABLED` | `1` | Set to `0` to disable the Claude Code hook |
+
+### Speech routing (sink-speech)
+
+| Variable | Default | Description |
+|---|---|---|
+| `MEDIA_SPEECH_DEFAULT_TARGET` | `local` | Where clips play: `local` or `rooms` |
+| `MEDIA_SPEECH_LOCAL_DEVICE` | *(broker default)* | mpv `audio-device` for the `local` target (e.g. `pulse/am`) |
+| `MEDIA_ROOMS_SINK` | `am` | PulseAudio/PipeWire sink name for the `rooms` target (fed into Snapcast) |
+| `MEDIA_SPEECH_SOCKET_<TARGET>` | *(XDG state dir)* | Override IPC socket path per target |
+
+### Music interruption (coordinator)
+
+When TTS fires, the coordinator checks what Mopidy is playing and applies
+a strategy based on content type:
+
+- **Podcast / audiobook / speech** → pause-and-resume (with a configurable
+  lead-in rewind so the listener doesn't miss a word)
+- **Music / stream / unknown** → duck to a lower volume, then restore
+
+| Variable | Default | Description |
+|---|---|---|
+| `MEDIA_DUCK_VOLUME` | *(per-policy)* | Override duck level (0-100) for all content types |
+| `AAR_MOPIDY_DUCK_VOLUME` | — | Legacy alias for `MEDIA_DUCK_VOLUME` |
+
+### MPRIS browser/media pause
+
+The coordinator pauses any MPRIS-registered player (Chrome, VLC, etc.)
+around TTS. Uses `playerctl` — install it with your package manager.
+
+| Variable | Default | Description |
+|---|---|---|
+| `MEDIA_MPRIS_PAUSE` | `1` | Set to `0` to disable MPRIS pause entirely |
+| `MEDIA_MPRIS_SSH_HOSTS` | — | Comma-separated list of remote hosts to also pause via SSH (e.g. `sp4r` or `sp4r,tablet`) |
+
+#### Remote MPRIS (cross-host)
+
+If TTS originates on one machine (e.g. a headless mel) but browser media
+plays on another (e.g. sp4r), set `MEDIA_MPRIS_SSH_HOSTS=sp4r` on the
+originating host. The coordinator will SSH to each listed host and pause
+their MPRIS players before speech starts, then resume them after.
+
+Requirements:
+- `playerctl` installed on every remote host
+- Passwordless SSH from the originating host to each remote (key auth)
+- The remote user's D-Bus session bus at the standard path
+  (`/run/user/<uid>/bus`)
+
+**Timing:** on cold start the SSH connection takes ~5 seconds to establish.
+The coordinator starts the SSH pause in a background thread *before* the
+TTS clip is rendered, so the two overlap. The audio will be briefly delayed
+on the very first message after the connection goes cold (after 5 minutes of
+silence). Subsequent messages within 5 minutes reuse the SSH ControlMaster
+and are instant.
+
+**Chromium / Chrome:** handled correctly despite Chromium unregistering its
+MPRIS interface when paused and re-registering with a new instance number on
+resume. The coordinator uses base-name prefix matching to find the new
+instance.
+
+### Notifications (Claude Code hook)
+
+| Variable | Default | Description |
+|---|---|---|
+| `MEDIA_NOTIF_LABEL` | `1` | Set to `0` to disable the "hostname / session / pane" prefix on notifications |
+| `MEDIA_NOTIF_LABEL_HOST` | `1` | Set to `0` to omit the hostname from the label (useful on single-machine setups) |
+| `MEDIA_NOTIF_FOCUS_SUPPRESS` | `180` | Suppress "waiting" notifications if the user was active in tmux within this many seconds. Set to `0` to disable. |
+
+---
+
+## Services
+
+`media-setup` (bundled CLI) installs and wires up all services. It
+auto-detects the init system (runit on Termux / host-runit, systemd
+`--user` on regular Linux).
+
+Manually, the key services are:
+
+### `sink-speech` (mpv broker)
+
+A long-running `mpv --idle=yes --input-ipc-server=<socket>` process. The
+`media` CLI and all hooks talk to it over the socket.
+
+```sh
+# systemd user service (Linux)
+systemctl --user start agent-media-sink-speech
+
+# Termux runit
+sv start agent-media-sink-speech
+```
+
+Socket path: `$XDG_STATE_HOME/agent-media/sink-speech.sock`
+(default: `~/.local/state/agent-media/sink-speech.sock`)
+
+### Claude Code hook
+
+Wire in `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "Stop": [{"hooks": [{"type": "command",
+                         "command": "media-hook-claude-code",
+                         "timeout": 30}]}],
+    "Notification": [{"hooks": [{"type": "command",
+                                  "command": "media-hook-claude-code",
+                                  "timeout": 30}]}]
+  }
+}
+```
+
+The hook reads the transcript, extracts the latest assistant text, deduplicates
+it against recent history, and submits it to the pipeline.
+
+---
+
+## tmux integration
+
+Source `media.tmux` from your `tmux.conf.local` for the control popup and
+status bar:
+
+```tmux
+# In tmux.conf.local (after oh-my-tmux loads):
+source-file ~/.local/share/agent-media/media.tmux
+
+# Add to status-right for live TTS progress (oh-my-tmux):
+# tmux_conf_theme_status_right="... #(media status 2>/dev/null) ..."
+```
+
+`prefix + a` opens the control popup (play/pause, seek, volume, speed,
+view spoken text). `media status` prints a compact progress bar for the
+status line.
+
+---
+
+## Snapcast (whole-house audio)
+
+For multi-room setups, TTS and music route through Snapcast:
+
+1. PipeWire null sinks (`am`, `am-music`) receive audio from mpv and Mopidy.
+2. `parec` reads from the sink monitors and writes into named FIFOs
+   (`/tmp/snapfifo-am`, `/tmp/snapfifo-am-music`).
+3. `snapserver` reads the FIFOs and streams to all `snapclient` instances.
+
+Key constraint: `snapserver` and `parec` must run as the **same user** or
+the FIFO write will fail with ENXIO. Override snapserver's user in
+`/etc/systemd/system/snapserver.service.d/override.conf`:
+
+```ini
+[Service]
+User=<your-username>
+Group=<your-username>
+Environment=XDG_RUNTIME_DIR=/run/user/<uid>
+```
+
+Pre-create the FIFOs at boot via `/etc/tmpfiles.d/snapfifo.conf`:
+
+```
+p /tmp/snapfifo-am      0662 <user> <user> -
+p /tmp/snapfifo-am-music 0662 <user> <user> -
+```
