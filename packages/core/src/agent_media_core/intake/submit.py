@@ -123,6 +123,9 @@ def _tmux_highlight_text(text: str) -> None:
         return
 
     snippet = re.sub(r'([][(){}^$.*+?|\\])', r'\\\1', snippet)
+    # How many chars to select from the match start: full sentence length,
+    # capped so we don't overshoot if the pane rendered it shorter.
+    select_len = max(0, len(text.strip()) - 1)
 
     try:
         subprocess.run(["tmux", "copy-mode", "-t", pane],
@@ -132,6 +135,14 @@ def _tmux_highlight_text(text: str) -> None:
         subprocess.run(["tmux", "send-keys", "-t", pane, "-X",
                         "search-backward", snippet],
                        capture_output=True)
+        # Extend selection to cover the whole sentence.
+        subprocess.run(["tmux", "send-keys", "-t", pane, "-X",
+                        "begin-selection"],
+                       capture_output=True)
+        if select_len > 0:
+            subprocess.run(["tmux", "send-keys", "-t", pane,
+                            "-X", "-N", str(select_len), "cursor-right"],
+                           capture_output=True)
     except Exception:  # noqa: BLE001
         pass
 
