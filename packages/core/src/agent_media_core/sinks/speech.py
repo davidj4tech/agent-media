@@ -95,6 +95,10 @@ class SinkSpeech:
             except ipc.MpvIpcError:
                 pass
 
+    def queue(self, uri: str, target: Target = DEFAULT_TARGET) -> None:
+        """Append a clip to mpv's playlist without interrupting what's playing."""
+        ipc.command(_socket_for(target), "loadfile", uri, "append")
+
     def pause(self, target: Target = DEFAULT_TARGET) -> None:
         ipc.set_property(_socket_for(target), "pause", True)
 

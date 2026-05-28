@@ -195,13 +195,25 @@ def _do_replay(index: int) -> int:
     if len(rows) < index:
         print("media: no clip to replay", file=sys.stderr)
         return 1
-    uri = rows[index - 1].get("uri")
+    row = rows[index - 1]
+    uri = row.get("uri")
     if not uri:
         return 1
-    SinkSpeech().play(uri, SPEECH_TARGET)
-    # "Replay" means "I want to hear this now": clear a lingering pause or
-    # mute (e.g. a stray Space/m while idle) that would otherwise make it
-    # load silently. `m` still toggles mute live while a clip is playing.
+    ex = row.get("extras") or {}
+    if isinstance(ex, str):
+        try:
+            ex = json.loads(ex)
+        except Exception:
+            ex = {}
+    clip_uris: list[str] = ex.get("clip_uris") or [uri]
+
+    sink = SinkSpeech()
+    # Play first clip (replace), then queue the rest — mpv plays them
+    # sequentially as a playlist so the full response replays intact.
+    sink.play(clip_uris[0], SPEECH_TARGET)
+    for extra_uri in clip_uris[1:]:
+        sink.queue(extra_uri, SPEECH_TARGET)
+    # "Replay" means "I want to hear this now": clear a lingering pause/mute.
     try:
         ipc.set_property(_sock(), "pause", False)
         ipc.set_property(_sock(), "mute", False)

@@ -383,6 +383,7 @@ def submit_event(event: Event,
 
     extras = {"engine": engine, "voice": voice,
               "priority": event.priority.value,
+              "clip_uris": [str(p) for _, p in clip_data],
               **(event.metadata or {})}
     if fallback_info:
         extras["fallback"] = fallback_info
