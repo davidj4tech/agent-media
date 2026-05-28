@@ -88,20 +88,12 @@ def _split_sentences(text: str) -> list[str]:
     return result or [text.strip()]
 
 
-def _tmux_highlight_text(text: str, *, first: bool = False) -> None:
+def _tmux_highlight_text(text: str, *, first: bool = False) -> None:  # noqa: ARG001 (first unused)
     """Enter copy-mode in the source pane and jump to the spoken text.
 
-    Called once per sentence during progressive playback so the pane
-    tracks the audio as it plays (karaoke-style). Press q to exit
-    copy-mode at any time; playback is unaffected.
-
-    For the first sentence: enter copy-mode fresh, go to history-bottom,
-    search-backward to find the sentence near the end of the buffer.
-
-    For subsequent sentences: stay in copy-mode and search-forward from
-    the current cursor position (end of previous selection). This avoids
-    the cancel+re-enter round-trip and prevents mis-matches from duplicate
-    snippets earlier in the session history.
+    Called once per sentence. Each call is independent — cancel + re-enter
+    + history-bottom + search-backward every time so that any overshoot in
+    the previous selection doesn't cascade into the next sentence's search.
 
     Enabled when TMUX_PANE is set and MEDIA_AUTO_HIGHLIGHT != "0".
     """
@@ -136,20 +128,15 @@ def _tmux_highlight_text(text: str, *, first: bool = False) -> None:
     select_len = max(0, len(text.strip()) + 1)
 
     try:
-        if first:
-            subprocess.run(["tmux", "send-keys", "-t", pane, "-X", "cancel"],
-                           capture_output=True)
-            subprocess.run(["tmux", "copy-mode", "-t", pane],
-                           capture_output=True)
-            subprocess.run(["tmux", "send-keys", "-t", pane, "-X", "history-bottom"],
-                           capture_output=True)
-            subprocess.run(["tmux", "send-keys", "-t", pane, "-X",
-                            "search-backward", snippet],
-                           capture_output=True)
-        else:
-            subprocess.run(["tmux", "send-keys", "-t", pane, "-X",
-                            "search-forward", snippet],
-                           capture_output=True)
+        subprocess.run(["tmux", "send-keys", "-t", pane, "-X", "cancel"],
+                       capture_output=True)
+        subprocess.run(["tmux", "copy-mode", "-t", pane],
+                       capture_output=True)
+        subprocess.run(["tmux", "send-keys", "-t", pane, "-X", "history-bottom"],
+                       capture_output=True)
+        subprocess.run(["tmux", "send-keys", "-t", pane, "-X",
+                        "search-backward", snippet],
+                       capture_output=True)
         subprocess.run(["tmux", "send-keys", "-t", pane, "-X",
                         "begin-selection"],
                        capture_output=True)
@@ -375,7 +362,7 @@ def submit_event(event: Event,
                         "clip_offset_s": offset_s,
                         "total_duration_s": total_duration_s})
             if do_highlight:
-                _tmux_highlight_text(sentence, first=(i == 0))
+                _tmux_highlight_text(sentence)
             try:
                 sink.play(str(clip_path), target)
                 played_any = True

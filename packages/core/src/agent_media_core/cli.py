@@ -294,7 +294,7 @@ def cmd_replay_track(a) -> int:
         except Exception:  # noqa: BLE001
             continue
         if pos != last_pos and 0 <= pos < len(sentences):
-            _tmux_highlight_text(sentences[pos], first=(pos == 0))
+            _tmux_highlight_text(sentences[pos])
             last_pos = pos
     return 0
 
