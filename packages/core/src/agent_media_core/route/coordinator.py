@@ -20,7 +20,7 @@ from typing import Optional
 from ..sinks.music import SinkMusic
 from ..state import StateStore
 from ..types import ContentType, Target
-from . import _mpris
+from . import _android, _mpris
 from .policy import (
     DEFAULT_POLICY,
     InterruptionPolicy,
@@ -64,6 +64,9 @@ class Coordinator:
         self._mpris_paused: list[str] = []
         self._mpris_remote_paused: dict[str, list[str]] = {}
         self._remote_pause_done: Optional[threading.Event] = None
+        # Hosts where we sent a media-button play-pause that we need to undo
+        # after speech finishes (Android phones via SSH).
+        self._android_paused: list[str] = []
 
     # ---- public API used by sink-speech --------------------------------
 
@@ -74,16 +77,25 @@ class Coordinator:
         with rendering.  before_speech() waits up to 6s for it to finish
         before playing audio.
         """
-        if not _mpris.enabled() or not _mpris.ssh_hosts():
+        mpris_hosts = _mpris.ssh_hosts() if _mpris.enabled() else []
+        android_hosts = _android.pause_hosts()
+        if not mpris_hosts and not android_hosts:
             return
         self._remote_pause_done = threading.Event()
 
         def _work() -> None:
-            for host in _mpris.ssh_hosts():
+            for host in mpris_hosts:
                 try:
                     remote = _mpris.remote_playing_players(host)
                     self._mpris_remote_paused[host] = remote
                     _mpris.pause_remote(host, remote)
+                except Exception:  # noqa: BLE001
+                    pass
+            for host in android_hosts:
+                try:
+                    if _android.is_playing(host):
+                        _android.send_play_pause(host)
+                        self._android_paused.append(host)
                 except Exception:  # noqa: BLE001
                     pass
             self._remote_pause_done.set()
@@ -100,16 +112,23 @@ class Coordinator:
             self._mpris_paused = _mpris.playing_players()
             _mpris.pause_players(self._mpris_paused)
 
-        # Remote MPRIS: wait for pre_pause_remote() background work to finish,
-        # or do it synchronously if it was never started.
-        if _mpris.enabled() and _mpris.ssh_hosts():
+        # Remote MPRIS + Android media-button: wait for pre_pause_remote()
+        # background work to finish, or do it synchronously if it was never
+        # started.
+        mpris_hosts = _mpris.ssh_hosts() if _mpris.enabled() else []
+        android_hosts = _android.pause_hosts()
+        if mpris_hosts or android_hosts:
             if self._remote_pause_done is not None:
                 self._remote_pause_done.wait(timeout=14)
             else:
-                for host in _mpris.ssh_hosts():
+                for host in mpris_hosts:
                     remote = _mpris.remote_playing_players(host)
                     self._mpris_remote_paused[host] = remote
                     _mpris.pause_remote(host, remote)
+                for host in android_hosts:
+                    if _android.is_playing(host):
+                        _android.send_play_pause(host)
+                        self._android_paused.append(host)
 
         try:
             uri = self.music.now_playing_uri(self.music_target)
@@ -165,6 +184,12 @@ class Coordinator:
         for host, names in self._mpris_remote_paused.items():
             _mpris.resume_remote(host, names)
         self._mpris_remote_paused = {}
+        for host in self._android_paused:
+            try:
+                _android.send_play_pause(host)
+            except Exception:  # noqa: BLE001
+                pass
+        self._android_paused = []
 
         np = self.state.get_now_playing("music")
         if not np or not np.get("extras"):

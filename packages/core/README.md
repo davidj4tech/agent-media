@@ -76,6 +76,8 @@ around TTS. Uses `playerctl` — install it with your package manager.
 |---|---|---|
 | `MEDIA_MPRIS_PAUSE` | `1` | Set to `0` to disable MPRIS pause entirely |
 | `MEDIA_MPRIS_SSH_HOSTS` | — | Comma-separated list of remote hosts to also pause via SSH (e.g. `sp4r` or `sp4r,tablet`) |
+| `MEDIA_ANDROID_PAUSE_HOSTS` | — | Comma-separated list of Android phone hosts (Termux + sshd) to pause via a media-button intent — see *Android pause* below |
+| `MEDIA_ANDROID_PAUSE_CMD` | `am broadcast -a android.intent.action.MEDIA_BUTTON --ei android.intent.extra.KEY_EVENT 85` | Override the command sent over SSH for play/pause — use this if `am broadcast` doesn't reach your apps and you need `input keyevent`, `termux-keyevent`, ADB, etc. |
 
 #### Remote MPRIS (cross-host)
 
@@ -101,6 +103,25 @@ and are instant.
 MPRIS interface when paused and re-registering with a new instance number on
 resume. The coordinator uses base-name prefix matching to find the new
 instance.
+
+#### Android pause
+
+Android doesn't expose MPRIS, so phones use a different SSH-based path:
+set `MEDIA_ANDROID_PAUSE_HOSTS=phone1,phone2` and the coordinator will SSH
+into each, query `dumpsys media_session` for an active playing session,
+and if so, broadcast a `KEYCODE_MEDIA_PLAY_PAUSE` intent that most music
+apps (Spotify, YouTube Music, Pocket Casts, etc.) listen for. After speech
+finishes, a second media-button broadcast resumes playback.
+
+Caveats:
+- Android exposes only a toggle, not explicit pause/resume — we check
+  state before pausing to avoid accidentally starting playback.
+- `am broadcast` works in Termux for media-button intents. If your phone
+  needs a different mechanism (root + `input keyevent 85`, `termux-keyevent`
+  via `termux-api`, ADB over Wi-Fi, Shizuku, etc.) override the command
+  with `MEDIA_ANDROID_PAUSE_CMD`.
+- Both `MEDIA_MPRIS_SSH_HOSTS` and `MEDIA_ANDROID_PAUSE_HOSTS` can be
+  active for different remote hosts in the same response.
 
 ### Text highlight
 
