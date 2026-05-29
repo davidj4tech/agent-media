@@ -10,13 +10,20 @@ log = logging.getLogger(__name__)
 
 
 def load_env_file(label: str = "hook") -> None:
-    """Load ~/.config/agent-audio-relay.env (or RELAY_ENV_FILE) into os.environ.
+    """Load env file into os.environ. Tries (in order):
 
-    Missing file is a no-op. Existing env vars are never overwritten.
-    Lines starting with ``export `` are stripped before parsing.
+    1. ``$MEDIA_ENV_FILE`` or ``$RELAY_ENV_FILE`` (legacy)
+    2. ``~/.config/agent-media.env`` (current)
+    3. ``~/.config/agent-audio-relay.env`` (legacy, kept so hosts that
+       haven't migrated still work)
+
+    Missing files are skipped. Loads the first file that exists. Existing
+    env vars are never overwritten. ``export `` prefixes are stripped.
     """
     candidates = [
+        os.environ.get("MEDIA_ENV_FILE") or "",
         os.environ.get("RELAY_ENV_FILE") or "",
+        str(Path.home() / ".config" / "agent-media.env"),
         str(Path.home() / ".config" / "agent-audio-relay.env"),
     ]
     for path in candidates:

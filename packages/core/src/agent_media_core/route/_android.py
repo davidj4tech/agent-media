@@ -65,17 +65,29 @@ def play_pause_cmd() -> str:
 
 
 def is_playing(host: str) -> bool:
-    """True if dumpsys media_session reports any active session in a
-    playing-ish state (PlaybackState state=3 PLAYING or state=8 BUFFERING).
+    """True if dumpsys media_session reports any active playing session.
+
+    On Termux without root, `dumpsys` is denied (no DUMP permission) — we
+    return True in that case so the toggle still fires. Set
+    MEDIA_ANDROID_REQUIRE_PLAYING_DETECTION=1 to require positive detection
+    (no toggle when state can't be determined).
     """
-    out = _ssh(host, "dumpsys media_session 2>/dev/null")
-    if not out:
+    out = _ssh(host, "/system/bin/dumpsys media_session 2>&1")
+    if out is None:
         return False
     # Look for "state=N" where N is 3 (PLAYING) or 8 (BUFFERING).
     for line in out.splitlines():
         if "PlaybackState" in line or "state=" in line:
             if "state=3" in line or "state=8" in line:
                 return True
+    # If we couldn't read state (permission denied / no dumpsys), default
+    # to True so the toggle still fires for users on stock Termux.
+    if "Permission Denial" in out or "not found" in out or not out.strip():
+        if os.environ.get("MEDIA_ANDROID_REQUIRE_PLAYING_DETECTION") == "1":
+            return False
+        log.debug("android: %s can't detect state (permission/missing); "
+                  "defaulting to play-pause toggle", host)
+        return True
     return False
 
 
