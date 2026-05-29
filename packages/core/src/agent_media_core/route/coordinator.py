@@ -25,6 +25,7 @@ from .policy import (
     DEFAULT_POLICY,
     InterruptionPolicy,
     InterruptionStrategy,
+    coerce_content_type,
     detect_content_type,
     policy_for,
 )
@@ -138,7 +139,7 @@ class Coordinator:
         if not uri:
             return  # nothing to interrupt via Mopidy
 
-        content_type = detect_content_type(uri)
+        content_type = self._content_type_for(uri)
         policy = policy_for(content_type)
         extras: dict = {}
 
@@ -223,6 +224,33 @@ class Coordinator:
             self.state.clear_now_playing("music")
 
     # ---- helpers --------------------------------------------------------
+
+    def _content_type_for(self, uri: str) -> ContentType:
+        """Content type for what's playing on the music sink.
+
+        Prefers the caller's queue-time intent (set by music_play, e.g.
+        "this yt: URL is an audiobook") over re-sniffing the URI, since a
+        YouTube/HTTP URL is otherwise indistinguishable from music and would
+        be ducked rather than paused. Falls back to URI detection when no
+        intent is recorded.
+
+        The intent is trusted whenever present rather than matched against
+        `uri`: Mopidy normalises a queued `yt:https://...` URL into a
+        `yt:video:<id>` form by playback time, so an exact match would
+        defeat the very case this exists for. The trade-off is that music
+        started outside music_play (e.g. the /music skill talking straight
+        to MPD) can leave a stale audiobook intent — that over-pauses music,
+        which is benign and self-heals on the next music_play or music_stop.
+        """
+        try:
+            intent = self.state.get_music_intent()
+        except Exception:  # noqa: BLE001
+            intent = None
+        if intent:
+            ct = coerce_content_type(intent.get("content_type"))
+            if ct is not None:
+                return ct
+        return detect_content_type(uri)
 
     def _log_err(self, msg: str, detail: str) -> None:
         log.warning("%s: %s", msg, detail)

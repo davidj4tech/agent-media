@@ -149,6 +149,43 @@ class StateStore:
             cur.execute("UPDATE now_playing SET pause_pos_ms = ? WHERE sink = ?",
                         (pos_ms, sink))
 
+    # ---- music content-type intent ----------------------------------------
+    #
+    # The caller's content-type intent for whatever is queued on the music
+    # sink ("this YouTube URL is an audiobook, pause it instead of ducking").
+    # Lives in `meta` rather than `now_playing` on purpose: the interruption
+    # coordinator wipes the music `now_playing` row after *every* speech clip
+    # (see route/coordinator.after_speech), so a hint stored there would only
+    # survive the first interruption. This one persists until the next
+    # music_play overwrites it or music_stop clears it.
+
+    _MUSIC_INTENT_KEY = "music_content_intent"
+
+    def set_music_intent(self, uri: str, content_type: Optional[str]) -> None:
+        with self._cursor() as cur:
+            cur.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                (self._MUSIC_INTENT_KEY,
+                 json.dumps({"uri": uri, "content_type": content_type})),
+            )
+
+    def get_music_intent(self) -> Optional[dict]:
+        with self._cursor() as cur:
+            cur.execute("SELECT value FROM meta WHERE key = ?",
+                        (self._MUSIC_INTENT_KEY,))
+            row = cur.fetchone()
+        if not row:
+            return None
+        try:
+            return json.loads(row[0])
+        except (json.JSONDecodeError, TypeError):
+            return None
+
+    def clear_music_intent(self) -> None:
+        with self._cursor() as cur:
+            cur.execute("DELETE FROM meta WHERE key = ?",
+                        (self._MUSIC_INTENT_KEY,))
+
     # ---- history ----------------------------------------------------------
 
     def add_history(self, *, sink: str, uri: str, started_at: float,

@@ -35,6 +35,7 @@ def _port() -> int:
     except ValueError:
         return 8765
 
+from .route import coerce_content_type, detect_content_type
 from .sinks import SinkMusic, SinkSpeech
 from .state import StateStore
 from .types import Event, Priority, Source, Target
@@ -158,16 +159,25 @@ def speech_replay_last(target: str = "local") -> dict:
 # --- music sink controls --------------------------------------------------
 
 @mcp.tool()
-def music_play(uri: str, replace: bool = True, target: str = "local") -> dict:
-    """Play a music URI on the music sink (Mopidy).
+def music_play(uri: str, replace: bool = True, target: str = "local",
+               content_type: str = "") -> dict:
+    """Play a URI on the music sink (Mopidy) — music or longform alike.
 
     Args:
         uri: Mopidy URI — e.g. `yt:https://...`, `https://stream.url`,
             `local:track:...`.
         replace: Clear the queue first (default True).
+        content_type: How speech should interrupt this. `music`/`dj-set`/
+            `ambient` duck the volume; `audiobook`/`podcast` pause and
+            resume (with a short rewind) so you don't miss narration.
+            Defaults to auto-detection from the URI — which classifies a
+            bare YouTube/HTTP URL as music, so set `audiobook` explicitly
+            for spoken-word content from YouTube.
     """
     _music().play(uri, _target(target), replace=replace)
-    return {"ok": True, "uri": uri}
+    ct = coerce_content_type(content_type) or detect_content_type(uri)
+    _state().set_music_intent(uri, ct.value)
+    return {"ok": True, "uri": uri, "content_type": ct.value}
 
 
 @mcp.tool()
@@ -188,6 +198,7 @@ def music_resume(target: str = "local") -> dict:
 def music_stop(target: str = "local") -> dict:
     """Stop music and clear the playlist."""
     _music().stop(_target(target))
+    _state().clear_music_intent()
     return {"ok": True}
 
 
