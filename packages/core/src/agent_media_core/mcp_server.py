@@ -35,6 +35,7 @@ def _port() -> int:
     except ValueError:
         return 8765
 
+from .intake._env import load_env_file
 from .route import coerce_content_type, detect_content_type
 from .sinks import SinkMusic, SinkSpeech
 from .state import StateStore
@@ -236,12 +237,14 @@ def _configure_logging() -> None:
 
 def main() -> None:
     """stdio entrypoint — for Claude Code and other local MCP clients."""
+    load_env_file("media-mcp")
     _configure_logging()
     mcp.run()
 
 
 def main_http() -> None:
     """streamable-HTTP entrypoint — for remote callers over Tailscale."""
+    load_env_file("media-mcp-http")
     _configure_logging()
     log.info("media-mcp http listening on %s:%d", _host(), _port())
     mcp.run(transport="streamable-http")
