@@ -123,6 +123,23 @@ def resolve_policy(content_type: Optional[ContentType],
     return policy_for(content_type)
 
 
+def coerce_content_type(value: Optional[str]) -> Optional[ContentType]:
+    """Parse a free-text content-type label into a `ContentType`.
+
+    Accepts the enum values (`music`, `audiobook`, `podcast`, `dj-set`,
+    `ambient`, `unknown`) case-insensitively, plus the `dj_set` underscore
+    spelling. Returns None for anything unrecognised so callers can fall
+    back to URI-based detection instead of failing.
+    """
+    if not value:
+        return None
+    v = value.strip().lower().replace("_", "-")
+    try:
+        return ContentType(v)
+    except ValueError:
+        return None
+
+
 def detect_content_type(uri: Optional[str], *,
                         hint: Optional[ContentType] = None) -> ContentType:
     """Pick a content type from a Mopidy URI / hint.

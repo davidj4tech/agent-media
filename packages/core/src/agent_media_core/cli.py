@@ -416,9 +416,24 @@ def cmd_say(a) -> int:
 # --- music subcommands -----------------------------------------------------
 
 def cmd_music(a) -> int:
+    from .route import coerce_content_type, detect_content_type
+
     m = SinkMusic()
+    if a.action == "play":
+        if not a.uri:
+            print("media music play: a URI is required", file=sys.stderr)
+            return 2
+        m.play(a.uri, replace=not a.add)
+        ct = coerce_content_type(getattr(a, "as_type", None)) or detect_content_type(a.uri)
+        StateStore().set_music_intent(a.uri, ct.value)
+        print(f"playing ({ct.value}): {a.uri}")
+        return 0
+    if a.action == "stop":
+        m.stop()
+        StateStore().clear_music_intent()
+        return 0
     {
-        "pause": m.pause, "resume": m.resume, "stop": m.stop,
+        "pause": m.pause, "resume": m.resume,
         "toggle": m.toggle, "next": m.next, "prev": m.previous,
     }[a.action]()
     return 0
@@ -489,7 +504,17 @@ def _build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("music", help="music control via Mopidy/MPD")
     s.add_argument("action",
-                   choices=("pause", "resume", "stop", "toggle", "next", "prev"))
+                   choices=("play", "pause", "resume", "stop", "toggle",
+                            "next", "prev"))
+    s.add_argument("uri", nargs="?",
+                   help="for 'play': Mopidy URI (e.g. yt:https://...)")
+    s.add_argument("--add", action="store_true",
+                   help="for 'play': queue without clearing the playlist")
+    s.add_argument("--as", dest="as_type", metavar="TYPE",
+                   choices=("music", "audiobook", "podcast", "dj-set",
+                            "ambient"),
+                   help="for 'play': interruption content type "
+                        "(audiobook/podcast pause instead of duck)")
     s.set_defaults(func=cmd_music)
 
     return p
