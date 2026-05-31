@@ -141,9 +141,13 @@ def cmd_now(a) -> int:
 def _spoken_pane() -> Optional[str]:
     """tmux pane id that produced the current (or most recent) speech."""
     np = _now_speaking()
-    pane = (np or {}).get("extras", {}).get("source_pane") if np else None
-    if pane:
-        return pane
+    if np:
+        # Actively playing: use THIS clip's source pane, or None when the
+        # source had no pane (a gateway/openclaw agent, `media say`, etc.).
+        # Don't fall back to history here — borrowing the last Claude pane
+        # would mislabel paneless speech with a stale, wrong title.
+        return (np.get("extras") or {}).get("source_pane") or None
+    # Idle: keep naming whoever last spoke.
     rows = _speech_history(1)
     if rows:
         ex = rows[0].get("extras") or {}
@@ -152,8 +156,8 @@ def _spoken_pane() -> Optional[str]:
                 ex = json.loads(ex)
             except json.JSONDecodeError:
                 ex = {}
-        pane = ex.get("source_pane")
-    return pane or None
+        return ex.get("source_pane") or None
+    return None
 
 
 def _focus_pane(pane: str) -> None:
