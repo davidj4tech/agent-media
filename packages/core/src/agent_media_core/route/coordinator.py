@@ -95,7 +95,7 @@ class Coordinator:
             for host in android_hosts:
                 try:
                     if _android.is_playing(host):
-                        _android.send_play_pause(host)
+                        _android.pause(host)
                         self._android_paused.append(host)
                 except Exception:  # noqa: BLE001
                     pass
@@ -128,7 +128,7 @@ class Coordinator:
                     _mpris.pause_remote(host, remote)
                 for host in android_hosts:
                     if _android.is_playing(host):
-                        _android.send_play_pause(host)
+                        _android.pause(host)
                         self._android_paused.append(host)
 
         try:
@@ -187,7 +187,7 @@ class Coordinator:
         self._mpris_remote_paused = {}
         for host in self._android_paused:
             try:
-                _android.send_play_pause(host)
+                _android.resume(host)
             except Exception:  # noqa: BLE001
                 pass
         self._android_paused = []

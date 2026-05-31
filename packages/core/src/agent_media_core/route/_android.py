@@ -1,17 +1,27 @@
-"""Android media pause/resume via SSH + media-button intent.
+"""Android media pause/resume via SSH + `cmd media_session dispatch`.
 
 For Android phones (typically Termux + sshd) which don't expose MPRIS.
-The approach: SSH in, query `dumpsys media_session` for an active playing
-session, and if so, send a media-button intent (KEYCODE_MEDIA_PLAY_PAUSE)
-that most apps (Spotify, YouTube Music, Pocket Casts, etc.) register for.
+The approach: SSH in and dispatch media keys to the active session with
+`cmd media_session dispatch pause|play`. Unlike `am broadcast MEDIA_BUTTON`
+(which modern Android sends "without waiting for result" and routinely fails
+to route to the active session), dispatch reaches the foreground media
+session — and, importantly, needs no special permission, so it works on
+stock non-root Termux. `dispatch pause` is a safe no-op when nothing is
+playing (it won't start playback).
+
+State detection (`dumpsys media_session` / `cmd media_session list-sessions`)
+requires the privileged DUMP / MEDIA_CONTENT_CONTROL permission and is denied
+on non-root Termux, so we can't reliably tell what's playing — we just
+dispatch pause before speech and play after (matching the MPRIS path's
+pause/resume), gated by is_playing() which defaults to True on denial.
 
 Enabled by setting MEDIA_ANDROID_PAUSE_HOSTS=phone (comma-separated for
 multiple hosts). Cooperates with the MPRIS path in `_mpris.py` — both can
 be active for different remote hosts in the same response.
 
-Defaults assume Termux can issue `am broadcast`. If your phone needs a
-different command (input keyevent, termux-keyevent via termux-api, ADB,
-shizuku, etc.) override with MEDIA_ANDROID_PAUSE_CMD.
+Override the dispatch commands with MEDIA_ANDROID_PAUSE_CMD /
+MEDIA_ANDROID_RESUME_CMD (e.g. for ADB, `input keyevent`, or a rooted phone).
+Set MEDIA_ANDROID_RESUME=0 to pause without auto-resuming.
 """
 
 from __future__ import annotations
@@ -34,12 +44,11 @@ _SSH_OPTS = ["-o", "BatchMode=yes",
              "-o", f"ControlPersist={_SSH_CONTROL_PERSIST}"]
 
 
-# Send KEYCODE_MEDIA_PLAY_PAUSE (85) as a media-button broadcast.
-# Most media apps register a MediaButtonReceiver and respond.
-_DEFAULT_PLAY_PAUSE_CMD = (
-    "am broadcast -a android.intent.action.MEDIA_BUTTON "
-    "--ei android.intent.extra.KEY_EVENT 85 >/dev/null 2>&1"
-)
+# Dispatch explicit pause / play keys to the active media session. Works
+# without root or extra permissions, and reaches the foreground session
+# (unlike an MEDIA_BUTTON broadcast).
+_DEFAULT_PAUSE_CMD = "cmd media_session dispatch pause >/dev/null 2>&1"
+_DEFAULT_RESUME_CMD = "cmd media_session dispatch play >/dev/null 2>&1"
 
 
 def _ssh(host: str, script: str) -> str | None:
@@ -60,8 +69,16 @@ def pause_hosts() -> list[str]:
     return [h.strip() for h in raw.split(",") if h.strip()]
 
 
-def play_pause_cmd() -> str:
-    return os.environ.get("MEDIA_ANDROID_PAUSE_CMD", _DEFAULT_PLAY_PAUSE_CMD)
+def pause_cmd() -> str:
+    return os.environ.get("MEDIA_ANDROID_PAUSE_CMD", _DEFAULT_PAUSE_CMD)
+
+
+def resume_cmd() -> str:
+    return os.environ.get("MEDIA_ANDROID_RESUME_CMD", _DEFAULT_RESUME_CMD)
+
+
+def resume_enabled() -> bool:
+    return os.environ.get("MEDIA_ANDROID_RESUME", "1") != "0"
 
 
 def is_playing(host: str) -> bool:
@@ -96,9 +113,15 @@ def warmup(host: str) -> None:
     _ssh(host, "true")
 
 
-def send_play_pause(host: str) -> None:
-    """Toggle play/pause on the host. Used for both pause-when-playing and
-    resume-when-was-paused — Android exposes only the toggle.
-    """
-    _ssh(host, play_pause_cmd())
-    log.debug("android: sent play-pause to %s", host)
+def pause(host: str) -> None:
+    """Pause the active media session on the host (safe no-op if idle)."""
+    _ssh(host, pause_cmd())
+    log.debug("android: dispatched pause to %s", host)
+
+
+def resume(host: str) -> None:
+    """Resume the active media session on the host."""
+    if not resume_enabled():
+        return
+    _ssh(host, resume_cmd())
+    log.debug("android: dispatched play to %s", host)
