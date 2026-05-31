@@ -146,6 +146,22 @@ def _cursor_sig(pane: str) -> str:
         return ""
 
 
+def _strip_markdown_inline(s: str) -> str:
+    """Drop inline markdown markers the terminal renderer hides, so a snippet
+    built from the *raw* spoken text matches the *rendered* pane text.
+
+    e.g. the agent says "use `media toggle`" but Claude Code renders the code
+    span without backticks, so a search for the literal backticked snippet
+    never matches. Only markers that are unambiguously formatting are removed
+    (backticks, **bold**, ~~strike~~, [text](url), heading #) — single * / _
+    are left alone since they're often literal (source_pane, a*b)."""
+    s = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", s)   # [text](url) -> text
+    s = s.replace("`", "")                            # inline code backticks
+    s = re.sub(r"\*\*|__|~~", "", s)                  # bold / strikethrough
+    s = re.sub(r"^\s*#{1,6}\s+", "", s)               # ATX heading marker
+    return s
+
+
 def _tmux_highlight_text(text: str, *, first: bool = False,
                          force: bool = False) -> None:
     """Re-anchor copy-mode in the source pane onto the spoken text.
@@ -170,6 +186,9 @@ def _tmux_highlight_text(text: str, *, first: bool = False,
     pane = os.environ.get("TMUX_PANE")
     if not pane:
         return
+
+    # Match against what's *rendered* in the pane, not the raw markdown.
+    text = _strip_markdown_inline(text)
 
     # Trim to last word boundary within 50 chars so the snippet fits on
     # a single visual line — tmux search won't match across line wraps.

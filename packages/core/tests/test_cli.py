@@ -99,6 +99,16 @@ def test_music_status_line_idle_and_playing():
     assert playing.startswith("▶ 00:30 ") and playing.endswith(" 02:00")
 
 
+def test_strip_markdown_inline():
+    from agent_media_core.intake.submit import _strip_markdown_inline as f
+    assert f("use `media toggle` now") == "use media toggle now"
+    assert f("this is **bold** and ~~gone~~") == "this is bold and gone"
+    assert f("see [the docs](http://x/y) here") == "see the docs here"
+    assert f("## Heading text") == "Heading text"
+    # single * / _ left alone (often literal: identifiers, a*b)
+    assert f("source_pane stays and a*b too") == "source_pane stays and a*b too"
+
+
 def test_history_index_for_pane(monkeypatch):
     rows = [
         {"extras": {"source_pane": "%9"}},                    # 1 latest
