@@ -166,6 +166,68 @@ def test_now_pane_falls_back_to_last_clip(monkeypatch, capsys):
     assert capsys.readouterr().out.strip() == "my coding pane"
 
 
+class _FakeIpc:
+    """Records mpv-IPC calls and answers get_property from a dict."""
+    MpvIpcError = RuntimeError
+
+    def __init__(self, props=None):
+        self.props = props or {}
+        self.calls = []
+
+    def command(self, sock, *args):
+        self.calls.append(("command", *args))
+        return None
+
+    def set_property(self, sock, name, value):
+        self.calls.append(("set", name, value))
+        self.props[name] = value
+
+    def get_property(self, sock, name, timeout=2.0):
+        self.calls.append(("get", name))
+        return self.props.get(name)
+
+
+def test_jump_end_unpauses_and_finishes_single_clip(monkeypatch):
+    fake = _FakeIpc({"playlist-count": 1})
+    monkeypatch.setattr(cli, "ipc", fake)
+    monkeypatch.setattr(cli, "_sock", lambda: "/tmp/x.sock")
+
+    class A:
+        where = "end"
+    assert cli.cmd_jump(A()) == 0
+    # Clears pause + mute so the clip can actually play out to EOF...
+    assert ("set", "pause", False) in fake.calls
+    assert ("set", "mute", False) in fake.calls
+    # ...does NOT touch playlist-pos for a single clip...
+    assert not any(c[:2] == ("set", "playlist-pos") for c in fake.calls)
+    # ...and seeks to the end last.
+    assert fake.calls[-1] == ("command", "seek", 100, "absolute-percent")
+
+
+def test_jump_end_lands_on_last_clip_of_playlist(monkeypatch):
+    fake = _FakeIpc({"playlist-count": 3})
+    monkeypatch.setattr(cli, "ipc", fake)
+    monkeypatch.setattr(cli, "_sock", lambda: "/tmp/x.sock")
+
+    class A:
+        where = "end"
+    assert cli.cmd_jump(A()) == 0
+    # Jumps to the final playlist entry before seeking to its end.
+    assert ("set", "playlist-pos", 2) in fake.calls
+    assert fake.calls[-1] == ("command", "seek", 100, "absolute-percent")
+
+
+def test_jump_start_seeks_zero(monkeypatch):
+    fake = _FakeIpc()
+    monkeypatch.setattr(cli, "ipc", fake)
+    monkeypatch.setattr(cli, "_sock", lambda: "/tmp/x.sock")
+
+    class A:
+        where = "start"
+    assert cli.cmd_jump(A()) == 0
+    assert fake.calls == [("command", "seek", 0, "absolute")]
+
+
 def test_replay_resolves_history(monkeypatch):
     played = {}
 

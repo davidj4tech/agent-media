@@ -342,10 +342,31 @@ def cmd_speed(a) -> int:
 
 def cmd_jump(a) -> int:
     """Seek to the start or end of the current clip."""
+    sock = _sock()
     if a.where == "start":
-        ipc.command(_sock(), "seek", 0, "absolute")
-    else:  # end — finish the clip (skip forward)
-        ipc.command(_sock(), "seek", 100, "absolute-percent")
+        ipc.command(sock, "seek", 0, "absolute")
+        return 0
+    # end — skip to the end of the (last) clip so it finishes.
+    # A seek-to-end only plays out if the broker isn't paused/muted: a paused
+    # clip just parks the playhead at 100% and never reaches EOF (so the popup
+    # `>` looked like a no-op when the clip had been paused, e.g. via Space).
+    # Clear those first so the clip actually finishes.
+    for prop in ("pause", "mute"):
+        try:
+            ipc.set_property(sock, prop, False)
+        except ipc.MpvIpcError:
+            pass
+    # On a multi-clip replay the response's clips are queued as one mpv
+    # playlist; seeking the *current* clip to 100% would only advance to the
+    # next one. Jump to the final playlist entry first so we land on the
+    # actual last clip before seeking it to the end.
+    try:
+        count = ipc.get_property(sock, "playlist-count")
+        if isinstance(count, int) and count > 1:
+            ipc.set_property(sock, "playlist-pos", count - 1)
+    except ipc.MpvIpcError:
+        pass
+    ipc.command(sock, "seek", 100, "absolute-percent")
     return 0
 
 
