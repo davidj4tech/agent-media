@@ -280,14 +280,24 @@ def _do_replay(index: int) -> int:
     except ipc.MpvIpcError:
         pass
     clip_sentences: list[str] = ex.get("clip_sentences") or []
-    if len(clip_uris) > 1 and len(clip_durations) == len(clip_uris):
-        # Persist durations so cmd_status can compute spanning progress bar.
-        StateStore().set_now_playing(
-            "speech", uri=clip_uris[0], started_at=time.time(),
-            target=SPEECH_TARGET.name,
-            extras={"text": replay_text,
-                    "total_duration_s": sum(clip_durations),
-                    "clip_durations_s": clip_durations})
+    have_durations = (
+        len(clip_durations) == len(clip_uris) and len(clip_durations) > 0
+    )
+    # Always refresh now_playing so cmd_status's progress bar reflects the
+    # clip we just started, not a stale prior entry. Without this, replaying
+    # a single-clip history item (the common `<` case) left the previous
+    # response's total_duration_s in place and the bar never acknowledged
+    # the jump. When we have per-clip durations, persist them so cmd_status
+    # can compute a spanning bar; otherwise omit total_duration_s and let
+    # cmd_status fall back to mpv's raw time-pos/duration.
+    np_extras: dict = {"text": replay_text}
+    if have_durations:
+        np_extras["total_duration_s"] = sum(clip_durations)
+        np_extras["clip_durations_s"] = clip_durations
+    StateStore().set_now_playing(
+        "speech", uri=clip_uris[0], started_at=time.time(),
+        target=SPEECH_TARGET.name, extras=np_extras)
+    if len(clip_uris) > 1 and have_durations:
         # Spawn a detached highlight tracker so copy-mode follows along
         # even though _do_replay returns immediately.
         # TTS_POPUP_PANE is the original pane that opened the popup (set by
