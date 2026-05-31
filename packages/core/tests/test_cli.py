@@ -228,6 +228,43 @@ def test_jump_start_seeks_zero(monkeypatch):
     assert fake.calls == [("command", "seek", 0, "absolute")]
 
 
+def test_ncmpcpp_pane_matches_command(monkeypatch):
+    class _R:
+        returncode = 0
+        stdout = "%0\tzsh\n%3\tncmpcpp\n%5\tclaude\n"
+
+    monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: _R())
+    assert cli._ncmpcpp_pane() == "%3"
+
+
+def test_goto_track_focuses_and_jumps(monkeypatch):
+    calls = []
+
+    class _R:
+        returncode = 0
+        stdout = "%3\tncmpcpp\n"
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        return _R()
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    assert cli.cmd_goto_track(object()) == 0
+    # Focused the ncmpcpp pane and sent `o` (JumpToPlayingSong) to it.
+    assert ["tmux", "select-pane", "-t", "%3"] in calls
+    assert ["tmux", "send-keys", "-t", "%3", "o"] in calls
+
+
+def test_goto_track_no_pane_returns_1(monkeypatch):
+    class _R:
+        returncode = 0
+        stdout = "%0\tzsh\n%5\tclaude\n"
+
+    monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: _R())
+    # No ncmpcpp pane → rc 1 so the popup shows a hint instead of closing.
+    assert cli.cmd_goto_track(object()) == 1
+
+
 def test_replay_resolves_history(monkeypatch):
     played = {}
 

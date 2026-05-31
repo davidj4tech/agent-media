@@ -169,11 +169,13 @@ while true; do
              else
                  $MEDIA jump end
              fi ;;
-        # Go to source: speech → focus the speaking pane (and close the
-        # popup so you land on it). Music → jump to the track in ncmpcpp
-        # (pending: setup TBD).
+        # Go to source, then close the popup so you land on it. Speech →
+        # focus the speaking pane. Music → focus the ncmpcpp pane and jump it
+        # to the now-playing song (sends ncmpcpp's `o`); if no ncmpcpp pane is
+        # running, keep the popup open and show a hint instead of closing.
         g)   if [ "$CHANNEL" = "music" ]; then
-                 tmux display-message "♫ ncmpcpp jump not configured yet" 2>/dev/null
+                 if $MEDIA goto-track 2>/dev/null; then break
+                 else tmux display-message "♫ no ncmpcpp pane found — start ncmpcpp first" 2>/dev/null; fi
              else
                  $MEDIA goto-pane 2>/dev/null; break
              fi ;;

@@ -199,6 +199,49 @@ def cmd_goto_pane(a) -> int:
     return 0
 
 
+def _ncmpcpp_pane() -> Optional[str]:
+    """tmux pane id running ncmpcpp on this server, or None.
+
+    Scans every pane (all sessions/windows) and matches the foreground
+    command, so the music `g` lands on the player wherever it lives.
+    """
+    try:
+        r = subprocess.run(
+            ["tmux", "list-panes", "-a", "-F",
+             "#{pane_id}\t#{pane_current_command}"],
+            capture_output=True, text=True)
+    except Exception:  # noqa: BLE001
+        return None
+    if r.returncode != 0:
+        return None
+    for line in r.stdout.splitlines():
+        pane, _, cmd = line.partition("\t")
+        if cmd.strip() == "ncmpcpp":
+            return pane
+    return None
+
+
+def cmd_goto_track(a) -> int:
+    """Focus the ncmpcpp pane and jump it to the now-playing song.
+
+    Mirrors the speech side's goto-pane for the music channel: bring the
+    player to the foreground, then send ncmpcpp's default JumpToPlayingSong
+    key (`o`) so it centers on the track the music sink is playing. Returns
+    1 (and stays quiet) when no ncmpcpp pane is running, so the popup can
+    show a hint instead of silently doing nothing.
+    """
+    pane = _ncmpcpp_pane()
+    if not pane:
+        return 1
+    _focus_pane(pane)
+    try:
+        subprocess.run(["tmux", "send-keys", "-t", pane, "o"],
+                       capture_output=True)
+    except Exception:  # noqa: BLE001
+        pass
+    return 0
+
+
 def cmd_highlight_toggle(a) -> int:
     """Toggle auto-highlight on/off. Prints the new state.
 
@@ -639,6 +682,9 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("goto-pane",
                    help="focus the pane that produced the now-playing speech"
                    ).set_defaults(func=cmd_goto_pane)
+    sub.add_parser("goto-track",
+                   help="focus the ncmpcpp pane and jump to the now-playing song"
+                   ).set_defaults(func=cmd_goto_track)
     sub.add_parser("text", help="spoken text (now-playing or latest history)").set_defaults(func=cmd_text)
 
     sub.add_parser("highlight-toggle",
