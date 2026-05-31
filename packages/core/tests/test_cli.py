@@ -99,6 +99,36 @@ def test_music_status_line_idle_and_playing():
     assert playing.startswith("▶ 00:30 ") and playing.endswith(" 02:00")
 
 
+def test_history_index_for_pane(monkeypatch):
+    rows = [
+        {"extras": {"source_pane": "%9"}},                    # 1 latest
+        {"extras": '{"source_pane": "%4"}'},                  # 2 (json string)
+        {"extras": {"source_pane": "%9"}},                    # 3
+    ]
+    monkeypatch.setattr(cli, "_speech_history", lambda n=20: rows)
+    assert cli._history_index_for_pane("%9") == 1   # most recent for %9
+    assert cli._history_index_for_pane("%4") == 2   # parses json extras
+    assert cli._history_index_for_pane("%99") is None
+    assert cli._history_index_for_pane("") is None
+
+
+def test_toggle_idle_replays_active_pane(monkeypatch):
+    replayed = {}
+
+    def fake_replay(i):
+        replayed["idx"] = i
+        return 0
+
+    monkeypatch.setattr(cli, "_get", lambda prop: True if prop == "idle-active" else None)
+    monkeypatch.setattr(cli, "_do_replay", fake_replay)
+    monkeypatch.setattr(cli, "_speech_history",
+                        lambda n=20: [{"extras": {"source_pane": "%1"}},
+                                      {"extras": {"source_pane": "%7"}}])
+    monkeypatch.setenv("TTS_POPUP_PANE", "%7")
+    assert cli.cmd_toggle(object()) == 0
+    assert replayed["idx"] == 2   # %7's most recent clip, not the global latest
+
+
 def test_now_pane_falls_back_to_last_clip(monkeypatch, capsys):
     """When nothing is playing, now-pane uses the most recent clip's pane."""
     class FakeStore:

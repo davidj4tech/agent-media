@@ -169,6 +169,14 @@ while true; do
              else
                  $MEDIA jump end
              fi ;;
+        # Go to source: speech → focus the speaking pane (and close the
+        # popup so you land on it). Music → jump to the track in ncmpcpp
+        # (pending: setup TBD).
+        g)   if [ "$CHANNEL" = "music" ]; then
+                 tmux display-message "♫ ncmpcpp jump not configured yet" 2>/dev/null
+             else
+                 $MEDIA goto-pane 2>/dev/null; break
+             fi ;;
         # --- speech-only keys below ---
         r)   [ "$CHANNEL" = "speech" ] && { $MEDIA replay; hist_idx=1; } ;;
         m)   [ "$CHANNEL" = "speech" ] && $MEDIA mute ;;
@@ -182,7 +190,7 @@ while true; do
                  _hl_out=$(TTS_POPUP_PANE="$HL_PANE" $MEDIA highlight-toggle 2>/dev/null)
                  tmux display-message "♪ ${_hl_out:-highlight: ?}" 2>/dev/null
              fi ;;
-        '?') tmux display-message "Tab channel · Space play/pause · h/l ±5s · -/= vol · < > prev/next · speech: r replay m mute [/] speed v highlight · q quit" 2>/dev/null ;;
+        '?') tmux display-message "Tab channel · Space play/pause · h/l ±5s · -/= vol · < > prev/next · g go to source · speech: r replay m mute [/] speed v highlight · q quit" 2>/dev/null ;;
         q|$'\e') break ;;
         *) : ;;
     esac

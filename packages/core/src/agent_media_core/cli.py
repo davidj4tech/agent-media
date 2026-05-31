@@ -187,6 +187,14 @@ def cmd_now_pane(a) -> int:
     return 0
 
 
+def cmd_goto_pane(a) -> int:
+    """Focus the tmux pane that produced the now-playing (or last) speech."""
+    pane = _spoken_pane()
+    if pane:
+        _focus_pane(pane)
+    return 0
+
+
 def cmd_highlight_toggle(a) -> int:
     """Toggle auto-highlight on/off. Prints the new state.
 
@@ -261,11 +269,32 @@ def cmd_text(a) -> int:
     return 0
 
 
+def _history_index_for_pane(pane: str, limit: int = 50) -> Optional[int]:
+    """1-based index into recent speech history of the latest clip produced
+    by `pane` (1 = most recent overall). None if the pane has no clip."""
+    if not pane:
+        return None
+    for i, r in enumerate(_speech_history(limit), start=1):
+        ex = r.get("extras") or {}
+        if isinstance(ex, str):
+            try:
+                ex = json.loads(ex)
+            except json.JSONDecodeError:
+                ex = {}
+        if ex.get("source_pane") == pane:
+            return i
+    return None
+
+
 def cmd_toggle(a) -> int:
-    # If nothing is loaded, "play" means replay the latest clip (matches the
-    # old popup's Space = play/pause-or-replay). Otherwise flip pause.
+    # If nothing is loaded, "play" means replay a clip (matches the old
+    # popup's Space = play/pause-or-replay). Prefer the most recent clip from
+    # the *active* pane (the one that opened the popup), so Space-while-idle
+    # replays "what this pane just said"; fall back to the latest overall.
+    # Otherwise flip pause.
     if _get("idle-active"):
-        return _do_replay(1)
+        pane = os.environ.get("TTS_POPUP_PANE") or os.environ.get("TMUX_PANE", "")
+        return _do_replay(_history_index_for_pane(pane) or 1)
     ipc.set_property(_sock(), "pause", not bool(_get("pause")))
     return 0
 
@@ -582,6 +611,9 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("now-pane",
                    help="title of the pane that produced the now-playing speech"
                    ).set_defaults(func=cmd_now_pane)
+    sub.add_parser("goto-pane",
+                   help="focus the pane that produced the now-playing speech"
+                   ).set_defaults(func=cmd_goto_pane)
     sub.add_parser("text", help="spoken text (now-playing or latest history)").set_defaults(func=cmd_text)
 
     sub.add_parser("highlight-toggle",
