@@ -8,6 +8,14 @@
 #
 # Requires `media` and `media-popup` on PATH (installed in ~/.local/bin).
 
+# Ensure ~/.local/bin is on the tmux *server* PATH. When the server is
+# started from a minimal-PATH context (systemd, tmux-continuum resurrect at
+# boot), it lacks ~/.local/bin, so the popup below ("media-popup: command
+# not found", popup vanishes instantly) and `#(media status)` in the status
+# line both silently break. tmux config can't shell-expand $HOME/$PATH, so
+# do it via run-shell. Idempotent: only prepends when not already present.
+run-shell 'case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) tmux set-environment -g PATH "$HOME/.local/bin:$PATH" ;; esac'
+
 # prefix a → control popup (top-right), one keystroke. All controls live
 # inside the popup (Space play/pause, r replay, h/l seek, -/= volume,
 # m mute, [/] speed, v show spoken text, q close). The caller pane (for
