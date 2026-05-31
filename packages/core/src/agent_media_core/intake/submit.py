@@ -134,6 +134,18 @@ def _pane_scroll_pos(pane: str) -> tuple[bool, str]:
         return (False, "")
 
 
+def _cursor_sig(pane: str) -> str:
+    """A signature of the copy-mode cursor/viewport, to detect movement."""
+    try:
+        r = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", pane,
+             "#{scroll_position}\t#{copy_cursor_x}\t#{copy_cursor_y}"],
+            capture_output=True, text=True)
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _tmux_highlight_text(text: str, *, first: bool = False,
                          force: bool = False) -> None:
     """Re-anchor copy-mode in the source pane onto the spoken text.
@@ -203,7 +215,9 @@ def _tmux_highlight_text(text: str, *, first: bool = False,
     # than where we last left it, the user scrolled up to read — leave their
     # view untouched. When they return to that position (or drop out of
     # copy-mode, putting them back at the live bottom), following resumes.
-    if not force:
+    # The first sentence of a response (and an explicit `v` toggle) always
+    # re-anchors, so we never get permanently stuck skipping.
+    if not force and not first:
         in_mode, pos = _pane_scroll_pos(pane)
         if in_mode:
             try:
@@ -239,9 +253,17 @@ def _tmux_highlight_text(text: str, *, first: bool = False,
         # regardless of where the viewport currently sits.
         subprocess.run(["tmux", "send-keys", "-t", pane, "-X", "history-bottom"],
                        capture_output=True)
+        _before = _cursor_sig(pane)
         subprocess.run(["tmux", "send-keys", "-t", pane, "-X",
                         "search-backward", snippet],
                        capture_output=True)
+        # If the search matched nothing, the cursor stays put at the bottom.
+        # Don't paint a stray selection there (the "yellow block at bottom
+        # left"); leave copy-mode so the next sentence retries cleanly.
+        if _cursor_sig(pane) == _before:
+            subprocess.run(["tmux", "send-keys", "-t", pane, "-X", "cancel"],
+                           capture_output=True)
+            return
         subprocess.run(["tmux", "send-keys", "-t", pane, "-X",
                         "begin-selection"],
                        capture_output=True)
