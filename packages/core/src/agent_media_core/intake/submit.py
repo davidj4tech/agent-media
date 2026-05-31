@@ -115,18 +115,41 @@ def toggle_auto_highlight() -> bool:
     return new_state
 
 
-def _tmux_highlight_text(text: str, *, first: bool = False) -> None:
-    """Enter copy-mode in the source pane and jump to the spoken text.
+def _pane_scroll_pos(pane: str) -> tuple[bool, str]:
+    """(in_copy_mode, scroll_position) for `pane`.
 
-    For the first sentence: enter copy-mode fresh, history-bottom,
-    search-backward. For subsequent sentences: search-forward from the
-    current cursor (which sits inside the previous sentence's text, since
-    selection is capped at snippet length ~50 chars). This avoids the
-    visual snap-to-bottom that history-bottom causes between sentences.
+    scroll_position is lines scrolled up from the live bottom; it is only
+    meaningful while the pane is in copy-mode (empty otherwise).
+    """
+    try:
+        r = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", pane,
+             "#{pane_in_mode}\t#{scroll_position}"],
+            capture_output=True, text=True)
+        if r.returncode != 0:
+            return (False, "")
+        in_mode, _, pos = r.stdout.rstrip("\n").partition("\t")
+        return (in_mode.strip() == "1", pos.strip())
+    except Exception:  # noqa: BLE001
+        return (False, "")
+
+
+def _tmux_highlight_text(text: str, *, first: bool = False,
+                         force: bool = False) -> None:
+    """Re-anchor copy-mode in the source pane onto the spoken text.
+
+    Each call jumps to the bottom and searches backward for this sentence,
+    so it tracks the right line regardless of prior position. But it leaves
+    the user's scroll alone: if the pane is in copy-mode and the viewport
+    has moved since our last highlight (the user scrolled up to read), this
+    no-ops — until the user returns to that position or exits copy-mode, at
+    which point following resumes. `force=True` (the popup's `v` toggle)
+    always repositions, since the user just asked for it.
 
     Off by default — opt-in via the popup's `v` toggle (which writes to
     `$XDG_STATE_HOME/agent-media/auto-highlight`). `MEDIA_AUTO_HIGHLIGHT=1`
-    in env can override on a per-host basis.
+    in env can override on a per-host basis. `first` is accepted for call-site
+    compatibility but no longer changes anchoring (every call re-anchors).
     """
     if not os.environ.get("TMUX"):
         return
@@ -169,11 +192,30 @@ def _tmux_highlight_text(text: str, *, first: bool = False) -> None:
     # persists until the next sentence's highlight replaces it).
     flash_ms = int(os.environ.get("MEDIA_HIGHLIGHT_FLASH_MS", "1500"))
 
-    # Per-pane PID file so each new highlight can kill the previous
-    # sentence's pending clear-timer before it races into our selection.
     import signal as _signal
     _pane_safe = re.sub(r"[^A-Za-z0-9_-]", "_", pane)
     pidfile = f"/tmp/media-highlight-clear-{_pane_safe}.pid"
+    # Tracks the scroll_position our last highlight left the pane at, so we
+    # can tell whether the user has since scrolled away.
+    posfile = f"/tmp/media-highlight-pos-{_pane_safe}"
+
+    # Respect a manual scroll: if the pane is in copy-mode at a position other
+    # than where we last left it, the user scrolled up to read — leave their
+    # view untouched. When they return to that position (or drop out of
+    # copy-mode, putting them back at the live bottom), following resumes.
+    if not force:
+        in_mode, pos = _pane_scroll_pos(pane)
+        if in_mode:
+            try:
+                with open(posfile) as _f:
+                    saved = _f.read().strip()
+            except OSError:
+                saved = None
+            if pos != saved:
+                return
+
+    # Per-pane PID file so each new highlight can kill the previous
+    # sentence's pending clear-timer before it races into our selection.
     try:
         with open(pidfile) as _f:
             _old_pgid = int(_f.read().strip())
@@ -185,25 +227,21 @@ def _tmux_highlight_text(text: str, *, first: bool = False) -> None:
         pass
 
     try:
-        if first:
-            # Fresh copy-mode session: anchor at bottom, search backward.
-            subprocess.run(["tmux", "send-keys", "-t", pane, "-X", "cancel"],
-                           capture_output=True)
-            subprocess.run(["tmux", "copy-mode", "-t", pane],
-                           capture_output=True)
-            subprocess.run(["tmux", "send-keys", "-t", pane, "-X", "history-bottom"],
-                           capture_output=True)
-            subprocess.run(["tmux", "send-keys", "-t", pane, "-X",
-                            "search-backward", snippet],
-                           capture_output=True)
-        else:
-            # Already in copy-mode at the previous sentence's position.
-            # Cursor is inside the previous sentence (selection capped at
-            # ~50 chars); search-forward finds the next sentence cleanly
-            # without snapping the viewport.
-            subprocess.run(["tmux", "send-keys", "-t", pane, "-X",
-                            "search-forward", snippet],
-                           capture_output=True)
+        # Ensure copy-mode is active (no-op if it already is, e.g. the user
+        # scrolled the pane — which leaves it in copy-mode).
+        subprocess.run(["tmux", "copy-mode", "-t", pane],
+                       capture_output=True)
+        # Re-anchor from the bottom on EVERY sentence, then search backward.
+        # The old code searched *forward* from the previous match's cursor
+        # for sentences 2..N, which a manual scroll between sentences would
+        # throw off (the cursor moves with the user). history-bottom +
+        # search-backward finds the latest occurrence of this sentence
+        # regardless of where the viewport currently sits.
+        subprocess.run(["tmux", "send-keys", "-t", pane, "-X", "history-bottom"],
+                       capture_output=True)
+        subprocess.run(["tmux", "send-keys", "-t", pane, "-X",
+                        "search-backward", snippet],
+                       capture_output=True)
         subprocess.run(["tmux", "send-keys", "-t", pane, "-X",
                         "begin-selection"],
                        capture_output=True)
@@ -211,6 +249,14 @@ def _tmux_highlight_text(text: str, *, first: bool = False) -> None:
             subprocess.run(["tmux", "send-keys", "-t", pane,
                             "-X", "-N", str(select_len), "cursor-right"],
                            capture_output=True)
+        # Record where we landed so the next sentence can tell whether the
+        # user has scrolled away from it.
+        _, _new_pos = _pane_scroll_pos(pane)
+        try:
+            with open(posfile, "w") as _f:
+                _f.write(_new_pos)
+        except OSError:
+            pass
         if flash_ms > 0:
             # Detached clear-selection after flash window. start_new_session
             # makes this proc the session leader, so its PID is its pgid;
@@ -338,6 +384,12 @@ def submit_event(event: Event,
     stamp = time.strftime("%Y%m%dT%H%M%S")
     started_at = time.time()
 
+    # The tmux pane that produced this speech (the Claude Code TTS hook runs
+    # inside the agent's pane, so TMUX_PANE points at it). Persisted into
+    # now_playing/history so the popup can show *which* pane is currently
+    # talking, rather than the pane that happens to be active.
+    source_pane = (event.metadata or {}).get("pane") or os.environ.get("TMUX_PANE", "")
+
     fallback_info: dict = {}
     _fallback_lock = threading.Lock()
 
@@ -457,6 +509,7 @@ def submit_event(event: Event,
                         "engine": engine, "voice": voice,
                         "clip_offset_s": offset_s,
                         "total_duration_s": total_duration_s,
+                        "source_pane": source_pane,
                         "current_sentence": sentence,
                         "current_sentence_idx": i})
             if do_highlight:
@@ -488,6 +541,7 @@ def submit_event(event: Event,
 
     extras = {"engine": engine, "voice": voice,
               "priority": event.priority.value,
+              "source_pane": source_pane,
               "clip_uris": [str(p) for _, p in clip_data],
           "clip_sentences": [s for s, _ in clip_data],
           "clip_durations_s": durations,

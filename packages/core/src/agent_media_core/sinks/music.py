@@ -52,6 +52,21 @@ def _cmd(s: socket.socket, line: str) -> str:
     return buf.decode(errors="replace")
 
 
+def _parse_kv(text: str) -> dict:
+    """Parse MPD's `key: value\\n` response block into a dict.
+
+    Keys are unique in `status`/`currentsong`, so first-wins is fine.
+    """
+    out: dict = {}
+    for line in text.splitlines():
+        if line in ("OK", "") or line.startswith(("OK ", "ACK")):
+            continue
+        k, sep, v = line.partition(": ")
+        if sep:
+            out.setdefault(k, v.strip())
+    return out
+
+
 class SinkMusic:
     """Sink protocol implementation for Mopidy / MPD."""
 
@@ -127,3 +142,37 @@ class SinkMusic:
             if line.startswith("file:"):
                 return line.split(":", 1)[1].strip()
         return None
+
+    def status_dict(self, target: Target = DEFAULT_TARGET) -> dict:
+        """Parsed MPD `status` (state/elapsed/duration/volume/…)."""
+        with _connect(target) as s:
+            return _parse_kv(_cmd(s, "status"))
+
+    def current_song(self, target: Target = DEFAULT_TARGET) -> dict:
+        """Parsed MPD `currentsong` (Title/Artist/Name/file/…)."""
+        with _connect(target) as s:
+            return _parse_kv(_cmd(s, "currentsong"))
+
+    def seek_relative(self, secs: float,
+                      target: Target = DEFAULT_TARGET) -> None:
+        """Seek the current track by ±secs. Computed from `elapsed` and
+        issued as an absolute seekcur so we don't depend on Mopidy
+        supporting relative `seekcur +N` syntax."""
+        with _connect(target) as s:
+            st = _parse_kv(_cmd(s, "status"))
+            try:
+                cur = float(st.get("elapsed", "0") or 0)
+            except ValueError:
+                cur = 0.0
+            _cmd(s, f"seekcur {max(0.0, cur + secs):.3f}")
+
+    def volume_delta(self, delta: int,
+                     target: Target = DEFAULT_TARGET) -> None:
+        """Change volume by ±delta, clamped to [0, 100]."""
+        with _connect(target) as s:
+            st = _parse_kv(_cmd(s, "status"))
+            try:
+                cur = int(st.get("volume", "100") or 100)
+            except ValueError:
+                cur = 100
+            _cmd(s, f"setvol {max(0, min(100, cur + delta))}")

@@ -49,13 +49,20 @@ def progress_bar(frac: float, width: int = 12) -> str:
 def render_status(*, idle: Optional[bool], pos: Optional[float],
                   dur: Optional[float], paused: Optional[bool],
                   muted: Optional[bool], width: int = 12,
-                  hide_idle: bool = True) -> str:
-    """Build the one-line status string (or '' / '○' when idle)."""
+                  hide_idle: bool = True, bar: bool = True) -> str:
+    """Build the one-line status string (or '' / '○' when idle).
+
+    With bar=False, the progress bar is dropped and only the times remain
+    (`▶ 00:30 / 02:00`) — used by the popup, which shows just the clock.
+    """
     if idle is None or idle:
         return "" if hide_idle else "○"
     icon = "⏸" if paused else "▶"
-    frac = (pos / dur) if (pos and dur) else 0.0
-    line = f"{icon} {fmt_mmss(pos)} {progress_bar(frac, width)} {fmt_mmss(dur)}"
+    if bar:
+        frac = (pos / dur) if (pos and dur) else 0.0
+        line = f"{icon} {fmt_mmss(pos)} {progress_bar(frac, width)} {fmt_mmss(dur)}"
+    else:
+        line = f"{icon} {fmt_mmss(pos)} / {fmt_mmss(dur)}"
     if muted:
         line += " [M]"
     return line
@@ -119,7 +126,8 @@ def cmd_status(a) -> int:
                 dur = total
     print(render_status(idle=idle, pos=pos, dur=dur,
                         paused=_get("pause"), muted=_get("mute"),
-                        width=a.width, hide_idle=not a.show_idle))
+                        width=a.width, hide_idle=not a.show_idle,
+                        bar=not getattr(a, "no_bar", False)))
     return 0
 
 
@@ -130,32 +138,87 @@ def cmd_now(a) -> int:
     return 0
 
 
+def _spoken_pane() -> Optional[str]:
+    """tmux pane id that produced the current (or most recent) speech."""
+    np = _now_speaking()
+    pane = (np or {}).get("extras", {}).get("source_pane") if np else None
+    if pane:
+        return pane
+    rows = _speech_history(1)
+    if rows:
+        ex = rows[0].get("extras") or {}
+        if isinstance(ex, str):
+            try:
+                ex = json.loads(ex)
+            except json.JSONDecodeError:
+                ex = {}
+        pane = ex.get("source_pane")
+    return pane or None
+
+
+def _focus_pane(pane: str) -> None:
+    """Bring `pane` to the foreground — its window, then the pane itself."""
+    for args in (["select-window", "-t", pane], ["select-pane", "-t", pane]):
+        try:
+            subprocess.run(["tmux", *args], capture_output=True)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def cmd_now_pane(a) -> int:
+    """Title of the tmux pane that produced the speech.
+
+    The popup shows this so the marquee names *which* pane is talking. When
+    nothing is playing, falls back to the pane of the most recent clip so the
+    marquee keeps showing who last spoke (rather than reverting to a generic
+    label). Prints nothing when no pane was ever captured.
+    """
+    pane = _spoken_pane()
+    if not pane:
+        return 0
+    try:
+        r = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", pane, "#{pane_title}"],
+            capture_output=True, text=True)
+        if r.returncode == 0:
+            print(r.stdout.strip())
+    except Exception:  # noqa: BLE001 — popup must never see a traceback
+        pass
+    return 0
+
+
 def cmd_highlight_toggle(a) -> int:
-    """Toggle auto-highlight on/off. Prints the new state."""
+    """Toggle auto-highlight on/off. Prints the new state.
+
+    Turning it on jumps focus to the speaking pane (so the copy-mode
+    follow-along is actually visible) and highlights the current sentence
+    immediately for feedback.
+    """
     from .intake.submit import toggle_auto_highlight, _tmux_highlight_text
     on = toggle_auto_highlight()
+    # Prefer the pane that produced the speech; fall back to the popup's
+    # caller pane if we never captured a source pane.
+    pane = (_spoken_pane()
+            or os.environ.get("TTS_POPUP_PANE")
+            or os.environ.get("TMUX_PANE", ""))
     if on:
-        # If a sentence is currently playing, highlight it now so the user
-        # gets immediate feedback that the toggle took effect.
-        np = _now_speaking()
-        if np:
-            ex = np.get("extras") or {}
-            sentence = ex.get("current_sentence")
+        if pane:
+            # Jump to the speaking pane so the follow-along is on screen.
+            _focus_pane(pane)
+            os.environ["TMUX_PANE"] = pane
+            if not os.environ.get("TMUX"):
+                os.environ["TMUX"] = "x"
+            # If a sentence is playing right now, highlight it immediately.
+            np = _now_speaking()
+            sentence = (np.get("extras") or {}).get("current_sentence") if np else None
             if sentence:
-                pane = os.environ.get("TTS_POPUP_PANE") or os.environ.get("TMUX_PANE", "")
-                if pane:
-                    os.environ["TMUX_PANE"] = pane
-                    if not os.environ.get("TMUX"):
-                        os.environ["TMUX"] = "x"
-                    _tmux_highlight_text(sentence, first=True)
+                _tmux_highlight_text(sentence, force=True)
         print("highlight: ON")
     else:
-        # Exit any active copy-mode in the caller pane.
-        pane = os.environ.get("TTS_POPUP_PANE") or os.environ.get("TMUX_PANE", "")
+        # Exit any active copy-mode in the speaking pane.
         if pane:
-            import subprocess as _sp
-            _sp.run(["tmux", "send-keys", "-t", pane, "-X", "cancel"],
-                    capture_output=True)
+            subprocess.run(["tmux", "send-keys", "-t", pane, "-X", "cancel"],
+                           capture_output=True)
         print("highlight: OFF")
     return 0
 
@@ -291,6 +354,9 @@ def _do_replay(index: int) -> int:
     # can compute a spanning bar; otherwise omit total_duration_s and let
     # cmd_status fall back to mpv's raw time-pos/duration.
     np_extras: dict = {"text": replay_text}
+    source_pane = ex.get("source_pane")
+    if source_pane:
+        np_extras["source_pane"] = source_pane
     if have_durations:
         np_extras["total_duration_s"] = sum(clip_durations)
         np_extras["clip_durations_s"] = clip_durations
@@ -425,10 +491,53 @@ def cmd_say(a) -> int:
 
 # --- music subcommands -----------------------------------------------------
 
+def _music_status_line(m: "SinkMusic", width: int, hide_idle: bool,
+                       bar: bool = True) -> str:
+    """One-line music progress bar from MPD status (mirrors cmd_status)."""
+    st = m.status_dict()
+    state = st.get("state", "stop")
+    if state in ("stop", "") or not state:
+        return render_status(idle=True, pos=None, dur=None, paused=None,
+                             muted=None, width=width, hide_idle=hide_idle)
+
+    def _f(key):
+        try:
+            return float(st[key]) if st.get(key) else None
+        except (ValueError, KeyError):
+            return None
+
+    return render_status(idle=False, pos=_f("elapsed"), dur=_f("duration"),
+                         paused=(state == "pause"), muted=False,
+                         width=width, hide_idle=hide_idle, bar=bar)
+
+
+def _music_now_label(m: "SinkMusic") -> str:
+    """Current track as 'Artist — Title' (the music channel's marquee)."""
+    song = m.current_song()
+    title = song.get("Title") or song.get("Name") or ""
+    if not title:
+        title = (song.get("file") or "").rsplit("/", 1)[-1]
+    artist = song.get("Artist") or ""
+    return f"{artist} — {title}" if artist and title else title
+
+
 def cmd_music(a) -> int:
     from .route import coerce_content_type, detect_content_type
 
     m = SinkMusic()
+    if a.action == "status":
+        try:
+            print(_music_status_line(m, a.width, hide_idle=not a.show_idle,
+                                     bar=not a.no_bar))
+        except Exception:  # noqa: BLE001 — popup must never see a traceback
+            print("○" if a.show_idle else "")
+        return 0
+    if a.action == "now":
+        try:
+            print(_music_now_label(m))
+        except Exception:  # noqa: BLE001
+            pass
+        return 0
     if a.action == "play":
         if not a.uri:
             print("media music play: a URI is required", file=sys.stderr)
@@ -441,6 +550,12 @@ def cmd_music(a) -> int:
     if a.action == "stop":
         m.stop()
         StateStore().clear_music_intent()
+        return 0
+    if a.action == "seek":
+        m.seek_relative(float(a.uri or 0))
+        return 0
+    if a.action == "volume":
+        m.volume_delta(int(float(a.uri or 0)))
         return 0
     {
         "pause": m.pause, "resume": m.resume,
@@ -459,9 +574,14 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument("--width", type=int, default=12)
     s.add_argument("--show-idle", action="store_true",
                    help="emit '○' when idle instead of empty")
+    s.add_argument("--no-bar", action="store_true",
+                   help="show only the times (no progress bar)")
     s.set_defaults(func=cmd_status)
 
     sub.add_parser("now", help="text currently being spoken").set_defaults(func=cmd_now)
+    sub.add_parser("now-pane",
+                   help="title of the pane that produced the now-playing speech"
+                   ).set_defaults(func=cmd_now_pane)
     sub.add_parser("text", help="spoken text (now-playing or latest history)").set_defaults(func=cmd_text)
 
     sub.add_parser("highlight-toggle",
@@ -515,9 +635,16 @@ def _build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("music", help="music control via Mopidy/MPD")
     s.add_argument("action",
                    choices=("play", "pause", "resume", "stop", "toggle",
-                            "next", "prev"))
+                            "next", "prev", "status", "now", "seek", "volume"))
     s.add_argument("uri", nargs="?",
-                   help="for 'play': Mopidy URI (e.g. yt:https://...)")
+                   help="for 'play': Mopidy URI (e.g. yt:https://...); "
+                        "for 'seek': ±seconds; for 'volume': ±delta")
+    s.add_argument("--width", type=int, default=12,
+                   help="for 'status': progress-bar width")
+    s.add_argument("--show-idle", action="store_true",
+                   help="for 'status': emit '○' when idle instead of empty")
+    s.add_argument("--no-bar", action="store_true",
+                   help="for 'status': show only the times (no progress bar)")
     s.add_argument("--add", action="store_true",
                    help="for 'play': queue without clearing the playlist")
     s.add_argument("--as", dest="as_type", metavar="TYPE",

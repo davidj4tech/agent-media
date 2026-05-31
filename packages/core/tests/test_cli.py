@@ -50,6 +50,82 @@ def test_parser_has_all_subcommands():
         assert name in sub.choices, name
 
 
+def test_render_status_no_bar():
+    line = cli.render_status(idle=False, pos=30, dur=120, paused=False,
+                             muted=False, bar=False)
+    assert line == "▶ 00:30 / 02:00"
+    assert "█" not in line and "░" not in line
+
+
+def test_parse_kv_music():
+    from agent_media_core.sinks.music import _parse_kv
+    raw = "volume: 80\nstate: play\nelapsed: 12.500\nduration: 213.000\nOK\n"
+    d = _parse_kv(raw)
+    assert d == {"volume": "80", "state": "play",
+                 "elapsed": "12.500", "duration": "213.000"}
+
+
+class _FakeMusic:
+    def __init__(self, status, song):
+        self._status, self._song = status, song
+
+    def status_dict(self):
+        return self._status
+
+    def current_song(self):
+        return self._song
+
+
+def test_music_now_label_prefers_artist_title():
+    m = _FakeMusic({}, {"Title": "Strobe", "Artist": "deadmau5",
+                        "file": "yt:abc"})
+    assert cli._music_now_label(m) == "deadmau5 — Strobe"
+
+
+def test_music_now_label_falls_back_to_name_then_file():
+    assert cli._music_now_label(
+        _FakeMusic({}, {"Name": "BBC R6"})) == "BBC R6"
+    assert cli._music_now_label(
+        _FakeMusic({}, {"file": "/music/x/song.mp3"})) == "song.mp3"
+
+
+def test_music_status_line_idle_and_playing():
+    idle = cli._music_status_line(_FakeMusic({"state": "stop"}, {}),
+                                  width=8, hide_idle=False)
+    assert idle == "○"
+    playing = cli._music_status_line(
+        _FakeMusic({"state": "play", "elapsed": "30", "duration": "120"}, {}),
+        width=8, hide_idle=False)
+    assert playing.startswith("▶ 00:30 ") and playing.endswith(" 02:00")
+
+
+def test_now_pane_falls_back_to_last_clip(monkeypatch, capsys):
+    """When nothing is playing, now-pane uses the most recent clip's pane."""
+    class FakeStore:
+        def get_now_playing(self, sink):
+            return None  # idle
+
+        def recent_history(self, *, sink, limit):
+            return [{"extras": {"source_pane": "%7"}}]
+
+    captured = {}
+
+    class _R:
+        returncode = 0
+        stdout = "my coding pane\n"
+
+    def fake_run(cmd, **kw):
+        captured["cmd"] = cmd
+        return _R()
+
+    monkeypatch.setattr(cli, "StateStore", FakeStore)
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    assert cli.cmd_now_pane(object()) == 0
+    # Resolved the *history* pane id, not the active pane.
+    assert "%7" in captured["cmd"] and "#{pane_title}" in captured["cmd"]
+    assert capsys.readouterr().out.strip() == "my coding pane"
+
+
 def test_replay_resolves_history(monkeypatch):
     played = {}
 

@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
 # Interactive agent-media control popup — runs inside `tmux display-popup -E`.
-# A compact key-capture overlay; the live progress bar lives in the status
-# line (`media status`). Single-key hotkeys drive the `media` CLI:
+# A compact two-line overlay: line 1 is a marquee (the title of the pane that
+# produced the now-playing speech; the current track on the music channel),
+# line 2 is the live clock. Tab cycles channels; single-key hotkeys drive the
+# `media` CLI and route to the active channel:
 #
-#   Space   play/pause toggle          r   replay latest clip
+#   Tab     switch channel (speech ⇆ music)
+#   Space   play/pause toggle          r   replay latest clip   (speech)
 #   h / l   seek -5s / +5s             H / L   seek -30s / +30s
-#   - / =   volume -5 / +5             m   toggle mute
-#   [ / ]   slower / faster (0.1)      0   reset speed
-#   < / >   replay older / newer       v   toggle auto-highlight on/off
-#   ?       help                       q / Esc   close
+#   - / =   volume -5 / +5             m   toggle mute           (speech)
+#   [ / ]   slower / faster (0.1)      0   reset speed           (speech)
+#   < / >   speech: replay older/newer · music: prev/next track
+#   v       toggle auto-highlight (speech)   ?  help   q / Esc  close
 #
-# Caller pane for `v` comes from TTS_POPUP_PANE (set by the tmux binding).
+# Caller pane for `v`/the speech marquee comes from TTS_POPUP_PANE (set by
+# the tmux binding).
 set -u
 MEDIA="${MEDIA:-media}"
 # Caller pane for the `v` show-text. Prefer the binding's TTS_POPUP_PANE,
@@ -30,15 +34,82 @@ export TTS_POPUP_PANE="$HL_PANE"
 
 speed=1.0
 hist_idx=1
+CHANNEL=speech          # active channel: speech | music (Tab cycles)
+
+# Cached snapshot of the CLI state. The draw loop ticks fast (TICK) so the
+# marquee scrolls smoothly, but the `media` CLI costs ~150ms/call, so we
+# only refresh this snapshot every FETCH_EVERY ticks (~1s) — and right after
+# a keypress so actions feel instant.
+LABEL="agent-media"     # marquee text (pane title / current track)
+STATUS=""               # second line: progress bar for the active channel
+
+# Marquee state. When LABEL is wider than the line, draw() scrolls it once
+# (a single left-to-right pass), holding briefly at each end, then parks at
+# the start (SCROLL_DONE) and stays put until LABEL changes.
+LAST_LABEL=""
+SCROLL_OFFSET=0
+SCROLL_HOLD_TICKS=6
+SCROLL_HOLD_COUNT=0
+SCROLL_DONE=0
 
 printf '\033[?25l'                       # hide cursor
 cleanup() { printf '\033[?25h'; }        # restore on exit
 trap cleanup EXIT
 
+# Pull the progress bar + marquee label for the active channel into the
+# cached snapshot. Speech marquee = the caller pane's title; music marquee =
+# the current track. Trims surrounding whitespace; collapses newlines.
+fetch() {
+    local t
+    if [ "$CHANNEL" = "music" ]; then
+        STATUS=$($MEDIA music status --show-idle --no-bar 2>/dev/null)
+        t=$($MEDIA music now 2>/dev/null | tr '\n' ' ')
+        t="${t#"${t%%[![:space:]]*}"}"; t="${t%"${t##*[![:space:]]}"}"
+        [ -n "$t" ] && LABEL="$t" || LABEL="(no music)"
+    else
+        STATUS=$($MEDIA status --show-idle --no-bar 2>/dev/null)
+        # Title of the pane that produced the *currently playing* speech
+        # (not the active pane), so the marquee names who's talking.
+        t=$($MEDIA now-pane 2>/dev/null | tr '\n' ' ')
+        t="${t#"${t%%[![:space:]]*}"}"; t="${t%"${t##*[![:space:]]}"}"
+        [ -n "$t" ] && LABEL="$t" || LABEL="agent-media"
+    fi
+}
+
 draw() {
     printf '\033[H\033[2J'               # home + clear
-    printf ' ♪ agent-media\r\n'
-    printf ' %s\r\n' "$($MEDIA status --show-idle --width 8 2>/dev/null)"
+    # Line 1: marquee of LABEL behind a fixed channel glyph.
+    local cols="${COLUMNS:-0}"
+    [ "$cols" -le 0 ] && cols=$(tput cols 2>/dev/null || echo 24)
+    local prefix; [ "$CHANNEL" = "music" ] && prefix='♫ ' || prefix='♪ '
+    local avail=$(( cols - ${#prefix} - 1 ))
+    [ "$avail" -lt 4 ] && avail=4
+    if [ "$LABEL" != "$LAST_LABEL" ]; then
+        SCROLL_OFFSET=0; SCROLL_HOLD_COUNT=0; SCROLL_DONE=0; LAST_LABEL="$LABEL"
+    fi
+    local shown="$LABEL"
+    if [ "${#LABEL}" -gt "$avail" ]; then
+        if [ "$SCROLL_DONE" -eq 1 ]; then
+            shown="${LABEL:0:avail}"               # parked at the start
+        else
+            local maxoff=$(( ${#LABEL} - avail ))
+            shown="${LABEL:SCROLL_OFFSET:avail}"
+            if [ "$SCROLL_OFFSET" -ge "$maxoff" ]; then
+                # end is in view — hold, then snap back to the start and stop
+                if [ "$SCROLL_HOLD_COUNT" -lt "$SCROLL_HOLD_TICKS" ]; then
+                    SCROLL_HOLD_COUNT=$(( SCROLL_HOLD_COUNT + 1 ))
+                else
+                    SCROLL_OFFSET=0; SCROLL_HOLD_COUNT=0; SCROLL_DONE=1
+                fi
+            elif [ "$SCROLL_OFFSET" -eq 0 ] && [ "$SCROLL_HOLD_COUNT" -lt "$SCROLL_HOLD_TICKS" ]; then
+                SCROLL_HOLD_COUNT=$(( SCROLL_HOLD_COUNT + 1 ))   # hold at start
+            else
+                SCROLL_OFFSET=$(( SCROLL_OFFSET + 1 )); SCROLL_HOLD_COUNT=0
+            fi
+        fi
+    fi
+    printf ' %s%s\r\n' "$prefix" "$shown"
+    printf ' %s\r\n' "$STATUS"
 }
 
 bump_speed() {        # $1 = +/- delta
@@ -46,42 +117,76 @@ bump_speed() {        # $1 = +/- delta
     $MEDIA speed "$speed" 2>/dev/null
 }
 
+# Run a transport command on the active channel. Avoids the `A && B || C`
+# pitfall (where a failing music command would fall through to the speech
+# one). On the music channel the args are passed to `media music …`.
+xport() {
+    # stderr silenced so a transient failure (e.g. MPD unreachable) can't
+    # dump a traceback over the popup UI.
+    if [ "$CHANNEL" = "music" ]; then $MEDIA music "$@" 2>/dev/null
+    else $MEDIA "$@" 2>/dev/null; fi
+}
+
+fetch
 draw
+TICK=0.2          # redraw cadence — fast enough for a smooth marquee
+FETCH_EVERY=5     # refresh the CLI snapshot every ~1s (5 × TICK)
+ticks=0
 while true; do
-    # Timed read so the status bar redraws ~1/s even with no keypress.
-    IFS= read -rsn1 -t 2 key; rc=$?
-    if [ "$rc" -gt 128 ]; then draw; continue; fi
+    # Short timed read: on timeout we scroll the marquee; every FETCH_EVERY
+    # timeouts we also re-pull the snapshot. A keypress refreshes immediately.
+    IFS= read -rsn1 -t "$TICK" key; rc=$?
+    if [ "$rc" -gt 128 ]; then
+        ticks=$(( ticks + 1 ))
+        if [ "$ticks" -ge "$FETCH_EVERY" ]; then fetch; ticks=0; fi
+        draw; continue
+    fi
     [ "$rc" -ne 0 ] && break
+    # Transport keys route to the active channel; speech-only keys (r, m,
+    # [, ], 0, v) no-op on the music channel.
     case "$key" in
-        ' ') $MEDIA toggle ;;
-        r)   $MEDIA replay; hist_idx=1 ;;
-        h)   $MEDIA seek -5 ;;
-        l)   $MEDIA seek 5 ;;
-        H)   $MEDIA seek -30 ;;
-        L)   $MEDIA seek 30 ;;
-        '-') $MEDIA volume -5 ;;
-        '='|'+') $MEDIA volume 5 ;;
-        m)   $MEDIA mute ;;
-        '[') bump_speed -0.1 ;;
-        ']') bump_speed 0.1 ;;
-        0)   speed=1.0; $MEDIA speed reset ;;
-        # ⏮ older clip in history; ⏭ newer clip, or jump to end of the
-        # current clip when already on the latest.
-        '<') hist_idx=$((hist_idx + 1)); $MEDIA replay "$hist_idx" || hist_idx=$((hist_idx - 1)) ;;
-        '>') if [ "$hist_idx" -gt 1 ]; then
+        $'\t') [ "$CHANNEL" = "speech" ] && CHANNEL=music || CHANNEL=speech
+               LABEL=""; LAST_LABEL=" "    # force a clean marquee reset
+               tmux display-message "♪ channel: $CHANNEL" 2>/dev/null ;;
+        ' ') xport toggle ;;
+        h)   xport seek -5 ;;
+        l)   xport seek 5 ;;
+        H)   xport seek -30 ;;
+        L)   xport seek 30 ;;
+        '-') xport volume -5 ;;
+        '='|'+') xport volume 5 ;;
+        # speech: ⏮ older / ⏭ newer clip (jump to end when on latest).
+        # music: previous / next track.
+        '<') if [ "$CHANNEL" = "music" ]; then
+                 $MEDIA music prev
+             else
+                 hist_idx=$((hist_idx + 1)); $MEDIA replay "$hist_idx" || hist_idx=$((hist_idx - 1))
+             fi ;;
+        '>') if [ "$CHANNEL" = "music" ]; then
+                 $MEDIA music next
+             elif [ "$hist_idx" -gt 1 ]; then
                  hist_idx=$((hist_idx - 1)); $MEDIA replay "$hist_idx"
              else
                  $MEDIA jump end
              fi ;;
-        v)   # Toggle auto-highlight (copy-mode follow-along) on/off.
-             # When turned on, immediately fires for the current sentence
-             # so the user sees instant feedback. The new state is shown
-             # in a tmux message so the user knows what just happened.
-             _hl_out=$(TTS_POPUP_PANE="$HL_PANE" $MEDIA highlight-toggle 2>/dev/null)
-             tmux display-message "♪ ${_hl_out:-highlight: ?}" 2>/dev/null ;;
-        '?') tmux display-message "Space play/pause · r replay · h/l ±5s · -/= vol · m mute · [/] speed · < > history · v toggle highlight · q quit" 2>/dev/null ;;
+        # --- speech-only keys below ---
+        r)   [ "$CHANNEL" = "speech" ] && { $MEDIA replay; hist_idx=1; } ;;
+        m)   [ "$CHANNEL" = "speech" ] && $MEDIA mute ;;
+        '[') [ "$CHANNEL" = "speech" ] && bump_speed -0.1 ;;
+        ']') [ "$CHANNEL" = "speech" ] && bump_speed 0.1 ;;
+        0)   [ "$CHANNEL" = "speech" ] && { speed=1.0; $MEDIA speed reset; } ;;
+        v)   # Toggle auto-highlight (copy-mode follow-along) on/off. Speech
+             # only; immediate feedback fires for the current sentence and the
+             # new state is shown in a tmux message.
+             if [ "$CHANNEL" = "speech" ]; then
+                 _hl_out=$(TTS_POPUP_PANE="$HL_PANE" $MEDIA highlight-toggle 2>/dev/null)
+                 tmux display-message "♪ ${_hl_out:-highlight: ?}" 2>/dev/null
+             fi ;;
+        '?') tmux display-message "Tab channel · Space play/pause · h/l ±5s · -/= vol · < > prev/next · speech: r replay m mute [/] speed v highlight · q quit" 2>/dev/null ;;
         q|$'\e') break ;;
         *) : ;;
     esac
+    # Refresh the snapshot so the bar/label reflect the action immediately.
+    fetch; ticks=0
     draw
 done
