@@ -58,6 +58,11 @@ def test_replay_resolves_history(monkeypatch):
             return [{"uri": "/clips/latest.mp3", "text": "a"},
                     {"uri": "/clips/older.mp3", "text": "b"}][:limit]
 
+        def set_now_playing(self, sink, *, uri, started_at, target, extras):
+            # _do_replay always refreshes now_playing so the status-bar
+            # progress reflects the clip just started, even single-clip ones.
+            played["now_playing_uri"] = uri
+
     class FakeSpeech:
         def play(self, uri, target):
             played["uri"] = uri
@@ -74,3 +79,4 @@ def test_replay_resolves_history(monkeypatch):
         index = 2
     assert cli.cmd_replay(A2()) == 0
     assert played["uri"] == "/clips/older.mp3"
+    assert played["now_playing_uri"] == "/clips/older.mp3"

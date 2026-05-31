@@ -286,7 +286,16 @@ def _wait_for_clip(sink: SinkSpeech, target: Target) -> None:
             break
         time.sleep(0.05)
     idle_streak = 0
-    for _ in range(1200):
+    elapsed = 0
+    while elapsed < 1200:
+        # A user pause (popup Space) holds the clip here indefinitely: a
+        # paused clip never goes idle, so without this it would burn the
+        # ~120s budget and then force-advance to the next sentence,
+        # resuming the response on its own. Hold without consuming budget;
+        # resume picks up where it left off.
+        if sink.paused(target):
+            time.sleep(0.1)
+            continue
         if sink.idle(target):
             idle_streak += 1
             if idle_streak >= 3:
@@ -294,6 +303,7 @@ def _wait_for_clip(sink: SinkSpeech, target: Target) -> None:
         else:
             idle_streak = 0
         time.sleep(0.1)
+        elapsed += 1
 
 
 def submit_event(event: Event,
@@ -452,7 +462,9 @@ def submit_event(event: Event,
             if do_highlight:
                 _tmux_highlight_text(sentence, first=(i == 0))
             try:
-                sink.play(str(clip_path), target)
+                # Only the first sentence resets a lingering pause/mute;
+                # later sentences preserve a pause the user made mid-response.
+                sink.play(str(clip_path), target, reset_state=(i == 0))
                 played_any = True
             except Exception as e:  # noqa: BLE001
                 log.warning("intake: sink-speech.play failed: %s", e)
