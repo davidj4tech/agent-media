@@ -45,6 +45,7 @@ from .._paths import state_dir
 from ..state import StateStore
 from ..types import Event, Priority, Source
 from ._env import load_env_file
+from ._text import strip_markdown
 from .submit import submit_event
 
 
@@ -272,7 +273,7 @@ def _handle_notification(payload: dict) -> int:
     """Notif path: prefer Claude's `message` field, dedup-skip if a
     Stop just played or a notif fired within the cooldown windows.
     """
-    msg = (payload.get("message") or "").strip()
+    msg = strip_markdown((payload.get("message") or "").strip())
     if not msg:
         return 0
 
@@ -323,7 +324,7 @@ def _handle_stop(payload: dict) -> int:
             break
         time.sleep(0.1)
 
-    text = _latest_assistant_text(tp)
+    text = strip_markdown(_latest_assistant_text(tp))
     if not text:
         return 0
 
