@@ -45,10 +45,25 @@ from .._paths import state_dir
 from ..state import StateStore
 from ..types import Event, Priority, Source
 from ._env import load_env_file
+from ._text import strip_markdown
 from .submit import submit_event
 
 
 log = logging.getLogger(__name__)
+
+# Distinguishable-accent voices used to give each tmux session its own
+# voice when no explicit MEDIA_SESSION_VOICE_MAP pin matches. Override the
+# whole set with MEDIA_SESSION_VOICE_POOL (comma-separated).
+_DEFAULT_VOICE_POOL = (
+    "en-AU-NatashaNeural",  # Australian
+    "en-NZ-MollyNeural",    # New Zealand
+    "en-GB-SoniaNeural",    # British
+    "en-IE-EmilyNeural",    # Irish
+    "en-CA-ClaraNeural",    # Canadian
+    "en-ZA-LeahNeural",     # South African
+    "en-GB-LibbyNeural",    # British (younger)
+    "en-IN-NeerjaNeural",   # Indian
+)
 
 
 def _tmux(args: list[str], timeout: float = 2.0) -> str:
@@ -62,7 +77,44 @@ def _tmux(args: list[str], timeout: float = 2.0) -> str:
         return ""
 
 
-def _notif_label() -> str:
+def _session_name() -> str:
+    """Current tmux session name, or "" when not running inside tmux."""
+    pane = os.environ.get("TMUX_PANE")
+    if not pane:
+        return ""
+    return _tmux(["display-message", "-p", "-t", pane, "#{session_name}"])
+
+
+def _voice_for_session(sess: str) -> Optional[str]:
+    """Pick a TTS voice for the given tmux session name.
+
+    Resolution order:
+      1. Return None (→ daemon default voice) when disabled via
+         MEDIA_SESSION_VOICE_ENABLED=0 or when not in tmux (no session).
+      2. Explicit pin from MEDIA_SESSION_VOICE_MAP, formatted
+         "name=voice,name=voice"; first exact session-name match wins.
+      3. Stable hash of the session name into the voice pool
+         (MEDIA_SESSION_VOICE_POOL overrides the built-in accent set), so a
+         given session always gets the same voice without configuration.
+    """
+    if not sess or os.environ.get("MEDIA_SESSION_VOICE_ENABLED", "1") == "0":
+        return None
+
+    for pair in os.environ.get("MEDIA_SESSION_VOICE_MAP", "").split(","):
+        name, _, voice = pair.partition("=")
+        if name.strip() == sess and voice.strip():
+            return voice.strip()
+
+    pool_env = os.environ.get("MEDIA_SESSION_VOICE_POOL", "")
+    pool = [v.strip() for v in pool_env.split(",") if v.strip()] \
+        or list(_DEFAULT_VOICE_POOL)
+    if not pool:
+        return None
+    h = int(hashlib.sha1(sess.encode("utf-8")).hexdigest(), 16)
+    return pool[h % len(pool)]
+
+
+def _notif_label(sess: str) -> str:
     """Build a "where am I" prefix for the notification text.
 
     Includes:
@@ -81,7 +133,6 @@ def _notif_label() -> str:
     if not pane:
         return ""
 
-    sess = _tmux(["display-message", "-p", "-t", pane, "#{session_name}"])
     pane_title = _tmux(["display-message", "-p", "-t", pane, "#{pane_title}"])
     sess_count_s = _tmux(["list-sessions", "-F", "#{session_name}"])
 
@@ -222,7 +273,7 @@ def _handle_notification(payload: dict) -> int:
     """Notif path: prefer Claude's `message` field, dedup-skip if a
     Stop just played or a notif fired within the cooldown windows.
     """
-    msg = (payload.get("message") or "").strip()
+    msg = strip_markdown((payload.get("message") or "").strip())
     if not msg:
         return 0
 
@@ -232,7 +283,8 @@ def _handle_notification(payload: dict) -> int:
     if focus_window > 0 and _client_focused_recently(focus_window):
         return 0
 
-    label = _notif_label()
+    sess = _session_name()
+    label = _notif_label(sess)
     if label:
         msg = f"{label}: {msg}"
 
@@ -248,6 +300,7 @@ def _handle_notification(payload: dict) -> int:
 
     submit_event(Event(text=msg, source=Source.CLAUDE_CODE,
                        priority=Priority.HIGH,
+                       voice=_voice_for_session(sess),
                        metadata={"kind": "notif"}))
     return 0
 
@@ -271,7 +324,7 @@ def _handle_stop(payload: dict) -> int:
             break
         time.sleep(0.1)
 
-    text = _latest_assistant_text(tp)
+    text = strip_markdown(_latest_assistant_text(tp))
     if not text:
         return 0
 
@@ -283,6 +336,7 @@ def _handle_stop(payload: dict) -> int:
     rid = submit_event(
         Event(text=text, source=Source.CLAUDE_CODE,
               priority=Priority.NORMAL,
+              voice=_voice_for_session(_session_name()),
               metadata={"kind": "stop", "dedup_key": dedup_key}),
         state=state,
     )

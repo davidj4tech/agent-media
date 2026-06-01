@@ -144,6 +144,19 @@ jump on demand.
 | `MEDIA_NOTIF_LABEL_HOST` | `1` | Set to `0` to omit the hostname from the label (useful on single-machine setups) |
 | `MEDIA_NOTIF_FOCUS_SUPPRESS` | `180` | Suppress "waiting" notifications if the user was active in tmux within this many seconds. Set to `0` to disable. |
 
+### Per-session voices (Claude Code hook)
+
+Gives each tmux session its own speech voice, so concurrent Claude Code
+sessions are audibly distinguishable. The voice is resolved from the tmux
+session name and rides on the event to the sink — no daemon change. Resolution
+order: explicit pin → stable hash of the session name → `MEDIA_RENDER_VOICE`.
+
+| Variable | Default | Description |
+|---|---|---|
+| `MEDIA_SESSION_VOICE_ENABLED` | `1` | Set to `0` to disable per-session voices (falls back to `MEDIA_RENDER_VOICE`). Also inactive when not running inside tmux. |
+| `MEDIA_SESSION_VOICE_MAP` | *(none)* | Explicit pins as `name=voice,name=voice` (e.g. `sasonica=en-IE-EmilyNeural,main=en-AU-NatashaNeural`). First exact session-name match wins. |
+| `MEDIA_SESSION_VOICE_POOL` | *(built-in)* | Comma-separated voices for the stable-hash fallback. Overrides the built-in distinguishable-accent pool (AU/NZ/GB/IE/CA/ZA/GB-young/IN). Sessions with no explicit pin get `pool[ sha1(session_name) % len(pool) ]`. |
+
 ---
 
 ## Services
