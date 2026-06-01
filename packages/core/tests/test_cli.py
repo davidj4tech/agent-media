@@ -265,6 +265,97 @@ def test_goto_track_no_pane_returns_1(monkeypatch):
     assert cli.cmd_goto_track(object()) == 1
 
 
+def test_split_with_paragraphs_preserves_boundaries():
+    from agent_media_core.intake.submit import (
+        _split_sentences_with_paragraphs as seg)
+    s, p = seg("First one. Second here is a bit longer.\n\n"
+               "New paragraph opener here.\n\nThird block of text.")
+    assert len(s) == len(p)
+    assert p[0] == 0 and p[-1] == 2
+    # A short sentence that opens a new paragraph is NOT merged backward.
+    s2, p2 = seg("A longer first sentence here.\n\nYes.")
+    assert s2[-1] == "Yes." and p2[-1] == 1
+
+
+def test_nav_target_sentence_and_paragraph():
+    para = [0, 0, 1, 2]
+    n = 4
+    assert cli._nav_target(0, n, para, "sentence", 1) == 1
+    assert cli._nav_target(0, n, para, "sentence", -1) == -1   # caller clamps
+    assert cli._nav_target(0, n, para, "paragraph", 1) == 2    # → para 1 start
+    assert cli._nav_target(2, n, para, "paragraph", 1) == 3    # → para 2 start
+    assert cli._nav_target(3, n, para, "paragraph", 1) == 4    # past end → end
+    assert cli._nav_target(3, n, para, "paragraph", -1) == 2   # prev para start
+    assert cli._nav_target(2, n, para, "paragraph", -1) == 0   # prev para start
+
+
+def _skip_args(unit="sentence", direction=1, fallback=5.0):
+    class A:
+        pass
+    A.unit, A.dir, A.seek_fallback = unit, direction, fallback
+    return A()
+
+
+def test_skip_falls_back_to_time_seek_without_sequence(monkeypatch):
+    fake = _FakeIpc({"idle-active": False, "playlist-count": 1})
+    monkeypatch.setattr(cli, "ipc", fake)
+    monkeypatch.setattr(cli, "_sock", lambda: "/s")
+
+    class FakeStore:
+        def get_now_playing(self, sink):
+            return {"extras": {"clip_sentences": ["only one sentence"]}}
+
+    monkeypatch.setattr(cli, "StateStore", FakeStore)
+    assert cli.cmd_skip(_skip_args(fallback=5.0)) == 0
+    assert ("command", "seek", 5.0, "relative") in fake.calls
+
+
+def test_skip_live_writes_nav_request(monkeypatch):
+    fake = _FakeIpc({"idle-active": False, "playlist-count": 1})
+    monkeypatch.setattr(cli, "ipc", fake)
+    monkeypatch.setattr(cli, "_sock", lambda: "/s")
+    written = {}
+    monkeypatch.setattr(cli, "_write_nav_request",
+                        lambda i, *a: written.__setitem__("i", i))
+
+    class FakeStore:
+        def get_now_playing(self, sink):
+            return {"extras": {"clip_sentences": ["a", "b", "c"],
+                               "clip_paragraph_idx": [0, 0, 1],
+                               "current_sentence_idx": 0}}
+
+    monkeypatch.setattr(cli, "StateStore", FakeStore)
+    # sentence forward → next index
+    assert cli.cmd_skip(_skip_args("sentence", 1)) == 0
+    assert written["i"] == 1
+    # paragraph forward from sentence 0 → first clip of paragraph 1 (idx 2)
+    assert cli.cmd_skip(_skip_args("paragraph", 1)) == 0
+    assert written["i"] == 2
+    # sentence back from 0 clamps to 0 (restart first section)
+    assert cli.cmd_skip(_skip_args("sentence", -1)) == 0
+    assert written["i"] == 0
+
+
+def test_skip_playlist_sets_playlist_pos_and_highlights(monkeypatch):
+    fake = _FakeIpc({"idle-active": False, "playlist-count": 3,
+                     "playlist-pos": 0})
+    monkeypatch.setattr(cli, "ipc", fake)
+    monkeypatch.setattr(cli, "_sock", lambda: "/s")
+    hl = {}
+    monkeypatch.setattr(cli, "_force_highlight_sentence",
+                        lambda s: hl.__setitem__("s", s))
+
+    class FakeStore:
+        def get_now_playing(self, sink):
+            return {"extras": {"clip_sentences": ["a", "b", "c"],
+                               "clip_paragraph_idx": [0, 1, 2]}}
+
+    monkeypatch.setattr(cli, "StateStore", FakeStore)
+    assert cli.cmd_skip(_skip_args("sentence", 1)) == 0
+    assert ("set", "playlist-pos", 1) in fake.calls
+    assert hl["s"] == "b"
+
+
 def test_replay_resolves_history(monkeypatch):
     played = {}
 

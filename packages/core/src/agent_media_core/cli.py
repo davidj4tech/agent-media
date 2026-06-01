@@ -383,13 +383,8 @@ def cmd_speed(a) -> int:
     return 0
 
 
-def cmd_jump(a) -> int:
-    """Seek to the start or end of the current clip."""
-    sock = _sock()
-    if a.where == "start":
-        ipc.command(sock, "seek", 0, "absolute")
-        return 0
-    # end — skip to the end of the (last) clip so it finishes.
+def _seek_to_end(sock) -> int:
+    """Skip to the end of the (last) clip so the response finishes."""
     # A seek-to-end only plays out if the broker isn't paused/muted: a paused
     # clip just parks the playhead at 100% and never reaches EOF (so the popup
     # `>` looked like a no-op when the clip had been paused, e.g. via Space).
@@ -410,6 +405,151 @@ def cmd_jump(a) -> int:
     except ipc.MpvIpcError:
         pass
     ipc.command(sock, "seek", 100, "absolute-percent")
+    return 0
+
+
+def cmd_jump(a) -> int:
+    """Seek to the start or end of the current clip."""
+    sock = _sock()
+    if a.where == "start":
+        ipc.command(sock, "seek", 0, "absolute")
+        return 0
+    return _seek_to_end(sock)
+
+
+def _nav_target(cur: int, n: int, para_idx: list, unit: str,
+                direction: int) -> int:
+    """Resolve the sentence index to jump to for `media skip`.
+
+    A return >= n means "past the last section" → finish the response; a
+    negative return is clamped to 0 by the caller (restart the first section).
+    """
+    if unit == "sentence":
+        return cur + (1 if direction > 0 else -1)
+    # paragraph
+    if not para_idx or cur >= len(para_idx):
+        return cur + (1 if direction > 0 else -1)
+    cur_para = para_idx[cur]
+    if direction > 0:
+        nxt = [p for p in para_idx if p > cur_para]
+        if not nxt:
+            return n  # already in the last paragraph → finish
+        tp = min(nxt)
+        return next(j for j in range(n) if para_idx[j] == tp)
+    # backward: to the start of the current paragraph, else the previous one's
+    para_start = next(j for j in range(n) if para_idx[j] == cur_para)
+    if cur > para_start:
+        return para_start
+    prev = [p for p in para_idx if p < cur_para]
+    if not prev:
+        return 0
+    tp = max(prev)
+    return next(j for j in range(n) if para_idx[j] == tp)
+
+
+def _force_highlight_sentence(sentence: str) -> None:
+    """Force the copy-mode highlight onto `sentence` (used for replay jumps)."""
+    from .intake.submit import _tmux_highlight_text
+    pane = os.environ.get("TTS_POPUP_PANE") or os.environ.get("TMUX_PANE", "")
+    if "#{" in pane:
+        pane = ""
+    if not pane:
+        return
+    os.environ["TMUX_PANE"] = pane
+    if not os.environ.get("TMUX"):
+        os.environ["TMUX"] = "x"
+    try:
+        _tmux_highlight_text(sentence, force=True)
+    except Exception:  # noqa: BLE001 — popup must never see a traceback
+        pass
+
+
+def _write_nav_request(idx: int, target_name: str = "local") -> None:
+    """Drop a jump request the live reader loop reads after the current clip.
+
+    Keyed by the *playing* target (e.g. "rooms" for the Snapcast feed) so the
+    flag filename matches what the reader loop polls — the loop runs with
+    MEDIA_SPEECH_DEFAULT_TARGET, which isn't necessarily "local".
+    """
+    from .intake.submit import _nav_flag_path
+    try:
+        _nav_flag_path(Target(name=target_name)).write_text(str(idx))
+    except OSError:
+        pass
+
+
+def cmd_skip(a) -> int:
+    """Step the speech reader forward/back by a sentence (h/l) or paragraph (H/L).
+
+    Works both on a replay (clips queued as one mpv playlist → jump by
+    playlist-pos) and during the live readout (the reader loop picks up a jump
+    request even while paused). Falls back to a plain time-seek of
+    --seek-fallback seconds when there's no multi-sentence sequence to step.
+    """
+    sock = _sock()
+    direction = 1 if a.dir > 0 else -1
+
+    def _time_seek() -> int:
+        try:
+            ipc.command(sock, "seek", float(a.seek_fallback), "relative")
+            return 0
+        except ipc.MpvIpcError:
+            return 1
+
+    np = StateStore().get_now_playing("speech")
+    ex = (np or {}).get("extras") or {}
+    if isinstance(ex, str):
+        try:
+            ex = json.loads(ex)
+        except json.JSONDecodeError:
+            ex = {}
+    sentences = ex.get("clip_sentences") or []
+    para_idx = ex.get("clip_paragraph_idx") or []
+    n = len(sentences)
+
+    try:
+        idle = bool(ipc.get_property(sock, "idle-active"))
+    except ipc.MpvIpcError:
+        idle = True
+    try:
+        raw = ipc.get_property(sock, "playlist-count")
+        count = int(raw) if isinstance(raw, int) else 1
+    except ipc.MpvIpcError:
+        count = 1
+
+    if n <= 1 or idle:
+        return _time_seek()
+    if len(para_idx) != n:
+        para_idx = list(range(n))  # no paragraph map → one paragraph per line
+
+    playlist = count > 1
+    if playlist:
+        try:
+            cur = int(ipc.get_property(sock, "playlist-pos") or 0)
+        except ipc.MpvIpcError:
+            cur = 0
+    else:
+        cur = ex.get("current_sentence_idx")
+        if cur is None:
+            return _time_seek()
+        cur = int(cur)
+
+    target = _nav_target(cur, n, para_idx, a.unit, direction)
+    if target < 0:
+        target = 0
+
+    if playlist:
+        if target >= n:
+            return _seek_to_end(sock)
+        try:
+            ipc.set_property(sock, "playlist-pos", target)
+        except ipc.MpvIpcError:
+            return 1
+        _force_highlight_sentence(sentences[target])
+        return 0
+    # Live readout: hand the jump to the reader loop (honored even while
+    # paused). Key the flag by the target that's actually playing.
+    _write_nav_request(target, (np or {}).get("target") or "local")
     return 0
 
 
@@ -457,6 +597,14 @@ def _do_replay(index: int) -> int:
     if have_durations:
         np_extras["total_duration_s"] = sum(clip_durations)
         np_extras["clip_durations_s"] = clip_durations
+    # Carry the sentence + paragraph map so `media skip` can step the replay
+    # by sentence/paragraph; the tracker keeps current_sentence_idx fresh.
+    if clip_sentences and len(clip_sentences) == len(clip_uris):
+        np_extras["clip_sentences"] = clip_sentences
+        cpi = ex.get("clip_paragraph_idx")
+        if cpi and len(cpi) == len(clip_uris):
+            np_extras["clip_paragraph_idx"] = cpi
+        np_extras["current_sentence_idx"] = 0
     StateStore().set_now_playing(
         "speech", uri=clip_uris[0], started_at=time.time(),
         target=SPEECH_TARGET.name, extras=np_extras)
@@ -717,6 +865,15 @@ def _build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("jump", help="seek to start|end of the current clip")
     s.add_argument("where", choices=("start", "end"))
     s.set_defaults(func=cmd_jump)
+
+    s = sub.add_parser(
+        "skip", help="step the reader by a sentence/paragraph (popup h/l/H/L)")
+    s.add_argument("--unit", choices=("sentence", "paragraph"),
+                   default="sentence")
+    s.add_argument("--dir", type=int, default=1, help="-1 back, 1 forward")
+    s.add_argument("--seek-fallback", type=float, default=5.0,
+                   help="seconds to time-seek when there's no sentence sequence")
+    s.set_defaults(func=cmd_skip)
 
     s = sub.add_parser("replay", help="replay the Nth most recent clip (1=latest)")
     s.add_argument("index", nargs="?", type=int, default=1)

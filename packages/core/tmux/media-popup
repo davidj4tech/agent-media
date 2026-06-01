@@ -7,7 +7,8 @@
 #
 #   Tab     switch channel (speech ⇆ music)
 #   Space   play/pause toggle          r   replay latest clip   (speech)
-#   h / l   seek -5s / +5s             H / L   seek -30s / +30s
+#   h / l   prev/next sentence         H / L   prev/next paragraph
+#           (speech; ±5s/±30s seek on music or a single-sentence reply)
 #   - / =   volume -5 / +5             m   toggle mute           (speech)
 #   [ / ]   slower / faster (0.1)      0   reset speed           (speech)
 #   < / >   speech: replay older/newer · music: prev/next track
@@ -149,10 +150,16 @@ while true; do
                LABEL=""; LAST_LABEL=" "    # force a clean marquee reset
                tmux display-message "♪ channel: $CHANNEL" 2>/dev/null ;;
         ' ') xport toggle ;;
-        h)   xport seek -5 ;;
-        l)   xport seek 5 ;;
-        H)   xport seek -30 ;;
-        L)   xport seek 30 ;;
+        # speech: step one sentence (h/l) or paragraph (H/L), falling back to a
+        # time-seek when there's no sentence sequence. music: plain time-seek.
+        h)   if [ "$CHANNEL" = "music" ]; then $MEDIA music seek -5 2>/dev/null
+             else $MEDIA skip --unit sentence --dir -1 --seek-fallback -5 2>/dev/null; fi ;;
+        l)   if [ "$CHANNEL" = "music" ]; then $MEDIA music seek 5 2>/dev/null
+             else $MEDIA skip --unit sentence --dir 1 --seek-fallback 5 2>/dev/null; fi ;;
+        H)   if [ "$CHANNEL" = "music" ]; then $MEDIA music seek -30 2>/dev/null
+             else $MEDIA skip --unit paragraph --dir -1 --seek-fallback -30 2>/dev/null; fi ;;
+        L)   if [ "$CHANNEL" = "music" ]; then $MEDIA music seek 30 2>/dev/null
+             else $MEDIA skip --unit paragraph --dir 1 --seek-fallback 30 2>/dev/null; fi ;;
         '-') xport volume -5 ;;
         '='|'+') xport volume 5 ;;
         # speech: ⏮ older / ⏭ newer clip (jump to end when on latest).
@@ -192,7 +199,7 @@ while true; do
                  _hl_out=$(TTS_POPUP_PANE="$HL_PANE" $MEDIA highlight-toggle 2>/dev/null)
                  tmux display-message "♪ ${_hl_out:-highlight: ?}" 2>/dev/null
              fi ;;
-        '?') tmux display-message "Tab channel · Space play/pause · h/l ±5s · -/= vol · < > prev/next · g go to source · speech: r replay m mute [/] speed v highlight · q quit" 2>/dev/null ;;
+        '?') tmux display-message "Tab channel · Space play/pause · h/l sentence H/L paragraph · -/= vol · < > older/newer · g go to source · speech: r replay m mute [/] speed v highlight · q quit" 2>/dev/null ;;
         q|$'\e') break ;;
         *) : ;;
     esac
