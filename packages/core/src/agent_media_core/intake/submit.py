@@ -212,16 +212,17 @@ def _tmux_highlight_text(text: str, *, first: bool = False,
         cut = s[:limit].rfind(" ")
         return s[:cut] if cut > 15 else s[:limit]
 
-    snippet = ""
-    for line in text.splitlines():
-        line = line.strip()
-        if len(line) >= 20:
-            snippet = _trim_to_word(line)
-            break
-    if not snippet:
-        snippet = _trim_to_word(text.replace("\n", " ").strip())
-    if not snippet:
+    # Anchor on the longest single line — tmux search matches within one
+    # visual row, so flattening newlines (which span wrapped rows) would never
+    # match. A too-short anchor (a one-word sentence, a bare heading) isn't
+    # unique: search-backward then lands on spurious text — often the prompt at
+    # the very bottom — yanking the view to the end of the buffer. Skip those
+    # outright and leave the prior highlight in place.
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    anchor = max(lines, key=len) if lines else text.strip()
+    if len(anchor) < 15:
         return
+    snippet = _trim_to_word(anchor)
 
     # Selection length = snippet length, capped so the highlight always fits
     # within a single visual row. cursor-right N beyond the row would drag
@@ -273,6 +274,10 @@ def _tmux_highlight_text(text: str, *, first: bool = False,
     except (OSError, ValueError):
         pass
 
+    # Remember where the pane sat before we touch it, so a failed search can
+    # put the view back instead of stranding the reader at the bottom.
+    _prev_in_mode, _prev_pos = _pane_scroll_pos(pane)
+
     try:
         # Ensure copy-mode is active (no-op if it already is, e.g. the user
         # scrolled the pane — which leaves it in copy-mode).
@@ -290,12 +295,18 @@ def _tmux_highlight_text(text: str, *, first: bool = False,
         subprocess.run(["tmux", "send-keys", "-t", pane, "-X",
                         "search-backward", snippet],
                        capture_output=True)
-        # If the search matched nothing, the cursor stays put at the bottom.
-        # Don't paint a stray selection there (the "yellow block at bottom
-        # left"); leave copy-mode so the next sentence retries cleanly.
+        # If the search matched nothing, the cursor is still at the bottom
+        # (history-bottom moved it there). Don't strand the reader at the end
+        # of the buffer: restore the prior viewport if we had one (scroll back
+        # up the same number of lines), otherwise just leave copy-mode.
         if _cursor_sig(pane) == _before:
-            subprocess.run(["tmux", "send-keys", "-t", pane, "-X", "cancel"],
-                           capture_output=True)
+            if _prev_in_mode and _prev_pos.isdigit() and int(_prev_pos) > 0:
+                subprocess.run(["tmux", "send-keys", "-t", pane, "-X",
+                                "-N", _prev_pos, "scroll-up"],
+                               capture_output=True)
+            else:
+                subprocess.run(["tmux", "send-keys", "-t", pane, "-X", "cancel"],
+                               capture_output=True)
             return
         subprocess.run(["tmux", "send-keys", "-t", pane, "-X",
                         "begin-selection"],
