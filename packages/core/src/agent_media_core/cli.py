@@ -96,7 +96,14 @@ def _now_speaking() -> Optional[dict]:
 
 
 def _speech_history(n: int = 20):
-    return StateStore().recent_history(sink="speech", limit=n)
+    # Exclude "Claude is waiting" notif clips: they're alerts, not responses,
+    # and shouldn't appear when traversing past TTS (popup < / >, r, replay).
+    # Over-fetch so filtering still leaves n real responses to step through.
+    rows = StateStore().recent_history(sink="speech", limit=max(n * 4, n + 50))
+    rows = [r for r in rows
+            if not (isinstance(r.get("extras"), dict)
+                    and r["extras"].get("kind") == "notif")]
+    return rows[:n]
 
 
 # --- speech subcommands ----------------------------------------------------
