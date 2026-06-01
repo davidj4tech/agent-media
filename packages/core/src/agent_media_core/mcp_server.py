@@ -141,13 +141,23 @@ def speech_now_playing(target: str = "local") -> dict:
 @mcp.tool()
 def speech_history(limit: int = 10) -> list[dict]:
     """The last N speech clips. Most recent first."""
-    return _state().recent_history(sink="speech", limit=limit)
+    # Exclude "Claude is waiting" notif clips: they're alerts, not responses.
+    # Over-fetch so filtering still leaves `limit` real responses.
+    rows = _state().recent_history(sink="speech", limit=max(limit * 4, limit + 50))
+    rows = [r for r in rows
+            if not (isinstance(r.get("extras"), dict)
+                    and r["extras"].get("kind") == "notif")]
+    return rows[:limit]
 
 
 @mcp.tool()
 def speech_replay_last(target: str = "local") -> dict:
     """Replay the most recent speech clip."""
-    rows = _state().recent_history(sink="speech", limit=1)
+    # Skip "Claude is waiting" notif clips: replay the last real response.
+    rows = _state().recent_history(sink="speech", limit=50)
+    rows = [r for r in rows
+            if not (isinstance(r.get("extras"), dict)
+                    and r["extras"].get("kind") == "notif")]
     if not rows:
         return {"ok": False, "reason": "no history"}
     uri = rows[0].get("uri")
