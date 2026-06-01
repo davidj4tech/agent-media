@@ -72,7 +72,8 @@ def _device_for(target: Target) -> Optional[str]:
 class SinkSpeech:
     """Sink protocol implementation for the speech broker."""
 
-    def play(self, uri: str, target: Target = DEFAULT_TARGET, **_: object) -> None:
+    def play(self, uri: str, target: Target = DEFAULT_TARGET,
+             reset_state: bool = True, **_: object) -> None:
         sock = _socket_for(target)
         device = _device_for(target)
         if device is not None:
@@ -84,16 +85,19 @@ class SinkSpeech:
                 log.warning("sink-speech: set audio-device %s failed: %s",
                             device, e)
         ipc.command(sock, "loadfile", uri, "replace")
-        # A new clip must be audible regardless of a lingering pause/mute
-        # left on the broker (e.g. a popup Space/m while idle) — otherwise
-        # every future clip loads into a paused/muted broker and plays
-        # silently. The popup's keys still control the *currently* playing
-        # clip; this only resets state at the start of a fresh one.
-        for prop in ("pause", "mute"):
-            try:
-                ipc.set_property(sock, prop, False)
-            except ipc.MpvIpcError:
-                pass
+        # A fresh response must be audible regardless of a lingering
+        # pause/mute left on the broker (e.g. a popup Space/m while idle) —
+        # otherwise it loads into a paused/muted broker and plays silently.
+        # But advancing between sentences of one response must NOT clear a
+        # pause the user just made via the popup, or the response "resumes
+        # itself". Callers pass reset_state=False for those mid-response
+        # clips; only the first clip of a response resets.
+        if reset_state:
+            for prop in ("pause", "mute"):
+                try:
+                    ipc.set_property(sock, prop, False)
+                except ipc.MpvIpcError:
+                    pass
 
     def queue(self, uri: str, target: Target = DEFAULT_TARGET) -> None:
         """Append a clip to mpv's playlist without interrupting what's playing."""
@@ -131,3 +135,14 @@ class SinkSpeech:
             return bool(ipc.get_property(_socket_for(target), "idle-active"))
         except ipc.MpvIpcError:
             return True
+
+    def paused(self, target: Target = DEFAULT_TARGET) -> bool:
+        """True when a clip is loaded but held paused (e.g. popup Space).
+
+        Returns False on IPC error so a transient hiccup can't wedge a
+        caller that loops while paused.
+        """
+        try:
+            return bool(ipc.get_property(_socket_for(target), "pause"))
+        except ipc.MpvIpcError:
+            return False

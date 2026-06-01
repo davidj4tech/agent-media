@@ -49,13 +49,20 @@ def progress_bar(frac: float, width: int = 12) -> str:
 def render_status(*, idle: Optional[bool], pos: Optional[float],
                   dur: Optional[float], paused: Optional[bool],
                   muted: Optional[bool], width: int = 12,
-                  hide_idle: bool = True) -> str:
-    """Build the one-line status string (or '' / '○' when idle)."""
+                  hide_idle: bool = True, bar: bool = True) -> str:
+    """Build the one-line status string (or '' / '○' when idle).
+
+    With bar=False, the progress bar is dropped and only the times remain
+    (`▶ 00:30 / 02:00`) — used by the popup, which shows just the clock.
+    """
     if idle is None or idle:
         return "" if hide_idle else "○"
     icon = "⏸" if paused else "▶"
-    frac = (pos / dur) if (pos and dur) else 0.0
-    line = f"{icon} {fmt_mmss(pos)} {progress_bar(frac, width)} {fmt_mmss(dur)}"
+    if bar:
+        frac = (pos / dur) if (pos and dur) else 0.0
+        line = f"{icon} {fmt_mmss(pos)} {progress_bar(frac, width)} {fmt_mmss(dur)}"
+    else:
+        line = f"{icon} {fmt_mmss(pos)} / {fmt_mmss(dur)}"
     if muted:
         line += " [M]"
     return line
@@ -89,7 +96,14 @@ def _now_speaking() -> Optional[dict]:
 
 
 def _speech_history(n: int = 20):
-    return StateStore().recent_history(sink="speech", limit=n)
+    # Exclude "Claude is waiting" notif clips: they're alerts, not responses,
+    # and shouldn't appear when traversing past TTS (popup < / >, r, replay).
+    # Over-fetch so filtering still leaves n real responses to step through.
+    rows = StateStore().recent_history(sink="speech", limit=max(n * 4, n + 50))
+    rows = [r for r in rows
+            if not (isinstance(r.get("extras"), dict)
+                    and r["extras"].get("kind") == "notif")]
+    return rows[:n]
 
 
 # --- speech subcommands ----------------------------------------------------
@@ -119,7 +133,8 @@ def cmd_status(a) -> int:
                 dur = total
     print(render_status(idle=idle, pos=pos, dur=dur,
                         paused=_get("pause"), muted=_get("mute"),
-                        width=a.width, hide_idle=not a.show_idle))
+                        width=a.width, hide_idle=not a.show_idle,
+                        bar=not getattr(a, "no_bar", False)))
     return 0
 
 
@@ -130,32 +145,142 @@ def cmd_now(a) -> int:
     return 0
 
 
+def _spoken_pane() -> Optional[str]:
+    """tmux pane id that produced the current (or most recent) speech."""
+    np = _now_speaking()
+    if np:
+        # Actively playing: use THIS clip's source pane, or None when the
+        # source had no pane (a gateway/openclaw agent, `media say`, etc.).
+        # Don't fall back to history here — borrowing the last Claude pane
+        # would mislabel paneless speech with a stale, wrong title.
+        return (np.get("extras") or {}).get("source_pane") or None
+    # Idle: keep naming whoever last spoke.
+    rows = _speech_history(1)
+    if rows:
+        ex = rows[0].get("extras") or {}
+        if isinstance(ex, str):
+            try:
+                ex = json.loads(ex)
+            except json.JSONDecodeError:
+                ex = {}
+        return ex.get("source_pane") or None
+    return None
+
+
+def _focus_pane(pane: str) -> None:
+    """Bring `pane` to the foreground — its window, then the pane itself."""
+    for args in (["select-window", "-t", pane], ["select-pane", "-t", pane]):
+        try:
+            subprocess.run(["tmux", *args], capture_output=True)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def cmd_now_pane(a) -> int:
+    """Title of the tmux pane that produced the speech.
+
+    The popup shows this so the marquee names *which* pane is talking. When
+    nothing is playing, falls back to the pane of the most recent clip so the
+    marquee keeps showing who last spoke (rather than reverting to a generic
+    label). Prints nothing when no pane was ever captured.
+    """
+    pane = _spoken_pane()
+    if not pane:
+        return 0
+    try:
+        r = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", pane, "#{pane_title}"],
+            capture_output=True, text=True)
+        if r.returncode == 0:
+            print(r.stdout.strip())
+    except Exception:  # noqa: BLE001 — popup must never see a traceback
+        pass
+    return 0
+
+
+def cmd_goto_pane(a) -> int:
+    """Focus the tmux pane that produced the now-playing (or last) speech."""
+    pane = _spoken_pane()
+    if pane:
+        _focus_pane(pane)
+    return 0
+
+
+def _ncmpcpp_pane() -> Optional[str]:
+    """tmux pane id running ncmpcpp on this server, or None.
+
+    Scans every pane (all sessions/windows) and matches the foreground
+    command, so the music `g` lands on the player wherever it lives.
+    """
+    try:
+        r = subprocess.run(
+            ["tmux", "list-panes", "-a", "-F",
+             "#{pane_id}\t#{pane_current_command}"],
+            capture_output=True, text=True)
+    except Exception:  # noqa: BLE001
+        return None
+    if r.returncode != 0:
+        return None
+    for line in r.stdout.splitlines():
+        pane, _, cmd = line.partition("\t")
+        if cmd.strip() == "ncmpcpp":
+            return pane
+    return None
+
+
+def cmd_goto_track(a) -> int:
+    """Focus the ncmpcpp pane and jump it to the now-playing song.
+
+    Mirrors the speech side's goto-pane for the music channel: bring the
+    player to the foreground, then send ncmpcpp's default JumpToPlayingSong
+    key (`o`) so it centers on the track the music sink is playing. Returns
+    1 (and stays quiet) when no ncmpcpp pane is running, so the popup can
+    show a hint instead of silently doing nothing.
+    """
+    pane = _ncmpcpp_pane()
+    if not pane:
+        return 1
+    _focus_pane(pane)
+    try:
+        subprocess.run(["tmux", "send-keys", "-t", pane, "o"],
+                       capture_output=True)
+    except Exception:  # noqa: BLE001
+        pass
+    return 0
+
+
 def cmd_highlight_toggle(a) -> int:
-    """Toggle auto-highlight on/off. Prints the new state."""
+    """Toggle auto-highlight on/off. Prints the new state.
+
+    Turning it on jumps focus to the speaking pane (so the copy-mode
+    follow-along is actually visible) and highlights the current sentence
+    immediately for feedback.
+    """
     from .intake.submit import toggle_auto_highlight, _tmux_highlight_text
     on = toggle_auto_highlight()
+    # Prefer the pane that produced the speech; fall back to the popup's
+    # caller pane if we never captured a source pane.
+    pane = (_spoken_pane()
+            or os.environ.get("TTS_POPUP_PANE")
+            or os.environ.get("TMUX_PANE", ""))
     if on:
-        # If a sentence is currently playing, highlight it now so the user
-        # gets immediate feedback that the toggle took effect.
-        np = _now_speaking()
-        if np:
-            ex = np.get("extras") or {}
-            sentence = ex.get("current_sentence")
+        if pane:
+            # Jump to the speaking pane so the follow-along is on screen.
+            _focus_pane(pane)
+            os.environ["TMUX_PANE"] = pane
+            if not os.environ.get("TMUX"):
+                os.environ["TMUX"] = "x"
+            # If a sentence is playing right now, highlight it immediately.
+            np = _now_speaking()
+            sentence = (np.get("extras") or {}).get("current_sentence") if np else None
             if sentence:
-                pane = os.environ.get("TTS_POPUP_PANE") or os.environ.get("TMUX_PANE", "")
-                if pane:
-                    os.environ["TMUX_PANE"] = pane
-                    if not os.environ.get("TMUX"):
-                        os.environ["TMUX"] = "x"
-                    _tmux_highlight_text(sentence, first=True)
+                _tmux_highlight_text(sentence, force=True)
         print("highlight: ON")
     else:
-        # Exit any active copy-mode in the caller pane.
-        pane = os.environ.get("TTS_POPUP_PANE") or os.environ.get("TMUX_PANE", "")
+        # Exit any active copy-mode in the speaking pane.
         if pane:
-            import subprocess as _sp
-            _sp.run(["tmux", "send-keys", "-t", pane, "-X", "cancel"],
-                    capture_output=True)
+            subprocess.run(["tmux", "send-keys", "-t", pane, "-X", "cancel"],
+                           capture_output=True)
         print("highlight: OFF")
     return 0
 
@@ -198,11 +323,32 @@ def cmd_text(a) -> int:
     return 0
 
 
+def _history_index_for_pane(pane: str, limit: int = 50) -> Optional[int]:
+    """1-based index into recent speech history of the latest clip produced
+    by `pane` (1 = most recent overall). None if the pane has no clip."""
+    if not pane:
+        return None
+    for i, r in enumerate(_speech_history(limit), start=1):
+        ex = r.get("extras") or {}
+        if isinstance(ex, str):
+            try:
+                ex = json.loads(ex)
+            except json.JSONDecodeError:
+                ex = {}
+        if ex.get("source_pane") == pane:
+            return i
+    return None
+
+
 def cmd_toggle(a) -> int:
-    # If nothing is loaded, "play" means replay the latest clip (matches the
-    # old popup's Space = play/pause-or-replay). Otherwise flip pause.
+    # If nothing is loaded, "play" means replay a clip (matches the old
+    # popup's Space = play/pause-or-replay). Prefer the most recent clip from
+    # the *active* pane (the one that opened the popup), so Space-while-idle
+    # replays "what this pane just said"; fall back to the latest overall.
+    # Otherwise flip pause.
     if _get("idle-active"):
-        return _do_replay(1)
+        pane = os.environ.get("TTS_POPUP_PANE") or os.environ.get("TMUX_PANE", "")
+        return _do_replay(_history_index_for_pane(pane) or 1)
     ipc.set_property(_sock(), "pause", not bool(_get("pause")))
     return 0
 
@@ -244,12 +390,173 @@ def cmd_speed(a) -> int:
     return 0
 
 
+def _seek_to_end(sock) -> int:
+    """Skip to the end of the (last) clip so the response finishes."""
+    # A seek-to-end only plays out if the broker isn't paused/muted: a paused
+    # clip just parks the playhead at 100% and never reaches EOF (so the popup
+    # `>` looked like a no-op when the clip had been paused, e.g. via Space).
+    # Clear those first so the clip actually finishes.
+    for prop in ("pause", "mute"):
+        try:
+            ipc.set_property(sock, prop, False)
+        except ipc.MpvIpcError:
+            pass
+    # On a multi-clip replay the response's clips are queued as one mpv
+    # playlist; seeking the *current* clip to 100% would only advance to the
+    # next one. Jump to the final playlist entry first so we land on the
+    # actual last clip before seeking it to the end.
+    try:
+        count = ipc.get_property(sock, "playlist-count")
+        if isinstance(count, int) and count > 1:
+            ipc.set_property(sock, "playlist-pos", count - 1)
+    except ipc.MpvIpcError:
+        pass
+    ipc.command(sock, "seek", 100, "absolute-percent")
+    return 0
+
+
 def cmd_jump(a) -> int:
     """Seek to the start or end of the current clip."""
+    sock = _sock()
     if a.where == "start":
-        ipc.command(_sock(), "seek", 0, "absolute")
-    else:  # end — finish the clip (skip forward)
-        ipc.command(_sock(), "seek", 100, "absolute-percent")
+        ipc.command(sock, "seek", 0, "absolute")
+        return 0
+    return _seek_to_end(sock)
+
+
+def _nav_target(cur: int, n: int, para_idx: list, unit: str,
+                direction: int) -> int:
+    """Resolve the sentence index to jump to for `media skip`.
+
+    A return >= n means "past the last section" → finish the response; a
+    negative return is clamped to 0 by the caller (restart the first section).
+    """
+    if unit == "sentence":
+        return cur + (1 if direction > 0 else -1)
+    # paragraph
+    if not para_idx or cur >= len(para_idx):
+        return cur + (1 if direction > 0 else -1)
+    cur_para = para_idx[cur]
+    if direction > 0:
+        nxt = [p for p in para_idx if p > cur_para]
+        if not nxt:
+            return n  # already in the last paragraph → finish
+        tp = min(nxt)
+        return next(j for j in range(n) if para_idx[j] == tp)
+    # backward: to the start of the current paragraph, else the previous one's
+    para_start = next(j for j in range(n) if para_idx[j] == cur_para)
+    if cur > para_start:
+        return para_start
+    prev = [p for p in para_idx if p < cur_para]
+    if not prev:
+        return 0
+    tp = max(prev)
+    return next(j for j in range(n) if para_idx[j] == tp)
+
+
+def _force_highlight_sentence(sentence: str) -> None:
+    """Force the copy-mode highlight onto `sentence` (used for replay jumps)."""
+    from .intake.submit import _tmux_highlight_text
+    pane = os.environ.get("TTS_POPUP_PANE") or os.environ.get("TMUX_PANE", "")
+    if "#{" in pane:
+        pane = ""
+    if not pane:
+        return
+    os.environ["TMUX_PANE"] = pane
+    if not os.environ.get("TMUX"):
+        os.environ["TMUX"] = "x"
+    try:
+        _tmux_highlight_text(sentence, force=True)
+    except Exception:  # noqa: BLE001 — popup must never see a traceback
+        pass
+
+
+def _write_nav_request(idx: int, target_name: str = "local") -> None:
+    """Drop a jump request the live reader loop reads after the current clip.
+
+    Keyed by the *playing* target (e.g. "rooms" for the Snapcast feed) so the
+    flag filename matches what the reader loop polls — the loop runs with
+    MEDIA_SPEECH_DEFAULT_TARGET, which isn't necessarily "local".
+    """
+    from .intake.submit import _nav_flag_path
+    try:
+        _nav_flag_path(Target(name=target_name)).write_text(str(idx))
+    except OSError:
+        pass
+
+
+def cmd_skip(a) -> int:
+    """Step the speech reader forward/back by a sentence (h/l) or paragraph (H/L).
+
+    Works both on a replay (clips queued as one mpv playlist → jump by
+    playlist-pos) and during the live readout (the reader loop picks up a jump
+    request even while paused). Falls back to a plain time-seek of
+    --seek-fallback seconds when there's no multi-sentence sequence to step.
+    """
+    sock = _sock()
+    direction = 1 if a.dir > 0 else -1
+
+    def _time_seek() -> int:
+        try:
+            ipc.command(sock, "seek", float(a.seek_fallback), "relative")
+            return 0
+        except ipc.MpvIpcError:
+            return 1
+
+    np = StateStore().get_now_playing("speech")
+    ex = (np or {}).get("extras") or {}
+    if isinstance(ex, str):
+        try:
+            ex = json.loads(ex)
+        except json.JSONDecodeError:
+            ex = {}
+    sentences = ex.get("clip_sentences") or []
+    para_idx = ex.get("clip_paragraph_idx") or []
+    n = len(sentences)
+
+    try:
+        idle = bool(ipc.get_property(sock, "idle-active"))
+    except ipc.MpvIpcError:
+        idle = True
+    try:
+        raw = ipc.get_property(sock, "playlist-count")
+        count = int(raw) if isinstance(raw, int) else 1
+    except ipc.MpvIpcError:
+        count = 1
+
+    if n <= 1 or idle:
+        return _time_seek()
+    if len(para_idx) != n:
+        para_idx = list(range(n))  # no paragraph map → one paragraph per line
+
+    playlist = count > 1
+    if playlist:
+        try:
+            cur = int(ipc.get_property(sock, "playlist-pos") or 0)
+        except ipc.MpvIpcError:
+            cur = 0
+    else:
+        cur = ex.get("current_sentence_idx")
+        if cur is None:
+            return _time_seek()
+        cur = int(cur)
+
+    target = _nav_target(cur, n, para_idx, a.unit, direction)
+    if target < 0:
+        target = 0
+
+    if playlist:
+        if target >= n:
+            return _seek_to_end(sock)
+        try:
+            ipc.set_property(sock, "playlist-pos", target)
+        except ipc.MpvIpcError:
+            return 1
+        _force_highlight_sentence(sentences[target])
+        return 0
+    # Live readout: hand the jump to the reader loop (honored even while
+    # paused). Key the flag by the target that's actually playing.
+    _write_nav_request(target, (np or {}).get("target") or "local")
     return 0
 
 
@@ -280,14 +587,35 @@ def _do_replay(index: int) -> int:
     except ipc.MpvIpcError:
         pass
     clip_sentences: list[str] = ex.get("clip_sentences") or []
-    if len(clip_uris) > 1 and len(clip_durations) == len(clip_uris):
-        # Persist durations so cmd_status can compute spanning progress bar.
-        StateStore().set_now_playing(
-            "speech", uri=clip_uris[0], started_at=time.time(),
-            target=SPEECH_TARGET.name,
-            extras={"text": replay_text,
-                    "total_duration_s": sum(clip_durations),
-                    "clip_durations_s": clip_durations})
+    have_durations = (
+        len(clip_durations) == len(clip_uris) and len(clip_durations) > 0
+    )
+    # Always refresh now_playing so cmd_status's progress bar reflects the
+    # clip we just started, not a stale prior entry. Without this, replaying
+    # a single-clip history item (the common `<` case) left the previous
+    # response's total_duration_s in place and the bar never acknowledged
+    # the jump. When we have per-clip durations, persist them so cmd_status
+    # can compute a spanning bar; otherwise omit total_duration_s and let
+    # cmd_status fall back to mpv's raw time-pos/duration.
+    np_extras: dict = {"text": replay_text}
+    source_pane = ex.get("source_pane")
+    if source_pane:
+        np_extras["source_pane"] = source_pane
+    if have_durations:
+        np_extras["total_duration_s"] = sum(clip_durations)
+        np_extras["clip_durations_s"] = clip_durations
+    # Carry the sentence + paragraph map so `media skip` can step the replay
+    # by sentence/paragraph; the tracker keeps current_sentence_idx fresh.
+    if clip_sentences and len(clip_sentences) == len(clip_uris):
+        np_extras["clip_sentences"] = clip_sentences
+        cpi = ex.get("clip_paragraph_idx")
+        if cpi and len(cpi) == len(clip_uris):
+            np_extras["clip_paragraph_idx"] = cpi
+        np_extras["current_sentence_idx"] = 0
+    StateStore().set_now_playing(
+        "speech", uri=clip_uris[0], started_at=time.time(),
+        target=SPEECH_TARGET.name, extras=np_extras)
+    if len(clip_uris) > 1 and have_durations:
         # Spawn a detached highlight tracker so copy-mode follows along
         # even though _do_replay returns immediately.
         # TTS_POPUP_PANE is the original pane that opened the popup (set by
@@ -415,10 +743,53 @@ def cmd_say(a) -> int:
 
 # --- music subcommands -----------------------------------------------------
 
+def _music_status_line(m: "SinkMusic", width: int, hide_idle: bool,
+                       bar: bool = True) -> str:
+    """One-line music progress bar from MPD status (mirrors cmd_status)."""
+    st = m.status_dict()
+    state = st.get("state", "stop")
+    if state in ("stop", "") or not state:
+        return render_status(idle=True, pos=None, dur=None, paused=None,
+                             muted=None, width=width, hide_idle=hide_idle)
+
+    def _f(key):
+        try:
+            return float(st[key]) if st.get(key) else None
+        except (ValueError, KeyError):
+            return None
+
+    return render_status(idle=False, pos=_f("elapsed"), dur=_f("duration"),
+                         paused=(state == "pause"), muted=False,
+                         width=width, hide_idle=hide_idle, bar=bar)
+
+
+def _music_now_label(m: "SinkMusic") -> str:
+    """Current track as 'Artist — Title' (the music channel's marquee)."""
+    song = m.current_song()
+    title = song.get("Title") or song.get("Name") or ""
+    if not title:
+        title = (song.get("file") or "").rsplit("/", 1)[-1]
+    artist = song.get("Artist") or ""
+    return f"{artist} — {title}" if artist and title else title
+
+
 def cmd_music(a) -> int:
     from .route import coerce_content_type, detect_content_type
 
     m = SinkMusic()
+    if a.action == "status":
+        try:
+            print(_music_status_line(m, a.width, hide_idle=not a.show_idle,
+                                     bar=not a.no_bar))
+        except Exception:  # noqa: BLE001 — popup must never see a traceback
+            print("○" if a.show_idle else "")
+        return 0
+    if a.action == "now":
+        try:
+            print(_music_now_label(m))
+        except Exception:  # noqa: BLE001
+            pass
+        return 0
     if a.action == "play":
         if not a.uri:
             print("media music play: a URI is required", file=sys.stderr)
@@ -431,6 +802,12 @@ def cmd_music(a) -> int:
     if a.action == "stop":
         m.stop()
         StateStore().clear_music_intent()
+        return 0
+    if a.action == "seek":
+        m.seek_relative(float(a.uri or 0))
+        return 0
+    if a.action == "volume":
+        m.volume_delta(int(float(a.uri or 0)))
         return 0
     {
         "pause": m.pause, "resume": m.resume,
@@ -449,9 +826,20 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument("--width", type=int, default=12)
     s.add_argument("--show-idle", action="store_true",
                    help="emit '○' when idle instead of empty")
+    s.add_argument("--no-bar", action="store_true",
+                   help="show only the times (no progress bar)")
     s.set_defaults(func=cmd_status)
 
     sub.add_parser("now", help="text currently being spoken").set_defaults(func=cmd_now)
+    sub.add_parser("now-pane",
+                   help="title of the pane that produced the now-playing speech"
+                   ).set_defaults(func=cmd_now_pane)
+    sub.add_parser("goto-pane",
+                   help="focus the pane that produced the now-playing speech"
+                   ).set_defaults(func=cmd_goto_pane)
+    sub.add_parser("goto-track",
+                   help="focus the ncmpcpp pane and jump to the now-playing song"
+                   ).set_defaults(func=cmd_goto_track)
     sub.add_parser("text", help="spoken text (now-playing or latest history)").set_defaults(func=cmd_text)
 
     sub.add_parser("highlight-toggle",
@@ -485,6 +873,15 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument("where", choices=("start", "end"))
     s.set_defaults(func=cmd_jump)
 
+    s = sub.add_parser(
+        "skip", help="step the reader by a sentence/paragraph (popup h/l/H/L)")
+    s.add_argument("--unit", choices=("sentence", "paragraph"),
+                   default="sentence")
+    s.add_argument("--dir", type=int, default=1, help="-1 back, 1 forward")
+    s.add_argument("--seek-fallback", type=float, default=5.0,
+                   help="seconds to time-seek when there's no sentence sequence")
+    s.set_defaults(func=cmd_skip)
+
     s = sub.add_parser("replay", help="replay the Nth most recent clip (1=latest)")
     s.add_argument("index", nargs="?", type=int, default=1)
     s.set_defaults(func=cmd_replay)
@@ -505,9 +902,16 @@ def _build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("music", help="music control via Mopidy/MPD")
     s.add_argument("action",
                    choices=("play", "pause", "resume", "stop", "toggle",
-                            "next", "prev"))
+                            "next", "prev", "status", "now", "seek", "volume"))
     s.add_argument("uri", nargs="?",
-                   help="for 'play': Mopidy URI (e.g. yt:https://...)")
+                   help="for 'play': Mopidy URI (e.g. yt:https://...); "
+                        "for 'seek': ±seconds; for 'volume': ±delta")
+    s.add_argument("--width", type=int, default=12,
+                   help="for 'status': progress-bar width")
+    s.add_argument("--show-idle", action="store_true",
+                   help="for 'status': emit '○' when idle instead of empty")
+    s.add_argument("--no-bar", action="store_true",
+                   help="for 'status': show only the times (no progress bar)")
     s.add_argument("--add", action="store_true",
                    help="for 'play': queue without clearing the playlist")
     s.add_argument("--as", dest="as_type", metavar="TYPE",

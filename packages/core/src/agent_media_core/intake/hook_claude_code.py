@@ -62,7 +62,6 @@ _DEFAULT_VOICE_POOL = (
     "en-CA-ClaraNeural",    # Canadian
     "en-ZA-LeahNeural",     # South African
     "en-GB-LibbyNeural",    # British (younger)
-    "en-IN-NeerjaNeural",   # Indian
 )
 
 

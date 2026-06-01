@@ -55,12 +55,14 @@ def _ext_for(engine: str) -> str:
     return "wav" if engine in ("qwen", "realtime") else "mp3"
 
 
-def _split_sentences(text: str) -> list[str]:
-    """Split text into sentence-level chunks for progressive TTS + highlight.
+def _split_sentences_with_paragraphs(text: str) -> tuple[list[str], list[int]]:
+    """Segment text into sentences plus a parallel paragraph index per sentence.
 
     Splits on paragraph breaks first, then on sentence-ending punctuation
     within each paragraph. Common abbreviations are masked so they don't
-    produce spurious splits.
+    produce spurious splits. The returned paragraph indices are 0-based and
+    monotonically non-decreasing; the popup uses them so H/L can jump a whole
+    paragraph at a time while h/l step one sentence.
     """
     _ABBREV = re.compile(
         r'\b(Mr|Mrs|Ms|Dr|Prof|Sr|Jr|vs|etc|e\.g|i\.e|'
@@ -73,19 +75,31 @@ def _split_sentences(text: str) -> list[str]:
         return [p.replace('\x00', '.').strip() for p in parts if p.strip()]
 
     paragraphs = [p.strip() for p in re.split(r'\n{2,}', text) if p.strip()]
-    raw: list[str] = []
-    for para in paragraphs:
-        raw.extend(_sentences_in(para))
+    raw: list[tuple[str, int]] = []  # (sentence, paragraph index)
+    for pi, para in enumerate(paragraphs):
+        for s in _sentences_in(para):
+            raw.append((s, pi))
 
     # Merge very short fragments (< 20 chars) into the preceding sentence
-    # so standalone words like "Yes." or "OK." don't become solo clips.
-    result: list[str] = []
-    for part in raw:
-        if len(part) < 20 and result:
-            result[-1] += ' ' + part
+    # so standalone words like "Yes." or "OK." don't become solo clips — but
+    # only within the same paragraph, so a short sentence that opens a new
+    # paragraph stays its own clip and H/L paragraph-nav keeps working.
+    sentences: list[str] = []
+    para_idx: list[int] = []
+    for part, pi in raw:
+        if len(part) < 20 and sentences and para_idx[-1] == pi:
+            sentences[-1] += ' ' + part
         else:
-            result.append(part)
-    return result or [text.strip()]
+            sentences.append(part)
+            para_idx.append(pi)
+    if not sentences:
+        return [text.strip()], [0]
+    return sentences, para_idx
+
+
+def _split_sentences(text: str) -> list[str]:
+    """Sentence-level chunks for progressive TTS + highlight (paragraph map dropped)."""
+    return _split_sentences_with_paragraphs(text)[0]
 
 
 def _highlight_flag_path() -> Path:
@@ -115,18 +129,69 @@ def toggle_auto_highlight() -> bool:
     return new_state
 
 
-def _tmux_highlight_text(text: str, *, first: bool = False) -> None:
-    """Enter copy-mode in the source pane and jump to the spoken text.
+def _pane_scroll_pos(pane: str) -> tuple[bool, str]:
+    """(in_copy_mode, scroll_position) for `pane`.
 
-    For the first sentence: enter copy-mode fresh, history-bottom,
-    search-backward. For subsequent sentences: search-forward from the
-    current cursor (which sits inside the previous sentence's text, since
-    selection is capped at snippet length ~50 chars). This avoids the
-    visual snap-to-bottom that history-bottom causes between sentences.
+    scroll_position is lines scrolled up from the live bottom; it is only
+    meaningful while the pane is in copy-mode (empty otherwise).
+    """
+    try:
+        r = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", pane,
+             "#{pane_in_mode}\t#{scroll_position}"],
+            capture_output=True, text=True)
+        if r.returncode != 0:
+            return (False, "")
+        in_mode, _, pos = r.stdout.rstrip("\n").partition("\t")
+        return (in_mode.strip() == "1", pos.strip())
+    except Exception:  # noqa: BLE001
+        return (False, "")
+
+
+def _cursor_sig(pane: str) -> str:
+    """A signature of the copy-mode cursor/viewport, to detect movement."""
+    try:
+        r = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", pane,
+             "#{scroll_position}\t#{copy_cursor_x}\t#{copy_cursor_y}"],
+            capture_output=True, text=True)
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _strip_markdown_inline(s: str) -> str:
+    """Drop inline markdown markers the terminal renderer hides, so a snippet
+    built from the *raw* spoken text matches the *rendered* pane text.
+
+    e.g. the agent says "use `media toggle`" but Claude Code renders the code
+    span without backticks, so a search for the literal backticked snippet
+    never matches. Only markers that are unambiguously formatting are removed
+    (backticks, **bold**, ~~strike~~, [text](url), heading #) — single * / _
+    are left alone since they're often literal (source_pane, a*b)."""
+    s = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", s)   # [text](url) -> text
+    s = s.replace("`", "")                            # inline code backticks
+    s = re.sub(r"\*\*|__|~~", "", s)                  # bold / strikethrough
+    s = re.sub(r"^\s*#{1,6}\s+", "", s)               # ATX heading marker
+    return s
+
+
+def _tmux_highlight_text(text: str, *, first: bool = False,
+                         force: bool = False) -> None:
+    """Re-anchor copy-mode in the source pane onto the spoken text.
+
+    Each call jumps to the bottom and searches backward for this sentence,
+    so it tracks the right line regardless of prior position. But it leaves
+    the user's scroll alone: if the pane is in copy-mode and the viewport
+    has moved since our last highlight (the user scrolled up to read), this
+    no-ops — until the user returns to that position or exits copy-mode, at
+    which point following resumes. `force=True` (the popup's `v` toggle)
+    always repositions, since the user just asked for it.
 
     Off by default — opt-in via the popup's `v` toggle (which writes to
     `$XDG_STATE_HOME/agent-media/auto-highlight`). `MEDIA_AUTO_HIGHLIGHT=1`
-    in env can override on a per-host basis.
+    in env can override on a per-host basis. `first` is accepted for call-site
+    compatibility but no longer changes anchoring (every call re-anchors).
     """
     if not os.environ.get("TMUX"):
         return
@@ -136,6 +201,9 @@ def _tmux_highlight_text(text: str, *, first: bool = False) -> None:
     if not pane:
         return
 
+    # Match against what's *rendered* in the pane, not the raw markdown.
+    text = _strip_markdown_inline(text)
+
     # Trim to last word boundary within 50 chars so the snippet fits on
     # a single visual line — tmux search won't match across line wraps.
     def _trim_to_word(s: str, limit: int = 50) -> str:
@@ -144,16 +212,17 @@ def _tmux_highlight_text(text: str, *, first: bool = False) -> None:
         cut = s[:limit].rfind(" ")
         return s[:cut] if cut > 15 else s[:limit]
 
-    snippet = ""
-    for line in text.splitlines():
-        line = line.strip()
-        if len(line) >= 20:
-            snippet = _trim_to_word(line)
-            break
-    if not snippet:
-        snippet = _trim_to_word(text.replace("\n", " ").strip())
-    if not snippet:
+    # Anchor on the longest single line — tmux search matches within one
+    # visual row, so flattening newlines (which span wrapped rows) would never
+    # match. A too-short anchor (a one-word sentence, a bare heading) isn't
+    # unique: search-backward then lands on spurious text — often the prompt at
+    # the very bottom — yanking the view to the end of the buffer. Skip those
+    # outright and leave the prior highlight in place.
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    anchor = max(lines, key=len) if lines else text.strip()
+    if len(anchor) < 15:
         return
+    snippet = _trim_to_word(anchor)
 
     # Selection length = snippet length, capped so the highlight always fits
     # within a single visual row. cursor-right N beyond the row would drag
@@ -169,11 +238,32 @@ def _tmux_highlight_text(text: str, *, first: bool = False) -> None:
     # persists until the next sentence's highlight replaces it).
     flash_ms = int(os.environ.get("MEDIA_HIGHLIGHT_FLASH_MS", "1500"))
 
-    # Per-pane PID file so each new highlight can kill the previous
-    # sentence's pending clear-timer before it races into our selection.
     import signal as _signal
     _pane_safe = re.sub(r"[^A-Za-z0-9_-]", "_", pane)
     pidfile = f"/tmp/media-highlight-clear-{_pane_safe}.pid"
+    # Tracks the scroll_position our last highlight left the pane at, so we
+    # can tell whether the user has since scrolled away.
+    posfile = f"/tmp/media-highlight-pos-{_pane_safe}"
+
+    # Respect a manual scroll: if the pane is in copy-mode at a position other
+    # than where we last left it, the user scrolled up to read — leave their
+    # view untouched. When they return to that position (or drop out of
+    # copy-mode, putting them back at the live bottom), following resumes.
+    # The first sentence of a response (and an explicit `v` toggle) always
+    # re-anchors, so we never get permanently stuck skipping.
+    if not force and not first:
+        in_mode, pos = _pane_scroll_pos(pane)
+        if in_mode:
+            try:
+                with open(posfile) as _f:
+                    saved = _f.read().strip()
+            except OSError:
+                saved = None
+            if pos != saved:
+                return
+
+    # Per-pane PID file so each new highlight can kill the previous
+    # sentence's pending clear-timer before it races into our selection.
     try:
         with open(pidfile) as _f:
             _old_pgid = int(_f.read().strip())
@@ -184,26 +274,40 @@ def _tmux_highlight_text(text: str, *, first: bool = False) -> None:
     except (OSError, ValueError):
         pass
 
+    # Remember where the pane sat before we touch it, so a failed search can
+    # put the view back instead of stranding the reader at the bottom.
+    _prev_in_mode, _prev_pos = _pane_scroll_pos(pane)
+
     try:
-        if first:
-            # Fresh copy-mode session: anchor at bottom, search backward.
-            subprocess.run(["tmux", "send-keys", "-t", pane, "-X", "cancel"],
-                           capture_output=True)
-            subprocess.run(["tmux", "copy-mode", "-t", pane],
-                           capture_output=True)
-            subprocess.run(["tmux", "send-keys", "-t", pane, "-X", "history-bottom"],
-                           capture_output=True)
-            subprocess.run(["tmux", "send-keys", "-t", pane, "-X",
-                            "search-backward", snippet],
-                           capture_output=True)
-        else:
-            # Already in copy-mode at the previous sentence's position.
-            # Cursor is inside the previous sentence (selection capped at
-            # ~50 chars); search-forward finds the next sentence cleanly
-            # without snapping the viewport.
-            subprocess.run(["tmux", "send-keys", "-t", pane, "-X",
-                            "search-forward", snippet],
-                           capture_output=True)
+        # Ensure copy-mode is active (no-op if it already is, e.g. the user
+        # scrolled the pane — which leaves it in copy-mode).
+        subprocess.run(["tmux", "copy-mode", "-t", pane],
+                       capture_output=True)
+        # Re-anchor from the bottom on EVERY sentence, then search backward.
+        # The old code searched *forward* from the previous match's cursor
+        # for sentences 2..N, which a manual scroll between sentences would
+        # throw off (the cursor moves with the user). history-bottom +
+        # search-backward finds the latest occurrence of this sentence
+        # regardless of where the viewport currently sits.
+        subprocess.run(["tmux", "send-keys", "-t", pane, "-X", "history-bottom"],
+                       capture_output=True)
+        _before = _cursor_sig(pane)
+        subprocess.run(["tmux", "send-keys", "-t", pane, "-X",
+                        "search-backward", snippet],
+                       capture_output=True)
+        # If the search matched nothing, the cursor is still at the bottom
+        # (history-bottom moved it there). Don't strand the reader at the end
+        # of the buffer: restore the prior viewport if we had one (scroll back
+        # up the same number of lines), otherwise just leave copy-mode.
+        if _cursor_sig(pane) == _before:
+            if _prev_in_mode and _prev_pos.isdigit() and int(_prev_pos) > 0:
+                subprocess.run(["tmux", "send-keys", "-t", pane, "-X",
+                                "-N", _prev_pos, "scroll-up"],
+                               capture_output=True)
+            else:
+                subprocess.run(["tmux", "send-keys", "-t", pane, "-X", "cancel"],
+                               capture_output=True)
+            return
         subprocess.run(["tmux", "send-keys", "-t", pane, "-X",
                         "begin-selection"],
                        capture_output=True)
@@ -211,6 +315,14 @@ def _tmux_highlight_text(text: str, *, first: bool = False) -> None:
             subprocess.run(["tmux", "send-keys", "-t", pane,
                             "-X", "-N", str(select_len), "cursor-right"],
                            capture_output=True)
+        # Record where we landed so the next sentence can tell whether the
+        # user has scrolled away from it.
+        _, _new_pos = _pane_scroll_pos(pane)
+        try:
+            with open(posfile, "w") as _f:
+                _f.write(_new_pos)
+        except OSError:
+            pass
         if flash_ms > 0:
             # Detached clear-selection after flash window. start_new_session
             # makes this proc the session leader, so its PID is its pgid;
@@ -273,8 +385,41 @@ def _clip_duration(path: Path) -> float:
         return 0.0
 
 
-def _wait_for_clip(sink: SinkSpeech, target: Target) -> None:
+def _nav_flag_path(target: Target) -> Path:
+    """File the popup writes to request a sentence/paragraph jump (`media skip`).
+
+    Holds the absolute target sentence index for the live reader loop to jump
+    to next. One per target since there's a single broker per target.
+    """
+    state = Path(os.environ.get("XDG_STATE_HOME",
+                                str(Path.home() / ".local" / "state")))
+    d = state / "agent-media"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / f"nav-request-{target.name}"
+
+
+def _read_nav_request(target: Target) -> Optional[int]:
+    """Pop a pending nav request (target sentence index), or None. Clears it."""
+    path = _nav_flag_path(target)
+    try:
+        raw = path.read_text().strip()
+        path.unlink()
+    except (FileNotFoundError, OSError):
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def _wait_for_clip(sink: SinkSpeech, target: Target) -> Optional[int]:
     """Wait for sink-speech to start then finish the current clip.
+
+    Returns None on natural end-of-clip; returns an absolute sentence index
+    when the popup requested a sentence/paragraph jump (`media skip`), so the
+    reader loop can re-load that sentence instead of advancing by one. The
+    nav check runs even while paused, so you can step the highlight forward or
+    back through a paused response.
 
     Requires two consecutive idle readings before declaring done — a
     single True from sink.idle() can be a transient IPC error mid-play
@@ -286,7 +431,19 @@ def _wait_for_clip(sink: SinkSpeech, target: Target) -> None:
             break
         time.sleep(0.05)
     idle_streak = 0
-    for _ in range(1200):
+    elapsed = 0
+    while elapsed < 1200:
+        nav = _read_nav_request(target)
+        if nav is not None:
+            return nav
+        # A user pause (popup Space) holds the clip here indefinitely: a
+        # paused clip never goes idle, so without this it would burn the
+        # ~120s budget and then force-advance to the next sentence,
+        # resuming the response on its own. Hold without consuming budget;
+        # resume picks up where it left off.
+        if sink.paused(target):
+            time.sleep(0.1)
+            continue
         if sink.idle(target):
             idle_streak += 1
             if idle_streak >= 3:
@@ -294,6 +451,8 @@ def _wait_for_clip(sink: SinkSpeech, target: Target) -> None:
         else:
             idle_streak = 0
         time.sleep(0.1)
+        elapsed += 1
+    return None
 
 
 def submit_event(event: Event,
@@ -327,6 +486,12 @@ def submit_event(event: Event,
     audio_dir = _audio_dir()
     stamp = time.strftime("%Y%m%dT%H%M%S")
     started_at = time.time()
+
+    # The tmux pane that produced this speech (the Claude Code TTS hook runs
+    # inside the agent's pane, so TMUX_PANE points at it). Persisted into
+    # now_playing/history so the popup can show *which* pane is currently
+    # talking, rather than the pane that happens to be active.
+    source_pane = (event.metadata or {}).get("pane") or os.environ.get("TMUX_PANE", "")
 
     fallback_info: dict = {}
     _fallback_lock = threading.Lock()
@@ -363,7 +528,7 @@ def submit_event(event: Event,
     # (~4.8s) overlaps with sentence rendering below.
     coordinator.pre_pause_remote()
 
-    sentences = _split_sentences(text)
+    sentences, sent_para = _split_sentences_with_paragraphs(text)
 
     # Submit all sentence renders in parallel. Sentence 0 starts playing as
     # soon as its render finishes (~0.5s); the rest are done by then.
@@ -396,7 +561,9 @@ def submit_event(event: Event,
     # Parallel renders are mostly done by now; future.result() is instant
     # for finished ones and waits briefly for the last stragglers.
     clip_data: list[tuple[str, Path]] = []  # (sentence, clip_path)
-    for sentence, outfile, future in zip(sentences, outfiles, futures):
+    clip_para: list[int] = []               # paragraph index per surviving clip
+    for sentence, pi, outfile, future in zip(sentences, sent_para,
+                                             outfiles, futures):
         try:
             ok, err = future.result()
         except Exception as exc:  # noqa: BLE001
@@ -418,6 +585,7 @@ def submit_event(event: Event,
             except OSError:
                 pass
         clip_data.append((sentence, clip_path))
+        clip_para.append(pi)
 
     if not clip_data:
         return None
@@ -433,40 +601,72 @@ def submit_event(event: Event,
     _highlight_delay_s = float(
         os.environ.get("MEDIA_SNAPCAST_LATENCY_MS", "500")) / 1000.0
 
+    # Cumulative start offset of each clip on the response-wide timeline.
+    offsets: list[float] = []
+    _acc = 0.0
+    for d in durations:
+        offsets.append(_acc)
+        _acc += d
+    _clip_sentences = [s for s, _ in clip_data]
+
     coordinator.before_speech()
     played_any = False
+    n = len(clip_data)
+    # Drop any stale jump request left by a previous response.
+    _nav_flag_path(target).unlink(missing_ok=True)
     try:
-        offset_s = 0.0
-        for i, ((sentence, clip_path), dur) in enumerate(zip(clip_data, durations)):
-            # Update now_playing so cmd_status can show a response-wide bar
-            # and `media current-sentence` can return the active sentence.
+        i = 0
+        nav_jump = False  # True when this clip was reached via a popup skip
+        while 0 <= i < n:
+            sentence, clip_path = clip_data[i]
+            # Update now_playing so cmd_status can show a response-wide bar,
+            # `media current-sentence` can return the active sentence, and
+            # `media skip` can read the sentence/paragraph map for live nav.
             state.set_now_playing(
                 "speech", uri=str(clip_path), started_at=started_at,
                 target=target.name,
                 extras={"text": text, "source": event.source.value,
                         "engine": engine, "voice": voice,
-                        "clip_offset_s": offset_s,
+                        "clip_offset_s": offsets[i],
                         "total_duration_s": total_duration_s,
+                        "source_pane": source_pane,
                         "current_sentence": sentence,
-                        "current_sentence_idx": i})
+                        "current_sentence_idx": i,
+                        "clip_paragraph_idx": clip_para,
+                        "clip_sentences": _clip_sentences})
             if do_highlight:
-                _tmux_highlight_text(sentence, first=(i == 0))
+                # A manual jump (h/l/H/L via `media skip`) forces the
+                # highlight onto that section even if the reader scrolled
+                # away; a natural advance respects the scroll position.
+                _tmux_highlight_text(sentence, first=(i == 0), force=nav_jump)
             try:
-                sink.play(str(clip_path), target)
+                # Only the first sentence resets a lingering pause/mute;
+                # later sentences preserve a pause the user made mid-response.
+                sink.play(str(clip_path), target, reset_state=(i == 0))
                 played_any = True
             except Exception as e:  # noqa: BLE001
                 log.warning("intake: sink-speech.play failed: %s", e)
                 state.log_error("intake", "sink-speech play failed",
                                 extras={"detail": str(e),
                                         "source": event.source.value})
-                offset_s += dur
+                i += 1
+                nav_jump = False
                 continue
-            _wait_for_clip(sink, target)
-            offset_s += dur
-            # Let Snapcast drain before firing the next highlight, so the
-            # visual matches what the listener is hearing.
-            if _highlight_delay_s > 0:
-                time.sleep(_highlight_delay_s)
+            nav = _wait_for_clip(sink, target)
+            if nav is None:
+                i += 1
+                nav_jump = False
+                # Let Snapcast drain before the next highlight, so the visual
+                # matches what the listener is hearing.
+                if _highlight_delay_s > 0 and i < n:
+                    time.sleep(_highlight_delay_s)
+            else:
+                # Popup requested a sentence/paragraph jump. A target past the
+                # last clip means "skip to the end" → finish the response.
+                if nav >= n:
+                    break
+                i = max(0, nav)
+                nav_jump = True
     finally:
         coordinator.after_speech()
         state.clear_now_playing("speech")
@@ -476,9 +676,11 @@ def submit_event(event: Event,
 
     extras = {"engine": engine, "voice": voice,
               "priority": event.priority.value,
+              "source_pane": source_pane,
               "clip_uris": [str(p) for _, p in clip_data],
           "clip_sentences": [s for s, _ in clip_data],
           "clip_durations_s": durations,
+          "clip_paragraph_idx": clip_para,
               **(event.metadata or {})}
     if fallback_info:
         extras["fallback"] = fallback_info

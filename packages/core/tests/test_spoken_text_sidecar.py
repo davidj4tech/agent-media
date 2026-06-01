@@ -37,6 +37,9 @@ class _FakeSink:
         self.calls += 1
         return self.calls > 1
 
+    def paused(self, target):
+        return False
+
 
 def test_sidecar_and_now_playing_lifecycle(state_env, monkeypatch):
     monkeypatch.setattr(S, "render_text", _fake_render)
@@ -45,13 +48,23 @@ def test_sidecar_and_now_playing_lifecycle(state_env, monkeypatch):
     during = {}
 
     class _Coord:
+        def pre_pause_remote(self):
+            pass
+
         def before_speech(self):
-            during["np"] = state.get_now_playing("speech")
+            pass
 
         def after_speech(self):
             pass
 
-    sink = _FakeSink()
+    # now_playing is set inside the reader loop right before each clip plays,
+    # so capture it from the sink's play() to see it live mid-playback.
+    class _CapSink(_FakeSink):
+        def play(self, uri, target, **kw):
+            during.setdefault("np", state.get_now_playing("speech"))
+            return super().play(uri, target, **kw)
+
+    sink = _CapSink()
     rid = S.submit_event(Event(text="hello world", source=Source.CLI),
                          state=state, sink=sink, coordinator=_Coord())
 
