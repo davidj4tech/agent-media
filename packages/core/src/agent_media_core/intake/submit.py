@@ -385,6 +385,23 @@ def _clip_duration(path: Path) -> float:
         return 0.0
 
 
+def _tmux_session_for_pane(pane: str) -> str:
+    """Resolve a tmux pane id (e.g. ``%41``) to its session name, or "".
+
+    Best-effort: returns "" when there's no pane, no tmux server, or the pane
+    has already closed.
+    """
+    if not pane or "#{" in pane:
+        return ""
+    try:
+        r = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", pane, "#{session_name}"],
+            capture_output=True, text=True, timeout=2)
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _nav_flag_path(target: Target) -> Path:
     """File the popup writes to request a sentence/paragraph jump (`media skip`).
 
@@ -496,6 +513,11 @@ def submit_event(event: Event,
     # popup can resume the conversation when its source pane has since been
     # closed — `goto-pane` falls back to `claude --resume <session>`.
     source_session = (event.metadata or {}).get("session") or ""
+    # The tmux session that owns the source pane, captured now while the pane
+    # is guaranteed alive. Persisted so the popup's < / > can scope history
+    # traversal to "this tmux session's clips" without resolving a (possibly
+    # since-closed) pane id back to its session at browse time.
+    source_tmux_session = _tmux_session_for_pane(source_pane)
 
     fallback_info: dict = {}
     _fallback_lock = threading.Lock()
@@ -635,6 +657,7 @@ def submit_event(event: Event,
                         "total_duration_s": total_duration_s,
                         "source_pane": source_pane,
                         "source_session": source_session,
+                        "source_tmux_session": source_tmux_session,
                         "current_sentence": sentence,
                         "current_sentence_idx": i,
                         "clip_paragraph_idx": clip_para,
@@ -683,6 +706,7 @@ def submit_event(event: Event,
               "priority": event.priority.value,
               "source_pane": source_pane,
               "source_session": source_session,
+              "source_tmux_session": source_tmux_session,
               "clip_uris": [str(p) for _, p in clip_data],
           "clip_sentences": [s for s, _ in clip_data],
           "clip_durations_s": durations,

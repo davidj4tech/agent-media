@@ -464,6 +464,9 @@ def test_replay_resolves_history(monkeypatch):
     played = {}
 
     class FakeStore:
+        def get_now_playing(self, sink):
+            return None
+
         def recent_history(self, *, sink, limit):
             return [{"uri": "/clips/latest.mp3", "text": "a"},
                     {"uri": "/clips/older.mp3", "text": "b"}][:limit]
