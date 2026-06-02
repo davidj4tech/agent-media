@@ -230,12 +230,31 @@ def _spoken_session() -> Optional[str]:
 
 
 def _focus_pane(pane: str) -> None:
-    """Bring `pane` to the foreground — its window, then the pane itself."""
+    """Bring `pane` to the foreground for the calling client.
+
+    Selects the pane within its window/session, then `switch-client`s the
+    calling client to that pane's session — without the last step, focus
+    never follows when the pane lives in a *different* session than the one
+    the popup was opened from (select-window/select-pane only move the target
+    session's active pane, not the attached client). Each step is best-effort
+    so a missing client or a since-closed pane can't surface a traceback.
+    """
     for args in (["select-window", "-t", pane], ["select-pane", "-t", pane]):
         try:
             subprocess.run(["tmux", *args], capture_output=True)
         except Exception:  # noqa: BLE001
             pass
+    # Resolve the pane's session and switch the client there.
+    try:
+        r = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", pane, "#{session_name}"],
+            capture_output=True, text=True)
+        sess = (r.stdout or "").strip()
+        if sess:
+            subprocess.run(["tmux", "switch-client", "-t", sess],
+                           capture_output=True)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _pane_alive(pane: str) -> bool:
