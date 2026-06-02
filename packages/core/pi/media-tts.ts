@@ -2,7 +2,7 @@
  * agent-media TTS extension for pi.
  *
  * At the end of each agent turn, pipes the assistant's text response to
- * `media-hook-codex` (agent-media core intake), which renders it via Edge TTS
+ * `media-hook-pi` (agent-media core intake), which renders it via Edge TTS
  * and delivers to the Snapcast feed.
  *
  * Install once:
