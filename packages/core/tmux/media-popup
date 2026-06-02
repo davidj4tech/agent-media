@@ -113,6 +113,15 @@ draw() {
     printf ' %s\r\n' "$STATUS"
 }
 
+# Blocking yes/no prompt drawn over the popup. Returns 0 on y/Y. Used by the
+# `g` reopen flows (start ncmpcpp / resume a closed Claude pane's session).
+confirm() {           # $1 = prompt text
+    printf '\033[H\033[2J'
+    printf ' %s\r\n [y/N] ' "$1"
+    local ans; IFS= read -rsn1 ans
+    case "$ans" in y|Y) return 0 ;; *) return 1 ;; esac
+}
+
 bump_speed() {        # $1 = +/- delta
     speed=$(awk -v s="$speed" -v d="$1" 'BEGIN{v=s+d; if(v<0.3)v=0.3; if(v>3)v=3; printf "%.1f", v}')
     $MEDIA speed "$speed" 2>/dev/null
@@ -176,15 +185,26 @@ while true; do
              else
                  $MEDIA jump end
              fi ;;
-        # Go to source, then close the popup so you land on it. Speech →
-        # focus the speaking pane. Music → focus the ncmpcpp pane and jump it
-        # to the now-playing song (sends ncmpcpp's `o`); if no ncmpcpp pane is
-        # running, keep the popup open and show a hint instead of closing.
+        # Go to source, then close the popup so you land on it.
+        # Music → focus the ncmpcpp pane and jump it to the now-playing song;
+        # if none is running, offer to start one. Speech → focus the speaking
+        # pane; if it's been closed, offer to resume its Claude session.
         g)   if [ "$CHANNEL" = "music" ]; then
                  if $MEDIA goto-track 2>/dev/null; then break
-                 else tmux display-message "♫ no ncmpcpp pane found — start ncmpcpp first" 2>/dev/null; fi
+                 elif confirm "♫ no ncmpcpp running — start it?"; then
+                     $MEDIA open-ncmpcpp 2>/dev/null; break
+                 fi
              else
-                 $MEDIA goto-pane 2>/dev/null; break
+                 _sid=$($MEDIA goto-pane 2>/dev/null); _grc=$?
+                 case "$_grc" in
+                     0) break ;;                          # landed on a live pane
+                     3) if [ -n "$_sid" ] && \
+                           confirm "⊘ pane closed — resume its Claude session?"; then
+                            $MEDIA open-session "$_sid" 2>/dev/null; break
+                        fi ;;
+                     2) tmux display-message "⊘ that pane is closed" 2>/dev/null ;;
+                     *) break ;;                          # nothing captured
+                 esac
              fi ;;
         # --- speech-only keys below ---
         r)   [ "$CHANNEL" = "speech" ] && { $MEDIA replay; hist_idx=1; } ;;

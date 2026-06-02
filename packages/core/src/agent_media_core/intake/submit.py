@@ -492,6 +492,10 @@ def submit_event(event: Event,
     # now_playing/history so the popup can show *which* pane is currently
     # talking, rather than the pane that happens to be active.
     source_pane = (event.metadata or {}).get("pane") or os.environ.get("TMUX_PANE", "")
+    # The Claude Code session id (from the hook payload), persisted so the
+    # popup can resume the conversation when its source pane has since been
+    # closed — `goto-pane` falls back to `claude --resume <session>`.
+    source_session = (event.metadata or {}).get("session") or ""
 
     fallback_info: dict = {}
     _fallback_lock = threading.Lock()
@@ -630,6 +634,7 @@ def submit_event(event: Event,
                         "clip_offset_s": offsets[i],
                         "total_duration_s": total_duration_s,
                         "source_pane": source_pane,
+                        "source_session": source_session,
                         "current_sentence": sentence,
                         "current_sentence_idx": i,
                         "clip_paragraph_idx": clip_para,
@@ -677,6 +682,7 @@ def submit_event(event: Event,
     extras = {"engine": engine, "voice": voice,
               "priority": event.priority.value,
               "source_pane": source_pane,
+              "source_session": source_session,
               "clip_uris": [str(p) for _, p in clip_data],
           "clip_sentences": [s for s, _ in clip_data],
           "clip_durations_s": durations,
