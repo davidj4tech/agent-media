@@ -7,13 +7,20 @@ The approach: SSH in and dispatch media keys to the active session with
 to route to the active session), dispatch reaches the foreground media
 session — and, importantly, needs no special permission, so it works on
 stock non-root Termux. `dispatch pause` is a safe no-op when nothing is
-playing (it won't start playback).
+playing (it won't start playback) — but `dispatch play` is NOT a no-op: it
+will *start* a session. Resume is therefore asymmetric and gated carefully.
 
-State detection (`dumpsys media_session` / `cmd media_session list-sessions`)
-requires the privileged DUMP / MEDIA_CONTENT_CONTROL permission and is denied
-on non-root Termux, so we can't reliably tell what's playing — we just
-dispatch pause before speech and play after (matching the MPRIS path's
-pause/resume), gated by is_playing() which defaults to True on denial.
+State detection (`dumpsys media_session`) needs the privileged DUMP
+permission, which is denied on non-root Termux. So we distinguish three
+cases (see `playback_state` / `pause_for_speech`):
+  - playing  → pause before speech, resume after.
+  - stopped  → leave it alone (nothing to pause).
+  - unknown  → (permission denied / host unreachable) dispatch pause
+               defensively (a safe no-op when idle) but do NOT auto-resume,
+               since `play` could start a session that was never playing.
+               Set MEDIA_ANDROID_RESUME_ON_UNKNOWN=1 to resume anyway, or
+               MEDIA_ANDROID_REQUIRE_PLAYING_DETECTION=1 to skip unknown
+               hosts entirely (no pause either).
 
 Enabled by setting MEDIA_ANDROID_PAUSE_HOSTS=phone (comma-separated for
 multiple hosts). Cooperates with the MPRIS path in `_mpris.py` — both can
@@ -46,9 +53,10 @@ _SSH_OPTS = ["-o", "BatchMode=yes",
 
 # Dispatch explicit pause / play keys to the active media session. Works
 # without root or extra permissions, and reaches the foreground session
-# (unlike an MEDIA_BUTTON broadcast).
-_DEFAULT_PAUSE_CMD = "cmd media_session dispatch pause >/dev/null 2>&1"
-_DEFAULT_RESUME_CMD = "cmd media_session dispatch play >/dev/null 2>&1"
+# (unlike an MEDIA_BUTTON broadcast). Absolute path: non-interactive SSH on
+# Termux usually lacks /system/bin on PATH (same reason dumpsys is absolute).
+_DEFAULT_PAUSE_CMD = "/system/bin/cmd media_session dispatch pause >/dev/null 2>&1"
+_DEFAULT_RESUME_CMD = "/system/bin/cmd media_session dispatch play >/dev/null 2>&1"
 
 
 def _ssh(host: str, script: str) -> str | None:
@@ -64,7 +72,7 @@ def _ssh(host: str, script: str) -> str | None:
 
 
 def pause_hosts() -> list[str]:
-    """Hosts to pause via media-button SSH (MEDIA_ANDROID_PAUSE_HOSTS=h1,h2)."""
+    """Hosts to pause via SSH dispatch (MEDIA_ANDROID_PAUSE_HOSTS=h1,h2)."""
     raw = os.environ.get("MEDIA_ANDROID_PAUSE_HOSTS", "")
     return [h.strip() for h in raw.split(",") if h.strip()]
 
@@ -81,31 +89,65 @@ def resume_enabled() -> bool:
     return os.environ.get("MEDIA_ANDROID_RESUME", "1") != "0"
 
 
-def is_playing(host: str) -> bool:
-    """True if dumpsys media_session reports any active playing session.
+def resume_on_unknown() -> bool:
+    """Whether to auto-resume hosts whose playback state couldn't be read.
 
-    On Termux without root, `dumpsys` is denied (no DUMP permission) — we
-    return True in that case so the toggle still fires. Set
-    MEDIA_ANDROID_REQUIRE_PLAYING_DETECTION=1 to require positive detection
-    (no toggle when state can't be determined).
+    Off by default: `dispatch play` *starts* a session, so resuming on a
+    guess risks spawning playback that was never there. Opt in on a host you
+    trust to have been playing (e.g. a dedicated music phone).
+    """
+    return os.environ.get("MEDIA_ANDROID_RESUME_ON_UNKNOWN", "0") == "1"
+
+
+def require_detection() -> bool:
+    """If set, only act on hosts whose playback state is positively known."""
+    return os.environ.get("MEDIA_ANDROID_REQUIRE_PLAYING_DETECTION") == "1"
+
+
+def playback_state(host: str) -> str:
+    """Best-effort media playback state: 'playing', 'stopped', or 'unknown'.
+
+    Reads `dumpsys media_session` (absolute path — non-interactive SSH on
+    Termux usually lacks /system/bin on PATH). 'unknown' covers both an
+    unreachable host and the common stock-Termux case where the DUMP
+    permission is denied, so state can't be read at all.
     """
     out = _ssh(host, "/system/bin/dumpsys media_session 2>&1")
     if out is None:
-        return False
+        return "unknown"  # SSH failed / host unreachable
     # Look for "state=N" where N is 3 (PLAYING) or 8 (BUFFERING).
     for line in out.splitlines():
         if "PlaybackState" in line or "state=" in line:
             if "state=3" in line or "state=8" in line:
-                return True
-    # If we couldn't read state (permission denied / no dumpsys), default
-    # to True so the toggle still fires for users on stock Termux.
+                return "playing"
     if "Permission Denial" in out or "not found" in out or not out.strip():
-        if os.environ.get("MEDIA_ANDROID_REQUIRE_PLAYING_DETECTION") == "1":
-            return False
-        log.debug("android: %s can't detect state (permission/missing); "
-                  "defaulting to play-pause toggle", host)
+        return "unknown"
+    return "stopped"
+
+
+def pause_for_speech(host: str) -> bool:
+    """Pause `host` for the duration of speech. Return True iff it should be
+    auto-resumed afterwards.
+
+    Auto-resume only when playback was positively confirmed (state=3/8),
+    because `dispatch play` starts a session and resuming on a guess can
+    spawn playback that was never there. When state is unknown we still
+    pause defensively (a no-op if idle) but don't mark for resume unless
+    MEDIA_ANDROID_RESUME_ON_UNKNOWN=1. With
+    MEDIA_ANDROID_REQUIRE_PLAYING_DETECTION=1, unknown hosts are skipped
+    entirely (no pause).
+    """
+    state = playback_state(host)
+    if state == "playing":
+        pause(host)
         return True
-    return False
+    if state == "stopped":
+        return False  # confirmed idle — don't touch it
+    # state == "unknown"
+    if require_detection():
+        return False
+    pause(host)
+    return resume_on_unknown()
 
 
 def warmup(host: str) -> None:
