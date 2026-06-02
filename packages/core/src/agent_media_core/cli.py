@@ -95,15 +95,62 @@ def _now_speaking() -> Optional[dict]:
     return np
 
 
-def _speech_history(n: int = 20):
+def _speech_history(n: int = 20, session: Optional[str] = None):
     # Exclude "Claude is waiting" notif clips: they're alerts, not responses,
     # and shouldn't appear when traversing past TTS (popup < / >, r, replay).
-    # Over-fetch so filtering still leaves n real responses to step through.
-    rows = StateStore().recent_history(sink="speech", limit=max(n * 4, n + 50))
+    # Over-fetch so filtering still leaves n real responses to step through;
+    # over-fetch harder when also scoping to one tmux session, since other
+    # sessions' clips interleave and would otherwise crowd out the buffer.
+    fetch = max(n * 4, n + 50)
+    if session:
+        fetch = max(fetch, 400)
+    rows = StateStore().recent_history(sink="speech", limit=fetch)
     rows = [r for r in rows
             if not (isinstance(r.get("extras"), dict)
                     and r["extras"].get("kind") == "notif")]
+    if session:
+        # Scope traversal to one tmux session's clips. Rows predate the
+        # source_tmux_session field (or came from a non-tmux source) carry no
+        # session tag and are excluded rather than leaking across sessions.
+        rows = [r for r in rows
+                if isinstance(r.get("extras"), dict)
+                and r["extras"].get("source_tmux_session") == session]
     return rows[:n]
+
+
+def _tmux_session_for_pane(pane: str) -> str:
+    """Resolve a tmux pane id (e.g. ``%41``) to its session name, or ""."""
+    if not pane or "#{" in pane:
+        return ""
+    try:
+        r = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", pane, "#{session_name}"],
+            capture_output=True, text=True, timeout=2)
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _anchor_session() -> Optional[str]:
+    """The tmux session the popup's < / > traversal should stay within.
+
+    Follows what you're hearing: the now-playing clip's tmux session if one is
+    playing; otherwise the session of the pane that opened the popup
+    (TTS_POPUP_PANE, exported by the tmux binding). Returns None when neither
+    resolves — callers then fall back to unscoped (all-session) history.
+    """
+    np = StateStore().get_now_playing("speech")
+    ex = (np or {}).get("extras") or {}
+    if isinstance(ex, str):
+        try:
+            ex = json.loads(ex)
+        except json.JSONDecodeError:
+            ex = {}
+    sess = ex.get("source_tmux_session")
+    if sess:
+        return sess
+    sess = _tmux_session_for_pane(os.environ.get("TTS_POPUP_PANE", ""))
+    return sess or None
 
 
 # --- speech subcommands ----------------------------------------------------
@@ -500,6 +547,28 @@ def cmd_jump(a) -> int:
     if a.where == "start":
         ipc.command(sock, "seek", 0, "absolute")
         return 0
+    # End-of-response. On a *replay* the clips are queued as one mpv playlist,
+    # so seeking the last entry to its end finishes the whole response. During
+    # a *live* readout each sentence is a separate loadfile (playlist-count 1):
+    # seeking the current clip to EOF would just let the reader loop advance to
+    # the next sentence — making `>` behave like `l`. Hand the reader a
+    # past-the-end jump so it stops after the current clip instead of
+    # continuing, then seek the current clip out so playback ends promptly.
+    np = StateStore().get_now_playing("speech")
+    ex = (np or {}).get("extras") or {}
+    if isinstance(ex, str):
+        try:
+            ex = json.loads(ex)
+        except json.JSONDecodeError:
+            ex = {}
+    sentences = ex.get("clip_sentences") or []
+    try:
+        count = ipc.get_property(sock, "playlist-count")
+    except ipc.MpvIpcError:
+        count = 1
+    playlist = isinstance(count, int) and count > 1
+    if len(sentences) > 1 and not playlist:
+        _write_nav_request(len(sentences), (np or {}).get("target") or "local")
     return _seek_to_end(sock)
 
 
@@ -639,8 +708,8 @@ def cmd_skip(a) -> int:
     return 0
 
 
-def _do_replay(index: int) -> int:
-    rows = _speech_history(max(1, index))
+def _do_replay(index: int, session: Optional[str] = None) -> int:
+    rows = _speech_history(max(1, index), session=session)
     if len(rows) < index:
         print("media: no clip to replay", file=sys.stderr)
         return 1
@@ -680,6 +749,11 @@ def _do_replay(index: int) -> int:
     source_pane = ex.get("source_pane")
     if source_pane:
         np_extras["source_pane"] = source_pane
+    # Carry the clip's tmux session forward so the next < / > press anchors to
+    # the same session (keeps the traversal scope stable across the walk).
+    src_sess = ex.get("source_tmux_session")
+    if src_sess:
+        np_extras["source_tmux_session"] = src_sess
     if have_durations:
         np_extras["total_duration_s"] = sum(clip_durations)
         np_extras["clip_durations_s"] = clip_durations
@@ -725,7 +799,8 @@ def _do_replay(index: int) -> int:
 
 
 def cmd_replay(a) -> int:
-    return _do_replay(a.index)
+    # Scope < / > / r traversal to the current tmux session's clips.
+    return _do_replay(a.index, session=_anchor_session())
 
 
 def cmd_replay_track(a) -> int:
