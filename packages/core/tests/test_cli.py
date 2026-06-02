@@ -513,3 +513,91 @@ def test_replay_resolves_history(monkeypatch):
     assert cli.cmd_replay(A2()) == 0
     assert played["uri"] == "/clips/older.mp3"
     assert played["now_playing_uri"] == "/clips/older.mp3"
+
+
+# --- replay-at-cursor (cursor -> clip) -------------------------------------
+
+# Single-line texts so _anchor_for returns the whole line; ordered newest-first
+# the way _speech_history yields them.
+_RAC_ROWS = [
+    {"text": "Alpha row one is the most recent reply we made."},   # idx 1
+    {"text": "Bravo row two is also a fairly recent reply here."},  # idx 2
+    {"text": "Charlie row three sits just above the cursor now."},  # idx 3
+    {"text": "Delta row four is older content further down below."},  # idx 4
+]
+
+
+def _rac_fake_run(cursor_line, captured, *, rec=None):
+    """Build a subprocess.run stub for cmd_replay_at_cursor.
+
+    cursor_line: the "pane_in_mode\\tcopy_cursor_y\\tscroll_position" string the
+    cursor display-message query returns. captured: capture-pane output. rec
+    (optional dict) records the capture-pane "-E" value the function computed.
+    """
+    def run(cmd, **kw):
+        class _R:
+            returncode = 0
+            stdout = ""
+        r = _R()
+        if "capture-pane" in cmd:
+            if rec is not None and "-E" in cmd:
+                rec["end"] = cmd[cmd.index("-E") + 1]
+            r.stdout = captured
+        elif any("#{pane_in_mode}" in str(x) for x in cmd):
+            r.stdout = cursor_line + "\n"
+        return r
+    return run
+
+
+def test_replay_at_cursor_picks_nearest_preceding(monkeypatch):
+    """In copy-mode: replay the most recent clip whose text is above the cursor,
+    and convert copy_cursor_y/scroll_position to the capture-pane end line."""
+    rec = {}
+    played = {}
+    captured = _RAC_ROWS[2]["text"] + "\n" + _RAC_ROWS[3]["text"]  # rows 3,4 only
+
+    monkeypatch.setenv("TTS_POPUP_PANE", "%5")
+    monkeypatch.setattr(cli, "_tmux_session_for_pane", lambda p: "sess")
+    monkeypatch.setattr(cli, "_speech_history",
+                        lambda n=20, session=None: _RAC_ROWS)
+    monkeypatch.setattr(cli, "_do_replay",
+                        lambda i, session=None: played.update(idx=i, sess=session) or 0)
+    # copy_cursor_y=10, scroll_position=4  ->  end line 10-4 = 6
+    monkeypatch.setattr(cli.subprocess, "run",
+                        _rac_fake_run("1\t10\t4", captured, rec=rec))
+
+    assert cli.cmd_replay_at_cursor(object()) == 0
+    assert played["idx"] == 3            # nearest clip above the cursor
+    assert played["sess"] == "sess"      # scoped to the caller pane's session
+    assert rec["end"] == "6"             # cursor_y - scroll_position
+
+
+def test_replay_at_cursor_not_in_copy_mode_falls_back(monkeypatch):
+    """No copy-mode cursor -> replay this pane's latest clip."""
+    played = {}
+    monkeypatch.setenv("TTS_POPUP_PANE", "%5")
+    monkeypatch.setattr(cli, "_tmux_session_for_pane", lambda p: "sess")
+    monkeypatch.setattr(cli, "_history_index_for_pane", lambda p: 2)
+    monkeypatch.setattr(cli, "_do_replay",
+                        lambda i, session=None: played.update(idx=i) or 0)
+    monkeypatch.setattr(cli.subprocess, "run",
+                        _rac_fake_run("0\t\t", ""))  # pane_in_mode=0
+
+    assert cli.cmd_replay_at_cursor(object()) == 0
+    assert played["idx"] == 2
+
+
+def test_replay_at_cursor_no_match_above_cursor(monkeypatch):
+    """In copy-mode but no clip's text is above the cursor -> error, no replay."""
+    called = {"replay": False}
+    monkeypatch.setenv("TTS_POPUP_PANE", "%5")
+    monkeypatch.setattr(cli, "_tmux_session_for_pane", lambda p: "sess")
+    monkeypatch.setattr(cli, "_speech_history",
+                        lambda n=20, session=None: _RAC_ROWS)
+    monkeypatch.setattr(cli, "_do_replay",
+                        lambda i, session=None: called.update(replay=True) or 0)
+    monkeypatch.setattr(cli.subprocess, "run",
+                        _rac_fake_run("1\t3\t0", "unrelated text with no clip anchor"))
+
+    assert cli.cmd_replay_at_cursor(object()) == 1
+    assert called["replay"] is False

@@ -153,6 +153,22 @@ def _anchor_session() -> Optional[str]:
     return sess or None
 
 
+def _caller_pane() -> str:
+    """The pane that opened the popup (TTS_POPUP_PANE), resolving an
+    unexpanded ``#{pane_id}`` literal by asking tmux for the active pane.
+    Inside ``display-popup`` TMUX_PANE is the popup's own ephemeral pane, so
+    TTS_POPUP_PANE is the one we want; it falls back to TMUX_PANE otherwise."""
+    pane = os.environ.get("TTS_POPUP_PANE") or os.environ.get("TMUX_PANE", "")
+    if "#{" in pane:
+        try:
+            r = subprocess.run(["tmux", "display-message", "-p", "#{pane_id}"],
+                               capture_output=True, text=True)
+            pane = r.stdout.strip() if r.returncode == 0 else ""
+        except Exception:  # noqa: BLE001
+            pane = ""
+    return pane
+
+
 # --- speech subcommands ----------------------------------------------------
 
 def cmd_status(a) -> int:
@@ -790,19 +806,9 @@ def _do_replay(index: int, session: Optional[str] = None) -> int:
     if len(clip_uris) > 1 and have_durations:
         # Spawn a detached highlight tracker so copy-mode follows along
         # even though _do_replay returns immediately.
-        # TTS_POPUP_PANE is the original pane that opened the popup (set by
-        # the tmux binding). TMUX_PANE inside display-popup is the popup's
-        # own ephemeral pane, which disappears when the popup closes.
-        pane = os.environ.get("TTS_POPUP_PANE") or os.environ.get("TMUX_PANE", "")
-        # If the binding left an unexpanded #{pane_id} literal, query tmux
-        # for the active pane instead.
-        if "#{" in pane:
-            try:
-                r = subprocess.run(["tmux", "display-message", "-p", "#{pane_id}"],
-                                   capture_output=True, text=True)
-                pane = r.stdout.strip() if r.returncode == 0 else ""
-            except Exception:  # noqa: BLE001
-                pane = ""
+        # TTS_POPUP_PANE is the original pane that opened the popup; TMUX_PANE
+        # inside display-popup is the popup's own ephemeral pane.
+        pane = _caller_pane()
         if pane and clip_sentences and len(clip_sentences) == len(clip_uris):
             subprocess.Popen(
                 [sys.executable, "-m", "agent_media_core.cli",
@@ -820,6 +826,87 @@ def _do_replay(index: int, session: Optional[str] = None) -> int:
 def cmd_replay(a) -> int:
     # Scope < / > / r traversal to the current tmux session's clips.
     return _do_replay(a.index, session=_anchor_session())
+
+
+def cmd_replay_at_cursor(a) -> int:
+    """Replay the spoken clip at/just-above the copy-mode cursor (popup `p`).
+
+    "The clip in the sequence before the cursor": capture the caller pane's
+    text down to the cursor row, then play the most recent clip whose search
+    anchor appears in it — clips below the cursor never appear in the capture,
+    so they're excluded for free, and most-recent-first picks the nearest
+    preceding utterance. Reuses `_anchor_for` so a clip that the auto-highlight
+    can land on is exactly one this can match. If the pane isn't scrolled into
+    copy-mode there's no cursor, so it falls back to "replay what this pane
+    just said" (the latest clip from this pane).
+    """
+    from .intake.submit import _anchor_for
+
+    pane = _caller_pane()
+    if not pane:
+        print("media: no caller pane", file=sys.stderr)
+        return 1
+    # Match against the caller pane's own scrollback, so scope history to that
+    # pane's session (not the now-playing one, which may be elsewhere).
+    sess = _tmux_session_for_pane(pane) or _anchor_session()
+
+    # Cursor state in the caller pane (queryable while the popup overlays it).
+    in_mode, cur_y, scroll = "", "", ""
+    try:
+        r = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", pane,
+             "#{pane_in_mode}\t#{copy_cursor_y}\t#{scroll_position}"],
+            capture_output=True, text=True, timeout=2)
+        if r.returncode == 0:
+            parts = r.stdout.rstrip("\n").split("\t")
+            in_mode = parts[0] if len(parts) > 0 else ""
+            cur_y = parts[1] if len(parts) > 1 else ""
+            scroll = parts[2] if len(parts) > 2 else ""
+    except Exception:  # noqa: BLE001
+        pass
+
+    # Not scrolled into copy-mode → no cursor to anchor on; replay this pane's
+    # latest clip (matches Space's "play what this pane just said").
+    if in_mode.strip() != "1" or not cur_y.strip().isdigit():
+        idx = _history_index_for_pane(pane)
+        if idx is None:
+            print("media: this pane has no spoken clip", file=sys.stderr)
+            return 1
+        return _do_replay(idx, session=sess)
+
+    # capture-pane line numbers are relative to the live screen (0 = top of the
+    # visible pane, negative into history); copy_cursor_y is relative to the
+    # scrolled copy-mode view. Subtract scroll_position to convert.
+    scroll_n = int(scroll) if scroll.strip().isdigit() else 0
+    end_line = int(cur_y) - scroll_n
+    try:
+        cap = subprocess.run(
+            ["tmux", "capture-pane", "-p", "-t", pane,
+             "-S", "-32768", "-E", str(end_line)],
+            capture_output=True, text=True, timeout=4)
+        captured = cap.stdout if cap.returncode == 0 else ""
+    except Exception:  # noqa: BLE001
+        captured = ""
+    if not captured:
+        print("media: could not read pane text", file=sys.stderr)
+        return 1
+
+    rows = _speech_history(200, session=sess)
+    for i, row in enumerate(rows, start=1):
+        anchor = _anchor_for(row.get("text") or "")
+        if anchor and anchor in captured:
+            preview = " ".join((row.get("text") or "").split())
+            if len(preview) > 60:
+                preview = preview[:57] + "…"
+            subprocess.run(["tmux", "display-message", f"♪ {preview}"],
+                           capture_output=True)
+            return _do_replay(i, session=sess)
+
+    subprocess.run(
+        ["tmux", "display-message", "⊘ no spoken clip above cursor"],
+        capture_output=True)
+    print("media: no spoken clip above cursor", file=sys.stderr)
+    return 1
 
 
 def cmd_replay_track(a) -> int:
@@ -1065,6 +1152,11 @@ def _build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("replay", help="replay the Nth most recent clip (1=latest)")
     s.add_argument("index", nargs="?", type=int, default=1)
     s.set_defaults(func=cmd_replay)
+
+    sub.add_parser(
+        "replay-at-cursor",
+        help="replay the clip at the copy-mode cursor (popup p)"
+        ).set_defaults(func=cmd_replay_at_cursor)
 
     s = sub.add_parser("replay-track", help=argparse.SUPPRESS)
     s.add_argument("--sentences", required=True)

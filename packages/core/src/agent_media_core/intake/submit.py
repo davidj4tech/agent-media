@@ -176,6 +176,30 @@ def _strip_markdown_inline(s: str) -> str:
     return s
 
 
+def _anchor_for(text: str) -> Optional[str]:
+    """Single-line search anchor for spoken `text`, normalized to match the
+    *rendered* pane (markdown stripped). Returns the plain (un-escaped) snippet
+    — the longest line, trimmed to a word boundary within 50 chars so it fits
+    on one visual row — or None if no line is long enough (>=15 chars) to be a
+    unique search target. Shared by the auto-highlight (clip->cursor) and
+    `replay-at-cursor` (cursor->clip) so both normalize text identically; if
+    they drift, a clip that highlights wouldn't match-at-cursor.
+    """
+    text = _strip_markdown_inline(text)
+    # tmux search matches within one visual row, so flattening newlines (which
+    # span wrapped rows) would never match — anchor on the longest single line.
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    anchor = max(lines, key=len) if lines else text.strip()
+    # A too-short anchor (one-word sentence, a bare heading) isn't unique:
+    # search-backward then lands on spurious text. Skip those.
+    if len(anchor) < 15:
+        return None
+    if len(anchor) <= 50:
+        return anchor
+    cut = anchor[:50].rfind(" ")
+    return anchor[:cut] if cut > 15 else anchor[:50]
+
+
 def _tmux_highlight_text(text: str, *, first: bool = False,
                          force: bool = False) -> None:
     """Re-anchor copy-mode in the source pane onto the spoken text.
@@ -201,28 +225,12 @@ def _tmux_highlight_text(text: str, *, first: bool = False,
     if not pane:
         return
 
-    # Match against what's *rendered* in the pane, not the raw markdown.
-    text = _strip_markdown_inline(text)
-
-    # Trim to last word boundary within 50 chars so the snippet fits on
-    # a single visual line — tmux search won't match across line wraps.
-    def _trim_to_word(s: str, limit: int = 50) -> str:
-        if len(s) <= limit:
-            return s
-        cut = s[:limit].rfind(" ")
-        return s[:cut] if cut > 15 else s[:limit]
-
-    # Anchor on the longest single line — tmux search matches within one
-    # visual row, so flattening newlines (which span wrapped rows) would never
-    # match. A too-short anchor (a one-word sentence, a bare heading) isn't
-    # unique: search-backward then lands on spurious text — often the prompt at
-    # the very bottom — yanking the view to the end of the buffer. Skip those
-    # outright and leave the prior highlight in place.
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    anchor = max(lines, key=len) if lines else text.strip()
-    if len(anchor) < 15:
+    # Build the search anchor (markdown stripped, longest single line, trimmed
+    # to one visual row). None = no line unique enough to search for — leave the
+    # prior highlight in place rather than stranding the view at the bottom.
+    snippet = _anchor_for(text)
+    if snippet is None:
         return
-    snippet = _trim_to_word(anchor)
 
     # Selection length = snippet length, capped so the highlight always fits
     # within a single visual row. cursor-right N beyond the row would drag

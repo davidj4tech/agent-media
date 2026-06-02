@@ -7,6 +7,8 @@
 #
 #   Tab     switch channel (speech ⇆ music)
 #   Space   play/pause toggle          r   replay latest clip   (speech)
+#   p       play clip at copy-mode cursor (speech) — the spoken clip whose
+#           text sits at/above the cursor; no copy-mode → this pane's latest
 #   h / l   prev/next sentence         H / L   prev/next paragraph
 #           (speech; ±5s/±30s seek on music or a single-sentence reply)
 #   - / =   volume -5 / +5             m   toggle mute           (speech)
@@ -208,6 +210,11 @@ while true; do
              fi ;;
         # --- speech-only keys below ---
         r)   [ "$CHANNEL" = "speech" ] && { $MEDIA replay; hist_idx=1; } ;;
+        # Play the clip at the caller pane's copy-mode cursor (or this pane's
+        # latest clip if not scrolled into copy-mode). Reset hist_idx so a
+        # following < / > walks from the clip we just landed on.
+        p)   [ "$CHANNEL" = "speech" ] && \
+                 { TTS_POPUP_PANE="$HL_PANE" $MEDIA replay-at-cursor; hist_idx=1; } ;;
         m)   [ "$CHANNEL" = "speech" ] && $MEDIA mute ;;
         '[') [ "$CHANNEL" = "speech" ] && bump_speed -0.1 ;;
         ']') [ "$CHANNEL" = "speech" ] && bump_speed 0.1 ;;
@@ -219,7 +226,7 @@ while true; do
                  _hl_out=$(TTS_POPUP_PANE="$HL_PANE" $MEDIA highlight-toggle 2>/dev/null)
                  tmux display-message "♪ ${_hl_out:-highlight: ?}" 2>/dev/null
              fi ;;
-        '?') tmux display-message "Tab channel · Space play/pause · h/l sentence H/L paragraph · -/= vol · < > older/newer · g go to source · speech: r replay m mute [/] speed v highlight · q quit" 2>/dev/null ;;
+        '?') tmux display-message "Tab channel · Space play/pause · h/l sentence H/L paragraph · -/= vol · < > older/newer · g go to source · speech: p play-at-cursor r replay m mute [/] speed v highlight · q quit" 2>/dev/null ;;
         q|$'\e') break ;;
         *) : ;;
     esac
