@@ -90,6 +90,39 @@ def test_sidecar_and_now_playing_lifecycle(state_env, monkeypatch):
     assert state.get_now_playing("speech") is None
 
 
+def test_source_session_persisted_from_metadata(state_env, monkeypatch):
+    """The hook's session id rides metadata into now_playing + history extras,
+    so a closed pane can later be resumed via `media goto-pane`/`open-session`."""
+    monkeypatch.setattr(S, "render_text", _fake_render)
+    state = StateStore()
+
+    during = {}
+
+    class _CapSink(_FakeSink):
+        def play(self, uri, target, **kw):
+            during.setdefault("np", state.get_now_playing("speech"))
+            return super().play(uri, target, **kw)
+
+    rid = S.submit_event(
+        Event(text="hello", source=Source.CLAUDE_CODE,
+              metadata={"session": "sess-abc"}),
+        state=state, sink=_CapSink())
+
+    def _extras(d):
+        ex = d.get("extras") or {}
+        if isinstance(ex, str):
+            import json
+            ex = json.loads(ex)
+        return ex
+
+    # live now_playing carried it...
+    assert _extras(during["np"]).get("source_session") == "sess-abc"
+    # ...and so did the history row.
+    row = state.recent_history(sink="speech", limit=1)[0]
+    assert _extras(row).get("source_session") == "sess-abc"
+    assert rid is not None
+
+
 def test_empty_text_no_sidecar(state_env, monkeypatch):
     monkeypatch.setattr(S, "render_text", _fake_render)
     state = StateStore()

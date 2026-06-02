@@ -300,7 +300,8 @@ def _handle_notification(payload: dict) -> int:
     submit_event(Event(text=msg, source=Source.CLAUDE_CODE,
                        priority=Priority.HIGH,
                        voice=_voice_for_session(sess),
-                       metadata={"kind": "notif"}))
+                       metadata={"kind": "notif",
+                                 "session": payload.get("session_id") or ""}))
     return 0
 
 
@@ -336,7 +337,8 @@ def _handle_stop(payload: dict) -> int:
         Event(text=text, source=Source.CLAUDE_CODE,
               priority=Priority.NORMAL,
               voice=_voice_for_session(_session_name()),
-              metadata={"kind": "stop", "dedup_key": dedup_key}),
+              metadata={"kind": "stop", "dedup_key": dedup_key,
+                        "session": payload.get("session_id") or ""}),
         state=state,
     )
     if rid is not None:

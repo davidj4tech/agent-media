@@ -1,5 +1,7 @@
 """Tests for the media CLI pure helpers + parser (task #9, PR A)."""
 
+import pytest
+
 from agent_media_core import cli
 
 
@@ -263,6 +265,108 @@ def test_goto_track_no_pane_returns_1(monkeypatch):
     monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: _R())
     # No ncmpcpp pane → rc 1 so the popup shows a hint instead of closing.
     assert cli.cmd_goto_track(object()) == 1
+
+
+def test_open_ncmpcpp_opens_window(monkeypatch):
+    calls = []
+    monkeypatch.setattr(cli.subprocess, "run",
+                        lambda cmd, **k: calls.append(cmd))
+    monkeypatch.delenv("MEDIA_NCMPCPP_CMD", raising=False)
+    assert cli.cmd_open_ncmpcpp(object()) == 0
+    assert ["tmux", "new-window", "ncmpcpp"] in calls
+
+
+def test_open_ncmpcpp_honors_cmd_override(monkeypatch):
+    calls = []
+    monkeypatch.setattr(cli.subprocess, "run",
+                        lambda cmd, **k: calls.append(cmd))
+    monkeypatch.setenv("MEDIA_NCMPCPP_CMD", "/opt/bin/ncmpcpp -q")
+    assert cli.cmd_open_ncmpcpp(object()) == 0
+    assert ["tmux", "new-window", "/opt/bin/ncmpcpp -q"] in calls
+
+
+# --- goto-pane: focus live pane, else offer to resume / report closed ---
+
+def _patch_pane_alive(monkeypatch, alive_panes):
+    """Make _pane_alive report only `alive_panes` as open."""
+    class _R:
+        returncode = 0
+        stdout = "\n".join(alive_panes) + "\n"
+    monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: _R())
+
+
+def test_goto_pane_focuses_live_pane(monkeypatch):
+    calls = []
+    monkeypatch.setattr(cli, "_spoken_pane", lambda: "%7")
+    monkeypatch.setattr(cli, "_spoken_session", lambda: "sess-xyz")
+    monkeypatch.setattr(cli, "_pane_alive", lambda p: True)
+    monkeypatch.setattr(cli, "_focus_pane", lambda p: calls.append(p))
+    assert cli.cmd_goto_pane(object()) == 0  # live → just focus
+    assert calls == ["%7"]
+
+
+def test_goto_pane_closed_with_session_returns_3(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_spoken_pane", lambda: "%7")
+    monkeypatch.setattr(cli, "_spoken_session", lambda: "sess-xyz")
+    monkeypatch.setattr(cli, "_pane_alive", lambda p: False)  # pane closed
+    monkeypatch.setattr(cli, "_focus_pane",
+                        lambda p: pytest.fail("should not focus a dead pane"))
+    assert cli.cmd_goto_pane(object()) == 3
+    assert capsys.readouterr().out.strip() == "sess-xyz"  # id for the popup
+
+
+def test_goto_pane_closed_no_session_returns_2(monkeypatch):
+    monkeypatch.setattr(cli, "_spoken_pane", lambda: "%7")
+    monkeypatch.setattr(cli, "_spoken_session", lambda: None)
+    monkeypatch.setattr(cli, "_pane_alive", lambda p: False)
+    assert cli.cmd_goto_pane(object()) == 2
+
+
+def test_goto_pane_no_source_returns_1(monkeypatch):
+    monkeypatch.setattr(cli, "_spoken_pane", lambda: None)
+    monkeypatch.setattr(cli, "_spoken_session", lambda: None)
+    assert cli.cmd_goto_pane(object()) == 1
+
+
+def test_pane_alive_membership(monkeypatch):
+    class _R:
+        returncode = 0
+        stdout = "%1\n%7\n%10\n"
+    monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: _R())
+    assert cli._pane_alive("%7") is True
+    assert cli._pane_alive("%99") is False
+    assert cli._pane_alive("") is False
+
+
+def test_open_session_resumes(monkeypatch):
+    calls = []
+    monkeypatch.setattr(cli.subprocess, "run",
+                        lambda cmd, **k: calls.append(cmd))
+
+    class A:
+        session = "abc-123"
+    assert cli.cmd_open_session(A()) == 0
+    assert ["tmux", "new-window", "claude --resume abc-123"] in calls
+
+
+def test_open_session_blank_returns_1(monkeypatch):
+    monkeypatch.setattr(cli.subprocess, "run",
+                        lambda *a, **k: pytest.fail("should not spawn"))
+
+    class A:
+        session = "  "
+    assert cli.cmd_open_session(A()) == 1
+
+
+def test_spoken_session_reads_extras(monkeypatch):
+    monkeypatch.setattr(cli, "_now_speaking",
+                        lambda: {"extras": {"source_session": "live-sess"}})
+    assert cli._spoken_session() == "live-sess"
+    # Idle: falls back to the most recent history clip's extras.
+    monkeypatch.setattr(cli, "_now_speaking", lambda: None)
+    monkeypatch.setattr(cli, "_speech_history",
+                        lambda n=1: [{"extras": {"source_session": "hist-sess"}}])
+    assert cli._spoken_session() == "hist-sess"
 
 
 def test_split_with_paragraphs_preserves_boundaries():

@@ -145,16 +145,17 @@ def cmd_now(a) -> int:
     return 0
 
 
-def _spoken_pane() -> Optional[str]:
-    """tmux pane id that produced the current (or most recent) speech."""
+def _spoken_extras() -> dict:
+    """Extras of the current (or most recent) speech — source of pane/session.
+
+    Actively playing: THIS clip's extras (or {} when paneless — a gateway/
+    openclaw agent, `media say`, etc.). Don't fall back to history while
+    playing, or paneless speech would borrow the last Claude pane.
+    Idle: the most recent clip's extras, so we keep naming whoever last spoke.
+    """
     np = _now_speaking()
     if np:
-        # Actively playing: use THIS clip's source pane, or None when the
-        # source had no pane (a gateway/openclaw agent, `media say`, etc.).
-        # Don't fall back to history here — borrowing the last Claude pane
-        # would mislabel paneless speech with a stale, wrong title.
-        return (np.get("extras") or {}).get("source_pane") or None
-    # Idle: keep naming whoever last spoke.
+        return np.get("extras") or {}
     rows = _speech_history(1)
     if rows:
         ex = rows[0].get("extras") or {}
@@ -163,8 +164,22 @@ def _spoken_pane() -> Optional[str]:
                 ex = json.loads(ex)
             except json.JSONDecodeError:
                 ex = {}
-        return ex.get("source_pane") or None
-    return None
+        return ex
+    return {}
+
+
+def _spoken_pane() -> Optional[str]:
+    """tmux pane id that produced the current (or most recent) speech."""
+    return _spoken_extras().get("source_pane") or None
+
+
+def _spoken_session() -> Optional[str]:
+    """Claude Code session id behind the current (or most recent) speech.
+
+    Captured at speech time by the hook, so it survives the source pane being
+    closed — lets `goto-pane` offer to resume the conversation.
+    """
+    return _spoken_extras().get("source_session") or None
 
 
 def _focus_pane(pane: str) -> None:
@@ -174,6 +189,21 @@ def _focus_pane(pane: str) -> None:
             subprocess.run(["tmux", *args], capture_output=True)
         except Exception:  # noqa: BLE001
             pass
+
+
+def _pane_alive(pane: str) -> bool:
+    """True if `pane` is still an open tmux pane on this server."""
+    if not pane:
+        return False
+    try:
+        r = subprocess.run(
+            ["tmux", "list-panes", "-a", "-F", "#{pane_id}"],
+            capture_output=True, text=True)
+    except Exception:  # noqa: BLE001
+        return False
+    if r.returncode != 0:
+        return False
+    return pane in r.stdout.split()
 
 
 def cmd_now_pane(a) -> int:
@@ -199,10 +229,43 @@ def cmd_now_pane(a) -> int:
 
 
 def cmd_goto_pane(a) -> int:
-    """Focus the tmux pane that produced the now-playing (or last) speech."""
+    """Focus the pane that produced the now-playing (or last) speech.
+
+    Exit codes let the popup react instead of silently no-opping when the
+    pane is gone:
+      0  focused a live pane (nothing printed)
+      3  pane is closed but a Claude session is resumable — its id is printed
+         on stdout so the popup can offer `claude --resume <id>`
+      2  pane is closed and there's nothing to resume
+      1  no source pane was ever captured (paneless speech)
+    """
     pane = _spoken_pane()
-    if pane:
+    if pane and _pane_alive(pane):
         _focus_pane(pane)
+        return 0
+    session = _spoken_session()
+    if session:
+        print(session)
+        return 3
+    if pane:
+        return 2  # had a pane, it's closed, no session to fall back to
+    return 1
+
+
+def cmd_open_session(a) -> int:
+    """Open a new tmux window resuming the given Claude Code session.
+
+    The popup calls this after `goto-pane` reports a closed pane (rc 3) and
+    the user confirms — it brings the conversation back as `claude --resume`.
+    """
+    sid = (getattr(a, "session", "") or "").strip()
+    if not sid:
+        return 1
+    try:
+        subprocess.run(["tmux", "new-window", f"claude --resume {sid}"],
+                       capture_output=True)
+    except Exception:  # noqa: BLE001
+        return 1
     return 0
 
 
@@ -246,6 +309,22 @@ def cmd_goto_track(a) -> int:
                        capture_output=True)
     except Exception:  # noqa: BLE001
         pass
+    return 0
+
+
+def cmd_open_ncmpcpp(a) -> int:
+    """Open a new tmux window running ncmpcpp.
+
+    The popup calls this when the music `g` found no ncmpcpp pane and the
+    user confirms. ncmpcpp's config sets `jump_to_now_playing_song_at_start`,
+    so it lands on the current track without us sending `o`. The launch
+    command is overridable via MEDIA_NCMPCPP_CMD (e.g. a wrapper or a path).
+    """
+    cmd = os.environ.get("MEDIA_NCMPCPP_CMD", "ncmpcpp")
+    try:
+        subprocess.run(["tmux", "new-window", cmd], capture_output=True)
+    except Exception:  # noqa: BLE001
+        return 1
     return 0
 
 
@@ -840,6 +919,13 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("goto-track",
                    help="focus the ncmpcpp pane and jump to the now-playing song"
                    ).set_defaults(func=cmd_goto_track)
+    sub.add_parser("open-ncmpcpp",
+                   help="open a new tmux window running ncmpcpp"
+                   ).set_defaults(func=cmd_open_ncmpcpp)
+    p_os = sub.add_parser("open-session",
+                          help="open a window resuming a Claude Code session")
+    p_os.add_argument("session", help="Claude Code session id to resume")
+    p_os.set_defaults(func=cmd_open_session)
     sub.add_parser("text", help="spoken text (now-playing or latest history)").set_defaults(func=cmd_text)
 
     sub.add_parser("highlight-toggle",
