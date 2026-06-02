@@ -46,6 +46,33 @@ def _env_duck_level() -> Optional[int]:
     return None
 
 
+def _remote_resume_settle_s() -> float:
+    """Seconds to wait before resuming a remote player (Android via SSH).
+
+    When mpv reports idle, the speech audio is still draining on the remote
+    end (Snapcast buffer) and the speech stream is the phone's active media
+    session — so a `dispatch play` sent immediately is routed to it (or
+    dropped) instead of resuming music, and the resume only lands on the
+    next pause/play cycle. Waiting for the drain fixes that.
+
+    Tunable via MEDIA_REMOTE_RESUME_SETTLE_MS; defaults to the Snapcast
+    latency (MEDIA_SNAPCAST_LATENCY_MS, default 500) plus a 400ms margin.
+    """
+    env = os.environ.get("MEDIA_REMOTE_RESUME_SETTLE_MS")
+    if env is not None:
+        try:
+            ms = int(env)
+        except ValueError:
+            ms = 900
+    else:
+        try:
+            base = int(os.environ.get("MEDIA_SNAPCAST_LATENCY_MS", "500"))
+        except ValueError:
+            base = 500
+        ms = base + 400
+    return max(0.0, ms / 1000.0)
+
+
 log = logging.getLogger(__name__)
 
 
@@ -183,12 +210,16 @@ class Coordinator:
         for host, names in self._mpris_remote_paused.items():
             _mpris.resume_remote(host, names)
         self._mpris_remote_paused = {}
-        for host in self._android_paused:
-            try:
-                _android.resume(host)
-            except Exception:  # noqa: BLE001
-                pass
-        self._android_paused = []
+        if self._android_paused:
+            # Let our speech audio drain on the phone first (see helper) so
+            # `dispatch play` reaches the music session, not the speech one.
+            time.sleep(_remote_resume_settle_s())
+            for host in self._android_paused:
+                try:
+                    _android.resume(host)
+                except Exception:  # noqa: BLE001
+                    pass
+            self._android_paused = []
 
         np = self.state.get_now_playing("music")
         if not np or not np.get("extras"):
