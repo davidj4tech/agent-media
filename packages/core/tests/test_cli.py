@@ -267,6 +267,26 @@ def test_goto_track_no_pane_returns_1(monkeypatch):
     assert cli.cmd_goto_track(object()) == 1
 
 
+def test_focus_pane_switches_client_to_target_session(monkeypatch):
+    """Focus must `switch-client` to the pane's session, else cross-session
+    'go to' silently no-ops (select-window/-pane only move the target session,
+    not the attached client)."""
+    calls = []
+
+    class _R:
+        returncode = 0
+        stdout = "music\n"  # session_name lookup for the pane
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        return _R()
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    cli._focus_pane("%10")
+    assert ["tmux", "select-pane", "-t", "%10"] in calls
+    assert ["tmux", "switch-client", "-t", "music"] in calls
+
+
 def test_open_ncmpcpp_opens_window(monkeypatch):
     calls = []
     monkeypatch.setattr(cli.subprocess, "run",
