@@ -21,6 +21,7 @@ Replaces the legacy Node `packages/media-mcp/server.js` end-to-end.
 
 import logging
 import os
+import time
 
 from mcp.server.fastmcp import FastMCP
 
@@ -36,8 +37,19 @@ def _port() -> int:
         return 8765
 
 from .intake._env import load_env_file
-from .route import coerce_content_type, detect_content_type
-from .sinks import SinkMusic, SinkSpeech
+from .route import (
+    BED_DUCK,
+    BED_PAUSE,
+    FOCUS_BOOK,
+    FOCUS_MUSIC,
+    apply_focus,
+    bed_strategy,
+    coerce_content_type,
+    detect_content_type,
+    resolve,
+)
+from .sinks import SinkBook, SinkMusic, SinkSpeech
+from .sinks.book import normalize_uri
 from .state import StateStore
 from .types import Event, Priority, Source, Target
 
@@ -67,7 +79,42 @@ def _music() -> SinkMusic:
     return _music._v  # type: ignore[attr-defined]
 
 
+def _book() -> SinkBook:
+    if not hasattr(_book, "_v"):
+        _book._v = SinkBook()  # type: ignore[attr-defined]
+    return _book._v  # type: ignore[attr-defined]
+
+
+def _save_book_bookmark(book: SinkBook, state: StateStore,
+                        target: Target) -> None:
+    """Persist the currently-open book's position as its resume bookmark.
+
+    Called before pause/stop/switch so `book resume` (or reopening the same
+    URI) lands where the listener left off. Best-effort and spawn-free.
+    """
+    try:
+        np = state.get_now_playing("book")
+        if not np:
+            return
+        pos = book.position(target)
+        if pos is not None and pos > 0:
+            state.set_resume_pos(np["uri"], pos)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _target(name: str) -> Target:
+    return Target(name=name or "local")
+
+
+def _book_target(name: str = "") -> Target:
+    """Resolve the book channel's output target. An empty name means "use
+    the configured default" (MEDIA_BOOK_DEFAULT_TARGET, default `local`) —
+    so books can default to the rooms without every caller passing it, while
+    an explicit `local`/`rooms` still wins.
+    """
+    if not name:
+        name = os.environ.get("MEDIA_BOOK_DEFAULT_TARGET", "local")
     return Target(name=name or "local")
 
 
@@ -236,6 +283,185 @@ def music_seek(position_ms: int, target: str = "local") -> dict:
     """Seek the current music track to absolute position (ms)."""
     _music().seek_cur(_target(target), max(0, position_ms))
     return {"ok": True, "position_ms": position_ms}
+
+
+# --- book sink controls (longform channel) --------------------------------
+#
+# The book channel is a *separate* player from music: its own queue, its own
+# position, and durable resume-by-URI bookmarks. Speech pauses it (and
+# rewinds a touch) rather than ducking. It runs as its own mpv broker on the
+# local box and lazy-starts on first `book_play`.
+
+@mcp.tool()
+def book_play(uri: str, resume: bool = True, start_ms: int = -1,
+              target: str = "") -> dict:
+    """Play longform audio (audiobook / podcast) on the book channel.
+
+    Use this instead of `music_play` for spoken-word you want to come back
+    to: the book channel remembers where you were, and speech pauses it
+    instead of talking over it. Accepts the same URIs as `music_play`
+    (`yt:https://...`, http(s) streams, file paths) — a leading `yt:` is
+    stripped for the underlying mpv player.
+
+    Args:
+        uri: What to play.
+        resume: If True (default) and no explicit start_ms, resume from this
+            URI's saved bookmark.
+        start_ms: Explicit start offset (ms). -1 (default) means use the
+            bookmark when `resume`, else start from the beginning.
+    """
+    b, st, t = _book(), _state(), _book_target(target)
+    norm = normalize_uri(uri)
+    # Save the outgoing book's place before switching away from it.
+    _save_book_bookmark(b, st, t)
+    if start_ms is not None and start_ms >= 0:
+        start = start_ms
+    elif resume:
+        start = st.get_resume_pos(norm) or 0
+    else:
+        start = 0
+    b.play(norm, t, start_ms=start)
+    st.set_now_playing(sink="book", uri=norm, started_at=time.time(),
+                       content_type="audiobook", target=t.name)
+    st.set_book_last(norm)
+    return {"ok": True, "uri": norm, "resumed_from_ms": start}
+
+
+@mcp.tool()
+def book_resume(target: str = "") -> dict:
+    """Resume the book channel. If nothing is loaded, reopen the last book
+    played, at its saved bookmark."""
+    b, st, t = _book(), _state(), _book_target(target)
+    if b.idle(t):
+        last = st.get_book_last()
+        if not last:
+            return {"ok": False, "reason": "no book to resume"}
+        start = st.get_resume_pos(last) or 0
+        b.play(last, t, start_ms=start)
+        st.set_now_playing(sink="book", uri=last, started_at=time.time(),
+                           content_type="audiobook", target=t.name)
+        return {"ok": True, "uri": last, "resumed_from_ms": start}
+    b.resume(t)
+    return {"ok": True}
+
+
+@mcp.tool()
+def book_pause(target: str = "local") -> dict:
+    """Pause the book channel and save its place."""
+    b, t = _book(), _target(target)
+    _save_book_bookmark(b, _state(), t)
+    b.pause(t)
+    return {"ok": True}
+
+
+@mcp.tool()
+def book_stop(target: str = "local") -> dict:
+    """Stop the book channel, saving its place first so you can resume later."""
+    b, st, t = _book(), _state(), _target(target)
+    _save_book_bookmark(b, st, t)
+    b.stop(t)
+    st.clear_now_playing("book")
+    return {"ok": True}
+
+
+@mcp.tool()
+def book_skip(seconds: float = 30, target: str = "local") -> dict:
+    """Skip the book by ±seconds (negative = back). Default +30s."""
+    _book().skip(seconds, _target(target))
+    return {"ok": True, "seconds": seconds}
+
+
+@mcp.tool()
+def book_speed(rate: float, target: str = "local") -> dict:
+    """Set book playback speed (0.25–4.0; 1.0 = normal)."""
+    applied = _book().set_speed(rate, _target(target))
+    return {"ok": True, "speed": applied}
+
+
+@mcp.tool()
+def book_now_playing(target: str = "local") -> dict:
+    """What the book channel is playing — URI, position, duration, speed."""
+    b, t = _book(), _target(target)
+    if b.idle(t):
+        return {"idle": True}
+    return {
+        "idle": False,
+        "uri": b.now_playing_uri(t),
+        "position_ms": b.position(t),
+        "duration_ms": b.duration(t),
+        "paused": b.paused(t),
+        "speed": b.speed(t),
+    }
+
+
+# --- channel concurrency: focus + bed -------------------------------------
+#
+# The book and music channels can play at once (book in front, music as a
+# quiet bed). `focus` chooses which is in front; `book_bed` chooses whether
+# the music bed ducks (instrumental) or pauses (lyrics) under the book.
+
+@mcp.tool()
+def focus(channel: str, target: str = "local") -> dict:
+    """Bring a channel to the front; push the other into its bed.
+
+    Args:
+        channel: "book" → music drops to a quiet bed (or pauses, per the
+            current `book_bed` mode) and the book plays at full. "music" →
+            the book pauses (its place is saved) and music returns to full.
+    """
+    ch = channel.strip().lower()
+    if ch not in (FOCUS_BOOK, FOCUS_MUSIC):
+        return {"ok": False, "reason": f"unknown channel {channel!r}"}
+    b, m, st, t = _book(), _music(), _state(), _target(target)
+    # Save the book's place before focus pauses it.
+    if ch == FOCUS_MUSIC:
+        _save_book_bookmark(b, st, t)
+    result = apply_focus(ch, music=m, book=b, state=st,
+                         music_target=t, book_target=t)
+    return {"ok": True, **result}
+
+
+@mcp.tool()
+def book_bed(mode: str, target: str = "local") -> dict:
+    """Set how the music bed behaves under a foregrounded book.
+
+    Args:
+        mode: "duck" — keep music playing quietly under the narration
+            (good for instrumental); "pause" — pause music entirely while
+            the book is in front (good for lyrics). Applies immediately if
+            a book is currently in front.
+    """
+    md = mode.strip().lower()
+    if md not in (BED_DUCK, BED_PAUSE):
+        return {"ok": False, "reason": f"mode must be 'duck' or 'pause', got {mode!r}"}
+    st = _state()
+    st.set_book_bed(md)
+    # If the book is already in front, re-apply so the change takes effect now.
+    reapplied = False
+    if st.get_focus() == FOCUS_BOOK:
+        t = _target(target)
+        apply_focus(FOCUS_BOOK, music=_music(), book=_book(), state=st,
+                    music_target=t, book_target=t)
+        reapplied = True
+    return {"ok": True, "bed": md, "applied_now": reapplied}
+
+
+@mcp.tool()
+def channels_status() -> dict:
+    """Both channels at a glance — what's playing, plus focus and bed mode."""
+    b, m = _book(), _music()
+    t = _target("local")
+    pol = resolve(_state())
+    book_state: dict = {"idle": b.idle(t)}
+    if not book_state["idle"]:
+        book_state.update(uri=b.now_playing_uri(t), position_ms=b.position(t),
+                          paused=b.paused(t), speed=b.speed(t))
+    return {
+        "focus": pol.focus,
+        "bed": pol.bed,
+        "music": {"uri": m.now_playing_uri(t), "position_ms": m.position(t)},
+        "book": book_state,
+    }
 
 
 # --- entrypoint -----------------------------------------------------------

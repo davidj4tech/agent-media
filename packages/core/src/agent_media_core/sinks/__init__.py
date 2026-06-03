@@ -2,11 +2,13 @@
 
 `sink-speech` is mpv-backed (one broker, openal, XDG socket).
 `sink-music` is Mopidy-backed (MPD client).
+`sink-book` is mpv-backed (its own broker) — the longform book channel.
 
-Both implement the `Sink` protocol in `agent_media_core.types`.
+All implement the `Sink` protocol in `agent_media_core.types`.
 """
 
+from .book import SinkBook
 from .music import SinkMusic
 from .speech import SinkSpeech
 
-__all__ = ["SinkSpeech", "SinkMusic"]
+__all__ = ["SinkSpeech", "SinkMusic", "SinkBook"]
