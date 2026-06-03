@@ -112,7 +112,9 @@ draw() {
         fi
     fi
     printf ' %s%s\r\n' "$prefix" "$shown"
-    printf ' %s\r\n' "$STATUS"
+    printf ' %s' "$STATUS"               # no trailing newline: in a 2-row popup
+                                         # it would scroll the marquee off the top
+
 }
 
 # Blocking yes/no prompt drawn over the popup. Returns 0 on y/Y. Used by the
