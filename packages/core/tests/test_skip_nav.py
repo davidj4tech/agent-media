@@ -141,3 +141,81 @@ def test_reader_loop_honors_midresponse_sentence_jump(tmp_path, monkeypatch):
     assert sink.played[0].endswith("000.mp3")
     assert sink.played[1].endswith("002.mp3")
     assert not any(p.endswith("001.mp3") for p in sink.played)
+
+
+# --- _HighlightScheduler: deferred highlight aligned to Snapcast buffer ---
+
+
+def _patch_highlight(monkeypatch):
+    """Record (sentence, first, force, t) for every highlight that fires."""
+    calls = []
+    start = time.monotonic()
+
+    def _rec(text, *, first=False, force=False):
+        calls.append((text, first, force, time.monotonic() - start))
+
+    monkeypatch.setattr(S, "_tmux_highlight_text", _rec)
+    return calls
+
+
+def test_scheduler_disabled_is_noop(monkeypatch):
+    calls = _patch_highlight(monkeypatch)
+    h = S._HighlightScheduler(0.05, enabled=False)
+    h.show("hi", first=True, force=False)
+    h.drain()
+    assert calls == []
+
+
+def test_scheduler_zero_delay_fires_sync(monkeypatch):
+    calls = _patch_highlight(monkeypatch)
+    h = S._HighlightScheduler(0.0, enabled=True)
+    h.show("hi", first=True, force=False)
+    assert [c[0] for c in calls] == ["hi"]  # already fired, no drain needed
+    assert calls[0][3] < 0.02
+
+
+def test_scheduler_defers_until_drain(monkeypatch):
+    calls = _patch_highlight(monkeypatch)
+    h = S._HighlightScheduler(0.1, enabled=True)
+    h.show("later", first=False, force=False)
+    assert calls == []  # not yet — buffer delay not elapsed
+    h.drain()
+    assert [c[0] for c in calls] == ["later"]
+    assert calls[0][3] >= 0.1
+
+
+def test_scheduler_queues_short_clips_in_order(monkeypatch):
+    """Back-to-back clips shorter than the delay must all fire, in order,
+    not cancel one another."""
+    calls = _patch_highlight(monkeypatch)
+    h = S._HighlightScheduler(0.15, enabled=True)
+    h.show("one", first=True, force=False)
+    time.sleep(0.02)
+    h.show("two", first=False, force=False)
+    time.sleep(0.02)
+    h.show("three", first=False, force=False)
+    h.drain()
+    assert [c[0] for c in calls] == ["one", "two", "three"]
+
+
+def test_scheduler_force_fires_now_and_drops_queue(monkeypatch):
+    calls = _patch_highlight(monkeypatch)
+    h = S._HighlightScheduler(0.2, enabled=True)
+    h.show("queued", first=False, force=False)  # pending
+    h.show("jumped", first=False, force=True)   # manual skip
+    # forced one is immediate...
+    assert [c[0] for c in calls] == ["jumped"]
+    assert calls[0][2] is True  # force flag passed through
+    h.drain()
+    # ...and the queued highlight was cancelled, never fires
+    assert [c[0] for c in calls] == ["jumped"]
+
+
+def test_scheduler_cancel_pending_drops_tail(monkeypatch):
+    calls = _patch_highlight(monkeypatch)
+    h = S._HighlightScheduler(0.2, enabled=True)
+    h.show("a", first=False, force=False)
+    h.show("b", first=False, force=False)
+    h.cancel_pending()
+    h.drain()
+    assert calls == []

@@ -17,10 +17,12 @@ import time
 import threading
 from typing import Optional
 
+from ..sinks.book import SinkBook
 from ..sinks.music import SinkMusic
 from ..state import StateStore
 from ..types import ContentType, Target
 from . import _android, _mpris
+from .concurrency import FOCUS_BOOK, bed_level, resolve
 from .policy import (
     DEFAULT_POLICY,
     InterruptionPolicy,
@@ -85,16 +87,24 @@ class Coordinator:
 
     def __init__(self, *, music: Optional[SinkMusic] = None,
                  state: Optional[StateStore] = None,
-                 music_target: Target = Target(name="local")) -> None:
+                 book: Optional[SinkBook] = None,
+                 music_target: Target = Target(name="local"),
+                 book_target: Target = Target(name="local")) -> None:
         self.music = music or SinkMusic()
         self.state = state or StateStore()
+        # Constructing SinkBook is cheap and never spawns mpv; probes below
+        # are spawn-free, so an unused book channel costs nothing here.
+        self.book = book if book is not None else SinkBook()
         self.music_target = music_target
+        self.book_target = book_target
         self._mpris_paused: list[str] = []
         self._mpris_remote_paused: dict[str, list[str]] = {}
         self._remote_pause_done: Optional[threading.Event] = None
         # Hosts where we sent a media-button play-pause that we need to undo
         # after speech finishes (Android phones via SSH).
         self._android_paused: list[str] = []
+        # Whether we paused the book channel for the current clip.
+        self._book_paused = False
 
     # ---- public API used by sink-speech --------------------------------
 
@@ -156,6 +166,26 @@ class Coordinator:
                     if _android.pause_for_speech(host):
                         self._android_paused.append(host)
 
+        # Book channel (sink-book): a longform audiobook must *pause* for
+        # speech — you can't half-hear narration. Independent of the Mopidy
+        # music sink below, and handled first so it still pauses when no
+        # music is playing. In-memory like the MPRIS pauses (before/after
+        # wrap one clip in the same process). Spawn-free: active() is False
+        # when no broker is up, so this is a no-op when the book is unused.
+        try:
+            if self.book.active(self.book_target):
+                self.book.pause(self.book_target)
+                self._book_paused = True
+        except Exception as e:  # noqa: BLE001
+            self._log_err("book: pause failed", str(e))
+
+        # When a book is foregrounded with bed=pause, music is *already*
+        # paused on purpose — don't duck-and-resume it for speech, or
+        # after_speech would un-pause it and break the focus arrangement.
+        concurrency = resolve(self.state)
+        if concurrency.music_bedded_by_pause:
+            return
+
         try:
             uri = self.music.now_playing_uri(self.music_target)
         except Exception as e:  # noqa: BLE001
@@ -186,7 +216,12 @@ class Coordinator:
             level = env_override if env_override is not None else policy.duck_level
             extras["strategy"] = "duck"
             extras["duck_level"] = level
-            extras["baseline_volume"] = policy.baseline_volume
+            # If a book is in front (bed=duck), music belongs at the bed
+            # level after speech, not the normal baseline — otherwise each
+            # clip pops the bedded music back up to full-ish.
+            extras["baseline_volume"] = (
+                bed_level() if concurrency.focus == FOCUS_BOOK
+                else policy.baseline_volume)
             try:
                 self.music.duck(self.music_target, level)
             except Exception as e:  # noqa: BLE001
@@ -220,6 +255,19 @@ class Coordinator:
                 except Exception:  # noqa: BLE001
                     pass
             self._android_paused = []
+
+        # Resume the book channel if we paused it, backed up by the audiobook
+        # lead-in so the listener doesn't miss the word speech cut in on.
+        if self._book_paused:
+            try:
+                lead_in_ms = policy_for(ContentType.AUDIOBOOK).lead_in_ms
+                if lead_in_ms > 0:
+                    self.book.skip(-lead_in_ms / 1000.0, self.book_target)
+                self.book.resume(self.book_target)
+            except Exception as e:  # noqa: BLE001
+                self._log_err("book: resume failed", str(e))
+            finally:
+                self._book_paused = False
 
         np = self.state.get_now_playing("music")
         if not np or not np.get("extras"):

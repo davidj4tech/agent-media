@@ -22,7 +22,7 @@ from typing import Iterator, Optional
 from .._paths import state_dir
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -61,6 +61,16 @@ CREATE TABLE IF NOT EXISTS errors (
     component TEXT NOT NULL,
     message   TEXT NOT NULL,
     extras    TEXT
+);
+
+-- Durable "where was I" bookmarks for the book channel (sink-book),
+-- keyed by the normalized URI. Distinct from now_playing.pause_pos_ms,
+-- which is transient speech-interruption state; these survive channel
+-- switches and restarts so `book resume` lands at the right spot.
+CREATE TABLE IF NOT EXISTS resume_pos (
+    uri        TEXT PRIMARY KEY,
+    pos_ms     INTEGER NOT NULL,
+    updated_at REAL NOT NULL
 );
 """
 
@@ -185,6 +195,77 @@ class StateStore:
         with self._cursor() as cur:
             cur.execute("DELETE FROM meta WHERE key = ?",
                         (self._MUSIC_INTENT_KEY,))
+
+    # ---- book resume bookmarks -------------------------------------------
+    #
+    # Durable per-URI "where was I in this book" positions for the book
+    # channel, plus a pointer to the last book opened so a bare `book
+    # resume` knows what to reopen. See the resume_pos table comment.
+
+    _BOOK_LAST_KEY = "book_last_uri"
+
+    def set_resume_pos(self, uri: str, pos_ms: int) -> None:
+        import time
+        with self._cursor() as cur:
+            cur.execute(
+                "INSERT OR REPLACE INTO resume_pos (uri, pos_ms, updated_at) "
+                "VALUES (?, ?, ?)",
+                (uri, max(0, int(pos_ms)), time.time()),
+            )
+
+    def get_resume_pos(self, uri: str) -> Optional[int]:
+        with self._cursor() as cur:
+            cur.execute("SELECT pos_ms FROM resume_pos WHERE uri = ?", (uri,))
+            row = cur.fetchone()
+        return int(row[0]) if row else None
+
+    def set_book_last(self, uri: str) -> None:
+        with self._cursor() as cur:
+            cur.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                        (self._BOOK_LAST_KEY, uri))
+
+    def get_book_last(self) -> Optional[str]:
+        with self._cursor() as cur:
+            cur.execute("SELECT value FROM meta WHERE key = ?",
+                        (self._BOOK_LAST_KEY,))
+            row = cur.fetchone()
+        return row[0] if row else None
+
+    # ---- channel concurrency: focus + bed --------------------------------
+    #
+    # `focus` is which channel is in front (book | music); the other goes to
+    # a quiet bed or out of the way. `book_bed` is how the *music* channel
+    # behaves under a foregrounded book — duck (instrumental) or pause
+    # (lyrics) — switchable at runtime. Both persist in meta so the speech
+    # coordinator and the MCP verbs agree on the current arrangement.
+
+    _FOCUS_KEY = "focus_channel"
+    _BOOK_BED_KEY = "book_bed_strategy"
+
+    def set_focus(self, channel: Optional[str]) -> None:
+        with self._cursor() as cur:
+            if channel is None:
+                cur.execute("DELETE FROM meta WHERE key = ?", (self._FOCUS_KEY,))
+            else:
+                cur.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                            (self._FOCUS_KEY, channel))
+
+    def get_focus(self) -> Optional[str]:
+        with self._cursor() as cur:
+            cur.execute("SELECT value FROM meta WHERE key = ?", (self._FOCUS_KEY,))
+            row = cur.fetchone()
+        return row[0] if row else None
+
+    def set_book_bed(self, strategy: str) -> None:
+        with self._cursor() as cur:
+            cur.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                        (self._BOOK_BED_KEY, strategy))
+
+    def get_book_bed(self) -> Optional[str]:
+        with self._cursor() as cur:
+            cur.execute("SELECT value FROM meta WHERE key = ?", (self._BOOK_BED_KEY,))
+            row = cur.fetchone()
+        return row[0] if row else None
 
     # ---- history ----------------------------------------------------------
 

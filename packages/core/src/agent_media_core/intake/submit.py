@@ -12,12 +12,14 @@ land here. The shape is intentionally narrow: take a populated
 from __future__ import annotations
 
 import concurrent.futures
+import fcntl
 import logging
 import os
 import re
 import subprocess
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -26,7 +28,7 @@ from ..render import render_text
 from ..route import Coordinator
 from ..sinks.speech import SinkSpeech
 from ..state import StateStore
-from ..types import Event, Target
+from ..types import Event, Priority, Target
 
 
 log = logging.getLogger(__name__)
@@ -392,6 +394,311 @@ def _tmux_highlight_text(text: str, *, first: bool = False,
         pass
 
 
+class _HighlightScheduler:
+    """Fire `_tmux_highlight_text` so the on-screen highlight lands *with* the
+    audio instead of ahead of it.
+
+    Speech routed through Snapcast (the `rooms` target) is only audible a fixed
+    buffer later (snapserver.conf `buffer`, exposed as MEDIA_SNAPCAST_LATENCY_MS).
+    play() returns as soon as mpv starts feeding the sink, so highlighting then
+    runs ~that buffer ahead of the listener. We defer each natural highlight by
+    that delay on a daemon timer — non-blocking, so the reader keeps feeding the
+    next clip gaplessly meanwhile (a blocking sleep would inject silence on clips
+    shorter than the delay).
+
+    Because the reader advances on mpv-idle (feed done) while the listener is
+    still hearing the clip, several timers can be in flight for back-to-back
+    short clips; they're left to fire in order at their own onset times rather
+    than cancelling one another. `cancel_pending()` drops the queue on a manual
+    skip-to-end; `show(force=True)` (a manual h/l/H/L jump) abandons the queue
+    and highlights immediately for instant feedback on the keypress; `drain()`
+    lets the natural tail fire before the (often short-lived) process exits.
+    """
+
+    def __init__(self, delay_s: float, enabled: bool):
+        self._delay = delay_s
+        self._enabled = enabled
+        self._lock = threading.Lock()
+        self._timers: list[threading.Timer] = []
+        self._dbg = bool(os.environ.get("MEDIA_HL_DEBUG"))
+        if self._dbg:
+            self._log(f"INIT delay_s={delay_s} enabled={enabled} pid={os.getpid()}")
+
+    def _log(self, msg: str) -> None:
+        try:
+            with open("/tmp/am-hl-debug.log", "a") as f:
+                f.write(f"{time.time():.3f} {msg}\n")
+        except OSError:
+            pass
+
+    def _reap(self) -> None:
+        with self._lock:
+            self._timers = [t for t in self._timers if t.is_alive()]
+
+    def show(self, sentence: str, *, first: bool, force: bool) -> None:
+        if not self._enabled:
+            return
+        if force or self._delay <= 0:
+            self.cancel_pending()
+            if self._dbg:
+                self._log(f"SHOW-NOW force={force} delay={self._delay} {sentence[:30]!r}")
+            _tmux_highlight_text(sentence, first=first, force=force)
+            return
+        self._reap()
+        if self._dbg:
+            self._log(f"SCHEDULE +{self._delay}s {sentence[:30]!r}")
+
+        def _fire():
+            if self._dbg:
+                self._log(f"FIRE {sentence[:30]!r}")
+            _tmux_highlight_text(sentence, first=first)
+
+        t = threading.Timer(self._delay, _fire)
+        t.daemon = True
+        with self._lock:
+            self._timers.append(t)
+        t.start()
+
+    def cancel_pending(self) -> None:
+        with self._lock:
+            timers, self._timers = self._timers, []
+        for t in timers:
+            t.cancel()
+
+    def drain(self) -> None:
+        with self._lock:
+            timers = list(self._timers)
+        for t in timers:
+            t.join()
+
+
+def _speech_lock_path() -> Path:
+    state = Path(os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state"))
+    return state / "agent-media" / "speech-playback.lock"
+
+
+def _speech_wait_dir() -> Path:
+    state = Path(os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state"))
+    return state / "agent-media" / "speech-waiters"
+
+
+# Priority -> numeric rank. Higher rank preempts lower; equal ranks queue.
+_PRIO_RANK = {
+    Priority.LOW: 0,
+    Priority.NORMAL: 10,
+    Priority.HIGH: 20,
+    Priority.URGENT: 30,
+}
+
+
+def _rank_of(priority: Priority) -> int:
+    return _PRIO_RANK.get(priority, _PRIO_RANK[Priority.NORMAL])
+
+
+def _pid_alive(pid: int) -> bool:
+    """Best-effort liveness check used to reap stale waiter entries."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True  # e.g. EPERM — alive but not ours
+    return True
+
+
+class _SpeechPlaybackLock:
+    """Priority-aware serialization of speech *playback* across processes.
+
+    Every session's hook talks to the one shared sink-speech broker and the
+    one `am` Snapcast stream, so only one may play at a time. An exclusive
+    `flock` on `speech-playback.lock` is the "currently speaking" token.
+    Without it concurrent readers `loadfile replace` over each other and poll
+    the same idle state, so their audio interleaves and each pane's highlight
+    desyncs hopelessly.
+
+    Priority (set by the intake hooks: notifications/prompts = HIGH, responses
+    = NORMAL) decides what happens when someone else wants the token:
+
+      * HIGH / URGENT  -> preempt: the current speaker steps aside at its next
+                          sentence boundary (`should_yield` -> `yield_to_higher`)
+                          and resumes when the higher clip finishes.
+      * NORMAL         -> queue: wait for the token, never interrupt.
+      * LOW            -> skip: if the token is already held, give up rather
+                          than queue (ambient announcements aren't worth a wait).
+
+    Waiters announce themselves in a lockless registry — one file per waiter
+    under `speech-waiters/`, named `<pid>.<token>` and holding the waiter's
+    rank — so a holder can tell whether anyone *higher* is waiting. Dead-pid
+    entries are reaped on scan, so a crashed waiter never wedges anyone, and
+    `flock` is released on fd close / process death, so a crashed holder frees
+    the token. A paused response would hold it indefinitely, so non-LOW waiters
+    give up after MEDIA_SPEECH_LOCK_TIMEOUT_S (default 600) and play
+    unserialized rather than be lost. Set MEDIA_SPEECH_SERIALIZE=0 to disable.
+
+    Rendering is intentionally left outside the lock so sessions still render
+    their clips in parallel; only the broker hand-off serializes.
+    """
+
+    def __init__(self) -> None:
+        self._fd: Optional[int] = None
+        self._rank: int = _PRIO_RANK[Priority.NORMAL]
+        # Unique per instance so two locks in one process (e.g. tests) don't
+        # collide; the pid prefix lets _max_other_rank reap dead waiters.
+        self._token = f"{os.getpid()}.{uuid.uuid4().hex}"
+
+    # ---- waiter registry -------------------------------------------------
+
+    def _register(self) -> None:
+        try:
+            d = _speech_wait_dir()
+            d.mkdir(parents=True, exist_ok=True)
+            (d / self._token).write_text(str(self._rank))
+        except OSError:
+            pass
+
+    def _unregister(self) -> None:
+        try:
+            (_speech_wait_dir() / self._token).unlink()
+        except OSError:
+            pass
+
+    def _max_other_rank(self) -> int:
+        """Highest rank among *other* live waiters; -1 if none. Reaps stale
+        (dead-pid) entries as a side effect."""
+        best = -1
+        try:
+            entries = list(_speech_wait_dir().iterdir())
+        except OSError:
+            return best
+        for f in entries:
+            if f.name == self._token:
+                continue
+            try:
+                pid = int(f.name.split(".", 1)[0])
+            except (ValueError, IndexError):
+                continue
+            if not _pid_alive(pid):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+                continue
+            try:
+                r = int(f.read_text().strip())
+            except (OSError, ValueError):
+                continue
+            best = max(best, r)
+        return best
+
+    # ---- token acquisition ----------------------------------------------
+
+    @staticmethod
+    def _disabled() -> bool:
+        return os.environ.get("MEDIA_SPEECH_SERIALIZE", "1").lower() in ("0", "false", "no")
+
+    def acquire(self, priority: Priority = Priority.NORMAL) -> None:
+        if self._disabled():
+            return
+        self._rank = _rank_of(priority)
+        # LOW announcements skip rather than queue when anything's playing.
+        self._take(skip_if_busy=self._rank <= _PRIO_RANK[Priority.LOW])
+
+    def _take(self, *, skip_if_busy: bool = False) -> None:
+        try:
+            path = _speech_lock_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(str(path), os.O_CREAT | os.O_RDWR, 0o644)
+        except OSError as e:  # noqa: BLE001
+            log.warning("speech lock: open failed (%s); proceeding unserialized", e)
+            return
+        self._register()
+        timeout = float(os.environ.get("MEDIA_SPEECH_LOCK_TIMEOUT_S", "600"))
+        deadline = time.monotonic() + timeout
+        try:
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except OSError:
+                    # Token held by someone else.
+                    if skip_if_busy:
+                        log.info("speech lock: low-priority clip skipped (busy)")
+                        os.close(fd)
+                        return
+                    if time.monotonic() >= deadline:
+                        log.warning("speech lock: timed out after %ss; proceeding "
+                                    "unserialized", timeout)
+                        os.close(fd)
+                        return
+                    time.sleep(0.2)
+                    continue
+                # Got the token, but hand it back if someone strictly higher is
+                # also waiting — so priority wins admission no matter who won
+                # the raw flock race.
+                if self._max_other_rank() > self._rank:
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_UN)
+                    except OSError:
+                        pass
+                    time.sleep(0.2)
+                    continue
+                self._fd = fd
+                return
+        finally:
+            # A holder is no longer a waiter; also clears the entry on give-up.
+            self._unregister()
+
+    def should_yield(self) -> bool:
+        """True when a strictly higher-priority speaker is waiting."""
+        if self._fd is None:
+            return False
+        return self._max_other_rank() > self._rank
+
+    def yield_to_higher(self) -> None:
+        """Step aside for a higher-priority waiter, then re-take the token.
+
+        Blocks until re-acquired. Call only between clips (broker idle), so
+        there's nothing to pause or seek — the caller just replays its next
+        sentence once this returns.
+        """
+        if self._fd is None:
+            return
+        try:
+            fcntl.flock(self._fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        try:
+            os.close(self._fd)
+        except OSError:
+            pass
+        self._fd = None
+        time.sleep(0.05)  # grace for the higher waiter to grab the token
+        self._take()
+
+    def release(self) -> None:
+        if self._fd is None:
+            self._unregister()
+            return
+        try:
+            fcntl.flock(self._fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        finally:
+            try:
+                os.close(self._fd)
+            except OSError:
+                pass
+            self._fd = None
+            self._unregister()
+
+    def __enter__(self) -> "_SpeechPlaybackLock":
+        self.acquire()
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        self.release()
+        return False
+
+
 def _audio_dir() -> Path:
     """Where rendered audio lands. Cache-y, GC-able. Per-user.
 
@@ -682,15 +989,26 @@ def submit_event(event: Event,
         _acc += d
     _clip_sentences = [s for s, _ in clip_data]
 
-    coordinator.before_speech()
+    # Serialize playback across sessions: only one response feeds the shared
+    # broker/Snapcast stream at a time (rendering above already ran in
+    # parallel). Acquired before before_speech() so other media isn't paused
+    # while we're still queued behind another speaker.
+    playback_lock = _SpeechPlaybackLock()
+    playback_lock.acquire(event.priority)
     played_any = False
     n = len(clip_data)
+    highlighter = _HighlightScheduler(_highlight_delay_s, do_highlight)
     # Drop any stale jump request left by a previous response.
     _nav_flag_path(target).unlink(missing_ok=True)
     try:
+        coordinator.before_speech()
         i = 0
         nav_jump = False  # True when this clip was reached via a popup skip
         while 0 <= i < n:
+            # Step aside between sentences if a higher-priority speaker (e.g. a
+            # notification) is waiting; resume this same sentence once it's done.
+            if playback_lock.should_yield():
+                playback_lock.yield_to_higher()
             sentence, clip_path = clip_data[i]
             # Update now_playing so cmd_status can show a response-wide bar,
             # `media current-sentence` can return the active sentence, and
@@ -709,11 +1027,6 @@ def submit_event(event: Event,
                         "current_sentence_idx": i,
                         "clip_paragraph_idx": clip_para,
                         "clip_sentences": _clip_sentences})
-            if do_highlight:
-                # A manual jump (h/l/H/L via `media skip`) forces the
-                # highlight onto that section even if the reader scrolled
-                # away; a natural advance respects the scroll position.
-                _tmux_highlight_text(sentence, first=(i == 0), force=nav_jump)
             try:
                 # Only the first sentence resets a lingering pause/mute;
                 # later sentences preserve a pause the user made mid-response.
@@ -727,24 +1040,27 @@ def submit_event(event: Event,
                 i += 1
                 nav_jump = False
                 continue
+            # Highlight is deferred by the Snapcast buffer so it lands with the
+            # audio (a manual jump forces it on immediately even if the reader
+            # scrolled away; a natural advance respects the scroll position).
+            highlighter.show(sentence, first=(i == 0), force=nav_jump)
             nav = _wait_for_clip(sink, target)
             if nav is None:
                 i += 1
                 nav_jump = False
-                # Let Snapcast drain before the next highlight, so the visual
-                # matches what the listener is hearing.
-                if _highlight_delay_s > 0 and i < n:
-                    time.sleep(_highlight_delay_s)
             else:
                 # Popup requested a sentence/paragraph jump. A target past the
                 # last clip means "skip to the end" → finish the response.
                 if nav >= n:
+                    highlighter.cancel_pending()
                     break
                 i = max(0, nav)
                 nav_jump = True
     finally:
+        highlighter.drain()
         coordinator.after_speech()
         state.clear_now_playing("speech")
+        playback_lock.release()
 
     if not played_any:
         return None
@@ -816,6 +1132,11 @@ def submit_stream(sentences,
     source_session = (event.metadata or {}).get("session") or ""
     source_tmux_session = _tmux_session_for_pane(source_pane)
     do_highlight = event.source not in (_Source.CLI,)
+    # Snapcast buffers audio after mpv starts writing, so the sound reaches the
+    # listener a beat later than play() returns. Hold the highlight that long so
+    # it lands with the speech rather than ahead of it.
+    _highlight_delay_s = float(
+        os.environ.get("MEDIA_SNAPCAST_LATENCY_MS", "500")) / 1000.0
 
     fallback_info: dict = {}
     _fallback_lock = threading.Lock()
@@ -894,10 +1215,20 @@ def submit_stream(sentences,
     before_called = False
     played_any = False
     first_clip: Optional[Path] = None
+    highlighter = _HighlightScheduler(_highlight_delay_s, do_highlight)
+    # Serialize playback across sessions (rendering keeps streaming in parallel
+    # via the producer thread while we wait our turn for the broker).
+    playback_lock = _SpeechPlaybackLock()
+    playback_lock.acquire(event.priority)
     i = 0
     nav_jump = False
     try:
         while True:
+            # Step aside between sentences for a higher-priority speaker;
+            # resume this clip once it's done. Only after the first clip has
+            # played, so before_speech ran and there's something to resume.
+            if before_called and playback_lock.should_yield():
+                playback_lock.yield_to_higher()
             item = _get(i)
             if item is None:
                 break
@@ -959,8 +1290,6 @@ def submit_stream(sentences,
                         "current_sentence_idx": i,
                         "clip_sentences": known,
                         "streaming": True})
-            if do_highlight:
-                _tmux_highlight_text(sentence, first=(i == 0), force=nav_jump)
             try:
                 sink.play(str(clip_path), target, reset_state=(i == 0))
                 played_any = True
@@ -972,6 +1301,8 @@ def submit_stream(sentences,
                 i += 1
                 nav_jump = False
                 continue
+            # Deferred so the highlight lands with the Snapcast-buffered audio.
+            highlighter.show(sentence, first=(i == 0), force=nav_jump)
 
             nav = _wait_for_clip(sink, target)
             if nav is None:
@@ -985,6 +1316,7 @@ def submit_stream(sentences,
                     # "Skip to the end": stop if the producer's finished,
                     # otherwise fall through to whatever arrives next.
                     if done:
+                        highlighter.cancel_pending()
                         break
                     i = count
                     nav_jump = False
@@ -992,8 +1324,10 @@ def submit_stream(sentences,
                     i = max(0, nav)
                     nav_jump = True
     finally:
+        highlighter.drain()
         coordinator.after_speech()
         state.clear_now_playing("speech")
+        playback_lock.release()
         producer_done.wait(timeout=2.0)
         pool.shutdown(wait=False)
 
