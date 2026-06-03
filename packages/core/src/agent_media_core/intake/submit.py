@@ -732,3 +732,258 @@ def submit_event(event: Event,
         text=text,
         extras=extras,
     )
+
+
+def submit_stream(sentences,
+                  event: Event,
+                  *,
+                  state: Optional[StateStore] = None,
+                  coordinator: Optional[Coordinator] = None,
+                  sink: Optional[SinkSpeech] = None) -> Optional[int]:
+    """Streaming sibling of `submit_event`: speak sentences as they arrive.
+
+    `sentences` is an iterable yielding cleaned sentence strings as a producer
+    (e.g. a model's token stream) completes them. Each sentence is rendered the
+    instant it arrives and played in order through the same long-running
+    sink-speech broker, so audio for sentence 1 starts while the model is still
+    generating the rest — the key win over `submit_event`, which needs the
+    whole reply first.
+
+    Remote players are paused/resumed once (not per sentence). Best-effort
+    karaoke highlight + back/forward nav over already-spoken sentences; the
+    response-wide progress bar grows as sentences arrive (total length isn't
+    known up front). One history row is written at the end.
+
+    Blocks until the producer is exhausted and all clips finish. Callers that
+    need fire-and-forget should run this in a thread.
+    """
+    from ..types import Source as _Source
+
+    state = state or StateStore()
+    coordinator = coordinator or Coordinator(state=state)
+    sink = sink or SinkSpeech()
+    target = event.target or Target(
+        name=os.environ.get("MEDIA_SPEECH_DEFAULT_TARGET", "local"))
+
+    engine = _resolve_engine(event)
+    voice = _resolve_voice(event)
+    ext = _ext_for(engine)
+
+    audio_dir = _audio_dir()
+    stamp = time.strftime("%Y%m%dT%H%M%S")
+    started_at = time.time()
+
+    source_pane = (event.metadata or {}).get("pane") or os.environ.get("TMUX_PANE", "")
+    source_session = (event.metadata or {}).get("session") or ""
+    source_tmux_session = _tmux_session_for_pane(source_pane)
+    do_highlight = event.source not in (_Source.CLI,)
+
+    fallback_info: dict = {}
+    _fallback_lock = threading.Lock()
+
+    def _on_fallback(failed_engine: str, err: str) -> None:
+        short = err.strip().splitlines()[0] if err else "no detail"
+        kind = "render-fallback"
+        if "insufficient_quota" in err:
+            kind = "render-quota"
+        log.warning("intake-stream: %s engine failed (%s); falling back to edge",
+                    failed_engine, short)
+        state.log_error("intake",
+                        f"render {failed_engine} failed, fell back to edge",
+                        extras={"kind": kind, "engine": failed_engine,
+                                "detail": short[:300],
+                                "source": event.source.value})
+        with _fallback_lock:
+            fallback_info.update({"from_engine": failed_engine,
+                                  "fallback_engine": "edge", "kind": kind,
+                                  "detail": short[:300]})
+        if kind == "render-quota":
+            title = f"agent-media: {failed_engine} quota exhausted"
+            body = "Falling back to edge for now."
+        else:
+            title = f"agent-media: {failed_engine} render failed"
+            body = f"Falling back to edge. {short[:120]}"
+        notify(key=f"render-fallback-{failed_engine}", title=title, content=body)
+
+    # Shared, lock-guarded clip table: the producer thread appends sentences and
+    # kicks off their renders the instant they arrive; the play loop consumes in
+    # order. Renders run a few ahead of playback via a bounded pool.
+    workers = max(1, int(os.environ.get("MEDIA_STREAM_RENDER_WORKERS", "3") or 3))
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
+    cond = threading.Condition()
+    sents: list[str] = []
+    futures: list = []
+    paths: list[Path] = []
+    producer_done = threading.Event()
+
+    def _produce() -> None:
+        try:
+            for s in sentences:
+                if not s or not s.strip():
+                    continue
+                outfile = audio_dir / f"{stamp}--{event.source.value}--{len(sents):03d}.{ext}"
+                fut = pool.submit(render_text, s, outfile,
+                                  engine=engine, voice=voice, on_fallback=_on_fallback)
+                with cond:
+                    sents.append(s)
+                    futures.append(fut)
+                    paths.append(outfile)
+                    cond.notify_all()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("intake-stream: producer raised: %s", exc)
+        finally:
+            producer_done.set()
+            with cond:
+                cond.notify_all()
+
+    def _get(i: int):
+        """(sentence, future, path) for clip i, waiting until it's enqueued.
+        Returns None when no clip i will ever exist (producer finished)."""
+        with cond:
+            while i >= len(sents) and not producer_done.is_set():
+                cond.wait(timeout=0.5)
+            if i >= len(sents):
+                return None
+            return sents[i], futures[i], paths[i]
+
+    coordinator.pre_pause_remote()
+    _nav_flag_path(target).unlink(missing_ok=True)
+    producer = threading.Thread(target=_produce, daemon=True)
+    producer.start()
+
+    durations: dict[int, float] = {}   # measured clip durations, by index
+    before_called = False
+    played_any = False
+    first_clip: Optional[Path] = None
+    i = 0
+    nav_jump = False
+    try:
+        while True:
+            item = _get(i)
+            if item is None:
+                break
+            sentence, fut, clip_path = item
+            try:
+                ok, err = fut.result()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("intake-stream: render future raised: %s", exc)
+                i += 1
+                nav_jump = False
+                continue
+            if not ok:
+                log.warning("intake-stream: render failed (%s): %s", engine, err)
+                state.log_error("intake", f"render failed ({engine})",
+                                extras={"err": err, "source": event.source.value})
+                i += 1
+                nav_jump = False
+                continue
+            with _fallback_lock:
+                has_fallback = bool(fallback_info)
+            if has_fallback and clip_path.suffix == ".wav":
+                renamed = clip_path.with_suffix(".mp3")
+                try:
+                    clip_path.rename(renamed)
+                    clip_path = renamed
+                    paths[i] = renamed
+                except OSError:
+                    pass
+
+            if not before_called:
+                coordinator.before_speech()
+                before_called = True
+
+            durations[i] = _clip_duration(clip_path)
+            with cond:
+                known = list(sents)
+            if first_clip is None:
+                first_clip = clip_path
+            # Keep the first clip's text sidecar updated with everything spoken
+            # so far, so the popup can show the running response.
+            try:
+                first_clip.with_suffix(".txt").write_text(" ".join(known))
+            except OSError:
+                pass
+
+            offset = sum(durations.get(k, 0.0) for k in range(i))
+            total = sum(durations.values())  # grows as more clips render
+            state.set_now_playing(
+                "speech", uri=str(clip_path), started_at=started_at,
+                target=target.name,
+                extras={"text": " ".join(known), "source": event.source.value,
+                        "engine": engine, "voice": voice,
+                        "clip_offset_s": offset,
+                        "total_duration_s": total,
+                        "source_pane": source_pane,
+                        "source_session": source_session,
+                        "source_tmux_session": source_tmux_session,
+                        "current_sentence": sentence,
+                        "current_sentence_idx": i,
+                        "clip_sentences": known,
+                        "streaming": True})
+            if do_highlight:
+                _tmux_highlight_text(sentence, first=(i == 0), force=nav_jump)
+            try:
+                sink.play(str(clip_path), target, reset_state=(i == 0))
+                played_any = True
+            except Exception as e:  # noqa: BLE001
+                log.warning("intake-stream: sink-speech.play failed: %s", e)
+                state.log_error("intake", "sink-speech play failed",
+                                extras={"detail": str(e),
+                                        "source": event.source.value})
+                i += 1
+                nav_jump = False
+                continue
+
+            nav = _wait_for_clip(sink, target)
+            if nav is None:
+                i += 1
+                nav_jump = False
+            else:
+                with cond:
+                    count = len(sents)
+                    done = producer_done.is_set()
+                if nav >= count:
+                    # "Skip to the end": stop if the producer's finished,
+                    # otherwise fall through to whatever arrives next.
+                    if done:
+                        break
+                    i = count
+                    nav_jump = False
+                else:
+                    i = max(0, nav)
+                    nav_jump = True
+    finally:
+        coordinator.after_speech()
+        state.clear_now_playing("speech")
+        producer_done.wait(timeout=2.0)
+        pool.shutdown(wait=False)
+
+    if not played_any:
+        return None
+
+    with cond:
+        all_sents = list(sents)
+        all_paths = list(paths)
+    full_text = " ".join(all_sents)
+    extras = {"engine": engine, "voice": voice,
+              "priority": event.priority.value,
+              "source_pane": source_pane,
+              "source_session": source_session,
+              "source_tmux_session": source_tmux_session,
+              "clip_uris": [str(p) for p in all_paths],
+              "clip_sentences": all_sents,
+              "clip_durations_s": [durations.get(k, 0.0) for k in range(len(all_paths))],
+              "streaming": True,
+              **(event.metadata or {})}
+    if fallback_info:
+        extras["fallback"] = fallback_info
+    return state.add_history(
+        sink="speech",
+        uri=str(first_clip),
+        started_at=started_at,
+        ended_at=time.time(),
+        target=target.name,
+        source=event.source.value,
+        text=full_text,
+        extras=extras,
+    )
