@@ -38,8 +38,15 @@ def main() -> int:
 
     engine = (os.environ.get("PI_TTS_ENGINE")
               or os.environ.get("MEDIA_RENDER_ENGINE"))
-    voice = (os.environ.get("PI_TTS_VOICE")
-             or os.environ.get("MEDIA_RENDER_VOICE"))
+    # Per-source voice override only — engine-specific. The generic
+    # MEDIA_RENDER_VOICE is NOT folded in (that bled an edge voice onto qwen and
+    # caused the DashScope 400); submit._resolve_voice picks the right
+    # per-engine voice when this is None.
+    voice = None
+    if engine:
+        voice = os.environ.get(
+            f"PI_TTS_VOICE_{engine.upper().replace('-', '_')}")
+    voice = voice or os.environ.get("PI_TTS_VOICE")
 
     sentencer = IncrementalSentencer()
     q: "queue.Queue" = queue.Queue()

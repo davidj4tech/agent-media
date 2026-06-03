@@ -36,18 +36,57 @@ _DEFAULT_ENGINE = "edge"
 _DEFAULT_VOICE: Optional[str] = None
 
 
-def _resolve_engine(event: Event) -> str:
-    return (event.engine
-            or os.environ.get("MEDIA_RENDER_ENGINE")
+def _default_engine() -> str:
+    return (os.environ.get("MEDIA_RENDER_ENGINE")
             or os.environ.get("CLAUDE_TTS_ENGINE")  # legacy
             or _DEFAULT_ENGINE)
 
 
-def _resolve_voice(event: Event) -> Optional[str]:
-    return (event.voice
-            or os.environ.get("MEDIA_RENDER_VOICE")
-            or os.environ.get("CLAUDE_TTS_VOICE")  # legacy
-            or _DEFAULT_VOICE)
+def _resolve_engine(event: Event) -> str:
+    return event.engine or _default_engine()
+
+
+def _resolve_voice(event: Event, engine: str) -> Optional[str]:
+    """Resolve the voice for the *selected* engine.
+
+    Voices live in engine-specific namespaces (edge 'en-AU-NatashaNeural',
+    openai 'marin', qwen 'Cherry'), so resolution must know which engine will
+    render — otherwise one engine's voice gets force-fed to another, which e.g.
+    makes DashScope reject the request (qwen 400 InvalidParameter). Precedence:
+
+      1. event.voice                  — explicit per-event override
+      2. MEDIA_RENDER_VOICE_<ENGINE>  — per-engine config (the canonical knob)
+      3. MEDIA_RENDER_VOICE           — generic, but ONLY when this engine is
+                                        the configured default engine, so a
+                                        generic voice can't bleed onto another
+                                        engine
+      4. CLAUDE_TTS_VOICE             — legacy, ONLY when this engine matches
+                                        the legacy CLAUDE_TTS_ENGINE it paired
+                                        with
+      5. None                         — render_text falls back to the engine's
+                                        own built-in default voice
+
+    Returning None is safe: render_text applies the right per-engine default.
+    """
+    if event.voice:
+        return event.voice
+
+    per_engine = os.environ.get(f"MEDIA_RENDER_VOICE_{engine.upper().replace('-', '_')}")
+    if per_engine:
+        return per_engine
+
+    if engine == (os.environ.get("MEDIA_RENDER_ENGINE") or _DEFAULT_ENGINE):
+        generic = os.environ.get("MEDIA_RENDER_VOICE")
+        if generic:
+            return generic
+
+    legacy_engine = os.environ.get("CLAUDE_TTS_ENGINE")
+    if legacy_engine and engine == legacy_engine:
+        legacy_voice = os.environ.get("CLAUDE_TTS_VOICE")
+        if legacy_voice:
+            return legacy_voice
+
+    return _DEFAULT_VOICE
 
 
 def _ext_for(engine: str) -> str:
@@ -505,7 +544,7 @@ def submit_event(event: Event,
         name=os.environ.get("MEDIA_SPEECH_DEFAULT_TARGET", "local"))
 
     engine = _resolve_engine(event)
-    voice = _resolve_voice(event)
+    voice = _resolve_voice(event, engine)
     ext = _ext_for(engine)
 
     audio_dir = _audio_dir()
@@ -766,7 +805,7 @@ def submit_stream(sentences,
         name=os.environ.get("MEDIA_SPEECH_DEFAULT_TARGET", "local"))
 
     engine = _resolve_engine(event)
-    voice = _resolve_voice(event)
+    voice = _resolve_voice(event, engine)
     ext = _ext_for(engine)
 
     audio_dir = _audio_dir()
