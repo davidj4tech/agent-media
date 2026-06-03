@@ -60,7 +60,6 @@ _DEFAULT_VOICE_POOL = (
     "en-GB-SoniaNeural",    # British
     "en-IE-EmilyNeural",    # Irish
     "en-CA-ClaraNeural",    # Canadian
-    "en-ZA-LeahNeural",     # South African
     "en-GB-LibbyNeural",    # British (younger)
 )
 
