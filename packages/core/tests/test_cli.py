@@ -13,6 +13,31 @@ def test_fmt_mmss():
     assert cli.fmt_mmss(-3) == "00:00"
 
 
+def test_fmt_time():
+    assert cli.fmt_time(None) == "--:--"
+    # auto: sub-hour stays MM:SS (same as fmt_mmss); >= 1h → compact H:MM
+    assert cli.fmt_time(8) == "00:08"
+    assert cli.fmt_time(75) == "01:15"
+    assert cli.fmt_time(3600) == "1:00"
+    assert cli.fmt_time(39937) == "11:05"          # 11h05m audiobook
+    assert cli.fmt_time(-3) == "00:00"
+    # forced format keeps a pos/total pair consistent
+    assert cli.fmt_time(6932, hours=True) == "1:55"   # 1h55m pos
+    assert cli.fmt_time(150, hours=True) == "0:02"    # 2.5-min pos in an hours total
+    assert cli.fmt_time(150, hours=False) == "02:30"
+
+
+def test_render_status_compact_book():
+    # An 11h book renders compactly, not the overflowing 115:32 / 665:37.
+    line = cli.render_status(idle=False, pos=6932, dur=39937,
+                             paused=True, muted=False, bar=False)
+    assert line == "⏸ 1:55 / 11:05"
+    # A short clip stays MM:SS (unchanged from before).
+    line = cli.render_status(idle=False, pos=8, dur=225,
+                             paused=False, muted=False, bar=False)
+    assert line == "▶ 00:08 / 03:45"
+
+
 def test_progress_bar():
     assert cli.progress_bar(0.0, 10) == "░" * 10
     assert cli.progress_bar(1.0, 10) == "█" * 10

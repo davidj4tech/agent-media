@@ -40,6 +40,29 @@ def fmt_mmss(secs: Optional[float]) -> str:
     return f"{secs // 60:02d}:{secs % 60:02d}"
 
 
+def fmt_time(secs: Optional[float], *, hours: Optional[bool] = None) -> str:
+    """Compact duration. `hours=True` → ``H:MM`` (audiobook scale — minutes,
+    no seconds); `hours=False` → ``M:SS``; `None` auto-picks ``H:MM`` once the
+    value reaches an hour. Pass an explicit `hours` (derived from the *total*)
+    so a pos/total pair shares one format — otherwise a 45-min position into an
+    11-hour book would render ``45:00`` next to ``11:05``.
+
+    Keeps long content compact: an 11h book is ``11:05`` instead of fmt_mmss's
+    overflowing ``665:37``.
+    """
+    if secs is None:
+        return "--:--"
+    secs = max(0, int(secs))
+    if hours is None:
+        hours = secs >= 3600
+    if hours:
+        h, rem = divmod(secs, 3600)
+        return f"{h}:{rem // 60:02d}"
+    # Sub-hour stays byte-identical to fmt_mmss (MM:SS) so speech/music status
+    # is unchanged; only >= 1h content switches to the compact H:MM above.
+    return f"{secs // 60:02d}:{secs % 60:02d}"
+
+
 def progress_bar(frac: float, width: int = 12) -> str:
     frac = max(0.0, min(1.0, frac))
     filled = int(round(frac * width))
@@ -58,11 +81,15 @@ def render_status(*, idle: Optional[bool], pos: Optional[float],
     if idle is None or idle:
         return "" if hide_idle else "○"
     icon = "⏸" if paused else "▶"
+    # Format chosen by the total's magnitude (applied to both) so an 11h book
+    # reads `1:55 / 11:05` rather than the overflowing `115:32 / 665:37`.
+    hours = bool(dur is not None and dur >= 3600)
     if bar:
         frac = (pos / dur) if (pos and dur) else 0.0
-        line = f"{icon} {fmt_mmss(pos)} {progress_bar(frac, width)} {fmt_mmss(dur)}"
+        line = (f"{icon} {fmt_time(pos, hours=hours)} {progress_bar(frac, width)} "
+                f"{fmt_time(dur, hours=hours)}")
     else:
-        line = f"{icon} {fmt_mmss(pos)} / {fmt_mmss(dur)}"
+        line = f"{icon} {fmt_time(pos, hours=hours)} / {fmt_time(dur, hours=hours)}"
     if muted:
         line += " [M]"
     return line
@@ -1185,7 +1212,7 @@ def cmd_book(a) -> int:
         r = srv.book_play(a.uri, resume=not a.no_resume,
                           start_ms=(a.start_ms if a.start_ms is not None else -1),
                           target=tgt)
-        print(f"▶ {r['uri']} (from {fmt_mmss((r['resumed_from_ms'] or 0)/1000)})")
+        print(f"▶ {r['uri']} (from {fmt_time((r['resumed_from_ms'] or 0)/1000)})")
         return 0
     if bc == "resume":
         r = srv.book_resume(target=tgt)
