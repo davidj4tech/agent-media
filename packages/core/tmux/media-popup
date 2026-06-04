@@ -366,7 +366,15 @@ while true; do
                  case "$_hl_out" in *OFF*) HL=off ;; *ON*) HL=on ;; esac
                  tmux display-message "♪ ${_hl_out:-highlight: ?}" 2>/dev/null
              fi ;;
-        '?') tmux display-message "Tab channel (speech/music/book) · Space play/pause · h/l H/L seek · -/= vol · < > older-newer / track / book-part · g go to source · speech: p play-at-cursor r replay m mute v highlight · [/] speed (speech/book) 0 reset · q quit" 2>/dev/null ;;
+        '?') # Full keymap in a nested popup, sized to the client so it fits a
+             # narrow phone; fall back to a one-line message if it can't open.
+             _hw=$(tmux display -p '#{client_width}' 2>/dev/null); _hw=${_hw:-26}
+             _hh=$(tmux display -p '#{client_height}' 2>/dev/null); _hh=${_hh:-24}
+             [ "$_hw" -gt 30 ] 2>/dev/null && _hw=30
+             [ "$_hh" -gt 6 ] 2>/dev/null && _hh=$(( _hh - 2 ))
+             tmux display-popup -E -w "$_hw" -h "$_hh" \
+                 -s 'bg=default' -S 'bg=default' media-popup-help 2>/dev/null \
+               || tmux display-message "Tab channel · Space play/pause · h/l H/L seek · -/= vol · < > prev/next · g source · speech: r p m v · [/] 0 speed · q quit" 2>/dev/null ;;
         q|$'\e') break ;;
         *) : ;;
     esac
