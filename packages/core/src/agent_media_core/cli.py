@@ -846,9 +846,11 @@ def cmd_replay_at_cursor(a) -> int:
     if not pane:
         print("media: no caller pane", file=sys.stderr)
         return 1
-    # Match against the caller pane's own scrollback, so scope history to that
-    # pane's session (not the now-playing one, which may be elsewhere).
-    sess = _tmux_session_for_pane(pane) or _anchor_session()
+    # Deliberately NOT session-scoped: the pane-scrollback capture below is
+    # itself the scope — only a clip whose text is visible in *this* pane can
+    # match. Searching all sessions lets `p` play whatever's above the cursor
+    # regardless of which session last spoke or owns the clip (the whole point
+    # of `p`: play from the cursor, not from the last-played clip).
 
     # Cursor state in the caller pane (queryable while the popup overlays it).
     in_mode, cur_y, scroll = "", "", ""
@@ -872,7 +874,7 @@ def cmd_replay_at_cursor(a) -> int:
         if idx is None:
             print("media: this pane has no spoken clip", file=sys.stderr)
             return 1
-        return _do_replay(idx, session=sess)
+        return _do_replay(idx)
 
     # capture-pane line numbers are relative to the live screen (0 = top of the
     # visible pane, negative into history); copy_cursor_y is relative to the
@@ -891,16 +893,22 @@ def cmd_replay_at_cursor(a) -> int:
         print("media: could not read pane text", file=sys.stderr)
         return 1
 
-    rows = _speech_history(200, session=sess)
+    # Collapse whitespace before matching: the terminal word-wraps a response
+    # at its content width, so an anchor longer than that width spans two
+    # visual rows and a raw substring test misses it. The highlight path keeps
+    # anchors to one row because it uses a row-bound tmux search; here we do a
+    # plain substring test, so normalize both sides and wrapping stops mattering.
+    norm_cap = " ".join(captured.split())
+    rows = _speech_history(200)
     for i, row in enumerate(rows, start=1):
         anchor = _anchor_for(row.get("text") or "")
-        if anchor and anchor in captured:
+        if anchor and " ".join(anchor.split()) in norm_cap:
             preview = " ".join((row.get("text") or "").split())
             if len(preview) > 60:
                 preview = preview[:57] + "…"
             subprocess.run(["tmux", "display-message", f"♪ {preview}"],
                            capture_output=True)
-            return _do_replay(i, session=sess)
+            return _do_replay(i)
 
     subprocess.run(
         ["tmux", "display-message", "⊘ no spoken clip above cursor"],
