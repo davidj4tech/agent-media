@@ -22,7 +22,7 @@ from typing import Iterator, Optional
 from .._paths import state_dir
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -71,6 +71,26 @@ CREATE TABLE IF NOT EXISTS resume_pos (
     uri        TEXT PRIMARY KEY,
     pos_ms     INTEGER NOT NULL,
     updated_at REAL NOT NULL
+);
+
+-- Book channel playlists: an ordered list of part URIs plus a remembered
+-- cursor (which part). Per-part within-offset resume reuses resume_pos
+-- above (keyed by URI), so a playlist only needs to remember which part;
+-- `cur_index` + the part's resume_pos together give (which part, where in
+-- it). Advancing to the next part is just `cur_index += 1`.
+CREATE TABLE IF NOT EXISTS playlists (
+    name       TEXT PRIMARY KEY,
+    channel    TEXT NOT NULL,             -- 'book'
+    cur_index  INTEGER NOT NULL DEFAULT 0,
+    updated_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS playlist_items (
+    name  TEXT NOT NULL,
+    pos   INTEGER NOT NULL,               -- order in the list (0-based)
+    uri   TEXT NOT NULL,
+    title TEXT,
+    PRIMARY KEY (name, pos)
 );
 """
 
@@ -230,6 +250,147 @@ class StateStore:
                         (self._BOOK_LAST_KEY,))
             row = cur.fetchone()
         return row[0] if row else None
+
+    # ---- book playlists --------------------------------------------------
+    #
+    # An ordered list of part URIs with a remembered cursor. Within-part
+    # offset resume reuses resume_pos (keyed by URI); `cur_index` only tracks
+    # which part. `_PLAYLIST_ACTIVE_KEY` points at the playlist currently
+    # being played so `book next`/`prev` know which list to advance — cleared
+    # when an ad-hoc (non-playlist) book is opened or the book stops.
+
+    _PLAYLIST_ACTIVE_KEY = "book_playlist_active"
+
+    def create_playlist(self, name: str, channel: str = "book") -> bool:
+        """Create an empty playlist. Returns False if one already exists."""
+        import time
+        with self._cursor() as cur:
+            cur.execute("SELECT 1 FROM playlists WHERE name = ?", (name,))
+            if cur.fetchone():
+                return False
+            cur.execute(
+                "INSERT INTO playlists (name, channel, cur_index, updated_at) "
+                "VALUES (?, ?, 0, ?)",
+                (name, channel, time.time()),
+            )
+        return True
+
+    def delete_playlist(self, name: str) -> bool:
+        """Remove a playlist and its items. Returns False if it didn't exist."""
+        with self._cursor() as cur:
+            cur.execute("SELECT 1 FROM playlists WHERE name = ?", (name,))
+            if not cur.fetchone():
+                return False
+            cur.execute("DELETE FROM playlist_items WHERE name = ?", (name,))
+            cur.execute("DELETE FROM playlists WHERE name = ?", (name,))
+            if self.get_playlist_active() == name:
+                self.clear_playlist_active()
+        return True
+
+    def add_playlist_items(self, name: str,
+                           items: list) -> int:
+        """Append items (str URI, or (uri, title) pairs) to a playlist.
+
+        Returns the number of items now in the list. Raises KeyError if the
+        playlist doesn't exist.
+        """
+        import time
+        with self._cursor() as cur:
+            cur.execute("SELECT 1 FROM playlists WHERE name = ?", (name,))
+            if not cur.fetchone():
+                raise KeyError(name)
+            cur.execute("SELECT COALESCE(MAX(pos), -1) FROM playlist_items "
+                        "WHERE name = ?", (name,))
+            pos = (cur.fetchone()[0]) + 1
+            for item in items:
+                if isinstance(item, (tuple, list)):
+                    uri, title = item[0], (item[1] if len(item) > 1 else None)
+                else:
+                    uri, title = item, None
+                cur.execute(
+                    "INSERT INTO playlist_items (name, pos, uri, title) "
+                    "VALUES (?, ?, ?, ?)",
+                    (name, pos, uri, title),
+                )
+                pos += 1
+            cur.execute("UPDATE playlists SET updated_at = ? WHERE name = ?",
+                        (time.time(), name))
+            cur.execute("SELECT COUNT(*) FROM playlist_items WHERE name = ?",
+                        (name,))
+            return int(cur.fetchone()[0])
+
+    def get_playlist(self, name: str) -> Optional[dict]:
+        """A playlist with its ordered items, or None if it doesn't exist."""
+        with self._cursor() as cur:
+            cur.execute("SELECT name, channel, cur_index, updated_at "
+                        "FROM playlists WHERE name = ?", (name,))
+            row = cur.fetchone()
+            if row is None:
+                return None
+            cur.execute("SELECT pos, uri, title FROM playlist_items "
+                        "WHERE name = ? ORDER BY pos", (name,))
+            items = [{"pos": p, "uri": u, "title": t}
+                     for (p, u, t) in cur.fetchall()]
+        return {
+            "name": row[0],
+            "channel": row[1],
+            "cur_index": row[2],
+            "updated_at": row[3],
+            "items": items,
+        }
+
+    def list_playlists(self, channel: Optional[str] = None) -> list[dict]:
+        """All playlists (optionally for one channel) with item counts."""
+        q = ("SELECT p.name, p.channel, p.cur_index, p.updated_at, "
+             "COUNT(i.pos) "
+             "FROM playlists p LEFT JOIN playlist_items i ON i.name = p.name")
+        args: tuple = ()
+        if channel is not None:
+            q += " WHERE p.channel = ?"
+            args = (channel,)
+        q += " GROUP BY p.name ORDER BY p.name"
+        with self._cursor() as cur:
+            cur.execute(q, args)
+            rows = cur.fetchall()
+        return [{"name": n, "channel": c, "cur_index": ci,
+                 "updated_at": ua, "count": cnt}
+                for (n, c, ci, ua, cnt) in rows]
+
+    def get_playlist_item(self, name: str, index: int) -> Optional[dict]:
+        """The item at `index` in a playlist, or None if out of range."""
+        with self._cursor() as cur:
+            cur.execute("SELECT pos, uri, title FROM playlist_items "
+                        "WHERE name = ? AND pos = ?", (name, index))
+            row = cur.fetchone()
+        if row is None:
+            return None
+        return {"pos": row[0], "uri": row[1], "title": row[2]}
+
+    def set_playlist_index(self, name: str, index: int) -> None:
+        """Move a playlist's cursor to `index` (clamped to >= 0)."""
+        import time
+        with self._cursor() as cur:
+            cur.execute("UPDATE playlists SET cur_index = ?, updated_at = ? "
+                        "WHERE name = ?", (max(0, int(index)), time.time(), name))
+
+    def set_playlist_active(self, name: Optional[str]) -> None:
+        with self._cursor() as cur:
+            if name is None:
+                cur.execute("DELETE FROM meta WHERE key = ?",
+                            (self._PLAYLIST_ACTIVE_KEY,))
+            else:
+                cur.execute("INSERT OR REPLACE INTO meta (key, value) "
+                            "VALUES (?, ?)", (self._PLAYLIST_ACTIVE_KEY, name))
+
+    def get_playlist_active(self) -> Optional[str]:
+        with self._cursor() as cur:
+            cur.execute("SELECT value FROM meta WHERE key = ?",
+                        (self._PLAYLIST_ACTIVE_KEY,))
+            row = cur.fetchone()
+        return row[0] if row else None
+
+    def clear_playlist_active(self) -> None:
+        self.set_playlist_active(None)
 
     # ---- channel concurrency: focus + bed --------------------------------
     #

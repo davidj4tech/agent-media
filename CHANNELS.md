@@ -258,3 +258,47 @@ Default book target is `rooms` (`MEDIA_BOOK_DEFAULT_TARGET=rooms` in the env
 file); set it to `local` to keep books on mel's own output. Music→rooms
 **validated by ear 2026-06-03**; book→rooms uses the identical proven
 speech-to-rooms `am` path.
+
+## Phase 3 — built 2026-06-04
+
+Delivered: book playlists — the two tables and the `book playlist *` verbs,
+plus part-stepping. A playlist is an ordered list of part URIs with a
+remembered cursor; within-part offset resume reuses the per-URI `resume_pos`
+bookmarks from phase 1, so the playlist only tracks *which* part
+(`cur_index`) and the part's own bookmark gives *where in it*. Together they
+resume at the exact part and offset.
+
+- `state/store.py` — `playlists` + `playlist_items` tables (SCHEMA_VERSION
+  → 3; both `CREATE TABLE IF NOT EXISTS`, so existing DBs gain them on next
+  open, no migration). Methods: `create_playlist` (idempotent),
+  `delete_playlist` (drops items + clears the active pointer; keeps the
+  parts' bookmarks), `add_playlist_items` (ordered append; accepts bare URIs
+  or `(uri, title)` pairs), `get_playlist` (with items), `list_playlists`
+  (+ counts), `get_playlist_item`, `set_playlist_index` (clamped ≥ 0), and a
+  `book_playlist_active` meta pointer (`set/get/clear_playlist_active`) so
+  `book next` knows which list to advance.
+- `mcp_server.py` — `book_playlist_new`, `book_playlist_add`,
+  `book_playlist_play` (opens at the saved cursor + part bookmark; `resume=
+  False` starts over), `book_next` / `book_prev` (step the cursor, report
+  end/start of list), `book_playlist_ls` (all lists, or one list's parts),
+  `book_playlist_rm`. A shared `_play_playlist_part` helper saves the
+  outgoing book's bookmark, points the cursor, plays the part, and marks the
+  playlist active. An ad-hoc `book_play` or `book_stop` clears the active
+  pointer so `book next` won't advance a list the listener stepped away from.
+
+**Auto-advance on end-of-part** is wired: a daemon thread (started the first
+time a playlist plays, lives in the long-running MCP server) watches the book
+broker's async event stream via `_mpv_ipc.event_stream` and advances on an
+`eof` `end-file`. Only `eof` triggers it — a user stop/skip/replace ends with
+reason `stop`, so manual control never auto-advances. When the last part ends
+the active pointer is cleared (the playlist is finished) rather than looping.
+`mcp_server._advance_after_eof` holds the advance decision; the loop and
+reconnect/back-off live in `_autoadvance_loop`.
+
+14 tests in `tests/test_book_playlists.py` (store layer + the eof-advance
+decision); full suite 123 pass. Auto-advance also verified end-to-end against
+a real mpv broker (two short clips, `ao=null`): it advanced part 1→2 on EOF
+and cleared the active playlist when the last part finished.
+
+Deferred to phase 4: the CLI + voice-command phrasing for all the channel
+verbs (the MCP surface is complete).
