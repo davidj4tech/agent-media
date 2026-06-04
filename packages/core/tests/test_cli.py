@@ -568,7 +568,9 @@ def test_replay_at_cursor_picks_nearest_preceding(monkeypatch):
 
     assert cli.cmd_replay_at_cursor(object()) == 0
     assert played["idx"] == 3            # nearest clip above the cursor
-    assert played["sess"] == "sess"      # scoped to the caller pane's session
+    assert played["sess"] is None        # NOT session-scoped: the pane capture
+                                         # is the scope, so any session's clip
+                                         # visible above the cursor can play
     assert rec["end"] == "6"             # cursor_y - scroll_position
 
 
@@ -585,6 +587,32 @@ def test_replay_at_cursor_not_in_copy_mode_falls_back(monkeypatch):
 
     assert cli.cmd_replay_at_cursor(object()) == 0
     assert played["idx"] == 2
+
+
+def test_replay_at_cursor_matches_wrapped_anchor(monkeypatch):
+    """A clip's anchor word-wrapped across visual rows still matches.
+
+    The terminal wraps a long line at its content width, so the anchor spans
+    two captured rows. cmd_replay_at_cursor collapses whitespace before the
+    substring test, so the wrap must not defeat the match.
+    """
+    played = {}
+    # Row 3's anchor is one logical line, but the captured pane wrapped it:
+    a = "Charlie row three sits just above the cursor now."
+    wrapped = "Charlie row three sits just above the\ncursor now."  # mid-line break
+    assert a not in wrapped                                          # raw test would miss
+    captured = wrapped + "\n" + _RAC_ROWS[3]["text"]
+    monkeypatch.setenv("TTS_POPUP_PANE", "%5")
+    monkeypatch.setattr(cli, "_tmux_session_for_pane", lambda p: "sess")
+    monkeypatch.setattr(cli, "_speech_history",
+                        lambda n=20, session=None: _RAC_ROWS)
+    monkeypatch.setattr(cli, "_do_replay",
+                        lambda i, session=None: played.update(idx=i) or 0)
+    monkeypatch.setattr(cli.subprocess, "run",
+                        _rac_fake_run("1\t10\t0", captured))
+
+    assert cli.cmd_replay_at_cursor(object()) == 0
+    assert played["idx"] == 3            # matched despite the wrap
 
 
 def test_replay_at_cursor_no_match_above_cursor(monkeypatch):

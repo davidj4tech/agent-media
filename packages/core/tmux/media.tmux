@@ -21,8 +21,16 @@ run-shell 'case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) tmux set-environment 
 # m mute, [/] speed, v show spoken text, q close). The caller pane (for
 # the popup's `v`) is pinned via the global env; the popup also self-
 # resolves it, so this is belt-and-suspenders.
+# -y is the popup's *bottom* edge (display-menu corner semantics), so with
+# -h 4 anything below 4 clamps to the top of the screen. Use 6 to sit the
+# popup a couple rows down, clear of a top status line.
+# -s/-S bg=default paint the interior + border on the terminal's own
+# background rather than a solid fill, so a transparent terminal shows
+# through (tmux has no true alpha; this defers to the emulator).
 bind a \
-    display-popup -E -w 24 -h 4 -x R -y 0 "TTS_POPUP_PANE=#{pane_id} media-popup"
+    display-popup -E -w 24 -h 4 -x R -y 6 \
+        -s 'bg=default' -S 'bg=default' \
+        "TTS_POPUP_PANE=#{pane_id} media-popup"
 
 # Refresh the status bar every second so the `#(media status)` progress
 # bar advances smoothly (oh-my-tmux defaults to 10s — too coarse for it).
