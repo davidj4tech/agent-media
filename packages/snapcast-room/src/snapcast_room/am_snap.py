@@ -1,27 +1,37 @@
-"""aar-snap — CLI wrapper for Snapcast's JSON-RPC.
+"""am-snap — CLI wrapper for Snapcast's JSON-RPC.
 
-Snapcast's web UI handles routing perfectly well, but for scripting and
-parity with `aar-where` we want a terse CLI. This is roughly the same
-shape: tell room X to listen to channel Y, set its volume, mute it.
+Snapcast's web UI handles routing perfectly well, but for scripting we
+want a terse CLI: tell room X to listen to channel Y, set its volume,
+mute it.
 
 Multiple snapservers (mel, sp4r) are addressed transparently — config
 maps a logical channel name to (server, stream-id), and a logical room
 name to (server, client-id-or-name).
 
-Config: ~/.config/agent-audio-relay/aar-snap.json — see header of
-`config.py` for schema, or run `aar-snap list` to see the current state
-matching whatever you've configured.
+Config: ~/.config/snapcast-room/am-snap.json (falls back to the legacy
+~/.config/agent-audio-relay/aar-snap.json so an un-migrated host keeps
+working). Override with $AM_SNAP_CONFIG. Run `am-snap list` to see the
+current state matching whatever you've configured.
+
+Schema (JSON):
+    {
+      "servers": {"mel": "http://mel:1780/jsonrpc", ...},
+      "streams": {"<channel>": {"server": "mel", "stream": "am-music"}, ...},
+      "rooms":   {"<room>": {"server": "mel", "client": "<id-or-name>"}, ...}
+    }
 
 Subcommands:
-    aar-snap list                       — full state across configured servers
-    aar-snap rooms                      — short room/stream list
-    aar-snap streams                    — all streams across all servers
-    aar-snap join <channel> <room>      — make `room` listen to `channel`
-    aar-snap volume <room> <0-100>      — set room volume
-    aar-snap mute <room> [on|off]       — toggle mute (no arg = toggle)
+    am-snap list                       — full state across configured servers
+    am-snap rooms                      — short room/stream list
+    am-snap streams                    — all streams across all servers
+    am-snap join <channel> <room>      — make `room` listen to `channel`
+    am-snap volume <room> <0-100>      — set room volume
+    am-snap mute <room> [on|off]       — toggle mute (no arg = toggle)
 
 `channel` is a key from config.streams; `room` is a key from
 config.rooms (or a snapcast client id / name if no alias is configured).
+
+The `aar-snap` console script is retained as a backward-compatible alias.
 """
 
 from __future__ import annotations
@@ -35,19 +45,30 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-CONFIG_PATH = Path(
-    os.environ.get(
-        "AAR_SNAP_CONFIG",
-        str(Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
-            / "agent-audio-relay" / "aar-snap.json"),
-    )
-)
+
+def _config_path() -> Path:
+    """Resolve the config file: $AM_SNAP_CONFIG (or legacy $AAR_SNAP_CONFIG)
+    if set, else the new ~/.config/snapcast-room/am-snap.json, falling back
+    to the legacy ~/.config/agent-audio-relay/aar-snap.json when only that
+    exists (so a host that hasn't migrated still works)."""
+    override = os.environ.get("AM_SNAP_CONFIG") or os.environ.get("AAR_SNAP_CONFIG")
+    if override:
+        return Path(override)
+    base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    new = base / "snapcast-room" / "am-snap.json"
+    legacy = base / "agent-audio-relay" / "aar-snap.json"
+    if not new.exists() and legacy.exists():
+        return legacy
+    return new
+
+
+CONFIG_PATH = _config_path()
 
 
 def _load_config() -> dict[str, Any]:
     if not CONFIG_PATH.exists():
         sys.stderr.write(
-            f"aar-snap: config not found: {CONFIG_PATH}\n"
+            f"am-snap: config not found: {CONFIG_PATH}\n"
             "see module header for example schema; minimum is "
             "`servers`, `streams`, optionally `rooms`.\n"
         )
@@ -55,7 +76,7 @@ def _load_config() -> dict[str, Any]:
     try:
         return json.loads(CONFIG_PATH.read_text())
     except (OSError, ValueError) as e:
-        sys.stderr.write(f"aar-snap: config parse error ({CONFIG_PATH}): {e}\n")
+        sys.stderr.write(f"am-snap: config parse error ({CONFIG_PATH}): {e}\n")
         sys.exit(2)
 
 
@@ -73,9 +94,9 @@ def _rpc(server_url: str, method: str, params: dict[str, Any] | None = None) -> 
         with urllib.request.urlopen(req, timeout=5) as r:
             resp = json.loads(r.read().decode())
     except urllib.error.URLError as e:
-        raise SystemExit(f"aar-snap: {server_url} unreachable: {e}")
+        raise SystemExit(f"am-snap: {server_url} unreachable: {e}")
     if "error" in resp:
-        raise SystemExit(f"aar-snap: rpc error: {resp['error']}")
+        raise SystemExit(f"am-snap: rpc error: {resp['error']}")
     return resp.get("result")
 
 
@@ -84,13 +105,13 @@ def _resolve_channel(cfg: dict, name: str) -> tuple[str, str]:
     chan = cfg.get("streams", {}).get(name)
     if chan is None:
         raise SystemExit(
-            f"aar-snap: unknown channel: {name} "
+            f"am-snap: unknown channel: {name} "
             f"(known: {', '.join(cfg.get('streams', {}))})"
         )
     server = chan["server"]
     server_url = cfg["servers"].get(server)
     if server_url is None:
-        raise SystemExit(f"aar-snap: channel '{name}' references unknown server '{server}'")
+        raise SystemExit(f"am-snap: channel '{name}' references unknown server '{server}'")
     return server_url, chan["stream"]
 
 
@@ -122,7 +143,7 @@ def _find_client_anywhere(cfg: dict, room: str) -> tuple[str, str, dict]:
                     or client["host"].get("name") == target_name
                 ):
                     return server_url, client["id"], client
-    raise SystemExit(f"aar-snap: no client matching '{room}' on any configured server")
+    raise SystemExit(f"am-snap: no client matching '{room}' on any configured server")
 
 
 def _client_group_id(server_url: str, client_id: str) -> str:
@@ -131,7 +152,7 @@ def _client_group_id(server_url: str, client_id: str) -> str:
         for client in group["clients"]:
             if client["id"] == client_id:
                 return group["id"]
-    raise SystemExit(f"aar-snap: client {client_id} not found on {server_url}")
+    raise SystemExit(f"am-snap: client {client_id} not found on {server_url}")
 
 
 def cmd_list(_args, cfg: dict) -> int:
@@ -197,14 +218,14 @@ def cmd_join(args, cfg: dict) -> int:
         # connect to. Cross-server "join" doesn't make sense; user needs
         # a different snapclient process per server (which our setup has).
         raise SystemExit(
-            f"aar-snap: room '{args.room}' is connected to a different "
+            f"am-snap: room '{args.room}' is connected to a different "
             f"snapserver than channel '{args.channel}'. "
             "Use a per-server room name, or run a snapclient pointed at "
             "the right server."
         )
     gid = _client_group_id(surl, cid)
     _rpc(surl, "Group.SetStream", {"id": gid, "stream_id": chan_stream})
-    print(f"aar-snap: {args.room} → {args.channel}")
+    print(f"am-snap: {args.room} → {args.channel}")
     return 0
 
 
@@ -214,7 +235,7 @@ def cmd_volume(args, cfg: dict) -> int:
     cur = c["config"]["volume"]
     _rpc(surl, "Client.SetVolume",
          {"id": cid, "volume": {"muted": cur["muted"], "percent": pct}})
-    print(f"aar-snap: {args.room} volume → {pct}")
+    print(f"am-snap: {args.room} volume → {pct}")
     return 0
 
 
@@ -229,13 +250,13 @@ def cmd_mute(args, cfg: dict) -> int:
         new_muted = not cur["muted"]
     _rpc(surl, "Client.SetVolume",
          {"id": cid, "volume": {"muted": new_muted, "percent": cur["percent"]}})
-    print(f"aar-snap: {args.room} mute → {'on' if new_muted else 'off'}")
+    print(f"am-snap: {args.room} mute → {'on' if new_muted else 'off'}")
     return 0
 
 
 def main() -> int:
     cfg = _load_config()
-    p = argparse.ArgumentParser(prog="aar-snap", description=__doc__.split("\n")[0])
+    p = argparse.ArgumentParser(prog="am-snap", description=__doc__.split("\n")[0])
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("list", help="full state across servers").set_defaults(func=cmd_list)

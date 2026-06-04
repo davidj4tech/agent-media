@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "snapcast-room"
+version = "0.4.0"
+description = "Terse CLI over Snapcast's JSON-RPC for whole-house audio routing — the snapcast/pipewire plumbing that survived the agent-media restructure"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.9"
+authors = [{ name = "David Ryer" }]
+keywords = ["snapcast", "multiroom", "audio", "pipewire", "tmux"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Home Automation",
+    "Topic :: Multimedia :: Sound/Audio",
+]
+# Pure stdlib — no runtime deps. TTS render/hooks/watcher/clip-server all
+# moved into agent-media-core during the restructure.
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/davidj4tech/agent-media/tree/main/packages/snapcast-room"
+Issues = "https://github.com/davidj4tech/agent-media/issues"
+
+[project.scripts]
+am-snap  = "snapcast_room.am_snap:main"
+# Backward-compatible alias for the former aar-snap CLI.
+aar-snap = "snapcast_room.am_snap:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/snapcast_room"]
