@@ -258,3 +258,37 @@ Default book target is `rooms` (`MEDIA_BOOK_DEFAULT_TARGET=rooms` in the env
 file); set it to `local` to keep books on mel's own output. Music→rooms
 **validated by ear 2026-06-03**; book→rooms uses the identical proven
 speech-to-rooms `am` path.
+
+## Phase 3 — built 2026-06-04
+
+Delivered: book playlists — the two tables and the `book playlist *` verbs,
+plus part-stepping. A playlist is an ordered list of part URIs with a
+remembered cursor; within-part offset resume reuses the per-URI `resume_pos`
+bookmarks from phase 1, so the playlist only tracks *which* part
+(`cur_index`) and the part's own bookmark gives *where in it*. Together they
+resume at the exact part and offset.
+
+- `state/store.py` — `playlists` + `playlist_items` tables (SCHEMA_VERSION
+  → 3; both `CREATE TABLE IF NOT EXISTS`, so existing DBs gain them on next
+  open, no migration). Methods: `create_playlist` (idempotent),
+  `delete_playlist` (drops items + clears the active pointer; keeps the
+  parts' bookmarks), `add_playlist_items` (ordered append; accepts bare URIs
+  or `(uri, title)` pairs), `get_playlist` (with items), `list_playlists`
+  (+ counts), `get_playlist_item`, `set_playlist_index` (clamped ≥ 0), and a
+  `book_playlist_active` meta pointer (`set/get/clear_playlist_active`) so
+  `book next` knows which list to advance.
+- `mcp_server.py` — `book_playlist_new`, `book_playlist_add`,
+  `book_playlist_play` (opens at the saved cursor + part bookmark; `resume=
+  False` starts over), `book_next` / `book_prev` (step the cursor, report
+  end/start of list), `book_playlist_ls` (all lists, or one list's parts),
+  `book_playlist_rm`. A shared `_play_playlist_part` helper saves the
+  outgoing book's bookmark, points the cursor, plays the part, and marks the
+  playlist active. An ad-hoc `book_play` or `book_stop` clears the active
+  pointer so `book next` won't advance a list the listener stepped away from.
+
+11 store-layer tests in `tests/test_book_playlists.py`; full suite 120 pass.
+
+Deferred to phase 4 (and a refinement): **auto-advance on end-of-part** is
+not yet wired — the mpv broker goes idle at EOF and `book_next` is explicit
+(an mpv `end-file` event observer in the broker would make it automatic);
+and the CLI + voice-command phrasing for all the channel verbs.

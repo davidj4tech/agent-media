@@ -324,6 +324,9 @@ def book_play(uri: str, resume: bool = True, start_ms: int = -1,
     st.set_now_playing(sink="book", uri=norm, started_at=time.time(),
                        content_type="audiobook", target=t.name)
     st.set_book_last(norm)
+    # An ad-hoc book breaks the playlist context, so `book next` won't try to
+    # advance a list the listener has stepped away from.
+    st.clear_playlist_active()
     return {"ok": True, "uri": norm, "resumed_from_ms": start}
 
 
@@ -361,6 +364,7 @@ def book_stop(target: str = "local") -> dict:
     _save_book_bookmark(b, st, t)
     b.stop(t)
     st.clear_now_playing("book")
+    st.clear_playlist_active()
     return {"ok": True}
 
 
@@ -392,6 +396,133 @@ def book_now_playing(target: str = "local") -> dict:
         "paused": b.paused(t),
         "speed": b.speed(t),
     }
+
+
+# --- book playlists -------------------------------------------------------
+#
+# A book playlist is an ordered list of part URIs (chapters / episodes) with
+# a remembered cursor. Within-part offset resume reuses the per-URI book
+# bookmarks; the playlist only tracks which part. `book_playlist_play` opens
+# the part at the cursor; `book_next`/`book_prev` step the cursor. The active
+# playlist is remembered so `book_next` knows what to advance.
+
+def _play_playlist_part(name: str, index: int, target: Target,
+                        resume_part: bool = True) -> dict:
+    """Open the playlist `name` at `index` on the book channel.
+
+    Saves the outgoing book's bookmark first, points the playlist cursor at
+    `index`, plays that part (resuming within it from its own bookmark when
+    `resume_part`), and marks the playlist active. Shared by play/next/prev.
+    """
+    b, st = _book(), _state()
+    item = st.get_playlist_item(name, index)
+    if item is None:
+        return {"ok": False, "reason": "index out of range", "index": index}
+    _save_book_bookmark(b, st, target)
+    uri = normalize_uri(item["uri"])
+    start = (st.get_resume_pos(uri) or 0) if resume_part else 0
+    b.play(uri, target, start_ms=start)
+    st.set_playlist_index(name, index)
+    st.set_playlist_active(name)
+    st.set_now_playing(sink="book", uri=uri, started_at=time.time(),
+                       content_type="audiobook", target=target.name)
+    st.set_book_last(uri)
+    return {"ok": True, "playlist": name, "index": index, "uri": uri,
+            "title": item["title"], "resumed_from_ms": start}
+
+
+@mcp.tool()
+def book_playlist_new(name: str) -> dict:
+    """Create an empty book playlist. Add parts with `book_playlist_add`."""
+    created = _state().create_playlist(name, channel="book")
+    return {"ok": True, "playlist": name, "created": created}
+
+
+@mcp.tool()
+def book_playlist_add(name: str, uris: list[str]) -> dict:
+    """Append one or more part URIs (in order) to a book playlist.
+
+    Accepts the same URIs as `book_play` (`yt:https://...`, http(s) streams,
+    file paths). Creates the playlist if it doesn't exist yet.
+    """
+    st = _state()
+    st.create_playlist(name, channel="book")  # no-op if it exists
+    count = st.add_playlist_items(name, list(uris))
+    return {"ok": True, "playlist": name, "count": count, "added": len(uris)}
+
+
+@mcp.tool()
+def book_playlist_play(name: str, resume: bool = True, target: str = "") -> dict:
+    """Play a book playlist, resuming at its remembered part + offset.
+
+    Args:
+        name: The playlist to play.
+        resume: If True (default), start at the playlist's saved cursor and
+            within that part at its saved bookmark. If False, start over from
+            the first part.
+    """
+    st, t = _state(), _book_target(target)
+    pl = st.get_playlist(name)
+    if pl is None:
+        return {"ok": False, "reason": f"no playlist {name!r}"}
+    if not pl["items"]:
+        return {"ok": False, "reason": f"playlist {name!r} is empty"}
+    index = pl["cur_index"] if resume else 0
+    if index >= len(pl["items"]):
+        index = 0
+    return _play_playlist_part(name, index, t, resume_part=resume)
+
+
+@mcp.tool()
+def book_next(target: str = "") -> dict:
+    """Advance to the next part of the active book playlist."""
+    st, t = _state(), _book_target(target)
+    name = st.get_playlist_active()
+    if not name:
+        return {"ok": False, "reason": "no active playlist"}
+    pl = st.get_playlist(name)
+    if pl is None:
+        return {"ok": False, "reason": f"playlist {name!r} gone"}
+    nxt = pl["cur_index"] + 1
+    if nxt >= len(pl["items"]):
+        return {"ok": False, "reason": "end of playlist", "playlist": name}
+    return _play_playlist_part(name, nxt, t)
+
+
+@mcp.tool()
+def book_prev(target: str = "") -> dict:
+    """Go back to the previous part of the active book playlist."""
+    st, t = _state(), _book_target(target)
+    name = st.get_playlist_active()
+    if not name:
+        return {"ok": False, "reason": "no active playlist"}
+    pl = st.get_playlist(name)
+    if pl is None:
+        return {"ok": False, "reason": f"playlist {name!r} gone"}
+    prv = pl["cur_index"] - 1
+    if prv < 0:
+        return {"ok": False, "reason": "at start of playlist", "playlist": name}
+    return _play_playlist_part(name, prv, t)
+
+
+@mcp.tool()
+def book_playlist_ls(name: str = "") -> dict:
+    """List book playlists, or the parts of one if `name` is given."""
+    st = _state()
+    if not name:
+        return {"playlists": st.list_playlists(channel="book")}
+    pl = st.get_playlist(name)
+    if pl is None:
+        return {"ok": False, "reason": f"no playlist {name!r}"}
+    return pl
+
+
+@mcp.tool()
+def book_playlist_rm(name: str) -> dict:
+    """Delete a book playlist (its parts' bookmarks are kept)."""
+    removed = _state().delete_playlist(name)
+    return {"ok": removed, "playlist": name,
+            **({} if removed else {"reason": "no such playlist"})}
 
 
 # --- channel concurrency: focus + bed -------------------------------------
