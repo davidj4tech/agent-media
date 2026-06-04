@@ -7,10 +7,10 @@ or Termux on Android.
 ```
 ┌──────────────────────────────────────────────────────┐
 │ packages/                                            │
-│ ├── core/         intake → route → render → sink     │  Python — the spine
-│ ├── audio-relay/  whole-house snapcast pipeline      │  Python — legacy/sp4r
-│ ├── voice-bridge/ STT (mic → text → intake)          │  Python — sibling
-│ └── astrotunes/   what to play                       │  Python — recommender
+│ ├── core/          intake → route → render → sink    │  Python — the spine
+│ ├── snapcast-room/ am-snap: snapcast routing CLI      │  Python — plumbing
+│ ├── voice-bridge/  STT (mic → text → intake)          │  Python — sibling
+│ └── astrotunes/    what to play                       │  Python — recommender
 └──────────────────────────────────────────────────────┘
 ```
 
@@ -31,12 +31,13 @@ Also exposes an MCP server (`media-mcp`) for tool-based control from Claude.
 See **[`packages/core/README.md`](./packages/core/README.md)** for full
 configuration reference (env vars, services, MPRIS, Snapcast).
 
-### [`audio-relay/`](./packages/audio-relay/)
+### [`snapcast-room/`](./packages/snapcast-room/)
 
-Legacy whole-house pipeline (p8ar/sp4r). Hosts the clip-server and the
-forwarder/watcher pair. Being incrementally replaced by `core/` as the
-primary intake+render path; the Snapcast FIFO pipeline it pioneered is now
-documented in core's README.
+The snapcast/pipewire plumbing that survived the restructure: `am-snap`, a
+terse CLI over Snapcast's JSON-RPC for whole-house routing (join a room to a
+channel, set volume, mute) across multiple snapservers. The former
+`agent-audio-relay`'s render engines, agent hooks, watcher and clip-server all
+moved into `core/`; this is what remained. (`aar-snap` is kept as an alias.)
 
 ### [`voice-bridge/`](./packages/voice-bridge/)
 
@@ -91,6 +92,6 @@ See `packages/core/README.md` → *Remote MPRIS* for details.
 Assembled in May 2026 from previously separate repos:
 
 - `davidj4tech/mpv-mcp` → `media-mcp` (Node) → retired in favor of `core.mcp_server` (Python)
-- `davidj4tech/agent-audio-relay` → `packages/audio-relay/`
+- `davidj4tech/agent-audio-relay` → `packages/audio-relay/` → shrunk + renamed to `packages/snapcast-room/` (the rest absorbed into `core/`)
 - `davidj4tech/tmux-voice-bridge` → `packages/voice-bridge/`
 - `astrotunes` new
