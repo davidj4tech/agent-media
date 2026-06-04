@@ -1,15 +1,34 @@
 #!/usr/bin/env bash
-# Open the agent-media control popup at a width that fits the calling client,
-# capped so a wide desktop stays tidy but a narrow phone never overflows.
-# Invoked from the `prefix a` binding with the client's name/pane/width, which
-# tmux expands at key-press time:
-#     bind a run-shell -b "media-popup-open '#{client_name}' '#{pane_id}' '#{client_width}'"
+# Open the agent-media control popup at a width that fits the calling client
+# (capped), and drive the help overlay.
+#
+# tmux allows only ONE popup per client, so the popup's `?` can't open a nested
+# help popup (tmux silently ignores it). Instead `?` writes the current channel
+# to a flag file and exits; here we detect the flag, open the help as a normal
+# (top-level) popup, then reopen the main popup at the same channel. Repeats so
+# `?` can be pressed again.
+#
+# Invoked from the `prefix a` binding with the client's name/pane/width/height,
+# which tmux expands at key-press time.
 set -u
-client="${1:-}"; pane="${2:-}"; cw="${3:-34}"
+client="${1:-}"; pane="${2:-}"; cw="${3:-34}"; ch="${4:-24}"
+
 MAX="${MEDIA_POPUP_MAX_W:-34}"; MIN=18
-w="$cw"
-[ "$w" -gt "$MAX" ] && w="$MAX"
-[ "$w" -lt "$MIN" ] && w="$MIN"
-exec tmux display-popup ${client:+-c "$client"} -E -w "$w" -h 4 -x R -y 6 \
-    -s 'bg=default' -S 'bg=default' \
-    "TTS_POPUP_PANE=$pane media-popup"
+w="$cw"; [ "$w" -gt "$MAX" ] && w="$MAX"; [ "$w" -lt "$MIN" ] && w="$MIN"
+# Help popup geometry — the keymap table is ~23 cols x ~26 rows.
+hw="$cw"; [ "$hw" -gt 30 ] && hw=30
+hh="$ch"; [ "$hh" -gt 5 ] && hh=$(( hh - 1 ))
+
+flag="${TMPDIR:-/tmp}/media-popup-help.$$"
+rm -f "$flag"
+chan=speech
+popup() { tmux display-popup ${client:+-c "$client"} -E "$@"; }
+while :; do
+    popup -w "$w" -h 4 -x R -y 6 -s 'bg=default' -S 'bg=default' \
+        "TTS_POPUP_PANE=$pane MEDIA_POPUP_HELP_FLAG=$flag MEDIA_POPUP_CHANNEL=$chan media-popup"
+    [ -f "$flag" ] || break            # not a help request → done
+    chan=$(cat "$flag" 2>/dev/null); chan=${chan:-speech}
+    rm -f "$flag"
+    popup -w "$hw" -h "$hh" -s 'bg=default' -S 'bg=default' media-popup-help
+done
+rm -f "$flag"

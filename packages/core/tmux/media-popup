@@ -39,7 +39,8 @@ export TTS_POPUP_PANE="$HL_PANE"
 speed=1.0
 bspeed=1.0              # book channel speed (tracked separately from speech)
 hist_idx=1
-CHANNEL=speech          # active channel: speech | music | book (Tab cycles)
+CHANNEL="${MEDIA_POPUP_CHANNEL:-speech}"   # speech | music | book (Tab cycles); the
+                        # launcher restores it across a `?` help round-trip
 BOOK_SOCK="${MEDIA_BOOK_SOCKET:-$HOME/.local/state/agent-media/sink-book.sock}"
 SPEECH_SOCK="${MEDIA_SPEECH_SOCKET:-$HOME/.local/state/agent-media/sink-speech.sock}"
 # Indicator state (line-2 cluster). Read fresh from the active channel's socket
@@ -366,7 +367,15 @@ while true; do
                  case "$_hl_out" in *OFF*) HL=off ;; *ON*) HL=on ;; esac
                  tmux display-message "♪ ${_hl_out:-highlight: ?}" 2>/dev/null
              fi ;;
-        '?') tmux display-message "Tab channel (speech/music/book) · Space play/pause · h/l H/L seek · -/= vol · < > older-newer / track / book-part · g go to source · speech: p play-at-cursor r replay m mute v highlight · [/] speed (speech/book) 0 reset · q quit" 2>/dev/null ;;
+        '?') # tmux allows one popup per client, so we can't nest a help popup.
+             # Signal the launcher to show it (top-level) and exit, preserving
+             # the channel. Fall back to a one-line message if launched without
+             # the launcher (no flag in env).
+             if [ -n "${MEDIA_POPUP_HELP_FLAG:-}" ]; then
+                 printf '%s' "$CHANNEL" > "$MEDIA_POPUP_HELP_FLAG"; break
+             else
+                 tmux display-message "Tab chan · Spc play · h/l H/L seek · -/= vol · < > prev/next · g src · speech: r p m v · [/] 0 speed · q quit" 2>/dev/null
+             fi ;;
         q|$'\e') break ;;
         *) : ;;
     esac
