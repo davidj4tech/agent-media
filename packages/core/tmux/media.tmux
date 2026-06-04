@@ -27,10 +27,11 @@ run-shell 'case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) tmux set-environment 
 # -s/-S bg=default paint the interior + border on the terminal's own
 # background rather than a solid fill, so a transparent terminal shows
 # through (tmux has no true alpha; this defers to the emulator).
+# Width is sized to the calling client (capped at 34) by media-popup-open, so
+# the popup never overflows a narrow phone yet stays roomy on a desktop. The
+# #{…} formats are expanded by tmux at key-press time (client context).
 bind a \
-    display-popup -E -w 24 -h 4 -x R -y 6 \
-        -s 'bg=default' -S 'bg=default' \
-        "TTS_POPUP_PANE=#{pane_id} media-popup"
+    run-shell -b "media-popup-open '#{client_name}' '#{pane_id}' '#{client_width}'"
 
 # Refresh the status bar every second so the `#(media status)` progress
 # bar advances smoothly (oh-my-tmux defaults to 10s — too coarse for it).
