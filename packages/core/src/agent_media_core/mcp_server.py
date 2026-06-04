@@ -21,6 +21,7 @@ Replaces the legacy Node `packages/media-mcp/server.js` end-to-end.
 
 import logging
 import os
+import threading
 import time
 
 from mcp.server.fastmcp import FastMCP
@@ -427,8 +428,80 @@ def _play_playlist_part(name: str, index: int, target: Target,
     st.set_now_playing(sink="book", uri=uri, started_at=time.time(),
                        content_type="audiobook", target=target.name)
     st.set_book_last(uri)
+    _ensure_autoadvance_watcher()
     return {"ok": True, "playlist": name, "index": index, "uri": uri,
             "title": item["title"], "resumed_from_ms": start}
+
+
+# --- playlist auto-advance ------------------------------------------------
+#
+# Audiobook playlists should roll on to the next part when one ends, without
+# the listener asking. The book broker is a single long-lived mpv that goes
+# idle at end-of-file; a daemon thread (started the first time a playlist
+# plays) watches the broker's async event stream and advances on an `eof`
+# `end-file`. Only `eof` triggers it — a user stop/skip/replace ends with
+# reason `stop`, so manual control never auto-advances. Lives in the
+# long-running MCP server process, which is where playlist playback is driven.
+
+_autoadvance_thread: "threading.Thread | None" = None
+_autoadvance_lock = threading.Lock()
+
+
+def _advance_after_eof() -> None:
+    """Advance the active playlist one part. No-op if none is active.
+
+    Called from the watcher thread when a part ends naturally. Walks off the
+    end by clearing the active pointer (the playlist is finished) rather than
+    looping.
+    """
+    st = _state()
+    name = st.get_playlist_active()
+    if not name:
+        return
+    pl = st.get_playlist(name)
+    if pl is None:
+        st.clear_playlist_active()
+        return
+    nxt = pl["cur_index"] + 1
+    np = st.get_now_playing("book")
+    t = _book_target((np or {}).get("target") or "")
+    if nxt >= len(pl["items"]):
+        st.clear_playlist_active()
+        st.clear_now_playing("book")
+        log.info("book playlist %r finished", name)
+        return
+    _play_playlist_part(name, nxt, t)
+
+
+def _autoadvance_loop() -> None:
+    from .sinks import _mpv_ipc as ipc
+
+    sock = _book()._sock
+    while True:
+        try:
+            for msg in ipc.event_stream(sock):
+                if msg is None:
+                    continue
+                if msg.get("event") == "end-file" and msg.get("reason") == "eof":
+                    try:
+                        _advance_after_eof()
+                    except Exception:  # noqa: BLE001 — never kill the watcher
+                        log.exception("book auto-advance failed")
+        except (OSError, ipc.MpvIpcError):
+            pass
+        # Broker gone or never came up; back off then retry.
+        time.sleep(2.0)
+
+
+def _ensure_autoadvance_watcher() -> None:
+    """Start the auto-advance watcher once; idempotent and thread-safe."""
+    global _autoadvance_thread
+    with _autoadvance_lock:
+        if _autoadvance_thread is not None and _autoadvance_thread.is_alive():
+            return
+        _autoadvance_thread = threading.Thread(
+            target=_autoadvance_loop, name="book-autoadvance", daemon=True)
+        _autoadvance_thread.start()
 
 
 @mcp.tool()

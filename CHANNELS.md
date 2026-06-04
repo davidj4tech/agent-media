@@ -286,9 +286,19 @@ resume at the exact part and offset.
   playlist active. An ad-hoc `book_play` or `book_stop` clears the active
   pointer so `book next` won't advance a list the listener stepped away from.
 
-11 store-layer tests in `tests/test_book_playlists.py`; full suite 120 pass.
+**Auto-advance on end-of-part** is wired: a daemon thread (started the first
+time a playlist plays, lives in the long-running MCP server) watches the book
+broker's async event stream via `_mpv_ipc.event_stream` and advances on an
+`eof` `end-file`. Only `eof` triggers it — a user stop/skip/replace ends with
+reason `stop`, so manual control never auto-advances. When the last part ends
+the active pointer is cleared (the playlist is finished) rather than looping.
+`mcp_server._advance_after_eof` holds the advance decision; the loop and
+reconnect/back-off live in `_autoadvance_loop`.
 
-Deferred to phase 4 (and a refinement): **auto-advance on end-of-part** is
-not yet wired — the mpv broker goes idle at EOF and `book_next` is explicit
-(an mpv `end-file` event observer in the broker would make it automatic);
-and the CLI + voice-command phrasing for all the channel verbs.
+14 tests in `tests/test_book_playlists.py` (store layer + the eof-advance
+decision); full suite 123 pass. Auto-advance also verified end-to-end against
+a real mpv broker (two short clips, `ao=null`): it advanced part 1→2 on EOF
+and cleared the active playlist when the last part finished.
+
+Deferred to phase 4: the CLI + voice-command phrasing for all the channel
+verbs (the MCP surface is complete).

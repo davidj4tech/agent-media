@@ -106,6 +106,69 @@ def test_delete_removes_items_and_active(tmp_path):
     assert st.delete_playlist("dune") is False        # already gone
 
 
+class _FakeBook:
+    """Stand-in for SinkBook so auto-advance can be tested without mpv."""
+
+    def __init__(self):
+        self.plays = []
+
+    def play(self, uri, target, start_ms=None):
+        self.plays.append((uri, start_ms))
+
+    def position(self, target):
+        return None
+
+    def idle(self, target):
+        return True
+
+
+def _wire_mcp(monkeypatch, tmp_path):
+    import agent_media_core.mcp_server as m
+    st = StateStore(tmp_path / "state.db")
+    fb = _FakeBook()
+    monkeypatch.setattr(m._state, "_v", st, raising=False)
+    monkeypatch.setattr(m._book, "_v", fb, raising=False)
+    # Don't spawn the real watcher thread (it'd dial a nonexistent socket).
+    monkeypatch.setattr(m, "_ensure_autoadvance_watcher", lambda: None)
+    return m, st, fb
+
+
+def test_eof_advances_active_playlist(tmp_path, monkeypatch):
+    m, st, fb = _wire_mcp(monkeypatch, tmp_path)
+    st.create_playlist("dune")
+    st.add_playlist_items("dune", [A, B, C])
+    m.book_playlist_play("dune")
+    assert st.get_playlist("dune")["cur_index"] == 0
+    m._advance_after_eof()
+    assert st.get_playlist("dune")["cur_index"] == 1
+    m._advance_after_eof()
+    assert st.get_playlist("dune")["cur_index"] == 2
+    # URIs were normalized (yt: stripped) and played in order.
+    assert [u for (u, _) in fb.plays] == [
+        "https://youtu.be/part1", "https://youtu.be/part2",
+        "https://youtu.be/part3"]
+
+
+def test_eof_at_end_finishes_and_clears(tmp_path, monkeypatch):
+    m, st, fb = _wire_mcp(monkeypatch, tmp_path)
+    st.create_playlist("dune")
+    st.add_playlist_items("dune", [A, B])
+    m.book_playlist_play("dune")
+    m._advance_after_eof()  # -> part B (last)
+    assert st.get_playlist_active() == "dune"
+    m._advance_after_eof()  # past the end
+    assert st.get_playlist_active() is None
+    assert st.get_now_playing("book") is None
+    # No phantom extra play past the end.
+    assert len(fb.plays) == 2
+
+
+def test_eof_without_active_playlist_is_noop(tmp_path, monkeypatch):
+    m, st, fb = _wire_mcp(monkeypatch, tmp_path)
+    m._advance_after_eof()
+    assert fb.plays == []
+
+
 def test_per_part_resume_is_independent_of_cursor(tmp_path):
     # The two-level model: cur_index picks the part, resume_pos (by URI) the
     # offset within it. They are stored separately and don't interfere.
