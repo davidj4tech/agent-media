@@ -1076,6 +1076,150 @@ def cmd_music(a) -> int:
     return 0
 
 
+# --- book + channel subcommands -------------------------------------------
+#
+# The book channel and focus/bed concurrency are orchestrated in mcp_server
+# (bookmark-save on switch, playlist cursor, auto-advance). Rather than
+# duplicate that here, the CLI calls those same tool functions — they're
+# plain callables — and formats the result for the terminal. Imported lazily
+# so frequent `media status`/`music` calls (status bar) don't pull in mcp.
+
+def _srv():
+    from . import mcp_server as srv
+    return srv
+
+
+def _book_status_line(srv, width: int, hide_idle: bool, bar: bool = True) -> str:
+    np = srv.book_now_playing(target="")
+    if np.get("idle"):
+        return render_status(idle=True, pos=None, dur=None, paused=None,
+                             muted=None, width=width, hide_idle=hide_idle)
+    pos = (np.get("position_ms") or 0) / 1000.0
+    dur = (np.get("duration_ms") or 0) / 1000.0 or None
+    return render_status(idle=False, pos=pos, dur=dur,
+                         paused=bool(np.get("paused")), muted=False,
+                         width=width, hide_idle=hide_idle, bar=bar)
+
+
+def _ok(result: dict) -> int:
+    """Print a reason on failure; map the tool dict's ok flag to an exit code."""
+    if result.get("ok") is False:
+        reason = result.get("reason", "failed")
+        print(f"media: {reason}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _cmd_book_playlist(a, srv) -> int:
+    pc = a.pl_cmd
+    if pc == "new":
+        r = srv.book_playlist_new(a.name)
+        print(f"playlist {a.name!r}: "
+              + ("created" if r.get("created") else "already exists"))
+        return 0
+    if pc == "add":
+        r = srv.book_playlist_add(a.name, list(a.uris))
+        print(f"playlist {a.name!r}: {r['added']} added ({r['count']} total)")
+        return 0
+    if pc == "play":
+        r = srv.book_playlist_play(a.name, resume=not a.no_resume,
+                                   target=a.target or "")
+        if _ok(r):
+            return 1
+        title = r.get("title") or r.get("uri")
+        print(f"▶ {a.name} [{r['index']}] {title}")
+        return 0
+    if pc == "rm":
+        return _ok(srv.book_playlist_rm(a.name))
+    # ls
+    if a.name:
+        pl = srv.book_playlist_ls(a.name)
+        if _ok(pl):
+            return 1
+        cur = pl["cur_index"]
+        if not pl["items"]:
+            print(f"{a.name}: (empty)")
+            return 0
+        for it in pl["items"]:
+            mark = "→" if it["pos"] == cur else " "
+            label = it["title"] or it["uri"]
+            print(f"{mark} {it['pos']:>2}  {label}")
+        return 0
+    lists = srv.book_playlist_ls().get("playlists", [])
+    if not lists:
+        print("(no book playlists)")
+        return 0
+    for pl in lists:
+        print(f"{pl['name']:<20} {pl['count']:>3} parts  @ {pl['cur_index']}")
+    return 0
+
+
+def cmd_book(a) -> int:
+    srv = _srv()
+    bc = a.book_cmd
+    tgt = getattr(a, "target", "") or ""
+
+    if bc == "playlist":
+        return _cmd_book_playlist(a, srv)
+    if bc == "status":
+        try:
+            print(_book_status_line(srv, a.width, hide_idle=not a.show_idle,
+                                    bar=not a.no_bar))
+        except Exception:  # noqa: BLE001 — status bar must never see a traceback
+            print("○" if a.show_idle else "")
+        return 0
+    if bc == "now":
+        np = srv.book_now_playing(target=tgt)
+        if not np.get("idle"):
+            print(np.get("uri") or "")
+        return 0
+    if bc == "play":
+        r = srv.book_play(a.uri, resume=not a.no_resume,
+                          start_ms=(a.start_ms if a.start_ms is not None else -1),
+                          target=tgt)
+        print(f"▶ {r['uri']} (from {fmt_mmss((r['resumed_from_ms'] or 0)/1000)})")
+        return 0
+    if bc == "resume":
+        r = srv.book_resume(target=tgt)
+        return _ok(r)
+    if bc == "pause":
+        return _ok(srv.book_pause(target=tgt or "local"))
+    if bc == "stop":
+        return _ok(srv.book_stop(target=tgt or "local"))
+    if bc == "next":
+        return _ok(srv.book_next(target=tgt))
+    if bc == "prev":
+        return _ok(srv.book_prev(target=tgt))
+    if bc == "skip":
+        return _ok(srv.book_skip(seconds=a.secs, target=tgt or "local"))
+    if bc == "speed":
+        rate = 1.0 if a.factor == "reset" else float(a.factor)
+        r = srv.book_speed(rate, target=tgt or "local")
+        print(f"speed: {r['speed']}")
+        return 0
+    if bc == "bed":
+        return _ok(srv.book_bed(a.mode, target=tgt or "local"))
+    return 2
+
+
+def cmd_focus(a) -> int:
+    return _ok(_srv().focus(a.channel, target="local"))
+
+
+def cmd_channels(a) -> int:
+    st = _srv().channels_status()
+    print(f"focus: {st.get('focus') or '-'}   bed: {st.get('bed') or '-'}")
+    mu = st.get("music") or {}
+    bk = st.get("book") or {}
+    print(f"music: {mu.get('uri') or '(idle)'}")
+    if bk.get("idle"):
+        print("book:  (idle)")
+    else:
+        print(f"book:  {bk.get('uri') or ''}"
+              + (" [paused]" if bk.get("paused") else ""))
+    return 0
+
+
 # --- CLI -------------------------------------------------------------------
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -1193,7 +1337,81 @@ def _build_parser() -> argparse.ArgumentParser:
                         "(audiobook/podcast pause instead of duck)")
     s.set_defaults(func=cmd_music)
 
+    _add_book_parser(sub)
+
+    f = sub.add_parser("focus", help="bring a channel to the front (book|music)")
+    f.add_argument("channel", choices=("book", "music"))
+    f.set_defaults(func=cmd_focus)
+
+    sub.add_parser("channels", help="both channels at a glance (focus, bed, what's on)"
+                   ).set_defaults(func=cmd_channels)
+
     return p
+
+
+def _add_book_parser(sub) -> None:
+    """The `media book ...` subtree — the longform/audiobook channel.
+
+    Mirrors `media music` but with book-shaped transport (resume bookmarks,
+    skip ±s, speed) and playlists. `--target rooms|local` overrides where the
+    book plays; empty uses MEDIA_BOOK_DEFAULT_TARGET.
+    """
+    book = sub.add_parser("book", help="longform / audiobook channel")
+    book.set_defaults(func=cmd_book)
+    b = book.add_subparsers(dest="book_cmd", required=True)
+
+    bp = b.add_parser("play", help="play longform audio (resumes by default)")
+    bp.add_argument("uri", help="yt:https://..., http(s) stream, or file path")
+    bp.add_argument("--no-resume", action="store_true",
+                    help="start from the beginning, ignoring the bookmark")
+    bp.add_argument("--start-ms", type=int, default=None,
+                    help="explicit start offset in ms")
+    bp.add_argument("--target", default="", help="rooms|local")
+
+    br = b.add_parser("resume", help="resume the book (reopens the last if idle)")
+    br.add_argument("--target", default="")
+    b.add_parser("pause", help="pause and save the place")
+    b.add_parser("stop", help="stop, saving the place to resume later")
+    bn = b.add_parser("next", help="next part of the active playlist")
+    bn.add_argument("--target", default="")
+    bpv = b.add_parser("prev", help="previous part of the active playlist")
+    bpv.add_argument("--target", default="")
+
+    bk = b.add_parser("skip", help="seek ±seconds (default +30)")
+    bk.add_argument("secs", nargs="?", type=float, default=30.0)
+
+    bs = b.add_parser("speed", help="set playback speed (factor or 'reset')")
+    bs.add_argument("factor")
+
+    bbed = b.add_parser("bed", help="how music behaves under a foregrounded book")
+    bbed.add_argument("mode", choices=("duck", "pause"))
+
+    bst = b.add_parser("status", help="one-line book progress (for status bar)")
+    bst.add_argument("--width", type=int, default=12)
+    bst.add_argument("--show-idle", action="store_true")
+    bst.add_argument("--no-bar", action="store_true")
+
+    bnow = b.add_parser("now", help="URI of what the book channel is reading")
+    bnow.add_argument("--target", default="")
+
+    pl = b.add_parser("playlist", help="manage book playlists")
+    pl.set_defaults(func=cmd_book)
+    pls = pl.add_subparsers(dest="pl_cmd", required=True)
+
+    pn = pls.add_parser("new", help="create an empty playlist")
+    pn.add_argument("name")
+    pa = pls.add_parser("add", help="append part URIs to a playlist")
+    pa.add_argument("name")
+    pa.add_argument("uris", nargs="+", help="one or more part URIs, in order")
+    ppl = pls.add_parser("play", help="play a playlist at its remembered place")
+    ppl.add_argument("name")
+    ppl.add_argument("--no-resume", action="store_true",
+                     help="start the playlist over from the first part")
+    ppl.add_argument("--target", default="")
+    pls_ls = pls.add_parser("ls", help="list playlists, or one list's parts")
+    pls_ls.add_argument("name", nargs="?", default="")
+    prm = pls.add_parser("rm", help="delete a playlist (keeps part bookmarks)")
+    prm.add_argument("name")
 
 
 def main(argv=None) -> int:

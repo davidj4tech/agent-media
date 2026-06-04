@@ -601,3 +601,129 @@ def test_replay_at_cursor_no_match_above_cursor(monkeypatch):
 
     assert cli.cmd_replay_at_cursor(object()) == 1
     assert called["replay"] is False
+
+
+# --- book / focus / channels CLI ------------------------------------------
+
+class _FakeSrv:
+    """Records calls to the mcp_server tool functions the book CLI delegates
+    to, returning canned dicts so the CLI never touches mpv/the store."""
+
+    def __init__(self):
+        self.calls = []
+
+    def book_play(self, uri, resume=True, start_ms=-1, target=""):
+        self.calls.append(("book_play", uri, resume, start_ms, target))
+        return {"ok": True, "uri": uri, "resumed_from_ms": 0}
+
+    def book_resume(self, target=""):
+        self.calls.append(("book_resume", target)); return {"ok": True}
+
+    def book_pause(self, target="local"):
+        self.calls.append(("book_pause", target)); return {"ok": True}
+
+    def book_stop(self, target="local"):
+        self.calls.append(("book_stop", target)); return {"ok": True}
+
+    def book_next(self, target=""):
+        self.calls.append(("book_next", target)); return {"ok": True}
+
+    def book_prev(self, target=""):
+        self.calls.append(("book_prev", target))
+        return {"ok": False, "reason": "at start of playlist"}
+
+    def book_skip(self, seconds=30, target="local"):
+        self.calls.append(("book_skip", seconds, target)); return {"ok": True}
+
+    def book_speed(self, rate, target="local"):
+        self.calls.append(("book_speed", rate, target))
+        return {"ok": True, "speed": rate}
+
+    def book_bed(self, mode, target="local"):
+        self.calls.append(("book_bed", mode, target)); return {"ok": True}
+
+    def book_now_playing(self, target="local"):
+        return {"idle": True}
+
+    def focus(self, channel, target="local"):
+        self.calls.append(("focus", channel, target)); return {"ok": True}
+
+    def channels_status(self):
+        return {"focus": "book", "bed": "duck",
+                "music": {"uri": None}, "book": {"idle": True}}
+
+    def book_playlist_new(self, name):
+        self.calls.append(("pl_new", name))
+        return {"ok": True, "created": True}
+
+    def book_playlist_add(self, name, uris):
+        self.calls.append(("pl_add", name, uris))
+        return {"ok": True, "added": len(uris), "count": len(uris)}
+
+    def book_playlist_play(self, name, resume=True, target=""):
+        self.calls.append(("pl_play", name, resume, target))
+        return {"ok": True, "index": 0, "uri": "u", "title": None}
+
+    def book_playlist_ls(self, name=""):
+        return {"playlists": []} if not name else {
+            "ok": True, "name": name, "cur_index": 0, "items": []}
+
+    def book_playlist_rm(self, name):
+        self.calls.append(("pl_rm", name)); return {"ok": True}
+
+
+def _run(monkeypatch, fake, argv):
+    monkeypatch.setattr(cli, "_srv", lambda: fake)
+    return cli.main(argv)
+
+
+def test_book_subcommands_registered():
+    p = cli._build_parser()
+    top = next(a for a in p._actions if a.choices and "book" in a.choices)
+    for name in ("book", "focus", "channels"):
+        assert name in top.choices
+    book = top.choices["book"]
+    bsub = next(a for a in book._actions if a.choices and "play" in a.choices)
+    for name in ("play", "resume", "pause", "stop", "next", "prev", "skip",
+                 "speed", "bed", "status", "now", "playlist"):
+        assert name in bsub.choices, name
+
+
+def test_book_play_passes_flags(monkeypatch):
+    fake = _FakeSrv()
+    assert _run(monkeypatch, fake,
+                ["book", "play", "yt:foo", "--no-resume", "--target", "rooms"]) == 0
+    assert ("book_play", "yt:foo", False, -1, "rooms") in fake.calls
+
+
+def test_book_skip_default_is_plus_30(monkeypatch):
+    fake = _FakeSrv()
+    assert _run(monkeypatch, fake, ["book", "skip"]) == 0
+    assert ("book_skip", 30.0, "local") in fake.calls
+
+
+def test_book_failure_maps_to_exit_1(monkeypatch):
+    fake = _FakeSrv()
+    # book_prev returns ok=False in the fake.
+    assert _run(monkeypatch, fake, ["book", "prev"]) == 1
+
+
+def test_book_playlist_add_collects_uris(monkeypatch):
+    fake = _FakeSrv()
+    assert _run(monkeypatch, fake,
+                ["book", "playlist", "add", "dune", "a", "b", "c"]) == 0
+    assert ("pl_add", "dune", ["a", "b", "c"]) in fake.calls
+
+
+def test_book_playlist_play_resume_flag(monkeypatch):
+    fake = _FakeSrv()
+    assert _run(monkeypatch, fake,
+                ["book", "playlist", "play", "dune", "--no-resume"]) == 0
+    assert ("pl_play", "dune", False, "") in fake.calls
+
+
+def test_focus_and_channels(monkeypatch):
+    fake = _FakeSrv()
+    assert _run(monkeypatch, fake, ["focus", "music"]) == 0
+    assert ("focus", "music", "local") in fake.calls
+    assert _run(monkeypatch, fake, ["channels"]) == 0

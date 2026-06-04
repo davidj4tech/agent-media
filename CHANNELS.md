@@ -300,5 +300,71 @@ decision); full suite 123 pass. Auto-advance also verified end-to-end against
 a real mpv broker (two short clips, `ao=null`): it advanced part 1→2 on EOF
 and cleared the active playlist when the last part finished.
 
-Deferred to phase 4: the CLI + voice-command phrasing for all the channel
-verbs (the MCP surface is complete).
+## Phase 4 — built 2026-06-04
+
+Delivered: the `media` CLI surface for the book channel + focus/bed, and
+voice-friendly phrasing on the agent-facing MCP tools. This completes the
+channel design.
+
+### CLI (`media …`)
+
+Mirrors `media music`, with book-shaped transport and playlists. The CLI
+doesn't re-implement the orchestration — it calls the same `mcp_server` tool
+functions (they're plain callables) and formats the result, so bookmark-save,
+the playlist cursor and auto-advance behave identically to the MCP path.
+`mcp_server` is imported lazily inside the book handlers so the frequently-run
+`media status` / `media music` status-bar calls don't pull in the `mcp`
+dependency.
+
+```
+media book play <uri> [--no-resume] [--start-ms N] [--target rooms|local]
+media book resume | pause | stop
+media book next | prev            # step the active playlist
+media book skip [secs]            # default +30
+media book speed <factor|reset>
+media book bed duck|pause
+media book status [--width N --show-idle --no-bar]   # status-bar line
+media book now                    # URI being read
+media book playlist new <name>
+media book playlist add <name> <uri>...
+media book playlist play <name> [--no-resume] [--target T]
+media book playlist ls [name]
+media book playlist rm <name>
+media focus book|music
+media channels                    # both channels at a glance
+```
+
+### Auto-advance is now host-wide
+
+The auto-advance watcher is started in `mcp_server.main`/`main_http` (service
+startup), not only on the first MCP `book_playlist_play`. So a playlist started
+from the **CLI** — a short-lived process that can't host the watcher — still
+rolls to the next part, as long as the `agent-media-mcp` service is up (it is,
+on mel).
+
+### Voice
+
+There is no separate NLU layer: spoken requests flow HA Assist / Matrix → the
+openclaw agent → these MCP tools, so "voice phrasing" means the agent-facing
+tool names + descriptions are natural enough for an LLM to map speech onto.
+Example spoken phrase → tool:
+
+| "..."                                    | tool                          |
+|------------------------------------------|-------------------------------|
+| play my Dune audiobook                   | `book_playlist_play(name=…)`  |
+| next chapter / skip ahead                | `book_next`                   |
+| previous chapter / go back a part        | `book_prev`                   |
+| jump back 30 seconds                     | `book_skip(seconds=-30)`      |
+| read a bit faster                        | `book_speed(rate=…)`          |
+| put the music underneath / quieter       | `focus(channel="book")` + `book_bed("duck")` |
+| pause the music while I listen           | `book_bed("pause")`           |
+| back to my music                         | `focus(channel="music")`      |
+| what's playing                           | `channels_status`             |
+
+The flat `music_*` tools are retained as the `music` channel's aliases, so
+existing "play some music" phrasings keep working unchanged.
+
+CLI dispatch is unit-tested (`tests/test_cli.py`, fake server) and verified
+end-to-end against a real mpv broker (isolated state dir, `ao=null`): playlist
+new/add/ls/play, cross-process `status`/`now`/`channels`, next/prev, speed,
+bed, focus, stop. Full suite 130 pass.
