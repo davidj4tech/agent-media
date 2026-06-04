@@ -526,7 +526,10 @@ def book_playlist_add(name: str, uris: list[str]) -> dict:
 
 @mcp.tool()
 def book_playlist_play(name: str, resume: bool = True, target: str = "") -> dict:
-    """Play a book playlist, resuming at its remembered part + offset.
+    """Play a saved book playlist, resuming at its remembered part + offset.
+
+    For spoken requests like "play my Dune audiobook" / "put on the <name>
+    playlist" / "continue my book" where <name> is a saved playlist.
 
     Args:
         name: The playlist to play.
@@ -548,7 +551,8 @@ def book_playlist_play(name: str, resume: bool = True, target: str = "") -> dict
 
 @mcp.tool()
 def book_next(target: str = "") -> dict:
-    """Advance to the next part of the active book playlist."""
+    """Next part of the active book playlist — "next chapter", "skip ahead",
+    "play the next part", "next episode"."""
     st, t = _state(), _book_target(target)
     name = st.get_playlist_active()
     if not name:
@@ -564,7 +568,8 @@ def book_next(target: str = "") -> dict:
 
 @mcp.tool()
 def book_prev(target: str = "") -> dict:
-    """Go back to the previous part of the active book playlist."""
+    """Previous part of the active book playlist — "previous chapter",
+    "go back a part", "last episode"."""
     st, t = _state(), _book_target(target)
     name = st.get_playlist_active()
     if not name:
@@ -679,6 +684,9 @@ def main() -> None:
     """stdio entrypoint — for Claude Code and other local MCP clients."""
     load_env_file("media-mcp")
     _configure_logging()
+    # Watch for playlist part-ends host-wide, so a playlist started from the
+    # CLI (a short-lived process that can't host the watcher) still advances.
+    _ensure_autoadvance_watcher()
     mcp.run()
 
 
@@ -686,6 +694,7 @@ def main_http() -> None:
     """streamable-HTTP entrypoint — for remote callers over Tailscale."""
     load_env_file("media-mcp-http")
     _configure_logging()
+    _ensure_autoadvance_watcher()
     log.info("media-mcp http listening on %s:%d", _host(), _port())
     mcp.run(transport="streamable-http")
 
