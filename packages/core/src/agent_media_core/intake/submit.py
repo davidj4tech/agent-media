@@ -217,14 +217,40 @@ def _strip_markdown_inline(s: str) -> str:
     return s
 
 
-def _anchor_for(text: str) -> Optional[str]:
+def _pane_anchor_width(pane: str) -> int:
+    """Max anchor length that fits on one visual row of `pane`.
+
+    Claude Code wraps its output at the full pane width (measured: a 32-col
+    pane's content rows reach exactly 32), so cap to pane_width − 1 (a hair of
+    slack at the wrap column), clamped to [15, 50]. Falls back to 50 (the old
+    fixed cap) when the width can't be resolved.
+    """
+    try:
+        r = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", pane, "#{pane_width}"],
+            capture_output=True, text=True, timeout=2)
+        w = int(r.stdout.strip()) if r.returncode == 0 else 0
+    except Exception:  # noqa: BLE001
+        w = 0
+    if w <= 0:
+        return 50
+    return min(50, max(15, w - 1))
+
+
+def _anchor_for(text: str, max_len: int = 50) -> Optional[str]:
     """Single-line search anchor for spoken `text`, normalized to match the
     *rendered* pane (markdown stripped). Returns the plain (un-escaped) snippet
-    — the longest line, trimmed to a word boundary within 50 chars so it fits
-    on one visual row — or None if no line is long enough (>=15 chars) to be a
-    unique search target. Shared by the auto-highlight (clip->cursor) and
+    — the longest line, trimmed to a word boundary within `max_len` chars so it
+    fits on one visual row — or None if no line is long enough (>=15 chars) to
+    be a unique search target. Shared by the auto-highlight (clip->cursor) and
     `replay-at-cursor` (cursor->clip) so both normalize text identically; if
     they drift, a clip that highlights wouldn't match-at-cursor.
+
+    `max_len` defaults to 50 but the highlight path passes the target pane's
+    width: tmux's search-backward matches within ONE visual row, so on a narrow
+    pane (e.g. a 32-col phone) a 50-char anchor wraps and never matches. The
+    anchor is always a prefix of a logical line, which renders from the left
+    margin, so capping it to the pane width keeps it on that first row.
     """
     text = _strip_markdown_inline(text)
     # tmux search matches within one visual row, so flattening newlines (which
@@ -235,10 +261,13 @@ def _anchor_for(text: str) -> Optional[str]:
     # search-backward then lands on spurious text. Skip those.
     if len(anchor) < 15:
         return None
-    if len(anchor) <= 50:
+    if len(anchor) <= max_len:
         return anchor
-    cut = anchor[:50].rfind(" ")
-    return anchor[:cut] if cut > 15 else anchor[:50]
+    if max_len < 15:
+        # Pane too narrow to hold a unique (>=15 char) single-row anchor.
+        return None
+    cut = anchor[:max_len].rfind(" ")
+    return anchor[:cut] if cut > 15 else anchor[:max_len]
 
 
 def _tmux_highlight_text(text: str, *, first: bool = False,
@@ -267,9 +296,12 @@ def _tmux_highlight_text(text: str, *, first: bool = False,
         return
 
     # Build the search anchor (markdown stripped, longest single line, trimmed
-    # to one visual row). None = no line unique enough to search for — leave the
-    # prior highlight in place rather than stranding the view at the bottom.
-    snippet = _anchor_for(text)
+    # to one visual row). Cap to the target pane's width: tmux search-backward
+    # is row-bound, so on a narrow pane (a 32-col phone) a 50-char anchor wraps
+    # and matches nothing — the main reason highlighting "doesn't work on the
+    # phone". None = no line unique enough to search for — leave the prior
+    # highlight in place rather than stranding the view at the bottom.
+    snippet = _anchor_for(text, max_len=_pane_anchor_width(pane))
     if snippet is None:
         return
 
