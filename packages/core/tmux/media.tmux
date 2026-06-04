@@ -31,7 +31,7 @@ run-shell 'case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) tmux set-environment 
 # the popup never overflows a narrow phone yet stays roomy on a desktop. The
 # #{…} formats are expanded by tmux at key-press time (client context).
 bind a \
-    run-shell -b "media-popup-open '#{client_name}' '#{pane_id}' '#{client_width}'"
+    run-shell -b "media-popup-open '#{client_name}' '#{pane_id}' '#{client_width}' '#{client_height}'"
 
 # Refresh the status bar every second so the `#(media status)` progress
 # bar advances smoothly (oh-my-tmux defaults to 10s — too coarse for it).
