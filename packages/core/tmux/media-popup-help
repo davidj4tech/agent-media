@@ -1,31 +1,41 @@
 #!/usr/bin/env bash
 # Full keymap for the agent-media control popup, shown in a nested popup from
-# the main popup's `?` key. Renders the key reference, waits for any key, exits.
-# Kept narrow (<=22 cols) so it fits a ~26-col phone client.
+# the main popup's `?` key. Renders a compact box table grouped by channel
+# (<=22 cols so it fits a ~26-col phone), waits for any key, exits.
+#
+# Line 1 is intentionally blank: tmux paints a copy-mode/position indicator over
+# the popup's first row, which would otherwise clobber the title.
 set -u
-printf '\033[?25l'                       # hide cursor
-cleanup() { printf '\033[?25h'; }        # restore on exit
+printf '\033[?25l\033[?7l'                 # hide cursor + disable line-wrap
+cleanup() { printf '\033[?7h\033[?25h'; }  # restore both on exit
 trap cleanup EXIT
 cat <<'EOF'
- agent-media popup
- — any channel —
- Tab  next channel
- Spc  play / pause
- h l  seek -/+5s
- H L  seek -/+30s
- - =  volume -/+5
- < >  prev / next
- g    go to source
- q    close
- — speech —
- r  replay last
- p  clip at cursor
- m  mute
- v  highlight
- — speech & book —
- [ ]  speed -/+
- 0    reset speed
 
- (press any key)
+ agent-media popup keys
+ ┌────────────────────┐
+ │ all channels       │
+ ├─────┬──────────────┤
+ │ Tab │ next channel │
+ │ Spc │ play/pause   │
+ │ h l │ seek -/+5s   │
+ │ H L │ seek -/+30s  │
+ │ - = │ volume -/+5  │
+ │ < > │ prev/next    │
+ │ g   │ go to source │
+ │ q   │ close        │
+ ├─────┴──────────────┤
+ │ speech only        │
+ ├─────┬──────────────┤
+ │ r   │ replay last  │
+ │ p   │ clip @cursor │
+ │ m   │ mute         │
+ │ v   │ highlight    │
+ ├─────┴──────────────┤
+ │ speech & book      │
+ ├─────┬──────────────┤
+ │ [ ] │ speed -/+    │
+ │ 0   │ reset speed  │
+ └─────┴──────────────┘
+ (any key closes)
 EOF
 IFS= read -rsn1 _
