@@ -46,6 +46,10 @@ SPEECH_SOCK="${MEDIA_SPEECH_SOCKET:-$HOME/.local/state/agent-media/sink-speech.s
 # each fetch so they're honest regardless of who changed them.
 MUTED=""        # 1 when the active channel is muted
 SPD=""          # active channel's actual speed ("" / "1" → hidden)
+PART=""         # "2/5" when a multi-part book/playlist is active
+LOADING=""      # 1 while the book channel is resolving a load (YouTube gap)
+SPIN=0          # spinner frame index (advances each draw while LOADING)
+SPIN_FRAMES=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
 HL=""           # speech auto-highlight: on|off (tracked from the v key)
 VOL_SHOW=0      # ticks remaining to show the transient volume readout
 VOL_TXT=""      # the transient volume readout text
@@ -100,7 +104,7 @@ fetch() {
     fi
     # Refresh socket-backed indicators (speech/book have a socket; music/MPD
     # doesn't). Sync the bump base so a following [ / ] starts from reality.
-    SPD=""; MUTED=""
+    SPD=""; MUTED=""; PART=""; LOADING=""
     # Derive mute from the CLI's own [M] marker (works on any channel), then
     # strip the text — we render a single 🔇 glyph instead of [M] + glyph.
     case "$STATUS" in *'[M]'*) MUTED=1 ;; esac
@@ -111,6 +115,25 @@ fetch() {
             SPD=$(sock_get speed)   # mpv returns e.g. 0.700000 — normalize
             [ -n "$SPD" ] && SPD=$(awk -v s="$SPD" 'BEGIN{printf "%.1f", s}')
             [ "$CHANNEL" = "speech" ] && speed="${SPD:-$speed}" || bspeed="${SPD:-$bspeed}"
+            ;;
+    esac
+    # Part number, shown only for a genuinely multi-part book/playlist.
+    case "$CHANNEL" in
+        book)
+            local pp pc bdur
+            pp=$(sock_get playlist-pos); pc=$(sock_get playlist-count)
+            [ -n "$pc" ] && [ "$pc" -gt 1 ] 2>/dev/null && PART="$(( ${pp:-0} + 1 ))/$pc"
+            # Loading = a file is queued (playlist-count>=1) but has no duration
+            # yet, i.e. mid yt-dlp/network resolve (the 4-25s YouTube gap).
+            if [ -n "$pc" ] && [ "$pc" -ge 1 ] 2>/dev/null; then
+                bdur=$(sock_get duration)
+                [ -z "$bdur" ] && LOADING=1
+            fi
+            ;;
+        music)
+            local sg pl
+            sg=$(mpd_get song); pl=$(mpd_get playlistlength)
+            [ -n "$pl" ] && [ "$pl" -gt 1 ] 2>/dev/null && PART="$(( ${sg:-0} + 1 ))/$pl"
             ;;
     esac
 }
@@ -153,13 +176,22 @@ draw() {
     # stays small on a ~32-col phone). speed (speech/book) · mute · highlight
     # (speech) · transient volume.
     local ind=""
+    [ -n "$PART" ] && ind="$ind $PART"
     [ -n "$SPD" ] && [ "$SPD" != "1.0" ] && ind="$ind ${SPD}×"
     [ -n "$MUTED" ] && ind="$ind 🔇"
     [ "$CHANNEL" = "speech" ] && [ "$HL" = "on" ] && ind="$ind ✎"
     [ "$VOL_SHOW" -gt 0 ] && ind="$ind $VOL_TXT"
+    # While the book channel resolves a load (the YouTube gap), show an animated
+    # spinner instead of the meaningless `--:--` so it doesn't look hung.
+    local line2
+    if [ -n "$LOADING" ]; then
+        SPIN=$(( (SPIN + 1) % ${#SPIN_FRAMES[@]} ))
+        line2=" ${SPIN_FRAMES[SPIN]} loading…"
+    else
+        line2=" $STATUS$ind"
+    fi
     # Clip line 2 to the popup width so a long book status + indicators can't
     # wrap onto a third row (which would scroll the marquee off the top).
-    local line2=" $STATUS$ind"
     printf '%s' "${line2:0:cols}"        # no trailing newline (2-row popup)
 }
 
