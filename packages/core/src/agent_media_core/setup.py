@@ -14,6 +14,9 @@ Subcommands:
                                         host-runit) vs systemd --user
                                         (regular Linux); override with
                                         --backend.
+  media-setup install-shell [--dry-run] Symlink the tmux popup launcher +
+                                        control surface onto PATH
+                                        (~/.local/bin, ~/.local/share).
   media-setup status                    Summarize current wiring.
 
 Everything is idempotent. The settings.json writer makes a `.bak` copy
@@ -304,6 +307,43 @@ def service_templates_dir() -> Path:
     return Path(__file__).resolve().parent.parent.parent / "services"
 
 
+def tmux_dir() -> Path:
+    """Repo-shipped tmux integration under packages/core/tmux/."""
+    return Path(__file__).resolve().parent.parent.parent / "tmux"
+
+
+def local_bin() -> Path:
+    return Path.home() / ".local" / "bin"
+
+
+def media_share_dir() -> Path:
+    return Path.home() / ".local" / "share" / "agent-media"
+
+
+def _symlink_into(src: Path, dest: Path, *, dry_run: bool) -> bool:
+    """Idempotently symlink ``dest -> src``. Replaces a stale symlink of ours
+    but never clobbers a real file someone else put there."""
+    if dest.is_symlink():
+        if dest.resolve() == src.resolve():
+            print(f"media-setup: {dest.name} already linked")
+            return True
+        if dry_run:
+            print(f"# would relink {dest} -> {src}")
+            return True
+        dest.unlink()
+    elif dest.exists():
+        print(f"media-setup: {dest} exists and is not our symlink; leaving it",
+              file=sys.stderr)
+        return False
+    if dry_run:
+        print(f"# would symlink {dest} -> {src}")
+        return True
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.symlink_to(src)
+    print(f"media-setup: linked {dest} -> {src}")
+    return True
+
+
 def _install_one_service(name: str, *, dry_run: bool,
                          root: Path) -> bool:
     """Symlink/copy the template tree into the runit service root.
@@ -464,6 +504,34 @@ def cmd_install_services(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+# --- Shell integration (tmux popup + control surface) ----------------------
+
+def cmd_install_shell(args: argparse.Namespace) -> int:
+    """Symlink the shell-facing bits onto PATH so the `prefix a` popup works:
+    the executable helpers in tmux/ (media-popup, media-popup-open, …) into
+    ~/.local/bin, and the tmux control surface (media.tmux) into
+    ~/.local/share/agent-media/. Repo-source symlinks, so a `git pull` keeps
+    them current; the bin loop enumerates tmux/, so new helper scripts are
+    picked up automatically."""
+    src_dir = tmux_dir()
+    if not src_dir.is_dir():
+        print(f"media-setup: tmux dir not found at {src_dir}", file=sys.stderr)
+        return 1
+    ok = True
+    bindir = local_bin()
+    for f in sorted(src_dir.iterdir()):
+        # Executable scripts (not the .tmux source) → ~/.local/bin.
+        if f.is_file() and f.suffix != ".tmux" and os.access(f, os.X_OK):
+            ok = _symlink_into(f, bindir / f.name, dry_run=args.dry_run) and ok
+    # The tmux control surface, sourced from tmux.conf.local behind an
+    # if-shell guard → ~/.local/share/agent-media/.
+    tmux_conf = src_dir / "media.tmux"
+    if tmux_conf.is_file():
+        ok = _symlink_into(tmux_conf, media_share_dir() / "media.tmux",
+                           dry_run=args.dry_run) and ok
+    return 0 if ok else 1
+
+
 # --- Prereq check ----------------------------------------------------------
 
 PREREQS: tuple[tuple[str, str], ...] = (
@@ -561,6 +629,13 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.add_argument("services", nargs="*",
                     help="Specific service names (default: all in repo)")
     sp.set_defaults(func=cmd_install_services)
+
+    sp = sub.add_parser("install-shell",
+                        help="Symlink the tmux popup launcher + control "
+                             "surface onto PATH (~/.local/bin, "
+                             "~/.local/share/agent-media)")
+    sp.add_argument("--dry-run", action="store_true")
+    sp.set_defaults(func=cmd_install_shell)
 
     sp = sub.add_parser("migrate-env",
                         help="Rename CLAUDE_TTS_*/AAR_*/RELAY_* envs to "

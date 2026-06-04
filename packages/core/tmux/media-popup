@@ -5,15 +5,16 @@
 # line 2 is the live clock. Tab cycles channels; single-key hotkeys drive the
 # `media` CLI and route to the active channel:
 #
-#   Tab     switch channel (speech ⇆ music)
+#   Tab     switch channel (speech ⇆ music ⇆ book)
 #   Space   play/pause toggle          r   replay latest clip   (speech)
 #   p       play clip at copy-mode cursor (speech) — the spoken clip whose
 #           text sits at/above the cursor; no copy-mode → this pane's latest
 #   h / l   prev/next sentence         H / L   prev/next paragraph
-#           (speech; ±5s/±30s seek on music or a single-sentence reply)
-#   - / =   volume -5 / +5             m   toggle mute           (speech)
-#   [ / ]   slower / faster (0.1)      0   reset speed           (speech)
-#   < / >   speech: replay older/newer · music: prev/next track
+#           (speech; ±5s/±30s seek on music & book)
+#   - / =   volume -5 / +5             m   toggle mute           (speech/music)
+#   [ / ]   slower / faster (0.1)      0   reset speed           (speech/book)
+#   < / >   speech: replay older/newer · music: prev/next track ·
+#           book: prev/next part (chapters in a later pass)
 #   v       toggle auto-highlight (speech)   ?  help   q / Esc  close
 #
 # Caller pane for `v`/the speech marquee comes from TTS_POPUP_PANE (set by
@@ -36,8 +37,19 @@ case "$HL_PANE" in *'#{'*) HL_PANE="" ;; esac
 export TTS_POPUP_PANE="$HL_PANE"
 
 speed=1.0
+bspeed=1.0              # book channel speed (tracked separately from speech)
 hist_idx=1
-CHANNEL=speech          # active channel: speech | music (Tab cycles)
+CHANNEL=speech          # active channel: speech | music | book (Tab cycles)
+BOOK_SOCK="${MEDIA_BOOK_SOCKET:-$HOME/.local/state/agent-media/sink-book.sock}"
+SPEECH_SOCK="${MEDIA_SPEECH_SOCKET:-$HOME/.local/state/agent-media/sink-speech.sock}"
+# Indicator state (line-2 cluster). Read fresh from the active channel's socket
+# each fetch so they're honest regardless of who changed them.
+MUTED=""        # 1 when the active channel is muted
+SPD=""          # active channel's actual speed ("" / "1" → hidden)
+HL=""           # speech auto-highlight: on|off (tracked from the v key)
+VOL_SHOW=0      # ticks remaining to show the transient volume readout
+VOL_TXT=""      # the transient volume readout text
+VOL_TICKS=8     # ~1.6s at TICK=0.2
 
 # Cached snapshot of the CLI state. The draw loop ticks fast (TICK) so the
 # marquee scrolls smoothly, but the `media` CLI costs ~150ms/call, so we
@@ -69,6 +81,15 @@ fetch() {
         t=$($MEDIA music now 2>/dev/null | tr '\n' ' ')
         t="${t#"${t%%[![:space:]]*}"}"; t="${t%"${t##*[![:space:]]}"}"
         [ -n "$t" ] && LABEL="$t" || LABEL="(no music)"
+    elif [ "$CHANNEL" = "book" ]; then
+        STATUS=$($MEDIA book status --show-idle --no-bar 2>/dev/null)
+        # `media book now` yields a bare URI; the socket's media-title reads
+        # far nicer in the marquee. Falls back to a placeholder when idle.
+        t=$(printf '{"command":["get_property","media-title"]}\n' \
+              | socat - "$BOOK_SOCK" 2>/dev/null | jq -r '.data // empty' 2>/dev/null \
+              | tr '\n' ' ')
+        t="${t#"${t%%[![:space:]]*}"}"; t="${t%"${t##*[![:space:]]}"}"
+        [ -n "$t" ] && LABEL="$t" || LABEL="(audiobook)"
     else
         STATUS=$($MEDIA status --show-idle --no-bar 2>/dev/null)
         # Title of the pane that produced the *currently playing* speech
@@ -77,6 +98,21 @@ fetch() {
         t="${t#"${t%%[![:space:]]*}"}"; t="${t%"${t##*[![:space:]]}"}"
         [ -n "$t" ] && LABEL="$t" || LABEL="agent-media"
     fi
+    # Refresh socket-backed indicators (speech/book have a socket; music/MPD
+    # doesn't). Sync the bump base so a following [ / ] starts from reality.
+    SPD=""; MUTED=""
+    # Derive mute from the CLI's own [M] marker (works on any channel), then
+    # strip the text — we render a single 🔇 glyph instead of [M] + glyph.
+    case "$STATUS" in *'[M]'*) MUTED=1 ;; esac
+    STATUS="${STATUS/ \[M\]/}"
+    case "$CHANNEL" in
+        speech|book)
+            [ "$(sock_get mute)" = "true" ] && MUTED=1
+            SPD=$(sock_get speed)   # mpv returns e.g. 0.700000 — normalize
+            [ -n "$SPD" ] && SPD=$(awk -v s="$SPD" 'BEGIN{printf "%.1f", s}')
+            [ "$CHANNEL" = "speech" ] && speed="${SPD:-$speed}" || bspeed="${SPD:-$bspeed}"
+            ;;
+    esac
 }
 
 draw() {
@@ -84,7 +120,8 @@ draw() {
     # Line 1: marquee of LABEL behind a fixed channel glyph.
     local cols="${COLUMNS:-0}"
     [ "$cols" -le 0 ] && cols=$(tput cols 2>/dev/null || echo 24)
-    local prefix; [ "$CHANNEL" = "music" ] && prefix='♫ ' || prefix='♪ '
+    local prefix
+    case "$CHANNEL" in music) prefix='♫ ' ;; book) prefix='☰ ' ;; *) prefix='♪ ' ;; esac
     local avail=$(( cols - ${#prefix} - 1 ))
     [ "$avail" -lt 4 ] && avail=4
     if [ "$LABEL" != "$LAST_LABEL" ]; then
@@ -112,9 +149,18 @@ draw() {
         fi
     fi
     printf ' %s%s\r\n' "$prefix" "$shown"
-    printf ' %s' "$STATUS"               # no trailing newline: in a 2-row popup
-                                         # it would scroll the marquee off the top
-
+    # Line 2: progress, then a compact indicator cluster (only-when-active so it
+    # stays small on a ~32-col phone). speed (speech/book) · mute · highlight
+    # (speech) · transient volume.
+    local ind=""
+    [ -n "$SPD" ] && [ "$SPD" != "1.0" ] && ind="$ind ${SPD}×"
+    [ -n "$MUTED" ] && ind="$ind 🔇"
+    [ "$CHANNEL" = "speech" ] && [ "$HL" = "on" ] && ind="$ind ✎"
+    [ "$VOL_SHOW" -gt 0 ] && ind="$ind $VOL_TXT"
+    # Clip line 2 to the popup width so a long book status + indicators can't
+    # wrap onto a third row (which would scroll the marquee off the top).
+    local line2=" $STATUS$ind"
+    printf '%s' "${line2:0:cols}"        # no trailing newline (2-row popup)
 }
 
 # Blocking yes/no prompt drawn over the popup. Returns 0 on y/Y. Used by the
@@ -126,9 +172,51 @@ confirm() {           # $1 = prompt text
     case "$ans" in y|Y) return 0 ;; *) return 1 ;; esac
 }
 
-bump_speed() {        # $1 = +/- delta
-    speed=$(awk -v s="$speed" -v d="$1" 'BEGIN{v=s+d; if(v<0.3)v=0.3; if(v>3)v=3; printf "%.1f", v}')
-    $MEDIA speed "$speed" 2>/dev/null
+bump_speed() {        # $1 = +/- delta — applies to the active channel
+    if [ "$CHANNEL" = "book" ]; then
+        bspeed=$(awk -v s="$bspeed" -v d="$1" 'BEGIN{v=s+d; if(v<0.3)v=0.3; if(v>3)v=3; printf "%.1f", v}')
+        $MEDIA book speed "$bspeed" 2>/dev/null
+    else
+        speed=$(awk -v s="$speed" -v d="$1" 'BEGIN{v=s+d; if(v<0.3)v=0.3; if(v>3)v=3; printf "%.1f", v}')
+        $MEDIA speed "$speed" 2>/dev/null
+    fi
+}
+
+# The book channel exposes no `toggle`; derive play/pause from the status glyph.
+book_toggle() {
+    case "$($MEDIA book status --no-bar 2>/dev/null)" in
+        '⏸'*) $MEDIA book resume 2>/dev/null ;;
+        *)    $MEDIA book pause  2>/dev/null ;;
+    esac
+}
+
+# The active channel's mpv IPC socket (music is MPD — no socket, returns "").
+sock_for() { case "$CHANNEL" in book) printf '%s' "$BOOK_SOCK" ;; speech) printf '%s' "$SPEECH_SOCK" ;; esac; }
+sock_get() {  # $1 = mpv property; echoes raw .data, or "" if absent/false/no-socket
+    local s; s=$(sock_for); [ -z "$s" ] && return 1
+    printf '{"command":["get_property","%s"]}\n' "$1" | socat - "$s" 2>/dev/null \
+        | jq -r '.data // empty' 2>/dev/null
+}
+
+# Music has no mpv socket, but Mopidy speaks MPD — read fields from its
+# `status` over the MPD control port (defaults: the tailnet IP, since the tmux
+# server env usually lacks MOPIDY_MPD_*).
+MPD_HOST="${MOPIDY_MPD_HOST:-100.94.154.59}"; MPD_PORT="${MOPIDY_MPD_PORT:-6600}"
+mpd_get() {  # $1 = status field, e.g. volume
+    printf 'status\nclose\n' | socat -T2 - TCP:"$MPD_HOST":"$MPD_PORT" 2>/dev/null \
+        | awk -F': ' -v k="$1" '$1==k{print $2; exit}'
+}
+
+# Capture a transient volume readout after a -/= press (shown ~1.6s).
+show_volume() {
+    local v
+    if [ "$CHANNEL" = "music" ]; then
+        v=$(mpd_get volume); [ "$v" = "-1" ] && v=""   # -1 = Mopidy mixer disabled
+    else
+        v=$(sock_get volume)
+    fi
+    case "$v" in '') VOL_TXT='🔊vol' ;; *) VOL_TXT="🔊${v%.*}%" ;; esac
+    VOL_SHOW=$VOL_TICKS
 }
 
 # Run a transport command on the active channel. Avoids the `A && B || C`
@@ -138,6 +226,7 @@ xport() {
     # stderr silenced so a transient failure (e.g. MPD unreachable) can't
     # dump a traceback over the popup UI.
     if [ "$CHANNEL" = "music" ]; then $MEDIA music "$@" 2>/dev/null
+    elif [ "$CHANNEL" = "book" ]; then $MEDIA book "$@" 2>/dev/null
     else $MEDIA "$@" 2>/dev/null; fi
 }
 
@@ -152,6 +241,7 @@ while true; do
     IFS= read -rsn1 -t "$TICK" key; rc=$?
     if [ "$rc" -gt 128 ]; then
         ticks=$(( ticks + 1 ))
+        [ "$VOL_SHOW" -gt 0 ] && VOL_SHOW=$(( VOL_SHOW - 1 ))
         if [ "$ticks" -ge "$FETCH_EVERY" ]; then fetch; ticks=0; fi
         draw; continue
     fi
@@ -159,31 +249,43 @@ while true; do
     # Transport keys route to the active channel; speech-only keys (r, m,
     # [, ], 0, v) no-op on the music channel.
     case "$key" in
-        $'\t') [ "$CHANNEL" = "speech" ] && CHANNEL=music || CHANNEL=speech
+        $'\t') case "$CHANNEL" in
+                   speech) CHANNEL=music ;;
+                   music)  CHANNEL=book ;;
+                   *)      CHANNEL=speech ;;
+               esac
                LABEL=""; LAST_LABEL=" "    # force a clean marquee reset
                tmux display-message "♪ channel: $CHANNEL" 2>/dev/null ;;
-        ' ') xport toggle ;;
+        ' ') if [ "$CHANNEL" = "book" ]; then book_toggle; else xport toggle; fi ;;
         # speech: step one sentence (h/l) or paragraph (H/L), falling back to a
         # time-seek when there's no sentence sequence. music: plain time-seek.
         h)   if [ "$CHANNEL" = "music" ]; then $MEDIA music seek -5 2>/dev/null
+             elif [ "$CHANNEL" = "book" ]; then $MEDIA book skip -5 2>/dev/null
              else $MEDIA skip --unit sentence --dir -1 --seek-fallback -5 2>/dev/null; fi ;;
         l)   if [ "$CHANNEL" = "music" ]; then $MEDIA music seek 5 2>/dev/null
+             elif [ "$CHANNEL" = "book" ]; then $MEDIA book skip 5 2>/dev/null
              else $MEDIA skip --unit sentence --dir 1 --seek-fallback 5 2>/dev/null; fi ;;
         H)   if [ "$CHANNEL" = "music" ]; then $MEDIA music seek -30 2>/dev/null
+             elif [ "$CHANNEL" = "book" ]; then $MEDIA book skip -30 2>/dev/null
              else $MEDIA skip --unit paragraph --dir -1 --seek-fallback -30 2>/dev/null; fi ;;
         L)   if [ "$CHANNEL" = "music" ]; then $MEDIA music seek 30 2>/dev/null
+             elif [ "$CHANNEL" = "book" ]; then $MEDIA book skip 30 2>/dev/null
              else $MEDIA skip --unit paragraph --dir 1 --seek-fallback 30 2>/dev/null; fi ;;
-        '-') xport volume -5 ;;
-        '='|'+') xport volume 5 ;;
+        '-') xport volume -5; show_volume ;;
+        '='|'+') xport volume 5; show_volume ;;
         # speech: ⏮ older / ⏭ newer clip (jump to end when on latest).
         # music: previous / next track.
         '<') if [ "$CHANNEL" = "music" ]; then
                  $MEDIA music prev
+             elif [ "$CHANNEL" = "book" ]; then
+                 $MEDIA book prev 2>/dev/null   # v2: chapters when available
              else
                  hist_idx=$((hist_idx + 1)); $MEDIA replay "$hist_idx" || hist_idx=$((hist_idx - 1))
              fi ;;
         '>') if [ "$CHANNEL" = "music" ]; then
                  $MEDIA music next
+             elif [ "$CHANNEL" = "book" ]; then
+                 $MEDIA book next 2>/dev/null   # v2: chapters when available
              elif [ "$hist_idx" -gt 1 ]; then
                  hist_idx=$((hist_idx - 1)); $MEDIA replay "$hist_idx"
              else
@@ -198,6 +300,8 @@ while true; do
                  elif confirm "♫ no ncmpcpp running — start it?"; then
                      $MEDIA open-ncmpcpp 2>/dev/null; break
                  fi
+             elif [ "$CHANNEL" = "book" ]; then
+                 tmux display-message "☰ book: no source to jump to" 2>/dev/null
              else
                  _sid=$($MEDIA goto-pane 2>/dev/null); _grc=$?
                  case "$_grc" in
@@ -218,17 +322,19 @@ while true; do
         p)   [ "$CHANNEL" = "speech" ] && \
                  { TTS_POPUP_PANE="$HL_PANE" $MEDIA replay-at-cursor; hist_idx=1; } ;;
         m)   [ "$CHANNEL" = "speech" ] && $MEDIA mute ;;
-        '[') [ "$CHANNEL" = "speech" ] && bump_speed -0.1 ;;
-        ']') [ "$CHANNEL" = "speech" ] && bump_speed 0.1 ;;
-        0)   [ "$CHANNEL" = "speech" ] && { speed=1.0; $MEDIA speed reset; } ;;
+        '[') { [ "$CHANNEL" = "speech" ] || [ "$CHANNEL" = "book" ]; } && bump_speed -0.1 ;;
+        ']') { [ "$CHANNEL" = "speech" ] || [ "$CHANNEL" = "book" ]; } && bump_speed 0.1 ;;
+        0)   if [ "$CHANNEL" = "book" ]; then bspeed=1.0; $MEDIA book speed reset 2>/dev/null
+             elif [ "$CHANNEL" = "speech" ]; then speed=1.0; $MEDIA speed reset; fi ;;
         v)   # Toggle auto-highlight (copy-mode follow-along) on/off. Speech
              # only; immediate feedback fires for the current sentence and the
              # new state is shown in a tmux message.
              if [ "$CHANNEL" = "speech" ]; then
                  _hl_out=$(TTS_POPUP_PANE="$HL_PANE" $MEDIA highlight-toggle 2>/dev/null)
+                 case "$_hl_out" in *OFF*) HL=off ;; *ON*) HL=on ;; esac
                  tmux display-message "♪ ${_hl_out:-highlight: ?}" 2>/dev/null
              fi ;;
-        '?') tmux display-message "Tab channel · Space play/pause · h/l sentence H/L paragraph · -/= vol · < > older/newer · g go to source · speech: p play-at-cursor r replay m mute [/] speed v highlight · q quit" 2>/dev/null ;;
+        '?') tmux display-message "Tab channel (speech/music/book) · Space play/pause · h/l H/L seek · -/= vol · < > older-newer / track / book-part · g go to source · speech: p play-at-cursor r replay m mute v highlight · [/] speed (speech/book) 0 reset · q quit" 2>/dev/null ;;
         q|$'\e') break ;;
         *) : ;;
     esac
