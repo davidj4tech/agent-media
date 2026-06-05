@@ -136,7 +136,10 @@ class SinkBook:
         subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          start_new_session=True)
-        # Wait for the socket to come up (cold mpv ~0.3-1s).
+        # Wait for the socket to come up (cold mpv ~0.3-1s). EOF self-heal and
+        # playlist auto-advance are handled by the book event watcher in the
+        # long-lived MCP server (mcp_server._autoadvance_loop), which connects
+        # to this socket — no per-broker sidecar here.
         deadline = time.time() + 5.0
         while time.time() < deadline:
             if self._running():

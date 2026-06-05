@@ -433,18 +433,33 @@ def _play_playlist_part(name: str, index: int, target: Target,
             "title": item["title"], "resumed_from_ms": start}
 
 
-# --- playlist auto-advance ------------------------------------------------
+# --- book event watcher: playlist auto-advance + EOF self-heal ------------
 #
-# Audiobook playlists should roll on to the next part when one ends, without
-# the listener asking. The book broker is a single long-lived mpv that goes
-# idle at end-of-file; a daemon thread (started the first time a playlist
-# plays) watches the broker's async event stream and advances on an `eof`
-# `end-file`. Only `eof` triggers it — a user stop/skip/replace ends with
-# reason `stop`, so manual control never auto-advances. Lives in the
-# long-running MCP server process, which is where playlist playback is driven.
+# The book broker is a single long-lived mpv. One daemon thread (started the
+# first time a playlist plays, and at service boot) watches its async event
+# stream and reacts to two kinds of `end-file`:
+#
+#   reason=eof   → a part ended naturally: advance the active playlist. A
+#                  user stop/skip/replace ends with reason `stop`, so manual
+#                  control never auto-advances.
+#   reason=error → playback broke (the resolved YouTube media URL carries a
+#                  ~6h `expire=`; pausing across it, or a network drop, ends
+#                  the file and leaves mpv idle with the entry still queued).
+#                  Reload the last book at the live position so an expired-URL
+#                  stall self-heals without a keypress. A consecutive-failure
+#                  cap keeps a genuinely dead stream from hot-looping.
+#
+# Both live in the long-running MCP server process, which is where playlist
+# playback is driven — so no separate watcher process or service is needed.
 
 _autoadvance_thread: "threading.Thread | None" = None
 _autoadvance_lock = threading.Lock()
+
+# Self-heal tuning: stop rehealing after this many consecutive error end-files
+# with no intervening settled playback (the stream is dead, not just expired);
+# a clean stretch of playback resets the streak.
+_HEAL_MAX_CONSECUTIVE = 3
+_HEAL_RECOVERED_AFTER_S = 5.0
 
 
 def _advance_after_eof() -> None:
@@ -473,20 +488,77 @@ def _advance_after_eof() -> None:
     _play_playlist_part(name, nxt, t)
 
 
+def _reheal_after_error(last_pos_ms: "int | None") -> bool:
+    """Reload the last book at the best-known position after an error
+    end-file. Prefers the live-tracked position over the saved bookmark so a
+    self-heal never restarts from zero; reloads onto the same target the book
+    was last playing to. Returns True if a load was issued."""
+    from .sinks.book import normalize_uri
+
+    st, b = _state(), _book()
+    uri = st.get_book_last()
+    if not uri:
+        return False
+    norm = normalize_uri(uri)
+    pos = last_pos_ms if last_pos_ms and last_pos_ms > 0 else st.get_resume_pos(norm)
+    np = st.get_now_playing("book")
+    t = _book_target((np or {}).get("target") or "")
+    log.warning("book self-heal: reloading %s at %sms on %s", norm, pos, t.name)
+    b.play(norm, t, start_ms=(pos or 0))
+    return True
+
+
 def _autoadvance_loop() -> None:
     from .sinks import _mpv_ipc as ipc
 
     sock = _book()._sock
+    last_pos_ms: "int | None" = None
+    failures = 0
+    last_load_at = time.monotonic()
     while True:
         try:
             for msg in ipc.event_stream(sock):
                 if msg is None:
+                    # Heartbeat: remember the live position so an error
+                    # end-file can reload where we were, and clear the failure
+                    # streak once playback has settled back in.
+                    try:
+                        pos = ipc.get_property(sock, "time-pos")
+                        if pos is not None:
+                            last_pos_ms = int(pos * 1000)
+                            if (time.monotonic() - last_load_at) > _HEAL_RECOVERED_AFTER_S:
+                                failures = 0
+                    except (OSError, ipc.MpvIpcError):
+                        pass
                     continue
-                if msg.get("event") == "end-file" and msg.get("reason") == "eof":
+                ev = msg.get("event")
+                if ev == "start-file":
+                    last_load_at = time.monotonic()
+                    continue
+                if ev != "end-file":
+                    continue
+                reason = msg.get("reason")
+                if reason == "eof":
                     try:
                         _advance_after_eof()
                     except Exception:  # noqa: BLE001 — never kill the watcher
                         log.exception("book auto-advance failed")
+                    failures = 0
+                    continue
+                if reason != "error":
+                    continue  # stop/quit/redirect — never reheal
+                # Error end-file: self-heal unless the stream looks truly dead.
+                failures += 1
+                if failures > _HEAL_MAX_CONSECUTIVE:
+                    log.warning("book self-heal: giving up after %d consecutive "
+                                "errors (stream looks dead)", failures - 1)
+                    continue
+                time.sleep(min(2.0 * failures, 8.0))  # back off a flapping net
+                try:
+                    if _reheal_after_error(last_pos_ms):
+                        last_load_at = time.monotonic()
+                except Exception:  # noqa: BLE001 — never kill the watcher
+                    log.exception("book self-heal: reload failed")
         except (OSError, ipc.MpvIpcError):
             pass
         # Broker gone or never came up; back off then retry.

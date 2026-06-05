@@ -49,6 +49,7 @@ MUTED=""        # 1 when the active channel is muted
 SPD=""          # active channel's actual speed ("" / "1" → hidden)
 PART=""         # "2/5" when a multi-part book/playlist is active
 LOADING=""      # 1 while the book channel is resolving a load (YouTube gap)
+IDLE=""         # 1 when the book channel has a queued-but-unstarted entry
 SPIN=0          # spinner frame index (advances each draw while LOADING)
 SPIN_FRAMES=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
 HL=""           # speech auto-highlight: on|off (tracked from the v key)
@@ -105,7 +106,7 @@ fetch() {
     fi
     # Refresh socket-backed indicators (speech/book have a socket; music/MPD
     # doesn't). Sync the bump base so a following [ / ] starts from reality.
-    SPD=""; MUTED=""; PART=""; LOADING=""
+    SPD=""; MUTED=""; PART=""; LOADING=""; IDLE=""
     # Derive mute from the CLI's own [M] marker (works on any channel), then
     # strip the text — we render a single 🔇 glyph instead of [M] + glyph.
     case "$STATUS" in *'[M]'*) MUTED=1 ;; esac
@@ -124,11 +125,21 @@ fetch() {
             local pp pc bdur
             pp=$(sock_get playlist-pos); pc=$(sock_get playlist-count)
             [ -n "$pc" ] && [ "$pc" -gt 1 ] 2>/dev/null && PART="$(( ${pp:-0} + 1 ))/$pc"
-            # Loading = a file is queued (playlist-count>=1) but has no duration
-            # yet, i.e. mid yt-dlp/network resolve (the 4-25s YouTube gap).
+            # Distinguish two "queued but no duration" states so we don't spin
+            # the loading animation forever on a dead entry:
+            #   pos>=0, no duration  → mpv is on an item, mid yt-dlp/network
+            #                          resolve (the 4-25s YouTube gap) = LOADING.
+            #   pos=-1, count>=1     → queued but never started (abandoned load
+            #                          or stop) = IDLE; spinning would lie.
             if [ -n "$pc" ] && [ "$pc" -ge 1 ] 2>/dev/null; then
                 bdur=$(sock_get duration)
-                [ -z "$bdur" ] && LOADING=1
+                if [ -z "$bdur" ]; then
+                    if [ -n "$pp" ] && [ "$pp" -ge 0 ] 2>/dev/null; then
+                        LOADING=1
+                    else
+                        IDLE=1
+                    fi
+                fi
             fi
             ;;
         music)
@@ -188,6 +199,9 @@ draw() {
     if [ -n "$LOADING" ]; then
         SPIN=$(( (SPIN + 1) % ${#SPIN_FRAMES[@]} ))
         line2=" ${SPIN_FRAMES[SPIN]} loading…"
+    elif [ -n "$IDLE" ]; then
+        # Queued but not playing — tell the user instead of spinning forever.
+        line2=" ⏸ idle · press play"
     else
         line2=" $STATUS$ind"
     fi
@@ -217,6 +231,13 @@ bump_speed() {        # $1 = +/- delta — applies to the active channel
 
 # The book channel exposes no `toggle`; derive play/pause from the status glyph.
 book_toggle() {
+    # Idle/ended (e.g. the YouTube media URL expired and mpv stopped) isn't a
+    # pause — pausing an already-stopped channel is a no-op and leaves you
+    # stuck. Reload the last book at its bookmark instead. `book resume`'s
+    # idle branch handles the reopen; on a *paused* channel it just unpauses.
+    if [ "$(sock_get idle-active)" = "true" ]; then
+        $MEDIA book resume 2>/dev/null; return
+    fi
     case "$($MEDIA book status --no-bar 2>/dev/null)" in
         '⏸'*) $MEDIA book resume 2>/dev/null ;;
         *)    $MEDIA book pause  2>/dev/null ;;
