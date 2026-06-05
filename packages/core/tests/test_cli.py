@@ -780,3 +780,76 @@ def test_focus_and_channels(monkeypatch):
     assert _run(monkeypatch, fake, ["focus", "music"]) == 0
     assert ("focus", "music", "local") in fake.calls
     assert _run(monkeypatch, fake, ["channels"]) == 0
+
+
+# --- popup-channel resolution ---------------------------------------------
+
+def _resolve(monkeypatch, capsys, playing, last):
+    """Run `media popup-channel` with the play-probe and last-viewed mocked."""
+    monkeypatch.setattr(cli, "_channel_is_playing", lambda c: c in playing)
+    monkeypatch.setattr(cli, "_last_popup_channel", lambda: last)
+    assert cli.main(["popup-channel"]) == 0
+    return capsys.readouterr().out.strip()
+
+
+def test_popup_channel_single_playing_wins(monkeypatch, capsys):
+    # A lone playing channel is opened regardless of what was last viewed.
+    assert _resolve(monkeypatch, capsys, {"book"}, "speech") == "book"
+    assert _resolve(monkeypatch, capsys, {"music"}, "book") == "music"
+
+
+def test_popup_channel_multiple_playing_falls_back_to_last(monkeypatch, capsys):
+    # Music bed under speech → ambiguous → defer to the last-viewed channel.
+    assert _resolve(monkeypatch, capsys, {"speech", "music"}, "music") == "music"
+
+
+def test_popup_channel_none_playing_uses_last(monkeypatch, capsys):
+    assert _resolve(monkeypatch, capsys, set(), "book") == "book"
+
+
+def test_popup_channel_none_playing_no_memory_defaults_speech(monkeypatch, capsys):
+    assert _resolve(monkeypatch, capsys, set(), None) == "speech"
+
+
+def test_popup_channel_set_round_trips_through_file(monkeypatch, tmp_path):
+    f = tmp_path / "popup-channel"
+    monkeypatch.setattr(cli, "_popup_channel_file", lambda: f)
+    assert cli.main(["popup-channel", "--set", "book"]) == 0
+    assert f.read_text() == "book"
+    assert cli._last_popup_channel() == "book"
+
+
+def test_last_popup_channel_rejects_garbage(monkeypatch, tmp_path):
+    f = tmp_path / "popup-channel"
+    f.write_text("bogus")
+    monkeypatch.setattr(cli, "_popup_channel_file", lambda: f)
+    assert cli._last_popup_channel() is None
+    # A missing file is fine too — no memory yet.
+    monkeypatch.setattr(cli, "_popup_channel_file", lambda: tmp_path / "nope")
+    assert cli._last_popup_channel() is None
+
+
+def test_channel_is_playing_speech(monkeypatch):
+    # idle-active False and pause False → playing; either truthy → not.
+    monkeypatch.setattr(cli, "_get",
+                        lambda p: {"idle-active": False, "pause": False}[p])
+    assert cli._channel_is_playing("speech") is True
+    monkeypatch.setattr(cli, "_get",
+                        lambda p: {"idle-active": True, "pause": False}[p])
+    assert cli._channel_is_playing("speech") is False
+
+
+def test_channel_is_playing_music_reads_mpd_state(monkeypatch):
+    state = {"v": "play"}
+    monkeypatch.setattr(cli.SinkMusic, "status_dict",
+                        lambda self, t: {"state": state["v"]})
+    assert cli._channel_is_playing("music") is True
+    state["v"] = "pause"
+    assert cli._channel_is_playing("music") is False
+
+
+def test_channel_is_playing_swallows_probe_errors(monkeypatch):
+    def boom(self, t):
+        raise OSError("MPD down")
+    monkeypatch.setattr(cli.SinkMusic, "status_dict", boom)
+    assert cli._channel_is_playing("music") is False

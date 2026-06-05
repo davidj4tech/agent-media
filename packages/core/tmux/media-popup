@@ -74,7 +74,13 @@ SCROLL_HOLD_COUNT=0
 SCROLL_DONE=0
 
 printf '\033[?25l'                       # hide cursor
-cleanup() { printf '\033[?25h'; }        # restore on exit
+# On exit, remember the channel we ended on so the next `prefix a` reopens it
+# (unless a channel is actively playing — `media popup-channel` decides). Also
+# restore the cursor. Runs on q/Esc, the `?` round-trip break, and SIGHUP.
+cleanup() {
+    printf '\033[?25h'
+    "$MEDIA" popup-channel --set "$CHANNEL" 2>/dev/null
+}
 trap cleanup EXIT
 
 # Pull the progress bar + marquee label for the active channel into the
