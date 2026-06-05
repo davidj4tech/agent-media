@@ -5,7 +5,7 @@
   "type": "module",
   "pi": {
     "extensions": [
-      "./media-tts.ts"
+      "./media-tts-stream.ts"
     ]
   }
 }
