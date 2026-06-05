@@ -136,34 +136,16 @@ class SinkBook:
         subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          start_new_session=True)
-        # Wait for the socket to come up (cold mpv ~0.3-1s).
+        # Wait for the socket to come up (cold mpv ~0.3-1s). EOF self-heal and
+        # playlist auto-advance are handled by the book event watcher in the
+        # long-lived MCP server (mcp_server._autoadvance_loop), which connects
+        # to this socket — no per-broker sidecar here.
         deadline = time.time() + 5.0
         while time.time() < deadline:
             if self._running():
-                self._spawn_watcher(env)
                 return
             time.sleep(0.1)
         raise ipc.MpvIpcError("sink-book broker did not come up in time")
-
-    def _spawn_watcher(self, env: dict) -> None:
-        """Start the EOF self-heal watcher alongside a freshly-spawned broker.
-
-        Detached and idempotent: the watcher flock-guards itself, so a second
-        spawn (every play calls _ensure_broker) just exits. Set
-        MEDIA_BOOK_SELFHEAL=0 to disable. Best-effort — a watcher that fails
-        to start never blocks playback.
-        """
-        if os.environ.get("MEDIA_BOOK_SELFHEAL", "1") == "0":
-            return
-        try:
-            import sys
-            subprocess.Popen(
-                [sys.executable, "-m", "agent_media_core.sinks._book_watch"],
-                env=env, stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                start_new_session=True)
-        except Exception as e:  # noqa: BLE001
-            log.warning("sink-book: watcher spawn failed: %s", e)
 
     # ---- playback --------------------------------------------------------
 
