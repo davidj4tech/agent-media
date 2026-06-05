@@ -212,10 +212,37 @@ def _write_stamp(path: Path, value: int) -> None:
         pass
 
 
+def _format_ask_question(tool_input: dict) -> str:
+    """Render an AskUserQuestion tool input as speakable text.
+
+    A multiple-choice question goes out as a *tool call*, so its text never
+    lands in the assistant's spoken reply — the user would otherwise only hear
+    the generic "waiting for input" notification. Speak the question(s) and
+    their option labels so the choice is audible. Option descriptions are
+    omitted (too verbose for TTS); the labels carry the gist.
+    """
+    questions = tool_input.get("questions") or []
+    blocks: list[str] = []
+    multi = len(questions) > 1
+    for i, q in enumerate(questions, 1):
+        qtext = (q.get("question") or "").strip()
+        if not qtext:
+            continue
+        lead = f"Question {i}. " if multi else ""
+        opts = q.get("options") or []
+        labels = [(o.get("label") or "").strip() for o in opts]
+        labels = [l for l in labels if l]
+        choice = "".join(f" Option {n}: {l}." for n, l in enumerate(labels, 1))
+        tail = " You can pick more than one." if q.get("multiSelect") else ""
+        blocks.append(f"{lead}{qtext}{choice}{tail}")
+    return " ".join(blocks)
+
+
 def _latest_assistant_text(transcript_path: Path) -> str:
     """Walk the JSONL transcript from the end, return the most recent
-    assistant turn's joined text content. Empty string if the latest
-    turn is tool-call-only or the file is unparseable.
+    assistant turn's joined text content. If the latest assistant turn is an
+    AskUserQuestion tool call (no text), speak the synthesized question instead.
+    Empty string if the latest turn is other tool-call-only or unparseable.
     """
     try:
         lines = transcript_path.read_text().splitlines()
@@ -233,13 +260,22 @@ def _latest_assistant_text(transcript_path: Path) -> str:
         if msg.get("role") != "assistant":
             continue
         parts = []
+        ask: Optional[dict] = None
         for c in msg.get("content") or []:
-            if isinstance(c, dict) and c.get("type") == "text":
+            if not isinstance(c, dict):
+                continue
+            if c.get("type") == "text":
                 parts.append(c.get("text") or "")
+            elif c.get("type") == "tool_use" and c.get("name") == "AskUserQuestion":
+                ask = c.get("input") or {}
         text = "\n".join(p for p in parts if p)
         if text:
             return text
-        # Tool-use-only turn — keep searching backward for the last text turn.
+        if ask is not None:
+            spoken = _format_ask_question(ask)
+            if spoken:
+                return spoken
+        # Other tool-use-only turn — keep searching backward for the last text.
     return ""
 
 
