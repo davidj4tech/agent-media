@@ -21,7 +21,10 @@ hh="$ch"; [ "$hh" -gt 5 ] && hh=$(( hh - 1 ))
 
 flag="${TMPDIR:-/tmp}/media-popup-help.$$"
 rm -f "$flag"
-chan=speech
+# Open on the channel that's actually playing, else the last-viewed one, else
+# speech (`media popup-channel` resolves this). The help round-trip below
+# overrides `chan` from the flag file, so an explicit choice is preserved.
+chan=$(media popup-channel 2>/dev/null); chan=${chan:-speech}
 popup() { tmux display-popup ${client:+-c "$client"} -E "$@"; }
 while :; do
     popup -w "$w" -h 4 -x R -y 6 -s 'bg=default' -S 'bg=default' \

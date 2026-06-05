@@ -21,11 +21,14 @@ import sys
 import time
 from typing import Optional
 
+from ._paths import state_dir
 from .sinks import _mpv_ipc as ipc
 from .sinks.music import SinkMusic
 from .sinks.speech import SinkSpeech, _socket_for
 from .state import StateStore
 from .types import Event, Source, Target
+
+POPUP_CHANNELS = ("speech", "music", "book")
 
 
 SPEECH_TARGET = Target("local")
@@ -1255,6 +1258,67 @@ def cmd_channels(a) -> int:
     return 0
 
 
+# --- popup channel resolution ---------------------------------------------
+#
+# `prefix a` should reopen the channel you were last using, but defer to one
+# that's actually playing audio. The launcher (media-popup-open) calls
+# `media popup-channel` to pick the initial channel; the popup (media-popup)
+# calls `media popup-channel --set <chan>` on exit to remember it.
+
+def _popup_channel_file():
+    return state_dir() / "popup-channel"
+
+
+def _channel_is_playing(name: str) -> bool:
+    """True when `name` is actively producing audio (not idle, not paused).
+
+    Every probe is best-effort: a missing socket / unreachable MPD / any error
+    means "not playing" rather than blowing up the launcher.
+    """
+    try:
+        if name == "speech":
+            # Require explicit False: a dead/absent socket returns None, which
+            # must read as "not playing" (not as `not None` → truthy).
+            return _get("idle-active") is False and _get("pause") is False
+        if name == "music":
+            return SinkMusic().status_dict(SPEECH_TARGET).get("state") == "play"
+        if name == "book":
+            st = _srv().channels_status().get("book") or {}
+            return (not st.get("idle")) and (not st.get("paused"))
+    except Exception:  # noqa: BLE001 — the launcher must never see a traceback
+        return False
+    return False
+
+
+def _last_popup_channel() -> Optional[str]:
+    try:
+        chan = _popup_channel_file().read_text().strip()
+    except OSError:
+        return None
+    return chan if chan in POPUP_CHANNELS else None
+
+
+def cmd_popup_channel(a) -> int:
+    if getattr(a, "set", None):
+        if a.set in POPUP_CHANNELS:
+            try:
+                f = _popup_channel_file()
+                f.parent.mkdir(parents=True, exist_ok=True)
+                f.write_text(a.set)
+            except OSError:
+                pass
+        return 0
+    # Resolve: a single playing channel wins; otherwise (none or several
+    # playing — e.g. a music bed under speech) fall back to the last-viewed
+    # channel, then speech.
+    playing = [c for c in POPUP_CHANNELS if _channel_is_playing(c)]
+    if len(playing) == 1:
+        print(playing[0])
+    else:
+        print(_last_popup_channel() or "speech")
+    return 0
+
+
 # --- CLI -------------------------------------------------------------------
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -1380,6 +1444,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("channels", help="both channels at a glance (focus, bed, what's on)"
                    ).set_defaults(func=cmd_channels)
+
+    pc = sub.add_parser("popup-channel",
+                        help="resolve (or --set) the popup's opening channel")
+    pc.add_argument("--set", choices=POPUP_CHANNELS, default=None,
+                    help="remember this as the last-viewed channel")
+    pc.set_defaults(func=cmd_popup_channel)
 
     return p
 
