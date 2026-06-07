@@ -112,7 +112,7 @@ def _voice_for_session(sess: str) -> Optional[str]:
     return pool[h % len(pool)]
 
 
-def _notif_label(sess: str, *, include_pane: bool = True) -> str:
+def _notif_label(sess: str) -> str:
     """Build a "where am I" prefix for the notification text.
 
     Includes:
@@ -120,12 +120,11 @@ def _notif_label(sess: str, *, include_pane: bool = True) -> str:
         MEDIA_NOTIF_LABEL_HOST != "0" (default on).
       - tmux session name (always, when in tmux)
       - pane title when set (via `select-pane -T` or terminal escape); omitted
-        when empty or identical to the session name, or when include_pane is
-        False (e.g. the AskUserQuestion path, where the pane title is the
-        transient "AskUserQuestion" tool-status and would be read aloud).
+        when empty or identical to the session name.
 
     Returns "" outside tmux or when the user disabled labelling
-    (MEDIA_NOTIF_LABEL=0).
+    (MEDIA_NOTIF_LABEL=0). The AskUserQuestion path uses _ask_location_label
+    instead (hierarchical host/session omission + window-name pane locator).
     """
     if os.environ.get("MEDIA_NOTIF_LABEL", "1") == "0":
         return ""
@@ -133,8 +132,7 @@ def _notif_label(sess: str, *, include_pane: bool = True) -> str:
     if not pane:
         return ""
 
-    pane_title = _tmux(["display-message", "-p", "-t", pane, "#{pane_title}"]) \
-        if include_pane else ""
+    pane_title = _tmux(["display-message", "-p", "-t", pane, "#{pane_title}"])
     sess_count_s = _tmux(["list-sessions", "-F", "#{session_name}"])
 
     parts: list[str] = []
@@ -151,6 +149,82 @@ def _notif_label(sess: str, *, include_pane: bool = True) -> str:
 
     if pane_title and pane_title != sess:
         parts.append(pane_title)
+
+    return " / ".join(parts)
+
+
+def _active_client_session() -> Optional[str]:
+    """Session name of the most-recently-active attached client on this tmux
+    server (the one the user last typed in), or None if no client is attached.
+
+    Used as the "current" reference for hierarchical label omission: clients
+    attach to the local server, so an attached client means the user is on this
+    host (→ host is current, omit it), and its session is the one they're
+    working in (→ omit that session from the label).
+    """
+    out = _tmux(["list-clients", "-F", "#{client_activity}\t#{session_name}"])
+    best_ts, best_sess = -1, None
+    for line in out.splitlines():
+        ts_s, _, sess = line.partition("\t")
+        try:
+            ts = int(ts_s)
+        except ValueError:
+            continue
+        if ts > best_ts and sess:
+            best_ts, best_sess = ts, sess
+    return best_sess
+
+
+def _ask_location_label() -> str:
+    """"Where is this question?" prefix for the AskUserQuestion notif.
+
+    Announces host / session / pane, but omits — hierarchically, relative to
+    the active tmux client (where the user last typed) — whatever is "current":
+      - host:    dropped when a client is attached to this server (user is here)
+      - session: dropped when it's the session the user is working in
+      - pane:    always kept — window name + window.pane index (the window name
+                 tracks the Claude conversation's title, a useful locator; the
+                 *pane title* is the transient "AskUserQuestion" tool-status and
+                 is deliberately not used)
+
+    So a question from the foreground session reads just its pane; one from a
+    background session adds the session; one from a host with nobody attached
+    adds the host too. Returns "" outside tmux or when MEDIA_NOTIF_LABEL=0.
+    """
+    if os.environ.get("MEDIA_NOTIF_LABEL", "1") == "0":
+        return ""
+    pane = os.environ.get("TMUX_PANE")
+    if not pane:
+        return ""
+
+    info = _tmux(["display-message", "-p", "-t", pane,
+                  "#{session_name}\t#{window_name}\t#{window_index}\t#{pane_index}"])
+    fields = info.split("\t")
+    if len(fields) < 4:
+        return ""
+    sess, win_name, win_idx, pane_idx = (f.strip() for f in fields[:4])
+
+    active = _active_client_session()
+    parts: list[str] = []
+
+    # host — only when nobody is attached here (so the user isn't on this host)
+    if active is None and os.environ.get("MEDIA_NOTIF_LABEL_HOST", "1") != "0":
+        import socket
+        host = socket.gethostname().split(".")[0]
+        if host:
+            parts.append(host)
+
+    # session — only when it isn't the session the user is working in
+    if sess and (active is None or sess != active):
+        parts.append(sess)
+
+    # pane — always; window name + index, skipping a name that just repeats
+    # the session we already announced
+    idx = f"{win_idx}.{pane_idx}" if win_idx and pane_idx else ""
+    if win_name and win_name != sess:
+        parts.append(f"{win_name} {idx}".strip())
+    elif idx:
+        parts.append(idx)
 
     return " / ".join(parts)
 
@@ -389,7 +463,7 @@ def _handle_notification(payload: dict) -> int:
 
     if ask:
         sess = _session_name()
-        label = _notif_label(sess, include_pane=False)
+        label = _ask_location_label()
         msg = f"{label}: {ask}" if label else ask
         state = StateStore()
         if _dedup_seen(state, msg):
