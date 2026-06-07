@@ -112,7 +112,7 @@ def _voice_for_session(sess: str) -> Optional[str]:
     return pool[h % len(pool)]
 
 
-def _notif_label(sess: str) -> str:
+def _notif_label(sess: str, *, include_pane: bool = True) -> str:
     """Build a "where am I" prefix for the notification text.
 
     Includes:
@@ -120,7 +120,9 @@ def _notif_label(sess: str) -> str:
         MEDIA_NOTIF_LABEL_HOST != "0" (default on).
       - tmux session name (always, when in tmux)
       - pane title when set (via `select-pane -T` or terminal escape); omitted
-        when empty or identical to the session name.
+        when empty or identical to the session name, or when include_pane is
+        False (e.g. the AskUserQuestion path, where the pane title is the
+        transient "AskUserQuestion" tool-status and would be read aloud).
 
     Returns "" outside tmux or when the user disabled labelling
     (MEDIA_NOTIF_LABEL=0).
@@ -131,7 +133,8 @@ def _notif_label(sess: str) -> str:
     if not pane:
         return ""
 
-    pane_title = _tmux(["display-message", "-p", "-t", pane, "#{pane_title}"])
+    pane_title = _tmux(["display-message", "-p", "-t", pane, "#{pane_title}"]) \
+        if include_pane else ""
     sess_count_s = _tmux(["list-sessions", "-F", "#{session_name}"])
 
     parts: list[str] = []
@@ -308,6 +311,40 @@ def _latest_assistant_text(transcript_path: Path) -> str:
     return ""
 
 
+def _latest_ask_question(transcript_path: Path) -> str:
+    """If the latest assistant turn contains an AskUserQuestion tool call,
+    return its synthesized speakable text; else "".
+
+    AskUserQuestion fires a *Notification* (the turn pauses awaiting input),
+    not a Stop — and the generic notif message ("Claude is waiting for your
+    input") never includes the question. At notif-fire time the AskUserQuestion
+    is the live last assistant turn (no tool_result appended yet), so we read it
+    here and speak the actual question + options instead of the generic nudge.
+    """
+    try:
+        lines = transcript_path.read_text().splitlines()
+    except OSError:
+        return ""
+    for raw in reversed(lines):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            obj = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        msg = obj.get("message") or {}
+        if msg.get("role") != "assistant":
+            continue
+        for c in msg.get("content") or []:
+            if (isinstance(c, dict) and c.get("type") == "tool_use"
+                    and c.get("name") == "AskUserQuestion"):
+                return _format_ask_question(c.get("input") or {})
+        # First assistant turn found isn't an AskUserQuestion → not our case.
+        return ""
+    return ""
+
+
 def _dedup_seen(state: StateStore, text: str, ttl_seconds: int = 300) -> bool:
     """Crude text-hash dedup over the recent history table.
 
@@ -335,7 +372,40 @@ def _dedup_seen(state: StateStore, text: str, ttl_seconds: int = 300) -> bool:
 def _handle_notification(payload: dict) -> int:
     """Notif path: prefer Claude's `message` field, dedup-skip if a
     Stop just played or a notif fired within the cooldown windows.
+
+    Special case — AskUserQuestion: a multiple-choice prompt fires a
+    Notification (not a Stop), and the generic message never carries the
+    question. When the live last assistant turn is an AskUserQuestion, speak
+    the actual question + options, and bypass focus-suppression / cooldowns —
+    the user explicitly wants questions read out, and they're infrequent.
+    Text-dedup still guards against a double-fired notification.
     """
+    ask = ""
+    tp_raw = (payload.get("transcript_path") or "").strip()
+    if tp_raw:
+        tp = Path(tp_raw)
+        if tp.is_file():
+            ask = strip_markdown(_latest_ask_question(tp).strip())
+
+    if ask:
+        sess = _session_name()
+        label = _notif_label(sess, include_pane=False)
+        msg = f"{label}: {ask}" if label else ask
+        state = StateStore()
+        if _dedup_seen(state, msg):
+            return 0
+        _write_stamp(_stamp_dir() / "notif-last", int(time.time()))
+        priority = Priority.NORMAL if (
+            os.environ.get("MEDIA_NOTIF_NO_INTERRUPT_FOCUSED", "1") != "0"
+            and _client_pane_focused()) else Priority.HIGH
+        submit_event(Event(text=msg, source=Source.CLAUDE_CODE,
+                           priority=priority,
+                           voice=_voice_for_session(sess),
+                           metadata={"kind": "notif", "ask": True,
+                                     "session": payload.get("session_id") or ""}),
+                     state=state)
+        return 0
+
     msg = strip_markdown((payload.get("message") or "").strip())
     if not msg:
         return 0

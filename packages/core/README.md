@@ -67,6 +67,23 @@ a strategy based on content type:
 | `MEDIA_DUCK_VOLUME` | *(per-policy)* | Override duck level (0-100) for all content types |
 | `AAR_MOPIDY_DUCK_VOLUME` | — | Legacy alias for `MEDIA_DUCK_VOLUME` |
 
+### Music sink — YouTube via Mopidy-Mpv
+
+Shared YouTube on the music sink is routed through the [Mopidy-Mpv]
+backend (the `mpv:` URI scheme — mpv + yt-dlp) instead of
+Mopidy-YouTube/GStreamer: more reliable resolution, and the duck-for-speech
+bridge below works. Single videos are rewritten to `mpv:`; YouTube
+*playlists* are enumerated with `yt-dlp --flat-playlist` and queued as one
+`mpv:` track each (auto-advances, ducks). Everything else (local library,
+search, plain http(s) streams, non-YouTube) stays on GStreamer. Requires the
+Mopidy-Mpv backend + its idle mpv (`mopidy-mpv.service`) to be running.
+
+| Variable | Default | Description |
+|---|---|---|
+| `MEDIA_MUSIC_MPV_SOCKET` | `$XDG_RUNTIME_DIR/mopidy-mpv.sock` | mpv JSON-IPC socket for the Mopidy-Mpv backend; used to mirror `duck`/`unduck` volume onto mpv (MPD `setvol` can't reach mpv's output) |
+| `MEDIA_MUSIC_PLAYLIST_MAX` | `50` | Max tracks to pull when expanding a YouTube playlist; the rest are dropped (logged) |
+| `MEDIA_YTDLP_BIN` | `yt-dlp` | yt-dlp binary used to enumerate playlists (reads `~/.config/yt-dlp/config`) |
+
 ### MPRIS browser/media pause
 
 The coordinator pauses any MPRIS-registered player (Chrome, VLC, etc.)
