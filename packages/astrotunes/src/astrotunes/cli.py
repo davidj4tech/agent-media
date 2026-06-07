@@ -34,11 +34,27 @@ def cmd_context(args: argparse.Namespace) -> int:
         "natal": natal_to_dict(natal),
     }
 
+    # Human Design bodygraph — static chart, plus today's transit overlay.
+    bg = None
+    try:
+        from .humandesign import compute_bodygraph
+        bg = compute_bodygraph(natal)
+        ctx["natal"]["human_design"] = bg.to_dict()
+    except RuntimeError as e:
+        ctx["natal"]["human_design_error"] = str(e)
+
     try:
         from .transits import compute
         ctx["transits"] = compute(natal, now).to_dict()
     except RuntimeError as e:
         ctx["transits_error"] = str(e)
+
+    if bg is not None:
+        try:
+            ctx.setdefault("transits", {})
+            ctx["transits"]["human_design"] = bg.transit_overlay(now)
+        except Exception as e:
+            ctx["transits"].setdefault("human_design_error", str(e))
 
     if not args.no_weather:
         try:
