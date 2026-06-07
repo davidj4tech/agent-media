@@ -155,7 +155,7 @@ def detect_content_type(uri: Optional[str], *,
         return ContentType.PODCAST
     if u.startswith("audiobook:"):
         return ContentType.AUDIOBOOK
-    if u.startswith(("yt:", "youtube:", "soundcloud:", "spotify:",
+    if u.startswith(("yt:", "youtube:", "mpv:", "soundcloud:", "spotify:",
                      "local:", "file://", "http://", "https://")):
         return ContentType.MUSIC
     return ContentType.UNKNOWN
