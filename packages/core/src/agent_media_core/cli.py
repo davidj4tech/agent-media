@@ -840,7 +840,26 @@ def _do_replay(index: int, session: Optional[str] = None) -> int:
         # inside display-popup is the popup's own ephemeral pane.
         pane = _caller_pane()
         if pane and clip_sentences and len(clip_sentences) == len(clip_uris):
-            subprocess.Popen(
+            # Supersede any tracker still polling from a prior replay. The
+            # tracker only self-exits when the speech mpv goes idle, so
+            # replaying again before the prior playlist finishes (rapid < / >
+            # traversal, re-pressing r/Space) would otherwise leave the old
+            # tracker running on the shared socket — it never sees "its"
+            # playback end and keeps highlighting the new clip with the old
+            # clip's sentences. killpg the previous one (start_new_session ⇒
+            # the child's pid is its own pgid). Mirrors the per-pane pidfile
+            # pattern _tmux_highlight_text uses for its clear-timer.
+            import re as _re
+            import signal as _signal
+            _pane_safe = _re.sub(r"[^A-Za-z0-9_-]", "_", pane)
+            _trk_pidfile = f"/tmp/media-replay-track-{_pane_safe}.pid"
+            try:
+                with open(_trk_pidfile) as _f:
+                    _old_pgid = int(_f.read().strip())
+                os.killpg(_old_pgid, _signal.SIGTERM)
+            except (OSError, ValueError, ProcessLookupError, PermissionError):
+                pass
+            _trk = subprocess.Popen(
                 [sys.executable, "-m", "agent_media_core.cli",
                  "replay-track",
                  "--sentences", json.dumps(clip_sentences),
@@ -850,6 +869,11 @@ def _do_replay(index: int, session: Optional[str] = None) -> int:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
+            try:
+                with open(_trk_pidfile, "w") as _f:
+                    _f.write(str(_trk.pid))
+            except OSError:
+                pass
     return 0
 
 
