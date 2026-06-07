@@ -192,6 +192,35 @@ def _client_focused_recently(within_seconds: int) -> bool:
     return False
 
 
+def _client_pane_focused() -> bool:
+    """True if our pane is *the* pane the user is looking at right now: the
+    active pane of its session's active window, with an attached client.
+
+    Unlike `_client_focused_recently`, this ignores keystroke recency — it
+    answers "is this exactly the focused pane?", not "was the user typing
+    here lately?". Used to keep a notification from *interrupting* whatever
+    is currently being spoken: a notif from the focused pane is downgraded
+    from HIGH to NORMAL so it queues behind the current clip instead of
+    preempting it. Requires an attached client so a detached (walked-away)
+    session still gets the interrupting HIGH cue.
+    """
+    pane = os.environ.get("TMUX_PANE")
+    if not pane:
+        return False
+    state = _tmux(["display-message", "-p", "-t", pane,
+                   "#{window_active}:#{pane_active}:#{session_attached}"])
+    try:
+        win_active, pane_active, sess_attached = state.split(":", 2)
+    except ValueError:
+        return False
+    if win_active != "1" or pane_active != "1":
+        return False
+    try:
+        return int(sess_attached or "0") >= 1
+    except ValueError:
+        return False
+
+
 def _stamp_dir() -> Path:
     d = state_dir() / "claude-stamps"
     d.mkdir(parents=True, exist_ok=True)
@@ -332,8 +361,16 @@ def _handle_notification(payload: dict) -> int:
         return 0
     _write_stamp(stamps / "notif-last", now)
 
+    # A notif from the pane the user is actively looking at shouldn't cut off
+    # whatever is currently being spoken — speak it, but at NORMAL so it queues
+    # instead of preempting. Tunable via env, 0 keeps the old always-HIGH behaviour.
+    priority = Priority.HIGH
+    if os.environ.get("MEDIA_NOTIF_NO_INTERRUPT_FOCUSED", "1") != "0" \
+            and _client_pane_focused():
+        priority = Priority.NORMAL
+
     submit_event(Event(text=msg, source=Source.CLAUDE_CODE,
-                       priority=Priority.HIGH,
+                       priority=priority,
                        voice=_voice_for_session(sess),
                        metadata={"kind": "notif",
                                  "session": payload.get("session_id") or ""}))
