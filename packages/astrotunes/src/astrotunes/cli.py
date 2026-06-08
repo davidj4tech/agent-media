@@ -62,8 +62,16 @@ def cmd_context(args: argparse.Namespace) -> int:
         except Exception as e:
             ctx["weather_error"] = str(e)
 
-    # Translation layer: turn the computed facts into an explicit, tweakable
-    # musical brief (axes + reasons). Track selection stays downstream.
+    # Information sources (raga, gene keys, sabian + config-gated features /
+    # last.fm / home-assistant). Run before qualities so their nudges fold in.
+    try:
+        from .sources import gather
+        ctx["sources"] = gather(ctx)
+    except Exception as e:
+        ctx["sources_error"] = str(e)
+
+    # Translation layer: turn the computed facts (+ source nudges) into an
+    # explicit, tweakable musical brief. Track selection stays downstream.
     try:
         from .qualities import derive
         ctx["qualities"] = derive(ctx)

@@ -21,6 +21,7 @@ dependencies = [
 
 [project.optional-dependencies]
 mpd = ["python-mpd2>=3"]
+features = ["librosa>=0.10"]  # local audio-feature extraction (sources.features)
 
 [project.urls]
 Homepage = "https://github.com/davidj4tech/agent-media/tree/main/packages/astrotunes"

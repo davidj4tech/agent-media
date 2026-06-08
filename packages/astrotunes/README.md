@@ -70,6 +70,29 @@ skill, where the live mood/activity answer can override the brief. A
 dense natal chart yields many aspects, so the aspect layer is capped
 (`ASPECT_CAP`) to colour the brief without swamping time/weather/mood.
 
+## Sources (`sources/`)
+
+A pluggable registry of information libraries, emitted as `ctx["sources"]`.
+Each source reports `available` + a `status`, and may contribute
+`brief_nudges` (folded into the qualities brief, capped by `SOURCE_CAP`),
+`themes`, `seeds` (concrete search queries), and `data`. Sources degrade
+gracefully — one with no creds/data returns `available: false` with a
+status telling you how to switch it on, never crashing the brief.
+
+| Source | State | What it adds |
+|---|---|---|
+| `raga` | **live** | Hindustani raga time-theory — ragas for this time-of-day + Melbourne's (southern-hemisphere) season; rasa → brief nudges, canonical recordings → seeds |
+| `genekeys` | **live** | Shadow→Gift→Siddhi for core + transit gates (joins HD's 64 gates) |
+| `sabian` | scaffold | degree→symbol numbers; load a verified 360-symbol table to enable |
+| `features` | config | local audio-feature retrieval — `pip install 'astrotunes[features]'` + import music to beets |
+| `lastfm` | config | crowd mood tags + your loved-tracks — set `LASTFM_API_KEY` / `LASTFM_USER` |
+| `ha` | config | Home Assistant heart-rate → energy/tempo — set `HA_URL` / `HA_TOKEN` / `HA_HR_ENTITY` |
+
+MCP-only signals (Google Calendar for activity, Spotify now-playing) are
+*not* sources — the CLI can't call MCP servers; the `music-transit` skill
+pulls those itself. Reference data (raga samay, Gene Keys) is verified
+against Bhatkhande/Jovian and genekeys.com respectively.
+
 ## CLI
 
 ```sh
