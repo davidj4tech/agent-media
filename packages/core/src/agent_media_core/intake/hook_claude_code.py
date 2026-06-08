@@ -12,8 +12,16 @@ Settings.json wires it as:
                                   "timeout":30}]}],
       "Notification": [{"hooks":[{"type":"command",
                                   "command":"media-hook-claude-code",
+                                  "timeout":30}]}],
+      "PreToolUse":   [{"matcher":"AskUserQuestion",
+                        "hooks":[{"type":"command",
+                                  "command":"media-hook-claude-code",
                                   "timeout":30}]}]
     }
+
+PreToolUse(AskUserQuestion) is what actually reads a multiple-choice prompt
+aloud — Claude Code never fires a Notification for the question modal, so the
+read-out has to hang off the tool's pre-execution hook.
 
 Behaviours preserved from the bash version:
   - Sources `~/.config/agent-audio-relay.env` (or `RELAY_ENV_FILE`) so
@@ -443,16 +451,63 @@ def _dedup_seen(state: StateStore, text: str, ttl_seconds: int = 300) -> bool:
     return False
 
 
+def _emit_ask(ask: str, payload: dict) -> int:
+    """Speak a synthesized AskUserQuestion (question + option labels).
+
+    Prefixes the hierarchical host/session/pane label, bypasses focus-
+    suppression and the notif/stop cooldown windows (the user explicitly wants
+    questions read out, and they're infrequent), and text-dedups against the
+    recent history so a PreToolUse fire and a stray Notification can't double
+    up. Downgrades HIGH→NORMAL when this is the focused pane so the cue queues
+    behind whatever is currently speaking instead of preempting it.
+    """
+    sess = _session_name()
+    label = _ask_location_label()
+    msg = f"{label}: {ask}" if label else ask
+    state = StateStore()
+    if _dedup_seen(state, msg):
+        return 0
+    _write_stamp(_stamp_dir() / "notif-last", int(time.time()))
+    priority = Priority.NORMAL if (
+        os.environ.get("MEDIA_NOTIF_NO_INTERRUPT_FOCUSED", "1") != "0"
+        and _client_pane_focused()) else Priority.HIGH
+    submit_event(Event(text=msg, source=Source.CLAUDE_CODE,
+                       priority=priority,
+                       voice=_voice_for_session(sess),
+                       metadata={"kind": "notif", "ask": True,
+                                 "session": payload.get("session_id") or ""}),
+                 state=state)
+    return 0
+
+
+def _handle_pretooluse(payload: dict) -> int:
+    """PreToolUse path — the *real* AskUserQuestion trigger.
+
+    Claude Code does NOT fire a Notification when an AskUserQuestion modal is
+    shown (verified: a real question sat unanswered 9 minutes with zero notifs),
+    so the old Notification-based read-out never actually ran on a live
+    question. PreToolUse fires right as the tool is about to execute — i.e. as
+    the modal appears — and hands us `tool_input` directly, no transcript walk.
+    We only care about AskUserQuestion; every other tool returns immediately.
+    """
+    if payload.get("tool_name") != "AskUserQuestion":
+        return 0
+    ask = strip_markdown(_format_ask_question(payload.get("tool_input") or {}).strip())
+    if not ask:
+        return 0
+    return _emit_ask(ask, payload)
+
+
 def _handle_notification(payload: dict) -> int:
     """Notif path: prefer Claude's `message` field, dedup-skip if a
     Stop just played or a notif fired within the cooldown windows.
 
-    Special case — AskUserQuestion: a multiple-choice prompt fires a
-    Notification (not a Stop), and the generic message never carries the
-    question. When the live last assistant turn is an AskUserQuestion, speak
-    the actual question + options, and bypass focus-suppression / cooldowns —
-    the user explicitly wants questions read out, and they're infrequent.
-    Text-dedup still guards against a double-fired notification.
+    AskUserQuestion is handled by the PreToolUse path (`_handle_pretooluse`),
+    not here — Claude Code doesn't emit a Notification for the modal. We still
+    keep a belt-and-braces check: if the live last assistant turn *is* an
+    AskUserQuestion (e.g. a future Claude Code does start notifying), speak it,
+    bypassing focus-suppression / cooldowns. Text-dedup collapses any overlap
+    with the PreToolUse read-out.
     """
     ask = ""
     tp_raw = (payload.get("transcript_path") or "").strip()
@@ -462,23 +517,7 @@ def _handle_notification(payload: dict) -> int:
             ask = strip_markdown(_latest_ask_question(tp).strip())
 
     if ask:
-        sess = _session_name()
-        label = _ask_location_label()
-        msg = f"{label}: {ask}" if label else ask
-        state = StateStore()
-        if _dedup_seen(state, msg):
-            return 0
-        _write_stamp(_stamp_dir() / "notif-last", int(time.time()))
-        priority = Priority.NORMAL if (
-            os.environ.get("MEDIA_NOTIF_NO_INTERRUPT_FOCUSED", "1") != "0"
-            and _client_pane_focused()) else Priority.HIGH
-        submit_event(Event(text=msg, source=Source.CLAUDE_CODE,
-                           priority=priority,
-                           voice=_voice_for_session(sess),
-                           metadata={"kind": "notif", "ask": True,
-                                     "session": payload.get("session_id") or ""}),
-                     state=state)
-        return 0
+        return _emit_ask(ask, payload)
 
     msg = strip_markdown((payload.get("message") or "").strip())
     if not msg:
@@ -583,6 +622,8 @@ def main() -> int:
 
     event_name = payload.get("hook_event_name")
     try:
+        if event_name == "PreToolUse":
+            return _handle_pretooluse(payload)
         if event_name == "Notification":
             return _handle_notification(payload)
         if event_name == "Stop":
