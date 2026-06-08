@@ -83,15 +83,16 @@ status telling you how to switch it on, never crashing the brief.
 |---|---|---|
 | `raga` | **live** | Hindustani raga time-theory — ragas for this time-of-day + Melbourne's (southern-hemisphere) season; rasa → brief nudges, canonical recordings → seeds |
 | `genekeys` | **live** | Shadow→Gift→Siddhi for core + transit gates (joins HD's 64 gates) |
-| `sabian` | scaffold | degree→symbol numbers; load a verified 360-symbol table to enable |
+| `sabian` | **live** | Sabian symbol (poetic image) per body's degree — Sun/Moon imagery for mood (Rudhyar 1973, in `sabian_data.py`) |
 | `features` | config | local audio-feature retrieval — `pip install 'astrotunes[features]'` + import music to beets |
 | `lastfm` | config | crowd mood tags + your loved-tracks — set `LASTFM_API_KEY` / `LASTFM_USER` |
 | `ha` | config | Home Assistant heart-rate → energy/tempo — set `HA_URL` / `HA_TOKEN` / `HA_HR_ENTITY` |
 
 MCP-only signals (Google Calendar for activity, Spotify now-playing) are
 *not* sources — the CLI can't call MCP servers; the `music-transit` skill
-pulls those itself. Reference data (raga samay, Gene Keys) is verified
-against Bhatkhande/Jovian and genekeys.com respectively.
+pulls those itself. Reference data is verified: raga samay (Bhatkhande
+consensus), Gene Keys (genekeys.com / Richard Rudd), Sabian symbols
+(Rudhyar, *An Astrological Mandala*, 1973).
 
 ## CLI
 
