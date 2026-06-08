@@ -95,6 +95,8 @@ ASPECT_KIND = {        # (flavor_scale, extra nudges added regardless of planet)
 # A dense natal chart yields many aspects; cap how far the whole aspect layer can
 # move any one axis so it colors the brief without swamping time/weather/mood.
 ASPECT_CAP = 0.20
+# Same idea for the combined source layer (raga, HA, …).
+SOURCE_CAP = 0.20
 
 # Human Design: which axis each *open* center amplifies (sensitivity, not a value).
 CENTER_AMPLIFIES = {
@@ -212,6 +214,19 @@ def derive(ctx: dict[str, Any]) -> dict[str, Any]:
         reasons[a].extend(asp_reasons[a])
         if abs(asp_values[a]) > ASPECT_CAP:
             reasons[a].append(f"aspects net {asp_values[a]:+.2f} → capped at ±{ASPECT_CAP:.2f}")
+
+    # 4b. Source nudges (raga rasa, HA heart-rate, …). Capped as one layer too,
+    # so a chatty source colours the brief without dominating it.
+    from .sources import collected_nudges
+    src_nudges = collected_nudges(ctx.get("sources") or {})
+    for axis, delta in src_nudges.items():
+        if axis not in values:
+            continue
+        capped = max(-SOURCE_CAP, min(SOURCE_CAP, delta))
+        values[axis] += capped
+        if abs(capped) >= REASON_EPS:
+            arrow = "↑" if capped > 0 else "↓"
+            reasons[axis].append(f"sources {arrow}{abs(capped):.2f}")
 
     # Clamp
     for a in values:
