@@ -49,6 +49,27 @@ Archive (the official Ra Uru Hu lineage) and corroborating
 gate-by-degree sources. The music interpretation — which open center
 maps to which musical lever — lives in the `music-transit` skill.
 
+## Qualities (the translation layer)
+
+`astrotunes context` also emits `qualities` — a deterministic, tweakable
+*brief* that turns the computed facts (transits, Human Design, weather,
+time, moon) into six musical axes, each `0.0–1.0` with a `label`, the
+`reasons` that moved it, and an `amplified` flag:
+
+`tempo`, `energy`, `warmth`, `brightness`, `lyric_density`, `texture`.
+
+Plus `amplified_axes` (open-HD-center dimensions the listener feels most
+acutely), `posture` (Type's listening stance), `novelty`, and `themes`
+(today's HD channel keynotes).
+
+This is the explicit half of a deliberate split: the *translation* (facts
+→ tags) is transparent and lives in `qualities.py`'s CONFIG block of
+nudges — tweak a nudge and every future brief changes. The *selection*
+(tags → actual tracks) stays downstream judgment in the `music-transit`
+skill, where the live mood/activity answer can override the brief. A
+dense natal chart yields many aspects, so the aspect layer is capped
+(`ASPECT_CAP`) to colour the brief without swamping time/weather/mood.
+
 ## CLI
 
 ```sh

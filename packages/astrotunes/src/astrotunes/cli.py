@@ -62,6 +62,14 @@ def cmd_context(args: argparse.Namespace) -> int:
         except Exception as e:
             ctx["weather_error"] = str(e)
 
+    # Translation layer: turn the computed facts into an explicit, tweakable
+    # musical brief (axes + reasons). Track selection stays downstream.
+    try:
+        from .qualities import derive
+        ctx["qualities"] = derive(ctx)
+    except Exception as e:
+        ctx["qualities_error"] = str(e)
+
     json.dump(ctx, sys.stdout, indent=2, default=str)
     sys.stdout.write("\n")
     return 0
