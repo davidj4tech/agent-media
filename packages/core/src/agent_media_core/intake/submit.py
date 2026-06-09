@@ -574,6 +574,9 @@ class _SpeechPlaybackLock:
     def __init__(self) -> None:
         self._fd: Optional[int] = None
         self._rank: int = _PRIO_RANK[Priority.NORMAL]
+        # Lazily-created read-only handle for polling holder progress while we
+        # wait for the token (see _holder_progress_sig).
+        self._progress_store: Optional[StateStore] = None
         # Unique per instance so two locks in one process (e.g. tests) don't
         # collide; the pid prefix lets _max_other_rank reap dead waiters.
         self._token = f"{os.getpid()}.{uuid.uuid4().hex}"
@@ -635,6 +638,27 @@ class _SpeechPlaybackLock:
         # LOW announcements skip rather than queue when anything's playing.
         self._take(skip_if_busy=self._rank <= _PRIO_RANK[Priority.LOW])
 
+    def _holder_progress_sig(self) -> Optional[tuple]:
+        """A cheap signature of the current speaker's progress: (clip uri,
+        message start). The shared speech now_playing row is rewritten every
+        sentence with the new clip uri, so this changes as long as someone is
+        actively speaking — and stays put when the holder is paused, wedged, or
+        gone. Returns None if it can't be read (treated as "no progress info").
+        """
+        store = self._progress_store
+        if store is None:
+            try:
+                store = self._progress_store = StateStore()
+            except Exception:  # noqa: BLE001
+                return None
+        try:
+            np = store.get_now_playing("speech")
+        except Exception:  # noqa: BLE001
+            return None
+        if not np:
+            return None
+        return (np.get("uri"), np.get("started_at"))
+
     def _take(self, *, skip_if_busy: bool = False) -> None:
         try:
             path = _speech_lock_path()
@@ -644,8 +668,17 @@ class _SpeechPlaybackLock:
             log.warning("speech lock: open failed (%s); proceeding unserialized", e)
             return
         self._register()
+        # Progress-aware give-up: the timeout measures how long the *current
+        # speaker* has been STUCK, not how long we've waited. While someone is
+        # actively speaking their clip `uri` in the shared speech now_playing
+        # row advances every sentence; each change pushes the deadline forward.
+        # So a long-but-healthy reply (or a queue of them) never forces us to
+        # bail and play unserialized — only a genuinely wedged/paused holder,
+        # whose clip stops advancing, still times out after `timeout`. Without
+        # this, two long replies tripped the flat 600s deadline and interleaved.
         timeout = float(os.environ.get("MEDIA_SPEECH_LOCK_TIMEOUT_S", "600"))
         deadline = time.monotonic() + timeout
+        last_sig = self._holder_progress_sig()
         try:
             while True:
                 try:
@@ -656,8 +689,13 @@ class _SpeechPlaybackLock:
                         log.info("speech lock: low-priority clip skipped (busy)")
                         os.close(fd)
                         return
+                    sig = self._holder_progress_sig()
+                    if sig is not None and sig != last_sig:
+                        # Current speaker advanced a clip — it's healthy, reset.
+                        last_sig = sig
+                        deadline = time.monotonic() + timeout
                     if time.monotonic() >= deadline:
-                        log.warning("speech lock: timed out after %ss; proceeding "
+                        log.warning("speech lock: holder stalled >%ss; proceeding "
                                     "unserialized", timeout)
                         os.close(fd)
                         return
