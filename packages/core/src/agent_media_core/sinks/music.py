@@ -62,8 +62,9 @@ def _to_music_uri(uri: str) -> str:
     or a bare youtube.com/youtu.be URL — to `mpv:<watch-url>`, which the
     Mopidy-Mpv backend plays via mpv's yt-dlp. Non-YouTube URIs (local:,
     spotify:, plain http(s) streams, file paths) and already-`mpv:` URIs pass
-    through untouched. Playlists pass through too, so Mopidy-YouTube keeps
-    expanding them into individual tracks.
+    through untouched. A watch URL with a mix/playlist (`watch?v=…&list=…`) is
+    rewritten to just that video. True playlist URLs (no video id) pass through,
+    so Mopidy-YouTube keeps expanding them into individual tracks.
     """
     u = uri.strip()
     if u.startswith("mpv:"):
@@ -76,6 +77,17 @@ def _to_music_uri(uri: str) -> str:
             inner = inner[len(p):]
             had_yt_scheme = True
             break
+
+    # A YouTube *watch* URL carries a single video id (v=… or youtu.be/<id>);
+    # play that one video via mpv even when a mix/playlist (list=) or index=
+    # rides along — that's what a user pasting a "watch" link means. Only a true
+    # playlist URL (no video id) falls through to the list= branch below for
+    # Mopidy-YouTube to expand.
+    if _YT_HOST_RE.search(inner):
+        m = re.search(r"[?&]v=([A-Za-z0-9_-]{11})", inner) or \
+            re.search(r"youtu\.be/([A-Za-z0-9_-]{11})", inner)
+        if m:
+            return f"mpv:https://www.youtube.com/watch?v={m.group(1)}"
 
     # Leave playlists/search to Mopidy-YouTube's library expansion.
     low = inner.lower()
