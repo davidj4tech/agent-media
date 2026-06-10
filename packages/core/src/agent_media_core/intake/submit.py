@@ -742,6 +742,15 @@ class _SpeechPlaybackLock:
             pass
         self._fd = None
         time.sleep(0.05)  # grace for the higher waiter to grab the token
+        # Reclaim with precedence over fresh *equal-rank* replies. We're an
+        # in-progress message that was forced aside for a notification; without
+        # this bump we'd race a not-yet-started reply of the same priority for
+        # the token on the way back and could lose — so a whole other long reply
+        # plays before we resume (the A -> notif -> B -> A interleave). Bump just
+        # above our base rank but below the next tier, so genuine HIGH speakers
+        # still preempt us; clamp so repeated yields can't creep into HIGH.
+        if self._rank < _PRIO_RANK[Priority.HIGH]:
+            self._rank = min(self._rank + 1, _PRIO_RANK[Priority.HIGH] - 1)
         self._take()
 
     def release(self) -> None:
