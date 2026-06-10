@@ -225,6 +225,20 @@ confirm() {           # $1 = prompt text
     case "$ans" in y|Y) return 0 ;; *) return 1 ;; esac
 }
 
+# Book typed-seek: read a whole timecode line and hand it to `book seek`
+# (absolute H:MM:SS, or +90 / -5:00 for a relative offset). Shows the cursor
+# and enables echo for the duration so the user can see what they type, then
+# restores the popup's hidden-cursor state. Empty input cancels.
+typed_seek() {
+    printf '\033[H\033[2J\033[?25h'                 # clear + show cursor
+    printf ' seek › H:MM:SS · +90 · -5:00\r\n ➜ '
+    local t; IFS= read -r t
+    printf '\033[?25l'                              # re-hide cursor
+    # `--` ends option parsing so a relative "-5:00" isn't taken as a flag
+    # (argparse only treats a bare "-5" as a number, not "-5:00").
+    [ -n "$t" ] && $MEDIA book seek -- "$t" 2>/dev/null
+}
+
 bump_speed() {        # $1 = +/- delta — applies to the active channel
     if [ "$CHANNEL" = "book" ]; then
         bspeed=$(awk -v s="$bspeed" -v d="$1" 'BEGIN{v=s+d; if(v<0.3)v=0.3; if(v>3)v=3; printf "%.1f", v}')
@@ -320,17 +334,20 @@ while true; do
         # speech: step one sentence (h/l) or paragraph (H/L), falling back to a
         # time-seek when there's no sentence sequence. music: plain time-seek.
         h)   if [ "$CHANNEL" = "music" ]; then $MEDIA music seek -5 2>/dev/null
-             elif [ "$CHANNEL" = "book" ]; then $MEDIA book skip -5 2>/dev/null
+             elif [ "$CHANNEL" = "book" ]; then $MEDIA book seek -5 2>/dev/null
              else $MEDIA skip --unit sentence --dir -1 --seek-fallback -5 2>/dev/null; fi ;;
         l)   if [ "$CHANNEL" = "music" ]; then $MEDIA music seek 5 2>/dev/null
-             elif [ "$CHANNEL" = "book" ]; then $MEDIA book skip 5 2>/dev/null
+             elif [ "$CHANNEL" = "book" ]; then $MEDIA book seek +5 2>/dev/null
              else $MEDIA skip --unit sentence --dir 1 --seek-fallback 5 2>/dev/null; fi ;;
         H)   if [ "$CHANNEL" = "music" ]; then $MEDIA music seek -30 2>/dev/null
-             elif [ "$CHANNEL" = "book" ]; then $MEDIA book skip -30 2>/dev/null
+             elif [ "$CHANNEL" = "book" ]; then $MEDIA book seek -30 2>/dev/null
              else $MEDIA skip --unit paragraph --dir -1 --seek-fallback -30 2>/dev/null; fi ;;
         L)   if [ "$CHANNEL" = "music" ]; then $MEDIA music seek 30 2>/dev/null
-             elif [ "$CHANNEL" = "book" ]; then $MEDIA book skip 30 2>/dev/null
+             elif [ "$CHANNEL" = "book" ]; then $MEDIA book seek +30 2>/dev/null
              else $MEDIA skip --unit paragraph --dir 1 --seek-fallback 30 2>/dev/null; fi ;;
+        # Typed seek — book only (it's the channel with an absolute timeline).
+        s)   if [ "$CHANNEL" = "book" ]; then typed_seek
+             else tmux display-message "⏱ typed seek: book channel only" 2>/dev/null; fi ;;
         '-') xport volume -5; show_volume ;;
         '='|'+') xport volume 5; show_volume ;;
         # speech: ⏮ older / ⏭ newer clip (jump to end when on latest).
@@ -401,7 +418,7 @@ while true; do
              if [ -n "${MEDIA_POPUP_HELP_FLAG:-}" ]; then
                  printf '%s' "$CHANNEL" > "$MEDIA_POPUP_HELP_FLAG"; break
              else
-                 tmux display-message "Tab chan · Spc play · h/l H/L seek · -/= vol · < > prev/next · g src · speech: r p m v · [/] 0 speed · q quit" 2>/dev/null
+                 tmux display-message "Tab chan · Spc play · h/l H/L seek · s typed-seek (book) · -/= vol · < > prev/next · g src · speech: r p m v · [/] 0 speed · q quit" 2>/dev/null
              fi ;;
         q|$'\e') break ;;
         *) : ;;

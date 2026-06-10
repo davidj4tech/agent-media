@@ -1257,6 +1257,39 @@ def _parse_timecode(s: str) -> tuple[float, bool]:
     return sign * secs, relative
 
 
+def _hms(t: float) -> str:
+    """``H:MM:SS`` (or ``M:SS`` under an hour) for seek/skip feedback — keeps
+    seconds, unlike fmt_time which drops to ``H:MM`` at audiobook scale."""
+    t = int(round(t)); h, rem = divmod(t, 3600); m, s = divmod(rem, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+def _book_seek_action(srv, time_str: str, tgt: str, *,
+                      force_relative: bool = False) -> int:
+    """Move the book playhead, shared by ``book seek`` and ``book skip``.
+
+    Parses a timecode (``H:MM:SS`` / ``MM:SS`` / ``SS``; a leading ``+``/``-``
+    makes it relative). An absolute value jumps; a relative one offsets the
+    current position. ``force_relative`` is the ``skip`` semantics — a bare,
+    unsigned number is treated as a relative offset rather than an absolute
+    jump, so legacy ``book skip 30`` still means "+30s".
+    """
+    try:
+        secs, relative = _parse_timecode(time_str)
+    except ValueError as e:
+        print(e, file=sys.stderr)
+        return 2
+    if force_relative:
+        relative = True
+    if relative:
+        srv.book_skip(seconds=secs, target=tgt or "local")
+        print(f"⏩ {'+' if secs >= 0 else '−'}{_hms(abs(secs))}")
+    else:
+        r = srv.book_seek(position_secs=secs, target=tgt or "local")
+        print(f"⏱ {_hms((r.get('position_ms') or 0) / 1000)}")
+    return 0
+
+
 def cmd_book(a) -> int:
     srv = _srv()
     bc = a.book_cmd
@@ -1300,23 +1333,10 @@ def cmd_book(a) -> int:
     if bc == "prev":
         return _ok(srv.book_prev(target=tgt))
     if bc == "skip":
-        return _ok(srv.book_skip(seconds=a.secs, target=tgt or "local"))
+        # `skip` is relative-only sugar over the shared seek action.
+        return _book_seek_action(srv, str(a.secs), tgt, force_relative=True)
     if bc == "seek":
-        try:
-            secs, relative = _parse_timecode(a.time)
-        except ValueError as e:
-            print(e, file=sys.stderr)
-            return 2
-        def _hms(t: float) -> str:
-            t = int(round(t)); h, rem = divmod(t, 3600); m, s = divmod(rem, 60)
-            return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
-        if relative:
-            srv.book_skip(seconds=secs, target=tgt or "local")
-            print(f"⏩ {'+' if secs >= 0 else '−'}{_hms(abs(secs))}")
-        else:
-            r = srv.book_seek(position_secs=secs, target=tgt or "local")
-            print(f"⏱ {_hms((r.get('position_ms') or 0) / 1000)}")
-        return 0
+        return _book_seek_action(srv, a.time, tgt)
     if bc == "speed":
         rate = 1.0 if a.factor == "reset" else float(a.factor)
         r = srv.book_speed(rate, target=tgt or "local")
@@ -1569,8 +1589,10 @@ def _add_book_parser(sub) -> None:
     bpv = b.add_parser("prev", help="previous part of the active playlist")
     bpv.add_argument("--target", default="")
 
-    bk = b.add_parser("skip", help="seek ±seconds (default +30)")
+    bk = b.add_parser("skip", help="relative ±seconds (default +30); alias of "
+                                   "`seek` with a forced-relative offset")
     bk.add_argument("secs", nargs="?", type=float, default=30.0)
+    bk.add_argument("--target", default="")
 
     bsk = b.add_parser("seek", help="jump to a time (H:MM:SS); +/- for relative")
     bsk.add_argument("time", help="absolute 1:33:35 / 93:35 / 5615, or +90 / -5:00")
@@ -1610,10 +1632,30 @@ def _add_book_parser(sub) -> None:
     prm.add_argument("name")
 
 
+def _end_opts_before_book_time(argv: list[str]) -> list[str]:
+    """Insert ``--`` so ``book seek -5:00`` / ``book skip -1:30`` parse.
+
+    argparse reads a bare ``-5`` as a negative number but treats a dash-led
+    *colon* timecode (``-5:00``) as an unknown option. Terminate option parsing
+    right after the seek/skip subcommand when its time argument leads with a
+    dash, so a relative offset isn't mistaken for a flag.
+    """
+    a = list(argv)
+    for i in range(len(a) - 2):
+        if (a[i] == "book" and a[i + 1] in ("seek", "skip")
+                and a[i + 2].startswith("-")
+                and a[i + 2] not in ("--", "-h", "--help", "--target")):
+            a.insert(i + 2, "--")
+            break
+    return a
+
+
 def main(argv=None) -> int:
     from .intake._env import load_env_file
     load_env_file("media-cli")
-    args = _build_parser().parse_args(argv)
+    if argv is None:
+        argv = sys.argv[1:]
+    args = _build_parser().parse_args(_end_opts_before_book_time(argv))
     try:
         return args.func(args)
     except ipc.MpvIpcError as e:
