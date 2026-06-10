@@ -179,7 +179,8 @@ def test_now_pane_falls_back_to_last_clip(monkeypatch, capsys):
 
     class _R:
         returncode = 0
-        stdout = "my coding pane\n"
+        # window_name \t pane_title — pane title carries a spinner glyph.
+        stdout = "my coding pane\t⠐ doing a thing\n"
 
     def fake_run(cmd, **kw):
         captured["cmd"] = cmd
@@ -188,9 +189,31 @@ def test_now_pane_falls_back_to_last_clip(monkeypatch, capsys):
     monkeypatch.setattr(cli, "StateStore", FakeStore)
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
     assert cli.cmd_now_pane(object()) == 0
-    # Resolved the *history* pane id, not the active pane.
-    assert "%7" in captured["cmd"] and "#{pane_title}" in captured["cmd"]
+    # Resolved the *history* pane id, not the active pane, and asked for both
+    # the window name and pane title.
+    assert "%7" in captured["cmd"]
+    assert "#{window_name}\t#{pane_title}" in captured["cmd"]
+    # Prefers the stable window name over the transient (spinner) pane title.
     assert capsys.readouterr().out.strip() == "my coding pane"
+
+
+def test_now_pane_strips_spinner_when_window_unnamed(monkeypatch, capsys):
+    """A default-named window falls back to the spinner-stripped pane title."""
+    class FakeStore:
+        def get_now_playing(self, sink):
+            return None
+
+        def recent_history(self, *, sink, limit):
+            return [{"extras": {"source_pane": "%7"}}]
+
+    class _R:
+        returncode = 0
+        stdout = "zsh\t⠐ Check the dotfiles repos\n"
+
+    monkeypatch.setattr(cli, "StateStore", FakeStore)
+    monkeypatch.setattr(cli.subprocess, "run", lambda cmd, **kw: _R())
+    assert cli.cmd_now_pane(object()) == 0
+    assert capsys.readouterr().out.strip() == "Check the dotfiles repos"
 
 
 class _FakeIpc:
