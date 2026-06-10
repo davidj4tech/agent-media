@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from agent_media_core import library
+from agent_media_core import cli
 from agent_media_core.cli import _parse_timecode
 
 
@@ -72,3 +73,92 @@ def test_parse_timecode(text, secs, relative):
 def test_parse_timecode_rejects_garbage(bad):
     with pytest.raises(ValueError):
         _parse_timecode(bad)
+
+
+# --- unified seek/skip action ---------------------------------------------
+
+class _FakeSrv:
+    """Records which book transport method the action chose."""
+    def __init__(self):
+        self.calls = []
+
+    def book_skip(self, *, seconds, target):
+        self.calls.append(("skip", seconds, target))
+        return {"ok": True}
+
+    def book_seek(self, *, position_secs, target):
+        self.calls.append(("seek", position_secs, target))
+        return {"position_ms": position_secs * 1000}
+
+
+def test_seek_absolute_jumps(capsys):
+    srv = _FakeSrv()
+    assert cli._book_seek_action(srv, "1:33:35", "") == 0
+    assert srv.calls == [("seek", 5615.0, "local")]
+    assert "⏱" in capsys.readouterr().out
+
+
+def test_seek_signed_is_relative(capsys):
+    srv = _FakeSrv()
+    assert cli._book_seek_action(srv, "-5:00", "") == 0
+    assert srv.calls == [("skip", -300.0, "local")]
+
+
+def test_skip_forces_relative_on_bare_number(capsys):
+    """`book skip 30` (bare, unsigned) must offset +30, not jump to 0:30."""
+    srv = _FakeSrv()
+    assert cli._book_seek_action(srv, "30", "", force_relative=True) == 0
+    assert srv.calls == [("skip", 30.0, "local")]
+
+
+def test_seek_bad_timecode_returns_2(capsys):
+    srv = _FakeSrv()
+    assert cli._book_seek_action(srv, "abc", "") == 2
+    assert srv.calls == []
+
+
+class _FakeMusic:
+    def __init__(self):
+        self.calls = []
+
+    def seek_cur(self, *, position_ms):
+        self.calls.append(("abs_ms", position_ms))
+
+    def seek_relative(self, secs):
+        self.calls.append(("rel", secs))
+
+
+def _music_args(uri):
+    import argparse
+    return argparse.Namespace(action="seek", uri=uri)
+
+
+def test_music_seek_absolute(monkeypatch, capsys):
+    fake = _FakeMusic()
+    monkeypatch.setattr(cli, "SinkMusic", lambda: fake)
+    assert cli.cmd_music(_music_args("1:30")) == 0
+    assert fake.calls == [("abs_ms", 90000)]   # 1:30 → absolute 90s
+    assert "⏱" in capsys.readouterr().out
+
+
+def test_music_seek_relative(monkeypatch, capsys):
+    fake = _FakeMusic()
+    monkeypatch.setattr(cli, "SinkMusic", lambda: fake)
+    assert cli.cmd_music(_music_args("-5:00")) == 0
+    assert fake.calls == [("rel", -300.0)]     # signed → relative offset
+
+
+@pytest.mark.parametrize("argv,expect", [
+    (["book", "seek", "-5:00"], ["book", "seek", "--", "-5:00"]),
+    (["book", "skip", "-1:30"], ["book", "skip", "--", "-1:30"]),
+    (["music", "seek", "-5:00"], ["music", "seek", "--", "-5:00"]),
+    # Bare negative numbers / colon-less values already parse; the `--` is
+    # harmless. Absolute and `+` forms are never rewritten.
+    (["book", "seek", "1:33:35"], ["book", "seek", "1:33:35"]),
+    (["book", "seek", "+90"], ["book", "seek", "+90"]),
+    (["music", "seek", "30"], ["music", "seek", "30"]),
+    (["book", "seek", "--", "-5:00"], ["book", "seek", "--", "-5:00"]),
+    (["seek", "-5"], ["seek", "-5"]),  # top-level speech seek → untouched
+])
+def test_end_opts_before_time(argv, expect):
+    assert cli._end_opts_before_time(argv) == expect
