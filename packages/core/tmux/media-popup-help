@@ -34,6 +34,7 @@ cat <<'EOF'
  │ book & music       │
  ├─────┬──────────────┤
  │ s   │ typed seek   │
+ │ o   │ open URL     │
  ├─────┴──────────────┤
  │ speech & book      │
  ├─────┬──────────────┤

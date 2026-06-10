@@ -15,6 +15,8 @@
 #   [ / ]   slower / faster (0.1)      0   reset speed           (speech/book)
 #   < / >   speech: replay older/newer · music: prev/next track ·
 #           book: prev/next part (chapters in a later pass)
+#   o       open a URL on this channel — music (ducks) / book (pauses);
+#           pre-fills from the tmux paste buffer, so copy a link then o, Enter
 #   v       toggle auto-highlight (speech)   ?  help   q / Esc  close
 #
 # Caller pane for `v`/the speech marquee comes from TTS_POPUP_PANE (set by
@@ -245,6 +247,32 @@ typed_seek() {
     [ -n "$t" ] && $MEDIA "$CHANNEL" seek -- "$t" >/dev/null 2>&1
 }
 
+# Open a URL on a timeline channel: music (ducks under speech) or book (pauses
+# under speech). Clipboard-first — the tmux paste buffer is the one clipboard
+# that works on every host (phone included), so copy a link, then `o` plays it
+# with no typing. Bare Enter accepts the buffer URL; typing overrides it; an
+# empty prompt with no buffered URL cancels. Speech has no playlist, so `o`
+# there points the user at Tab.
+typed_open() {
+    if [ "$CHANNEL" != "book" ] && [ "$CHANNEL" != "music" ]; then
+        tmux display-message "↗ open URL: switch to music or book first (Tab)" 2>/dev/null
+        return
+    fi
+    local buf url t
+    buf=$(tmux show-buffer 2>/dev/null | head -1)
+    case "$buf" in http://*|https://*) url="$buf" ;; esac
+    printf '\033[H\033[2J\033[?25h'                 # clear + show cursor
+    if [ -n "$url" ]; then
+        printf ' %s open › %.38s\r\n [Enter] play · or type a URL to override\r\n ➜ ' "$CHANNEL" "$url"
+    else
+        printf ' %s open › paste/type a URL (Enter cancels)\r\n ➜ ' "$CHANNEL"
+    fi
+    IFS= read -r t
+    printf '\033[?25l'                              # re-hide cursor
+    [ -z "$t" ] && t="$url"                         # bare Enter accepts the buffer URL
+    [ -n "$t" ] && $MEDIA "$CHANNEL" play "$t" >/dev/null 2>&1
+}
+
 bump_speed() {        # $1 = +/- delta — applies to the active channel
     if [ "$CHANNEL" = "book" ]; then
         bspeed=$(awk -v s="$bspeed" -v d="$1" 'BEGIN{v=s+d; if(v<0.3)v=0.3; if(v>3)v=3; printf "%.1f", v}')
@@ -355,6 +383,9 @@ while true; do
              else $MEDIA skip --unit paragraph --dir 1 --seek-fallback 30 2>/dev/null; fi ;;
         # Typed seek — book/music (the channels with an absolute timeline).
         s)   typed_seek ;;
+        # Open a URL on the active channel — music (ducks) or book (pauses).
+        # Clipboard-first: copy a link, then `o`, Enter.
+        o)   typed_open ;;
         '-') xport volume -5; show_volume ;;
         '='|'+') xport volume 5; show_volume ;;
         # speech: ⏮ older / ⏭ newer clip (jump to end when on latest).
@@ -425,7 +456,7 @@ while true; do
              if [ -n "${MEDIA_POPUP_HELP_FLAG:-}" ]; then
                  printf '%s' "$CHANNEL" > "$MEDIA_POPUP_HELP_FLAG"; break
              else
-                 tmux display-message "Tab chan · Spc play · h/l H/L seek · s typed-seek (book/music) · -/= vol · < > prev/next · g src · speech: r p m v · [/] 0 speed · q quit" 2>/dev/null
+                 tmux display-message "Tab chan · Spc play · h/l H/L seek · s typed-seek · o open URL (music/book) · -/= vol · < > prev/next · g src · speech: r p m v · [/] 0 speed · q quit" 2>/dev/null
              fi ;;
         q|$'\e') break ;;
         *) : ;;
