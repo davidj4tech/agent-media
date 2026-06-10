@@ -220,6 +220,15 @@ class SinkBook:
         except (ipc.MpvIpcError, OSError):
             pass
 
+    def seek_to(self, seconds: float, target: Target = DEFAULT_TARGET) -> Optional[int]:
+        """Seek to an absolute position (seconds from the start), clamped by
+        mpv to the file bounds. Returns the resulting position in ms."""
+        try:
+            ipc.command(self._sock, "seek", max(0.0, float(seconds)), "absolute")
+        except (ipc.MpvIpcError, OSError):
+            return None
+        return self.position(target)
+
     def set_speed(self, rate: float, target: Target = DEFAULT_TARGET) -> float:
         rate = max(_MIN_SPEED, min(_MAX_SPEED, float(rate)))
         try:

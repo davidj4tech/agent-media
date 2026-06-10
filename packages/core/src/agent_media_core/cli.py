@@ -1231,6 +1231,32 @@ def _cmd_book_playlist(a, srv) -> int:
     return 0
 
 
+def _parse_timecode(s: str) -> tuple[float, bool]:
+    """Parse a position string into (seconds, relative).
+
+    Accepts ``H:MM:SS`` / ``MM:SS`` / ``SS`` (fractions ok). A leading ``+`` or
+    ``-`` makes it relative (skip ±) instead of an absolute jump:
+        ``1:33:35`` → absolute 5615s   ``+90`` → +90s   ``-5:00`` → back 5min
+    """
+    s = s.strip()
+    relative = False
+    sign = 1.0
+    if s[:1] == "+":
+        relative, s = True, s[1:]
+    elif s[:1] == "-":
+        relative, sign, s = True, -1.0, s[1:]
+    parts = s.split(":")
+    if not parts or not all(parts):
+        raise ValueError(f"bad time: {s!r}")
+    try:
+        secs = 0.0
+        for p in parts:
+            secs = secs * 60 + float(p)
+    except ValueError:
+        raise ValueError(f"bad time: {s!r}")
+    return sign * secs, relative
+
+
 def cmd_book(a) -> int:
     srv = _srv()
     bc = a.book_cmd
@@ -1254,7 +1280,13 @@ def cmd_book(a) -> int:
         r = srv.book_play(a.uri, resume=not a.no_resume,
                           start_ms=(a.start_ms if a.start_ms is not None else -1),
                           target=tgt)
-        print(f"▶ {r['uri']} (from {fmt_time((r['resumed_from_ms'] or 0)/1000)})")
+        if r.get("fetching"):
+            print(f"⬇ {r.get('reason', 'fetching')}: {r['uri']}")
+            return 0
+        if not r.get("ok", True):
+            print(r.get("reason", "book play failed"), file=sys.stderr)
+            return 1
+        print(f"▶ {r['uri']} (from {fmt_time((r.get('resumed_from_ms') or 0)/1000)})")
         return 0
     if bc == "resume":
         r = srv.book_resume(target=tgt)
@@ -1269,6 +1301,22 @@ def cmd_book(a) -> int:
         return _ok(srv.book_prev(target=tgt))
     if bc == "skip":
         return _ok(srv.book_skip(seconds=a.secs, target=tgt or "local"))
+    if bc == "seek":
+        try:
+            secs, relative = _parse_timecode(a.time)
+        except ValueError as e:
+            print(e, file=sys.stderr)
+            return 2
+        def _hms(t: float) -> str:
+            t = int(round(t)); h, rem = divmod(t, 3600); m, s = divmod(rem, 60)
+            return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+        if relative:
+            srv.book_skip(seconds=secs, target=tgt or "local")
+            print(f"⏩ {'+' if secs >= 0 else '−'}{_hms(abs(secs))}")
+        else:
+            r = srv.book_seek(position_secs=secs, target=tgt or "local")
+            print(f"⏱ {_hms((r.get('position_ms') or 0) / 1000)}")
+        return 0
     if bc == "speed":
         rate = 1.0 if a.factor == "reset" else float(a.factor)
         r = srv.book_speed(rate, target=tgt or "local")
@@ -1523,6 +1571,10 @@ def _add_book_parser(sub) -> None:
 
     bk = b.add_parser("skip", help="seek ±seconds (default +30)")
     bk.add_argument("secs", nargs="?", type=float, default=30.0)
+
+    bsk = b.add_parser("seek", help="jump to a time (H:MM:SS); +/- for relative")
+    bsk.add_argument("time", help="absolute 1:33:35 / 93:35 / 5615, or +90 / -5:00")
+    bsk.add_argument("--target", default="")
 
     bs = b.add_parser("speed", help="set playback speed (factor or 'reset')")
     bs.add_argument("factor")

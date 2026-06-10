@@ -49,6 +49,7 @@ from .route import (
     detect_content_type,
     resolve,
 )
+from . import library
 from .sinks import SinkBook, SinkMusic, SinkSpeech
 from .sinks.book import normalize_uri
 from .state import StateStore
@@ -313,6 +314,20 @@ def book_play(uri: str, resume: bool = True, start_ms: int = -1,
     """
     b, st, t = _book(), _state(), _book_target(target)
     norm = normalize_uri(uri)
+    # Download-first: a YouTube URL is unplayable directly on mel (datacenter IP
+    # blocked). Resolve it to a cached local file, or start a phone-side fetch
+    # (audiobook-fetch) that auto-plays on the book channel when it finishes.
+    if library.is_youtube(norm):
+        vid = library.video_id(norm)
+        cached = library.cached_path(vid) if vid else None
+        if cached is not None:
+            norm = str(cached)
+        else:
+            started = library.start_fetch(norm, play=True)
+            return {"ok": False, "fetching": started, "uri": norm,
+                    "reason": ("downloading on phone; will auto-play when ready"
+                               if started
+                               else "not cached and audiobook-fetch unavailable")}
     # Save the outgoing book's place before switching away from it.
     _save_book_bookmark(b, st, t)
     if start_ms is not None and start_ms >= 0:
@@ -374,6 +389,17 @@ def book_skip(seconds: float = 30, target: str = "local") -> dict:
     """Skip the book by ±seconds (negative = back). Default +30s."""
     _book().skip(seconds, _target(target))
     return {"ok": True, "seconds": seconds}
+
+
+@mcp.tool()
+def book_seek(position_secs: float, target: str = "local") -> dict:
+    """Seek the book to an absolute position (seconds from the start).
+
+    Unlike `book_skip` (which moves ±relative), this jumps to a specific
+    time — e.g. `position_secs=5615` for 1:33:35. Clamped to the file length.
+    """
+    pos = _book().seek_to(position_secs, _target(target))
+    return {"ok": True, "position_ms": pos}
 
 
 @mcp.tool()
