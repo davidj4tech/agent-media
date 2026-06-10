@@ -16,6 +16,7 @@ import argparse
 import datetime
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -325,16 +326,30 @@ def cmd_now_pane(a) -> int:
     nothing is playing, falls back to the pane of the most recent clip so the
     marquee keeps showing who last spoke (rather than reverting to a generic
     label). Prints nothing when no pane was ever captured.
+
+    Prefers the *window name* (which tracks the stable Claude conversation
+    title) over the *pane title* — the pane title is the transient tool-status,
+    so it carries a leading spinner glyph and flips to whatever Claude is doing
+    right now rather than naming what's actually being spoken. Falls back to a
+    spinner-stripped pane title only when the window has no usable name.
     """
     pane = _spoken_pane()
     if not pane:
         return 0
     try:
         r = subprocess.run(
-            ["tmux", "display-message", "-p", "-t", pane, "#{pane_title}"],
+            ["tmux", "display-message", "-p", "-t", pane,
+             "#{window_name}\t#{pane_title}"],
             capture_output=True, text=True)
         if r.returncode == 0:
-            print(r.stdout.strip())
+            window_name, _, pane_title = r.stdout.strip().partition("\t")
+            # A default-named window (the shell/program name) is no better than
+            # the pane title; only prefer it when it's a real conversation title.
+            label = window_name.strip()
+            if not label or label in {"zsh", "bash", "sh", "fish"}:
+                # Strip a leading Claude spinner glyph (braille U+2800–U+28FF).
+                label = re.sub(r"^[⠀-⣿]\s*", "", pane_title.strip())
+            print(label)
     except Exception:  # noqa: BLE001 — popup must never see a traceback
         pass
     return 0
