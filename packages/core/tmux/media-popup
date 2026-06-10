@@ -258,7 +258,7 @@ typed_open() {
         tmux display-message "↗ open URL: switch to music or book first (Tab)" 2>/dev/null
         return
     fi
-    local buf url t
+    local buf="" url="" t=""    # init: url stays empty when the buffer isn't a URL (set -u)
     buf=$(tmux show-buffer 2>/dev/null | head -1)
     case "$buf" in http://*|https://*) url="$buf" ;; esac
     printf '\033[H\033[2J\033[?25h'                 # clear + show cursor
