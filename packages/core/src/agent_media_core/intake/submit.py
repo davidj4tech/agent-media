@@ -934,7 +934,13 @@ def submit_event(event: Event,
     ext = _ext_for(engine)
 
     audio_dir = _audio_dir()
-    stamp = time.strftime("%Y%m%dT%H%M%S")
+    # Per-submission unique: second-resolution time is NOT enough — two
+    # concurrent sessions (both source "claude-code") finishing a reply in the
+    # same second would render to identical clip paths and clobber each other's
+    # audio, so one session could end up playing another's clips. pid + a short
+    # random token guarantees uniqueness across processes and within one.
+    stamp = (time.strftime("%Y%m%dT%H%M%S")
+             + f"-{os.getpid()}-{uuid.uuid4().hex[:6]}")
     started_at = time.time()
 
     # The tmux pane that produced this speech (the Claude Code TTS hook runs
@@ -1204,7 +1210,13 @@ def submit_stream(sentences,
     ext = _ext_for(engine)
 
     audio_dir = _audio_dir()
-    stamp = time.strftime("%Y%m%dT%H%M%S")
+    # Per-submission unique: second-resolution time is NOT enough — two
+    # concurrent sessions (both source "claude-code") finishing a reply in the
+    # same second would render to identical clip paths and clobber each other's
+    # audio, so one session could end up playing another's clips. pid + a short
+    # random token guarantees uniqueness across processes and within one.
+    stamp = (time.strftime("%Y%m%dT%H%M%S")
+             + f"-{os.getpid()}-{uuid.uuid4().hex[:6]}")
     started_at = time.time()
 
     source_pane = (event.metadata or {}).get("pane") or os.environ.get("TMUX_PANE", "")
