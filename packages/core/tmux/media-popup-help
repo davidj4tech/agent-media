@@ -31,7 +31,7 @@ cat <<'EOF'
  │ m   │ mute         │
  │ v   │ highlight    │
  ├─────┴──────────────┤
- │ book only          │
+ │ book & music       │
  ├─────┬──────────────┤
  │ s   │ typed seek   │
  ├─────┴──────────────┤

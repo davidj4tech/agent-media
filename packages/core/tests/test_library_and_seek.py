@@ -117,15 +117,48 @@ def test_seek_bad_timecode_returns_2(capsys):
     assert srv.calls == []
 
 
+class _FakeMusic:
+    def __init__(self):
+        self.calls = []
+
+    def seek_cur(self, *, position_ms):
+        self.calls.append(("abs_ms", position_ms))
+
+    def seek_relative(self, secs):
+        self.calls.append(("rel", secs))
+
+
+def _music_args(uri):
+    import argparse
+    return argparse.Namespace(action="seek", uri=uri)
+
+
+def test_music_seek_absolute(monkeypatch, capsys):
+    fake = _FakeMusic()
+    monkeypatch.setattr(cli, "SinkMusic", lambda: fake)
+    assert cli.cmd_music(_music_args("1:30")) == 0
+    assert fake.calls == [("abs_ms", 90000)]   # 1:30 → absolute 90s
+    assert "⏱" in capsys.readouterr().out
+
+
+def test_music_seek_relative(monkeypatch, capsys):
+    fake = _FakeMusic()
+    monkeypatch.setattr(cli, "SinkMusic", lambda: fake)
+    assert cli.cmd_music(_music_args("-5:00")) == 0
+    assert fake.calls == [("rel", -300.0)]     # signed → relative offset
+
+
 @pytest.mark.parametrize("argv,expect", [
     (["book", "seek", "-5:00"], ["book", "seek", "--", "-5:00"]),
     (["book", "skip", "-1:30"], ["book", "skip", "--", "-1:30"]),
-    # Bare negative numbers already parse — left untouched is fine either way,
-    # but a `--` is harmless; absolute and `+` forms are never rewritten.
+    (["music", "seek", "-5:00"], ["music", "seek", "--", "-5:00"]),
+    # Bare negative numbers / colon-less values already parse; the `--` is
+    # harmless. Absolute and `+` forms are never rewritten.
     (["book", "seek", "1:33:35"], ["book", "seek", "1:33:35"]),
     (["book", "seek", "+90"], ["book", "seek", "+90"]),
+    (["music", "seek", "30"], ["music", "seek", "30"]),
     (["book", "seek", "--", "-5:00"], ["book", "seek", "--", "-5:00"]),
-    (["music", "seek", "-5"], ["music", "seek", "-5"]),  # not book → untouched
+    (["seek", "-5"], ["seek", "-5"]),  # top-level speech seek → untouched
 ])
-def test_end_opts_before_book_time(argv, expect):
-    assert cli._end_opts_before_book_time(argv) == expect
+def test_end_opts_before_time(argv, expect):
+    assert cli._end_opts_before_time(argv) == expect

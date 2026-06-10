@@ -1141,8 +1141,14 @@ def cmd_music(a) -> int:
         StateStore().clear_music_intent()
         return 0
     if a.action == "seek":
-        m.seek_relative(float(a.uri or 0))
-        return 0
+        # Timecode-aware, mirroring `book seek`: a bare value jumps absolute,
+        # a signed one (+90 / -5:00) offsets. MPD seeks the current track only.
+        return _do_timecode_seek(
+            a.uri or "0",
+            jump=lambda s: (m.seek_cur(position_ms=int(max(0.0, s) * 1000)),
+                            max(0.0, s))[1],
+            offset=lambda s: m.seek_relative(s),
+        )
     if a.action == "volume":
         m.volume_delta(int(float(a.uri or 0)))
         return 0
@@ -1264,15 +1270,17 @@ def _hms(t: float) -> str:
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
 
-def _book_seek_action(srv, time_str: str, tgt: str, *,
+def _do_timecode_seek(time_str: str, *, jump, offset,
                       force_relative: bool = False) -> int:
-    """Move the book playhead, shared by ``book seek`` and ``book skip``.
+    """Channel-agnostic timecode seek, shared by book and music.
 
     Parses a timecode (``H:MM:SS`` / ``MM:SS`` / ``SS``; a leading ``+``/``-``
-    makes it relative). An absolute value jumps; a relative one offsets the
-    current position. ``force_relative`` is the ``skip`` semantics — a bare,
-    unsigned number is treated as a relative offset rather than an absolute
-    jump, so legacy ``book skip 30`` still means "+30s".
+    makes it relative) and routes it to one of two channel callbacks:
+      ``jump(secs)``   — absolute seek; may return the resulting position (s).
+      ``offset(secs)`` — relative seek by ±secs.
+    ``force_relative`` makes a bare, unsigned number relative instead of an
+    absolute jump (the ``skip`` semantics — ``book skip 30`` means "+30s").
+    Prints a one-line confirmation; returns 2 on a malformed timecode.
     """
     try:
         secs, relative = _parse_timecode(time_str)
@@ -1282,12 +1290,23 @@ def _book_seek_action(srv, time_str: str, tgt: str, *,
     if force_relative:
         relative = True
     if relative:
-        srv.book_skip(seconds=secs, target=tgt or "local")
+        offset(secs)
         print(f"⏩ {'+' if secs >= 0 else '−'}{_hms(abs(secs))}")
     else:
-        r = srv.book_seek(position_secs=secs, target=tgt or "local")
-        print(f"⏱ {_hms((r.get('position_ms') or 0) / 1000)}")
+        pos = jump(secs)
+        print(f"⏱ {_hms(pos if pos is not None else secs)}")
     return 0
+
+
+def _book_seek_action(srv, time_str: str, tgt: str, *,
+                      force_relative: bool = False) -> int:
+    """Move the book playhead, shared by ``book seek`` and ``book skip``."""
+    return _do_timecode_seek(
+        time_str, force_relative=force_relative,
+        jump=lambda s: (srv.book_seek(position_secs=s, target=tgt or "local")
+                        .get("position_ms") or 0) / 1000,
+        offset=lambda s: srv.book_skip(seconds=s, target=tgt or "local"),
+    )
 
 
 def cmd_book(a) -> int:
@@ -1527,7 +1546,8 @@ def _build_parser() -> argparse.ArgumentParser:
                             "next", "prev", "status", "now", "seek", "volume"))
     s.add_argument("uri", nargs="?",
                    help="for 'play': Mopidy URI (e.g. yt:https://...); "
-                        "for 'seek': ±seconds; for 'volume': ±delta")
+                        "for 'seek': time H:MM:SS (absolute) or +90/-5:00 "
+                        "(relative); for 'volume': ±delta")
     s.add_argument("--width", type=int, default=12,
                    help="for 'status': progress-bar width")
     s.add_argument("--show-idle", action="store_true",
@@ -1632,21 +1652,26 @@ def _add_book_parser(sub) -> None:
     prm.add_argument("name")
 
 
-def _end_opts_before_book_time(argv: list[str]) -> list[str]:
-    """Insert ``--`` so ``book seek -5:00`` / ``book skip -1:30`` parse.
+def _end_opts_before_time(argv: list[str]) -> list[str]:
+    """Insert ``--`` so a dash-led colon timecode parses as the seek argument.
 
     argparse reads a bare ``-5`` as a negative number but treats a dash-led
-    *colon* timecode (``-5:00``) as an unknown option. Terminate option parsing
-    right after the seek/skip subcommand when its time argument leads with a
-    dash, so a relative offset isn't mistaken for a flag.
+    *colon* timecode (``-5:00``) as an unknown option. For each seek-like
+    subcommand — ``book seek``/``book skip`` and ``music seek`` — terminate
+    option parsing right before a dash-led time value so a relative offset
+    isn't mistaken for a flag.
     """
     a = list(argv)
-    for i in range(len(a) - 2):
-        if (a[i] == "book" and a[i + 1] in ("seek", "skip")
-                and a[i + 2].startswith("-")
-                and a[i + 2] not in ("--", "-h", "--help", "--target")):
-            a.insert(i + 2, "--")
-            break
+    for i, tok in enumerate(a):
+        seekish = ((tok in ("seek", "skip") and i > 0 and a[i - 1] == "book")
+                   or (tok == "seek" and i > 0 and a[i - 1] == "music"))
+        if not seekish:
+            continue
+        j = i + 1
+        if (j < len(a) and a[j].startswith("-")
+                and a[j] not in ("--", "-h", "--help", "--target")):
+            a.insert(j, "--")
+        break
     return a
 
 
@@ -1655,7 +1680,7 @@ def main(argv=None) -> int:
     load_env_file("media-cli")
     if argv is None:
         argv = sys.argv[1:]
-    args = _build_parser().parse_args(_end_opts_before_book_time(argv))
+    args = _build_parser().parse_args(_end_opts_before_time(argv))
     try:
         return args.func(args)
     except ipc.MpvIpcError as e:
