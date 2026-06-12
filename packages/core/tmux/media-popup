@@ -17,8 +17,9 @@
 #           book: prev/next part (chapters in a later pass)
 #   o       open a URL on this channel — music (ducks) / book (pauses);
 #           pre-fills from the tmux paste buffer, so copy a link then o, Enter
-#   w       open the channel's web UI — music → Mopidy-Iris, book → mpvc-web
-#           (copies the URL to the paste buffer + shows it)
+#   w       the channel's web UI — music → Mopidy-Iris, book → simple-mpv-webui.
+#           mel can't open the client's browser, so it shows the URL as a
+#           tappable link (+ raw URL + copies it to the tmux paste buffer)
 #   v       toggle auto-highlight (speech)   ?  help   q / Esc  close
 #   ← →     (or ↑ ↓) move a focus highlight across the buttons; Enter activates
 #           the focused one; Esc clears the highlight (then Esc again quits).
@@ -400,6 +401,28 @@ typed_open() {
     [ -n "$t" ] && $MEDIA "$CHANNEL" play "$t" >/dev/null 2>&1
 }
 
+# Show a web-UI URL the user can actually open from a phone/SSH session: mel is
+# headless and can't open the client's browser, so present it as a tappable OSC 8
+# hyperlink (row 1) plus the raw URL (row 2, which most phone terminals auto-link)
+# and copy it to the tmux paste buffer. Any key dismisses.
+show_link() {  # $1 = url
+    mouse_off
+    tmux set-buffer -- "$1" 2>/dev/null
+    # Enable line-wrap so the full URL shows across the 2 rows instead of being
+    # clipped at the popup's right edge (it's normally off). The whole URL is one
+    # OSC 8 hyperlink, so it stays tappable even when wrapped; the leading ↗ hints
+    # it's a link. Restored to no-wrap on the way out.
+    printf '\033[H\033[2J\033[?7h'
+    printf ' ↗ \033]8;;%s\033\\%s\033]8;;\033\\' "$1" "$1"
+    # TODO: a URL longer than one popup row (e.g. music/Iris …:6680/iris/) wraps
+    # across rows — fine for OSC 8 terminals (Kitty), but Termux's long-press
+    # URL detection won't catch a wrapped URL. Consider a wider/taller link
+    # popup, or rendering a short OSC 8 label + putting the raw URL elsewhere.
+    IFS= read -rsn1 _
+    printf '\033[?7l'
+    mouse_on
+}
+
 bump_speed() {        # $1 = +/- delta — applies to the active channel
     if [ "$CHANNEL" = "book" ]; then
         bspeed=$(awk -v s="$bspeed" -v d="$1" 'BEGIN{v=s+d; if(v<0.3)v=0.3; if(v>3)v=3; printf "%.1f", v}')
@@ -580,12 +603,8 @@ handle_key() {
                  book)  _wu=$($MEDIA book-web  2>/dev/null | head -1) ;;
                  *)     _wu="" ;;
              esac
-             if [ -n "$_wu" ]; then
-                 tmux set-buffer -- "$_wu" 2>/dev/null
-                 tmux display-message "↗ $_wu (copied)" 2>/dev/null
-             else
-                 tmux display-message "↗ web: music/book only" 2>/dev/null
-             fi ;;
+             if [ -n "$_wu" ]; then show_link "$_wu"
+             else tmux display-message "↗ web: music/book only" 2>/dev/null; fi ;;
         # --- speech-only keys below ---
         r)   [ "$CHANNEL" = "speech" ] && { $MEDIA replay; hist_idx=1; } ;;
         # Play the clip at the caller pane's copy-mode cursor (or this pane's
