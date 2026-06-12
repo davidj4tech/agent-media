@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# Full keymap for the agent-media control popup, shown in a nested popup from
-# the main popup's `?` key. Renders a compact box table grouped by channel
-# (<=22 cols so it fits a ~26-col phone), waits for any key, exits.
+# Scrollable keymap help for the agent-media control popup, shown in a nested
+# popup from the main popup's `?` key. The table is taller than a phone popup, so
+# this is a tiny self-contained pager: j/k or ↑/↓ scroll a line, space pages,
+# g/G jump to top/bottom, q or Esc close. Sized to the popup's actual height
+# (LINES/COLUMNS unset so a stale env value can't make it overshoot — the bug
+# that left `less` rendering past the visible rows).
 #
-# Line 1 is intentionally blank: tmux paints a copy-mode/position indicator over
-# the popup's first row, which would otherwise clobber the title.
+# Line 1 of the table is intentionally blank: tmux paints a copy-mode/position
+# indicator over the popup's first row, which would otherwise clobber the title.
 set -u
-printf '\033[?25l\033[?7l'                 # hide cursor + disable line-wrap
-cleanup() { printf '\033[?7h\033[?25h'; }  # restore both on exit
-trap cleanup EXIT
-cat <<'EOF'
+
+mapfile -t L <<'EOF'
 
  agent-media popup keys
  ┌────────────────────┐
@@ -35,12 +36,90 @@ cat <<'EOF'
  ├─────┬──────────────┤
  │ s   │ typed seek   │
  │ o   │ open URL     │
+ │ w   │ web UI       │
  ├─────┴──────────────┤
  │ speech & book      │
  ├─────┬──────────────┤
  │ [ ] │ speed -/+    │
- │ 0   │ reset speed  │
+ │ ⌫   │ reset speed  │
+ ├─────┴──────────────┤
+ │ mouse (click)      │
+ ├─────┬──────────────┤
+ │ TL  │ channel      │
+ │ TR  │ close        │
+ │ ttl │ source       │
+ │ < > │ prev/next    │
+ │prog │ play/pause   │
+ │ whl │ volume -/+   │
+ ├─────┴──────────────┤
+ │ keyboard focus     │
+ ├─────┬──────────────┤
+ │ ← → │ move focus   │
+ │ Ent │ activate     │
+ │ Esc │ clear focus  │
  └─────┴──────────────┘
- (any key closes)
 EOF
-IFS= read -rsn1 _
+
+# The popup's real size from the pty winsize (ioctl) — not $LINES/$COLUMNS or
+# tput, both of which can carry a stale value and make the pager overshoot.
+sz=$(stty size 2>/dev/null </dev/tty) || sz=""
+rows=${sz% *}; cols=${sz#* }
+case "$rows" in ''|*[!0-9]*) rows=20 ;; esac
+case "$cols" in ''|*[!0-9]*) cols=24 ;; esac
+total=${#L[@]}
+view=$(( rows > 1 ? rows - 1 : rows ))     # last row is the footer hint
+maxoff=$(( total - view )); [ "$maxoff" -lt 0 ] && maxoff=0
+off=0
+
+printf '\033[?25l\033[?7l'                 # hide cursor + disable line-wrap
+cleanup() { printf '\033[?7h\033[?25h\033[H\033[2J'; }
+trap cleanup EXIT
+
+draw() {
+    printf '\033[H\033[2J'
+    local i end=$(( off + view ))
+    [ "$end" -gt "$total" ] && end=$total
+    for (( i = off; i < end; i++ )); do printf '%s\r\n' "${L[i]}"; done
+    # Footer pinned to the bottom row: scroll arrows (only when there's more in
+    # that direction) + key hint, reverse-video, clipped to width.
+    local up="·" dn="·"
+    [ "$off" -gt 0 ] && up="↑"
+    [ "$off" -lt "$maxoff" ] && dn="↓"
+    local hint
+    if [ "$maxoff" -eq 0 ]; then hint=" q/Esc close"
+    else hint=" $up$dn j/k scroll · q/Esc quit"; fi
+    printf '\033[%d;1H\033[7m%s\033[0m' "$rows" "${hint:0:cols}"
+}
+
+draw
+while :; do
+    IFS= read -rsn1 c || break
+    case "$c" in
+        j)   off=$(( off + 1 )) ;;
+        k)   off=$(( off - 1 )) ;;
+        ' ') off=$(( off + view )) ;;
+        g)   off=0 ;;
+        G)   off=$maxoff ;;
+        q)   break ;;
+        $'\e')
+            # Esc alone closes; Esc [ … is an arrow / page key. Disambiguate on
+            # a short timeout (a real Esc has no bytes trailing it).
+            if IFS= read -rsn1 -t 0.02 c2; then
+                if [ "$c2" = '[' ]; then
+                    IFS= read -rsn1 -t 0.02 c3
+                    case "$c3" in
+                        A) off=$(( off - 1 )) ;;                 # ↑
+                        B) off=$(( off + 1 )) ;;                 # ↓
+                        5) off=$(( off - view )); IFS= read -rsn1 -t 0.02 _ ;;  # PgUp
+                        6) off=$(( off + view )); IFS= read -rsn1 -t 0.02 _ ;;  # PgDn
+                    esac
+                fi
+                # other Esc sequence → ignore
+            else
+                break                                            # bare Esc → quit
+            fi ;;
+    esac
+    [ "$off" -gt "$maxoff" ] && off=$maxoff
+    [ "$off" -lt 0 ] && off=0
+    draw
+done

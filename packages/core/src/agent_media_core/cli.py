@@ -455,6 +455,105 @@ def cmd_open_ncmpcpp(a) -> int:
     return 0
 
 
+# Window name we launch the book's mpvc-tui under, so goto-book can find it
+# again regardless of what the foreground command reports (rlwrap/sh/mpvc-tui).
+_MPVC_WINDOW = "agent-media-book"
+
+
+def _mpvc_pane() -> Optional[str]:
+    """tmux pane id showing the book's mpvc-tui, or None.
+
+    The book channel's player is mpvc-tui — an IPC client of the headless
+    sink-book broker (analogous to ncmpcpp for Mopidy). We launch it in a
+    window named `_MPVC_WINDOW`, so match that first; also accept a pane whose
+    foreground command is mpvc-tui in case one was started by hand.
+    """
+    try:
+        r = subprocess.run(
+            ["tmux", "list-panes", "-a", "-F",
+             "#{pane_id}\t#{window_name}\t#{pane_current_command}"],
+            capture_output=True, text=True)
+    except Exception:  # noqa: BLE001
+        return None
+    if r.returncode != 0:
+        return None
+    for line in r.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 3:
+            continue
+        pane, wname, cmd = parts
+        if wname == _MPVC_WINDOW or cmd.strip() == "mpvc-tui":
+            return pane
+    return None
+
+
+def cmd_goto_book(a) -> int:
+    """Focus the book's mpvc-tui player pane (the book channel's `g`).
+
+    Mirrors goto-track for the book channel: bring an existing mpvc-tui to the
+    foreground. Since mpvc-tui only drives the broker over IPC, the audiobook
+    keeps playing on the multi-room stream. Returns 1 (quietly) when no
+    mpvc-tui is running, so the popup can offer to open one.
+    """
+    pane = _mpvc_pane()
+    if not pane:
+        return 1
+    _focus_pane(pane)
+    return 0
+
+
+def cmd_open_mpvc(a) -> int:
+    """Open a new tmux window running mpvc-tui bound to the book socket.
+
+    The popup calls this when the book `g` found no mpvc-tui pane and the user
+    confirms. mpvc-tui's socket already defaults to sink-book.sock; the launch
+    command/mode is overridable via MEDIA_MPVC_CMD (e.g. `mpvc-tui -tt` for the
+    tiny TUI, or a wrapper that sets the socket explicitly).
+    """
+    cmd = os.environ.get("MEDIA_MPVC_CMD", "mpvc-tui -t")
+    try:
+        subprocess.run(["tmux", "new-window", "-n", _MPVC_WINDOW, cmd],
+                       capture_output=True)
+    except Exception:  # noqa: BLE001
+        return 1
+    return 0
+
+
+def _print_open_url(url: str) -> int:
+    """Print a URL (clickable in most terminals — the reliable path, since mel
+    is headless and this usually runs over SSH/tmux from a phone) and also fire
+    a real browser via the stdlib webbrowser module, but only when a display or
+    $BROWSER is actually present so a headless run doesn't spawn a pointless or
+    hanging opener.
+    """
+    print(url)
+    if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY") \
+            or os.environ.get("BROWSER"):
+        try:
+            import webbrowser
+            webbrowser.open(url)
+        except Exception:  # noqa: BLE001
+            pass
+    return 0
+
+
+def cmd_book_web(a) -> int:
+    """Open the mpvc-web browser control page for the book channel.
+
+    URL overridable via MEDIA_BOOK_WEB_URL.
+    """
+    return _print_open_url(os.environ.get(
+        "MEDIA_BOOK_WEB_URL", "http://mel.eagle-dubhe.ts.net:8889/"))
+
+
+def cmd_music_web(a) -> int:
+    """Open the Mopidy-Iris web UI for the music channel (the music analogue of
+    book-web). URL overridable via MEDIA_MUSIC_WEB_URL.
+    """
+    return _print_open_url(os.environ.get(
+        "MEDIA_MUSIC_WEB_URL", "http://mel.eagle-dubhe.ts.net:6680/iris/"))
+
+
 def cmd_highlight_toggle(a) -> int:
     """Toggle auto-highlight on/off. Prints the new state.
 
@@ -1472,6 +1571,18 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("open-ncmpcpp",
                    help="open a new tmux window running ncmpcpp"
                    ).set_defaults(func=cmd_open_ncmpcpp)
+    sub.add_parser("goto-book",
+                   help="focus the book's mpvc-tui player pane"
+                   ).set_defaults(func=cmd_goto_book)
+    sub.add_parser("open-mpvc",
+                   help="open a new tmux window running mpvc-tui for the book"
+                   ).set_defaults(func=cmd_open_mpvc)
+    sub.add_parser("book-web",
+                   help="print/open the mpvc-web browser control URL for the book"
+                   ).set_defaults(func=cmd_book_web)
+    sub.add_parser("music-web",
+                   help="print/open the Mopidy-Iris web UI URL for music"
+                   ).set_defaults(func=cmd_music_web)
     p_os = sub.add_parser("open-session",
                           help="open a window resuming a Claude Code session")
     p_os.add_argument("session", help="Claude Code session id to resume")
