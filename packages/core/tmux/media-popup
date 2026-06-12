@@ -12,17 +12,37 @@
 #   h / l   prev/next sentence         H / L   prev/next paragraph
 #           (speech; ±5s/±30s seek on music & book)
 #   - / =   volume -5 / +5             m   toggle mute           (speech/music)
-#   [ / ]   slower / faster (0.1)      0   reset speed           (speech/book)
+#   [ / ]   slower / faster (0.1)      ⌫   reset speed (0 also works)           (speech/book)
 #   < / >   speech: replay older/newer · music: prev/next track ·
 #           book: prev/next part (chapters in a later pass)
 #   o       open a URL on this channel — music (ducks) / book (pauses);
 #           pre-fills from the tmux paste buffer, so copy a link then o, Enter
+#   w       open the channel's web UI — music → Mopidy-Iris, book → mpvc-web
+#           (copies the URL to the paste buffer + shows it)
 #   v       toggle auto-highlight (speech)   ?  help   q / Esc  close
+#   ← →     (or ↑ ↓) move a focus highlight across the buttons; Enter activates
+#           the focused one; Esc clears the highlight (then Esc again quits).
+#           Purely optional — Space stays play/pause and every hotkey is direct.
+#
+# Mouse (SGR 1006): clickable regions are laid out across both rows —
+#   row 1: channel glyph (top-left) switches channel · title jumps to source ·
+#          'x' (top-right) closes
+#   row 2: '<' prev · the progress core is play/pause · '>' next · '-'/'+' vol
+#   The scroll wheel nudges volume. On the music and book channels the marquee
+#   title is also an OSC 8 hyperlink — a Ctrl/Cmd-click opens the track's
+#   source URL in the terminal's browser.
 #
 # Caller pane for `v`/the speech marquee comes from TTS_POPUP_PANE (set by
 # the tmux binding).
 set -u
 MEDIA="${MEDIA:-media}"
+# Mouse-event debug log (calibration aid). Prefer the env (forwarded by the
+# launcher), else read it straight from tmux's global environment so
+# `tmux setenv -g MEDIA_POPUP_DEBUG <file>` works even though run-shell jobs
+# don't reliably inherit it.
+[ -z "${MEDIA_POPUP_DEBUG:-}" ] && \
+    MEDIA_POPUP_DEBUG=$(tmux show-environment -g MEDIA_POPUP_DEBUG 2>/dev/null \
+        | sed -n 's/^MEDIA_POPUP_DEBUG=//p')
 # Caller pane for the `v` show-text. Prefer the binding's TTS_POPUP_PANE,
 # but fall back to asking tmux directly — inside a display-popup the
 # attached session's active pane *is* the caller, so the highlight works
@@ -55,6 +75,11 @@ IDLE=""         # 1 when the book channel has a queued-but-unstarted entry
 SPIN=0          # spinner frame index (advances each draw while LOADING)
 SPIN_FRAMES=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
 HL=""           # speech auto-highlight: on|off (tracked from the v key)
+# The pause-action glyph for the play/pause button: ‖ (U+2016 DOUBLE VERTICAL
+# LINE). NOT ⏸ (U+23F8), which is Emoji_Presentation=Yes — phone fonts render
+# that as a colored (orange) emoji and ignore a VS15 text selector. ‖ is plain
+# text (Emoji=No), always black-and-white, and single-column like ▶ → no drift.
+PAUSE_GLYPH='‖'
 VOL_SHOW=0      # ticks remaining to show the transient volume readout
 VOL_TXT=""      # the transient volume readout text
 VOL_TICKS=8     # ~1.6s at TICK=0.2
@@ -64,6 +89,8 @@ VOL_TICKS=8     # ~1.6s at TICK=0.2
 # only refresh this snapshot every FETCH_EVERY ticks (~1s) — and right after
 # a keypress so actions feel instant.
 LABEL="agent-media"     # marquee text (pane title / current track)
+LINK=""                 # http(s) source URL for the current track (music/book);
+                        # wraps the marquee in an OSC 8 hyperlink when set
 STATUS=""               # second line: progress bar for the active channel
 
 # Marquee state. When LABEL is wider than the line, draw() scrolls it once
@@ -75,12 +102,31 @@ SCROLL_HOLD_TICKS=6
 SCROLL_HOLD_COUNT=0
 SCROLL_DONE=0
 
-printf '\033[?25l'                       # hide cursor
+# SGR mouse reporting (1006) lets the popup hit-test clicks on the button row
+# and the title. Toggle it off around the blocking text prompts (typed_seek /
+# typed_open / confirm) so a stray click can't inject escape bytes into a typed
+# line.
+mouse_on()  { printf '\033[?1000h\033[?1006h'; }
+mouse_off() { printf '\033[?1000l\033[?1006l'; }
+
+# Put the tty in raw, no-echo mode for the popup's whole lifetime. Without this
+# the terminal only suppresses echo *during* each `read -s`; mouse-report bytes
+# that arrive while we're elsewhere (e.g. mid-fetch, or the release event after
+# a click) get echoed to the screen as stray "special characters". -icanon also
+# delivers each byte immediately instead of line-buffering.
+SAVED_STTY=$(stty -g 2>/dev/null || true)
+stty -echo -icanon min 1 time 0 2>/dev/null || true
+
+printf '\033[?25l\033[?7l'               # hide cursor + disable line-wrap
+mouse_on
 # On exit, remember the channel we ended on so the next `prefix a` reopens it
 # (unless a channel is actively playing — `media popup-channel` decides). Also
-# restore the cursor. Runs on q/Esc, the `?` round-trip break, and SIGHUP.
+# restore the cursor, mouse reporting, and the saved tty mode. Runs on q/Esc,
+# the `?` round-trip break, and SIGHUP.
 cleanup() {
-    printf '\033[?25h'
+    mouse_off
+    printf '\033[?25h\033[?7h'
+    [ -n "${SAVED_STTY:-}" ] && stty "$SAVED_STTY" 2>/dev/null
     "$MEDIA" popup-channel --set "$CHANNEL" 2>/dev/null
 }
 trap cleanup EXIT
@@ -95,6 +141,7 @@ fetch() {
         t=$($MEDIA music now 2>/dev/null | tr '\n' ' ')
         t="${t#"${t%%[![:space:]]*}"}"; t="${t%"${t##*[![:space:]]}"}"
         [ -n "$t" ] && LABEL="$t" || LABEL="(no music)"
+        LINK=$(url_for "$(mpd_currentsong_file)")
     elif [ "$CHANNEL" = "book" ]; then
         STATUS=$($MEDIA book status --show-idle --no-bar 2>/dev/null)
         # `media book now` yields a bare URI; the socket's media-title reads
@@ -104,6 +151,7 @@ fetch() {
               | tr '\n' ' ')
         t="${t#"${t%%[![:space:]]*}"}"; t="${t%"${t##*[![:space:]]}"}"
         [ -n "$t" ] && LABEL="$t" || LABEL="(audiobook)"
+        LINK=$(url_for "$(sock_get path)")
     else
         STATUS=$($MEDIA status --show-idle --no-bar 2>/dev/null)
         # Title of the pane that produced the *currently playing* speech
@@ -111,6 +159,7 @@ fetch() {
         t=$($MEDIA now-pane 2>/dev/null | tr '\n' ' ')
         t="${t#"${t%%[![:space:]]*}"}"; t="${t%"${t##*[![:space:]]}"}"
         [ -n "$t" ] && LABEL="$t" || LABEL="agent-media"
+        LINK=""                          # speech marquee is a pane title, not a URL
     fi
     # Refresh socket-backed indicators (speech/book have a socket; music/MPD
     # doesn't). Sync the bump base so a following [ / ] starts from reality.
@@ -119,6 +168,7 @@ fetch() {
     # strip the text — we render a single 🔇 glyph instead of [M] + glyph.
     case "$STATUS" in *'[M]'*) MUTED=1 ;; esac
     STATUS="${STATUS/ \[M\]/}"
+    STATUS="${STATUS// \/ //}"               # "1:23 / 4:56" → "1:23/4:56" (save 2 cols)
     case "$CHANNEL" in
         speech|book)
             [ "$(sock_get mute)" = "true" ] && MUTED=1
@@ -132,7 +182,7 @@ fetch() {
         book)
             local pp pc bdur
             pp=$(sock_get playlist-pos); pc=$(sock_get playlist-count)
-            [ -n "$pc" ] && [ "$pc" -gt 1 ] 2>/dev/null && PART="$(( ${pp:-0} + 1 ))/$pc"
+            [ -n "$pp" ] && [ "$pp" -ge 0 ] 2>/dev/null && [ -n "$pc" ] && [ "$pc" -gt 1 ] 2>/dev/null && PART="#$(( pp + 1 ))/$pc"
             # Distinguish two "queued but no duration" states so we don't spin
             # the loading animation forever on a dead entry:
             #   pos>=0, no duration  → mpv is on an item, mid yt-dlp/network
@@ -151,21 +201,49 @@ fetch() {
             fi
             ;;
         music)
+            # Position in Mopidy's play queue, shown only when a track is
+            # actually current. `song` is absent while stopped (the queue
+            # persists across stops), so without the `-n "$sg"` guard a stopped
+            # 6-track queue defaulted to a misleading "1/6". `#` marks it as a
+            # queue position.
             local sg pl
             sg=$(mpd_get song); pl=$(mpd_get playlistlength)
-            [ -n "$pl" ] && [ "$pl" -gt 1 ] 2>/dev/null && PART="$(( ${sg:-0} + 1 ))/$pl"
+            [ -n "$sg" ] && [ -n "$pl" ] && [ "$pl" -gt 1 ] 2>/dev/null && PART="#$(( sg + 1 ))/$pl"
             ;;
     esac
 }
 
+# Clickable regions, rebuilt every draw(): parallel arrays of row, start col,
+# end col (1-based, inclusive) and the action key handle_mouse feeds to
+# handle_key. Registered most-specific-first; handle_mouse takes the first hit.
+HIT_ROW=(); HIT_S=(); HIT_E=(); HIT_A=()
+hit() { HIT_ROW+=("$1"); HIT_S+=("$2"); HIT_E+=("$3"); HIT_A+=("$4"); }
+
+# Optional keyboard focus: ←/→ (or ↑/↓) move a highlight across the buttons,
+# Enter activates the highlighted one, Esc clears it. Purely additive — the
+# direct hotkeys and Space=play/pause never change, so there's no mode to get
+# stuck in. FOCUS is "" (no highlight) or an index into FOCUS_KEYS, whose order
+# follows the layout: channel · title(source) · prev · play/pause · next · vol-
+# · vol+ · close.
+FOCUS=""
+FOCUS_KEYS=( $'\t' g '<' ' ' '>' '-' '=' 'q' )
+# emit text, reverse-video when this element ($2 = its FOCUS index) is focused.
+emit() {
+    if [ "$FOCUS" = "$2" ]; then printf '\033[7m%s\033[0m' "$1"
+    else printf '%s' "$1"; fi
+}
+
 draw() {
     printf '\033[H\033[2J'               # home + clear
-    # Line 1: marquee of LABEL behind a fixed channel glyph.
     local cols="${COLUMNS:-0}"
     [ "$cols" -le 0 ] && cols=$(tput cols 2>/dev/null || echo 24)
+    HIT_ROW=(); HIT_S=(); HIT_E=(); HIT_A=()
+    # ---- Row 1: channel glyph (top-left) · marquee · close (top-right) ----
+    # The channel glyph doubles as the channel-switch button; the close 'x' is
+    # pinned to the far right; the title between them jumps to source on click.
     local prefix
     case "$CHANNEL" in music) prefix='♫ ' ;; book) prefix='☰ ' ;; *) prefix='♪ ' ;; esac
-    local avail=$(( cols - ${#prefix} - 1 ))
+    local avail=$(( cols - ${#prefix} - 3 ))   # reserve left glyph + right 'x'
     [ "$avail" -lt 4 ] && avail=4
     if [ "$LABEL" != "$LAST_LABEL" ]; then
         SCROLL_OFFSET=0; SCROLL_HOLD_COUNT=0; SCROLL_DONE=0; LAST_LABEL="$LABEL"
@@ -191,39 +269,84 @@ draw() {
             fi
         fi
     fi
-    printf ' %s%s\r\n' "$prefix" "$shown"
-    # Line 2: progress, then a compact indicator cluster (only-when-active so it
-    # stays small on a ~32-col phone). speed (speech/book) · mute · highlight
-    # (speech) · transient volume.
+    # Channel glyph (focus 0), then the title (focus 1) — OSC 8-wrapped on
+    # music/book so a Ctrl/Cmd-click opens its source. ST is ESC '\' (\033\\).
+    printf ' '; emit "$prefix" 0
+    if [ -n "$LINK" ]; then
+        printf '\033]8;;%s\033\\' "$LINK"   # open hyperlink
+        emit "$shown" 1                      # title text (reverse-video if focused)
+        printf '\033]8;;\033\\'              # close hyperlink
+    else
+        emit "$shown" 1
+    fi
+    printf '\033[1;%dH' "$cols"; emit x 7   # close button (focus 7), far right
+    hit 1 "$(( cols - 1 ))" "$cols" q     # close (2-col target)
+    hit 1 1 3 $'\t'                        # channel switch (left glyph)
+    hit 1 4 "$(( cols - 2 ))" g            # title → go to source
+    # ---- Row 2: < · play/pause+progress · > · vol- · vol+ · indicators ----
+    # Indicator cluster (only-when-active so it stays small on a ~32-col phone):
+    # speed (speech/book) · mute · highlight (speech) · transient volume.
+    # Volume readout first so the transient feedback sits right next to the
+    # +/- buttons and isn't the thing that clips off the right edge.
     local ind=""
+    [ "$VOL_SHOW" -gt 0 ] && ind="$ind $VOL_TXT"
     [ -n "$PART" ] && ind="$ind $PART"
     [ -n "$SPD" ] && [ "$SPD" != "1.0" ] && ind="$ind ${SPD}×"
     [ -n "$MUTED" ] && ind="$ind 🔇"
     [ "$CHANNEL" = "speech" ] && [ "$HL" = "on" ] && ind="$ind ✎"
-    [ "$VOL_SHOW" -gt 0 ] && ind="$ind $VOL_TXT"
     # While the book channel resolves a load (the YouTube gap), show an animated
     # spinner instead of the meaningless `--:--` so it doesn't look hung.
-    local line2
+    local status
     if [ -n "$LOADING" ]; then
         SPIN=$(( (SPIN + 1) % ${#SPIN_FRAMES[@]} ))
-        line2=" ${SPIN_FRAMES[SPIN]} loading…"
+        status="${SPIN_FRAMES[SPIN]} loading…"
     elif [ -n "$IDLE" ]; then
         # Queued but not playing — tell the user instead of spinning forever.
-        line2=" ⏸ idle · press play"
+        status="⏸ idle"
     else
-        line2=" $STATUS$ind"
+        status="$STATUS"
     fi
-    # Clip line 2 to the popup width so a long book status + indicators can't
-    # wrap onto a third row (which would scroll the marquee off the top).
-    printf '%s' "${line2:0:cols}"        # no trailing newline (2-row popup)
+    # The progress core is the play/pause *button*, so its leading glyph shows
+    # the action it triggers, not the current state — flip play⇄pause (▶ when
+    # paused = "click to play"; $PAUSE_GLYPH = ‖ when playing = "click to pause").
+    # Both glyphs are single-column, so no padding/width fixups are needed.
+    case "$status" in
+        '▶'*) status="${PAUSE_GLYPH}${status#▶}" ;;
+        '⏸'*) status="▶${status#⏸}" ;;
+    esac
+    # Lay row 2 out left-to-right, tracking the column each piece lands on so the
+    # prev/next/volume buttons that flank the variable-width progress stay
+    # hit-testable. Buttons get a 2-col target (glyph + trailing space), which
+    # also absorbs a ±1 drift if the state glyph renders double-width. The whole
+    # progress core is the play/pause button.
+    # %s on every segment so a glyph like '-' isn't read as a printf option.
+    # emit() reverse-videos the focused glyph; FOCUS index per element in comments.
+    printf '\033[2;1H%s' ' '               # row 2, col 1 = leading space
+    local col=2
+    hit 2 "$col" "$(( col + 1 ))" '<'; emit '< ' 2; col=$(( col + 2 ))        # prev (2)
+    local pstart=$col
+    # Highlight only the leading play/pause glyph on focus — not the time — but
+    # keep the whole progress as the click target.
+    emit "${status:0:1}" 3; printf '%s' "${status:1}"; col=$(( col + ${#status} ))  # play/pause (3)
+    hit 2 "$pstart" "$(( col - 1 ))" ' '   # progress core = play/pause toggle
+    printf '%s' ' '; col=$(( col + 1 ))
+    hit 2 "$col" "$(( col + 1 ))" '>'; emit '> ' 4; col=$(( col + 2 ))        # next (4)
+    hit 2 "$col" "$(( col + 1 ))" '-'; emit '- ' 5; col=$(( col + 2 ))        # vol- (5)
+    hit 2 "$col" "$(( col + 1 ))" '='; emit '+ ' 6; col=$(( col + 2 ))        # vol+ (6)
+    ind="${ind# }"                         # the +/- button's trailing space
+                                           # already separates it — drop ours
+    local room=$(( cols - col + 1 ))       # indicators fill what's left (clipped)
+    [ "$room" -gt 0 ] && printf '%s' "${ind:0:room}"
 }
 
 # Blocking yes/no prompt drawn over the popup. Returns 0 on y/Y. Used by the
 # `g` reopen flows (start ncmpcpp / resume a closed Claude pane's session).
 confirm() {           # $1 = prompt text
+    mouse_off
     printf '\033[H\033[2J'
     printf ' %s\r\n [y/N] ' "$1"
     local ans; IFS= read -rsn1 ans
+    mouse_on
     case "$ans" in y|Y) return 0 ;; *) return 1 ;; esac
 }
 
@@ -238,10 +361,12 @@ typed_seek() {
         tmux display-message "⏱ typed seek: book/music only (speech: h/l by sentence)" 2>/dev/null
         return
     fi
+    mouse_off
     printf '\033[H\033[2J\033[?25h'                 # clear + show cursor
     printf ' %s seek › H:MM:SS · +90 · -5:00\r\n ➜ ' "$CHANNEL"
     local t; IFS= read -r t
     printf '\033[?25l'                              # re-hide cursor
+    mouse_on
     # `--` ends option parsing so a relative "-5:00" isn't taken as a flag
     # (argparse only treats a bare "-5" as a number, not "-5:00").
     [ -n "$t" ] && $MEDIA "$CHANNEL" seek -- "$t" >/dev/null 2>&1
@@ -261,6 +386,7 @@ typed_open() {
     local buf="" url="" t=""    # init: url stays empty when the buffer isn't a URL (set -u)
     buf=$(tmux show-buffer 2>/dev/null | head -1)
     case "$buf" in http://*|https://*) url="$buf" ;; esac
+    mouse_off
     printf '\033[H\033[2J\033[?25h'                 # clear + show cursor
     if [ -n "$url" ]; then
         printf ' %s open › %.38s\r\n [Enter] play · or type a URL to override\r\n ➜ ' "$CHANNEL" "$url"
@@ -269,6 +395,7 @@ typed_open() {
     fi
     IFS= read -r t
     printf '\033[?25l'                              # re-hide cursor
+    mouse_on
     [ -z "$t" ] && t="$url"                         # bare Enter accepts the buffer URL
     [ -n "$t" ] && $MEDIA "$CHANNEL" play "$t" >/dev/null 2>&1
 }
@@ -314,6 +441,25 @@ mpd_get() {  # $1 = status field, e.g. volume
     printf 'status\nclose\n' | socat -T2 - TCP:"$MPD_HOST":"$MPD_PORT" 2>/dev/null \
         | awk -F': ' -v k="$1" '$1==k{print $2; exit}'
 }
+# The uri of the current music track (MPD `currentsong` → `file:`). Mopidy URIs
+# carry the backend scheme (yt:…, http://…); url_for() turns the ones we can
+# into a browser-openable link.
+mpd_currentsong_file() {
+    printf 'currentsong\nclose\n' | socat -T2 - TCP:"$MPD_HOST":"$MPD_PORT" 2>/dev/null \
+        | sed -n 's/^file: //p' | head -1
+}
+# Best-effort map of a backend uri to an http(s) URL, or "" when there's no
+# sensible web target. Plain http(s) passes through; common Mopidy-YouTube
+# shapes (yt:video:ID, yt:https://…, youtube:video/Title.ID) become watch URLs.
+url_for() {  # $1 = uri
+    case "$1" in
+        http://*|https://*)        printf '%s' "$1" ;;
+        yt:https://*|yt:http://*)  printf '%s' "${1#yt:}" ;;
+        yt:video:*)                printf 'https://www.youtube.com/watch?v=%s' "${1##*:}" ;;
+        youtube:video/*)           printf 'https://www.youtube.com/watch?v=%s' "${1##*.}" ;;
+        *)                         printf '' ;;
+    esac
+}
 
 # Capture a transient volume readout after a -/= press (shown ~1.6s).
 show_volume() {
@@ -323,7 +469,10 @@ show_volume() {
     else
         v=$(sock_get volume)
     fi
-    case "$v" in '') VOL_TXT='🔊vol' ;; *) VOL_TXT="🔊${v%.*}%" ;; esac
+    # No 🔊 glyph: it sits right after the +/- buttons (context is obvious) and
+    # the double-width emoji would clip the % off the right edge on a narrow
+    # popup. Plain ASCII keeps the width math exact.
+    case "$v" in '') VOL_TXT='vol' ;; *) VOL_TXT="${v%.*}%" ;; esac
     VOL_SHOW=$VOL_TICKS
 }
 
@@ -338,22 +487,12 @@ xport() {
     else $MEDIA "$@" 2>/dev/null; fi
 }
 
-fetch
-draw
-TICK=0.2          # redraw cadence — fast enough for a smooth marquee
-FETCH_EVERY=5     # refresh the CLI snapshot every ~1s (5 × TICK)
-ticks=0
-while true; do
-    # Short timed read: on timeout we scroll the marquee; every FETCH_EVERY
-    # timeouts we also re-pull the snapshot. A keypress refreshes immediately.
-    IFS= read -rsn1 -t "$TICK" key; rc=$?
-    if [ "$rc" -gt 128 ]; then
-        ticks=$(( ticks + 1 ))
-        [ "$VOL_SHOW" -gt 0 ] && VOL_SHOW=$(( VOL_SHOW - 1 ))
-        if [ "$ticks" -ge "$FETCH_EVERY" ]; then fetch; ticks=0; fi
-        draw; continue
-    fi
-    [ "$rc" -ne 0 ] && break
+# Dispatch a logical action, identified by the key char it shares with the
+# keyboard. The mouse path feeds the same chars, so clicks and keystrokes run
+# one code path. Sets QUIT=1 (instead of `break`) to ask the loop to exit.
+QUIT=""
+handle_key() {
+    local key="$1"
     # Transport keys route to the active channel; speech-only keys (r, m,
     # [, ], 0, v) no-op on the music channel.
     case "$key" in
@@ -411,23 +550,41 @@ while true; do
         # if none is running, offer to start one. Speech → focus the speaking
         # pane; if it's been closed, offer to resume its Claude session.
         g)   if [ "$CHANNEL" = "music" ]; then
-                 if $MEDIA goto-track 2>/dev/null; then break
+                 if $MEDIA goto-track 2>/dev/null; then QUIT=1; return
                  elif confirm "♫ no ncmpcpp running — start it?"; then
-                     $MEDIA open-ncmpcpp 2>/dev/null; break
+                     $MEDIA open-ncmpcpp 2>/dev/null; QUIT=1; return
                  fi
              elif [ "$CHANNEL" = "book" ]; then
-                 tmux display-message "☰ book: no source to jump to" 2>/dev/null
+                 if $MEDIA goto-book 2>/dev/null; then QUIT=1; return
+                 elif confirm "☰ open mpvc-tui for the book?"; then
+                     $MEDIA open-mpvc 2>/dev/null; QUIT=1; return
+                 fi
              else
                  _sid=$($MEDIA goto-pane 2>/dev/null); _grc=$?
                  case "$_grc" in
-                     0) break ;;                          # landed on a live pane
+                     0) QUIT=1; return ;;                 # landed on a live pane
                      3) if [ -n "$_sid" ] && \
                            confirm "⊘ pane closed — resume its Claude session?"; then
-                            $MEDIA open-session "$_sid" 2>/dev/null; break
+                            $MEDIA open-session "$_sid" 2>/dev/null; QUIT=1; return
                         fi ;;
                      2) tmux display-message "⊘ that pane is closed" 2>/dev/null ;;
-                     *) break ;;                          # nothing captured
+                     *) QUIT=1; return ;;                 # nothing captured
                  esac
+             fi ;;
+        # Open the channel's web UI: music → Mopidy-Iris, book → mpvc-web. The
+        # `media *-web` commands open a browser when a display exists (desktop);
+        # headless/phone they just print the URL, so we surface it via a tmux
+        # message and stash it in the paste buffer to copy into a browser.
+        w)   case "$CHANNEL" in
+                 music) _wu=$($MEDIA music-web 2>/dev/null | head -1) ;;
+                 book)  _wu=$($MEDIA book-web  2>/dev/null | head -1) ;;
+                 *)     _wu="" ;;
+             esac
+             if [ -n "$_wu" ]; then
+                 tmux set-buffer -- "$_wu" 2>/dev/null
+                 tmux display-message "↗ $_wu (copied)" 2>/dev/null
+             else
+                 tmux display-message "↗ web: music/book only" 2>/dev/null
              fi ;;
         # --- speech-only keys below ---
         r)   [ "$CHANNEL" = "speech" ] && { $MEDIA replay; hist_idx=1; } ;;
@@ -439,7 +596,10 @@ while true; do
         m)   [ "$CHANNEL" = "speech" ] && $MEDIA mute ;;
         '[') { [ "$CHANNEL" = "speech" ] || [ "$CHANNEL" = "book" ]; } && bump_speed -0.1 ;;
         ']') { [ "$CHANNEL" = "speech" ] || [ "$CHANNEL" = "book" ]; } && bump_speed 0.1 ;;
-        0)   if [ "$CHANNEL" = "book" ]; then bspeed=1.0; $MEDIA book speed reset 2>/dev/null
+        # Backspace = "undo the speed change" → reset to 1.0 (⌫ is the primary
+        # key; 0 kept as an alias). Terminals send DEL (0x7f) or BS (0x08).
+        $'\177'|$'\b'|0)
+             if [ "$CHANNEL" = "book" ]; then bspeed=1.0; $MEDIA book speed reset 2>/dev/null
              elif [ "$CHANNEL" = "speech" ]; then speed=1.0; $MEDIA speed reset; fi ;;
         v)   # Toggle auto-highlight (copy-mode follow-along) on/off. Speech
              # only; immediate feedback fires for the current sentence and the
@@ -454,13 +614,130 @@ while true; do
              # the channel. Fall back to a one-line message if launched without
              # the launcher (no flag in env).
              if [ -n "${MEDIA_POPUP_HELP_FLAG:-}" ]; then
-                 printf '%s' "$CHANNEL" > "$MEDIA_POPUP_HELP_FLAG"; break
+                 printf '%s' "$CHANNEL" > "$MEDIA_POPUP_HELP_FLAG"; QUIT=1; return
              else
-                 tmux display-message "Tab chan · Spc play · h/l H/L seek · s typed-seek · o open URL (music/book) · -/= vol · < > prev/next · g src · speech: r p m v · [/] 0 speed · q quit" 2>/dev/null
+                 tmux display-message "Tab chan · Spc play · h/l H/L seek · s typed-seek · o open URL (music/book) · -/= vol · < > prev/next · g src · w web UI (music/book) · [/] speed ⌫ reset · ←→ focus Enter activate Esc clear · click: glyph=chan title=src x=close · row2 < play > -+ · q quit" 2>/dev/null
              fi ;;
-        q|$'\e') break ;;
+        q) QUIT=1; return ;;
+        # Enter activates the focused button (←/→ to focus); inert with no focus
+        # so Space stays the one-and-only play/pause key. Enter arrives as '' (the
+        # tty's ICRNL maps its CR→NL, which read -n1 treats as an empty-line read).
+        ''|$'\r'|$'\n') [ -n "$FOCUS" ] && handle_key "${FOCUS_KEYS[FOCUS]}" ;;
         *) : ;;
     esac
+}
+
+# Read the remainder of an escape sequence after a leading ESC. Populates
+# ESC_KIND (mouse|other), and for mouse: ESC_BTN, ESC_COL, ESC_ROW, ESC_FINAL
+# (M=press, m=release). Returns 1 when the ESC stands alone (bare Esc → quit).
+read_escape() {
+    local c p buf=""
+    ESC_KIND=""
+    IFS= read -rsn1 -t 0.02 c || return 1     # nothing follows → bare ESC
+    case "$c" in '['|'O') p="$c" ;; *) return 1 ;; esac   # CSI / SS3, else bare Esc
+    IFS= read -rsn1 -t 0.02 c || return 1
+    if [ "$p" = '[' ] && [ "$c" = '<' ]; then # SGR mouse: <btn;col;row(M|m)
+        while IFS= read -rsn1 -t 0.02 c; do
+            case "$c" in [Mm]) ESC_FINAL="$c"; break ;; *) buf="$buf$c" ;; esac
+        done
+        ESC_KIND=mouse
+        ESC_BTN="${buf%%;*}"
+        local rest="${buf#*;}"
+        ESC_COL="${rest%%;*}"; ESC_ROW="${rest##*;}"
+        return 0
+    fi
+    case "$c" in                              # arrow keys (CSI or SS3 form)
+        A|B|C|D) ESC_KIND=arrow; ESC_ARROW="$c"; return 0 ;;
+    esac
+    # Other CSI (PgUp/Del/etc.) — drain to the final byte (0x40–0x7E) and drop.
+    case "$c" in [@-~]) ESC_KIND=other; return 0 ;; esac
+    while IFS= read -rsn1 -t 0.02 c; do case "$c" in [@-~]) break ;; esac; done
+    ESC_KIND=other
+    return 0
+}
+
+# Move the keyboard focus highlight. The first arrow enters selection (left end
+# going right, right end going left); after that it wraps around.
+focus_move() {  # $1 = +1 (right/down) or -1 (left/up)
+    local n=${#FOCUS_KEYS[@]}
+    if [ -z "$FOCUS" ]; then
+        [ "$1" -gt 0 ] && FOCUS=0 || FOCUS=$(( n - 1 ))
+    else
+        FOCUS=$(( (FOCUS + $1 + n) % n ))
+    fi
+}
+handle_arrow() {
+    case "$ESC_ARROW" in
+        C|B) focus_move 1 ;;     # right / down → next button
+        D|A) focus_move -1 ;;    # left  / up   → prev button
+    esac
+}
+
+# Map a parsed mouse event to an action. A left-press is matched against the
+# clickable regions draw() registered (channel/close/title on row 1; prev /
+# play-pause / next / vol± on row 2); the wheel nudges volume. Sets ACTED=1 when
+# it dispatched something, so the caller only pays for a `fetch` on a real action
+# (not on the release event or an empty click). Set MEDIA_POPUP_DEBUG=<file> to
+# log every parsed event — handy for calibrating row/col.
+act() { ACTED=1; handle_key "$1"; }
+handle_mouse() {
+    [ "$ESC_KIND" = mouse ] || return
+    [ -n "${MEDIA_POPUP_DEBUG:-}" ] && \
+        printf 'btn=%s col=%s row=%s final=%s\n' \
+            "$ESC_BTN" "$ESC_COL" "$ESC_ROW" "$ESC_FINAL" >> "$MEDIA_POPUP_DEBUG"
+    [ "$ESC_FINAL" = M ] || return        # press only (ignore the release event)
+    case "$ESC_BTN" in
+        64) act '=' ; return ;;            # wheel up → vol+
+        65) act '-' ; return ;;            # wheel down → vol−
+        0)  ;;                             # left button → hit-test below
+        *)  return ;;
+    esac
+    case "$ESC_COL$ESC_ROW" in ''|*[!0-9]*) return ;; esac   # need numeric col/row
+    local i
+    for i in "${!HIT_ROW[@]}"; do
+        if [ "$ESC_ROW" = "${HIT_ROW[i]}" ] && \
+           [ "$ESC_COL" -ge "${HIT_S[i]}" ] && [ "$ESC_COL" -le "${HIT_E[i]}" ]; then
+            act "${HIT_A[i]}"; return
+        fi
+    done
+}
+
+fetch
+draw
+TICK=0.2          # redraw cadence — fast enough for a smooth marquee
+FETCH_EVERY=5     # refresh the CLI snapshot every ~1s (5 × TICK)
+ticks=0
+while true; do
+    # Short timed read: on timeout we scroll the marquee; every FETCH_EVERY
+    # timeouts we also re-pull the snapshot. A keypress refreshes immediately.
+    IFS= read -rsn1 -t "$TICK" key; rc=$?
+    if [ "$rc" -gt 128 ]; then
+        ticks=$(( ticks + 1 ))
+        [ "$VOL_SHOW" -gt 0 ] && VOL_SHOW=$(( VOL_SHOW - 1 ))
+        if [ "$ticks" -ge "$FETCH_EVERY" ]; then fetch; ticks=0; fi
+        draw; continue
+    fi
+    [ "$rc" -ne 0 ] && break
+    if [ "$key" = $'\e' ]; then
+        # ESC [ … is a mouse click, an arrow (focus nav), or an ignored CSI.
+        if read_escape; then
+            ACTED=""
+            case "$ESC_KIND" in
+                mouse) handle_mouse ;;
+                arrow) handle_arrow ;;
+            esac
+            [ -n "$QUIT" ] && break
+            # Re-pull the (slow) snapshot only on a real action; always redraw so
+            # the focus highlight tracks the arrows without a flicker of fetch.
+            [ -n "$ACTED" ] && { fetch; ticks=0; }
+            draw; continue
+        fi
+        # Bare Esc: clear the focus highlight first; quit only when none is set.
+        if [ -n "$FOCUS" ]; then FOCUS=""; draw; continue; fi
+        break
+    fi
+    handle_key "$key"
+    [ -n "$QUIT" ] && break
     # Refresh the snapshot so the bar/label reflect the action immediately.
     fetch; ticks=0
     draw
