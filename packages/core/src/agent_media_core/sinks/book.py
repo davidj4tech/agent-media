@@ -133,6 +133,20 @@ class SinkBook:
             f"--audio-client-name={client}",
             "--cache=yes",
         ]
+        # Optional richer browser UI: simple-mpv-webui loads INTO this mpv as a
+        # Lua script (needs luasocket on the Lua-5.1 module path) and serves a
+        # full audiobook UI — seek, speed, chapters, playlist. It binds 0.0.0.0,
+        # but mel's firewall keeps it tailnet-only (the public zone exposes no
+        # such port). Gated on the script existing; path/port/auth overridable.
+        webui = os.environ.get(
+            "MEDIA_BOOK_WEBUI",
+            str(Path.home() / "src" / "simple-mpv-webui" / "main.lua"))
+        if webui and Path(webui).is_file():
+            opts = "webui-port=" + os.environ.get("MEDIA_BOOK_WEBUI_PORT", "8889")
+            htpw = os.environ.get("MEDIA_BOOK_WEBUI_HTPASSWD", "")
+            if htpw:
+                opts += ",webui-htpasswd_path=" + htpw
+            argv += [f"--script={webui}", f"--script-opts={opts}"]
         subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          start_new_session=True)
