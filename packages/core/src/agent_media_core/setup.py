@@ -321,8 +321,13 @@ def media_share_dir() -> Path:
 
 
 def _symlink_into(src: Path, dest: Path, *, dry_run: bool) -> bool:
-    """Idempotently symlink ``dest -> src``. Replaces a stale symlink of ours
-    but never clobbers a real file someone else put there."""
+    """Idempotently symlink ``dest -> src``.
+
+    Replaces a stale symlink of ours, and auto-converts a stale *real file*
+    (typically a copy from an older install) into a symlink: dropped if it
+    matches ``src``, else backed up first so no local edit is lost. A real
+    directory or anything else unexpected is left alone.
+    """
     if dest.is_symlink():
         if dest.resolve() == src.resolve():
             print(f"media-setup: {dest.name} already linked")
@@ -331,7 +336,20 @@ def _symlink_into(src: Path, dest: Path, *, dry_run: bool) -> bool:
             print(f"# would relink {dest} -> {src}")
             return True
         dest.unlink()
+    elif dest.is_file():
+        if dry_run:
+            print(f"# would convert real file {dest} -> symlink {src}")
+            return True
+        if dest.read_bytes() == src.read_bytes():
+            dest.unlink()
+            print(f"media-setup: {dest.name}: replaced identical real file "
+                  f"with symlink")
+        else:
+            backup = _backup_aside(dest, "shell-backups", dest.name)
+            print(f"media-setup: {dest.name}: real file differed from source; "
+                  f"backed up to {backup} before relinking", file=sys.stderr)
     elif dest.exists():
+        # A real directory (or other non-file) at the link path — not ours.
         print(f"media-setup: {dest} exists and is not our symlink; leaving it",
               file=sys.stderr)
         return False
@@ -361,12 +379,14 @@ def _service_dir_matches_template(dest: Path, src: Path) -> bool:
     return True
 
 
-def _backup_service_dir(name: str, path: Path) -> Path:
-    """Move a real service dir somewhere safe before we replace it with a
-    symlink. The backup must live OUTSIDE the service root — runsvdir scans
-    ``root/*`` and would otherwise try to supervise the backup as a service.
+def _backup_aside(path: Path, category: str, name: str) -> Path:
+    """Move ``path`` into ``media_share_dir()/category/name`` before we replace
+    it with a symlink, so nothing local is lost. The backup lands OUTSIDE both
+    the service root (runsvdir scans ``root/*`` and would otherwise supervise a
+    backed-up service) and ~/.local/bin (so a backed-up script isn't on PATH).
+    A numeric suffix is appended if the target already exists.
     """
-    backups = media_share_dir() / "service-backups"
+    backups = media_share_dir() / category
     backups.mkdir(parents=True, exist_ok=True)
     dest = backups / name
     n = 1
@@ -418,7 +438,7 @@ def _install_one_service(name: str, *, dry_run: bool,
             print(f"media-setup: {name}: replaced identical real dir "
                   f"with symlink")
         else:
-            backup = _backup_service_dir(name, dest)
+            backup = _backup_aside(dest, "service-backups", name)
             print(f"media-setup: {name}: real dir differed from template; "
                   f"backed up to {backup} before relinking", file=sys.stderr)
     elif dest.exists():
