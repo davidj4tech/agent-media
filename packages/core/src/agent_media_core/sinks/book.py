@@ -61,6 +61,23 @@ def _socket_path() -> Path:
     return state_dir() / "sink-book.sock"
 
 
+def load_intent_path() -> Path:
+    """Marker file the book sink drops on each play() so book_observer.py can
+    distinguish agent-media-initiated loads from external (Iris) ones."""
+    return state_dir() / "book-load-intent.json"
+
+
+def _write_load_intent(uri: str, start_ms: int) -> None:
+    import json
+    try:
+        p = load_intent_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(
+            {"uri": uri, "start_ms": int(start_ms), "ts": time.time()}))
+    except Exception:  # noqa: BLE001 — best-effort breadcrumb
+        pass
+
+
 def _device_for(target: Target) -> Optional[str]:
     """mpv `audio-device` for a target. None = mpv's default device.
 
@@ -170,6 +187,11 @@ class SinkBook:
         Returns the normalized URI handed to mpv (i.e. the bookmark key).
         """
         norm = normalize_uri(uri)
+        # Leave a breadcrumb so the resume-bookmark observer (book_observer.py)
+        # can tell *our* loads — which already applied the right start offset —
+        # apart from loads it didn't initiate (e.g. Iris via Mopidy-Mpv hitting
+        # the shared book socket), which it must resume from the saved bookmark.
+        _write_load_intent(norm, start_ms or 0)
         self._ensure_broker()
         device = _device_for(target)
         if device is not None:
