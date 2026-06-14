@@ -20,7 +20,12 @@ hw="$cw"; [ "$hw" -gt 30 ] && hw=30
 hh="$ch"; [ "$hh" -gt 5 ] && hh=$(( hh - 1 ))
 
 flag="${TMPDIR:-/tmp}/media-popup-help.$$"
-rm -f "$flag"
+linkflag="${TMPDIR:-/tmp}/media-popup-link.$$"
+rm -f "$flag" "$linkflag"
+# Link popup width: the FULL client width (uncapped, unlike the control popup),
+# so a long web-UI URL fits on one line — Termux's long-press URL detection (no
+# OSC 8) fails on a wrap. Bounded for sanity.
+lw="$cw"; [ "$lw" -gt 64 ] && lw=64; [ "$lw" -lt "$MIN" ] && lw="$MIN"
 # Open on the channel that's actually playing, else the last-viewed one, else
 # speech (`media popup-channel` resolves this). The help round-trip below
 # overrides `chan` from the flag file, so an explicit choice is preserved.
@@ -31,10 +36,17 @@ popup() { tmux display-popup ${client:+-c "$client"} -E "$@"; }
 dbg=""; [ -n "${MEDIA_POPUP_DEBUG:-}" ] && dbg="MEDIA_POPUP_DEBUG=$MEDIA_POPUP_DEBUG "
 while :; do
     popup -w "$w" -h 4 -x R -y 6 -s 'bg=default' -S 'bg=default' \
-        "${dbg}TTS_POPUP_PANE=$pane MEDIA_POPUP_HELP_FLAG=$flag MEDIA_POPUP_CHANNEL=$chan media-popup"
-    [ -f "$flag" ] || break            # not a help request → done
-    chan=$(cat "$flag" 2>/dev/null); chan=${chan:-speech}
-    rm -f "$flag"
-    popup -w "$hw" -h "$hh" -s 'bg=default' -S 'bg=default' media-popup-help
+        "${dbg}TTS_POPUP_PANE=$pane MEDIA_POPUP_HELP_FLAG=$flag MEDIA_POPUP_LINK_FLAG=$linkflag MEDIA_POPUP_CHANNEL=$chan media-popup"
+    if [ -f "$flag" ]; then            # `?` → keymap overlay, then reopen
+        chan=$(cat "$flag" 2>/dev/null); chan=${chan:-speech}
+        rm -f "$flag"
+        popup -w "$hw" -h "$hh" -s 'bg=default' -S 'bg=default' media-popup-help
+    elif [ -f "$linkflag" ]; then      # `w` → full-width web-UI link, then reopen
+        IFS=$'\t' read -r chan url < "$linkflag"; chan=${chan:-speech}
+        rm -f "$linkflag"
+        popup -w "$lw" -h 5 -s 'bg=default' -S 'bg=default' "MEDIA_POPUP_LINK=$url media-popup-link"
+    else
+        break                          # normal close → done
+    fi
 done
-rm -f "$flag"
+rm -f "$flag" "$linkflag"

@@ -33,6 +33,16 @@ run-shell 'case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) tmux set-environment 
 bind a \
     run-shell -b "media-popup-open '#{client_name}' '#{pane_id}' '#{client_width}' '#{client_height}'"
 
+# Tell tmux the outer terminal can render OSC 8 hyperlinks, so it forwards
+# them instead of stripping them. Without this the `w` web-UI link popup
+# (media-popup-link) shows the URL as plain text and a click in Kitty et al.
+# hits nothing. `*` covers any OSC 8-capable terminal; ones that don't
+# support it ignore the escape, and the popup also prints the raw URL so
+# Termux long-press still works. (Takes effect on the next client attach.)
+# With `mouse on`, the terminal's mouse is grabbed by tmux, so open the link
+# with the emulator's grabbed-app gesture — Kitty: ctrl+shift+click.
+set -ga terminal-features '*:hyperlinks'
+
 # Refresh the status bar every second so the `#(media status)` progress
 # bar advances smoothly (oh-my-tmux defaults to 10s — too coarse for it).
 set -g status-interval 1
