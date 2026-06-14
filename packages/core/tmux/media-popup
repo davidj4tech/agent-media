@@ -414,10 +414,10 @@ show_link() {  # $1 = url
     # it's a link. Restored to no-wrap on the way out.
     printf '\033[H\033[2J\033[?7h'
     printf ' ↗ \033]8;;%s\033\\%s\033]8;;\033\\' "$1" "$1"
-    # TODO: a URL longer than one popup row (e.g. music/Iris …:6680/iris/) wraps
-    # across rows — fine for OSC 8 terminals (Kitty), but Termux's long-press
-    # URL detection won't catch a wrapped URL. Consider a wider/taller link
-    # popup, or rendering a short OSC 8 label + putting the raw URL elsewhere.
+    # NOTE: this in-popup fallback is only used when launched WITHOUT the
+    # launcher (no MEDIA_POPUP_LINK_FLAG). The normal `prefix a` path hands the
+    # URL to media-popup-open, which shows it in a full-client-width
+    # media-popup-link popup so a long URL isn't forced to wrap here.
     IFS= read -rsn1 _
     printf '\033[?7l'
     mouse_on
@@ -603,8 +603,18 @@ handle_key() {
                  book)  _wu=$($MEDIA book-web  2>/dev/null | head -1) ;;
                  *)     _wu="" ;;
              esac
-             if [ -n "$_wu" ]; then show_link "$_wu"
-             else tmux display-message "↗ web: music/book only" 2>/dev/null; fi ;;
+             if [ -z "$_wu" ]; then
+                 tmux display-message "↗ web: music/book only" 2>/dev/null
+             elif [ -n "${MEDIA_POPUP_LINK_FLAG:-}" ]; then
+                 # Hand off to the launcher: it opens a FULL-client-width link
+                 # popup, since this 2-row popup (~34 cols) is too narrow for a
+                 # long URL and a wrap defeats Termux's long-press URL detection.
+                 # Flag = "channel<TAB>url" so it can reopen on this channel.
+                 printf '%s\t%s' "$CHANNEL" "$_wu" > "$MEDIA_POPUP_LINK_FLAG"
+                 QUIT=1; return
+             else
+                 show_link "$_wu"          # standalone (no launcher): in-popup
+             fi ;;
         # --- speech-only keys below ---
         r)   [ "$CHANNEL" = "speech" ] && { $MEDIA replay; hist_idx=1; } ;;
         # Play the clip at the caller pane's copy-mode cursor (or this pane's

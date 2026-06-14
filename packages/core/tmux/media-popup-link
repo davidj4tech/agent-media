@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# A web-UI URL shown in its own popup, sized by media-popup-open to the FULL
+# client width (the main control popup is capped at ~34 cols, too narrow for a
+# long URL). Termux has no OSC 8 and detects URLs by long-press, which only works
+# on an un-wrapped one-line URL — hence the full-width popup. The URL is also a
+# tappable OSC 8 hyperlink (Kitty et al.) and copied to the tmux paste buffer.
+# URL via $MEDIA_POPUP_LINK. Any key closes.
+set -u
+url="${MEDIA_POPUP_LINK:-}"
+printf '\033[?25l'                                   # hide cursor
+trap 'printf "\033[?25h"' EXIT
+[ -n "$url" ] && tmux set-buffer -- "$url" 2>/dev/null
+printf '\033[H\033[2J'
+# Row 1: a short hint (kept brief so it never wraps and pushes the URL down).
+# Row 2+: the URL as one OSC 8 hyperlink (also plain text for Termux long-press).
+# Wrap stays on so a URL wider than even the full client wraps (into the popup's
+# spare row) rather than clipping.
+printf ' ↗ tap/click to open:\r\n \033]8;;%s\033\\%s\033]8;;\033\\' "$url" "$url"
+IFS= read -rsn1 _
