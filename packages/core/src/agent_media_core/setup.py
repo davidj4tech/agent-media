@@ -344,6 +344,39 @@ def _symlink_into(src: Path, dest: Path, *, dry_run: bool) -> bool:
     return True
 
 
+def _service_dir_matches_template(dest: Path, src: Path) -> bool:
+    """True if every file shipped in the template ``src`` exists in ``dest``
+    with identical content.
+
+    Extra files in ``dest`` are ignored — a live runit dir carries runtime
+    state (``supervise/``, ``log/`` output) that the template never has. We
+    only care that nothing the repo manages was hand-edited locally.
+    """
+    for tpl in src.rglob("*"):
+        if not tpl.is_file():
+            continue
+        live = dest / tpl.relative_to(src)
+        if not live.is_file() or live.read_bytes() != tpl.read_bytes():
+            return False
+    return True
+
+
+def _backup_service_dir(name: str, path: Path) -> Path:
+    """Move a real service dir somewhere safe before we replace it with a
+    symlink. The backup must live OUTSIDE the service root — runsvdir scans
+    ``root/*`` and would otherwise try to supervise the backup as a service.
+    """
+    backups = media_share_dir() / "service-backups"
+    backups.mkdir(parents=True, exist_ok=True)
+    dest = backups / name
+    n = 1
+    while dest.exists():
+        dest = backups / f"{name}.{n}"
+        n += 1
+    shutil.move(str(path), str(dest))
+    return dest
+
+
 def _install_one_service(name: str, *, dry_run: bool,
                          root: Path) -> bool:
     """Symlink/copy the template tree into the runit service root.
@@ -351,23 +384,49 @@ def _install_one_service(name: str, *, dry_run: bool,
     Termux's runsvdir scans `service_dir/*` for `run` files. We use
     symlinks so a `git pull` on the repo picks up service edits without
     a re-install.
+
+    A pre-existing *real* directory (typically a stale copy-based install)
+    is auto-converted to a symlink: if its tracked files match the template
+    we just drop it, otherwise we back it up first so no local edit is lost.
     """
     src = service_templates_dir() / name
     if not src.is_dir():
         print(f"media-setup: template missing: {src}", file=sys.stderr)
         return False
     dest = root / name
-    if dest.exists() or dest.is_symlink():
-        # Already in place; only complain if it points elsewhere.
-        current = (dest.resolve()
-                   if dest.is_symlink() or dest.is_dir() else None)
-        if current and current.resolve() != src.resolve():
-            print(f"media-setup: {dest} already exists and differs "
-                  f"from {src}", file=sys.stderr)
+    if dest.is_symlink():
+        if dest.resolve() == src.resolve():
+            print(f"media-setup: {name} already installed")
+            return True
+        # Our symlink, but pointing elsewhere (e.g. an old repo path): relink.
+        if dry_run:
+            print(f"# would relink {dest} -> {src}")
+            return True
+        dest.unlink()
+    elif dest.is_dir():
+        # A real directory. Convert it to a symlink iff it's recognizably one
+        # of our service dirs (has a `run` script); never touch a stranger.
+        if not (dest / "run").is_file():
+            print(f"media-setup: {dest} exists and is not a service dir; "
+                  f"leaving it", file=sys.stderr)
             return False
-        print(f"media-setup: {name} already installed")
-        return True
-    if dry_run:
+        if dry_run:
+            print(f"# would convert real dir {dest} -> symlink {src}")
+            return True
+        if _service_dir_matches_template(dest, src):
+            shutil.rmtree(dest)
+            print(f"media-setup: {name}: replaced identical real dir "
+                  f"with symlink")
+        else:
+            backup = _backup_service_dir(name, dest)
+            print(f"media-setup: {name}: real dir differed from template; "
+                  f"backed up to {backup} before relinking", file=sys.stderr)
+    elif dest.exists():
+        # A real non-directory file sitting at the service path — not ours.
+        print(f"media-setup: {dest} exists and is not our symlink; leaving it",
+              file=sys.stderr)
+        return False
+    elif dry_run:
         print(f"# would symlink {dest} -> {src}")
         return True
     dest.parent.mkdir(parents=True, exist_ok=True)
