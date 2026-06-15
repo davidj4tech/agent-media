@@ -427,6 +427,47 @@ def _latest_ask_question(transcript_path: Path) -> str:
     return ""
 
 
+def _ask_lead_text(transcript_path: Path) -> str:
+    """Assistant prose that precedes the question in the *same* turn.
+
+    When Claude writes an explanation and then calls AskUserQuestion, both the
+    text and the tool_use live in one assistant message. PreToolUse speaks only
+    the synthesized question, and Stop never fires while the turn is paused on
+    the modal — so that lead-in prose would otherwise be silently dropped. Walk
+    back to the latest assistant turn and, *only if* it carries the
+    AskUserQuestion tool call, return its joined text blocks.
+    """
+    try:
+        lines = transcript_path.read_text().splitlines()
+    except OSError:
+        return ""
+    for raw in reversed(lines):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            obj = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        msg = obj.get("message") or {}
+        if msg.get("role") != "assistant":
+            continue
+        parts: list[str] = []
+        has_ask = False
+        for c in msg.get("content") or []:
+            if not isinstance(c, dict):
+                continue
+            if c.get("type") == "text":
+                parts.append(c.get("text") or "")
+            elif (c.get("type") == "tool_use"
+                  and c.get("name") == "AskUserQuestion"):
+                has_ask = True
+        if not has_ask:
+            return ""
+        return "\n".join(p for p in parts if p).strip()
+    return ""
+
+
 def _dedup_seen(state: StateStore, text: str, ttl_seconds: int = 300) -> bool:
     """Crude text-hash dedup over the recent history table.
 
@@ -451,7 +492,7 @@ def _dedup_seen(state: StateStore, text: str, ttl_seconds: int = 300) -> bool:
     return False
 
 
-def _emit_ask(ask: str, payload: dict) -> int:
+def _emit_ask(ask: str, payload: dict, lead: str = "") -> int:
     """Speak a synthesized AskUserQuestion (question + option labels).
 
     Prefixes the hierarchical host/session/pane label, bypasses focus-
@@ -460,10 +501,14 @@ def _emit_ask(ask: str, payload: dict) -> int:
     recent history so a PreToolUse fire and a stray Notification can't double
     up. Downgrades HIGH→NORMAL when this is the focused pane so the cue queues
     behind whatever is currently speaking instead of preempting it.
+
+    `lead` is any assistant prose that preceded the question in the same turn;
+    it's spoken before the question so the explanation isn't lost to the modal.
     """
     sess = _session_name()
     label = _ask_location_label()
-    msg = f"{label}: {ask}" if label else ask
+    body = f"{lead} {ask}".strip() if lead else ask
+    msg = f"{label}: {body}" if label else body
     state = StateStore()
     if _dedup_seen(state, msg):
         return 0
@@ -495,7 +540,15 @@ def _handle_pretooluse(payload: dict) -> int:
     ask = strip_markdown(_format_ask_question(payload.get("tool_input") or {}).strip())
     if not ask:
         return 0
-    return _emit_ask(ask, payload)
+    # Prepend any prose Claude wrote before the question in this same turn —
+    # the modal swallows it and Stop won't fire while input is pending.
+    lead = ""
+    tp_raw = (payload.get("transcript_path") or "").strip()
+    if tp_raw:
+        tp = Path(tp_raw)
+        if tp.is_file():
+            lead = strip_markdown(_ask_lead_text(tp)).strip()
+    return _emit_ask(ask, payload, lead=lead)
 
 
 def _handle_notification(payload: dict) -> int:
