@@ -430,17 +430,22 @@ def _latest_ask_question(transcript_path: Path) -> str:
 def _ask_lead_text(transcript_path: Path) -> str:
     """Assistant prose that precedes the question in the *same* turn.
 
-    When Claude writes an explanation and then calls AskUserQuestion, both the
-    text and the tool_use live in one assistant message. PreToolUse speaks only
-    the synthesized question, and Stop never fires while the turn is paused on
-    the modal — so that lead-in prose would otherwise be silently dropped. Walk
-    back to the latest assistant turn and, *only if* it carries the
-    AskUserQuestion tool call, return its joined text blocks.
+    When Claude writes an explanation and then calls AskUserQuestion, PreToolUse
+    speaks only the synthesized question, and Stop never fires while the turn is
+    paused on the modal — so that lead-in prose would otherwise be silently
+    dropped. In a real transcript the text and the tool_use are written as
+    *separate* JSONL lines within one turn (text, then a tool_use-only line), so
+    walk back over the contiguous run of assistant lines collecting `text`
+    blocks, stopping at the turn boundary (the first user / tool_result line).
+    Returns "" unless that run actually carries the AskUserQuestion call.
     """
     try:
         lines = transcript_path.read_text().splitlines()
     except OSError:
         return ""
+    texts: list[str] = []
+    seen_ask = False
+    saw_assistant = False
     for raw in reversed(lines):
         raw = raw.strip()
         if not raw:
@@ -451,21 +456,26 @@ def _ask_lead_text(transcript_path: Path) -> str:
             continue
         msg = obj.get("message") or {}
         if msg.get("role") != "assistant":
-            continue
-        parts: list[str] = []
-        has_ask = False
+            if saw_assistant:
+                break  # hit the turn boundary
+            continue   # trailing non-assistant lines before the turn
+        saw_assistant = True
+        line_parts: list[str] = []
         for c in msg.get("content") or []:
             if not isinstance(c, dict):
                 continue
             if c.get("type") == "text":
-                parts.append(c.get("text") or "")
+                line_parts.append(c.get("text") or "")
             elif (c.get("type") == "tool_use"
                   and c.get("name") == "AskUserQuestion"):
-                has_ask = True
-        if not has_ask:
-            return ""
-        return "\n".join(p for p in parts if p).strip()
-    return ""
+                seen_ask = True
+        joined = "\n".join(p for p in line_parts if p)
+        if joined:
+            texts.append(joined)
+    if not seen_ask:
+        return ""
+    texts.reverse()
+    return "\n".join(t for t in texts if t).strip()
 
 
 def _dedup_seen(state: StateStore, text: str, ttl_seconds: int = 300) -> bool:
