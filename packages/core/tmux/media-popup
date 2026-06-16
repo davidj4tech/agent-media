@@ -173,7 +173,7 @@ fetch() {
     STATUS="${STATUS/ \[M\]/}"
     # Sticky per-pane mute for the speaking pane (durable policy, not the live
     # broker mute above). Speech channel only; one cheap CLI query per refresh.
-    [ "$CHANNEL" = "speech" ] && [ "$($MEDIA pane-muted 2>/dev/null)" = "1" ] && PMUTED=1
+    [ "$CHANNEL" = "speech" ] && [ "$($MEDIA pane-muted ${HL_PANE:+--pane "$HL_PANE"} 2>/dev/null)" = "1" ] && PMUTED=1
     STATUS="${STATUS// \/ //}"               # "1:23 / 4:56" → "1:23/4:56" (save 2 cols)
     case "$CHANNEL" in
         speech|book)
@@ -633,7 +633,7 @@ handle_key() {
         # distinct from `m`'s live broker mute. A muted pane still records
         # history so it can be replayed; it just never plays live or ducks.
         M)   [ "$CHANNEL" = "speech" ] && \
-                 { $MEDIA mute-pane --current toggle >/dev/null 2>&1; \
+                 { $MEDIA mute-pane ${HL_PANE:+--pane "$HL_PANE"} toggle >/dev/null 2>&1; \
                    tmux display-message "🔕 pane mute toggled" 2>/dev/null; } ;;
         '[') { [ "$CHANNEL" = "speech" ] || [ "$CHANNEL" = "book" ]; } && bump_speed -0.1 ;;
         ']') { [ "$CHANNEL" = "speech" ] || [ "$CHANNEL" = "book" ]; } && bump_speed 0.1 ;;

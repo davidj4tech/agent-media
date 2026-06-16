@@ -805,12 +805,15 @@ def cmd_mute_status(a) -> int:
 
 
 def cmd_pane_muted(a) -> int:
-    """Print '1' when the current/last speaking pane is effectively muted.
+    """Print '1' when the target pane is effectively muted.
 
-    A tiny query for the popup's sticky-mute indicator. Silent (prints
-    nothing) when unmuted or when no pane can be resolved.
+    A tiny query for the popup's sticky-mute indicator. The popup passes
+    `--pane $HL_PANE` so the glyph reflects the pane the popup controls (the
+    one it was opened from) — NOT whoever spoke last globally, which in a
+    multi-pane setup is usually a different session. Silent (prints nothing)
+    when unmuted or when no pane can be resolved.
     """
-    pane = _spoken_pane() or os.environ.get("TMUX_PANE", "")
+    pane = getattr(a, "pane", None) or _caller_pane() or _spoken_pane() or ""
     if not pane:
         return 0
     from .intake.submit import _tmux_session_for_pane
@@ -1748,9 +1751,10 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("mute-status",
                    help="list per-pane/session speech mutes"
                    ).set_defaults(func=cmd_mute_status)
-    sub.add_parser("pane-muted",
-                   help="print '1' if the speaking pane is muted (popup indicator)"
-                   ).set_defaults(func=cmd_pane_muted)
+    p_pm = sub.add_parser("pane-muted",
+                          help="print '1' if the target pane is muted (popup indicator)")
+    p_pm.add_argument("--pane", help="pane id to check (default: caller/last-speaking)")
+    p_pm.set_defaults(func=cmd_pane_muted)
 
     s = sub.add_parser("seek", help="seek relative seconds (+/-)")
     s.add_argument("secs", type=float)

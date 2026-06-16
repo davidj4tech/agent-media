@@ -86,6 +86,19 @@ def test_pane_muted_query(env, capsys):
     assert capsys.readouterr().out.strip() == "1"
 
 
+def test_pane_muted_prefers_explicit_and_caller_pane(env, capsys, monkeypatch):
+    # The popup passes --pane (the pane it was opened from), which must win
+    # over the global last-speaker — the whole point of the resume-pane fix.
+    env.set_mute("pane", "%27", True)          # the caller pane is muted
+    # _spoken_pane() is %2 (a different, unmuted pane) per the fixture.
+    cli.main(["pane-muted", "--pane", "%27"])
+    assert capsys.readouterr().out.strip() == "1"
+    # Without --pane, the exported caller pane (TTS_POPUP_PANE) is used.
+    monkeypatch.setenv("TTS_POPUP_PANE", "%27")
+    cli.main(["pane-muted"])
+    assert capsys.readouterr().out.strip() == "1"
+
+
 def test_status_prunes_dead_and_tags(env, capsys):
     env.set_mute("pane", "%1", True)     # live
     env.set_mute("pane", "%9", True)     # dead → pruned on status
