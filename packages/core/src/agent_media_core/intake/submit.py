@@ -189,6 +189,35 @@ def _pane_scroll_pos(pane: str) -> tuple[bool, str]:
         return (False, "")
 
 
+def _pane_recent_keystrokes(pane: str, within_s: float) -> bool:
+    """True if `pane`'s window saw activity within the last `within_s` seconds.
+
+    tmux exposes no last-*input* timestamp, only last *output* activity
+    (`#{window_activity}`, an epoch). During the TTS window the speaking
+    agent has already stopped, so fresh output in its window is almost
+    always the user typing the next prompt (each keystroke echoes). We use
+    that as a keystroke proxy to skip a highlight turn while the user is
+    actively typing — the highlight would otherwise yank copy-mode out from
+    under them. Fails open (returns False) on any tmux error so highlighting
+    still happens if we can't tell.
+    """
+    if within_s <= 0:
+        return False
+    try:
+        r = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", pane,
+             "#{window_activity}"],
+            capture_output=True, text=True)
+        if r.returncode != 0:
+            return False
+        last = r.stdout.strip()
+        if not last.isdigit():
+            return False
+        return (time.time() - int(last)) < within_s
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _cursor_sig(pane: str) -> str:
     """A signature of the copy-mode cursor/viewport, to detect movement."""
     try:
@@ -275,17 +304,17 @@ def _tmux_highlight_text(text: str, *, first: bool = False,
     """Re-anchor copy-mode in the source pane onto the spoken text.
 
     Each call jumps to the bottom and searches backward for this sentence,
-    so it tracks the right line regardless of prior position. But it leaves
-    the user's scroll alone: if the pane is in copy-mode and the viewport
-    has moved since our last highlight (the user scrolled up to read), this
-    no-ops — until the user returns to that position or exits copy-mode, at
-    which point following resumes. `force=True` (the popup's `v` toggle)
-    always repositions, since the user just asked for it.
+    so it tracks the right line regardless of prior position — including
+    while the user has scrolled up in copy-mode. (We used to no-op when the
+    user scrolled away from our last highlight; that rule is gone — the
+    keystroke-recency skip in `_run` is the gentler way to stay out of the
+    user's way, so highlighting now always follows the spoken text.)
 
     Off by default — opt-in via the popup's `v` toggle (which writes to
     `$XDG_STATE_HOME/agent-media/auto-highlight`). `MEDIA_AUTO_HIGHLIGHT=1`
-    in env can override on a per-host basis. `first` is accepted for call-site
-    compatibility but no longer changes anchoring (every call re-anchors).
+    in env can override on a per-host basis. `first` and `force` are accepted
+    for call-site compatibility but no longer change anchoring (every call
+    re-anchors).
     """
     if not os.environ.get("TMUX"):
         return
@@ -322,26 +351,6 @@ def _tmux_highlight_text(text: str, *, first: bool = False,
     import signal as _signal
     _pane_safe = re.sub(r"[^A-Za-z0-9_-]", "_", pane)
     pidfile = f"/tmp/media-highlight-clear-{_pane_safe}.pid"
-    # Tracks the scroll_position our last highlight left the pane at, so we
-    # can tell whether the user has since scrolled away.
-    posfile = f"/tmp/media-highlight-pos-{_pane_safe}"
-
-    # Respect a manual scroll: if the pane is in copy-mode at a position other
-    # than where we last left it, the user scrolled up to read — leave their
-    # view untouched. When they return to that position (or drop out of
-    # copy-mode, putting them back at the live bottom), following resumes.
-    # The first sentence of a response (and an explicit `v` toggle) always
-    # re-anchors, so we never get permanently stuck skipping.
-    if not force and not first:
-        in_mode, pos = _pane_scroll_pos(pane)
-        if in_mode:
-            try:
-                with open(posfile) as _f:
-                    saved = _f.read().strip()
-            except OSError:
-                saved = None
-            if pos != saved:
-                return
 
     # Per-pane PID file so each new highlight can kill the previous
     # sentence's pending clear-timer before it races into our selection.
@@ -396,14 +405,6 @@ def _tmux_highlight_text(text: str, *, first: bool = False,
             subprocess.run(["tmux", "send-keys", "-t", pane,
                             "-X", "-N", str(select_len), "cursor-right"],
                            capture_output=True)
-        # Record where we landed so the next sentence can tell whether the
-        # user has scrolled away from it.
-        _, _new_pos = _pane_scroll_pos(pane)
-        try:
-            with open(posfile, "w") as _f:
-                _f.write(_new_pos)
-        except OSError:
-            pass
         if flash_ms > 0:
             # Detached clear-selection after flash window. start_new_session
             # makes this proc the session leader, so its PID is its pgid;
@@ -1074,6 +1075,18 @@ def submit_event(event: Event,
     # Only highlight for hook sources — CLI text is never in the pane.
     from ..types import Source as _Source
     do_highlight = event.source not in (_Source.CLI,)
+
+    # Skip this turn's highlighting if the user has typed in the source pane
+    # recently: grabbing copy-mode mid-keystroke would yank the view out from
+    # under them. Window threshold via MEDIA_HIGHLIGHT_KEYSTROKE_S (0 disables
+    # the skip). tmux has no last-input time, so this uses window-activity as a
+    # keystroke proxy (the speaking agent is idle by now, so output ~= typing).
+    if do_highlight:
+        _ks_window_s = float(
+            os.environ.get("MEDIA_HIGHLIGHT_KEYSTROKE_S", "5"))
+        _src_pane = os.environ.get("TMUX_PANE")
+        if _src_pane and _pane_recent_keystrokes(_src_pane, _ks_window_s):
+            do_highlight = False
 
     # Phase 1: resolve all render futures and collect clip durations.
     # Parallel renders are mostly done by now; future.result() is instant
