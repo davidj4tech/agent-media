@@ -721,11 +721,30 @@ def _mute_target_pane(a) -> str:
     return os.environ.get("TMUX_PANE", "") or (_spoken_pane() or "")
 
 
+def _silence_current_if_covered(scope: str, key: str) -> bool:
+    """Stop the speech broker if it's *actively* playing a clip from a pane the
+    mute now covers, so `M` feels immediate (like `m`) instead of only
+    suppressing the next response. The in-flight response is already in history,
+    so it stays replayable. Returns True if it stopped something.
+    """
+    np = _now_speaking()                 # active playback only (not history)
+    if not np:
+        return False
+    ex = np.get("extras") or {}
+    covered = (ex.get("source_pane") == key if scope == "pane"
+               else ex.get("source_tmux_session") == key)
+    if covered:
+        SinkSpeech().stop(SPEECH_TARGET)
+        return True
+    return False
+
+
 def cmd_mute_pane(a) -> int:
     """Set/clear durable per-pane (or --session) speech mute. Default toggles.
 
     A muted pane still renders + records history (the popup can replay it) but
-    is never played live and never ducks music — enforced at intake.
+    is never played live and never ducks music — enforced at intake. Muting
+    also stops the covered pane's currently-playing clip, if any.
     """
     state = StateStore()
     pane = _mute_target_pane(a)
@@ -759,7 +778,9 @@ def cmd_mute_pane(a) -> int:
             new = not state.resolve_mute(pane, session)
 
     state.set_mute(scope, key, new)
-    print(f"{scope} {key}: {'muted' if new else 'unmuted'}")
+    stopped = _silence_current_if_covered(scope, key) if new else False
+    print(f"{scope} {key}: {'muted' if new else 'unmuted'}"
+          f"{' (stopped current)' if stopped else ''}")
     return 0
 
 

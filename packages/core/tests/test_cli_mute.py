@@ -62,6 +62,21 @@ def test_no_target_pane_errors(env, capsys, monkeypatch):
     assert "no target pane" in capsys.readouterr().err
 
 
+def test_mute_stops_in_flight_clip(env, monkeypatch, capsys):
+    env.set_now_playing("speech", uri="/x.mp3", started_at=1.0,
+                        extras={"source_pane": "%1", "source_tmux_session": "work:"})
+    stops = []
+    monkeypatch.setattr(cli, "SinkSpeech",
+                        lambda: type("S", (), {"stop": lambda self, t: stops.append(t)})())
+    cli.main(["mute-pane", "--pane", "%1", "on"])
+    assert stops                                   # current clip stopped
+    assert "(stopped current)" in capsys.readouterr().out
+    # Unmuting never stops anything.
+    stops.clear()
+    cli.main(["mute-pane", "--pane", "%1", "off"])
+    assert not stops
+
+
 def test_pane_muted_query(env, capsys):
     # _spoken_pane() → %2 (from fixture); unmuted prints nothing.
     cli.main(["pane-muted"])

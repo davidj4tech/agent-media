@@ -259,7 +259,20 @@ def mute_pane(pane: str = "", session: str = "", state: str = "toggle") -> dict:
     else:  # toggle this scope's own override (no tmux here for an effective flip)
         muted = not bool(st.get_mute(scope, key))
     st.set_mute(scope, key, muted)
-    return {"ok": True, "scope": scope, "key": key, "muted": muted}
+    # Muting also stops the covered pane's in-flight clip so it takes effect
+    # immediately (the response is already in history, still replayable).
+    stopped = False
+    if muted:
+        np = st.get_now_playing("speech") or {}
+        ex = np.get("extras") if isinstance(np.get("extras"), dict) else {}
+        ex = ex or {}
+        covered = (ex.get("source_pane") == key if scope == "pane"
+                   else ex.get("source_tmux_session") == key)
+        if covered:
+            _speech().stop(_target("local"))
+            stopped = True
+    return {"ok": True, "scope": scope, "key": key, "muted": muted,
+            "stopped_current": stopped}
 
 
 @mcp.tool()
