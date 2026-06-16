@@ -127,11 +127,17 @@ def _now_speaking() -> Optional[dict]:
 
 
 def _speech_history(n: int = 20, session: Optional[str] = None):
+    # `session`, when given, is a *Claude session id* (extras.source_session) —
+    # the true "this conversation" boundary. It's preferred over the tmux
+    # session because one tmux session can hold several distinct conversations
+    # (so tmux-scoping bleeds between them) and one conversation can move panes
+    # on resume (so pane-scoping splits it). The Claude id does neither.
+    #
     # Exclude "Claude is waiting" notif clips: they're alerts, not responses,
     # and shouldn't appear when traversing past TTS (popup < / >, r, replay).
     # Over-fetch so filtering still leaves n real responses to step through;
-    # over-fetch harder when also scoping to one tmux session, since other
-    # sessions' clips interleave and would otherwise crowd out the buffer.
+    # over-fetch harder when scoping, since other conversations' clips
+    # interleave and would otherwise crowd out the buffer.
     fetch = max(n * 4, n + 50)
     if session:
         fetch = max(fetch, 400)
@@ -140,12 +146,12 @@ def _speech_history(n: int = 20, session: Optional[str] = None):
             if not (isinstance(r.get("extras"), dict)
                     and r["extras"].get("kind") == "notif")]
     if session:
-        # Scope traversal to one tmux session's clips. Rows predate the
-        # source_tmux_session field (or came from a non-tmux source) carry no
-        # session tag and are excluded rather than leaking across sessions.
+        # Scope traversal to one conversation's clips. Rows that predate the
+        # source_session field (or came from a session-less source) carry no
+        # tag and are excluded rather than leaking across conversations.
         rows = [r for r in rows
                 if isinstance(r.get("extras"), dict)
-                and r["extras"].get("source_tmux_session") == session]
+                and r["extras"].get("source_session") == session]
     return rows[:n]
 
 
@@ -163,12 +169,15 @@ def _tmux_session_for_pane(pane: str) -> str:
 
 
 def _anchor_session() -> Optional[str]:
-    """The tmux session the popup's < / > traversal should stay within.
+    """The *conversation* the popup's < / > traversal should stay within,
+    as a Claude session id (extras.source_session).
 
-    Follows what you're hearing: the now-playing clip's tmux session if one is
-    playing; otherwise the session of the pane that opened the popup
-    (TTS_POPUP_PANE, exported by the tmux binding). Returns None when neither
-    resolves — callers then fall back to unscoped (all-session) history.
+    Follows what you're hearing: the now-playing clip's conversation if one is
+    playing; otherwise the conversation that last spoke in the pane that opened
+    the popup (TTS_POPUP_PANE). The Claude id is the right scope — it survives a
+    session being resumed into another pane and doesn't bleed across sibling
+    conversations sharing one tmux session. Returns None when neither resolves,
+    so callers fall back to unscoped (all-conversation) history.
     """
     np = StateStore().get_now_playing("speech")
     ex = (np or {}).get("extras") or {}
@@ -177,11 +186,18 @@ def _anchor_session() -> Optional[str]:
             ex = json.loads(ex)
         except json.JSONDecodeError:
             ex = {}
-    sess = ex.get("source_tmux_session")
+    sess = ex.get("source_session")
     if sess:
         return sess
-    sess = _tmux_session_for_pane(os.environ.get("TTS_POPUP_PANE", ""))
-    return sess or None
+    # Idle: a bare pane id carries no Claude id, so resolve it from that pane's
+    # most recent clip (most-recent-first history).
+    pane = os.environ.get("TTS_POPUP_PANE", "")
+    if pane:
+        for r in _speech_history(50):
+            rex = r.get("extras") or {}
+            if rex.get("source_pane") == pane and rex.get("source_session"):
+                return rex["source_session"]
+    return None
 
 
 def _caller_pane() -> str:
@@ -1061,8 +1077,12 @@ def _do_replay(index: int, session: Optional[str] = None) -> int:
     source_pane = ex.get("source_pane")
     if source_pane:
         np_extras["source_pane"] = source_pane
-    # Carry the clip's tmux session forward so the next < / > press anchors to
-    # the same session (keeps the traversal scope stable across the walk).
+    # Carry the clip's conversation (Claude id) + tmux session forward so the
+    # next < / > press anchors to the same conversation — keeps the traversal
+    # scope stable across the walk (_anchor_session reads source_session).
+    src_claude = ex.get("source_session")
+    if src_claude:
+        np_extras["source_session"] = src_claude
     src_sess = ex.get("source_tmux_session")
     if src_sess:
         np_extras["source_tmux_session"] = src_sess
