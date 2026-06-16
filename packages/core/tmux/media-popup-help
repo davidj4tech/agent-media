@@ -30,6 +30,7 @@ mapfile -t L <<'EOF'
  │ r   │ replay last  │
  │ p   │ clip @cursor │
  │ m   │ mute         │
+ │ M   │ pane-mute 🔕 │
  │ v   │ highlight    │
  ├─────┴──────────────┤
  │ book & music       │

@@ -300,6 +300,50 @@ class Coordinator:
             # stuck row doesn't poison the next clip.
             self.state.clear_now_playing("music")
 
+    # ---- mid-response mute toggling ------------------------------------
+
+    def _duck_interruption(self) -> Optional[dict]:
+        """The interruption marker before_speech stashed, but only when it
+        ducked (not paused) music. None otherwise.
+
+        Used by the mute-edge handlers below so they reuse the exact level
+        and baseline before_speech chose, instead of recomputing.
+        """
+        np = self.state.get_now_playing("music")
+        interruption = ((np or {}).get("extras") or {}).get("interruption") or {}
+        return interruption if interruption.get("strategy") == "duck" else None
+
+    def release_music_duck(self) -> None:
+        """Temporarily un-duck music when speech goes silent mid-response
+        (the user muted via the popup): muted speech needs no headroom.
+
+        Deliberately leaves the interruption marker in place so after_speech
+        still performs the authoritative restore — and only touches the duck,
+        never the book/MPRIS/phone pauses, which would churn on every toggle.
+        Pause-strategy music (audiobook/podcast) is left alone.
+        """
+        interruption = self._duck_interruption()
+        if interruption is None:
+            return
+        baseline = int(interruption.get("baseline_volume") or 45)
+        try:
+            self.music.unduck(self.music_target, restore=baseline)
+        except Exception as e:  # noqa: BLE001
+            self._log_err("music: release duck (mute) failed", str(e))
+
+    def reapply_music_duck(self) -> None:
+        """Re-duck music when a mid-response mute is lifted and speech is
+        audible again. Reads the same level before_speech recorded.
+        """
+        interruption = self._duck_interruption()
+        if interruption is None:
+            return
+        level = int(interruption.get("duck_level") or 15)
+        try:
+            self.music.duck(self.music_target, level)
+        except Exception as e:  # noqa: BLE001
+            self._log_err("music: reapply duck (mute) failed", str(e))
+
     # ---- helpers --------------------------------------------------------
 
     def _content_type_for(self, uri: str) -> ContentType:

@@ -21,7 +21,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from .._notify import notify
 from ..render import render_text
@@ -862,7 +862,8 @@ def _read_nav_request(target: Target) -> Optional[int]:
         return None
 
 
-def _wait_for_clip(sink: SinkSpeech, target: Target) -> Optional[int]:
+def _wait_for_clip(sink: SinkSpeech, target: Target,
+                   on_poll: Optional[Callable[[], None]] = None) -> Optional[int]:
     """Wait for sink-speech to start then finish the current clip.
 
     Returns None on natural end-of-clip; returns an absolute sentence index
@@ -871,18 +872,26 @@ def _wait_for_clip(sink: SinkSpeech, target: Target) -> Optional[int]:
     nav check runs even while paused, so you can step the highlight forward or
     back through a paused response.
 
+    `on_poll`, if given, is invoked once per polling iteration (including
+    while paused and during the initial wait-for-start) — used to watch the
+    broker mute state and toggle the music duck to match.
+
     Requires two consecutive idle readings before declaring done — a
     single True from sink.idle() can be a transient IPC error mid-play
     (the method returns True on MpvIpcError), which would otherwise cause
     the next clip to cut the current one short.
     """
     for _ in range(20):
+        if on_poll is not None:
+            on_poll()
         if not sink.idle(target):
             break
         time.sleep(0.05)
     idle_streak = 0
     elapsed = 0
     while elapsed < 1200:
+        if on_poll is not None:
+            on_poll()
         nav = _read_nav_request(target)
         if nav is not None:
             return nav
@@ -903,6 +912,42 @@ def _wait_for_clip(sink: SinkSpeech, target: Target) -> Optional[int]:
         time.sleep(0.1)
         elapsed += 1
     return None
+
+
+class _MuteDuckWatcher:
+    """Track the speech broker's mute state across a response and toggle the
+    music duck to match: a mid-response mute (popup `m`) makes the remaining
+    sentences silent, so the ducked music can come back up; un-muting re-ducks
+    it while audible speech resumes.
+
+    State lives here (not in `_wait_for_clip`, which is per-clip) so a mute set
+    during one sentence is remembered across the sentence boundary and isn't
+    re-ducked when the next silent clip loads. Restore at end-of-response is
+    left to `coordinator.after_speech()`, which is idempotent with whatever
+    duck state we leave behind.
+    """
+
+    def __init__(self, sink: SinkSpeech, target: Target,
+                 coordinator: Coordinator) -> None:
+        self._sink = sink
+        self._target = target
+        self._coord = coordinator
+        # A fresh response always un-mutes itself on sentence 0
+        # (reset_state), so we start from "audible / ducked".
+        self._muted = False
+
+    def poll(self) -> None:
+        try:
+            muted = self._sink.muted(self._target)
+        except Exception:  # noqa: BLE001
+            return  # can't read mute → don't touch the duck
+        if muted == self._muted:
+            return
+        self._muted = muted
+        if muted:
+            self._coord.release_music_duck()
+        else:
+            self._coord.reapply_music_duck()
 
 
 def submit_event(event: Event,
@@ -958,6 +1003,12 @@ def submit_event(event: Event,
     # since-closed) pane id back to its session at browse time.
     source_tmux_session = _tmux_session_for_pane(source_pane)
 
+    # Durable per-pane / per-session mute (popup `M` / `media mute-pane`): a
+    # muted pane still renders its clips and records a replayable history row,
+    # but is never played through the broker and never ducks music. Decided
+    # once, up front, so we also skip the remote pre-pause below.
+    muted = state.resolve_mute(source_pane, source_tmux_session)
+
     fallback_info: dict = {}
     _fallback_lock = threading.Lock()
 
@@ -990,8 +1041,10 @@ def submit_event(event: Event,
                title=title, content=body)
 
     # Start remote MPRIS detect-and-pause in background so SSH cold-connect
-    # (~4.8s) overlaps with sentence rendering below.
-    coordinator.pre_pause_remote()
+    # (~4.8s) overlaps with sentence rendering below. Skipped when muted —
+    # nothing will play, so there's nothing to pause for.
+    if not muted:
+        coordinator.pre_pause_remote()
 
     sentences, sent_para = _split_sentences_with_paragraphs(text)
 
@@ -1074,81 +1127,86 @@ def submit_event(event: Event,
         _acc += d
     _clip_sentences = [s for s, _ in clip_data]
 
-    # Serialize playback across sessions: only one response feeds the shared
-    # broker/Snapcast stream at a time (rendering above already ran in
-    # parallel). Acquired before before_speech() so other media isn't paused
-    # while we're still queued behind another speaker.
-    playback_lock = _SpeechPlaybackLock()
-    playback_lock.acquire(event.priority)
-    played_any = False
-    n = len(clip_data)
-    highlighter = _HighlightScheduler(_highlight_delay_s, do_highlight)
-    # Drop any stale jump request left by a previous response.
-    _nav_flag_path(target).unlink(missing_ok=True)
-    try:
-        coordinator.before_speech()
-        i = 0
-        nav_jump = False  # True when this clip was reached via a popup skip
-        while 0 <= i < n:
-            # Step aside between sentences if a higher-priority speaker (e.g. a
-            # notification) is waiting; resume this same sentence once it's done.
-            if playback_lock.should_yield():
-                playback_lock.yield_to_higher()
-            sentence, clip_path = clip_data[i]
-            # Update now_playing so cmd_status can show a response-wide bar,
-            # `media current-sentence` can return the active sentence, and
-            # `media skip` can read the sentence/paragraph map for live nav.
-            state.set_now_playing(
-                "speech", uri=str(clip_path), started_at=started_at,
-                target=target.name,
-                extras={"text": text, "source": event.source.value,
-                        "engine": engine, "voice": voice,
-                        "clip_offset_s": offsets[i],
-                        "total_duration_s": total_duration_s,
-                        "source_pane": source_pane,
-                        "source_session": source_session,
-                        "source_tmux_session": source_tmux_session,
-                        "current_sentence": sentence,
-                        "current_sentence_idx": i,
-                        "clip_paragraph_idx": clip_para,
-                        "clip_sentences": _clip_sentences})
-            try:
-                # Only the first sentence resets a lingering pause/mute;
-                # later sentences preserve a pause the user made mid-response.
-                sink.play(str(clip_path), target, reset_state=(i == 0))
-                played_any = True
-            except Exception as e:  # noqa: BLE001
-                log.warning("intake: sink-speech.play failed: %s", e)
-                state.log_error("intake", "sink-speech play failed",
-                                extras={"detail": str(e),
-                                        "source": event.source.value})
-                i += 1
-                nav_jump = False
-                continue
-            # Highlight is deferred by the Snapcast buffer so it lands with the
-            # audio (a manual jump forces it on immediately even if the reader
-            # scrolled away; a natural advance respects the scroll position).
-            highlighter.show(sentence, first=(i == 0), force=nav_jump)
-            nav = _wait_for_clip(sink, target)
-            if nav is None:
-                i += 1
-                nav_jump = False
-            else:
-                # Popup requested a sentence/paragraph jump. A target past the
-                # last clip means "skip to the end" → finish the response.
-                if nav >= n:
-                    highlighter.cancel_pending()
-                    break
-                i = max(0, nav)
-                nav_jump = True
-    finally:
-        highlighter.drain()
-        coordinator.after_speech()
-        state.clear_now_playing("speech")
-        playback_lock.release()
+    # A muted pane skips playback entirely: the clips are already rendered
+    # (above), so we fall straight through to the history write below — no
+    # broker, no before/after_speech, no duck.
+    if not muted:
+        # Serialize playback across sessions: only one response feeds the shared
+        # broker/Snapcast stream at a time (rendering above already ran in
+        # parallel). Acquired before before_speech() so other media isn't paused
+        # while we're still queued behind another speaker.
+        playback_lock = _SpeechPlaybackLock()
+        playback_lock.acquire(event.priority)
+        played_any = False
+        n = len(clip_data)
+        highlighter = _HighlightScheduler(_highlight_delay_s, do_highlight)
+        # Drop any stale jump request left by a previous response.
+        _nav_flag_path(target).unlink(missing_ok=True)
+        try:
+            coordinator.before_speech()
+            mute_watcher = _MuteDuckWatcher(sink, target, coordinator)
+            i = 0
+            nav_jump = False  # True when this clip was reached via a popup skip
+            while 0 <= i < n:
+                # Step aside between sentences if a higher-priority speaker (e.g. a
+                # notification) is waiting; resume this same sentence once it's done.
+                if playback_lock.should_yield():
+                    playback_lock.yield_to_higher()
+                sentence, clip_path = clip_data[i]
+                # Update now_playing so cmd_status can show a response-wide bar,
+                # `media current-sentence` can return the active sentence, and
+                # `media skip` can read the sentence/paragraph map for live nav.
+                state.set_now_playing(
+                    "speech", uri=str(clip_path), started_at=started_at,
+                    target=target.name,
+                    extras={"text": text, "source": event.source.value,
+                            "engine": engine, "voice": voice,
+                            "clip_offset_s": offsets[i],
+                            "total_duration_s": total_duration_s,
+                            "source_pane": source_pane,
+                            "source_session": source_session,
+                            "source_tmux_session": source_tmux_session,
+                            "current_sentence": sentence,
+                            "current_sentence_idx": i,
+                            "clip_paragraph_idx": clip_para,
+                            "clip_sentences": _clip_sentences})
+                try:
+                    # Only the first sentence resets a lingering pause/mute;
+                    # later sentences preserve a pause the user made mid-response.
+                    sink.play(str(clip_path), target, reset_state=(i == 0))
+                    played_any = True
+                except Exception as e:  # noqa: BLE001
+                    log.warning("intake: sink-speech.play failed: %s", e)
+                    state.log_error("intake", "sink-speech play failed",
+                                    extras={"detail": str(e),
+                                            "source": event.source.value})
+                    i += 1
+                    nav_jump = False
+                    continue
+                # Highlight is deferred by the Snapcast buffer so it lands with the
+                # audio (a manual jump forces it on immediately even if the reader
+                # scrolled away; a natural advance respects the scroll position).
+                highlighter.show(sentence, first=(i == 0), force=nav_jump)
+                nav = _wait_for_clip(sink, target, on_poll=mute_watcher.poll)
+                if nav is None:
+                    i += 1
+                    nav_jump = False
+                else:
+                    # Popup requested a sentence/paragraph jump. A target past the
+                    # last clip means "skip to the end" → finish the response.
+                    if nav >= n:
+                        highlighter.cancel_pending()
+                        break
+                    i = max(0, nav)
+                    nav_jump = True
+        finally:
+            highlighter.drain()
+            coordinator.after_speech()
+            state.clear_now_playing("speech")
+            playback_lock.release()
 
-    if not played_any:
-        return None
+        if not played_any:
+            return None
 
     extras = {"engine": engine, "voice": voice,
               "priority": event.priority.value,
@@ -1162,6 +1220,8 @@ def submit_event(event: Event,
               **(event.metadata or {})}
     if fallback_info:
         extras["fallback"] = fallback_info
+    if muted:
+        extras["muted"] = True   # rendered but never played (popup can replay)
     return state.add_history(
         sink="speech",
         uri=str(first_clip),
@@ -1222,6 +1282,9 @@ def submit_stream(sentences,
     source_pane = (event.metadata or {}).get("pane") or os.environ.get("TMUX_PANE", "")
     source_session = (event.metadata or {}).get("session") or ""
     source_tmux_session = _tmux_session_for_pane(source_pane)
+    # Durable per-pane / per-session mute: render the stream into clips for
+    # popup replay/history, but never play it or duck music. See submit_event.
+    muted = state.resolve_mute(source_pane, source_tmux_session)
     do_highlight = event.source not in (_Source.CLI,)
     # Snapcast buffers audio after mpv starts writing, so the sound reaches the
     # listener a beat later than play() returns. Hold the highlight that long so
@@ -1297,130 +1360,183 @@ def submit_stream(sentences,
                 return None
             return sents[i], futures[i], paths[i]
 
-    coordinator.pre_pause_remote()
+    # Skipped when muted — nothing plays, so there's nothing to pause for.
+    if not muted:
+        coordinator.pre_pause_remote()
     _nav_flag_path(target).unlink(missing_ok=True)
     producer = threading.Thread(target=_produce, daemon=True)
     producer.start()
 
     durations: dict[int, float] = {}   # measured clip durations, by index
-    before_called = False
     played_any = False
     first_clip: Optional[Path] = None
-    highlighter = _HighlightScheduler(_highlight_delay_s, do_highlight)
-    # Serialize playback across sessions (rendering keeps streaming in parallel
-    # via the producer thread while we wait our turn for the broker).
-    playback_lock = _SpeechPlaybackLock()
-    playback_lock.acquire(event.priority)
-    i = 0
-    nav_jump = False
-    try:
-        while True:
-            # Step aside between sentences for a higher-priority speaker;
-            # resume this clip once it's done. Only after the first clip has
-            # played, so before_speech ran and there's something to resume.
-            if before_called and playback_lock.should_yield():
-                playback_lock.yield_to_higher()
-            item = _get(i)
-            if item is None:
-                break
-            sentence, fut, clip_path = item
-            try:
-                ok, err = fut.result()
-            except Exception as exc:  # noqa: BLE001
-                log.warning("intake-stream: render future raised: %s", exc)
-                i += 1
-                nav_jump = False
-                continue
-            if not ok:
-                log.warning("intake-stream: render failed (%s): %s", engine, err)
-                state.log_error("intake", f"render failed ({engine})",
-                                extras={"err": err, "source": event.source.value})
-                i += 1
-                nav_jump = False
-                continue
-            with _fallback_lock:
-                has_fallback = bool(fallback_info)
-            if has_fallback and clip_path.suffix == ".wav":
-                renamed = clip_path.with_suffix(".mp3")
+
+    if muted:
+        # Drain the producer into clips so the response is in history and the
+        # popup can replay it — but never play it or touch the coordinator.
+        i = 0
+        try:
+            while True:
+                item = _get(i)
+                if item is None:
+                    break
+                sentence, fut, clip_path = item
                 try:
-                    clip_path.rename(renamed)
-                    clip_path = renamed
-                    paths[i] = renamed
-                except OSError:
-                    pass
-
-            if not before_called:
-                coordinator.before_speech()
-                before_called = True
-
-            durations[i] = _clip_duration(clip_path)
+                    ok, err = fut.result()
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("intake-stream: render future raised: %s", exc)
+                    i += 1
+                    continue
+                if not ok:
+                    log.warning("intake-stream: render failed (%s): %s", engine, err)
+                    state.log_error("intake", f"render failed ({engine})",
+                                    extras={"err": err, "source": event.source.value})
+                    i += 1
+                    continue
+                with _fallback_lock:
+                    has_fallback = bool(fallback_info)
+                if has_fallback and clip_path.suffix == ".wav":
+                    renamed = clip_path.with_suffix(".mp3")
+                    try:
+                        clip_path.rename(renamed)
+                        clip_path = renamed
+                        paths[i] = renamed
+                    except OSError:
+                        pass
+                durations[i] = _clip_duration(clip_path)
+                if first_clip is None:
+                    first_clip = clip_path
+                played_any = True
+                i += 1
+        finally:
+            producer_done.wait(timeout=2.0)
+            pool.shutdown(wait=False)
+        # Sidecar with the full text so the popup shows the whole response.
+        if first_clip is not None:
             with cond:
                 known = list(sents)
-            if first_clip is None:
-                first_clip = clip_path
-            # Keep the first clip's text sidecar updated with everything spoken
-            # so far, so the popup can show the running response.
             try:
                 first_clip.with_suffix(".txt").write_text(" ".join(known))
             except OSError:
                 pass
+    else:
+        before_called = False
+        mute_watcher = _MuteDuckWatcher(sink, target, coordinator)
+        highlighter = _HighlightScheduler(_highlight_delay_s, do_highlight)
+        # Serialize playback across sessions (rendering keeps streaming in
+        # parallel via the producer thread while we wait our turn for the broker).
+        playback_lock = _SpeechPlaybackLock()
+        playback_lock.acquire(event.priority)
+        i = 0
+        nav_jump = False
+        try:
+            while True:
+                # Step aside between sentences for a higher-priority speaker;
+                # resume this clip once it's done. Only after the first clip has
+                # played, so before_speech ran and there's something to resume.
+                if before_called and playback_lock.should_yield():
+                    playback_lock.yield_to_higher()
+                item = _get(i)
+                if item is None:
+                    break
+                sentence, fut, clip_path = item
+                try:
+                    ok, err = fut.result()
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("intake-stream: render future raised: %s", exc)
+                    i += 1
+                    nav_jump = False
+                    continue
+                if not ok:
+                    log.warning("intake-stream: render failed (%s): %s", engine, err)
+                    state.log_error("intake", f"render failed ({engine})",
+                                    extras={"err": err, "source": event.source.value})
+                    i += 1
+                    nav_jump = False
+                    continue
+                with _fallback_lock:
+                    has_fallback = bool(fallback_info)
+                if has_fallback and clip_path.suffix == ".wav":
+                    renamed = clip_path.with_suffix(".mp3")
+                    try:
+                        clip_path.rename(renamed)
+                        clip_path = renamed
+                        paths[i] = renamed
+                    except OSError:
+                        pass
 
-            offset = sum(durations.get(k, 0.0) for k in range(i))
-            total = sum(durations.values())  # grows as more clips render
-            state.set_now_playing(
-                "speech", uri=str(clip_path), started_at=started_at,
-                target=target.name,
-                extras={"text": " ".join(known), "source": event.source.value,
-                        "engine": engine, "voice": voice,
-                        "clip_offset_s": offset,
-                        "total_duration_s": total,
-                        "source_pane": source_pane,
-                        "source_session": source_session,
-                        "source_tmux_session": source_tmux_session,
-                        "current_sentence": sentence,
-                        "current_sentence_idx": i,
-                        "clip_sentences": known,
-                        "streaming": True})
-            try:
-                sink.play(str(clip_path), target, reset_state=(i == 0))
-                played_any = True
-            except Exception as e:  # noqa: BLE001
-                log.warning("intake-stream: sink-speech.play failed: %s", e)
-                state.log_error("intake", "sink-speech play failed",
-                                extras={"detail": str(e),
-                                        "source": event.source.value})
-                i += 1
-                nav_jump = False
-                continue
-            # Deferred so the highlight lands with the Snapcast-buffered audio.
-            highlighter.show(sentence, first=(i == 0), force=nav_jump)
+                if not before_called:
+                    coordinator.before_speech()
+                    before_called = True
 
-            nav = _wait_for_clip(sink, target)
-            if nav is None:
-                i += 1
-                nav_jump = False
-            else:
+                durations[i] = _clip_duration(clip_path)
                 with cond:
-                    count = len(sents)
-                    done = producer_done.is_set()
-                if nav >= count:
-                    # "Skip to the end": stop if the producer's finished,
-                    # otherwise fall through to whatever arrives next.
-                    if done:
-                        highlighter.cancel_pending()
-                        break
-                    i = count
+                    known = list(sents)
+                if first_clip is None:
+                    first_clip = clip_path
+                # Keep the first clip's text sidecar updated with everything spoken
+                # so far, so the popup can show the running response.
+                try:
+                    first_clip.with_suffix(".txt").write_text(" ".join(known))
+                except OSError:
+                    pass
+
+                offset = sum(durations.get(k, 0.0) for k in range(i))
+                total = sum(durations.values())  # grows as more clips render
+                state.set_now_playing(
+                    "speech", uri=str(clip_path), started_at=started_at,
+                    target=target.name,
+                    extras={"text": " ".join(known), "source": event.source.value,
+                            "engine": engine, "voice": voice,
+                            "clip_offset_s": offset,
+                            "total_duration_s": total,
+                            "source_pane": source_pane,
+                            "source_session": source_session,
+                            "source_tmux_session": source_tmux_session,
+                            "current_sentence": sentence,
+                            "current_sentence_idx": i,
+                            "clip_sentences": known,
+                            "streaming": True})
+                try:
+                    sink.play(str(clip_path), target, reset_state=(i == 0))
+                    played_any = True
+                except Exception as e:  # noqa: BLE001
+                    log.warning("intake-stream: sink-speech.play failed: %s", e)
+                    state.log_error("intake", "sink-speech play failed",
+                                    extras={"detail": str(e),
+                                            "source": event.source.value})
+                    i += 1
+                    nav_jump = False
+                    continue
+                # Deferred so the highlight lands with the Snapcast-buffered audio.
+                highlighter.show(sentence, first=(i == 0), force=nav_jump)
+
+                nav = _wait_for_clip(sink, target, on_poll=mute_watcher.poll)
+                if nav is None:
+                    i += 1
                     nav_jump = False
                 else:
-                    i = max(0, nav)
-                    nav_jump = True
-    finally:
-        highlighter.drain()
-        coordinator.after_speech()
-        state.clear_now_playing("speech")
-        playback_lock.release()
-        producer_done.wait(timeout=2.0)
-        pool.shutdown(wait=False)
+                    with cond:
+                        count = len(sents)
+                        done = producer_done.is_set()
+                    if nav >= count:
+                        # "Skip to the end": stop if the producer's finished,
+                        # otherwise fall through to whatever arrives next.
+                        if done:
+                            highlighter.cancel_pending()
+                            break
+                        i = count
+                        nav_jump = False
+                    else:
+                        i = max(0, nav)
+                        nav_jump = True
+        finally:
+            highlighter.drain()
+            coordinator.after_speech()
+            state.clear_now_playing("speech")
+            playback_lock.release()
+            producer_done.wait(timeout=2.0)
+            pool.shutdown(wait=False)
 
     if not played_any:
         return None
@@ -1441,6 +1557,8 @@ def submit_stream(sentences,
               **(event.metadata or {})}
     if fallback_info:
         extras["fallback"] = fallback_info
+    if muted:
+        extras["muted"] = True   # rendered but never played (popup can replay)
     return state.add_history(
         sink="speech",
         uri=str(first_clip),
