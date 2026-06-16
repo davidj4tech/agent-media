@@ -11,9 +11,12 @@ from agent_media_core.state import StateStore
 def env(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.delenv("TMUX_PANE", raising=False)
+    monkeypatch.delenv("TTS_POPUP_PANE", raising=False)
     # Deterministic tmux: pretend %1/%2 are live, %9 is dead; sessions resolve.
     monkeypatch.setattr(cli, "_live_panes", lambda: ["%1", "%2"])
     monkeypatch.setattr(cli, "_spoken_pane", lambda: "%2")
+    monkeypatch.setattr(cli, "_tmux_session_for_pane",
+                        lambda pane: "work:" if pane else "")
     monkeypatch.setattr(S, "_tmux_session_for_pane",
                         lambda pane: "work:" if pane else "")
     return StateStore()
@@ -77,26 +80,64 @@ def test_mute_stops_in_flight_clip(env, monkeypatch, capsys):
     assert not stops
 
 
-def test_pane_muted_query(env, capsys):
-    # _spoken_pane() → %2 (from fixture); unmuted prints nothing.
+def test_subject_idle_is_caller_pane(env, monkeypatch):
+    monkeypatch.setenv("TTS_POPUP_PANE", "%2")
+    assert cli._subject() == ("%2", "work:", False)   # idle → caller, not following
+
+
+def test_subject_follows_now_playing(env, monkeypatch):
+    monkeypatch.setenv("TTS_POPUP_PANE", "%2")
+    env.set_now_playing("speech", uri="/x", started_at=1.0,
+                        extras={"source_pane": "%30", "source_tmux_session": "ts"})
+    assert cli._subject() == ("%30", "ts", True)       # other pane → following
+    env.set_now_playing("speech", uri="/x", started_at=1.0,
+                        extras={"source_pane": "%2", "source_tmux_session": "ts"})
+    assert cli._subject() == ("%2", "ts", False)       # your pane playing → not following
+
+
+def test_pane_muted_reflects_subject(env, monkeypatch, capsys):
+    monkeypatch.setenv("TTS_POPUP_PANE", "%2")         # idle → subject = caller %2
     cli.main(["pane-muted"])
     assert capsys.readouterr().out == ""
     env.set_mute("pane", "%2", True)
     cli.main(["pane-muted"])
     assert capsys.readouterr().out.strip() == "1"
+    # An explicit --pane still overrides the subject.
+    cli.main(["pane-muted", "--pane", "%1"])           # %1 unmuted
+    assert capsys.readouterr().out == ""
 
 
-def test_pane_muted_prefers_explicit_and_caller_pane(env, capsys, monkeypatch):
-    # The popup passes --pane (the pane it was opened from), which must win
-    # over the global last-speaker — the whole point of the resume-pane fix.
-    env.set_mute("pane", "%27", True)          # the caller pane is muted
-    # _spoken_pane() is %2 (a different, unmuted pane) per the fixture.
-    cli.main(["pane-muted", "--pane", "%27"])
-    assert capsys.readouterr().out.strip() == "1"
-    # Without --pane, the exported caller pane (TTS_POPUP_PANE) is used.
-    monkeypatch.setenv("TTS_POPUP_PANE", "%27")
+def test_pane_muted_follows_now_playing_not_caller(env, monkeypatch, capsys):
+    # Subject is the now-playing pane (%30), even though the popup was opened
+    # from %2 — the glyph must track what M will act on.
+    monkeypatch.setenv("TTS_POPUP_PANE", "%2")
+    env.set_now_playing("speech", uri="/x", started_at=1.0,
+                        extras={"source_pane": "%30", "source_tmux_session": "ts"})
+    env.set_mute("pane", "%2", True)                   # caller muted, subject not
+    cli.main(["pane-muted"])
+    assert capsys.readouterr().out == ""               # subject %30 is unmuted
+    env.set_mute("pane", "%30", True)
     cli.main(["pane-muted"])
     assert capsys.readouterr().out.strip() == "1"
+
+
+def test_mute_pane_subject_targets_now_playing(env, monkeypatch):
+    monkeypatch.setenv("TTS_POPUP_PANE", "%2")
+    env.set_now_playing("speech", uri="/x", started_at=1.0,
+                        extras={"source_pane": "%30", "source_tmux_session": "ts"})
+    cli.main(["mute-pane", "--subject", "on"])
+    assert env.get_mute("pane", "%30") is True         # the subject, not the caller
+    assert env.get_mute("pane", "%2") is None
+
+
+def test_mute_count(env, capsys):
+    cli.main(["mute-count"])
+    assert capsys.readouterr().out == ""               # nothing when zero
+    env.set_mute("pane", "%1", True)
+    env.set_mute("session", "work:", True)
+    env.set_mute("pane", "%2", False)                  # explicit-unmute doesn't count
+    cli.main(["mute-count"])
+    assert capsys.readouterr().out.strip() == "2"
 
 
 def test_status_prunes_dead_and_tags(env, capsys):

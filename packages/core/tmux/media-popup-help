@@ -29,8 +29,8 @@ mapfile -t L <<'EOF'
  ├─────┬──────────────┤
  │ r   │ replay last  │
  │ p   │ clip @cursor │
- │ m   │ mute         │
- │ M   │ pane-mute 🔕 │
+ │ m   │ mute now     │
+ │ M   │ keep muted 🔒│
  │ v   │ highlight    │
  ├─────┴──────────────┤
  │ book & music       │
