@@ -292,6 +292,33 @@ def _spoken_session() -> Optional[str]:
     return _spoken_extras().get("source_session") or None
 
 
+def _subject() -> tuple[str, str, bool]:
+    """The single thing the popup acts on: ``(pane, tmux_session, following)``.
+
+    "What you see is what every key acts on." The subject is whatever is
+    *playing now* (the pane you're actually hearing), else the pane that opened
+    the popup. The title, the `M` key, the 🔒 indicator and the `<`/`>` scope
+    all resolve through this, so they never disagree. `following` is True when
+    the subject is a *different* pane than the caller — i.e. you're hearing
+    another conversation, not your own — which the popup flags with `↪`.
+
+    Uses *now-playing* only (not last-history) as the active signal, so an idle
+    popup is always "about your pane", never a stale background speaker.
+    """
+    np = StateStore().get_now_playing("speech")
+    ex = (np or {}).get("extras") or {}
+    if isinstance(ex, str):
+        try:
+            ex = json.loads(ex)
+        except json.JSONDecodeError:
+            ex = {}
+    caller = _caller_pane()
+    np_pane = ex.get("source_pane") or ""
+    if np_pane:
+        return np_pane, ex.get("source_tmux_session") or "", np_pane != caller
+    return caller, (_tmux_session_for_pane(caller) if caller else ""), False
+
+
 def _focus_pane(pane: str) -> None:
     """Bring `pane` to the foreground for the calling client.
 
@@ -336,12 +363,14 @@ def _pane_alive(pane: str) -> bool:
 
 
 def cmd_now_pane(a) -> int:
-    """Title of the tmux pane that produced the speech.
+    """Title of the popup's *subject* pane — what every key acts on.
 
-    The popup shows this so the marquee names *which* pane is talking. When
-    nothing is playing, falls back to the pane of the most recent clip so the
-    marquee keeps showing who last spoke (rather than reverting to a generic
-    label). Prints nothing when no pane was ever captured.
+    Names the pane that's playing now, or (idle) the pane that opened the
+    popup, via `_subject()`. Prefixes the label with `↪` when the subject is a
+    *different* pane than the caller (you're hearing another conversation) and
+    `🔒` when that subject is muted — so the marquee says, at a glance, what
+    `M`/`<`/`>` will act on and whether it's currently silenced. Prints nothing
+    when no subject pane resolves.
 
     Prefers the *window name* (which tracks the stable Claude conversation
     title) over the *pane title* — the pane title is the transient tool-status,
@@ -349,7 +378,7 @@ def cmd_now_pane(a) -> int:
     right now rather than naming what's actually being spoken. Falls back to a
     spinner-stripped pane title only when the window has no usable name.
     """
-    pane = _spoken_pane()
+    pane, tmux_sess, following = _subject()
     if not pane:
         return 0
     try:
@@ -365,7 +394,12 @@ def cmd_now_pane(a) -> int:
             if not label or label in {"zsh", "bash", "sh", "fish"}:
                 # Strip a leading Claude spinner glyph (braille U+2800–U+28FF).
                 label = re.sub(r"^[⠀-⣿]\s*", "", pane_title.strip())
-            print(label)
+            prefix = ""
+            if following:
+                prefix += "↪ "
+            if StateStore().resolve_mute(pane, tmux_sess):
+                prefix += "🔒 "
+            print(prefix + label)
     except Exception:  # noqa: BLE001 — popup must never see a traceback
         pass
     return 0
@@ -726,12 +760,15 @@ def _live_panes() -> list[str]:
 def _mute_target_pane(a) -> str:
     """Resolve which pane a mute command acts on.
 
-    Precedence: explicit --pane → --current (the speaking/last pane, used by
-    the popup) → the calling shell's $TMUX_PANE → the speaking pane as a last
-    resort (e.g. a paneless caller).
+    Precedence: explicit --pane → --subject (the popup's subject: what's
+    playing now, else the caller pane) → --current (legacy: the speaking/last
+    pane) → the calling shell's $TMUX_PANE → the speaking pane as a last resort.
+    The popup uses --subject so `M` acts on the same thing the title shows.
     """
     if getattr(a, "pane", None):
         return a.pane
+    if getattr(a, "subject", False):
+        return _subject()[0]
     if getattr(a, "current", False):
         return _spoken_pane() or ""
     return os.environ.get("TMUX_PANE", "") or (_spoken_pane() or "")
@@ -750,7 +787,10 @@ def _silence_current_if_covered(scope: str, key: str) -> bool:
     covered = (ex.get("source_pane") == key if scope == "pane"
                else ex.get("source_tmux_session") == key)
     if covered:
-        SinkSpeech().stop(SPEECH_TARGET)
+        try:
+            SinkSpeech().stop(SPEECH_TARGET)
+        except Exception:  # noqa: BLE001 — a dead/absent broker mustn't fail the mute
+            pass
         return True
     return False
 
@@ -820,20 +860,37 @@ def cmd_mute_status(a) -> int:
     return 0
 
 
-def cmd_pane_muted(a) -> int:
-    """Print '1' when the target pane is effectively muted.
+def cmd_mute_count(a) -> int:
+    """Print the total number of muted panes + sessions (nothing when zero).
 
-    A tiny query for the popup's sticky-mute indicator. The popup passes
-    `--pane $HL_PANE` so the glyph reflects the pane the popup controls (the
-    one it was opened from) — NOT whoever spoke last globally, which in a
-    multi-pane setup is usually a different session. Silent (prints nothing)
-    when unmuted or when no pane can be resolved.
+    Drives the popup's "you have N things muted" badge so a durable mute set
+    on a pane you're not looking at doesn't silently stay forgotten.
     """
-    pane = getattr(a, "pane", None) or _caller_pane() or _spoken_pane() or ""
+    m = StateStore().list_mutes()
+    n = sum(1 for v in m["panes"].values() if v) + \
+        sum(1 for v in m["sessions"].values() if v)
+    if n:
+        print(n)
+    return 0
+
+
+def cmd_pane_muted(a) -> int:
+    """Print '1' when the popup's *subject* pane is effectively muted.
+
+    Drives the popup's 🔒 indicator. Resolves the same subject as the title
+    and `M` (`_subject()`: what's playing now, else the caller pane), so the
+    glyph always reflects exactly what `M` would toggle. An explicit `--pane`
+    overrides. Silent (prints nothing) when unmuted or unresolvable.
+    """
+    pane = getattr(a, "pane", None)
+    sess = ""
+    if not pane:
+        pane, sess, _ = _subject()
     if not pane:
         return 0
-    from .intake.submit import _tmux_session_for_pane
-    if StateStore().resolve_mute(pane, _tmux_session_for_pane(pane)):
+    if not sess:
+        sess = _tmux_session_for_pane(pane)
+    if StateStore().resolve_mute(pane, sess):
         print("1")
     return 0
 
@@ -1764,16 +1821,21 @@ def _build_parser() -> argparse.ArgumentParser:
     p_mp.add_argument("--session", action="store_true",
                       help="target the whole tmux session owning the pane")
     p_mp.add_argument("--current", action="store_true",
-                      help="target the currently/last speaking pane (popup uses this)")
+                      help="target the currently/last speaking pane (legacy)")
+    p_mp.add_argument("--subject", action="store_true",
+                      help="target the popup subject: now-playing pane, else caller")
     p_mp.add_argument("state", nargs="?", choices=["on", "off", "toggle"],
                       default="toggle")
     p_mp.set_defaults(func=cmd_mute_pane)
     sub.add_parser("mute-status",
                    help="list per-pane/session speech mutes"
                    ).set_defaults(func=cmd_mute_status)
+    sub.add_parser("mute-count",
+                   help="print the total number of muted panes+sessions (else nothing)"
+                   ).set_defaults(func=cmd_mute_count)
     p_pm = sub.add_parser("pane-muted",
-                          help="print '1' if the target pane is muted (popup indicator)")
-    p_pm.add_argument("--pane", help="pane id to check (default: caller/last-speaking)")
+                          help="print '1' if the subject pane is muted (popup indicator)")
+    p_pm.add_argument("--pane", help="pane id to check (default: popup subject)")
     p_pm.set_defaults(func=cmd_pane_muted)
 
     s = sub.add_parser("seek", help="seek relative seconds (+/-)")

@@ -166,15 +166,20 @@ def test_toggle_idle_replays_active_pane(monkeypatch):
     assert replayed["idx"] == 2   # %7's most recent clip, not the global latest
 
 
-def test_now_pane_falls_back_to_last_clip(monkeypatch, capsys):
-    """When nothing is playing, now-pane uses the most recent clip's pane."""
-    class FakeStore:
-        def get_now_playing(self, sink):
-            return None  # idle
+class _NowPaneStore:
+    """Idle store stub for now-pane; `muted` controls the 🔒 prefix."""
+    def __init__(self, muted=False):
+        self._muted = muted
 
-        def recent_history(self, *, sink, limit):
-            return [{"extras": {"source_pane": "%7"}}]
+    def get_now_playing(self, sink):
+        return None  # idle → subject is the caller pane
 
+    def resolve_mute(self, pane, sess):
+        return self._muted
+
+
+def test_now_pane_uses_caller_pane_when_idle(monkeypatch, capsys):
+    """Idle → now-pane names the popup's caller pane (the subject)."""
     captured = {}
 
     class _R:
@@ -186,34 +191,52 @@ def test_now_pane_falls_back_to_last_clip(monkeypatch, capsys):
         captured["cmd"] = cmd
         return _R()
 
-    monkeypatch.setattr(cli, "StateStore", FakeStore)
+    monkeypatch.setattr(cli, "StateStore", _NowPaneStore)
+    monkeypatch.setattr(cli, "_caller_pane", lambda: "%7")
+    monkeypatch.setattr(cli, "_tmux_session_for_pane", lambda p: "")
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
     assert cli.cmd_now_pane(object()) == 0
-    # Resolved the *history* pane id, not the active pane, and asked for both
-    # the window name and pane title.
+    # Resolved the caller pane id, and asked for window name + pane title.
     assert "%7" in captured["cmd"]
     assert "#{window_name}\t#{pane_title}" in captured["cmd"]
     # Prefers the stable window name over the transient (spinner) pane title.
+    # No ↪/🔒 prefix: subject is the caller, and it's unmuted.
     assert capsys.readouterr().out.strip() == "my coding pane"
 
 
 def test_now_pane_strips_spinner_when_window_unnamed(monkeypatch, capsys):
     """A default-named window falls back to the spinner-stripped pane title."""
-    class FakeStore:
-        def get_now_playing(self, sink):
-            return None
-
-        def recent_history(self, *, sink, limit):
-            return [{"extras": {"source_pane": "%7"}}]
-
     class _R:
         returncode = 0
         stdout = "zsh\t⠐ Check the dotfiles repos\n"
 
-    monkeypatch.setattr(cli, "StateStore", FakeStore)
+    monkeypatch.setattr(cli, "StateStore", _NowPaneStore)
+    monkeypatch.setattr(cli, "_caller_pane", lambda: "%7")
+    monkeypatch.setattr(cli, "_tmux_session_for_pane", lambda p: "")
     monkeypatch.setattr(cli.subprocess, "run", lambda cmd, **kw: _R())
     assert cli.cmd_now_pane(object()) == 0
     assert capsys.readouterr().out.strip() == "Check the dotfiles repos"
+
+
+def test_now_pane_prefixes_following_and_muted(monkeypatch, capsys):
+    """A clip playing in another pane → '↪ '; muted subject → '🔒 '."""
+    class _Store:
+        def get_now_playing(self, sink):
+            return {"extras": {"source_pane": "%30",
+                               "source_tmux_session": "ts"}}
+
+        def resolve_mute(self, pane, sess):
+            return True
+
+    class _R:
+        returncode = 0
+        stdout = "youtube-accounts\t⠐ x\n"
+
+    monkeypatch.setattr(cli, "StateStore", _Store)
+    monkeypatch.setattr(cli, "_caller_pane", lambda: "%27")  # different → following
+    monkeypatch.setattr(cli.subprocess, "run", lambda cmd, **kw: _R())
+    assert cli.cmd_now_pane(object()) == 0
+    assert capsys.readouterr().out.strip() == "↪ 🔒 youtube-accounts"
 
 
 class _FakeIpc:
