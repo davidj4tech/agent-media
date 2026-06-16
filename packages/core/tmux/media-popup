@@ -12,6 +12,8 @@
 #   h / l   prev/next sentence         H / L   prev/next paragraph
 #           (speech; ±5s/±30s seek on music & book)
 #   - / =   volume -5 / +5             m   toggle mute           (speech/music)
+#   M       sticky mute this speaking pane (durable; still recorded for replay,
+#           just never plays live or ducks — 🔕 indicator)                 (speech)
 #   [ / ]   slower / faster (0.1)      ⌫   reset speed (0 also works)           (speech/book)
 #   < / >   speech: replay older/newer · music: prev/next track ·
 #           book: prev/next part (chapters in a later pass)
@@ -164,11 +166,14 @@ fetch() {
     fi
     # Refresh socket-backed indicators (speech/book have a socket; music/MPD
     # doesn't). Sync the bump base so a following [ / ] starts from reality.
-    SPD=""; MUTED=""; PART=""; LOADING=""; IDLE=""
+    SPD=""; MUTED=""; PMUTED=""; PART=""; LOADING=""; IDLE=""
     # Derive mute from the CLI's own [M] marker (works on any channel), then
     # strip the text — we render a single 🔇 glyph instead of [M] + glyph.
     case "$STATUS" in *'[M]'*) MUTED=1 ;; esac
     STATUS="${STATUS/ \[M\]/}"
+    # Sticky per-pane mute for the speaking pane (durable policy, not the live
+    # broker mute above). Speech channel only; one cheap CLI query per refresh.
+    [ "$CHANNEL" = "speech" ] && [ "$($MEDIA pane-muted ${HL_PANE:+--pane "$HL_PANE"} 2>/dev/null)" = "1" ] && PMUTED=1
     STATUS="${STATUS// \/ //}"               # "1:23 / 4:56" → "1:23/4:56" (save 2 cols)
     case "$CHANNEL" in
         speech|book)
@@ -294,6 +299,7 @@ draw() {
     [ -n "$PART" ] && ind="$ind $PART"
     [ -n "$SPD" ] && [ "$SPD" != "1.0" ] && ind="$ind ${SPD}×"
     [ -n "$MUTED" ] && ind="$ind 🔇"
+    [ -n "$PMUTED" ] && ind="$ind 🔕"
     [ "$CHANNEL" = "speech" ] && [ "$HL" = "on" ] && ind="$ind ✎"
     # While the book channel resolves a load (the YouTube gap), show an animated
     # spinner instead of the meaningless `--:--` so it doesn't look hung.
@@ -623,6 +629,12 @@ handle_key() {
         p)   [ "$CHANNEL" = "speech" ] && \
                  { TTS_POPUP_PANE="$HL_PANE" $MEDIA replay-at-cursor; hist_idx=1; } ;;
         m)   [ "$CHANNEL" = "speech" ] && $MEDIA mute ;;
+        # Sticky per-pane mute (durable, survives turns) for the speaking pane —
+        # distinct from `m`'s live broker mute. A muted pane still records
+        # history so it can be replayed; it just never plays live or ducks.
+        M)   [ "$CHANNEL" = "speech" ] && \
+                 { $MEDIA mute-pane ${HL_PANE:+--pane "$HL_PANE"} toggle >/dev/null 2>&1; \
+                   tmux display-message "🔕 pane mute toggled" 2>/dev/null; } ;;
         '[') { [ "$CHANNEL" = "speech" ] || [ "$CHANNEL" = "book" ]; } && bump_speed -0.1 ;;
         ']') { [ "$CHANNEL" = "speech" ] || [ "$CHANNEL" = "book" ]; } && bump_speed 0.1 ;;
         # Backspace = "undo the speed change" → reset to 1.0 (⌫ is the primary
@@ -645,7 +657,7 @@ handle_key() {
              if [ -n "${MEDIA_POPUP_HELP_FLAG:-}" ]; then
                  printf '%s' "$CHANNEL" > "$MEDIA_POPUP_HELP_FLAG"; QUIT=1; return
              else
-                 tmux display-message "Tab chan · Spc play · h/l H/L seek · s typed-seek · o open URL (music/book) · -/= vol · < > prev/next · g src · w web UI (music/book) · [/] speed ⌫ reset · ←→ focus Enter activate Esc clear · click: glyph=chan title=src x=close · row2 < play > -+ · q quit" 2>/dev/null
+                 tmux display-message "Tab chan · Spc play · h/l H/L seek · s typed-seek · o open URL (music/book) · -/= vol · m mute · M sticky pane-mute · < > prev/next · g src · w web UI (music/book) · [/] speed ⌫ reset · ←→ focus Enter activate Esc clear · click: glyph=chan title=src x=close · row2 < play > -+ · q quit" 2>/dev/null
              fi ;;
         q) QUIT=1; return ;;
         # Enter activates the focused button (←/→ to focus); inert with no focus

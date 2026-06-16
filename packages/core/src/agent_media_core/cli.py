@@ -691,6 +691,137 @@ def cmd_mute(a) -> int:
     return 0
 
 
+# --- durable per-pane / per-session mute (Step 3/4) -------------------------
+
+def _live_panes() -> list[str]:
+    """Current tmux pane ids across all sessions, or [] if tmux is unreachable.
+
+    [] means "couldn't determine" — callers must treat it as such and never
+    use it to prune (see StateStore.prune_panes, which no-ops on an empty set).
+    """
+    try:
+        r = subprocess.run(["tmux", "list-panes", "-a", "-F", "#{pane_id}"],
+                           capture_output=True, text=True)
+    except Exception:  # noqa: BLE001
+        return []
+    return r.stdout.split() if r.returncode == 0 else []
+
+
+def _mute_target_pane(a) -> str:
+    """Resolve which pane a mute command acts on.
+
+    Precedence: explicit --pane → --current (the speaking/last pane, used by
+    the popup) → the calling shell's $TMUX_PANE → the speaking pane as a last
+    resort (e.g. a paneless caller).
+    """
+    if getattr(a, "pane", None):
+        return a.pane
+    if getattr(a, "current", False):
+        return _spoken_pane() or ""
+    return os.environ.get("TMUX_PANE", "") or (_spoken_pane() or "")
+
+
+def _silence_current_if_covered(scope: str, key: str) -> bool:
+    """Stop the speech broker if it's *actively* playing a clip from a pane the
+    mute now covers, so `M` feels immediate (like `m`) instead of only
+    suppressing the next response. The in-flight response is already in history,
+    so it stays replayable. Returns True if it stopped something.
+    """
+    np = _now_speaking()                 # active playback only (not history)
+    if not np:
+        return False
+    ex = np.get("extras") or {}
+    covered = (ex.get("source_pane") == key if scope == "pane"
+               else ex.get("source_tmux_session") == key)
+    if covered:
+        SinkSpeech().stop(SPEECH_TARGET)
+        return True
+    return False
+
+
+def cmd_mute_pane(a) -> int:
+    """Set/clear durable per-pane (or --session) speech mute. Default toggles.
+
+    A muted pane still renders + records history (the popup can replay it) but
+    is never played live and never ducks music — enforced at intake. Muting
+    also stops the covered pane's currently-playing clip, if any.
+    """
+    state = StateStore()
+    pane = _mute_target_pane(a)
+    if not pane:
+        print("media mute-pane: no target pane (not in tmux and nothing "
+              "speaking) — pass --pane %ID", file=sys.stderr)
+        return 1
+    from .intake.submit import _tmux_session_for_pane
+    session = _tmux_session_for_pane(pane)
+    action = getattr(a, "state", None) or "toggle"
+
+    if getattr(a, "session", False):
+        if not session:
+            print(f"media mute-pane: could not resolve a tmux session for "
+                  f"{pane}", file=sys.stderr)
+            return 1
+        scope, key = "session", session
+        if action == "on":
+            new = True
+        elif action == "off":
+            new = False
+        else:  # toggle this session's own override
+            new = not bool(state.get_mute("session", key))
+    else:
+        scope, key = "pane", pane
+        if action == "on":
+            new = True
+        elif action == "off":
+            new = False
+        else:  # toggle the *effective* state, so it flips what you actually hear
+            new = not state.resolve_mute(pane, session)
+
+    state.set_mute(scope, key, new)
+    stopped = _silence_current_if_covered(scope, key) if new else False
+    print(f"{scope} {key}: {'muted' if new else 'unmuted'}"
+          f"{' (stopped current)' if stopped else ''}")
+    return 0
+
+
+def cmd_mute_status(a) -> int:
+    """List per-pane / per-session mutes, pruning since-closed panes first."""
+    state = StateStore()
+    live = _live_panes()
+    if live:
+        state.prune_panes(live)   # only when tmux gave a reliable snapshot
+    live_set = set(live)
+    mutes = state.list_mutes()
+    panes, sessions = mutes["panes"], mutes["sessions"]
+    if not panes and not sessions:
+        print("no per-pane or per-session mutes set")
+        return 0
+    for key, m in sorted(panes.items()):
+        tag = "" if key in live_set else " (dead)"
+        print(f"pane    {key}{tag}: {'muted' if m else 'unmuted'}")
+    for key, m in sorted(sessions.items()):
+        print(f"session {key}: {'muted' if m else 'unmuted'}")
+    return 0
+
+
+def cmd_pane_muted(a) -> int:
+    """Print '1' when the target pane is effectively muted.
+
+    A tiny query for the popup's sticky-mute indicator. The popup passes
+    `--pane $HL_PANE` so the glyph reflects the pane the popup controls (the
+    one it was opened from) — NOT whoever spoke last globally, which in a
+    multi-pane setup is usually a different session. Silent (prints nothing)
+    when unmuted or when no pane can be resolved.
+    """
+    pane = getattr(a, "pane", None) or _caller_pane() or _spoken_pane() or ""
+    if not pane:
+        return 0
+    from .intake.submit import _tmux_session_for_pane
+    if StateStore().resolve_mute(pane, _tmux_session_for_pane(pane)):
+        print("1")
+    return 0
+
+
 def cmd_speed(a) -> int:
     ipc.set_property(_sock(), "speed",
                      1.0 if a.factor == "reset" else float(a.factor))
@@ -1605,6 +1736,25 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("resume").set_defaults(func=cmd_resume)
     sub.add_parser("stop").set_defaults(func=cmd_stop)
     sub.add_parser("mute", help="toggle mute").set_defaults(func=cmd_mute)
+
+    p_mp = sub.add_parser("mute-pane",
+                          help="durable per-pane (or --session) speech mute")
+    p_mp.add_argument("--pane",
+                      help="target tmux pane id (default: $TMUX_PANE / speaking pane)")
+    p_mp.add_argument("--session", action="store_true",
+                      help="target the whole tmux session owning the pane")
+    p_mp.add_argument("--current", action="store_true",
+                      help="target the currently/last speaking pane (popup uses this)")
+    p_mp.add_argument("state", nargs="?", choices=["on", "off", "toggle"],
+                      default="toggle")
+    p_mp.set_defaults(func=cmd_mute_pane)
+    sub.add_parser("mute-status",
+                   help="list per-pane/session speech mutes"
+                   ).set_defaults(func=cmd_mute_status)
+    p_pm = sub.add_parser("pane-muted",
+                          help="print '1' if the target pane is muted (popup indicator)")
+    p_pm.add_argument("--pane", help="pane id to check (default: caller/last-speaking)")
+    p_pm.set_defaults(func=cmd_pane_muted)
 
     s = sub.add_parser("seek", help="seek relative seconds (+/-)")
     s.add_argument("secs", type=float)

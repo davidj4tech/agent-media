@@ -15,6 +15,7 @@ import json
 import os
 import sqlite3
 import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Optional
@@ -22,7 +23,7 @@ from typing import Iterator, Optional
 from .._paths import state_dir
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -91,6 +92,19 @@ CREATE TABLE IF NOT EXISTS playlist_items (
     uri   TEXT NOT NULL,
     title TEXT,
     PRIMARY KEY (name, pos)
+);
+
+-- Durable per-pane / per-session speech-mute policy. A muted pane still
+-- renders its clips (so the popup can browse/replay) but is never played
+-- through the broker and never ducks music. Resolution is pane → session
+-- → unmuted (see StateStore.resolve_mute). `muted=0` is an explicit unmute
+-- that overrides a broader (session) mute; absence of a row means "unset".
+CREATE TABLE IF NOT EXISTS mute_policy (
+    scope      TEXT NOT NULL,             -- 'pane' | 'session'
+    key        TEXT NOT NULL,             -- tmux pane id '%17' | tmux session name
+    muted      INTEGER NOT NULL,          -- 1 muted, 0 explicit-unmuted
+    updated_at REAL NOT NULL,
+    PRIMARY KEY (scope, key)
 );
 """
 
@@ -178,6 +192,87 @@ class StateStore:
         with self._cursor() as cur:
             cur.execute("UPDATE now_playing SET pause_pos_ms = ? WHERE sink = ?",
                         (pos_ms, sink))
+
+    # ---- mute policy ------------------------------------------------------
+    #
+    # Durable per-pane / per-session speech suppression. Distinct from the
+    # transient mpv `mute` property on the broker: this decides, at intake
+    # time, whether a pane's speech is played at all. A muted pane still
+    # renders + records history (for popup replay) but is never played and
+    # never ducks music.
+
+    def set_mute(self, scope: str, key: str,
+                 muted: Optional[bool]) -> None:
+        """Set or clear a mute override. `muted=None` deletes the row,
+        returning that (scope, key) to "unset" so a broader scope applies.
+        """
+        if not key:
+            return
+        with self._cursor() as cur:
+            if muted is None:
+                cur.execute("DELETE FROM mute_policy WHERE scope = ? AND key = ?",
+                            (scope, key))
+            else:
+                cur.execute(
+                    "INSERT OR REPLACE INTO mute_policy "
+                    "(scope, key, muted, updated_at) VALUES (?, ?, ?, ?)",
+                    (scope, key, 1 if muted else 0, time.time()))
+
+    def get_mute(self, scope: str, key: str) -> Optional[bool]:
+        """The override for one (scope, key), or None when unset."""
+        if not key:
+            return None
+        with self._cursor() as cur:
+            cur.execute("SELECT muted FROM mute_policy WHERE scope = ? AND key = ?",
+                        (scope, key))
+            row = cur.fetchone()
+        return None if row is None else bool(row[0])
+
+    def resolve_mute(self, pane: str, tmux_session: str) -> bool:
+        """Effective mute for a speech event: pane override wins, then the
+        owning tmux session, then the default (unmuted). An explicit pane
+        unmute (`muted=0`) therefore overrides a session-wide mute.
+        """
+        if pane:
+            v = self.get_mute("pane", pane)
+            if v is not None:
+                return v
+        if tmux_session:
+            v = self.get_mute("session", tmux_session)
+            if v is not None:
+                return v
+        return False
+
+    def list_mutes(self) -> dict:
+        """All overrides, as {"panes": {key: bool}, "sessions": {key: bool}}."""
+        with self._cursor() as cur:
+            cur.execute("SELECT scope, key, muted FROM mute_policy "
+                        "ORDER BY scope, key")
+            rows = cur.fetchall()
+        out: dict = {"panes": {}, "sessions": {}}
+        for scope, key, muted in rows:
+            bucket = "panes" if scope == "pane" else "sessions"
+            out[bucket][key] = bool(muted)
+        return out
+
+    def prune_panes(self, live_pane_ids) -> int:
+        """Drop pane overrides for tmux panes that no longer exist.
+
+        `live_pane_ids` must be a *reliable* snapshot of current pane ids
+        (e.g. from `tmux list-panes -a`). An empty set is treated as "could
+        not determine" and is a no-op, never a mass-delete — so a failed or
+        server-less tmux query can't wipe the policy. Returns rows removed.
+        """
+        live = [p for p in live_pane_ids if p]
+        if not live:
+            return 0
+        placeholders = ",".join("?" for _ in live)
+        with self._cursor() as cur:
+            cur.execute(
+                f"DELETE FROM mute_policy WHERE scope = 'pane' "
+                f"AND key NOT IN ({placeholders})",
+                live)
+            return cur.rowcount or 0
 
     # ---- music content-type intent ----------------------------------------
     #

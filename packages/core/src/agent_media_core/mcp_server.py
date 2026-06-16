@@ -216,6 +216,71 @@ def speech_replay_last(target: str = "local") -> dict:
     return {"ok": True, "uri": uri}
 
 
+def _last_speaking_pane() -> str:
+    """The pane currently (or most recently) speaking, from the state store.
+
+    The MCP daemon has no tmux pane of its own, so a pane-less `mute_pane`
+    call targets whoever last spoke — the same "the pane I'm hearing" intent
+    the popup uses.
+    """
+    st = _state()
+    np = st.get_now_playing("speech") or {}
+    ex = np.get("extras") if isinstance(np.get("extras"), dict) else {}
+    pane = (ex or {}).get("source_pane") or ""
+    if pane:
+        return pane
+    rows = st.recent_history(sink="speech", limit=1)
+    if rows and isinstance(rows[0].get("extras"), dict):
+        return rows[0]["extras"].get("source_pane") or ""
+    return ""
+
+
+@mcp.tool()
+def mute_pane(pane: str = "", session: str = "", state: str = "toggle") -> dict:
+    """Durably mute/unmute a tmux pane's (or a whole tmux session's) speech.
+
+    A muted pane still renders and is recorded to history (so it can be
+    replayed), but is never played live and never ducks music. With neither
+    `pane` nor `session` given, targets the pane that is currently (or was
+    last) speaking. `state` is `on`, `off`, or `toggle`.
+    """
+    st = _state()
+    if session:
+        scope, key = "session", session
+    else:
+        key = pane or _last_speaking_pane()
+        if not key:
+            return {"ok": False, "reason": "no pane (pass pane= or session=)"}
+        scope = "pane"
+    if state == "on":
+        muted = True
+    elif state == "off":
+        muted = False
+    else:  # toggle this scope's own override (no tmux here for an effective flip)
+        muted = not bool(st.get_mute(scope, key))
+    st.set_mute(scope, key, muted)
+    # Muting also stops the covered pane's in-flight clip so it takes effect
+    # immediately (the response is already in history, still replayable).
+    stopped = False
+    if muted:
+        np = st.get_now_playing("speech") or {}
+        ex = np.get("extras") if isinstance(np.get("extras"), dict) else {}
+        ex = ex or {}
+        covered = (ex.get("source_pane") == key if scope == "pane"
+                   else ex.get("source_tmux_session") == key)
+        if covered:
+            _speech().stop(_target("local"))
+            stopped = True
+    return {"ok": True, "scope": scope, "key": key, "muted": muted,
+            "stopped_current": stopped}
+
+
+@mcp.tool()
+def mute_status() -> dict:
+    """All durable per-pane / per-session speech mutes."""
+    return _state().list_mutes()
+
+
 # --- music sink controls --------------------------------------------------
 
 @mcp.tool()

@@ -146,3 +146,14 @@ class SinkSpeech:
             return bool(ipc.get_property(_socket_for(target), "pause"))
         except ipc.MpvIpcError:
             return False
+
+    def muted(self, target: Target = DEFAULT_TARGET) -> bool:
+        """True when the speech broker is muted (e.g. popup `m`).
+
+        Returns False on IPC error so a transient hiccup can't make a
+        caller think silent-speech when it isn't.
+        """
+        try:
+            return bool(ipc.get_property(_socket_for(target), "mute"))
+        except ipc.MpvIpcError:
+            return False
