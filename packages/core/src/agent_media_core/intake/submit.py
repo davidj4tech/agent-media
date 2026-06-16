@@ -304,17 +304,17 @@ def _tmux_highlight_text(text: str, *, first: bool = False,
     """Re-anchor copy-mode in the source pane onto the spoken text.
 
     Each call jumps to the bottom and searches backward for this sentence,
-    so it tracks the right line regardless of prior position. But it leaves
-    the user's scroll alone: if the pane is in copy-mode and the viewport
-    has moved since our last highlight (the user scrolled up to read), this
-    no-ops — until the user returns to that position or exits copy-mode, at
-    which point following resumes. `force=True` (the popup's `v` toggle)
-    always repositions, since the user just asked for it.
+    so it tracks the right line regardless of prior position — including
+    while the user has scrolled up in copy-mode. (We used to no-op when the
+    user scrolled away from our last highlight; that rule is gone — the
+    keystroke-recency skip in `_run` is the gentler way to stay out of the
+    user's way, so highlighting now always follows the spoken text.)
 
     Off by default — opt-in via the popup's `v` toggle (which writes to
     `$XDG_STATE_HOME/agent-media/auto-highlight`). `MEDIA_AUTO_HIGHLIGHT=1`
-    in env can override on a per-host basis. `first` is accepted for call-site
-    compatibility but no longer changes anchoring (every call re-anchors).
+    in env can override on a per-host basis. `first` and `force` are accepted
+    for call-site compatibility but no longer change anchoring (every call
+    re-anchors).
     """
     if not os.environ.get("TMUX"):
         return
@@ -351,26 +351,6 @@ def _tmux_highlight_text(text: str, *, first: bool = False,
     import signal as _signal
     _pane_safe = re.sub(r"[^A-Za-z0-9_-]", "_", pane)
     pidfile = f"/tmp/media-highlight-clear-{_pane_safe}.pid"
-    # Tracks the scroll_position our last highlight left the pane at, so we
-    # can tell whether the user has since scrolled away.
-    posfile = f"/tmp/media-highlight-pos-{_pane_safe}"
-
-    # Respect a manual scroll: if the pane is in copy-mode at a position other
-    # than where we last left it, the user scrolled up to read — leave their
-    # view untouched. When they return to that position (or drop out of
-    # copy-mode, putting them back at the live bottom), following resumes.
-    # The first sentence of a response (and an explicit `v` toggle) always
-    # re-anchors, so we never get permanently stuck skipping.
-    if not force and not first:
-        in_mode, pos = _pane_scroll_pos(pane)
-        if in_mode:
-            try:
-                with open(posfile) as _f:
-                    saved = _f.read().strip()
-            except OSError:
-                saved = None
-            if pos != saved:
-                return
 
     # Per-pane PID file so each new highlight can kill the previous
     # sentence's pending clear-timer before it races into our selection.
@@ -425,14 +405,6 @@ def _tmux_highlight_text(text: str, *, first: bool = False,
             subprocess.run(["tmux", "send-keys", "-t", pane,
                             "-X", "-N", str(select_len), "cursor-right"],
                            capture_output=True)
-        # Record where we landed so the next sentence can tell whether the
-        # user has scrolled away from it.
-        _, _new_pos = _pane_scroll_pos(pane)
-        try:
-            with open(posfile, "w") as _f:
-                _f.write(_new_pos)
-        except OSError:
-            pass
         if flash_ms > 0:
             # Detached clear-selection after flash window. start_new_session
             # makes this proc the session leader, so its PID is its pgid;
