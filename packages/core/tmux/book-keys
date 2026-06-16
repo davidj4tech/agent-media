@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# book-keys — single-keypress remote for the agent-media book channel (mpv).
+# Talks to the book mpv's JSON IPC socket; no Enter needed, mpv-style keys.
+#
+#   space / p   pause / play          [ / ]   speed slower / faster (accel)
+#   ← / →       seek -/+ 10s           \       speed reset 1.0
+#   ↑ / ↓       seek +/- 60s           9 / 0   volume -/+ 5
+#   i           reprint key help       q       quit (playback keeps going)
+#
+# It only sends commands over the socket — quitting does NOT stop the audio.
+
+SOCK="${MEDIA_BOOK_SOCKET:-$HOME/.local/state/agent-media/sink-book.sock}"
+
+ipc() { printf '{"command":%s}\n' "$1" | socat - "$SOCK" 2>/dev/null; }
+get() { ipc "[\"get_property\",\"$1\"]" | jq -r '.data // empty' 2>/dev/null; }
+
+# Speed [ / ] acceleration (mirrors the prefix-a popup): consecutive presses in
+# the same direction climb the step; resets on a direction flip or >2s pause.
+# Below 1x, slowing stays a gentle fixed 0.1 — the accel ramp only drives >1x.
+SPEED_STEPS=(0.1 0.4 0.5)   # nth consecutive press; last value repeats thereafter
+accel_n=0; accel_dir=0; accel_last=0
+bump_speed() {        # $1 = direction: 1 faster / -1 slower
+  local dir="$1" now; now=${EPOCHSECONDS:-0}
+  local cur; cur=$(get speed); [ -z "$cur" ] && cur=1.0
+  local delta
+  if [ "$dir" = "-1" ] && awk -v c="$cur" 'BEGIN{exit !(c<1.0)}'; then
+    accel_n=0; accel_dir=0; delta=-0.1
+  else
+    if [ "$dir" != "$accel_dir" ] || [ $(( now - accel_last )) -gt 2 ]; then accel_n=0; fi
+    accel_dir="$dir"; accel_last="$now"
+    local i="$accel_n"; [ "$i" -ge "${#SPEED_STEPS[@]}" ] && i=$(( ${#SPEED_STEPS[@]} - 1 ))
+    accel_n=$(( accel_n + 1 ))
+    delta=$(awk -v s="${SPEED_STEPS[$i]}" -v d="$dir" 'BEGIN{printf "%.2f", s*d}')
+  fi
+  ipc "[\"add\",\"speed\",$delta]" >/dev/null
+  # mpv's add has no bounds — clamp to [0.3, 3.0].
+  local v; v=$(get speed); [ -z "$v" ] && return
+  v=$(awk -v s="$v" 'BEGIN{v=s+0; if(v<0.3)v=0.3; else if(v>3)v=3; else exit; printf "%.1f", v}')
+  [ -n "$v" ] && ipc "[\"set_property\",\"speed\",$v]" >/dev/null
+}
+
+if [ ! -S "$SOCK" ]; then
+  echo "book-keys: no socket at $SOCK — is the book channel running? (try: media book resume)" >&2
+  exit 1
+fi
+
+hms() { # seconds -> H:MM:SS
+  local s=${1%.*}; printf '%d:%02d:%02d' $((s/3600)) $(((s%3600)/60)) $((s%60))
+}
+
+status() {
+  local pos dur spd pause vol title flag
+  pos=$(get time-pos); dur=$(get duration); spd=$(get speed)
+  pause=$(get pause);  vol=$(get volume);  title=$(get media-title)
+  [ "$pause" = "true" ] && flag="⏸" || flag="▶"
+  printf '\r\033[K%s  %s / %s   %sx  vol:%s%%   %.40s ' \
+    "$flag" "$(hms "${pos:-0}")" "$(hms "${dur:-0}")" \
+    "${spd:-1.0}" "${vol:-100}" "${title:-…}"
+}
+
+help() {
+  printf '\n\033[1mbook-keys\033[0m  space/p:pause  ←/→:±10s  ↑/↓:±60s  [/]:speed  \\:1x  9/0:vol  q:quit\n'
+}
+
+cleanup() { stty "$saved" 2>/dev/null; printf '\033[?7h\n'; }  # restore wrap
+saved=$(stty -g); trap cleanup EXIT INT TERM
+stty -echo -icanon time 0 min 0   # raw-ish: non-blocking single chars
+printf '\033[?7l'                 # disable line-wrap so status can't spill
+
+help
+while :; do
+  status
+  IFS= read -rsn1 -t 0.5 k || { continue; }   # redraw every 0.5s
+  [ -z "$k" ] && continue
+  if [ "$k" = $'\e' ]; then                    # arrow keys: ESC [ A/B/C/D
+    IFS= read -rsn2 -t 0.001 rest
+    case "$rest" in
+      '[C') ipc '["seek",10]' >/dev/null ;;    # right
+      '[D') ipc '["seek",-10]' >/dev/null ;;   # left
+      '[A') ipc '["seek",60]' >/dev/null ;;    # up
+      '[B') ipc '["seek",-60]' >/dev/null ;;   # down
+    esac
+    continue
+  fi
+  case "$k" in
+    ' '|p) ipc '["cycle","pause"]' >/dev/null ;;
+    ']')   bump_speed 1 ;;
+    '[')   bump_speed -1 ;;
+    '\')   accel_n=0; ipc '["set_property","speed",1.0]' >/dev/null ;;
+    '0')   ipc '["add","volume",5]' >/dev/null ;;
+    '9')   ipc '["add","volume",-5]' >/dev/null ;;
+    i)     help ;;
+    q|Q)   break ;;
+  esac
+done

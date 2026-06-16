@@ -16,7 +16,7 @@
 #           the title: ↪ = another pane). Still recorded for replay, never
 #           plays live or ducks. 🔒 in the title = subject muted; 🔒N indicator
 #           = N muted in total.                                          (speech)
-#   [ / ]   slower / faster (0.1)      ⌫   reset speed (0 also works)           (speech/book)
+#   [ / ]   slower / faster (accel)    ⌫   reset speed (0 also works)           (speech/book)
 #   < / >   speech: replay older/newer · music: prev/next track ·
 #           book: prev/next part (chapters in a later pass)
 #   o       open a URL on this channel — music (ducks) / book (pauses);
@@ -65,6 +65,12 @@ export TTS_POPUP_PANE="$HL_PANE"
 
 speed=1.0
 bspeed=1.0              # book channel speed (tracked separately from speech)
+# Speed [ / ] acceleration: consecutive presses in the same direction climb the
+# step (gentle single tap, fast repeat). Resets on direction flip or a >2s pause.
+SPEED_STEPS=(0.1 0.4 0.5)   # nth consecutive press; last value repeats thereafter
+accel_n=0              # consecutive bump count (index into SPEED_STEPS)
+accel_dir=0            # last bump direction (+1 faster / -1 slower)
+accel_last=0           # $EPOCHSECONDS of the last bump
 hist_idx=1
 CHANNEL="${MEDIA_POPUP_CHANNEL:-speech}"   # speech | music | book (Tab cycles); the
                         # launcher restores it across a `?` help round-trip
@@ -432,17 +438,33 @@ show_link() {  # $1 = url
     mouse_on
 }
 
-bump_speed() {        # $1 = +/- delta — accumulate atomically on the active channel
+bump_speed() {        # $1 = direction: 1 faster / -1 slower — accelerates on repeats
+    local dir="$1" now; now=${EPOCHSECONDS:-0}
+    local sock; sock=$(sock_for); [ -z "$sock" ] && return
+    local cur; cur=$(sock_get speed); [ -z "$cur" ] && cur=1.0
+    local delta
+    # Below 1x, slowing stays a gentle fixed 0.1 step — the small 0.3–1.0 range
+    # would overshoot under the accel ramp, which only drives the climb above 1x.
+    if [ "$dir" = "-1" ] && awk -v c="$cur" 'BEGIN{exit !(c<1.0)}'; then
+        accel_n=0; accel_dir=0; delta=-0.1
+    else
+        # Reset the ramp on a direction flip or a >2s gap so a deliberate single
+        # tap is a gentle 0.1, but a fast repeat climbs (1.0 → 1.1 → 1.5 → 2.0 …).
+        if [ "$dir" != "$accel_dir" ] || [ $(( now - accel_last )) -gt 2 ]; then accel_n=0; fi
+        accel_dir="$dir"; accel_last="$now"
+        local i="$accel_n"; [ "$i" -ge "${#SPEED_STEPS[@]}" ] && i=$(( ${#SPEED_STEPS[@]} - 1 ))
+        accel_n=$(( accel_n + 1 ))
+        delta=$(awk -v s="${SPEED_STEPS[$i]}" -v d="$dir" 'BEGIN{printf "%.2f", s*d}')
+    fi
     # Read-modify-write *inside* mpv (`add speed`) so repeated [ / ] presses
     # stack regardless of render/resync timing. Computing in the shell off the
     # tracked var loses steps: the refresh loop resyncs that var from the live
     # socket (rounded), so a press could re-base off a not-yet-applied reading.
-    local s; s=$(sock_for); [ -z "$s" ] && return
-    printf '{"command":["add","speed",%s]}\n' "$1" | socat - "$s" >/dev/null 2>&1
+    printf '{"command":["add","speed",%s]}\n' "$delta" | socat - "$sock" >/dev/null 2>&1
     local v; v=$(sock_get speed); [ -z "$v" ] && return
     # mpv's add has no bounds — clamp to [0.3, 3.0] and normalize to 0.1 steps.
     v=$(awk -v s="$v" 'BEGIN{v=s+0; if(v<0.3)v=0.3; if(v>3)v=3; printf "%.1f", v}')
-    printf '{"command":["set_property","speed",%s]}\n' "$v" | socat - "$s" >/dev/null 2>&1
+    printf '{"command":["set_property","speed",%s]}\n' "$v" | socat - "$sock" >/dev/null 2>&1
     [ "$CHANNEL" = "book" ] && bspeed="$v" || speed="$v"
 }
 
@@ -644,11 +666,12 @@ handle_key() {
         M)   [ "$CHANNEL" = "speech" ] && \
                  { _mr=$(TTS_POPUP_PANE="$HL_PANE" $MEDIA mute-pane --subject toggle 2>/dev/null); \
                    tmux display-message "🔒 ${_mr:-pane mute toggled}" 2>/dev/null; } ;;
-        '[') { [ "$CHANNEL" = "speech" ] || [ "$CHANNEL" = "book" ]; } && bump_speed -0.1 ;;
-        ']') { [ "$CHANNEL" = "speech" ] || [ "$CHANNEL" = "book" ]; } && bump_speed 0.1 ;;
+        '[') { [ "$CHANNEL" = "speech" ] || [ "$CHANNEL" = "book" ]; } && bump_speed -1 ;;
+        ']') { [ "$CHANNEL" = "speech" ] || [ "$CHANNEL" = "book" ]; } && bump_speed 1 ;;
         # Backspace = "undo the speed change" → reset to 1.0 (⌫ is the primary
         # key; 0 kept as an alias). Terminals send DEL (0x7f) or BS (0x08).
         $'\177'|$'\b'|0)
+             accel_n=0   # reset the accel ramp so the next [ / ] starts gentle
              if [ "$CHANNEL" = "book" ]; then bspeed=1.0; $MEDIA book speed reset 2>/dev/null
              elif [ "$CHANNEL" = "speech" ]; then speed=1.0; $MEDIA speed reset; fi ;;
         v)   # Toggle auto-highlight (copy-mode follow-along) on/off. Speech
