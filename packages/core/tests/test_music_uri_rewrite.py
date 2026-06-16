@@ -11,10 +11,17 @@ from agent_media_core.route.policy import detect_content_type, ContentType
 
 
 @pytest.mark.parametrize("uri,want", [
-    # YouTube in all the forms agent-media / shares produce -> mpv:
-    ("yt:https://youtu.be/jNQXAC9IVRw", "mpv:https://youtu.be/jNQXAC9IVRw"),
+    # YouTube in all the forms agent-media / shares produce -> mpv:.
+    # A real 11-char video id is canonicalized to the watch?v= URL, so a
+    # youtu.be short link collapses to the same single-video form as a
+    # watch+mix link (see _to_music_uri's id-extraction branch). The "abc"
+    # cases below keep their host because a 3-char id doesn't match the
+    # 11-char id regex and falls through to plain host pass-through.
+    ("yt:https://youtu.be/jNQXAC9IVRw",
+     "mpv:https://www.youtube.com/watch?v=jNQXAC9IVRw"),
     ("yt:https://www.youtube.com/watch?v=abc", "mpv:https://www.youtube.com/watch?v=abc"),
-    ("https://youtu.be/jNQXAC9IVRw", "mpv:https://youtu.be/jNQXAC9IVRw"),
+    ("https://youtu.be/jNQXAC9IVRw",
+     "mpv:https://www.youtube.com/watch?v=jNQXAC9IVRw"),
     ("https://www.youtube.com/watch?v=abc", "mpv:https://www.youtube.com/watch?v=abc"),
     ("youtube:video:abc123", "mpv:https://www.youtube.com/watch?v=abc123"),
     ("yt:abc123", "mpv:https://www.youtube.com/watch?v=abc123"),
