@@ -189,6 +189,35 @@ def _pane_scroll_pos(pane: str) -> tuple[bool, str]:
         return (False, "")
 
 
+def _pane_recent_keystrokes(pane: str, within_s: float) -> bool:
+    """True if `pane`'s window saw activity within the last `within_s` seconds.
+
+    tmux exposes no last-*input* timestamp, only last *output* activity
+    (`#{window_activity}`, an epoch). During the TTS window the speaking
+    agent has already stopped, so fresh output in its window is almost
+    always the user typing the next prompt (each keystroke echoes). We use
+    that as a keystroke proxy to skip a highlight turn while the user is
+    actively typing — the highlight would otherwise yank copy-mode out from
+    under them. Fails open (returns False) on any tmux error so highlighting
+    still happens if we can't tell.
+    """
+    if within_s <= 0:
+        return False
+    try:
+        r = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", pane,
+             "#{window_activity}"],
+            capture_output=True, text=True)
+        if r.returncode != 0:
+            return False
+        last = r.stdout.strip()
+        if not last.isdigit():
+            return False
+        return (time.time() - int(last)) < within_s
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _cursor_sig(pane: str) -> str:
     """A signature of the copy-mode cursor/viewport, to detect movement."""
     try:
@@ -1074,6 +1103,18 @@ def submit_event(event: Event,
     # Only highlight for hook sources — CLI text is never in the pane.
     from ..types import Source as _Source
     do_highlight = event.source not in (_Source.CLI,)
+
+    # Skip this turn's highlighting if the user has typed in the source pane
+    # recently: grabbing copy-mode mid-keystroke would yank the view out from
+    # under them. Window threshold via MEDIA_HIGHLIGHT_KEYSTROKE_S (0 disables
+    # the skip). tmux has no last-input time, so this uses window-activity as a
+    # keystroke proxy (the speaking agent is idle by now, so output ~= typing).
+    if do_highlight:
+        _ks_window_s = float(
+            os.environ.get("MEDIA_HIGHLIGHT_KEYSTROKE_S", "5"))
+        _src_pane = os.environ.get("TMUX_PANE")
+        if _src_pane and _pane_recent_keystrokes(_src_pane, _ks_window_s):
+            do_highlight = False
 
     # Phase 1: resolve all render futures and collect clip durations.
     # Parallel renders are mostly done by now; future.result() is instant
