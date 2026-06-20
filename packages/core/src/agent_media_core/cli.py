@@ -228,6 +228,7 @@ def cmd_status(a) -> int:
     idle = _get("idle-active")
     pos = _get("time-pos")
     dur = _get("duration")
+    playing = False         # the response timeline (offset+pos / total) is known
     if not idle:
         np = _now_speaking()
         if np:
@@ -247,6 +248,17 @@ def cmd_status(a) -> int:
                     offset = ex.get("clip_offset_s") or 0.0
                 pos = offset + (pos or 0.0)
                 dur = total
+                playing = True
+    # Optional title-overlay bar (EXPERIMENTAL): the whole `▶ pos title dur`
+    # segment becomes one background-progress bar, times embedded in the fill.
+    # `tw` = title-window width in columns. Only while genuinely playing.
+    tw = getattr(a, "title", None)
+    if tw and playing:
+        label = _subject_label()
+        if label:
+            print(_title_status_line(pos, dur, _get("pause"), _get("mute"),
+                                     _get("speed"), label, tw, key="status"))
+            return 0
     print(render_status(idle=idle, pos=pos, dur=dur,
                         paused=_get("pause"), muted=_get("mute"),
                         width=a.width, hide_idle=not a.show_idle,
@@ -369,46 +381,119 @@ def _pane_alive(pane: str) -> bool:
     return pane in r.stdout.split()
 
 
-def cmd_now_pane(a) -> int:
-    """Title of the popup's *subject* pane — what every key acts on.
+def _subject_label() -> str:
+    """The popup/marquee subject label: what every key acts on.
 
-    Names the pane that's playing now, or (idle) the pane that opened the
-    popup, via `_subject()`. Prefixes the label with `↪` when the subject is a
-    *different* pane than the caller (you're hearing another conversation) and
-    `🔒` when that subject is muted — so the marquee says, at a glance, what
-    `M`/`<`/`>` will act on and whether it's currently silenced. Prints nothing
-    when no subject pane resolves.
+    Names the pane playing now, or (idle) the pane that opened the popup, via
+    `_subject()`. Prefixes `↪` when the subject is a *different* pane than the
+    caller (you're hearing another conversation) and `🔒` when that subject is
+    muted. '' when no subject pane resolves.
 
     Prefers the *window name* (which tracks the stable Claude conversation
     title) over the *pane title* — the pane title is the transient tool-status,
     so it carries a leading spinner glyph and flips to whatever Claude is doing
     right now rather than naming what's actually being spoken. Falls back to a
     spinner-stripped pane title only when the window has no usable name.
+
+    Shared by `now-pane` (popup marquee) and the optional status-bar marquee.
     """
     pane, tmux_sess, following = _subject()
     if not pane:
-        return 0
+        return ""
     try:
         r = subprocess.run(
             ["tmux", "display-message", "-p", "-t", pane,
              "#{window_name}\t#{pane_title}"],
             capture_output=True, text=True)
-        if r.returncode == 0:
-            window_name, _, pane_title = r.stdout.strip().partition("\t")
-            # A default-named window (the shell/program name) is no better than
-            # the pane title; only prefer it when it's a real conversation title.
-            label = window_name.strip()
-            if not label or label in {"zsh", "bash", "sh", "fish"}:
-                # Strip a leading Claude spinner glyph (braille U+2800–U+28FF).
-                label = re.sub(r"^[⠀-⣿]\s*", "", pane_title.strip())
-            prefix = ""
-            if following:
-                prefix += "↪ "
-            if StateStore().resolve_mute(pane, tmux_sess):
-                prefix += "🔒 "
-            print(prefix + label)
     except Exception:  # noqa: BLE001 — popup must never see a traceback
+        return ""
+    if r.returncode != 0:
+        return ""
+    window_name, _, pane_title = r.stdout.strip().partition("\t")
+    # A default-named window (the shell/program name) is no better than the
+    # pane title; only prefer it when it's a real conversation title.
+    label = window_name.strip()
+    if not label or label in {"zsh", "bash", "sh", "fish"}:
+        # Strip a leading Claude spinner glyph (braille U+2800–U+28FF).
+        label = re.sub(r"^[⠀-⣿]\s*", "", pane_title.strip())
+    prefix = ""
+    if following:
+        prefix += "↪ "
+    if StateStore().resolve_mute(pane, tmux_sess):
+        prefix += "🔒 "
+    return prefix + label
+
+
+def _marquee(text: str, width: int, *, key: str = "status",
+             gap: str = "   ") -> str:
+    """A `width`-column window into `text`, scrolling one column per call.
+
+    The tmux status bar redraws at most once a second (status-interval floor),
+    so this advances 1 col/call — a coarse crawl, not the popup's smooth glide.
+    Offset persists in a state file (this runs as a fresh process each refresh)
+    and resets when `text` changes. Text that already fits is returned as-is.
+    """
+    text = " ".join(text.split())
+    if not text or width <= 0:
+        return ""
+    if len(text) <= width:
+        return text
+    p = state_dir() / f"marquee-{key}"
+    try:
+        saved = json.loads(p.read_text())
+        last, off = saved.get("t"), int(saved.get("o", 0))
+    except Exception:  # noqa: BLE001
+        last, off = None, 0
+    if last != text:
+        off = 0
+    loop = text + gap
+    window = (loop + loop)[off:off + width]
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({"t": text, "o": (off + 1) % len(loop)}))
+    except OSError:
         pass
+    return window
+
+
+def _title_status_line(pos: Optional[float], dur: Optional[float],
+                       paused: Optional[bool], muted: Optional[bool],
+                       speed: Optional[float], label: str, width: int,
+                       *, key: str = "status") -> str:
+    """The whole speech status segment as ONE background-progress bar.
+
+    `▶ {pos} {scrolling title} {dur}` is rendered as a single field whose
+    background colour-fills left→right by progress, so the numeric times on
+    either side of the title are *part of* the bar rather than sitting outside
+    it. `width` is the title window (the times/icon add a few cols either side).
+
+    Emits tmux `#[...]` directives (honoured inside `#()` status output).
+    Colours via MEDIA_STATUS_TITLE_{FILL,REST}; `#[default]` resets at the end
+    (set the env vars to the theme's status-right colours if the handoff to
+    whatever follows looks off). Mute/speed readouts ride after the bar.
+    """
+    icon = "⏸" if paused else "▶"
+    hours = bool(dur is not None and dur >= 3600)
+    titlewin = _marquee(label, width, key=key)
+    inner = f"{icon} {fmt_time(pos, hours=hours)} {titlewin} {fmt_time(dur, hours=hours)}"
+    frac = (pos / dur) if (pos and dur) else 0.0
+    frac = max(0.0, min(1.0, frac))
+    split = int(round(frac * len(inner)))
+    fill = os.environ.get("MEDIA_STATUS_TITLE_FILL", "bg=colour24,fg=colour231")
+    rest = os.environ.get("MEDIA_STATUS_TITLE_REST", "bg=colour236,fg=colour250")
+    line = f"#[{fill}]{inner[:split]}#[{rest}]{inner[split:]}#[default]"
+    if muted:
+        line += " [M]"
+    if isinstance(speed, (int, float)) and abs(speed - 1.0) > 0.05:
+        line += f" {'⏩' if speed > 1.0 else '🐢'}{speed:.2g}×"
+    return line
+
+
+def cmd_now_pane(a) -> int:
+    """Print the popup's subject-pane title (see `_subject_label`)."""
+    label = _subject_label()
+    if label:
+        print(label)
     return 0
 
 
@@ -1825,6 +1910,11 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="emit '○' when idle instead of empty")
     s.add_argument("--no-bar", action="store_true",
                    help="show only the times (no progress bar)")
+    s.add_argument("--title", nargs="?", type=int, const=18, default=None,
+                   metavar="WIDTH",
+                   help="render the whole status (times + subject title) as one "
+                        "background-progress bar (title window WIDTH cols, "
+                        "default 18; EXPERIMENTAL)")
     s.set_defaults(func=cmd_status)
 
     sub.add_parser("now", help="text currently being spoken").set_defaults(func=cmd_now)
