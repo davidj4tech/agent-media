@@ -83,6 +83,20 @@ def test_title_line_paused_glyph(monkeypatch, tmp_path):
     assert line.startswith("⏸")
 
 
+def test_title_window_responsive(monkeypatch):
+    monkeypatch.delenv("MEDIA_STATUS_TITLE_MIN", raising=False)
+    monkeypatch.delenv("MEDIA_STATUS_TITLE_MAX", raising=False)
+    assert cli._title_window(200) == 26    # wide desktop → clamped to max
+    assert cli._title_window(32) == 8      # ~32-col phone → clamped to min
+    assert cli._title_window(80) == 20     # quarter, within bounds
+
+
+def test_client_width_tolerates_unexpanded(monkeypatch):
+    assert cli._client_width("120") == 120
+    assert cli._client_width("#{client_width}") == 80   # literal → default
+    assert cli._client_width(None) == 80
+
+
 def test_title_line_pins_prefix_indicator(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     long_body = "refactor the whole speech sink pipeline end to end"
