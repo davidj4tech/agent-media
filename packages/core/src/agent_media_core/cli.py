@@ -254,10 +254,10 @@ def cmd_status(a) -> int:
     # `tw` = title-window width in columns. Only while genuinely playing.
     tw = getattr(a, "title", None)
     if tw and playing:
-        label = _subject_label()
-        if label:
+        prefix, body = _subject_label()
+        if prefix or body:
             print(_title_status_line(pos, dur, _get("pause"), _get("mute"),
-                                     _get("speed"), label, tw, key="status"))
+                                     _get("speed"), prefix, body, tw, key="status"))
             return 0
     print(render_status(idle=idle, pos=pos, dur=dur,
                         paused=_get("pause"), muted=_get("mute"),
@@ -381,13 +381,15 @@ def _pane_alive(pane: str) -> bool:
     return pane in r.stdout.split()
 
 
-def _subject_label() -> str:
-    """The popup/marquee subject label: what every key acts on.
+def _subject_label() -> "tuple[str, str]":
+    """`(prefix, title)` for the subject pane — what every key acts on.
 
     Names the pane playing now, or (idle) the pane that opened the popup, via
-    `_subject()`. Prefixes `↪` when the subject is a *different* pane than the
-    caller (you're hearing another conversation) and `🔒` when that subject is
-    muted. '' when no subject pane resolves.
+    `_subject()`. `prefix` holds the leading indicators — `↪ ` when the subject
+    is a *different* pane than the caller (you're hearing another conversation)
+    and `🔒 ` when that subject is muted — returned *separately* from the title
+    so a marquee can pin them (keep them fixed) while only the title scrolls.
+    `('', '')` when no subject pane resolves.
 
     Prefers the *window name* (which tracks the stable Claude conversation
     title) over the *pane title* — the pane title is the transient tool-status,
@@ -399,16 +401,16 @@ def _subject_label() -> str:
     """
     pane, tmux_sess, following = _subject()
     if not pane:
-        return ""
+        return "", ""
     try:
         r = subprocess.run(
             ["tmux", "display-message", "-p", "-t", pane,
              "#{window_name}\t#{pane_title}"],
             capture_output=True, text=True)
     except Exception:  # noqa: BLE001 — popup must never see a traceback
-        return ""
+        return "", ""
     if r.returncode != 0:
-        return ""
+        return "", ""
     window_name, _, pane_title = r.stdout.strip().partition("\t")
     # A default-named window (the shell/program name) is no better than the
     # pane title; only prefer it when it's a real conversation title.
@@ -421,7 +423,7 @@ def _subject_label() -> str:
         prefix += "↪ "
     if StateStore().resolve_mute(pane, tmux_sess):
         prefix += "🔒 "
-    return prefix + label
+    return prefix, label
 
 
 def _marquee(text: str, width: int, *, key: str = "status",
@@ -458,14 +460,17 @@ def _marquee(text: str, width: int, *, key: str = "status",
 
 def _title_status_line(pos: Optional[float], dur: Optional[float],
                        paused: Optional[bool], muted: Optional[bool],
-                       speed: Optional[float], label: str, width: int,
-                       *, key: str = "status") -> str:
+                       speed: Optional[float], prefix: str, body: str,
+                       width: int, *, key: str = "status") -> str:
     """The whole speech status segment as ONE background-progress bar.
 
-    `▶ {pos} {scrolling title} {dur}` is rendered as a single field whose
-    background colour-fills left→right by progress, so the numeric times on
-    either side of the title are *part of* the bar rather than sitting outside
-    it. `width` is the title window (the times/icon add a few cols either side).
+    `▶ {pos} {prefix}{scrolling title} {dur}` is rendered as a single field
+    whose background colour-fills left→right by progress, so the numeric times
+    on either side of the title are *part of* the bar rather than sitting
+    outside it. `prefix` (the ↪/🔒 indicators) is pinned — only `body` scrolls
+    within the remaining space — so the indicator stays visible. `width` is the
+    title field (prefix + body window); the times/icon add a few cols either
+    side.
 
     Emits tmux `#[...]` directives (honoured inside `#()` status output).
     Colours via MEDIA_STATUS_TITLE_{FILL,REST}; `#[default]` resets at the end
@@ -474,8 +479,9 @@ def _title_status_line(pos: Optional[float], dur: Optional[float],
     """
     icon = "⏸" if paused else "▶"
     hours = bool(dur is not None and dur >= 3600)
-    titlewin = _marquee(label, width, key=key)
-    inner = f"{icon} {fmt_time(pos, hours=hours)} {titlewin} {fmt_time(dur, hours=hours)}"
+    bodywin = _marquee(body, max(1, width - len(prefix)), key=key)
+    titlefield = f"{prefix}{bodywin}"
+    inner = f"{icon} {fmt_time(pos, hours=hours)} {titlefield} {fmt_time(dur, hours=hours)}"
     frac = (pos / dur) if (pos and dur) else 0.0
     frac = max(0.0, min(1.0, frac))
     split = int(round(frac * len(inner)))
@@ -491,9 +497,9 @@ def _title_status_line(pos: Optional[float], dur: Optional[float],
 
 def cmd_now_pane(a) -> int:
     """Print the popup's subject-pane title (see `_subject_label`)."""
-    label = _subject_label()
-    if label:
-        print(label)
+    prefix, body = _subject_label()
+    if prefix or body:
+        print(f"{prefix}{body}")
     return 0
 
 
