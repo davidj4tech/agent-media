@@ -189,33 +189,114 @@ def _pane_scroll_pos(pane: str) -> tuple[bool, str]:
         return (False, "")
 
 
-def _pane_recent_keystrokes(pane: str, within_s: float) -> bool:
-    """True if `pane`'s window saw activity within the last `within_s` seconds.
+def _last_client_activity(pane: str) -> Optional[int]:
+    """Epoch of the most recent *user input* on `pane`'s session, or None.
 
-    tmux exposes no last-*input* timestamp, only last *output* activity
-    (`#{window_activity}`, an epoch). During the TTS window the speaking
-    agent has already stopped, so fresh output in its window is almost
-    always the user typing the next prompt (each keystroke echoes). We use
-    that as a keystroke proxy to skip a highlight turn while the user is
-    actively typing — the highlight would otherwise yank copy-mode out from
-    under them. Fails open (returns False) on any tmux error so highlighting
-    still happens if we can't tell.
+    We want last-keystroke time, not last-output. `#{window_activity}` /
+    `#{pane_activity}` track output, which is useless here: a Claude Code (or
+    any TUI) pane redraws its spinner/status continuously, so output-activity
+    is always ≈now even when the user is idle. `#{client_activity}` instead
+    tracks when the *attached client* last sent data — i.e. real keystrokes —
+    and freezes while the user isn't typing.
+
+    A client is per-attachment, and this runs in a hook subprocess with no
+    client of its own, so we resolve the pane's session and take the max
+    client_activity across the clients attached to it. None = couldn't tell
+    (no session / no clients / tmux error).
+    """
+    try:
+        s = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", pane, "#{session_id}"],
+            capture_output=True, text=True)
+        if s.returncode != 0:
+            return None
+        sid = s.stdout.strip()
+        if not sid:
+            return None
+        r = subprocess.run(
+            ["tmux", "list-clients", "-t", sid, "-F", "#{client_activity}"],
+            capture_output=True, text=True)
+        if r.returncode != 0:
+            return None
+        epochs = [int(x) for x in r.stdout.split() if x.strip().isdigit()]
+        return max(epochs) if epochs else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _pane_recent_keystrokes(pane: str, within_s: float) -> bool:
+    """True if the user typed in `pane`'s session within the last `within_s`s.
+
+    Used to skip a highlight turn while the user is actively typing (the
+    highlight would otherwise yank copy-mode out from under them). Backed by
+    `_last_client_activity` (client input, not pane output — see there).
+    Fails open (returns False) when we can't tell, so highlighting still
+    happens rather than silently never running.
     """
     if within_s <= 0:
         return False
-    try:
-        r = subprocess.run(
-            ["tmux", "display-message", "-p", "-t", pane,
-             "#{window_activity}"],
-            capture_output=True, text=True)
-        if r.returncode != 0:
-            return False
-        last = r.stdout.strip()
-        if not last.isdigit():
-            return False
-        return (time.time() - int(last)) < within_s
-    except Exception:  # noqa: BLE001
+    last = _last_client_activity(pane)
+    if last is None:
         return False
+    return (time.time() - last) < within_s
+
+
+def _force_highlight_flag_path() -> Path:
+    """File flag for "highlight the next turn(s) even if I just typed".
+
+    Contents = the epoch the user pressed the force key (popup/tmux
+    `highlight-now`). Stays in effect until they type again (client activity
+    moves past that epoch), at which point the gate clears it.
+    """
+    state = Path(os.environ.get("XDG_STATE_HOME",
+                                str(Path.home() / ".local" / "state")))
+    return state / "agent-media" / "force-highlight"
+
+
+def set_force_highlight() -> None:
+    """Stamp the force-highlight flag with the current time (the key press)."""
+    p = _force_highlight_flag_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(str(int(time.time())))
+
+
+def _popup_open_flag_path() -> Path:
+    """Marker written by `media-popup-open` while the control popup is open.
+
+    Contents = the pane the popup is controlling. An open popup means the user
+    is attending to playback, so the highlight overrides its keystroke-skip
+    while it's up."""
+    state = Path(os.environ.get("XDG_STATE_HOME",
+                                str(Path.home() / ".local" / "state")))
+    return state / "agent-media" / "popup-open"
+
+
+def _popup_open_for(pane: str) -> bool:
+    """True if the control popup is currently open for `pane`."""
+    try:
+        return _popup_open_flag_path().read_text().strip() == pane
+    except OSError:
+        return False
+
+
+def _force_highlight_active(pane: str) -> bool:
+    """True if a force-highlight press is still in effect for `pane`.
+
+    Active from the press until the user types again. "Types again" = client
+    activity strictly past the press epoch; pressing the force key is itself
+    client input at the press second, so equal-second still counts as active.
+    Expired flags are unlinked so they don't linger. Fails open to *inactive*
+    (no flag → normal skip behaviour applies)."""
+    p = _force_highlight_flag_path()
+    try:
+        pressed = int(p.read_text().strip())
+    except (OSError, ValueError):
+        return False
+    last = _last_client_activity(pane)
+    if last is not None and last > pressed:
+        p.unlink(missing_ok=True)
+        return False
+    return True
 
 
 def _cursor_sig(pane: str) -> str:
@@ -1078,14 +1159,17 @@ def submit_event(event: Event,
 
     # Skip this turn's highlighting if the user has typed in the source pane
     # recently: grabbing copy-mode mid-keystroke would yank the view out from
-    # under them. Window threshold via MEDIA_HIGHLIGHT_KEYSTROKE_S (0 disables
-    # the skip). tmux has no last-input time, so this uses window-activity as a
-    # keystroke proxy (the speaking agent is idle by now, so output ~= typing).
+    # under them. Threshold via MEDIA_HIGHLIGHT_KEYSTROKE_S (0 disables the
+    # skip). Two things override the skip ("I'm attending — follow this one"):
+    # the `highlight-now` force key (tmux `prefix V`, until you type again), and
+    # the control popup being open for this pane.
     if do_highlight:
         _ks_window_s = float(
             os.environ.get("MEDIA_HIGHLIGHT_KEYSTROKE_S", "5"))
         _src_pane = os.environ.get("TMUX_PANE")
-        if _src_pane and _pane_recent_keystrokes(_src_pane, _ks_window_s):
+        if (_src_pane and _pane_recent_keystrokes(_src_pane, _ks_window_s)
+                and not _force_highlight_active(_src_pane)
+                and not _popup_open_for(_src_pane)):
             do_highlight = False
 
     # Phase 1: resolve all render futures and collect clip durations.

@@ -76,11 +76,14 @@ def progress_bar(frac: float, width: int = 12) -> str:
 def render_status(*, idle: Optional[bool], pos: Optional[float],
                   dur: Optional[float], paused: Optional[bool],
                   muted: Optional[bool], width: int = 12,
-                  hide_idle: bool = True, bar: bool = True) -> str:
+                  hide_idle: bool = True, bar: bool = True,
+                  speed: Optional[float] = None) -> str:
     """Build the one-line status string (or '' / '○' when idle).
 
     With bar=False, the progress bar is dropped and only the times remain
     (`▶ 00:30 / 02:00`) — used by the popup, which shows just the clock.
+    `speed` (when not ~1.0) appends a `⏩1.4×` readout so a listening-mode
+    speed change is visible in the status bar.
     """
     if idle is None or idle:
         return "" if hide_idle else "○"
@@ -96,6 +99,9 @@ def render_status(*, idle: Optional[bool], pos: Optional[float],
         line = f"{icon} {fmt_time(pos, hours=hours)} / {fmt_time(dur, hours=hours)}"
     if muted:
         line += " [M]"
+    if isinstance(speed, (int, float)) and abs(speed - 1.0) > 0.05:
+        glyph = "⏩" if speed > 1.0 else "🐢"
+        line += f" {glyph}{speed:.2g}×"
     return line
 
 
@@ -244,7 +250,8 @@ def cmd_status(a) -> int:
     print(render_status(idle=idle, pos=pos, dur=dur,
                         paused=_get("pause"), muted=_get("mute"),
                         width=a.width, hide_idle=not a.show_idle,
-                        bar=not getattr(a, "no_bar", False)))
+                        bar=not getattr(a, "no_bar", False),
+                        speed=_get("speed")))
     return 0
 
 
@@ -642,6 +649,37 @@ def cmd_highlight_toggle(a) -> int:
     return 0
 
 
+def cmd_highlight_now(a) -> int:
+    """Force highlight follow-along for the upcoming turn(s), bypassing the
+    keystroke-skip, until the user types again. Bound to tmux `prefix V`.
+
+    The keystroke-skip suppresses the highlight for a turn when you've just
+    typed (so it doesn't yank copy-mode out from under you). This says "I've
+    stopped — follow along now" without waiting it out. If a sentence is
+    already playing, it highlights it immediately for instant feedback.
+    """
+    from .intake.submit import (set_force_highlight, _is_auto_highlight_enabled,
+                                _tmux_highlight_text)
+    set_force_highlight()
+    if not _is_auto_highlight_enabled():
+        # Force only overrides the keystroke-skip, not the master opt-in.
+        print("highlight: armed (note: auto-highlight is OFF — toggle it on)")
+        return 0
+    pane = (_spoken_pane()
+            or os.environ.get("TTS_POPUP_PANE")
+            or os.environ.get("TMUX_PANE", ""))
+    if pane:
+        os.environ["TMUX_PANE"] = pane
+        if not os.environ.get("TMUX"):
+            os.environ["TMUX"] = "x"
+        np = _now_speaking()
+        sentence = (np.get("extras") or {}).get("current_sentence") if np else None
+        if sentence:
+            _tmux_highlight_text(sentence, force=True)
+    print("highlight: now (until you type again)")
+    return 0
+
+
 def cmd_current_sentence(a) -> int:
     """Print the currently-spoken sentence (one of many in a response).
 
@@ -895,9 +933,30 @@ def cmd_pane_muted(a) -> int:
     return 0
 
 
+_SPEED_MIN, _SPEED_MAX, _SPEED_STEP = 0.5, 3.0, 0.1
+
+
 def cmd_speed(a) -> int:
-    ipc.set_property(_sock(), "speed",
-                     1.0 if a.factor == "reset" else float(a.factor))
+    """Set speech speed: absolute factor, 'reset' (→1.0), or relative 'up'/'down'
+    (and the '+0.1' / '-0.1' forms) which read-modify-write the live sink so the
+    listening-mode [ / ] keys can ride it up and down. Clamped to a sane range."""
+    sock = _sock()
+    f = a.factor
+    if f == "reset":
+        target = 1.0
+    elif f in ("up", "down") or (f and f[0] in "+-"):
+        cur = _get("speed")
+        cur = float(cur) if isinstance(cur, (int, float)) else 1.0
+        if f == "up":
+            delta = _SPEED_STEP
+        elif f == "down":
+            delta = -_SPEED_STEP
+        else:
+            delta = float(f)
+        target = max(_SPEED_MIN, min(_SPEED_MAX, cur + delta))
+    else:
+        target = max(_SPEED_MIN, min(_SPEED_MAX, float(f)))
+    ipc.set_property(sock, "speed", round(target, 2))
     return 0
 
 
@@ -1803,6 +1862,11 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="toggle auto-highlight on/off (popup v key)"
                     ).set_defaults(func=cmd_highlight_toggle)
 
+    sub.add_parser("highlight-now",
+                    help="force highlight this turn past the keystroke-skip "
+                         "until you type again (tmux prefix V)"
+                    ).set_defaults(func=cmd_highlight_now)
+
     s = sub.add_parser("current-sentence",
                         help="active sentence (for status-line karaoke indicator)")
     s.add_argument("--width", type=int, default=80,
@@ -1846,7 +1910,9 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument("delta", type=int)
     s.set_defaults(func=cmd_volume)
 
-    s = sub.add_parser("speed", help="set playback speed (factor or 'reset')")
+    s = sub.add_parser(
+        "speed",
+        help="set playback speed: a factor, 'reset', or 'up'/'down' (±0.1)")
     s.add_argument("factor")
     s.set_defaults(func=cmd_speed)
 
