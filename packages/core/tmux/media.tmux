@@ -33,6 +33,42 @@ run-shell 'case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) tmux set-environment 
 bind a \
     run-shell -b "media-popup-open '#{client_name}' '#{pane_id}' '#{client_width}' '#{client_height}'"
 
+# prefix V → "highlight now": the auto-highlight follow-along normally skips a
+# turn if you've typed in the last few seconds (so it doesn't yank copy-mode
+# while you're composing). Press this once you've stopped to say "follow this
+# one" — it overrides the skip until you next type. (Lowercase `v`, inside the
+# popup, toggles the feature on/off; uppercase V here forces the next turn.)
+bind V run-shell -b "media highlight-now"
+
+# --- Listening mode -------------------------------------------------------
+# A sticky key-table that drives the *speech* channel live with bare keys —
+# the popup's controls, minus the popup, so the pane (and the auto-highlight
+# follow-along) stays visible while you ride the speed up/down. Enter with
+# `prefix L` (lowercase `l` stays last-window) or the bare `M-l`; the table is
+# re-armed after every action key so it persists until you press q / Escape
+# (or any unbound key, which silently drops back to normal input).
+#
+# `#{client_key_table}` is `speech` while you're in here — the status line
+# keys off that to show the 🎧 indicator (see tmux.conf.local).
+bind L switch-client -T speech
+bind -n M-l switch-client -T speech
+
+# Speed: [ slower / ] faster (±0.1, clamped), Backspace/0 reset to 1×.
+bind -T speech '[' run-shell -b "media speed down"     \; switch-client -T speech
+bind -T speech ']' run-shell -b "media speed up"       \; switch-client -T speech
+bind -T speech BSpace run-shell -b "media speed reset" \; switch-client -T speech
+bind -T speech 0      run-shell -b "media speed reset" \; switch-client -T speech
+# Transport: Space play/pause · h/l sentence · H/L paragraph · r replay.
+bind -T speech Space run-shell -b "media toggle" \; switch-client -T speech
+bind -T speech h run-shell -b "media skip --unit sentence  --dir -1" \; switch-client -T speech
+bind -T speech l run-shell -b "media skip --unit sentence  --dir 1"  \; switch-client -T speech
+bind -T speech H run-shell -b "media skip --unit paragraph --dir -1" \; switch-client -T speech
+bind -T speech L run-shell -b "media skip --unit paragraph --dir 1"  \; switch-client -T speech
+bind -T speech r run-shell -b "media replay" \; switch-client -T speech
+# Exit (also: any unbound key falls through to normal input).
+bind -T speech q      display-message "🎧 listening off"
+bind -T speech Escape display-message "🎧 listening off"
+
 # Tell tmux the outer terminal can render OSC 8 hyperlinks, so it forwards
 # them instead of stripping them. Without this the `w` web-UI link popup
 # (media-popup-link) shows the URL as plain text and a click in Kitty et al.

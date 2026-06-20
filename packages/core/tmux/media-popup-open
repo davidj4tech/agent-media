@@ -13,6 +13,14 @@
 set -u
 client="${1:-}"; pane="${2:-}"; cw="${3:-34}"; ch="${4:-24}"
 
+# Marker so the highlight follow-along knows the popup is open for this pane and
+# can override its keystroke-skip (an open popup means you're attending to
+# playback). Holds the controlled pane id; removed on exit (incl. close/`q`).
+openmark="${XDG_STATE_HOME:-$HOME/.local/state}/agent-media/popup-open"
+mkdir -p "$(dirname "$openmark")" 2>/dev/null
+printf '%s' "$pane" > "$openmark" 2>/dev/null
+trap 'rm -f "$openmark"' EXIT
+
 MAX="${MEDIA_POPUP_MAX_W:-34}"; MIN=18
 w="$cw"; [ "$w" -gt "$MAX" ] && w="$MAX"; [ "$w" -lt "$MIN" ] && w="$MIN"
 # Help popup geometry — the keymap table is ~23 cols x ~26 rows.
