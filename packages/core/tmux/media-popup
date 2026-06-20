@@ -184,6 +184,17 @@ fetch() {
     # this is the global count. Speech channel only; one cheap query per refresh.
     [ "$CHANNEL" = "speech" ] && MCOUNT=$(TTS_POPUP_PANE="$HL_PANE" $MEDIA mute-count 2>/dev/null)
     STATUS="${STATUS// \/ //}"               # "1:23 / 4:56" → "1:23/4:56" (save 2 cols)
+    # Reflect the *persisted* auto-highlight state, not just v-key toggles made
+    # this popup session, so the timeline indicator is right the moment we open.
+    # Mirrors submit._is_auto_highlight_enabled: env override wins, else the flag
+    # file holds "1". (Speech-only feature, but cheap; derive on every channel.)
+    if [ -n "${MEDIA_AUTO_HIGHLIGHT:-}" ]; then
+        [ "$MEDIA_AUTO_HIGHLIGHT" != 0 ] && HL=on || HL=off
+    elif [ "$(cat "${XDG_STATE_HOME:-$HOME/.local/state}/agent-media/auto-highlight" 2>/dev/null)" = 1 ]; then
+        HL=on
+    else
+        HL=off
+    fi
     case "$CHANNEL" in
         speech|book)
             [ "$(sock_get mute)" = "true" ] && MUTED=1
@@ -300,7 +311,8 @@ draw() {
     hit 1 4 "$(( cols - 2 ))" g            # title → go to source
     # ---- Row 2: < · play/pause+progress · > · vol- · vol+ · indicators ----
     # Indicator cluster (only-when-active so it stays small on a ~32-col phone):
-    # speed (speech/book) · mute · highlight (speech) · transient volume.
+    # speed (speech/book) · mute · transient volume. (Auto-highlight ON is shown
+    # without spending a column — by tinting the timeline yellow below.)
     # Volume readout first so the transient feedback sits right next to the
     # +/- buttons and isn't the thing that clips off the right edge.
     local ind=""
@@ -309,7 +321,6 @@ draw() {
     [ -n "$SPD" ] && [ "$SPD" != "1.0" ] && ind="$ind ${SPD}×"
     [ -n "$MUTED" ] && ind="$ind 🔇"
     [ -n "$MCOUNT" ] && ind="$ind 🔒$MCOUNT"
-    [ "$CHANNEL" = "speech" ] && [ "$HL" = "on" ] && ind="$ind ✎"
     # While the book channel resolves a load (the YouTube gap), show an animated
     # spinner instead of the meaningless `--:--` so it doesn't look hung.
     local status
@@ -337,13 +348,21 @@ draw() {
     # progress core is the play/pause button.
     # %s on every segment so a glyph like '-' isn't read as a printf option.
     # emit() reverse-videos the focused glyph; FOCUS index per element in comments.
+    # When speech auto-highlight is ON, tint the timeline (the time/progress
+    # after the play/pause glyph) black-on-yellow — a no-extra-column indicator
+    # that the copy-mode follow-along is live. Only the time text, not the
+    # play/pause button (which `emit` may reverse-video on focus).
+    local hlbg='' hlrst=''
+    if [ "$CHANNEL" = "speech" ] && [ "$HL" = "on" ]; then
+        hlbg='\033[30;43m'; hlrst='\033[0m'
+    fi
     printf '\033[2;1H%s' ' '               # row 2, col 1 = leading space
     local col=2
     hit 2 "$col" "$(( col + 1 ))" '<'; emit '< ' 2; col=$(( col + 2 ))        # prev (2)
     local pstart=$col
     # Highlight only the leading play/pause glyph on focus — not the time — but
     # keep the whole progress as the click target.
-    emit "${status:0:1}" 3; printf '%s' "${status:1}"; col=$(( col + ${#status} ))  # play/pause (3)
+    emit "${status:0:1}" 3; printf "${hlbg}%s${hlrst}" "${status:1}"; col=$(( col + ${#status} ))  # play/pause (3)
     hit 2 "$pstart" "$(( col - 1 ))" ' '   # progress core = play/pause toggle
     printf '%s' ' '; col=$(( col + 1 ))
     hit 2 "$col" "$(( col + 1 ))" '>'; emit '> ' 4; col=$(( col + 2 ))        # next (4)
