@@ -253,6 +253,11 @@ def _force_highlight_flag_path() -> Path:
     return state / "agent-media" / "force-highlight"
 
 
+# Backstop so a forgotten/stale force-highlight flag can't override the
+# keystroke-skip indefinitely (a real press self-heals on the next keystroke).
+_FORCE_MAX_AGE_S = 1800
+
+
 def set_force_highlight() -> None:
     """Stamp the force-highlight flag with the current time (the key press)."""
     p = _force_highlight_flag_path()
@@ -282,18 +287,28 @@ def _popup_open_for(pane: str) -> bool:
 def _force_highlight_active(pane: str) -> bool:
     """True if a force-highlight press is still in effect for `pane`.
 
-    Active from the press until the user types again. "Types again" = client
+    Active from the press until the user types again ("types again" = client
     activity strictly past the press epoch; pressing the force key is itself
-    client input at the press second, so equal-second still counts as active.
-    Expired flags are unlinked so they don't linger. Fails open to *inactive*
-    (no flag → normal skip behaviour applies)."""
+    client input at the press second, so equal-second still counts as active).
+    Expired flags are unlinked so they don't linger.
+
+    Fails to *inactive* when we can't read client activity, and ignores a flag
+    older than FORCE_MAX_AGE_S — otherwise a stale flag (e.g. left by a test, or
+    a moment when no client is attached so activity reads None) would silently
+    override the keystroke-skip forever. A genuine press self-heals on the next
+    keystroke; the max-age is just a backstop."""
     p = _force_highlight_flag_path()
     try:
         pressed = int(p.read_text().strip())
     except (OSError, ValueError):
         return False
+    if time.time() - pressed > _FORCE_MAX_AGE_S:
+        p.unlink(missing_ok=True)
+        return False
     last = _last_client_activity(pane)
-    if last is not None and last > pressed:
+    if last is None:
+        return False                      # can't tell → don't override
+    if last > pressed:
         p.unlink(missing_ok=True)
         return False
     return True
