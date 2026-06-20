@@ -46,7 +46,7 @@ def _strip_tmux(s: str) -> str:
 
 def test_title_line_is_one_fill_then_track(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-    line = cli._title_status_line(30, 120, False, False, None, "Aria", 18, key="x")
+    line = cli._title_status_line(30, 120, False, False, None, "", "Aria", 18, key="x")
     # Exactly one fill region, then one track region, then a reset.
     assert line.startswith("#[bg=colour24,fg=colour231]")
     assert "#[bg=colour236,fg=colour250]" in line
@@ -56,7 +56,7 @@ def test_title_line_is_one_fill_then_track(monkeypatch, tmp_path):
 def test_title_line_embeds_both_times(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     plain = _strip_tmux(cli._title_status_line(30, 120, False, False, None,
-                                               "Aria", 18, key="x2"))
+                                               "", "Aria", 18, key="x2"))
     assert "00:30" in plain and "02:00" in plain   # both times in the bar
     assert plain.startswith("▶")
 
@@ -64,20 +64,34 @@ def test_title_line_embeds_both_times(monkeypatch, tmp_path):
 def test_title_line_split_tracks_progress(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     # At ~0% the fill region is empty; at 100% the track region is empty.
-    near0 = cli._title_status_line(0, 120, False, False, None, "Aria", 18, key="a")
-    full = cli._title_status_line(120, 120, False, False, None, "Aria", 18, key="b")
+    near0 = cli._title_status_line(0, 120, False, False, None, "", "Aria", 18, key="a")
+    full = cli._title_status_line(120, 120, False, False, None, "", "Aria", 18, key="b")
     assert near0.startswith("#[bg=colour24,fg=colour231]#[bg=colour236")  # nothing filled
     assert full.endswith("#[bg=colour236,fg=colour250]#[default]")        # nothing left
 
 
 def test_title_line_muted_and_speed_suffix(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-    line = cli._title_status_line(60, 120, True, True, 1.4, "Aria", 18, key="m")
+    line = cli._title_status_line(60, 120, True, True, 1.4, "", "Aria", 18, key="m")
     assert line.endswith("[M] ⏩1.4×") or "[M]" in line and "1.4×" in line
 
 
 def test_title_line_paused_glyph(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     line = _strip_tmux(cli._title_status_line(60, 120, True, False, None,
-                                              "Aria", 18, key="p"))
+                                              "", "Aria", 18, key="p"))
     assert line.startswith("⏸")
+
+
+def test_title_line_pins_prefix_indicator(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    long_body = "refactor the whole speech sink pipeline end to end"
+    # The ↪ prefix must stay put while the body scrolls: it appears right after
+    # the left time on consecutive refreshes, and the body advances under it.
+    a = _strip_tmux(cli._title_status_line(30, 120, False, False, None,
+                                           "↪ ", long_body, 16, key="pin"))
+    b = _strip_tmux(cli._title_status_line(30, 120, False, False, None,
+                                           "↪ ", long_body, 16, key="pin"))
+    assert "↪ " in a and "↪ " in b
+    assert a.split("↪ ", 1)[0] == b.split("↪ ", 1)[0]   # text before ↪ unchanged
+    assert a != b                                        # body scrolled
