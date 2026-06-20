@@ -251,13 +251,15 @@ def cmd_status(a) -> int:
                 playing = True
     # Optional title-overlay bar (EXPERIMENTAL): the whole `▶ pos title dur`
     # segment becomes one background-progress bar, times embedded in the fill.
-    # `tw` = title-window width in columns. Only while genuinely playing.
-    tw = getattr(a, "title", None)
-    if tw and playing:
+    # `--title` carries the tmux client width; the title-field width is derived
+    # from it (_title_window) so one config fits any screen. Only while playing.
+    cw = getattr(a, "title", None)
+    if cw and playing:
         prefix, body = _subject_label()
         if prefix or body:
             print(_title_status_line(pos, dur, _get("pause"), _get("mute"),
-                                     _get("speed"), prefix, body, tw, key="status"))
+                                     _get("speed"), prefix, body,
+                                     _title_window(cw), key="status"))
             return 0
     print(render_status(idle=idle, pos=pos, dur=dur,
                         paused=_get("pause"), muted=_get("mute"),
@@ -334,7 +336,11 @@ def _subject() -> tuple[str, str, bool]:
     caller = _caller_pane()
     np_pane = ex.get("source_pane") or ""
     if np_pane:
-        return np_pane, ex.get("source_tmux_session") or "", np_pane != caller
+        # "following" (↪) only when we actually have a caller pane to compare:
+        # the status bar runs `media status` with no pane context (caller=""),
+        # where we can't tell — don't falsely flag every speaker as "different".
+        following = bool(caller) and np_pane != caller
+        return np_pane, ex.get("source_tmux_session") or "", following
     return caller, (_tmux_session_for_pane(caller) if caller else ""), False
 
 
@@ -456,6 +462,24 @@ def _marquee(text: str, width: int, *, key: str = "status",
     except OSError:
         pass
     return window
+
+
+def _client_width(v) -> int:
+    """argparse type for --title: a tmux client width, tolerant of a literal
+    unexpanded `#{client_width}` (→ 80) so the status bar never errors out."""
+    try:
+        return max(1, int(v))
+    except (TypeError, ValueError):
+        return 80
+
+
+def _title_window(client_width: int) -> int:
+    """Title-field width derived from the tmux client width, so one status-bar
+    config fits any screen (wide desktop → roomy, ~32-col phone → tight): a
+    quarter of the client, clamped. Bounds via MEDIA_STATUS_TITLE_{MIN,MAX}."""
+    tmin = int(os.environ.get("MEDIA_STATUS_TITLE_MIN", "8"))
+    tmax = int(os.environ.get("MEDIA_STATUS_TITLE_MAX", "26"))
+    return max(tmin, min(tmax, client_width // 4))
 
 
 def _title_status_line(pos: Optional[float], dur: Optional[float],
@@ -1916,11 +1940,12 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="emit '○' when idle instead of empty")
     s.add_argument("--no-bar", action="store_true",
                    help="show only the times (no progress bar)")
-    s.add_argument("--title", nargs="?", type=int, const=18, default=None,
-                   metavar="WIDTH",
+    s.add_argument("--title", nargs="?", type=_client_width, const=80,
+                   default=None, metavar="CLIENT_WIDTH",
                    help="render the whole status (times + subject title) as one "
-                        "background-progress bar (title window WIDTH cols, "
-                        "default 18; EXPERIMENTAL)")
+                        "background-progress bar; the title width auto-derives "
+                        "from CLIENT_WIDTH — pass tmux #{client_width} so it "
+                        "fits any screen (default 80; EXPERIMENTAL)")
     s.set_defaults(func=cmd_status)
 
     sub.add_parser("now", help="text currently being spoken").set_defaults(func=cmd_now)
