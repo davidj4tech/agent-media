@@ -98,12 +98,25 @@ def test_force_inactive_without_flag(monkeypatch, tmp_path):
     assert S._force_highlight_active("%5") is False
 
 
-def test_force_active_when_cant_tell(monkeypatch, tmp_path):
+def test_force_inactive_when_cant_tell(monkeypatch, tmp_path):
+    # Can't read client activity -> don't override the skip (so a stale flag
+    # with no attached client can't suppress the keystroke-skip forever).
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     monkeypatch.setattr(S.time, "time", lambda: 2000)
     S.set_force_highlight()
     monkeypatch.setattr(S, "_last_client_activity", lambda p: None)
-    assert S._force_highlight_active("%5") is True       # honor the request
+    assert S._force_highlight_active("%5") is False
+
+
+def test_force_expires_after_max_age(monkeypatch, tmp_path):
+    # A flag older than the backstop is ignored + cleared, even with no typing.
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.setattr(S.time, "time", lambda: 2000)
+    S.set_force_highlight()                              # pressed at t=2000
+    monkeypatch.setattr(S, "_last_client_activity", lambda p: 2000)  # no typing
+    monkeypatch.setattr(S.time, "time", lambda: 2000 + S._FORCE_MAX_AGE_S + 1)
+    assert S._force_highlight_active("%5") is False
+    assert not S._force_highlight_flag_path().exists()
 
 
 # --- popup-open override ----------------------------------------------------

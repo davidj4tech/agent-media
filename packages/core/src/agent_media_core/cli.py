@@ -207,11 +207,17 @@ def _anchor_session() -> Optional[str]:
 
 
 def _caller_pane() -> str:
-    """The pane that opened the popup (TTS_POPUP_PANE), resolving an
-    unexpanded ``#{pane_id}`` literal by asking tmux for the active pane.
-    Inside ``display-popup`` TMUX_PANE is the popup's own ephemeral pane, so
-    TTS_POPUP_PANE is the one we want; it falls back to TMUX_PANE otherwise."""
-    pane = os.environ.get("TTS_POPUP_PANE") or os.environ.get("TMUX_PANE", "")
+    """The pane the user is "at", for the different-pane (↪) comparison.
+
+    Popup: TTS_POPUP_PANE (TMUX_PANE inside display-popup is the popup's own
+    ephemeral pane). Status bar: MEDIA_STATUS_PANE, which the status-right
+    config passes as `#{pane_id}` (the viewing client's active pane) — without
+    it the status bar has no pane context, so the ↪ comparison can't tell which
+    pane you're on. Falls back to TMUX_PANE. An unexpanded `#{...}` literal is
+    resolved by asking tmux for the active pane."""
+    pane = (os.environ.get("TTS_POPUP_PANE")
+            or os.environ.get("MEDIA_STATUS_PANE")
+            or os.environ.get("TMUX_PANE", ""))
     if "#{" in pane:
         try:
             r = subprocess.run(["tmux", "display-message", "-p", "#{pane_id}"],
