@@ -12,8 +12,12 @@ There are three seams, in decreasing order of how plug-and-play they are.
 
 ## 1. Render engines — fully pluggable (entry points)
 
-A render engine turns text into an audio file. Core ships four built-ins
-(`edge`, `openai`, `qwen`, `realtime`); anyone can add more.
+A render engine turns text into an audio file. Core ships exactly one built-in
+— `edge`, which is zero-config (no API key) and the universal default.
+Everything else is an installable plugin, including the ones maintained in this
+repo: `openai` (`agent-media-engine-openai`), `qwen`
+(`agent-media-engine-qwen`), and `realtime` (`agent-media-engine-realtime`).
+Anyone can add more the same way.
 
 **The contract** is one callable:
 
@@ -48,8 +52,8 @@ MEDIA_RENDER_ENGINE=myengine media say "hello"
 
 Rules core enforces (see `agent_media_core/extensions.py`):
 
-- An extension **may not shadow a built-in** name (`edge`/`openai`/`qwen`/
-  `realtime`) — the collision is logged and the built-in wins.
+- An extension **may not shadow a built-in** name (`edge`) — the collision is
+  logged and the built-in wins.
 - A broken extension (import error, not callable, raises at render time) is
   logged and skipped/failed-over, never fatal.
 - Discovery is cached for the process; engines are resolved on first use.
@@ -104,7 +108,8 @@ If a fourth channel ever earns its place, it belongs in core, not a plugin.
 
 ## Roadmap
 
-Engines are the proven seam (this document + the espeak example). The natural
-next step is to move core's optional engines (`openai`, `qwen`, `realtime`) out
-into their own packages using this same contract, leaving core shipping only
-the zero-config `edge` engine. Track that under the monorepo's overhaul plan.
+Engines are the proven seam: core ships only `edge`, and `openai`/`qwen`/
+`realtime` already live in their own packages (`packages/engine-*`) wired
+through this contract. The natural next step is to give optional **intake**
+adapters (matrix, ha, codex) the same treatment as separate packages. Track
+that under the monorepo's overhaul plan.

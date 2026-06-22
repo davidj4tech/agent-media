@@ -43,9 +43,12 @@ def test_discovers_third_party_engine(monkeypatch):
     _patch_eps(monkeypatch, [_FakeEP("espeak", _good_engine)])
     engines = extensions.discover_render_engines(refresh=True)
     assert set(engines) == {"espeak"}
-    assert "espeak" in extensions.all_engine_names()
+    names = extensions.all_engine_names()
+    assert "espeak" in names
     # built-ins still present and listed first
-    assert extensions.all_engine_names()[:4] == extensions.BUILTIN_ENGINE_NAMES
+    n = len(extensions.BUILTIN_ENGINE_NAMES)
+    assert names[:n] == extensions.BUILTIN_ENGINE_NAMES
+    assert "edge" in names
 
 
 def test_extension_cannot_shadow_builtin(monkeypatch):

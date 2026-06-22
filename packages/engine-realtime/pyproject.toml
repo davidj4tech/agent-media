@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agent-media-engine-realtime"
+version = "0.1.0"
+description = "OpenAI Realtime (WebSocket) TTS render engine for agent-media."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+# The WebSocket flow runs in a subprocess interpreter (MEDIA_REALTIME_PYTHON)
+# that provides `websockets`, so this package has no hard runtime dependency.
+
+[project.entry-points."agent_media.render_engines"]
+realtime = "agent_media_engine_realtime:render"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent_media_engine_realtime"]

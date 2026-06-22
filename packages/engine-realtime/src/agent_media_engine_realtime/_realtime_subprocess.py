@@ -3,8 +3,7 @@
 Reads JSON config from stdin (`{"text", "model", "voice", "outfile"}`),
 opens the OpenAI Realtime WebSocket, collects PCM deltas, writes WAV to
 `outfile`. Exits non-zero with a one-line reason on stderr if anything
-goes wrong. Mirrors the TypeScript flow in
-`packages/audio-relay/extensions/pi-tts-extension.ts::ttsOpenAIRealtime`.
+goes wrong.
 """
 
 from __future__ import annotations

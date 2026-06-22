@@ -40,10 +40,11 @@ log = logging.getLogger(__name__)
 # Entry-point group third-party render engines register under.
 RENDER_ENGINE_GROUP = "agent_media.render_engines"
 
-# Built-in engine names render_text handles directly. Discovered engines may
-# not shadow these — a collision is logged and the built-in wins, so a stray
-# third-party package can never silently replace core's TTS.
-BUILTIN_ENGINE_NAMES = ("edge", "openai", "qwen", "realtime")
+# Built-in engine names render_text handles directly. Only `edge` ships with
+# core now (openai/qwen/realtime moved to their own packages). A discovered
+# engine may not shadow a built-in — the collision is logged and the built-in
+# wins, so a stray third-party package can never silently replace core's TTS.
+BUILTIN_ENGINE_NAMES = ("edge",)
 
 
 @runtime_checkable
