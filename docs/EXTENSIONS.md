@@ -66,34 +66,41 @@ is a complete espeak-ng engine you can install and copy.
 ## 2. Intake adapters — pluggable at the process level (console scripts)
 
 An intake adapter is anything that produces an `Event` and calls
-`agent_media_core.intake.submit`. Core's own adapters are already separate
-console-script entry points:
+`agent_media_core.intake.submit_event`. Each adapter is a console-script entry
+point — the process boundary *is* the isolation, so core never imports an
+adapter to use it; the adapter drives core.
+
+Core bundles only the hooks that are part of its identity
+(`media-hook-claude-code`, `media-hook-pi`, `media-hook-pi-stream`). The
+optional adapters live in their own packages (`packages/intake-*`), each
+depending on `agent-media-core` and reusing the same console-script name:
 
 ```
-media-hook-claude-code   media-hook-codex   media-hook-pi   media-hook-pi-stream
-media-intake-ha-sse      media-intake-matrix
+agent-media-intake-matrix  -> media-intake-matrix
+agent-media-intake-ha      -> media-intake-ha-sse
+agent-media-intake-codex   -> media-hook-codex
 ```
 
-To add a new source (a different chat app, a webhook, a CLI), ship **your own
-console script** that builds an `Event` and submits it:
+To add a new source (a different chat app, a webhook, a CLI), do the same —
+ship a package with a console script that builds an `Event` and submits it,
+using core's stable public intake surface (`submit_event`, `strip_markdown`,
+`run_hook_stdin`):
 
 ```toml
+[project]
+dependencies = ["agent-media-core"]
 [project.scripts]
-media-intake-myapp = "my_package.intake:main"
+media-intake-myapp = "my_package:main"
 ```
 
 ```python
-from agent_media_core.intake import submit
+from agent_media_core.intake import submit_event
 from agent_media_core.types import Event, Source, Priority
 
 def main() -> int:
-    submit(Event(text="...", source=Source.CLI, priority=Priority.NORMAL, ...))
+    submit_event(Event(text="...", source=Source.CLI, priority=Priority.NORMAL, ...))
     return 0
 ```
-
-Nothing in core needs to change — core never imports intake adapters to use
-them, they drive core. This is a documented convention rather than a discovery
-mechanism; the process boundary *is* the isolation.
 
 ---
 
@@ -108,8 +115,9 @@ If a fourth channel ever earns its place, it belongs in core, not a plugin.
 
 ## Roadmap
 
-Engines are the proven seam: core ships only `edge`, and `openai`/`qwen`/
-`realtime` already live in their own packages (`packages/engine-*`) wired
-through this contract. The natural next step is to give optional **intake**
-adapters (matrix, ha, codex) the same treatment as separate packages. Track
-that under the monorepo's overhaul plan.
+Render engines (`packages/engine-*`) and optional intake adapters
+(`packages/intake-*`) both now live outside core, wired through the contracts
+above — core ships only `edge` plus its identity hooks. The remaining slimming
+target is the two large CLI/pipeline modules (`cli.py`, `intake/submit.py`),
+tracked under the monorepo's overhaul plan; those are internal refactors, not
+extension seams.

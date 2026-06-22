@@ -1,8 +1,8 @@
 """Codex (OpenAI CLI) intake — stdin-pipe hook."""
 
 import sys
-from ..types import Source
-from ._hook_stdin import run
+from agent_media_core.types import Source
+from agent_media_core.intake import run_hook_stdin as run
 
 
 def main() -> int:

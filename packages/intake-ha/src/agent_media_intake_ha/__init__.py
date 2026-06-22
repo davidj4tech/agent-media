@@ -22,9 +22,9 @@ import urllib.error
 import urllib.request
 from typing import Optional
 
-from ..types import Event, Priority, Source
-from ._text import strip_markdown
-from .submit import submit_event
+from agent_media_core.types import Event, Priority, Source
+from agent_media_core.intake import strip_markdown
+from agent_media_core.intake import submit_event
 
 
 log = logging.getLogger(__name__)

@@ -34,11 +34,11 @@ import urllib.request
 from pathlib import Path
 from typing import Iterable, Optional
 
-from ..route import Coordinator
-from ..sinks.music import SinkMusic
-from ..sinks.speech import SinkSpeech
-from ..state import StateStore
-from ..types import Event, Priority, Source, Target
+from agent_media_core.route import Coordinator
+from agent_media_core.sinks.music import SinkMusic
+from agent_media_core.sinks.speech import SinkSpeech
+from agent_media_core.state import StateStore
+from agent_media_core.types import Event, Priority, Source, Target
 
 
 log = logging.getLogger(__name__)

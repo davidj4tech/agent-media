@@ -14,14 +14,13 @@ dependencies = [
 [project.scripts]
 media                  = "agent_media_core.cli:main"
 media-hook-claude-code = "agent_media_core.intake.hook_claude_code:main"
-media-hook-codex       = "agent_media_core.intake.hook_codex:main"
 media-hook-pi          = "agent_media_core.intake.hook_pi:main"
 media-hook-pi-stream   = "agent_media_core.intake.hook_pi_stream:main"
-media-intake-ha-sse    = "agent_media_core.intake.ha_sse:main"
-media-intake-matrix    = "agent_media_core.intake.matrix:main"
 media-setup            = "agent_media_core.setup:main"
 media-mcp              = "agent_media_core.mcp_server:main"
 media-mcp-http         = "agent_media_core.mcp_server:main_http"
+# Optional intake adapters moved to their own packages (still installable,
+# same console-script names): agent-media-intake-matrix / -ha / -codex.
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_media_core"]
