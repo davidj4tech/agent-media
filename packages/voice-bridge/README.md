@@ -166,11 +166,11 @@ or create tmux session `N` on homer. SSH `Host` patterns don't support
 
 ```sshconfig
 Host homer
-  HostName 100.125.48.108
+  HostName 100.64.0.1
   User mel
 
 Host homer1 homer2 homer3 homer4 homer5 homer6 homer7 homer8 homer9 homer10
-  HostName 100.125.48.108
+  HostName 100.64.0.1
   User mel
   RequestTTY yes
   RemoteCommand tmux -u new -A -D -s "$(echo %n | sed 's/^homer//')"

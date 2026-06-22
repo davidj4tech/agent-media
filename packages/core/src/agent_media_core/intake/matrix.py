@@ -44,7 +44,7 @@ from ..types import Event, Priority, Source, Target
 log = logging.getLogger(__name__)
 
 DEFAULT_SYNC_TIMEOUT_MS = 30000
-DEFAULT_HOMESERVER = "https://matrix.ryer.org"
+DEFAULT_HOMESERVER = "https://matrix.example.org"
 
 _running = True
 
@@ -224,10 +224,10 @@ def main() -> int:
         return 2
 
     homeserver = os.environ.get("MATRIX_HOMESERVER", DEFAULT_HOMESERVER).rstrip("/")
-    sam_id = os.environ.get("MATRIX_SAM_ID", "@sam:ryer.org")
+    sam_id = os.environ.get("MATRIX_SAM_ID", "@agent:example.org")
     control_ids = set(filter(None, (
         os.environ.get("MATRIX_CONTROL_IDS")
-        or f"@david:ryer.org,{sam_id}"
+        or f"@owner:example.org,{sam_id}"
     ).split(",")))
     room_allow = set(filter(None, (
         os.environ.get("MATRIX_ROOM_ALLOW", "").split(",")

@@ -718,20 +718,21 @@ def _print_open_url(url: str) -> int:
 def cmd_book_web(a) -> int:
     """Open the simple-mpv-webui browser control page for the book channel.
 
-    Uses mel's tailnet IP (not the MagicDNS name) so it's short enough to show on
-    one line in the popup — needed for Termux's long-press URL detection, which
-    has no OSC 8 — and resolves without MagicDNS. Override via MEDIA_BOOK_WEB_URL.
+    Set MEDIA_BOOK_WEB_URL to the host running the webui. Prefer a bare tailnet
+    IP over a MagicDNS name: it's short enough to show on one line in the popup
+    (Termux's long-press URL detection has no OSC 8) and resolves without
+    MagicDNS. Defaults to loopback.
     """
     return _print_open_url(os.environ.get(
-        "MEDIA_BOOK_WEB_URL", "http://100.94.154.59:8889/"))
+        "MEDIA_BOOK_WEB_URL", "http://127.0.0.1:8889/"))
 
 
 def cmd_music_web(a) -> int:
     """Open the Mopidy-Iris web UI for the music channel (the music analogue of
-    book-web). Tailnet IP for the same reasons. Override via MEDIA_MUSIC_WEB_URL.
+    book-web). Set MEDIA_MUSIC_WEB_URL for the same reasons. Defaults to loopback.
     """
     return _print_open_url(os.environ.get(
-        "MEDIA_MUSIC_WEB_URL", "http://100.94.154.59:6680/iris/"))
+        "MEDIA_MUSIC_WEB_URL", "http://127.0.0.1:6680/iris/"))
 
 
 def cmd_highlight_toggle(a) -> int:

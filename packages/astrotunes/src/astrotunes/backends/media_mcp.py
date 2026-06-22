@@ -6,7 +6,7 @@ import httpx
 
 
 def queue(track: dict, base_url: str | None = None) -> None:
-    base = base_url or os.environ.get("ASTROTUNES_MEDIA_MCP", "http://100.94.14.59:8765")
+    base = base_url or os.environ.get("ASTROTUNES_MEDIA_MCP", "http://127.0.0.1:8765")
     url = track.get("url")
     if not url:
         raise ValueError("media-mcp backend requires track['url']")

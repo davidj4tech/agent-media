@@ -511,9 +511,10 @@ sock_get() {  # $1 = mpv property; echoes raw .data, or "" if absent/false/no-so
 }
 
 # Music has no mpv socket, but Mopidy speaks MPD — read fields from its
-# `status` over the MPD control port (defaults: the tailnet IP, since the tmux
-# server env usually lacks MOPIDY_MPD_*).
-MPD_HOST="${MOPIDY_MPD_HOST:-100.94.154.59}"; MPD_PORT="${MOPIDY_MPD_PORT:-6600}"
+# `status` over the MPD control port. Defaults to loopback; point at a remote
+# Mopidy with MOPIDY_MPD_HOST/PORT (the tmux server env usually lacks them, so
+# set them in ~/.config/agent-media.env).
+MPD_HOST="${MOPIDY_MPD_HOST:-127.0.0.1}"; MPD_PORT="${MOPIDY_MPD_PORT:-6600}"
 mpd_get() {  # $1 = status field, e.g. volume
     printf 'status\nclose\n' | socat -T2 - TCP:"$MPD_HOST":"$MPD_PORT" 2>/dev/null \
         | awk -F': ' -v k="$1" '$1==k{print $2; exit}'
