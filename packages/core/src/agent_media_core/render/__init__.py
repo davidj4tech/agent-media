@@ -14,10 +14,13 @@ from .engines import (
     default_openai_python,
     render_text,
 )
+from ..extensions import all_engine_names, discover_render_engines
 
 __all__ = [
     "render_text",
     "default_openai_python",
+    "all_engine_names",
+    "discover_render_engines",
     "KNOWN_ENGINES",
     "EDGE_DEFAULT_VOICE",
     "OPENAI_DEFAULT_VOICE",

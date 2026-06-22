@@ -1,8 +1,11 @@
-"""Render engines: edge, openai, qwen, realtime.
+"""Render engines: edge, openai, qwen, realtime (built-in) + third-party.
 
-All four are first-class: `render_text(..., engine="<name>", ...)` works
-for any of them. Fallback to edge on non-edge failure is on by default
-(caller can disable).
+All four built-ins are first-class: `render_text(..., engine="<name>", ...)`
+works for any of them. An unknown engine name is resolved against third-party
+engines registered via the `agent_media.render_engines` entry-point group
+(see ../extensions.py and docs/EXTENSIONS.md), so packages can add engines
+without core importing them. Fallback to edge on non-edge failure is on by
+default (caller can disable) and applies to third-party engines too.
 
 This is a port + extension of the original `aar-tts-render` Python and
 the TypeScript realtime path from `pi-tts-extension.ts`. Behaviour is
@@ -204,7 +207,16 @@ def render_text(
             voice=voice or realtime_voice, model=realtime_model, python_bin=py,
         )
     else:
-        return False, f"unknown engine: {engine}"
+        # Not a built-in: look for a third-party engine registered via the
+        # `agent_media.render_engines` entry-point group (see extensions.py).
+        from ..extensions import get_render_engine
+        ext = get_render_engine(engine)
+        if ext is None:
+            return False, f"unknown engine: {engine}"
+        try:
+            ok, err = ext(text, outfile, voice=voice)
+        except Exception as e:  # noqa: BLE001 — isolate plugin faults; fall back below
+            ok, err = False, f"engine {engine!r} raised: {e}"
     if not ok and fallback_to_edge:
         if on_fallback is not None:
             on_fallback(engine, err)

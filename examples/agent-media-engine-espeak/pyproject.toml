@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agent-media-engine-espeak"
+version = "0.1.0"
+description = "Example agent-media render engine: offline TTS via espeak-ng."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+
+# This is the whole contract: register a callable under the
+# `agent_media.render_engines` group, keyed by the engine name users will pass
+# as MEDIA_RENDER_ENGINE / engine=. agent-media-core discovers it at runtime —
+# it never imports this package directly.
+[project.entry-points."agent_media.render_engines"]
+espeak = "agent_media_engine_espeak:render"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent_media_engine_espeak"]
