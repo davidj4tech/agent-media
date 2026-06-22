@@ -155,6 +155,17 @@ class StateStore:
                         content_type: Optional[str] = None,
                         extras: Optional[dict] = None) -> None:
         with self._cursor() as cur:
+            # Snapshot the previous now_playing for this sink so we can log a
+            # history row when the URI actually changes. Speech already logs
+            # history explicitly via add_history(); skip it here to avoid
+            # double-counting. Music/book have no explicit logging, so this is
+            # where their plays land.
+            prev_uri: Optional[str] = None
+            if sink != "speech":
+                cur.execute("SELECT uri FROM now_playing WHERE sink = ?", (sink,))
+                row = cur.fetchone()
+                if row is not None:
+                    prev_uri = row[0]
             cur.execute(
                 "INSERT OR REPLACE INTO now_playing "
                 "(sink, uri, started_at, content_type, target, pause_pos_ms, extras) "
@@ -162,6 +173,15 @@ class StateStore:
                 (sink, uri, started_at, content_type, target,
                  json.dumps(extras) if extras else None),
             )
+            if sink != "speech" and uri and uri != prev_uri:
+                cur.execute(
+                    "INSERT INTO history "
+                    "(sink, uri, started_at, ended_at, target, source, "
+                    " content_type, text, extras) "
+                    "VALUES (?, ?, ?, NULL, ?, NULL, ?, NULL, ?)",
+                    (sink, uri, started_at, target, content_type,
+                     json.dumps(extras) if extras else None),
+                )
 
     def get_now_playing(self, sink: str) -> Optional[dict]:
         with self._cursor() as cur:

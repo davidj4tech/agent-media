@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Optional
 
 from .._paths import state_dir
+from .. import mopidy
 from ..types import Target
 from . import _mpv_ipc as ipc
 
@@ -37,6 +38,22 @@ DEFAULT_TARGET = Target(name="local")
 # mpv playback-speed sane bounds.
 _MIN_SPEED = 0.25
 _MAX_SPEED = 4.0
+
+
+def _to_book_uri(uri: str) -> str:
+    """Wrap any URI as `mpv:...` so the book Mopidy's mopidy-mpv backend can
+    play it. Already-`mpv:` URIs pass through. The `yt:` prefix (legacy from
+    the book_play MCP tool) is stripped before wrapping."""
+    u = uri.strip()
+    if u.startswith("mpv:"):
+        return u
+    if u.startswith("yt:"):
+        u = u[3:]
+    return f"mpv:{u}"
+
+
+def _mopidy_enabled() -> bool:
+    return os.environ.get("MEDIA_BOOK_MOPIDY", "0") not in ("", "0", "false", "no")
 
 
 def normalize_uri(uri: str) -> str:
@@ -201,6 +218,24 @@ class SinkBook:
                 log.warning("sink-book: set audio-device %s failed: %s", device, e)
 
         secs = max(0.0, (start_ms or 0) / 1000.0)
+        # When MEDIA_BOOK_MOPIDY is on, route the *load* through Mopidy so
+        # Iris's history controller records the play. Audio still lands on
+        # sink-book.sock (mopidy-mpv is attached to the same broker), and
+        # book_observer applies start_ms from resume_pos when it sees the
+        # loadfile event — same as Iris-driven plays today.
+        if _mopidy_enabled():
+            try:
+                mopidy.play_uri(mopidy.book_url(), _to_book_uri(norm))
+                # mopidy-mpv has no "start" option in tracklist.add, so we
+                # apply the resume offset directly on the socket after Mopidy
+                # kicks off the load. The observer sees our load-intent and
+                # won't re-seek to the bookmark on top of us.
+                if secs > 0:
+                    self._seek_abs(secs)
+                return norm
+            except mopidy.MopidyRpcError as e:
+                log.warning("sink-book: Mopidy RPC failed, falling back to "
+                            "direct ipc: %s", e)
         if secs > 0:
             # mpv 0.37: loadfile <url> [<flags> [<options>]] — pass `start`
             # as an option so we resume without racing the async file-load.
