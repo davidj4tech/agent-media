@@ -427,7 +427,7 @@ def _latest_ask_question(transcript_path: Path) -> str:
     return ""
 
 
-def _ask_lead_text(transcript_path: Path) -> str:
+def _ask_lead_text(transcript_path: Path, require_ask: bool = True) -> str:
     """Assistant prose that precedes the question in the *same* turn.
 
     When Claude writes an explanation and then calls AskUserQuestion, PreToolUse
@@ -437,7 +437,15 @@ def _ask_lead_text(transcript_path: Path) -> str:
     *separate* JSONL lines within one turn (text, then a tool_use-only line), so
     walk back over the contiguous run of assistant lines collecting `text`
     blocks, stopping at the turn boundary (the first user / tool_result line).
-    Returns "" unless that run actually carries the AskUserQuestion call.
+
+    `require_ask` gates whether the AskUserQuestion tool_use must be *seen in the
+    transcript* for the lead to count. The default (True) is the safe behaviour
+    for callers that don't otherwise know a question is happening. But PreToolUse
+    fires before Claude Code flushes the tool_use JSONL line — so at that moment
+    only the lead *text* line exists, `seen_ask` never trips, and the lead is
+    silently dropped. Callers that already know an AskUserQuestion is imminent
+    (it's in their payload) pass require_ask=False to take the trailing
+    assistant prose without waiting for the tool_use line to materialise.
     """
     try:
         lines = transcript_path.read_text().splitlines()
@@ -456,8 +464,13 @@ def _ask_lead_text(transcript_path: Path) -> str:
             continue
         msg = obj.get("message") or {}
         if msg.get("role") != "assistant":
-            if saw_assistant:
-                break  # hit the turn boundary
+            # Turn boundary. With require_ask we may skip trailing non-assistant
+            # lines (e.g. tool_results) to find an earlier assistant run, since
+            # seen_ask still guards the result. Without it (PreToolUse, tool_use
+            # not yet flushed) we must NOT skip a user message into the prior
+            # turn — that would mis-speak the previous reply as this lead.
+            if saw_assistant or not require_ask:
+                break
             continue   # trailing non-assistant lines before the turn
         saw_assistant = True
         line_parts: list[str] = []
@@ -472,7 +485,7 @@ def _ask_lead_text(transcript_path: Path) -> str:
         joined = "\n".join(p for p in line_parts if p)
         if joined:
             texts.append(joined)
-    if not seen_ask:
+    if require_ask and not seen_ask:
         return ""
     texts.reverse()
     return "\n".join(t for t in texts if t).strip()
@@ -551,13 +564,21 @@ def _handle_pretooluse(payload: dict) -> int:
     if not ask:
         return 0
     # Prepend any prose Claude wrote before the question in this same turn —
-    # the modal swallows it and Stop won't fire while input is pending.
+    # the modal swallows it and Stop won't fire while input is pending. We know
+    # an AskUserQuestion is happening (it's in this very payload), so don't gate
+    # on the tool_use line being in the transcript yet — at PreToolUse time it
+    # usually isn't flushed. Retry briefly to let the lead *text* line land; the
+    # shim runs us detached, so a short wait doesn't block the modal.
     lead = ""
     tp_raw = (payload.get("transcript_path") or "").strip()
     if tp_raw:
         tp = Path(tp_raw)
-        if tp.is_file():
-            lead = strip_markdown(_ask_lead_text(tp)).strip()
+        for _ in range(6):
+            if tp.is_file():
+                lead = strip_markdown(_ask_lead_text(tp, require_ask=False)).strip()
+            if lead:
+                break
+            time.sleep(0.2)
     return _emit_ask(ask, payload, lead=lead)
 
 
