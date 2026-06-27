@@ -904,10 +904,15 @@ def cmd_highlight_toggle(a) -> int:
                 _tmux_highlight_text(sentence, force=True)
         print("highlight: ON")
     else:
-        # Exit any active copy-mode in the speaking pane.
+        # Kill any in-flight clear-timer (so it can't fire into the pane after
+        # we're off), then force copy-mode shut and verify it actually left —
+        # otherwise the pane stays in tmux copy-mode, eating the app's own
+        # scroll/transcript keys even though highlighting is "off".
         if pane:
-            subprocess.run(["tmux", "send-keys", "-t", pane, "-X", "cancel"],
-                           capture_output=True)
+            from .intake.submit import (_kill_pending_clear,
+                                        _force_cancel_copy_mode)
+            _kill_pending_clear(pane)
+            _force_cancel_copy_mode(pane)
         print("highlight: OFF")
     return 0
 
