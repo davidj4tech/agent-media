@@ -395,6 +395,20 @@ def _anchor_for(text: str, max_len: int = 50) -> Optional[str]:
     return anchor[:cut] if cut > 15 else anchor[:max_len]
 
 
+def _pane_alternate_on(pane: str) -> bool:
+    """True if `pane` is on the alternate screen — a fullscreen TUI (Claude Code
+    and friends). That also means no tmux scrollback, so copy-mode only ever
+    sees the *visible* screen, and the app likely has its own scroll/transcript
+    view (e.g. Claude's Ctrl+O) that a held copy-mode would block."""
+    try:
+        r = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", pane, "#{alternate_on}"],
+            capture_output=True, text=True)
+        return r.returncode == 0 and r.stdout.strip() == "1"
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _tmux_highlight_text(text: str, *, first: bool = False,
                          force: bool = False) -> None:
     """Re-anchor copy-mode in the source pane onto the spoken text.
@@ -405,6 +419,11 @@ def _tmux_highlight_text(text: str, *, first: bool = False,
     user scrolled away from our last highlight; that rule is gone — the
     keystroke-recency skip in `_run` is the gentler way to stay out of the
     user's way, so highlighting now always follows the spoken text.)
+
+    On an alternate-screen pane (Claude Code & other fullscreen TUIs) this is a
+    *transient pulse* — flash then drop out of copy-mode so the app's own scroll
+    keys (Claude's Ctrl+O) stay usable; on a normal-screen pane it parks the
+    viewport on the sentence (scroll-and-hold). See `transient` below.
 
     Off by default — opt-in via the popup's `v` toggle (which writes to
     `$XDG_STATE_HOME/agent-media/auto-highlight`). `MEDIA_AUTO_HIGHLIGHT=1`
@@ -419,6 +438,16 @@ def _tmux_highlight_text(text: str, *, first: bool = False,
     pane = os.environ.get("TMUX_PANE")
     if not pane:
         return
+
+    # Transient pulse vs scroll-and-hold. On an alternate-screen pane (Claude
+    # Code & other fullscreen TUIs) we flash the sentence then drop out of
+    # copy-mode, so the pane returns to the app's live view and its own
+    # scroll/transcript keys (Claude's Ctrl+O) aren't blocked — and there's no
+    # scrollback to hold onto anyway. On a normal-screen pane we keep the
+    # scroll-and-hold follow-along (real scrollback to read along, no fullscreen
+    # view to step aside for). Override with MEDIA_HIGHLIGHT_TRANSIENT=1/0.
+    _t_env = os.environ.get("MEDIA_HIGHLIGHT_TRANSIENT")
+    transient = (_t_env == "1") if _t_env in ("0", "1") else _pane_alternate_on(pane)
 
     # Build the search anchor (markdown stripped, longest single line, trimmed
     # to one visual row). Cap to the target pane's width: tmux search-backward
@@ -502,13 +531,17 @@ def _tmux_highlight_text(text: str, *, first: bool = False,
                             "-X", "-N", str(select_len), "cursor-right"],
                            capture_output=True)
         if flash_ms > 0:
-            # Detached clear-selection after flash window. start_new_session
-            # makes this proc the session leader, so its PID is its pgid;
-            # we record it so the next highlight can killpg it cleanly.
+            # After the flash window, end the highlight. Transient (alt-screen):
+            # `cancel` drops out of copy-mode entirely so the app's own keys work
+            # again between pulses. Otherwise `clear-selection` fades the mark but
+            # stays in copy-mode, leaving the viewport parked on the sentence.
+            # start_new_session makes this proc the session leader, so its PID is
+            # its pgid; we record it so the next highlight can killpg it cleanly.
+            _end = "cancel" if transient else "clear-selection"
             proc = subprocess.Popen(
                 ["sh", "-c",
                  f"sleep {flash_ms / 1000:.2f}; "
-                 f"tmux send-keys -t {pane} -X clear-selection 2>/dev/null"],
+                 f"tmux send-keys -t {pane} -X {_end} 2>/dev/null"],
                 start_new_session=True,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
