@@ -119,6 +119,35 @@ def test_force_expires_after_max_age(monkeypatch, tmp_path):
     assert not S._force_highlight_flag_path().exists()
 
 
+# --- alternate-screen detection (transient pulse vs scroll-and-hold) --------
+
+def test_pane_alternate_on_true(monkeypatch):
+    def fake_run(cmd, **kw):
+        class _R:
+            returncode = 0
+            stdout = "1\n"
+        return _R()
+    monkeypatch.setattr(S.subprocess, "run", fake_run)
+    assert S._pane_alternate_on("%5") is True
+
+
+def test_pane_alternate_on_false(monkeypatch):
+    def fake_run(cmd, **kw):
+        class _R:
+            returncode = 0
+            stdout = "0\n"
+        return _R()
+    monkeypatch.setattr(S.subprocess, "run", fake_run)
+    assert S._pane_alternate_on("%5") is False
+
+
+def test_pane_alternate_on_error(monkeypatch):
+    def fake_run(cmd, **kw):
+        raise RuntimeError("no tmux")
+    monkeypatch.setattr(S.subprocess, "run", fake_run)
+    assert S._pane_alternate_on("%5") is False
+
+
 # --- popup-open override ----------------------------------------------------
 
 def test_popup_open_matches_pane(monkeypatch, tmp_path):
