@@ -467,6 +467,7 @@ PartOf=default.target
 
 [Service]
 Type=simple
+EnvironmentFile=-%h/.config/agent-media.env
 Environment=PATH={bindir}:/usr/local/bin:/usr/bin:/bin
 ExecStart=/bin/sh {runscript}
 Restart=on-failure
