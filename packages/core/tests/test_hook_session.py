@@ -15,6 +15,9 @@ def _capture_submit(monkeypatch):
         return "rid-1"
 
     monkeypatch.setattr(H, "submit_event", fake_submit)
+    # The Stop path detaches playback into a forked child where an in-process
+    # mock can't be observed; run inline so the captured call is visible.
+    monkeypatch.setenv("MEDIA_HOOK_NO_DETACH", "1")
     return seen
 
 

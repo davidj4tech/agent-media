@@ -633,6 +633,63 @@ def _handle_notification(payload: dict) -> int:
     return 0
 
 
+def _play_detached(event: Event) -> None:
+    """Render + play `event` in a session-detached grandchild process.
+
+    Claude Code SIGKILLs a Stop hook still running at its 120s timeout. Playback
+    blocks for the full spoken duration, so a reply with >~120s of audio would be
+    cut off mid-sentence ("finishes early" on long replies). Double-fork + setsid
+    + detached stdio hands playback to a process reparented to init: the hook
+    returns in milliseconds and playback runs to completion regardless of length.
+    Cross-turn ordering is still serialized by the speech playback lock inside
+    submit_event. Falls back to inline play if fork is unavailable.
+
+    Set MEDIA_HOOK_NO_DETACH=1 to play inline instead (debugging — surfaces
+    submit errors to the caller; also what the tests use to observe the call).
+    """
+    if os.environ.get("MEDIA_HOOK_NO_DETACH"):
+        submit_event(event, state=StateStore())
+        return
+    try:
+        pid = os.fork()
+    except OSError:
+        submit_event(event, state=StateStore())  # no fork → bounded by timeout
+        return
+    if pid > 0:
+        # Reap the intermediate child (it exits right after its own fork) so the
+        # hook leaves no zombie and returns immediately.
+        try:
+            os.waitpid(pid, 0)
+        except OSError:
+            pass
+        return
+    # --- intermediate child: new session, then fork again and exit so the
+    #     grandchild is reparented to init and outlives the hook ---
+    os.setsid()
+    try:
+        if os.fork() > 0:
+            os._exit(0)
+    except OSError:
+        os._exit(0)
+    # --- grandchild: detach stdio so Claude Code's hook pipe sees EOF (it must
+    #     not wait on us), then play to completion ---
+    try:
+        devnull = os.open(os.devnull, os.O_RDWR)
+        for fd in (0, 1, 2):
+            try:
+                os.dup2(devnull, fd)
+            except OSError:
+                pass
+    except OSError:
+        pass
+    try:
+        submit_event(event, state=StateStore())
+    except Exception:  # noqa: BLE001 — detached; there is no caller to report to
+        pass
+    finally:
+        os._exit(0)
+
+
 def _handle_stop(payload: dict) -> int:
     """Stop path: read the latest assistant text and submit it."""
     raw_path = (payload.get("transcript_path") or "").strip()
@@ -661,16 +718,18 @@ def _handle_stop(payload: dict) -> int:
         return 0
 
     dedup_key = hashlib.sha1(text.encode("utf-8")).hexdigest()
-    rid = submit_event(
+    # Record the stop stamp now — we're committing to speak, the notif
+    # suppression window keys off it, and detached playback won't report back.
+    _write_stamp(_stamp_dir() / "stop-last", int(time.time()))
+    # Detach playback: a long reply's audio can exceed Claude Code's 120s hook
+    # timeout, which would SIGKILL the hook and cut it off mid-sentence. Hand it
+    # to a backgrounded process and return immediately.
+    _play_detached(
         Event(text=text, source=Source.CLAUDE_CODE,
               priority=Priority.NORMAL,
               voice=_voice_for_session(_session_name()),
               metadata={"kind": "stop", "dedup_key": dedup_key,
-                        "session": payload.get("session_id") or ""}),
-        state=state,
-    )
-    if rid is not None:
-        _write_stamp(_stamp_dir() / "stop-last", int(time.time()))
+                        "session": payload.get("session_id") or ""}))
     return 0
 
 
