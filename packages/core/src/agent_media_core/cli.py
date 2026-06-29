@@ -1055,27 +1055,50 @@ def cmd_pane_muted(a) -> int:
     return 0
 
 
-_SPEED_MIN, _SPEED_MAX, _SPEED_STEP = 0.5, 3.0, 0.1
+# Speed [ / ] ladder. At/above 1.0x, presses hop these rungs — the gaps widen
+# (1.0→1.5→2.0→3.0 is +0.5,+0.5,+1.0) so a held key accelerates. Below 1.0x, fine
+# flat 0.1 steps for precise control (no ladder). Symmetric for up/down. As a
+# position ladder (snap off the live speed) it needs no cross-press accel state —
+# each listening-mode [ / ] press is a separate `media speed` process.
+_SPEED_MIN, _SPEED_MAX, _SPEED_FLAT = 0.3, 3.0, 0.1
+_SPEED_RUNGS = (1.0, 1.5, 2.0, 3.0)
+
+
+def _speed_next(cur: float, direction: int) -> float:
+    """Next speed for a [ / ] press: +1 faster / -1 slower. Hops _SPEED_RUNGS
+    at/above 1.0x; flat _SPEED_FLAT steps below. Clamped to [_SPEED_MIN, _SPEED_MAX]."""
+    eps = 1e-6
+    if direction > 0:
+        if cur < 1.0 - eps:
+            return min(round(cur + _SPEED_FLAT, 2), 1.0)
+        for r in _SPEED_RUNGS:
+            if r > cur + eps:
+                return r
+        return _SPEED_MAX
+    if cur > 1.0 + eps:
+        for r in reversed(_SPEED_RUNGS):
+            if r < cur - eps:
+                return r
+        return 1.0
+    return max(round(cur - _SPEED_FLAT, 2), _SPEED_MIN)
 
 
 def cmd_speed(a) -> int:
     """Set speech speed: absolute factor, 'reset' (→1.0), or relative 'up'/'down'
-    (and the '+0.1' / '-0.1' forms) which read-modify-write the live sink so the
-    listening-mode [ / ] keys can ride it up and down. Clamped to a sane range."""
+    (the listening-mode [ / ] keys) which snap the live sink along the speed ladder.
+    The raw '+0.1' / '-0.1' forms still apply a literal delta. Clamped to range."""
     sock = _sock()
     f = a.factor
     if f == "reset":
         target = 1.0
-    elif f in ("up", "down") or (f and f[0] in "+-"):
+    elif f in ("up", "down"):
         cur = _get("speed")
         cur = float(cur) if isinstance(cur, (int, float)) else 1.0
-        if f == "up":
-            delta = _SPEED_STEP
-        elif f == "down":
-            delta = -_SPEED_STEP
-        else:
-            delta = float(f)
-        target = max(_SPEED_MIN, min(_SPEED_MAX, cur + delta))
+        target = _speed_next(cur, 1 if f == "up" else -1)
+    elif f and f[0] in "+-":
+        cur = _get("speed")
+        cur = float(cur) if isinstance(cur, (int, float)) else 1.0
+        target = max(_SPEED_MIN, min(_SPEED_MAX, cur + float(f)))
     else:
         target = max(_SPEED_MIN, min(_SPEED_MAX, float(f)))
     ipc.set_property(sock, "speed", round(target, 2))
