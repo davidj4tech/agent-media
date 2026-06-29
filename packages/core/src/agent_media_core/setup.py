@@ -584,6 +584,145 @@ def cmd_install_services(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+# --- Rooms audio hub (server role) -----------------------------------------
+# `media-setup server` wires a PipeWire/systemd host as a Snapcast render hub:
+# null sinks (am[/am-music]) -> parec -> /tmp/snapfifo-<sink> -> snapserver.
+# This is the USER-level half (sinks + parec bridge + rooms env). snapserver
+# itself needs root (pkg + /etc/snapserver.conf + a same-user override + the
+# tmpfiles FIFO pre-create), so those are printed for sudo / an ansible
+# audio_server role. PipeWire/systemd hosts only — Termux keeps the openal AO
+# default (it survives BT route changes), so this never runs there.
+
+ROOMS_SPEECH_SINK = "am"
+ROOMS_MUSIC_SINK = "am-music"
+
+_AM_SINKS_UNIT = """\
+[Unit]
+Description=agent-media: PipeWire null sinks for rooms audio
+After=pipewire.service pipewire-pulse.service wireplumber.service
+Requires=pipewire.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+{execstarts}
+
+[Install]
+WantedBy=default.target
+"""
+
+_AM_SNAPFIFO_UNIT = """\
+[Unit]
+Description=agent-media: parec %i.monitor -> /tmp/snapfifo-%i (snapserver pipe)
+After=am-sinks.service
+Requires=am-sinks.service
+
+[Service]
+ExecStart=/bin/sh -c "exec parec --device=%i.monitor --rate=48000 --format=s16le --channels=2 > /tmp/snapfifo-%i"
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+"""
+
+# PipeWire host: per-clip `audio-device=pulse/<sink>` routing needs the pulse
+# AO. (openal — the default that survives Termux BT route changes — does not
+# understand pulse device ids.)
+_ROOMS_ENV_DEFAULTS = (
+    ("MEDIA_SPEECH_DEFAULT_TARGET", "rooms"),
+    ("MEDIA_ROOMS_SINK", ROOMS_SPEECH_SINK),
+    ("MEDIA_SPEECH_AO", "pulse"),
+    ("MEDIA_RENDER_ENGINE", "edge"),
+)
+
+
+def _agent_media_env_path() -> Path:
+    base = os.environ.get("XDG_CONFIG_HOME")
+    root = Path(base) if base else Path.home() / ".config"
+    return root / "agent-media.env"
+
+
+def _merge_env_defaults(env_path: Path, defaults, *, dry_run: bool) -> list[str]:
+    """Append missing KEY=value defaults to agent-media.env. Never overwrites a
+    key the user already set. Returns the keys added."""
+    existing = env_path.read_text() if env_path.exists() else ""
+    present = {ln.split("=", 1)[0].strip()
+               for ln in existing.splitlines()
+               if "=" in ln and not ln.lstrip().startswith("#")}
+    add = [(k, v) for k, v in defaults if k not in present]
+    if not add:
+        return []
+    block = "".join(f"{k}={v}\n" for k, v in add)
+    if dry_run:
+        print(f"# would append to {env_path}:\n{block}", end="")
+        return [k for k, _ in add]
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    sep = "" if (not existing or existing.endswith("\n")) else "\n"
+    with env_path.open("a") as fh:
+        fh.write(sep + ("" if existing else "# agent-media host config\n") + block)
+    return [k for k, _ in add]
+
+
+def cmd_server(args: argparse.Namespace) -> int:
+    """Wire this host as a Snapcast rooms render hub (PipeWire/systemd only)."""
+    if _service_backend(getattr(args, "backend", None) or "auto") != "systemd":
+        print("media-setup server: PipeWire/systemd --user hosts only "
+              "(Termux/runit hosts are snapclients, not the hub).",
+              file=sys.stderr)
+        return 1
+
+    sinks = [ROOMS_SPEECH_SINK] + ([ROOMS_MUSIC_SINK] if args.music else [])
+    root = systemd_user_dir()
+    execstarts = "\n".join(
+        f'ExecStart=/bin/sh -c "pactl list short sinks | cut -f2 | grep -qx {s} '
+        f'|| pactl load-module module-null-sink sink_name={s} '
+        f'sink_properties=device.description={s}"'
+        for s in sinks)
+    for name, content in (("am-sinks.service", _AM_SINKS_UNIT.format(execstarts=execstarts)),
+                          ("am-snapfifo@.service", _AM_SNAPFIFO_UNIT)):
+        dest = root / name
+        if args.dry_run:
+            print(f"# would write {dest}:\n{content}")
+        elif dest.exists() and dest.read_text() == content:
+            print(f"media-setup: {name} already up to date")
+        else:
+            root.mkdir(parents=True, exist_ok=True)
+            dest.write_text(content)
+            print(f"media-setup: wrote {dest}")
+    units = ["am-sinks.service"] + [f"am-snapfifo@{s}.service" for s in sinks]
+
+    added = _merge_env_defaults(_agent_media_env_path(), _ROOMS_ENV_DEFAULTS,
+                                dry_run=args.dry_run)
+    print(f"media-setup: set {', '.join(added)} in agent-media.env" if added
+          else "media-setup: agent-media.env already has the rooms env")
+
+    if args.dry_run:
+        print(f"# would: systemctl --user daemon-reload && enable --now {' '.join(units)}")
+    else:
+        _systemctl_user("daemon-reload")
+        if args.now:
+            _systemctl_user("enable", "--now", *units)
+        else:
+            print("media-setup: units written. Start them with:\n"
+                  f"  systemctl --user enable --now {' '.join(units)}")
+
+    user = os.environ.get("USER") or Path.home().name
+    src_lines = "; ".join(
+        f"source = pipe:///tmp/snapfifo-{s}?name={s}&codec=pcm&sampleformat=48000:16:2"
+        for s in sinks)
+    print("\nmedia-setup: snapserver itself needs root — run the dotfiles "
+          "audio_server ansible role, or as root:\n"
+          f"  * /etc/snapserver.conf [stream]: {src_lines}\n"
+          f"  * snapserver.service override -> User={user} Group={user} "
+          "(same-user FIFO constraint)\n"
+          f"  * /etc/tmpfiles.d/snapfifo.conf: pre-create "
+          f"{', '.join('/tmp/snapfifo-'+s for s in sinks)} owned by {user}\n"
+          f"  * loginctl enable-linger {user}; systemctl enable --now snapserver",
+          file=sys.stderr)
+    return 0
+
+
 # --- Shell integration (tmux popup + control surface) ----------------------
 
 def cmd_install_shell(args: argparse.Namespace) -> int:
@@ -709,6 +848,17 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.add_argument("services", nargs="*",
                     help="Specific service names (default: all in repo)")
     sp.set_defaults(func=cmd_install_services)
+
+    sp = sub.add_parser("server",
+                        help="Wire this host as a Snapcast rooms render hub "
+                             "(PipeWire null sinks + parec->FIFO + rooms env; "
+                             "PipeWire/systemd hosts only)")
+    sp.add_argument("--music", action="store_true",
+                    help="also wire the am-music sink/bridge (default: am only)")
+    sp.add_argument("--now", action="store_true",
+                    help="enable --now the units after writing")
+    sp.add_argument("--dry-run", action="store_true")
+    sp.set_defaults(func=cmd_server)
 
     sp = sub.add_parser("install-shell",
                         help="Symlink the tmux popup launcher + control "
