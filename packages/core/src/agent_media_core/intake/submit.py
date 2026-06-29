@@ -92,8 +92,8 @@ def _resolve_voice(event: Event, engine: str) -> Optional[str]:
 
 
 def _ext_for(engine: str) -> str:
-    """qwen / realtime emit WAV, others MP3."""
-    return "wav" if engine in ("qwen", "realtime") else "mp3"
+    """qwen / realtime / kokoro emit WAV, others MP3."""
+    return "wav" if engine in ("qwen", "realtime", "kokoro") else "mp3"
 
 
 def _split_sentences_with_paragraphs(text: str) -> tuple[list[str], list[int]]:
