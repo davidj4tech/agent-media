@@ -20,6 +20,10 @@ def _load_one(path: str, label: str) -> None:
     Existing vars (real env or an earlier, higher-precedence file) are never
     clobbered, so calling this for each candidate from highest to lowest
     precedence layers them correctly. Missing files are skipped silently.
+
+    A *present-but-empty* var (e.g. `OPENAI_API_KEY=''` exported by a login
+    shell) counts as unset for layering: it would otherwise block a real value
+    from the config file while contributing nothing, so it gets backfilled.
     """
     try:
         with open(path) as f:
@@ -33,7 +37,7 @@ def _load_one(path: str, label: str) -> None:
                     continue
                 k, v = line.split("=", 1)
                 k, v = k.strip(), v.strip().strip('"').strip("'")
-                if k and k not in os.environ:
+                if k and not os.environ.get(k):
                     os.environ[k] = v
     except FileNotFoundError:
         return

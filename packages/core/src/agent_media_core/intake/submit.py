@@ -92,8 +92,8 @@ def _resolve_voice(event: Event, engine: str) -> Optional[str]:
 
 
 def _ext_for(engine: str) -> str:
-    """qwen / realtime emit WAV, others MP3."""
-    return "wav" if engine in ("qwen", "realtime") else "mp3"
+    """qwen / realtime / kokoro emit WAV, others MP3."""
+    return "wav" if engine in ("qwen", "realtime", "kokoro") else "mp3"
 
 
 def _split_sentences_with_paragraphs(text: str) -> tuple[list[str], list[int]]:
@@ -1144,29 +1144,30 @@ def submit_event(event: Event,
 
     def _on_fallback(failed_engine: str, err: str) -> None:
         short = err.strip().splitlines()[0] if err else "no detail"
+        fb = os.environ.get("MEDIA_RENDER_FALLBACK_ENGINE") or "edge"
         kind = "render-fallback"
         if "insufficient_quota" in err:
             kind = "render-quota"
-        log.warning("intake: %s engine failed (%s); falling back to edge",
-                    failed_engine, short)
+        log.warning("intake: %s engine failed (%s); falling back to %s",
+                    failed_engine, short, fb)
         state.log_error("intake",
-                        f"render {failed_engine} failed, fell back to edge",
+                        f"render {failed_engine} failed, fell back to {fb}",
                         extras={"kind": kind, "engine": failed_engine,
-                                "detail": short[:300],
+                                "fallback_engine": fb, "detail": short[:300],
                                 "source": event.source.value})
         with _fallback_lock:
             fallback_info.update({
                 "from_engine": failed_engine,
-                "fallback_engine": "edge",
+                "fallback_engine": fb,
                 "kind": kind,
                 "detail": short[:300],
             })
         if kind == "render-quota":
             title = f"agent-media: {failed_engine} quota exhausted"
-            body = "Falling back to edge for now."
+            body = f"Falling back to {fb} for now."
         else:
             title = f"agent-media: {failed_engine} render failed"
-            body = f"Falling back to edge. {short[:120]}"
+            body = f"Falling back to {fb}. {short[:120]}"
         notify(key=f"render-fallback-{failed_engine}",
                title=title, content=body)
 
@@ -1442,26 +1443,27 @@ def submit_stream(sentences,
 
     def _on_fallback(failed_engine: str, err: str) -> None:
         short = err.strip().splitlines()[0] if err else "no detail"
+        fb = os.environ.get("MEDIA_RENDER_FALLBACK_ENGINE") or "edge"
         kind = "render-fallback"
         if "insufficient_quota" in err:
             kind = "render-quota"
-        log.warning("intake-stream: %s engine failed (%s); falling back to edge",
-                    failed_engine, short)
+        log.warning("intake-stream: %s engine failed (%s); falling back to %s",
+                    failed_engine, short, fb)
         state.log_error("intake",
-                        f"render {failed_engine} failed, fell back to edge",
+                        f"render {failed_engine} failed, fell back to {fb}",
                         extras={"kind": kind, "engine": failed_engine,
-                                "detail": short[:300],
+                                "fallback_engine": fb, "detail": short[:300],
                                 "source": event.source.value})
         with _fallback_lock:
             fallback_info.update({"from_engine": failed_engine,
-                                  "fallback_engine": "edge", "kind": kind,
+                                  "fallback_engine": fb, "kind": kind,
                                   "detail": short[:300]})
         if kind == "render-quota":
             title = f"agent-media: {failed_engine} quota exhausted"
-            body = "Falling back to edge for now."
+            body = f"Falling back to {fb} for now."
         else:
             title = f"agent-media: {failed_engine} render failed"
-            body = f"Falling back to edge. {short[:120]}"
+            body = f"Falling back to {fb}. {short[:120]}"
         notify(key=f"render-fallback-{failed_engine}", title=title, content=body)
 
     # Shared, lock-guarded clip table: the producer thread appends sentences and
