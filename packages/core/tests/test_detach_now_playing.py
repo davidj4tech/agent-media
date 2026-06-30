@@ -11,9 +11,19 @@ live pane was "already closed". The fix is to release the parent's connection
 before forking; see ``StateStore.close`` and ``_play_detached``.
 """
 
+import os
+import subprocess
+
 from agent_media_core.intake import hook_claude_code as H
 from agent_media_core.state import StateStore
 from agent_media_core.types import Event, Source
+
+
+def _dead_pid() -> int:
+    """A pid that is guaranteed not to be a live process (reaped child)."""
+    p = subprocess.Popen(["true"])
+    p.wait()
+    return p.pid
 
 
 def test_close_releases_then_reopens(tmp_path):
@@ -42,3 +52,36 @@ def test_play_detached_closes_caller_state_before_fork(monkeypatch):
     H._play_detached(Event(text="hi", source=Source.CLAUDE_CODE),
                      state=SpyState())
     assert closed["n"] == 1
+
+
+# --- orphan guard: a row whose writer process is gone must not be shown ------
+
+def test_orphaned_speech_row_is_hidden_and_cleared(tmp_path):
+    store = StateStore(tmp_path / "state.db")
+    store.set_now_playing("speech", uri="clip-0", started_at=1.0,
+                          extras={"writer_pid": _dead_pid(),
+                                  "total_duration_s": 9.0})
+    # Writer is gone → the row is treated as absent...
+    assert store.get_now_playing("speech") is None
+    # ...and self-healed out of the table.
+    with store._cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM now_playing WHERE sink='speech'")
+        assert cur.fetchone()[0] == 0
+
+
+def test_live_writer_row_is_returned(tmp_path):
+    store = StateStore(tmp_path / "state.db")
+    store.set_now_playing("speech", uri="clip-0", started_at=1.0,
+                          extras={"writer_pid": os.getpid(),
+                                  "total_duration_s": 9.0})
+    np = store.get_now_playing("speech")
+    assert np is not None and np["uri"] == "clip-0"
+
+
+def test_row_without_writer_pid_is_untouched(tmp_path):
+    # Music/book/legacy rows carry no writer_pid and must never be guarded.
+    store = StateStore(tmp_path / "state.db")
+    store.set_now_playing("music", uri="track-1", started_at=1.0,
+                          content_type="music")
+    np = store.get_now_playing("music")
+    assert np is not None and np["uri"] == "track-1"
