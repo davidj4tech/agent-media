@@ -17,8 +17,10 @@ import time
 import threading
 from typing import Optional
 
+from .. import snapcast
 from ..sinks.book import SinkBook
 from ..sinks.music import SinkMusic
+from ..sinks.music_router import SinkMusicRouter
 from ..state import StateStore
 from ..types import ContentType, Target
 from . import _android, _mpris
@@ -46,6 +48,20 @@ def _env_duck_level() -> Optional[int]:
             except ValueError:
                 continue
     return None
+
+
+def _rooms_duck_stream() -> Optional[str]:
+    """Snapcast stream whose client volumes get ducked under speech, so the duck
+    reaches the rooms regardless of which player feeds the stream (Mopidy on any
+    host, the phone's local mpv, …) — unlike the Mopidy ``setvol`` duck below,
+    which only lands when *this* coordinator's Mopidy is the one playing.
+
+    Set ``MEDIA_DUCK_ROOMS_STREAM`` to the music stream id (e.g. ``am-music``) on
+    the rooms hub to enable. Unset (default) disables this path entirely, so it's
+    behaviour-preserving for hosts that aren't the rooms snapserver.
+    """
+    s = (os.environ.get("MEDIA_DUCK_ROOMS_STREAM") or "").strip()
+    return s or None
 
 
 def _remote_resume_settle_s() -> float:
@@ -90,7 +106,11 @@ class Coordinator:
                  book: Optional[SinkBook] = None,
                  music_target: Target = Target(name="local"),
                  book_target: Target = Target(name="local")) -> None:
-        self.music = music or SinkMusic()
+        # The router forwards control to whichever backend is live (Mopidy or
+        # the phone's local mpv) so speech ducks phone-local playout too. With
+        # no phone backend configured it short-circuits to plain Mopidy, so this
+        # is behaviour-preserving for the rooms/desktop case.
+        self.music = music or SinkMusicRouter()
         self.state = state or StateStore()
         # Constructing SinkBook is cheap and never spawns mpv; probes below
         # are spawn-free, so an unused book channel costs nothing here.
@@ -139,11 +159,93 @@ class Coordinator:
 
         threading.Thread(target=_work, daemon=True).start()
 
+    # ---- source-agnostic rooms (Snapcast) duck ------------------------
+
+    def _rooms_duck(self, level: int) -> None:
+        """Duck the rooms music stream by lowering each audible Snapcast
+        client's volume to ``level`` for the clip. Source-agnostic: works no
+        matter which player feeds ``MEDIA_DUCK_ROOMS_STREAM``. Best-effort —
+        a snapserver hiccup must never break speech. No-op when disabled.
+        """
+        stream = _rooms_duck_stream()
+        if not stream:
+            return
+        try:
+            marker = self.state.get_rooms_duck()
+            if marker and marker.get("vols"):
+                # A duck is already in force (mid-response re-duck, or a strand
+                # from a killed process): keep the original pre-duck volumes as
+                # the restore baseline rather than re-capturing ducked ones.
+                vols = {str(k): int(v) for k, v in marker["vols"].items()}
+            else:
+                vols = {c["id"]: int(c["percent"])
+                        for c in snapcast.clients_on_stream(stream)}
+            if not vols:
+                return
+            self.state.set_rooms_duck({"level": int(level), "vols": vols})
+            for cid, prior in vols.items():
+                if prior > level:
+                    snapcast.set_client_volume(cid, level)
+        except Exception as e:  # noqa: BLE001
+            self._log_err("rooms: snapcast duck failed", str(e))
+
+    def _rooms_unduck(self, clear: bool = True) -> None:
+        """Restore client volumes ducked by :meth:`_rooms_duck`. With
+        ``clear=False`` the marker is kept so a later restore still runs (used
+        by the mid-response mute release)."""
+        if not _rooms_duck_stream():
+            return
+        try:
+            marker = self.state.get_rooms_duck()
+        except Exception:  # noqa: BLE001
+            marker = None
+        if not marker:
+            return
+        try:
+            for cid, prior in (marker.get("vols") or {}).items():
+                snapcast.set_client_volume(str(cid), int(prior))
+        except Exception as e:  # noqa: BLE001
+            self._log_err("rooms: snapcast unduck failed", str(e))
+        finally:
+            if clear:
+                try:
+                    self.state.set_rooms_duck(None)
+                except Exception:  # noqa: BLE001
+                    pass
+
+    def _rooms_reduck(self) -> None:
+        """Re-apply the rooms duck after a mid-response mute is lifted, reusing
+        the level and pre-duck volumes the marker recorded."""
+        if not _rooms_duck_stream():
+            return
+        try:
+            marker = self.state.get_rooms_duck()
+        except Exception:  # noqa: BLE001
+            marker = None
+        if not marker:
+            return
+        level = int(marker.get("level") or 10)
+        try:
+            for cid, prior in (marker.get("vols") or {}).items():
+                if int(prior) > level:
+                    snapcast.set_client_volume(str(cid), level)
+        except Exception as e:  # noqa: BLE001
+            self._log_err("rooms: snapcast reduck failed", str(e))
+
     def before_speech(self) -> None:
         """Apply interruption for whatever sink-music is currently
         playing. Records baseline volume + position so after_speech can
         restore.
         """
+        # Source-agnostic rooms duck, applied first and independent of the
+        # Mopidy now-playing gate below: lower the Snapcast music stream so the
+        # duck lands even when the music is fed by a different player/host than
+        # the one this coordinator can poll. No-op unless MEDIA_DUCK_ROOMS_STREAM
+        # is set. Uses the same level the user/policy picks for music.
+        rooms_level = _env_duck_level()
+        if rooms_level is None:
+            rooms_level = policy_for(ContentType.MUSIC).duck_level
+        self._rooms_duck(rooms_level)
         # Local MPRIS: pause browser/external players on this host.
         if _mpris.enabled():
             self._mpris_paused = _mpris.playing_players()
@@ -239,6 +341,10 @@ class Coordinator:
 
     def after_speech(self) -> None:
         """Restore from whatever before_speech did."""
+        # Restore the source-agnostic rooms (Snapcast) duck first — it's
+        # independent of the Mopidy interruption marker handled below (which is
+        # absent whenever this coordinator's Mopidy wasn't the one playing).
+        self._rooms_unduck()
         if self._mpris_paused:
             _mpris.resume_players(self._mpris_paused)
             self._mpris_paused = []
@@ -322,6 +428,9 @@ class Coordinator:
         never the book/MPRIS/phone pauses, which would churn on every toggle.
         Pause-strategy music (audiobook/podcast) is left alone.
         """
+        # Lift the rooms (Snapcast) duck too while speech is muted; keep the
+        # marker so after_speech still owns the authoritative restore.
+        self._rooms_unduck(clear=False)
         interruption = self._duck_interruption()
         if interruption is None:
             return
@@ -335,6 +444,8 @@ class Coordinator:
         """Re-duck music when a mid-response mute is lifted and speech is
         audible again. Reads the same level before_speech recorded.
         """
+        # Re-duck the rooms (Snapcast) stream too, reusing its own marker.
+        self._rooms_reduck()
         interruption = self._duck_interruption()
         if interruption is None:
             return

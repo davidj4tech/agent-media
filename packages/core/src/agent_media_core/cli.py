@@ -1641,6 +1641,33 @@ def _music_now_label(m: "SinkMusic") -> str:
     return f"{artist} — {title}" if artist and title else title
 
 
+def _resolve_music_where(where: str) -> str:
+    """Resolve a `--where` value to a concrete backend: 'phone' or 'rooms'.
+
+    Mirrors the old `play-music` router so it can retire: 'local'/'rooms' map
+    straight to Mopidy ('rooms'); 'phone' to the phone-local backend; 'auto'
+    picks phone when it's the only listener (no other room connected to the
+    snapserver) and rooms otherwise. On an unreachable snapserver, fall back to
+    MEDIA_MUSIC_AUTO_DEFAULT (default 'phone' — offline-capable, survives a hub
+    hiccup). When the phone backend isn't configured, 'auto' always means rooms.
+    """
+    if where in ("local", "rooms"):
+        return "rooms"
+    if where == "phone":
+        return "phone"
+    # auto
+    from .sinks.music_local import configured as _local_configured
+    if not _local_configured():
+        return "rooms"
+    from . import snapcast
+    default = os.environ.get("MEDIA_MUSIC_AUTO_DEFAULT", "phone")
+    try:
+        others = snapcast.connected_other_clients()
+    except snapcast.SnapcastError:
+        return default if default in ("phone", "rooms") else "phone"
+    return "rooms" if others else "phone"
+
+
 def cmd_music(a) -> int:
     from .route import coerce_content_type, detect_content_type
 
@@ -1662,8 +1689,23 @@ def cmd_music(a) -> int:
         if not a.uri:
             print("media music play: a URI is required", file=sys.stderr)
             return 2
-        m.play(a.uri, replace=not a.add)
+        where = _resolve_music_where(getattr(a, "where", "auto"))
         ct = coerce_content_type(getattr(a, "as_type", None)) or detect_content_type(a.uri)
+        if where == "phone":
+            from .sinks.music_local import SinkMusicLocal, configured
+            if not configured():
+                print("media music play --where phone: MEDIA_MUSIC_LOCAL_ENDPOINT "
+                      "is unset (phone backend not configured)", file=sys.stderr)
+                return 2
+            try:
+                SinkMusicLocal().play(a.uri, replace=not a.add)
+            except Exception as e:  # noqa: BLE001
+                print(f"media music play (phone) failed: {e}", file=sys.stderr)
+                return 1
+            StateStore().set_music_intent(a.uri, ct.value)
+            print(f"playing on phone ({ct.value}): {a.uri}")
+            return 0
+        m.play(a.uri, replace=not a.add)
         StateStore().set_music_intent(a.uri, ct.value)
         print(f"playing ({ct.value}): {a.uri}")
         return 0
@@ -2141,6 +2183,12 @@ def _build_parser() -> argparse.ArgumentParser:
                             "ambient"),
                    help="for 'play': interruption content type "
                         "(audiobook/podcast pause instead of duck)")
+    s.add_argument("--where", choices=("auto", "local", "rooms", "phone"),
+                   default="auto",
+                   help="for 'play': where to play — 'phone' downloads on the "
+                        "phone (residential IP, dodges 403, offline) and plays "
+                        "locally; 'rooms'/'local' use Mopidy; 'auto' picks phone "
+                        "when it's the only listener (replaces play-music)")
     s.set_defaults(func=cmd_music)
 
     _add_book_parser(sub)

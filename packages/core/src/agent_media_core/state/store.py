@@ -603,6 +603,34 @@ class StateStore:
             row = cur.fetchone()
         return row[0] if row else None
 
+    _ROOMS_DUCK_KEY = "rooms_duck"
+
+    def set_rooms_duck(self, marker: Optional[dict]) -> None:
+        """Stash (or clear, with None) the in-force Snapcast rooms-duck marker:
+        ``{"level": int, "vols": {client_id: pre_duck_percent}}``. Persisted (not
+        in-memory) so a process killed mid-duck self-heals: the next
+        before_speech reuses these original volumes as the restore baseline
+        instead of re-capturing the already-ducked ones."""
+        with self._cursor() as cur:
+            if marker is None:
+                cur.execute("DELETE FROM meta WHERE key = ?",
+                            (self._ROOMS_DUCK_KEY,))
+            else:
+                cur.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                            (self._ROOMS_DUCK_KEY, json.dumps(marker)))
+
+    def get_rooms_duck(self) -> Optional[dict]:
+        with self._cursor() as cur:
+            cur.execute("SELECT value FROM meta WHERE key = ?",
+                        (self._ROOMS_DUCK_KEY,))
+            row = cur.fetchone()
+        if not row:
+            return None
+        try:
+            return json.loads(row[0])
+        except (ValueError, TypeError):
+            return None
+
     # ---- history ----------------------------------------------------------
 
     def add_history(self, *, sink: str, uri: str, started_at: float,
