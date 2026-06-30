@@ -633,7 +633,7 @@ def _handle_notification(payload: dict) -> int:
     return 0
 
 
-def _play_detached(event: Event) -> None:
+def _play_detached(event: Event, *, state: Optional[StateStore] = None) -> None:
     """Render + play `event` in a session-detached grandchild process.
 
     Claude Code SIGKILLs a Stop hook still running at its 120s timeout. Playback
@@ -644,9 +644,20 @@ def _play_detached(event: Event) -> None:
     Cross-turn ordering is still serialized by the speech playback lock inside
     submit_event. Falls back to inline play if fork is unavailable.
 
+    `state` is the caller's StateStore; it is closed *before* the fork so the
+    detached grandchild never inherits an open SQLite WAL connection. An
+    inherited WAL handle corrupts the child's wal-index locking, which lets the
+    parent's exit (and unrelated reader processes) unlink the -wal/-shm out from
+    under the grandchild — its now_playing writes then vanish (grey status bar,
+    wrong popup subject, "pane already closed" goto). See StateStore.close.
+
     Set MEDIA_HOOK_NO_DETACH=1 to play inline instead (debugging — surfaces
     submit errors to the caller; also what the tests use to observe the call).
     """
+    # Release the inherited WAL connection before we fork (and even on the
+    # inline path — it has served its purpose; submit_event opens its own).
+    if state is not None:
+        state.close()
     if os.environ.get("MEDIA_HOOK_NO_DETACH"):
         submit_event(event, state=StateStore())
         return
@@ -729,7 +740,8 @@ def _handle_stop(payload: dict) -> int:
               priority=Priority.NORMAL,
               voice=_voice_for_session(_session_name()),
               metadata={"kind": "stop", "dedup_key": dedup_key,
-                        "session": payload.get("session_id") or ""}))
+                        "session": payload.get("session_id") or ""}),
+        state=state)
     return 0
 
 

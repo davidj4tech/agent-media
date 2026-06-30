@@ -139,6 +139,29 @@ class StateStore:
             self._local.conn = c
         return c
 
+    def close(self) -> None:
+        """Close this thread's cached connection, if any.
+
+        Mainly matters right before forking a detached child (see
+        ``_play_detached`` in the Claude Code hook). A child that inherits an
+        open SQLite **WAL** connection shares the parent's wal-index/lock
+        state; when the parent then exits — or any unrelated short-lived
+        reader process closes as the apparent *last* connection — SQLite
+        checkpoints and **unlinks** the ``-wal``/``-shm`` files out from under
+        the still-running child. The child's later autocommitted writes
+        (e.g. ``now_playing`` during speech playback) land in that orphaned,
+        already-deleted WAL and are invisible to every fresh reader, while the
+        main db file stays frozen. Releasing the connection before the fork
+        keeps the child's own WAL the sole, un-inherited one.
+        """
+        c = getattr(self._local, "conn", None)
+        if c is not None:
+            try:
+                c.close()
+            except Exception:  # noqa: BLE001 — best-effort release
+                pass
+            self._local.conn = None
+
     @contextmanager
     def _cursor(self) -> Iterator[sqlite3.Cursor]:
         conn = self._conn()

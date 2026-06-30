@@ -193,6 +193,7 @@ def test_now_pane_uses_caller_pane_when_idle(monkeypatch, capsys):
 
     monkeypatch.setattr(cli, "StateStore", _NowPaneStore)
     monkeypatch.setattr(cli, "_caller_pane", lambda: "%7")
+    monkeypatch.setattr(cli, "_pane_alive", lambda p: True)
     monkeypatch.setattr(cli, "_tmux_session_for_pane", lambda p: "")
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
     assert cli.cmd_now_pane(object()) == 0
@@ -212,6 +213,7 @@ def test_now_pane_strips_spinner_when_window_unnamed(monkeypatch, capsys):
 
     monkeypatch.setattr(cli, "StateStore", _NowPaneStore)
     monkeypatch.setattr(cli, "_caller_pane", lambda: "%7")
+    monkeypatch.setattr(cli, "_pane_alive", lambda p: True)
     monkeypatch.setattr(cli, "_tmux_session_for_pane", lambda p: "")
     monkeypatch.setattr(cli.subprocess, "run", lambda cmd, **kw: _R())
     assert cli.cmd_now_pane(object()) == 0
@@ -234,6 +236,7 @@ def test_now_pane_prefixes_following_and_muted(monkeypatch, capsys):
 
     monkeypatch.setattr(cli, "StateStore", _Store)
     monkeypatch.setattr(cli, "_caller_pane", lambda: "%27")  # different → following
+    monkeypatch.setattr(cli, "_pane_alive", lambda p: True)  # subject pane is live
     monkeypatch.setattr(cli.subprocess, "run", lambda cmd, **kw: _R())
     assert cli.cmd_now_pane(object()) == 0
     assert capsys.readouterr().out.strip() == "↪ 🔒 youtube-accounts"
