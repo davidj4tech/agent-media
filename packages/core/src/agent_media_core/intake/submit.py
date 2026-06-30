@@ -1350,7 +1350,8 @@ def submit_event(event: Event,
                             "current_sentence": sentence,
                             "current_sentence_idx": i,
                             "clip_paragraph_idx": clip_para,
-                            "clip_sentences": _clip_sentences})
+                            "clip_sentences": _clip_sentences,
+                            "writer_pid": os.getpid()})
                 try:
                     # Only the first sentence resets a lingering pause/mute;
                     # later sentences preserve a pause the user made mid-response.
@@ -1681,7 +1682,8 @@ def submit_stream(sentences,
                             "current_sentence": sentence,
                             "current_sentence_idx": i,
                             "clip_sentences": known,
-                            "streaming": True})
+                            "streaming": True,
+                            "writer_pid": os.getpid()})
                 try:
                     sink.play(str(clip_path), target, reset_state=(i == 0))
                     played_any = True

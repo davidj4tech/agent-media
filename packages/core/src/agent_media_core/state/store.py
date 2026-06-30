@@ -113,6 +113,25 @@ def default_db_path() -> Path:
     return state_dir() / "state.db"
 
 
+def _pid_alive(pid: int) -> bool:
+    """True if a (host-local) process with `pid` currently exists.
+
+    Used by the now_playing orphan guard. now_playing is host-local state and
+    its writer runs on the same host, so a local liveness probe is sufficient.
+    Conservative on the unknown: any error other than "no such process" is
+    treated as alive so we never hide a live row on a transient failure.
+    """
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True  # e.g. PermissionError → process exists, owned elsewhere
+    return True
+
+
 class StateStore:
     """Thread-safe SQLite wrapper. One connection per thread.
 
@@ -217,7 +236,7 @@ class StateStore:
         if row is None:
             return None
         sink_, uri, started_at, content_type, target, pause_pos_ms, extras = row
-        return {
+        result = {
             "sink": sink_,
             "uri": uri,
             "started_at": started_at,
@@ -226,6 +245,24 @@ class StateStore:
             "pause_pos_ms": pause_pos_ms,
             "extras": json.loads(extras) if extras else None,
         }
+        # Orphan guard: the detached speech player clears its own row in a
+        # finally block, so a surviving row whose recorded writer process is
+        # gone means it crashed / was SIGKILLed mid-playback. Such a row would
+        # otherwise haunt the status bar and popup until the next reply
+        # overwrites it. Hide it, and self-heal with a started_at-guarded delete
+        # so we never race-delete a fresh replacement written between our read
+        # and this clear. Only speech records writer_pid; music/book and legacy
+        # rows have none and are left untouched.
+        ex = result["extras"] or {}
+        pid = ex.get("writer_pid")
+        if isinstance(pid, int) and not _pid_alive(pid):
+            with self._cursor() as cur:
+                cur.execute(
+                    "DELETE FROM now_playing WHERE sink = ? AND started_at = ?",
+                    (sink_, started_at),
+                )
+            return None
+        return result
 
     def clear_now_playing(self, sink: str) -> None:
         with self._cursor() as cur:
