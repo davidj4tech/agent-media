@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import socket
+import time
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
@@ -64,11 +65,27 @@ def _send(sock_path: str | Path, command: list[Any], timeout: float = 5.0) -> di
 def command(sock_path: str | Path, *args: Any, timeout: float = 5.0) -> Any:
     """Send `command` with positional args. Returns `data` from the reply,
     or raises MpvIpcError on non-success.
+
+    Over a tcp:// bridge (socat fork-per-connection to a remote mpv), a single
+    request can transiently fail or come back a spurious "property unavailable"
+    under rapid polling — which would cut a clip short (idle() reads "done") or
+    drop a loadfile (clip skipped). So retry a few times for tcp endpoints. All
+    the commands we send (loadfile replace / set_property / get_property) are
+    idempotent, so a retry can't double-apply. Unix-socket calls stay single-shot.
     """
-    reply = _send(sock_path, list(args), timeout=timeout)
-    if reply.get("error", "success") != "success":
-        raise MpvIpcError(f"{args[0]}: {reply.get('error')}")
-    return reply.get("data")
+    attempts = 3 if str(sock_path).startswith(_TCP_PREFIX) else 1
+    last: Exception = MpvIpcError("unreached")
+    for attempt in range(attempts):
+        try:
+            reply = _send(sock_path, list(args), timeout=timeout)
+            if reply.get("error", "success") != "success":
+                raise MpvIpcError(f"{args[0]}: {reply.get('error')}")
+            return reply.get("data")
+        except (MpvIpcError, OSError) as e:
+            last = e
+            if attempt + 1 < attempts:
+                time.sleep(0.04)
+    raise last
 
 
 def event_stream(sock_path: str | Path,
@@ -112,6 +129,7 @@ def event_stream(sock_path: str | Path,
 
 
 def get_property(sock_path: str | Path, name: str, timeout: float = 2.0) -> Any:
+    # `command` already retries transient failures for tcp:// (bridge) endpoints.
     return command(sock_path, "get_property", name, timeout=timeout)
 
 

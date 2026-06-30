@@ -45,19 +45,30 @@ def _env_key(prefix: str, target_name: str) -> str:
 
 
 def _clip_uri_for(uri: str, target: Target) -> str:
-    """Rewrite a local clip path to a fetchable URL for a remote-played target.
+    """Resolve the clip reference the *remote* player should load (Grade B).
 
-    When a target's broker is on another host (e.g. the phone's mpv reached over
-    a TCP bridge — Grade B), it can't read *this* host's filesystem. If
-    ``MEDIA_SPEECH_CLIP_BASEURL_<TARGET>`` is set, a local file path is rewritten
-    to ``<baseurl>/<basename>`` so the remote mpv fetches the clip over HTTP
-    (red5 serves the audio dir on the tailnet). Already-URL uris and the unset
-    case pass through, so local/rooms playback is unchanged.
+    A remote broker (the phone's mpv over a TCP bridge) can't read this host's
+    filesystem. Two ways to give it the clip, preferred in order:
+
+      1. ``MEDIA_SPEECH_CLIP_LOCALDIR_<TARGET>`` — the clip was **pre-fetched**
+         to this dir on the remote host (see :meth:`SinkSpeech.prefetch`); play
+         it as a local file ``<localdir>/<basename>`` — no per-clip network I/O,
+         which is what makes long replies reliable.
+      2. ``MEDIA_SPEECH_CLIP_BASEURL_<TARGET>`` — fetch ``<baseurl>/<basename>``
+         over HTTP (fallback; per-clip fetch, fragile on long replies).
+
+    Already-URL uris and the all-unset case pass through, so local/rooms
+    playback is unchanged.
     """
-    base = os.environ.get(_env_key("MEDIA_SPEECH_CLIP_BASEURL", target.name))
-    if not base or uri.startswith(("http://", "https://", "rtsp://")):
+    if uri.startswith(("http://", "https://", "rtsp://")):
         return uri
-    return base.rstrip("/") + "/" + Path(uri).name
+    localdir = os.environ.get(_env_key("MEDIA_SPEECH_CLIP_LOCALDIR", target.name))
+    if localdir:
+        return localdir.rstrip("/") + "/" + Path(uri).name
+    base = os.environ.get(_env_key("MEDIA_SPEECH_CLIP_BASEURL", target.name))
+    if base:
+        return base.rstrip("/") + "/" + Path(uri).name
+    return uri
 
 
 def _device_for(target: Target) -> Optional[str]:
@@ -116,6 +127,42 @@ class SinkSpeech:
                     ipc.set_property(sock, prop, False)
                 except ipc.MpvIpcError:
                     pass
+
+    def prefetch(self, paths: "list", target: Target = DEFAULT_TARGET) -> None:
+        """Copy all of a response's clips to the remote player's local dir up
+        front (Grade B reliability).
+
+        When ``MEDIA_SPEECH_CLIP_LOCALDIR_<TARGET>`` is set, the rendered clips
+        are tar-piped over SSH into that dir on the remote host, so each
+        subsequent `play` is a *local* loadfile instead of a per-clip network
+        fetch — the per-sentence HTTP/​bridge fragility that stalled long replies.
+        No-op when no local dir is configured (local/rooms, or HTTP fallback).
+        Best-effort: a failure is logged and play falls back to whatever
+        `_clip_uri_for` resolves (the HTTP URL if a base is set).
+        """
+        localdir = os.environ.get(_env_key("MEDIA_SPEECH_CLIP_LOCALDIR", target.name))
+        if not localdir or not paths:
+            return
+        import shlex
+        import subprocess
+        host = (os.environ.get(_env_key("MEDIA_SPEECH_CLIP_SSH", target.name))
+                or os.environ.get("MEDIA_MUSIC_LOCAL_SSH", "p8ar"))
+        ps = [Path(p) for p in paths]
+        srcdir = str(ps[0].parent)
+        qnames = " ".join(shlex.quote(p.name) for p in ps)
+        opts = ("-o BatchMode=yes -o ConnectTimeout=10 -o ControlMaster=auto "
+                "-o ControlPath=/tmp/ssh-am-%r@%h:%p -o ControlPersist=300")
+        remote = (f"mkdir -p {shlex.quote(localdir)} && "
+                  f"tar -C {shlex.quote(localdir)} -xf -")
+        cmd = (f"tar -C {shlex.quote(srcdir)} -cf - {qnames} | "
+               f"ssh {opts} {shlex.quote(host)} {shlex.quote(remote)}")
+        try:
+            subprocess.run(
+                cmd, shell=True,
+                timeout=float(os.environ.get("MEDIA_SPEECH_PREFETCH_TIMEOUT", "30")),
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        except Exception as e:  # noqa: BLE001 — best-effort; play has its own fallback
+            log.warning("sink-speech: prefetch to %s failed: %s", host, e)
 
     def queue(self, uri: str, target: Target = DEFAULT_TARGET) -> None:
         """Append a clip to mpv's playlist without interrupting what's playing."""

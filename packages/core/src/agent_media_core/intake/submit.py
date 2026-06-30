@@ -1343,12 +1343,16 @@ def submit_event(event: Event,
     durations = [_clip_duration(p) for _, p in clip_data]
     total_duration_s = sum(durations)
 
-    # After mpv reports idle, Snapcast still has buffered audio to drain.
-    # Delay the next highlight by this amount so it fires when the audio
-    # actually starts at the listener's end rather than when mpv finishes
-    # writing to the PipeWire sink.
+    # Delay the highlight so it fires when the audio is actually *heard*, not
+    # when mpv reports idle. For Snapcast rooms that's the buffer drain
+    # (MEDIA_SNAPCAST_LATENCY_MS). For a remote-played target (Grade B: phone
+    # mpv over the bridge, clips pre-fetched local) it's just the bridge
+    # loadfile + mpv start — much smaller — so a per-target override wins:
+    # MEDIA_SPEECH_PLAYOUT_MS_<TARGET>.
+    _playout_key = f"MEDIA_SPEECH_PLAYOUT_MS_{target.name.upper().replace('-', '_')}"
     _highlight_delay_s = float(
-        os.environ.get("MEDIA_SNAPCAST_LATENCY_MS", "500")) / 1000.0
+        os.environ.get(_playout_key)
+        or os.environ.get("MEDIA_SNAPCAST_LATENCY_MS", "500")) / 1000.0
 
     # Cumulative start offset of each clip on the response-wide timeline.
     offsets: list[float] = []
@@ -1368,6 +1372,10 @@ def submit_event(event: Event,
         # while we're still queued behind another speaker.
         playback_lock = _SpeechPlaybackLock()
         playback_lock.acquire(event.priority)
+        # Grade B: push all clips to the remote player's local dir up front
+        # (no-op for local/rooms), so each play below is a local loadfile —
+        # no per-sentence network fetch to stall a long reply.
+        sink.prefetch([p for _, p in clip_data], target)
         played_any = False
         n = len(clip_data)
         highlighter = _HighlightScheduler(_highlight_delay_s, do_highlight)
