@@ -379,14 +379,20 @@ def book_play(uri: str, resume: bool = True, start_ms: int = -1,
     """
     b, st, t = _book(), _state(), _book_target(target)
     norm = normalize_uri(uri)
-    # Download-first: a YouTube URL is unplayable directly on mel (datacenter IP
-    # blocked). Resolve it to a cached local file, or start a phone-side fetch
-    # (audiobook-fetch) that auto-plays on the book channel when it finishes.
+    # Download-first: a YouTube URL is unplayable directly on a datacenter IP
+    # (mel/red5 get 403'd). Resolve it to a cached local file, or start a
+    # phone-side fetch (audiobook-fetch) that auto-plays when it finishes.
+    #
+    # EXCEPT on a residential host (e.g. the phone): no 403, so the book mpv can
+    # play the YouTube URL directly via yt-dlp — no fetch/cache indirection.
+    # Gated by MEDIA_BOOK_DIRECT_YT=1 so datacenter hosts keep the safe path.
     if library.is_youtube(norm):
         vid = library.video_id(norm)
         cached = library.cached_path(vid) if vid else None
         if cached is not None:
             norm = str(cached)
+        elif os.environ.get("MEDIA_BOOK_DIRECT_YT", "0") not in ("", "0", "false", "no"):
+            pass  # residential: fall through and let the book mpv stream it
         else:
             started = library.start_fetch(norm, play=True)
             return {"ok": False, "fetching": started, "uri": norm,
