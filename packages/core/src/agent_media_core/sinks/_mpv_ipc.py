@@ -1,7 +1,13 @@
-"""Minimal mpv JSON-IPC client over a Unix socket.
+"""Minimal mpv JSON-IPC client over a Unix socket — or a TCP bridge.
 
 Synchronous, one-shot per call. mpv replies with one JSON line per
 command on the same socket; we read until newline or timeout.
+
+An endpoint is normally a Unix-socket path (str/Path). It may also be a
+`tcp://host:port` string, which connects over TCP instead — used to reach a
+*remote* mpv whose IPC socket has been bridged to a TCP port (e.g. the phone's
+mpv-music exposed over Tailscale via socat). The line-delimited JSON protocol
+is identical over either transport, so every helper below works unchanged.
 """
 
 from __future__ import annotations
@@ -16,11 +22,30 @@ class MpvIpcError(RuntimeError):
     pass
 
 
-def _send(sock_path: str | Path, command: list[Any], timeout: float = 5.0) -> dict:
+_TCP_PREFIX = "tcp://"
+
+
+def _open(endpoint: str | Path, timeout: float) -> socket.socket:
+    """Connect to an mpv IPC endpoint (Unix path or `tcp://host:port`)."""
+    ep = str(endpoint)
+    if ep.startswith(_TCP_PREFIX):
+        hostport = ep[len(_TCP_PREFIX):]
+        host, _, port = hostport.rpartition(":")
+        if not host or not port:
+            raise MpvIpcError(f"bad tcp endpoint {ep!r} (want tcp://host:port)")
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect((host, int(port)))
+        return s
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.settimeout(timeout)
+    s.connect(ep)
+    return s
+
+
+def _send(sock_path: str | Path, command: list[Any], timeout: float = 5.0) -> dict:
+    s = _open(sock_path, timeout)
     try:
-        s.connect(str(sock_path))
         s.sendall((json.dumps({"command": command}) + "\n").encode())
         buf = b""
         while b"\n" not in buf:
@@ -60,10 +85,8 @@ def event_stream(sock_path: str | Path,
     Distinct from `_send`, which is one-shot per call; don't mix the two on
     the same connection.
     """
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(heartbeat)
+    s = _open(sock_path, heartbeat)
     try:
-        s.connect(str(sock_path))
         buf = b""
         while True:
             try:
