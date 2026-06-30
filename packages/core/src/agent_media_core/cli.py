@@ -342,10 +342,13 @@ def _subject() -> tuple[str, str, bool]:
     caller = _caller_pane()
     np_pane = ex.get("source_pane") or ""
     if np_pane:
-        # "following" (↪) only when we actually have a caller pane to compare:
-        # the status bar runs `media status` with no pane context (caller=""),
-        # where we can't tell — don't falsely flag every speaker as "different".
-        following = bool(caller) and np_pane != caller
+        # "following" (↪) only when we actually have a caller pane to compare
+        # AND the subject pane is a live pane *on this server*: the status bar
+        # runs `media status` with no pane context (caller=""), where we can't
+        # tell; and a pane that's dead here — renumbered by a tmux restore,
+        # closed, or living on another host (rooms hub) — isn't a "different
+        # live pane" we can honestly point at, so don't flag it with ↪.
+        following = bool(caller) and _pane_alive(np_pane) and np_pane != caller
         return np_pane, ex.get("source_tmux_session") or "", following
     return caller, (_tmux_session_for_pane(caller) if caller else ""), False
 
@@ -414,22 +417,34 @@ def _subject_label() -> "tuple[str, str]":
     pane, tmux_sess, following = _subject()
     if not pane:
         return "", ""
-    try:
-        r = subprocess.run(
-            ["tmux", "display-message", "-p", "-t", pane,
-             "#{window_name}\t#{pane_title}"],
-            capture_output=True, text=True)
-    except Exception:  # noqa: BLE001 — popup must never see a traceback
-        return "", ""
-    if r.returncode != 0:
-        return "", ""
-    window_name, _, pane_title = r.stdout.strip().partition("\t")
-    # A default-named window (the shell/program name) is no better than the
-    # pane title; only prefer it when it's a real conversation title.
-    label = window_name.strip()
-    if not label or label in {"zsh", "bash", "sh", "fish"}:
-        # Strip a leading Claude spinner glyph (braille U+2800–U+28FF).
-        label = re.sub(r"^[⠀-⣿]\s*", "", pane_title.strip())
+    # Resolve the live pane name only when the pane is actually open on this
+    # server. A pane that's dead here (renumbered by a tmux-resurrect restore,
+    # closed since, or — for a rooms hub — living on another host) returns
+    # success-with-empty-fields from `display-message`, which the old
+    # `returncode != 0` guard sailed straight past, leaving a blank title.
+    label = ""
+    if _pane_alive(pane):
+        try:
+            r = subprocess.run(
+                ["tmux", "display-message", "-p", "-t", pane,
+                 "#{window_name}\t#{pane_title}"],
+                capture_output=True, text=True)
+        except Exception:  # noqa: BLE001 — popup must never see a traceback
+            r = None
+        if r is not None and r.returncode == 0:
+            window_name, _, pane_title = r.stdout.strip().partition("\t")
+            # A default-named window (the shell/program name) is no better than
+            # the pane title; only prefer it when it's a real conversation title.
+            label = window_name.strip()
+            if not label or label in {"zsh", "bash", "sh", "fish"}:
+                # Strip a leading Claude spinner glyph (braille U+2800–U+28FF).
+                label = re.sub(r"^[⠀-⣿]\s*", "", pane_title.strip())
+    if not label:
+        # Pane unresolvable here — fall back to the conversation title captured
+        # at speech time and carried in the speech extras (source_window). This
+        # is what lets the bar name a renumbered/closed/remote speaker instead
+        # of showing a bare ↪ with an empty title.
+        label = (_spoken_extras().get("source_window") or "").strip()
     prefix = ""
     if following:
         prefix += "↪ "
@@ -1324,6 +1339,9 @@ def _do_replay(index: int, session: Optional[str] = None) -> int:
     src_sess = ex.get("source_tmux_session")
     if src_sess:
         np_extras["source_tmux_session"] = src_sess
+    src_window = ex.get("source_window")
+    if src_window:
+        np_extras["source_window"] = src_window
     if have_durations:
         np_extras["total_duration_s"] = sum(clip_durations)
         np_extras["clip_durations_s"] = clip_durations

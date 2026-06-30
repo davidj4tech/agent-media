@@ -965,6 +965,36 @@ def _tmux_session_for_pane(pane: str) -> str:
         return ""
 
 
+def _tmux_window_for_pane(pane: str) -> str:
+    """The conversation title for a pane — its tmux window name, captured now
+    while the pane is alive.
+
+    Persisted into the speech extras so the popup / status bar can name the
+    speaker even when its pane can't be resolved at *display* time: a pane
+    renumbered by a tmux-resurrect restore, closed since, or — for a rooms hub
+    — living on a *different host* entirely. Mirrors the cli `_subject_label`
+    preference: the window name (which tracks the stable Claude conversation
+    title) over the transient, spinner-prefixed pane title; falls back to a
+    spinner-stripped pane title only when the window has no usable name.
+    """
+    if not pane or "#{" in pane:
+        return ""
+    try:
+        r = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", pane,
+             "#{window_name}\t#{pane_title}"],
+            capture_output=True, text=True, timeout=2)
+    except Exception:  # noqa: BLE001
+        return ""
+    if r.returncode != 0:
+        return ""
+    window_name, _, pane_title = r.stdout.strip().partition("\t")
+    label = window_name.strip()
+    if not label or label in {"zsh", "bash", "sh", "fish"}:
+        label = re.sub(r"^[⠀-⣿]\s*", "", pane_title.strip())
+    return label
+
+
 def _nav_flag_path(target: Target) -> Path:
     """File the popup writes to request a sentence/paragraph jump (`media skip`).
 
@@ -1132,6 +1162,10 @@ def submit_event(event: Event,
     # traversal to "this tmux session's clips" without resolving a (possibly
     # since-closed) pane id back to its session at browse time.
     source_tmux_session = _tmux_session_for_pane(source_pane)
+    # The conversation title (window name) of the source pane, captured now so
+    # the popup / status bar can name the speaker even when source_pane can't be
+    # resolved at display time (renumbered by a restore, closed, or remote host).
+    source_window = _tmux_window_for_pane(source_pane)
 
     # Durable per-pane / per-session mute (popup `M` / `media mute-pane`): a
     # muted pane still renders its clips and records a replayable history row,
@@ -1312,6 +1346,7 @@ def submit_event(event: Event,
                             "source_pane": source_pane,
                             "source_session": source_session,
                             "source_tmux_session": source_tmux_session,
+                            "source_window": source_window,
                             "current_sentence": sentence,
                             "current_sentence_idx": i,
                             "clip_paragraph_idx": clip_para,
@@ -1359,6 +1394,7 @@ def submit_event(event: Event,
               "source_pane": source_pane,
               "source_session": source_session,
               "source_tmux_session": source_tmux_session,
+              "source_window": source_window,
               "clip_uris": [str(p) for _, p in clip_data],
           "clip_sentences": [s for s, _ in clip_data],
           "clip_durations_s": durations,
@@ -1428,6 +1464,7 @@ def submit_stream(sentences,
     source_pane = (event.metadata or {}).get("pane") or os.environ.get("TMUX_PANE", "")
     source_session = (event.metadata or {}).get("session") or ""
     source_tmux_session = _tmux_session_for_pane(source_pane)
+    source_window = _tmux_window_for_pane(source_pane)
     # Durable per-pane / per-session mute: render the stream into clips for
     # popup replay/history, but never play it or duck music. See submit_event.
     muted = state.resolve_mute(source_pane, source_tmux_session)
@@ -1640,6 +1677,7 @@ def submit_stream(sentences,
                             "source_pane": source_pane,
                             "source_session": source_session,
                             "source_tmux_session": source_tmux_session,
+                            "source_window": source_window,
                             "current_sentence": sentence,
                             "current_sentence_idx": i,
                             "clip_sentences": known,
@@ -1697,6 +1735,7 @@ def submit_stream(sentences,
               "source_pane": source_pane,
               "source_session": source_session,
               "source_tmux_session": source_tmux_session,
+              "source_window": source_window,
               "clip_uris": [str(p) for p in all_paths],
               "clip_sentences": all_sents,
               "clip_durations_s": [durations.get(k, 0.0) for k in range(len(all_paths))],

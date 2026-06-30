@@ -87,9 +87,10 @@ def test_subject_idle_is_caller_pane(env, monkeypatch):
 
 def test_subject_follows_now_playing(env, monkeypatch):
     monkeypatch.setenv("TTS_POPUP_PANE", "%2")
+    monkeypatch.setattr(cli, "_pane_alive", lambda p: True)  # subject pane is live
     env.set_now_playing("speech", uri="/x", started_at=1.0,
                         extras={"source_pane": "%30", "source_tmux_session": "ts"})
-    assert cli._subject() == ("%30", "ts", True)       # other pane → following
+    assert cli._subject() == ("%30", "ts", True)       # other live pane → following
     env.set_now_playing("speech", uri="/x", started_at=1.0,
                         extras={"source_pane": "%2", "source_tmux_session": "ts"})
     assert cli._subject() == ("%2", "ts", False)       # your pane playing → not following
