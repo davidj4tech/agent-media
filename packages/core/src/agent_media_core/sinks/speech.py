@@ -21,18 +21,20 @@ log = logging.getLogger(__name__)
 DEFAULT_TARGET = Target(name="local")
 
 
-def _socket_for(target: Target) -> Path:
-    """Resolve the IPC socket path for a target (decision 1C).
+def _socket_for(target: Target) -> "str | Path":
+    """Resolve the IPC endpoint for a target (decision 1C).
 
     All targets share the single local mpv broker socket at
     `$XDG_STATE_HOME/agent-media/sink-speech.sock`; the *output device*
-    is what differs per target (see `_device_for`). A per-target socket
-    can be set with `MEDIA_SPEECH_SOCKET_<TARGET>` for the future case
-    of one broker per room playing simultaneously.
+    is what differs per target (see `_device_for`). A per-target endpoint
+    can be set with `MEDIA_SPEECH_SOCKET_<TARGET>` — either a Unix socket
+    path, or a `tcp://host:port` to drive a *remote* mpv over a bridge
+    (Grade B: red5 drives the phone's sink-speech). A tcp:// override is
+    returned as a raw string — `Path()` would collapse `tcp://` to `tcp:/`.
     """
     override = os.environ.get(_env_key("MEDIA_SPEECH_SOCKET", target.name))
     if override:
-        return Path(override)
+        return override if override.startswith("tcp://") else Path(override)
     state = Path(os.environ.get("XDG_STATE_HOME",
                                 str(Path.home() / ".local" / "state")))
     return state / "agent-media" / "sink-speech.sock"
@@ -40,6 +42,22 @@ def _socket_for(target: Target) -> Path:
 
 def _env_key(prefix: str, target_name: str) -> str:
     return f"{prefix}_{target_name.upper().replace('-', '_')}"
+
+
+def _clip_uri_for(uri: str, target: Target) -> str:
+    """Rewrite a local clip path to a fetchable URL for a remote-played target.
+
+    When a target's broker is on another host (e.g. the phone's mpv reached over
+    a TCP bridge — Grade B), it can't read *this* host's filesystem. If
+    ``MEDIA_SPEECH_CLIP_BASEURL_<TARGET>`` is set, a local file path is rewritten
+    to ``<baseurl>/<basename>`` so the remote mpv fetches the clip over HTTP
+    (red5 serves the audio dir on the tailnet). Already-URL uris and the unset
+    case pass through, so local/rooms playback is unchanged.
+    """
+    base = os.environ.get(_env_key("MEDIA_SPEECH_CLIP_BASEURL", target.name))
+    if not base or uri.startswith(("http://", "https://", "rtsp://")):
+        return uri
+    return base.rstrip("/") + "/" + Path(uri).name
 
 
 def _device_for(target: Target) -> Optional[str]:
@@ -84,7 +102,7 @@ class SinkSpeech:
                 # falls back to its current device.
                 log.warning("sink-speech: set audio-device %s failed: %s",
                             device, e)
-        ipc.command(sock, "loadfile", uri, "replace")
+        ipc.command(sock, "loadfile", _clip_uri_for(uri, target), "replace")
         # A fresh response must be audible regardless of a lingering
         # pause/mute left on the broker (e.g. a popup Space/m while idle) —
         # otherwise it loads into a paused/muted broker and plays silently.
@@ -101,7 +119,8 @@ class SinkSpeech:
 
     def queue(self, uri: str, target: Target = DEFAULT_TARGET) -> None:
         """Append a clip to mpv's playlist without interrupting what's playing."""
-        ipc.command(_socket_for(target), "loadfile", uri, "append")
+        ipc.command(_socket_for(target), "loadfile",
+                    _clip_uri_for(uri, target), "append")
 
     def pause(self, target: Target = DEFAULT_TARGET) -> None:
         ipc.set_property(_socket_for(target), "pause", True)
