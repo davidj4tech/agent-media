@@ -1110,6 +1110,46 @@ class _MuteDuckWatcher:
             self._coord.reapply_music_duck()
 
 
+def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
+                       state: StateStore, event: Event) -> Optional[int]:
+    """Render a reply on a remote low-latency hub instead of locally.
+
+    Used when ``MEDIA_REMOTE_SAY_CMD`` is set (e.g. red5, whose rooms listen to
+    snap-mel in Melbourne). The whole reply text is piped to the remote renderer
+    over **stdin** — so no shell on the far side reinterprets quotes/`$`/etc. —
+    and the call blocks until the remote finishes, so ``before_speech`` /
+    ``after_speech`` bracket the audio and music ducks for its full duration.
+
+    Serialized by the same cross-process speech lock as local playback, so two
+    sessions can't render into the hub's fifo at once. Best-effort: a remote
+    hiccup is logged, never raised, and the duck is always restored.
+    """
+    import subprocess
+
+    timeout = float(os.environ.get("MEDIA_REMOTE_SAY_TIMEOUT", "180"))
+    lock = _SpeechPlaybackLock()
+    lock.acquire(event.priority)
+    try:
+        coordinator.before_speech()
+        try:
+            subprocess.run(cmd, shell=True, input=text.encode(),
+                           timeout=timeout,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as e:  # noqa: BLE001 — remote render must never crash the hook
+            log.warning("intake: remote-say failed: %s", e)
+            try:
+                state.log_error("intake", "remote-say failed",
+                                extras={"detail": str(e),
+                                        "source": event.source.value})
+            except Exception:  # noqa: BLE001
+                pass
+        finally:
+            coordinator.after_speech()
+    finally:
+        lock.release()
+    return None
+
+
 def submit_event(event: Event,
                  *,
                  state: Optional[StateStore] = None,
@@ -1133,6 +1173,17 @@ def submit_event(event: Event,
     sink = sink or SinkSpeech()
     target = event.target or Target(
         name=os.environ.get("MEDIA_SPEECH_DEFAULT_TARGET", "local"))
+
+    # Remote-say bridge: on a headless feeder host (e.g. red5) whose rooms now
+    # listen to a remote low-latency hub (snap-mel, in Melbourne), render the
+    # reply *there* instead of locally — the hub renders the text to its own
+    # Snapcast fifo. The coordinator still ducks from here (it drives the rooms
+    # snapserver over the tailnet via MEDIA_SNAP_JSONRPC_HOST), so music dips
+    # under speech as before. Env-gated: unset elsewhere ⇒ the local render+play
+    # path below is unchanged.
+    remote_say = os.environ.get("MEDIA_REMOTE_SAY_CMD")
+    if remote_say:
+        return _submit_remote_say(text, remote_say, coordinator, state, event)
 
     engine = _resolve_engine(event)
     voice = _resolve_voice(event, engine)
@@ -1447,6 +1498,17 @@ def submit_stream(sentences,
     sink = sink or SinkSpeech()
     target = event.target or Target(
         name=os.environ.get("MEDIA_SPEECH_DEFAULT_TARGET", "local"))
+
+    # Remote-say bridge: on a headless feeder host (e.g. red5) whose rooms now
+    # listen to a remote low-latency hub (snap-mel, in Melbourne), render the
+    # reply *there* instead of locally — the hub renders the text to its own
+    # Snapcast fifo. The coordinator still ducks from here (it drives the rooms
+    # snapserver over the tailnet via MEDIA_SNAP_JSONRPC_HOST), so music dips
+    # under speech as before. Env-gated: unset elsewhere ⇒ the local render+play
+    # path below is unchanged.
+    remote_say = os.environ.get("MEDIA_REMOTE_SAY_CMD")
+    if remote_say:
+        return _submit_remote_say(text, remote_say, coordinator, state, event)
 
     engine = _resolve_engine(event)
     voice = _resolve_voice(event, engine)
