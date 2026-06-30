@@ -25,7 +25,7 @@
  *   MEDIA_HOOK_STREAM_BIN     override the hook binary (default: media-hook-pi-stream)
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { spawn, type ChildProcess } from "node:child_process";
 
 // One active hook subprocess per pi turn. pi emits a single assistant message
