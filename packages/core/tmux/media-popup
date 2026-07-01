@@ -456,6 +456,14 @@ show_link() {  # $1 = url
 
 bump_speed() {        # $1 = direction: 1 faster / -1 slower — hops the speed ladder
     local dir="$1"
+    # Speech may play on a *remote* target (the phone, Grade B), so route through
+    # the target-aware CLI — which owns the same rung ladder — instead of poking
+    # red5's idle local mpv over a socket. (Book plays locally; keep its path.)
+    if [ "$CHANNEL" = "speech" ]; then
+        if [ "$dir" -gt 0 ]; then $MEDIA speed up >/dev/null 2>&1
+        else $MEDIA speed down >/dev/null 2>&1; fi
+        return
+    fi
     local sock; sock=$(sock_for); [ -z "$sock" ] && return
     local cur; cur=$(sock_get speed); [ -z "$cur" ] && cur=1.0
     # At/above 1.0x hop the rungs (1.0 1.5 2.0 3.0); below 1.0x take fine flat 0.1
