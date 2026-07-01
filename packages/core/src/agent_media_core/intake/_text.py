@@ -99,8 +99,13 @@ def suppress_code_blocks(text: str) -> str:
             spans.append((start, end, _code_placeholder(end - start)))
     if not spans:
         return text
+    return _splice_spans(text, spans)
 
-    spans.sort()
+
+def _splice_spans(text: str, spans: "list[tuple[int, int, str]]") -> str:
+    """Replace half-open ``[start, end)`` source-line ranges with their spoken
+    placeholder. Shared by the code-block and table suppressors."""
+    spans = sorted(spans)
     lines = text.split("\n")
     out_lines: list[str] = []
     i = 0
@@ -116,6 +121,89 @@ def suppress_code_blocks(text: str) -> str:
     return "\n".join(out_lines)
 
 
+def _table_placeholder(headers: "list[str]", n_rows: int) -> str:
+    n = max(1, n_rows)
+    cols = ", ".join(h for h in headers if h)
+    head = f"columns {cols}, " if cols else ""
+    return f"table, {head}{n} row{'s' if n != 1 else ''}, omitted."
+
+
+# Separator row of a GFM table, e.g. "| --- | :--: |". Must contain a dash.
+_TABLE_SEP_RE = re.compile(
+    r"^[ \t]*\|?[ \t]*:?-{1,}:?[ \t]*(?:\|[ \t]*:?-{1,}:?[ \t]*)*\|?[ \t]*$"
+)
+
+
+def _regex_suppress_tables(text: str) -> str:
+    """Fallback table detector: a pipe-bearing header line immediately followed
+    by a separator line, then consecutive pipe-bearing data lines."""
+    lines = text.split("\n")
+    out: list[str] = []
+    i = 0
+    n = len(lines)
+    while i < n:
+        if "|" in lines[i] and i + 1 < n and _TABLE_SEP_RE.match(lines[i + 1]):
+            headers = [c.strip() for c in lines[i].strip().strip("|").split("|")]
+            j = i + 2
+            n_rows = 0
+            while j < n and lines[j].strip() and "|" in lines[j]:
+                n_rows += 1
+                j += 1
+            out.append(_table_placeholder(headers, n_rows))
+            i = j
+        else:
+            out.append(lines[i])
+            i += 1
+    return "\n".join(out)
+
+
+def suppress_tables(text: str) -> str:
+    """Replace markdown tables with a short spoken placeholder
+    ("table, columns Name, Port, Notes, 2 rows, omitted.") so TTS describes the
+    table instead of reading every cell and the ``|---|`` separator aloud. Runs
+    on the FULL text (a table spans many lines), after code-block suppression so
+    a fenced block containing ``|`` lines isn't mistaken for a table."""
+    if not text or "|" not in text:
+        return text
+    try:
+        from markdown_it import MarkdownIt
+        md = MarkdownIt("commonmark")
+        md.enable("table")
+        tokens = md.parse(text)
+    except Exception:  # noqa: BLE001 — any import/parse issue → regex fallback
+        return _regex_suppress_tables(text)
+
+    spans: list[tuple[int, int, str]] = []
+    n = len(tokens)
+    i = 0
+    while i < n:
+        tok = tokens[i]
+        if tok.type == "table_open" and getattr(tok, "map", None):
+            start, end = tok.map
+            headers: list[str] = []
+            n_rows = 0
+            section: str | None = None
+            j = i + 1
+            while j < n and tokens[j].type != "table_close":
+                tj = tokens[j]
+                if tj.type in ("thead_open", "tbody_open"):
+                    section = tj.type[:5]  # "thead" / "tbody"
+                elif tj.type in ("thead_close", "tbody_close"):
+                    section = None
+                elif tj.type == "tr_open" and section == "tbody":
+                    n_rows += 1
+                elif tj.type == "inline" and section == "thead":
+                    headers.append(tj.content.strip())
+                j += 1
+            spans.append((start, end, _table_placeholder(headers, n_rows)))
+            i = j
+        i += 1
+
+    if not spans:
+        return text
+    return _splice_spans(text, spans)
+
+
 def strip_markdown(text: str) -> str:
     """Strip enough markdown that TTS doesn't read backticks / asterisks /
     fence markers aloud, and replace fenced code blocks with a spoken
@@ -124,6 +212,7 @@ def strip_markdown(text: str) -> str:
     if not text:
         return ""
     out = suppress_code_blocks(text)
+    out = suppress_tables(out)
     out = suppress_urls(out)
     out = _FENCE_RE.sub("", out)
     out = _HEAD_RE.sub("", out)
