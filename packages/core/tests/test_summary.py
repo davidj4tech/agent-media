@@ -1,5 +1,9 @@
 """Unit tests for the optional LLM spoken-summary helper."""
 
+import io
+import json
+import urllib.error
+
 from agent_media_core.intake import _summary
 
 
@@ -26,47 +30,73 @@ def test_empty_text_returns_none():
     assert _summary.summarize_for_speech("   ") is None
 
 
-def test_bogus_interpreter_returns_none(monkeypatch):
-    monkeypatch.setenv("MEDIA_SUMMARY_PYTHON", "/nonexistent/python-xyz-123")
-    assert _summary.summarize_for_speech("some sufficiently long text") is None
+class _FakeResp:
+    def __init__(self, payload):
+        self._b = json.dumps(payload).encode("utf-8")
+
+    def read(self):
+        return self._b
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
 
 
-def test_happy_path_returns_stdout(monkeypatch):
-    class FakeProc:
-        returncode = 0
-        stdout = b"  A short spoken summary.  "
+def _fake_urlopen(payload, captured=None):
+    def _open(req, timeout=None):
+        if captured is not None:
+            captured["url"] = req.full_url
+            captured["auth"] = req.headers.get("Authorization")
+            captured["body"] = json.loads(req.data.decode("utf-8"))
+        return _FakeResp(payload)
+    return _open
 
-    monkeypatch.setenv("MEDIA_SUMMARY_PYTHON", "python3")
-    monkeypatch.setattr(_summary.subprocess, "run", lambda *a, **k: FakeProc())
+
+def test_happy_path_returns_content(monkeypatch):
+    payload = {"choices": [{"message": {"content": "  A short spoken summary.  "}}]}
+    monkeypatch.setattr(_summary.urllib.request, "urlopen", _fake_urlopen(payload))
     assert _summary.summarize_for_speech("a long reply") == "A short spoken summary."
 
 
-def test_nonzero_exit_returns_none(monkeypatch):
-    class FakeProc:
-        returncode = 1
-        stdout = b"whatever"
+def test_dedicated_base_url_and_key_used(monkeypatch):
+    captured = {}
+    payload = {"choices": [{"message": {"content": "ok"}}]}
+    monkeypatch.setenv("MEDIA_SUMMARY_BASE_URL", "http://gw:4000/v1")
+    monkeypatch.setenv("MEDIA_SUMMARY_API_KEY", "sk-local-xyz")
+    monkeypatch.setenv("MEDIA_SUMMARY_MODEL", "local-abliterate")
+    # A real OpenAI key that must NOT be used for the summary call.
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-real-openai")
+    monkeypatch.setattr(_summary.urllib.request, "urlopen",
+                        _fake_urlopen(payload, captured))
+    assert _summary.summarize_for_speech("a long reply") == "ok"
+    assert captured["url"] == "http://gw:4000/v1/chat/completions"
+    assert captured["auth"] == "Bearer sk-local-xyz"
+    assert captured["body"]["model"] == "local-abliterate"
 
-    monkeypatch.setenv("MEDIA_SUMMARY_PYTHON", "python3")
-    monkeypatch.setattr(_summary.subprocess, "run", lambda *a, **k: FakeProc())
-    assert _summary.summarize_for_speech("a long reply") is None
 
-
-def test_empty_stdout_returns_none(monkeypatch):
-    class FakeProc:
-        returncode = 0
-        stdout = b"   "
-
-    monkeypatch.setenv("MEDIA_SUMMARY_PYTHON", "python3")
-    monkeypatch.setattr(_summary.subprocess, "run", lambda *a, **k: FakeProc())
+def test_http_error_returns_none(monkeypatch):
+    def _raise(req, timeout=None):
+        raise urllib.error.HTTPError(req.full_url, 500, "err", {}, io.BytesIO(b""))
+    monkeypatch.setattr(_summary.urllib.request, "urlopen", _raise)
     assert _summary.summarize_for_speech("a long reply") is None
 
 
 def test_timeout_returns_none(monkeypatch):
-    import subprocess as _sp
+    def _raise(req, timeout=None):
+        raise TimeoutError("timed out")
+    monkeypatch.setattr(_summary.urllib.request, "urlopen", _raise)
+    assert _summary.summarize_for_speech("a long reply") is None
 
-    def _raise(*a, **k):
-        raise _sp.TimeoutExpired(cmd="x", timeout=1)
 
-    monkeypatch.setenv("MEDIA_SUMMARY_PYTHON", "python3")
-    monkeypatch.setattr(_summary.subprocess, "run", _raise)
+def test_empty_content_returns_none(monkeypatch):
+    payload = {"choices": [{"message": {"content": "   "}}]}
+    monkeypatch.setattr(_summary.urllib.request, "urlopen", _fake_urlopen(payload))
+    assert _summary.summarize_for_speech("a long reply") is None
+
+
+def test_malformed_response_returns_none(monkeypatch):
+    payload = {"unexpected": "shape"}
+    monkeypatch.setattr(_summary.urllib.request, "urlopen", _fake_urlopen(payload))
     assert _summary.summarize_for_speech("a long reply") is None
