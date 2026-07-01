@@ -681,6 +681,27 @@ def test_replay_at_cursor_not_in_copy_mode_falls_back(monkeypatch):
     assert played["idx"] == 2
 
 
+def test_replay_at_cursor_fullscreen_matches_visible(monkeypatch):
+    """Not in copy-mode (e.g. Claude fullscreen): replay the most recent clip
+    on the visible screen — no cursor needed — rather than blindly the pane's
+    latest clip."""
+    played = {}
+    # Visible screen shows Charlie (idx 3); the pane's "latest" would be idx 1.
+    visible = "some header line\n" + _RAC_ROWS[2]["text"] + "\n> a prompt"
+    monkeypatch.setenv("TTS_POPUP_PANE", "%5")
+    monkeypatch.setattr(cli, "_tmux_session_for_pane", lambda p: "sess")
+    monkeypatch.setattr(cli, "_speech_history",
+                        lambda n=20, session=None: _RAC_ROWS)
+    monkeypatch.setattr(cli, "_history_index_for_pane", lambda p: 1)
+    monkeypatch.setattr(cli, "_do_replay",
+                        lambda i, session=None: played.update(idx=i) or 0)
+    monkeypatch.setattr(cli.subprocess, "run",
+                        _rac_fake_run("0\t\t", visible))  # pane_in_mode=0
+
+    assert cli.cmd_replay_at_cursor(object()) == 0
+    assert played["idx"] == 3   # the on-screen clip, not _history_index_for_pane's 1
+
+
 def test_replay_at_cursor_matches_wrapped_anchor(monkeypatch):
     """A clip's anchor word-wrapped across visual rows still matches.
 

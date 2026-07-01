@@ -1629,6 +1629,40 @@ def cmd_replay_prev(a) -> int:
     return 0
 
 
+def _clip_index_in_text(captured: str) -> Optional[int]:
+    """1-based speech-history index of the most-recent clip whose search anchor
+    appears in `captured` pane text, or None if none is present. Shared by
+    `p`'s copy-mode path (capture down to the cursor) and its fullscreen path
+    (capture the visible screen)."""
+    from .intake.submit import _anchor_for
+
+    if not captured:
+        return None
+    # Collapse whitespace before matching: the terminal word-wraps a response
+    # at its content width, so an anchor longer than that width spans two visual
+    # rows and a raw substring test misses it. The highlight path keeps anchors
+    # to one row because it uses a row-bound tmux search; here we do a plain
+    # substring test, so normalize both sides and wrapping stops mattering.
+    norm_cap = " ".join(captured.split())
+    for i, row in enumerate(_speech_history(200), start=1):
+        anchor = _anchor_for(row.get("text") or "")
+        if anchor and " ".join(anchor.split()) in norm_cap:
+            return i
+    return None
+
+
+def _announce_replay(idx: int) -> int:
+    """Flash a ♪ preview of clip `idx` (popup `p` feedback) then replay it."""
+    rows = _speech_history(200)
+    if 1 <= idx <= len(rows):
+        preview = " ".join((rows[idx - 1].get("text") or "").split())
+        if len(preview) > 60:
+            preview = preview[:57] + "…"
+        subprocess.run(["tmux", "display-message", f"♪ {preview}"],
+                       capture_output=True)
+    return _do_replay(idx)
+
+
 def cmd_replay_at_cursor(a) -> int:
     """Replay the spoken clip at/just-above the copy-mode cursor (popup `p`).
 
@@ -1638,11 +1672,11 @@ def cmd_replay_at_cursor(a) -> int:
     so they're excluded for free, and most-recent-first picks the nearest
     preceding utterance. Reuses `_anchor_for` so a clip that the auto-highlight
     can land on is exactly one this can match. If the pane isn't scrolled into
-    copy-mode there's no cursor, so it falls back to "replay what this pane
-    just said" (the latest clip from this pane).
+    copy-mode there's no cursor to point with, so it falls back to the most
+    recent clip on the *visible screen* (this is what makes `p` work in Claude's
+    fullscreen mode, which has no scrollback or copy-mode cursor), and failing
+    that to "replay what this pane just said" (the latest clip from this pane).
     """
-    from .intake.submit import _anchor_for
-
     pane = _caller_pane()
     if not pane:
         print("media: no caller pane", file=sys.stderr)
@@ -1668,9 +1702,24 @@ def cmd_replay_at_cursor(a) -> int:
     except Exception:  # noqa: BLE001
         pass
 
-    # Not scrolled into copy-mode → no cursor to anchor on; replay this pane's
-    # latest clip (matches Space's "play what this pane just said").
+    # Not scrolled into copy-mode → no cursor to point with. Try the *visible
+    # screen* first: replay the most recent clip currently on screen. This is
+    # what makes `p` useful in Claude's fullscreen (alt-screen) mode, which has
+    # no scrollback or copy-mode cursor — capture-pane there returns just the
+    # visible screen, so a match means "the clip I can see". Fall back to this
+    # pane's latest clip when nothing on screen matches (e.g. the spoken text
+    # scrolled off), preserving the old "play what this pane just said".
     if in_mode.strip() != "1" or not cur_y.strip().isdigit():
+        try:
+            cap = subprocess.run(
+                ["tmux", "capture-pane", "-p", "-t", pane],
+                capture_output=True, text=True, timeout=4)
+            visible = cap.stdout if cap.returncode == 0 else ""
+        except Exception:  # noqa: BLE001
+            visible = ""
+        idx = _clip_index_in_text(visible)
+        if idx is not None:
+            return _announce_replay(idx)
         idx = _history_index_for_pane(pane)
         if idx is None:
             print("media: this pane has no spoken clip", file=sys.stderr)
@@ -1694,22 +1743,9 @@ def cmd_replay_at_cursor(a) -> int:
         print("media: could not read pane text", file=sys.stderr)
         return 1
 
-    # Collapse whitespace before matching: the terminal word-wraps a response
-    # at its content width, so an anchor longer than that width spans two
-    # visual rows and a raw substring test misses it. The highlight path keeps
-    # anchors to one row because it uses a row-bound tmux search; here we do a
-    # plain substring test, so normalize both sides and wrapping stops mattering.
-    norm_cap = " ".join(captured.split())
-    rows = _speech_history(200)
-    for i, row in enumerate(rows, start=1):
-        anchor = _anchor_for(row.get("text") or "")
-        if anchor and " ".join(anchor.split()) in norm_cap:
-            preview = " ".join((row.get("text") or "").split())
-            if len(preview) > 60:
-                preview = preview[:57] + "…"
-            subprocess.run(["tmux", "display-message", f"♪ {preview}"],
-                           capture_output=True)
-            return _do_replay(i)
+    idx = _clip_index_in_text(captured)
+    if idx is not None:
+        return _announce_replay(idx)
 
     subprocess.run(
         ["tmux", "display-message", "⊘ no spoken clip above cursor"],
@@ -1723,7 +1759,7 @@ def cmd_replay_track(a) -> int:
 
     Spawned detached by _do_replay so it outlives the media-replay process.
     """
-    from .intake.submit import _tmux_highlight_text
+    from .intake.submit import _tmux_highlight_text, _restore_fullscreen
     sentences: list[str] = json.loads(a.sentences)
     pane: str = a.pane
     if not sentences or not pane:
@@ -1754,6 +1790,7 @@ def cmd_replay_track(a) -> int:
         except Exception:  # noqa: BLE001
             idle_streak += 1
             if idle_streak >= 5:
+                _restore_fullscreen()  # no-op unless MEDIA_HIGHLIGHT_DUMP dumped
                 return 0
             continue
         idle_streak = 0
@@ -1763,6 +1800,7 @@ def cmd_replay_track(a) -> int:
             time.sleep(0.15)
             try:
                 if bool(ipc.get_property(_sock(), "idle-active")):
+                    _restore_fullscreen()  # no-op unless MEDIA_HIGHLIGHT_DUMP dumped
                     return 0
             except Exception:  # noqa: BLE001
                 pass
