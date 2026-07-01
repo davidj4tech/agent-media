@@ -245,9 +245,18 @@ def _caller_pane() -> str:
 # --- speech subcommands ----------------------------------------------------
 
 def cmd_status(a) -> int:
-    idle = _get("idle-active")
-    pos = _get("time-pos")
-    dur = _get("duration")
+    # One batched read of everything this needs. Over a tcp:// bridge each
+    # get_property is a ~600ms round-trip, and the popup redraws this constantly
+    # (plus the status bar every 1s) — so ~7 serial reads made it crawl (~6.5s).
+    try:
+        snap = ipc.get_properties(
+            _sock(), ["idle-active", "time-pos", "duration", "pause", "mute",
+                      "speed", "playlist-pos"])
+    except Exception:  # noqa: BLE001
+        snap = {}
+    idle = snap.get("idle-active")
+    pos = snap.get("time-pos")
+    dur = snap.get("duration")
     playing = False         # the response timeline (offset+pos / total) is known
     if not idle:
         np = _now_speaking()
@@ -257,12 +266,8 @@ def cmd_status(a) -> int:
             if total:
                 clip_durs = ex.get("clip_durations_s")
                 if clip_durs:
-                    # Replay path: compute offset from mpv playlist-pos so
-                    # no background thread is needed to track clip advances.
-                    try:
-                        ppos = max(0, int(ipc.get_property(_sock(), "playlist-pos") or 0))
-                    except Exception:  # noqa: BLE001
-                        ppos = 0
+                    # Replay path: offset from playlist-pos (from the snapshot).
+                    ppos = max(0, int(snap.get("playlist-pos") or 0))
                     offset = sum(clip_durs[:ppos])
                 else:
                     offset = ex.get("clip_offset_s") or 0.0
@@ -277,15 +282,15 @@ def cmd_status(a) -> int:
     if cw and playing:
         prefix, body = _subject_label()
         if prefix or body:
-            print(_title_status_line(pos, dur, _get("pause"), _get("mute"),
-                                     _get("speed"), prefix, body,
+            print(_title_status_line(pos, dur, snap.get("pause"), snap.get("mute"),
+                                     snap.get("speed"), prefix, body,
                                      _title_window(cw), key="status"))
             return 0
     print(render_status(idle=idle, pos=pos, dur=dur,
-                        paused=_get("pause"), muted=_get("mute"),
+                        paused=snap.get("pause"), muted=snap.get("mute"),
                         width=a.width, hide_idle=not a.show_idle,
                         bar=not getattr(a, "no_bar", False),
-                        speed=_get("speed")))
+                        speed=snap.get("speed")))
     return 0
 
 
