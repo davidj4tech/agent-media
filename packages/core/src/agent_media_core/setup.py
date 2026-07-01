@@ -522,9 +522,21 @@ def _install_one_systemd(name: str, *, dry_run: bool, root: Path) -> str | None:
     content = SYSTEMD_UNIT_TEMPLATE.format(
         name=name, bindir=_entrypoint_bindir(), runscript=run)
     if dry_run:
+        if dest.is_symlink():
+            print(f"# would replace symlink {dest} -> {os.readlink(dest)} "
+                  f"with a generated unit")
         print(f"# would write {dest}:")
         print(content)
         return unit
+    # A stale symlink here is typically an older stow/dotfiles-deployed unit.
+    # Unlink it first so we write a real file rather than following the link and
+    # clobbering its target (a tracked source file). A dangling symlink is
+    # handled the same way — writing through it would recreate the deleted
+    # target.
+    if dest.is_symlink():
+        print(f"media-setup: {unit}: replacing stale symlink "
+              f"(-> {os.readlink(dest)}) with a generated unit")
+        dest.unlink()
     if dest.exists() and dest.read_text() == content:
         print(f"media-setup: {unit} already up to date")
         return unit

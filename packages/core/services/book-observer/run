@@ -1,0 +1,12 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# Book-channel resume-bookmark observer: keeps sink-book.sock bookmarks correct
+# no matter who drives the socket (agent-media itself or the books Mopidy/Iris).
+# Polls for the socket and reattaches on its own if the book mpv comes/goes, so
+# it needs no ordering deps.
+#
+# Invoked via the `media-book-observer` console script (in this install's venv
+# bin, which the systemd unit puts on PATH), so it follows wherever the repo
+# lives — no hard-coded path. On a PipeWire/systemd host it runs under
+# `/bin/sh <this>`; on Termux/runit its own shebang is used.
+exec 2>&1
+exec media-book-observer
