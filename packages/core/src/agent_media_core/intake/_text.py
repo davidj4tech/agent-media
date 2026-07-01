@@ -17,6 +17,45 @@ _BLANK_RE = re.compile(r"\n[ \t]*\n+")
 _REGEX_FENCE_BLOCK = re.compile(r"(`{3,}|~{3,})([^\n]*)\n(.*?)\n[ \t]*\1", re.DOTALL)
 
 
+# Markdown link / image: [text](url) or ![alt](url) -> keep only the human text.
+_MD_LINK_RE = re.compile(r"!?\[([^\]]*)\]\(\s*<?([^)\s>]+)>?(?:\s+[^)]*)?\)")
+# Autolink <https://...> -> spoken host.
+_AUTOLINK_RE = re.compile(r"<(https?://[^>\s]+)>")
+# Bare URL with an explicit scheme (safe: won't catch "e.g." / "example.com").
+_BARE_URL_RE = re.compile(r"\bhttps?://[^\s)>\]`]+", re.IGNORECASE)
+
+
+def _url_host(url: str) -> str:
+    """Reduce a URL to a spoken 'host link' placeholder, dropping the path/query
+    so TTS says "github.com link" instead of reading the whole thing."""
+    host = re.sub(r"^https?://", "", url, flags=re.IGNORECASE)
+    host = re.sub(r"^www\.", "", host, flags=re.IGNORECASE)
+    host = host.split("/")[0].split("?")[0].split("#")[0].strip()
+    host = host.rstrip(".,;:!?")
+    return f"{host} link" if host else "link"
+
+
+def suppress_urls(text: str) -> str:
+    """Keep markdown link *text* but drop the URL, and reduce bare URLs to a
+    spoken "<host> link" placeholder, so TTS doesn't read long URLs / query
+    strings aloud."""
+    if not text:
+        return text
+    out = _MD_LINK_RE.sub(lambda m: m.group(1).strip() or _url_host(m.group(2)), text)
+    out = _AUTOLINK_RE.sub(lambda m: _url_host(m.group(1)), out)
+
+    def _bare(m: "re.Match[str]") -> str:
+        url = m.group(0)
+        trail = ""
+        while url and url[-1] in ".,;:!?":  # keep sentence punctuation outside the URL
+            trail = url[-1] + trail
+            url = url[:-1]
+        return _url_host(url) + trail
+
+    out = _BARE_URL_RE.sub(_bare, out)
+    return out
+
+
 def _code_placeholder(n_lines: int, lang: str = "") -> str:
     n = max(1, n_lines)
     lang_word = f"{lang} " if lang else ""
@@ -85,6 +124,7 @@ def strip_markdown(text: str) -> str:
     if not text:
         return ""
     out = suppress_code_blocks(text)
+    out = suppress_urls(out)
     out = _FENCE_RE.sub("", out)
     out = _HEAD_RE.sub("", out)
     out = _BOLD_RE.sub(r"\1", out)
