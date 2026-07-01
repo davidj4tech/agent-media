@@ -1,12 +1,22 @@
 """Unit tests for the TTS text-cleanup helpers in intake/_text.py."""
 
 from agent_media_core.intake._text import (
+    IncrementalSentencer,
     _regex_suppress_tables,
     strip_markdown,
     suppress_code_blocks,
     suppress_tables,
     suppress_urls,
 )
+
+
+def _stream(text, chunk=7):
+    """Feed `text` through IncrementalSentencer in small chunks."""
+    s = IncrementalSentencer()
+    out = []
+    for i in range(0, len(text), chunk):
+        out += s.feed(text[i:i + chunk])
+    return out + s.close()
 
 
 # --- code blocks --------------------------------------------------------
@@ -96,6 +106,46 @@ def test_bare_domain_without_scheme_untouched():
 
 
 # --- combined -----------------------------------------------------------
+
+def test_table_absorbed_prose_line_not_swallowed():
+    # GFM pulls a following non-blank line into the table; we must keep it.
+    text = "| A | B |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\nDone here."
+    out = suppress_tables(text)
+    assert "2 rows, omitted." in out
+    assert "Done here." in out
+
+
+# --- streaming sentencer ------------------------------------------------
+
+def test_stream_plain_prose_splits_normally():
+    out = _stream("One here. Two follows! Three ends.", chunk=5)
+    assert out == ["One here.", "Two follows!", "Three ends."]
+
+
+def test_stream_abbreviations_do_not_split():
+    out = _stream("See Dr. Smith, e.g. today. Next.", chunk=4)
+    assert out == ["See Dr. Smith, e.g. today.", "Next."]
+
+
+def test_stream_code_fence_with_punctuation_held_together():
+    # print("Hello. World.") must NOT split the fence mid-block.
+    text = 'Intro.\n```python\nprint("Hello. World.")\nx = 1\n```\nAfter.'
+    out = _stream(text, chunk=6)
+    assert out[0] == "Intro."
+    joined = " ".join(out)
+    assert "python code block" in joined
+    assert "Hello. World." not in joined
+    assert joined.endswith("After.")
+
+
+def test_stream_table_held_together():
+    text = "Below. | A | B |\n|---|---|\n| 1 | 2 |\nDone."
+    out = _stream(text, chunk=6)
+    joined = " ".join(out)
+    assert "table, columns A, B" in joined
+    assert "| 1 | 2 |" not in joined
+    assert "Done." in joined
+
 
 def test_strip_markdown_handles_all_three():
     text = (
