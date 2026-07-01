@@ -245,6 +245,7 @@ def test_highlight_dump_first_dumps_on_fullscreen(monkeypatch):
     monkeypatch.setenv("MEDIA_HIGHLIGHT_DUMP", "1")
     monkeypatch.setattr(S, "_is_auto_highlight_enabled", lambda: True)
     monkeypatch.setattr(S, "_pane_alternate_on", lambda p: True)  # fullscreen
+    monkeypatch.setattr(S, "_pane_recent_keystrokes", lambda p, w: False)
     dumped = {"n": 0}
     def _fake_dump(pane):
         dumped["n"] += 1
@@ -263,6 +264,52 @@ def test_highlight_dump_first_dumps_on_fullscreen(monkeypatch):
     S._tmux_highlight_text("Some spoken sentence here.", first=True)
     assert dumped["n"] == 1
     assert S._dumped_pane == "%5"
+    S._dumped_pane = None
+
+
+def _dump_mode_stubs(monkeypatch, *, alt, typing):
+    """Common stubs for the (re)dump branch: dump mode on, auto-highlight on,
+    pane alt-screen state = `alt`, keystroke state = `typing`. Returns a dict
+    counting _dump_transcript calls."""
+    monkeypatch.setenv("TMUX", "1")
+    monkeypatch.setenv("TMUX_PANE", "%5")
+    monkeypatch.setenv("MEDIA_HIGHLIGHT_DUMP", "1")
+    monkeypatch.setattr(S, "_is_auto_highlight_enabled", lambda: True)
+    monkeypatch.setattr(S, "_pane_alternate_on", lambda p: alt)
+    monkeypatch.setattr(S, "_pane_recent_keystrokes", lambda p, w: typing)
+    monkeypatch.setattr(S, "_force_highlight_active", lambda p: False)
+    monkeypatch.setattr(S, "_popup_open_for", lambda p: False)
+    monkeypatch.setattr(S, "_anchor_for", lambda t, max_len=50: "an anchor line")
+    monkeypatch.setattr(S, "_pane_anchor_width", lambda p: 50)
+    monkeypatch.setattr(S, "_pane_scroll_pos", lambda p: (False, ""))
+    monkeypatch.setattr(S, "_cursor_sig", lambda p: "same")
+    monkeypatch.setattr(S.subprocess, "run", _RunRec())
+    dumped = {"n": 0}
+    def _fake_dump(pane):
+        dumped["n"] += 1
+        S._dumped_pane = pane
+        return True
+    monkeypatch.setattr(S, "_dump_transcript", _fake_dump)
+    return dumped
+
+
+def test_highlight_dump_redumps_when_pane_restaled(monkeypatch):
+    """A later sentence whose pane flipped back to fullscreen (Claude redrew)
+    re-dumps to refresh the staled scrollback — the "refresh once in a while"."""
+    dumped = _dump_mode_stubs(monkeypatch, alt=True, typing=False)
+    S._dumped_pane = "%5"
+    S._tmux_highlight_text("A later sentence.", first=False)
+    assert dumped["n"] == 1                  # re-dumped despite not being first
+    S._dumped_pane = None
+
+
+def test_highlight_dump_no_redump_while_holding(monkeypatch):
+    """A later sentence while the dump still holds (pane on normal screen):
+    no re-dump — search the existing scrollback, don't churn Ctrl+O/[."""
+    dumped = _dump_mode_stubs(monkeypatch, alt=False, typing=False)
+    S._dumped_pane = "%5"
+    S._tmux_highlight_text("A later sentence.", first=False)
+    assert dumped["n"] == 0
     S._dumped_pane = None
 
 

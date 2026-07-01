@@ -439,7 +439,13 @@ def _dump_transcript(pane: str) -> bool:
     # default is imperceptible. Tunable via MEDIA_HIGHLIGHT_DUMP_SETTLE_MS.
     settle = int(os.environ.get("MEDIA_HIGHLIGHT_DUMP_SETTLE_MS", "300")) / 1000
     try:
-        # Fresh scrollback each response so repeated dumps don't pile up copies.
+        # Leave tmux copy-mode first: a prior sentence's scroll-and-hold may have
+        # left us in it, and then the C-o below is eaten by copy-mode instead of
+        # reaching Claude — so a *re-dump* would silently no-op. Harmless no-op
+        # when not in copy-mode.
+        subprocess.run(["tmux", "send-keys", "-t", pane, "-X", "cancel"],
+                       capture_output=True)
+        # Fresh scrollback each dump so repeated dumps don't pile up copies.
         # Safe here: we only dump an alt-screen pane, whose scrollback is empty.
         subprocess.run(["tmux", "clear-history", "-t", pane], capture_output=True)
         subprocess.run(["tmux", "send-keys", "-t", pane, "C-o"], capture_output=True)
@@ -501,24 +507,32 @@ def _tmux_highlight_text(text: str, *, first: bool = False,
     if not pane:
         return
 
-    # Optional transcript-dump follow-along (MEDIA_HIGHLIGHT_DUMP=1). On the
-    # first sentence, if the pane is a fullscreen (alt-screen) Claude, print its
-    # transcript into scrollback so the scroll-and-hold below can follow every
-    # sentence — including ones off the fullscreen view. On later sentences,
-    # step aside if the user has started typing into the dumped pane: restore
-    # fullscreen and skip, so their keys reach the input box (the once-at-start
-    # keystroke skip in `_run` can't catch a mid-response keystroke).
+    # Optional transcript-dump follow-along (MEDIA_HIGHLIGHT_DUMP=1). Print
+    # Claude's transcript into scrollback so the scroll-and-hold below can follow
+    # every sentence — including ones off the fullscreen view.
+    #
+    # (Re)dump whenever the pane is currently on the alt-screen: the first
+    # sentence needs the initial dump, and *later* sentences need a refresh
+    # because Claude re-renders often and each redraw flips the pane back to
+    # fullscreen, staling the dumped scrollback (the highlight then "doesn't
+    # jump back in"). A pane still on the normal screen (alt=0) means our dump
+    # holds — skip the re-dump so we don't churn Ctrl+O/[ on every line.
+    #
+    # First, though: if the user has started typing into the dumped pane, step
+    # aside — restore fullscreen and skip, so their keys reach the input box
+    # (the once-at-start keystroke skip in `_run` can't catch a mid-response
+    # keystroke) and we don't re-dump on top of them.
     dump = _highlight_dump_enabled()
     if dump:
-        if first and _pane_alternate_on(pane):
+        _ks = float(os.environ.get("MEDIA_HIGHLIGHT_KEYSTROKE_S", "5"))
+        _typing = (_ks > 0 and _pane_recent_keystrokes(pane, _ks)
+                   and not _force_highlight_active(pane)
+                   and not _popup_open_for(pane))
+        if _dumped_pane == pane and not first and _typing:
+            _restore_fullscreen()
+            return
+        if not _typing and _pane_alternate_on(pane):
             _dump_transcript(pane)
-        elif _dumped_pane == pane and not first:
-            _ks = float(os.environ.get("MEDIA_HIGHLIGHT_KEYSTROKE_S", "5"))
-            if (_ks > 0 and _pane_recent_keystrokes(pane, _ks)
-                    and not _force_highlight_active(pane)
-                    and not _popup_open_for(pane)):
-                _restore_fullscreen()
-                return
 
     # Transient pulse vs scroll-and-hold. On an alternate-screen pane (Claude
     # Code & other fullscreen TUIs) we flash the sentence then drop out of
