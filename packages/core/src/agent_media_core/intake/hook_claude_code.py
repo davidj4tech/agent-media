@@ -660,6 +660,20 @@ def _play_now(event: Event) -> None:
     # Commit to speaking: the notif-suppression window keys off this stamp, and
     # detached playback won't report back.
     _write_stamp(_stamp_dir() / "stop-last", int(time.time()))
+    # Optional LLM spoken-summary rewrite (opt-in). Runs *here*, in the detached
+    # child, so the network call never blocks the hook. Dedup already keyed off
+    # the mechanically-stripped original above, keeping it deterministic; on any
+    # failure we keep event.text as-is. `summary_raw` holds the un-stripped reply
+    # so the model can describe code/tables rather than the "…omitted." stubs.
+    raw = event.metadata.pop("summary_raw", None)
+    if raw:
+        try:
+            from ._summary import summarize_for_speech
+            spoken = summarize_for_speech(raw)
+            if spoken:
+                event.text = strip_markdown(spoken)
+        except Exception:  # noqa: BLE001 — detached; fall back to event.text
+            pass
     submit_event(event, state=state)
 
 
@@ -715,7 +729,8 @@ def _handle_stop(payload: dict) -> int:
     # Prefer the text straight off the Stop payload — no transcript read, parse,
     # or flush-retry. `last_assistant_message` is "the full text of Claude's
     # response" (Stop/SubagentStop only).
-    text = strip_markdown((payload.get("last_assistant_message") or "").strip())
+    raw = (payload.get("last_assistant_message") or "").strip()
+    text = strip_markdown(raw)
     if not text:
         # Fall back to the transcript JSONL: covers older Claude Code (no field)
         # and a tool-only turn (empty field, but the walk may still find earlier
@@ -735,7 +750,8 @@ def _handle_stop(payload: dict) -> int:
             if ok:
                 break
             time.sleep(0.1)
-        text = strip_markdown(_latest_assistant_text(tp))
+        raw = _latest_assistant_text(tp)
+        text = strip_markdown(raw)
     if not text:
         return 0
 
@@ -744,12 +760,17 @@ def _handle_stop(payload: dict) -> int:
     # backgrounded process and return immediately. Dedup, the stop stamp, and all
     # now_playing writes happen there on a fresh StateStore (see _play_now), so
     # the parent opens no DB connection to fork across.
+    metadata = {"kind": "stop", "session": payload.get("session_id") or ""}
+    # Opt-in LLM spoken-summary: carry the raw reply so the detached child can
+    # rewrite it for speech (only worth it past a length threshold).
+    from ._summary import summary_enabled, summary_min_chars
+    if summary_enabled() and len(raw) >= summary_min_chars():
+        metadata["summary_raw"] = raw
     _play_detached(
         Event(text=text, source=Source.CLAUDE_CODE,
               priority=Priority.NORMAL,
               voice=_voice_for_session(_session_name()),
-              metadata={"kind": "stop",
-                        "session": payload.get("session_id") or ""}))
+              metadata=metadata))
     return 0
 
 
