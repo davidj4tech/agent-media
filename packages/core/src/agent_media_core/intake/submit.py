@@ -409,6 +409,74 @@ def _pane_alternate_on(pane: str) -> bool:
         return False
 
 
+def _highlight_dump_enabled() -> bool:
+    """Opt-in (MEDIA_HIGHLIGHT_DUMP=1): in Claude's fullscreen mode, drive its
+    Ctrl+O → `[` transcript-print so the spoken sentence — usually scrolled off
+    the alt-screen where copy-mode can't reach it — lands in real scrollback the
+    highlight can follow. Off by default; see `_dump_transcript`."""
+    return os.environ.get("MEDIA_HIGHLIGHT_DUMP") == "1"
+
+
+# Pane we've driven into a transcript dump this response (fullscreen → normal
+# screen), so the response-end restore knows to send Escape. One response plays
+# per process, so a single in-process slot is enough.
+_dumped_pane: Optional[str] = None
+
+
+def _dump_transcript(pane: str) -> bool:
+    """Print Claude Code's conversation into `pane`'s native scrollback via its
+    Ctrl+O (transcript) → `[` (print) keys, turning a fullscreen (alt-screen)
+    pane into a normal-screen one copy-mode can search — so the highlight can
+    follow a sentence that scrolled off the fullscreen view.
+
+    Best-effort: returns True only if the pane actually left the alt-screen
+    (i.e. the dump took, so it was really Claude and the keys registered). On
+    success records the pane in `_dumped_pane` for `_restore_fullscreen`.
+    """
+    global _dumped_pane
+    # Time for Claude to enter transcript mode before we send `[`; too short and
+    # `[` would land in the input box instead. Once-per-response, so a generous
+    # default is imperceptible. Tunable via MEDIA_HIGHLIGHT_DUMP_SETTLE_MS.
+    settle = int(os.environ.get("MEDIA_HIGHLIGHT_DUMP_SETTLE_MS", "300")) / 1000
+    try:
+        # Leave tmux copy-mode first: a prior sentence's scroll-and-hold may have
+        # left us in it, and then the C-o below is eaten by copy-mode instead of
+        # reaching Claude — so a *re-dump* would silently no-op. Harmless no-op
+        # when not in copy-mode.
+        subprocess.run(["tmux", "send-keys", "-t", pane, "-X", "cancel"],
+                       capture_output=True)
+        # Fresh scrollback each dump so repeated dumps don't pile up copies.
+        # Safe here: we only dump an alt-screen pane, whose scrollback is empty.
+        subprocess.run(["tmux", "clear-history", "-t", pane], capture_output=True)
+        subprocess.run(["tmux", "send-keys", "-t", pane, "C-o"], capture_output=True)
+        time.sleep(settle)
+        subprocess.run(["tmux", "send-keys", "-t", pane, "["], capture_output=True)
+        time.sleep(0.2)
+    except Exception:  # noqa: BLE001
+        return False
+    if _pane_alternate_on(pane):
+        return False  # not Claude, or the keys didn't take — nothing dumped
+    _dumped_pane = pane
+    return True
+
+
+def _restore_fullscreen() -> None:
+    """Undo `_dump_transcript`: leave copy-mode and send Escape so Claude
+    re-enters its fullscreen renderer. No-op unless we dumped a pane."""
+    global _dumped_pane
+    pane = _dumped_pane
+    if not pane:
+        return
+    try:
+        subprocess.run(["tmux", "send-keys", "-t", pane, "-X", "cancel"],
+                       capture_output=True)
+        subprocess.run(["tmux", "send-keys", "-t", pane, "Escape"],
+                       capture_output=True)
+    except Exception:  # noqa: BLE001
+        pass
+    _dumped_pane = None
+
+
 def _tmux_highlight_text(text: str, *, first: bool = False,
                          force: bool = False) -> None:
     """Re-anchor copy-mode in the source pane onto the spoken text.
@@ -439,15 +507,49 @@ def _tmux_highlight_text(text: str, *, first: bool = False,
     if not pane:
         return
 
+    # Optional transcript-dump follow-along (MEDIA_HIGHLIGHT_DUMP=1). Print
+    # Claude's transcript into scrollback so the scroll-and-hold below can follow
+    # every sentence — including ones off the fullscreen view.
+    #
+    # (Re)dump whenever the pane is currently on the alt-screen: the first
+    # sentence needs the initial dump, and *later* sentences need a refresh
+    # because Claude re-renders often and each redraw flips the pane back to
+    # fullscreen, staling the dumped scrollback (the highlight then "doesn't
+    # jump back in"). A pane still on the normal screen (alt=0) means our dump
+    # holds — skip the re-dump so we don't churn Ctrl+O/[ on every line.
+    #
+    # First, though: if the user has started typing into the dumped pane, step
+    # aside — restore fullscreen and skip, so their keys reach the input box
+    # (the once-at-start keystroke skip in `_run` can't catch a mid-response
+    # keystroke) and we don't re-dump on top of them.
+    dump = _highlight_dump_enabled()
+    if dump:
+        _ks = float(os.environ.get("MEDIA_HIGHLIGHT_KEYSTROKE_S", "5"))
+        _typing = (_ks > 0 and _pane_recent_keystrokes(pane, _ks)
+                   and not _force_highlight_active(pane)
+                   and not _popup_open_for(pane))
+        if _dumped_pane == pane and not first and _typing:
+            _restore_fullscreen()
+            return
+        if not _typing and _pane_alternate_on(pane):
+            _dump_transcript(pane)
+
     # Transient pulse vs scroll-and-hold. On an alternate-screen pane (Claude
     # Code & other fullscreen TUIs) we flash the sentence then drop out of
     # copy-mode, so the pane returns to the app's live view and its own
     # scroll/transcript keys (Claude's Ctrl+O) aren't blocked — and there's no
     # scrollback to hold onto anyway. On a normal-screen pane we keep the
     # scroll-and-hold follow-along (real scrollback to read along, no fullscreen
-    # view to step aside for). Override with MEDIA_HIGHLIGHT_TRANSIENT=1/0.
+    # view to step aside for). A dumped pane (above) is now normal-screen with a
+    # transcript to hold, so force scroll-and-hold there. Override with
+    # MEDIA_HIGHLIGHT_TRANSIENT=1/0.
     _t_env = os.environ.get("MEDIA_HIGHLIGHT_TRANSIENT")
-    transient = (_t_env == "1") if _t_env in ("0", "1") else _pane_alternate_on(pane)
+    if _t_env in ("0", "1"):
+        transient = (_t_env == "1")
+    elif dump and _dumped_pane == pane:
+        transient = False
+    else:
+        transient = _pane_alternate_on(pane)
 
     # Build the search anchor (markdown stripped, longest single line, trimmed
     # to one visual row). Cap to the target pane's width: tmux search-backward
@@ -1561,6 +1663,7 @@ def submit_event(event: Event,
                         nav_jump = True
         finally:
             highlighter.drain()
+            _restore_fullscreen()   # no-op unless MEDIA_HIGHLIGHT_DUMP dumped
             coordinator.after_speech()
             state.clear_now_playing("speech")
             playback_lock.release()
@@ -1908,6 +2011,7 @@ def submit_stream(sentences,
                         nav_jump = True
         finally:
             highlighter.drain()
+            _restore_fullscreen()   # no-op unless MEDIA_HIGHLIGHT_DUMP dumped
             coordinator.after_speech()
             state.clear_now_playing("speech")
             playback_lock.release()
