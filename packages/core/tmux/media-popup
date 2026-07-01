@@ -70,6 +70,13 @@ bspeed=1.0              # book channel speed (tracked separately from speech)
 # widening gaps, so a held key accelerates); below 1.0x, fine flat 0.1 steps.
 SPEED_RUNGS="1.0 1.5 2.0 3.0"
 hist_idx=1
+# Fused speech keys: instead of running `$MEDIA <verb>` and then a separate
+# `popup-status` redraw (two Python spawns per press), a fusable speech key
+# stashes its verb here; the loop hands it to `fetch` which runs the action AND
+# returns the redraw in ONE spawn (`popup-status --act …`). ACT_OUT holds that
+# action's stdout (e.g. replay-prev's resolved history cursor).
+SPEECH_ACT=()
+ACT_OUT=""
 CHANNEL="${MEDIA_POPUP_CHANNEL:-speech}"   # speech | music | book (Tab cycles); the
                         # launcher restores it across a `?` help round-trip
 BOOK_SOCK="${MEDIA_BOOK_SOCKET:-$HOME/.local/state/agent-media/sink-book.sock}"
@@ -168,8 +175,19 @@ fetch() {
         # Python startup (~0.1s), and the popup refreshes every ~1s and after
         # every key, so three-into-one is what makes it feel responsive. Emits
         # exactly three lines (any may be empty).
-        { IFS= read -r STATUS; IFS= read -r t; IFS= read -r smc; } < <(
-            TTS_POPUP_PANE="$HL_PANE" $MEDIA popup-status --show-idle --no-bar 2>/dev/null)
+        #
+        # When called WITH args (a fusable speech key's verb), fuse the action
+        # into this same spawn via `--act`: the reply then has a leading line
+        # (the action's own stdout, e.g. replay-prev's cursor → ACT_OUT) before
+        # the three status fields, so a keypress costs one spawn, not two.
+        ACT_OUT=""
+        if [ "$#" -gt 0 ]; then
+            { IFS= read -r ACT_OUT; IFS= read -r STATUS; IFS= read -r t; IFS= read -r smc; } < <(
+                TTS_POPUP_PANE="$HL_PANE" $MEDIA popup-status --show-idle --no-bar --act "$@" 2>/dev/null)
+        else
+            { IFS= read -r STATUS; IFS= read -r t; IFS= read -r smc; } < <(
+                TTS_POPUP_PANE="$HL_PANE" $MEDIA popup-status --show-idle --no-bar 2>/dev/null)
+        fi
         t="${t#"${t%%[![:space:]]*}"}"; t="${t%"${t##*[![:space:]]}"}"
         [ -n "$t" ] && LABEL="$t" || LABEL="agent-media"
         LINK=""                          # speech marquee is a pane title, not a URL
@@ -593,23 +611,27 @@ handle_key() {
                esac
                LABEL=""; LAST_LABEL=" "    # force a clean marquee reset
                tmux display-message "♪ channel: $CHANNEL" 2>/dev/null ;;
-        ' ') if [ "$CHANNEL" = "book" ]; then book_toggle; else xport toggle; fi ;;
+        # Fusable speech keys stash their verb in SPEECH_ACT (run+redraw in one
+        # spawn by the loop); music/book keep their own direct calls.
+        ' ') if [ "$CHANNEL" = "book" ]; then book_toggle
+             elif [ "$CHANNEL" = "speech" ]; then SPEECH_ACT=(toggle)
+             else xport toggle; fi ;;
         # speech: step one sentence (h/l) or paragraph (H/L), falling back to a
         # time-seek when there's no sentence sequence. music: plain time-seek.
         # music/book share one timecode `seek` (signed = relative); the
         # confirmation line is suppressed since the loop redraws right after.
         h)   if [ "$CHANNEL" = "music" ]; then $MEDIA music seek -5 >/dev/null 2>&1
              elif [ "$CHANNEL" = "book" ]; then $MEDIA book seek -5 >/dev/null 2>&1
-             else $MEDIA skip --unit sentence --dir -1 --seek-fallback -5 2>/dev/null; fi ;;
+             else SPEECH_ACT=(skip --unit sentence --dir -1 --seek-fallback -5); fi ;;
         l)   if [ "$CHANNEL" = "music" ]; then $MEDIA music seek +5 >/dev/null 2>&1
              elif [ "$CHANNEL" = "book" ]; then $MEDIA book seek +5 >/dev/null 2>&1
-             else $MEDIA skip --unit sentence --dir 1 --seek-fallback 5 2>/dev/null; fi ;;
+             else SPEECH_ACT=(skip --unit sentence --dir 1 --seek-fallback 5); fi ;;
         H)   if [ "$CHANNEL" = "music" ]; then $MEDIA music seek -30 >/dev/null 2>&1
              elif [ "$CHANNEL" = "book" ]; then $MEDIA book seek -30 >/dev/null 2>&1
-             else $MEDIA skip --unit paragraph --dir -1 --seek-fallback -30 2>/dev/null; fi ;;
+             else SPEECH_ACT=(skip --unit paragraph --dir -1 --seek-fallback -30); fi ;;
         L)   if [ "$CHANNEL" = "music" ]; then $MEDIA music seek +30 >/dev/null 2>&1
              elif [ "$CHANNEL" = "book" ]; then $MEDIA book seek +30 >/dev/null 2>&1
-             else $MEDIA skip --unit paragraph --dir 1 --seek-fallback 30 2>/dev/null; fi ;;
+             else SPEECH_ACT=(skip --unit paragraph --dir 1 --seek-fallback 30); fi ;;
         # Typed seek — book/music (the channels with an absolute timeline).
         s)   typed_seek ;;
         # Open a URL on the active channel — music (ducks) or book (pauses).
@@ -626,18 +648,18 @@ handle_key() {
              else
                  # ⏮ semantics: restart the current turn if we're past its
                  # start, else step back one. `replay-prev` decides and echoes
-                 # the resolved cursor (MEDIA_POPUP_PREV_RESTART_S = grace secs).
-                 _ni=$($MEDIA replay-prev --idx "$hist_idx" 2>/dev/null)
-                 case "$_ni" in ''|*[!0-9]*) : ;; *) hist_idx="$_ni" ;; esac
+                 # the resolved cursor (MEDIA_POPUP_PREV_RESTART_S = grace secs)
+                 # — the loop folds that echo (ACT_OUT) back into hist_idx.
+                 SPEECH_ACT=(replay-prev --idx "$hist_idx")
              fi ;;
         '>') if [ "$CHANNEL" = "music" ]; then
                  $MEDIA music next
              elif [ "$CHANNEL" = "book" ]; then
                  $MEDIA book next 2>/dev/null   # v2: chapters when available
              elif [ "$hist_idx" -gt 1 ]; then
-                 hist_idx=$((hist_idx - 1)); $MEDIA replay "$hist_idx"
+                 hist_idx=$((hist_idx - 1)); SPEECH_ACT=(replay "$hist_idx")
              else
-                 $MEDIA jump end
+                 SPEECH_ACT=(jump end)
              fi ;;
         # Go to source, then close the popup so you land on it.
         # Music → focus the ncmpcpp pane and jump it to the now-playing song;
@@ -687,13 +709,13 @@ handle_key() {
                  show_link "$_wu"          # standalone (no launcher): in-popup
              fi ;;
         # --- speech-only keys below ---
-        r)   [ "$CHANNEL" = "speech" ] && { $MEDIA replay; hist_idx=1; } ;;
+        r)   [ "$CHANNEL" = "speech" ] && { SPEECH_ACT=(replay); hist_idx=1; } ;;
         # Play the clip at the caller pane's copy-mode cursor (or this pane's
         # latest clip if not scrolled into copy-mode). Reset hist_idx so a
         # following < / > walks from the clip we just landed on.
         p)   [ "$CHANNEL" = "speech" ] && \
                  { TTS_POPUP_PANE="$HL_PANE" $MEDIA replay-at-cursor; hist_idx=1; } ;;
-        m)   [ "$CHANNEL" = "speech" ] && $MEDIA mute ;;
+        m)   [ "$CHANNEL" = "speech" ] && SPEECH_ACT=(mute) ;;
         # "Keep muted": durable sticky mute of the popup *subject* (what the
         # title shows — now-playing pane, else this caller pane). Distinct from
         # `m`'s momentary broker mute. A muted pane still records history so it
@@ -810,6 +832,20 @@ handle_mouse() {
     done
 }
 
+# Refresh after a keypress/click. A fusable speech key left its verb in
+# SPEECH_ACT: run it fused with the redraw (ONE `media` spawn, not two) and fold
+# `replay-prev`'s echoed cursor (ACT_OUT) back into hist_idx. Otherwise (music/
+# book, or a key that already ran inline) just re-pull the snapshot.
+do_refresh() {
+    if [ "${#SPEECH_ACT[@]}" -gt 0 ]; then
+        fetch "${SPEECH_ACT[@]}"; SPEECH_ACT=()
+        case "$ACT_OUT" in ''|*[!0-9]*) : ;; *) hist_idx="$ACT_OUT" ;; esac
+    else
+        fetch
+    fi
+    ticks=0
+}
+
 # Paint the frame immediately from the seeded defaults so the popup *appears*
 # at once, then pull real state (~0.12s) and repaint — rather than blocking on
 # the CLI before the first pixel, which read as "slow to come up".
@@ -841,7 +877,7 @@ while true; do
             [ -n "$QUIT" ] && break
             # Re-pull the (slow) snapshot only on a real action; always redraw so
             # the focus highlight tracks the arrows without a flicker of fetch.
-            [ -n "$ACTED" ] && { fetch; ticks=0; }
+            [ -n "$ACTED" ] && do_refresh
             draw; continue
         fi
         # Bare Esc: clear the focus highlight first; quit only when none is set.
@@ -850,7 +886,8 @@ while true; do
     fi
     handle_key "$key"
     [ -n "$QUIT" ] && break
-    # Refresh the snapshot so the bar/label reflect the action immediately.
-    fetch; ticks=0
+    # Refresh the snapshot so the bar/label reflect the action immediately
+    # (fused into one spawn when the key stashed a SPEECH_ACT verb).
+    do_refresh
     draw
 done

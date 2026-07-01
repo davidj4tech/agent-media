@@ -323,7 +323,31 @@ def cmd_popup_status(a) -> int:
     refresh, which made it slow to open and slow to react. Emits exactly three
     newline-terminated fields (any may be empty) so the caller reads them with
     three `read -r`s.
+
+    With ``--act VERB [ARGS…]`` it first runs that media subcommand *in this
+    process* (reusing main()'s parser/dispatch) and prepends its stdout,
+    whitespace-collapsed, as a leading line — so a popup keypress costs ONE
+    `media` spawn (action + redraw) instead of two. The popup keeps the
+    key→verb map (one source of truth); this just fuses the two spawns. That
+    leading line carries e.g. `replay-prev`'s resolved history cursor back to
+    the popup; it's empty for actions that print nothing.
     """
+    act = getattr(a, "act", None)
+    if act:
+        import contextlib
+        import io
+        buf = io.StringIO()
+        try:
+            ns = _build_parser().parse_args(_end_opts_before_time(act))
+            with contextlib.redirect_stdout(buf):
+                ns.func(ns)
+        except SystemExit:
+            pass          # a malformed/parse-failed action must not eat the redraw
+        except Exception:  # noqa: BLE001 — nor may an action error blank the popup
+            pass
+        # Leading line = the action's own output (collapsed to one line), which
+        # the caller reads before the three status fields.
+        print(" ".join(buf.getvalue().split()))
     idle, pos, dur, paused, muted, speed, _ = _speech_display_state()
     print(render_status(idle=idle, pos=pos, dur=dur, paused=paused, muted=muted,
                         width=a.width, hide_idle=not a.show_idle,
@@ -2307,6 +2331,11 @@ def _build_parser() -> argparse.ArgumentParser:
     ps.add_argument("--width", type=int, default=12)
     ps.add_argument("--show-idle", action="store_true")
     ps.add_argument("--no-bar", action="store_true")
+    ps.add_argument("--act", nargs=argparse.REMAINDER, default=None,
+                    help="run this media subcommand in-process before emitting "
+                         "the status (fuses the popup's action+redraw into one "
+                         "spawn); its stdout is prepended as a leading line. "
+                         "Must be last: everything after --act is the action.")
     ps.set_defaults(func=cmd_popup_status)
 
     sub.add_parser("now", help="text currently being spoken").set_defaults(func=cmd_now)
