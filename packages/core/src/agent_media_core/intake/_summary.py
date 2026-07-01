@@ -21,7 +21,11 @@ Config (env / ~/.config/agent-media.env):
   MEDIA_SUMMARY_MODEL      chat model (default gpt-4o-mini)
   MEDIA_SUMMARY_BASE_URL   OpenAI-compatible base, incl. /v1 (falls back to
                            OPENAI_BASE_URL, then https://api.openai.com/v1)
-  MEDIA_SUMMARY_API_KEY    bearer token (falls back to OPENAI_API_KEY)
+  MEDIA_SUMMARY_API_KEY    bearer token; if unset, resolved from the LiteLLM
+                           gateway key (LITELLM_MASTER_KEY env, else
+                           ~/.config/litellm/litellm.env), else OPENAI_API_KEY —
+                           so no key literal is needed in agent-media.env
+  MEDIA_SUMMARY_KEY_FILE   override the litellm.env path for key resolution
   MEDIA_SUMMARY_MIN_CHARS  only summarize replies at least this long (default 320)
   MEDIA_SUMMARY_TIMEOUT    request timeout seconds (default 30)
   MEDIA_SUMMARY_PROMPT     override the system prompt
@@ -63,6 +67,34 @@ def summary_min_chars() -> int:
     return _int_env("MEDIA_SUMMARY_MIN_CHARS", DEFAULT_MIN_CHARS)
 
 
+def _litellm_master_key() -> str:
+    """The LiteLLM gateway master key: env, else read from litellm.env (the
+    file dotfiles-secrets renders from the sops store). Mirrors the reader in
+    venice-mcp / pi-liberator so no key literal is copied into agent-media.env."""
+    k = os.environ.get("LITELLM_MASTER_KEY")
+    if k:
+        return k
+    path = (os.environ.get("MEDIA_SUMMARY_KEY_FILE")
+            or os.path.expanduser("~/.config/litellm/litellm.env"))
+    try:
+        with open(path) as fh:
+            for line in fh:
+                if line.startswith("LITELLM_MASTER_KEY="):
+                    return line.split("=", 1)[1].strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return ""
+
+
+def _resolve_api_key() -> str:
+    """Explicit MEDIA_SUMMARY_API_KEY wins; otherwise prefer the gateway master
+    key (the usual local-summary target) over OPENAI_API_KEY, which on gateway
+    hosts is the real-OpenAI TTS key and would fail auth against the gateway."""
+    return (os.environ.get("MEDIA_SUMMARY_API_KEY")
+            or _litellm_master_key()
+            or os.environ.get("OPENAI_API_KEY") or "")
+
+
 def summarize_for_speech(text: str) -> str | None:
     """Rewrite `text` into a short spoken summary via an OpenAI-compatible chat
     endpoint. Returns the summary, or ``None`` on any problem (caller falls
@@ -73,8 +105,7 @@ def summarize_for_speech(text: str) -> str | None:
     base = (os.environ.get("MEDIA_SUMMARY_BASE_URL")
             or os.environ.get("OPENAI_BASE_URL")
             or DEFAULT_BASE_URL).rstrip("/")
-    api_key = (os.environ.get("MEDIA_SUMMARY_API_KEY")
-               or os.environ.get("OPENAI_API_KEY") or "")
+    api_key = _resolve_api_key()
     model = os.environ.get("MEDIA_SUMMARY_MODEL") or DEFAULT_MODEL
     prompt = os.environ.get("MEDIA_SUMMARY_PROMPT") or DEFAULT_PROMPT
     timeout = _int_env("MEDIA_SUMMARY_TIMEOUT", DEFAULT_TIMEOUT)

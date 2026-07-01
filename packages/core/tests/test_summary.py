@@ -76,6 +76,23 @@ def test_dedicated_base_url_and_key_used(monkeypatch):
     assert captured["body"]["model"] == "local-abliterate"
 
 
+def test_api_key_resolved_from_litellm_env(monkeypatch, tmp_path):
+    # No explicit summary key + a real OpenAI key present (TTS key): the summary
+    # must use the gateway master key from litellm.env, NOT the OpenAI key.
+    keyfile = tmp_path / "litellm.env"
+    keyfile.write_text("VENICE_API_KEY=v\nLITELLM_MASTER_KEY=sk-red5-master\n")
+    monkeypatch.delenv("MEDIA_SUMMARY_API_KEY", raising=False)
+    monkeypatch.delenv("LITELLM_MASTER_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-real-openai-tts")
+    monkeypatch.setenv("MEDIA_SUMMARY_KEY_FILE", str(keyfile))
+    captured = {}
+    payload = {"choices": [{"message": {"content": "ok"}}]}
+    monkeypatch.setattr(_summary.urllib.request, "urlopen",
+                        _fake_urlopen(payload, captured))
+    assert _summary.summarize_for_speech("a long reply") == "ok"
+    assert captured["auth"] == "Bearer sk-red5-master"
+
+
 def test_http_error_returns_none(monkeypatch):
     def _raise(req, timeout=None):
         raise urllib.error.HTTPError(req.full_url, 500, "err", {}, io.BytesIO(b""))
