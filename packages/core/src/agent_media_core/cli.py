@@ -634,18 +634,58 @@ def cmd_goto_pane(a) -> int:
     return 1
 
 
+def _session_cwd(sid: str) -> Optional[str]:
+    """Working directory a Claude Code session was recorded under, or None.
+
+    `claude --resume <id>` only finds a session when run from that session's
+    project directory — transcripts live under ~/.claude/projects/<enc-cwd>/,
+    keyed by the cwd they ran in. So a resume launched from the wrong pane's
+    cwd fails with "No conversation found". Recover the real cwd from the
+    transcript's first line that carries one.
+    """
+    import glob as _glob
+    root = os.path.expanduser("~/.claude/projects")
+    hits = _glob.glob(os.path.join(root, "*", f"{sid}.jsonl"))
+    if not hits:
+        return None
+    try:
+        with open(hits[0], encoding="utf8", errors="replace") as fh:
+            for line in fh:
+                if '"cwd"' not in line:
+                    continue
+                try:
+                    cwd = json.loads(line).get("cwd") or ""
+                except Exception:  # noqa: BLE001
+                    continue
+                if cwd:
+                    return cwd
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
 def cmd_open_session(a) -> int:
     """Open a new tmux window resuming the given Claude Code session.
 
     The popup calls this after `goto-pane` reports a closed pane (rc 3) and
     the user confirms — it brings the conversation back as `claude --resume`.
+
+    The new window MUST start in the session's own project cwd: `claude
+    --resume` resolves the id per-project, so launching from the caller pane's
+    directory (whatever it happened to be) would fail silently and the window
+    would close instantly. Mirror the claude-resume CLI: `-c <cwd>` plus
+    `env -u ANTHROPIC_API_KEY` so a stray key doesn't override the login.
     """
     sid = (getattr(a, "session", "") or "").strip()
     if not sid:
         return 1
+    argv = ["tmux", "new-window"]
+    cwd = _session_cwd(sid)
+    if cwd:
+        argv += ["-c", cwd]
+    argv.append(f"env -u ANTHROPIC_API_KEY claude --resume {sid}")
     try:
-        subprocess.run(["tmux", "new-window", f"claude --resume {sid}"],
-                       capture_output=True)
+        subprocess.run(argv, capture_output=True)
     except Exception:  # noqa: BLE001
         return 1
     return 0
