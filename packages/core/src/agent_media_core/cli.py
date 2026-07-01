@@ -244,7 +244,45 @@ def _caller_pane() -> str:
 
 # --- speech subcommands ----------------------------------------------------
 
+def _remote_speech() -> bool:
+    """Speech plays on a remote target (the phone, over a tcp:// bridge)."""
+    return str(_sock()).startswith("tcp://")
+
+
 def cmd_status(a) -> int:
+    # When speech plays on the phone, don't read the phone's mpv over the bridge
+    # (~600ms) on every popup redraw — read the monitor's local mirror in
+    # now_playing instead. The intake monitor writes the live position / pause /
+    # speed / mute there each tick, so this is a local DB hit (near-instant) and
+    # the popup responds to keys without the bridge lag.
+    if _remote_speech():
+        np = _now_speaking()
+        ex = (np or {}).get("extras") if np else None
+        if ex and ex.get("total_duration_s"):
+            lp = ex.get("live_pos_s")
+            pos = lp if lp is not None else (ex.get("clip_offset_s") or 0.0)
+            dur = ex.get("total_duration_s")
+            paused = bool(ex.get("live_pause"))
+            muted = bool(ex.get("live_mute"))
+            speed = ex.get("live_speed") or 1.0
+            playing, idle = True, False
+        else:
+            pos = dur = speed = None
+            paused = muted = playing = False
+            idle = True
+        cw = getattr(a, "title", None)
+        if cw and playing:
+            prefix, body = _subject_label()
+            if prefix or body:
+                print(_title_status_line(pos, dur, paused, muted, speed,
+                                         prefix, body, _title_window(cw),
+                                         key="status"))
+                return 0
+        print(render_status(idle=idle, pos=pos, dur=dur, paused=paused,
+                            muted=muted, width=a.width,
+                            hide_idle=not a.show_idle,
+                            bar=not getattr(a, "no_bar", False), speed=speed))
+        return 0
     # One batched read of everything this needs. Over a tcp:// bridge each
     # get_property is a ~600ms round-trip, and the popup redraws this constantly
     # (plus the status bar every 1s) — so ~7 serial reads made it crawl (~6.5s).

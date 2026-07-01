@@ -1409,24 +1409,35 @@ def submit_event(event: Event,
             mute_watcher = _MuteDuckWatcher(sink, target, coordinator)
             # Shared per-clip marker — drives the popup (status bar, current
             # sentence, skip map). Identical for both playback paths below.
-            def _mark(idx: int) -> None:
+            def _mark(idx: int, live: Optional[dict] = None) -> None:
                 sentence_i, clip_i = clip_data[idx]
+                extras = {"text": text, "source": event.source.value,
+                          "engine": engine, "voice": voice,
+                          "clip_offset_s": offsets[idx],
+                          "total_duration_s": total_duration_s,
+                          "source_pane": source_pane,
+                          "source_session": source_session,
+                          "source_tmux_session": source_tmux_session,
+                          "source_window": source_window,
+                          "current_sentence": sentence_i,
+                          "current_sentence_idx": idx,
+                          "clip_paragraph_idx": clip_para,
+                          "clip_sentences": _clip_sentences,
+                          "writer_pid": os.getpid()}
+                if live is not None:
+                    # Mirror the *remote* player's live state into now_playing so a
+                    # status read (popup redraw) is a local DB hit, not a ~600ms
+                    # bridge round-trip to the phone. Timeline position = the start
+                    # of this clip plus how far mpv is into it.
+                    tp = live.get("time-pos")
+                    extras["live_pos_s"] = (offsets[idx] + tp
+                                            if tp is not None else offsets[idx])
+                    extras["live_pause"] = bool(live.get("pause"))
+                    extras["live_speed"] = live.get("speed") or 1.0
+                    extras["live_mute"] = bool(live.get("mute"))
                 state.set_now_playing(
                     "speech", uri=str(clip_i), started_at=started_at,
-                    target=target.name,
-                    extras={"text": text, "source": event.source.value,
-                            "engine": engine, "voice": voice,
-                            "clip_offset_s": offsets[idx],
-                            "total_duration_s": total_duration_s,
-                            "source_pane": source_pane,
-                            "source_session": source_session,
-                            "source_tmux_session": source_tmux_session,
-                            "source_window": source_window,
-                            "current_sentence": sentence_i,
-                            "current_sentence_idx": idx,
-                            "clip_paragraph_idx": clip_para,
-                            "clip_sentences": _clip_sentences,
-                            "writer_pid": os.getpid()})
+                    target=target.name, extras=extras)
 
             if _remote_playlist(target):
                 # Autonomous gapless playlist: load every clip and let the remote
@@ -1442,6 +1453,11 @@ def submit_event(event: Event,
                     state.log_error("intake", "play_playlist failed",
                                     extras={"detail": str(e),
                                             "source": event.source.value})
+                # Seed now_playing immediately so a status read (popup) shows the
+                # response as playing right away, before the first bridge snapshot
+                # lands (~0.6s) to fill in the live position.
+                if played_any:
+                    _mark(0)
                 i = -1
                 nav_jump = False
                 misses = 0
@@ -1470,6 +1486,8 @@ def submit_event(event: Event,
                         nav_jump = True
                         stall = 0
                     if snap.get("pause"):
+                        if 0 <= i < n:
+                            _mark(i, live=snap)  # reflect the pause in now_playing
                         stall = 0
                         time.sleep(0.1)
                         continue
@@ -1481,11 +1499,15 @@ def submit_event(event: Event,
                         continue
                     if pos != i and 0 <= pos < n:
                         i = pos
-                        _mark(i)
                         highlighter.show(clip_data[i][0],
                                          first=(i == 0), force=nav_jump)
                         nav_jump = False
                         stall = 0
+                    if 0 <= i < n:
+                        # Every tick, not just on sentence change: keep the mirrored
+                        # live position/pause/speed/mute fresh so the popup's redraw
+                        # reads a current local snapshot.
+                        _mark(i, live=snap)
                     # Stall guard: if playback time isn't advancing while we're
                     # not paused (a wedged clip, or another process clobbering the
                     # shared broker), bail so a response can never hang. A gapless

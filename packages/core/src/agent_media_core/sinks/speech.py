@@ -204,7 +204,8 @@ class SinkSpeech:
         try:
             return ipc.get_properties(
                 _socket_for(target),
-                ["playlist-pos", "idle-active", "pause", "time-pos", "mute"])
+                ["playlist-pos", "idle-active", "pause", "time-pos", "mute",
+                 "speed"])
         except (ipc.MpvIpcError, OSError):
             return {}
 
