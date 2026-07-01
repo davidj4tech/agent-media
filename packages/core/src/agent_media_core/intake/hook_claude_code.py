@@ -4,20 +4,26 @@ Reads Claude Code's hook JSON from stdin, extracts the speech text, and
 hands it to `submit_event`. Replaces the legacy bash hook
 (`packages/audio-relay/src/agent_audio_relay/shell/hooks/claude-code-tts-hook.sh`).
 
-Settings.json wires it as:
+Settings.json wires it as (note `"async": true` — see below):
 
     "hooks": {
       "Stop":         [{"hooks":[{"type":"command",
                                   "command":"media-hook-claude-code",
-                                  "timeout":30}]}],
+                                  "async":true,"timeout":120}]}],
       "Notification": [{"hooks":[{"type":"command",
                                   "command":"media-hook-claude-code",
-                                  "timeout":30}]}],
+                                  "async":true,"timeout":30}]}],
       "PreToolUse":   [{"matcher":"AskUserQuestion",
                         "hooks":[{"type":"command",
                                   "command":"media-hook-claude-code",
-                                  "timeout":30}]}]
+                                  "async":true,"timeout":30}]}]
     }
+
+`async: true` runs the hook in the background so Claude Code never blocks on
+TTS. Claude Code still terminates async hooks at their timeout and when the
+session exits, so the Stop path detaches playback into a `setsid` child that
+reparents to init and outlives both (see `_play_detached`). A single fork is
+enough now that async handles non-blocking — no double-fork.
 
 PreToolUse(AskUserQuestion) is what actually reads a multiple-choice prompt
 aloud — Claude Code never fires a Notification for the question modal, so the
@@ -28,8 +34,8 @@ Behaviours preserved from the bash version:
     OPENAI_API_KEY etc. don't have to live in settings.json.
   - Notification suppression: skip if another notif fired within 120s,
     or a Stop played within 90s.
-  - Stop: read the latest assistant text from the transcript JSONL.
-    Skip tool-call-only turns (no text content).
+  - Stop: speak `last_assistant_message` from the payload; fall back to the
+    transcript JSONL when it's absent/empty. Skip tool-call-only turns.
   - Dedup key (text-hash) collapses duplicate Stop / Stop+notif races.
 
 Long-text routing (the old `CLAUDE_TTS_LONG_THRESHOLD` split into
@@ -633,57 +639,60 @@ def _handle_notification(payload: dict) -> int:
     return 0
 
 
-def _play_detached(event: Event, *, state: Optional[StateStore] = None) -> None:
-    """Render + play `event` in a session-detached grandchild process.
+def _play_now(event: Event) -> None:
+    """Dedup, stamp, and submit the Stop reply on a *fresh* StateStore.
 
-    Claude Code SIGKILLs a Stop hook still running at its 120s timeout. Playback
-    blocks for the full spoken duration, so a reply with >~120s of audio would be
-    cut off mid-sentence ("finishes early" on long replies). Double-fork + setsid
-    + detached stdio hands playback to a process reparented to init: the hook
-    returns in milliseconds and playback runs to completion regardless of length.
-    Cross-turn ordering is still serialized by the speech playback lock inside
-    submit_event. Falls back to inline play if fork is unavailable.
+    Runs in the detached child (or inline under MEDIA_HOOK_NO_DETACH). Opening the
+    StateStore *here* — after the fork — is what keeps the WAL connection out of
+    the parent: an inherited WAL handle used to corrupt the child's wal-index
+    locking, so the parent's exit (or an unrelated reader) would unlink the
+    -wal/-shm out from under us and our now_playing writes would vanish (grey
+    status bar, wrong popup subject, "pane already closed" goto).
 
-    `state` is the caller's StateStore; it is closed *before* the fork so the
-    detached grandchild never inherits an open SQLite WAL connection. An
-    inherited WAL handle corrupts the child's wal-index locking, which lets the
-    parent's exit (and unrelated reader processes) unlink the -wal/-shm out from
-    under the grandchild — its now_playing writes then vanish (grey status bar,
-    wrong popup subject, "pane already closed" goto). See StateStore.close.
-
-    Set MEDIA_HOOK_NO_DETACH=1 to play inline instead (debugging — surfaces
-    submit errors to the caller; also what the tests use to observe the call).
+    Dedup + the stop stamp live here too (not in the parent), so the parent never
+    opens a StateStore at all — nothing to close-before-fork, nothing to leak.
     """
-    # Release the inherited WAL connection before we fork (and even on the
-    # inline path — it has served its purpose; submit_event opens its own).
-    if state is not None:
-        state.close()
+    state = StateStore()
+    if _dedup_seen(state, event.text):
+        return
+    event.metadata["dedup_key"] = hashlib.sha1(
+        event.text.encode("utf-8")).hexdigest()
+    # Commit to speaking: the notif-suppression window keys off this stamp, and
+    # detached playback won't report back.
+    _write_stamp(_stamp_dir() / "stop-last", int(time.time()))
+    submit_event(event, state=state)
+
+
+def _play_detached(event: Event) -> None:
+    """Render + play `event` in a session-detached child that outlives the hook.
+
+    The hook is wired `async: true`, so Claude Code doesn't block on it — but it
+    still terminates async hooks at their timeout and when the session exits.
+    Playback of a long reply must survive both, so we fork once and `setsid`: the
+    child leads a new session and is reparented to init on our exit, escaping
+    Claude Code's process-group teardown. (async already handles non-blocking, so
+    no second "return fast" fork is needed — this replaces the old double-fork.)
+
+    All DB work happens in the child via `_play_now` on its own StateStore, so no
+    WAL connection is ever inherited across the fork. Falls back to inline play if
+    fork is unavailable, and MEDIA_HOOK_NO_DETACH=1 forces inline (tests/debug).
+    """
     if os.environ.get("MEDIA_HOOK_NO_DETACH"):
-        submit_event(event, state=StateStore())
+        _play_now(event)
         return
     try:
         pid = os.fork()
     except OSError:
-        submit_event(event, state=StateStore())  # no fork → bounded by timeout
+        _play_now(event)  # no fork → inline, bounded by the hook timeout
         return
     if pid > 0:
-        # Reap the intermediate child (it exits right after its own fork) so the
-        # hook leaves no zombie and returns immediately.
-        try:
-            os.waitpid(pid, 0)
-        except OSError:
-            pass
-        return
-    # --- intermediate child: new session, then fork again and exit so the
-    #     grandchild is reparented to init and outlives the hook ---
-    os.setsid()
+        return  # parent: return at once; the child reparents to init on our exit
+    # --- child: new session (survives session-group teardown), detach stdio so
+    #     Claude Code's hook pipe sees EOF, then play to completion ---
     try:
-        if os.fork() > 0:
-            os._exit(0)
+        os.setsid()
     except OSError:
-        os._exit(0)
-    # --- grandchild: detach stdio so Claude Code's hook pipe sees EOF (it must
-    #     not wait on us), then play to completion ---
+        pass
     try:
         devnull = os.open(os.devnull, os.O_RDWR)
         for fd in (0, 1, 2):
@@ -694,7 +703,7 @@ def _play_detached(event: Event, *, state: Optional[StateStore] = None) -> None:
     except OSError:
         pass
     try:
-        submit_event(event, state=StateStore())
+        _play_now(event)
     except Exception:  # noqa: BLE001 — detached; there is no caller to report to
         pass
     finally:
@@ -702,46 +711,45 @@ def _play_detached(event: Event, *, state: Optional[StateStore] = None) -> None:
 
 
 def _handle_stop(payload: dict) -> int:
-    """Stop path: read the latest assistant text and submit it."""
-    raw_path = (payload.get("transcript_path") or "").strip()
-    if not raw_path:
-        return 0
-    tp = Path(raw_path)
-    if not tp.is_file():
-        return 0
-
-    # Tight retry while the transcript flushes.
-    for _ in range(5):
-        try:
-            ok = tp.stat().st_size > 0 and (time.time() - tp.stat().st_mtime) <= 5
-        except OSError:
-            ok = False
-        if ok:
-            break
-        time.sleep(0.1)
-
-    text = strip_markdown(_latest_assistant_text(tp))
+    """Stop path: get the assistant's final text and speak it (detached)."""
+    # Prefer the text straight off the Stop payload — no transcript read, parse,
+    # or flush-retry. `last_assistant_message` is "the full text of Claude's
+    # response" (Stop/SubagentStop only).
+    text = strip_markdown((payload.get("last_assistant_message") or "").strip())
+    if not text:
+        # Fall back to the transcript JSONL: covers older Claude Code (no field)
+        # and a tool-only turn (empty field, but the walk may still find earlier
+        # spoken text or an AskUserQuestion to synthesize). The flush-retry only
+        # matters on this path, where we're racing the transcript write.
+        raw_path = (payload.get("transcript_path") or "").strip()
+        if not raw_path:
+            return 0
+        tp = Path(raw_path)
+        if not tp.is_file():
+            return 0
+        for _ in range(5):
+            try:
+                ok = tp.stat().st_size > 0 and (time.time() - tp.stat().st_mtime) <= 5
+            except OSError:
+                ok = False
+            if ok:
+                break
+            time.sleep(0.1)
+        text = strip_markdown(_latest_assistant_text(tp))
     if not text:
         return 0
 
-    state = StateStore()
-    if _dedup_seen(state, text):
-        return 0
-
-    dedup_key = hashlib.sha1(text.encode("utf-8")).hexdigest()
-    # Record the stop stamp now — we're committing to speak, the notif
-    # suppression window keys off it, and detached playback won't report back.
-    _write_stamp(_stamp_dir() / "stop-last", int(time.time()))
-    # Detach playback: a long reply's audio can exceed Claude Code's 120s hook
-    # timeout, which would SIGKILL the hook and cut it off mid-sentence. Hand it
-    # to a backgrounded process and return immediately.
+    # Detach playback: a long reply's audio can outlast the hook's async timeout
+    # / the session exiting, which would cut it off mid-sentence. Hand it to a
+    # backgrounded process and return immediately. Dedup, the stop stamp, and all
+    # now_playing writes happen there on a fresh StateStore (see _play_now), so
+    # the parent opens no DB connection to fork across.
     _play_detached(
         Event(text=text, source=Source.CLAUDE_CODE,
               priority=Priority.NORMAL,
               voice=_voice_for_session(_session_name()),
-              metadata={"kind": "stop", "dedup_key": dedup_key,
-                        "session": payload.get("session_id") or ""}),
-        state=state)
+              metadata={"kind": "stop",
+                        "session": payload.get("session_id") or ""}))
     return 0
 
 

@@ -38,20 +38,59 @@ def test_close_releases_then_reopens(tmp_path):
     assert store.get_now_playing("speech")["uri"] == "clip-0"
 
 
-def test_play_detached_closes_caller_state_before_fork(monkeypatch):
-    """The caller's StateStore is closed before any fork/inline submit."""
+def test_play_detached_owns_its_state(monkeypatch):
+    """The play path creates its OWN StateStore (in the detached child), so the
+    parent never holds a WAL connection to inherit across the fork — the whole
+    point of this regression file. dedup + stamp + submit all run on that store.
+    """
     monkeypatch.setenv("MEDIA_HOOK_NO_DETACH", "1")  # inline: observable, no fork
-    monkeypatch.setattr(H, "submit_event", lambda *a, **k: "rid")
+    sentinel = object()
+    monkeypatch.setattr(H, "StateStore", lambda *a, **k: sentinel)
+    monkeypatch.setattr(H, "_dedup_seen", lambda *a, **k: False)
+    monkeypatch.setattr(H, "_write_stamp", lambda *a, **k: None)
+    seen = {}
+    monkeypatch.setattr(H, "submit_event",
+                        lambda event, state=None: seen.setdefault("state", state))
 
-    closed = {"n": 0}
+    H._play_detached(Event(text="hi", source=Source.CLAUDE_CODE))
+    assert seen["state"] is sentinel  # submit ran on the store the child opened
 
-    class SpyState:
-        def close(self):
-            closed["n"] += 1
 
-    H._play_detached(Event(text="hi", source=Source.CLAUDE_CODE),
-                     state=SpyState())
-    assert closed["n"] == 1
+def test_play_detached_dedup_skips_submit(monkeypatch):
+    """A duplicate reply is dropped on the play path (dedup lives in the child
+    now, not the parent hook), so submit_event is never reached."""
+    monkeypatch.setenv("MEDIA_HOOK_NO_DETACH", "1")
+    monkeypatch.setattr(H, "StateStore", lambda *a, **k: object())
+    monkeypatch.setattr(H, "_dedup_seen", lambda *a, **k: True)  # seen recently
+    monkeypatch.setattr(H, "_write_stamp", lambda *a, **k: None)
+    called = {"n": 0}
+    monkeypatch.setattr(H, "submit_event",
+                        lambda *a, **k: called.__setitem__("n", called["n"] + 1))
+
+    H._play_detached(Event(text="dup", source=Source.CLAUDE_CODE))
+    assert called["n"] == 0
+
+
+def test_handle_stop_prefers_last_assistant_message(monkeypatch, tmp_path):
+    """Stop speaks the payload's last_assistant_message directly (markdown
+    stripped) without touching the transcript."""
+    monkeypatch.setenv("MEDIA_HOOK_NO_DETACH", "1")
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(H, "_dedup_seen", lambda *a, **k: False)
+    monkeypatch.setattr(H, "_write_stamp", lambda *a, **k: None)
+    monkeypatch.setattr(H, "_session_name", lambda: "")
+    used = {"transcript": False}
+    monkeypatch.setattr(H, "_latest_assistant_text",
+                        lambda tp: used.__setitem__("transcript", True) or "")
+    seen = {}
+    monkeypatch.setattr(H, "submit_event",
+                        lambda event, **k: seen.setdefault("event", event))
+
+    rc = H._handle_stop({"last_assistant_message": "**Done** refactoring.",
+                         "session_id": "s"})
+    assert rc == 0
+    assert used["transcript"] is False           # never read the JSONL
+    assert "Done refactoring" in seen["event"].text and "**" not in seen["event"].text
 
 
 # --- orphan guard: a row whose writer process is gone must not be shown ------
