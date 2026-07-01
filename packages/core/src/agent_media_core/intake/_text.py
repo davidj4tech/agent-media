@@ -173,6 +173,7 @@ def suppress_tables(text: str) -> str:
     except Exception:  # noqa: BLE001 — any import/parse issue → regex fallback
         return _regex_suppress_tables(text)
 
+    lines = text.split("\n")
     spans: list[tuple[int, int, str]] = []
     n = len(tokens)
     i = 0
@@ -191,10 +192,18 @@ def suppress_tables(text: str) -> str:
                 elif tj.type in ("thead_close", "tbody_close"):
                     section = None
                 elif tj.type == "tr_open" and section == "tbody":
-                    n_rows += 1
+                    # GFM absorbs a following non-blank prose line as a bare
+                    # single-cell row; a real table row has a pipe in its source
+                    # line, so only count/replace those.
+                    rng = getattr(tj, "map", None)
+                    if rng and "|" in lines[rng[0]]:
+                        n_rows += 1
                 elif tj.type == "inline" and section == "thead":
                     headers.append(tj.content.strip())
                 j += 1
+            # Trim trailing non-pipe lines that GFM pulled into the table.
+            while end > start + 1 and "|" not in lines[end - 1]:
+                end -= 1
             spans.append((start, end, _table_placeholder(headers, n_rows)))
             i = j
         i += 1
@@ -238,6 +247,24 @@ _ABBREV_TAIL = re.compile(
 
 _WS_RE = re.compile(r'\s+')
 
+# A line that opens/closes a fenced code block. The streaming sentencer must NOT
+# split a sentence boundary that falls inside an open fence (or on a table row):
+# the whole block has to reach strip_markdown intact to be suppressed as a unit —
+# a half-a-fence fragment can't be matched.
+_FENCE_LINE_RE = re.compile(r'(?m)^[ \t]*(?:`{3,}|~{3,})')
+
+
+def _in_open_fence(prefix: str) -> bool:
+    """True if `prefix` ends inside an unclosed ``` / ~~~ code fence."""
+    return len(_FENCE_LINE_RE.findall(prefix)) % 2 == 1
+
+
+def _on_table_row(buf: str, pos: int) -> bool:
+    """True if the line containing `pos` looks like a markdown table row
+    (starts with an optional-indent ``|``)."""
+    line_start = buf.rfind("\n", 0, pos) + 1
+    return buf[line_start:pos + 1].lstrip().startswith("|")
+
 
 class IncrementalSentencer:
     """Segment a *streamed* text into complete sentences as they arrive.
@@ -252,9 +279,10 @@ class IncrementalSentencer:
     collapsed so it's ready to render. Abbreviations and single-letter
     initials ("Dr.", "e.g.", "J.") don't trigger a split.
 
-    Known limitation: fenced code blocks aren't suppressed (strip_markdown
-    drops the ``` markers but keeps the lines) — fine for prose / roleplay,
-    which is the streaming path's purpose.
+    Fenced code blocks and tables are held together across the stream (a
+    boundary inside an open fence or on a table row doesn't split), so the
+    complete block reaches strip_markdown and is suppressed as a unit rather
+    than spoken as a half-fence / raw pipes.
     """
 
     def __init__(self) -> None:
@@ -283,6 +311,14 @@ class IncrementalSentencer:
                 # boundary; skip if it ends in an abbreviation/initial.
                 head = self._buf[: m.start() + 1]
                 if _ABBREV_TAIL.search(head):
+                    continue
+                # Don't split inside a code fence or on a table row: let the
+                # whole block accumulate so strip_markdown suppresses it as a
+                # unit instead of speaking a half-fence / raw pipes. If the
+                # block is still open (no qualifying boundary yet), we simply
+                # buffer until it closes — or until close() flushes it.
+                if (_in_open_fence(self._buf[: m.end()])
+                        or _on_table_row(self._buf, m.start())):
                     continue
                 split_end = m.end()  # includes the trailing whitespace
                 break
