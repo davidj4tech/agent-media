@@ -17,8 +17,9 @@
 #           plays live or ducks. 🔒 in the title = subject muted; 🔒N indicator
 #           = N muted in total.                                          (speech)
 #   [ / ]   slower / faster (accel)    ⌫   reset speed (0 also works)           (speech/book)
-#   < / >   speech: replay older/newer · music: prev/next track ·
-#           book: prev/next part (chapters in a later pass)
+#   < / >   older/newer — speech: turn · music: track · book: part.
+#           < is ⏮: restarts the current item first if you're past its start
+#           (grace = MEDIA_POPUP_PREV_RESTART_S, def 3s), else steps back.
 #   o       open a URL on this channel — music (ducks) / book (pauses);
 #           pre-fills from the tmux paste buffer, so copy a link then o, Enter
 #   w       the channel's web UI — music → Mopidy-Iris, book → simple-mpv-webui.
@@ -619,11 +620,15 @@ handle_key() {
         # speech: ⏮ older / ⏭ newer clip (jump to end when on latest).
         # music: previous / next track.
         '<') if [ "$CHANNEL" = "music" ]; then
-                 $MEDIA music prev
+                 $MEDIA music prev --restart-first
              elif [ "$CHANNEL" = "book" ]; then
-                 $MEDIA book prev 2>/dev/null   # v2: chapters when available
+                 $MEDIA book prev --restart-first 2>/dev/null   # v2: chapters when available
              else
-                 hist_idx=$((hist_idx + 1)); $MEDIA replay "$hist_idx" || hist_idx=$((hist_idx - 1))
+                 # ⏮ semantics: restart the current turn if we're past its
+                 # start, else step back one. `replay-prev` decides and echoes
+                 # the resolved cursor (MEDIA_POPUP_PREV_RESTART_S = grace secs).
+                 _ni=$($MEDIA replay-prev --idx "$hist_idx" 2>/dev/null)
+                 case "$_ni" in ''|*[!0-9]*) : ;; *) hist_idx="$_ni" ;; esac
              fi ;;
         '>') if [ "$CHANNEL" = "music" ]; then
                  $MEDIA music next

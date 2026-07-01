@@ -1538,6 +1538,55 @@ def cmd_replay(a) -> int:
     return _do_replay(a.index, session=_anchor_session())
 
 
+def _prev_restart_threshold() -> float:
+    """Seconds into an item past which `<` restarts it instead of stepping back."""
+    try:
+        return max(0.0, float(os.environ.get("MEDIA_POPUP_PREV_RESTART_S") or 3.0))
+    except (TypeError, ValueError):
+        return 3.0
+
+
+def _prev_with_restart(elapsed, restart, step_back) -> int:
+    """⏮ shared by the music/book `<` key: restart the current item if we're
+    more than the grace window into it, else step back to the previous one.
+
+    `elapsed` returns seconds into the current item (None/0 when idle → step
+    back); `restart` seeks it to 0; `step_back` moves to the previous item.
+    """
+    try:
+        pos = float(elapsed() or 0.0)
+    except (TypeError, ValueError):
+        pos = 0.0
+    (restart if pos > _prev_restart_threshold() else step_back)()
+    return 0
+
+
+def cmd_replay_prev(a) -> int:
+    """Popup `<` for speech: "previous" with a restart-first grace window.
+
+    Like a music player's ⏮: if we're already more than
+    MEDIA_POPUP_PREV_RESTART_S (default 3s) into the current turn, `<` rewinds
+    to that turn's start rather than jumping to the older one. Only when we're
+    at/near the start (or nothing's playing) does it step back a turn. `--idx`
+    is the popup's current history cursor (1 = latest); the resolved cursor is
+    printed to stdout so the popup can update its own `hist_idx`.
+    """
+    idx = max(1, a.idx)
+    idle, pos, _dur, *_ = _speech_display_state()
+    session = _anchor_session()
+    if (not idle) and pos is not None and pos > _prev_restart_threshold():
+        # Partway through the current turn → restart it, keep the cursor put.
+        _do_replay(idx, session=session)
+        new_idx = idx
+    else:
+        # At the start (or idle) → step back a turn; stay put if there's none.
+        new_idx = idx + 1
+        if _do_replay(new_idx, session=session) != 0:
+            new_idx = idx
+    print(new_idx)
+    return 0
+
+
 def cmd_replay_at_cursor(a) -> int:
     """Replay the spoken clip at/just-above the copy-mode cursor (popup `p`).
 
@@ -1835,6 +1884,13 @@ def cmd_music(a) -> int:
     if a.action == "volume":
         m.volume_delta(int(float(a.uri or 0)))
         return 0
+    if a.action == "prev" and getattr(a, "restart_first", False):
+        # Popup `<`: ⏮ semantics — restart the track if we're past its start.
+        return _prev_with_restart(
+            elapsed=lambda: (m.status_dict() or {}).get("elapsed"),
+            restart=lambda: m.seek_cur(position_ms=0),
+            step_back=m.previous,
+        )
     {
         "pause": m.pause, "resume": m.resume,
         "toggle": m.toggle, "next": m.next, "prev": m.previous,
@@ -2033,6 +2089,16 @@ def cmd_book(a) -> int:
     if bc == "next":
         return _ok(srv.book_next(target=tgt))
     if bc == "prev":
+        if getattr(a, "restart_first", False):
+            # Popup `<`: ⏮ semantics — restart the part if we're past its start.
+            np = srv.book_now_playing(target=tgt)
+            pos = None if np.get("idle") else (np.get("position_ms") or 0) / 1000.0
+            return _prev_with_restart(
+                elapsed=lambda: pos,
+                restart=lambda: srv.book_seek(position_secs=0,
+                                              target=tgt or "local"),
+                step_back=lambda: srv.book_prev(target=tgt),
+            )
         return _ok(srv.book_prev(target=tgt))
     if bc == "skip":
         # `skip` is relative-only sugar over the shared seek action.
@@ -2262,6 +2328,10 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument("index", nargs="?", type=int, default=1)
     s.set_defaults(func=cmd_replay)
 
+    s = sub.add_parser("replay-prev", help=argparse.SUPPRESS)  # popup < (restart-first)
+    s.add_argument("--idx", type=int, default=1)
+    s.set_defaults(func=cmd_replay_prev)
+
     sub.add_parser(
         "replay-at-cursor",
         help="replay the clip at the copy-mode cursor (popup p)"
@@ -2296,6 +2366,9 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="for 'status': show only the times (no progress bar)")
     s.add_argument("--add", action="store_true",
                    help="for 'play': queue without clearing the playlist")
+    s.add_argument("--restart-first", action="store_true",
+                   help="for 'prev': restart the current track if past its "
+                        "start (⏮ style; grace = MEDIA_POPUP_PREV_RESTART_S)")
     s.add_argument("--as", dest="as_type", metavar="TYPE",
                    choices=("music", "audiobook", "podcast", "dj-set",
                             "ambient"),
@@ -2354,6 +2427,9 @@ def _add_book_parser(sub) -> None:
     bn.add_argument("--target", default="")
     bpv = b.add_parser("prev", help="previous part of the active playlist")
     bpv.add_argument("--target", default="")
+    bpv.add_argument("--restart-first", action="store_true",
+                     help="restart the current part if past its start (⏮ style; "
+                          "grace = MEDIA_POPUP_PREV_RESTART_S)")
 
     bk = b.add_parser("skip", help="relative ±seconds (default +30); alias of "
                                    "`seek` with a forced-relative offset")
