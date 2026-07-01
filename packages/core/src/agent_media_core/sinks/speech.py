@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import logging
 import os
+import socket as _socket
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -19,6 +21,22 @@ from . import _mpv_ipc as ipc
 log = logging.getLogger(__name__)
 
 DEFAULT_TARGET = Target(name="local")
+
+# Cross-host owner claim for a *shared remote* broker (the phone's mpv, driven
+# by every host over the tcp:// bridge). The local playback flock only
+# serializes one host; this token — stored in mpv `user-data` on the broker
+# itself, so all hosts see the same value — stops a second machine's reply from
+# stop+clearing another's still-playing playlist. Requires mpv >= 0.36.
+_BROKER_OWNER_KEY = "user-data/am-owner"
+# How long a claim stays valid without a refresh. Long enough to ride out a
+# brief bridge hiccup, short enough that a crashed holder frees the broker soon.
+BROKER_TTL_S = 20.0
+
+
+def _broker_owner_id() -> str:
+    """Stable id for this claimer. Same-host/same-pid callers are already
+    serialized by the local flock, so host:pid is enough to tell hosts apart."""
+    return f"{_socket.gethostname()}:{os.getpid()}"
 
 
 def _socket_for(target: Target) -> "str | Path":
@@ -237,6 +255,98 @@ class SinkSpeech:
 
     def stop(self, target: Target = DEFAULT_TARGET) -> None:
         ipc.command(_socket_for(target), "stop")
+
+    # ---- cross-host broker ownership -------------------------------------
+    #
+    # These are no-ops for a local/rooms (unix-socket) target: only one host
+    # drives it, so the playback flock already serializes. They matter only for
+    # a shared remote (tcp://) broker, where several hosts can drive the same
+    # mpv and the flock — being per-host — can't stop them clobbering each other.
+
+    def _is_remote(self, target: Target) -> bool:
+        return str(_socket_for(target)).startswith("tcp://")
+
+    def active_other_owner(self, target: Target = DEFAULT_TARGET) -> Optional[dict]:
+        """The claim of *another* host that currently holds this broker, or None.
+
+        None means 'safe to take': local target, unowned, expired, ours, or
+        unreadable (a dead bridge — can't coordinate, so don't pretend someone
+        holds it). Returns the raw ``{"owner", "deadline"}`` dict otherwise so a
+        waiter can watch the deadline advance (a live holder refreshes it)."""
+        if not self._is_remote(target):
+            return None
+        try:
+            cur = ipc.get_property(_socket_for(target), _BROKER_OWNER_KEY)
+        except (ipc.MpvIpcError, OSError):
+            return None
+        if not isinstance(cur, dict):
+            return None
+        owner = cur.get("owner")
+        if not owner or owner == _broker_owner_id():
+            return None
+        try:
+            if float(cur.get("deadline", 0)) <= time.time():
+                return None  # expired — the holder crashed or stalled
+        except (TypeError, ValueError):
+            return None
+        return cur
+
+    def claim_broker(self, target: Target = DEFAULT_TARGET,
+                     ttl: float = BROKER_TTL_S) -> bool:
+        """Best-effort claim of a shared remote broker. Returns True once we own
+        it — or immediately for a local target, or if the broker is unreachable
+        (never block a reply on the token machinery itself)."""
+        if not self._is_remote(target):
+            return True
+        if self.active_other_owner(target) is not None:
+            return False  # someone else actively holds it
+        sock = _socket_for(target)
+        me = _broker_owner_id()
+        try:
+            ipc.set_property(sock, _BROKER_OWNER_KEY,
+                             {"owner": me, "deadline": time.time() + ttl})
+        except (ipc.MpvIpcError, OSError):
+            return True  # can't reach broker to claim → play anyway, don't wedge
+        # Verify after a small per-pid desync so two hosts that raced the read
+        # don't both believe they won — the later writer wins and the other sees
+        # it isn't the owner and backs off.
+        time.sleep(0.05 + (os.getpid() % 10) / 100.0)
+        try:
+            cur = ipc.get_property(sock, _BROKER_OWNER_KEY)
+        except (ipc.MpvIpcError, OSError):
+            return True
+        return isinstance(cur, dict) and cur.get("owner") == me
+
+    def refresh_broker(self, target: Target = DEFAULT_TARGET,
+                       ttl: float = BROKER_TTL_S) -> None:
+        """Push our claim's deadline out while we keep playing. No-op unless we
+        currently own it (so we never steal a claim from whoever took over)."""
+        if not self._is_remote(target):
+            return
+        sock = _socket_for(target)
+        me = _broker_owner_id()
+        try:
+            cur = ipc.get_property(sock, _BROKER_OWNER_KEY)
+            if isinstance(cur, dict) and cur.get("owner") == me:
+                ipc.set_property(sock, _BROKER_OWNER_KEY,
+                                 {"owner": me, "deadline": time.time() + ttl})
+        except (ipc.MpvIpcError, OSError):
+            pass
+
+    def release_broker(self, target: Target = DEFAULT_TARGET) -> None:
+        """Drop our claim so the next host can take the broker immediately.
+        Only clears it if it's still ours."""
+        if not self._is_remote(target):
+            return
+        sock = _socket_for(target)
+        me = _broker_owner_id()
+        try:
+            cur = ipc.get_property(sock, _BROKER_OWNER_KEY)
+            if isinstance(cur, dict) and cur.get("owner") == me:
+                ipc.set_property(sock, _BROKER_OWNER_KEY,
+                                 {"owner": "", "deadline": 0})
+        except (ipc.MpvIpcError, OSError):
+            pass
 
     def duck(self, target: Target = DEFAULT_TARGET, level: int = 50) -> None:
         ipc.set_property(_socket_for(target), "volume", max(0, min(100, level)))
