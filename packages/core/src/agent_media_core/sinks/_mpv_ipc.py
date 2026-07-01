@@ -206,10 +206,15 @@ def get_properties(sock_path: str | Path, names: list,
             for i, n in enumerate(names))
         s.sendall(payload)
         out: dict = {}
+        answered: set = set()
         s.settimeout(timeout)
         buf = b""
         deadline = time.time() + timeout
-        while len(out) < len(names) and time.time() < deadline:
+        # Stop as soon as every request has been *answered* — success OR error.
+        # An idle mpv replies "property unavailable" for time-pos/duration, which
+        # never land in `out`; keying the exit on len(out) would then spin until
+        # the timeout on every idle snapshot (2s per popup/status-bar redraw).
+        while len(answered) < len(names) and time.time() < deadline:
             try:
                 chunk = s.recv(4096)
             except socket.timeout:
@@ -227,6 +232,7 @@ def get_properties(sock_path: str | Path, names: list,
                     continue
                 rid = msg.get("request_id")
                 if rid in idx and "error" in msg:  # a command reply, not an event
+                    answered.add(rid)
                     if msg.get("error") == "success":
                         out[idx[rid]] = msg.get("data")
         return out
