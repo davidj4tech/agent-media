@@ -477,6 +477,52 @@ def _restore_fullscreen() -> None:
     _dumped_pane = None
 
 
+def _highlight_pidfile(pane: str) -> str:
+    """Path to the per-pane clear-timer PID file. One file per pane so a new
+    highlight can kill the previous sentence's pending clear-timer."""
+    _pane_safe = re.sub(r"[^A-Za-z0-9_-]", "_", pane)
+    return f"/tmp/media-highlight-clear-{_pane_safe}.pid"
+
+
+def _kill_pending_clear(pane: str) -> None:
+    """Kill any in-flight clear-timer for `pane` and drop its PID file.
+
+    The clear-timer is a detached `sleep …; tmux send-keys -X …` process group
+    (see `_tmux_highlight_text`). Without this, turning auto-highlight off — or
+    ending playback — leaves the timer alive to fire `cancel`/`clear-selection`
+    into the pane a beat later, yanking the view out from under the user."""
+    import signal as _signal
+    pidfile = _highlight_pidfile(pane)
+    try:
+        with open(pidfile) as _f:
+            _pgid = int(_f.read().strip())
+        try:
+            os.killpg(_pgid, _signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+    except (OSError, ValueError):
+        pass
+    try:
+        os.unlink(pidfile)
+    except OSError:
+        pass
+
+
+def _force_cancel_copy_mode(pane: str) -> None:
+    """Cancel copy-mode on `pane` and verify it actually left the mode.
+
+    A single `-X cancel` is a no-op if the pane isn't in copy-mode, and can be
+    lost to a race with an entering highlight; re-check `#{pane_in_mode}` and
+    retry once so we never strand the pane inside tmux copy-mode (which would
+    eat the app's own scroll/transcript keys)."""
+    for _ in range(2):
+        in_mode, _pos = _pane_scroll_pos(pane)
+        if not in_mode:
+            return
+        subprocess.run(["tmux", "send-keys", "-t", pane, "-X", "cancel"],
+                       capture_output=True)
+
+
 def _tmux_highlight_text(text: str, *, first: bool = False,
                          force: bool = False) -> None:
     """Re-anchor copy-mode in the source pane onto the spoken text.
@@ -575,21 +621,11 @@ def _tmux_highlight_text(text: str, *, first: bool = False,
     # persists until the next sentence's highlight replaces it).
     flash_ms = int(os.environ.get("MEDIA_HIGHLIGHT_FLASH_MS", "1500"))
 
-    import signal as _signal
-    _pane_safe = re.sub(r"[^A-Za-z0-9_-]", "_", pane)
-    pidfile = f"/tmp/media-highlight-clear-{_pane_safe}.pid"
+    pidfile = _highlight_pidfile(pane)
 
     # Per-pane PID file so each new highlight can kill the previous
     # sentence's pending clear-timer before it races into our selection.
-    try:
-        with open(pidfile) as _f:
-            _old_pgid = int(_f.read().strip())
-        try:
-            os.killpg(_old_pgid, _signal.SIGTERM)
-        except (ProcessLookupError, PermissionError):
-            pass
-    except (OSError, ValueError):
-        pass
+    _kill_pending_clear(pane)
 
     # Remember where the pane sat before we touch it, so a failed search can
     # put the view back instead of stranding the reader at the bottom.
@@ -637,13 +673,23 @@ def _tmux_highlight_text(text: str, *, first: bool = False,
             # `cancel` drops out of copy-mode entirely so the app's own keys work
             # again between pulses. Otherwise `clear-selection` fades the mark but
             # stays in copy-mode, leaving the viewport parked on the sentence.
+            #
+            # The transient/hold choice is re-checked at *fire* time, not frozen
+            # here: if the pane has since flipped to the alternate screen (the
+            # user opened Claude's detailed-transcript / Ctrl+O view), we must
+            # `cancel` rather than `clear-selection` — otherwise we'd leave the
+            # pane parked in tmux copy-mode, eating the app's own scroll keys.
             # start_new_session makes this proc the session leader, so its PID is
             # its pgid; we record it so the next highlight can killpg it cleanly.
-            _end = "cancel" if transient else "clear-selection"
+            _hold = "0" if transient else "1"
             proc = subprocess.Popen(
                 ["sh", "-c",
                  f"sleep {flash_ms / 1000:.2f}; "
-                 f"tmux send-keys -t {pane} -X {_end} 2>/dev/null"],
+                 f'if [ "{_hold}" = "1" ] && '
+                 f'[ "$(tmux display-message -p -t {pane} '
+                 f"'#{{alternate_on}}' 2>/dev/null)\" != \"1\" ]; then "
+                 f"tmux send-keys -t {pane} -X clear-selection 2>/dev/null; "
+                 f"else tmux send-keys -t {pane} -X cancel 2>/dev/null; fi"],
                 start_new_session=True,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
