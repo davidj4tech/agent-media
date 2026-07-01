@@ -1565,6 +1565,18 @@ def submit_event(event: Event,
                 misses = 0
                 last_ms = -1
                 stall = 0
+                # Hold the playback token until the reply's audio is really done,
+                # not merely until we can still *see* the player. Losing the
+                # follow-along (a flaky bridge trips the misses/stall guards below)
+                # must NOT release the token early: a queued equal-priority reply
+                # would then grab it and play_playlist stop+clears our still-
+                # playing audio — the "long reply gets cut off and never comes
+                # back" bug. We know the whole reply's duration, so on a blind
+                # bail we keep the token until that's plausibly elapsed (the
+                # blind-hold tail after this loop). `finished` is set only when we
+                # positively observe the end (idle, or a skip past the last clip).
+                finished = False
+                hard_deadline = time.monotonic() + (total_duration_s or 0.0) + 5.0
                 while played_any:
                     # One batched snapshot per tick (pos/idle/pause/time) instead
                     # of four separate ~600ms bridge hops — keeps the follow-along
@@ -1583,6 +1595,7 @@ def submit_event(event: Event,
                         if nav >= n:
                             highlighter.cancel_pending()
                             sink.stop(target)
+                            finished = True   # skip past last clip = intentional end
                             break
                         sink.set_playlist_pos(max(0, nav), target)
                         nav_jump = True
@@ -1594,6 +1607,7 @@ def submit_event(event: Event,
                         time.sleep(0.1)
                         continue
                     if snap.get("idle-active"):
+                        finished = True
                         break  # playlist finished
                     pos = snap.get("playlist-pos")
                     if pos is None or pos < 0:
@@ -1624,6 +1638,22 @@ def submit_event(event: Event,
                             log.warning("intake: playlist stalled; ending follow")
                             break
                     time.sleep(0.1)
+                # Blind-hold: the follow loop stopped but we never positively saw
+                # the playlist end (the bridge went unreadable / stalled). The
+                # phone is most likely still playing our clips, so keep the token
+                # until we can confirm it's idle again or the reply's own duration
+                # has elapsed — otherwise a queued reply clobbers the remaining
+                # audio. Trust only a *readable* idle: snapshot() returns None on a
+                # dead bridge, and sink.idle() reports idle on IPC error, so either
+                # alone would release us straight back into the clobber.
+                if played_any and not finished:
+                    log.info("intake: lost follow-along; holding speech token "
+                             "until audio completes")
+                    while time.monotonic() < hard_deadline:
+                        snap = sink.snapshot(target)
+                        if snap and snap.get("idle-active"):
+                            break
+                        time.sleep(0.5)
             else:
                 i = 0
                 nav_jump = False  # True when this clip was reached via a popup skip
