@@ -193,11 +193,18 @@ fetch() {
         HL=off
     fi
     case "$CHANNEL" in
-        speech|book)
+        book)
+            # Book plays locally on this host, so its live speed/mute come
+            # straight off the socket. Speech may play on a *remote* target
+            # (the phone) — its mute rides in on `media status` as [M] (caught
+            # above) and its speed as the ⏩/🐢 glyph in the status line, both
+            # fed from the intake monitor's local mirror. Reading the local
+            # socket for speech would just report red5's idle broker (1.0×,
+            # unmuted) and clobber the real remote state.
             [ "$(sock_get mute)" = "true" ] && MUTED=1
             SPD=$(sock_get speed)   # mpv returns e.g. 0.700000 — normalize
             [ -n "$SPD" ] && SPD=$(awk -v s="$SPD" 'BEGIN{printf "%.1f", s}')
-            [ "$CHANNEL" = "speech" ] && speed="${SPD:-$speed}" || bspeed="${SPD:-$bspeed}"
+            bspeed="${SPD:-$bspeed}"
             ;;
     esac
     # Part number, shown only for a genuinely multi-part book/playlist.
