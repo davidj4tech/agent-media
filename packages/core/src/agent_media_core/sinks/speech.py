@@ -175,37 +175,38 @@ class SinkSpeech:
         """
         sock = _socket_for(target)
         device = _device_for(target)
+        # One batched round-trip instead of ~10 (each a ~600ms hop over the
+        # bridge). Build the whole playlist BEFORE starting: a `loadfile replace`
+        # would play the (~0.5s) first clip *immediately*, and it can END before
+        # the rest are appended, leaving mpv idle with unplayed items. So clear,
+        # append every clip to the idle player (append does NOT auto-play), then
+        # jump to index 0 — from there mpv auto-advances gaplessly.
+        cmds: list = []
         if device is not None:
-            try:
-                ipc.set_property(sock, "audio-device", device)
-            except ipc.MpvIpcError as e:
-                log.warning("sink-speech: set audio-device %s failed: %s", device, e)
-        try:
-            ipc.set_property(sock, "gapless-audio", "yes" if gapless else "no")
-        except ipc.MpvIpcError:
-            pass
-        # Build the whole playlist BEFORE starting playback: a `loadfile replace`
-        # would play the (very short, ~0.5s) first clip *immediately*, and it can
-        # END before the remaining clips are appended over the bridge — leaving
-        # mpv idle with unplayed items. So clear, append every clip to the idle
-        # player (append does NOT auto-play), then jump to index 0 to start —
-        # from there mpv auto-advances through the rest gaplessly.
-        try:
-            ipc.command(sock, "stop")
-            ipc.command(sock, "playlist-clear")
-        except ipc.MpvIpcError:
-            pass
+            cmds.append(["set_property", "audio-device", device])
+        cmds.append(["set_property", "gapless-audio", "yes" if gapless else "no"])
+        cmds.append(["stop"])
+        cmds.append(["playlist-clear"])
         for uri in uris:
-            ipc.command(sock, "loadfile", _clip_uri_for(str(uri), target), "append")
-        for prop in ("pause", "mute"):
-            try:
-                ipc.set_property(sock, prop, False)
-            except ipc.MpvIpcError:
-                pass
+            cmds.append(["loadfile", _clip_uri_for(str(uri), target), "append"])
+        cmds.append(["set_property", "pause", False])
+        cmds.append(["set_property", "mute", False])
+        cmds.append(["set_property", "playlist-pos", 0])
         try:
-            ipc.set_property(sock, "playlist-pos", 0)
-        except ipc.MpvIpcError:
-            pass
+            ipc.command_batch(sock, cmds)
+        except (ipc.MpvIpcError, OSError) as e:
+            log.warning("sink-speech: play_playlist batch failed: %s", e)
+
+    def snapshot(self, target: Target = DEFAULT_TARGET) -> dict:
+        """One-round-trip read of the state the playlist monitor needs each tick
+        (playlist-pos / idle-active / pause / time-pos). Empty dict on failure —
+        far cheaper over a bridge than four separate get_property hops."""
+        try:
+            return ipc.get_properties(
+                _socket_for(target),
+                ["playlist-pos", "idle-active", "pause", "time-pos", "mute"])
+        except (ipc.MpvIpcError, OSError):
+            return {}
 
     def playlist_pos(self, target: Target = DEFAULT_TARGET) -> Optional[int]:
         """Index of the clip the playlist is currently on (-1/None when idle)."""

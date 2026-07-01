@@ -1096,11 +1096,12 @@ class _MuteDuckWatcher:
         # (reset_state), so we start from "audible / ducked".
         self._muted = False
 
-    def poll(self) -> None:
-        try:
-            muted = self._sink.muted(self._target)
-        except Exception:  # noqa: BLE001
-            return  # can't read mute → don't touch the duck
+    def poll(self, muted: Optional[bool] = None) -> None:
+        if muted is None:
+            try:
+                muted = self._sink.muted(self._target)
+            except Exception:  # noqa: BLE001
+                return  # can't read mute → don't touch the duck
         if muted == self._muted:
             return
         self._muted = muted
@@ -1353,8 +1354,12 @@ def submit_event(event: Event,
     if not clip_data:
         return None
 
-    # Compute per-clip offsets for a single spanning progress bar.
-    durations = [_clip_duration(p) for _, p in clip_data]
+    # Compute per-clip offsets for a single spanning progress bar. ffprobe is a
+    # subprocess per clip; probe them in parallel so a multi-sentence reply
+    # doesn't add ~0.2s × N to time-to-first-audio.
+    with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(8, len(clip_data))) as _dpool:
+        durations = list(_dpool.map(_clip_duration, [p for _, p in clip_data]))
     total_duration_s = sum(durations)
 
     # Delay the highlight so it fires when the audio is actually *heard*, not
@@ -1443,7 +1448,18 @@ def submit_event(event: Event,
                 last_ms = -1
                 stall = 0
                 while played_any:
-                    mute_watcher.poll()
+                    # One batched snapshot per tick (pos/idle/pause/time) instead
+                    # of four separate ~600ms bridge hops — keeps the follow-along
+                    # tight rather than lagging the audio by seconds.
+                    snap = sink.snapshot(target)
+                    if not snap:
+                        misses += 1
+                        if misses > 50:        # ~5s fully unreadable → bail
+                            break
+                        time.sleep(0.1)
+                        continue
+                    misses = 0
+                    mute_watcher.poll(snap.get("mute"))  # from the same snapshot
                     nav = _read_nav_request(target)
                     if nav is not None:
                         if nav >= n:
@@ -1453,20 +1469,16 @@ def submit_event(event: Event,
                         sink.set_playlist_pos(max(0, nav), target)
                         nav_jump = True
                         stall = 0
-                    if sink.paused(target):
+                    if snap.get("pause"):
                         stall = 0
                         time.sleep(0.1)
                         continue
-                    if sink.idle(target):
+                    if snap.get("idle-active"):
                         break  # playlist finished
-                    pos = sink.playlist_pos(target)
+                    pos = snap.get("playlist-pos")
                     if pos is None or pos < 0:
-                        misses += 1
-                        if misses > 50:        # ~5s of unreadable state → bail
-                            break
-                        time.sleep(0.1)
+                        time.sleep(0.1)   # loaded but not on an entry yet
                         continue
-                    misses = 0
                     if pos != i and 0 <= pos < n:
                         i = pos
                         _mark(i)
@@ -1478,7 +1490,7 @@ def submit_event(event: Event,
                     # not paused (a wedged clip, or another process clobbering the
                     # shared broker), bail so a response can never hang. A gapless
                     # clip boundary resets time-pos, which counts as progress.
-                    ms = sink.position(target)
+                    ms = snap.get("time-pos")
                     if ms is not None and ms != last_ms:
                         last_ms = ms
                         stall = 0
