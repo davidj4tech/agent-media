@@ -9,6 +9,7 @@ description = "Core lib for agent-media: intake/route/render/transcribe/capture/
 requires-python = ">=3.11"
 dependencies = [
     "mcp>=1.9",
+    "markdown-it-py>=3.0",  # code-block suppression for TTS (intake/_text.py)
 ]
 
 [project.scripts]

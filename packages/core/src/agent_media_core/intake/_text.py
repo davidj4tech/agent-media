@@ -14,13 +14,78 @@ _BULLET_RE = re.compile(r"^\s*[-*]\s+", flags=re.MULTILINE)
 _BLANK_RE = re.compile(r"\n[ \t]*\n+")
 
 
+_REGEX_FENCE_BLOCK = re.compile(r"(`{3,}|~{3,})([^\n]*)\n(.*?)\n[ \t]*\1", re.DOTALL)
+
+
+def _code_placeholder(n_lines: int, lang: str = "") -> str:
+    n = max(1, n_lines)
+    lang_word = f"{lang} " if lang else ""
+    return f"{lang_word}code block, {n} line{'s' if n != 1 else ''}, omitted."
+
+
+def _regex_suppress_fences(text: str) -> str:
+    def repl(m: "re.Match[str]") -> str:
+        lang = (m.group(2) or "").strip().split(" ")[0]
+        n = m.group(3).count("\n") + 1
+        return _code_placeholder(n, lang)
+    return _REGEX_FENCE_BLOCK.sub(repl, text)
+
+
+def suppress_code_blocks(text: str) -> str:
+    """Replace fenced / indented code blocks with a short *spoken* placeholder
+    ("python code block, 12 lines, omitted.") so TTS describes code instead of
+    reading it line by line. Uses markdown-it-py for robust block detection when
+    available; falls back to a fenced-code regex. Must run on the FULL text
+    (a block spans multiple sentences), so it's applied at the top of
+    ``strip_markdown`` before sentence-level cleanup.
+    """
+    if not text or ("```" not in text and "~~~" not in text and "\n    " not in text):
+        return text
+    try:
+        from markdown_it import MarkdownIt
+        tokens = MarkdownIt("commonmark").parse(text)
+    except Exception:  # noqa: BLE001 — any import/parse issue → regex fallback
+        return _regex_suppress_fences(text)
+
+    spans: list[tuple[int, int, str]] = []
+    for tok in tokens:
+        rng = getattr(tok, "map", None)
+        if not rng or tok.type not in ("fence", "code_block"):
+            continue
+        start, end = rng
+        if tok.type == "fence":
+            lang = (tok.info or "").strip().split(" ")[0]
+            spans.append((start, end, _code_placeholder(end - start - 2, lang)))
+        else:  # indented code_block
+            spans.append((start, end, _code_placeholder(end - start)))
+    if not spans:
+        return text
+
+    spans.sort()
+    lines = text.split("\n")
+    out_lines: list[str] = []
+    i = 0
+    si = 0
+    while i < len(lines):
+        if si < len(spans) and i == spans[si][0]:
+            out_lines.append(spans[si][2])
+            i = spans[si][1]
+            si += 1
+        else:
+            out_lines.append(lines[i])
+            i += 1
+    return "\n".join(out_lines)
+
+
 def strip_markdown(text: str) -> str:
     """Strip enough markdown that TTS doesn't read backticks / asterisks /
-    fence markers aloud. Loose by design: callers can submit anything.
+    fence markers aloud, and replace fenced code blocks with a spoken
+    placeholder. Loose by design: callers can submit anything.
     """
     if not text:
         return ""
-    out = _FENCE_RE.sub("", text)
+    out = suppress_code_blocks(text)
+    out = _FENCE_RE.sub("", out)
     out = _HEAD_RE.sub("", out)
     out = _BOLD_RE.sub(r"\1", out)
     out = _ITAL_RE.sub(r"\1", out)
