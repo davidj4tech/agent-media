@@ -1443,10 +1443,12 @@ def _do_replay(index: int, session: Optional[str] = None) -> int:
     for extra_uri in clip_uris[1:]:
         sink.queue(extra_uri, SPEECH_TARGET)
     # "Replay" means "I want to hear this now": clear a lingering pause/mute.
+    # OSError too: a missing/refused socket (mpv not up yet) must be a no-op,
+    # not a traceback — _open raises raw FileNotFoundError/ConnectionRefused.
     try:
         ipc.set_property(_sock(), "pause", False)
         ipc.set_property(_sock(), "mute", False)
-    except ipc.MpvIpcError:
+    except (ipc.MpvIpcError, OSError):
         pass
     clip_sentences: list[str] = ex.get("clip_sentences") or []
     have_durations = (
