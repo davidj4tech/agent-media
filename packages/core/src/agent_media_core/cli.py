@@ -1477,19 +1477,26 @@ def _do_replay(index: int, session: Optional[str] = None) -> int:
     replay_text: str = row.get("text") or ""
 
     sink = SinkSpeech()
-    # Play first clip (replace), then queue the rest — mpv plays them
-    # sequentially as a playlist so the full response replays intact.
-    sink.play(clip_uris[0], SPEECH_TARGET)
-    for extra_uri in clip_uris[1:]:
-        sink.queue(extra_uri, SPEECH_TARGET)
-    # "Replay" means "I want to hear this now": clear a lingering pause/mute.
-    # OSError too: a missing/refused socket (mpv not up yet) must be a no-op,
-    # not a traceback — _open raises raw FileNotFoundError/ConnectionRefused.
-    try:
-        ipc.set_property(_sock(), "pause", False)
-        ipc.set_property(_sock(), "mute", False)
-    except (ipc.MpvIpcError, OSError):
-        pass
+    # Push the whole turn in ONE batched round-trip (stop/clear/append-all/
+    # unpause/jump-to-0) rather than 1 play + N queues + 2 state-sets — each a
+    # ~600ms hop over the phone bridge. Traversing (< / >) or replaying a long
+    # multi-clip turn otherwise drove every clip individually, blocking the
+    # popup for seconds per press (a 14-clip reply ≈ 8s frozen); mashing back
+    # through a few clips then looked like the popup had hung. Mirrors the live
+    # intake path (play_playlist), which also clears any lingering pause/mute so
+    # a "replay" ("I want to hear this now") is audible past a stale pause/mute.
+    if len(clip_uris) > 1:
+        sink.play_playlist(clip_uris, SPEECH_TARGET)
+    else:
+        # Single clip: one loadfile + explicit state reset. OSError too — a
+        # missing/refused socket (mpv not up yet) must be a no-op, not a
+        # traceback (_open raises raw FileNotFoundError/ConnectionRefused).
+        sink.play(clip_uris[0], SPEECH_TARGET)
+        try:
+            ipc.set_property(_sock(), "pause", False)
+            ipc.set_property(_sock(), "mute", False)
+        except (ipc.MpvIpcError, OSError):
+            pass
     clip_sentences: list[str] = ex.get("clip_sentences") or []
     have_durations = (
         len(clip_durations) == len(clip_uris) and len(clip_durations) > 0
