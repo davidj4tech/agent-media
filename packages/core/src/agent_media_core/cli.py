@@ -2269,8 +2269,16 @@ def _channel_is_playing(name: str) -> bool:
         if name == "music":
             return SinkMusic().status_dict(SPEECH_TARGET).get("state") == "play"
         if name == "book":
-            st = _srv().channels_status().get("book") or {}
-            return (not st.get("idle")) and (not st.get("paused"))
+            # Probe the book sink directly rather than via mcp_server: importing
+            # mcp_server pulls in the whole fastmcp framework (~0.47s), and this
+            # runs in the popup *launcher* (`popup-channel`), before the popup
+            # can even appear — so that import was the bulk of open latency.
+            # SinkBook.idle/paused is what channels_status reads anyway (target
+            # "local"); short-circuiting skips the paused() probe when idle.
+            from .sinks import SinkBook
+            b = SinkBook()
+            t = Target(name="local")
+            return (not b.idle(t)) and (not b.paused(t))
     except Exception:  # noqa: BLE001 — the launcher must never see a traceback
         return False
     return False
