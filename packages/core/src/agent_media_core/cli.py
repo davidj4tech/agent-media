@@ -1308,10 +1308,15 @@ def _seek_to_end(sock) -> int:
     # On a multi-clip replay the response's clips are queued as one mpv
     # playlist; seeking the *current* clip to 100% would only advance to the
     # next one. Jump to the final playlist entry first so we land on the
-    # actual last clip before seeking it to the end.
+    # actual last clip before seeking it to the end — but only if we're not
+    # already on it. Re-setting playlist-pos to the index that's already
+    # current makes mpv *reload* that entry (restart it from 0): that was the
+    # "`>` repeated the current clip instead of ending it" bug, hit whenever
+    # the popup's `>` landed while the last clip was already playing.
     try:
         count = ipc.get_property(sock, "playlist-count")
-        if isinstance(count, int) and count > 1:
+        pos = ipc.get_property(sock, "playlist-pos")
+        if isinstance(count, int) and count > 1 and pos != count - 1:
             ipc.set_property(sock, "playlist-pos", count - 1)
     except ipc.MpvIpcError:
         pass
