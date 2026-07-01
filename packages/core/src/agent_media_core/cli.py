@@ -249,43 +249,24 @@ def _remote_speech() -> bool:
     return str(_sock()).startswith("tcp://")
 
 
-def cmd_status(a) -> int:
-    # When speech plays on the phone, don't read the phone's mpv over the bridge
-    # (~600ms) on every popup redraw — read the monitor's local mirror in
-    # now_playing instead. The intake monitor writes the live position / pause /
-    # speed / mute there each tick, so this is a local DB hit (near-instant) and
-    # the popup responds to keys without the bridge lag.
+def _speech_display_state():
+    """`(idle, pos, dur, paused, muted, speed, playing)` for the speech channel.
+
+    Remote target (the phone): read the intake monitor's local now_playing
+    mirror — a DB hit, not a ~600ms bridge round-trip — so the status bar and
+    popup stay responsive. Local target: one batched snapshot off the local mpv,
+    enriched with the response timeline (offset+pos / total) from now_playing.
+    """
     if _remote_speech():
         np = _now_speaking()
         ex = (np or {}).get("extras") if np else None
         if ex and ex.get("total_duration_s"):
             lp = ex.get("live_pos_s")
             pos = lp if lp is not None else (ex.get("clip_offset_s") or 0.0)
-            dur = ex.get("total_duration_s")
-            paused = bool(ex.get("live_pause"))
-            muted = bool(ex.get("live_mute"))
-            speed = ex.get("live_speed") or 1.0
-            playing, idle = True, False
-        else:
-            pos = dur = speed = None
-            paused = muted = playing = False
-            idle = True
-        cw = getattr(a, "title", None)
-        if cw and playing:
-            prefix, body = _subject_label()
-            if prefix or body:
-                print(_title_status_line(pos, dur, paused, muted, speed,
-                                         prefix, body, _title_window(cw),
-                                         key="status"))
-                return 0
-        print(render_status(idle=idle, pos=pos, dur=dur, paused=paused,
-                            muted=muted, width=a.width,
-                            hide_idle=not a.show_idle,
-                            bar=not getattr(a, "no_bar", False), speed=speed))
-        return 0
-    # One batched read of everything this needs. Over a tcp:// bridge each
-    # get_property is a ~600ms round-trip, and the popup redraws this constantly
-    # (plus the status bar every 1s) — so ~7 serial reads made it crawl (~6.5s).
+            return (False, pos, ex.get("total_duration_s"),
+                    bool(ex.get("live_pause")), bool(ex.get("live_mute")),
+                    ex.get("live_speed") or 1.0, True)
+        return (True, None, None, False, False, None, False)
     try:
         snap = ipc.get_properties(
             _sock(), ["idle-active", "time-pos", "duration", "pause", "mute",
@@ -312,6 +293,12 @@ def cmd_status(a) -> int:
                 pos = offset + (pos or 0.0)
                 dur = total
                 playing = True
+    return (idle, pos, dur, snap.get("pause"), snap.get("mute"),
+            snap.get("speed"), playing)
+
+
+def cmd_status(a) -> int:
+    idle, pos, dur, paused, muted, speed, playing = _speech_display_state()
     # Optional title-overlay bar (EXPERIMENTAL): the whole `▶ pos title dur`
     # segment becomes one background-progress bar, times embedded in the fill.
     # `--title` carries the tmux client width; the title-field width is derived
@@ -320,15 +307,33 @@ def cmd_status(a) -> int:
     if cw and playing:
         prefix, body = _subject_label()
         if prefix or body:
-            print(_title_status_line(pos, dur, snap.get("pause"), snap.get("mute"),
-                                     snap.get("speed"), prefix, body,
-                                     _title_window(cw), key="status"))
+            print(_title_status_line(pos, dur, paused, muted, speed, prefix,
+                                     body, _title_window(cw), key="status"))
             return 0
-    print(render_status(idle=idle, pos=pos, dur=dur,
-                        paused=snap.get("pause"), muted=snap.get("mute"),
+    print(render_status(idle=idle, pos=pos, dur=dur, paused=paused, muted=muted,
                         width=a.width, hide_idle=not a.show_idle,
-                        bar=not getattr(a, "no_bar", False),
-                        speed=snap.get("speed")))
+                        bar=not getattr(a, "no_bar", False), speed=speed))
+    return 0
+
+
+def cmd_popup_status(a) -> int:
+    """Aggregate the speech popup's whole redraw into ONE process: three lines —
+    status / subject-pane label / durable-mute count. The popup used to spawn
+    `status` + `now-pane` + `mute-count` separately (~3× Python startup) on every
+    refresh, which made it slow to open and slow to react. Emits exactly three
+    newline-terminated fields (any may be empty) so the caller reads them with
+    three `read -r`s.
+    """
+    idle, pos, dur, paused, muted, speed, _ = _speech_display_state()
+    print(render_status(idle=idle, pos=pos, dur=dur, paused=paused, muted=muted,
+                        width=a.width, hide_idle=not a.show_idle,
+                        bar=not getattr(a, "no_bar", False), speed=speed))
+    prefix, body = _subject_label()
+    print(f"{prefix}{body}" if (prefix or body) else "")
+    m = StateStore().list_mutes()
+    n = sum(1 for v in m["panes"].values() if v) + \
+        sum(1 for v in m["sessions"].values() if v)
+    print(n if n else "")
     return 0
 
 
@@ -2094,6 +2099,14 @@ def _build_parser() -> argparse.ArgumentParser:
                         "from CLIENT_WIDTH — pass tmux #{client_width} so it "
                         "fits any screen (default 80; EXPERIMENTAL)")
     s.set_defaults(func=cmd_status)
+
+    ps = sub.add_parser("popup-status",
+                        help="speech status + subject label + mute-count in one "
+                             "shot (3 lines) — the popup's per-refresh aggregate")
+    ps.add_argument("--width", type=int, default=12)
+    ps.add_argument("--show-idle", action="store_true")
+    ps.add_argument("--no-bar", action="store_true")
+    ps.set_defaults(func=cmd_popup_status)
 
     sub.add_parser("now", help="text currently being spoken").set_defaults(func=cmd_now)
     sub.add_parser("now-pane",

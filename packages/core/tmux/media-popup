@@ -100,6 +100,7 @@ LABEL="agent-media"     # marquee text (pane title / current track)
 LINK=""                 # http(s) source URL for the current track (music/book);
                         # wraps the marquee in an OSC 8 hyperlink when set
 STATUS=""               # second line: progress bar for the active channel
+MCOUNT=""               # durable-mute badge count (speech); "" hides it
 
 # Marquee state. When LABEL is wider than the line, draw() scrolls it once
 # (a single left-to-right pass), holding briefly at each end, then parks at
@@ -143,7 +144,7 @@ trap cleanup EXIT
 # cached snapshot. Speech marquee = the caller pane's title; music marquee =
 # the current track. Trims surrounding whitespace; collapses newlines.
 fetch() {
-    local t
+    local t smc=""
     if [ "$CHANNEL" = "music" ]; then
         STATUS=$($MEDIA music status --show-idle --no-bar 2>/dev/null)
         t=$($MEDIA music now 2>/dev/null | tr '\n' ' ')
@@ -161,10 +162,13 @@ fetch() {
         [ -n "$t" ] && LABEL="$t" || LABEL="(audiobook)"
         LINK=$(url_for "$(sock_get path)")
     else
-        STATUS=$($MEDIA status --show-idle --no-bar 2>/dev/null)
-        # Title of the pane that produced the *currently playing* speech
-        # (not the active pane), so the marquee names who's talking.
-        t=$($MEDIA now-pane 2>/dev/null | tr '\n' ' ')
+        # One aggregate call — status line + speaking-pane title + durable-mute
+        # count — instead of three separate `media` spawns. Each spawn is a full
+        # Python startup (~0.1s), and the popup refreshes every ~1s and after
+        # every key, so three-into-one is what makes it feel responsive. Emits
+        # exactly three lines (any may be empty).
+        { IFS= read -r STATUS; IFS= read -r t; IFS= read -r smc; } < <(
+            TTS_POPUP_PANE="$HL_PANE" $MEDIA popup-status --show-idle --no-bar 2>/dev/null)
         t="${t#"${t%%[![:space:]]*}"}"; t="${t%"${t##*[![:space:]]}"}"
         [ -n "$t" ] && LABEL="$t" || LABEL="agent-media"
         LINK=""                          # speech marquee is a pane title, not a URL
@@ -178,8 +182,9 @@ fetch() {
     STATUS="${STATUS/ \[M\]/}"
     # Total durable mutes (the "don't forget you muted things" badge). The
     # *subject's* own mute is shown in the title (🔒 prefix from `now-pane`);
-    # this is the global count. Speech channel only; one cheap query per refresh.
-    [ "$CHANNEL" = "speech" ] && MCOUNT=$(TTS_POPUP_PANE="$HL_PANE" $MEDIA mute-count 2>/dev/null)
+    # this is the global count. Speech-only; folded into the popup-status call
+    # above (`smc`) so it costs no extra spawn.
+    [ "$CHANNEL" = "speech" ] && MCOUNT="$smc"
     STATUS="${STATUS// \/ //}"               # "1:23 / 4:56" → "1:23/4:56" (save 2 cols)
     # Reflect the *persisted* auto-highlight state, not just v-key toggles made
     # this popup session, so the timeline indicator is right the moment we open.
@@ -800,6 +805,10 @@ handle_mouse() {
     done
 }
 
+# Paint the frame immediately from the seeded defaults so the popup *appears*
+# at once, then pull real state (~0.12s) and repaint — rather than blocking on
+# the CLI before the first pixel, which read as "slow to come up".
+draw
 fetch
 draw
 TICK=0.2          # redraw cadence — fast enough for a smooth marquee
