@@ -54,6 +54,18 @@ class _LoudSink:
     def play(self, uri, target, **_):
         self.plays += 1
 
+    def prefetch(self, paths, target=None):
+        pass
+
+    def play_playlist(self, uris, target=None, gapless=True):
+        self.plays += len(list(uris))
+
+    def playlist_pos(self, target=None):
+        return None
+
+    def set_playlist_pos(self, pos, target=None):
+        pass
+
     def idle(self, target):
         return True
 

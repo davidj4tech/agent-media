@@ -31,8 +31,22 @@ from .types import Event, Source, Target
 
 POPUP_CHANNELS = ("speech", "music", "book")
 
+# Load machine-local config (~/.config/agent-media.env) so the CLI — including
+# the tmux status bar and the popup controls — resolves the same speech target
+# the hook plays to. Without this the status/popup would read the *local* mpv
+# even when speech is playing on a remote target (the phone, Grade B), and show
+# nothing. Real env vars still win, matching the hooks' precedence.
+try:
+    from .intake._env import load_env_file as _load_env_file
+    _load_env_file("cli")
+except Exception:  # noqa: BLE001 — config is best-effort; CLI must still run
+    pass
 
-SPEECH_TARGET = Target("local")
+# The speech target the control surface reads/drives. For a remote target (the
+# phone over a tcp:// bridge) media status/now/pause/skip/replay all talk to
+# *that* mpv, so the popup follows phone-local playback (Grade B). Falls back to
+# the local broker when unset.
+SPEECH_TARGET = Target(os.environ.get("MEDIA_SPEECH_DEFAULT_TARGET", "local"))
 
 
 # --- pure helpers (unit-tested) -------------------------------------------
@@ -230,10 +244,38 @@ def _caller_pane() -> str:
 
 # --- speech subcommands ----------------------------------------------------
 
-def cmd_status(a) -> int:
-    idle = _get("idle-active")
-    pos = _get("time-pos")
-    dur = _get("duration")
+def _remote_speech() -> bool:
+    """Speech plays on a remote target (the phone, over a tcp:// bridge)."""
+    return str(_sock()).startswith("tcp://")
+
+
+def _speech_display_state():
+    """`(idle, pos, dur, paused, muted, speed, playing)` for the speech channel.
+
+    Remote target (the phone): read the intake monitor's local now_playing
+    mirror — a DB hit, not a ~600ms bridge round-trip — so the status bar and
+    popup stay responsive. Local target: one batched snapshot off the local mpv,
+    enriched with the response timeline (offset+pos / total) from now_playing.
+    """
+    if _remote_speech():
+        np = _now_speaking()
+        ex = (np or {}).get("extras") if np else None
+        if ex and ex.get("total_duration_s"):
+            lp = ex.get("live_pos_s")
+            pos = lp if lp is not None else (ex.get("clip_offset_s") or 0.0)
+            return (False, pos, ex.get("total_duration_s"),
+                    bool(ex.get("live_pause")), bool(ex.get("live_mute")),
+                    ex.get("live_speed") or 1.0, True)
+        return (True, None, None, False, False, None, False)
+    try:
+        snap = ipc.get_properties(
+            _sock(), ["idle-active", "time-pos", "duration", "pause", "mute",
+                      "speed", "playlist-pos"])
+    except Exception:  # noqa: BLE001
+        snap = {}
+    idle = snap.get("idle-active")
+    pos = snap.get("time-pos")
+    dur = snap.get("duration")
     playing = False         # the response timeline (offset+pos / total) is known
     if not idle:
         np = _now_speaking()
@@ -243,18 +285,20 @@ def cmd_status(a) -> int:
             if total:
                 clip_durs = ex.get("clip_durations_s")
                 if clip_durs:
-                    # Replay path: compute offset from mpv playlist-pos so
-                    # no background thread is needed to track clip advances.
-                    try:
-                        ppos = max(0, int(ipc.get_property(_sock(), "playlist-pos") or 0))
-                    except Exception:  # noqa: BLE001
-                        ppos = 0
+                    # Replay path: offset from playlist-pos (from the snapshot).
+                    ppos = max(0, int(snap.get("playlist-pos") or 0))
                     offset = sum(clip_durs[:ppos])
                 else:
                     offset = ex.get("clip_offset_s") or 0.0
                 pos = offset + (pos or 0.0)
                 dur = total
                 playing = True
+    return (idle, pos, dur, snap.get("pause"), snap.get("mute"),
+            snap.get("speed"), playing)
+
+
+def cmd_status(a) -> int:
+    idle, pos, dur, paused, muted, speed, playing = _speech_display_state()
     # Optional title-overlay bar (EXPERIMENTAL): the whole `▶ pos title dur`
     # segment becomes one background-progress bar, times embedded in the fill.
     # `--title` carries the tmux client width; the title-field width is derived
@@ -263,15 +307,33 @@ def cmd_status(a) -> int:
     if cw and playing:
         prefix, body = _subject_label()
         if prefix or body:
-            print(_title_status_line(pos, dur, _get("pause"), _get("mute"),
-                                     _get("speed"), prefix, body,
-                                     _title_window(cw), key="status"))
+            print(_title_status_line(pos, dur, paused, muted, speed, prefix,
+                                     body, _title_window(cw), key="status"))
             return 0
-    print(render_status(idle=idle, pos=pos, dur=dur,
-                        paused=_get("pause"), muted=_get("mute"),
+    print(render_status(idle=idle, pos=pos, dur=dur, paused=paused, muted=muted,
                         width=a.width, hide_idle=not a.show_idle,
-                        bar=not getattr(a, "no_bar", False),
-                        speed=_get("speed")))
+                        bar=not getattr(a, "no_bar", False), speed=speed))
+    return 0
+
+
+def cmd_popup_status(a) -> int:
+    """Aggregate the speech popup's whole redraw into ONE process: three lines —
+    status / subject-pane label / durable-mute count. The popup used to spawn
+    `status` + `now-pane` + `mute-count` separately (~3× Python startup) on every
+    refresh, which made it slow to open and slow to react. Emits exactly three
+    newline-terminated fields (any may be empty) so the caller reads them with
+    three `read -r`s.
+    """
+    idle, pos, dur, paused, muted, speed, _ = _speech_display_state()
+    print(render_status(idle=idle, pos=pos, dur=dur, paused=paused, muted=muted,
+                        width=a.width, hide_idle=not a.show_idle,
+                        bar=not getattr(a, "no_bar", False), speed=speed))
+    prefix, body = _subject_label()
+    print(f"{prefix}{body}" if (prefix or body) else "")
+    m = StateStore().list_mutes()
+    n = sum(1 for v in m["panes"].values() if v) + \
+        sum(1 for v in m["sessions"].values() if v)
+    print(n if n else "")
     return 0
 
 
@@ -872,12 +934,51 @@ def _history_index_for_pane(pane: str, limit: int = 50) -> Optional[int]:
     return None
 
 
+def _patch_speech_mirror(**live) -> None:
+    """Optimistically patch the speech now_playing mirror (live_pause/speed/mute)
+    so a control shows up in the popup on its very next redraw, instead of
+    lagging ~1s until the intake monitor re-reads the remote player. The monitor
+    overwrites these with ground truth on its next tick, so a stale patch is
+    self-correcting."""
+    store = StateStore()
+    np = store.get_now_playing("speech")
+    if not np:
+        return
+    ex = np.get("extras")
+    if not isinstance(ex, dict):
+        return
+    ex.update(live)
+    store.set_now_playing("speech", uri=np["uri"], started_at=np["started_at"],
+                          target=np.get("target") or "local",
+                          content_type=np.get("content_type"), extras=ex)
+
+
 def cmd_toggle(a) -> int:
     # If nothing is loaded, "play" means replay a clip (matches the old
     # popup's Space = play/pause-or-replay). Prefer the most recent clip from
     # the *active* pane (the one that opened the popup), so Space-while-idle
     # replays "what this pane just said"; fall back to the latest overall.
     # Otherwise flip pause.
+    if _remote_speech():
+        # Over the phone bridge each get_property is a full ~600ms round-trip,
+        # so the old idle-read + pause-read + pause-write cost ~2s (and could hit
+        # a "property unavailable" retry storm). Decide from the local mirror and
+        # do ONE idempotent write; patch the mirror so the glyph flips at once.
+        idle, _pos, _dur, paused, _muted, _speed, playing = _speech_display_state()
+        if not playing:
+            pane = os.environ.get("TTS_POPUP_PANE") or os.environ.get("TMUX_PANE", "")
+            return _do_replay(_history_index_for_pane(pane) or 1)
+        new_pause = not paused
+        # Fire-and-forget: pausing suspends the phone's audio device (~0.6s), but
+        # we don't need to wait for that "ok" — the mirror patch is what the popup
+        # reads back and the monitor confirms ground truth next tick. Returns in
+        # ~0.3s (connect+send) instead of ~0.7s. Falls back to a waited set.
+        try:
+            ipc.send_nowait(_sock(), "set_property", "pause", new_pause)
+        except Exception:  # noqa: BLE001
+            ipc.set_property(_sock(), "pause", new_pause)
+        _patch_speech_mirror(live_pause=new_pause)
+        return 0
     if _get("idle-active"):
         pane = os.environ.get("TTS_POPUP_PANE") or os.environ.get("TMUX_PANE", "")
         return _do_replay(_history_index_for_pane(pane) or 1)
@@ -1104,19 +1205,28 @@ def cmd_speed(a) -> int:
     The raw '+0.1' / '-0.1' forms still apply a literal delta. Clamped to range."""
     sock = _sock()
     f = a.factor
+
+    def _cur() -> float:
+        # For a remote target read the live speed off the local mirror rather
+        # than paying a bridge round-trip (matches cmd_toggle).
+        if _remote_speech():
+            sp = _speech_display_state()[5]
+            return float(sp) if isinstance(sp, (int, float)) else 1.0
+        cur = _get("speed")
+        return float(cur) if isinstance(cur, (int, float)) else 1.0
+
     if f == "reset":
         target = 1.0
     elif f in ("up", "down"):
-        cur = _get("speed")
-        cur = float(cur) if isinstance(cur, (int, float)) else 1.0
-        target = _speed_next(cur, 1 if f == "up" else -1)
+        target = _speed_next(_cur(), 1 if f == "up" else -1)
     elif f and f[0] in "+-":
-        cur = _get("speed")
-        cur = float(cur) if isinstance(cur, (int, float)) else 1.0
-        target = max(_SPEED_MIN, min(_SPEED_MAX, cur + float(f)))
+        target = max(_SPEED_MIN, min(_SPEED_MAX, _cur() + float(f)))
     else:
         target = max(_SPEED_MIN, min(_SPEED_MAX, float(f)))
-    ipc.set_property(sock, "speed", round(target, 2))
+    target = round(target, 2)
+    ipc.set_property(sock, "speed", target)
+    if _remote_speech():
+        _patch_speech_mirror(live_speed=target)
     return 0
 
 
@@ -1428,6 +1538,55 @@ def cmd_replay(a) -> int:
     return _do_replay(a.index, session=_anchor_session())
 
 
+def _prev_restart_threshold() -> float:
+    """Seconds into an item past which `<` restarts it instead of stepping back."""
+    try:
+        return max(0.0, float(os.environ.get("MEDIA_POPUP_PREV_RESTART_S") or 3.0))
+    except (TypeError, ValueError):
+        return 3.0
+
+
+def _prev_with_restart(elapsed, restart, step_back) -> int:
+    """⏮ shared by the music/book `<` key: restart the current item if we're
+    more than the grace window into it, else step back to the previous one.
+
+    `elapsed` returns seconds into the current item (None/0 when idle → step
+    back); `restart` seeks it to 0; `step_back` moves to the previous item.
+    """
+    try:
+        pos = float(elapsed() or 0.0)
+    except (TypeError, ValueError):
+        pos = 0.0
+    (restart if pos > _prev_restart_threshold() else step_back)()
+    return 0
+
+
+def cmd_replay_prev(a) -> int:
+    """Popup `<` for speech: "previous" with a restart-first grace window.
+
+    Like a music player's ⏮: if we're already more than
+    MEDIA_POPUP_PREV_RESTART_S (default 3s) into the current turn, `<` rewinds
+    to that turn's start rather than jumping to the older one. Only when we're
+    at/near the start (or nothing's playing) does it step back a turn. `--idx`
+    is the popup's current history cursor (1 = latest); the resolved cursor is
+    printed to stdout so the popup can update its own `hist_idx`.
+    """
+    idx = max(1, a.idx)
+    idle, pos, _dur, *_ = _speech_display_state()
+    session = _anchor_session()
+    if (not idle) and pos is not None and pos > _prev_restart_threshold():
+        # Partway through the current turn → restart it, keep the cursor put.
+        _do_replay(idx, session=session)
+        new_idx = idx
+    else:
+        # At the start (or idle) → step back a turn; stay put if there's none.
+        new_idx = idx + 1
+        if _do_replay(new_idx, session=session) != 0:
+            new_idx = idx
+    print(new_idx)
+    return 0
+
+
 def cmd_replay_at_cursor(a) -> int:
     """Replay the spoken clip at/just-above the copy-mode cursor (popup `p`).
 
@@ -1725,6 +1884,13 @@ def cmd_music(a) -> int:
     if a.action == "volume":
         m.volume_delta(int(float(a.uri or 0)))
         return 0
+    if a.action == "prev" and getattr(a, "restart_first", False):
+        # Popup `<`: ⏮ semantics — restart the track if we're past its start.
+        return _prev_with_restart(
+            elapsed=lambda: (m.status_dict() or {}).get("elapsed"),
+            restart=lambda: m.seek_cur(position_ms=0),
+            step_back=m.previous,
+        )
     {
         "pause": m.pause, "resume": m.resume,
         "toggle": m.toggle, "next": m.next, "prev": m.previous,
@@ -1923,6 +2089,16 @@ def cmd_book(a) -> int:
     if bc == "next":
         return _ok(srv.book_next(target=tgt))
     if bc == "prev":
+        if getattr(a, "restart_first", False):
+            # Popup `<`: ⏮ semantics — restart the part if we're past its start.
+            np = srv.book_now_playing(target=tgt)
+            pos = None if np.get("idle") else (np.get("position_ms") or 0) / 1000.0
+            return _prev_with_restart(
+                elapsed=lambda: pos,
+                restart=lambda: srv.book_seek(position_secs=0,
+                                              target=tgt or "local"),
+                step_back=lambda: srv.book_prev(target=tgt),
+            )
         return _ok(srv.book_prev(target=tgt))
     if bc == "skip":
         # `skip` is relative-only sugar over the shared seek action.
@@ -2038,6 +2214,14 @@ def _build_parser() -> argparse.ArgumentParser:
                         "fits any screen (default 80; EXPERIMENTAL)")
     s.set_defaults(func=cmd_status)
 
+    ps = sub.add_parser("popup-status",
+                        help="speech status + subject label + mute-count in one "
+                             "shot (3 lines) — the popup's per-refresh aggregate")
+    ps.add_argument("--width", type=int, default=12)
+    ps.add_argument("--show-idle", action="store_true")
+    ps.add_argument("--no-bar", action="store_true")
+    ps.set_defaults(func=cmd_popup_status)
+
     sub.add_parser("now", help="text currently being spoken").set_defaults(func=cmd_now)
     sub.add_parser("now-pane",
                    help="title of the pane that produced the now-playing speech"
@@ -2144,6 +2328,10 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument("index", nargs="?", type=int, default=1)
     s.set_defaults(func=cmd_replay)
 
+    s = sub.add_parser("replay-prev", help=argparse.SUPPRESS)  # popup < (restart-first)
+    s.add_argument("--idx", type=int, default=1)
+    s.set_defaults(func=cmd_replay_prev)
+
     sub.add_parser(
         "replay-at-cursor",
         help="replay the clip at the copy-mode cursor (popup p)"
@@ -2178,6 +2366,9 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="for 'status': show only the times (no progress bar)")
     s.add_argument("--add", action="store_true",
                    help="for 'play': queue without clearing the playlist")
+    s.add_argument("--restart-first", action="store_true",
+                   help="for 'prev': restart the current track if past its "
+                        "start (⏮ style; grace = MEDIA_POPUP_PREV_RESTART_S)")
     s.add_argument("--as", dest="as_type", metavar="TYPE",
                    choices=("music", "audiobook", "podcast", "dj-set",
                             "ambient"),
@@ -2236,6 +2427,9 @@ def _add_book_parser(sub) -> None:
     bn.add_argument("--target", default="")
     bpv = b.add_parser("prev", help="previous part of the active playlist")
     bpv.add_argument("--target", default="")
+    bpv.add_argument("--restart-first", action="store_true",
+                     help="restart the current part if past its start (⏮ style; "
+                          "grace = MEDIA_POPUP_PREV_RESTART_S)")
 
     bk = b.add_parser("skip", help="relative ±seconds (default +30); alias of "
                                    "`seek` with a forced-relative offset")
