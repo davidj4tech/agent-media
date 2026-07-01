@@ -436,11 +436,29 @@ def test_open_session_resumes(monkeypatch):
     calls = []
     monkeypatch.setattr(cli.subprocess, "run",
                         lambda cmd, **k: calls.append(cmd))
+    # Resume must run in the session's own project cwd, else `claude --resume`
+    # can't find the id and the window closes instantly.
+    monkeypatch.setattr(cli, "_session_cwd", lambda sid: "/home/ryer/proj")
 
     class A:
         session = "abc-123"
     assert cli.cmd_open_session(A()) == 0
-    assert ["tmux", "new-window", "claude --resume abc-123"] in calls
+    assert ["tmux", "new-window", "-c", "/home/ryer/proj",
+            "env -u ANTHROPIC_API_KEY claude --resume abc-123"] in calls
+
+
+def test_open_session_resumes_without_cwd(monkeypatch):
+    """No transcript found → resume without -c (best effort), key still stripped."""
+    calls = []
+    monkeypatch.setattr(cli.subprocess, "run",
+                        lambda cmd, **k: calls.append(cmd))
+    monkeypatch.setattr(cli, "_session_cwd", lambda sid: None)
+
+    class A:
+        session = "abc-123"
+    assert cli.cmd_open_session(A()) == 0
+    assert ["tmux", "new-window",
+            "env -u ANTHROPIC_API_KEY claude --resume abc-123"] in calls
 
 
 def test_open_session_blank_returns_1(monkeypatch):
