@@ -164,6 +164,64 @@ class SinkSpeech:
         except Exception as e:  # noqa: BLE001 — best-effort; play has its own fallback
             log.warning("sink-speech: prefetch to %s failed: %s", host, e)
 
+    def play_playlist(self, uris: "list", target: Target = DEFAULT_TARGET,
+                      gapless: bool = True) -> None:
+        """Load all of a response's clips as a gapless playlist and start it.
+
+        The (remote) player then advances through the clips *autonomously* — no
+        per-sentence drive from this host, so a bridge hiccup can't stall or cut
+        the reply, and clips play back-to-back with no inter-sentence gap. The
+        caller monitors `playlist_pos` to follow along (now_playing/highlight).
+        """
+        sock = _socket_for(target)
+        device = _device_for(target)
+        if device is not None:
+            try:
+                ipc.set_property(sock, "audio-device", device)
+            except ipc.MpvIpcError as e:
+                log.warning("sink-speech: set audio-device %s failed: %s", device, e)
+        try:
+            ipc.set_property(sock, "gapless-audio", "yes" if gapless else "no")
+        except ipc.MpvIpcError:
+            pass
+        # Build the whole playlist BEFORE starting playback: a `loadfile replace`
+        # would play the (very short, ~0.5s) first clip *immediately*, and it can
+        # END before the remaining clips are appended over the bridge — leaving
+        # mpv idle with unplayed items. So clear, append every clip to the idle
+        # player (append does NOT auto-play), then jump to index 0 to start —
+        # from there mpv auto-advances through the rest gaplessly.
+        try:
+            ipc.command(sock, "stop")
+            ipc.command(sock, "playlist-clear")
+        except ipc.MpvIpcError:
+            pass
+        for uri in uris:
+            ipc.command(sock, "loadfile", _clip_uri_for(str(uri), target), "append")
+        for prop in ("pause", "mute"):
+            try:
+                ipc.set_property(sock, prop, False)
+            except ipc.MpvIpcError:
+                pass
+        try:
+            ipc.set_property(sock, "playlist-pos", 0)
+        except ipc.MpvIpcError:
+            pass
+
+    def playlist_pos(self, target: Target = DEFAULT_TARGET) -> Optional[int]:
+        """Index of the clip the playlist is currently on (-1/None when idle)."""
+        try:
+            pos = ipc.get_property(_socket_for(target), "playlist-pos")
+        except ipc.MpvIpcError:
+            return None
+        return int(pos) if pos is not None else None
+
+    def set_playlist_pos(self, pos: int, target: Target = DEFAULT_TARGET) -> None:
+        """Jump the playlist to clip `pos` (popup skip/replay over the bridge)."""
+        try:
+            ipc.set_property(_socket_for(target), "playlist-pos", int(pos))
+        except ipc.MpvIpcError:
+            pass
+
     def queue(self, uri: str, target: Target = DEFAULT_TARGET) -> None:
         """Append a clip to mpv's playlist without interrupting what's playing."""
         ipc.command(_socket_for(target), "loadfile",

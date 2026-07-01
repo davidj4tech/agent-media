@@ -31,8 +31,22 @@ from .types import Event, Source, Target
 
 POPUP_CHANNELS = ("speech", "music", "book")
 
+# Load machine-local config (~/.config/agent-media.env) so the CLI — including
+# the tmux status bar and the popup controls — resolves the same speech target
+# the hook plays to. Without this the status/popup would read the *local* mpv
+# even when speech is playing on a remote target (the phone, Grade B), and show
+# nothing. Real env vars still win, matching the hooks' precedence.
+try:
+    from .intake._env import load_env_file as _load_env_file
+    _load_env_file("cli")
+except Exception:  # noqa: BLE001 — config is best-effort; CLI must still run
+    pass
 
-SPEECH_TARGET = Target("local")
+# The speech target the control surface reads/drives. For a remote target (the
+# phone over a tcp:// bridge) media status/now/pause/skip/replay all talk to
+# *that* mpv, so the popup follows phone-local playback (Grade B). Falls back to
+# the local broker when unset.
+SPEECH_TARGET = Target(os.environ.get("MEDIA_SPEECH_DEFAULT_TARGET", "local"))
 
 
 # --- pure helpers (unit-tested) -------------------------------------------
