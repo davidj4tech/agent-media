@@ -124,6 +124,24 @@ def command_batch(sock_path: str | Path, commands: list, timeout: float = 5.0) -
     raise last
 
 
+def send_nowait(sock_path: str | Path, *args: Any, timeout: float = 3.0) -> None:
+    """Send one command without waiting for the reply.
+
+    For a remote control action the caller often doesn't need the "ok" — the new
+    state is mirrored/confirmed elsewhere — and waiting for mpv to finish adds
+    real latency: pausing suspends the phone's audio device (~0.6s round-trip),
+    whereas the connect+send itself is ~0.3s. Connect, send, close: the bytes are
+    flushed before the FIN, so socat still forwards the command to mpv even
+    though we never read the reply. Transport errors raise (the caller can fall
+    back to a waited `set_property`).
+    """
+    s = _open(sock_path, timeout)
+    try:
+        s.sendall((json.dumps({"command": list(args)}) + "\n").encode())
+    finally:
+        s.close()
+
+
 def event_stream(sock_path: str | Path,
                  heartbeat: float = 1.0) -> Iterator[Optional[dict]]:
     """Yield mpv async event dicts from a *persistent* connection.

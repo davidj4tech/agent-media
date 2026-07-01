@@ -934,12 +934,51 @@ def _history_index_for_pane(pane: str, limit: int = 50) -> Optional[int]:
     return None
 
 
+def _patch_speech_mirror(**live) -> None:
+    """Optimistically patch the speech now_playing mirror (live_pause/speed/mute)
+    so a control shows up in the popup on its very next redraw, instead of
+    lagging ~1s until the intake monitor re-reads the remote player. The monitor
+    overwrites these with ground truth on its next tick, so a stale patch is
+    self-correcting."""
+    store = StateStore()
+    np = store.get_now_playing("speech")
+    if not np:
+        return
+    ex = np.get("extras")
+    if not isinstance(ex, dict):
+        return
+    ex.update(live)
+    store.set_now_playing("speech", uri=np["uri"], started_at=np["started_at"],
+                          target=np.get("target") or "local",
+                          content_type=np.get("content_type"), extras=ex)
+
+
 def cmd_toggle(a) -> int:
     # If nothing is loaded, "play" means replay a clip (matches the old
     # popup's Space = play/pause-or-replay). Prefer the most recent clip from
     # the *active* pane (the one that opened the popup), so Space-while-idle
     # replays "what this pane just said"; fall back to the latest overall.
     # Otherwise flip pause.
+    if _remote_speech():
+        # Over the phone bridge each get_property is a full ~600ms round-trip,
+        # so the old idle-read + pause-read + pause-write cost ~2s (and could hit
+        # a "property unavailable" retry storm). Decide from the local mirror and
+        # do ONE idempotent write; patch the mirror so the glyph flips at once.
+        idle, _pos, _dur, paused, _muted, _speed, playing = _speech_display_state()
+        if not playing:
+            pane = os.environ.get("TTS_POPUP_PANE") or os.environ.get("TMUX_PANE", "")
+            return _do_replay(_history_index_for_pane(pane) or 1)
+        new_pause = not paused
+        # Fire-and-forget: pausing suspends the phone's audio device (~0.6s), but
+        # we don't need to wait for that "ok" — the mirror patch is what the popup
+        # reads back and the monitor confirms ground truth next tick. Returns in
+        # ~0.3s (connect+send) instead of ~0.7s. Falls back to a waited set.
+        try:
+            ipc.send_nowait(_sock(), "set_property", "pause", new_pause)
+        except Exception:  # noqa: BLE001
+            ipc.set_property(_sock(), "pause", new_pause)
+        _patch_speech_mirror(live_pause=new_pause)
+        return 0
     if _get("idle-active"):
         pane = os.environ.get("TTS_POPUP_PANE") or os.environ.get("TMUX_PANE", "")
         return _do_replay(_history_index_for_pane(pane) or 1)
@@ -1166,19 +1205,28 @@ def cmd_speed(a) -> int:
     The raw '+0.1' / '-0.1' forms still apply a literal delta. Clamped to range."""
     sock = _sock()
     f = a.factor
+
+    def _cur() -> float:
+        # For a remote target read the live speed off the local mirror rather
+        # than paying a bridge round-trip (matches cmd_toggle).
+        if _remote_speech():
+            sp = _speech_display_state()[5]
+            return float(sp) if isinstance(sp, (int, float)) else 1.0
+        cur = _get("speed")
+        return float(cur) if isinstance(cur, (int, float)) else 1.0
+
     if f == "reset":
         target = 1.0
     elif f in ("up", "down"):
-        cur = _get("speed")
-        cur = float(cur) if isinstance(cur, (int, float)) else 1.0
-        target = _speed_next(cur, 1 if f == "up" else -1)
+        target = _speed_next(_cur(), 1 if f == "up" else -1)
     elif f and f[0] in "+-":
-        cur = _get("speed")
-        cur = float(cur) if isinstance(cur, (int, float)) else 1.0
-        target = max(_SPEED_MIN, min(_SPEED_MAX, cur + float(f)))
+        target = max(_SPEED_MIN, min(_SPEED_MAX, _cur() + float(f)))
     else:
         target = max(_SPEED_MIN, min(_SPEED_MAX, float(f)))
-    ipc.set_property(sock, "speed", round(target, 2))
+    target = round(target, 2)
+    ipc.set_property(sock, "speed", target)
+    if _remote_speech():
+        _patch_speech_mirror(live_speed=target)
     return 0
 
 
