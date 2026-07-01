@@ -1227,6 +1227,56 @@ def _remote_playlist(target: Target) -> bool:
     return str(_socket_for(target)).startswith("tcp://")
 
 
+def _wait_and_claim_broker(sink: "SinkSpeech", target: Target) -> None:
+    """Cross-host serialization for a *shared remote* (tcp://) broker.
+
+    The playback flock only serializes this host; the phone broker is driven by
+    every host. Before we stop+clear it with our playlist, claim an owner token
+    that lives on the broker itself (mpv user-data) and wait out any other host
+    that actively holds it. This mirrors the flock's progress-aware give-up: a
+    healthy remote holder keeps refreshing its claim's deadline, so we keep
+    waiting; a crashed/stalled one's claim expires, so we take over. No-op for
+    local/rooms targets (the flock already covers them) and best-effort — the
+    token machinery must never wedge a reply, so any trouble just proceeds.
+    """
+    if not _remote_playlist(target):
+        return
+    claim = getattr(sink, "claim_broker", None)
+    if claim is None:
+        return
+    timeout = float(os.environ.get("MEDIA_SPEECH_LOCK_TIMEOUT_S", "600"))
+    deadline = time.monotonic() + timeout
+    last_seen: Optional[float] = None
+    while True:
+        try:
+            info = sink.active_other_owner(target)
+        except Exception:  # noqa: BLE001
+            info = None
+        if info is None:
+            try:
+                if claim(target):
+                    return
+            except Exception:  # noqa: BLE001
+                return
+        else:
+            # Another host holds it; while its claim's deadline keeps advancing
+            # it's alive, so reset our give-up and keep waiting rather than
+            # clobber a healthy long reply on the other machine.
+            try:
+                od = float(info.get("deadline", 0))
+            except (TypeError, ValueError):
+                od = 0.0
+            if od != last_seen:
+                last_seen = od
+                deadline = time.monotonic() + timeout
+        if time.monotonic() >= deadline:
+            who = info.get("owner") if isinstance(info, dict) else "?"
+            log.warning("intake: remote broker held by %s and not advancing "
+                        ">%ss; proceeding", who, timeout)
+            return
+        time.sleep(0.3)
+
+
 def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
                        state: StateStore, event: Event) -> Optional[int]:
     """Render a reply on a remote low-latency hub instead of locally.
@@ -1493,6 +1543,10 @@ def submit_event(event: Event,
         # while we're still queued behind another speaker.
         playback_lock = _SpeechPlaybackLock()
         playback_lock.acquire(event.priority)
+        # Cross-host: also claim the shared remote broker so another machine's
+        # reply can't stop+clear our still-playing playlist. Waits out a healthy
+        # remote holder, takes over an expired one. No-op for local/rooms.
+        _wait_and_claim_broker(sink, target)
         # Grade B: push all clips to the remote player's local dir up front
         # (no-op for local/rooms), so each play below is a local loadfile —
         # no per-sentence network fetch to stall a long reply.
@@ -1565,7 +1619,63 @@ def submit_event(event: Event,
                 misses = 0
                 last_ms = -1
                 stall = 0
+                # Hold the playback token until the reply's audio is really done,
+                # not merely until we can still *see* the player. Losing the
+                # follow-along (a flaky bridge trips the misses/stall guards below)
+                # must NOT release the token early: a queued equal-priority reply
+                # would then grab it and play_playlist stop+clears our still-
+                # playing audio — the "long reply gets cut off and never comes
+                # back" bug. We know the whole reply's duration, so on a blind
+                # bail we keep the token until that's plausibly elapsed (the
+                # blind-hold tail after this loop). `finished` is set only when we
+                # positively observe the end (idle, or a skip past the last clip).
+                finished = False
+                hard_deadline = time.monotonic() + (total_duration_s or 0.0) + 5.0
+                last_broker_refresh = time.monotonic()
                 while played_any:
+                    # Step aside for a higher-priority speaker (e.g. a
+                    # notification) waiting on the token, then resume this reply —
+                    # the remote counterpart of the per-clip path's yield. The
+                    # phone plays the playlist autonomously, so to hand the broker
+                    # over cleanly we stop it, drop our broker claim (else a
+                    # same-host higher speaker would wait out our claim's TTL),
+                    # yield the flock until the higher clip finishes, then reload
+                    # the full playlist and jump back to where we were — reloading
+                    # the whole list (not just the tail) keeps playlist-pos mapping
+                    # 1:1 to the sentence index for the popup/highlight.
+                    if playback_lock.should_yield():
+                        resume_i = i if 0 <= i < n else 0
+                        highlighter.cancel_pending()
+                        sink.stop(target)
+                        getattr(sink, "release_broker",
+                                lambda *a, **k: None)(target)
+                        playback_lock.yield_to_higher()
+                        _wait_and_claim_broker(sink, target)
+                        try:
+                            sink.play_playlist([p for _, p in clip_data], target)
+                            if resume_i > 0:
+                                sink.set_playlist_pos(resume_i, target)
+                        except Exception as e:  # noqa: BLE001
+                            log.warning("intake: resume after yield failed: %s", e)
+                        # Re-arm follow state; recompute the blind-hold deadline for
+                        # only the audio that's left (wall-clock advanced while the
+                        # higher-priority reply played).
+                        i = -1
+                        nav_jump = True
+                        misses = 0
+                        last_ms = -1
+                        stall = 0
+                        remaining = max(0.0, total_duration_s - offsets[resume_i])
+                        hard_deadline = time.monotonic() + remaining + 5.0
+                        last_broker_refresh = time.monotonic()
+                        _mark(resume_i)
+                        continue
+                    # Keep our cross-host broker claim alive while we play so
+                    # another machine's reply doesn't take it for a stalled one.
+                    if time.monotonic() - last_broker_refresh > 5.0:
+                        getattr(sink, "refresh_broker",
+                                lambda *a, **k: None)(target)
+                        last_broker_refresh = time.monotonic()
                     # One batched snapshot per tick (pos/idle/pause/time) instead
                     # of four separate ~600ms bridge hops — keeps the follow-along
                     # tight rather than lagging the audio by seconds.
@@ -1583,6 +1693,7 @@ def submit_event(event: Event,
                         if nav >= n:
                             highlighter.cancel_pending()
                             sink.stop(target)
+                            finished = True   # skip past last clip = intentional end
                             break
                         sink.set_playlist_pos(max(0, nav), target)
                         nav_jump = True
@@ -1594,6 +1705,7 @@ def submit_event(event: Event,
                         time.sleep(0.1)
                         continue
                     if snap.get("idle-active"):
+                        finished = True
                         break  # playlist finished
                     pos = snap.get("playlist-pos")
                     if pos is None or pos < 0:
@@ -1624,6 +1736,22 @@ def submit_event(event: Event,
                             log.warning("intake: playlist stalled; ending follow")
                             break
                     time.sleep(0.1)
+                # Blind-hold: the follow loop stopped but we never positively saw
+                # the playlist end (the bridge went unreadable / stalled). The
+                # phone is most likely still playing our clips, so keep the token
+                # until we can confirm it's idle again or the reply's own duration
+                # has elapsed — otherwise a queued reply clobbers the remaining
+                # audio. Trust only a *readable* idle: snapshot() returns None on a
+                # dead bridge, and sink.idle() reports idle on IPC error, so either
+                # alone would release us straight back into the clobber.
+                if played_any and not finished:
+                    log.info("intake: lost follow-along; holding speech token "
+                             "until audio completes")
+                    while time.monotonic() < hard_deadline:
+                        snap = sink.snapshot(target)
+                        if snap and snap.get("idle-active"):
+                            break
+                        time.sleep(0.5)
             else:
                 i = 0
                 nav_jump = False  # True when this clip was reached via a popup skip
@@ -1666,6 +1794,9 @@ def submit_event(event: Event,
             _restore_fullscreen()   # no-op unless MEDIA_HIGHLIGHT_DUMP dumped
             coordinator.after_speech()
             state.clear_now_playing("speech")
+            # Drop the cross-host broker claim before the flock so the next host
+            # (and the next local waiter) can take over immediately. No-op local.
+            getattr(sink, "release_broker", lambda *a, **k: None)(target)
             playback_lock.release()
 
         if not played_any:
