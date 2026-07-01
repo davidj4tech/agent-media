@@ -12,7 +12,28 @@ STATE="${XDG_STATE_HOME:-$HOME/.local/state}/agent-media"
 SOCK="$STATE/sink-speech.sock"
 mkdir -p "$STATE"
 rm -f "$SOCK"
+# Keep scaletempo2 permanently in the filter chain. mpv otherwise AUTO-inserts
+# it the moment speed leaves 1.0× and REMOVES it when speed returns to 1.0× —
+# and each insert/remove rebuilds the filter graph, which tears down and
+# re-inits the audio output. The openal AO (the Termux default) handles that
+# reinit badly: it underruns and restarts, heard as playback briefly "stopping"
+# every time the speed crosses 1.0×. Verified on the phone: 4 crossings → 4
+# underruns baseline, 0 with scaletempo2 pinned. `audio-pitch-correction=no`
+# only stops mpv *also* auto-inserting a second scaletempo2; the explicit filter
+# still preserves pitch, so faster speech doesn't chipmunk.
+#
+# Belt-and-suspenders: pin one output format so a clip whose native rate/
+# channels differ from the previous one can't force the same AO reinit at a
+# boundary. 48 kHz / s16 / stereo is the devices' native format here, so this
+# never makes the *device* itself resample. All overridable per host.
+: "${MEDIA_SPEECH_SAMPLERATE:=48000}"
+: "${MEDIA_SPEECH_FORMAT:=s16}"
+: "${MEDIA_SPEECH_CHANNELS:=stereo}"
 exec mpv --idle=yes --ao="$MEDIA_SPEECH_AO" --force-window=no \
   --input-ipc-server="$SOCK" --volume=100 --keep-open=no \
   --gapless-audio=no --audio-stream-silence=no --ytdl=no \
-  --network-timeout=60
+  --network-timeout=60 \
+  --af=scaletempo2 --audio-pitch-correction=no \
+  --audio-samplerate="$MEDIA_SPEECH_SAMPLERATE" \
+  --audio-format="$MEDIA_SPEECH_FORMAT" \
+  --audio-channels="$MEDIA_SPEECH_CHANNELS"
