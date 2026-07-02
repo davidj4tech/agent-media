@@ -10,7 +10,7 @@ falls back to edge, so a red5 hiccup never drops a sentence.
 
 Config from the environment:
 
-  MEDIA_KOKORO_BASE_URL     server base URL (default http://100.103.43.93:8880)
+  MEDIA_KOKORO_BASE_URL     server base URL (default http://red5:8880)
   MEDIA_RENDER_VOICE_KOKORO default voice    (default af_heart)
   MEDIA_KOKORO_LANG         language         (default en-us)
   MEDIA_KOKORO_SPEED        speed factor     (default 1.0)
@@ -24,7 +24,7 @@ import os
 import urllib.request
 from pathlib import Path
 
-DEFAULT_BASE_URL = "http://100.103.43.93:8880"
+DEFAULT_BASE_URL = "http://red5:8880"
 DEFAULT_VOICE = "af_heart"
 DEFAULT_LANG = "en-us"
 

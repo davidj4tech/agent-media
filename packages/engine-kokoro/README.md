@@ -10,7 +10,7 @@ no API key. On any failure it returns `(False, err)` so core falls back to edge.
 ```sh
 pip install -e packages/engine-kokoro
 export MEDIA_RENDER_ENGINE=kokoro
-export MEDIA_KOKORO_BASE_URL=http://100.103.43.93:8880   # red5
+export MEDIA_KOKORO_BASE_URL=http://red5:8880   # red5
 ```
 
 Config (env): `MEDIA_KOKORO_BASE_URL`, `MEDIA_RENDER_VOICE_KOKORO` (default
