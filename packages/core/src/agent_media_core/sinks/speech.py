@@ -62,7 +62,7 @@ def _env_key(prefix: str, target_name: str) -> str:
     return f"{prefix}_{target_name.upper().replace('-', '_')}"
 
 
-def _clip_uri_for(uri: str, target: Target) -> str:
+def _clip_uri_for(uri: str, target: Target, prefer_url: bool = False) -> str:
     """Resolve the clip reference the *remote* player should load (Grade B).
 
     A remote broker (the phone's mpv over a TCP bridge) can't read this host's
@@ -81,9 +81,12 @@ def _clip_uri_for(uri: str, target: Target) -> str:
     if uri.startswith(("http://", "https://", "rtsp://")):
         return uri
     localdir = os.environ.get(_env_key("MEDIA_SPEECH_CLIP_LOCALDIR", target.name))
-    if localdir:
-        return localdir.rstrip("/") + "/" + Path(uri).name
     base = os.environ.get(_env_key("MEDIA_SPEECH_CLIP_BASEURL", target.name))
+    # prefer_url: the caller knows the localdir copy is unreliable (its
+    # prefetch just failed), so a configured HTTP base beats a local path
+    # that may not exist — a per-clip fetch is fragile, silence is worse.
+    if localdir and not (prefer_url and base):
+        return localdir.rstrip("/") + "/" + Path(uri).name
     if base:
         return base.rstrip("/") + "/" + Path(uri).name
     return uri
@@ -119,6 +122,15 @@ def _device_for(target: Target) -> Optional[str]:
 class SinkSpeech:
     """Sink protocol implementation for the speech broker."""
 
+    def __init__(self) -> None:
+        # Target names whose last prefetch failed: play/play_playlist then
+        # resolve clips to the HTTP base URL (if configured) instead of the
+        # remote localdir the clips never reached.
+        self._relay_unavailable: set = set()
+
+    def _prefer_url(self, target: Target) -> bool:
+        return target.name in self._relay_unavailable
+
     def play(self, uri: str, target: Target = DEFAULT_TARGET,
              reset_state: bool = True, **_: object) -> None:
         sock = _socket_for(target)
@@ -131,7 +143,9 @@ class SinkSpeech:
                 # falls back to its current device.
                 log.warning("sink-speech: set audio-device %s failed: %s",
                             device, e)
-        ipc.command(sock, "loadfile", _clip_uri_for(uri, target), "replace")
+        ipc.command(sock, "loadfile",
+                    _clip_uri_for(uri, target, self._prefer_url(target)),
+                    "replace")
         # A fresh response must be audible regardless of a lingering
         # pause/mute left on the broker (e.g. a popup Space/m while idle) —
         # otherwise it loads into a paused/muted broker and plays silently.
@@ -146,7 +160,7 @@ class SinkSpeech:
                 except ipc.MpvIpcError:
                     pass
 
-    def prefetch(self, paths: "list", target: Target = DEFAULT_TARGET) -> None:
+    def prefetch(self, paths: "list", target: Target = DEFAULT_TARGET) -> bool:
         """Copy all of a response's clips to the remote player's local dir up
         front (Grade B reliability).
 
@@ -154,13 +168,16 @@ class SinkSpeech:
         are tar-piped over SSH into that dir on the remote host, so each
         subsequent `play` is a *local* loadfile instead of a per-clip network
         fetch — the per-sentence HTTP/​bridge fragility that stalled long replies.
-        No-op when no local dir is configured (local/rooms, or HTTP fallback).
-        Best-effort: a failure is logged and play falls back to whatever
-        `_clip_uri_for` resolves (the HTTP URL if a base is set).
+        No-op (returns True) when no local dir is configured (local/rooms, or
+        HTTP fallback). Best-effort: a failure is logged, remembered per
+        target, and this sink's play/play_playlist then resolve clips to the
+        HTTP base URL (if one is set) instead of the localdir the clips never
+        reached — e.g. ssh to the phone broken while the clip HTTP server is
+        fine. Returns False on failure so callers can react too.
         """
         localdir = os.environ.get(_env_key("MEDIA_SPEECH_CLIP_LOCALDIR", target.name))
         if not localdir or not paths:
-            return
+            return True
         import shlex
         import subprocess
         host = (os.environ.get(_env_key("MEDIA_SPEECH_CLIP_SSH", target.name))
@@ -172,15 +189,27 @@ class SinkSpeech:
                 "-o ControlPath=/tmp/ssh-am-%r@%h:%p -o ControlPersist=300")
         remote = (f"mkdir -p {shlex.quote(localdir)} && "
                   f"tar -C {shlex.quote(localdir)} -xf -")
-        cmd = (f"tar -C {shlex.quote(srcdir)} -cf - {qnames} | "
+        # pipefail (hence bash): a tar-side failure (clip pruned from the
+        # local cache) must not read as success just because ssh exited 0.
+        cmd = (f"set -o pipefail; "
+               f"tar -C {shlex.quote(srcdir)} -cf - {qnames} | "
                f"ssh {opts} {shlex.quote(host)} {shlex.quote(remote)}")
         try:
-            subprocess.run(
-                cmd, shell=True,
+            rc = subprocess.run(
+                cmd, shell=True, executable="/bin/bash",
                 timeout=float(os.environ.get("MEDIA_SPEECH_PREFETCH_TIMEOUT", "30")),
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+            ).returncode
         except Exception as e:  # noqa: BLE001 — best-effort; play has its own fallback
             log.warning("sink-speech: prefetch to %s failed: %s", host, e)
+            rc = -1
+        if rc != 0:
+            log.warning("sink-speech: prefetch to %s failed (rc=%s); "
+                        "falling back to clip base URL if configured", host, rc)
+            self._relay_unavailable.add(target.name)
+            return False
+        self._relay_unavailable.discard(target.name)
+        return True
 
     def play_playlist(self, uris: "list", target: Target = DEFAULT_TARGET,
                       gapless: bool = True) -> None:
@@ -205,8 +234,10 @@ class SinkSpeech:
         cmds.append(["set_property", "gapless-audio", "yes" if gapless else "no"])
         cmds.append(["stop"])
         cmds.append(["playlist-clear"])
+        prefer_url = self._prefer_url(target)
         for uri in uris:
-            cmds.append(["loadfile", _clip_uri_for(str(uri), target), "append"])
+            cmds.append(["loadfile", _clip_uri_for(str(uri), target, prefer_url),
+                         "append"])
         cmds.append(["set_property", "pause", False])
         cmds.append(["set_property", "mute", False])
         cmds.append(["set_property", "playlist-pos", 0])
