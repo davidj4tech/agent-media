@@ -1511,6 +1511,13 @@ def _do_replay(index: int, session: Optional[str] = None) -> int:
     replay_text: str = row.get("text") or ""
 
     sink = SinkSpeech()
+    # A remote target plays clips from its clips-relay dir, which only the
+    # live intake path populates — and a replayed item's clips may never have
+    # arrived (e.g. rendered while ssh to the phone was down) or may have been
+    # cleaned since. Re-push them first; on failure the sink resolves clips to
+    # the HTTP base URL instead. No-op for local/rooms, and cheap (one
+    # multiplexed ssh hop) when the files are already there.
+    getattr(sink, "prefetch", lambda *a, **k: True)(clip_uris, SPEECH_TARGET)
     # Push the whole turn in ONE batched round-trip (stop/clear/append-all/
     # unpause/jump-to-0) rather than 1 play + N queues + 2 state-sets — each a
     # ~600ms hop over the phone bridge. Traversing (< / >) or replaying a long
