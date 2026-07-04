@@ -23,15 +23,25 @@ Policy (chosen 2026-07-04):
 
 So this daemon only ever *pauses*, and never issues a resume of its own.
 
-It keeps *re-asserting* the pause on every poll for as long as the call lasts —
-not just once on the ring. That's deliberate: the speech sink clears pause/mute
-at the start of each response (so a fresh reply is audible after an idle
-popup-pause), and ``play_playlist`` on the phone path does it unconditionally.
-So a TTS reply that *starts mid-call* would un-pause itself and play over the
-conversation; re-asserting every cycle re-pauses it within one poll instead
-(its first fraction of a second may still leak — closing that fully would mean
-gating the sink's pause-clear on call state). Once the call clears we stop
-holding the pause but leave it paused — you resume manually.
+Two mechanisms hold the pause down for the whole call:
+
+  * **poll re-assert** — every notification poll, while the call is active, we
+    re-send pause to the sockets. This pauses audio already playing when the
+    call starts (within one poll) and is a cheap backstop.
+  * **event hold** — the reason a poll alone isn't enough: the speech sink
+    clears pause/mute at the *start of each reply* (so a fresh reply is audible
+    after an idle popup-pause), and ``play_playlist`` on the phone path does it
+    unconditionally. So a TTS reply that *starts mid-call* un-pauses the broker
+    itself. A flag the sink could check doesn't help here — the sink runs on
+    the host driving the phone (red5), not on the phone, so it can't see
+    phone-side call state without a cross-machine push and per-reply latency.
+    Instead, for the duration of the call we hold an mpv ``observe_property``
+    subscription on ``pause`` on each *local* broker socket; the instant
+    anything un-pauses it, we re-pause over that same connection (~1 ms). A
+    mid-call reply therefore loads paused and can't play over the conversation.
+
+Once the call clears we stop both — leaving the broker paused for a manual
+resume; we never resume it ourselves.
 
 Invoked via the ``media-call-guard`` console script; supervised as the
 ``call-guard`` runit service on the phone. Use ``media-call-guard --probe`` to
@@ -47,7 +57,9 @@ import logging
 import os
 import re
 import signal
+import socket
 import subprocess
+import threading
 import time
 
 from ._paths import state_dir
@@ -184,7 +196,116 @@ def pause_sockets(cfg: Config, dry_run: bool = False, quiet: bool = False) -> No
             log.warning("could not pause %s: %s", sock, e)
 
 
+# One-line mpv IPC commands the event-hold sends on its persistent connection.
+_OBSERVE_PAUSE = (json.dumps({"command": ["observe_property", 1, "pause"]})
+                  + "\n").encode()
+_REPAUSE = (json.dumps({"command": ["set_property", "pause", True]})
+            + "\n").encode()
+
+# How long a hold worker blocks in recv before checking its stop flag, and how
+# long it backs off before reconnecting a dropped/absent socket.
+_HOLD_RECV_TIMEOUT = 0.5
+_HOLD_RECONNECT_S = 0.5
+
+
+def _is_unpause_event(msg: object) -> bool:
+    """True for an mpv ``pause`` property-change to False (i.e. an un-pause).
+
+    mpv also emits the *current* value right after ``observe_property``, so this
+    fires on connect too if the broker is already un-paused — which is what we
+    want mid-call: catch a reply that started before the hold attached.
+    """
+    return (isinstance(msg, dict)
+            and msg.get("event") == "property-change"
+            and msg.get("name") == "pause"
+            and msg.get("data") is False)
+
+
+def _hold_worker(sock_path: str, stop: threading.Event) -> None:
+    """Keep `sock_path` paused for as long as `stop` is unset.
+
+    Holds a persistent connection with an ``observe_property pause``
+    subscription; on any un-pause (including the initial value on connect),
+    re-pauses over the same socket. Reconnects if the broker restarts or the
+    socket isn't up yet. All errors are swallowed — a hold failure must never
+    take the guard down; the poll re-assert still covers it.
+    """
+    while not stop.is_set() and not _stop:
+        try:
+            s = ipc._open(sock_path, _HOLD_RECV_TIMEOUT)
+        except (ipc.MpvIpcError, OSError):
+            stop.wait(_HOLD_RECONNECT_S)
+            continue
+        try:
+            s.sendall(_OBSERVE_PAUSE)
+            buf = b""
+            while not stop.is_set() and not _stop:
+                try:
+                    chunk = s.recv(4096)
+                except socket.timeout:
+                    continue
+                if not chunk:
+                    break  # broker closed the socket — reconnect
+                buf += chunk
+                while b"\n" in buf:
+                    line, buf = buf.split(b"\n", 1)
+                    if not line.strip():
+                        continue
+                    try:
+                        msg = json.loads(line.decode())
+                    except ValueError:
+                        continue
+                    if _is_unpause_event(msg):
+                        s.sendall(_REPAUSE)
+        except OSError:
+            pass  # transport hiccup — fall through to reconnect
+        finally:
+            try:
+                s.close()
+            except OSError:
+                pass
+        if not stop.is_set():
+            stop.wait(_HOLD_RECONNECT_S)
+
+
+class PauseHold:
+    """Manages the per-socket event-hold threads for the length of a call."""
+
+    def __init__(self, sockets: list[str]) -> None:
+        self._sockets = sockets
+        self._stop: threading.Event | None = None
+        self._threads: list[threading.Thread] = []
+
+    @property
+    def active(self) -> bool:
+        return self._stop is not None
+
+    def start(self) -> None:
+        if self.active:
+            return
+        self._stop = threading.Event()
+        for sock in self._sockets:
+            t = threading.Thread(
+                target=_hold_worker, args=(sock, self._stop),
+                name=f"call-hold:{os.path.basename(sock)}", daemon=True)
+            t.start()
+            self._threads.append(t)
+        log.info("event-hold engaged on %d socket(s)", len(self._threads))
+
+    def stop(self) -> None:
+        if not self.active:
+            return
+        assert self._stop is not None
+        self._stop.set()
+        for t in self._threads:
+            t.join(timeout=2.0)
+        self._threads = []
+        self._stop = None
+        log.info("event-hold released")
+
+
 def _run_loop(cfg: Config, dry_run: bool = False) -> None:
+    hold = PauseHold(cfg.sockets)
     was_active = False  # whether the previous cycle saw a call
     while not _stop:
         notifs = list_notifications(cfg)
@@ -195,13 +316,17 @@ def _run_loop(cfg: Config, dry_run: bool = False) -> None:
         if active:
             if not was_active:
                 log.info("call detected — pausing phone audio")
-            # Re-assert every cycle: a reply starting mid-call clears its own
-            # pause, so hold it down until the call ends. Log only the first.
+                if not dry_run:
+                    hold.start()  # instant re-pause on any mid-call un-pause
+            # Re-assert every cycle: pauses audio already playing when the call
+            # started, and backstops the event hold. Log only the first.
             pause_sockets(cfg, dry_run=dry_run, quiet=was_active)
         elif was_active:
             log.info("call cleared — stopped holding pause (no auto-resume)")
+            hold.stop()
         was_active = active
         time.sleep(cfg.poll_s)
+    hold.stop()  # on SIGTERM / shutdown
 
 
 def _probe(cfg: Config, seconds: float) -> int:

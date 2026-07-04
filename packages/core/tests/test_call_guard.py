@@ -1,5 +1,9 @@
 """Tests for the phone call guard (call_guard) — call detection + edge logic."""
 
+import json
+import socket
+import threading
+
 from agent_media_core import call_guard
 
 
@@ -152,3 +156,83 @@ def test_pause_sockets_dry_run_touches_nothing(monkeypatch, tmp_path):
                         lambda *a, **k: called.append(a))
     call_guard.pause_sockets(cfg, dry_run=True)
     assert called == []
+
+
+# --- event hold -----------------------------------------------------------
+
+def test_is_unpause_event():
+    unpause = {"event": "property-change", "name": "pause", "data": False}
+    assert call_guard._is_unpause_event(unpause) is True
+    # A pause (data True) is not an un-pause — must not trigger a re-pause loop.
+    assert call_guard._is_unpause_event(
+        {"event": "property-change", "name": "pause", "data": True}) is False
+    # Other properties / events / shapes are ignored.
+    assert call_guard._is_unpause_event(
+        {"event": "property-change", "name": "mute", "data": False}) is False
+    assert call_guard._is_unpause_event(
+        {"event": "start-file"}) is False
+    assert call_guard._is_unpause_event("nonsense") is False
+
+
+def test_hold_worker_repauses_on_unpause(tmp_path):
+    # Stand up a fake mpv: accept a connection, expect an observe_property
+    # subscription, push an un-pause event, and assert the worker re-pauses.
+    sock_path = str(tmp_path / "sink-speech.sock")
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv.bind(sock_path)
+    srv.listen(1)
+    srv.settimeout(5.0)
+
+    received: list = []
+    ready = threading.Event()
+
+    def _fake_mpv():
+        conn, _ = srv.accept()
+        conn.settimeout(5.0)
+        buf = b""
+        # First line should be the observe_property subscription.
+        while b"\n" not in buf:
+            buf += conn.recv(4096)
+        first, buf = buf.split(b"\n", 1)
+        received.append(json.loads(first.decode()))
+        # Simulate a mid-call reply un-pausing the broker.
+        conn.sendall((json.dumps(
+            {"event": "property-change", "name": "pause", "data": False})
+            + "\n").encode())
+        # The worker should now send set_property pause True back.
+        while b"\n" not in buf:
+            buf += conn.recv(4096)
+        second, _ = buf.split(b"\n", 1)
+        received.append(json.loads(second.decode()))
+        ready.set()
+        conn.close()
+
+    server = threading.Thread(target=_fake_mpv, daemon=True)
+    server.start()
+
+    stop = threading.Event()
+    worker = threading.Thread(
+        target=call_guard._hold_worker, args=(sock_path, stop), daemon=True)
+    worker.start()
+    try:
+        assert ready.wait(5.0), "worker did not re-pause in time"
+    finally:
+        stop.set()
+        worker.join(timeout=3.0)
+        srv.close()
+
+    assert received[0]["command"] == ["observe_property", 1, "pause"]
+    assert received[1]["command"] == ["set_property", "pause", True]
+
+
+def test_pause_hold_start_stop_is_idempotent(tmp_path):
+    # No real broker here; workers just fail to connect and back off. start()/
+    # stop() must be safe to call repeatedly and must join cleanly.
+    hold = call_guard.PauseHold([str(tmp_path / "absent.sock")])
+    assert hold.active is False
+    hold.start()
+    assert hold.active is True
+    hold.start()  # second start is a no-op
+    hold.stop()
+    assert hold.active is False
+    hold.stop()  # second stop is a no-op
