@@ -109,6 +109,38 @@ def test_pause_sockets_skips_absent_and_pauses_present(monkeypatch, tmp_path):
     assert paused == [(str(present), "pause", True)]
 
 
+def test_run_loop_reasserts_pause_each_active_cycle(monkeypatch):
+    # A reply that starts mid-call clears its own pause, so the guard must
+    # re-pause on every cycle the call is active — not just once on the ring.
+    cfg = call_guard.Config()
+    # Two active polls, then one clear poll, then stop.
+    states = iter([[{"packageName": "com.android.server.telecom",
+                     "title": "Ongoing call", "content": "00:01"}],
+                   [{"packageName": "com.android.server.telecom",
+                     "title": "Ongoing call", "content": "00:02"}],
+                   []])
+
+    def _next(_cfg):
+        try:
+            return next(states)
+        except StopIteration:
+            call_guard._stop = True
+            return []
+    monkeypatch.setattr(call_guard, "list_notifications", _next)
+    monkeypatch.setattr(call_guard.time, "sleep", lambda _s: None)
+
+    pauses = []
+    monkeypatch.setattr(call_guard, "pause_sockets",
+                        lambda cfg, dry_run=False, quiet=False: pauses.append(quiet))
+    call_guard._stop = False
+    try:
+        call_guard._run_loop(cfg)
+    finally:
+        call_guard._stop = False
+    # Paused on both active cycles (first loud, second quiet); none once cleared.
+    assert pauses == [False, True]
+
+
 def test_pause_sockets_dry_run_touches_nothing(monkeypatch, tmp_path):
     present = tmp_path / "sink-speech.sock"
     present.write_bytes(b"")

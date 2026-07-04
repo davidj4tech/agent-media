@@ -21,8 +21,17 @@ Policy (chosen 2026-07-04):
   * **do not auto-resume** — you un-pause manually (popup Space / ``media
     resume``) when the call is done.
 
-So this daemon only ever *pauses*. It re-arms once the call clears, so a later
-call pauses again, but it never issues a resume of its own.
+So this daemon only ever *pauses*, and never issues a resume of its own.
+
+It keeps *re-asserting* the pause on every poll for as long as the call lasts —
+not just once on the ring. That's deliberate: the speech sink clears pause/mute
+at the start of each response (so a fresh reply is audible after an idle
+popup-pause), and ``play_playlist`` on the phone path does it unconditionally.
+So a TTS reply that *starts mid-call* would un-pause itself and play over the
+conversation; re-asserting every cycle re-pauses it within one poll instead
+(its first fraction of a second may still leak — closing that fully would mean
+gating the sink's pause-clear on call state). Once the call clears we stop
+holding the pause but leave it paused — you resume manually.
 
 Invoked via the ``media-call-guard`` console script; supervised as the
 ``call-guard`` runit service on the phone. Use ``media-call-guard --probe`` to
@@ -152,38 +161,46 @@ def call_active(notifs: list[dict], cfg: Config) -> bool:
     return any(_matches(n, cfg) for n in notifs)
 
 
-def pause_sockets(cfg: Config, dry_run: bool = False) -> None:
+def pause_sockets(cfg: Config, dry_run: bool = False, quiet: bool = False) -> None:
     """Best-effort pause of every configured mpv broker. A missing/idle socket
-    is skipped silently — pausing is a safe no-op on a broker playing nothing."""
+    is skipped silently — pausing is a safe no-op on a broker playing nothing.
+
+    ``quiet`` drops the per-socket log line; the loop sets it on the repeated
+    re-assert cycles so only the initial pause (and any error) is logged.
+    """
     for sock in cfg.sockets:
         if not os.path.exists(sock):
             log.debug("socket absent, skipping: %s", sock)
             continue
         if dry_run:
-            log.info("[dry-run] would pause %s", sock)
+            if not quiet:
+                log.info("[dry-run] would pause %s", sock)
             continue
         try:
             ipc.set_property(sock, "pause", True)
-            log.info("paused %s", sock)
+            if not quiet:
+                log.info("paused %s", sock)
         except (ipc.MpvIpcError, OSError) as e:
             log.warning("could not pause %s: %s", sock, e)
 
 
 def _run_loop(cfg: Config, dry_run: bool = False) -> None:
-    armed = True  # ready to fire on the next rising edge of a call
+    was_active = False  # whether the previous cycle saw a call
     while not _stop:
         notifs = list_notifications(cfg)
         if notifs is None:
             time.sleep(cfg.poll_s)  # unknown this cycle — leave state untouched
             continue
         active = call_active(notifs, cfg)
-        if active and armed:
-            log.info("call detected — pausing phone audio")
-            pause_sockets(cfg, dry_run=dry_run)
-            armed = False
-        elif not active and not armed:
-            log.info("call cleared — re-armed (no auto-resume)")
-            armed = True
+        if active:
+            if not was_active:
+                log.info("call detected — pausing phone audio")
+            # Re-assert every cycle: a reply starting mid-call clears its own
+            # pause, so hold it down until the call ends. Log only the first.
+            pause_sockets(cfg, dry_run=dry_run, quiet=was_active)
+        elif was_active:
+            log.info("call cleared — stopped holding pause (no auto-resume)")
+        was_active = active
         time.sleep(cfg.poll_s)
 
 
