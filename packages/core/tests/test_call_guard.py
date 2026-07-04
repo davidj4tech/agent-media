@@ -12,10 +12,30 @@ def _telecom(title="Ongoing call", content="00:12"):
             "title": title, "content": content}
 
 
+def _dialer(title="Steven Toshack", content="Calling"):
+    return {"packageName": "com.google.android.dialer",
+            "title": title, "content": content}
+
+
 def test_telecom_notification_counts_as_active(monkeypatch):
     monkeypatch.delenv("MEDIA_CALL_GUARD_PACKAGES", raising=False)
     cfg = call_guard.Config()
     assert call_guard.call_active([_telecom()], cfg) is True
+
+
+def test_dialer_call_counts_as_active_by_default(monkeypatch):
+    # The Google/Pixel dialer is in the default package set (calibrated on the
+    # target phone: an outgoing call showed pkg=dialer, content="Calling").
+    monkeypatch.delenv("MEDIA_CALL_GUARD_PACKAGES", raising=False)
+    cfg = call_guard.Config()
+    assert call_guard.call_active([_dialer()], cfg) is True
+
+
+def test_voicemail_is_excluded_by_default(monkeypatch):
+    monkeypatch.delenv("MEDIA_CALL_GUARD_EXCLUDE_RE", raising=False)
+    cfg = call_guard.Config()
+    vm = _dialer(title="Voicemail", content="1 new voicemail")
+    assert call_guard.call_active([vm], cfg) is False
 
 
 def test_no_notifications_is_not_active(monkeypatch):

@@ -11,6 +11,9 @@
 # when the call is done).
 exec 2>&1
 export PATH="${PREFIX:-/data/data/com.termux/files/usr}/bin:$PATH"
+# runsvdir doesn't propagate agent-media.env, so source it here for any
+# MEDIA_CALL_GUARD_* overrides (packages / poll interval / match regexes).
+[ -f "$HOME/.config/agent-media.env" ] && . "$HOME/.config/agent-media.env"
 # Prefer the repo's own venv (this service dir lives at
 # <repo>/packages/core/services/call-guard), so a plain `git pull` is enough —
 # the module form needs no reinstall under an editable install, unlike the

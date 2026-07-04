@@ -71,18 +71,20 @@ log = logging.getLogger(__name__)
 # ships it as `termux-notification-list`; overridable for testing / other hosts.
 _DEFAULT_LIST_CMD = "termux-notification-list"
 
-# Packages whose notification means "a call is happening". The AOSP/Pixel
-# telephony ConnectionService posts the incoming/ongoing-call notification under
-# `com.android.server.telecom` and clears it when the call ends — the cleanest
-# signal. Dialer packages also post *missed-call* notifications that linger, so
-# they're not in the default set; add them via MEDIA_CALL_GUARD_PACKAGES only
-# together with the "missed" exclusion below.
-_DEFAULT_PACKAGES = "com.android.server.telecom"
+# Packages whose notification means "a call is happening". Two cover the common
+# Android cases: the AOSP telephony ConnectionService posts under
+# `com.android.server.telecom`, while the Google/Pixel dialer posts the
+# incoming/outgoing/ongoing-call notification under `com.google.android.dialer`
+# (confirmed on the target phone: an outgoing call showed pkg=dialer,
+# content="Calling"). Both clear the notification when the call ends. Add others
+# (e.g. `org.linphone` for SIP) via MEDIA_CALL_GUARD_PACKAGES.
+_DEFAULT_PACKAGES = "com.android.server.telecom,com.google.android.dialer"
 
-# A matched notification whose title/content matches this is NOT a live call
-# (drops "Missed call" notifications, which persist after the call ends and
-# would otherwise wedge the rising-edge detector).
-_DEFAULT_EXCLUDE_RE = r"(?i)missed"
+# A matched notification whose title/content matches this is NOT a live call.
+# The dialer posts "Missed call" and "Voicemail" notifications that persist
+# after the call ends; without this they'd read as an active call forever and
+# wedge the detector (and hold audio paused).
+_DEFAULT_EXCLUDE_RE = r"(?i)missed|voicemail"
 
 # The three phone-local mpv IPC sockets to pause: speech, the local voice
 # broker, and the phone-local music bridge. Resolved under the agent-media state
