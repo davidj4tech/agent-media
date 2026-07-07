@@ -256,3 +256,100 @@ def test_pause_hold_start_stop_is_idempotent(tmp_path):
     hold.stop()
     assert hold.active is False
     hold.stop()  # second stop is a no-op
+
+
+# --- external hold flag ----------------------------------------------------
+
+def test_hold_flag_default_under_state_dir(monkeypatch):
+    monkeypatch.delenv("MEDIA_CALL_GUARD_HOLD_FLAG", raising=False)
+    cfg = call_guard.Config()
+    assert cfg.hold_flag.endswith("/call-guard.hold")
+
+
+def test_set_and_clear_hold(monkeypatch, tmp_path):
+    flag = tmp_path / "sub" / "hold"
+    monkeypatch.setenv("MEDIA_CALL_GUARD_HOLD_FLAG", str(flag))
+    cfg = call_guard.Config()
+    assert call_guard.flag_present(cfg) is False
+    call_guard._set_hold(cfg)            # creates parent dir + file
+    assert call_guard.flag_present(cfg) is True
+    call_guard._clear_hold(cfg)
+    assert call_guard.flag_present(cfg) is False
+    call_guard._clear_hold(cfg)          # idempotent when already gone
+
+
+def test_resume_sockets_skips_absent_and_dry_run(monkeypatch, tmp_path):
+    present = tmp_path / "sink-speech.sock"
+    present.write_bytes(b"")
+    absent = tmp_path / "mpv-music.sock"
+    monkeypatch.setenv("MEDIA_CALL_GUARD_SOCKETS", f"{present},{absent}")
+    cfg = call_guard.Config()
+    resumed = []
+    monkeypatch.setattr(call_guard.ipc, "set_property",
+                        lambda s, n, v: resumed.append((str(s), n, v)))
+    call_guard.resume_sockets(cfg)
+    assert resumed == [(str(present), "pause", False)]
+    resumed.clear()
+    call_guard.resume_sockets(cfg, dry_run=True)
+    assert resumed == []
+
+
+def _drive_loop(monkeypatch, flag_states, call_states=None):
+    """Run _run_loop over the given per-cycle (flag, call) states, capturing the
+    pause/resume/hold side effects as an event list."""
+    cfg = call_guard.Config()
+    flags = iter(flag_states)
+    calls = iter(call_states if call_states is not None
+                 else [False] * len(flag_states))
+
+    def _flag(_c):
+        try:
+            return next(flags)
+        except StopIteration:
+            call_guard._stop = True
+            return False
+    # list_notifications returns [] (no call) or [telecom] depending on calls[]
+    def _notifs(_c):
+        try:
+            return [_telecom()] if next(calls) else []
+        except StopIteration:
+            return []
+    monkeypatch.setattr(call_guard, "flag_present", _flag)
+    monkeypatch.setattr(call_guard, "list_notifications", _notifs)
+    monkeypatch.setattr(call_guard.time, "sleep", lambda _s: None)
+    events = []
+    monkeypatch.setattr(call_guard, "pause_sockets",
+                        lambda cfg, dry_run=False, quiet=False: events.append("pause"))
+    monkeypatch.setattr(call_guard, "resume_sockets",
+                        lambda cfg, dry_run=False: events.append("resume"))
+    monkeypatch.setattr(call_guard.PauseHold, "start",
+                        lambda self: events.append("hold_start"))
+    monkeypatch.setattr(call_guard.PauseHold, "stop",
+                        lambda self: events.append("hold_stop"))
+    call_guard._stop = False
+    try:
+        call_guard._run_loop(cfg)
+    finally:
+        call_guard._stop = False
+    return events
+
+
+def test_external_flag_pauses_then_auto_resumes(monkeypatch):
+    # flag absent, present, present, absent -> pause on rising edge, resume on fall
+    events = _drive_loop(monkeypatch, [False, True, True, False])
+    assert "hold_start" in events
+    assert "pause" in events
+    assert "resume" in events
+    # resume happens only after the hold is released
+    assert events.index("hold_stop") < events.index("resume")
+
+
+def test_external_flag_no_resume_if_call_overlapped(monkeypatch):
+    # cycle1: flag+call, cycle2: flag only, cycle3: neither.
+    # A call participated, so the fall of the flag must NOT auto-resume.
+    events = _drive_loop(monkeypatch,
+                         flag_states=[True, True, False],
+                         call_states=[True, False, False])
+    assert "pause" in events
+    assert "hold_stop" in events
+    assert "resume" not in events
