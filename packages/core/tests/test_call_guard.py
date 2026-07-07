@@ -322,6 +322,10 @@ def _drive_loop(monkeypatch, flag_states, call_states=None):
                         lambda cfg, dry_run=False, quiet=False: events.append("pause"))
     monkeypatch.setattr(call_guard, "resume_sockets",
                         lambda cfg, dry_run=False: events.append("resume"))
+    monkeypatch.setattr(call_guard, "duck_sockets",
+                        lambda cfg, saved, dry_run=False, quiet=False: events.append("duck"))
+    monkeypatch.setattr(call_guard, "unduck_sockets",
+                        lambda cfg, saved, dry_run=False: events.append("unduck"))
     monkeypatch.setattr(call_guard.PauseHold, "start",
                         lambda self: events.append("hold_start"))
     monkeypatch.setattr(call_guard.PauseHold, "stop",
@@ -335,21 +339,64 @@ def _drive_loop(monkeypatch, flag_states, call_states=None):
 
 
 def test_external_flag_pauses_then_auto_resumes(monkeypatch):
-    # flag absent, present, present, absent -> pause on rising edge, resume on fall
+    # flag absent, present, present, absent -> pause+duck on rising edge,
+    # unduck+resume on fall.
     events = _drive_loop(monkeypatch, [False, True, True, False])
     assert "hold_start" in events
-    assert "pause" in events
-    assert "resume" in events
+    assert "pause" in events and "duck" in events
+    assert "resume" in events and "unduck" in events
     # resume happens only after the hold is released
     assert events.index("hold_stop") < events.index("resume")
 
 
 def test_external_flag_no_resume_if_call_overlapped(monkeypatch):
     # cycle1: flag+call, cycle2: flag only, cycle3: neither.
-    # A call participated, so the fall of the flag must NOT auto-resume.
+    # A call participated, so the fall of the flag must NOT auto-resume speech —
+    # but the music volume is still restored (un-ducking is always safe).
     events = _drive_loop(monkeypatch,
                          flag_states=[True, True, False],
                          call_states=[True, False, False])
-    assert "pause" in events
+    assert "pause" in events and "duck" in events
     assert "hold_stop" in events
-    assert "resume" not in events
+    assert "unduck" in events       # music volume restored even after a call
+    assert "resume" not in events   # speech stays paused
+
+
+def test_music_ducked_not_paused_by_default(monkeypatch):
+    monkeypatch.delenv("MEDIA_CALL_GUARD_SOCKETS", raising=False)
+    monkeypatch.delenv("MEDIA_CALL_GUARD_DUCK_SOCKETS", raising=False)
+    cfg = call_guard.Config()
+    assert any(s.endswith("mpv-music.sock") for s in cfg.duck_list)
+    assert all(not s.endswith("mpv-music.sock") for s in cfg.pause_list)
+    assert any(s.endswith("sink-speech.sock") for s in cfg.pause_list)
+
+
+def test_duck_disabled_via_empty_env(monkeypatch):
+    monkeypatch.setenv("MEDIA_CALL_GUARD_DUCK_SOCKETS", "")
+    cfg = call_guard.Config()
+    assert cfg.duck_list == []
+    # with nothing ducked, music falls back into the paused set
+    assert any(s.endswith("mpv-music.sock") for s in cfg.pause_list)
+
+
+def test_duck_saves_and_unduck_restores_volume(monkeypatch, tmp_path):
+    music = tmp_path / "mpv-music.sock"
+    music.write_bytes(b"")
+    monkeypatch.setenv("MEDIA_CALL_GUARD_SOCKETS", str(music))
+    monkeypatch.setenv("MEDIA_CALL_GUARD_DUCK_SOCKETS", str(music))
+    monkeypatch.setenv("MEDIA_CALL_GUARD_DUCK_VOLUME", "15")
+    cfg = call_guard.Config()
+    props = {"volume": 70.0}
+    monkeypatch.setattr(call_guard.ipc, "get_property",
+                        lambda s, n, **k: props[n])
+    monkeypatch.setattr(call_guard.ipc, "set_property",
+                        lambda s, n, v: props.__setitem__(n, v))
+    saved = {}
+    call_guard.duck_sockets(cfg, saved)
+    assert props["volume"] == 15            # ducked
+    assert saved[str(music)] == 70.0        # original remembered
+    call_guard.duck_sockets(cfg, saved)     # re-assert: keeps duck, no re-save
+    assert props["volume"] == 15 and saved[str(music)] == 70.0
+    call_guard.unduck_sockets(cfg, saved)
+    assert props["volume"] == 70.0          # restored
+    assert saved == {}
