@@ -51,15 +51,20 @@ Two mechanisms hold the pause down for the whole call:
 Once the call clears we stop both — leaving the broker paused for a manual
 resume; we never resume it after a call.
 
-**External hold (opt-in).** Any external trigger can pause playback the same
-way by touching a flag file — ``media-call-guard --hold`` sets it, ``--release``
-clears it (or point ``MEDIA_CALL_GUARD_HOLD_FLAG`` elsewhere). While the flag is
-present the daemon pauses and event-holds exactly as for a call; when it's
-removed it **auto-resumes** (unlike a call). This is the durable half of a
-"pause while Google voice typing is active" feature: a Tasker/MacroDroid
-accessibility macro sets/clears the flag as the voice-input UI appears and
-disappears. If a call overlaps a hold episode, auto-resume is suppressed — the
-call's manual-resume policy wins.
+**External hold (opt-in).** Any external trigger can pause+duck playback by
+touching a flag file — ``media-call-guard --hold`` sets it, ``--release`` clears
+it (or point ``MEDIA_CALL_GUARD_HOLD_FLAG`` elsewhere). The flag is checked on a
+fast tick (``MEDIA_CALL_GUARD_FLAG_POLL_S``, default 0.3s) — decoupled from the
+slower call-notification poll — and *debounced*: it must be present for
+``MEDIA_CALL_GUARD_HOLD_ENGAGE_S`` (default 1.5s) before engaging, so short
+voice-typing utterances are ignored and only sustained dictation ducks, and
+absent for ``MEDIA_CALL_GUARD_HOLD_RELEASE_S`` (default 2s) before releasing, so
+the flag flicking between utterances doesn't drop the hold. On release it
+**auto-resumes** (unlike a call). This is the durable half of a "duck while
+Google voice typing is active" feature: an Automate/Tasker/MacroDroid macro
+detects the mic recording and sets/clears the flag (confirmed working with
+Automate's "Audio device recording" block). If a call overlaps a hold episode,
+auto-resume is suppressed — the call's manual-resume policy wins.
 
 Invoked via the ``media-call-guard`` console script; supervised as the
 ``call-guard`` runit service on the phone. Use ``media-call-guard --probe`` to
@@ -120,12 +125,29 @@ _DEFAULT_DUCK_VOLUME = 20.0
 
 _DEFAULT_POLL_S = 1.5
 
-# External-hold flag file. Any external trigger (e.g. a Tasker/MacroDroid macro
-# firing on voice-typing start/stop) touches this to pause + hold, and removes
-# it to auto-resume. See `--hold` / `--release` and `_run_loop`.
+# External-hold flag file. Any external trigger (e.g. a Tasker/MacroDroid/Automate
+# macro firing on voice-typing start/stop) touches this to pause + hold, and
+# removes it to auto-resume. See `--hold` / `--release` and `_run_loop`.
 _DEFAULT_HOLD_FLAG_NAME = "call-guard.hold"
 
+# The flag file is a cheap local stat, so we check it on a fast tick — decoupled
+# from the (expensive) notification poll for calls, which stays at poll_s.
+_DEFAULT_FLAG_POLL_S = 0.3
+# Debounce for the external hold: the flag must be present continuously for
+# ENGAGE_S before we duck/pause (so short voice-typing utterances are ignored —
+# only sustained dictation triggers it), and absent for RELEASE_S before we
+# release (so the flag flicking off between utterances doesn't drop the hold).
+_DEFAULT_HOLD_ENGAGE_S = 1.5
+_DEFAULT_HOLD_RELEASE_S = 2.0
+
 _stop = False
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, "") or default)
+    except ValueError:
+        return default
 
 
 def _on_signal(_signum, _frame):
@@ -153,16 +175,15 @@ class Config:
         # Sockets we pause vs. sockets we duck. A duck socket is never paused.
         self.pause_list = [s for s in self.sockets if s not in self.duck]
         self.duck_list = list(self.duck)
-        try:
-            self.duck_volume = float(os.environ.get(
-                "MEDIA_CALL_GUARD_DUCK_VOLUME", _DEFAULT_DUCK_VOLUME))
-        except ValueError:
-            self.duck_volume = _DEFAULT_DUCK_VOLUME
-        try:
-            self.poll_s = float(os.environ.get(
-                "MEDIA_CALL_GUARD_POLL_S", _DEFAULT_POLL_S))
-        except ValueError:
-            self.poll_s = _DEFAULT_POLL_S
+        self.duck_volume = _env_float(
+            "MEDIA_CALL_GUARD_DUCK_VOLUME", _DEFAULT_DUCK_VOLUME)
+        self.poll_s = _env_float("MEDIA_CALL_GUARD_POLL_S", _DEFAULT_POLL_S)
+        self.flag_poll_s = _env_float(
+            "MEDIA_CALL_GUARD_FLAG_POLL_S", _DEFAULT_FLAG_POLL_S)
+        self.hold_engage_s = _env_float(
+            "MEDIA_CALL_GUARD_HOLD_ENGAGE_S", _DEFAULT_HOLD_ENGAGE_S)
+        self.hold_release_s = _env_float(
+            "MEDIA_CALL_GUARD_HOLD_RELEASE_S", _DEFAULT_HOLD_RELEASE_S)
         self.hold_flag = os.environ.get(
             "MEDIA_CALL_GUARD_HOLD_FLAG",
             str(state_dir() / _DEFAULT_HOLD_FLAG_NAME))
@@ -446,19 +467,64 @@ def _hold_reason(call: bool, flag: bool) -> str:
     return "call" if call else "external hold"
 
 
+def _now() -> float:
+    return time.monotonic()
+
+
+class FlagHold:
+    """Debounced external-hold state derived from the flag file.
+
+    Engages only after the flag has been present continuously for ``engage_s``
+    — so short voice-typing utterances (which flick the flag briefly) are
+    ignored and only sustained dictation ducks — and releases only after it's
+    been absent for ``release_s``, so the flag flicking off between the
+    utterances of one long message doesn't drop the hold. ``update`` is called
+    every fast tick with the current flag state and a monotonic timestamp.
+    """
+
+    def __init__(self, engage_s: float, release_s: float) -> None:
+        self.engage_s = engage_s
+        self.release_s = release_s
+        self._held = False
+        self._present_since: float | None = None
+        self._absent_since: float | None = None
+
+    def update(self, flag_now: bool, now: float) -> bool:
+        if flag_now:
+            self._absent_since = None
+            if self._present_since is None:
+                self._present_since = now
+            if not self._held and now - self._present_since >= self.engage_s:
+                self._held = True
+        else:
+            self._present_since = None
+            if self._absent_since is None:
+                self._absent_since = now
+            if self._held and now - self._absent_since >= self.release_s:
+                self._held = False
+        return self._held
+
+
 def _run_loop(cfg: Config, dry_run: bool = False) -> None:
     hold = PauseHold(cfg.pause_list)  # event-hold only guards the *paused* sockets
+    flaghold = FlagHold(cfg.hold_engage_s, cfg.hold_release_s)
     prev_want = False        # was anything holding the pause last cycle?
     call_in_episode = False  # did a call participate in the current hold?
     last_call = False        # last known call state (kept across query failures)
     ducked: dict = {}        # duck socket -> its pre-duck volume, for restoring
+    tick = cfg.flag_poll_s or _DEFAULT_FLAG_POLL_S
+    # The flag is a cheap local stat (checked every fast tick); notifications
+    # (for calls) are an expensive subprocess, so poll them only every ~poll_s.
+    notif_every = max(1, round(cfg.poll_s / tick))
+    i = 0
     while not _stop:
-        notifs = list_notifications(cfg)
-        # On a transient query failure keep the previous call reading rather than
-        # flapping; the flag path (a local file) stays reliable regardless.
-        call = last_call if notifs is None else call_active(notifs, cfg)
-        last_call = call
-        flag = flag_present(cfg)
+        if i % notif_every == 0:
+            notifs = list_notifications(cfg)
+            # On a transient query failure keep the previous reading, not flap.
+            if notifs is not None:
+                last_call = call_active(notifs, cfg)
+        call = last_call
+        flag = flaghold.update(flag_present(cfg), _now())
         want = call or flag
 
         if want:
@@ -469,11 +535,13 @@ def _run_loop(cfg: Config, dry_run: bool = False) -> None:
                          _hold_reason(call, flag))
                 if not dry_run:
                     hold.start()  # instant re-pause on any un-pause
-            # Re-assert every cycle: pause speech/voice, duck music. This also
-            # pauses/ducks audio already playing when the hold started, and
-            # backstops the event hold. Log only the first cycle.
-            pause_sockets(cfg, dry_run=dry_run, quiet=prev_want)
-            duck_sockets(cfg, ducked, dry_run=dry_run, quiet=prev_want)
+                pause_sockets(cfg, dry_run=dry_run, quiet=False)
+                duck_sockets(cfg, ducked, dry_run=dry_run, quiet=False)
+            elif i % notif_every == 0:
+                # Periodic re-assert (backstop) at the slow cadence — not every
+                # fast tick. Catches audio that started playing mid-hold.
+                pause_sockets(cfg, dry_run=dry_run, quiet=True)
+                duck_sockets(cfg, ducked, dry_run=dry_run, quiet=True)
         elif prev_want:
             # Every hold reason cleared. Release the event hold, then restore.
             hold.stop()
@@ -489,7 +557,8 @@ def _run_loop(cfg: Config, dry_run: bool = False) -> None:
             call_in_episode = False
 
         prev_want = want
-        time.sleep(cfg.poll_s)
+        i += 1
+        time.sleep(tick)
     hold.stop()  # on SIGTERM / shutdown
     unduck_sockets(cfg, ducked, dry_run=dry_run)  # don't leave music ducked
 
@@ -547,9 +616,11 @@ def main() -> int:
         return _probe(cfg, args.probe)
 
     log.info("call_guard starting: packages=%s pause=%s duck=%s@vol%g "
-             "poll=%.1fs hold_flag=%s%s",
+             "poll=%.1fs flag_poll=%.1fs engage=%.1fs release=%.1fs "
+             "hold_flag=%s%s",
              sorted(cfg.packages), cfg.pause_list, cfg.duck_list,
-             cfg.duck_volume, cfg.poll_s, cfg.hold_flag,
+             cfg.duck_volume, cfg.poll_s, cfg.flag_poll_s, cfg.hold_engage_s,
+             cfg.hold_release_s, cfg.hold_flag,
              " [dry-run]" if args.dry_run else "")
     _run_loop(cfg, dry_run=args.dry_run)
     log.info("call_guard stopped")

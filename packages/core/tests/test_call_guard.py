@@ -133,9 +133,19 @@ def test_pause_sockets_skips_absent_and_pauses_present(monkeypatch, tmp_path):
     assert paused == [(str(present), "pause", True)]
 
 
+def _percycle_env(monkeypatch):
+    # Make one loop iteration == one notification check + immediate flag
+    # engage/release, so the orchestration tests can reason per-cycle.
+    monkeypatch.setenv("MEDIA_CALL_GUARD_POLL_S", "1")
+    monkeypatch.setenv("MEDIA_CALL_GUARD_FLAG_POLL_S", "1")
+    monkeypatch.setenv("MEDIA_CALL_GUARD_HOLD_ENGAGE_S", "0")
+    monkeypatch.setenv("MEDIA_CALL_GUARD_HOLD_RELEASE_S", "0")
+
+
 def test_run_loop_reasserts_pause_each_active_cycle(monkeypatch):
     # A reply that starts mid-call clears its own pause, so the guard must
     # re-pause on every cycle the call is active — not just once on the ring.
+    _percycle_env(monkeypatch)
     cfg = call_guard.Config()
     # Two active polls, then one clear poll, then stop.
     states = iter([[{"packageName": "com.android.server.telecom",
@@ -297,6 +307,7 @@ def test_resume_sockets_skips_absent_and_dry_run(monkeypatch, tmp_path):
 def _drive_loop(monkeypatch, flag_states, call_states=None):
     """Run _run_loop over the given per-cycle (flag, call) states, capturing the
     pause/resume/hold side effects as an event list."""
+    _percycle_env(monkeypatch)
     cfg = call_guard.Config()
     flags = iter(flag_states)
     calls = iter(call_states if call_states is not None
@@ -360,6 +371,41 @@ def test_external_flag_no_resume_if_call_overlapped(monkeypatch):
     assert "hold_stop" in events
     assert "unduck" in events       # music volume restored even after a call
     assert "resume" not in events   # speech stays paused
+
+
+def test_debounce_config_defaults(monkeypatch):
+    for v in ("MEDIA_CALL_GUARD_FLAG_POLL_S", "MEDIA_CALL_GUARD_HOLD_ENGAGE_S",
+              "MEDIA_CALL_GUARD_HOLD_RELEASE_S"):
+        monkeypatch.delenv(v, raising=False)
+    cfg = call_guard.Config()
+    assert cfg.flag_poll_s == 0.3
+    assert cfg.hold_engage_s == 1.5
+    assert cfg.hold_release_s == 2.0
+
+
+def test_flaghold_ignores_short_flag_engages_on_sustained():
+    fh = call_guard.FlagHold(engage_s=1.5, release_s=2.0)
+    # A short blip (< engage) never engages — this is the "short utterance" case.
+    assert fh.update(True, 0.0) is False
+    assert fh.update(True, 1.0) is False
+    assert fh.update(False, 1.2) is False
+    # Sustained presence engages exactly at engage_s.
+    assert fh.update(True, 10.0) is False
+    assert fh.update(True, 11.4) is False   # 1.4s in — not yet
+    assert fh.update(True, 11.5) is True    # 1.5s — engaged
+
+
+def test_flaghold_release_grace_bridges_blips():
+    fh = call_guard.FlagHold(engage_s=1.0, release_s=2.0)
+    assert fh.update(True, 0.0) is False
+    assert fh.update(True, 1.0) is True     # engaged
+    # A gap shorter than release_s keeps it held (flag flicking between words).
+    assert fh.update(False, 1.5) is True
+    assert fh.update(False, 3.4) is True    # absent 1.9s < 2.0
+    assert fh.update(True, 3.5) is True     # back before release — still held
+    # A sustained gap finally releases.
+    assert fh.update(False, 10.0) is True
+    assert fh.update(False, 12.0) is False  # absent 2.0s — released
 
 
 def test_music_ducked_not_paused_by_default(monkeypatch):
