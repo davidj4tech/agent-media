@@ -1,0 +1,29 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# Call guard: pause the phone's local mpv brokers (speech + phone music) when a
+# phone call comes in. The brokers use --ao=openal/opensles, which ignore
+# Android audio focus, so without this a call plays TTS/music straight over the
+# ringtone and the conversation.
+#
+# Detection is non-root: it polls `termux-notification-list` for the dialer /
+# telephony call notification, so Termux:API must have Notification Access
+# (Android Settings -> Notification access -> Termux:API) and $PREFIX/bin must
+# be on PATH. Policy is pause-on-ring, no auto-resume (you un-pause manually
+# when the call is done).
+exec 2>&1
+export PATH="${PREFIX:-/data/data/com.termux/files/usr}/bin:$PATH"
+# runsvdir doesn't propagate agent-media.env, so source it here for any
+# MEDIA_CALL_GUARD_* overrides (packages / poll interval / match regexes).
+[ -f "$HOME/.config/agent-media.env" ] && . "$HOME/.config/agent-media.env"
+# Prefer the repo's own venv (this service dir lives at
+# <repo>/packages/core/services/call-guard), so a plain `git pull` is enough —
+# the module form needs no reinstall under an editable install, unlike the
+# generated `media-call-guard` console script.
+# pwd -P resolves the runit symlink ($PREFIX/var/service/call-guard) back to the
+# real repo path, so the venv is found relative to the checkout, not the symlink.
+here="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
+venv_py="$here/../../../../.venv/bin/python"
+if [ -x "$venv_py" ]; then
+  exec "$venv_py" -m agent_media_core.call_guard
+fi
+# systemd / non-Termux hosts: fall back to the console script on PATH.
+exec media-call-guard
