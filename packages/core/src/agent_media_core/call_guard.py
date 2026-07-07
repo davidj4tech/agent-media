@@ -17,12 +17,19 @@ enable "Termux:API").
 
 Policy (chosen 2026-07-04):
   * pause on the **ring** — the rising edge of a call, so you can still hear it;
-  * pause **speech + phone-local music** (the local mpv sockets);
-  * **do not auto-resume** — you un-pause manually (popup Space / ``media
-    resume``) when the call is done.
+  * **pause speech/voice**, but **duck** (lower the volume of) phone-local
+    **music** rather than pausing it;
+  * speech does **not auto-resume** — you un-pause it manually (popup Space /
+    ``media resume``) when the call is done. Music volume, however, is restored
+    automatically (un-ducking never starts playback, so it's always safe).
 
-For a **call**, the daemon only ever *pauses* — never resumes. (The opt-in
-external hold, below, is the exception: it auto-resumes.)
+Duck sockets are configured via ``MEDIA_CALL_GUARD_DUCK_SOCKETS`` (default: the
+music broker) and ``MEDIA_CALL_GUARD_DUCK_VOLUME`` (default 20). Set the socket
+list to ``""`` to pause music like everything else.
+
+For a **call**, the daemon leaves speech paused until you resume it, and only
+*ducks* music — restoring its volume when the call ends. (The opt-in external
+hold, below, additionally auto-resumes the paused speech.)
 
 Two mechanisms hold the pause down for the whole call:
 
@@ -103,6 +110,14 @@ _DEFAULT_EXCLUDE_RE = r"(?i)missed|voicemail"
 # dir unless MEDIA_CALL_GUARD_SOCKETS overrides with an explicit path list.
 _DEFAULT_SOCKET_NAMES = ("sink-speech.sock", "mpv-voice.sock", "mpv-music.sock")
 
+# Sockets to DUCK (lower volume) instead of pausing while a hold is active — the
+# phone-local music broker by default. Ducking rather than pausing means music
+# dips during a call/hold and its volume is *restored automatically* afterward
+# (always safe, unlike auto-resuming a pause). Set MEDIA_CALL_GUARD_DUCK_SOCKETS=""
+# to pause music like everything else instead.
+_DEFAULT_DUCK_SOCKET_NAMES = ("mpv-music.sock",)
+_DEFAULT_DUCK_VOLUME = 20.0
+
 _DEFAULT_POLL_S = 1.5
 
 # External-hold flag file. Any external trigger (e.g. a Tasker/MacroDroid macro
@@ -134,6 +149,15 @@ class Config:
         self.include_re = re.compile(inc) if inc else None
         self.exclude_re = re.compile(exc) if exc else None
         self.sockets = _resolve_sockets()
+        self.duck = _resolve_duck_sockets()
+        # Sockets we pause vs. sockets we duck. A duck socket is never paused.
+        self.pause_list = [s for s in self.sockets if s not in self.duck]
+        self.duck_list = list(self.duck)
+        try:
+            self.duck_volume = float(os.environ.get(
+                "MEDIA_CALL_GUARD_DUCK_VOLUME", _DEFAULT_DUCK_VOLUME))
+        except ValueError:
+            self.duck_volume = _DEFAULT_DUCK_VOLUME
         try:
             self.poll_s = float(os.environ.get(
                 "MEDIA_CALL_GUARD_POLL_S", _DEFAULT_POLL_S))
@@ -150,6 +174,15 @@ def _resolve_sockets() -> list[str]:
         return [s.strip() for s in raw.split(",") if s.strip()]
     st = state_dir()
     return [str(st / name) for name in _DEFAULT_SOCKET_NAMES]
+
+
+def _resolve_duck_sockets() -> set[str]:
+    # An explicit env value (even "") wins, so it can disable ducking entirely.
+    raw = os.environ.get("MEDIA_CALL_GUARD_DUCK_SOCKETS")
+    if raw is not None:
+        return {s.strip() for s in raw.split(",") if s.strip()}
+    st = state_dir()
+    return {str(st / name) for name in _DEFAULT_DUCK_SOCKET_NAMES}
 
 
 def list_notifications(cfg: Config) -> list[dict] | None:
@@ -201,8 +234,9 @@ def pause_sockets(cfg: Config, dry_run: bool = False, quiet: bool = False) -> No
 
     ``quiet`` drops the per-socket log line; the loop sets it on the repeated
     re-assert cycles so only the initial pause (and any error) is logged.
+    Duck sockets are skipped here — they're ducked, not paused.
     """
-    for sock in cfg.sockets:
+    for sock in cfg.pause_list:
         if not os.path.exists(sock):
             log.debug("socket absent, skipping: %s", sock)
             continue
@@ -219,10 +253,10 @@ def pause_sockets(cfg: Config, dry_run: bool = False, quiet: bool = False) -> No
 
 
 def resume_sockets(cfg: Config, dry_run: bool = False) -> None:
-    """Best-effort un-pause of every configured mpv broker. Used only by the
-    external-hold auto-resume — never after a call. The caller releases the
-    event hold *before* calling this so the un-pause isn't instantly re-held."""
-    for sock in cfg.sockets:
+    """Best-effort un-pause of the paused brokers. Used only by the external-hold
+    auto-resume — never after a call. The caller releases the event hold *before*
+    calling this so the un-pause isn't instantly re-held."""
+    for sock in cfg.pause_list:
         if not os.path.exists(sock):
             continue
         if dry_run:
@@ -233,6 +267,51 @@ def resume_sockets(cfg: Config, dry_run: bool = False) -> None:
             log.info("resumed %s", sock)
         except (ipc.MpvIpcError, OSError) as e:
             log.warning("could not resume %s: %s", sock, e)
+
+
+def duck_sockets(cfg: Config, saved: dict, dry_run: bool = False,
+                 quiet: bool = False) -> None:
+    """Lower the volume of each duck socket to ``cfg.duck_volume``, remembering
+    its original volume in ``saved`` (once, on the first duck) so it can be
+    restored later. A socket is only ducked after its baseline volume is read,
+    so ``unduck_sockets`` always has a value to put back."""
+    for sock in cfg.duck_list:
+        if not os.path.exists(sock):
+            continue
+        if dry_run:
+            if not quiet:
+                log.info("[dry-run] would duck %s to %g", sock, cfg.duck_volume)
+            continue
+        try:
+            if sock not in saved:
+                vol = ipc.get_property(sock, "volume")
+                if not isinstance(vol, (int, float)):
+                    continue  # can't establish a baseline — retry next cycle
+                saved[sock] = float(vol)
+            ipc.set_property(sock, "volume", cfg.duck_volume)
+            if not quiet:
+                log.info("ducked %s (%g -> %g)",
+                         sock, saved[sock], cfg.duck_volume)
+        except (ipc.MpvIpcError, OSError) as e:
+            log.warning("could not duck %s: %s", sock, e)
+
+
+def unduck_sockets(cfg: Config, saved: dict, dry_run: bool = False) -> None:
+    """Restore each ducked socket to its saved original volume, then forget it.
+    Always safe to call (it only sets volume, never starts playback), so it runs
+    on every hold release — after a call as well as an external hold."""
+    for sock, vol in list(saved.items()):
+        if dry_run:
+            log.info("[dry-run] would restore volume on %s", sock)
+            saved.pop(sock, None)
+            continue
+        try:
+            if os.path.exists(sock):
+                ipc.set_property(sock, "volume", vol)
+                log.info("restored %s volume -> %g", sock, vol)
+        except (ipc.MpvIpcError, OSError) as e:
+            log.warning("could not restore volume on %s: %s", sock, e)
+        saved.pop(sock, None)
 
 
 # One-line mpv IPC commands the event-hold sends on its persistent connection.
@@ -368,10 +447,11 @@ def _hold_reason(call: bool, flag: bool) -> str:
 
 
 def _run_loop(cfg: Config, dry_run: bool = False) -> None:
-    hold = PauseHold(cfg.sockets)
+    hold = PauseHold(cfg.pause_list)  # event-hold only guards the *paused* sockets
     prev_want = False        # was anything holding the pause last cycle?
     call_in_episode = False  # did a call participate in the current hold?
     last_call = False        # last known call state (kept across query failures)
+    ducked: dict = {}        # duck socket -> its pre-duck volume, for restoring
     while not _stop:
         notifs = list_notifications(cfg)
         # On a transient query failure keep the previous call reading rather than
@@ -385,19 +465,24 @@ def _run_loop(cfg: Config, dry_run: bool = False) -> None:
             if call:
                 call_in_episode = True
             if not prev_want:
-                log.info("pausing phone audio (%s)", _hold_reason(call, flag))
+                log.info("pausing/ducking phone audio (%s)",
+                         _hold_reason(call, flag))
                 if not dry_run:
                     hold.start()  # instant re-pause on any un-pause
-            # Re-assert every cycle: pauses audio already playing when the hold
-            # started, and backstops the event hold. Log only the first.
+            # Re-assert every cycle: pause speech/voice, duck music. This also
+            # pauses/ducks audio already playing when the hold started, and
+            # backstops the event hold. Log only the first cycle.
             pause_sockets(cfg, dry_run=dry_run, quiet=prev_want)
+            duck_sockets(cfg, ducked, dry_run=dry_run, quiet=prev_want)
         elif prev_want:
-            # Every hold reason cleared. Release the event hold first, then
-            # decide whether to resume.
+            # Every hold reason cleared. Release the event hold, then restore.
             hold.stop()
+            # Music volume is always restored (un-ducking never starts playback).
+            unduck_sockets(cfg, ducked, dry_run=dry_run)
             if call_in_episode:
-                # A call was involved — its manual-resume policy wins; leave paused.
-                log.info("hold cleared — leaving paused (no auto-resume after a call)")
+                # A call was involved — speech keeps the manual-resume policy.
+                log.info("hold cleared — speech left paused (no auto-resume "
+                         "after a call); music volume restored")
             else:
                 log.info("external hold released — resuming")
                 resume_sockets(cfg, dry_run=dry_run)
@@ -406,6 +491,7 @@ def _run_loop(cfg: Config, dry_run: bool = False) -> None:
         prev_want = want
         time.sleep(cfg.poll_s)
     hold.stop()  # on SIGTERM / shutdown
+    unduck_sockets(cfg, ducked, dry_run=dry_run)  # don't leave music ducked
 
 
 def _probe(cfg: Config, seconds: float) -> int:
@@ -460,9 +546,10 @@ def main() -> int:
     if args.probe is not None:
         return _probe(cfg, args.probe)
 
-    log.info("call_guard starting: packages=%s sockets=%s poll=%.1fs "
-             "hold_flag=%s%s",
-             sorted(cfg.packages), cfg.sockets, cfg.poll_s, cfg.hold_flag,
+    log.info("call_guard starting: packages=%s pause=%s duck=%s@vol%g "
+             "poll=%.1fs hold_flag=%s%s",
+             sorted(cfg.packages), cfg.pause_list, cfg.duck_list,
+             cfg.duck_volume, cfg.poll_s, cfg.hold_flag,
              " [dry-run]" if args.dry_run else "")
     _run_loop(cfg, dry_run=args.dry_run)
     log.info("call_guard stopped")
