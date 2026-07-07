@@ -21,7 +21,8 @@ Policy (chosen 2026-07-04):
   * **do not auto-resume** — you un-pause manually (popup Space / ``media
     resume``) when the call is done.
 
-So this daemon only ever *pauses*, and never issues a resume of its own.
+For a **call**, the daemon only ever *pauses* — never resumes. (The opt-in
+external hold, below, is the exception: it auto-resumes.)
 
 Two mechanisms hold the pause down for the whole call:
 
@@ -41,7 +42,17 @@ Two mechanisms hold the pause down for the whole call:
     mid-call reply therefore loads paused and can't play over the conversation.
 
 Once the call clears we stop both — leaving the broker paused for a manual
-resume; we never resume it ourselves.
+resume; we never resume it after a call.
+
+**External hold (opt-in).** Any external trigger can pause playback the same
+way by touching a flag file — ``media-call-guard --hold`` sets it, ``--release``
+clears it (or point ``MEDIA_CALL_GUARD_HOLD_FLAG`` elsewhere). While the flag is
+present the daemon pauses and event-holds exactly as for a call; when it's
+removed it **auto-resumes** (unlike a call). This is the durable half of a
+"pause while Google voice typing is active" feature: a Tasker/MacroDroid
+accessibility macro sets/clears the flag as the voice-input UI appears and
+disappears. If a call overlaps a hold episode, auto-resume is suppressed — the
+call's manual-resume policy wins.
 
 Invoked via the ``media-call-guard`` console script; supervised as the
 ``call-guard`` runit service on the phone. Use ``media-call-guard --probe`` to
@@ -61,6 +72,7 @@ import socket
 import subprocess
 import threading
 import time
+from pathlib import Path
 
 from ._paths import state_dir
 from .sinks import _mpv_ipc as ipc
@@ -93,6 +105,11 @@ _DEFAULT_SOCKET_NAMES = ("sink-speech.sock", "mpv-voice.sock", "mpv-music.sock")
 
 _DEFAULT_POLL_S = 1.5
 
+# External-hold flag file. Any external trigger (e.g. a Tasker/MacroDroid macro
+# firing on voice-typing start/stop) touches this to pause + hold, and removes
+# it to auto-resume. See `--hold` / `--release` and `_run_loop`.
+_DEFAULT_HOLD_FLAG_NAME = "call-guard.hold"
+
 _stop = False
 
 
@@ -122,6 +139,9 @@ class Config:
                 "MEDIA_CALL_GUARD_POLL_S", _DEFAULT_POLL_S))
         except ValueError:
             self.poll_s = _DEFAULT_POLL_S
+        self.hold_flag = os.environ.get(
+            "MEDIA_CALL_GUARD_HOLD_FLAG",
+            str(state_dir() / _DEFAULT_HOLD_FLAG_NAME))
 
 
 def _resolve_sockets() -> list[str]:
@@ -196,6 +216,23 @@ def pause_sockets(cfg: Config, dry_run: bool = False, quiet: bool = False) -> No
                 log.info("paused %s", sock)
         except (ipc.MpvIpcError, OSError) as e:
             log.warning("could not pause %s: %s", sock, e)
+
+
+def resume_sockets(cfg: Config, dry_run: bool = False) -> None:
+    """Best-effort un-pause of every configured mpv broker. Used only by the
+    external-hold auto-resume — never after a call. The caller releases the
+    event hold *before* calling this so the un-pause isn't instantly re-held."""
+    for sock in cfg.sockets:
+        if not os.path.exists(sock):
+            continue
+        if dry_run:
+            log.info("[dry-run] would resume %s", sock)
+            continue
+        try:
+            ipc.set_property(sock, "pause", False)
+            log.info("resumed %s", sock)
+        except (ipc.MpvIpcError, OSError) as e:
+            log.warning("could not resume %s: %s", sock, e)
 
 
 # One-line mpv IPC commands the event-hold sends on its persistent connection.
@@ -306,27 +343,67 @@ class PauseHold:
         log.info("event-hold released")
 
 
+def flag_present(cfg: Config) -> bool:
+    """Whether the external-hold flag file exists (a request to pause + hold)."""
+    return os.path.exists(cfg.hold_flag)
+
+
+def _set_hold(cfg: Config) -> None:
+    p = Path(cfg.hold_flag)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.touch()
+
+
+def _clear_hold(cfg: Config) -> None:
+    try:
+        Path(cfg.hold_flag).unlink()
+    except FileNotFoundError:
+        pass
+
+
+def _hold_reason(call: bool, flag: bool) -> str:
+    if call and flag:
+        return "call + external hold"
+    return "call" if call else "external hold"
+
+
 def _run_loop(cfg: Config, dry_run: bool = False) -> None:
     hold = PauseHold(cfg.sockets)
-    was_active = False  # whether the previous cycle saw a call
+    prev_want = False        # was anything holding the pause last cycle?
+    call_in_episode = False  # did a call participate in the current hold?
+    last_call = False        # last known call state (kept across query failures)
     while not _stop:
         notifs = list_notifications(cfg)
-        if notifs is None:
-            time.sleep(cfg.poll_s)  # unknown this cycle — leave state untouched
-            continue
-        active = call_active(notifs, cfg)
-        if active:
-            if not was_active:
-                log.info("call detected — pausing phone audio")
+        # On a transient query failure keep the previous call reading rather than
+        # flapping; the flag path (a local file) stays reliable regardless.
+        call = last_call if notifs is None else call_active(notifs, cfg)
+        last_call = call
+        flag = flag_present(cfg)
+        want = call or flag
+
+        if want:
+            if call:
+                call_in_episode = True
+            if not prev_want:
+                log.info("pausing phone audio (%s)", _hold_reason(call, flag))
                 if not dry_run:
-                    hold.start()  # instant re-pause on any mid-call un-pause
-            # Re-assert every cycle: pauses audio already playing when the call
+                    hold.start()  # instant re-pause on any un-pause
+            # Re-assert every cycle: pauses audio already playing when the hold
             # started, and backstops the event hold. Log only the first.
-            pause_sockets(cfg, dry_run=dry_run, quiet=was_active)
-        elif was_active:
-            log.info("call cleared — stopped holding pause (no auto-resume)")
+            pause_sockets(cfg, dry_run=dry_run, quiet=prev_want)
+        elif prev_want:
+            # Every hold reason cleared. Release the event hold first, then
+            # decide whether to resume.
             hold.stop()
-        was_active = active
+            if call_in_episode:
+                # A call was involved — its manual-resume policy wins; leave paused.
+                log.info("hold cleared — leaving paused (no auto-resume after a call)")
+            else:
+                log.info("external hold released — resuming")
+                resume_sockets(cfg, dry_run=dry_run)
+            call_in_episode = False
+
+        prev_want = want
         time.sleep(cfg.poll_s)
     hold.stop()  # on SIGTERM / shutdown
 
@@ -358,6 +435,10 @@ def main() -> int:
                              "the call match, then exit")
     parser.add_argument("--dry-run", action="store_true",
                         help="log what would be paused without touching playback")
+    parser.add_argument("--hold", action="store_true",
+                        help="set the external-hold flag (pause + hold now) and exit")
+    parser.add_argument("--release", action="store_true",
+                        help="clear the external-hold flag (auto-resume) and exit")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -368,11 +449,20 @@ def main() -> int:
     signal.signal(signal.SIGINT, _on_signal)
     cfg = Config()
 
+    if args.hold:
+        _set_hold(cfg)
+        print(f"hold flag set: {cfg.hold_flag}")
+        return 0
+    if args.release:
+        _clear_hold(cfg)
+        print(f"hold flag cleared: {cfg.hold_flag}")
+        return 0
     if args.probe is not None:
         return _probe(cfg, args.probe)
 
-    log.info("call_guard starting: packages=%s sockets=%s poll=%.1fs%s",
-             sorted(cfg.packages), cfg.sockets, cfg.poll_s,
+    log.info("call_guard starting: packages=%s sockets=%s poll=%.1fs "
+             "hold_flag=%s%s",
+             sorted(cfg.packages), cfg.sockets, cfg.poll_s, cfg.hold_flag,
              " [dry-run]" if args.dry_run else "")
     _run_loop(cfg, dry_run=args.dry_run)
     log.info("call_guard stopped")
