@@ -21,6 +21,14 @@ Design premises (from the discussion that spawned this):
   stream (`/events`), the image spool (`/img/<f>`), a push endpoint
   (`POST /show`), and the audio-controller backend (`GET /status`,
   `POST /ctl`). Default port **8781** (the speech clip server is 8780).
+- **Audio-reactive motion + sound cues** — while the voice is talking the
+  scene *moves with it*: the Ken Burns pan runs ~2.6× and a soft vignette
+  breathes; both settle when speech stops. A canvas-side poller (runs only
+  while screens are connected, ~1 Hz `media popup-status` — the popup's own
+  cadence) broadcasts `{"kind":"state", speaking, pos, dur}` over the SSE
+  stream. Synthesized sound effects (WebAudio, no assets): a whoosh when a
+  new image lands, a chime up/down when speech starts/stops — toggled with
+  the 🔈 button, persisted per device.
 - **Audio controller** — tap the canvas to reveal a touch version of the
   tmux popup (`prefix a`): channel cycle (♪ speech ⇆ ♫ music ⇆ ☰ book),
   marquee title, live clock, `⏮ ▶/‖ ⏭ − +`, and on speech mute + speed.

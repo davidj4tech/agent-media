@@ -30,6 +30,7 @@ import argparse
 import json
 import os
 import queue
+import re
 import shutil
 import socket as _socket
 import subprocess
@@ -46,12 +47,14 @@ DEFAULT_PORT = 8781
 
 class Hub:
     """Fan-out of show events to connected SSE clients; remembers the last
-    event so a screen that (re)connects immediately shows something."""
+    image event (and the latest speech state) so a screen that (re)connects
+    immediately shows something."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._clients: list[queue.Queue] = []
-        self.last: dict | None = None
+        self.last: dict | None = None        # last *image* event only
+        self.last_state: dict | None = None  # latest speech-state event
 
     def attach(self) -> queue.Queue:
         q: queue.Queue = queue.Queue(maxsize=16)
@@ -66,9 +69,17 @@ class Hub:
             except ValueError:
                 pass
 
-    def publish(self, event: dict) -> None:
+    def watchers(self) -> int:
         with self._lock:
-            self.last = event
+            return len(self._clients)
+
+    def publish(self, event: dict, *, remember: bool = True) -> None:
+        with self._lock:
+            if remember:
+                if event.get("kind") == "state":
+                    self.last_state = event
+                else:
+                    self.last = event
             clients = list(self._clients)
         for q in clients:
             try:
@@ -153,6 +164,57 @@ def channel_status(channel: str) -> dict:
             "muted": muted, "part": part}
 
 
+# --- speech-state poller: the canvas reacts to the voice ---------------------
+# While at least one screen is connected, poll the speech channel (~1 Hz, one
+# `media popup-status` spawn — the popup's own cadence) and broadcast
+# {"kind": "state", "speaking": bool, "pos": s, "dur": s} over the SSE stream.
+# The page uses it to drive motion (faster Ken Burns + a breathing vignette
+# while the voice is talking) and the start/stop sound cues. The local mpv
+# socket can't be the source: speech usually plays on the *phone*, and only
+# the `media` CLI sees the remote target's state.
+
+_TIME_PAIR = re.compile(r"(?:(\d+):)?(\d+):(\d{2})")
+
+
+def _parse_clock(text: str) -> list[int]:
+    """All H:MM:SS / MM:SS times in `text`, as seconds."""
+    out = []
+    for h, m, s in _TIME_PAIR.findall(text):
+        out.append((int(h or 0)) * 3600 + int(m) * 60 + int(s))
+    return out
+
+
+def speech_state() -> dict:
+    """One SSE-shaped speech-state snapshot off `media popup-status`."""
+    line = (_media(["popup-status", "--no-bar", "--show-idle"], timeout=5)
+            .splitlines() or [""])[0].strip()
+    times = _parse_clock(line)
+    state: dict = {"kind": "state", "speaking": line.startswith("▶")}
+    if len(times) >= 2:
+        state["pos"], state["dur"] = times[0], times[1]
+    return state
+
+
+def _state_poller() -> None:
+    last_key = None
+    while True:
+        if HUB.watchers() == 0:
+            time.sleep(2)
+            continue
+        try:
+            st = speech_state()
+        except Exception:  # noqa: BLE001 — the poller must outlive any hiccup
+            time.sleep(2)
+            continue
+        key = (st["speaking"], st.get("pos"))
+        # Broadcast on any change; while speaking, pos ticks every poll, so
+        # watchers get a ~1 Hz progress signal without idle-time chatter.
+        if key != last_key:
+            HUB.publish(st)
+            last_key = key
+        time.sleep(1)
+
+
 def ctl_argv(channel: str, action: str, arg: int) -> list[str] | None:
     """Whitelisted button → `media` argv. None = unknown/unsupported combo.
     The maps mirror the popup's handle_key dispatch."""
@@ -227,6 +289,16 @@ PAGE = """<!doctype html>
     border-radius: 50%; background: #e05c5c; opacity: 0; transition: opacity .5s;
   }
   #dot.off { opacity: .8; }
+  /* While the voice is talking the scene breathes: a soft vignette swells in
+     time-ish with speech (the Ken Burns pan also speeds up, via JS). */
+  #pulse {
+    position: fixed; inset: 0; pointer-events: none; opacity: 0;
+    background: radial-gradient(ellipse at center,
+                transparent 55%, rgba(0,0,0,.55) 100%);
+    transition: opacity 1s ease;
+  }
+  body.speaking #pulse { animation: breathe 2.8s ease-in-out infinite; }
+  @keyframes breathe { 0%, 100% { opacity: 0; } 50% { opacity: .65; } }
   /* --- audio controller (tap anywhere to reveal) — kin of the tmux popup --- */
   #ctl {
     position: fixed; left: 50%; bottom: max(3vh, env(safe-area-inset-bottom));
@@ -259,12 +331,14 @@ PAGE = """<!doctype html>
 <body>
 <img id="a" class="layer" alt="">
 <img id="b" class="layer" alt="">
+<div id="pulse"></div>
 <div id="cap"></div>
 <div id="dot" title="disconnected"></div>
 <div id="ctl">
   <div class="row">
     <button id="chan">♪</button>
     <div id="marq"><span id="title">agent-media</span></div>
+    <button id="sfx">🔈</button>
     <button id="xbtn">×</button>
   </div>
   <div class="row">
@@ -292,6 +366,9 @@ PAGE = """<!doctype html>
       const dur = 28 + Math.random() * 14;
       el.style.animation = KB[Math.floor(Math.random()*KB.length)] +
         ' ' + dur.toFixed(1) + 's ease-in-out infinite alternate';
+      if (speaking)
+        for (const a of el.getAnimations())
+          (a.updatePlaybackRate ? a.updatePlaybackRate(2.6) : a.playbackRate = 2.6);
       el.classList.add('on');
       layers[front].classList.remove('on');
       front = back;
@@ -305,9 +382,77 @@ PAGE = """<!doctype html>
     el.src = d.image;
   }
 
+  // ---- sound effects: tiny synthesized cues, no assets (WebAudio) ----------
+  // Whoosh when a new image lands; a two-note chime up when the voice starts,
+  // down when it stops. Quiet by design; 🔈 in the controller toggles, state
+  // persists per device. Browsers gate audio behind a first user gesture —
+  // the same tap that opens the controller / takes the wake lock unlocks it.
+  let ac = null;
+  function actx() {
+    if (!ac) ac = new (window.AudioContext || window.webkitAudioContext)();
+    if (ac.state === 'suspended') ac.resume().catch(() => {});
+    return ac;
+  }
+  function sfxOn() { return localStorage.getItem('sfx') !== '0'; }
+  function chime(up) {
+    if (!sfxOn()) return;
+    try {
+      const c = actx(), notes = up ? [523, 659] : [659, 523];
+      notes.forEach((f, i) => {
+        const t = c.currentTime + i * 0.11;
+        const o = c.createOscillator(), g = c.createGain();
+        o.type = 'sine'; o.frequency.value = f;
+        g.gain.setValueAtTime(0.0001, t);
+        g.gain.exponentialRampToValueAtTime(0.05, t + 0.02);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + 0.4);
+        o.connect(g).connect(c.destination);
+        o.start(t); o.stop(t + 0.45);
+      });
+    } catch (_) {}
+  }
+  function whoosh() {
+    if (!sfxOn()) return;
+    try {
+      const c = actx(), dur = 0.45;
+      const buf = c.createBuffer(1, c.sampleRate * dur, c.sampleRate);
+      const d = buf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+      const src = c.createBufferSource(); src.buffer = buf;
+      const f = c.createBiquadFilter(); f.type = 'bandpass'; f.Q.value = 1.2;
+      const t = c.currentTime;
+      f.frequency.setValueAtTime(300, t);
+      f.frequency.exponentialRampToValueAtTime(1400, t + dur * 0.7);
+      const g = c.createGain();
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.06, t + 0.08);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      src.connect(f).connect(g).connect(c.destination);
+      src.start(t); src.stop(t + dur);
+    } catch (_) {}
+  }
+
+  // ---- audio-reactive motion: the scene moves with the voice ---------------
+  // While speaking: pan/zoom runs faster (seamless via updatePlaybackRate)
+  // and the vignette breathes (CSS class). State arrives over the SSE stream.
+  let speaking = false;
+  function setSpeaking(on) {
+    if (on === speaking) return;
+    speaking = on;
+    document.body.classList.toggle('speaking', on);
+    for (const el of layers)
+      for (const a of el.getAnimations())
+        (a.updatePlaybackRate ? a.updatePlaybackRate(on ? 2.6 : 1)
+                              : a.playbackRate = on ? 2.6 : 1);
+    chime(on);
+  }
+
   const es = new EventSource('/events');
   es.onmessage = (e) => {
-    try { const d = JSON.parse(e.data); if (d.image) show(d); } catch (_) {}
+    try {
+      const d = JSON.parse(e.data);
+      if (d.kind === 'state') setSpeaking(!!d.speaking);
+      else if (d.image) { show(d); whoosh(); }
+    } catch (_) {}
   };
   es.onopen = () => $('dot').classList.remove('off');
   es.onerror = () => $('dot').classList.add('off');
@@ -410,6 +555,15 @@ PAGE = """<!doctype html>
     visible ? hideCtl() : showCtl();
   });
   $('xbtn').onclick = (e) => { e.stopPropagation(); hideCtl(); };
+  function drawSfx() { $('sfx').textContent = sfxOn() ? '🔈' : '🔇'; }
+  drawSfx();
+  $('sfx').onclick = (e) => {
+    e.stopPropagation();
+    localStorage.setItem('sfx', sfxOn() ? '0' : '1');
+    drawSfx();
+    if (sfxOn()) chime(true);              // audible confirmation + unlocks audio
+    resetHide();
+  };
   $('chan').onclick = () => {
     ch = ORDER[(ORDER.indexOf(ch) + 1) % ORDER.length];
     histIdx = 1;
@@ -500,6 +654,8 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(b"retry: 2000\n\n")
             if HUB.last is not None:
                 self._event(HUB.last)
+            if HUB.last_state is not None:
+                self._event(HUB.last_state)
             while True:
                 try:
                     self._event(q.get(timeout=15))
@@ -581,6 +737,7 @@ def main() -> None:
     args = ap.parse_args()
     srv = ThreadingHTTPServer((args.bind, args.port), Handler)
     srv.daemon_threads = True
+    threading.Thread(target=_state_poller, daemon=True).start()
     print(f"canvas on http://{args.bind}:{args.port}/  spool={spool_dir()}")
     srv.serve_forever()
 
