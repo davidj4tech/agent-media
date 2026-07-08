@@ -71,16 +71,14 @@ def _float_env(name: str, default: float) -> float:
         return default
 
 
-def _describe_enabled() -> bool:
-    return (os.environ.get("MEDIA_SPEECH_DESCRIBE", "0") or "0").strip() == "1"
-
-
-def _describe_code_or(body: str, placeholder: str) -> str:
-    """With MEDIA_SPEECH_DESCRIBE=1, replace an un-readable code block with a
+def _describe_code_or(body: str, placeholder: str, describe: bool) -> str:
+    """When ``describe`` is set, replace an un-readable code block with a
     one-sentence spoken description via the (local) summary model; otherwise —
-    or on any failure — return the mechanical placeholder. Lazy-imported so the
-    default path stays dependency- and network-free."""
-    if not _describe_enabled():
+    or on any failure — return the mechanical placeholder. ``describe`` is passed
+    explicitly (not read from the env here) so the caller controls *where* the
+    model call happens: the hook enables it only in the detached playback child,
+    never on the hot path. Lazy-imported so the default path stays network-free."""
+    if not describe:
         return placeholder
     try:
         from ._summary import describe_code
@@ -95,8 +93,9 @@ def _table_source(headers: "list[str]", rows: "list[list[str]]") -> str:
     return "\n".join(parts)
 
 
-def _describe_table_or(headers: "list[str]", rows: "list[list[str]]", placeholder: str) -> str:
-    if not _describe_enabled():
+def _describe_table_or(headers: "list[str]", rows: "list[list[str]]",
+                       placeholder: str, describe: bool) -> str:
+    if not describe:
         return placeholder
     try:
         from ._summary import describe_table
@@ -128,18 +127,18 @@ def _code_placeholder(n_lines: int, lang: str = "") -> str:
     return f"{lang_word}code block, {n} line{'s' if n != 1 else ''}, omitted."
 
 
-def _regex_suppress_fences(text: str) -> str:
+def _regex_suppress_fences(text: str, describe: bool = False) -> str:
     def repl(m: "re.Match[str]") -> str:
         lang = (m.group(2) or "").strip().split(" ")[0]
         body = m.group(3)
         if _code_reads_well(body):
             return body  # small & readable → keep the code, drop the fences
         n = body.count("\n") + 1
-        return _describe_code_or(body, _code_placeholder(n, lang))
+        return _describe_code_or(body, _code_placeholder(n, lang), describe)
     return _REGEX_FENCE_BLOCK.sub(repl, text)
 
 
-def suppress_code_blocks(text: str) -> str:
+def suppress_code_blocks(text: str, describe: bool = False) -> str:
     """Replace fenced / indented code blocks with a short *spoken* placeholder
     ("python code block, 12 lines, omitted.") so TTS describes code instead of
     reading it line by line. Uses markdown-it-py for robust block detection when
@@ -153,7 +152,7 @@ def suppress_code_blocks(text: str) -> str:
         from markdown_it import MarkdownIt
         tokens = MarkdownIt("commonmark").parse(text)
     except Exception:  # noqa: BLE001 — any import/parse issue → regex fallback
-        return _regex_suppress_fences(text)
+        return _regex_suppress_fences(text, describe)
 
     spans: list[tuple[int, int, str]] = []
     for tok in tokens:
@@ -168,7 +167,7 @@ def suppress_code_blocks(text: str) -> str:
             placeholder = _code_placeholder(end - start - 2, lang)
         else:  # indented code_block
             placeholder = _code_placeholder(end - start)
-        spans.append((start, end, _describe_code_or(tok.content or "", placeholder)))
+        spans.append((start, end, _describe_code_or(tok.content or "", placeholder, describe)))
     if not spans:
         return text
     return _splice_spans(text, spans)
@@ -233,7 +232,7 @@ _TABLE_SEP_RE = re.compile(
 )
 
 
-def _regex_suppress_tables(text: str) -> str:
+def _regex_suppress_tables(text: str, describe: bool = False) -> str:
     """Fallback table detector: a pipe-bearing header line immediately followed
     by a separator line, then consecutive pipe-bearing data lines."""
     lines = text.split("\n")
@@ -251,7 +250,7 @@ def _regex_suppress_tables(text: str) -> str:
             if _table_reads_well(rows):
                 out.append(_table_to_prose(headers, rows) or _table_placeholder(headers, len(rows)))
             else:
-                out.append(_describe_table_or(headers, rows, _table_placeholder(headers, len(rows))))
+                out.append(_describe_table_or(headers, rows, _table_placeholder(headers, len(rows)), describe))
             i = j
         else:
             out.append(lines[i])
@@ -259,7 +258,7 @@ def _regex_suppress_tables(text: str) -> str:
     return "\n".join(out)
 
 
-def suppress_tables(text: str) -> str:
+def suppress_tables(text: str, describe: bool = False) -> str:
     """Replace markdown tables with a short spoken placeholder
     ("table, columns Name, Port, Notes, 2 rows, omitted.") so TTS describes the
     table instead of reading every cell and the ``|---|`` separator aloud. Runs
@@ -273,7 +272,7 @@ def suppress_tables(text: str) -> str:
         md.enable("table")
         tokens = md.parse(text)
     except Exception:  # noqa: BLE001 — any import/parse issue → regex fallback
-        return _regex_suppress_tables(text)
+        return _regex_suppress_tables(text, describe)
 
     lines = text.split("\n")
     spans: list[tuple[int, int, str]] = []
@@ -316,7 +315,7 @@ def suppress_tables(text: str) -> str:
             if _table_reads_well(rows):
                 repl = _table_to_prose(headers, rows) or _table_placeholder(headers, len(rows))
             else:
-                repl = _describe_table_or(headers, rows, _table_placeholder(headers, len(rows)))
+                repl = _describe_table_or(headers, rows, _table_placeholder(headers, len(rows)), describe)
             spans.append((start, end, repl))
             i = j
         i += 1
@@ -326,15 +325,20 @@ def suppress_tables(text: str) -> str:
     return _splice_spans(text, spans)
 
 
-def strip_markdown(text: str) -> str:
+def strip_markdown(text: str, describe: bool = False) -> str:
     """Strip enough markdown that TTS doesn't read backticks / asterisks /
     fence markers aloud, and replace fenced code blocks with a spoken
     placeholder. Loose by design: callers can submit anything.
+
+    ``describe=True`` turns the "…omitted." placeholders for un-readable code
+    blocks / tables into one-sentence LLM descriptions. It makes network calls,
+    so callers pass it ONLY off the hot path (the hook's detached playback
+    child); the default keeps strip_markdown deterministic and network-free.
     """
     if not text:
         return ""
-    out = suppress_code_blocks(text)
-    out = suppress_tables(out)
+    out = suppress_code_blocks(text, describe)
+    out = suppress_tables(out, describe)
     out = suppress_urls(out)
     out = _FENCE_RE.sub("", out)
     out = _HEAD_RE.sub("", out)
