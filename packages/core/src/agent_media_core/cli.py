@@ -27,7 +27,7 @@ from .sinks import _mpv_ipc as ipc
 from .sinks.music import SinkMusic
 from .sinks.speech import SinkSpeech, _socket_for
 from .state import StateStore
-from .types import Event, Source, Target
+from .types import Event, Priority, Source, Target
 
 POPUP_CHANNELS = ("speech", "music", "book")
 
@@ -1892,7 +1892,16 @@ def cmd_say(a) -> int:
     text = a.text if a.text else sys.stdin.read()
     if not text.strip():
         return 0
-    submit_event(Event(text=text, source=Source.CLI))
+    urgent = getattr(a, "urgent", False) or getattr(a, "supersede", False)
+    metadata = {}
+    if getattr(a, "supersede", False):
+        # supersede implies urgent: barge in AND drop the same-session messages
+        # this one interrupts/precedes, rather than letting them resume.
+        metadata["supersede"] = True
+    submit_event(Event(
+        text=text, source=Source.CLI,
+        priority=Priority.URGENT if urgent else Priority.NORMAL,
+        metadata=metadata))
     return 0
 
 
@@ -2489,6 +2498,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("say", help="speak text (stdin if no arg)")
     s.add_argument("text", nargs="?")
+    s.add_argument("--urgent", action="store_true",
+                   help="barge in: interrupt this session's current speech and "
+                        "jump its queue, then let the interrupted message resume")
+    s.add_argument("--supersede", action="store_true",
+                   help="like --urgent, but DROP the same-session messages this "
+                        "one interrupts/precedes instead of resuming them")
     s.set_defaults(func=cmd_say)
 
     s = sub.add_parser("music", help="music control via Mopidy/MPD")

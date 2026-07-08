@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 
 
@@ -56,6 +57,71 @@ def suppress_urls(text: str) -> str:
     return out
 
 
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int((os.environ.get(name) or "").strip() or default)
+    except ValueError:
+        return default
+
+
+def _float_env(name: str, default: float) -> float:
+    try:
+        return float((os.environ.get(name) or "").strip() or default)
+    except ValueError:
+        return default
+
+
+def _describe_enabled() -> bool:
+    return (os.environ.get("MEDIA_SPEECH_DESCRIBE", "0") or "0").strip() == "1"
+
+
+def _describe_code_or(body: str, placeholder: str) -> str:
+    """With MEDIA_SPEECH_DESCRIBE=1, replace an un-readable code block with a
+    one-sentence spoken description via the (local) summary model; otherwise —
+    or on any failure — return the mechanical placeholder. Lazy-imported so the
+    default path stays dependency- and network-free."""
+    if not _describe_enabled():
+        return placeholder
+    try:
+        from ._summary import describe_code
+        return describe_code(body) or placeholder
+    except Exception:  # noqa: BLE001 — never let describe break the pipeline
+        return placeholder
+
+
+def _table_source(headers: "list[str]", rows: "list[list[str]]") -> str:
+    parts = [" | ".join(headers)] if headers else []
+    parts += [" | ".join(r) for r in rows]
+    return "\n".join(parts)
+
+
+def _describe_table_or(headers: "list[str]", rows: "list[list[str]]", placeholder: str) -> str:
+    if not _describe_enabled():
+        return placeholder
+    try:
+        from ._summary import describe_table
+        return describe_table(_table_source(headers, rows)) or placeholder
+    except Exception:  # noqa: BLE001
+        return placeholder
+
+
+def _code_reads_well(body: str) -> bool:
+    """True if a code block is small and low-symbol enough to speak acceptably
+    (e.g. a one-line shell command) instead of being replaced with a spoken
+    placeholder. Tuned by MEDIA_SPEECH_CODE_MAX_LINES (default 2) and
+    MEDIA_SPEECH_CODE_MAX_SYMBOL_RATIO (default 0.28); set max lines to 0 to
+    always suppress."""
+    text = (body or "").strip("\n")
+    nonblank = [ln for ln in text.split("\n") if ln.strip()]
+    if not nonblank or len(nonblank) > _int_env("MEDIA_SPEECH_CODE_MAX_LINES", 2):
+        return False
+    compact = text.strip()
+    if not compact:
+        return False
+    symbols = sum(1 for c in compact if not (c.isalnum() or c.isspace() or c in "._,:-/'\""))
+    return symbols / len(compact) <= _float_env("MEDIA_SPEECH_CODE_MAX_SYMBOL_RATIO", 0.28)
+
+
 def _code_placeholder(n_lines: int, lang: str = "") -> str:
     n = max(1, n_lines)
     lang_word = f"{lang} " if lang else ""
@@ -65,8 +131,11 @@ def _code_placeholder(n_lines: int, lang: str = "") -> str:
 def _regex_suppress_fences(text: str) -> str:
     def repl(m: "re.Match[str]") -> str:
         lang = (m.group(2) or "").strip().split(" ")[0]
-        n = m.group(3).count("\n") + 1
-        return _code_placeholder(n, lang)
+        body = m.group(3)
+        if _code_reads_well(body):
+            return body  # small & readable → keep the code, drop the fences
+        n = body.count("\n") + 1
+        return _describe_code_or(body, _code_placeholder(n, lang))
     return _REGEX_FENCE_BLOCK.sub(repl, text)
 
 
@@ -92,11 +161,14 @@ def suppress_code_blocks(text: str) -> str:
         if not rng or tok.type not in ("fence", "code_block"):
             continue
         start, end = rng
+        if _code_reads_well(tok.content or ""):
+            continue  # small & readable → leave it in; fences stripped later
         if tok.type == "fence":
             lang = (tok.info or "").strip().split(" ")[0]
-            spans.append((start, end, _code_placeholder(end - start - 2, lang)))
+            placeholder = _code_placeholder(end - start - 2, lang)
         else:  # indented code_block
-            spans.append((start, end, _code_placeholder(end - start)))
+            placeholder = _code_placeholder(end - start)
+        spans.append((start, end, _describe_code_or(tok.content or "", placeholder)))
     if not spans:
         return text
     return _splice_spans(text, spans)
@@ -128,6 +200,33 @@ def _table_placeholder(headers: "list[str]", n_rows: int) -> str:
     return f"table, {head}{n} row{'s' if n != 1 else ''}, omitted."
 
 
+def _table_reads_well(rows: "list[list[str]]") -> bool:
+    """True if a table is small enough (and its cells short enough) to speak as
+    prose instead of a placeholder. Tuned by MEDIA_SPEECH_TABLE_MAX_ROWS
+    (default 2) and MEDIA_SPEECH_TABLE_MAX_CELL (default 40); set max rows to 0
+    to always suppress."""
+    if not rows or len(rows) > _int_env("MEDIA_SPEECH_TABLE_MAX_ROWS", 2):
+        return False
+    max_cell = _int_env("MEDIA_SPEECH_TABLE_MAX_CELL", 40)
+    return all(
+        len(c) <= max_cell and "http://" not in c and "https://" not in c
+        for row in rows for c in row
+    )
+
+
+def _table_to_prose(headers: "list[str]", rows: "list[list[str]]") -> str:
+    """Render a small table as spoken prose: each row as "header: cell, ..."."""
+    out: list[str] = []
+    for row in rows:
+        if headers and len(headers) == len(row):
+            pairs = [f"{h}: {c}" for h, c in zip(headers, row) if c.strip()]
+        else:
+            pairs = [c for c in row if c.strip()]
+        if pairs:
+            out.append(", ".join(pairs))
+    return ". ".join(out) + "." if out else ""
+
+
 # Separator row of a GFM table, e.g. "| --- | :--: |". Must contain a dash.
 _TABLE_SEP_RE = re.compile(
     r"^[ \t]*\|?[ \t]*:?-{1,}:?[ \t]*(?:\|[ \t]*:?-{1,}:?[ \t]*)*\|?[ \t]*$"
@@ -145,11 +244,14 @@ def _regex_suppress_tables(text: str) -> str:
         if "|" in lines[i] and i + 1 < n and _TABLE_SEP_RE.match(lines[i + 1]):
             headers = [c.strip() for c in lines[i].strip().strip("|").split("|")]
             j = i + 2
-            n_rows = 0
+            rows: list[list[str]] = []
             while j < n and lines[j].strip() and "|" in lines[j]:
-                n_rows += 1
+                rows.append([c.strip() for c in lines[j].strip().strip("|").split("|")])
                 j += 1
-            out.append(_table_placeholder(headers, n_rows))
+            if _table_reads_well(rows):
+                out.append(_table_to_prose(headers, rows) or _table_placeholder(headers, len(rows)))
+            else:
+                out.append(_describe_table_or(headers, rows, _table_placeholder(headers, len(rows))))
             i = j
         else:
             out.append(lines[i])
@@ -182,7 +284,8 @@ def suppress_tables(text: str) -> str:
         if tok.type == "table_open" and getattr(tok, "map", None):
             start, end = tok.map
             headers: list[str] = []
-            n_rows = 0
+            rows: list[list[str]] = []
+            cur_row: list[str] | None = None
             section: str | None = None
             j = i + 1
             while j < n and tokens[j].type != "table_close":
@@ -194,17 +297,27 @@ def suppress_tables(text: str) -> str:
                 elif tj.type == "tr_open" and section == "tbody":
                     # GFM absorbs a following non-blank prose line as a bare
                     # single-cell row; a real table row has a pipe in its source
-                    # line, so only count/replace those.
+                    # line, so only count/keep those.
                     rng = getattr(tj, "map", None)
-                    if rng and "|" in lines[rng[0]]:
-                        n_rows += 1
-                elif tj.type == "inline" and section == "thead":
-                    headers.append(tj.content.strip())
+                    cur_row = [] if (rng and "|" in lines[rng[0]]) else None
+                elif tj.type == "tr_close" and section == "tbody":
+                    if cur_row is not None:
+                        rows.append(cur_row)
+                    cur_row = None
+                elif tj.type == "inline":
+                    if section == "thead":
+                        headers.append(tj.content.strip())
+                    elif section == "tbody" and cur_row is not None:
+                        cur_row.append(tj.content.strip())
                 j += 1
             # Trim trailing non-pipe lines that GFM pulled into the table.
             while end > start + 1 and "|" not in lines[end - 1]:
                 end -= 1
-            spans.append((start, end, _table_placeholder(headers, n_rows)))
+            if _table_reads_well(rows):
+                repl = _table_to_prose(headers, rows) or _table_placeholder(headers, len(rows))
+            else:
+                repl = _describe_table_or(headers, rows, _table_placeholder(headers, len(rows)))
+            spans.append((start, end, repl))
             i = j
         i += 1
 

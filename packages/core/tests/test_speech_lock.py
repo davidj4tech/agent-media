@@ -122,6 +122,205 @@ def test_equal_priority_does_not_preempt(tmp_path, monkeypatch):
     tb.join(timeout=3)
 
 
+def test_same_session_high_does_not_preempt(tmp_path, monkeypatch):
+    """A HIGH clip must NOT preempt an in-progress NORMAL clip from the *same*
+    session — within a session, priority never interrupts; siblings queue."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.delenv("MEDIA_SPEECH_SERIALIZE", raising=False)
+    monkeypatch.setenv("MEDIA_SPEECH_LOCK_TIMEOUT_S", "5")
+
+    a = S._SpeechPlaybackLock()
+    a.acquire(P.NORMAL, session="sess-1")  # long NORMAL reply, speaking
+
+    b = S._SpeechPlaybackLock()
+
+    def run_b() -> None:
+        b.acquire(P.HIGH, session="sess-1")  # same session -> queues, no preempt
+        time.sleep(0.05)
+        b.release()
+
+    tb = threading.Thread(target=run_b)
+    tb.start()
+    time.sleep(0.4)                    # let b register as a waiter
+
+    assert a.should_yield() is False   # same-session HIGH must not interrupt
+    a.release()                        # only now can b take its turn
+    tb.join(timeout=3)
+
+
+def test_cross_session_high_still_preempts(tmp_path, monkeypatch):
+    """The cross-session preemption path is unchanged: a HIGH clip from a
+    *different* session still makes the NORMAL holder yield."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.delenv("MEDIA_SPEECH_SERIALIZE", raising=False)
+    monkeypatch.setenv("MEDIA_SPEECH_LOCK_TIMEOUT_S", "5")
+
+    a = S._SpeechPlaybackLock()
+    a.acquire(P.NORMAL, session="sess-1")
+
+    b = S._SpeechPlaybackLock()
+
+    def run_b() -> None:
+        b.acquire(P.HIGH, session="sess-2")  # different session -> preempts
+        time.sleep(0.05)
+        b.release()
+
+    tb = threading.Thread(target=run_b)
+    tb.start()
+
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline and not a.should_yield():
+        time.sleep(0.02)
+    assert a.should_yield() is True     # cross-session HIGH preempts as before
+
+    a.yield_to_higher()
+    tb.join(timeout=3)
+    assert a._fd is not None
+    a.release()
+
+
+def test_same_session_admits_in_submission_order(tmp_path, monkeypatch):
+    """When two same-session clips wait behind a third session, the earlier-
+    submitted one wins admission even if the later one has higher priority —
+    canonical order, not priority, decides within a session."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.delenv("MEDIA_SPEECH_SERIALIZE", raising=False)
+    monkeypatch.setenv("MEDIA_SPEECH_LOCK_TIMEOUT_S", "5")
+
+    # A third session holds the token so our two clips both queue as waiters.
+    holder = S._SpeechPlaybackLock()
+    holder.acquire(P.NORMAL, session="other")
+
+    # `early` is submitted first (NORMAL), `late` second (HIGH). Register both
+    # as waiters by hand so their submission order is deterministic.
+    early = S._SpeechPlaybackLock()
+    early._rank = S._PRIO_RANK[P.NORMAL]
+    early._session = "sess-1"
+    early._seq = 100.0
+    early._register()
+
+    late = S._SpeechPlaybackLock()
+    late._rank = S._PRIO_RANK[P.HIGH]
+    late._session = "sess-1"
+    late._seq = 200.0
+    late._register()
+
+    # The later, higher-priority clip must see it has to defer to its earlier
+    # sibling; the earlier one has nothing to defer to.
+    assert late._earlier_sibling_waiting() is True
+    assert early._earlier_sibling_waiting() is False
+    # And it is *not* a cross-session preemption (same session excluded).
+    assert late._preempting_rank() <= late._rank
+
+    early._unregister()
+    late._unregister()
+    holder.release()
+
+
+def test_same_session_urgent_barges_in(tmp_path, monkeypatch):
+    """URGENT is the same-session exception: it interrupts the in-progress clip
+    at the next boundary, then (default) the interrupted clip resumes."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.delenv("MEDIA_SPEECH_SERIALIZE", raising=False)
+    monkeypatch.setenv("MEDIA_SPEECH_LOCK_TIMEOUT_S", "5")
+
+    a = S._SpeechPlaybackLock()
+    a.acquire(P.NORMAL, session="sess-1")  # long reply speaking
+
+    b = S._SpeechPlaybackLock()
+    held: dict = {}
+
+    def run_b() -> None:
+        b.acquire(P.URGENT, session="sess-1")  # same session, but URGENT -> barge in
+        held["fd"] = b._fd
+        time.sleep(0.1)
+        b.release()
+
+    tb = threading.Thread(target=run_b)
+    tb.start()
+
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline and not a.should_yield():
+        time.sleep(0.02)
+    assert a.should_yield() is True     # same-session URGENT triggers a yield
+
+    a.yield_to_higher()
+    tb.join(timeout=3)
+    assert held.get("fd") is not None   # the URGENT clip actually got the token
+    assert a._fd is not None            # and the interrupted reply resumed (kept)
+    a.release()
+
+
+def test_urgent_ignores_earlier_sibling_at_admission(tmp_path, monkeypatch):
+    """An URGENT clip jumps its session's queue: it does not defer to an
+    earlier-submitted sibling the way an ordinary clip would."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.delenv("MEDIA_SPEECH_SERIALIZE", raising=False)
+
+    # An earlier same-session sibling sits in the waiter registry.
+    early = S._SpeechPlaybackLock()
+    early._rank = S._PRIO_RANK[P.NORMAL]
+    early._session = "sess-1"
+    early._seq = 100.0
+    early._register()
+
+    urgent = S._SpeechPlaybackLock()
+    urgent._rank = S._PRIO_RANK[P.URGENT]
+    urgent._session = "sess-1"
+    urgent._seq = 200.0  # submitted later, yet must not defer
+    assert urgent._is_urgent() is True
+    assert urgent._earlier_sibling_waiting() is True   # the earlier one exists...
+    # ...but URGENT is exempt, so acquisition proceeds rather than handing back.
+    urgent.acquire(P.URGENT, session="sess-1")
+    assert urgent._fd is not None
+    urgent.release()
+    early._unregister()
+
+
+def test_supersede_marker_aborts_earlier_same_session(tmp_path, monkeypatch):
+    """A supersede barge-in drops the same-session clips it interrupts/precedes
+    (earlier seq) — but not itself, later clips, or other sessions."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.delenv("MEDIA_SPEECH_SERIALIZE", raising=False)
+
+    older = S._SpeechPlaybackLock()
+    older._session, older._seq = "sess-1", 100.0
+    assert older.should_abort() is False   # nothing has superseded yet
+
+    sup = S._SpeechPlaybackLock()
+    sup._session, sup._seq = "sess-1", 200.0
+    sup._rank = S._PRIO_RANK[P.URGENT]
+    sup._supersede = True
+    sup._mark_supersede()
+
+    assert older.should_abort() is True    # earlier clip -> dropped
+    assert sup.should_abort() is False     # the superseding clip keeps playing
+
+    later = S._SpeechPlaybackLock()
+    later._session, later._seq = "sess-1", 300.0
+    assert later.should_abort() is False   # submitted after the supersede
+
+    other = S._SpeechPlaybackLock()
+    other._session, other._seq = "sess-2", 100.0
+    assert other.should_abort() is False   # different session untouched
+
+
+def test_supersede_requires_urgent_and_session(tmp_path, monkeypatch):
+    """supersede only bites for an URGENT clip with a real session id — a NORMAL
+    (or session-less) clip tagged supersede publishes no marker."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.delenv("MEDIA_SPEECH_SERIALIZE", raising=False)
+
+    older = S._SpeechPlaybackLock()
+    older._session, older._seq = "sess-1", 100.0
+
+    n = S._SpeechPlaybackLock()
+    n.acquire(P.NORMAL, session="sess-1", supersede=True)  # NORMAL -> ignored
+    assert n._supersede is False
+    assert older.should_abort() is False
+    n.release()
+
+
 def test_low_priority_skips_when_busy(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     monkeypatch.delenv("MEDIA_SPEECH_SERIALIZE", raising=False)

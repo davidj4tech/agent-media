@@ -127,7 +127,8 @@ def say(text: str,
         voice: str = "",
         engine: str = "",
         target: str = "local",
-        priority: str = "normal") -> dict:
+        priority: str = "normal",
+        supersede: bool = False) -> dict:
     """Synthesize `text` and play it through sink-speech.
 
     Args:
@@ -136,7 +137,13 @@ def say(text: str,
         engine: Override engine (edge / openai / qwen / realtime).
             Empty = use MEDIA_RENDER_ENGINE default.
         target: Sink target. Default "local".
-        priority: "low" / "normal" / "high" / "urgent".
+        priority: "low" / "normal" / "high" / "urgent". Within one session,
+            only "urgent" interrupts what's already speaking (a barge-in);
+            lower priorities queue and play in submission order.
+        supersede: Only meaningful with priority "urgent". By default an urgent
+            barge-in lets the message it interrupted resume afterwards; set
+            supersede=True to DROP the same-session messages it interrupts or
+            was queued ahead of instead. Use when this message replaces them.
     """
     from .intake.submit import submit_event
 
@@ -145,13 +152,17 @@ def say(text: str,
     except ValueError:
         prio = Priority.NORMAL
 
+    metadata = {"kind": "say"}
+    if supersede:
+        metadata["supersede"] = True
+
     history_id = submit_event(Event(
         text=text, source=Source.MCP,
         priority=prio,
         voice=voice or None,
         engine=engine or None,
         target=_target(target),
-        metadata={"kind": "say"},
+        metadata=metadata,
     ), state=_state())
     return {"history_id": history_id}
 

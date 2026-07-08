@@ -58,3 +58,54 @@ def test_missing_session_id_is_empty_not_crash(tmp_path, monkeypatch):
     transcript.write_text("{}\n")
     assert H._handle_stop({"transcript_path": str(transcript)}) == 0
     assert (seen["event"].metadata or {}).get("session") == ""
+
+
+def test_claim_once_is_exclusive_within_ttl(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    assert H._claim_once("same question", ttl_seconds=300) is True
+    # A second, concurrent read of the same question is refused...
+    assert H._claim_once("same question", ttl_seconds=300) is False
+    # ...but a different question is independent.
+    assert H._claim_once("other question", ttl_seconds=300) is True
+
+
+def test_claim_once_reclaims_when_stale(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    # ttl=0 means the prior claim is always considered stale, so a genuine
+    # re-ask after the window is spoken again rather than swallowed forever.
+    assert H._claim_once("q", ttl_seconds=0) is True
+    assert H._claim_once("q", ttl_seconds=0) is True
+
+
+def test_ask_read_once_across_pretooluse_and_notification(tmp_path, monkeypatch):
+    """The two hooks a single AskUserQuestion modal fires (PreToolUse, then a
+    Notification) must speak the question exactly once, not twice."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    calls = []
+
+    def fake_submit(event, **_):
+        calls.append(event)
+        return "rid"
+
+    monkeypatch.setattr(H, "submit_event", fake_submit)
+    # Isolate _claim_once from history dedup and environment noise.
+    monkeypatch.setattr(H, "_dedup_seen", lambda *a, **k: False)
+    monkeypatch.setattr(H, "_session_name", lambda: "")
+    monkeypatch.setattr(H, "_ask_location_label", lambda: "")
+    monkeypatch.setattr(H, "_client_pane_focused", lambda: False)
+
+    tool_input = {"questions": [{"question": "Ship it?",
+                                 "options": [{"label": "Yes"}, {"label": "No"}]}]}
+    # PreToolUse path (fires as the modal appears).
+    H._handle_pretooluse({"tool_name": "AskUserQuestion",
+                          "tool_input": tool_input, "session_id": "s1"})
+    # Notification path (the same modal, transcript now flushed) reads the
+    # live last turn as an AskUserQuestion and would re-emit it.
+    monkeypatch.setattr(H, "_latest_ask_question",
+                        lambda tp: H._format_ask_question(tool_input))
+    tp = tmp_path / "t.jsonl"
+    tp.write_text("{}\n")
+    H._handle_notification({"transcript_path": str(tp),
+                            "message": "waiting", "session_id": "s1"})
+
+    assert len(calls) == 1  # spoken once, not twice
