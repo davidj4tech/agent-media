@@ -14,6 +14,7 @@ packages/
 ├── intake-ha/        ├─ optional intake adapters (event sources)
 ├── intake-codex/     ┘
 ├── snapcast-room/    am-snap: whole-house Snapcast routing CLI
+├── visual/           generated-image canvas + touch audio controller alongside TTS
 └── voice-bridge/     STT: mic → text → core intake
 examples/
 └── agent-media-engine-espeak/   reference render-engine plugin to copy
@@ -76,6 +77,16 @@ shipping a console-script daemon/hook:
 The snapcast/pipewire plumbing: `am-snap`, a terse CLI over Snapcast's JSON-RPC
 for whole-house routing (join a room to a channel, set volume, mute) across
 multiple snapservers. (`aar-snap` is kept as an alias.)
+
+### [`visual/`](./packages/visual/) — `agent-media-visual`
+
+A picture for every spoken reply: a full-bleed SSE web canvas
+(`media-visual-canvas`, systemd unit included) that any phone/TV browser
+leaves open, plus `media-visual`, which shapes a reply into an image prompt
+(evolving one continuous scene per session), generates it (pluggable
+`agent_media.visual_engines`, built-in Venice), and pushes it to one or more
+canvases. Tap the canvas for a touch audio controller mirroring the tmux
+popup. Opt-in Stop-hook wiring: `MEDIA_SPEECH_VISUAL=1`.
 
 ### [`voice-bridge/`](./packages/voice-bridge/) — `tmux-voice-bridge`
 

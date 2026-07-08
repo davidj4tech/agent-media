@@ -104,12 +104,16 @@ def test_stop_spawns_visual_and_strips_metadata(tmp_path, monkeypatch):
     monkeypatch.setattr(H, "_dedup_seen", lambda *a, **k: False)
     monkeypatch.setattr(H, "_session_name", lambda: "")
     spawned = {}
-    monkeypatch.setattr(_visual, "spawn_visual",
-                        lambda raw, spoken: spawned.update(raw=raw, spoken=spoken))
+    monkeypatch.setattr(
+        _visual, "spawn_visual",
+        lambda raw, spoken, session="": spawned.update(
+            raw=raw, spoken=spoken, session=session))
 
     raw = "A reply long enough to illustrate with a picture."
     assert H._handle_stop(_stop_payload(tmp_path, raw)) == 0
     assert spawned["raw"] == raw
+    # The session id keys the canvas's scene-continuity memory.
+    assert spawned["session"] == "sess-visual"
     # The raw reply must never ride into submit_event's metadata.
     assert "visual_raw" not in (seen["event"].metadata or {})
 

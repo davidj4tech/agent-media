@@ -1,6 +1,6 @@
-# agent-media-visual — SPIKE
+# agent-media-visual
 
-Status: **prototype spike** (2026-07-08). A visual channel alongside TTS:
+A visual channel alongside TTS:
 each spoken reply gets a generated image that cross-fades onto a full-bleed
 web canvas any screen can show — phone browser, tablet, TV in kiosk mode.
 
@@ -29,9 +29,20 @@ Design premises (from the discussion that spawned this):
   Auto-hides after 12s.
 - `media-visual "text"` — shapes the reply into an image prompt (one chat
   call to the same gateway the summary/describe path uses, fallback: raw
-  text), generates via **Venice** `/image/generate`, spools the webp, and
-  pushes it to the canvas. `--say` also fires `media say` first, detached,
-  for the full speak-and-show demo.
+  text), generates it, spools the webp, GCs the spool, and pushes to every
+  configured canvas. `--say` also fires `media say` first, detached, for
+  the full speak-and-show demo.
+- **Scene continuity** — with `--session <id>` (the Stop hook passes its
+  Claude session id), consecutive replies *evolve one artwork*: the shaper
+  is given the previous scene and asked to change what the reply changes,
+  keeping setting/palette/subject. The scene memory lives in the spool's
+  `scenes.json` with a TTL, so a fresh session (or a long gap) starts a
+  fresh scene. Disable with `MEDIA_VISUAL_CONTINUITY=0`.
+- **Pluggable engines** — image backends register under the
+  `agent_media.visual_engines` entry-point group (mirrors core's render
+  engines; see [`docs/EXTENSIONS.md`](../../docs/EXTENSIONS.md)). Built-in
+  and default: `venice`. Select with `MEDIA_VISUAL_ENGINE`; failures fall
+  back to `MEDIA_VISUAL_FALLBACK_ENGINE` (default venice).
 
 Keys: Venice key is read from `VENICE_API_KEY`, else
 `~/.config/litellm/litellm.env` — the same file the gateway reads, so
@@ -68,18 +79,21 @@ decoupled from this package.
 | `MEDIA_SPEECH_VISUAL` | off | `1` = Stop hook illustrates spoken replies |
 | `MEDIA_VISUAL_MIN_CHARS` | `320` | only illustrate replies at least this long |
 | `MEDIA_VISUAL_PORT` / `MEDIA_VISUAL_BIND` | `8781` / `0.0.0.0` | canvas listen (the service passes `--bind <tailscale-ip>`) |
-| `MEDIA_VISUAL_URL` | `http://127.0.0.1:8781` | where `media-visual` pushes (set to the tailnet URL when the canvas binds tailnet-only) |
+| `MEDIA_VISUAL_URL` | `http://127.0.0.1:8781` | canvas(es) to push to — space/comma-separated for several; with multiple, images are referenced via the FIRST target's absolute `/img/` URL, so make it the tailnet URL, reachable from every screen |
+| `MEDIA_VISUAL_ENGINE` | `venice` | image backend (entry-point group `agent_media.visual_engines`) |
+| `MEDIA_VISUAL_FALLBACK_ENGINE` | `venice` | tried when the primary engine fails |
+| `MEDIA_VISUAL_CONTINUITY` | on | `0` = every reply is a fresh scene |
+| `MEDIA_VISUAL_CONTINUITY_TTL` | `7200` | seconds a session's scene stays alive |
+| `MEDIA_VISUAL_SPOOL_KEEP` | `200` | newest images kept by the post-push GC |
 | `MEDIA_VISUAL_SHAPE_MODEL` / `_SHAPE_TIMEOUT` | summary model / timeout | prompt-shaping overrides |
-| `MEDIA_VISUAL_MODEL` | `z-image-turbo` | Venice image model (fast > pretty) |
+| `MEDIA_VISUAL_MODEL_VENICE` | `z-image-turbo` | venice image model (fast > pretty; `MEDIA_VISUAL_MODEL` also honoured) |
 | `MEDIA_VISUAL_STYLE` | cinematic digital painting… | style suffix, one visual voice |
 | `MEDIA_VISUAL_SIZE` | `1024x1024` | canvas cover-crops, square splits the difference |
 | `MEDIA_VISUAL_TIMEOUT` | `90` | image request timeout (s) |
 | `MEDIA_VISUAL_DEBUG` | off | `1` logs canvas requests |
 
-## TODO (post-spike)
+## TODO
 
-- Session continuity ("evolve the current image" prompting) instead of a
-  slideshow of unrelated pictures.
-- An `agent_media.visual_engines` entry-point group mirroring the TTS
-  render-engine registry (Venice is hardcoded here).
-- Spool GC, multi-canvas targets.
+- Image-to-image continuity (the *composition* persists via the evolved
+  prompt, but character/visual identity still drifts between generations).
+- Per-canvas routing (different sessions → different screens).

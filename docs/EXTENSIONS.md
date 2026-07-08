@@ -104,6 +104,39 @@ def main() -> int:
 
 ---
 
+## 1b. Visual engines — same pattern, owned by `agent-media-visual`
+
+The visual package (`packages/visual/`) accompanies spoken replies with
+generated images on a web canvas. Its image backend is pluggable the same way
+render engines are, except the seam lives in `agent-media-visual` (core knows
+nothing about visuals — the Stop hook only spawns the `media-visual` console
+script if it exists).
+
+**The contract** is one callable:
+
+```python
+def generate(prompt: str) -> tuple[bytes | None, str]:
+    """Generate one image for `prompt`. Return (image bytes, "") or (None, "<why>")."""
+```
+
+- Read all config (API key, model, size) from `os.environ` yourself.
+  Convention: `MEDIA_VISUAL_MODEL_<ENGINE>` for the engine's default model.
+- The built-in (and default) engine is `venice`; a non-venice failure falls
+  back to `MEDIA_VISUAL_FALLBACK_ENGINE` (default `venice`).
+
+**Register it:**
+
+```toml
+[project.entry-points."agent_media.visual_engines"]
+myengine = "my_package.module:generate"
+```
+
+**Use it:** `MEDIA_VISUAL_ENGINE=myengine`. Same rules as render engines
+(no shadowing built-ins, broken plugins are skipped not fatal, discovery is
+cached) — see `agent_media_visual/engines.py`.
+
+---
+
 ## 3. Sinks (speech / music / book) — stable core, not an extension seam
 
 The three output channels are core identity: speech and book are mpv-over-IPC,

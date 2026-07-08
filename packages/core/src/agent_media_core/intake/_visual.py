@@ -49,15 +49,21 @@ def _caption(spoken_text: str) -> str:
     return (cut or t[:CAPTION_MAX]) + "…"
 
 
-def spawn_visual(raw_reply: str, spoken_text: str) -> None:
+def spawn_visual(raw_reply: str, spoken_text: str, session: str = "") -> None:
     """Fire-and-forget `media-visual` for this reply. Never raises, never
-    blocks: any problem (no binary, spawn failure) is not playback's concern."""
+    blocks: any problem (no binary, spawn failure) is not playback's concern.
+    `session` keys the canvas's scene-continuity memory — consecutive replies
+    from one session evolve a single artwork."""
     exe = shutil.which("media-visual")
     if not exe:
         return
+    argv = [exe, "--caption", _caption(spoken_text)]
+    if session:
+        argv += ["--session", session]
+    argv.append(raw_reply)
     try:
         subprocess.Popen(
-            [exe, "--caption", _caption(spoken_text), raw_reply],
+            argv,
             start_new_session=True,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,

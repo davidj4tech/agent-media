@@ -39,16 +39,9 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from .state import spool_dir
+
 DEFAULT_PORT = 8781
-
-
-def spool_dir() -> Path:
-    """Where generated images land: XDG_STATE_HOME/agent-media/visual."""
-    base = os.environ.get("XDG_STATE_HOME")
-    root = Path(base) if base else Path.home() / ".local" / "state"
-    d = root / "agent-media" / "visual"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
 
 
 class Hub:

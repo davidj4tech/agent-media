@@ -1,23 +1,33 @@
-"""Reply text → image prompt → generated image (Venice API).
+"""Reply text → image prompt (with scene continuity) → the venice engine.
 
-Two steps, both best-effort and off any hot path:
+Prompt shaping is one chat call to the same OpenAI-compatible gateway the
+summary/describe path uses (MEDIA_SUMMARY_BASE_URL + LiteLLM master key —
+mirrors core's intake/_summary.py resolution). Two modes:
 
-1. *Prompt shaping*: one chat call to the same OpenAI-compatible gateway the
-   summary/describe path uses (MEDIA_SUMMARY_BASE_URL + LiteLLM master key —
-   mirrors core's intake/_summary.py resolution) turns the spoken reply into
-   a single vivid scene description. Falls back to the raw text on any
-   failure.
+* First reply of a session: describe ONE vivid scene for the reply.
+* Later replies (within MEDIA_VISUAL_CONTINUITY_TTL): *evolve* the previous
+  scene to reflect the new reply — the canvas becomes one continuously
+  developing artwork instead of a slideshow of unrelated pictures. The last
+  shaped scene per session lives in the spool's scenes.json (see state.py).
 
-2. *Image generation*: Venice `/image/generate`. The key comes from
-   VENICE_API_KEY, else ~/.config/litellm/litellm.env — same file the
-   gateway reads, so no new secret needs configuring.
+Falls back to the raw text on any shaping failure (and doesn't poison the
+scene memory with it).
+
+`generate_venice` is the built-in visual engine (see engines.py for the
+pluggable seam and the fallback rules). Its key comes from VENICE_API_KEY,
+else ~/.config/litellm/litellm.env — the same file the gateway reads, so no
+new secret needs configuring.
 
 Config (env):
-  MEDIA_VISUAL_MODEL    Venice image model (default z-image-turbo — fast,
-                        the image should land mid-utterance, not minutes late)
+  MEDIA_VISUAL_MODEL_VENICE  venice image model (also MEDIA_VISUAL_MODEL for
+                             back-compat; default z-image-turbo — fast, the
+                             image should land mid-utterance, not minutes late)
   MEDIA_VISUAL_STYLE    style suffix appended to every prompt
   MEDIA_VISUAL_SIZE     WxH (default 1024x1024; the canvas cover-crops)
   MEDIA_VISUAL_TIMEOUT  image request timeout seconds (default 90)
+  MEDIA_VISUAL_SHAPE_MODEL / MEDIA_VISUAL_SHAPE_TIMEOUT
+                        prompt-shaping overrides (default: the summary
+                        model / timeout)
 """
 
 from __future__ import annotations
@@ -27,6 +37,8 @@ import json
 import os
 import urllib.error
 import urllib.request
+
+from . import state
 
 VENICE_GENERATE_URL = "https://api.venice.ai/api/v1/image/generate"
 DEFAULT_MODEL = "z-image-turbo"
@@ -40,6 +52,18 @@ PROMPT_SHAPER = (
     "mood, and outcome — as a concrete visual metaphor. Plain descriptive "
     "language, at most 50 words. Never ask for text, words, letters, "
     "diagrams, or UI in the image. Output only the prompt."
+)
+
+PROMPT_EVOLVER = (
+    "You maintain one continuously evolving artwork accompanying an "
+    "assistant's spoken replies. Given the previous scene and a new reply, "
+    "output ONE image-generation prompt that EVOLVES the previous scene to "
+    "reflect the new reply: keep its setting, palette, and main subject where "
+    "they still fit; change, add, or remove what the reply changes. Concrete "
+    "visual language, at most 60 words. Never ask for text, words, letters, "
+    "diagrams, or UI in the image. Describe the scene directly — do not say "
+    "'evolve', mention the previous scene, or repeat these instructions. No "
+    "surrounding quotes. Output only the prompt."
 )
 
 
@@ -109,15 +133,30 @@ def _gateway_chat(system_prompt: str, user_text: str, timeout: int) -> str | Non
     return out or None
 
 
-def shape_prompt(reply_text: str) -> tuple[str, bool]:
-    """(image prompt, used_llm). The style suffix is always appended so the
-    canvas keeps one visual voice across replies."""
+def shape_prompt(reply_text: str, *, session: str = "") -> tuple[str, bool]:
+    """(image prompt, used_llm). Evolves the session's previous scene when one
+    is alive (see module docstring); the style suffix is always appended so
+    the canvas keeps one visual voice across replies."""
     style = os.environ.get("MEDIA_VISUAL_STYLE") or DEFAULT_STYLE
-    shaped = _gateway_chat(PROMPT_SHAPER, reply_text.strip()[:4000],
-                           _shape_timeout())
+    text = reply_text.strip()[:4000]
+    prev = state.load_scene(session)
+    if prev:
+        shaped = _gateway_chat(
+            PROMPT_EVOLVER,
+            f"Previous scene:\n{prev}\n\nNew reply:\n{text}",
+            _shape_timeout())
+    else:
+        shaped = _gateway_chat(PROMPT_SHAPER, text, _shape_timeout())
     if shaped:
+        # Small local models sometimes wrap the prompt in quotes or lead with
+        # the instruction verb anyway; strip the wrapper, keep the scene.
+        shaped = shaped.strip().strip('"').strip("'").strip()
+        # Remember the scene itself (sans style suffix) as the next evolution
+        # base. A fallback raw-text prompt is NOT a scene — don't poison the
+        # memory with it.
+        state.save_scene(session, shaped)
         return f"{shaped} {style}", True
-    return f"{reply_text.strip()[:300]} {style}", False
+    return f"{text[:300]} {style}", False
 
 
 def _size() -> tuple[int, int]:
@@ -129,12 +168,14 @@ def _size() -> tuple[int, int]:
         return 1024, 1024
 
 
-def generate_image(prompt: str, *, model: str | None = None) -> tuple[bytes | None, str]:
-    """Generate one image via Venice. Returns (webp bytes, "") or (None, err)."""
+def generate_venice(prompt: str) -> tuple[bytes | None, str]:
+    """The built-in visual engine: one image via Venice `/image/generate`.
+    Returns (webp bytes, "") or (None, err). Matches the engines.py contract."""
     key = _venice_key()
     if not key:
         return None, "VENICE_API_KEY not set (env or ~/.config/litellm/litellm.env)"
-    model = model or os.environ.get("MEDIA_VISUAL_MODEL") or DEFAULT_MODEL
+    model = (os.environ.get("MEDIA_VISUAL_MODEL_VENICE")
+             or os.environ.get("MEDIA_VISUAL_MODEL") or DEFAULT_MODEL)
     w, h = _size()
     timeout = int(os.environ.get("MEDIA_VISUAL_TIMEOUT") or DEFAULT_TIMEOUT)
     body = json.dumps({

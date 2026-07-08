@@ -722,7 +722,8 @@ def _play_now(event: Event) -> None:
     if visual_raw:
         try:
             from ._visual import spawn_visual
-            spawn_visual(visual_raw, event.text)
+            spawn_visual(visual_raw, event.text,
+                         event.metadata.get("session") or "")
         except Exception:  # noqa: BLE001 — accompaniment, never playback's problem
             pass
     # Optional LLM spoken-summary rewrite (opt-in). Runs *here*, in the detached
