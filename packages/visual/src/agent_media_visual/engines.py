@@ -1,10 +1,11 @@
 """Visual engines: venice (built-in) + third-party via entry points.
 
-Mirrors core's render-engine seam (agent_media_core/extensions.py): `venice`
-is the only engine this package ships and the default; any other engine is an
-installable plugin registered under the ``agent_media.visual_engines``
-entry-point group and discovered at runtime — this package imports none of
-them.
+Mirrors core's render-engine seam (agent_media_core/extensions.py): this
+package ships two built-ins — `venice` (raster, the default) and `svg`
+(animated clip-art straight from the gateway LLM, no image API). Any other
+engine is an installable plugin registered under the
+``agent_media.visual_engines`` entry-point group and discovered at runtime —
+this package imports none of them.
 
 **The contract** is one callable:
 
@@ -42,7 +43,7 @@ from typing import Callable, Dict
 log = logging.getLogger(__name__)
 
 VISUAL_ENGINE_GROUP = "agent_media.visual_engines"
-BUILTIN_ENGINE_NAMES = ("venice",)
+BUILTIN_ENGINE_NAMES = ("venice", "svg")
 
 VisualEngine = Callable[[str], "tuple[bytes | None, str]"]
 
@@ -95,6 +96,9 @@ def _generate_one(prompt: str, engine: str) -> tuple[bytes | None, str]:
     if engine == "venice":
         from .generate import generate_venice
         return generate_venice(prompt)
+    if engine == "svg":
+        from .generate import generate_svg
+        return generate_svg(prompt)
     ext = discover_visual_engines().get(engine)
     if ext is None:
         return None, f"unknown visual engine: {engine!r} (not installed?)"

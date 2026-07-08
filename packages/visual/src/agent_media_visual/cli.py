@@ -1,4 +1,4 @@
-"""`media-visual` — generate an image for a reply and push it to the canvas.
+"""`media-visual` — generate image(s) for a reply and push them to the canvas.
 
     media-visual "the spoken reply text"            image only
     media-visual --say "the spoken reply text"      speak AND show
@@ -9,6 +9,15 @@ when ready (the "album art" pattern — speech never waits on pixels).
 
 --session <id> keys the scene-continuity memory: consecutive replies from
 one session evolve a single artwork (the Stop hook passes its session id).
+
+**Beats** (default on for multi-part replies, `--no-beats` /
+MEDIA_VISUAL_BEATS=0 off): the reply is split into up to
+MEDIA_VISUAL_BEATS_MAX (4) parts, one storyboard call turns the scene into
+a prompt per part, the images generate concurrently, and the canvas is sent
+a *sequence* with per-part time fractions plus an estimated spoken duration
+(chars ÷ MEDIA_VISUAL_CHARS_PER_SEC). The page then flips beats in step
+with the voice and parks on the final beat when speech ends. Any failure
+along the way falls back to the single-image path.
 
 Config (env):
   MEDIA_VISUAL_URL   canvas base URL(s) to push to — space- or comma-
@@ -25,23 +34,35 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 
 from agent_media_core.intake._env import load_env_file
 
 from .canvas import DEFAULT_PORT
 from .engines import generate_image
-from .generate import shape_prompt
+from .generate import shape_prompt, shape_story
 from .state import gc_spool, spool_dir
+
+DEFAULT_BEATS_MAX = 4
+DEFAULT_CHARS_PER_SEC = 14  # rough TTS pace for the spoken-duration estimate
 
 
 def _canvas_urls() -> list[str]:
     raw = os.environ.get("MEDIA_VISUAL_URL") or f"http://127.0.0.1:{DEFAULT_PORT}"
     return [u.rstrip("/") for u in raw.replace(",", " ").split() if u.strip()]
+
+
+def _image_ref(name: str, targets: list[str]) -> str:
+    """Single target keeps the canvas-relative bare-name reference (robust —
+    no hostname assumptions). Multiple targets get the first target's absolute
+    /img/ URL, since only the pushing host holds the spool."""
+    return name if len(targets) == 1 else f"{targets[0]}/img/{name}"
 
 
 def _push_one(base: str, payload: dict) -> str:
@@ -56,23 +77,97 @@ def _push_one(base: str, payload: dict) -> str:
         return str(e)
 
 
-def _push(name: str, caption: str | None, prompt: str) -> list[str]:
-    """Push to every configured canvas; returns per-target errors ("" = ok).
-
-    Single target keeps the canvas-relative bare-name reference (robust — no
-    hostname assumptions). Multiple targets get the first target's absolute
-    /img/ URL, since only the pushing host holds the spool.
-    """
+def _push_all(payload_for: "callable") -> list[str]:
+    """payload_for(targets) → payload; push it to every canvas. Returns
+    per-target errors ("" = ok)."""
     targets = _canvas_urls()
-    image = name if len(targets) == 1 else f"{targets[0]}/img/{name}"
-    payload = {"image": image, "caption": caption, "prompt": prompt}
+    payload = payload_for(targets)
     return [_push_one(t, payload) for t in targets]
+
+
+# --- beat splitting ------------------------------------------------------------
+
+_FENCE = re.compile(r"```.*?```", re.S)
+_SENT_SPLIT = re.compile(r"(?<=[.!?])\s+")
+
+
+def _beats_max() -> int:
+    try:
+        v = int(os.environ.get("MEDIA_VISUAL_BEATS_MAX", "") or DEFAULT_BEATS_MAX)
+        return max(2, min(8, v))
+    except ValueError:
+        return DEFAULT_BEATS_MAX
+
+
+def _merge_even(chunks: list[str], n: int) -> list[str]:
+    """Merge contiguous chunks into `n` groups of roughly equal character
+    mass, preserving order."""
+    total = sum(len(c) for c in chunks) or 1
+    groups: list[list[str]] = [[]]
+    acc = 0
+    for c in chunks:
+        # Start a new group once the current one has its share — unless this
+        # is the last allowed group, which takes everything remaining.
+        if groups[-1] and len(groups) < n and acc >= total * len(groups) / n:
+            groups.append([])
+        groups[-1].append(c)
+        acc += len(c)
+    return ["\n\n".join(g) for g in groups]
+
+
+def split_beats(text: str, max_n: int) -> list[tuple[float, str]] | None:
+    """Split a reply into ≤ max_n ordered parts with their start fractions
+    (cumulative character offset / total — a proxy for spoken timing).
+    None when the reply doesn't warrant beats (short / single-thought).
+    Fenced code blocks are dropped first: they aren't spoken verbatim, so
+    they'd skew the pacing."""
+    clean = _FENCE.sub(" ", text).strip()
+    paras = [p.strip() for p in re.split(r"\n\s*\n", clean) if p.strip()]
+    if len(paras) < 2:
+        sents = [s.strip() for s in _SENT_SPLIT.split(clean) if s.strip()]
+        if len(sents) < 4:
+            return None
+        paras = _merge_even(sents, min(max_n, len(sents) // 2))
+    if len(paras) > max_n:
+        paras = _merge_even(paras, max_n)
+    if len(paras) < 2:
+        return None
+    total = sum(len(p) for p in paras) or 1
+    out: list[tuple[float, str]] = []
+    off = 0
+    for p in paras:
+        out.append((off / total, p))
+        off += len(p)
+    return out
+
+
+def _est_duration(text: str) -> int:
+    try:
+        cps = float(os.environ.get("MEDIA_VISUAL_CHARS_PER_SEC", "")
+                    or DEFAULT_CHARS_PER_SEC)
+    except ValueError:
+        cps = DEFAULT_CHARS_PER_SEC
+    clean = _FENCE.sub(" ", text)
+    return max(3, int(len(clean) / max(cps, 1.0)))
+
+
+def _spool(img: bytes) -> str:
+    # The svg engine returns markup, raster engines return webp — pick the
+    # extension by sniffing so the canvas serves the right content type.
+    ext = "svg" if img.lstrip()[:4] == b"<svg" else "webp"
+    name = f"img-{int(time.time())}-{os.getpid()}-{_spool.n}.{ext}"
+    _spool.n += 1
+    (spool_dir() / name).write_bytes(img)
+    return name
+
+
+_spool.n = 0
 
 
 def main() -> None:
     load_env_file("visual")
     ap = argparse.ArgumentParser(
-        description="generate an image for a reply and push it to the canvas")
+        description="generate image(s) for a reply and push them to the canvas")
     ap.add_argument("text", nargs="?", help="reply text (or stdin)")
     ap.add_argument("--say", action="store_true",
                     help="also speak the text via `media say` (detached)")
@@ -84,6 +179,8 @@ def main() -> None:
     ap.add_argument("--model", help="image model override for the engine")
     ap.add_argument("--no-shape", action="store_true",
                     help="skip LLM prompt shaping, use the text directly")
+    ap.add_argument("--no-beats", action="store_true",
+                    help="always a single image, even for multi-part replies")
     args = ap.parse_args()
 
     text = (args.text if args.text is not None else sys.stdin.read()).strip()
@@ -92,41 +189,85 @@ def main() -> None:
     if args.model:
         os.environ["MEDIA_VISUAL_MODEL"] = args.model
 
+    t_start = time.perf_counter()
     if args.say:
         subprocess.Popen(["media", "say", text], start_new_session=True,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
+    # Scene + storyboard in ONE gateway call when the reply splits into
+    # beats; plain scene shaping otherwise. Beats need the LLM — a raw-text
+    # fallback has no scene to storyboard.
+    beats_on = (not args.no_beats and not args.no_shape
+                and (os.environ.get("MEDIA_VISUAL_BEATS", "1") or "1") != "0")
+    parts = split_beats(text, _beats_max()) if beats_on else None
     t0 = time.perf_counter()
+    prompts = None
     if args.no_shape:
-        prompt, used_llm = text[:300], False
+        scene, used_llm = text[:300], False
+    elif parts:
+        scene, prompts, used_llm = shape_story(
+            text, [p for _, p in parts], session=args.session)
     else:
-        prompt, used_llm = shape_prompt(text, session=args.session)
+        scene, used_llm = shape_prompt(text, session=args.session)
     t_shape = time.perf_counter() - t0
 
+    # --- beats path: concurrent generation + sequence push -------------------
+    # Any failure (few surviving images, dead canvases) falls through to the
+    # single-image path below.
+    if prompts:
+        with ThreadPoolExecutor(max_workers=len(prompts)) as pool:
+            results = list(pool.map(
+                lambda p: generate_image(p, engine=args.engine), prompts))
+        beats = [(frac, img) for (frac, _), (img, _err)
+                 in zip(parts, results) if img is not None]
+        if len(beats) >= 2:
+            named = [(_spool(img), frac) for frac, img in beats]
+            gc_spool()
+            gen_secs = time.perf_counter() - t_start
+            errors = _push_all(lambda targets: {
+                "sequence": [{"image": _image_ref(n, targets),
+                              "at": round(frac, 3)} for n, frac in named],
+                "caption": args.caption,
+                "prompt": scene,
+                "estdur": _est_duration(text),
+                "gen_secs": round(gen_secs, 1),
+            })
+            _report_pushes(errors)
+            kib = sum((spool_dir() / n).stat().st_size for n, _ in named) // 1024
+            print(f"shown: {len(named)} beats  ({kib} KiB)\n"
+                  f"scene (llm, {t_shape:.1f}s): {scene}\n"
+                  f"beats: {gen_secs - t_shape:.1f}s")
+            return
+
     t0 = time.perf_counter()
-    img, err = generate_image(prompt, engine=args.engine)
+    img, err = generate_image(scene, engine=args.engine)
     t_gen = time.perf_counter() - t0
     if img is None:
         print(f"image generation failed: {err}", file=sys.stderr)
         sys.exit(1)
 
-    name = f"img-{int(time.time())}-{os.getpid()}.webp"
-    (spool_dir() / name).write_bytes(img)
+    name = _spool(img)
     gc_spool()
+    errors = _push_all(lambda targets: {
+        "image": _image_ref(name, targets),
+        "caption": args.caption,
+        "prompt": scene,
+    })
+    _report_pushes(errors)
+    print(f"shown: {name}  ({len(img)//1024} KiB, "
+          f"{sum(1 for e in errors if not e)}/{len(errors)} canvases)\n"
+          f"prompt ({'llm' if used_llm else 'fallback'}, {t_shape:.1f}s): {scene}\n"
+          f"image: {t_gen:.1f}s")
 
-    errors = _push(name, args.caption, prompt)
+
+def _report_pushes(errors: list[str]) -> None:
     targets = _canvas_urls()
     for target, e in zip(targets, errors):
         if e:
             print(f"push to {target} failed: {e}", file=sys.stderr)
     if all(errors):
-        print(f"generated {name} but every push failed", file=sys.stderr)
+        print("every push failed", file=sys.stderr)
         sys.exit(1)
-
-    shown = sum(1 for e in errors if not e)
-    print(f"shown: {name}  ({len(img)//1024} KiB, {shown}/{len(targets)} canvases)\n"
-          f"prompt ({'llm' if used_llm else 'fallback'}, {t_shape:.1f}s): {prompt}\n"
-          f"image: {t_gen:.1f}s")
 
 
 if __name__ == "__main__":

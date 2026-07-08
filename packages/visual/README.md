@@ -48,9 +48,19 @@ Design premises (from the discussion that spawned this):
   fresh scene. Disable with `MEDIA_VISUAL_CONTINUITY=0`.
 - **Pluggable engines** — image backends register under the
   `agent_media.visual_engines` entry-point group (mirrors core's render
-  engines; see [`docs/EXTENSIONS.md`](../../docs/EXTENSIONS.md)). Built-in
-  and default: `venice`. Select with `MEDIA_VISUAL_ENGINE`; failures fall
-  back to `MEDIA_VISUAL_FALLBACK_ENGINE` (default venice).
+  engines; see [`docs/EXTENSIONS.md`](../../docs/EXTENSIONS.md)). Two
+  built-ins: `venice` (raster, the default) and `svg` — animated clip-art
+  emitted directly by the gateway LLM (SMIL loops play inside `<img>`;
+  validated: well-formed, no scripts/external refs). Select with
+  `MEDIA_VISUAL_ENGINE`; failures fall back to
+  `MEDIA_VISUAL_FALLBACK_ENGINE` (default venice).
+- **Beats** — a multi-part reply becomes a synced *sequence*: one gateway
+  call shapes the scene AND storyboards it across up to 4 parts, the
+  images generate concurrently, and the canvas flips between them as the
+  voice crosses each part's time fraction (estimated from character
+  count), parking on the conclusion when speech ends. Short replies whose
+  generation outlasts the speech land directly on the conclusion. Off with
+  `--no-beats` / `MEDIA_VISUAL_BEATS=0`.
 
 Keys: Venice key is read from `VENICE_API_KEY`, else
 `~/.config/litellm/litellm.env` — the same file the gateway reads, so
@@ -93,7 +103,10 @@ decoupled from this package.
 | `MEDIA_VISUAL_CONTINUITY` | on | `0` = every reply is a fresh scene |
 | `MEDIA_VISUAL_CONTINUITY_TTL` | `7200` | seconds a session's scene stays alive |
 | `MEDIA_VISUAL_SPOOL_KEEP` | `200` | newest images kept by the post-push GC |
-| `MEDIA_VISUAL_SHAPE_MODEL` / `_SHAPE_TIMEOUT` | summary model / timeout | prompt-shaping overrides |
+| `MEDIA_VISUAL_SHAPE_MODEL` / `_SHAPE_TIMEOUT` | summary model / timeout | prompt-shaping overrides — a fast model (e.g. haiku) matters: prompts must beat the speech they illustrate |
+| `MEDIA_VISUAL_BEATS` / `_BEATS_MAX` | on / `4` | `0` disables the synced sequence; max parts per reply |
+| `MEDIA_VISUAL_CHARS_PER_SEC` | `14` | spoken-duration estimate driving beat pacing |
+| `MEDIA_VISUAL_SVG_MODEL` / `_SVG_TIMEOUT` | shape model / image timeout | svg engine model (haiku draws far better than a small local model) |
 | `MEDIA_VISUAL_MODEL_VENICE` | `z-image-turbo` | venice image model (fast > pretty; `MEDIA_VISUAL_MODEL` also honoured) |
 | `MEDIA_VISUAL_STYLE` | cinematic digital painting… | style suffix, one visual voice |
 | `MEDIA_VISUAL_SIZE` | `1024x1024` | canvas cover-crops, square splits the difference |

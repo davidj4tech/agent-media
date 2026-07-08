@@ -35,6 +35,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 
@@ -134,10 +135,10 @@ def _gateway_chat(system_prompt: str, user_text: str, timeout: int) -> str | Non
 
 
 def shape_prompt(reply_text: str, *, session: str = "") -> tuple[str, bool]:
-    """(image prompt, used_llm). Evolves the session's previous scene when one
-    is alive (see module docstring); the style suffix is always appended so
-    the canvas keeps one visual voice across replies."""
-    style = os.environ.get("MEDIA_VISUAL_STYLE") or DEFAULT_STYLE
+    """(scene prompt, used_llm). Evolves the session's previous scene when one
+    is alive (see module docstring). The scene is *style-free* — each engine
+    applies its own aesthetic (venice appends MEDIA_VISUAL_STYLE, svg speaks
+    clip-art natively), so one scene memory serves every engine."""
     text = reply_text.strip()[:4000]
     prev = state.load_scene(session)
     if prev:
@@ -151,12 +152,11 @@ def shape_prompt(reply_text: str, *, session: str = "") -> tuple[str, bool]:
         # Small local models sometimes wrap the prompt in quotes or lead with
         # the instruction verb anyway; strip the wrapper, keep the scene.
         shaped = shaped.strip().strip('"').strip("'").strip()
-        # Remember the scene itself (sans style suffix) as the next evolution
-        # base. A fallback raw-text prompt is NOT a scene — don't poison the
-        # memory with it.
+        # Remember the scene as the next evolution base. A fallback raw-text
+        # prompt is NOT a scene — don't poison the memory with it.
         state.save_scene(session, shaped)
-        return f"{shaped} {style}", True
-    return f"{text[:300]} {style}", False
+        return shaped, True
+    return text[:300], False
 
 
 def _size() -> tuple[int, int]:
@@ -169,11 +169,14 @@ def _size() -> tuple[int, int]:
 
 
 def generate_venice(prompt: str) -> tuple[bytes | None, str]:
-    """The built-in visual engine: one image via Venice `/image/generate`.
-    Returns (webp bytes, "") or (None, err). Matches the engines.py contract."""
+    """The built-in raster engine: one image via Venice `/image/generate`.
+    Returns (webp bytes, "") or (None, err). Matches the engines.py contract.
+    The raster style suffix (MEDIA_VISUAL_STYLE) is applied here — the scene
+    prompt arrives style-free so other engines can speak their own aesthetic."""
     key = _venice_key()
     if not key:
         return None, "VENICE_API_KEY not set (env or ~/.config/litellm/litellm.env)"
+    prompt = f"{prompt} {os.environ.get('MEDIA_VISUAL_STYLE') or DEFAULT_STYLE}"
     model = (os.environ.get("MEDIA_VISUAL_MODEL_VENICE")
              or os.environ.get("MEDIA_VISUAL_MODEL") or DEFAULT_MODEL)
     w, h = _size()
@@ -209,3 +212,146 @@ def generate_venice(prompt: str) -> tuple[bytes | None, str]:
         return base64.b64decode(images[0]), ""
     except (ValueError, TypeError) as e:
         return None, f"venice b64: {e}"
+
+
+# --- beats: storyboard one scene across the parts of a reply ------------------
+
+PROMPT_STORY = (
+    "You illustrate an assistant's spoken reply as ONE scene, then "
+    "storyboard that scene across the reply's numbered parts. For N parts, "
+    "output EXACTLY N+1 lines and nothing else. Line 1: one vivid "
+    "image-generation prompt capturing the whole reply's essence as a "
+    "concrete visual metaphor (at most 50 words); if a previous scene is "
+    "given, line 1 must EVOLVE it — keep its setting, palette, and main "
+    "subject where they still fit, change what the reply changes. Lines 2 "
+    "to N+1: that same scene at the moment of each part, in order — same "
+    "setting, palette, and main subject; change only what the part changes "
+    "(at most 40 words each). Never ask for text, words, letters, diagrams, "
+    "or UI. Describe scenes directly, no meta-language. No numbering, no "
+    "blank lines, no quotes."
+)
+
+_LINE_PREFIX = re.compile(r"^\s*(?:\d+\s*[).:\-]|[-*•])\s*")
+
+
+def _clean_lines(raw: str) -> list[str]:
+    return [_LINE_PREFIX.sub("", ln).strip().strip('"').strip("'")
+            for ln in raw.splitlines() if ln.strip()]
+
+
+def shape_story(reply_text: str, parts: list[str], *, session: str = ""
+                ) -> tuple[str, list[str] | None, bool]:
+    """(scene, beat prompts | None, used_llm) in ONE gateway call — scene and
+    storyboard together, because two round-trips on a slow model would outlast
+    the speech the beats are meant to accompany. Continuity works exactly as
+    in shape_prompt: the previous scene is offered for evolution and the new
+    scene is saved. Degrades gracefully: a line-count mismatch keeps the first
+    line as the scene (no beats); no output falls back to the raw text."""
+    text = reply_text.strip()[:4000]
+    user = f"Reply:\n{text}\n\nParts:\n" + "\n".join(
+        f"{i + 1}) {p.strip()[:400]}" for i, p in enumerate(parts))
+    prev = state.load_scene(session)
+    if prev:
+        user = f"Previous scene:\n{prev}\n\n{user}"
+    out = _gateway_chat(PROMPT_STORY, user, _shape_timeout())
+    if not out:
+        return text[:300], None, False
+    lines = _clean_lines(out)
+    if not lines:
+        return text[:300], None, False
+    scene = lines[0]
+    state.save_scene(session, scene)
+    beats = lines[1:1 + len(parts)]
+    if len(beats) < len(parts):
+        return scene, None, True
+    return scene, beats, True
+
+
+# --- the svg engine: animated clip-art straight from the LLM ------------------
+# No image API at all: one gateway chat emits a self-contained animated SVG
+# (SMIL <animate>/<animateTransform> loops play inside an <img> tag — scripts
+# don't, which is also why they're rejected below). Fast on a local model,
+# infinitely crisp, and the "movement" is native rather than faked. Aesthetic
+# lives in the system prompt (flat clip-art), not MEDIA_VISUAL_STYLE.
+
+PROMPT_SVG = (
+    "You are a vector illustrator. Turn the given scene into ONE complete, "
+    "self-contained animated SVG, viewBox=\"0 0 1600 900\". Flat clip-art "
+    "style: bold simple shapes, a coherent 5-8 colour palette. Compose "
+    "full-bleed and layered back-to-front: first a background rect covering "
+    "the whole viewBox (sky/room/backdrop, a subtle linearGradient is good), "
+    "then setting elements (ground, horizon, large forms), then 10-25 shapes "
+    "building the main subject at a generous size near the centre. Animate "
+    "3-5 elements with gentle infinite SMIL loops (<animate> / "
+    "<animateTransform>, dur 4-12s) — drifting, pulsing, rotating, floating; "
+    "each animation element must be INSIDE the shape or <g> it animates. "
+    "Rules: no <script>, no <foreignObject>, no external URLs or images, "
+    "no <text>. Output ONLY the SVG markup, nothing else."
+)
+
+_SVG_FORBIDDEN = ("<script", "<foreignobject", "http://", "https://",
+                  "javascript:")
+# The one URL family a valid SVG must contain: the W3C namespace declarations
+# (xmlns / xmlns:xlink). Blanked out before the forbidden scan.
+_SVG_NAMESPACE_OK = "http://www.w3.org/"
+
+
+def _svg_timeout() -> int:
+    """SVG markup is a much longer completion than a one-line prompt; give it
+    the image budget, not the shaping budget."""
+    try:
+        v = int(os.environ.get("MEDIA_VISUAL_SVG_TIMEOUT", "") or 0)
+    except ValueError:
+        v = 0
+    return v if v > 0 else int(os.environ.get("MEDIA_VISUAL_TIMEOUT")
+                               or DEFAULT_TIMEOUT)
+
+
+def _svg_ns_lower() -> str:
+    return _SVG_NAMESPACE_OK.lower()
+
+
+def _extract_svg(raw: str) -> str | None:
+    """The <svg>…</svg> span of a completion (models love to wrap markup in
+    code fences or preamble), or None."""
+    lo = raw.find("<svg")
+    hi = raw.rfind("</svg>")
+    if lo < 0 or hi < 0:
+        return None
+    return raw[lo:hi + len("</svg>")]
+
+
+def generate_svg(prompt: str) -> tuple[bytes | None, str]:
+    """The built-in clip-art engine: the gateway LLM emits an animated SVG.
+    Returns (svg bytes, "") or (None, err) — a bad completion falls back to
+    the raster engine via engines.generate_image. MEDIA_VISUAL_SVG_MODEL
+    overrides the model (default: the shaping model)."""
+    if os.environ.get("MEDIA_VISUAL_SVG_MODEL"):
+        # _gateway_chat honours MEDIA_VISUAL_SHAPE_MODEL first; route the
+        # override through it for this one call.
+        saved = os.environ.get("MEDIA_VISUAL_SHAPE_MODEL")
+        os.environ["MEDIA_VISUAL_SHAPE_MODEL"] = os.environ["MEDIA_VISUAL_SVG_MODEL"]
+        try:
+            raw = _gateway_chat(PROMPT_SVG, prompt, _svg_timeout())
+        finally:
+            if saved is None:
+                os.environ.pop("MEDIA_VISUAL_SHAPE_MODEL", None)
+            else:
+                os.environ["MEDIA_VISUAL_SHAPE_MODEL"] = saved
+    else:
+        raw = _gateway_chat(PROMPT_SVG, prompt, _svg_timeout())
+    if not raw:
+        return None, "svg: gateway returned nothing"
+    svg = _extract_svg(raw)
+    if not svg:
+        return None, "svg: completion contained no <svg> element"
+    low = svg.lower().replace(_svg_ns_lower(), "")
+    for bad in _SVG_FORBIDDEN:
+        if bad in low:
+            return None, f"svg: rejected ({bad!r} present)"
+    try:
+        import xml.etree.ElementTree as ET
+        ET.fromstring(svg)
+    except ET.ParseError as e:
+        return None, f"svg: not well-formed: {e}"
+    return svg.encode("utf-8"), ""

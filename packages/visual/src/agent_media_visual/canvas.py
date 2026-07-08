@@ -434,24 +434,76 @@ PAGE = """<!doctype html>
   // ---- audio-reactive motion: the scene moves with the voice ---------------
   // While speaking: pan/zoom runs faster (seamless via updatePlaybackRate)
   // and the vignette breathes (CSS class). State arrives over the SSE stream.
-  let speaking = false;
+  let speaking = false, speakStartT = 0;
   function setSpeaking(on) {
     if (on === speaking) return;
     speaking = on;
+    if (on) speakStartT = Date.now();
     document.body.classList.toggle('speaking', on);
     for (const el of layers)
       for (const a of el.getAnimations())
         (a.updatePlaybackRate ? a.updatePlaybackRate(on ? 2.6 : 1)
                               : a.playbackRate = on ? 2.6 : 1);
     chime(on);
+    if (!on && seq) setBeat(seq.length - 1);   // speech over → the conclusion
   }
+
+  // ---- beats: a sequence of images that flips in step with the voice -------
+  // The pusher sends per-beat start fractions plus an estimated spoken
+  // duration; progress = elapsed time since the voice started (or since
+  // generation began, for a screen that joined mid-reply) over that estimate.
+  // Speech ending parks the canvas on the final beat, whatever the estimate
+  // got wrong.
+  let seq = null, seqIdx = -1, seqBase = 0, seqEst = 0, seqCap = null;
+  function tick() {
+    if (!sfxOn()) return;
+    try {
+      const c = actx(), t = c.currentTime;
+      const o = c.createOscillator(), g = c.createGain();
+      o.type = 'sine'; o.frequency.value = 880;
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.03, t + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.09);
+      o.connect(g).connect(c.destination);
+      o.start(t); o.stop(t + 0.1);
+    } catch (_) {}
+  }
+  function setBeat(i) {
+    if (!seq || i === seqIdx || !seq[i]) return;
+    const first = seqIdx < 0;
+    seqIdx = i;
+    show({ image: seq[i].image, caption: first ? seqCap : null });
+    first ? whoosh() : tick();
+  }
+  function applySeq() {
+    if (!seq || seqIdx >= seq.length - 1 || !speaking || seqEst <= 0) return;
+    const frac = (Date.now() - seqBase) / 1000 / seqEst;
+    let idx = 0;
+    for (let i = 0; i < seq.length; i++) if (frac >= seq[i].at) idx = i;
+    if (idx > seqIdx) setBeat(idx);
+  }
+  setInterval(applySeq, 1000);
 
   const es = new EventSource('/events');
   es.onmessage = (e) => {
     try {
       const d = JSON.parse(e.data);
-      if (d.kind === 'state') setSpeaking(!!d.speaking);
-      else if (d.image) { show(d); whoosh(); }
+      if (d.kind === 'state') { setSpeaking(!!d.speaking); applySeq(); }
+      else if (d.sequence) {
+        seq = d.sequence; seqIdx = -1; seqEst = d.estdur || 0;
+        seqCap = d.caption || null;
+        // Anchor progress to the real speech start when we saw it; else
+        // reconstruct it from how long generation took.
+        seqBase = (speaking && speakStartT)
+          ? speakStartT : Date.now() - (d.gen_secs || 0) * 1000;
+        // If the voice already finished — generation outlasted a short reply,
+        // or this is a replay to a late-joining screen — park on the
+        // conclusion instead of restarting the story from beat 0.
+        const elapsed = (Date.now() - seqBase) / 1000;
+        if (!speaking && seqEst > 0 && elapsed > seqEst) setBeat(seq.length - 1);
+        else { setBeat(0); applySeq(); }
+      }
+      else if (d.image) { seq = null; seqIdx = -1; show(d); whoosh(); }
     } catch (_) {}
   };
   es.onopen = () => $('dot').classList.remove('off');
@@ -635,6 +687,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         data = f.read_bytes()
         ctype = "image/webp" if name.endswith(".webp") else \
+                "image/svg+xml" if name.endswith(".svg") else \
                 "image/png" if name.endswith(".png") else "image/jpeg"
         self.send_response(200)
         self.send_header("Content-Type", ctype)
@@ -692,20 +745,45 @@ class Handler(BaseHTTPRequestHandler):
         if body is None:
             self._send(400, b"bad json\n", "text/plain")
             return
-        image = str(body.get("image") or "").strip()
-        if not image:
-            self._send(400, b"missing image\n", "text/plain")
-            return
+
         # A bare spool filename becomes a canvas-relative /img/ URL, so the
         # event works from any screen regardless of how it reached us.
-        if "/" not in image:
-            image = "/img/" + image
-        HUB.publish({
-            "image": image,
+        def ref(img: str) -> str:
+            return img if "/" in img else "/img/" + img
+
+        event: dict = {
             "caption": (body.get("caption") or None),
             "prompt": (body.get("prompt") or None),
             "t": int(time.time()),
-        })
+        }
+        seq = body.get("sequence")
+        if isinstance(seq, list) and seq:
+            beats = []
+            for entry in seq:
+                img = str((entry or {}).get("image") or "").strip()
+                if not img:
+                    continue
+                try:
+                    at = max(0.0, min(1.0, float(entry.get("at") or 0)))
+                except (TypeError, ValueError):
+                    at = 0.0
+                beats.append({"image": ref(img), "at": at})
+            if not beats:
+                self._send(400, b"empty sequence\n", "text/plain")
+                return
+            event["sequence"] = beats
+            for k in ("estdur", "gen_secs"):
+                try:
+                    event[k] = max(0.0, float(body.get(k) or 0))
+                except (TypeError, ValueError):
+                    pass
+        else:
+            image = str(body.get("image") or "").strip()
+            if not image:
+                self._send(400, b"missing image\n", "text/plain")
+                return
+            event["image"] = ref(image)
+        HUB.publish(event)
         self._send(200, b"shown\n", "text/plain")
 
     def _ctl(self) -> None:

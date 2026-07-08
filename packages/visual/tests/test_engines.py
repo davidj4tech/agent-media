@@ -32,7 +32,7 @@ def test_discovery_skips_shadow_broken_and_duplicates(monkeypatch):
     ])
     found = engines.discover_visual_engines(refresh=True)
     assert set(found) == {"mine"}
-    assert engines.all_engine_names() == ("venice", "mine")
+    assert engines.all_engine_names() == ("venice", "svg", "mine")
 
 
 def test_dispatch_to_plugin(monkeypatch):
