@@ -18,8 +18,15 @@ Design premises (from the discussion that spawned this):
 ## Pieces
 
 - `media-visual-canvas` — stdlib HTTP server: the canvas page (`/`), an SSE
-  stream (`/events`), the image spool (`/img/<f>`), and a push endpoint
-  (`POST /show`). Default port **8781** (the speech clip server is 8780).
+  stream (`/events`), the image spool (`/img/<f>`), a push endpoint
+  (`POST /show`), and the audio-controller backend (`GET /status`,
+  `POST /ctl`). Default port **8781** (the speech clip server is 8780).
+- **Audio controller** — tap the canvas to reveal a touch version of the
+  tmux popup (`prefix a`): channel cycle (♪ speech ⇆ ♫ music ⇆ ☰ book),
+  marquee title, live clock, `⏮ ▶/‖ ⏭ − +`, and on speech mute + speed.
+  Every button runs the same `media` CLI verb the popup's hotkey runs — one
+  code path — including the popup's ⏮ replay-cursor semantics on speech.
+  Auto-hides after 12s.
 - `media-visual "text"` — shapes the reply into an image prompt (one chat
   call to the same gateway the summary/describe path uses, fallback: raw
   text), generates via **Venice** `/image/generate`, spools the webp, and
