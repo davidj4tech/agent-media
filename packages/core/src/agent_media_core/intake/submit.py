@@ -827,7 +827,7 @@ class _SpeechPlaybackLock:
     desyncs hopelessly.
 
     Priority (set by the intake hooks: notifications/prompts = HIGH, responses
-    = NORMAL) decides what happens when someone else wants the token:
+    = NORMAL) decides what happens when *another session* wants the token:
 
       * HIGH / URGENT  -> preempt: the current speaker steps aside at its next
                           sentence boundary (`should_yield` -> `yield_to_higher`)
@@ -836,9 +836,20 @@ class _SpeechPlaybackLock:
       * LOW            -> skip: if the token is already held, give up rather
                           than queue (ambient announcements aren't worth a wait).
 
+    Priority preemption is scoped to *cross-session* contention only. Within a
+    single Claude session, speech never preempts speech: a session's own clips
+    play in submission (canonical) order regardless of priority, so a short
+    HIGH notification can't cut ahead of that same session's longer NORMAL
+    reply — it queues behind it. (A message with no session id is treated as
+    its own session, so it still preempts by priority as before.) Same-session
+    ordering is enforced at admission via a per-clip submission timestamp; a
+    clip already speaking always finishes rather than being cut short for a
+    sibling.
+
     Waiters announce themselves in a lockless registry — one file per waiter
     under `speech-waiters/`, named `<pid>.<token>` and holding the waiter's
-    rank — so a holder can tell whether anyone *higher* is waiting. Dead-pid
+    rank, submission time, and session id — so a holder can tell whether anyone
+    with precedence is waiting. Dead-pid
     entries are reaped on scan, so a crashed waiter never wedges anyone, and
     `flock` is released on fd close / process death, so a crashed holder frees
     the token. A paused response would hold it indefinitely, so non-LOW waiters
@@ -852,11 +863,20 @@ class _SpeechPlaybackLock:
     def __init__(self) -> None:
         self._fd: Optional[int] = None
         self._rank: int = _PRIO_RANK[Priority.NORMAL]
+        # The Claude session this speech belongs to. Priority preemption only
+        # applies *across* sessions; within one session speech never preempts
+        # speech and siblings play in submission (canonical) order. Empty means
+        # "unknown" and is treated as distinct from every other waiter, so a
+        # message with no session id still preempts by priority as before.
+        self._session: str = ""
+        # Submission time, used to order same-session siblings. Set once in
+        # acquire() and preserved across yield_to_higher() re-takes.
+        self._seq: float = 0.0
         # Lazily-created read-only handle for polling holder progress while we
         # wait for the token (see _holder_progress_sig).
         self._progress_store: Optional[StateStore] = None
         # Unique per instance so two locks in one process (e.g. tests) don't
-        # collide; the pid prefix lets _max_other_rank reap dead waiters.
+        # collide; the pid prefix lets the waiter scan reap dead entries.
         self._token = f"{os.getpid()}.{uuid.uuid4().hex}"
 
     # ---- waiter registry -------------------------------------------------
@@ -865,7 +885,11 @@ class _SpeechPlaybackLock:
         try:
             d = _speech_wait_dir()
             d.mkdir(parents=True, exist_ok=True)
-            (d / self._token).write_text(str(self._rank))
+            # Three lines: rank, submission seq, session id. Session goes last
+            # (own line) so an id containing odd characters can't corrupt the
+            # numeric fields. Older single-line (rank-only) files still parse.
+            (d / self._token).write_text(
+                f"{self._rank}\n{self._seq!r}\n{self._session}")
         except OSError:
             pass
 
@@ -875,14 +899,20 @@ class _SpeechPlaybackLock:
         except OSError:
             pass
 
-    def _max_other_rank(self) -> int:
-        """Highest rank among *other* live waiters; -1 if none. Reaps stale
+    def _same_session(self, other: str) -> bool:
+        """True only when both sessions are known and identical. Unknown ("")
+        sessions are treated as distinct, so priority preemption still applies
+        when a message carries no session id."""
+        return bool(self._session) and bool(other) and other == self._session
+
+    def _other_waiters(self) -> "list[tuple[int, float, str]]":
+        """(rank, seq, session) for every *other* live waiter. Reaps stale
         (dead-pid) entries as a side effect."""
-        best = -1
+        out: "list[tuple[int, float, str]]" = []
         try:
             entries = list(_speech_wait_dir().iterdir())
         except OSError:
-            return best
+            return out
         for f in entries:
             if f.name == self._token:
                 continue
@@ -897,11 +927,36 @@ class _SpeechPlaybackLock:
                     pass
                 continue
             try:
-                r = int(f.read_text().strip())
-            except (OSError, ValueError):
+                lines = f.read_text().splitlines()
+                rank = int(lines[0].strip())
+            except (OSError, ValueError, IndexError):
                 continue
-            best = max(best, r)
+            try:
+                seq = float(lines[1].strip()) if len(lines) > 1 else 0.0
+            except ValueError:
+                seq = 0.0
+            session = lines[2] if len(lines) > 2 else ""
+            out.append((rank, seq, session))
+        return out
+
+    def _preempting_rank(self) -> int:
+        """Highest rank among other live waiters from a *different* session;
+        -1 if none. Same-session waiters are excluded — within a session,
+        priority never preempts (canonical order wins)."""
+        best = -1
+        for rank, _seq, session in self._other_waiters():
+            if self._same_session(session):
+                continue
+            best = max(best, rank)
         return best
+
+    def _earlier_sibling_waiting(self) -> bool:
+        """True if a same-session waiter was submitted before me. It must speak
+        first to preserve canonical order, regardless of either one's priority."""
+        for _rank, seq, session in self._other_waiters():
+            if self._same_session(session) and seq < self._seq:
+                return True
+        return False
 
     # ---- token acquisition ----------------------------------------------
 
@@ -909,10 +964,16 @@ class _SpeechPlaybackLock:
     def _disabled() -> bool:
         return os.environ.get("MEDIA_SPEECH_SERIALIZE", "1").lower() in ("0", "false", "no")
 
-    def acquire(self, priority: Priority = Priority.NORMAL) -> None:
+    def acquire(self, priority: Priority = Priority.NORMAL, *,
+                session: str = "") -> None:
         if self._disabled():
             return
         self._rank = _rank_of(priority)
+        self._session = session or ""
+        # Stamp submission order for same-session sibling ordering. Set once —
+        # yield_to_higher() re-takes without restamping, so a yielded reply
+        # keeps its original place among its session's clips.
+        self._seq = time.time()
         # LOW announcements skip rather than queue when anything's playing.
         self._take(skip_if_busy=self._rank <= _PRIO_RANK[Priority.LOW])
 
@@ -979,10 +1040,16 @@ class _SpeechPlaybackLock:
                         return
                     time.sleep(0.2)
                     continue
-                # Got the token, but hand it back if someone strictly higher is
-                # also waiting — so priority wins admission no matter who won
-                # the raw flock race.
-                if self._max_other_rank() > self._rank:
+                # Got the token, but hand it back if someone else should go
+                # first, then retry. Two reasons to defer: a strictly-higher
+                # *other-session* waiter (priority wins admission across
+                # sessions, no matter who won the raw flock race), or an
+                # *earlier same-session* waiter (siblings play in submission
+                # order, so priority never lets a later clip jump its session's
+                # queue). The strictly-earliest same-session waiter never defers
+                # to a sibling, so it always eventually wins — no livelock.
+                if (self._preempting_rank() > self._rank
+                        or self._earlier_sibling_waiting()):
                     try:
                         fcntl.flock(fd, fcntl.LOCK_UN)
                     except OSError:
@@ -996,10 +1063,14 @@ class _SpeechPlaybackLock:
             self._unregister()
 
     def should_yield(self) -> bool:
-        """True when a strictly higher-priority speaker is waiting."""
+        """True when a strictly higher-priority speaker from a *different*
+        session is waiting. A same-session sibling never interrupts an
+        in-progress clip: once we're speaking we finish, and canonical order is
+        enforced at admission (an earlier sibling wins the token next), so we
+        never cut a clip short to play another of our own session's messages."""
         if self._fd is None:
             return False
-        return self._max_other_rank() > self._rank
+        return self._preempting_rank() > self._rank
 
     def yield_to_higher(self) -> None:
         """Step aside for a higher-priority waiter, then re-take the token.
@@ -1341,7 +1412,8 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
 
     timeout = float(os.environ.get("MEDIA_REMOTE_SAY_TIMEOUT", "180"))
     lock = _SpeechPlaybackLock()
-    lock.acquire(event.priority)
+    lock.acquire(event.priority,
+                 session=(event.metadata or {}).get("session") or "")
     try:
         coordinator.before_speech()
         try:
@@ -1588,7 +1660,7 @@ def submit_event(event: Event,
         # parallel). Acquired before before_speech() so other media isn't paused
         # while we're still queued behind another speaker.
         playback_lock = _SpeechPlaybackLock()
-        playback_lock.acquire(event.priority)
+        playback_lock.acquire(event.priority, session=source_session)
         # Cross-host: also claim the shared remote broker so another machine's
         # reply can't stop+clear our still-playing playlist. Waits out a healthy
         # remote holder, takes over an expired one. No-op for local/rooms.
@@ -2080,7 +2152,7 @@ def submit_stream(sentences,
         # Serialize playback across sessions (rendering keeps streaming in
         # parallel via the producer thread while we wait our turn for the broker).
         playback_lock = _SpeechPlaybackLock()
-        playback_lock.acquire(event.priority)
+        playback_lock.acquire(event.priority, session=source_session)
         i = 0
         nav_jump = False
         try:
