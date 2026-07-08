@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import fcntl
+import hashlib
 import logging
 import os
 import re
@@ -792,6 +793,11 @@ def _speech_wait_dir() -> Path:
     return state / "agent-media" / "speech-waiters"
 
 
+def _speech_supersede_dir() -> Path:
+    state = Path(os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state"))
+    return state / "agent-media" / "speech-supersede"
+
+
 # Priority -> numeric rank. Higher rank preempts lower; equal ranks queue.
 _PRIO_RANK = {
     Priority.LOW: 0,
@@ -837,14 +843,20 @@ class _SpeechPlaybackLock:
                           than queue (ambient announcements aren't worth a wait).
 
     Priority preemption is scoped to *cross-session* contention only. Within a
-    single Claude session, speech never preempts speech: a session's own clips
+    single Claude session, speech does not preempt speech: a session's own clips
     play in submission (canonical) order regardless of priority, so a short
     HIGH notification can't cut ahead of that same session's longer NORMAL
     reply — it queues behind it. (A message with no session id is treated as
     its own session, so it still preempts by priority as before.) Same-session
     ordering is enforced at admission via a per-clip submission timestamp; a
-    clip already speaking always finishes rather than being cut short for a
-    sibling.
+    clip already speaking otherwise finishes rather than being cut short.
+
+    The one same-session exception is URGENT — a deliberate "stop and hear this"
+    barge-in. An URGENT clip interrupts its session's in-progress clip at the
+    next boundary and jumps ahead of its queued siblings. By default the
+    interrupted clip resumes afterwards (nothing lost); if the URGENT clip is
+    tagged `supersede`, the messages it interrupts/precedes are dropped instead
+    (see `should_abort` and the `speech-supersede` marker).
 
     Waiters announce themselves in a lockless registry — one file per waiter
     under `speech-waiters/`, named `<pid>.<token>` and holding the waiter's
@@ -872,6 +884,9 @@ class _SpeechPlaybackLock:
         # Submission time, used to order same-session siblings. Set once in
         # acquire() and preserved across yield_to_higher() re-takes.
         self._seq: float = 0.0
+        # Whether this is a supersede barge-in — one that drops the same-session
+        # messages it interrupts/precedes instead of letting them resume.
+        self._supersede: bool = False
         # Lazily-created read-only handle for polling holder progress while we
         # wait for the token (see _holder_progress_sig).
         self._progress_store: Optional[StateStore] = None
@@ -958,6 +973,20 @@ class _SpeechPlaybackLock:
                 return True
         return False
 
+    def _is_urgent(self) -> bool:
+        return self._rank >= _PRIO_RANK[Priority.URGENT]
+
+    def _urgent_sibling_waiting(self) -> bool:
+        """True if a same-session URGENT clip is waiting. URGENT is the one
+        same-session case that DOES barge in: a deliberate "stop and hear this"
+        that interrupts (and jumps ahead of) our own earlier message rather than
+        queueing behind it in canonical order. Everything below URGENT still
+        queues within a session."""
+        for rank, _seq, session in self._other_waiters():
+            if self._same_session(session) and rank >= _PRIO_RANK[Priority.URGENT]:
+                return True
+        return False
+
     # ---- token acquisition ----------------------------------------------
 
     @staticmethod
@@ -965,7 +994,7 @@ class _SpeechPlaybackLock:
         return os.environ.get("MEDIA_SPEECH_SERIALIZE", "1").lower() in ("0", "false", "no")
 
     def acquire(self, priority: Priority = Priority.NORMAL, *,
-                session: str = "") -> None:
+                session: str = "", supersede: bool = False) -> None:
         if self._disabled():
             return
         self._rank = _rank_of(priority)
@@ -974,6 +1003,14 @@ class _SpeechPlaybackLock:
         # yield_to_higher() re-takes without restamping, so a yielded reply
         # keeps its original place among its session's clips.
         self._seq = time.time()
+        # A supersede barge-in publishes a per-session marker at its own seq so
+        # the same-session clips it interrupts/precedes (all with an earlier
+        # seq) can see they've been dropped and abort. Only meaningful with a
+        # real session and an URGENT rank (the only same-session barge-in).
+        self._supersede = bool(supersede) and bool(self._session) \
+            and self._rank >= _PRIO_RANK[Priority.URGENT]
+        if self._supersede:
+            self._mark_supersede()
         # LOW announcements skip rather than queue when anything's playing.
         self._take(skip_if_busy=self._rank <= _PRIO_RANK[Priority.LOW])
 
@@ -1041,15 +1078,20 @@ class _SpeechPlaybackLock:
                     time.sleep(0.2)
                     continue
                 # Got the token, but hand it back if someone else should go
-                # first, then retry. Two reasons to defer: a strictly-higher
+                # first, then retry. Reasons to defer: a strictly-higher
                 # *other-session* waiter (priority wins admission across
-                # sessions, no matter who won the raw flock race), or an
-                # *earlier same-session* waiter (siblings play in submission
-                # order, so priority never lets a later clip jump its session's
-                # queue). The strictly-earliest same-session waiter never defers
-                # to a sibling, so it always eventually wins — no livelock.
+                # sessions, no matter who won the raw flock race), or — unless
+                # we ourselves are URGENT — a same-session waiter that outranks
+                # our place in the queue: an URGENT sibling (deliberate barge-in
+                # jumps to the front) or an *earlier* sibling (siblings otherwise
+                # play in submission order, so priority never lets a later clip
+                # jump its session's queue). An URGENT clip defers to nobody in
+                # its own session; the strictly-earliest non-URGENT sibling never
+                # defers to a sibling either, so admission always progresses.
                 if (self._preempting_rank() > self._rank
-                        or self._earlier_sibling_waiting()):
+                        or (not self._is_urgent()
+                            and (self._urgent_sibling_waiting()
+                                 or self._earlier_sibling_waiting()))):
                     try:
                         fcntl.flock(fd, fcntl.LOCK_UN)
                     except OSError:
@@ -1063,14 +1105,51 @@ class _SpeechPlaybackLock:
             self._unregister()
 
     def should_yield(self) -> bool:
-        """True when a strictly higher-priority speaker from a *different*
-        session is waiting. A same-session sibling never interrupts an
-        in-progress clip: once we're speaking we finish, and canonical order is
-        enforced at admission (an earlier sibling wins the token next), so we
-        never cut a clip short to play another of our own session's messages."""
+        """True when we should step aside at the next clip boundary: for a
+        strictly higher-priority speaker from a *different* session, or for a
+        same-session URGENT barge-in. A same-session clip below URGENT never
+        interrupts an in-progress clip — once we're speaking we finish, and
+        canonical order is enforced at admission (an earlier sibling wins the
+        token next), so an ordinary sibling never cuts a clip short."""
         if self._fd is None:
             return False
-        return self._preempting_rank() > self._rank
+        return (self._preempting_rank() > self._rank
+                or self._urgent_sibling_waiting())
+
+    def _supersede_path(self) -> Path:
+        key = hashlib.sha1(self._session.encode("utf-8")).hexdigest()
+        return _speech_supersede_dir() / key
+
+    def _mark_supersede(self) -> None:
+        """Publish 'drop everything in this session older than my seq'. Keyed by
+        session, so at most one marker per session; a later supersede only ever
+        raises the bar (max), never lowers it."""
+        try:
+            d = _speech_supersede_dir()
+            d.mkdir(parents=True, exist_ok=True)
+            path = self._supersede_path()
+            try:
+                prev = float(path.read_text().strip())
+            except (OSError, ValueError):
+                prev = 0.0
+            path.write_text(repr(max(prev, self._seq)))
+        except OSError:
+            pass
+
+    def should_abort(self) -> bool:
+        """True when a same-session supersede has dropped this clip — a later
+        URGENT clip in our session was tagged `supersede`, so everything it
+        interrupted or was queued ahead of (every clip with an earlier seq)
+        should stop rather than play/resume. The superseding clip itself has
+        seq == marker, so it never aborts itself; clips submitted *after* it
+        (larger seq) are unaffected."""
+        if self._disabled() or not self._session:
+            return False
+        try:
+            marker = float(self._supersede_path().read_text().strip())
+        except (OSError, ValueError):
+            return False
+        return marker > self._seq
 
     def yield_to_higher(self) -> None:
         """Step aside for a higher-priority waiter, then re-take the token.
@@ -1413,7 +1492,14 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
     timeout = float(os.environ.get("MEDIA_REMOTE_SAY_TIMEOUT", "180"))
     lock = _SpeechPlaybackLock()
     lock.acquire(event.priority,
-                 session=(event.metadata or {}).get("session") or "")
+                 session=(event.metadata or {}).get("session") or "",
+                 supersede=bool((event.metadata or {}).get("supersede")))
+    # Superseded before we started: skip this whole-reply remote render. (The
+    # remote say is one blocking pipe, so this is the only place it can drop —
+    # once handed off it can't be cut mid-utterance like the clip loops.)
+    if lock.should_abort():
+        lock.release()
+        return None
     try:
         coordinator.before_speech()
         try:
@@ -1660,7 +1746,15 @@ def submit_event(event: Event,
         # parallel). Acquired before before_speech() so other media isn't paused
         # while we're still queued behind another speaker.
         playback_lock = _SpeechPlaybackLock()
-        playback_lock.acquire(event.priority, session=source_session)
+        playback_lock.acquire(
+            event.priority, session=source_session,
+            supersede=bool((event.metadata or {}).get("supersede")))
+        # Superseded before we started (a later URGENT in this session dropped
+        # us): hand the token straight back and skip playback entirely — no
+        # broker claim, no music duck, no history row.
+        if playback_lock.should_abort():
+            playback_lock.release()
+            return None
         # Cross-host: also claim the shared remote broker so another machine's
         # reply can't stop+clear our still-playing playlist. Waits out a healthy
         # remote holder, takes over an expired one. No-op for local/rooms.
@@ -1751,6 +1845,13 @@ def submit_event(event: Event,
                 hard_deadline = time.monotonic() + (total_duration_s or 0.0) + 5.0
                 last_broker_refresh = time.monotonic()
                 while played_any:
+                    # Superseded by a later URGENT in this session — drop the
+                    # rest of the playlist instead of yielding-and-resuming.
+                    if playback_lock.should_abort():
+                        highlighter.cancel_pending()
+                        sink.stop(target)
+                        finished = True
+                        break
                     # Step aside for a higher-priority speaker (e.g. a
                     # notification) waiting on the token, then resume this reply —
                     # the remote counterpart of the per-clip path's yield. The
@@ -1874,6 +1975,10 @@ def submit_event(event: Event,
                 i = 0
                 nav_jump = False  # True when this clip was reached via a popup skip
                 while 0 <= i < n:
+                    # Superseded by a later URGENT in this session — drop the
+                    # remaining sentences instead of yielding-and-resuming.
+                    if playback_lock.should_abort():
+                        break
                     # Step aside between sentences if a higher-priority speaker
                     # (e.g. a notification) is waiting; resume it once that's done.
                     if playback_lock.should_yield():
@@ -2152,11 +2257,17 @@ def submit_stream(sentences,
         # Serialize playback across sessions (rendering keeps streaming in
         # parallel via the producer thread while we wait our turn for the broker).
         playback_lock = _SpeechPlaybackLock()
-        playback_lock.acquire(event.priority, session=source_session)
+        playback_lock.acquire(
+            event.priority, session=source_session,
+            supersede=bool((event.metadata or {}).get("supersede")))
         i = 0
         nav_jump = False
         try:
             while True:
+                # Superseded by a later URGENT in this session — drop the rest
+                # (whether or not we've started) instead of resuming.
+                if playback_lock.should_abort():
+                    break
                 # Step aside between sentences for a higher-priority speaker;
                 # resume this clip once it's done. Only after the first clip has
                 # played, so before_speech ran and there's something to resume.
