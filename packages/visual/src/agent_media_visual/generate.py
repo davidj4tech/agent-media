@@ -289,6 +289,21 @@ PROMPT_SVG = (
     "no <text>. Output ONLY the SVG markup, nothing else."
 )
 
+PROMPT_SVG_FIGURE = (
+    "You are a technical illustrator. Turn the given description into ONE "
+    "complete, self-contained SVG figure that COMMUNICATES it: a clear "
+    "diagram, comparison, or illustrative scene — whatever the description "
+    "calls for. viewBox=\"0 0 1600 900\", flat design, bold simple shapes, "
+    "a coherent 5-8 colour palette, generous sizing (it is viewed from "
+    "across a room). Short text labels ARE allowed and encouraged where "
+    "they carry meaning — sans-serif, large (36px+), high contrast, never "
+    "overlapping. Animate 1-3 elements subtly with infinite SMIL loops "
+    "(<animate> / <animateTransform>, dur 4-12s) — a gentle pulse on the "
+    "key element, a slow drift — never distracting from the content. "
+    "Rules: no <script>, no <foreignObject>, no external URLs or images. "
+    "Output ONLY the SVG markup, nothing else."
+)
+
 _SVG_FORBIDDEN = ("<script", "<foreignobject", "http://", "https://",
                   "javascript:")
 # The one URL family a valid SVG must contain: the W3C namespace declarations
@@ -325,21 +340,28 @@ def generate_svg(prompt: str) -> tuple[bytes | None, str]:
     """The built-in clip-art engine: the gateway LLM emits an animated SVG.
     Returns (svg bytes, "") or (None, err) — a bad completion falls back to
     the raster engine via engines.generate_image. MEDIA_VISUAL_SVG_MODEL
-    overrides the model (default: the shaping model)."""
+    overrides the model (default: the shaping model).
+
+    MEDIA_VISUAL_FIGURE=1 (set by the CLI for author-hinted, *purposeful*
+    visuals) switches to the figure prompt: communicate, not decorate —
+    diagrams and labeled comparisons, with crisp text labels allowed (vector
+    text renders perfectly; the no-text rule exists for raster models)."""
+    system = (PROMPT_SVG_FIGURE
+              if os.environ.get("MEDIA_VISUAL_FIGURE") == "1" else PROMPT_SVG)
     if os.environ.get("MEDIA_VISUAL_SVG_MODEL"):
         # _gateway_chat honours MEDIA_VISUAL_SHAPE_MODEL first; route the
         # override through it for this one call.
         saved = os.environ.get("MEDIA_VISUAL_SHAPE_MODEL")
         os.environ["MEDIA_VISUAL_SHAPE_MODEL"] = os.environ["MEDIA_VISUAL_SVG_MODEL"]
         try:
-            raw = _gateway_chat(PROMPT_SVG, prompt, _svg_timeout())
+            raw = _gateway_chat(system, prompt, _svg_timeout())
         finally:
             if saved is None:
                 os.environ.pop("MEDIA_VISUAL_SHAPE_MODEL", None)
             else:
                 os.environ["MEDIA_VISUAL_SHAPE_MODEL"] = saved
     else:
-        raw = _gateway_chat(PROMPT_SVG, prompt, _svg_timeout())
+        raw = _gateway_chat(system, prompt, _svg_timeout())
     if not raw:
         return None, "svg: gateway returned nothing"
     svg = _extract_svg(raw)

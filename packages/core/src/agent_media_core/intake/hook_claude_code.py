@@ -719,12 +719,24 @@ def _play_now(event: Event) -> None:
     # dedup, so a suppressed duplicate reply doesn't repaint the canvas either.
     # Popped unconditionally — the raw reply must never ride into submit_event.
     visual_raw = event.metadata.pop("visual_raw", None)
+    visual_hint = event.metadata.pop("visual_hint", "") or ""
+    visual_reveal = event.metadata.pop("visual_reveal", None)
+    spawn_epoch = time.time()
     if visual_raw:
         try:
             from ._visual import spawn_visual
             spawn_visual(visual_raw, event.text,
-                         event.metadata.get("session") or "")
+                         event.metadata.get("session") or "",
+                         hint=visual_hint)
         except Exception:  # noqa: BLE001 — accompaniment, never playback's problem
+            pass
+    if visual_raw and visual_reveal:
+        # [[reveal:]]: speak up to the marker, hold until the canvas shows
+        # the image (bounded — see wait_for_fresh_visual), then speak on.
+        try:
+            _play_reveal(event, visual_reveal, spawn_epoch, state)
+            return
+        except Exception:  # noqa: BLE001 — fall back to the plain single play
             pass
     # Optional LLM spoken-summary rewrite (opt-in). Runs *here*, in the detached
     # child, so the network call never blocks the hook. Dedup already keyed off
@@ -758,6 +770,27 @@ def _play_now(event: Event) -> None:
             except Exception:  # noqa: BLE001 — detached; keep event.text
                 pass
     submit_event(event, state=state)
+
+
+def _play_reveal(event: Event, reveal: dict, spawn_epoch: float,
+                 state: StateStore) -> None:
+    """Speak `reveal['pre']`, hold until the canvas shows an image fresher
+    than `spawn_epoch` (bounded by MEDIA_VISUAL_REVEAL_TIMEOUT — a hung
+    generator must never mute a reply), then speak `reveal['post']`. The two
+    parts share the session, so the broker plays them in canonical order; the
+    hold only delays when part two is *enqueued*. Runs in the detached child."""
+    from dataclasses import replace
+
+    from ._visual import wait_for_fresh_visual
+
+    def part(txt: str) -> Event:
+        md = dict(event.metadata)
+        md["dedup_key"] = hashlib.sha1(txt.encode("utf-8")).hexdigest()
+        return replace(event, text=txt, metadata=md)
+
+    submit_event(part(reveal["pre"]), state=state)
+    wait_for_fresh_visual(spawn_epoch)
+    submit_event(part(reveal["post"]), state=state)
 
 
 def _play_detached(event: Event) -> None:
@@ -812,7 +845,11 @@ def _handle_stop(payload: dict) -> int:
     # Prefer the text straight off the Stop payload — no transcript read, parse,
     # or flush-retry. `last_assistant_message` is "the full text of Claude's
     # response" (Stop/SubagentStop only).
+    # Inline [[visual:]]/[[reveal:]] markers make the reply's picture
+    # purposeful (see _visual.py). Always stripped from what gets spoken.
+    from ._visual import extract_visual_markers
     raw = (payload.get("last_assistant_message") or "").strip()
+    raw, vis_hint, reveal_pre, reveal_post = extract_visual_markers(raw)
     text = strip_markdown(raw)
     if not text:
         # Fall back to the transcript JSONL: covers older Claude Code (no field)
@@ -834,6 +871,7 @@ def _handle_stop(payload: dict) -> int:
                 break
             time.sleep(0.1)
         raw = _latest_assistant_text(tp)
+        raw, vis_hint, reveal_pre, reveal_post = extract_visual_markers(raw)
         text = strip_markdown(raw)
     if not text:
         return 0
@@ -846,20 +884,33 @@ def _handle_stop(payload: dict) -> int:
     metadata = {"kind": "stop", "session": payload.get("session_id") or ""}
     # Opt-in LLM spoken-summary: carry the raw reply so the detached child can
     # rewrite it for speech (only worth it past a length threshold).
+    # Opt-in visual accompaniment: carry the raw reply so the detached child
+    # can hand it to `media-visual` (see _visual.py). An author marker (hint)
+    # bypasses the length gate — the author explicitly asked for a picture.
+    # A [[reveal:]] marker additionally carries the split halves so playback
+    # can hold between them until the image is up.
+    from ._visual import visual_enabled, visual_min_chars
+    if visual_enabled() and (vis_hint or len(raw) >= visual_min_chars()):
+        metadata["visual_raw"] = raw
+        if vis_hint:
+            metadata["visual_hint"] = vis_hint
+        if reveal_pre is not None:
+            pre = strip_markdown(reveal_pre)
+            post = strip_markdown(reveal_post or "")
+            if pre and post:
+                metadata["visual_reveal"] = {"pre": pre, "post": post}
     from ._summary import summary_enabled, summary_min_chars, describe_enabled
-    if summary_enabled() and len(raw) >= summary_min_chars():
+    if "visual_reveal" in metadata:
+        # A reveal splits the mechanically-stripped text at an exact marker
+        # position; the summary/describe rewrites would move or erase that
+        # point, so they sit this reply out.
+        pass
+    elif summary_enabled() and len(raw) >= summary_min_chars():
         metadata["summary_raw"] = raw
     elif describe_enabled():
         # No whole-reply summary, but per-block describe is on: carry the raw
         # reply so the detached child can describe its code/tables (off the fork).
         metadata["describe_raw"] = raw
-    # Opt-in visual accompaniment (independent of summary/describe): carry the
-    # raw reply so the detached child can hand it to `media-visual` (see
-    # _visual.py). Its own length gate — a picture is worth more than a
-    # one-liner costs.
-    from ._visual import visual_enabled, visual_min_chars
-    if visual_enabled() and len(raw) >= visual_min_chars():
-        metadata["visual_raw"] = raw
     _play_detached(
         Event(text=text, source=Source.CLAUDE_CODE,
               priority=Priority.NORMAL,

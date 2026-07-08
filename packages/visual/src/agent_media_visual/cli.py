@@ -48,6 +48,7 @@ from .canvas import DEFAULT_PORT
 from .engines import generate_image
 from .generate import shape_prompt, shape_story
 from .state import gc_spool, spool_dir
+from .state import save_scene as state_save_scene
 
 DEFAULT_BEATS_MAX = 4
 DEFAULT_CHARS_PER_SEC = 14  # rough TTS pace for the spoken-duration estimate
@@ -190,6 +191,13 @@ def main() -> None:
                     help="skip LLM prompt shaping, use the text directly")
     ap.add_argument("--no-beats", action="store_true",
                     help="always a single image, even for multi-part replies")
+    ap.add_argument("--hint",
+                    help="author-supplied illustration description: used as "
+                         "the scene directly (no shaping call, no beats) — "
+                         "maximal relevance, minimal latency")
+    ap.add_argument("--fast", action="store_true",
+                    help="use the beats/fast engine (a reveal can't wait "
+                         "a minute for clip art)")
     args = ap.parse_args()
 
     text = (args.text if args.text is not None else sys.stdin.read()).strip()
@@ -203,15 +211,26 @@ def main() -> None:
         subprocess.Popen(["media", "say", text], start_new_session=True,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
+    if args.fast:
+        args.engine = _beats_engine(args.engine)
+
     # Scene + storyboard in ONE gateway call when the reply splits into
     # beats; plain scene shaping otherwise. Beats need the LLM — a raw-text
-    # fallback has no scene to storyboard.
-    beats_on = (not args.no_beats and not args.no_shape
+    # fallback has no scene to storyboard. An author-supplied --hint
+    # short-circuits everything: it IS the scene (saved to the continuity
+    # memory so later replies evolve from it), single decisive image.
+    beats_on = (not args.no_beats and not args.no_shape and not args.hint
                 and (os.environ.get("MEDIA_VISUAL_BEATS", "1") or "1") != "0")
     parts = split_beats(text, _beats_max()) if beats_on else None
     t0 = time.perf_counter()
     prompts = None
-    if args.no_shape:
+    if args.hint:
+        scene, used_llm = args.hint.strip(), True
+        # Purposeful mode for engines that can honour it (the svg engine
+        # switches to its labeled-figure prompt).
+        os.environ["MEDIA_VISUAL_FIGURE"] = "1"
+        state_save_scene(args.session, scene)
+    elif args.no_shape:
         scene, used_llm = text[:300], False
     elif parts:
         scene, prompts, used_llm = shape_story(

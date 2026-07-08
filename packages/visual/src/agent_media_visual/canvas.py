@@ -667,6 +667,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, b"ok\n", "text/plain")
         elif path == "/events":
             self._sse()
+        elif path == "/last":
+            # When the canvas last received something to show — the reveal
+            # flow polls this to know the image is up before speech resumes.
+            last = HUB.last or {}
+            self._json(200, {"t": last.get("t") or 0,
+                             "kind": "sequence" if last.get("sequence")
+                                     else "image" if last.get("image") else None})
         elif path == "/status":
             channel = "speech"
             for kv in query.split("&"):

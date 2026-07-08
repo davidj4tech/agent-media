@@ -54,6 +54,17 @@ Design premises (from the discussion that spawned this):
   validated: well-formed, no scripts/external refs). Select with
   `MEDIA_VISUAL_ENGINE`; failures fall back to
   `MEDIA_VISUAL_FALLBACK_ENGINE` (default venice).
+- **Purposeful visuals & the reveal** — a picture that *says* something
+  instead of decorating. The reply's author writes an inline marker:
+  `[[visual: description]]` makes the description the image spec (a figure,
+  drawn to communicate — the svg engine switches to its labeled-diagram
+  prompt, since vector text renders crisply); `[[reveal: description]]`
+  additionally **holds the voice at that exact point** until the canvas
+  confirms the image is up (`GET /last`, bounded by
+  `MEDIA_VISUAL_REVEAL_TIMEOUT` so a hung generator never mutes a reply) —
+  the presenter waiting for the slide. Markers are always stripped from
+  speech; a marker also bypasses the min-length gate. No marker → ambient
+  pretty pictures, as ever.
 - **Beats** — a multi-part reply becomes a synced *sequence*: one gateway
   call shapes the scene AND storyboards it across up to 4 parts, the
   images generate concurrently, and the canvas flips between them as the
@@ -108,6 +119,7 @@ decoupled from this package.
 | `MEDIA_VISUAL_BEATS_ENGINE` | the normal engine | engine for beat images only — pair a slow single-image engine (svg) with a fast one (venice) so sequences stay synced |
 | `MEDIA_VISUAL_CHARS_PER_SEC` | `14` | spoken-duration estimate driving beat pacing |
 | `MEDIA_VISUAL_SVG_MODEL` / `_SVG_TIMEOUT` | shape model / image timeout | svg engine model (haiku draws far better than a small local model) |
+| `MEDIA_VISUAL_REVEAL_TIMEOUT` | `75` | max seconds speech holds at a `[[reveal:]]` before continuing without the picture |
 | `MEDIA_VISUAL_MODEL_VENICE` | `z-image-turbo` | venice image model (fast > pretty; `MEDIA_VISUAL_MODEL` also honoured) |
 | `MEDIA_VISUAL_STYLE` | cinematic digital painting… | style suffix, one visual voice |
 | `MEDIA_VISUAL_SIZE` | `1024x1024` | canvas cover-crops, square splits the difference |
