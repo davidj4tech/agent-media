@@ -171,13 +171,38 @@ def describe_enabled() -> bool:
     return (os.environ.get("MEDIA_SPEECH_DESCRIBE", "0") or "0").strip() == "1"
 
 
+def _log_describe(kind: str, in_chars: int, secs: float, out: "str | None") -> None:
+    """Append one JSONL telemetry line per describe call when MEDIA_DESCRIBE_LOG
+    is set (a path). Best-effort: monitoring must never affect playback."""
+    path = os.environ.get("MEDIA_DESCRIBE_LOG")
+    if not path:
+        return
+    try:
+        import json
+        import time as _time
+        rec = {"t": round(_time.time()), "kind": kind, "in": in_chars,
+               "secs": round(secs, 1), "ok": out is not None, "out": len(out or "")}
+        with open(os.path.expanduser(path), "a") as fh:
+            fh.write(json.dumps(rec) + "\n")
+    except Exception:  # noqa: BLE001 — telemetry is never load-bearing
+        pass
+
+
+def _timed_describe(kind: str, prompt: str, text: str) -> str | None:
+    import time as _time
+    t0 = _time.perf_counter()
+    out = _chat(prompt, text, _int_env("MEDIA_DESCRIBE_TIMEOUT", DEFAULT_DESCRIBE_TIMEOUT))
+    _log_describe(kind, len(text or ""), _time.perf_counter() - t0, out)
+    return out
+
+
 def describe_code(body: str) -> str | None:
     """One-sentence spoken description of a code block, or ``None`` on failure."""
     prompt = os.environ.get("MEDIA_DESCRIBE_CODE_PROMPT") or DESCRIBE_CODE_PROMPT
-    return _chat(prompt, body, _int_env("MEDIA_DESCRIBE_TIMEOUT", DEFAULT_DESCRIBE_TIMEOUT))
+    return _timed_describe("code", prompt, body)
 
 
 def describe_table(table_text: str) -> str | None:
     """One-sentence spoken description of a table, or ``None`` on failure."""
     prompt = os.environ.get("MEDIA_DESCRIBE_TABLE_PROMPT") or DESCRIBE_TABLE_PROMPT
-    return _chat(prompt, table_text, _int_env("MEDIA_DESCRIBE_TIMEOUT", DEFAULT_DESCRIBE_TIMEOUT))
+    return _timed_describe("table", prompt, table_text)

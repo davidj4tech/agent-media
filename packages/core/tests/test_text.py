@@ -143,6 +143,25 @@ def test_strip_markdown_describe_true_threads_through(monkeypatch):
     assert "code block," not in out
 
 
+def test_describe_telemetry_logged_when_enabled(tmp_path, monkeypatch):
+    import json
+    import agent_media_core.intake._summary as summary
+    monkeypatch.setattr(summary, "_chat", lambda *a, **k: "a described thing")
+    logf = tmp_path / "describe.jsonl"
+    monkeypatch.setenv("MEDIA_DESCRIBE_LOG", str(logf))
+    summary.describe_code("def f():\n    return 1")
+    rec = json.loads(logf.read_text().strip())
+    assert rec["kind"] == "code" and rec["ok"] is True and "secs" in rec and rec["out"] > 0
+
+
+def test_describe_telemetry_silent_when_unset(tmp_path, monkeypatch):
+    import agent_media_core.intake._summary as summary
+    monkeypatch.setattr(summary, "_chat", lambda *a, **k: "x")
+    monkeypatch.delenv("MEDIA_DESCRIBE_LOG", raising=False)
+    summary.describe_code("code")  # must not raise, must not write anything
+    assert not (tmp_path / "describe.jsonl").exists()
+
+
 # --- urls ---------------------------------------------------------------
 
 def test_bare_url_reduced_to_host_link():
