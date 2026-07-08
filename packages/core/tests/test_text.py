@@ -115,25 +115,32 @@ def test_regex_table_fallback_matches_markdown_it():
 
 def test_describe_on_replaces_unreadable_block(monkeypatch):
     import agent_media_core.intake._summary as summary
-    monkeypatch.setenv("MEDIA_SPEECH_DESCRIBE", "1")
     monkeypatch.setattr(summary, "describe_code", lambda body: "a script that prints numbers")
     big = "```python\n" + "\n".join(f"print({i})" for i in range(6)) + "\n```"
-    assert suppress_code_blocks(big) == "a script that prints numbers"
+    assert suppress_code_blocks(big, describe=True) == "a script that prints numbers"
 
 
 def test_describe_failure_falls_back_to_placeholder(monkeypatch):
     import agent_media_core.intake._summary as summary
-    monkeypatch.setenv("MEDIA_SPEECH_DESCRIBE", "1")
     monkeypatch.setattr(summary, "describe_code", lambda body: None)
     big = "```python\n" + "\n".join(f"print({i})" for i in range(6)) + "\n```"
-    assert "code block" in suppress_code_blocks(big)
+    assert "code block" in suppress_code_blocks(big, describe=True)
 
 
-def test_describe_off_keeps_placeholder_no_call(monkeypatch):
-    # Default: no describe, no model import needed — just the placeholder.
-    monkeypatch.delenv("MEDIA_SPEECH_DESCRIBE", raising=False)
+def test_describe_off_is_deterministic_placeholder():
+    # Default (describe=False): mechanical placeholder, no model call.
     big = "```python\n" + "\n".join(f"print({i})" for i in range(6)) + "\n```"
     assert "python code block, 6 lines, omitted." in suppress_code_blocks(big)
+
+
+def test_strip_markdown_describe_true_threads_through(monkeypatch):
+    # describe=True must flow strip_markdown -> suppressors -> the model call.
+    import agent_media_core.intake._summary as summary
+    monkeypatch.setattr(summary, "describe_code", lambda body: "a described block")
+    big = "Intro.\n```python\n" + "\n".join(f"print({i})" for i in range(6)) + "\n```\nEnd."
+    out = strip_markdown(big, describe=True)
+    assert "a described block" in out
+    assert "code block," not in out
 
 
 # --- urls ---------------------------------------------------------------

@@ -718,15 +718,32 @@ def _play_now(event: Event) -> None:
     # the mechanically-stripped original above, keeping it deterministic; on any
     # failure we keep event.text as-is. `summary_raw` holds the un-stripped reply
     # so the model can describe code/tables rather than the "…omitted." stubs.
+    # Event is a frozen dataclass, so text rewrites go through object.__setattr__
+    # (the same in-place escape hatch the metadata mutations above rely on) —
+    # a plain `event.text = …` raises FrozenInstanceError.
     raw = event.metadata.pop("summary_raw", None)
     if raw:
         try:
             from ._summary import summarize_for_speech
             spoken = summarize_for_speech(raw)
             if spoken:
-                event.text = strip_markdown(spoken)
+                object.__setattr__(event, "text", strip_markdown(spoken))
         except Exception:  # noqa: BLE001 — detached; fall back to event.text
             pass
+    else:
+        # Per-block describe (opt-in, no whole-reply summary): re-strip the raw
+        # reply here in the detached child with describe=True, so un-readable
+        # code blocks / tables become a spoken description instead of an
+        # "…omitted." stub. Same off-the-fork placement as the summary, so the
+        # (slow, local) model call never blocks the hook. Falls back to event.text.
+        describe_raw = event.metadata.pop("describe_raw", None)
+        if describe_raw:
+            try:
+                described = strip_markdown(describe_raw, describe=True)
+                if described:
+                    object.__setattr__(event, "text", described)
+            except Exception:  # noqa: BLE001 — detached; keep event.text
+                pass
     submit_event(event, state=state)
 
 
@@ -816,9 +833,13 @@ def _handle_stop(payload: dict) -> int:
     metadata = {"kind": "stop", "session": payload.get("session_id") or ""}
     # Opt-in LLM spoken-summary: carry the raw reply so the detached child can
     # rewrite it for speech (only worth it past a length threshold).
-    from ._summary import summary_enabled, summary_min_chars
+    from ._summary import summary_enabled, summary_min_chars, describe_enabled
     if summary_enabled() and len(raw) >= summary_min_chars():
         metadata["summary_raw"] = raw
+    elif describe_enabled():
+        # No whole-reply summary, but per-block describe is on: carry the raw
+        # reply so the detached child can describe its code/tables (off the fork).
+        metadata["describe_raw"] = raw
     _play_detached(
         Event(text=text, source=Source.CLAUDE_CODE,
               priority=Priority.NORMAL,
