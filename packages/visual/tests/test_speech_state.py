@@ -44,3 +44,21 @@ def test_state_events_do_not_clobber_last_image():
     hub.publish({"kind": "state", "speaking": True})
     assert hub.last == {"image": "/img/x.webp"}
     assert hub.last_state == {"kind": "state", "speaking": True}
+
+
+def test_state_carries_sentence_and_visual_flag(monkeypatch):
+    _fake_media(monkeypatch, "▶ 00:02 / 00:30")
+    monkeypatch.setattr(canvas, "_speech_extras",
+                        lambda: {"current_sentence": "  The   very sentence. ",
+                                 "visual": "figure"})
+    st = canvas.speech_state()
+    assert st["sentence"] == "The very sentence."
+    assert st["visual"] == "figure"
+
+
+def test_idle_state_skips_extras(monkeypatch):
+    _fake_media(monkeypatch, "○")
+    monkeypatch.setattr(canvas, "_speech_extras",
+                        lambda: (_ for _ in ()).throw(AssertionError("no read")))
+    st = canvas.speech_state()
+    assert "sentence" not in st and "visual" not in st

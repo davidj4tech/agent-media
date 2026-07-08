@@ -111,3 +111,11 @@ def test_show_sequence_event_shape():
                               {"image": "/img/b.webp", "at": 0.5}],
                  "estdur": 30.0})
     assert hub.last["sequence"][1]["at"] == 0.5
+
+
+def test_show_image_passes_purpose_through():
+    from agent_media_visual import canvas
+    hub = canvas.Hub()
+    canvas.HUB = hub  # not used by Hub tests directly; guard against globals
+    hub.publish({"image": "/img/f.svg", "purpose": "figure"})
+    assert hub.last["purpose"] == "figure"

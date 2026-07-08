@@ -1792,6 +1792,10 @@ def submit_event(event: Event,
                           "clip_paragraph_idx": clip_para,
                           "clip_sentences": _clip_sentences,
                           "writer_pid": os.getpid()}
+                # Figure-bearing message ([[visual:]]/[[reveal:]]): surfaces as
+                # the ▣ indicator in the status bar / popup / canvas badge.
+                if event.metadata.get("visual"):
+                    extras["visual"] = event.metadata["visual"]
                 if live is not None:
                     # Mirror the *remote* player's live state into now_playing so a
                     # status read (popup redraw) is a local DB hit, not a ~600ms

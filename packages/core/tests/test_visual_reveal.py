@@ -181,3 +181,25 @@ def test_markers_stripped_even_when_visual_disabled(tmp_path, monkeypatch):
                     "transcript_path": str(tmp_path / "t.jsonl"),
                     "session_id": "s1"})
     assert len(submitted) == 1 and "[[" not in submitted[0].text
+
+
+def test_visual_flag_rides_event_metadata(tmp_path, monkeypatch):
+    submitted = _arm(tmp_path, monkeypatch)
+    monkeypatch.setattr(_visual, "spawn_visual", lambda *a, **k: None)
+    monkeypatch.setattr(_visual, "wait_for_fresh_visual", lambda *a, **k: True)
+    H._handle_stop({"last_assistant_message": REVEAL_RAW,
+                    "transcript_path": str(tmp_path / "t.jsonl"),
+                    "session_id": "s1"})
+    # Both reveal parts are marked so the status bar / popup can show ▣.
+    assert all(e.metadata.get("visual") == "reveal" for e in submitted)
+
+
+def test_ambient_reply_has_no_visual_flag(tmp_path, monkeypatch):
+    submitted = _arm(tmp_path, monkeypatch)
+    monkeypatch.setenv("MEDIA_VISUAL_MIN_CHARS", "10")
+    monkeypatch.setattr(_visual, "spawn_visual", lambda *a, **k: None)
+    H._handle_stop({"last_assistant_message":
+                    "A plain reply long enough for an ambient picture.",
+                    "transcript_path": str(tmp_path / "t.jsonl"),
+                    "session_id": "s1"})
+    assert submitted[0].metadata.get("visual") is None

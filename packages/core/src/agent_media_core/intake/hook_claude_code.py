@@ -894,6 +894,10 @@ def _handle_stop(payload: dict) -> int:
         metadata["visual_raw"] = raw
         if vis_hint:
             metadata["visual_hint"] = vis_hint
+            # Indicator flag: rides into now_playing extras so the status
+            # bar / popup / canvas can mark figure-bearing messages (▣).
+            metadata["visual"] = ("reveal" if reveal_pre is not None
+                                  else "figure")
         if reveal_pre is not None:
             pre = strip_markdown(reveal_pre)
             post = strip_markdown(reveal_post or "")

@@ -297,6 +297,26 @@ def _speech_display_state():
             snap.get("speed"), playing)
 
 
+def _speech_visual_flag() -> str:
+    """"figure"/"reveal" while the now-playing speech message carries a
+    purposeful visual ([[visual:]]/[[reveal:]] marker), else "". Drives the
+    ▣ indicator in the status bar and popup — never load-bearing, so any
+    lookup problem is just "no indicator"."""
+    try:
+        np = _now_speaking()
+        return ((np or {}).get("extras") or {}).get("visual") or ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _with_visual_glyph(line: str) -> str:
+    """Append the figure indicator to a rendered status line: the listener's
+    cue that this spoken message has a picture worth looking at."""
+    if line and not line.startswith("○") and _speech_visual_flag():
+        return f"{line} ▣"
+    return line
+
+
 def cmd_status(a) -> int:
     idle, pos, dur, paused, muted, speed, playing = _speech_display_state()
     # Optional title-overlay bar (EXPERIMENTAL): the whole `▶ pos title dur`
@@ -310,9 +330,10 @@ def cmd_status(a) -> int:
             print(_title_status_line(pos, dur, paused, muted, speed, prefix,
                                      body, _title_window(cw), key="status"))
             return 0
-    print(render_status(idle=idle, pos=pos, dur=dur, paused=paused, muted=muted,
-                        width=a.width, hide_idle=not a.show_idle,
-                        bar=not getattr(a, "no_bar", False), speed=speed))
+    print(_with_visual_glyph(
+        render_status(idle=idle, pos=pos, dur=dur, paused=paused, muted=muted,
+                      width=a.width, hide_idle=not a.show_idle,
+                      bar=not getattr(a, "no_bar", False), speed=speed)))
     return 0
 
 
@@ -349,9 +370,10 @@ def cmd_popup_status(a) -> int:
         # the caller reads before the three status fields.
         print(" ".join(buf.getvalue().split()))
     idle, pos, dur, paused, muted, speed, _ = _speech_display_state()
-    print(render_status(idle=idle, pos=pos, dur=dur, paused=paused, muted=muted,
-                        width=a.width, hide_idle=not a.show_idle,
-                        bar=not getattr(a, "no_bar", False), speed=speed))
+    print(_with_visual_glyph(
+        render_status(idle=idle, pos=pos, dur=dur, paused=paused, muted=muted,
+                      width=a.width, hide_idle=not a.show_idle,
+                      bar=not getattr(a, "no_bar", False), speed=speed)))
     prefix, body = _subject_label()
     print(f"{prefix}{body}" if (prefix or body) else "")
     m = StateStore().list_mutes()

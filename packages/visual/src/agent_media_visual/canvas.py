@@ -184,14 +184,35 @@ def _parse_clock(text: str) -> list[int]:
     return out
 
 
+def _speech_extras() -> dict:
+    """The speech channel's now_playing extras (fresh StateStore per read —
+    cheap WAL hit, thread-safe by construction). Empty dict on any problem."""
+    try:
+        from agent_media_core.state.store import StateStore
+        np = StateStore().get_now_playing("speech")
+        return (np or {}).get("extras") or {}
+    except Exception:  # noqa: BLE001 — subtitles are garnish, never a fault
+        return {}
+
+
 def speech_state() -> dict:
-    """One SSE-shaped speech-state snapshot off `media popup-status`."""
+    """One SSE-shaped speech-state snapshot off `media popup-status`, enriched
+    with the current sentence (the same per-clip marker that drives the tmux
+    copy-mode highlight — this is highlight mode for the canvas) and the
+    figure flag for the ▣ badge."""
     line = (_media(["popup-status", "--no-bar", "--show-idle"], timeout=5)
             .splitlines() or [""])[0].strip()
     times = _parse_clock(line)
     state: dict = {"kind": "state", "speaking": line.startswith("▶")}
     if len(times) >= 2:
         state["pos"], state["dur"] = times[0], times[1]
+    if state["speaking"]:
+        ex = _speech_extras()
+        sentence = " ".join(str(ex.get("current_sentence") or "").split())
+        if sentence:
+            state["sentence"] = sentence[:220]
+        if ex.get("visual"):
+            state["visual"] = ex["visual"]
     return state
 
 
@@ -206,7 +227,7 @@ def _state_poller() -> None:
         except Exception:  # noqa: BLE001 — the poller must outlive any hiccup
             time.sleep(2)
             continue
-        key = (st["speaking"], st.get("pos"))
+        key = (st["speaking"], st.get("pos"), st.get("sentence"))
         # Broadcast on any change; while speaking, pos ticks every poll, so
         # watchers get a ~1 Hz progress signal without idle-time chatter.
         if key != last_key:
@@ -289,6 +310,27 @@ PAGE = """<!doctype html>
     border-radius: 50%; background: #e05c5c; opacity: 0; transition: opacity .5s;
   }
   #dot.off { opacity: .8; }
+  /* Subtitles: the sentence being spoken right now — highlight mode for a
+     screen across the room. */
+  #sub {
+    position: fixed; left: 50%; bottom: max(4vh, env(safe-area-inset-bottom));
+    transform: translateX(-50%); max-width: 86vw;
+    padding: .5em 1.1em; border-radius: 14px;
+    font: 500 17px/1.5 system-ui, sans-serif; color: #ffe9a8;
+    text-align: center; text-wrap: balance;
+    background: rgba(8,8,8,.68); backdrop-filter: blur(12px);
+    opacity: 0; transition: opacity .5s ease; pointer-events: none;
+  }
+  #sub.on { opacity: 1; }
+  /* Figure badge: this image says something — it isn't wallpaper. */
+  #fig {
+    position: fixed; top: max(12px, env(safe-area-inset-top)); left: 16px;
+    padding: .3em .8em; border-radius: 999px;
+    font: 600 13px/1.4 system-ui, sans-serif; letter-spacing: .04em;
+    color: #ffd75f; background: rgba(10,10,10,.6); backdrop-filter: blur(10px);
+    opacity: 0; transition: opacity .8s ease; pointer-events: none;
+  }
+  #fig.on { opacity: 1; }
   /* While the voice is talking the scene breathes: a soft vignette swells in
      time-ish with speech (the Ken Burns pan also speeds up, via JS). */
   #pulse {
@@ -333,11 +375,14 @@ PAGE = """<!doctype html>
 <img id="b" class="layer" alt="">
 <div id="pulse"></div>
 <div id="cap"></div>
+<div id="sub"></div>
+<div id="fig">▣ figure</div>
 <div id="dot" title="disconnected"></div>
 <div id="ctl">
   <div class="row">
     <button id="chan">♪</button>
     <div id="marq"><span id="title">agent-media</span></div>
+    <button id="cc">💬</button>
     <button id="sfx">🔈</button>
     <button id="xbtn">×</button>
   </div>
@@ -410,6 +455,24 @@ PAGE = """<!doctype html>
       });
     } catch (_) {}
   }
+  // A figure deserves its own arrival sound: a bright three-note rise that
+  // says "look at the screen", distinct from the ambient whoosh.
+  function figureCue() {
+    if (!sfxOn()) return;
+    try {
+      const c = actx();
+      [523, 659, 784].forEach((f, i) => {
+        const t = c.currentTime + i * 0.13;
+        const o = c.createOscillator(), g = c.createGain();
+        o.type = 'triangle'; o.frequency.value = f;
+        g.gain.setValueAtTime(0.0001, t);
+        g.gain.exponentialRampToValueAtTime(0.055, t + 0.02);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + 0.5);
+        o.connect(g).connect(c.destination);
+        o.start(t); o.stop(t + 0.55);
+      });
+    } catch (_) {}
+  }
   function whoosh() {
     if (!sfxOn()) return;
     try {
@@ -435,6 +498,20 @@ PAGE = """<!doctype html>
   // While speaking: pan/zoom runs faster (seamless via updatePlaybackRate)
   // and the vignette breathes (CSS class). State arrives over the SSE stream.
   let speaking = false, speakStartT = 0;
+  // Figure badge has two feeders: the showing image's purpose, and the
+  // speaking message's [[visual:]] flag (so it lights before the image lands).
+  let figImg = false, figMsg = false;
+  function updFig() { $('fig').classList.toggle('on', figImg || figMsg); }
+  // Subtitles: the sentence being spoken, straight off the same per-clip
+  // marker that drives the tmux copy-mode highlight.
+  function subsOn() { return localStorage.getItem('subs') !== '0'; }
+  function setSubtitle(text) {
+    const show = !!(text && subsOn());
+    if (show) $('sub').textContent = text;
+    $('sub').classList.toggle('on', show);
+    if (show) $('cap').classList.add('hide');
+    else if (!visible) $('cap').classList.remove('hide');
+  }
   function setSpeaking(on) {
     if (on === speaking) return;
     speaking = on;
@@ -445,6 +522,7 @@ PAGE = """<!doctype html>
         (a.updatePlaybackRate ? a.updatePlaybackRate(on ? 2.6 : 1)
                               : a.playbackRate = on ? 2.6 : 1);
     chime(on);
+    if (!on) { setSubtitle(null); figMsg = false; updFig(); }
     if (!on && seq) setBeat(seq.length - 1);   // speech over → the conclusion
   }
 
@@ -488,10 +566,18 @@ PAGE = """<!doctype html>
   es.onmessage = (e) => {
     try {
       const d = JSON.parse(e.data);
-      if (d.kind === 'state') { setSpeaking(!!d.speaking); applySeq(); }
+      if (d.kind === 'state') {
+        setSpeaking(!!d.speaking);
+        if (d.speaking) {
+          setSubtitle(d.sentence || null);
+          figMsg = !!d.visual; updFig();
+        }
+        applySeq();
+      }
       else if (d.sequence) {
         seq = d.sequence; seqIdx = -1; seqEst = d.estdur || 0;
         seqCap = d.caption || null;
+        figImg = false; updFig();
         // Anchor progress to the real speech start when we saw it; else
         // reconstruct it from how long generation took.
         seqBase = (speaking && speakStartT)
@@ -503,7 +589,11 @@ PAGE = """<!doctype html>
         if (!speaking && seqEst > 0 && elapsed > seqEst) setBeat(seq.length - 1);
         else { setBeat(0); applySeq(); }
       }
-      else if (d.image) { seq = null; seqIdx = -1; show(d); whoosh(); }
+      else if (d.image) {
+        seq = null; seqIdx = -1; show(d);
+        figImg = d.purpose === 'figure'; updFig();
+        figImg ? figureCue() : whoosh();
+      }
     } catch (_) {}
   };
   es.onopen = () => $('dot').classList.remove('off');
@@ -580,7 +670,7 @@ PAGE = """<!doctype html>
   function hideCtl() {
     visible = false;
     $('ctl').classList.remove('on');
-    $('cap').classList.remove('hide');
+    if (!$('sub').classList.contains('on')) $('cap').classList.remove('hide');
     clearInterval(pollTimer);
     clearTimeout(hideTimer);
   }
@@ -609,6 +699,15 @@ PAGE = """<!doctype html>
   $('xbtn').onclick = (e) => { e.stopPropagation(); hideCtl(); };
   function drawSfx() { $('sfx').textContent = sfxOn() ? '🔈' : '🔇'; }
   drawSfx();
+  function drawCc() { $('cc').classList.toggle('lit', subsOn()); }
+  drawCc();
+  $('cc').onclick = (e) => {
+    e.stopPropagation();
+    localStorage.setItem('subs', subsOn() ? '0' : '1');
+    drawCc();
+    if (!subsOn()) setSubtitle(null);
+    resetHide();
+  };
   $('sfx').onclick = (e) => {
     e.stopPropagation();
     localStorage.setItem('sfx', sfxOn() ? '0' : '1');
@@ -761,6 +860,7 @@ class Handler(BaseHTTPRequestHandler):
         event: dict = {
             "caption": (body.get("caption") or None),
             "prompt": (body.get("prompt") or None),
+            "purpose": ("figure" if body.get("purpose") == "figure" else None),
             "t": int(time.time()),
         }
         seq = body.get("sequence")

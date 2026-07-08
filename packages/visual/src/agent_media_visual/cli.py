@@ -281,6 +281,9 @@ def main() -> None:
         "image": _image_ref(name, targets),
         "caption": args.caption,
         "prompt": scene,
+        # Purposeful figure (author-hinted) vs ambient art — the canvas
+        # badges figures and gives them their own arrival sound.
+        "purpose": "figure" if args.hint else None,
     })
     _report_pushes(errors)
     print(f"shown: {name}  ({len(img)//1024} KiB, "
