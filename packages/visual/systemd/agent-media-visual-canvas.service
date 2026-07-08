@@ -1,0 +1,15 @@
+[Unit]
+Description=agent-media visual canvas — SSE image page shown alongside spoken replies (tailnet-only)
+After=network-online.target
+
+[Service]
+# Bind to the Tailscale IP only (never the public interface — the images
+# illustrate your replies, same privacy posture as the clip server on 8780).
+# Pushers must therefore use the tailnet URL too: set
+# MEDIA_VISUAL_URL=http://<tailscale-ip>:8781 in ~/.config/agent-media.env.
+ExecStart=%h/projects/agent-media/.venv/bin/media-visual-canvas --bind 100.103.43.93 --port 8781
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

@@ -713,6 +713,18 @@ def _play_now(event: Event) -> None:
     # Commit to speaking: the notif-suppression window keys off this stamp, and
     # detached playback won't report back.
     _write_stamp(_stamp_dir() / "stop-last", int(time.time()))
+    # Opt-in visual accompaniment: hand the raw reply to `media-visual`
+    # fire-and-forget *before* the (slow) summary/describe rewrites below, so
+    # image generation runs concurrently with them and with playback. After
+    # dedup, so a suppressed duplicate reply doesn't repaint the canvas either.
+    # Popped unconditionally — the raw reply must never ride into submit_event.
+    visual_raw = event.metadata.pop("visual_raw", None)
+    if visual_raw:
+        try:
+            from ._visual import spawn_visual
+            spawn_visual(visual_raw, event.text)
+        except Exception:  # noqa: BLE001 — accompaniment, never playback's problem
+            pass
     # Optional LLM spoken-summary rewrite (opt-in). Runs *here*, in the detached
     # child, so the network call never blocks the hook. Dedup already keyed off
     # the mechanically-stripped original above, keeping it deterministic; on any
@@ -840,6 +852,13 @@ def _handle_stop(payload: dict) -> int:
         # No whole-reply summary, but per-block describe is on: carry the raw
         # reply so the detached child can describe its code/tables (off the fork).
         metadata["describe_raw"] = raw
+    # Opt-in visual accompaniment (independent of summary/describe): carry the
+    # raw reply so the detached child can hand it to `media-visual` (see
+    # _visual.py). Its own length gate — a picture is worth more than a
+    # one-liner costs.
+    from ._visual import visual_enabled, visual_min_chars
+    if visual_enabled() and len(raw) >= visual_min_chars():
+        metadata["visual_raw"] = raw
     _play_detached(
         Event(text=text, source=Source.CLAUDE_CODE,
               priority=Priority.NORMAL,

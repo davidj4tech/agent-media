@@ -32,33 +32,47 @@ nothing new to configure.
 
 ## Run
 
+The canvas runs as a systemd user service (see `systemd/`), bound to the
+Tailscale IP only — same privacy posture as the clip server on 8780:
+
 ```sh
-media-visual-canvas &                 # on red5 (the box the phone already
-                                      # fetches speech clips from)
-# phone/TV browser → http://100.103.43.93:8781/
-media-visual --say "All tests pass and the branch is merged."
+cp systemd/agent-media-visual-canvas.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now agent-media-visual-canvas
+# phone/TV browser → http://red5:8781/ (MagicDNS) or http://100.103.43.93:8781/
+media-visual --say "All tests pass and the branch is merged."   # manual demo
 ```
+
+### Stop-hook wiring (automatic pictures)
+
+With `MEDIA_SPEECH_VISUAL=1` in `~/.config/agent-media.env`, the Claude Code
+Stop hook illustrates every spoken reply automatically: the detached playback
+child hands the raw reply to `media-visual` fire-and-forget (see core
+`intake/_visual.py`), so image generation runs concurrently with the
+summary/describe rewrites and with playback. Gated on reply length
+(`MEDIA_VISUAL_MIN_CHARS`, default 320) and skipped for deduped replies; a
+missing `media-visual` binary makes it a silent no-op, so core stays
+decoupled from this package.
 
 ## Config (env / ~/.config/agent-media.env)
 
 | var | default | |
 |---|---|---|
-| `MEDIA_VISUAL_PORT` / `MEDIA_VISUAL_BIND` | `8781` / `0.0.0.0` | canvas listen |
-| `MEDIA_VISUAL_URL` | `http://127.0.0.1:8781` | where `media-visual` pushes |
+| `MEDIA_SPEECH_VISUAL` | off | `1` = Stop hook illustrates spoken replies |
+| `MEDIA_VISUAL_MIN_CHARS` | `320` | only illustrate replies at least this long |
+| `MEDIA_VISUAL_PORT` / `MEDIA_VISUAL_BIND` | `8781` / `0.0.0.0` | canvas listen (the service passes `--bind <tailscale-ip>`) |
+| `MEDIA_VISUAL_URL` | `http://127.0.0.1:8781` | where `media-visual` pushes (set to the tailnet URL when the canvas binds tailnet-only) |
+| `MEDIA_VISUAL_SHAPE_MODEL` / `_SHAPE_TIMEOUT` | summary model / timeout | prompt-shaping overrides |
 | `MEDIA_VISUAL_MODEL` | `z-image-turbo` | Venice image model (fast > pretty) |
 | `MEDIA_VISUAL_STYLE` | cinematic digital painting… | style suffix, one visual voice |
 | `MEDIA_VISUAL_SIZE` | `1024x1024` | canvas cover-crops, square splits the difference |
 | `MEDIA_VISUAL_TIMEOUT` | `90` | image request timeout (s) |
 | `MEDIA_VISUAL_DEBUG` | off | `1` logs canvas requests |
 
-## Out of scope for the spike (the real feature's TODO)
+## TODO (post-spike)
 
-- Hook wiring: fork an image job from the Stop-hook's detached child (where
-  describe already runs) so every spoken reply shows automatically — gated
-  like `MEDIA_SPEECH_SUMMARY` (opt-in env, min-length threshold, one image
-  per reply, not per block).
 - Session continuity ("evolve the current image" prompting) instead of a
   slideshow of unrelated pictures.
 - An `agent_media.visual_engines` entry-point group mirroring the TTS
   render-engine registry (Venice is hardcoded here).
-- Spool GC, a runit/systemd service for the canvas, multi-canvas targets.
+- Spool GC, multi-canvas targets.
