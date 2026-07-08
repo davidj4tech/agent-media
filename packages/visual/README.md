@@ -105,6 +105,7 @@ decoupled from this package.
 | `MEDIA_VISUAL_SPOOL_KEEP` | `200` | newest images kept by the post-push GC |
 | `MEDIA_VISUAL_SHAPE_MODEL` / `_SHAPE_TIMEOUT` | summary model / timeout | prompt-shaping overrides — a fast model (e.g. haiku) matters: prompts must beat the speech they illustrate |
 | `MEDIA_VISUAL_BEATS` / `_BEATS_MAX` | on / `4` | `0` disables the synced sequence; max parts per reply |
+| `MEDIA_VISUAL_BEATS_ENGINE` | the normal engine | engine for beat images only — pair a slow single-image engine (svg) with a fast one (venice) so sequences stay synced |
 | `MEDIA_VISUAL_CHARS_PER_SEC` | `14` | spoken-duration estimate driving beat pacing |
 | `MEDIA_VISUAL_SVG_MODEL` / `_SVG_TIMEOUT` | shape model / image timeout | svg engine model (haiku draws far better than a small local model) |
 | `MEDIA_VISUAL_MODEL_VENICE` | `z-image-turbo` | venice image model (fast > pretty; `MEDIA_VISUAL_MODEL` also honoured) |

@@ -91,6 +91,15 @@ _FENCE = re.compile(r"```.*?```", re.S)
 _SENT_SPLIT = re.compile(r"(?<=[.!?])\s+")
 
 
+def _beats_engine(cli_engine: str | None) -> str | None:
+    """The engine for beat images: an explicit --engine wins, then
+    MEDIA_VISUAL_BEATS_ENGINE, then the normal resolution (None). Exists
+    because beats live or die by latency — e.g. svg (slow, ~90s for a
+    sequence) as the single-image engine with venice (~6s) for beats keeps
+    the sequences actually synced to the voice."""
+    return cli_engine or os.environ.get("MEDIA_VISUAL_BEATS_ENGINE") or None
+
+
 def _beats_max() -> int:
     try:
         v = int(os.environ.get("MEDIA_VISUAL_BEATS_MAX", "") or DEFAULT_BEATS_MAX)
@@ -215,9 +224,10 @@ def main() -> None:
     # Any failure (few surviving images, dead canvases) falls through to the
     # single-image path below.
     if prompts:
+        beat_engine = _beats_engine(args.engine)
         with ThreadPoolExecutor(max_workers=len(prompts)) as pool:
             results = list(pool.map(
-                lambda p: generate_image(p, engine=args.engine), prompts))
+                lambda p: generate_image(p, engine=beat_engine), prompts))
         beats = [(frac, img) for (frac, _), (img, _err)
                  in zip(parts, results) if img is not None]
         if len(beats) >= 2:

@@ -1,0 +1,20 @@
+"""Test isolation for the visual package.
+
+core's cli.py calls load_env_file at module import, so a combined run
+(`pytest packages/visual/tests packages/core/tests`) pulls the machine's
+real ~/.config/agent-media.env into os.environ during collection — e.g. a
+real MEDIA_VISUAL_ENGINE=svg flips engine-default tests. Scrub every
+MEDIA_* var so these tests always see package defaults; tests that need a
+value set it explicitly via monkeypatch.setenv.
+"""
+
+import os
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _clean_media_env(monkeypatch):
+    for k in list(os.environ):
+        if k.startswith("MEDIA_"):
+            monkeypatch.delenv(k, raising=False)
