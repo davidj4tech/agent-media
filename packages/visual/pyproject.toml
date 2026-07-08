@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agent-media-visual"
+version = "0.0.1"
+description = "SPIKE: generated-image canvas alongside spoken replies (SSE web page + Venice image gen)."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+# Stdlib HTTP only (http.server, urllib); core is used for the shared
+# env-file layering so gateway config comes from ~/.config/agent-media.env.
+dependencies = ["agent-media-core"]
+
+[project.scripts]
+media-visual-canvas = "agent_media_visual.canvas:main"
+media-visual = "agent_media_visual.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent_media_visual"]
