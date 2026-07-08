@@ -164,6 +164,133 @@ def channel_status(channel: str) -> dict:
             "muted": muted, "part": part}
 
 
+# --- the input box backend: reply to whoever just spoke ----------------------
+# POST /input types text into a Claude session: the *last speaker's* tmux pane
+# by default (the same source_pane the popup's go-to-source uses), or a named
+# amux session via `amux send`. This is remote keystroke injection, so unlike
+# the transport controls it requires amux's own auth token — one credential
+# for both dashboards (~/.amux/auth_token / AMUX_AUTH_TOKEN).
+
+def _amux_token() -> str:
+    tok = os.environ.get("AMUX_AUTH_TOKEN", "")
+    if tok:
+        return "" if tok.lower() == "none" else tok
+    try:
+        return (Path.home() / ".amux" / "auth_token").read_text().strip()
+    except OSError:
+        return ""
+
+
+def _authorized(handler: "Handler") -> bool:
+    token = _amux_token()
+    if not token:
+        return False  # no token configured → the input surface stays closed
+    got = (handler.headers.get("X-Auth-Token")
+           or (handler.headers.get("Authorization") or "").removeprefix("Bearer").strip())
+    return got == token
+
+
+def _amux_bin() -> str:
+    """amux lives in ~/.local/bin, which a systemd user service's default
+    PATH doesn't include."""
+    return (shutil.which("amux")
+            or str(Path.home() / ".local" / "bin" / "amux"))
+
+
+def _amux_sessions() -> list[dict]:
+    """Parse `amux ls`: columns are id, name, dir[, mode]."""
+    out = _media_run([_amux_bin(), "ls"])
+    sessions = []
+    for line in out.splitlines():
+        fields = line.split()
+        if len(fields) >= 3 and fields[0].isdigit():
+            sessions.append({"name": fields[1], "dir": fields[2]})
+    return sessions
+
+
+def _media_run(argv: list[str], timeout: int = 10) -> str:
+    try:
+        out = subprocess.run(argv, capture_output=True, text=True,
+                             timeout=timeout)
+        return (out.stdout or "").strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def _pane_alive(pane: str) -> bool:
+    return bool(_media_run(["tmux", "display-message", "-pt", pane,
+                            "#{pane_id}"]))
+
+
+def _last_speaker() -> dict | None:
+    """{pane, session, tmux_session} of the most recent speech message whose
+    source pane still exists — live now_playing extras first, else a walk
+    back through recent history (idle). Panes die and ids get recycled, so
+    every candidate is probed before it wins."""
+    try:
+        import sqlite3
+
+        from agent_media_core.state.store import StateStore
+        st = StateStore()
+        candidates = [((st.get_now_playing("speech") or {}).get("extras")) or {}]
+        db = sqlite3.connect(str(st.path))
+        for (raw,) in db.execute(
+                "SELECT extras FROM history WHERE sink='speech' AND "
+                "extras IS NOT NULL ORDER BY rowid DESC LIMIT 10"):
+            try:
+                candidates.append(json.loads(raw))
+            except (TypeError, ValueError):
+                continue
+        for ex in candidates:
+            pane = ex.get("source_pane")
+            if pane and _pane_alive(pane):
+                return {"pane": pane,
+                        "session": (ex.get("source_session")
+                                    or ex.get("session") or ""),
+                        "tmux_session": ex.get("source_tmux_session") or ""}
+        return None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _send_to_pane(pane: str, text: str) -> str:
+    """Type `text` + Enter into a tmux pane (amux's literal-then-Enter timing,
+    which Claude Code's input buffering needs). Returns "" or an error."""
+    probe = _media_run(["tmux", "display-message", "-pt", pane, "#{pane_id}"])
+    if not probe:
+        return f"pane {pane} is gone"
+    try:
+        subprocess.run(["tmux", "send-keys", "-t", pane, "-l", text],
+                       timeout=5, check=True)
+        time.sleep(0.05)
+        subprocess.run(["tmux", "send-keys", "-t", pane, "Enter"],
+                       timeout=5, check=True)
+        return ""
+    except (OSError, subprocess.SubprocessError) as e:
+        return f"send-keys: {e}"
+
+
+def send_input(text: str, target: str) -> tuple[bool, str]:
+    """Deliver `text` to `target`: "speaker" or "amux:<name>". Returns
+    (ok, detail) where detail is the resolved destination or the error."""
+    text = (text or "").strip()
+    if not text:
+        return False, "empty text"
+    if target.startswith("amux:"):
+        name = target[len("amux:"):]
+        if name not in {s["name"] for s in _amux_sessions()}:
+            return False, f"unknown amux session {name!r}"
+        out = _media_run([_amux_bin(), "send", name, text])
+        return (True, f"amux:{name}") if out else (False, "amux send failed")
+    speaker = _last_speaker()
+    if not speaker:
+        return False, "no speaker on record yet"
+    err = _send_to_pane(speaker["pane"], text)
+    if err:
+        return False, err
+    return True, speaker.get("tmux_session") or speaker["pane"]
+
+
 # --- speech-state poller: the canvas reacts to the voice ---------------------
 # While at least one screen is connected, poll the speech channel (~1 Hz, one
 # `media popup-status` spawn — the popup's own cadence) and broadcast
@@ -251,6 +378,15 @@ def ctl_argv(channel: str, action: str, arg: int) -> list[str] | None:
             "speed-": ["speed", "down"],
             "speed+": ["speed", "up"],
             "speed0": ["speed", "reset"],
+            # h/l/H/L — the popup's sentence/paragraph steps.
+            "skip-": ["skip", "--unit", "sentence", "--dir", "-1",
+                      "--seek-fallback", "-5"],
+            "skip+": ["skip", "--unit", "sentence", "--dir", "1",
+                      "--seek-fallback", "5"],
+            "para-": ["skip", "--unit", "paragraph", "--dir", "-1",
+                      "--seek-fallback", "-30"],
+            "para+": ["skip", "--unit", "paragraph", "--dir", "1",
+                      "--seek-fallback", "30"],
         }
         return table.get(action)
     if channel in ("music", "book"):
@@ -259,6 +395,10 @@ def ctl_argv(channel: str, action: str, arg: int) -> list[str] | None:
             "next": [channel, "next"],
             "vol-": [channel, "volume", "-5"],
             "vol+": [channel, "volume", "5"],
+            "skip-": [channel, "seek", "-5"],
+            "skip+": [channel, "seek", "+5"],
+            "para-": [channel, "seek", "-30"],
+            "para+": [channel, "seek", "+30"],
         }
         if action == "toggle":
             if channel == "music":
@@ -359,6 +499,10 @@ PAGE = """<!doctype html>
   }
   #ctl button:active { background: rgba(255,255,255,.14); }
   #ctl button.lit { color: #ffd75f; }
+  .ic { width: 21px; height: 21px; display: block; margin: auto; }
+  #target .ic { width: 16px; height: 16px; display: inline-block;
+                vertical-align: -3px; margin-right: .35em; }
+  #send .ic { margin: auto; }
   #marq { flex: 1; overflow: hidden; white-space: nowrap; }
   #title { display: inline-block; padding-left: 0; }
   #title.scroll { animation: marq var(--marq-dur, 14s) linear infinite; }
@@ -368,9 +512,58 @@ PAGE = """<!doctype html>
   }
   #clock { flex: 1; text-align: center; font-variant-numeric: tabular-nums;
            color: #ddd; white-space: nowrap; overflow: hidden; }
+  /* Input bar: reply to whoever just spoke, from the canvas itself. */
+  #inp {
+    position: fixed; left: 50%; bottom: max(3vh, env(safe-area-inset-bottom));
+    transform: translate(-50%, 130%); width: min(92vw, 460px);
+    display: flex; align-items: center; gap: .4em;
+    padding: .5em .6em; border-radius: 22px;
+    background: rgba(10,10,10,.7); backdrop-filter: blur(14px);
+    transition: transform .3s ease, opacity .3s ease; opacity: 0;
+  }
+  #inp.on { transform: translate(-50%, 0); opacity: 1; }
+  #target {
+    background: rgba(255,255,255,.1); border: 0; color: #ffd75f;
+    font: 600 13px/1.4 system-ui, sans-serif; padding: .45em .8em;
+    border-radius: 999px; white-space: nowrap; cursor: pointer;
+  }
+  #text {
+    flex: 1; background: none; border: 0; outline: none; color: #eee;
+    font: 16px/1.4 system-ui, sans-serif; min-width: 0;
+  }
+  #send {
+    background: none; border: 0; color: #eee; font-size: 20px;
+    min-width: 40px; min-height: 40px; cursor: pointer; border-radius: 12px;
+  }
+  #send:active { background: rgba(255,255,255,.14); }
 </style>
 </head>
 <body>
+<!-- Unified icon set: one monochrome inline-SVG sprite (currentColor, uniform
+     2px stroke) instead of the emoji/text-glyph mix — emoji render as colored
+     pictographs with per-device fonts, exactly what the tmux popup's
+     PAUSE_GLYPH comment warns about. -->
+<svg style="display:none" xmlns="http://www.w3.org/2000/svg">
+  <symbol id="i-play" viewBox="0 0 24 24"><path fill="currentColor" d="M8 5l11 7-11 7z"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><path fill="currentColor" d="M7 5h3v14H7zM14 5h3v14h-3z"/></symbol>
+  <symbol id="i-prev" viewBox="0 0 24 24"><path fill="currentColor" d="M7 5h2v14H7zM19 5l-9 7 9 7z"/></symbol>
+  <symbol id="i-next" viewBox="0 0 24 24"><path fill="currentColor" d="M15 5h2v14h-2zM5 5l9 7-9 7z"/></symbol>
+  <symbol id="i-minus" viewBox="0 0 24 24"><path stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M6 12h12"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M6 12h12M12 6v12"/></symbol>
+  <symbol id="i-slower" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M7 8l-4 4 4 4M21 12H4"/></symbol>
+  <symbol id="i-faster" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M17 8l4 4-4 4M3 12h17"/></symbol>
+  <symbol id="i-mute" viewBox="0 0 24 24"><path fill="currentColor" d="M4 9v6h4l5 4V5L8 9z"/><path stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M16 9l5 6M21 9l-5 6"/></symbol>
+  <symbol id="i-bell" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" d="M6 16v-5a6 6 0 0112 0v5l2 2H4z"/><path stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M10 21h4"/></symbol>
+  <symbol id="i-bell-off" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" d="M6 16v-5a6 6 0 0112 0v5l2 2H4z"/><path stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M10 21h4M4 4l16 16"/></symbol>
+  <symbol id="i-cc" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><path stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M7 12h4M7 15.5h7"/></symbol>
+  <symbol id="i-kbd" viewBox="0 0 24 24"><rect x="2.5" y="6" width="19" height="12" rx="2.5" fill="none" stroke="currentColor" stroke-width="2"/><path stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6.5 10h.01M10.5 10h.01M14.5 10h.01M18 10h.01M7.5 14.5h9"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24"><path fill="currentColor" d="M3 11l18-8-7 18-3-7z"/></symbol>
+  <symbol id="i-note" viewBox="0 0 24 24"><path fill="currentColor" d="M9 18.5A2.5 2.5 0 116.5 16c.6 0 1.1.2 1.5.5V5l10-2v12.5a2.5 2.5 0 11-2.5-2.5c.6 0 1.1.2 1.5.5V7L9 8.6z"/></symbol>
+  <symbol id="i-notes" viewBox="0 0 24 24"><path fill="currentColor" d="M7 19a2 2 0 110-4c.4 0 .7.1 1 .2V6l9-1.8V15a2 2 0 11-2-2c.4 0 .7.1 1 .2V7.5L9 8.9V19z"/><path stroke="currentColor" stroke-width="1.6" stroke-linecap="round" d="M4 4.5l1.5 1"/></symbol>
+  <symbol id="i-book" viewBox="0 0 24 24"><path stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M4 7h16M4 12h16M4 17h10"/></symbol>
+  <symbol id="i-reply" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M9 6L4 11l5 5M4 11h11a5 5 0 015 5v2"/></symbol>
+</svg>
 <img id="a" class="layer" alt="">
 <img id="b" class="layer" alt="">
 <div id="pulse"></div>
@@ -378,29 +571,46 @@ PAGE = """<!doctype html>
 <div id="sub"></div>
 <div id="fig">▣ figure</div>
 <div id="dot" title="disconnected"></div>
+<div id="inp">
+  <button id="target"></button>
+  <input id="text" type="text" autocomplete="off" enterkeyhint="send"
+         placeholder="reply…">
+  <button id="send"></button>
+</div>
 <div id="ctl">
   <div class="row">
-    <button id="chan">♪</button>
+    <button id="chan"></button>
     <div id="marq"><span id="title">agent-media</span></div>
-    <button id="cc">💬</button>
-    <button id="sfx">🔈</button>
-    <button id="xbtn">×</button>
+    <button id="kbd"></button>
+    <button id="cc"></button>
+    <button id="sfx"></button>
+    <button id="xbtn"></button>
   </div>
   <div class="row">
-    <button id="prev">⏮</button>
-    <button id="pp">▶</button>
+    <button id="prev"></button>
+    <button id="pp"></button>
     <span id="clock">○</span>
-    <button id="next">⏭</button>
-    <button id="vdn">−</button>
-    <button id="vup">+</button>
-    <button id="sdn" class="sp">🐢</button>
-    <button id="sup" class="sp">⏩</button>
-    <button id="mute" class="sp">🔇</button>
+    <button id="next"></button>
+    <button id="vdn"></button>
+    <button id="vup"></button>
+    <button id="sdn" class="sp"></button>
+    <button id="sup" class="sp"></button>
+    <button id="mute" class="sp"></button>
   </div>
 </div>
 <script>
   const $ = (id) => document.getElementById(id);
+  const icon = (n) => '<svg class="ic"><use href="#i-' + n + '"/></svg>';
   const layers = [$('a'), $('b')];
+  // Static icons; stateful ones (pp, sfx, chan, target) are set in their
+  // draw functions below.
+  $('prev').innerHTML = icon('prev');   $('next').innerHTML = icon('next');
+  $('vdn').innerHTML = icon('minus');   $('vup').innerHTML = icon('plus');
+  $('sdn').innerHTML = icon('slower');  $('sup').innerHTML = icon('faster');
+  $('mute').innerHTML = icon('mute');   $('kbd').innerHTML = icon('kbd');
+  $('cc').innerHTML = icon('cc');       $('xbtn').innerHTML = icon('close');
+  $('send').innerHTML = icon('send');   $('chan').innerHTML = icon('note');
+  $('pp').innerHTML = icon('play');
   let front = 0, capTimer = null;
   const KB = ['kb1','kb2','kb3','kb4'];
 
@@ -429,7 +639,7 @@ PAGE = """<!doctype html>
 
   // ---- sound effects: tiny synthesized cues, no assets (WebAudio) ----------
   // Whoosh when a new image lands; a two-note chime up when the voice starts,
-  // down when it stops. Quiet by design; 🔈 in the controller toggles, state
+  // down when it stops. Quiet by design; the bell button toggles, state
   // persists per device. Browsers gate audio behind a first user gesture —
   // the same tap that opens the controller / takes the wake lock unlocks it.
   let ac = null;
@@ -610,7 +820,7 @@ PAGE = """<!doctype html>
     () => { if (!document.hidden) wake(); });
 
   // ---- audio controller: same verbs as the tmux popup, as touch buttons ----
-  const GLYPH = { speech: '♪', music: '♫', book: '☰' };
+  const GLYPH = { speech: 'note', music: 'notes', book: 'book' };
   const ORDER = ['speech', 'music', 'book'];
   let ch = 'speech', histIdx = 1, visible = false;
   let hideTimer = null, pollTimer = null;
@@ -621,7 +831,7 @@ PAGE = """<!doctype html>
   }
 
   function render(d) {
-    $('chan').textContent = GLYPH[ch];
+    $('chan').innerHTML = icon(GLYPH[ch]);
     const t = $('title');
     if (t.textContent !== d.label) {
       t.textContent = d.label;
@@ -638,7 +848,7 @@ PAGE = """<!doctype html>
     // The play/pause BUTTON shows the action it triggers (popup convention):
     // playing (▶ status) → show pause, else show play.
     const playing = d.status.startsWith('▶');
-    $('pp').textContent = playing ? '‖' : '▶';
+    $('pp').innerHTML = icon(playing ? 'pause' : 'play');
     $('clock').textContent = d.status.replace(/^[▶⏸○]\\s*/, '') || '○';
     $('mute').classList.toggle('lit', !!d.muted);
     speechOnly(ch === 'speech');
@@ -691,13 +901,113 @@ PAGE = """<!doctype html>
     setTimeout(poll, 300);                     // let the action land, then refresh
   }
 
+  // ---- input box: reply to whoever just spoke (token-authed) ---------------
+  let targets = ['speaker'], tIdx = 0;
+  function token() { return localStorage.getItem('amux_token') || ''; }
+  function askToken() {
+    const t = prompt('amux auth token (from ~/.amux/auth_token):');
+    if (t) localStorage.setItem('amux_token', t.trim());
+    return !!t;
+  }
+  async function authed(url, opts) {
+    opts = opts || {};
+    opts.headers = Object.assign({'X-Auth-Token': token()}, opts.headers);
+    let r = await fetch(url, opts);
+    if (r.status === 401 && askToken()) {
+      opts.headers['X-Auth-Token'] = token();
+      r = await fetch(url, opts);
+    }
+    return r;
+  }
+  function drawTarget() {
+    const t = targets[tIdx];
+    $('target').innerHTML = t === 'speaker'
+      ? icon('reply') + 'speaker'
+      : icon('book') + t.slice(5);
+  }
+  drawTarget();
+  async function openInput() {
+    hideCtl();
+    $('inp').classList.add('on');
+    $('text').focus();
+    try {
+      const d = await authed('/sessions').then(r => r.json());
+      targets = ['speaker'].concat((d.amux || []).map(n => 'amux:' + n));
+      tIdx = 0; drawTarget();
+    } catch (_) {}
+  }
+  function closeInput() { $('inp').classList.remove('on'); $('text').blur(); }
+  $('kbd').onclick = (e) => { e.stopPropagation(); openInput(); };
+  $('target').onclick = (e) => {
+    e.stopPropagation();
+    tIdx = (tIdx + 1) % targets.length;
+    drawTarget();
+  };
+  async function sendText() {
+    const text = $('text').value.trim();
+    if (!text) return;
+    $('send').textContent = '…';
+    try {
+      const r = await authed('/input', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({text: text, target: targets[tIdx]}),
+      }).then(r => r.json());
+      if (r.ok) { $('text').value = ''; $('send').textContent = '✓'; }
+      else { $('send').textContent = '✕'; console.warn(r.detail); }
+    } catch (_) { $('send').textContent = '✕'; }
+    setTimeout(() => { $('send').innerHTML = icon('send'); }, 1200);
+  }
+  $('send').onclick = (e) => { e.stopPropagation(); sendText(); };
+  $('text').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); sendText(); }
+    if (e.key === 'Escape') closeInput();
+  });
+
   document.body.addEventListener('click', (e) => {
     wake();
     if ($('ctl').contains(e.target)) { resetHide(); return; }
+    if ($('inp').contains(e.target)) return;
+    if ($('inp').classList.contains('on')) { closeInput(); return; }
     visible ? hideCtl() : showCtl();
   });
+
+  // ---- popup-parity key bindings (for canvases with a keyboard) ------------
+  // Same hotkeys as the tmux popup (prefix a): Tab channel · Space play/pause
+  // · h/l sentence · H/L paragraph · </> prev/next · -/= vol · m mute ·
+  // [/] speed, 0/Backspace reset · r replay · Enter input · Esc close.
+  document.addEventListener('keydown', (e) => {
+    if (e.target === $('text')) return;          // the input box owns its keys
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const nudge = () => { if (!visible) showCtl(); else resetHide(); };
+    const keys = {
+      ' ': () => act('toggle'),
+      'h': () => act('skip-'),  'l': () => act('skip+'),
+      'H': () => act('para-'),  'L': () => act('para+'),
+      '<': () => $('prev').onclick(), '>': () => $('next').onclick(),
+      ',': () => $('prev').onclick(), '.': () => $('next').onclick(),
+      '-': () => act('vol-'),   '=': () => act('vol+'), '+': () => act('vol+'),
+      'm': () => act('mute'),
+      '[': () => act('speed-'), ']': () => act('speed+'),
+      '0': () => act('speed0'), 'Backspace': () => act('speed0'),
+      'r': () => act('replay', 1),
+      'Tab': () => $('chan').onclick(),
+      'Enter': () => openInput(),
+      'c': () => $('cc').onclick(new Event('x')),
+      's': () => $('sfx').onclick(new Event('x')),
+      'Escape': () => { $('inp').classList.contains('on') ? closeInput()
+                          : hideCtl(); return 'quiet'; },
+    };
+    const fn = keys[e.key];
+    if (!fn) return;
+    e.preventDefault();
+    if (fn() !== 'quiet') nudge();
+  });
   $('xbtn').onclick = (e) => { e.stopPropagation(); hideCtl(); };
-  function drawSfx() { $('sfx').textContent = sfxOn() ? '🔈' : '🔇'; }
+  function drawSfx() {
+    $('sfx').innerHTML = icon(sfxOn() ? 'bell' : 'bell-off');
+    $('sfx').classList.toggle('lit', sfxOn());
+  }
   drawSfx();
   function drawCc() { $('cc').classList.toggle('lit', subsOn()); }
   drawCc();
@@ -773,6 +1083,16 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"t": last.get("t") or 0,
                              "kind": "sequence" if last.get("sequence")
                                      else "image" if last.get("image") else None})
+        elif path == "/sessions":
+            if not _authorized(self):
+                self._json(401, {"error": "unauthorized"})
+                return
+            speaker = _last_speaker()
+            self._json(200, {
+                "speaker": ({"label": speaker.get("tmux_session")
+                             or "last speaker"} if speaker else None),
+                "amux": [s["name"] for s in _amux_sessions()],
+            })
         elif path == "/status":
             channel = "speech"
             for kv in query.split("&"):
@@ -836,6 +1156,14 @@ class Handler(BaseHTTPRequestHandler):
             self._show()
         elif path == "/ctl":
             self._ctl()
+        elif path == "/input":
+            if not _authorized(self):
+                self._json(401, {"error": "unauthorized"})
+                return
+            body = self._read_json() or {}
+            ok, detail = send_input(str(body.get("text") or ""),
+                                    str(body.get("target") or "speaker"))
+            self._json(200 if ok else 400, {"ok": ok, "detail": detail})
         else:
             self._send(404, b"not found\n", "text/plain")
 

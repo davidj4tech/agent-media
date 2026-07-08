@@ -119,3 +119,13 @@ def test_show_image_passes_purpose_through():
     canvas.HUB = hub  # not used by Hub tests directly; guard against globals
     hub.publish({"image": "/img/f.svg", "purpose": "figure"})
     assert hub.last["purpose"] == "figure"
+
+
+def test_ctl_skip_actions_all_channels():
+    from agent_media_visual import canvas
+    assert canvas.ctl_argv("speech", "skip+", 1) == [
+        "skip", "--unit", "sentence", "--dir", "1", "--seek-fallback", "5"]
+    assert canvas.ctl_argv("speech", "para-", 1) == [
+        "skip", "--unit", "paragraph", "--dir", "-1", "--seek-fallback", "-30"]
+    assert canvas.ctl_argv("music", "skip-", 1) == ["music", "seek", "-5"]
+    assert canvas.ctl_argv("book", "para+", 1) == ["book", "seek", "+30"]

@@ -21,6 +21,15 @@ from agent_media_core.types import Event, Source, Target
 PHONE = Target(name="phone")
 
 
+@pytest.fixture(autouse=True)
+def state_env(tmp_path, monkeypatch):
+    """Isolate every state write — without this the fixture events (pane %7,
+    'First sentence here…') land in the REAL state.db and poison anything
+    that reads recent speech history (e.g. the canvas's reply-to-speaker)."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+
 # --------------------------------------------------------------------------
 # _wait_and_claim_broker
 # --------------------------------------------------------------------------

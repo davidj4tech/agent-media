@@ -30,11 +30,23 @@ Design premises (from the discussion that spawned this):
   new image lands, a chime up/down when speech starts/stops — toggled with
   the 🔈 button, persisted per device.
 - **Audio controller** — tap the canvas to reveal a touch version of the
-  tmux popup (`prefix a`): channel cycle (♪ speech ⇆ ♫ music ⇆ ☰ book),
-  marquee title, live clock, `⏮ ▶/‖ ⏭ − +`, and on speech mute + speed.
-  Every button runs the same `media` CLI verb the popup's hotkey runs — one
-  code path — including the popup's ⏮ replay-cursor semantics on speech.
-  Auto-hides after 12s.
+  tmux popup (`prefix a`): channel cycle (speech ⇆ music ⇆ book), marquee
+  title, live clock, prev/play-pause/next, volume, and on speech mute +
+  speed. Every button runs the same `media` CLI verb the popup's hotkey
+  runs — one code path — including the popup's ⏮ replay-cursor semantics
+  on speech. Auto-hides after 12s. **Popup-parity key bindings** for
+  canvases with a keyboard: Tab channel · Space play/pause · h/l H/L
+  sentence/paragraph · </> prev/next · -/= vol · m mute · [/] speed,
+  0 reset · r replay · Enter input box · Esc close. One monochrome
+  inline-SVG icon set (currentColor) — no emoji, so buttons render
+  identically on every device.
+- **Input box** — the canvas talks back. The keyboard button (or Enter)
+  opens a reply bar; the default target is *whoever just spoke* (resolved
+  from the speech history's source pane, probed live so dead panes are
+  skipped), with a tap-to-cycle picker of amux sessions (`amux send`
+  delivery). `POST /input` / `GET /sessions` require amux's own auth token
+  (`~/.amux/auth_token`) — one credential for both dashboards; the page
+  prompts once and remembers per device.
 - `media-visual "text"` — shapes the reply into an image prompt (one chat
   call to the same gateway the summary/describe path uses, fallback: raw
   text), generates it, spools the webp, GCs the spool, and pushes to every
