@@ -29,6 +29,13 @@ Config (env / ~/.config/agent-media.env):
   MEDIA_SUMMARY_MIN_CHARS  only summarize replies at least this long (default 320)
   MEDIA_SUMMARY_TIMEOUT    request timeout seconds (default 30)
   MEDIA_SUMMARY_PROMPT     override the system prompt
+
+Per-block description (independent of the whole-reply summary above):
+  MEDIA_SPEECH_DESCRIBE    "1" to describe un-readable code blocks / tables in
+                           one spoken sentence instead of a placeholder (default
+                           off). Reuses MEDIA_SUMMARY_MODEL / _BASE_URL / key.
+  MEDIA_DESCRIBE_TIMEOUT   per-block request timeout seconds (default 8)
+  MEDIA_DESCRIBE_CODE_PROMPT / MEDIA_DESCRIBE_TABLE_PROMPT   prompt overrides
 """
 
 from __future__ import annotations
@@ -95,25 +102,23 @@ def _resolve_api_key() -> str:
             or os.environ.get("OPENAI_API_KEY") or "")
 
 
-def summarize_for_speech(text: str) -> str | None:
-    """Rewrite `text` into a short spoken summary via an OpenAI-compatible chat
-    endpoint. Returns the summary, or ``None`` on any problem (caller falls
-    back to the mechanically-stripped text). Never raises."""
-    text = (text or "").strip()
-    if not text:
+def _chat(system_prompt: str, user_text: str, timeout: int) -> str | None:
+    """POST one system+user turn to the configured OpenAI-compatible endpoint
+    and return the assistant text, or ``None`` on any problem (empty/HTTP/JSON/
+    timeout). Never raises. Shared by the summary and describe paths."""
+    user_text = (user_text or "").strip()
+    if not user_text:
         return None
     base = (os.environ.get("MEDIA_SUMMARY_BASE_URL")
             or os.environ.get("OPENAI_BASE_URL")
             or DEFAULT_BASE_URL).rstrip("/")
     api_key = _resolve_api_key()
     model = os.environ.get("MEDIA_SUMMARY_MODEL") or DEFAULT_MODEL
-    prompt = os.environ.get("MEDIA_SUMMARY_PROMPT") or DEFAULT_PROMPT
-    timeout = _int_env("MEDIA_SUMMARY_TIMEOUT", DEFAULT_TIMEOUT)
 
     body = json.dumps({
         "model": model,
-        "messages": [{"role": "system", "content": prompt},
-                     {"role": "user", "content": text}],
+        "messages": [{"role": "system", "content": system_prompt},
+                     {"role": "user", "content": user_text}],
         "temperature": 0.3,
     }).encode("utf-8")
     req = urllib.request.Request(
@@ -130,3 +135,49 @@ def summarize_for_speech(text: str) -> str | None:
     except (KeyError, IndexError, TypeError):
         return None
     return out or None
+
+
+def summarize_for_speech(text: str) -> str | None:
+    """Rewrite `text` into a short spoken summary via an OpenAI-compatible chat
+    endpoint. Returns the summary, or ``None`` on any problem (caller falls
+    back to the mechanically-stripped text). Never raises."""
+    prompt = os.environ.get("MEDIA_SUMMARY_PROMPT") or DEFAULT_PROMPT
+    return _chat(prompt, text, _int_env("MEDIA_SUMMARY_TIMEOUT", DEFAULT_TIMEOUT))
+
+
+# --- Optional per-block description (MEDIA_SPEECH_DESCRIBE=1) -----------------
+# Unlike the whole-reply summary above, these describe a SINGLE code block or
+# table that the mechanical cleaner judged "doesn't read well", so TTS says what
+# it is instead of a bare "code block, N lines, omitted" placeholder. Called
+# only for those blocks and only when enabled — small/readable blocks are still
+# read verbatim with no model call. Falls back to the placeholder on any failure.
+DEFAULT_DESCRIBE_TIMEOUT = 8
+
+DESCRIBE_CODE_PROMPT = (
+    "You describe a code block for text-to-speech in ONE short spoken sentence. "
+    "No markdown, no symbols, do not quote the code. Say what it does or is — "
+    "e.g. 'a shell command that force-pushes the main branch'. Output only the "
+    "sentence."
+)
+DESCRIBE_TABLE_PROMPT = (
+    "You describe a table for text-to-speech in ONE short spoken sentence. No "
+    "markdown, do not read cells verbatim. Say what it contains or compares and "
+    "its size — e.g. 'a three-row table comparing hosts by sync status'. Output "
+    "only the sentence."
+)
+
+
+def describe_enabled() -> bool:
+    return (os.environ.get("MEDIA_SPEECH_DESCRIBE", "0") or "0").strip() == "1"
+
+
+def describe_code(body: str) -> str | None:
+    """One-sentence spoken description of a code block, or ``None`` on failure."""
+    prompt = os.environ.get("MEDIA_DESCRIBE_CODE_PROMPT") or DESCRIBE_CODE_PROMPT
+    return _chat(prompt, body, _int_env("MEDIA_DESCRIBE_TIMEOUT", DEFAULT_DESCRIBE_TIMEOUT))
+
+
+def describe_table(table_text: str) -> str | None:
+    """One-sentence spoken description of a table, or ``None`` on failure."""
+    prompt = os.environ.get("MEDIA_DESCRIBE_TABLE_PROMPT") or DESCRIBE_TABLE_PROMPT
+    return _chat(prompt, table_text, _int_env("MEDIA_DESCRIBE_TIMEOUT", DEFAULT_DESCRIBE_TIMEOUT))
