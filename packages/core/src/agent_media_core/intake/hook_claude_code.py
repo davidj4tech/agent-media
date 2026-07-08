@@ -332,6 +332,51 @@ def _write_stamp(path: Path, value: int) -> None:
         pass
 
 
+def _claim_once(key: str, ttl_seconds: int = 300) -> bool:
+    """Atomic, cross-process "I will speak this" claim.
+
+    Returns True if the claim is ours (proceed) or False if a live claim for
+    the same key already exists (skip). Unlike the history-based `_dedup_seen`,
+    this is race-safe: the marker is written *here*, at decide time, before the
+    event queues on the playback lock. One AskUserQuestion modal fires two hooks
+    (PreToolUse + Notification); they run concurrently and a queued-but-not-yet-
+    played event has no history row yet, so both used to pass `_dedup_seen` and
+    read the question twice. An `O_EXCL` create lets exactly one of them win.
+    A stale claim (older than `ttl_seconds`, e.g. from a crashed hook) is taken
+    over. Best-effort: on any filesystem error we return True rather than drop
+    the read.
+    """
+    try:
+        d = _stamp_dir() / "ask-claims"
+        d.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return True
+    path = d / hashlib.sha1(key.encode("utf-8")).hexdigest()
+    now = int(time.time())
+    try:
+        fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        try:
+            os.write(fd, str(now).encode())
+        finally:
+            os.close(fd)
+        return True
+    except FileExistsError:
+        try:
+            prev = int(path.read_text().strip())
+        except (OSError, ValueError):
+            prev = 0
+        if now - prev < ttl_seconds:
+            return False  # a fresh claim already owns this key
+        # Stale — reclaim it (best-effort) and proceed.
+        try:
+            path.write_text(str(now))
+        except OSError:
+            pass
+        return True
+    except OSError:
+        return True
+
+
 def _format_ask_question(tool_input: dict) -> str:
     """Render an AskUserQuestion tool input as speakable text.
 
@@ -525,6 +570,14 @@ def _emit_ask(ask: str, payload: dict, lead: str = "") -> int:
     label = _ask_location_label()
     body = f"{lead} {ask}".strip() if lead else ask
     msg = f"{label}: {body}" if label else body
+    # Race-safe dedup, claimed *before* the event queues on the playback lock.
+    # PreToolUse and Notification both fire for one modal; the history-based
+    # check below can't see a sibling that's queued-but-not-yet-played, so on
+    # its own it lets the question be read twice. Key on the raw `ask` (not
+    # `msg`) so the two fires collapse even when one carries lead-in prose or a
+    # different location label than the other.
+    if not _claim_once(ask):
+        return 0
     state = StateStore()
     if _dedup_seen(state, msg):
         return 0
