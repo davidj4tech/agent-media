@@ -23,6 +23,8 @@ Config (env):
                              back-compat; default z-image-turbo — fast, the
                              image should land mid-utterance, not minutes late)
   MEDIA_VISUAL_STYLE    style suffix appended to every prompt
+  MEDIA_VISUAL_DARK     dark mode, default ON: every engine biased toward
+                        deep dark backgrounds + luminous accents (0 = off)
   MEDIA_VISUAL_SIZE     WxH (default 1024x1024; the canvas cover-crops)
   MEDIA_VISUAL_TIMEOUT  image request timeout seconds (default 90)
   MEDIA_VISUAL_SHAPE_MODEL / MEDIA_VISUAL_SHAPE_TIMEOUT
@@ -44,6 +46,16 @@ from . import state
 VENICE_GENERATE_URL = "https://api.venice.ai/api/v1/image/generate"
 DEFAULT_MODEL = "z-image-turbo"
 DEFAULT_STYLE = "cinematic digital painting, rich colour, soft volumetric light"
+# The canvas page is black and mostly watched in dim rooms; a white-backed
+# image is a torch in the face. Dark mode (default ON, MEDIA_VISUAL_DARK=0
+# to disable) biases every engine's palette dark at the prompt level.
+DARK_STYLE_SUFFIX = ("dark background, low-key moody night lighting, deep "
+                     "shadows, luminous accents")
+
+
+def dark_mode() -> bool:
+    return (os.environ.get("MEDIA_VISUAL_DARK") or "1").strip().lower() \
+        not in ("0", "off", "no", "false")
 DEFAULT_SIZE = "1024x1024"
 DEFAULT_TIMEOUT = 90
 
@@ -176,7 +188,10 @@ def generate_venice(prompt: str) -> tuple[bytes | None, str]:
     key = _venice_key()
     if not key:
         return None, "VENICE_API_KEY not set (env or ~/.config/litellm/litellm.env)"
-    prompt = f"{prompt} {os.environ.get('MEDIA_VISUAL_STYLE') or DEFAULT_STYLE}"
+    style = os.environ.get("MEDIA_VISUAL_STYLE") or DEFAULT_STYLE
+    if dark_mode():
+        style = f"{style}, {DARK_STYLE_SUFFIX}"
+    prompt = f"{prompt} {style}"
     model = (os.environ.get("MEDIA_VISUAL_MODEL_VENICE")
              or os.environ.get("MEDIA_VISUAL_MODEL") or DEFAULT_MODEL)
     w, h = _size()
@@ -289,6 +304,17 @@ PROMPT_SVG = (
     "no <text>. Output ONLY the SVG markup, nothing else."
 )
 
+# Appended to either SVG system prompt in dark mode — the drawing is watched
+# on a black full-bleed page, often at night.
+PROMPT_SVG_DARK = (
+    " Dark mode: the artwork is shown full-bleed on a BLACK screen in a dim "
+    "room. The background rect must be a deep dark tone (near-black blues, "
+    "charcoals, deep purples; a subtle dark gradient is good — never white "
+    "or pale). Draw the subject in rich saturated mid-tones with a few "
+    "luminous bright accents that glow against the dark; any text must be "
+    "light-on-dark."
+)
+
 PROMPT_SVG_FIGURE = (
     "You are a technical illustrator. Turn the given description into ONE "
     "complete, self-contained SVG figure that COMMUNICATES it: a clear "
@@ -348,6 +374,8 @@ def generate_svg(prompt: str) -> tuple[bytes | None, str]:
     text renders perfectly; the no-text rule exists for raster models)."""
     system = (PROMPT_SVG_FIGURE
               if os.environ.get("MEDIA_VISUAL_FIGURE") == "1" else PROMPT_SVG)
+    if dark_mode():
+        system += PROMPT_SVG_DARK
     if os.environ.get("MEDIA_VISUAL_SVG_MODEL"):
         # _gateway_chat honours MEDIA_VISUAL_SHAPE_MODEL first; route the
         # override through it for this one call.

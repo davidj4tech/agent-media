@@ -446,7 +446,7 @@ PAGE = """<!doctype html>
   #cap.on { opacity: 1; }
   #cap.hide { opacity: 0; }
   #dot {
-    position: fixed; top: 12px; right: 12px; width: 8px; height: 8px;
+    position: fixed; bottom: 12px; right: 12px; width: 8px; height: 8px;
     border-radius: 50%; background: #e05c5c; opacity: 0; transition: opacity .5s;
   }
   #dot.off { opacity: .8; }
@@ -481,25 +481,30 @@ PAGE = """<!doctype html>
   }
   body.speaking #pulse { animation: breathe 2.8s ease-in-out infinite; }
   @keyframes breathe { 0%, 100% { opacity: 0; } 50% { opacity: .65; } }
-  /* --- audio controller (tap anywhere to reveal) — kin of the tmux popup --- */
+  /* --- audio controller (tap anywhere to reveal) — kin of the tmux popup ---
+     Geometry mirrors the tmux binding (`display-popup -w 34 -h 4 -x R -y 6`):
+     a compact panel anchored to the RIGHT edge near the top, sliding in from
+     the right, instead of a wide bottom sheet. */
   #ctl {
-    position: fixed; left: 50%; bottom: max(3vh, env(safe-area-inset-bottom));
-    transform: translate(-50%, 130%); width: min(92vw, 460px);
-    padding: .5em .8em; border-radius: 22px;
+    position: fixed; right: max(12px, env(safe-area-inset-right));
+    top: max(6vh, env(safe-area-inset-top));
+    transform: translateX(calc(100% + 24px)); width: min(94vw, 380px);
+    box-sizing: border-box;
+    padding: .45em .6em; border-radius: 18px;
     background: rgba(10,10,10,.62); backdrop-filter: blur(14px);
-    color: #eee; font: 15px/1.4 system-ui, sans-serif;
+    color: #eee; font: 14px/1.4 system-ui, sans-serif;
     transition: transform .35s ease, opacity .35s ease; opacity: 0;
   }
-  #ctl.on { transform: translate(-50%, 0); opacity: 1; }
-  #ctl .row { display: flex; align-items: center; gap: .2em; }
+  #ctl.on { transform: translateX(0); opacity: 1; }
+  #ctl .row { display: flex; align-items: center; gap: .15em; }
   #ctl button {
-    background: none; border: 0; color: #eee; font-size: 21px;
-    min-width: 44px; min-height: 42px; border-radius: 12px;
+    background: none; border: 0; color: #eee; font-size: 19px;
+    min-width: 38px; min-height: 38px; border-radius: 10px;
     cursor: pointer; -webkit-tap-highlight-color: transparent;
   }
   #ctl button:active { background: rgba(255,255,255,.14); }
   #ctl button.lit { color: #ffd75f; }
-  .ic { width: 21px; height: 21px; display: block; margin: auto; }
+  .ic { width: 19px; height: 19px; display: block; margin: auto; }
   #target .ic { width: 16px; height: 16px; display: inline-block;
                 vertical-align: -3px; margin-right: .35em; }
   #send .ic { margin: auto; }
@@ -512,16 +517,19 @@ PAGE = """<!doctype html>
   }
   #clock { flex: 1; text-align: center; font-variant-numeric: tabular-nums;
            color: #ddd; white-space: nowrap; overflow: hidden; }
-  /* Input bar: reply to whoever just spoke, from the canvas itself. */
+  /* Input bar: reply to whoever just spoke, from the canvas itself.
+     Same popup-parity geometry as #ctl, so the swap feels in-place. */
   #inp {
-    position: fixed; left: 50%; bottom: max(3vh, env(safe-area-inset-bottom));
-    transform: translate(-50%, 130%); width: min(92vw, 460px);
+    position: fixed; right: max(12px, env(safe-area-inset-right));
+    top: max(6vh, env(safe-area-inset-top));
+    transform: translateX(calc(100% + 24px)); width: min(94vw, 380px);
+    box-sizing: border-box;
     display: flex; align-items: center; gap: .4em;
-    padding: .5em .6em; border-radius: 22px;
+    padding: .5em .6em; border-radius: 18px;
     background: rgba(10,10,10,.7); backdrop-filter: blur(14px);
     transition: transform .3s ease, opacity .3s ease; opacity: 0;
   }
-  #inp.on { transform: translate(-50%, 0); opacity: 1; }
+  #inp.on { transform: translateX(0); opacity: 1; }
   #target {
     background: rgba(255,255,255,.1); border: 0; color: #ffd75f;
     font: 600 13px/1.4 system-ui, sans-serif; padding: .45em .8em;

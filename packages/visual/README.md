@@ -30,7 +30,10 @@ Design premises (from the discussion that spawned this):
   new image lands, a chime up/down when speech starts/stops — toggled with
   the 🔈 button, persisted per device.
 - **Audio controller** — tap the canvas to reveal a touch version of the
-  tmux popup (`prefix a`): channel cycle (speech ⇆ music ⇆ book), marquee
+  tmux popup (`prefix a`), in the popup's own geometry: a compact panel
+  anchored top-right that slides in from the right edge (mirroring the
+  binding's `display-popup -w 34 -h 4 -x R -y 6`): channel cycle
+  (speech ⇆ music ⇆ book), marquee
   title, live clock, prev/play-pause/next, volume, and on speech mute +
   speed. Every button runs the same `media` CLI verb the popup's hotkey
   runs — one code path — including the popup's ⏮ replay-cursor semantics
@@ -134,6 +137,7 @@ decoupled from this package.
 | `MEDIA_VISUAL_REVEAL_TIMEOUT` | `75` | max seconds speech holds at a `[[reveal:]]` before continuing without the picture |
 | `MEDIA_VISUAL_MODEL_VENICE` | `z-image-turbo` | venice image model (fast > pretty; `MEDIA_VISUAL_MODEL` also honoured) |
 | `MEDIA_VISUAL_STYLE` | cinematic digital painting… | style suffix, one visual voice |
+| `MEDIA_VISUAL_DARK` | **on** | dark mode: every engine is prompted toward deep dark backgrounds with luminous accents — the canvas is black and usually watched in a dim room; `0` disables |
 | `MEDIA_VISUAL_SIZE` | `1024x1024` | canvas cover-crops, square splits the difference |
 | `MEDIA_VISUAL_TIMEOUT` | `90` | image request timeout (s) |
 | `MEDIA_VISUAL_DEBUG` | off | `1` logs canvas requests |
