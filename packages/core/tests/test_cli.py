@@ -526,7 +526,11 @@ def test_skip_falls_back_to_time_seek_without_sequence(monkeypatch):
     assert ("command", "seek", 5.0, "relative") in fake.calls
 
 
-def test_skip_live_writes_nav_request(monkeypatch):
+def test_skip_live_writes_nav_request(monkeypatch, tmp_path):
+    # Breadcrumb chaining: presses inside the chain window step from the LAST
+    # press's target, not a re-read of current_sentence_idx (which lags a
+    # rapid second press on a remote target). Isolate the crumb in tmp.
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     fake = _FakeIpc({"idle-active": False, "playlist-count": 1})
     monkeypatch.setattr(cli, "ipc", fake)
     monkeypatch.setattr(cli, "_sock", lambda: "/s")
@@ -544,15 +548,21 @@ def test_skip_live_writes_nav_request(monkeypatch):
     # sentence forward → next index
     assert cli.cmd_skip(_skip_args("sentence", 1)) == 0
     assert written["i"] == 1
-    # paragraph forward from sentence 0 → first clip of paragraph 1 (idx 2)
+    # paragraph forward CHAINS from the last target (1, paragraph 0) → first
+    # clip of paragraph 1 (idx 2), even though the mirror still says 0
     assert cli.cmd_skip(_skip_args("paragraph", 1)) == 0
     assert written["i"] == 2
-    # sentence back from 0 clamps to 0 (restart first section)
+    # sentence back chains from 2 → 1 (the mirror's stale 0 is ignored)
+    assert cli.cmd_skip(_skip_args("sentence", -1)) == 0
+    assert written["i"] == 1
+    # expired crumb → back from the mirror's 0 clamps to 0 (restart first)
+    cli._skip_cursor_path().unlink()
     assert cli.cmd_skip(_skip_args("sentence", -1)) == 0
     assert written["i"] == 0
 
 
-def test_skip_playlist_sets_playlist_pos_and_highlights(monkeypatch):
+def test_skip_playlist_sets_playlist_pos_and_highlights(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     fake = _FakeIpc({"idle-active": False, "playlist-count": 3,
                      "playlist-pos": 0})
     monkeypatch.setattr(cli, "ipc", fake)

@@ -414,53 +414,75 @@ def _probe_video(endpoint) -> dict | None:
             "rate": float(props.get("speed") or 1.0)}
 
 
+def _selected_channel() -> str:
+    """The channel the user last selected (popup Tab / canvas controller both
+    persist it via `media popup-channel --set`). The canvas video layer and
+    controller follow this, so the two surfaces stay in sync."""
+    state = Path(os.environ.get("XDG_STATE_HOME",
+                                str(Path.home() / ".local" / "state")))
+    try:
+        v = (state / "agent-media" / "popup-channel").read_text().strip()
+    except OSError:
+        return "speech"
+    return v if v in ("speech", "music", "book") else "speech"
+
+
 def _video_state() -> dict:
     """One video-sync snapshot across the channels that can carry a YouTube
     video: the book (red5's sink-book mpv — phone-fetched .mka cache files or
-    raw-URL streams) and the music channel's phone mpv. Prefer whichever is
-    actively playing; a paused player only shows when nothing else is live."""
-    candidates: list[dict] = []
+    raw-URL streams) and the music channel's phone mpv.
+
+    The SELECTED channel's player wins when it has a video (even paused — the
+    user is looking at that channel); otherwise prefer whichever player is
+    actively playing, with a paused one only when nothing else is live. The
+    event always carries "chan" so the page's controller follows the popup."""
+    sel = _selected_channel()
+    probes: dict = {}
     try:
         book_sock = (os.environ.get("MEDIA_BOOK_SOCKET")
                      or str(Path.home()
                             / ".local/state/agent-media/sink-book.sock"))
         if Path(book_sock).exists():
-            bp = _probe_video(book_sock)
-            if bp:
-                candidates.append(bp)
+            probes["book"] = _probe_video(book_sock)
         from agent_media_core.sinks import music_local
         if music_local.configured():
-            mp = _probe_video(music_local.endpoint())
-            if mp:
-                candidates.append(mp)
+            probes["music"] = _probe_video(music_local.endpoint())
     except Exception:  # noqa: BLE001
         pass
-    pick = next((c for c in candidates if not c["paused"]),
-                candidates[0] if candidates else None)
+    pick = probes.get(sel)
     if pick is None:
-        return {"kind": "video", "vid": None}
-    return {"kind": "video", "ts": time.time(), **pick}
+        candidates = [p for p in (probes.get("book"), probes.get("music")) if p]
+        pick = next((c for c in candidates if not c["paused"]),
+                    candidates[0] if candidates else None)
+    if pick is None:
+        return {"kind": "video", "vid": None, "chan": sel}
+    return {"kind": "video", "ts": time.time(), "chan": sel, **pick}
 
 
 def _video_poller() -> None:
-    last_vid = "unset"
+    last_key = None
     while True:
         if HUB.watchers() == 0:
             time.sleep(3)
             continue
         ev = _video_state()
         # While a video is live, publish every poll (the position heartbeat the
-        # page drift-corrects against); the vid:None "hide" event only on the
-        # transition, so an idle music channel doesn't chatter.
-        if ev["vid"] is not None or ev["vid"] != last_vid:
+        # page drift-corrects against); otherwise only on a change — the hide
+        # transition, or a channel switch the controller must follow.
+        key = (ev["vid"], ev.get("chan"))
+        if ev["vid"] is not None or key != last_key:
             HUB.publish(ev)
-        last_vid = ev["vid"]
+        last_key = key
         time.sleep(5 if ev["vid"] else 3)
 
 
 def ctl_argv(channel: str, action: str, arg: int) -> list[str] | None:
     """Whitelisted button → `media` argv. None = unknown/unsupported combo.
     The maps mirror the popup's handle_key dispatch."""
+    if action == "select" and channel in ("speech", "music", "book"):
+        # Persist the channel choice — the popup opens on it, and the video
+        # poller broadcasts it back so every canvas follows.
+        return ["popup-channel", "--set", channel]
     if channel == "speech":
         table = {
             "toggle": ["toggle"],
@@ -945,7 +967,16 @@ PAGE = """<!doctype html>
   es.onmessage = (e) => {
     try {
       const d = JSON.parse(e.data);
-      if (d.kind === 'video') { d.rx = Date.now(); syncVideo(d); }
+      if (d.kind === 'video') {
+        d.rx = Date.now(); syncVideo(d);
+        // Follow the selected channel (popup Tab / another canvas) — unless
+        // the user just tapped the channel button here (their choice is on
+        // its way to the server; adopting a stale event would flip it back).
+        if (d.chan && d.chan !== ch && Date.now() - chTouched > 8000) {
+          ch = d.chan; histIdx = 1;
+          if (visible) { $('title').textContent = '…'; poll(); }
+        }
+      }
       else if (d.kind === 'state') {
         setSpeaking(!!d.speaking);
         if (d.speaking) {
@@ -996,6 +1027,7 @@ PAGE = """<!doctype html>
   const ORDER = ['speech', 'music', 'book'];
   let ch = 'speech', histIdx = 1, visible = false;
   let hideTimer = null, pollTimer = null;
+  let chTouched = 0;   // last local channel tap — wins over server sync briefly
 
   function speechOnly(showIt) {
     for (const el of document.querySelectorAll('#ctl .sp'))
@@ -1200,6 +1232,8 @@ PAGE = """<!doctype html>
   $('chan').onclick = () => {
     ch = ORDER[(ORDER.indexOf(ch) + 1) % ORDER.length];
     histIdx = 1;
+    chTouched = Date.now();
+    act('select');                 // persist → popup + other canvases follow
     $('title').textContent = '…';
     poll();
     resetHide();

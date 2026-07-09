@@ -1388,7 +1388,8 @@ def cmd_jump(a) -> int:
         count = 1
     playlist = isinstance(count, int) and count > 1
     if len(sentences) > 1 and not playlist:
-        _write_nav_request(len(sentences), (np or {}).get("target") or "local")
+        _write_nav_request(len(sentences),
+                           (np or {}).get("target") or SPEECH_TARGET.name)
     return _seek_to_end(sock)
 
 
@@ -1453,6 +1454,38 @@ def _write_nav_request(idx: int, target_name: str = "local") -> None:
         pass
 
 
+# Rapid skip presses must chain: each press is one step from where the LAST
+# press pointed, not from a re-read of "current sentence" — the playlist-pos /
+# mirror reads can lag a quick second press (bridge latency, mirror tick), so
+# re-deriving would compute the same target and merely replay the sentence the
+# first press chose. The breadcrumb holds the last commanded index, honored
+# while presses cluster within this window.
+_SKIP_CHAIN_S = 3.0
+
+
+def _skip_cursor_path() -> Path:
+    return state_dir() / f"skip-cursor-{SPEECH_TARGET.name}"
+
+
+def _read_skip_cursor() -> Optional[int]:
+    try:
+        p = _skip_cursor_path()
+        if time.time() - p.stat().st_mtime > _SKIP_CHAIN_S:
+            return None
+        return int(p.read_text().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _write_skip_cursor(idx: int) -> None:
+    try:
+        p = _skip_cursor_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(str(idx))
+    except OSError:
+        pass
+
+
 def cmd_skip(a) -> int:
     """Step the speech reader forward/back by a sentence (h/l) or paragraph (H/L).
 
@@ -1509,9 +1542,16 @@ def cmd_skip(a) -> int:
             return _time_seek()
         cur = int(cur)
 
+    # A press within the chain window steps from the LAST press's target,
+    # whatever the (possibly lagging) live read said.
+    crumb = _read_skip_cursor()
+    if crumb is not None and 0 <= crumb < n:
+        cur = crumb
+
     target = _nav_target(cur, n, para_idx, a.unit, direction)
     if target < 0:
         target = 0
+    _write_skip_cursor(min(target, n - 1))
 
     if playlist:
         if target >= n:
@@ -1520,11 +1560,23 @@ def cmd_skip(a) -> int:
             ipc.set_property(sock, "playlist-pos", target)
         except ipc.MpvIpcError:
             return 1
+        # Rapid presses race mpv's async entry loads: an earlier in-flight
+        # jump can commit AFTER ours and clobber it (observed as a skip
+        # "bouncing back" a moment later). Verify once, best-effort.
+        try:
+            time.sleep(0.15)
+            if int(ipc.get_property(sock, "playlist-pos") or -1) != target:
+                ipc.set_property(sock, "playlist-pos", target)
+        except (ipc.MpvIpcError, TypeError, ValueError):
+            pass
         _force_highlight_sentence(sentences[target])
         return 0
     # Live readout: hand the jump to the reader loop (honored even while
-    # paused). Key the flag by the target that's actually playing.
-    _write_nav_request(target, (np or {}).get("target") or "local")
+    # paused). Key the flag by the target that's actually playing, falling
+    # back to the CLI's resolved speech target — NOT "local", which orphans
+    # the flag whenever now_playing lacks a target (the reader polls the
+    # actual playout target's flag).
+    _write_nav_request(target, (np or {}).get("target") or SPEECH_TARGET.name)
     return 0
 
 

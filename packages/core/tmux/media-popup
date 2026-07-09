@@ -628,6 +628,10 @@ handle_key() {
                    *)      CHANNEL=speech ;;
                esac
                LABEL=""; LAST_LABEL=" "    # force a clean marquee reset
+               # Persist NOW (async — don't stall the keypress), not just on
+               # exit: the canvas follows the selected channel live (its video
+               # layer and controller sync to this).
+               ($MEDIA popup-channel --set "$CHANNEL" >/dev/null 2>&1 &)
                tmux display-message "♪ channel: $CHANNEL" 2>/dev/null ;;
         # Fusable speech keys stash their verb in SPEECH_ACT (run+redraw in one
         # spawn by the loop); music/book keep their own direct calls.
