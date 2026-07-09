@@ -126,6 +126,13 @@ SCROLL_DONE=0
 mouse_on()  { printf '\033[?1000h\033[?1006h'; }
 mouse_off() { printf '\033[?1000l\033[?1006l'; }
 
+# The popup tty runs raw (-echo -icanon, set below) so single keys arrive
+# instantly and mouse bytes don't echo. The typed prompts (typed_seek /
+# typed_open) need the opposite — echo so you can see what you type, icanon so
+# backspace edits the line — so they flip to line mode for the read and back.
+tty_line() { stty echo icanon 2>/dev/null || true; }
+tty_raw()  { stty -echo -icanon min 1 time 0 2>/dev/null || true; }
+
 # Put the tty in raw, no-echo mode for the popup's whole lifetime. Without this
 # the terminal only suppresses echo *during* each `read -s`; mouse-report bytes
 # that arrive while we're elsewhere (e.g. mid-fetch, or the release event after
@@ -154,8 +161,12 @@ trap cleanup EXIT
 fetch() {
     local t smc=""
     if [ "$CHANNEL" = "music" ]; then
-        STATUS=$($MEDIA music status --show-idle --no-bar 2>/dev/null)
-        t=$($MEDIA music now 2>/dev/null | tr '\n' ' ')
+        # Fused status+label: one `media` spawn AND one phone round-trip.
+        # `now-status` follows the live backend (phone mpv when `play --where
+        # auto` routed there, else Mopidy) — separate status/now calls would
+        # each re-probe the phone bridge.
+        { IFS= read -r STATUS; IFS= read -r t; } < <(
+            $MEDIA music now-status --show-idle --no-bar 2>/dev/null)
         t="${t#"${t%%[![:space:]]*}"}"; t="${t%"${t##*[![:space:]]}"}"
         [ -n "$t" ] && LABEL="$t" || LABEL="(no music)"
         LINK=$(url_for "$(mpd_currentsong_file)")
@@ -164,7 +175,7 @@ fetch() {
         # `media book now` yields a bare URI; the socket's media-title reads
         # far nicer in the marquee. Falls back to a placeholder when idle.
         t=$(printf '{"command":["get_property","media-title"]}\n' \
-              | socat - "$BOOK_SOCK" 2>/dev/null | jq -r '.data // empty' 2>/dev/null \
+              | socat - "UNIX-CONNECT:$BOOK_SOCK" 2>/dev/null | jq -r '.data // empty' 2>/dev/null \
               | tr '\n' ' ')
         t="${t#"${t%%[![:space:]]*}"}"; t="${t%"${t##*[![:space:]]}"}"
         [ -n "$t" ] && LABEL="$t" || LABEL="(audiobook)"
@@ -427,7 +438,9 @@ typed_seek() {
     mouse_off
     printf '\033[H\033[2J\033[?25h'                 # clear + show cursor
     printf ' %s seek › H:MM:SS · +90 · -5:00\r\n ➜ ' "$CHANNEL"
+    tty_line                                        # echo + line editing for the prompt
     local t; IFS= read -r t
+    tty_raw
     printf '\033[?25l'                              # re-hide cursor
     mouse_on
     # `--` ends option parsing so a relative "-5:00" isn't taken as a flag
@@ -456,7 +469,9 @@ typed_open() {
     else
         printf ' %s open › paste/type a URL (Enter cancels)\r\n ➜ ' "$CHANNEL"
     fi
+    tty_line                                        # echo + line editing for the prompt
     IFS= read -r t
+    tty_raw
     printf '\033[?25l'                              # re-hide cursor
     mouse_on
     [ -z "$t" ] && t="$url"                         # bare Enter accepts the buffer URL
@@ -513,7 +528,7 @@ bump_speed() {        # $1 = direction: 1 faster / -1 slower — hops the speed 
         if (v<0.3) v=0.3; if (v>3.0) v=3.0; printf "%.1f", v
     }')
     [ -z "$v" ] && return
-    printf '{"command":["set_property","speed",%s]}\n' "$v" | socat - "$sock" >/dev/null 2>&1
+    printf '{"command":["set_property","speed",%s]}\n' "$v" | socat - "UNIX-CONNECT:$sock" >/dev/null 2>&1
     [ "$CHANNEL" = "book" ] && bspeed="$v" || speed="$v"
 }
 
@@ -536,7 +551,10 @@ book_toggle() {
 sock_for() { case "$CHANNEL" in book) printf '%s' "$BOOK_SOCK" ;; speech) printf '%s' "$SPEECH_SOCK" ;; esac; }
 sock_get() {  # $1 = mpv property; echoes raw .data, or "" if absent/false/no-socket
     local s; s=$(sock_for); [ -z "$s" ] && return 1
-    printf '{"command":["get_property","%s"]}\n' "$1" | socat - "$s" 2>/dev/null \
+    # UNIX-CONNECT (not a bare filename): a bare filename is GOPEN, which on a
+    # missing/removed socket CREATES a regular file and buries the path under
+    # written-out queries — after which nothing can ever answer there.
+    printf '{"command":["get_property","%s"]}\n' "$1" | socat - "UNIX-CONNECT:$s" 2>/dev/null \
         | jq -r '.data // empty' 2>/dev/null
 }
 

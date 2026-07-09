@@ -176,6 +176,20 @@ class SinkMusicLocal:
         except (ipc.MpvIpcError, OSError):
             pass
 
+    def seek_relative(self, secs: float, target: Target = DEFAULT_TARGET) -> None:
+        try:
+            ipc.command(self._endpoint(), "seek", float(secs), "relative")
+        except (ipc.MpvIpcError, OSError):
+            pass
+
+    def volume_delta(self, delta: int, target: Target = DEFAULT_TARGET) -> None:
+        try:
+            cur = ipc.get_property(self._endpoint(), "volume")
+            self._set("volume",
+                      max(0, min(100, int(round((cur or 100) + delta)))))
+        except (ipc.MpvIpcError, OSError, TypeError, ValueError):
+            pass
+
     # ---- observation (spawn-free; None/idle when the bridge is unreachable) --
 
     def position(self, target: Target = DEFAULT_TARGET) -> Optional[int]:

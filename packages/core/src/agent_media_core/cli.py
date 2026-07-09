@@ -1959,6 +1959,80 @@ def _music_now_label(m: "SinkMusic") -> str:
     return f"{artist} — {title}" if artist and title else title
 
 
+def _phone_music_props() -> Optional[dict]:
+    """One batched snapshot of the phone's music mpv, or None when the phone
+    backend isn't configured, isn't reachable, or has nothing loaded.
+
+    `music play --where auto` routes playout to the phone when it's the only
+    listener, so the status/label/transport paths below must follow it there —
+    reading Mopidy would show an idle rooms queue while the track is audibly
+    playing. One `get_properties` batch = one bridge round-trip (a per-property
+    read would cost several hundred ms each from this host to the phone).
+    """
+    from .sinks import music_local
+    from .sinks import _mpv_ipc as ipc
+    if not music_local.configured():
+        return None
+    try:
+        props = ipc.get_properties(
+            music_local.endpoint(),
+            ["idle-active", "pause", "time-pos", "duration",
+             "media-title", "chapter-metadata/by-key/title"],
+            timeout=1.5)
+    except (ipc.MpvIpcError, OSError):
+        return None
+    if props.get("idle-active") is not False:
+        return None       # idle (or unknown) ⇒ the phone isn't the live backend
+    return props
+
+
+def _phone_music_label(props: dict) -> str:
+    """Marquee label for phone-local playback: the embedded title, plus the
+    current chapter when the file has chapters. The phone caches downloads by
+    video id, so an unembedded file's media-title is a bare `<id>.<ext>`
+    filename — strip the extension rather than showing it."""
+    chap = str(props.get("chapter-metadata/by-key/title") or "").strip()
+    title = str(props.get("media-title") or "").strip()
+    if "." in title and " " not in title:
+        title = title.rsplit(".", 1)[0]
+    if chap and title:
+        # Chapter first: on a ~34-col marquee the "what's playing right now"
+        # part must be visible before the scroll, not after it.
+        return f"{chap} · {title}"
+    return chap or title
+
+
+def _music_now_status(m: "SinkMusic", width: int, hide_idle: bool,
+                      bar: bool = True) -> tuple:
+    """(status line, marquee label) for whichever backend is actually playing:
+    the phone's local mpv when it has a track loaded, else Mopidy."""
+    props = _phone_music_props()
+    if props is not None:
+        line = render_status(idle=False, pos=props.get("time-pos"),
+                             dur=props.get("duration"),
+                             paused=bool(props.get("pause")), muted=False,
+                             width=width, hide_idle=hide_idle, bar=bar)
+        return line, _phone_music_label(props)
+    return (_music_status_line(m, width, hide_idle, bar), _music_now_label(m))
+
+
+def _music_live_backend(m: "SinkMusic"):
+    """The backend a music-channel control should hit: the phone's local mpv
+    when it has a track loaded (playing or paused), else Mopidy. Mirrors
+    SinkMusicRouter._observe_backend, which already makes the speech
+    coordinator's duck follow the live backend — without this the popup's
+    transport keys would drive an idle Mopidy while the phone plays."""
+    from .sinks.music_local import SinkMusicLocal, configured
+    if configured():
+        loc = SinkMusicLocal()
+        try:
+            if loc.loaded():
+                return loc
+        except Exception:  # noqa: BLE001 — bridge down ⇒ phone not live
+            pass
+    return m
+
+
 def _resolve_music_where(where: str) -> str:
     """Resolve a `--where` value to a concrete backend: 'phone' or 'rooms'.
 
@@ -1990,18 +2064,24 @@ def cmd_music(a) -> int:
     from .route import coerce_content_type, detect_content_type
 
     m = SinkMusic()
-    if a.action == "status":
+    if a.action in ("status", "now", "now-status"):
+        # All three follow the LIVE backend (phone mpv when it has a track
+        # loaded, else Mopidy). `now-status` is the popup's fused form: status
+        # line + marquee label in one spawn and one phone round-trip.
+        line, label = ("○" if a.show_idle else ""), ""
         try:
-            print(_music_status_line(m, a.width, hide_idle=not a.show_idle,
-                                     bar=not a.no_bar))
+            line, label = _music_now_status(m, a.width,
+                                            hide_idle=not a.show_idle,
+                                            bar=not a.no_bar)
         except Exception:  # noqa: BLE001 — popup must never see a traceback
-            print("○" if a.show_idle else "")
-        return 0
-    if a.action == "now":
-        try:
-            print(_music_now_label(m))
-        except Exception:  # noqa: BLE001
             pass
+        if a.action == "status":
+            print(line)
+        elif a.action == "now":
+            print(label)
+        else:
+            print(line)
+            print(label)
         return 0
     if a.action == "play":
         if not a.uri:
@@ -2027,8 +2107,11 @@ def cmd_music(a) -> int:
         StateStore().set_music_intent(a.uri, ct.value)
         print(f"playing ({ct.value}): {a.uri}")
         return 0
+    # Everything below is transport — route to the live backend so the keys
+    # control what's actually audible (phone mpv or Mopidy).
+    b = _music_live_backend(m)
     if a.action == "stop":
-        m.stop()
+        b.stop()
         StateStore().clear_music_intent()
         return 0
     if a.action == "seek":
@@ -2036,23 +2119,27 @@ def cmd_music(a) -> int:
         # a signed one (+90 / -5:00) offsets. MPD seeks the current track only.
         return _do_timecode_seek(
             a.uri or "0",
-            jump=lambda s: (m.seek_cur(position_ms=int(max(0.0, s) * 1000)),
+            jump=lambda s: (b.seek_cur(position_ms=int(max(0.0, s) * 1000)),
                             max(0.0, s))[1],
-            offset=lambda s: m.seek_relative(s),
+            offset=lambda s: b.seek_relative(s),
         )
     if a.action == "volume":
-        m.volume_delta(int(float(a.uri or 0)))
+        b.volume_delta(int(float(a.uri or 0)))
         return 0
     if a.action == "prev" and getattr(a, "restart_first", False):
         # Popup `<`: ⏮ semantics — restart the track if we're past its start.
+        if b is m:
+            elapsed = lambda: (m.status_dict() or {}).get("elapsed")  # noqa: E731
+        else:
+            elapsed = lambda: (b.position() or 0) / 1000.0  # noqa: E731
         return _prev_with_restart(
-            elapsed=lambda: (m.status_dict() or {}).get("elapsed"),
-            restart=lambda: m.seek_cur(position_ms=0),
-            step_back=m.previous,
+            elapsed=elapsed,
+            restart=lambda: b.seek_cur(position_ms=0),
+            step_back=b.previous,
         )
     {
-        "pause": m.pause, "resume": m.resume,
-        "toggle": m.toggle, "next": m.next, "prev": m.previous,
+        "pause": b.pause, "resume": b.resume,
+        "toggle": b.toggle, "next": b.next, "prev": b.previous,
     }[a.action]()
     return 0
 
@@ -2531,7 +2618,8 @@ def _build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("music", help="music control via Mopidy/MPD")
     s.add_argument("action",
                    choices=("play", "pause", "resume", "stop", "toggle",
-                            "next", "prev", "status", "now", "seek", "volume"))
+                            "next", "prev", "status", "now", "now-status",
+                            "seek", "volume"))
     s.add_argument("uri", nargs="?",
                    help="for 'play': Mopidy URI (e.g. yt:https://...); "
                         "for 'seek': time H:MM:SS (absolute) or +90/-5:00 "
