@@ -451,9 +451,12 @@ def _video_state() -> dict:
         pass
     pick = probes.get(sel)
     if pick is None:
+        # Not on a video channel (or its player has nothing): only an
+        # ACTIVELY PLAYING player may claim the screen. A paused player's
+        # frozen video sitting over the speech canvas is noise — it returns
+        # when its channel is selected or it resumes.
         candidates = [p for p in (probes.get("book"), probes.get("music")) if p]
-        pick = next((c for c in candidates if not c["paused"]),
-                    candidates[0] if candidates else None)
+        pick = next((c for c in candidates if not c["paused"]), None)
     if pick is None:
         return {"kind": "video", "vid": None, "chan": sel}
     return {"kind": "video", "ts": time.time(), "chan": sel, **pick}
@@ -543,6 +546,10 @@ PAGE = """<!doctype html>
     will-change: transform, opacity;
   }
   .layer.on { opacity: 1; }
+  /* Fit-within-screen: the whole image visible, letterboxed on black.
+     Figures get this by default (their edge labels are content — cover
+     crops them on small screens); the fit button forces it for everything. */
+  .layer.fit { object-fit: contain; background: #000; }
   /* Ken Burns variants — picked at random per image */
   @keyframes kb1 { from { transform: scale(1.06) translate(0,0); }
                    to   { transform: scale(1.18) translate(-2%,-1.5%); } }
@@ -690,6 +697,7 @@ PAGE = """<!doctype html>
   <symbol id="i-bell" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" d="M6 16v-5a6 6 0 0112 0v5l2 2H4z"/><path stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M10 21h4"/></symbol>
   <symbol id="i-bell-off" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" d="M6 16v-5a6 6 0 0112 0v5l2 2H4z"/><path stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M10 21h4M4 4l16 16"/></symbol>
   <symbol id="i-cc" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><path stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M7 12h4M7 15.5h7"/></symbol>
+  <symbol id="i-fit" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5"/></symbol>
   <symbol id="i-kbd" viewBox="0 0 24 24"><rect x="2.5" y="6" width="19" height="12" rx="2.5" fill="none" stroke="currentColor" stroke-width="2"/><path stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6.5 10h.01M10.5 10h.01M14.5 10h.01M18 10h.01M7.5 14.5h9"/></symbol>
   <symbol id="i-close" viewBox="0 0 24 24"><path stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></symbol>
   <symbol id="i-send" viewBox="0 0 24 24"><path fill="currentColor" d="M3 11l18-8-7 18-3-7z"/></symbol>
@@ -718,6 +726,7 @@ PAGE = """<!doctype html>
     <div id="marq"><span id="title">agent-media</span></div>
     <button id="kbd"></button>
     <button id="cc"></button>
+    <button id="fit"></button>
     <button id="sfx"></button>
     <button id="xbtn"></button>
   </div>
@@ -744,21 +753,43 @@ PAGE = """<!doctype html>
   $('sdn').innerHTML = icon('slower');  $('sup').innerHTML = icon('faster');
   $('mute').innerHTML = icon('mute');   $('kbd').innerHTML = icon('kbd');
   $('cc').innerHTML = icon('cc');       $('xbtn').innerHTML = icon('close');
+  $('fit').innerHTML = icon('fit');
   $('send').innerHTML = icon('send');   $('chan').innerHTML = icon('note');
   $('pp').innerHTML = icon('play');
   let front = 0, capTimer = null;
   const KB = ['kb1','kb2','kb3','kb4'];
 
+  // ---- fit setting: auto (figures fit, art fills) · fit · fill -------------
+  // cover + the Ken Burns zoom crops edges — fatal for a figure's labels on a
+  // small screen. Fitted images letterbox (object-fit: contain) and skip the
+  // pan/zoom (which would push the letterboxed image off-frame again).
+  function fitMode() { return localStorage.getItem('fit') || 'auto'; }
+  function wantFit(purpose) {
+    const m = fitMode();
+    return m === 'fit' || (m === 'auto' && purpose === 'figure');
+  }
+  let lastPurpose = null;
+  function kenBurns(el) {
+    const dur = 28 + Math.random() * 14;
+    el.style.animation = KB[Math.floor(Math.random()*KB.length)] +
+      ' ' + dur.toFixed(1) + 's ease-in-out infinite alternate';
+    if (speaking)
+      for (const a of el.getAnimations())
+        (a.updatePlaybackRate ? a.updatePlaybackRate(2.6) : a.playbackRate = 2.6);
+  }
+  function applyFit(el, fit) {
+    el.classList.toggle('fit', fit);
+    if (fit) el.style.animation = 'none';
+  }
+
   function show(d) {
     const back = 1 - front;
     const el = layers[back];
+    lastPurpose = d.purpose || null;
+    const fit = wantFit(d.purpose);
     el.onload = () => {
-      const dur = 28 + Math.random() * 14;
-      el.style.animation = KB[Math.floor(Math.random()*KB.length)] +
-        ' ' + dur.toFixed(1) + 's ease-in-out infinite alternate';
-      if (speaking)
-        for (const a of el.getAnimations())
-          (a.updatePlaybackRate ? a.updatePlaybackRate(2.6) : a.playbackRate = 2.6);
+      applyFit(el, fit);
+      if (!fit) kenBurns(el);
       el.classList.add('on');
       layers[front].classList.remove('on');
       front = back;
@@ -867,6 +898,7 @@ PAGE = """<!doctype html>
         (a.updatePlaybackRate ? a.updatePlaybackRate(on ? 2.6 : 1)
                               : a.playbackRate = on ? 2.6 : 1);
     chime(on);
+    vidVisible();                              // video yields while speaking
     if (!on) { setSubtitle(null); figMsg = false; updFig(); }
     if (!on && seq) setBeat(seq.length - 1);   // speech over → the conclusion
   }
@@ -934,8 +966,10 @@ PAGE = """<!doctype html>
     });
   };
   function vidVisible() {
+    // Speech owns the canvas while it's talking (subtitles, artwork,
+    // figures) — the video yields and returns when the voice stops.
     document.getElementById('ytwrap').classList
-      .toggle('on', !!ytVid && Date.now() > figHold);
+      .toggle('on', !!ytVid && !speaking && Date.now() > figHold);
   }
   setInterval(vidVisible, 5000);        // restores the video after a fig hold
   function syncVideo(d) {
@@ -1199,6 +1233,7 @@ PAGE = """<!doctype html>
       'Enter': () => openInput(),
       'c': () => $('cc').onclick(new Event('x')),
       's': () => $('sfx').onclick(new Event('x')),
+      'f': () => $('fit').onclick(new Event('x')),
       'Escape': () => { $('inp').classList.contains('on') ? closeInput()
                           : hideCtl(); return 'quiet'; },
     };
@@ -1227,6 +1262,31 @@ PAGE = """<!doctype html>
     localStorage.setItem('sfx', sfxOn() ? '0' : '1');
     drawSfx();
     if (sfxOn()) chime(true);              // audible confirmation + unlocks audio
+    resetHide();
+  };
+  function drawFit() {
+    $('fit').classList.toggle('lit', fitMode() !== 'auto');
+    $('fit').style.opacity = fitMode() === 'fill' ? 0.55 : 1;
+  }
+  drawFit();
+  $('fit').onclick = (e) => {
+    e.stopPropagation();
+    const next = { auto: 'fit', fit: 'fill', fill: 'auto' }[fitMode()] || 'auto';
+    localStorage.setItem('fit', next);
+    drawFit();
+    // Re-style the image on screen right away, restoring the pan/zoom when
+    // the new mode un-fits it.
+    const el = layers[front];
+    const f = wantFit(lastPurpose);
+    applyFit(el, f);
+    if (!f) kenBurns(el);
+    $('cap').textContent = { auto: 'fit: auto — figures fit, art fills',
+                             fit:  'fit: everything fits the screen',
+                             fill: 'fill: everything covers the screen' }[next];
+    $('cap').classList.remove('hide');
+    $('cap').classList.add('on');
+    clearTimeout(capTimer);
+    capTimer = setTimeout(() => $('cap').classList.remove('on'), 2500);
     resetHide();
   };
   $('chan').onclick = () => {
