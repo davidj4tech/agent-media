@@ -96,3 +96,10 @@ class SinkMusicRouter:
     def seek_cur(self, target: Target = Target(name="local"),
                  position_ms: int = 0) -> None:
         self._observe_backend().seek_cur(target, position_ms)
+
+    def current_volume(self, target: Target = Target(name="local")):
+        """The live backend's volume — the coordinator captures this before a
+        duck so unduck restores what the user actually had, not a policy
+        constant."""
+        fn = getattr(self._observe_backend(), "current_volume", None)
+        return fn(target) if fn else None

@@ -321,8 +321,21 @@ class Coordinator:
             # If a book is in front (bed=duck), music belongs at the bed
             # level after speech, not the normal baseline — otherwise each
             # clip pops the bedded music back up to full-ish.
+            #
+            # Otherwise restore what the user actually had: capture the live
+            # backend's volume before ducking. The policy baseline is only the
+            # fallback (unreadable volume, or a stranded duck left the current
+            # volume at/below the duck level — restoring *that* would freeze
+            # the music quiet).
+            pre_duck = None
+            try:
+                vol_fn = getattr(self.music, "current_volume", None)
+                pre_duck = vol_fn(self.music_target) if vol_fn else None
+            except Exception:  # noqa: BLE001 — best-effort capture
+                pre_duck = None
             extras["baseline_volume"] = (
                 bed_level() if concurrency.focus == FOCUS_BOOK
+                else pre_duck if pre_duck is not None and pre_duck > level
                 else policy.baseline_volume)
             try:
                 self.music.duck(self.music_target, level)

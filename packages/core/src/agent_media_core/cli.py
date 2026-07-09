@@ -261,6 +261,16 @@ def _speech_display_state():
         np = _now_speaking()
         ex = (np or {}).get("extras") if np else None
         if ex and ex.get("total_duration_s"):
+            # Zombie guard: the mirror is only as alive as the submit process
+            # that writes it. If that process died without its cleanup (kill,
+            # crash, power loss), the row would otherwise show a frozen
+            # "▶ 00:00 / N:NN" forever. Both playback paths stamp their pid.
+            wp = ex.get("writer_pid")
+            if wp:
+                try:
+                    os.kill(int(wp), 0)
+                except (OSError, ValueError):
+                    return (True, None, None, False, False, None, False)
             lp = ex.get("live_pos_s")
             pos = lp if lp is not None else (ex.get("clip_offset_s") or 0.0)
             return (False, pos, ex.get("total_duration_s"),

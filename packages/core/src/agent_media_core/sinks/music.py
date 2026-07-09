@@ -306,6 +306,14 @@ class SinkMusic:
         with _connect(target) as s:
             return _parse_kv(_cmd(s, "status"))
 
+    def current_volume(self, target: Target = DEFAULT_TARGET) -> Optional[int]:
+        """Mixer volume 0-100, or None when unreadable / mixer disabled (-1)."""
+        try:
+            v = int(self.status_dict(target).get("volume", ""))
+        except (ValueError, TypeError, OSError):
+            return None
+        return v if v >= 0 else None
+
     def current_song(self, target: Target = DEFAULT_TARGET) -> dict:
         """Parsed MPD `currentsong` (Title/Artist/Name/file/…)."""
         with _connect(target) as s:

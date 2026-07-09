@@ -190,6 +190,14 @@ class SinkMusicLocal:
         except (ipc.MpvIpcError, OSError, TypeError, ValueError):
             pass
 
+    def current_volume(self, target: Target = DEFAULT_TARGET) -> Optional[int]:
+        """The phone mpv's volume 0-100, or None when unreadable."""
+        try:
+            v = ipc.get_property(self._endpoint(), "volume")
+            return int(round(float(v))) if v is not None else None
+        except (ipc.MpvIpcError, OSError, TypeError, ValueError):
+            return None
+
     # ---- observation (spawn-free; None/idle when the bridge is unreachable) --
 
     def position(self, target: Target = DEFAULT_TARGET) -> Optional[int]:

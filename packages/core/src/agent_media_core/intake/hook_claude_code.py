@@ -823,19 +823,36 @@ def _play_detached(event: Event) -> None:
         os.setsid()
     except OSError:
         pass
+    # Detach stdio so Claude Code's hook pipe sees EOF — but keep stdout/stderr
+    # observable: a detached child that dies mid-playback (kill, crash) leaves a
+    # stale now_playing mirror and an unrestored duck with zero trace when its
+    # output goes to /dev/null. Warnings (logging's lastResort handler writes
+    # WARNING+ to stderr) and tracebacks land in the log instead.
     try:
+        logp = Path.home() / ".cache" / "agent-media" / "hook-play.log"
+        try:
+            logp.parent.mkdir(parents=True, exist_ok=True)
+            if logp.exists() and logp.stat().st_size > 2_000_000:
+                logp.unlink()   # crude rotation — it's a diagnostic tail, not an archive
+            logfd = os.open(str(logp), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        except OSError:
+            logfd = None
         devnull = os.open(os.devnull, os.O_RDWR)
-        for fd in (0, 1, 2):
+        os.dup2(devnull, 0)
+        for fd in (1, 2):
             try:
-                os.dup2(devnull, fd)
+                os.dup2(logfd if logfd is not None else devnull, fd)
             except OSError:
                 pass
+        print(f"--- hook-play pid={os.getpid()} {time.strftime('%F %T')} "
+              f"text={event.text[:60]!r}", file=sys.stderr, flush=True)
     except OSError:
         pass
     try:
         _play_now(event)
-    except Exception:  # noqa: BLE001 — detached; there is no caller to report to
-        pass
+    except Exception:  # noqa: BLE001 — detached; log it, there is no caller
+        import traceback
+        traceback.print_exc()
     finally:
         os._exit(0)
 
