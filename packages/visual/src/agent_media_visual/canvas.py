@@ -193,6 +193,47 @@ def _authorized(handler: "Handler") -> bool:
     return got == token
 
 
+# --- one-time pairing: install the token into a device's localStorage ----------
+# Typing a 40-char token on a phone keyboard is miserable, so `/pair?c=<code>`
+# does it: a ONE-TIME code minted host-side (written to the state dir by
+# whoever has shell access — no HTTP path can create one) unlocks a page that
+# stores the amux token in localStorage and redirects to the canvas. The code
+# file is deleted on first use and expires after PAIR_TTL_S regardless.
+
+PAIR_TTL_S = 600
+
+
+def _pair_code_path() -> Path:
+    return spool_dir() / "pair-code"
+
+
+def _pair_consume(code: str) -> bool:
+    """True (and burn the code) when `code` matches a fresh minted one."""
+    p = _pair_code_path()
+    try:
+        minted = p.read_text().strip()
+        fresh = (time.time() - p.stat().st_mtime) <= PAIR_TTL_S
+    except OSError:
+        return False
+    if not code or not minted or not fresh or code != minted:
+        return False
+    try:
+        p.unlink()
+    except OSError:
+        pass
+    return True
+
+
+_PAIR_PAGE = """<!doctype html><meta charset="utf-8">
+<body style="background:#000;color:#eee;font:16px system-ui">
+<script>
+  localStorage.setItem('amux_token', %s);
+  location.replace('/');
+</script>
+paired — loading the canvas…
+</body>"""
+
+
 def _amux_bin() -> str:
     """amux lives in ~/.local/bin, which a systemd user service's default
     PATH doesn't include."""
@@ -1416,6 +1457,22 @@ class Handler(BaseHTTPRequestHandler):
                              or "last speaker"} if speaker else None),
                 "amux": [s["name"] for s in _amux_sessions()],
             })
+        elif path == "/pair":
+            code = ""
+            for kv in query.split("&"):
+                k, _, v = kv.partition("=")
+                if k == "c":
+                    code = v
+            token = _amux_token()
+            if not token:
+                self._send(503, b"no amux token configured on the host\n",
+                           "text/plain")
+            elif _pair_consume(code):
+                self._send(200, (_PAIR_PAGE % json.dumps(token)).encode(),
+                           "text/html; charset=utf-8")
+            else:
+                self._send(403, b"invalid or expired pairing code\n",
+                           "text/plain")
         elif path == "/status":
             channel = "speech"
             for kv in query.split("&"):
