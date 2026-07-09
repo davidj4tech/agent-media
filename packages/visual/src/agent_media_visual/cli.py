@@ -262,6 +262,7 @@ def main() -> None:
                               "at": round(frac, 3)} for n, frac in named],
                 "caption": args.caption,
                 "prompt": scene,
+                "session": args.session or None,
                 "estdur": _est_duration(text),
                 "gen_secs": round(gen_secs, 1),
             })
@@ -287,6 +288,7 @@ def main() -> None:
         "image": _image_ref(name, targets),
         "caption": args.caption,
         "prompt": scene,
+        "session": args.session or None,
         # Purposeful figure (author-hinted) vs ambient art — the canvas
         # badges figures and gives them their own arrival sound.
         "purpose": "figure" if args.hint else None,

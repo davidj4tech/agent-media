@@ -343,6 +343,10 @@ def speech_state() -> dict:
             state["sentence"] = sentence[:220]
         if ex.get("visual"):
             state["visual"] = ex["visual"]
+        if ex.get("source_session"):
+            # Who's talking — the page uses this to dim a figure that belongs
+            # to a different session than the current voice.
+            state["session"] = str(ex["source_session"])[:80]
     return state
 
 
@@ -550,6 +554,9 @@ PAGE = """<!doctype html>
      Figures get this by default (their edge labels are content — cover
      crops them on small screens); the fit button forces it for everything. */
   .layer.fit { object-fit: contain; background: #000; }
+  /* A figure whose session ISN'T the one speaking dims to backdrop — it's
+     still there, but no longer claims to illustrate the current voice. */
+  .layer.stale { filter: brightness(.3) saturate(.5); }
   /* Ken Burns variants — picked at random per image */
   @keyframes kb1 { from { transform: scale(1.06) translate(0,0); }
                    to   { transform: scale(1.18) translate(-2%,-1.5%); } }
@@ -632,8 +639,14 @@ PAGE = """<!doctype html>
   #ctl .row { display: flex; align-items: center; gap: .15em; }
   #ctl button {
     background: none; border: 0; color: #eee; font-size: 19px;
-    min-width: 38px; min-height: 38px; border-radius: 10px;
+    min-width: 36px; min-height: 38px; border-radius: 10px;
     cursor: pointer; -webkit-tap-highlight-color: transparent;
+    flex: 0 0 auto;
+  }
+  /* Narrow screens: tighter buttons so the clock keeps its digits. */
+  @media (max-width: 430px) {
+    #ctl button { min-width: 31px; min-height: 34px; font-size: 17px; }
+    #clock { font-size: 13px; }
   }
   #ctl button:active { background: rgba(255,255,255,.14); }
   #ctl button.lit { color: #ffd75f; }
@@ -648,8 +661,10 @@ PAGE = """<!doctype html>
     0%, 12%  { transform: translateX(0); }
     88%, 100% { transform: translateX(var(--marq-shift, -40%)); }
   }
-  #clock { flex: 1; text-align: center; font-variant-numeric: tabular-nums;
-           color: #ddd; white-space: nowrap; overflow: hidden; }
+  #clock { flex: 1; min-width: 78px; text-align: center;
+           font-variant-numeric: tabular-nums;
+           color: #ddd; white-space: nowrap; overflow: hidden;
+           border-radius: 8px; padding: .25em .2em; }
   /* Input bar: reply to whoever just spoke, from the canvas itself.
      Same popup-parity geometry as #ctl, so the swap feels in-place. */
   #inp {
@@ -698,6 +713,8 @@ PAGE = """<!doctype html>
   <symbol id="i-bell-off" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" d="M6 16v-5a6 6 0 0112 0v5l2 2H4z"/><path stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M10 21h4M4 4l16 16"/></symbol>
   <symbol id="i-cc" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><path stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M7 12h4M7 15.5h7"/></symbol>
   <symbol id="i-fit" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5"/></symbol>
+  <symbol id="i-skipb" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M11 7l-5 5 5 5M18 7l-5 5 5 5"/></symbol>
+  <symbol id="i-skipf" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M13 7l5 5-5 5M6 7l5 5-5 5"/></symbol>
   <symbol id="i-kbd" viewBox="0 0 24 24"><rect x="2.5" y="6" width="19" height="12" rx="2.5" fill="none" stroke="currentColor" stroke-width="2"/><path stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6.5 10h.01M10.5 10h.01M14.5 10h.01M18 10h.01M7.5 14.5h9"/></symbol>
   <symbol id="i-close" viewBox="0 0 24 24"><path stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></symbol>
   <symbol id="i-send" viewBox="0 0 24 24"><path fill="currentColor" d="M3 11l18-8-7 18-3-7z"/></symbol>
@@ -730,11 +747,19 @@ PAGE = """<!doctype html>
     <button id="sfx"></button>
     <button id="xbtn"></button>
   </div>
+  <!-- Transport row: turn-prev · sentence-back · play/pause · clock ·
+       sentence-fwd · turn-next. The volume/speed/mute cluster gets its own
+       row below — nine buttons plus the clock overflowed a phone-width panel
+       and clipped the time display. -->
   <div class="row">
     <button id="prev"></button>
+    <button id="skb"></button>
     <button id="pp"></button>
     <span id="clock">○</span>
+    <button id="skf"></button>
     <button id="next"></button>
+  </div>
+  <div class="row">
     <button id="vdn"></button>
     <button id="vup"></button>
     <button id="sdn" class="sp"></button>
@@ -749,6 +774,7 @@ PAGE = """<!doctype html>
   // Static icons; stateful ones (pp, sfx, chan, target) are set in their
   // draw functions below.
   $('prev').innerHTML = icon('prev');   $('next').innerHTML = icon('next');
+  $('skb').innerHTML = icon('skipb');   $('skf').innerHTML = icon('skipf');
   $('vdn').innerHTML = icon('minus');   $('vup').innerHTML = icon('plus');
   $('sdn').innerHTML = icon('slower');  $('sup').innerHTML = icon('faster');
   $('mute').innerHTML = icon('mute');   $('kbd').innerHTML = icon('kbd');
@@ -789,6 +815,7 @@ PAGE = """<!doctype html>
     const fit = wantFit(d.purpose);
     el.onload = () => {
       applyFit(el, fit);
+      el.classList.remove('stale');   // a fresh image is never pre-dimmed
       if (!fit) kenBurns(el);
       el.classList.add('on');
       layers[front].classList.remove('on');
@@ -878,6 +905,18 @@ PAGE = """<!doctype html>
   // speaking message's [[visual:]] flag (so it lights before the image lands).
   let figImg = false, figMsg = false;
   function updFig() { $('fig').classList.toggle('on', figImg || figMsg); }
+  // Cross-session honesty: remember which session's reply the shown visual
+  // belongs to; while a DIFFERENT session speaks, a figure dims to backdrop
+  // and drops its badge (it doesn't illustrate that voice). null session on
+  // either side = unknown → leave it alone.
+  let shownFigure = false, shownSession = null;
+  function applyStale(speakSess) {
+    const stale = !!(shownFigure && shownSession && speakSess &&
+                     speakSess !== shownSession);
+    layers[front].classList.toggle('stale', stale);
+    figImg = shownFigure && !stale;
+    updFig();
+  }
   // Subtitles: the sentence being spoken, straight off the same per-clip
   // marker that drives the tmux copy-mode highlight.
   function subsOn() { return localStorage.getItem('subs') !== '0'; }
@@ -1016,12 +1055,16 @@ PAGE = """<!doctype html>
         if (d.speaking) {
           setSubtitle(d.sentence || null);
           figMsg = !!d.visual; updFig();
+          applyStale(d.session || null);
+        } else {
+          applyStale(null);            // no voice → nothing is misattributed
         }
         applySeq();
       }
       else if (d.sequence) {
         seq = d.sequence; seqIdx = -1; seqEst = d.estdur || 0;
         seqCap = d.caption || null;
+        shownFigure = false; shownSession = d.session || null;
         figImg = false; updFig();
         figHold = Date.now() + 60000; vidVisible();   // beats own the screen
         // Anchor progress to the real speech start when we saw it; else
@@ -1037,7 +1080,8 @@ PAGE = """<!doctype html>
       }
       else if (d.image) {
         seq = null; seqIdx = -1; show(d);
-        figImg = d.purpose === 'figure'; updFig();
+        shownFigure = d.purpose === 'figure'; shownSession = d.session || null;
+        figImg = shownFigure; updFig();
         if (figImg) { figHold = Date.now() + 60000; vidVisible(); }
         figImg ? figureCue() : whoosh();
       }
@@ -1087,7 +1131,18 @@ PAGE = """<!doctype html>
     // playing (▶ status) → show pause, else show play.
     const playing = d.status.startsWith('▶');
     $('pp').innerHTML = icon(playing ? 'pause' : 'play');
-    $('clock').textContent = d.status.replace(/^[▶⏸○]\\s*/, '') || '○';
+    // "00:12 / 02:05" → "00:12/02:05": two columns saved, same trick as the
+    // tmux popup — the difference between fitting and clipping on a phone.
+    const clock = (d.status.replace(/^[▶⏸○]\\s*/, '') || '○').replace(' / ', '/');
+    $('clock').textContent = clock;
+    // Background-fill progress: the clock doubles as the bar (no extra row).
+    const secs = (s) => s.split(':').reduce((a, v) => a * 60 + (+v || 0), 0);
+    const m = clock.match(/^([\\d:]+)\\/([\\d:]+)$/);
+    const frac = m && secs(m[2]) > 0
+      ? Math.max(0, Math.min(1, secs(m[1]) / secs(m[2]))) : null;
+    $('clock').style.background = frac === null ? 'none'
+      : 'linear-gradient(90deg, rgba(255,215,95,.28) ' + (frac * 100).toFixed(1)
+        + '%, rgba(255,255,255,.07) ' + (frac * 100).toFixed(1) + '%)';
     $('mute').classList.toggle('lit', !!d.muted);
     speechOnly(ch === 'speech');
   }
@@ -1299,6 +1354,8 @@ PAGE = """<!doctype html>
     resetHide();
   };
   $('pp').onclick  = () => act('toggle');
+  $('skb').onclick = () => act('skip-');    // sentence back (±5s music/book)
+  $('skf').onclick = () => act('skip+');    // sentence forward
   $('vdn').onclick = () => act('vol-');
   $('vup').onclick = () => act('vol+');
   $('sdn').onclick = () => act('speed-');
@@ -1457,6 +1514,11 @@ class Handler(BaseHTTPRequestHandler):
             "caption": (body.get("caption") or None),
             "prompt": (body.get("prompt") or None),
             "purpose": ("figure" if body.get("purpose") == "figure" else None),
+            # Which session's reply this visual belongs to — the page dims a
+            # figure while a DIFFERENT session is speaking (else a stale
+            # diagram reads as belonging to whatever voice is talking).
+            "session": (str(body.get("session"))[:80]
+                        if body.get("session") else None),
             "t": int(time.time()),
         }
         seq = body.get("sequence")

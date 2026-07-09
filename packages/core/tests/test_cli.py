@@ -149,7 +149,10 @@ def test_history_index_for_pane(monkeypatch):
     assert cli._history_index_for_pane("") is None
 
 
-def test_toggle_idle_replays_active_pane(monkeypatch):
+def test_toggle_idle_replays_active_pane(monkeypatch, tmp_path):
+    # Isolate the state store: the remote-speech branch consults the real
+    # now_playing mirror, so a test run during live playback flips branches.
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     replayed = {}
 
     def fake_replay(i):
