@@ -606,8 +606,13 @@ PAGE = """<!doctype html>
      the moody wall and the e-ink page alike. */
   html.eink, html.eink body { background: #fff; }
   html.eink .layer { transition: none; animation: none !important; }
-  html.eink .layer.inkable { filter: invert(1) hue-rotate(180deg); }
-  html.eink .layer:not(.inkable) { filter: grayscale(1) contrast(1.1); }
+  /* Tuned for DU4 (4-grey fast waveform, David's usual): only two steps
+     exist between black and white, so push figures toward pure B/W and
+     boost raster contrast — GC16 just renders the same look bolder. */
+  html.eink .layer.inkable {
+    filter: invert(1) hue-rotate(180deg) grayscale(1) contrast(1.7);
+  }
+  html.eink .layer:not(.inkable) { filter: grayscale(1) contrast(1.35); }
   html.eink .layer.fit { background: #fff; }
   html.eink .layer.stale.on { opacity: .2; filter: grayscale(1); }
   html.eink #pulse, html.eink #ytwrap { display: none !important; }
@@ -1223,8 +1228,10 @@ PAGE = """<!doctype html>
     const m = clock.match(/^([\\d:]+)\\/([\\d:]+)$/);
     const frac = m && secs(m[2]) > 0
       ? Math.max(0, Math.min(1, secs(m[1]) / secs(m[2]))) : null;
-    const fill = einkOn() ? 'rgba(0,0,0,.16)' : 'rgba(255,215,95,.28)';
-    const track = einkOn() ? 'rgba(0,0,0,.04)' : 'rgba(255,255,255,.07)';
+    // e-ink fill dark enough to survive DU4's 4-level quantization (a 16%
+    // grey rounds to white there); the track stays as a hairline via border.
+    const fill = einkOn() ? 'rgba(0,0,0,.32)' : 'rgba(255,215,95,.28)';
+    const track = einkOn() ? 'rgba(0,0,0,.08)' : 'rgba(255,255,255,.07)';
     $('clock').style.background = frac === null ? 'none'
       : 'linear-gradient(90deg, ' + fill + ' ' + (frac * 100).toFixed(1)
         + '%, ' + track + ' ' + (frac * 100).toFixed(1) + '%)';
