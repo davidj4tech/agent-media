@@ -376,33 +376,70 @@ def _state_poller() -> None:
 # audio. Poll only while screens are connected; one batched IPC round-trip.
 
 _YT_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
+# Same URL shapes sinks/book.py recognises — a book that fell back to raw-URL
+# streaming still identifies its video.
+_YT_URL = re.compile(
+    r"(?:youtube\.com/(?:watch\?(?:.*&)?v=|shorts/|live/)|youtu\.be/)"
+    r"([A-Za-z0-9_-]{11})")
+
+
+def _probe_video(endpoint) -> dict | None:
+    """{"vid", "t", "paused", "rate"} for one player, or None when it's idle,
+    unreachable, or not on YouTube-identifiable content."""
+    from agent_media_core.sinks import _mpv_ipc as ipc
+    try:
+        props = ipc.get_properties(
+            endpoint, ["idle-active", "pause", "time-pos", "speed", "path"],
+            timeout=1.5)
+    except Exception:  # noqa: BLE001 — down ⇒ no video, never a fault
+        return None
+    if props.get("idle-active") is not False:
+        return None
+    path = str(props.get("path") or "")
+    stem = Path(path).stem
+    # Three shapes carry a video id: the phone music cache (`<id>.mka`), the
+    # audiobook library (yt-dlp's `Title [<id>].mka`), and a raw YouTube URL.
+    vid = stem if _YT_ID.fullmatch(stem) else None
+    if not vid:
+        m = re.search(r"\[([A-Za-z0-9_-]{11})\]$", stem)
+        vid = m.group(1) if m else None
+    if not vid:
+        m = _YT_URL.search(path)
+        vid = m.group(1) if m else None
+    if not vid:
+        return None
+    return {"vid": vid,
+            "t": round(float(props.get("time-pos") or 0.0), 2),
+            "paused": bool(props.get("pause")),
+            "rate": float(props.get("speed") or 1.0)}
 
 
 def _video_state() -> dict:
-    """One video-sync snapshot: {"kind":"video","vid":id,...} while the phone
-    plays a YouTube-cached file, else {"kind":"video","vid":None}."""
-    off = {"kind": "video", "vid": None}
+    """One video-sync snapshot across the channels that can carry a YouTube
+    video: the book (red5's sink-book mpv — phone-fetched .mka cache files or
+    raw-URL streams) and the music channel's phone mpv. Prefer whichever is
+    actively playing; a paused player only shows when nothing else is live."""
+    candidates: list[dict] = []
     try:
+        book_sock = (os.environ.get("MEDIA_BOOK_SOCKET")
+                     or str(Path.home()
+                            / ".local/state/agent-media/sink-book.sock"))
+        if Path(book_sock).exists():
+            bp = _probe_video(book_sock)
+            if bp:
+                candidates.append(bp)
         from agent_media_core.sinks import music_local
-        from agent_media_core.sinks import _mpv_ipc as ipc
-        if not music_local.configured():
-            return off
-        props = ipc.get_properties(
-            music_local.endpoint(),
-            ["idle-active", "pause", "time-pos", "speed", "path"],
-            timeout=1.5)
-    except Exception:  # noqa: BLE001 — bridge down ⇒ no video, never a fault
-        return off
-    if props.get("idle-active") is not False:
-        return off
-    stem = Path(str(props.get("path") or "")).stem
-    if not _YT_ID.fullmatch(stem):
-        return off      # not a YouTube-id-named cache file (offline hash etc.)
-    return {"kind": "video", "vid": stem,
-            "t": round(float(props.get("time-pos") or 0.0), 2),
-            "paused": bool(props.get("pause")),
-            "rate": float(props.get("speed") or 1.0),
-            "ts": time.time()}
+        if music_local.configured():
+            mp = _probe_video(music_local.endpoint())
+            if mp:
+                candidates.append(mp)
+    except Exception:  # noqa: BLE001
+        pass
+    pick = next((c for c in candidates if not c["paused"]),
+                candidates[0] if candidates else None)
+    if pick is None:
+        return {"kind": "video", "vid": None}
+    return {"kind": "video", "ts": time.time(), **pick}
 
 
 def _video_poller() -> None:
