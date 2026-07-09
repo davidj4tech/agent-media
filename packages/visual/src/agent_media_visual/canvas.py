@@ -598,6 +598,34 @@ PAGE = """<!doctype html>
   /* A figure whose session ISN'T the one speaking dims to backdrop — it's
      still there, but no longer claims to illustrate the current voice. */
   .layer.stale { filter: brightness(.3) saturate(.5); }
+  /* ---- e-ink mode (?eink=1, persisted per device; 'e' toggles) ------------
+     Ink on paper for the Pine Note: white page, NO crossfades / pan-zoom /
+     breathing (partial-refresh ghosting), no video layer. Dark SVG figures
+     invert to black-line-on-white; raster art goes grayscale (inversion
+     would make photos negatives). All client-side — one generation serves
+     the moody wall and the e-ink page alike. */
+  html.eink, html.eink body { background: #fff; }
+  html.eink .layer { transition: none; animation: none !important; }
+  html.eink .layer.inkable { filter: invert(1) hue-rotate(180deg); }
+  html.eink .layer:not(.inkable) { filter: grayscale(1) contrast(1.1); }
+  html.eink .layer.fit { background: #fff; }
+  html.eink .layer.stale.on { opacity: .2; filter: grayscale(1); }
+  html.eink #pulse, html.eink #ytwrap { display: none !important; }
+  html.eink #title.scroll { animation: none !important; }
+  html.eink #cap, html.eink #sub {
+    color: #111; background: rgba(255,255,255,.92);
+    backdrop-filter: none; text-shadow: none;
+  }
+  html.eink #sub { color: #000; font-weight: 600; }
+  html.eink #fig { color: #000; background: rgba(255,255,255,.92); }
+  html.eink #ctl, html.eink #inp {
+    background: rgba(255,255,255,.94); backdrop-filter: none;
+    color: #111; border: 1.5px solid #000;
+  }
+  html.eink #ctl button, html.eink #send, html.eink #text { color: #111; }
+  html.eink #ctl button.lit { color: #000; background: rgba(0,0,0,.12); }
+  html.eink #clock { color: #111; }
+  html.eink #target { background: rgba(0,0,0,.08); color: #000; }
   /* Ken Burns variants — picked at random per image */
   @keyframes kb1 { from { transform: scale(1.06) translate(0,0); }
                    to   { transform: scale(1.18) translate(-2%,-1.5%); } }
@@ -811,6 +839,14 @@ PAGE = """<!doctype html>
 <script>
   const $ = (id) => document.getElementById(id);
   const icon = (n) => '<svg class="ic"><use href="#i-' + n + '"/></svg>';
+  // ---- e-ink mode: ?eink=1 arms it for this device, ?eink=0 (or 'e') back --
+  const qs = new URLSearchParams(location.search);
+  if (qs.has('eink')) {
+    localStorage.setItem('eink', qs.get('eink') === '0' ? '0' : '1');
+    history.replaceState(null, '', location.pathname);
+  }
+  function einkOn() { return localStorage.getItem('eink') === '1'; }
+  if (einkOn()) document.documentElement.classList.add('eink');
   const layers = [$('a'), $('b')];
   // Static icons; stateful ones (pp, sfx, chan, target) are set in their
   // draw functions below.
@@ -837,6 +873,7 @@ PAGE = """<!doctype html>
   }
   let lastPurpose = null;
   function kenBurns(el) {
+    if (einkOn()) return;            // motion is ghosting on e-ink
     const dur = 28 + Math.random() * 14;
     el.style.animation = KB[Math.floor(Math.random()*KB.length)] +
       ' ' + dur.toFixed(1) + 's ease-in-out infinite alternate';
@@ -857,6 +894,9 @@ PAGE = """<!doctype html>
     el.onload = () => {
       applyFit(el, fit);
       el.classList.remove('stale');   // a fresh image is never pre-dimmed
+      // Ink-invertible? SVG figures are dark-bg line art — invert() turns
+      // them into black-on-white; raster stays grayscale (see .eink CSS).
+      el.classList.toggle('inkable', /\\.svg(\\?|$)/i.test(d.image || ''));
       if (!fit) kenBurns(el);
       el.classList.add('on');
       layers[front].classList.remove('on');
@@ -1048,11 +1088,13 @@ PAGE = """<!doctype html>
   function vidVisible() {
     // Speech owns the canvas while it's talking (subtitles, artwork,
     // figures) — the video yields and returns when the voice stops.
+    // e-ink never shows video (CSS hides the layer; don't even sync it).
     document.getElementById('ytwrap').classList
-      .toggle('on', !!ytVid && !speaking && Date.now() > figHold);
+      .toggle('on', !!ytVid && !speaking && !einkOn() && Date.now() > figHold);
   }
   setInterval(vidVisible, 5000);        // restores the video after a fig hold
   function syncVideo(d) {
+    if (einkOn()) return;            // no video on e-ink — don't even load the API
     if (!d.vid) {
       ytVid = null; vidVisible();
       if (ytReady) try { ytP.stopVideo(); } catch (_) {}
@@ -1181,9 +1223,11 @@ PAGE = """<!doctype html>
     const m = clock.match(/^([\\d:]+)\\/([\\d:]+)$/);
     const frac = m && secs(m[2]) > 0
       ? Math.max(0, Math.min(1, secs(m[1]) / secs(m[2]))) : null;
+    const fill = einkOn() ? 'rgba(0,0,0,.16)' : 'rgba(255,215,95,.28)';
+    const track = einkOn() ? 'rgba(0,0,0,.04)' : 'rgba(255,255,255,.07)';
     $('clock').style.background = frac === null ? 'none'
-      : 'linear-gradient(90deg, rgba(255,215,95,.28) ' + (frac * 100).toFixed(1)
-        + '%, rgba(255,255,255,.07) ' + (frac * 100).toFixed(1) + '%)';
+      : 'linear-gradient(90deg, ' + fill + ' ' + (frac * 100).toFixed(1)
+        + '%, ' + track + ' ' + (frac * 100).toFixed(1) + '%)';
     $('mute').classList.toggle('lit', !!d.muted);
     speechOnly(ch === 'speech');
   }
@@ -1330,6 +1374,8 @@ PAGE = """<!doctype html>
       'c': () => $('cc').onclick(new Event('x')),
       's': () => $('sfx').onclick(new Event('x')),
       'f': () => $('fit').onclick(new Event('x')),
+      'e': () => { localStorage.setItem('eink', einkOn() ? '0' : '1');
+                   location.reload(); },
       'Escape': () => { $('inp').classList.contains('on') ? closeInput()
                           : hideCtl(); return 'quiet'; },
     };
