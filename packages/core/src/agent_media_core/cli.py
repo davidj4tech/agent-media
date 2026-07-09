@@ -19,6 +19,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from typing import Optional
 
@@ -1580,6 +1581,41 @@ def cmd_skip(a) -> int:
     return 0
 
 
+def _replay_visual(extras: dict) -> None:
+    """Re-show the visual that accompanied a replayed reply. A replay means
+    "that again" — for a figure-bearing reply the picture IS part of it, and
+    without this it plays under whatever newer artwork holds the canvas.
+    Best-effort: needs the visual package's push memory and live spool files."""
+    key = (extras or {}).get("dedup_key")
+    if not key:
+        return
+    try:
+        from agent_media_visual.state import load_push, spool_dir
+    except ImportError:
+        return
+    payload = load_push(str(key))
+    if not payload:
+        return
+    # Spool-relative names must still exist (GC keeps ~200); absolute /img/
+    # URLs can't be checked from here — push and let the canvas 404 quietly.
+    names = ([payload.get("image")] if payload.get("image")
+             else [b.get("image") for b in payload.get("sequence") or []])
+    for nm in names:
+        if nm and "/" not in str(nm) and not (spool_dir() / str(nm)).is_file():
+            return
+    import urllib.request
+    urls = (os.environ.get("MEDIA_VISUAL_URL") or "").replace(",", " ").split()
+    for base in urls:
+        try:
+            req = urllib.request.Request(
+                base.rstrip("/") + "/show",
+                data=json.dumps(payload).encode(),
+                method="POST", headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=2).read()
+        except OSError:
+            pass
+
+
 def _do_replay(index: int, session: Optional[str] = None) -> int:
     rows = _speech_history(max(1, index), session=session)
     if len(rows) < index:
@@ -1593,6 +1629,10 @@ def _do_replay(index: int, session: Optional[str] = None) -> int:
     clip_uris: list[str] = ex.get("clip_uris") or [uri]
     clip_durations: list[float] = ex.get("clip_durations_s") or []
     replay_text: str = row.get("text") or ""
+
+    # Re-show the reply's visual concurrently with the (slow, bridge-bound)
+    # playback push below; the thread outlives neither — the process waits.
+    threading.Thread(target=_replay_visual, args=(ex,)).start()
 
     sink = SinkSpeech()
     # A remote target plays clips from its clips-relay dir, which only the
@@ -1972,10 +2012,26 @@ def cmd_history(a) -> int:
 
 
 def cmd_say(a) -> int:
+    from .intake._text import strip_markdown
+    from .intake._visual import (extract_visual_markers, spawn_visual,
+                                 visual_enabled)
     from .intake.submit import submit_event
     text = a.text if a.text else sys.stdin.read()
     if not text.strip():
         return 0
+    # `say` callers hand over prose that can carry markdown and [[visual:]]
+    # markers (the same conventions hook replies use) — neither is ever worth
+    # hearing. A marker still earns its picture: the same fire-and-forget
+    # accompaniment the Stop hook spawns.
+    raw, hint, _pre, _post = extract_visual_markers(text)
+    text = strip_markdown(raw)
+    if not text.strip():
+        return 0
+    if visual_enabled() and hint:
+        try:
+            spawn_visual(raw, text, hint=hint)
+        except Exception:  # noqa: BLE001 — accompaniment, never speech's problem
+            pass
     urgent = getattr(a, "urgent", False) or getattr(a, "supersede", False)
     metadata = {}
     if getattr(a, "supersede", False):

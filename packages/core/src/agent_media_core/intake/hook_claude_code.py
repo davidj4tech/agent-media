@@ -727,7 +727,8 @@ def _play_now(event: Event) -> None:
             from ._visual import spawn_visual
             spawn_visual(visual_raw, event.text,
                          event.metadata.get("session") or "",
-                         hint=visual_hint)
+                         hint=visual_hint,
+                         key=event.metadata.get("dedup_key") or "")
         except Exception:  # noqa: BLE001 — accompaniment, never playback's problem
             pass
     if visual_raw and visual_reveal:

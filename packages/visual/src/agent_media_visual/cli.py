@@ -47,7 +47,7 @@ from agent_media_core.intake._env import load_env_file
 from .canvas import DEFAULT_PORT
 from .engines import generate_image
 from .generate import shape_prompt, shape_story
-from .state import gc_spool, spool_dir
+from .state import gc_spool, save_push, spool_dir
 from .state import save_scene as state_save_scene
 
 DEFAULT_BEATS_MAX = 4
@@ -78,12 +78,12 @@ def _push_one(base: str, payload: dict) -> str:
         return str(e)
 
 
-def _push_all(payload_for: "callable") -> list[str]:
+def _push_all(payload_for: "callable") -> tuple[list[str], dict]:
     """payload_for(targets) → payload; push it to every canvas. Returns
-    per-target errors ("" = ok)."""
+    (per-target errors ["" = ok], the payload as pushed)."""
     targets = _canvas_urls()
     payload = payload_for(targets)
-    return [_push_one(t, payload) for t in targets]
+    return [_push_one(t, payload) for t in targets], payload
 
 
 # --- beat splitting ------------------------------------------------------------
@@ -198,6 +198,10 @@ def main() -> None:
     ap.add_argument("--fast", action="store_true",
                     help="use the beats/fast engine (a reveal can't wait "
                          "a minute for clip art)")
+    ap.add_argument("--key", default="",
+                    help="reply identity (the intake dedup key): the pushed "
+                         "payload is remembered under it so a speech replay "
+                         "re-shows this reply's visual")
     args = ap.parse_args()
 
     text = (args.text if args.text is not None else sys.stdin.read()).strip()
@@ -253,7 +257,7 @@ def main() -> None:
             named = [(_spool(img), frac) for frac, img in beats]
             gc_spool()
             gen_secs = time.perf_counter() - t_start
-            errors = _push_all(lambda targets: {
+            errors, payload = _push_all(lambda targets: {
                 "sequence": [{"image": _image_ref(n, targets),
                               "at": round(frac, 3)} for n, frac in named],
                 "caption": args.caption,
@@ -262,6 +266,8 @@ def main() -> None:
                 "gen_secs": round(gen_secs, 1),
             })
             _report_pushes(errors)
+            if any(not e for e in errors):
+                save_push(args.key, payload)
             kib = sum((spool_dir() / n).stat().st_size for n, _ in named) // 1024
             print(f"shown: {len(named)} beats  ({kib} KiB)\n"
                   f"scene (llm, {t_shape:.1f}s): {scene}\n"
@@ -277,7 +283,7 @@ def main() -> None:
 
     name = _spool(img)
     gc_spool()
-    errors = _push_all(lambda targets: {
+    errors, payload = _push_all(lambda targets: {
         "image": _image_ref(name, targets),
         "caption": args.caption,
         "prompt": scene,
@@ -286,6 +292,8 @@ def main() -> None:
         "purpose": "figure" if args.hint else None,
     })
     _report_pushes(errors)
+    if any(not e for e in errors):
+        save_push(args.key, payload)
     print(f"shown: {name}  ({len(img)//1024} KiB, "
           f"{sum(1 for e in errors if not e)}/{len(errors)} canvases)\n"
           f"prompt ({'llm' if used_llm else 'fallback'}, {t_shape:.1f}s): {scene}\n"

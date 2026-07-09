@@ -95,6 +95,51 @@ def save_scene(session: str, scene: str) -> None:
         pass
 
 
+# --- push memory: what each reply showed, for replays --------------------------
+# `pushes.json` beside the spool maps a reply's intake dedup key to the exact
+# /show payload its visual pushed (figure or beat sequence). A speech REPLAY
+# re-pushes it so "play that again" brings the picture back too — otherwise a
+# replayed diagram plays under whatever newer artwork happens to be on screen.
+
+_PUSHES_KEEP = 40
+
+
+def pushes_path() -> Path:
+    return spool_dir() / "pushes.json"
+
+
+def save_push(key: str, payload: dict) -> None:
+    """Remember `payload` (as pushed to /show) for the reply keyed `key`.
+    Newest _PUSHES_KEEP kept; atomic replace; best-effort."""
+    if not key or not payload:
+        return
+    try:
+        p = pushes_path()
+        try:
+            data = json.loads(p.read_text())
+        except (OSError, ValueError):
+            data = {}
+        data[str(key)] = {"payload": payload, "t": time.time()}
+        items = sorted(data.items(),
+                       key=lambda kv: kv[1].get("t", 0))[-_PUSHES_KEEP:]
+        tmp = p.with_suffix(".tmp")
+        tmp.write_text(json.dumps(dict(items)))
+        tmp.replace(p)
+    except OSError:
+        pass
+
+
+def load_push(key: str) -> dict | None:
+    """The remembered /show payload for `key`, or None."""
+    if not key:
+        return None
+    try:
+        data = json.loads(pushes_path().read_text())
+    except (OSError, ValueError):
+        return None
+    return (data.get(str(key)) or {}).get("payload")
+
+
 # --- spool GC -----------------------------------------------------------------
 
 def gc_spool(keep: int | None = None) -> int:

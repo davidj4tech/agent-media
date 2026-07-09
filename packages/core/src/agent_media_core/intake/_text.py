@@ -7,11 +7,15 @@ import re
 
 
 _FENCE_RE = re.compile(r"```[a-zA-Z0-9_-]*")
-_BOLD_RE = re.compile(r"\*\*([^*]+)\*\*")
+# Bold spans may cross lines and contain single-* emphasis (`**a *b* c**`) —
+# hence DOTALL + a lazy any-char body, not [^*]+ (which broke the pairing and
+# left literal ** markers to be read aloud).
+_BOLD_RE = re.compile(r"\*\*(.+?)\*\*", flags=re.DOTALL)
 _ITAL_RE = re.compile(r"(?<!\*)\*([^*]+)\*")
 _CODE_RE = re.compile(r"`([^`]+)`")
 _HEAD_RE = re.compile(r"^#{1,6}\s+", flags=re.MULTILINE)
 _BULLET_RE = re.compile(r"^\s*[-*]\s+", flags=re.MULTILINE)
+_QUOTE_RE = re.compile(r"^\s*>\s?", flags=re.MULTILINE)
 _BLANK_RE = re.compile(r"\n[ \t]*\n+")
 
 
@@ -346,6 +350,10 @@ def strip_markdown(text: str, describe: bool = False) -> str:
     out = _ITAL_RE.sub(r"\1", out)
     out = _CODE_RE.sub(r"\1", out)
     out = _BULLET_RE.sub("", out)
+    out = _QUOTE_RE.sub("", out)
+    # Residual emphasis markers (an UNPAIRED ** / __ survives the pairing
+    # passes above) are never worth hearing — drop them outright.
+    out = out.replace("**", "").replace("__", "")
     out = _BLANK_RE.sub("\n", out).strip()
     return out
 

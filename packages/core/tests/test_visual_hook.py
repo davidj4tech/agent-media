@@ -106,8 +106,8 @@ def test_stop_spawns_visual_and_strips_metadata(tmp_path, monkeypatch):
     spawned = {}
     monkeypatch.setattr(
         _visual, "spawn_visual",
-        lambda raw, spoken, session="", hint="": spawned.update(
-            raw=raw, spoken=spoken, session=session, hint=hint))
+        lambda raw, spoken, session="", hint="", key="": spawned.update(
+            raw=raw, spoken=spoken, session=session, hint=hint, key=key))
 
     raw = "A reply long enough to illustrate with a picture."
     assert H._handle_stop(_stop_payload(tmp_path, raw)) == 0

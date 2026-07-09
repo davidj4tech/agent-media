@@ -144,7 +144,7 @@ def test_visual_marker_no_split_single_event(tmp_path, monkeypatch):
     submitted = _arm(tmp_path, monkeypatch)
     seen = {}
     monkeypatch.setattr(_visual, "spawn_visual",
-                        lambda raw, spoken, session="", hint="":
+                        lambda raw, spoken, session="", hint="", key="":
                         seen.update(hint=hint))
     monkeypatch.setattr(_visual, "wait_for_fresh_visual",
                         lambda *a, **k: (_ for _ in ()).throw(
@@ -162,7 +162,7 @@ def test_hint_bypasses_min_chars(tmp_path, monkeypatch):
     monkeypatch.setenv("MEDIA_VISUAL_MIN_CHARS", "5000")
     seen = {}
     monkeypatch.setattr(_visual, "spawn_visual",
-                        lambda raw, spoken, session="", hint="":
+                        lambda raw, spoken, session="", hint="", key="":
                         seen.update(hint=hint))
     H._handle_stop({"last_assistant_message":
                     "Tiny. [[visual: one bright square]] End.",

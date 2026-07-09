@@ -89,13 +89,14 @@ def _caption(spoken_text: str) -> str:
 
 
 def spawn_visual(raw_reply: str, spoken_text: str, session: str = "",
-                 hint: str = "") -> None:
+                 hint: str = "", key: str = "") -> None:
     """Fire-and-forget `media-visual` for this reply. Never raises, never
     blocks: any problem (no binary, spawn failure) is not playback's concern.
     `session` keys the canvas's scene-continuity memory — consecutive replies
     from one session evolve a single artwork. A non-empty `hint` (from a
     [[visual:]]/[[reveal:]] marker) makes the image purposeful: the hint is
-    the spec, drawn as a figure."""
+    the spec, drawn as a figure. `key` (the intake dedup key) lets a later
+    speech replay re-show this reply's visual."""
     exe = shutil.which("media-visual")
     if not exe:
         return
@@ -104,6 +105,8 @@ def spawn_visual(raw_reply: str, spoken_text: str, session: str = "",
         argv += ["--session", session]
     if hint:
         argv += ["--hint", hint]
+    if key:
+        argv += ["--key", key]
     argv.append(raw_reply)
     try:
         subprocess.Popen(

@@ -77,7 +77,7 @@ def _image_payload(name):
 def test_single_target_uses_bare_name(monkeypatch):
     monkeypatch.setenv("MEDIA_VISUAL_URL", "http://one:8781")
     pushed = _capture_pushes(monkeypatch)
-    errs = cli._push_all(_image_payload("img-1.webp"))
+    errs, _payload = cli._push_all(_image_payload("img-1.webp"))
     assert errs == [""]
     assert pushed[0][1]["image"] == "img-1.webp"
 
@@ -85,7 +85,7 @@ def test_single_target_uses_bare_name(monkeypatch):
 def test_multi_target_uses_first_targets_absolute_url(monkeypatch):
     monkeypatch.setenv("MEDIA_VISUAL_URL", "http://one:8781, http://two:8781")
     pushed = _capture_pushes(monkeypatch)
-    errs = cli._push_all(_image_payload("img-1.webp"))
+    errs, _payload = cli._push_all(_image_payload("img-1.webp"))
     assert [b for b, _ in pushed] == ["http://one:8781", "http://two:8781"]
     assert all(p["image"] == "http://one:8781/img/img-1.webp" for _, p in pushed)
     assert errs == ["", ""]
@@ -94,7 +94,7 @@ def test_multi_target_uses_first_targets_absolute_url(monkeypatch):
 def test_multi_target_partial_failure_reported(monkeypatch):
     monkeypatch.setenv("MEDIA_VISUAL_URL", "http://one:8781 http://two:8781")
     _capture_pushes(monkeypatch, fail={"http://two:8781"})
-    errs = cli._push_all(_image_payload("img-1.webp"))
+    errs, _payload = cli._push_all(_image_payload("img-1.webp"))
     assert errs == ["", "boom"]
 
 
