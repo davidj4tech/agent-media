@@ -55,6 +55,7 @@ class Hub:
         self._clients: list[queue.Queue] = []
         self.last: dict | None = None        # last *image* event only
         self.last_state: dict | None = None  # latest speech-state event
+        self.last_video: dict | None = None  # latest video-sync event
 
     def attach(self) -> queue.Queue:
         q: queue.Queue = queue.Queue(maxsize=16)
@@ -78,6 +79,8 @@ class Hub:
             if remember:
                 if event.get("kind") == "state":
                     self.last_state = event
+                elif event.get("kind") == "video":
+                    self.last_video = event
                 else:
                     self.last = event
             clients = list(self._clients)
@@ -363,6 +366,61 @@ def _state_poller() -> None:
         time.sleep(1)
 
 
+# --- video sync: mirror the phone's YouTube audio as muted video --------------
+# When the music channel plays on the phone-local backend (a YouTube track
+# downloaded to <video-id>.mka and played in the phone's mpv), the canvas can
+# show the matching video: the page embeds a muted YouTube IFrame player (the
+# browser device sits on the home network, so it streams from YouTube directly —
+# red5 itself can't, datacenter IPs get 403) and this poller broadcasts the
+# phone's position/pause/speed so the page keeps the video within ~1.5s of the
+# audio. Poll only while screens are connected; one batched IPC round-trip.
+
+_YT_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
+
+
+def _video_state() -> dict:
+    """One video-sync snapshot: {"kind":"video","vid":id,...} while the phone
+    plays a YouTube-cached file, else {"kind":"video","vid":None}."""
+    off = {"kind": "video", "vid": None}
+    try:
+        from agent_media_core.sinks import music_local
+        from agent_media_core.sinks import _mpv_ipc as ipc
+        if not music_local.configured():
+            return off
+        props = ipc.get_properties(
+            music_local.endpoint(),
+            ["idle-active", "pause", "time-pos", "speed", "path"],
+            timeout=1.5)
+    except Exception:  # noqa: BLE001 — bridge down ⇒ no video, never a fault
+        return off
+    if props.get("idle-active") is not False:
+        return off
+    stem = Path(str(props.get("path") or "")).stem
+    if not _YT_ID.fullmatch(stem):
+        return off      # not a YouTube-id-named cache file (offline hash etc.)
+    return {"kind": "video", "vid": stem,
+            "t": round(float(props.get("time-pos") or 0.0), 2),
+            "paused": bool(props.get("pause")),
+            "rate": float(props.get("speed") or 1.0),
+            "ts": time.time()}
+
+
+def _video_poller() -> None:
+    last_vid = "unset"
+    while True:
+        if HUB.watchers() == 0:
+            time.sleep(3)
+            continue
+        ev = _video_state()
+        # While a video is live, publish every poll (the position heartbeat the
+        # page drift-corrects against); the vid:None "hide" event only on the
+        # transition, so an idle music channel doesn't chatter.
+        if ev["vid"] is not None or ev["vid"] != last_vid:
+            HUB.publish(ev)
+        last_vid = ev["vid"]
+        time.sleep(5 if ev["vid"] else 3)
+
+
 def ctl_argv(channel: str, action: str, arg: int) -> list[str] | None:
     """Whitelisted button → `media` argv. None = unknown/unsupported combo.
     The maps mirror the popup's handle_key dispatch."""
@@ -435,6 +493,15 @@ PAGE = """<!doctype html>
                    to   { transform: scale(1.16) translate(1.5%,-1%); } }
   @keyframes kb4 { from { transform: scale(1.16) translate(0,-1.5%); }
                    to   { transform: scale(1.08) translate(-1%,1.5%); } }
+  /* Video layer: the muted YouTube mirror of what the phone is playing.
+     Sits above the ambient image layers, below every overlay (#pulse onward
+     in DOM order). pointer-events off — taps keep driving the canvas UI. */
+  #ytwrap {
+    position: fixed; inset: 0; background: #000;
+    opacity: 0; transition: opacity 1.4s ease; pointer-events: none;
+  }
+  #ytwrap.on { opacity: 1; }
+  #ytwrap iframe { width: 100vw; height: 100vh; border: 0; }
   #cap {
     position: fixed; left: 50%; bottom: max(4vh, env(safe-area-inset-bottom));
     transform: translateX(-50%); max-width: 82vw;
@@ -574,6 +641,7 @@ PAGE = """<!doctype html>
 </svg>
 <img id="a" class="layer" alt="">
 <img id="b" class="layer" alt="">
+<div id="ytwrap"><div id="yt"></div></div>
 <div id="pulse"></div>
 <div id="cap"></div>
 <div id="sub"></div>
@@ -780,11 +848,68 @@ PAGE = """<!doctype html>
   }
   setInterval(applySeq, 1000);
 
+  // ---- video sync: muted YouTube mirror of the phone's music ---------------
+  // The server streams {"kind":"video", vid, t, paused, rate} while the phone
+  // plays a YouTube-cached track. The page keeps a muted IFrame player within
+  // ~1.5s of the audio (seek on drift), and yields the screen to figures for a
+  // minute whenever one arrives — a figure is content, the video is ambience.
+  let ytP = null, ytReady = false, ytVid = null, ytApiAsked = false;
+  let pendingV = null, figHold = 0;
+  function ytEnsureApi() {
+    if (ytApiAsked) return; ytApiAsked = true;
+    const s = document.createElement('script');
+    s.src = 'https://www.youtube.com/iframe_api';
+    document.head.appendChild(s);
+  }
+  window.onYouTubeIframeAPIReady = () => {
+    ytP = new YT.Player('yt', {
+      width: '100%', height: '100%',
+      playerVars: { autoplay: 1, controls: 0, disablekb: 1, fs: 0, rel: 0,
+                    iv_load_policy: 3, playsinline: 1 },
+      events: {
+        onReady: () => { ytReady = true; ytP.mute();
+                         if (pendingV) { const v = pendingV; pendingV = null; syncVideo(v); } },
+        // Embed-blocked / removed video → fall back to the ambient artwork.
+        onError: () => { ytVid = null; vidVisible(); },
+      },
+    });
+  };
+  function vidVisible() {
+    document.getElementById('ytwrap').classList
+      .toggle('on', !!ytVid && Date.now() > figHold);
+  }
+  setInterval(vidVisible, 5000);        // restores the video after a fig hold
+  function syncVideo(d) {
+    if (!d.vid) {
+      ytVid = null; vidVisible();
+      if (ytReady) try { ytP.stopVideo(); } catch (_) {}
+      return;
+    }
+    ytEnsureApi();
+    if (!ytReady) { pendingV = d; return; }
+    const now = d.t + (Date.now() - d.rx) / 1000;   // rx stamped on arrival
+    try {
+      if (d.vid !== ytVid) {
+        ytVid = d.vid;
+        ytP.loadVideoById({ videoId: d.vid, startSeconds: now });
+        ytP.mute();
+      } else if (!d.paused && Math.abs(ytP.getCurrentTime() - now) > 1.5) {
+        ytP.seekTo(now, true);
+      }
+      if (d.paused) { if (ytP.getPlayerState() === 1) ytP.pauseVideo(); }
+      else if (ytP.getPlayerState() !== 1) ytP.playVideo();
+      if (d.rate && ytP.setPlaybackRate)
+        ytP.setPlaybackRate(Math.max(0.25, Math.min(2, d.rate)));
+    } catch (_) {}
+    vidVisible();
+  }
+
   const es = new EventSource('/events');
   es.onmessage = (e) => {
     try {
       const d = JSON.parse(e.data);
-      if (d.kind === 'state') {
+      if (d.kind === 'video') { d.rx = Date.now(); syncVideo(d); }
+      else if (d.kind === 'state') {
         setSpeaking(!!d.speaking);
         if (d.speaking) {
           setSubtitle(d.sentence || null);
@@ -796,6 +921,7 @@ PAGE = """<!doctype html>
         seq = d.sequence; seqIdx = -1; seqEst = d.estdur || 0;
         seqCap = d.caption || null;
         figImg = false; updFig();
+        figHold = Date.now() + 60000; vidVisible();   // beats own the screen
         // Anchor progress to the real speech start when we saw it; else
         // reconstruct it from how long generation took.
         seqBase = (speaking && speakStartT)
@@ -810,6 +936,7 @@ PAGE = """<!doctype html>
       else if (d.image) {
         seq = null; seqIdx = -1; show(d);
         figImg = d.purpose === 'figure'; updFig();
+        if (figImg) { figHold = Date.now() + 60000; vidVisible(); }
         figImg ? figureCue() : whoosh();
       }
     } catch (_) {}
@@ -1143,6 +1270,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._event(HUB.last)
             if HUB.last_state is not None:
                 self._event(HUB.last_state)
+            if HUB.last_video is not None:
+                self._event(HUB.last_video)
             while True:
                 try:
                     self._event(q.get(timeout=15))
@@ -1259,6 +1388,8 @@ def main() -> None:
     srv = ThreadingHTTPServer((args.bind, args.port), Handler)
     srv.daemon_threads = True
     threading.Thread(target=_state_poller, daemon=True).start()
+    if os.environ.get("MEDIA_VISUAL_VIDEO", "1") != "0":
+        threading.Thread(target=_video_poller, daemon=True).start()
     print(f"canvas on http://{args.bind}:{args.port}/  spool={spool_dir()}")
     srv.serve_forever()
 
