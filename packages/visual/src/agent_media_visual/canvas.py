@@ -242,14 +242,15 @@ def _amux_bin() -> str:
 
 
 def _amux_sessions() -> list[dict]:
-    """Parse `amux ls`: columns are id, name, dir[, mode]."""
-    out = _media_run([_amux_bin(), "ls"])
-    sessions = []
-    for line in out.splitlines():
-        fields = line.split()
-        if len(fields) >= 3 and fields[0].isdigit():
-            sessions.append({"name": fields[1], "dir": fields[2]})
-    return sessions
+    """Sessions from `amux ls --json`: [{name, state, dir, flags, preview}]
+    where state is working / input / approval / stopped. Empty list if amux is
+    old (no --json) or absent, so callers degrade gracefully."""
+    out = _media_run([_amux_bin(), "ls", "--json"])
+    try:
+        data = json.loads(out) if out else []
+    except (ValueError, TypeError):
+        return []
+    return [s for s in data if isinstance(s, dict) and s.get("name")]
 
 
 def _media_run(argv: list[str], timeout: int = 10) -> str:
@@ -817,6 +818,40 @@ PAGE = """<!doctype html>
     transition: opacity .25s ease;
   }
   #toast.on { opacity: 1; }
+  /* Agent strip: a top row of amux sessions with live state, so you can see
+     which agent needs you and tap one to aim the reply box at it. Hidden until
+     there's at least one session. */
+  #agents {
+    position: fixed; top: max(8px, env(safe-area-inset-top)); left: 50%;
+    transform: translateX(-50%); z-index: 25; display: none;
+    max-width: 96vw; gap: .3em; padding: .2em;
+    overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none;
+  }
+  #agents.on { display: flex; }
+  #agents::-webkit-scrollbar { display: none; }
+  #agents .ag {
+    flex: 0 0 auto; display: flex; align-items: center; gap: .4em;
+    padding: .3em .7em; border-radius: 999px; cursor: pointer; white-space: nowrap;
+    background: rgba(10,10,10,.55); backdrop-filter: blur(10px);
+    color: #eee; font: 13px/1.3 system-ui, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #agents .ag:active { background: rgba(255,255,255,.16); }
+  #agents .dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto;
+                 background: #888; }
+  #agents .working  .dot { background: #38bdf8; }               /* cyan — busy */
+  #agents .approval .dot { background: #f87171; }               /* red — asking */
+  #agents .input           { color: #fff; }                     /* needs you */
+  #agents .input    .dot { background: #ffd75f;
+                           animation: agpulse 1.8s ease-out infinite; }
+  @keyframes agpulse {
+    0%   { box-shadow: 0 0 0 0 rgba(255,215,95,.6); }
+    70%  { box-shadow: 0 0 0 7px rgba(255,215,95,0); }
+    100% { box-shadow: 0 0 0 0 rgba(255,215,95,0); }
+  }
+  html.eink #agents .ag  { background: #fff; color: #000; border: 1px solid #000; }
+  html.eink #agents .dot { background: #000; }
+  html.eink #agents .input .dot { animation: none; box-shadow: 0 0 0 2px #000; }
 </style>
 </head>
 <body>
@@ -857,6 +892,7 @@ PAGE = """<!doctype html>
 <div id="fig">▣ figure</div>
 <div id="dot" title="disconnected"></div>
 <div id="toast"></div>
+<div id="agents"></div>
 <div id="inp">
   <button id="target"></button>
   <input id="text" type="text" autocomplete="off" enterkeyhint="send"
@@ -1604,6 +1640,46 @@ PAGE = """<!doctype html>
     if (histIdx > 1) { histIdx -= 1; act('replay', histIdx); }
     else act('jump-end');
   };
+
+  // ---- agent strip: which amux sessions need you (poll `amux ls --json`) ----
+  // A top row of chips, one per amux session, coloured by live state. `input`
+  // (a turn finished, waiting on you) pulses amber. Tap a chip to aim the reply
+  // box at that session. Silent when no token / no sessions — never prompts.
+  async function pollAgents() {
+    const tok = token();
+    if (document.hidden || !tok) return;
+    let list;
+    try {
+      const r = await fetch('/agents', { headers: { 'X-Auth-Token': tok } });
+      if (!r.ok) { $('agents').classList.remove('on'); return; }
+      list = (await r.json()).agents || [];
+    } catch (_) { return; }
+    const box = $('agents');
+    if (!list.length) { box.classList.remove('on'); box.innerHTML = ''; return; }
+    const rank = { input: 0, approval: 1, working: 2, stopped: 3 };  // needs-you first
+    list.sort((a, b) => (rank[a.state] ?? 9) - (rank[b.state] ?? 9)
+                        || a.name.localeCompare(b.name));
+    box.innerHTML = list.map(a =>
+      '<span class="ag ' + a.state + '" data-name="' + encodeURIComponent(a.name) + '">'
+      + '<span class="dot"></span>' + a.name.replace(/[<>&]/g, '') + '</span>').join('');
+    box.classList.add('on');
+  }
+  $('agents').addEventListener('click', (e) => {
+    const chip = e.target.closest('.ag');
+    if (!chip) return;
+    e.stopPropagation();
+    targetAgent(decodeURIComponent(chip.dataset.name));
+  });
+  async function targetAgent(name) {
+    await openInput();                        // populates targets from /sessions
+    const idx = targets.indexOf('amux:' + name);
+    if (idx >= 0) { tIdx = idx; drawTarget(); }
+    $('text').focus();
+  }
+  pollAgents();
+  setInterval(pollAgents, 4000);
+  document.addEventListener('visibilitychange',
+    () => { if (!document.hidden) pollAgents(); });
 </script>
 </body>
 </html>
@@ -1653,6 +1729,12 @@ class Handler(BaseHTTPRequestHandler):
                              or "last speaker"} if speaker else None),
                 "amux": [s["name"] for s in _amux_sessions()],
             })
+        elif path == "/agents":
+            # Live session states for the canvas agent strip ("who needs me").
+            if not _authorized(self):
+                self._json(401, {"error": "unauthorized"})
+                return
+            self._json(200, {"agents": _amux_sessions()})
         elif path == "/pair":
             code = ""
             for kv in query.split("&"):
