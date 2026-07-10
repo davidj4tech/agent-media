@@ -988,6 +988,11 @@ PAGE = """<!doctype html>
   #ctl button:active { background: rgba(255,255,255,.14); }
   #ctl button.lit { color: #ffd75f; }
   .ic { width: 19px; height: 19px; display: block; margin: auto; }
+  /* Loading spinner: a play button becomes this arc while its clip is rendered
+     + queued for speech (say/replay block for seconds before audio starts). */
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .ic.spin { animation: spin .7s linear infinite; transform-origin: 50% 50%; }
+  html.eink .ic.spin { animation: none; opacity: .55; }   /* no motion on e-ink (ghosts) */
   #target .ic { width: 16px; height: 16px; display: inline-block;
                 vertical-align: -3px; margin-right: .35em; }
   #send .ic { margin: auto; }
@@ -1201,6 +1206,7 @@ PAGE = """<!doctype html>
   <symbol id="i-notes" viewBox="0 0 24 24"><path fill="currentColor" d="M7 19a2 2 0 110-4c.4 0 .7.1 1 .2V6l9-1.8V15a2 2 0 11-2-2c.4 0 .7.1 1 .2V7.5L9 8.9V19z"/><path stroke="currentColor" stroke-width="1.6" stroke-linecap="round" d="M4 4.5l1.5 1"/></symbol>
   <symbol id="i-book" viewBox="0 0 24 24"><path stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M4 7h16M4 12h16M4 17h10"/></symbol>
   <symbol id="i-reply" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M9 6L4 11l5 5M4 11h11a5 5 0 015 5v2"/></symbol>
+  <symbol id="i-spinner" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" d="M12 3a9 9 0 1 0 9 9"/></symbol>
 </svg>
 <img id="a" class="layer" alt="">
 <img id="b" class="layer" alt="">
@@ -1569,6 +1575,7 @@ PAGE = """<!doctype html>
         }
       }
       else if (d.kind === 'state') {
+        if (d.speaking) stopSaySpin();     // audio started → the play button stops loading
         setSpeaking(!!d.speaking);
         if (d.speaking) {
           setSubtitle(d.sentence || null);
@@ -2042,16 +2049,34 @@ PAGE = """<!doctype html>
     }
     const row = e.target.closest('.pane');
     if (!row) return;
-    if (e.target.closest('.pl')) { playPane(row.dataset.pane); return; }
+    if (e.target.closest('.pl')) { playPane(row.dataset.pane, e.target.closest('.pl')); return; }
     if (e.target.closest('.pk')) { peekPane(row.dataset.pane, decodeURIComponent(row.dataset.name)); return; }
     targetAgent(decodeURIComponent(row.dataset.name), row.dataset.source, row.dataset.pane);
   });
-  async function playPane(pane) {
+  // ---- play-load spinner: say/replay block for seconds (render + queue) before
+  // audio starts, so a tapped play button spins until speech actually begins
+  // (a 'state' event with speaking:true clears it) or a fallback timeout fires.
+  let saySpinEl = null, saySpinPrev = '', saySpinTimer = null;
+  function startSaySpin(btn) {
+    stopSaySpin();
+    if (!btn) return;
+    saySpinEl = btn; saySpinPrev = btn.innerHTML;
+    btn.innerHTML = '<svg class="ic spin"><use href="#i-spinner"/></svg>';
+    saySpinTimer = setTimeout(stopSaySpin, 25000);   // never spin forever
+  }
+  function stopSaySpin() {
+    clearTimeout(saySpinTimer); saySpinTimer = null;
+    if (saySpinEl) { saySpinEl.innerHTML = saySpinPrev; saySpinEl = null; saySpinPrev = ''; }
+  }
+  async function playPane(pane, btn) {
     if (!pane) return;
+    startSaySpin(btn);
     try {
-      await fetch('/play', { method: 'POST',
+      const r = await fetch('/play', { method: 'POST',
         headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pane }) });
-    } catch (_) {}
+      const j = await r.json().catch(() => null);
+      if (j && j.ok === false) stopSaySpin();   // nothing to replay → drop the spinner now
+    } catch (_) { stopSaySpin(); }
   }
   let peekTurns = [];
   async function peekPane(pane, name) {
@@ -2076,17 +2101,20 @@ PAGE = """<!doctype html>
   $('peek').addEventListener('click', (e) => {
     e.stopPropagation();
     const play = e.target.closest('.tplay');
-    if (play) { sayTurn(peekTurns[+play.parentElement.dataset.i]); return; }
+    if (play) { sayTurn(peekTurns[+play.parentElement.dataset.i], play); return; }
     const turn = e.target.closest('.turn');
     if (turn) { turn.classList.toggle('open'); return; }  // expand/collapse a snapshot
     hidePeek();
   });
-  async function sayTurn(text) {
+  async function sayTurn(text, btn) {
     if (!text) return;
+    startSaySpin(btn);
     try {
-      await fetch('/say', { method: 'POST',
+      const r = await fetch('/say', { method: 'POST',
         headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
-    } catch (_) {}
+      const j = await r.json().catch(() => null);
+      if (j && j.ok === false) stopSaySpin();   // render/submit failed → drop the spinner
+    } catch (_) { stopSaySpin(); }
   }
   async function targetAgent(name, source, pane) {
     await openInput();
@@ -2198,8 +2226,10 @@ PAGE = """<!doctype html>
     if (!rows.length) { if (k === 'Escape') { hidePeek(); return true; } return false; }
     if (k === 'j' || k === 'ArrowDown') { peekCursor = Math.min(peekCursor + 1, rows.length - 1); peekPaintCursor(); return true; }
     if (k === 'k' || k === 'ArrowUp')   { peekCursor = Math.max(peekCursor - 1, 0); peekPaintCursor(); return true; }
+    if (k === 'l' || k === 'ArrowRight') { rows[peekCursor].classList.add('open'); return true; }     // expand the snippet
+    if (k === 'h' || k === 'ArrowLeft')  { rows[peekCursor].classList.remove('open'); return true; }  // collapse it
     if (k === 'Enter') { rows[peekCursor].classList.toggle('open'); return true; }
-    if (k === 'p') { sayTurn(peekTurns[+rows[peekCursor].dataset.i]); return true; }
+    if (k === 'p') { sayTurn(peekTurns[+rows[peekCursor].dataset.i], rows[peekCursor].querySelector('.tplay')); return true; }
     if (k === 'Escape') { hidePeek(); return true; }
     return false;
   }
