@@ -364,6 +364,28 @@ def _tmux_cc_panes() -> list[dict]:
     return agents
 
 
+# /agents fan-out is expensive — `tmux list-panes` plus a `capture-pane` per
+# claude pane, per request. Every connected canvas polls it, so N screens × M
+# panes forked subprocesses on a short timer (#141). Memoize the whole payload
+# for a couple of seconds so a burst of client polls collapses to one sweep.
+_AGENTS_TTL = 2.0
+_AGENTS_LOCK = threading.Lock()
+_AGENTS_CACHE: dict = {"t": 0.0, "data": None}
+
+
+def _agents_payload() -> list[dict]:
+    now = time.monotonic()
+    with _AGENTS_LOCK:
+        if (_AGENTS_CACHE["data"] is not None
+                and now - _AGENTS_CACHE["t"] < _AGENTS_TTL):
+            return _AGENTS_CACHE["data"]
+        amux = [{**a, "session": a.get("name")} for a in _amux_sessions()]
+        data = amux + _tmux_cc_panes()
+        _AGENTS_CACHE["t"] = now
+        _AGENTS_CACHE["data"] = data
+        return data
+
+
 def _media_run(argv: list[str], timeout: int = 10) -> str:
     try:
         out = subprocess.run(argv, capture_output=True, text=True,
@@ -1454,6 +1476,7 @@ PAGE = """<!doctype html>
     if (on === speaking) return;
     speaking = on;
     if (on) speakStartT = Date.now();
+    pumpSeq(on);                               // beat pump runs only while speaking
     document.body.classList.toggle('speaking', on);
     for (const el of layers)
       for (const a of el.getAnimations())
@@ -1499,7 +1522,14 @@ PAGE = """<!doctype html>
     for (let i = 0; i < seq.length; i++) if (frac >= seq[i].at) idx = i;
     if (idx > seqIdx) setBeat(idx);
   }
-  setInterval(applySeq, 1000);
+  // The beat pump only means anything while the voice is talking — run its 1s
+  // timer only then (and never while backgrounded), started/stopped by
+  // setSpeaking, instead of a forever-ticking interval (#141).
+  let seqTimer = null;
+  function pumpSeq(on) {
+    clearInterval(seqTimer); seqTimer = null;
+    if (on) seqTimer = setInterval(() => { if (!document.hidden) applySeq(); }, 1000);
+  }
 
   // ---- video sync: muted YouTube mirror of the phone's music ---------------
   // The server streams {"kind":"video", vid, t, paused, rate} while the phone
@@ -1534,7 +1564,7 @@ PAGE = """<!doctype html>
     document.getElementById('ytwrap').classList
       .toggle('on', !!ytVid && !speaking && !einkOn() && Date.now() > figHold);
   }
-  setInterval(vidVisible, 5000);        // restores the video after a fig hold
+  setInterval(() => { if (!document.hidden) vidVisible(); }, 5000);  // restores video after a fig hold; idle while backgrounded (#141)
   function syncVideo(d) {
     if (einkOn()) return;            // no video on e-ink — don't even load the API
     if (!d.vid) {
@@ -1712,7 +1742,7 @@ PAGE = """<!doctype html>
     if (m === 'input') $('text').focus();
     else if (document.activeElement === $('text')) $('text').blur();
     clearInterval(pollTimer);
-    if (ctrl) { poll(); pollTimer = setInterval(poll, 2000); }
+    if (ctrl) { poll(); pollTimer = setInterval(() => { if (!document.hidden) poll(); }, 2000); }
     if (!active && !$('sub').classList.contains('on'))
       $('cap').classList.remove('hide');
     resetHide();
@@ -2041,7 +2071,9 @@ PAGE = """<!doctype html>
   $('agents').addEventListener('click', (e) => {
     e.stopPropagation();
     if (e.target.closest('.aghead')) {          // top pill → show/hide the tree
-      agTop = !agTop; $('agents').classList.toggle('expanded', agTop); return;
+      agTop = !agTop; $('agents').classList.toggle('expanded', agTop);
+      scheduleAgents();                         // expanded → fast poll now (#141)
+      return;
     }
     const head = e.target.closest('.shead');
     if (head) {
@@ -2235,10 +2267,20 @@ PAGE = """<!doctype html>
     return false;
   }
 
-  pollAgents();
-  setInterval(pollAgents, 4000);
+  // Adaptive cadence (#141): poll fast only while the tree is expanded and
+  // someone's watching states change; when collapsed, drop to a slow heartbeat
+  // — enough to keep the "who needs me" pill's dot/count live and to discover
+  // new agents, without the every-4s host-side subprocess storm. Idle while
+  // backgrounded (pollAgents already no-ops on document.hidden).
+  let agTimer = null;
+  function scheduleAgents() {
+    clearTimeout(agTimer);
+    const ms = document.hidden ? 30000 : (agTop ? 4000 : 12000);
+    agTimer = setTimeout(() => { pollAgents().then(scheduleAgents); }, ms);
+  }
+  pollAgents().then(scheduleAgents);
   document.addEventListener('visibilitychange',
-    () => { if (!document.hidden) pollAgents(); });
+    () => { if (!document.hidden) { pollAgents(); scheduleAgents(); } });
 </script>
 </body>
 </html>
@@ -2295,9 +2337,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/agents":
             # Live session states for the agent strip ("who needs me") — read-
             # only, so open on the tailnet-bound server (only /input is gated).
-            # amux-registered sessions + auto-discovered Claude Code tmux panes.
-            amux = [{**a, "session": a.get("name")} for a in _amux_sessions()]
-            self._json(200, {"agents": amux + _tmux_cc_panes()})
+            # amux-registered sessions + auto-discovered Claude Code tmux panes,
+            # memoized ~2s so concurrent canvases don't each fork the sweep (#141).
+            self._json(200, {"agents": _agents_payload()})
         elif path == "/peek":
             # A pane's Claude Code session as assistant turns (read-only, open
             # like /agents) — latest turn full, older ones collapsible snapshots.
