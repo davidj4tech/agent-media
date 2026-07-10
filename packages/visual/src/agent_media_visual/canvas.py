@@ -423,18 +423,25 @@ def _peek_pane(pane: str, lines: int = 60) -> list[str]:
 
 
 def _pane_session(pane: str) -> str:
-    """The Claude Code session uuid for a pane — read from the `claude` process's
-    CLAUDE_CODE_SESSION_ID env (checking the pane process and its children)."""
+    """The Claude Code session uuid for a pane — walk the pane process's whole
+    descendant tree for a process carrying CLAUDE_CODE_SESSION_ID (claude may be
+    a grandchild via a wrapper, not a direct child)."""
     ppid = _media_run(["tmux", "display-message", "-t", pane, "-p", "#{pane_pid}"])
     if not ppid.isdigit():
         return ""
-    for pid in [ppid, *_media_run(["pgrep", "-P", ppid]).split()]:
+    stack, seen = [ppid], set()
+    while stack:
+        pid = stack.pop()
+        if pid in seen:
+            continue
+        seen.add(pid)
         try:
             for kv in Path(f"/proc/{pid}/environ").read_bytes().split(b"\0"):
                 if kv.startswith(b"CLAUDE_CODE_SESSION_ID="):
                     return kv.split(b"=", 1)[1].decode().strip()
         except OSError:
-            continue
+            pass
+        stack += _media_run(["pgrep", "-P", pid]).split()
     return ""
 
 
