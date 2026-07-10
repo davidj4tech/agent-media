@@ -210,7 +210,7 @@ def _authorized(handler: "Handler") -> bool:
 # stores the amux token in localStorage and redirects to the canvas. The code
 # file is deleted on first use and expires after PAIR_TTL_S regardless.
 
-PAIR_TTL_S = 600
+PAIR_TTL_S = int(os.environ.get("MEDIA_VISUAL_PAIR_TTL") or 1800)  # 30 min; tune per host
 
 
 def _pair_code_path() -> Path:
@@ -282,7 +282,7 @@ def _cmd_pair(argv: list[str]) -> int:
               file=sys.stderr)
         return 1
 
-    code = secrets.token_hex(8)
+    code = secrets.token_hex(4)   # 8 hex chars — shorter URL, smaller/less-scrolly QR
     path = _pair_code_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(code)
