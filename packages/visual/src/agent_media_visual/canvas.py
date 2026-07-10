@@ -48,6 +48,7 @@ from pathlib import Path
 from .state import spool_dir
 
 DEFAULT_PORT = 8781
+MAX_SSE_CLIENTS = 64        # held-open /events streams before we shed load (#137)
 
 
 class Hub:
@@ -62,11 +63,17 @@ class Hub:
         self.last_state: dict | None = None  # latest speech-state event
         self.last_video: dict | None = None  # latest video-sync event
 
-    def attach(self) -> queue.Queue:
-        q: queue.Queue = queue.Queue(maxsize=16)
+    def attach(self) -> queue.Queue | None:
+        # Cap held-open /events streams: an unbounded fan-out lets thousands of
+        # half-open clients (mobile backgrounding, days-long walls) exhaust
+        # ThreadingHTTPServer's threads/fds (#137). Reject past the cap; the
+        # SSE handler turns None into a 503 and the browser retries.
         with self._lock:
+            if len(self._clients) >= MAX_SSE_CLIENTS:
+                return None
+            q: queue.Queue = queue.Queue(maxsize=16)
             self._clients.append(q)
-        return q
+            return q
 
     def detach(self, q: queue.Queue) -> None:
         with self._lock:
@@ -1591,10 +1598,18 @@ PAGE = """<!doctype html>
     vidVisible();
   }
 
-  const es = new EventSource('/events');
-  es.onmessage = (e) => {
+  // SSE stream + self-heal (#137). A stalled stream (mobile backgrounding,
+  // half-open TCP on a days-long wall) silently stops delivering; onerror
+  // isn't guaranteed to fire. So the server now sends a real `{"kind":"ping"}`
+  // data frame that fires onmessage, the client stamps lastEventTs on EVERY
+  // frame, and a watchdog tears the EventSource down and reconnects after ~45s
+  // of silence.
+  let es = null, lastEventTs = Date.now();
+  function onSseMessage(e) {
+    lastEventTs = Date.now();               // any frame (incl. ping) = the stream is live
     try {
       const d = JSON.parse(e.data);
+      if (d.kind === 'ping') return;        // heartbeat only — nothing to render
       if (d.kind === 'video') {
         d.rx = Date.now(); syncVideo(d);
         // Follow the selected channel (popup Tab / another canvas) — unless
@@ -1642,9 +1657,20 @@ PAGE = """<!doctype html>
         figImg ? figureCue() : whoosh();
       }
     } catch (_) {}
-  };
-  es.onopen = () => $('dot').classList.remove('off');
-  es.onerror = () => $('dot').classList.add('off');
+  }
+  function connectEvents() {
+    try { if (es) es.close(); } catch (_) {}
+    es = new EventSource('/events');
+    es.onmessage = onSseMessage;
+    es.onopen = () => { lastEventTs = Date.now(); $('dot').classList.remove('off'); };
+    es.onerror = () => $('dot').classList.add('off');
+  }
+  connectEvents();
+  // Watchdog: reconnect a stream that has gone quiet past the heartbeat window.
+  setInterval(() => {
+    if (document.hidden) return;            // backgrounded timers throttle; don't churn
+    if (Date.now() - lastEventTs > 45000) { lastEventTs = Date.now(); connectEvents(); }
+  }, 15000);
 
   // Keep a phone/tablet screen awake while the canvas is up (best-effort;
   // needs one tap on some browsers to count as a user gesture).
@@ -1654,7 +1680,7 @@ PAGE = """<!doctype html>
   }
   wake();
   document.addEventListener('visibilitychange',
-    () => { if (!document.hidden) wake(); });
+    () => { if (!document.hidden) { lastEventTs = Date.now(); wake(); } });
 
   // ---- audio controller: same verbs as the tmux popup, as touch buttons ----
   const GLYPH = { speech: 'note', music: 'notes', book: 'book' };
@@ -2393,11 +2419,14 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _sse(self) -> None:
+        q = HUB.attach()
+        if q is None:                       # over the client cap → shed load (#137)
+            self._send(503, b"too many canvas clients\n", "text/plain")
+            return
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        q = HUB.attach()
         try:
             self.wfile.write(b"retry: 2000\n\n")
             if HUB.last is not None:
@@ -2410,7 +2439,10 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     self._event(q.get(timeout=15))
                 except queue.Empty:
-                    self.wfile.write(b": ping\n\n")
+                    # A real data frame, not an SSE `: comment` — EventSource
+                    # ignores comments, so a comment heartbeat can't drive the
+                    # client's stall watchdog. onmessage fires on this (#137).
+                    self.wfile.write(b'data: {"kind":"ping"}\n\n')
                     self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
