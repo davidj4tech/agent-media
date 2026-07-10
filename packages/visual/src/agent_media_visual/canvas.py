@@ -244,6 +244,65 @@ paired — loading the canvas…
 </body>"""
 
 
+def _qr(url: str) -> str:
+    """A terminal QR for `url` — pure-python `qrcode` (half-block), falling back
+    to the `qrencode` binary, then to just the URL. QR is a nicety, never fatal."""
+    try:
+        import io
+        import qrcode
+        qr = qrcode.QRCode(border=2,
+                           error_correction=qrcode.constants.ERROR_CORRECT_M)
+        qr.add_data(url)
+        qr.make(fit=True)
+        buf = io.StringIO()
+        qr.print_ascii(out=buf, invert=True)   # invert → scannable on a dark terminal
+        return buf.getvalue().rstrip("\n")
+    except Exception:  # noqa: BLE001
+        import shutil
+        import subprocess
+        if shutil.which("qrencode"):
+            try:
+                return subprocess.run(["qrencode", "-t", "ANSIUTF8", url],
+                                      capture_output=True, text=True,
+                                      timeout=5).stdout.rstrip("\n")
+            except Exception:  # noqa: BLE001
+                pass
+        return "  (pip install qrcode — or apt install qrencode — for a QR)"
+
+
+def _cmd_pair(argv: list[str]) -> int:
+    """`media-visual-canvas pair` — mint a one-time link (+ QR) that installs
+    this host's amux token into a device's browser, so no secret is typed by
+    hand. The code is one-time and expires after PAIR_TTL_S (see _pair_consume)."""
+    import argparse
+    import secrets
+    ap = argparse.ArgumentParser(
+        prog="media-visual-canvas pair",
+        description="Mint a one-time pairing link (and QR) for a device.")
+    ap.add_argument("--host", default=(os.environ.get("MEDIA_VISUAL_PAIR_HOST")
+                                       or _socket.gethostname()),
+                    help="host used in the URL (default: this machine's hostname)")
+    ap.add_argument("--port", type=int,
+                    default=int(os.environ.get("MEDIA_VISUAL_PORT") or DEFAULT_PORT))
+    args = ap.parse_args(argv)
+
+    if not _amux_token():
+        print("no amux token on this host (~/.amux/auth_token) — nothing to pair.",
+              file=sys.stderr)
+        return 1
+
+    code = secrets.token_hex(8)
+    path = _pair_code_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(code)
+    url = f"http://{args.host}:{args.port}/pair?c={code}"
+
+    print(f"\n  Scan to pair this device (valid {PAIR_TTL_S // 60} min, one-time):\n")
+    print(_qr(url))
+    print(f"\n  {url}\n")
+    return 0
+
+
 def _amux_bin() -> str:
     """amux lives in ~/.local/bin, which a systemd user service's default
     PATH doesn't include."""
@@ -1915,6 +1974,8 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> None:
     from agent_media_core.intake._env import load_env_file
     load_env_file("visual-canvas")
+    if sys.argv[1:2] == ["pair"]:            # `media-visual-canvas pair`
+        raise SystemExit(_cmd_pair(sys.argv[2:]))
     ap = argparse.ArgumentParser(description="agent-media visual canvas (spike)")
     ap.add_argument("--port", type=int,
                     default=int(os.environ.get("MEDIA_VISUAL_PORT") or DEFAULT_PORT))
