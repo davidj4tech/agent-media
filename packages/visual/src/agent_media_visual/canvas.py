@@ -245,29 +245,20 @@ paired — loading the canvas…
 
 
 def _qr(url: str) -> str:
-    """A terminal QR for `url` — pure-python `qrcode` (half-block), falling back
-    to the `qrencode` binary, then to just the URL. QR is a nicety, never fatal."""
+    """A terminal QR for `url`. Full-block, double-width modules (██ per dark
+    cell) — these render on far more fonts/terminals than half-blocks (▀▄),
+    which silently break on many setups (e-ink, minimal fonts). Falls back to
+    the URL alone if `qrcode` isn't importable. QR is a nicety, never fatal."""
     try:
-        import io
         import qrcode
         qr = qrcode.QRCode(border=2,
                            error_correction=qrcode.constants.ERROR_CORRECT_M)
         qr.add_data(url)
         qr.make(fit=True)
-        buf = io.StringIO()
-        qr.print_ascii(out=buf, invert=True)   # invert → scannable on a dark terminal
-        return buf.getvalue().rstrip("\n")
+        return "\n".join("".join("██" if cell else "  " for cell in row)
+                         for row in qr.get_matrix())
     except Exception:  # noqa: BLE001
-        import shutil
-        import subprocess
-        if shutil.which("qrencode"):
-            try:
-                return subprocess.run(["qrencode", "-t", "ANSIUTF8", url],
-                                      capture_output=True, text=True,
-                                      timeout=5).stdout.rstrip("\n")
-            except Exception:  # noqa: BLE001
-                pass
-        return "  (pip install qrcode — or apt install qrencode — for a QR)"
+        return "  (pip install qrcode for a scannable QR — or open the URL below)"
 
 
 def _cmd_pair(argv: list[str]) -> int:
