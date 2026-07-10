@@ -357,6 +357,7 @@ def _tmux_cc_panes() -> list[dict]:
         preview = next((ln.strip()[:60] for ln in reversed(cap.splitlines())
                         if ln.strip()), "")
         agents.append({"name": (win if win and win != sess else sess),
+                       "session": sess,
                        "state": _classify_cc(cap) or "input",  # cmd=claude ⇒ CC
                        "dir": cwd, "preview": preview,
                        "source": "tmux", "pane": pane_id})
@@ -406,6 +407,36 @@ def _last_speaker() -> dict | None:
         return None
     except Exception:  # noqa: BLE001
         return None
+
+
+def _peek_pane(pane: str, lines: int = 24) -> list[str]:
+    """The last N non-blank, ANSI-stripped lines of a pane — for the peek panel."""
+    from urllib.parse import unquote
+    pane = unquote(pane or "")
+    if not pane:
+        return []
+    cap = re.sub(r"\x1b\[[0-9;]*m", "",
+                 _media_run(["tmux", "capture-pane", "-t", pane, "-p",
+                             "-S", f"-{lines * 3}"]))
+    out = [ln.rstrip() for ln in cap.splitlines() if ln.strip()]
+    return out[-lines:]
+
+
+def _play_pane(pane: str) -> bool:
+    """Replay a pane's last spoken clip through the speech channel — 'play the
+    output' (b). Reuses `replay-at-cursor`, which resolves the pane's latest clip
+    from the speech history via TTS_POPUP_PANE."""
+    from urllib.parse import unquote
+    pane = unquote(pane or "")
+    if not pane:
+        return False
+    env = {**os.environ, "TTS_POPUP_PANE": pane}
+    try:
+        subprocess.run([_media_bin(), "replay-at-cursor"], env=env,
+                       timeout=10, check=False)
+        return True
+    except (OSError, subprocess.SubprocessError):
+        return False
 
 
 def _send_to_pane(pane: str, text: str) -> str:
@@ -941,40 +972,68 @@ PAGE = """<!doctype html>
     transition: opacity .25s ease;
   }
   #toast.on { opacity: 1; }
-  /* Agent strip: a top row of amux sessions with live state, so you can see
-     which agent needs you and tap one to aim the reply box at it. Hidden until
-     there's at least one session. */
+  /* Agent tree: sessions as collapsible groups; each holds its claude panes
+     with live state, a peek (output) and a play (its last clip) button. Tap a
+     pane label to aim the reply box at it. Hidden until there's a session. */
   #agents {
     position: fixed; top: max(8px, env(safe-area-inset-top)); left: 50%;
     transform: translateX(-50%); z-index: 25; display: none;
-    max-width: 96vw; gap: .3em; padding: .2em;
-    overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none;
+    width: min(92vw, 460px); max-height: 62vh; overflow-y: auto;
+    flex-direction: column; gap: .25em; padding: .2em; scrollbar-width: none;
   }
   #agents.on { display: flex; }
-  #agents::-webkit-scrollbar { display: none; }
-  #agents .ag {
-    flex: 0 0 auto; display: flex; align-items: center; gap: .4em;
-    padding: .3em .7em; border-radius: 999px; cursor: pointer; white-space: nowrap;
-    background: rgba(10,10,10,.55); backdrop-filter: blur(10px);
-    color: #eee; font: 13px/1.3 system-ui, sans-serif;
-    -webkit-tap-highlight-color: transparent;
-  }
-  #agents .ag:active { background: rgba(255,255,255,.16); }
-  #agents .dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto;
-                 background: #888; }
-  #agents .working  .dot { background: #38bdf8; }               /* cyan — busy */
-  #agents .approval .dot { background: #f87171; }               /* red — asking */
-  #agents .input           { color: #fff; }                     /* needs you */
-  #agents .input    .dot { background: #ffd75f;
-                           animation: agpulse 1.8s ease-out infinite; }
+  #agents::-webkit-scrollbar { width: 0; }
+  #agents .sess { background: rgba(10,10,10,.62); backdrop-filter: blur(10px);
+                  border-radius: 12px; overflow: hidden; }
+  #agents .shead { display: flex; align-items: center; gap: .5em; padding: .45em .7em;
+                   cursor: pointer; color: #eee; font: 600 14px/1.3 system-ui, sans-serif;
+                   -webkit-tap-highlight-color: transparent; }
+  #agents .shead:active { background: rgba(255,255,255,.08); }
+  #agents .chev { color: #999; font-size: 11px; transition: transform .15s ease; }
+  #agents .sess.open .chev { transform: rotate(90deg); }
+  #agents .sname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #agents .scount { color: #999; font-weight: 400; font-size: 12px; }
+  #agents .panes { display: none; flex-direction: column; gap: .1em;
+                   padding: 0 .4em .35em 1.5em; }
+  #agents .sess.open .panes { display: flex; }
+  #agents .pane { display: flex; align-items: center; gap: .5em; padding: .3em .4em;
+                  border-radius: 8px; cursor: pointer; color: #ddd;
+                  font: 13px/1.3 system-ui, sans-serif; }
+  #agents .pane:active { background: rgba(255,255,255,.1); }
+  #agents .pane .lbl { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #agents .pane button { background: none; border: 0; color: #bbb; cursor: pointer;
+                         min-width: 30px; min-height: 26px; border-radius: 6px; flex: 0 0 auto; }
+  #agents .pane button:active { background: rgba(255,255,255,.14); }
+  #agents .pane button .ic { width: 15px; height: 15px; }
+  #agents .dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; background: #888; }
+  #agents .pane.working .dot,  #agents .sess.working  > .shead .dot { background: #38bdf8; }
+  #agents .pane.approval .dot, #agents .sess.approval > .shead .dot { background: #f87171; }
+  #agents .pane.input .dot,    #agents .sess.input    > .shead .dot {
+    background: #ffd75f; animation: agpulse 1.8s ease-out infinite; }
   @keyframes agpulse {
     0%   { box-shadow: 0 0 0 0 rgba(255,215,95,.6); }
     70%  { box-shadow: 0 0 0 7px rgba(255,215,95,0); }
     100% { box-shadow: 0 0 0 0 rgba(255,215,95,0); }
   }
-  html.eink #agents .ag  { background: #fff; color: #000; border: 1px solid #000; }
+  /* Peek panel: a pane's recent output. */
+  #peek {
+    position: fixed; left: 50%; transform: translateX(-50%);
+    top: max(8px, env(safe-area-inset-top)); z-index: 26; display: none;
+    width: min(92vw, 560px); max-height: 72vh; overflow: auto;
+    background: rgba(8,8,10,.96); backdrop-filter: blur(14px); border-radius: 12px;
+    padding: .5em .7em; box-shadow: 0 10px 40px rgba(0,0,0,.5);
+  }
+  #peek.on { display: block; }
+  #peek .ph { font: 600 13px/1.4 system-ui, sans-serif; color: #ffd75f; margin-bottom: .3em; }
+  #peek pre { margin: 0; white-space: pre-wrap; word-break: break-word;
+              font: 12px/1.35 ui-monospace, Menlo, monospace; color: #ccd; }
+  html.eink #agents .sess { background: #fff; color: #000; border: 1px solid #000; }
+  html.eink #agents .shead, html.eink #agents .pane { color: #000; }
   html.eink #agents .dot { background: #000; }
-  html.eink #agents .input .dot { animation: none; box-shadow: 0 0 0 2px #000; }
+  html.eink #agents .pane.input .dot, html.eink #agents .sess.input > .shead .dot {
+    animation: none; box-shadow: 0 0 0 2px #000; }
+  html.eink #peek { background: #fff; color: #000; border: 1px solid #000; }
+  html.eink #peek pre { color: #000; }
 </style>
 </head>
 <body>
@@ -1016,6 +1075,7 @@ PAGE = """<!doctype html>
 <div id="dot" title="disconnected"></div>
 <div id="toast"></div>
 <div id="agents"></div>
+<div id="peek"></div>
 <div id="inp">
   <button id="target"></button>
   <textarea id="text" rows="1" autocomplete="off" enterkeyhint="send"
@@ -1640,6 +1700,7 @@ PAGE = """<!doctype html>
   document.body.addEventListener('click', (e) => {
     wake();
     if ($('help').classList.contains('on')) { toggleHelp(); return; }
+    if ($('peek').classList.contains('on')) { hidePeek(); return; }  // tap-away closes peek
     if ($('ctl').contains(e.target)) { resetHide(); return; }  // buttons self-handle
     if ($('inp').contains(e.target)) { openInput(); return; }  // tap field → INPUT
     // Tap on the bare canvas: reveal / dismiss the controller (passive ⇄ control).
@@ -1769,36 +1830,78 @@ PAGE = """<!doctype html>
     else act('jump-end');
   };
 
-  // ---- agent strip: which amux sessions need you (poll `amux ls --json`) ----
-  // A top row of chips, one per amux session, coloured by live state. `input`
-  // (a turn finished, waiting on you) pulses amber. Tap a chip to aim the reply
-  // box at that session. Silent when no token / no sessions — never prompts.
+  // ---- agent tree: sessions → their claude panes, with live state ----------
+  // Poll /agents (open on the tailnet), group by session into collapsible
+  // groups. Each pane shows its state, a peek (output) and a play (its last
+  // clip) button; tap a pane label to aim the reply box at it.
+  const AG_RANK = { input: 0, approval: 1, working: 2, stopped: 3 };  // needs-you first
+  let agOpen = {};                              // session -> expanded (persist across polls)
+  const agEsc = (s) => s.replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
   async function pollAgents() {
     if (document.hidden) return;
     let list;
     try {
-      const r = await fetch('/agents');        // read-only, open on the tailnet
+      const r = await fetch('/agents');
       if (!r.ok) { $('agents').classList.remove('on'); return; }
       list = (await r.json()).agents || [];
     } catch (_) { return; }
     const box = $('agents');
-    if (!list.length) { box.classList.remove('on'); box.innerHTML = ''; return; }
-    const rank = { input: 0, approval: 1, working: 2, stopped: 3 };  // needs-you first
-    list.sort((a, b) => (rank[a.state] ?? 9) - (rank[b.state] ?? 9)
-                        || a.name.localeCompare(b.name));
-    box.innerHTML = list.map(a =>
-      '<span class="ag ' + a.state + '" data-name="' + encodeURIComponent(a.name)
-      + '" data-source="' + (a.source === 'tmux' ? 'tmux' : 'amux') + '"'
-      + (a.pane ? ' data-pane="' + a.pane + '"' : '') + '>'
-      + '<span class="dot"></span>' + a.name.replace(/[<>&]/g, '') + '</span>').join('');
+    if (!list.length) { box.classList.remove('on'); box.innerHTML = ''; hidePeek(); return; }
+    const groups = {};
+    for (const a of list) { const s = a.session || a.name; (groups[s] = groups[s] || []).push(a); }
+    const best = (ps) => Math.min(...ps.map((p) => AG_RANK[p.state] ?? 9));
+    const names = Object.keys(groups).sort((x, y) =>
+      best(groups[x]) - best(groups[y]) || x.localeCompare(y));
+    box.innerHTML = names.map((s) => {
+      const ps = groups[s].sort((a, b) =>
+        (AG_RANK[a.state] ?? 9) - (AG_RANK[b.state] ?? 9) || a.name.localeCompare(b.name));
+      const rows = ps.map((p) =>
+        '<div class="pane ' + p.state + '" data-name="' + encodeURIComponent(p.name)
+        + '" data-source="' + (p.source === 'tmux' ? 'tmux' : 'amux') + '"'
+        + (p.pane ? ' data-pane="' + p.pane + '"' : '') + '>'
+        + '<span class="dot"></span><span class="lbl">' + agEsc(p.name) + '</span>'
+        + (p.pane ? '<button class="pk" title="peek output">' + icon('cc') + '</button>' : '')
+        + '<button class="pl" title="play last clip">' + icon('play') + '</button></div>').join('');
+      return '<div class="sess ' + ps[0].state + (agOpen[s] ? ' open' : '')
+        + '" data-sess="' + encodeURIComponent(s) + '">'
+        + '<div class="shead"><span class="chev">▸</span><span class="dot"></span>'
+        + '<span class="sname">' + agEsc(s) + '</span>'
+        + '<span class="scount">' + ps.length + '</span></div>'
+        + '<div class="panes">' + rows + '</div></div>';
+    }).join('');
     box.classList.add('on');
   }
   $('agents').addEventListener('click', (e) => {
-    const chip = e.target.closest('.ag');
-    if (!chip) return;
     e.stopPropagation();
-    targetAgent(decodeURIComponent(chip.dataset.name), chip.dataset.source, chip.dataset.pane);
+    const head = e.target.closest('.shead');
+    if (head) {
+      const g = head.parentElement, s = decodeURIComponent(g.dataset.sess);
+      agOpen[s] = !agOpen[s]; g.classList.toggle('open', agOpen[s]); return;
+    }
+    const row = e.target.closest('.pane');
+    if (!row) return;
+    if (e.target.closest('.pl')) { playPane(row.dataset.pane); return; }
+    if (e.target.closest('.pk')) { peekPane(row.dataset.pane, decodeURIComponent(row.dataset.name)); return; }
+    targetAgent(decodeURIComponent(row.dataset.name), row.dataset.source, row.dataset.pane);
   });
+  async function playPane(pane) {
+    if (!pane) return;
+    try {
+      await fetch('/play', { method: 'POST',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pane }) });
+    } catch (_) {}
+  }
+  async function peekPane(pane, name) {
+    if (!pane) return;
+    let lines = [];
+    try { lines = ((await (await fetch('/peek?pane=' + encodeURIComponent(pane))).json()).lines) || []; }
+    catch (_) {}
+    $('peek').innerHTML = '<div class="ph">' + agEsc(name) + '</div><pre>'
+      + lines.map(agEsc).join('\\n') + '</pre>';
+    $('peek').classList.add('on');
+  }
+  function hidePeek() { $('peek').classList.remove('on'); }
+  $('peek').addEventListener('click', (e) => { e.stopPropagation(); hidePeek(); });
   async function targetAgent(name, source, pane) {
     await openInput();
     // tmux agents are addressed by pane id (a session may hold several); amux
@@ -1865,9 +1968,15 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/agents":
             # Live session states for the agent strip ("who needs me") — read-
             # only, so open on the tailnet-bound server (only /input is gated).
-            # amux-registered sessions + auto-discovered Claude Code tmux
-            # sessions (the tmux scan already skips amux's own amux-* sessions).
-            self._json(200, {"agents": _amux_sessions() + _tmux_cc_panes()})
+            # amux-registered sessions + auto-discovered Claude Code tmux panes.
+            amux = [{**a, "session": a.get("name")} for a in _amux_sessions()]
+            self._json(200, {"agents": amux + _tmux_cc_panes()})
+        elif path == "/peek":
+            # Recent output of one pane (the strip's peek panel). Read-only,
+            # open like /agents.
+            pane = next((v for k, _, v in (kv.partition("=")
+                         for kv in query.split("&")) if k == "pane"), "")
+            self._json(200, {"pane": pane, "lines": _peek_pane(pane)})
         elif path == "/pair":
             code = ""
             for kv in query.split("&"):
@@ -1957,6 +2066,12 @@ class Handler(BaseHTTPRequestHandler):
             ok, detail = send_input(str(body.get("text") or ""),
                                     str(body.get("target") or "speaker"))
             self._json(200 if ok else 400, {"ok": ok, "detail": detail})
+        elif path == "/play":
+            # Replay a pane's last spoken clip — open like /agents (plays audio,
+            # never injects keystrokes).
+            body = self._read_json() or {}
+            ok = _play_pane(str(body.get("pane") or ""))
+            self._json(200 if ok else 400, {"ok": ok})
         else:
             self._send(404, b"not found\n", "text/plain")
 
