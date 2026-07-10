@@ -357,6 +357,7 @@ def _tmux_cc_panes() -> list[dict]:
         preview = next((ln.strip()[:60] for ln in reversed(cap.splitlines())
                         if ln.strip()), "")
         agents.append({"name": (win if win and win != sess else sess),
+                       "session": sess,
                        "state": _classify_cc(cap) or "input",  # cmd=claude ⇒ CC
                        "dir": cwd, "preview": preview,
                        "source": "tmux", "pane": pane_id})
@@ -406,6 +407,110 @@ def _last_speaker() -> dict | None:
         return None
     except Exception:  # noqa: BLE001
         return None
+
+
+def _peek_pane(pane: str, lines: int = 60) -> list[str]:
+    """The last N non-blank, ANSI-stripped lines of a pane — for the peek panel."""
+    from urllib.parse import unquote
+    pane = unquote(pane or "")
+    if not pane:
+        return []
+    cap = re.sub(r"\x1b\[[0-9;]*m", "",
+                 _media_run(["tmux", "capture-pane", "-t", pane, "-p",
+                             "-S", f"-{lines * 3}"]))
+    out = [ln.rstrip() for ln in cap.splitlines() if ln.strip()]
+    return out[-lines:]
+
+
+def _pane_session(pane: str) -> str:
+    """The Claude Code session uuid for a pane — walk the pane process's whole
+    descendant tree for a process carrying CLAUDE_CODE_SESSION_ID (claude may be
+    a grandchild via a wrapper, not a direct child)."""
+    ppid = _media_run(["tmux", "display-message", "-t", pane, "-p", "#{pane_pid}"])
+    if not ppid.isdigit():
+        return ""
+    stack, seen = [ppid], set()
+    while stack:
+        pid = stack.pop()
+        if pid in seen:
+            continue
+        seen.add(pid)
+        try:
+            for kv in Path(f"/proc/{pid}/environ").read_bytes().split(b"\0"):
+                if kv.startswith(b"CLAUDE_CODE_SESSION_ID="):
+                    return kv.split(b"=", 1)[1].decode().strip()
+        except OSError:
+            pass
+        stack += _media_run(["pgrep", "-P", pid]).split()
+    return ""
+
+
+def _pane_turns(pane: str, limit: int = 12) -> list[str]:
+    """A pane's Claude Code session as assistant turns (oldest→newest), read from
+    its transcript (~/.claude/projects/<cwd-slug>/<session>.jsonl). Falls back to
+    one block of the raw pane capture when no transcript is found."""
+    from urllib.parse import unquote
+    pane = unquote(pane or "")
+    if not pane:
+        return []
+    session = _pane_session(pane)
+    if session:
+        cwd = _media_run(["tmux", "display-message", "-t", pane, "-p",
+                          "#{pane_current_path}"])
+        path = (Path.home() / ".claude" / "projects"
+                / cwd.replace("/", "-") / f"{session}.jsonl")
+        try:
+            turns: list[str] = []
+            for line in path.read_text(errors="replace").splitlines():
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if r.get("type") != "assistant":
+                    continue
+                c = (r.get("message") or {}).get("content")
+                if isinstance(c, list):
+                    text = "\n".join(b.get("text", "") for b in c
+                                     if isinstance(b, dict) and b.get("type") == "text")
+                else:
+                    text = c if isinstance(c, str) else ""
+                if text.strip():
+                    turns.append(text.strip())
+            if turns:
+                return turns[-limit:]
+        except OSError:
+            pass
+    lines = _peek_pane(pane)
+    return ["\n".join(lines)] if lines else []
+
+
+def _say(text: str) -> bool:
+    """Speak arbitrary text through the speech channel — per-turn 'play'."""
+    text = (text or "").strip()
+    if not text:
+        return False
+    try:
+        subprocess.run([_media_bin(), "say", text], timeout=20, check=False)
+        return True
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _play_pane(pane: str) -> bool:
+    """Replay a pane's last spoken clip through the speech channel — 'play the
+    output' (b). Reuses `replay-at-cursor`, which resolves the pane's latest clip
+    from the speech history via TTS_POPUP_PANE."""
+    from urllib.parse import unquote
+    pane = unquote(pane or "")
+    if not pane:
+        return False
+    env = {**os.environ, "TTS_POPUP_PANE": pane}
+    try:
+        subprocess.run([_media_bin(), "replay-at-cursor"], env=env,
+                       timeout=10, check=False)
+        return True
+    except (OSError, subprocess.SubprocessError):
+        return False
 
 
 def _send_to_pane(pane: str, text: str) -> str:
@@ -941,40 +1046,104 @@ PAGE = """<!doctype html>
     transition: opacity .25s ease;
   }
   #toast.on { opacity: 1; }
-  /* Agent strip: a top row of amux sessions with live state, so you can see
-     which agent needs you and tap one to aim the reply box at it. Hidden until
-     there's at least one session. */
+  /* Agent tree: sessions as collapsible groups; each holds its claude panes
+     with live state, a peek (output) and a play (its last clip) button. Tap a
+     pane label to aim the reply box at it. Hidden until there's a session. */
   #agents {
-    position: fixed; top: max(8px, env(safe-area-inset-top)); left: 50%;
-    transform: translateX(-50%); z-index: 25; display: none;
-    max-width: 96vw; gap: .3em; padding: .2em;
-    overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none;
+    position: fixed; left: 50%; transform: translateX(-50%); z-index: 25;
+    bottom: calc(max(2vh, env(safe-area-inset-bottom)) + 3.4em);  /* above the input */
+    display: none; width: min(96vw, 620px);
+    flex-direction: column-reverse; gap: .25em;   /* pill at bottom, tree drops UP */
   }
   #agents.on { display: flex; }
-  #agents::-webkit-scrollbar { display: none; }
-  #agents .ag {
-    flex: 0 0 auto; display: flex; align-items: center; gap: .4em;
-    padding: .3em .7em; border-radius: 999px; cursor: pointer; white-space: nowrap;
-    background: rgba(10,10,10,.55); backdrop-filter: blur(10px);
-    color: #eee; font: 13px/1.3 system-ui, sans-serif;
+  #agents.hide { display: none !important; }       /* hidden while composing a reply */
+  /* Top toggle: the whole tree collapses behind one pill (dot + count) so it
+     doesn't dominate a narrow phone screen. */
+  #agents .aghead {
+    display: flex; align-items: center; gap: .5em; padding: .4em .85em;
+    border-radius: 999px; cursor: pointer; align-self: center;
+    background: rgba(10,10,10,.62); backdrop-filter: blur(10px);
+    color: #eee; font: 600 13px/1.3 system-ui, sans-serif;
     -webkit-tap-highlight-color: transparent;
   }
-  #agents .ag:active { background: rgba(255,255,255,.16); }
-  #agents .dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto;
-                 background: #888; }
-  #agents .working  .dot { background: #38bdf8; }               /* cyan — busy */
-  #agents .approval .dot { background: #f87171; }               /* red — asking */
-  #agents .input           { color: #fff; }                     /* needs you */
-  #agents .input    .dot { background: #ffd75f;
-                           animation: agpulse 1.8s ease-out infinite; }
+  #agents .aghead:active { background: rgba(255,255,255,.1); }
+  #agents .atitle { color: #ddd; }
+  #agents .aghead .chev { color: #999; font-size: 11px; transition: transform .15s ease; }
+  #agents.expanded .aghead .chev { transform: rotate(90deg); }
+  #agents .aghead.working  .dot { background: #38bdf8; }
+  #agents .aghead.approval .dot { background: #f87171; }
+  #agents .aghead.input    .dot { background: #ffd75f; animation: agpulse 1.8s ease-out infinite; }
+  #agents .aglist { display: none; flex-direction: column; gap: .25em;
+                    max-height: 60vh; overflow-y: auto; scrollbar-width: none; }
+  #agents.expanded .aglist { display: flex; }
+  #agents .aglist::-webkit-scrollbar { width: 0; }
+  #agents .sess { background: rgba(10,10,10,.62); backdrop-filter: blur(10px);
+                  border-radius: 12px; overflow: hidden; }
+  #agents .shead { display: flex; align-items: center; gap: .5em; padding: .45em .7em;
+                   cursor: pointer; color: #eee; font: 600 14px/1.3 system-ui, sans-serif;
+                   -webkit-tap-highlight-color: transparent; }
+  #agents .shead:active { background: rgba(255,255,255,.08); }
+  #agents .chev { color: #999; font-size: 11px; transition: transform .15s ease; }
+  #agents .sess.open .chev { transform: rotate(90deg); }
+  #agents .sname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #agents .scount { color: #999; font-weight: 400; font-size: 12px; }
+  #agents .panes { display: none; flex-direction: column; gap: .1em;
+                   padding: 0 .4em .35em 1.5em; }
+  #agents .sess.open .panes { display: flex; }
+  #agents .pane { display: flex; align-items: center; gap: .5em; padding: .3em .4em;
+                  border-radius: 8px; cursor: pointer; color: #ddd;
+                  font: 13px/1.3 system-ui, sans-serif; }
+  #agents .pane:active { background: rgba(255,255,255,.1); }
+  #agents .pane .lbl { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #agents .pane button { background: none; border: 0; color: #bbb; cursor: pointer;
+                         min-width: 30px; min-height: 26px; border-radius: 6px; flex: 0 0 auto; }
+  #agents .pane button:active { background: rgba(255,255,255,.14); }
+  #agents .pane button .ic { width: 15px; height: 15px; }
+  #agents .dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; background: #888; }
+  #agents .pane.working .dot,  #agents .sess.working  > .shead .dot { background: #38bdf8; }
+  #agents .pane.approval .dot, #agents .sess.approval > .shead .dot { background: #f87171; }
+  #agents .pane.input .dot,    #agents .sess.input    > .shead .dot {
+    background: #ffd75f; animation: agpulse 1.8s ease-out infinite; }
   @keyframes agpulse {
     0%   { box-shadow: 0 0 0 0 rgba(255,215,95,.6); }
     70%  { box-shadow: 0 0 0 7px rgba(255,215,95,0); }
     100% { box-shadow: 0 0 0 0 rgba(255,215,95,0); }
   }
-  html.eink #agents .ag  { background: #fff; color: #000; border: 1px solid #000; }
+  /* Peek panel: a pane's recent output. */
+  #peek {
+    position: fixed; left: 50%; transform: translateX(-50%);
+    top: max(8px, env(safe-area-inset-top)); z-index: 26; display: none;
+    width: min(97vw, 960px); max-height: 80vh; overflow: auto;
+    background: rgba(8,8,10,.96); backdrop-filter: blur(14px); border-radius: 12px;
+    padding: .5em .7em; box-shadow: 0 10px 40px rgba(0,0,0,.5);
+  }
+  #peek.on { display: block; }
+  #peek .ph { font: 600 13px/1.4 system-ui, sans-serif; color: #ffd75f; margin-bottom: .3em; }
+  #peek pre { margin: 0; white-space: pre-wrap; word-break: break-word;
+              font: 12px/1.35 ui-monospace, Menlo, monospace; color: #ccd; }
+  #peek .turn { position: relative; border-top: 1px solid rgba(255,255,255,.08);
+                padding: .5em 2.4em .5em .3em; cursor: pointer; }
+  #peek .turn:first-of-type { border-top: 0; }
+  #peek .tbody { white-space: pre-wrap; word-break: break-word; color: #cdd;
+                font: 13.5px/1.5 system-ui, sans-serif;
+                max-height: 6.6em; overflow: hidden;
+                -webkit-mask-image: linear-gradient(#000 68%, transparent);
+                mask-image: linear-gradient(#000 68%, transparent); }
+  #peek .turn.open .tbody { max-height: none; -webkit-mask-image: none; mask-image: none; }
+  #peek .tplay { position: absolute; top: .35em; right: .25em; z-index: 1;
+                 background: none; border: 0; color: #bbb; cursor: pointer;
+                 min-width: 30px; min-height: 26px; border-radius: 6px; }
+  #peek .tplay:active { background: rgba(255,255,255,.14); }
+  #peek .tplay .ic { width: 15px; height: 15px; }
+  html.eink #peek .tbody { color: #000; -webkit-mask-image: none; mask-image: none; }
+  html.eink #peek .turn { border-top-color: #000; }
+  html.eink #agents .sess { background: #fff; color: #000; border: 1px solid #000; }
+  html.eink #agents .shead, html.eink #agents .pane { color: #000; }
   html.eink #agents .dot { background: #000; }
-  html.eink #agents .input .dot { animation: none; box-shadow: 0 0 0 2px #000; }
+  html.eink #agents .pane.input .dot, html.eink #agents .sess.input > .shead .dot {
+    animation: none; box-shadow: 0 0 0 2px #000; }
+  html.eink #peek { background: #fff; color: #000; border: 1px solid #000; }
+  html.eink #peek pre { color: #000; }
 </style>
 </head>
 <body>
@@ -1016,6 +1185,7 @@ PAGE = """<!doctype html>
 <div id="dot" title="disconnected"></div>
 <div id="toast"></div>
 <div id="agents"></div>
+<div id="peek"></div>
 <div id="inp">
   <button id="target"></button>
   <textarea id="text" rows="1" autocomplete="off" enterkeyhint="send"
@@ -1501,6 +1671,7 @@ PAGE = """<!doctype html>
     $('inp').classList.toggle('under', ctrl);             // hidden beneath controller
     $('ctl').classList.toggle('on', ctrl);
     $('ctl').classList.toggle('focused', ctrl);
+    $('agents').classList.toggle('hide', m === 'input');  // clear the tree while typing
     $('cap').classList.toggle('hide', active);
     if (m === 'input') $('text').focus();
     else if (document.activeElement === $('text')) $('text').blur();
@@ -1640,6 +1811,7 @@ PAGE = """<!doctype html>
   document.body.addEventListener('click', (e) => {
     wake();
     if ($('help').classList.contains('on')) { toggleHelp(); return; }
+    if ($('peek').classList.contains('on')) { hidePeek(); return; }  // tap-away closes peek
     if ($('ctl').contains(e.target)) { resetHide(); return; }  // buttons self-handle
     if ($('inp').contains(e.target)) { openInput(); return; }  // tap field → INPUT
     // Tap on the bare canvas: reveal / dismiss the controller (passive ⇄ control).
@@ -1769,36 +1941,113 @@ PAGE = """<!doctype html>
     else act('jump-end');
   };
 
-  // ---- agent strip: which amux sessions need you (poll `amux ls --json`) ----
-  // A top row of chips, one per amux session, coloured by live state. `input`
-  // (a turn finished, waiting on you) pulses amber. Tap a chip to aim the reply
-  // box at that session. Silent when no token / no sessions — never prompts.
+  // ---- agent tree: sessions → their claude panes, with live state ----------
+  // Poll /agents (open on the tailnet), group by session into collapsible
+  // groups. Each pane shows its state, a peek (output) and a play (its last
+  // clip) button; tap a pane label to aim the reply box at it.
+  const AG_RANK = { input: 0, approval: 1, working: 2, stopped: 3 };  // needs-you first
+  let agOpen = {}, agTop = false;              // session / top-level expanded (persist)
+  const agEsc = (s) => s.replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
   async function pollAgents() {
     if (document.hidden) return;
     let list;
     try {
-      const r = await fetch('/agents');        // read-only, open on the tailnet
+      const r = await fetch('/agents');
       if (!r.ok) { $('agents').classList.remove('on'); return; }
       list = (await r.json()).agents || [];
     } catch (_) { return; }
     const box = $('agents');
-    if (!list.length) { box.classList.remove('on'); box.innerHTML = ''; return; }
-    const rank = { input: 0, approval: 1, working: 2, stopped: 3 };  // needs-you first
-    list.sort((a, b) => (rank[a.state] ?? 9) - (rank[b.state] ?? 9)
-                        || a.name.localeCompare(b.name));
-    box.innerHTML = list.map(a =>
-      '<span class="ag ' + a.state + '" data-name="' + encodeURIComponent(a.name)
-      + '" data-source="' + (a.source === 'tmux' ? 'tmux' : 'amux') + '"'
-      + (a.pane ? ' data-pane="' + a.pane + '"' : '') + '>'
-      + '<span class="dot"></span>' + a.name.replace(/[<>&]/g, '') + '</span>').join('');
+    if (!list.length) { box.classList.remove('on'); box.innerHTML = ''; hidePeek(); return; }
+    const groups = {};
+    for (const a of list) { const s = a.session || a.name; (groups[s] = groups[s] || []).push(a); }
+    const best = (ps) => Math.min(...ps.map((p) => AG_RANK[p.state] ?? 9));
+    const names = Object.keys(groups).sort((x, y) =>
+      best(groups[x]) - best(groups[y]) || x.localeCompare(y));
+    const sessHtml = names.map((s) => {
+      const ps = groups[s].sort((a, b) =>
+        (AG_RANK[a.state] ?? 9) - (AG_RANK[b.state] ?? 9) || a.name.localeCompare(b.name));
+      const rows = ps.map((p) =>
+        '<div class="pane ' + p.state + '" data-name="' + encodeURIComponent(p.name)
+        + '" data-source="' + (p.source === 'tmux' ? 'tmux' : 'amux') + '"'
+        + (p.pane ? ' data-pane="' + p.pane + '"' : '') + '>'
+        + '<span class="dot"></span><span class="lbl">' + agEsc(p.name) + '</span>'
+        + (p.pane ? '<button class="pk" title="peek output">' + icon('cc') + '</button>' : '')
+        + '<button class="pl" title="play last clip">' + icon('play') + '</button></div>').join('');
+      return '<div class="sess ' + ps[0].state + (agOpen[s] ? ' open' : '')
+        + '" data-sess="' + encodeURIComponent(s) + '">'
+        + '<div class="shead"><span class="chev">▸</span><span class="dot"></span>'
+        + '<span class="sname">' + agEsc(s) + '</span>'
+        + '<span class="scount">' + ps.length + '</span></div>'
+        + '<div class="panes">' + rows + '</div></div>';
+    }).join('');
+    // Collapse the whole tree behind one pill; its dot/count give the glance.
+    const topState = ['input', 'approval', 'working', 'stopped'][
+      Math.min(...list.map((a) => AG_RANK[a.state] ?? 9))] || 'stopped';
+    box.innerHTML =
+      '<div class="aghead ' + topState + '"><span class="chev">▸</span>'
+      + '<span class="dot"></span><span class="atitle">agents</span>'
+      + '<span class="scount">' + list.length + '</span></div>'
+      + '<div class="aglist">' + sessHtml + '</div>';
     box.classList.add('on');
+    box.classList.toggle('expanded', agTop);
   }
   $('agents').addEventListener('click', (e) => {
-    const chip = e.target.closest('.ag');
-    if (!chip) return;
     e.stopPropagation();
-    targetAgent(decodeURIComponent(chip.dataset.name), chip.dataset.source, chip.dataset.pane);
+    if (e.target.closest('.aghead')) {          // top pill → show/hide the tree
+      agTop = !agTop; $('agents').classList.toggle('expanded', agTop); return;
+    }
+    const head = e.target.closest('.shead');
+    if (head) {
+      const g = head.parentElement, s = decodeURIComponent(g.dataset.sess);
+      agOpen[s] = !agOpen[s]; g.classList.toggle('open', agOpen[s]); return;
+    }
+    const row = e.target.closest('.pane');
+    if (!row) return;
+    if (e.target.closest('.pl')) { playPane(row.dataset.pane); return; }
+    if (e.target.closest('.pk')) { peekPane(row.dataset.pane, decodeURIComponent(row.dataset.name)); return; }
+    targetAgent(decodeURIComponent(row.dataset.name), row.dataset.source, row.dataset.pane);
   });
+  async function playPane(pane) {
+    if (!pane) return;
+    try {
+      await fetch('/play', { method: 'POST',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pane }) });
+    } catch (_) {}
+  }
+  let peekTurns = [];
+  async function peekPane(pane, name) {
+    if (!pane) return;
+    try { peekTurns = ((await (await fetch('/peek?pane=' + encodeURIComponent(pane))).json()).turns) || []; }
+    catch (_) { peekTurns = []; }
+    // Chronological like a real transcript: oldest at top, newest at the
+    // bottom (open/full); older ones are collapsed snapshots you click to
+    // expand. ▶ on each plays that turn. Opens scrolled to the latest.
+    const last = peekTurns.length - 1;
+    const blocks = peekTurns.map((t, i) =>
+      '<div class="turn' + (i === last ? ' open' : '') + '" data-i="' + i + '">'
+      + '<button class="tplay" title="play this turn">' + icon('play') + '</button>'
+      + '<div class="tbody">' + agEsc(t) + '</div></div>').join('');
+    $('peek').innerHTML = '<div class="ph">' + agEsc(name) + '</div>'
+      + (blocks || '<div class="tbody" style="max-height:none">(no transcript / output)</div>');
+    $('peek').classList.add('on');
+    requestAnimationFrame(() => { $('peek').scrollTop = $('peek').scrollHeight; });
+  }
+  function hidePeek() { $('peek').classList.remove('on'); }
+  $('peek').addEventListener('click', (e) => {
+    e.stopPropagation();
+    const play = e.target.closest('.tplay');
+    if (play) { sayTurn(peekTurns[+play.parentElement.dataset.i]); return; }
+    const turn = e.target.closest('.turn');
+    if (turn) { turn.classList.toggle('open'); return; }  // expand/collapse a snapshot
+    hidePeek();
+  });
+  async function sayTurn(text) {
+    if (!text) return;
+    try {
+      await fetch('/say', { method: 'POST',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
+    } catch (_) {}
+  }
   async function targetAgent(name, source, pane) {
     await openInput();
     // tmux agents are addressed by pane id (a session may hold several); amux
@@ -1865,9 +2114,15 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/agents":
             # Live session states for the agent strip ("who needs me") — read-
             # only, so open on the tailnet-bound server (only /input is gated).
-            # amux-registered sessions + auto-discovered Claude Code tmux
-            # sessions (the tmux scan already skips amux's own amux-* sessions).
-            self._json(200, {"agents": _amux_sessions() + _tmux_cc_panes()})
+            # amux-registered sessions + auto-discovered Claude Code tmux panes.
+            amux = [{**a, "session": a.get("name")} for a in _amux_sessions()]
+            self._json(200, {"agents": amux + _tmux_cc_panes()})
+        elif path == "/peek":
+            # A pane's Claude Code session as assistant turns (read-only, open
+            # like /agents) — latest turn full, older ones collapsible snapshots.
+            pane = next((v for k, _, v in (kv.partition("=")
+                         for kv in query.split("&")) if k == "pane"), "")
+            self._json(200, {"pane": pane, "turns": _pane_turns(pane)})
         elif path == "/pair":
             code = ""
             for kv in query.split("&"):
@@ -1957,6 +2212,17 @@ class Handler(BaseHTTPRequestHandler):
             ok, detail = send_input(str(body.get("text") or ""),
                                     str(body.get("target") or "speaker"))
             self._json(200 if ok else 400, {"ok": ok, "detail": detail})
+        elif path == "/play":
+            # Replay a pane's last spoken clip — open like /agents (plays audio,
+            # never injects keystrokes).
+            body = self._read_json() or {}
+            ok = _play_pane(str(body.get("pane") or ""))
+            self._json(200 if ok else 400, {"ok": ok})
+        elif path == "/say":
+            # Speak arbitrary text (a peeked turn) — open, plays audio only.
+            body = self._read_json() or {}
+            ok = _say(str(body.get("text") or ""))
+            self._json(200 if ok else 400, {"ok": ok})
         else:
             self._send(404, b"not found\n", "text/plain")
 
