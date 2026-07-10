@@ -1050,11 +1050,13 @@ PAGE = """<!doctype html>
      with live state, a peek (output) and a play (its last clip) button. Tap a
      pane label to aim the reply box at it. Hidden until there's a session. */
   #agents {
-    position: fixed; top: max(8px, env(safe-area-inset-top)); left: 50%;
-    transform: translateX(-50%); z-index: 25; display: none;
-    width: min(92vw, 460px); flex-direction: column; gap: .25em;
+    position: fixed; left: 50%; transform: translateX(-50%); z-index: 25;
+    bottom: calc(max(2vh, env(safe-area-inset-bottom)) + 3.4em);  /* above the input */
+    display: none; width: min(96vw, 620px);
+    flex-direction: column-reverse; gap: .25em;   /* pill at bottom, tree drops UP */
   }
   #agents.on { display: flex; }
+  #agents.hide { display: none !important; }       /* hidden while composing a reply */
   /* Top toggle: the whole tree collapses behind one pill (dot + count) so it
      doesn't dominate a narrow phone screen. */
   #agents .aghead {
@@ -1669,6 +1671,7 @@ PAGE = """<!doctype html>
     $('inp').classList.toggle('under', ctrl);             // hidden beneath controller
     $('ctl').classList.toggle('on', ctrl);
     $('ctl').classList.toggle('focused', ctrl);
+    $('agents').classList.toggle('hide', m === 'input');  // clear the tree while typing
     $('cap').classList.toggle('hide', active);
     if (m === 'input') $('text').focus();
     else if (document.activeElement === $('text')) $('text').blur();
@@ -2016,15 +2019,18 @@ PAGE = """<!doctype html>
     if (!pane) return;
     try { peekTurns = ((await (await fetch('/peek?pane=' + encodeURIComponent(pane))).json()).turns) || []; }
     catch (_) { peekTurns = []; }
-    // Newest turn first + open (full); older ones are collapsed snapshots you
-    // click to expand. ▶ on each plays that turn.
-    const blocks = peekTurns.map((t, i) => ({ t, i })).reverse().map((o, k) =>
-      '<div class="turn' + (k === 0 ? ' open' : '') + '" data-i="' + o.i + '">'
+    // Chronological like a real transcript: oldest at top, newest at the
+    // bottom (open/full); older ones are collapsed snapshots you click to
+    // expand. ▶ on each plays that turn. Opens scrolled to the latest.
+    const last = peekTurns.length - 1;
+    const blocks = peekTurns.map((t, i) =>
+      '<div class="turn' + (i === last ? ' open' : '') + '" data-i="' + i + '">'
       + '<button class="tplay" title="play this turn">' + icon('play') + '</button>'
-      + '<div class="tbody">' + agEsc(o.t) + '</div></div>').join('');
+      + '<div class="tbody">' + agEsc(t) + '</div></div>').join('');
     $('peek').innerHTML = '<div class="ph">' + agEsc(name) + '</div>'
       + (blocks || '<div class="tbody" style="max-height:none">(no transcript / output)</div>');
     $('peek').classList.add('on');
+    requestAnimationFrame(() => { $('peek').scrollTop = $('peek').scrollHeight; });
   }
   function hidePeek() { $('peek').classList.remove('on'); }
   $('peek').addEventListener('click', (e) => {
