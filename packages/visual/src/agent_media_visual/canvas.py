@@ -422,6 +422,73 @@ def _peek_pane(pane: str, lines: int = 60) -> list[str]:
     return out[-lines:]
 
 
+def _pane_session(pane: str) -> str:
+    """The Claude Code session uuid for a pane — read from the `claude` process's
+    CLAUDE_CODE_SESSION_ID env (checking the pane process and its children)."""
+    ppid = _media_run(["tmux", "display-message", "-t", pane, "-p", "#{pane_pid}"])
+    if not ppid.isdigit():
+        return ""
+    for pid in [ppid, *_media_run(["pgrep", "-P", ppid]).split()]:
+        try:
+            for kv in Path(f"/proc/{pid}/environ").read_bytes().split(b"\0"):
+                if kv.startswith(b"CLAUDE_CODE_SESSION_ID="):
+                    return kv.split(b"=", 1)[1].decode().strip()
+        except OSError:
+            continue
+    return ""
+
+
+def _pane_turns(pane: str, limit: int = 12) -> list[str]:
+    """A pane's Claude Code session as assistant turns (oldest→newest), read from
+    its transcript (~/.claude/projects/<cwd-slug>/<session>.jsonl). Falls back to
+    one block of the raw pane capture when no transcript is found."""
+    from urllib.parse import unquote
+    pane = unquote(pane or "")
+    if not pane:
+        return []
+    session = _pane_session(pane)
+    if session:
+        cwd = _media_run(["tmux", "display-message", "-t", pane, "-p",
+                          "#{pane_current_path}"])
+        path = (Path.home() / ".claude" / "projects"
+                / cwd.replace("/", "-") / f"{session}.jsonl")
+        try:
+            turns: list[str] = []
+            for line in path.read_text(errors="replace").splitlines():
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if r.get("type") != "assistant":
+                    continue
+                c = (r.get("message") or {}).get("content")
+                if isinstance(c, list):
+                    text = "\n".join(b.get("text", "") for b in c
+                                     if isinstance(b, dict) and b.get("type") == "text")
+                else:
+                    text = c if isinstance(c, str) else ""
+                if text.strip():
+                    turns.append(text.strip())
+            if turns:
+                return turns[-limit:]
+        except OSError:
+            pass
+    lines = _peek_pane(pane)
+    return ["\n".join(lines)] if lines else []
+
+
+def _say(text: str) -> bool:
+    """Speak arbitrary text through the speech channel — per-turn 'play'."""
+    text = (text or "").strip()
+    if not text:
+        return False
+    try:
+        subprocess.run([_media_bin(), "say", text], timeout=20, check=False)
+        return True
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def _play_pane(pane: str) -> bool:
     """Replay a pane's last spoken clip through the speech channel — 'play the
     output' (b). Reuses `replay-at-cursor`, which resolves the pane's latest clip
@@ -1027,6 +1094,22 @@ PAGE = """<!doctype html>
   #peek .ph { font: 600 13px/1.4 system-ui, sans-serif; color: #ffd75f; margin-bottom: .3em; }
   #peek pre { margin: 0; white-space: pre-wrap; word-break: break-word;
               font: 12px/1.35 ui-monospace, Menlo, monospace; color: #ccd; }
+  #peek .turn { position: relative; border-top: 1px solid rgba(255,255,255,.08);
+                padding: .5em 2.4em .5em .3em; cursor: pointer; }
+  #peek .turn:first-of-type { border-top: 0; }
+  #peek .tbody { white-space: pre-wrap; word-break: break-word; color: #cdd;
+                font: 13.5px/1.5 system-ui, sans-serif;
+                max-height: 6.6em; overflow: hidden;
+                -webkit-mask-image: linear-gradient(#000 68%, transparent);
+                mask-image: linear-gradient(#000 68%, transparent); }
+  #peek .turn.open .tbody { max-height: none; -webkit-mask-image: none; mask-image: none; }
+  #peek .tplay { position: absolute; top: .35em; right: .25em; z-index: 1;
+                 background: none; border: 0; color: #bbb; cursor: pointer;
+                 min-width: 30px; min-height: 26px; border-radius: 6px; }
+  #peek .tplay:active { background: rgba(255,255,255,.14); }
+  #peek .tplay .ic { width: 15px; height: 15px; }
+  html.eink #peek .tbody { color: #000; -webkit-mask-image: none; mask-image: none; }
+  html.eink #peek .turn { border-top-color: #000; }
   html.eink #agents .sess { background: #fff; color: #000; border: 1px solid #000; }
   html.eink #agents .shead, html.eink #agents .pane { color: #000; }
   html.eink #agents .dot { background: #000; }
@@ -1891,17 +1974,37 @@ PAGE = """<!doctype html>
         headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pane }) });
     } catch (_) {}
   }
+  let peekTurns = [];
   async function peekPane(pane, name) {
     if (!pane) return;
-    let lines = [];
-    try { lines = ((await (await fetch('/peek?pane=' + encodeURIComponent(pane))).json()).lines) || []; }
-    catch (_) {}
-    $('peek').innerHTML = '<div class="ph">' + agEsc(name) + '</div><pre>'
-      + lines.map(agEsc).join('\\n') + '</pre>';
+    try { peekTurns = ((await (await fetch('/peek?pane=' + encodeURIComponent(pane))).json()).turns) || []; }
+    catch (_) { peekTurns = []; }
+    // Newest turn first + open (full); older ones are collapsed snapshots you
+    // click to expand. ▶ on each plays that turn.
+    const blocks = peekTurns.map((t, i) => ({ t, i })).reverse().map((o, k) =>
+      '<div class="turn' + (k === 0 ? ' open' : '') + '" data-i="' + o.i + '">'
+      + '<button class="tplay" title="play this turn">' + icon('play') + '</button>'
+      + '<div class="tbody">' + agEsc(o.t) + '</div></div>').join('');
+    $('peek').innerHTML = '<div class="ph">' + agEsc(name) + '</div>'
+      + (blocks || '<div class="tbody" style="max-height:none">(no transcript / output)</div>');
     $('peek').classList.add('on');
   }
   function hidePeek() { $('peek').classList.remove('on'); }
-  $('peek').addEventListener('click', (e) => { e.stopPropagation(); hidePeek(); });
+  $('peek').addEventListener('click', (e) => {
+    e.stopPropagation();
+    const play = e.target.closest('.tplay');
+    if (play) { sayTurn(peekTurns[+play.parentElement.dataset.i]); return; }
+    const turn = e.target.closest('.turn');
+    if (turn) { turn.classList.toggle('open'); return; }  // expand/collapse a snapshot
+    hidePeek();
+  });
+  async function sayTurn(text) {
+    if (!text) return;
+    try {
+      await fetch('/say', { method: 'POST',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
+    } catch (_) {}
+  }
   async function targetAgent(name, source, pane) {
     await openInput();
     // tmux agents are addressed by pane id (a session may hold several); amux
@@ -1972,11 +2075,11 @@ class Handler(BaseHTTPRequestHandler):
             amux = [{**a, "session": a.get("name")} for a in _amux_sessions()]
             self._json(200, {"agents": amux + _tmux_cc_panes()})
         elif path == "/peek":
-            # Recent output of one pane (the strip's peek panel). Read-only,
-            # open like /agents.
+            # A pane's Claude Code session as assistant turns (read-only, open
+            # like /agents) — latest turn full, older ones collapsible snapshots.
             pane = next((v for k, _, v in (kv.partition("=")
                          for kv in query.split("&")) if k == "pane"), "")
-            self._json(200, {"pane": pane, "lines": _peek_pane(pane)})
+            self._json(200, {"pane": pane, "turns": _pane_turns(pane)})
         elif path == "/pair":
             code = ""
             for kv in query.split("&"):
@@ -2071,6 +2174,11 @@ class Handler(BaseHTTPRequestHandler):
             # never injects keystrokes).
             body = self._read_json() or {}
             ok = _play_pane(str(body.get("pane") or ""))
+            self._json(200 if ok else 400, {"ok": ok})
+        elif path == "/say":
+            # Speak arbitrary text (a peeked turn) — open, plays audio only.
+            body = self._read_json() or {}
+            ok = _say(str(body.get("text") or ""))
             self._json(200 if ok else 400, {"ok": ok})
         else:
             self._send(404, b"not found\n", "text/plain")
