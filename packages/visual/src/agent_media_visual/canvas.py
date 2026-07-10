@@ -524,9 +524,11 @@ def _video_poller() -> None:
         time.sleep(5 if ev["vid"] else 3)
 
 
-def ctl_argv(channel: str, action: str, arg: int) -> list[str] | None:
-    """Whitelisted button → `media` argv. None = unknown/unsupported combo.
-    The maps mirror the popup's handle_key dispatch."""
+def ctl_argv(channel: str, action: str, arg: int,
+             sarg: str = "") -> list[str] | None:
+    """Whitelisted button/key → `media` argv. None = unknown/unsupported combo.
+    The maps mirror the popup's handle_key dispatch. `sarg` carries free text
+    for the popup's typed-seek (`s`) and open-URL (`o`) keys."""
     if action == "select" and channel in ("speech", "music", "book"):
         # Persist the channel choice — the popup opens on it, and the video
         # poller broadcasts it back so every canvas follows.
@@ -540,6 +542,14 @@ def ctl_argv(channel: str, action: str, arg: int) -> list[str] | None:
             "vol-": ["volume", "-5"],
             "vol+": ["volume", "5"],
             "mute": ["mute"],
+            # M — durable "keep muted" of the popup subject (distinct from m).
+            "mute-keep": ["mute-pane", "--subject", "toggle"],
+            # v — toggle the copy-mode auto-highlight follow-along.
+            "highlight": ["highlight-toggle"],
+            # p — play the clip at the caller pane's copy-mode cursor.
+            "clip-cursor": ["replay-at-cursor"],
+            # g — focus the speaking pane in tmux.
+            "goto": ["goto-pane"],
             "speed-": ["speed", "down"],
             "speed+": ["speed", "up"],
             "speed0": ["speed", "reset"],
@@ -564,7 +574,16 @@ def ctl_argv(channel: str, action: str, arg: int) -> list[str] | None:
             "skip+": [channel, "seek", "+5"],
             "para-": [channel, "seek", "-30"],
             "para+": [channel, "seek", "+30"],
+            # g — focus the channel's pane/UI (ncmpcpp / mpvc).
+            "goto": ["goto-track" if channel == "music" else "goto-book"],
+            # w — print the channel's web-UI URL (the browser opens it).
+            "web": ["music-web" if channel == "music" else "book-web"],
         }
+        # s / o — typed seek and open-URL both carry a free-text arg.
+        if action == "seek-to" and sarg:
+            return [channel, "seek", "--", sarg]
+        if action == "open-url" and sarg:
+            return [channel, "play", sarg]
         if action == "toggle":
             if channel == "music":
                 return ["music", "toggle"]
@@ -650,7 +669,8 @@ PAGE = """<!doctype html>
   #ytwrap.on { opacity: 1; }
   #ytwrap iframe { width: 100vw; height: 100vh; border: 0; }
   #cap {
-    position: fixed; left: 50%; bottom: max(4vh, env(safe-area-inset-bottom));
+    position: fixed; left: 50%;
+    bottom: calc(max(2vh, env(safe-area-inset-bottom)) + 68px);  /* above #inp */
     transform: translateX(-50%); max-width: 82vw;
     padding: .55em 1.1em; border-radius: 999px;
     font: 15px/1.45 system-ui, sans-serif; color: #eee; text-align: center;
@@ -699,17 +719,20 @@ PAGE = """<!doctype html>
      Geometry mirrors the tmux binding (`display-popup -w 34 -h 4 -x R -y 6`):
      a compact panel anchored to the RIGHT edge near the top, sliding in from
      the right, instead of a wide bottom sheet. */
+  /* Bottom dock: the controller shares the input's slot (they're mutually
+     exclusive — CONTROL means hotkeys, not typing), sliding up from below. */
   #ctl {
-    position: fixed; right: max(12px, env(safe-area-inset-right));
-    top: max(6vh, env(safe-area-inset-top));
-    transform: translateX(calc(100% + 24px)); width: min(94vw, 380px);
-    box-sizing: border-box;
+    position: fixed; left: 50%; bottom: max(2vh, env(safe-area-inset-bottom));
+    transform: translateX(-50%) translateY(calc(100% + 24px));
+    width: min(96vw, 620px); box-sizing: border-box;
     padding: .45em .6em; border-radius: 18px;
-    background: rgba(10,10,10,.62); backdrop-filter: blur(14px);
+    background: rgba(10,10,10,.72); backdrop-filter: blur(14px);
     color: #eee; font: 14px/1.4 system-ui, sans-serif;
-    transition: transform .35s ease, opacity .35s ease; opacity: 0;
+    transition: transform .3s ease, opacity .3s ease; opacity: 0;
   }
-  #ctl.on { transform: translateX(0); opacity: 1; }
+  #ctl.on { transform: translateX(-50%) translateY(0); opacity: 1; }
+  /* CONTROL mode: hotkeys are live — amber ring (matches the input's). */
+  #ctl.focused { box-shadow: 0 0 0 2px rgba(255,215,95,.75); }
   #ctl .row { display: flex; align-items: center; gap: .15em; }
   #ctl button {
     background: none; border: 0; color: #eee; font-size: 19px;
@@ -739,19 +762,23 @@ PAGE = """<!doctype html>
            font-variant-numeric: tabular-nums;
            color: #ddd; white-space: nowrap; overflow: hidden;
            border-radius: 8px; padding: .25em .2em; }
-  /* Input bar: reply to whoever just spoke, from the canvas itself.
-     Same popup-parity geometry as #ctl, so the swap feels in-place. */
+  /* Input bar: reply to whoever just spoke, from the canvas itself. Persistent
+     along the bottom (the PASSIVE resting surface); focus ring + full opacity
+     in INPUT mode. Tapping it (or first Tab) focuses it. */
   #inp {
-    position: fixed; right: max(12px, env(safe-area-inset-right));
-    top: max(6vh, env(safe-area-inset-top));
-    transform: translateX(calc(100% + 24px)); width: min(94vw, 380px);
-    box-sizing: border-box;
+    position: fixed; left: 50%; transform: translateX(-50%);
+    bottom: max(2vh, env(safe-area-inset-bottom));
+    width: min(96vw, 620px); box-sizing: border-box;
     display: flex; align-items: center; gap: .4em;
     padding: .5em .6em; border-radius: 18px;
-    background: rgba(10,10,10,.7); backdrop-filter: blur(14px);
-    transition: transform .3s ease, opacity .3s ease; opacity: 0;
+    background: rgba(10,10,10,.5); backdrop-filter: blur(14px);
+    box-shadow: 0 0 0 1px rgba(255,255,255,.08);
+    transition: opacity .25s ease, background .2s ease, box-shadow .2s ease;
+    opacity: .5;                               /* dim while resting (PASSIVE) */
   }
-  #inp.on { transform: translateX(0); opacity: 1; }
+  #inp.on { opacity: 1; background: rgba(10,10,10,.74);
+            box-shadow: 0 0 0 2px rgba(255,215,95,.75); }  /* INPUT focus ring */
+  #inp.under { opacity: 0; pointer-events: none; }  /* CONTROL: controller takes the dock */
   #target {
     background: rgba(255,255,255,.1); border: 0; color: #ffd75f;
     font: 600 13px/1.4 system-ui, sans-serif; padding: .45em .8em;
@@ -766,6 +793,30 @@ PAGE = """<!doctype html>
     min-width: 40px; min-height: 40px; cursor: pointer; border-radius: 12px;
   }
   #send:active { background: rgba(255,255,255,.14); }
+  /* Keymap help overlay (the popup's `?`). Centered card, tap/`?`/Esc dismiss. */
+  #help {
+    position: fixed; inset: 0; margin: auto; width: min(92vw, 460px);
+    max-height: 82vh; height: max-content; overflow: auto;
+    padding: 1em 1.2em; border-radius: 16px; z-index: 30;
+    background: rgba(12,12,14,.93); backdrop-filter: blur(16px); color: #eee;
+    font: 14px/1.5 system-ui, sans-serif; box-shadow: 0 10px 40px rgba(0,0,0,.5);
+    opacity: 0; pointer-events: none; transition: opacity .2s ease;
+  }
+  #help.on { opacity: 1; pointer-events: auto; }
+  #help .hh { font-weight: 600; margin-bottom: .6em; color: #ffd75f; }
+  #help .hg { display: grid; grid-template-columns: auto 1fr; gap: .25em .9em; }
+  #help .hg b { color: #ffd75f; font-weight: 600; white-space: nowrap; }
+  /* Transient toast (top-center): brief status like "web UI not available". */
+  #toast {
+    position: fixed; left: 50%; transform: translateX(-50%);
+    top: max(16px, env(safe-area-inset-top)); max-width: 86vw; z-index: 40;
+    padding: .5em 1em; border-radius: 999px;
+    background: rgba(20,20,22,.92); backdrop-filter: blur(12px); color: #eee;
+    font: 14px/1.4 system-ui, sans-serif; box-shadow: 0 6px 24px rgba(0,0,0,.4);
+    word-break: break-word; opacity: 0; pointer-events: none;
+    transition: opacity .25s ease;
+  }
+  #toast.on { opacity: 1; }
 </style>
 </head>
 <body>
@@ -805,6 +856,7 @@ PAGE = """<!doctype html>
 <div id="sub"></div>
 <div id="fig">▣ figure</div>
 <div id="dot" title="disconnected"></div>
+<div id="toast"></div>
 <div id="inp">
   <button id="target"></button>
   <input id="text" type="text" autocomplete="off" enterkeyhint="send"
@@ -839,6 +891,27 @@ PAGE = """<!doctype html>
     <button id="sdn" class="sp"></button>
     <button id="sup" class="sp"></button>
     <button id="mute" class="sp"></button>
+  </div>
+</div>
+<div id="help">
+  <div class="hh">canvas keys · Tab: passive→input→control · Esc / q → passive</div>
+  <div class="hg">
+    <b>Space</b><span>play / pause</span>
+    <b>h · l</b><span>sentence −/+ (music/book: seek ∓5s)</span>
+    <b>H · L</b><span>paragraph −/+ (music/book: seek ∓30s)</span>
+    <b>&lt; · &gt;</b><span>prev / next</span>
+    <b>− · =</b><span>volume −/+</span>
+    <b>[ · ]</b><span>speed −/+  ·  0 / ⌫ reset</span>
+    <b>r · p</b><span>replay last · clip at cursor  (speech)</span>
+    <b>m · M</b><span>mute · keep-muted 🔒  (speech)</span>
+    <b>v</b><span>highlight follow-along  (speech)</span>
+    <b>g</b><span>go to source pane</span>
+    <b>s · o</b><span>typed seek · open URL  (music/book)</span>
+    <b>w</b><span>web UI  (music/book)</span>
+    <b>Tab</b><span>cycle channel  (in control)</span>
+    <b>c · f</b><span>captions · sound fx</span>
+    <b>Enter</b><span>reply input</span>
+    <b>?</b><span>this help</span>
   </div>
 </div>
 <script>
@@ -1247,36 +1320,46 @@ PAGE = """<!doctype html>
     } catch (_) {}
   }
 
-  function resetHide() {
+  // Three focus states, mirroring the tmux-popup model:
+  //   passive — just the image; the bottom input rests dim, hotkeys OFF.
+  //   input   — bottom field focused; type a reply (Enter sends, Esc → passive).
+  //   control — controller focused; single-key hotkeys live, Tab cycles channel.
+  // Tab walks passive→input→control; Esc / q drop back to passive.
+  let mode = 'passive';
+
+  function resetHide() {                        // idle CONTROL auto-returns to passive
     clearTimeout(hideTimer);
-    hideTimer = setTimeout(hideCtl, 12000);
+    if (mode === 'control')
+      hideTimer = setTimeout(() => setMode('passive'), 15000);
   }
 
-  function showCtl() {
-    visible = true;
-    $('ctl').classList.add('on');
-    $('cap').classList.add('hide');
-    poll();
+  function setMode(m) {
+    mode = m;
+    const ctrl = (m === 'control');
+    const active = (m === 'control' || m === 'input');   // dock is engaged
+    visible = ctrl;                          // controller (polled) only in CONTROL
+    $('inp').classList.toggle('on', m === 'input');       // focus ring
+    $('inp').classList.toggle('under', ctrl);             // hidden beneath controller
+    $('ctl').classList.toggle('on', ctrl);
+    $('ctl').classList.toggle('focused', ctrl);
+    $('cap').classList.toggle('hide', active);
+    if (m === 'input') $('text').focus();
+    else if (document.activeElement === $('text')) $('text').blur();
     clearInterval(pollTimer);
-    pollTimer = setInterval(poll, 2000);
+    if (ctrl) { poll(); pollTimer = setInterval(poll, 2000); }
+    if (!active && !$('sub').classList.contains('on'))
+      $('cap').classList.remove('hide');
     resetHide();
   }
 
-  function hideCtl() {
-    visible = false;
-    $('ctl').classList.remove('on');
-    if (!$('sub').classList.contains('on')) $('cap').classList.remove('hide');
-    clearInterval(pollTimer);
-    clearTimeout(hideTimer);
-  }
-
-  async function act(action, arg) {
+  async function act(action, arg, sarg) {
     resetHide();
+    let r = null;
     try {
-      const r = await fetch('/ctl', {
+      r = await fetch('/ctl', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ channel: ch, action: action, arg: arg }),
+        body: JSON.stringify({ channel: ch, action: action, arg: arg, sarg: sarg }),
       }).then(r => r.json());
       // Speech ⏮ semantics ride on replay-prev's echoed cursor (the popup
       // folds the same echo into hist_idx).
@@ -1284,7 +1367,49 @@ PAGE = """<!doctype html>
         histIdx = parseInt(r.out, 10);
     } catch (_) {}
     setTimeout(poll, 300);                     // let the action land, then refresh
+    return r;
   }
+
+  // Transient top-center status message (~2.6s).
+  let toastT = null;
+  function toast(msg) {
+    const t = $('toast');
+    t.textContent = msg;
+    t.classList.add('on');
+    clearTimeout(toastT);
+    toastT = setTimeout(() => t.classList.remove('on'), 2600);
+  }
+  // Popup `w` — open the active channel's web UI (music → Iris, book → mpvc).
+  // No UI configured/installed (empty result) → a toast instead of a dead tab;
+  // a blocked popup → surface the URL so it's still reachable.
+  async function openWeb() {
+    if (ch === 'speech') { toast('web UI — music / book only'); return; }
+    const r = await act('web');
+    const url = r && r.out && r.out.trim();
+    if (!url || url.slice(0, 4) !== 'http') {
+      toast(ch + ' web UI not available');
+      return;
+    }
+    // A loopback URL is the media host's own localhost — not reachable from a
+    // remote canvas (phone/wall). Surface the address rather than a dead tab.
+    if (url.indexOf('//127.0.0.1') >= 0 || url.indexOf('//localhost') >= 0) {
+      toast('web UI (on media host): ' + url);
+      return;
+    }
+    if (!window.open(url, '_blank')) toast(url);   // popup blocked → show it
+  }
+  // Popup `s` / `o` — typed seek and open-URL (music/book only; speech uses h/l).
+  function typedSeek() {
+    if (ch === 'speech') { toast('typed seek — music / book only'); return; }
+    const t = prompt(ch + ' seek — H:MM:SS · +90 · -5:00');
+    if (t && t.trim()) act('seek-to', 1, t.trim());
+  }
+  function typedOpen() {
+    if (ch === 'speech') { toast('open URL — music / book only'); return; }
+    const u = prompt(ch + ' — paste a URL to play');
+    if (u && u.trim()) act('open-url', 1, u.trim());
+  }
+  function toggleHelp() { $('help').classList.toggle('on'); }
 
   // ---- input box: reply to whoever just spoke (token-authed) ---------------
   let targets = ['speaker'], tIdx = 0;
@@ -1312,16 +1437,14 @@ PAGE = """<!doctype html>
   }
   drawTarget();
   async function openInput() {
-    hideCtl();
-    $('inp').classList.add('on');
-    $('text').focus();
+    setMode('input');
     try {
       const d = await authed('/sessions').then(r => r.json());
       targets = ['speaker'].concat((d.amux || []).map(n => 'amux:' + n));
       tIdx = 0; drawTarget();
     } catch (_) {}
   }
-  function closeInput() { $('inp').classList.remove('on'); $('text').blur(); }
+  function closeInput() { setMode('passive'); }
   $('kbd').onclick = (e) => { e.stopPropagation(); openInput(); };
   $('target').onclick = (e) => {
     e.stopPropagation();
@@ -1346,25 +1469,44 @@ PAGE = """<!doctype html>
   $('send').onclick = (e) => { e.stopPropagation(); sendText(); };
   $('text').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); sendText(); }
-    if (e.key === 'Escape') closeInput();
+    else if (e.key === 'Escape') { e.preventDefault(); setMode('passive'); }
+    else if (e.key === 'Tab') { e.preventDefault(); setMode('control'); }  // input → control
   });
 
   document.body.addEventListener('click', (e) => {
     wake();
-    if ($('ctl').contains(e.target)) { resetHide(); return; }
-    if ($('inp').contains(e.target)) return;
-    if ($('inp').classList.contains('on')) { closeInput(); return; }
-    visible ? hideCtl() : showCtl();
+    if ($('help').classList.contains('on')) { toggleHelp(); return; }
+    if ($('ctl').contains(e.target)) { resetHide(); return; }  // buttons self-handle
+    if ($('inp').contains(e.target)) { openInput(); return; }  // tap field → INPUT
+    // Tap on the bare canvas: reveal / dismiss the controller (passive ⇄ control).
+    setMode(mode === 'control' ? 'passive' : 'control');
   });
 
   // ---- popup-parity key bindings (for canvases with a keyboard) ------------
-  // Same hotkeys as the tmux popup (prefix a): Tab channel · Space play/pause
-  // · h/l sentence · H/L paragraph · </> prev/next · -/= vol · m mute ·
-  // [/] speed, 0/Backspace reset · r replay · Enter input · Esc close.
+  // Focus walks with Tab (passive→input→control) and unwinds with Esc/q. In
+  // CONTROL the full tmux-popup (prefix a) hotkey set is live: Tab channel ·
+  // Space play/pause · h/l sentence · H/L paragraph · </> prev/next · -/= vol ·
+  // m mute · M keep-muted · v highlight · p clip@cursor · g source · w web UI ·
+  // s typed-seek · o open-URL · [/] speed, 0/⌫ reset · r replay · c cc · f sfx ·
+  // ? help. Enter → input; Esc/q → passive.
   document.addEventListener('keydown', (e) => {
     if (e.target === $('text')) return;          // the input box owns its keys
     if (e.metaKey || e.ctrlKey || e.altKey) return;
-    const nudge = () => { if (!visible) showCtl(); else resetHide(); };
+    const k = e.key;
+    if (k === 'Tab') {                           // walk / cycle
+      e.preventDefault();
+      if (mode === 'control') $('chan').onclick();          // control: next channel
+      else setMode(mode === 'passive' ? 'input' : 'control');
+      return;
+    }
+    if (k === 'Escape' || (k === 'q' && mode === 'control')) {
+      e.preventDefault();
+      if ($('help').classList.contains('on')) { toggleHelp(); return; }
+      setMode('passive');
+      return;
+    }
+    if (k === 'Enter') { e.preventDefault(); openInput(); return; }
+    if (mode !== 'control') return;              // hotkeys are live only in CONTROL
     const keys = {
       ' ': () => act('toggle'),
       'h': () => act('skip-'),  'l': () => act('skip+'),
@@ -1372,26 +1514,27 @@ PAGE = """<!doctype html>
       '<': () => $('prev').onclick(), '>': () => $('next').onclick(),
       ',': () => $('prev').onclick(), '.': () => $('next').onclick(),
       '-': () => act('vol-'),   '=': () => act('vol+'), '+': () => act('vol+'),
-      'm': () => act('mute'),
+      'm': () => act('mute'),   'M': () => act('mute-keep'),
+      'v': () => act('highlight'), 'p': () => act('clip-cursor', 1),
+      'g': () => act('goto'),   'w': () => openWeb(),
+      's': () => typedSeek(),   'o': () => typedOpen(),
       '[': () => act('speed-'), ']': () => act('speed+'),
       '0': () => act('speed0'), 'Backspace': () => act('speed0'),
       'r': () => act('replay', 1),
-      'Tab': () => $('chan').onclick(),
-      'Enter': () => openInput(),
       'c': () => $('cc').onclick(new Event('x')),
-      's': () => $('sfx').onclick(new Event('x')),
+      'x': () => $('sfx').onclick(new Event('x')),   // sfx — s is typed-seek, f is fit
       'f': () => $('fit').onclick(new Event('x')),
       'e': () => { localStorage.setItem('eink', einkOn() ? '0' : '1');
                    location.reload(); },
-      'Escape': () => { $('inp').classList.contains('on') ? closeInput()
-                          : hideCtl(); return 'quiet'; },
+      '?': () => toggleHelp(),
     };
-    const fn = keys[e.key];
+    const fn = keys[k];
     if (!fn) return;
     e.preventDefault();
-    if (fn() !== 'quiet') nudge();
+    fn();
+    resetHide();
   });
-  $('xbtn').onclick = (e) => { e.stopPropagation(); hideCtl(); };
+  $('xbtn').onclick = (e) => { e.stopPropagation(); setMode('passive'); };
   function drawSfx() {
     $('sfx').innerHTML = icon(sfxOn() ? 'bell' : 'bell-off');
     $('sfx').classList.toggle('lit', sfxOn());
@@ -1668,11 +1811,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         channel = str(body.get("channel") or "")
         action = str(body.get("action") or "")
+        sarg = str(body.get("sarg") or "")[:512]
         try:
             arg = max(1, min(999, int(body.get("arg") or 1)))
         except (TypeError, ValueError):
             arg = 1
-        argv = ctl_argv(channel, action, arg)
+        argv = ctl_argv(channel, action, arg, sarg)
         if argv is None:
             self._json(400, {"ok": False, "err": "unknown action"})
             return

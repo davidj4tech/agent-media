@@ -42,8 +42,13 @@ popup() { tmux display-popup ${client:+-c "$client"} -E "$@"; }
 # Optional: forward a mouse-event debug log path so `prefix a` can calibrate
 # click coordinates. Set with `tmux setenv -g MEDIA_POPUP_DEBUG /tmp/popup.log`.
 dbg=""; [ -n "${MEDIA_POPUP_DEBUG:-}" ] && dbg="MEDIA_POPUP_DEBUG=$MEDIA_POPUP_DEBUG "
+# Anchor the control popup directly over the input field at the BOTTOM (matching
+# the browser canvas's bottom dock). `-y` is the popup's BOTTOM edge (display
+# corner semantics), so place it near the client's bottom row.
+PH=4
+PY=$(( ch - 1 )); [ "$PY" -lt "$PH" ] && PY=$PH
 while :; do
-    popup -w "$w" -h 4 -x R -y 6 -s 'bg=default' -S 'bg=default' \
+    popup -w "$w" -h "$PH" -x C -y "$PY" -s 'bg=default' -S 'bg=default' \
         "${dbg}TTS_POPUP_PANE=$pane MEDIA_POPUP_HELP_FLAG=$flag MEDIA_POPUP_LINK_FLAG=$linkflag MEDIA_POPUP_CHANNEL=$chan media-popup"
     if [ -f "$flag" ]; then            # `?` → keymap overlay, then reopen
         chan=$(cat "$flag" 2>/dev/null); chan=${chan:-speech}
