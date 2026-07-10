@@ -1144,6 +1144,18 @@ PAGE = """<!doctype html>
     animation: none; box-shadow: 0 0 0 2px #000; }
   html.eink #peek { background: #fff; color: #000; border: 1px solid #000; }
   html.eink #peek pre { color: #000; }
+  /* Keyboard navigation (tmux-chooser style): the .cursor row is where j/k
+     landed. Amber ring + tint, matching the input/controller focus colour. */
+  #agents.navfocus .aghead { box-shadow: 0 0 0 2px rgba(255,215,95,.75); }
+  #agents .shead.cursor, #agents .pane.cursor, #peek .turn.cursor {
+    box-shadow: inset 0 0 0 2px rgba(255,215,95,.85);
+    background: rgba(255,215,95,.12); border-radius: 8px;
+  }
+  html.eink #agents.navfocus .aghead { box-shadow: 0 0 0 2px #000; }
+  html.eink #agents .shead.cursor, html.eink #agents .pane.cursor,
+  html.eink #peek .turn.cursor {
+    box-shadow: inset 0 0 0 2px #000; background: rgba(0,0,0,.08);
+  }
 </style>
 </head>
 <body>
@@ -1240,6 +1252,7 @@ PAGE = """<!doctype html>
     <b>Tab</b><span>cycle channel  (in control)</span>
     <b>c · f</b><span>captions · sound fx</span>
     <b>Enter</b><span>reply input</span>
+    <b>a</b><span>agent tree: j/k move · l reply/open · h close · g/G ends · p peek · q exit</span>
     <b>?</b><span>this help</span>
   </div>
 </div>
@@ -1829,6 +1842,15 @@ PAGE = """<!doctype html>
     if (e.target === $('text')) return;          // the input box owns its keys
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const k = e.key;
+    // Tree / peek navigation runs BEFORE the mode machinery, so j/k/Enter/p/Esc
+    // mean "move the cursor", not "reply / control / toggle playback".
+    if ($('peek').classList.contains('on') && peekKey(k)) { e.preventDefault(); return; }
+    if (agFocused && agKey(k)) { e.preventDefault(); return; }
+    if (k === 'a' && !agFocused && $('agents').classList.contains('on')
+        && !$('agents').classList.contains('hide')
+        && !$('peek').classList.contains('on')) {
+      e.preventDefault(); agFocus(); return;
+    }
     if (k === 'Tab') {                           // walk / cycle
       e.preventDefault();
       if (mode === 'control') $('chan').onclick();          // control: next channel
@@ -1947,9 +1969,11 @@ PAGE = """<!doctype html>
   // clip) button; tap a pane label to aim the reply box at it.
   const AG_RANK = { input: 0, approval: 1, working: 2, stopped: 3 };  // needs-you first
   let agOpen = {}, agTop = false;              // session / top-level expanded (persist)
+  let agFocused = false, agCursor = 0, peekCursor = 0;   // vim-nav cursors
   const agEsc = (s) => s.replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
   async function pollAgents() {
     if (document.hidden) return;
+    if (agFocused) return;   // frozen while the tree has key focus — don't re-render under the cursor
     let list;
     try {
       const r = await fetch('/agents');
@@ -2030,7 +2054,8 @@ PAGE = """<!doctype html>
     $('peek').innerHTML = '<div class="ph">' + agEsc(name) + '</div>'
       + (blocks || '<div class="tbody" style="max-height:none">(no transcript / output)</div>');
     $('peek').classList.add('on');
-    requestAnimationFrame(() => { $('peek').scrollTop = $('peek').scrollHeight; });
+    peekCursor = peekTurns.length - 1;      // start on the latest turn (the open one)
+    requestAnimationFrame(() => { $('peek').scrollTop = $('peek').scrollHeight; peekPaintCursor(); });
   }
   function hidePeek() { $('peek').classList.remove('on'); }
   $('peek').addEventListener('click', (e) => {
@@ -2059,6 +2084,102 @@ PAGE = """<!doctype html>
     tIdx = idx; drawTarget();
     $('text').focus();
   }
+
+  // ---- vim-key navigation: the agent tree + peek panel, tmux-chooser style --
+  // 'a' focuses the tree; j/k (or arrows) walk the visible heads/panes; l/Enter
+  // opens a session or aims the reply box at a pane; h collapses; g/G jump; p
+  // peeks; Esc/q leave. In the peek panel j/k walk turns, Enter expands, p plays.
+  function agRows() {
+    // Visible navigable rows, in view order: each session head, then its panes
+    // when that session is open (a closed session's panes are display:none).
+    const out = [];
+    for (const sess of $('agents').querySelectorAll('.aglist .sess')) {
+      out.push(sess.querySelector('.shead'));
+      if (sess.classList.contains('open'))
+        for (const p of sess.querySelectorAll('.pane')) out.push(p);
+    }
+    return out;
+  }
+  function agPaintCursor() {
+    for (const el of $('agents').querySelectorAll('.cursor')) el.classList.remove('cursor');
+    const rows = agRows();
+    if (!rows.length) return;
+    agCursor = Math.max(0, Math.min(agCursor, rows.length - 1));
+    const cur = rows[agCursor];
+    cur.classList.add('cursor');
+    cur.scrollIntoView({ block: 'nearest' });
+  }
+  function agFocus() {
+    agFocused = true; agTop = true; agCursor = 0;
+    $('agents').classList.add('expanded', 'navfocus');
+    agPaintCursor();
+  }
+  function agBlur() {
+    agFocused = false;
+    $('agents').classList.remove('navfocus');
+    for (const el of $('agents').querySelectorAll('.cursor')) el.classList.remove('cursor');
+  }
+  function agKey(k) {
+    const rows = agRows();
+    if (!rows.length) { if (k === 'Escape' || k === 'q') { agBlur(); return true; } return false; }
+    const cur = rows[agCursor], isPane = cur.classList.contains('pane');
+    if (k === 'j' || k === 'ArrowDown') { agCursor = Math.min(agCursor + 1, rows.length - 1); agPaintCursor(); return true; }
+    if (k === 'k' || k === 'ArrowUp')   { agCursor = Math.max(agCursor - 1, 0); agPaintCursor(); return true; }
+    if (k === 'g') { agCursor = 0; agPaintCursor(); return true; }
+    if (k === 'G') { agCursor = rows.length - 1; agPaintCursor(); return true; }
+    if (k === 'l' || k === 'Enter' || k === 'ArrowRight') {
+      if (isPane) {                         // aim the reply box at this pane (leaves the tree)
+        agBlur();
+        targetAgent(decodeURIComponent(cur.dataset.name), cur.dataset.source, cur.dataset.pane);
+      } else {                              // expand the session — its panes appear
+        const sess = cur.parentElement;
+        agOpen[decodeURIComponent(sess.dataset.sess)] = true;
+        sess.classList.add('open'); agPaintCursor();
+      }
+      return true;
+    }
+    if (k === 'h' || k === 'ArrowLeft') {
+      if (isPane) {                         // collapse the parent, land on its head
+        const sess = cur.closest('.sess');
+        agOpen[decodeURIComponent(sess.dataset.sess)] = false;
+        sess.classList.remove('open');
+        agCursor = agRows().indexOf(sess.querySelector('.shead'));
+        agPaintCursor();
+      } else if (cur.parentElement.classList.contains('open')) {
+        agOpen[decodeURIComponent(cur.parentElement.dataset.sess)] = false;
+        cur.parentElement.classList.remove('open'); agPaintCursor();
+      }
+      return true;
+    }
+    if (k === 'p') {
+      if (isPane && cur.dataset.pane)
+        peekPane(cur.dataset.pane, decodeURIComponent(cur.dataset.name));
+      return true;
+    }
+    if (k === 'Escape' || k === 'q') { agBlur(); return true; }
+    return false;
+  }
+  function peekRows() { return Array.from($('peek').querySelectorAll('.turn')); }
+  function peekPaintCursor() {
+    const rows = peekRows();
+    for (const el of rows) el.classList.remove('cursor');
+    if (!rows.length) return;
+    peekCursor = Math.max(0, Math.min(peekCursor, rows.length - 1));
+    const cur = rows[peekCursor];
+    cur.classList.add('cursor');
+    cur.scrollIntoView({ block: 'nearest' });
+  }
+  function peekKey(k) {
+    const rows = peekRows();
+    if (!rows.length) { if (k === 'Escape') { hidePeek(); return true; } return false; }
+    if (k === 'j' || k === 'ArrowDown') { peekCursor = Math.min(peekCursor + 1, rows.length - 1); peekPaintCursor(); return true; }
+    if (k === 'k' || k === 'ArrowUp')   { peekCursor = Math.max(peekCursor - 1, 0); peekPaintCursor(); return true; }
+    if (k === 'Enter') { rows[peekCursor].classList.toggle('open'); return true; }
+    if (k === 'p') { sayTurn(peekTurns[+rows[peekCursor].dataset.i]); return true; }
+    if (k === 'Escape') { hidePeek(); return true; }
+    return false;
+  }
+
   pollAgents();
   setInterval(pollAgents, 4000);
   document.addEventListener('visibilitychange',
