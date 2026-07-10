@@ -19,6 +19,11 @@ Config (env):
   MEDIA_VISUAL_BIND   bind address (default 0.0.0.0; the shipped systemd
                       unit passes the Tailscale IP for a tailnet-only bind)
   MEDIA_VISUAL_DEBUG  "1" to log requests
+  MEDIA_VISUAL_TRUST_TAILNET  "1" drops the amux token even on /input — trust
+                      every caller of the tailnet-bound server. Default off; the
+                      token guards /input (keystroke injection) against a site
+                      your browser visits POSTing into your agents. The read-
+                      only /agents + /sessions are open regardless.
 
 Point the phone / TV browser at http://<host>:8781/ and leave it open.
 A screen that is off just misses the show — nothing depends on it.
@@ -185,6 +190,11 @@ def _amux_token() -> str:
 
 
 def _authorized(handler: "Handler") -> bool:
+    # Opt-in: on the tailnet-bound server, trust every caller — drops the token
+    # even for /input. Default off, so the token stays as CSRF protection
+    # against a site your browser visits POSTing keystrokes into your agents.
+    if (os.environ.get("MEDIA_VISUAL_TRUST_TAILNET") or "").strip() == "1":
+        return True
     token = _amux_token()
     if not token:
         return False  # no token configured → the input surface stays closed
@@ -1646,11 +1656,10 @@ PAGE = """<!doctype html>
   // (a turn finished, waiting on you) pulses amber. Tap a chip to aim the reply
   // box at that session. Silent when no token / no sessions — never prompts.
   async function pollAgents() {
-    const tok = token();
-    if (document.hidden || !tok) return;
+    if (document.hidden) return;
     let list;
     try {
-      const r = await fetch('/agents', { headers: { 'X-Auth-Token': tok } });
+      const r = await fetch('/agents');        // read-only, open on the tailnet
       if (!r.ok) { $('agents').classList.remove('on'); return; }
       list = (await r.json()).agents || [];
     } catch (_) { return; }
@@ -1720,9 +1729,8 @@ class Handler(BaseHTTPRequestHandler):
                              "kind": "sequence" if last.get("sequence")
                                      else "image" if last.get("image") else None})
         elif path == "/sessions":
-            if not _authorized(self):
-                self._json(401, {"error": "unauthorized"})
-                return
+            # Read-only (session names + speaker) — open on the tailnet-bound
+            # server; only /input (keystroke injection) stays gated.
             speaker = _last_speaker()
             self._json(200, {
                 "speaker": ({"label": speaker.get("tmux_session")
@@ -1730,10 +1738,8 @@ class Handler(BaseHTTPRequestHandler):
                 "amux": [s["name"] for s in _amux_sessions()],
             })
         elif path == "/agents":
-            # Live session states for the canvas agent strip ("who needs me").
-            if not _authorized(self):
-                self._json(401, {"error": "unauthorized"})
-                return
+            # Live session states for the agent strip ("who needs me") — read-
+            # only, so open on the tailnet-bound server (only /input is gated).
             self._json(200, {"agents": _amux_sessions()})
         elif path == "/pair":
             code = ""
