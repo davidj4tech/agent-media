@@ -1095,6 +1095,58 @@ PAGE = """<!doctype html>
     transition: opacity .25s ease;
   }
   #toast.on { opacity: 1; }
+  /* In-page input sheet (token / typed-seek / open-URL): replaces native
+     window.prompt so it respects the e-ink theme and isn't a dead modal on a
+     keyboardless wall (#142). Scrim + card, matching #help. */
+  #sheet {
+    position: fixed; inset: 0; z-index: 50; display: none;
+    align-items: center; justify-content: center;
+    background: rgba(6,6,8,.55); backdrop-filter: blur(4px);
+  }
+  #sheet.on { display: flex; }
+  #sheet .card {
+    width: min(92vw, 460px); padding: 1em 1.2em; border-radius: 16px;
+    background: rgba(16,16,18,.96); backdrop-filter: blur(16px); color: #eee;
+    box-shadow: 0 10px 40px rgba(0,0,0,.5); font: 14px/1.5 system-ui, sans-serif;
+  }
+  #sheet .sh { font-weight: 600; color: #ffd75f; margin-bottom: .6em; }
+  #sheet input {
+    width: 100%; box-sizing: border-box; padding: .55em .7em; border-radius: 10px;
+    border: 1px solid rgba(255,255,255,.18); background: rgba(0,0,0,.35);
+    color: #eee; font: 16px/1.3 system-ui, sans-serif; outline: none;
+  }
+  #sheet input:focus { border-color: rgba(255,215,95,.7); }
+  #sheet .btns { display: flex; justify-content: flex-end; gap: .5em; margin-top: .9em; }
+  #sheet button {
+    min-height: 40px; padding: 0 1.1em; border: 0; border-radius: 10px;
+    cursor: pointer; font: 600 14px/1 system-ui, sans-serif;
+  }
+  #sheet .ok { background: rgba(255,215,95,.9); color: #1a1a1a; }
+  #sheet .cancel { background: rgba(255,255,255,.12); color: #eee; }
+  html.eink #sheet { background: rgba(255,255,255,.7); backdrop-filter: none; }
+  html.eink #sheet .card { background: #fff; color: #000; border: 2px solid #000; }
+  html.eink #sheet .sh { color: #000; }
+  html.eink #sheet input { background: #fff; color: #000; border-color: #000; }
+  html.eink #sheet .ok { background: #000; color: #fff; }
+  html.eink #sheet .cancel { background: #fff; color: #000; border: 1px solid #000; }
+  /* Room-legible disconnect: a stalled/offline wall looks live from across a
+     room with only the 8px dot, so after ~10s down we grey the canvas (scrim
+     backdrop-filter, no conflict with the .layer filters) and float a big
+     "reconnecting…" banner. Driven together with the #137 watchdog. */
+  #offbar {
+    position: fixed; inset: 0; z-index: 45; display: none;
+    align-items: center; justify-content: center; pointer-events: none;
+    background: rgba(6,6,8,.5); backdrop-filter: grayscale(1) blur(2px);
+  }
+  #offbar.on { display: flex; }
+  #offbar .msg {
+    padding: .6em 1.4em; border-radius: 16px; color: #ffd75f;
+    background: rgba(20,20,22,.92); backdrop-filter: blur(12px);
+    font: 600 22px/1.3 system-ui, sans-serif; letter-spacing: .01em;
+    box-shadow: 0 8px 40px rgba(0,0,0,.5);
+  }
+  html.eink #offbar { background: rgba(255,255,255,.72); backdrop-filter: none; }
+  html.eink #offbar .msg { background: #fff; color: #000; border: 2px solid #000; }
   /* Agent tree: sessions as collapsible groups; each holds its claude panes
      with live state, a peek (output) and a play (its last clip) button. Tap a
      pane label to aim the reply box at it. Hidden until there's a session. */
@@ -1246,9 +1298,18 @@ PAGE = """<!doctype html>
 <div id="sub"></div>
 <div id="fig">▣ figure</div>
 <div id="dot" title="disconnected"></div>
+<div id="offbar"><div class="msg">reconnecting…</div></div>
 <div id="toast"></div>
 <div id="agents"></div>
 <div id="peek"></div>
+<div id="sheet"><div class="card">
+  <div class="sh" id="sheettitle"></div>
+  <input id="sheetin" type="text" autocomplete="off" autocapitalize="off" spellcheck="false">
+  <div class="btns">
+    <button class="cancel" id="sheetcancel">cancel</button>
+    <button class="ok" id="sheetok">OK</button>
+  </div>
+</div></div>
 <div id="inp">
   <button id="target"></button>
   <textarea id="text" rows="1" autocomplete="off" enterkeyhint="send"
@@ -1607,6 +1668,7 @@ PAGE = """<!doctype html>
   let es = null, lastEventTs = Date.now();
   function onSseMessage(e) {
     lastEventTs = Date.now();               // any frame (incl. ping) = the stream is live
+    setDisconnected(false);                 // a live frame clears the reconnect banner
     try {
       const d = JSON.parse(e.data);
       if (d.kind === 'ping') return;        // heartbeat only — nothing to render
@@ -1658,18 +1720,37 @@ PAGE = """<!doctype html>
       }
     } catch (_) {}
   }
+  // Room-legible disconnect (#142), coordinated with the #137 watchdog: a brief
+  // blip only dims the 8px dot; after ~10s down, grey the canvas and float the
+  // big "reconnecting…" banner. Repeated onerror/retry must NOT keep resetting
+  // the escalation timer, or a real outage would never surface.
+  let offTimer = null;
+  function setDisconnected(on) {
+    if (on) {
+      if (!offTimer && !$('offbar').classList.contains('on'))
+        offTimer = setTimeout(() => {
+          offTimer = null; $('offbar').classList.add('on');
+        }, 10000);
+    } else {
+      clearTimeout(offTimer); offTimer = null;
+      $('offbar').classList.remove('on');
+    }
+  }
   function connectEvents() {
     try { if (es) es.close(); } catch (_) {}
     es = new EventSource('/events');
     es.onmessage = onSseMessage;
-    es.onopen = () => { lastEventTs = Date.now(); $('dot').classList.remove('off'); };
-    es.onerror = () => $('dot').classList.add('off');
+    es.onopen = () => { lastEventTs = Date.now(); $('dot').classList.remove('off'); setDisconnected(false); };
+    es.onerror = () => { $('dot').classList.add('off'); setDisconnected(true); };
   }
   connectEvents();
-  // Watchdog: reconnect a stream that has gone quiet past the heartbeat window.
+  // Watchdog: reconnect a stream that has gone quiet past the heartbeat window
+  // (a silent stall may never fire onerror, so escalate the banner here too).
   setInterval(() => {
     if (document.hidden) return;            // backgrounded timers throttle; don't churn
-    if (Date.now() - lastEventTs > 45000) { lastEventTs = Date.now(); connectEvents(); }
+    if (Date.now() - lastEventTs > 45000) {
+      lastEventTs = Date.now(); setDisconnected(true); connectEvents();
+    }
   }, 15000);
 
   // Keep a phone/tablet screen awake while the canvas is up (best-effort;
@@ -1820,15 +1901,48 @@ PAGE = """<!doctype html>
     }
     if (!window.open(url, '_blank')) toast(url);   // popup blocked → show it
   }
+  // In-page input sheet — replaces native prompt() so it honours the e-ink
+  // theme and isn't a dead modal on a keyboardless wall (#142). Resolves to the
+  // entered string, or null on cancel / Esc / tap-away.
+  let sheetResolve = null;
+  function askSheet(title, placeholder, value) {
+    return new Promise((resolve) => {
+      if (sheetResolve) { const r = sheetResolve; sheetResolve = null; r(null); }
+      sheetResolve = resolve;
+      $('sheettitle').textContent = title;
+      const inp = $('sheetin');
+      inp.placeholder = placeholder || '';
+      inp.value = value || '';
+      $('sheet').classList.add('on');
+      setTimeout(() => { inp.focus(); inp.select(); }, 30);
+    });
+  }
+  function closeSheet(val) {
+    if (!$('sheet').classList.contains('on')) return;
+    $('sheet').classList.remove('on');
+    const r = sheetResolve; sheetResolve = null;
+    if (r) r(val);
+  }
+  $('sheetok').onclick = (e) => { e.stopPropagation(); closeSheet($('sheetin').value); };
+  $('sheetcancel').onclick = (e) => { e.stopPropagation(); closeSheet(null); };
+  $('sheet').addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (e.target === $('sheet')) closeSheet(null);   // tap the scrim → cancel
+  });
+  $('sheetin').addEventListener('keydown', (e) => {
+    e.stopPropagation();                             // the sheet owns its keys
+    if (e.key === 'Enter') { e.preventDefault(); closeSheet($('sheetin').value); }
+    else if (e.key === 'Escape') { e.preventDefault(); closeSheet(null); }
+  });
   // Popup `s` / `o` — typed seek and open-URL (music/book only; speech uses h/l).
-  function typedSeek() {
+  async function typedSeek() {
     if (ch === 'speech') { toast('typed seek — music / book only'); return; }
-    const t = prompt(ch + ' seek — H:MM:SS · +90 · -5:00');
+    const t = await askSheet('seek — ' + ch, 'H:MM:SS · +90 · -5:00', '');
     if (t && t.trim()) act('seek-to', 1, t.trim());
   }
-  function typedOpen() {
+  async function typedOpen() {
     if (ch === 'speech') { toast('open URL — music / book only'); return; }
-    const u = prompt(ch + ' — paste a URL to play');
+    const u = await askSheet('open in ' + ch, 'paste a URL to play', '');
     if (u && u.trim()) act('open-url', 1, u.trim());
   }
   function toggleHelp() { $('help').classList.toggle('on'); }
@@ -1836,18 +1950,23 @@ PAGE = """<!doctype html>
   // ---- input box: reply to whoever just spoke (token-authed) ---------------
   let targets = ['speaker'], tIdx = 0, targetLabels = {};
   function token() { return localStorage.getItem('amux_token') || ''; }
-  function askToken() {
-    const t = prompt('amux auth token (from ~/.amux/auth_token):');
-    if (t) localStorage.setItem('amux_token', t.trim());
-    return !!t;
+  async function askToken() {
+    const t = await askSheet('amux auth token', 'from ~/.amux/auth_token', '');
+    if (t && t.trim()) { localStorage.setItem('amux_token', t.trim()); return true; }
+    return false;
   }
   async function authed(url, opts) {
     opts = opts || {};
     opts.headers = Object.assign({'X-Auth-Token': token()}, opts.headers);
     let r = await fetch(url, opts);
-    if (r.status === 401 && askToken()) {
-      opts.headers['X-Auth-Token'] = token();
-      r = await fetch(url, opts);
+    if (r.status === 401) {
+      // Point at the phone-friendly pairing QR (a 40-char token is misery to
+      // type on a wall) and offer the in-page sheet — no native modal (#142).
+      toast('not paired — scan the QR at ' + location.host + '/pair, or enter the token');
+      if (await askToken()) {
+        opts.headers['X-Auth-Token'] = token();
+        r = await fetch(url, opts);
+      }
     }
     return r;
   }
@@ -1883,7 +2002,7 @@ PAGE = """<!doctype html>
         body: JSON.stringify({text: text, target: targets[tIdx]}),
       }).then(r => r.json());
       if (r.ok) { $('text').value = ''; growText(); $('send').textContent = '✓'; }
-      else { $('send').textContent = '✕'; console.warn(r.detail); }
+      else { $('send').textContent = '✕'; toast(r.detail || 'send failed'); }
     } catch (_) { $('send').textContent = '✕'; }
     setTimeout(() => { $('send').innerHTML = icon('send'); }, 1200);
   }
