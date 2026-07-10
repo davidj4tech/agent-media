@@ -3,6 +3,11 @@ Description=agent-media visual canvas — SSE image page shown alongside spoken 
 After=network-online.target
 
 [Service]
+# The venv bin (media, edge-tts) + ~/.local/bin (amux) on PATH: `media say` /
+# replay render TTS in-process, so the edge-tts renderer is resolved on PATH —
+# a bare service PATH silently drops per-turn audio (canvas.py augments this
+# too, belt-and-braces). Mirrors agent-media-sink-speech.service.
+Environment=PATH=%h/projects/agent-media/.venv/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 # Bind to the Tailscale IP only (never the public interface — the images
 # illustrate your replies, same privacy posture as the clip server on 8780).
 # Pushers must therefore use the tailnet URL too: set
