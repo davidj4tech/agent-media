@@ -316,6 +316,51 @@ def _amux_sessions() -> list[dict]:
     return [s for s in data if isinstance(s, dict) and s.get("name")]
 
 
+def _classify_cc(pane: str) -> "str | None":
+    """Classify an ANSI-stripped capture of a Claude Code TUI → working / input
+    / approval, or None if it doesn't look like Claude Code (so plain shells,
+    vim, etc. are ignored). Mirrors amux's detector: require CC chrome, check a
+    permission dialog BEFORE the working signal (CC shows "esc to interrupt"
+    even while a dialog blocks), and match the width-truncated "esc…" too."""
+    if not re.search(r"\? for shortcuts|bypass permissions|esc to interrupt|"
+                     r"esc…|⏵⏵", pane):
+        return None
+    if re.search(r"❯ *[0-9]+\.|Do you want to |Yes, (and|allow|proceed)", pane):
+        return "approval"
+    if re.search(r"· [↑↓] [0-9.]+k? tokens|esc to interrupt|esc…", pane):
+        return "working"
+    return "input"
+
+
+def _tmux_cc_sessions() -> list[dict]:
+    """Auto-discover Claude Code sessions across tmux: every session whose active
+    pane looks like Claude Code, EXCLUDING amux's own `amux-*` sessions (those
+    come from `amux ls`). So the strip shows every agent, not just registered
+    ones. Each: {name, state, dir, preview, source: "tmux"}."""
+    out = _media_run(["tmux", "list-sessions", "-F", "#{session_name}"])
+    found: list[dict] = []
+    for name in out.splitlines():
+        name = name.strip()
+        if not name or name.startswith("amux-"):
+            continue
+        pinfo = _media_run(["tmux", "display-message", "-t", name, "-p",
+                            "#{pane_id}\t#{pane_current_path}"])
+        pane_id, _, cwd = pinfo.partition("\t")
+        if not pane_id:
+            continue
+        cap = re.sub(r"\x1b\[[0-9;]*m", "",
+                     _media_run(["tmux", "capture-pane", "-t", pane_id,
+                                 "-p", "-S", "-40"]))
+        state = _classify_cc(cap)
+        if state is None:
+            continue
+        preview = next((ln.strip()[:60] for ln in reversed(cap.splitlines())
+                        if ln.strip()), "")
+        found.append({"name": name, "state": state, "dir": cwd,
+                      "preview": preview, "source": "tmux"})
+    return found
+
+
 def _media_run(argv: list[str], timeout: int = 10) -> str:
     try:
         out = subprocess.run(argv, capture_output=True, text=True,
@@ -390,6 +435,16 @@ def send_input(text: str, target: str) -> tuple[bool, str]:
             return False, f"unknown amux session {name!r}"
         out = _media_run([_amux_bin(), "send", name, text])
         return (True, f"amux:{name}") if out else (False, "amux send failed")
+    if target.startswith("tmux:"):
+        # An auto-discovered (non-amux) Claude Code session — type into its
+        # active pane directly, same literal-then-Enter path as `amux send`.
+        name = target[len("tmux:"):]
+        pane = _media_run(["tmux", "display-message", "-t", name, "-p",
+                           "#{pane_id}"])
+        if not pane:
+            return False, f"unknown tmux session {name!r}"
+        err = _send_to_pane(pane, text)
+        return (False, err) if err else (True, f"tmux:{name}")
     speaker = _last_speaker()
     if not speaker:
         return False, "no speaker on record yet"
@@ -833,7 +888,7 @@ PAGE = """<!doctype html>
     position: fixed; left: 50%; transform: translateX(-50%);
     bottom: max(2vh, env(safe-area-inset-bottom));
     width: min(96vw, 620px); box-sizing: border-box;
-    display: flex; align-items: center; gap: .4em;
+    display: flex; align-items: flex-end; gap: .4em;   /* buttons hug the bottom as text grows */
     padding: .5em .6em; border-radius: 18px;
     background: rgba(10,10,10,.5); backdrop-filter: blur(14px);
     box-shadow: 0 0 0 1px rgba(255,255,255,.08);
@@ -850,8 +905,11 @@ PAGE = """<!doctype html>
   }
   #text {
     flex: 1; background: none; border: 0; outline: none; color: #eee;
-    font: 16px/1.4 system-ui, sans-serif; min-width: 0;
+    font: 16px/1.35 system-ui, sans-serif; min-width: 0;
+    resize: none; overflow-y: auto; max-height: 6.4em;  /* grows to ~5 lines, then scrolls */
+    padding: 0; margin: 0; box-sizing: border-box;
   }
+  #text::-webkit-scrollbar { width: 0; }
   #send {
     background: none; border: 0; color: #eee; font-size: 20px;
     min-width: 40px; min-height: 40px; cursor: pointer; border-radius: 12px;
@@ -958,8 +1016,8 @@ PAGE = """<!doctype html>
 <div id="agents"></div>
 <div id="inp">
   <button id="target"></button>
-  <input id="text" type="text" autocomplete="off" enterkeyhint="send"
-         placeholder="reply…">
+  <textarea id="text" rows="1" autocomplete="off" enterkeyhint="send"
+            placeholder="reply…"></textarea>
   <button id="send"></button>
 </div>
 <div id="ctl">
@@ -1560,14 +1618,20 @@ PAGE = """<!doctype html>
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({text: text, target: targets[tIdx]}),
       }).then(r => r.json());
-      if (r.ok) { $('text').value = ''; $('send').textContent = '✓'; }
+      if (r.ok) { $('text').value = ''; growText(); $('send').textContent = '✓'; }
       else { $('send').textContent = '✕'; console.warn(r.detail); }
     } catch (_) { $('send').textContent = '✕'; }
     setTimeout(() => { $('send').innerHTML = icon('send'); }, 1200);
   }
   $('send').onclick = (e) => { e.stopPropagation(); sendText(); };
+  function growText() {                        // auto-grow the reply textarea
+    const t = $('text'); t.style.height = 'auto';
+    t.style.height = Math.min(t.scrollHeight, 104) + 'px';
+  }
+  $('text').addEventListener('input', growText);
   $('text').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') { e.preventDefault(); sendText(); }
+    // Enter sends; Shift+Enter is a newline (and the box grows to fit).
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendText(); }
     else if (e.key === 'Escape') { e.preventDefault(); setMode('passive'); }
     else if (e.key === 'Tab') { e.preventDefault(); setMode('control'); }  // input → control
   });
@@ -1722,7 +1786,8 @@ PAGE = """<!doctype html>
     list.sort((a, b) => (rank[a.state] ?? 9) - (rank[b.state] ?? 9)
                         || a.name.localeCompare(b.name));
     box.innerHTML = list.map(a =>
-      '<span class="ag ' + a.state + '" data-name="' + encodeURIComponent(a.name) + '">'
+      '<span class="ag ' + a.state + '" data-name="' + encodeURIComponent(a.name)
+      + '" data-source="' + (a.source === 'tmux' ? 'tmux' : 'amux') + '">'
       + '<span class="dot"></span>' + a.name.replace(/[<>&]/g, '') + '</span>').join('');
     box.classList.add('on');
   }
@@ -1730,12 +1795,14 @@ PAGE = """<!doctype html>
     const chip = e.target.closest('.ag');
     if (!chip) return;
     e.stopPropagation();
-    targetAgent(decodeURIComponent(chip.dataset.name));
+    targetAgent(decodeURIComponent(chip.dataset.name), chip.dataset.source);
   });
-  async function targetAgent(name) {
-    await openInput();                        // populates targets from /sessions
-    const idx = targets.indexOf('amux:' + name);
-    if (idx >= 0) { tIdx = idx; drawTarget(); }
+  async function targetAgent(name, source) {
+    await openInput();
+    const t = (source === 'tmux' ? 'tmux:' : 'amux:') + name;   // discovered vs managed
+    let idx = targets.indexOf(t);
+    if (idx < 0) { targets.push(t); idx = targets.length - 1; }
+    tIdx = idx; drawTarget();
     $('text').focus();
   }
   pollAgents();
@@ -1793,7 +1860,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/agents":
             # Live session states for the agent strip ("who needs me") — read-
             # only, so open on the tailnet-bound server (only /input is gated).
-            self._json(200, {"agents": _amux_sessions()})
+            # amux-registered sessions + auto-discovered Claude Code tmux
+            # sessions (the tmux scan already skips amux's own amux-* sessions).
+            self._json(200, {"agents": _amux_sessions() + _tmux_cc_sessions()})
         elif path == "/pair":
             code = ""
             for kv in query.split("&"):
