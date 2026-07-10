@@ -210,7 +210,7 @@ def _authorized(handler: "Handler") -> bool:
 # stores the amux token in localStorage and redirects to the canvas. The code
 # file is deleted on first use and expires after PAIR_TTL_S regardless.
 
-PAIR_TTL_S = 600
+PAIR_TTL_S = int(os.environ.get("MEDIA_VISUAL_PAIR_TTL") or 1800)  # 30 min; tune per host
 
 
 def _pair_code_path() -> Path:
@@ -245,29 +245,23 @@ paired — loading the canvas…
 
 
 def _qr(url: str) -> str:
-    """A terminal QR for `url` — pure-python `qrcode` (half-block), falling back
-    to the `qrencode` binary, then to just the URL. QR is a nicety, never fatal."""
+    """A COMPACT terminal QR for `url` — half-block rows (▀▄) at low error
+    correction and a 1-module quiet zone, so it stays short. A tall QR scrolls
+    off (or gets collapsed into scrollback) before you can scan it, which is the
+    real failure mode here, not the glyphs. Falls back to the URL alone if
+    `qrcode` isn't importable. QR is a nicety, never fatal."""
     try:
         import io
         import qrcode
-        qr = qrcode.QRCode(border=2,
-                           error_correction=qrcode.constants.ERROR_CORRECT_M)
+        qr = qrcode.QRCode(border=1,
+                           error_correction=qrcode.constants.ERROR_CORRECT_L)
         qr.add_data(url)
         qr.make(fit=True)
         buf = io.StringIO()
         qr.print_ascii(out=buf, invert=True)   # invert → scannable on a dark terminal
         return buf.getvalue().rstrip("\n")
     except Exception:  # noqa: BLE001
-        import shutil
-        import subprocess
-        if shutil.which("qrencode"):
-            try:
-                return subprocess.run(["qrencode", "-t", "ANSIUTF8", url],
-                                      capture_output=True, text=True,
-                                      timeout=5).stdout.rstrip("\n")
-            except Exception:  # noqa: BLE001
-                pass
-        return "  (pip install qrcode — or apt install qrencode — for a QR)"
+        return "  (pip install qrcode for a scannable QR — or open the URL below)"
 
 
 def _cmd_pair(argv: list[str]) -> int:
@@ -291,7 +285,7 @@ def _cmd_pair(argv: list[str]) -> int:
               file=sys.stderr)
         return 1
 
-    code = secrets.token_hex(8)
+    code = secrets.token_hex(4)   # 8 hex chars — shorter URL, smaller/less-scrolly QR
     path = _pair_code_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(code)
