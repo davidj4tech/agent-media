@@ -484,13 +484,27 @@ def _pane_turns(pane: str, limit: int = 12) -> list[str]:
     return ["\n".join(lines)] if lines else []
 
 
+def _child_env() -> dict:
+    """Environment for shell-outs that RENDER speech in-process (`media say`,
+    replay). `media say` submits and renders in the calling process, so the TTS
+    renderer (`edge-tts`) is looked up on PATH — and this systemd user service
+    ships a bare PATH (unlike sink-speech, which pins the venv bin). Prepend the
+    venv bin + ~/.local/bin so the renderer resolves, same gap the _media_bin /
+    _amux_bin fallbacks paper over for their own executables."""
+    env = dict(os.environ)
+    extra = [str(Path(sys.executable).parent), str(Path.home() / ".local" / "bin")]
+    env["PATH"] = os.pathsep.join(extra + ([env["PATH"]] if env.get("PATH") else []))
+    return env
+
+
 def _say(text: str) -> bool:
     """Speak arbitrary text through the speech channel — per-turn 'play'."""
     text = (text or "").strip()
     if not text:
         return False
     try:
-        subprocess.run([_media_bin(), "say", text], timeout=20, check=False)
+        subprocess.run([_media_bin(), "say", text], env=_child_env(),
+                       timeout=20, check=False)
         return True
     except (OSError, subprocess.SubprocessError):
         return False
@@ -504,7 +518,7 @@ def _play_pane(pane: str) -> bool:
     pane = unquote(pane or "")
     if not pane:
         return False
-    env = {**os.environ, "TTS_POPUP_PANE": pane}
+    env = {**_child_env(), "TTS_POPUP_PANE": pane}
     try:
         subprocess.run([_media_bin(), "replay-at-cursor"], env=env,
                        timeout=10, check=False)
@@ -1053,7 +1067,7 @@ PAGE = """<!doctype html>
     position: fixed; left: 50%; transform: translateX(-50%); z-index: 25;
     bottom: calc(max(2vh, env(safe-area-inset-bottom)) + 3.4em);  /* above the input */
     display: none; width: min(96vw, 620px);
-    flex-direction: column-reverse; gap: .25em;   /* pill at bottom, tree drops UP */
+    flex-direction: column; gap: .25em;   /* pill on top, session list below it */
   }
   #agents.on { display: flex; }
   #agents.hide { display: none !important; }       /* hidden while composing a reply */
@@ -1145,15 +1159,16 @@ PAGE = """<!doctype html>
   html.eink #peek { background: #fff; color: #000; border: 1px solid #000; }
   html.eink #peek pre { color: #000; }
   /* Keyboard navigation (tmux-chooser style): the .cursor row is where j/k
-     landed. Amber ring + tint, matching the input/controller focus colour. */
-  #agents.navfocus .aghead { box-shadow: 0 0 0 2px rgba(255,215,95,.75); }
-  #agents .shead.cursor, #agents .pane.cursor, #peek .turn.cursor {
+     landed — the top "agents" pill is itself selectable (l/h expand/collapse
+     the whole tree). Amber ring + tint, matching the input/controller focus. */
+  #agents .aghead.cursor, #agents .shead.cursor, #agents .pane.cursor,
+  #peek .turn.cursor {
     box-shadow: inset 0 0 0 2px rgba(255,215,95,.85);
-    background: rgba(255,215,95,.12); border-radius: 8px;
+    background: rgba(255,215,95,.14);
   }
-  html.eink #agents.navfocus .aghead { box-shadow: 0 0 0 2px #000; }
-  html.eink #agents .shead.cursor, html.eink #agents .pane.cursor,
-  html.eink #peek .turn.cursor {
+  #peek .turn.cursor { border-radius: 8px; }
+  html.eink #agents .aghead.cursor, html.eink #agents .shead.cursor,
+  html.eink #agents .pane.cursor, html.eink #peek .turn.cursor {
     box-shadow: inset 0 0 0 2px #000; background: rgba(0,0,0,.08);
   }
 </style>
@@ -2090,14 +2105,17 @@ PAGE = """<!doctype html>
   // opens a session or aims the reply box at a pane; h collapses; g/G jump; p
   // peeks; Esc/q leave. In the peek panel j/k walk turns, Enter expands, p plays.
   function agRows() {
-    // Visible navigable rows, in view order: each session head, then its panes
-    // when that session is open (a closed session's panes are display:none).
-    const out = [];
-    for (const sess of $('agents').querySelectorAll('.aglist .sess')) {
-      out.push(sess.querySelector('.shead'));
-      if (sess.classList.contains('open'))
-        for (const p of sess.querySelectorAll('.pane')) out.push(p);
-    }
+    // Visible navigable rows in view order: the top "agents" pill first, then —
+    // when the tree is expanded — each session head and its panes (a closed
+    // session's panes are display:none, so skipped).
+    const head = $('agents').querySelector('.aghead');
+    const out = head ? [head] : [];
+    if ($('agents').classList.contains('expanded'))
+      for (const sess of $('agents').querySelectorAll('.aglist .sess')) {
+        out.push(sess.querySelector('.shead'));
+        if (sess.classList.contains('open'))
+          for (const p of sess.querySelectorAll('.pane')) out.push(p);
+      }
     return out;
   }
   function agPaintCursor() {
@@ -2111,24 +2129,26 @@ PAGE = """<!doctype html>
   }
   function agFocus() {
     agFocused = true; agTop = true; agCursor = 0;
-    $('agents').classList.add('expanded', 'navfocus');
+    $('agents').classList.add('expanded');
     agPaintCursor();
   }
   function agBlur() {
     agFocused = false;
-    $('agents').classList.remove('navfocus');
     for (const el of $('agents').querySelectorAll('.cursor')) el.classList.remove('cursor');
   }
   function agKey(k) {
     const rows = agRows();
     if (!rows.length) { if (k === 'Escape' || k === 'q') { agBlur(); return true; } return false; }
-    const cur = rows[agCursor], isPane = cur.classList.contains('pane');
+    const cur = rows[agCursor];
+    const isTop = cur.classList.contains('aghead'), isPane = cur.classList.contains('pane');
     if (k === 'j' || k === 'ArrowDown') { agCursor = Math.min(agCursor + 1, rows.length - 1); agPaintCursor(); return true; }
     if (k === 'k' || k === 'ArrowUp')   { agCursor = Math.max(agCursor - 1, 0); agPaintCursor(); return true; }
     if (k === 'g') { agCursor = 0; agPaintCursor(); return true; }
     if (k === 'G') { agCursor = rows.length - 1; agPaintCursor(); return true; }
     if (k === 'l' || k === 'Enter' || k === 'ArrowRight') {
-      if (isPane) {                         // aim the reply box at this pane (leaves the tree)
+      if (isTop) {                          // expand the whole tree from the pill
+        agTop = true; $('agents').classList.add('expanded'); agPaintCursor();
+      } else if (isPane) {                  // aim the reply box at this pane (leaves the tree)
         agBlur();
         targetAgent(decodeURIComponent(cur.dataset.name), cur.dataset.source, cur.dataset.pane);
       } else {                              // expand the session — its panes appear
@@ -2139,15 +2159,19 @@ PAGE = """<!doctype html>
       return true;
     }
     if (k === 'h' || k === 'ArrowLeft') {
-      if (isPane) {                         // collapse the parent, land on its head
+      if (isTop) {                          // collapse the whole tree back into the pill
+        agTop = false; $('agents').classList.remove('expanded'); agPaintCursor();
+      } else if (isPane) {                  // collapse the parent, land on its head
         const sess = cur.closest('.sess');
         agOpen[decodeURIComponent(sess.dataset.sess)] = false;
         sess.classList.remove('open');
         agCursor = agRows().indexOf(sess.querySelector('.shead'));
         agPaintCursor();
-      } else if (cur.parentElement.classList.contains('open')) {
+      } else if (cur.parentElement.classList.contains('open')) {  // collapse an open session
         agOpen[decodeURIComponent(cur.parentElement.dataset.sess)] = false;
         cur.parentElement.classList.remove('open'); agPaintCursor();
+      } else {                              // a closed head: step up to the pill
+        agCursor = 0; agPaintCursor();
       }
       return true;
     }
