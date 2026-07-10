@@ -332,33 +332,35 @@ def _classify_cc(pane: str) -> "str | None":
     return "input"
 
 
-def _tmux_cc_sessions() -> list[dict]:
-    """Auto-discover Claude Code sessions across tmux: every session whose active
-    pane looks like Claude Code, EXCLUDING amux's own `amux-*` sessions (those
-    come from `amux ls`). So the strip shows every agent, not just registered
-    ones. Each: {name, state, dir, preview, source: "tmux"}."""
-    out = _media_run(["tmux", "list-sessions", "-F", "#{session_name}"])
-    found: list[dict] = []
-    for name in out.splitlines():
-        name = name.strip()
-        if not name or name.startswith("amux-"):
+def _tmux_cc_panes() -> list[dict]:
+    """Auto-discover Claude Code across ALL tmux panes (not just each session's
+    active one — a session can hold several agents in different windows),
+    EXCLUDING amux's own `amux-*` sessions (those come from `amux ls`). One agent
+    per CC pane, replyable by its pane id. Display name is the session, with the
+    window appended when a session holds more than one CC pane."""
+    out = _media_run(["tmux", "list-panes", "-a", "-F",
+                      "#{pane_id}\t#{pane_current_command}\t#{session_name}\t"
+                      "#{window_name}\t#{pane_current_path}"])
+    agents: list[dict] = []
+    for line in out.splitlines():
+        f = line.split("\t")
+        if len(f) < 5:
             continue
-        pinfo = _media_run(["tmux", "display-message", "-t", name, "-p",
-                            "#{pane_id}\t#{pane_current_path}"])
-        pane_id, _, cwd = pinfo.partition("\t")
-        if not pane_id:
+        pane_id, cmd, sess, win, cwd = f[:5]
+        # Claude Code panes report `claude` as their command — a cheap, exact
+        # filter (no need to capture shells/editors). Skip amux-managed ones.
+        if not pane_id or cmd != "claude" or sess.startswith("amux-"):
             continue
         cap = re.sub(r"\x1b\[[0-9;]*m", "",
                      _media_run(["tmux", "capture-pane", "-t", pane_id,
                                  "-p", "-S", "-40"]))
-        state = _classify_cc(cap)
-        if state is None:
-            continue
         preview = next((ln.strip()[:60] for ln in reversed(cap.splitlines())
                         if ln.strip()), "")
-        found.append({"name": name, "state": state, "dir": cwd,
-                      "preview": preview, "source": "tmux"})
-    return found
+        agents.append({"name": (win if win and win != sess else sess),
+                       "state": _classify_cc(cap) or "input",  # cmd=claude ⇒ CC
+                       "dir": cwd, "preview": preview,
+                       "source": "tmux", "pane": pane_id})
+    return agents
 
 
 def _media_run(argv: list[str], timeout: int = 10) -> str:
@@ -1569,7 +1571,7 @@ PAGE = """<!doctype html>
   function toggleHelp() { $('help').classList.toggle('on'); }
 
   // ---- input box: reply to whoever just spoke (token-authed) ---------------
-  let targets = ['speaker'], tIdx = 0;
+  let targets = ['speaker'], tIdx = 0, targetLabels = {};
   function token() { return localStorage.getItem('amux_token') || ''; }
   function askToken() {
     const t = prompt('amux auth token (from ~/.amux/auth_token):');
@@ -1588,9 +1590,8 @@ PAGE = """<!doctype html>
   }
   function drawTarget() {
     const t = targets[tIdx];
-    $('target').innerHTML = t === 'speaker'
-      ? icon('reply') + 'speaker'
-      : icon('book') + t.slice(5);
+    const label = t === 'speaker' ? 'speaker' : (targetLabels[t] || t.slice(5));
+    $('target').innerHTML = (t === 'speaker' ? icon('reply') : icon('book')) + label;
   }
   drawTarget();
   async function openInput() {
@@ -1787,7 +1788,8 @@ PAGE = """<!doctype html>
                         || a.name.localeCompare(b.name));
     box.innerHTML = list.map(a =>
       '<span class="ag ' + a.state + '" data-name="' + encodeURIComponent(a.name)
-      + '" data-source="' + (a.source === 'tmux' ? 'tmux' : 'amux') + '">'
+      + '" data-source="' + (a.source === 'tmux' ? 'tmux' : 'amux') + '"'
+      + (a.pane ? ' data-pane="' + a.pane + '"' : '') + '>'
       + '<span class="dot"></span>' + a.name.replace(/[<>&]/g, '') + '</span>').join('');
     box.classList.add('on');
   }
@@ -1795,11 +1797,14 @@ PAGE = """<!doctype html>
     const chip = e.target.closest('.ag');
     if (!chip) return;
     e.stopPropagation();
-    targetAgent(decodeURIComponent(chip.dataset.name), chip.dataset.source);
+    targetAgent(decodeURIComponent(chip.dataset.name), chip.dataset.source, chip.dataset.pane);
   });
-  async function targetAgent(name, source) {
+  async function targetAgent(name, source, pane) {
     await openInput();
-    const t = (source === 'tmux' ? 'tmux:' : 'amux:') + name;   // discovered vs managed
+    // tmux agents are addressed by pane id (a session may hold several); amux
+    // agents by name. Remember the friendly label for the target chip.
+    const t = source === 'tmux' ? 'tmux:' + (pane || name) : 'amux:' + name;
+    targetLabels[t] = name;
     let idx = targets.indexOf(t);
     if (idx < 0) { targets.push(t); idx = targets.length - 1; }
     tIdx = idx; drawTarget();
@@ -1862,7 +1867,7 @@ class Handler(BaseHTTPRequestHandler):
             # only, so open on the tailnet-bound server (only /input is gated).
             # amux-registered sessions + auto-discovered Claude Code tmux
             # sessions (the tmux scan already skips amux's own amux-* sessions).
-            self._json(200, {"agents": _amux_sessions() + _tmux_cc_sessions()})
+            self._json(200, {"agents": _amux_sessions() + _tmux_cc_panes()})
         elif path == "/pair":
             code = ""
             for kv in query.split("&"):
