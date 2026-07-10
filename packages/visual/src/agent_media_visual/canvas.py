@@ -1045,11 +1045,29 @@ PAGE = """<!doctype html>
   #agents {
     position: fixed; top: max(8px, env(safe-area-inset-top)); left: 50%;
     transform: translateX(-50%); z-index: 25; display: none;
-    width: min(92vw, 460px); max-height: 62vh; overflow-y: auto;
-    flex-direction: column; gap: .25em; padding: .2em; scrollbar-width: none;
+    width: min(92vw, 460px); flex-direction: column; gap: .25em;
   }
   #agents.on { display: flex; }
-  #agents::-webkit-scrollbar { width: 0; }
+  /* Top toggle: the whole tree collapses behind one pill (dot + count) so it
+     doesn't dominate a narrow phone screen. */
+  #agents .aghead {
+    display: flex; align-items: center; gap: .5em; padding: .4em .85em;
+    border-radius: 999px; cursor: pointer; align-self: center;
+    background: rgba(10,10,10,.62); backdrop-filter: blur(10px);
+    color: #eee; font: 600 13px/1.3 system-ui, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #agents .aghead:active { background: rgba(255,255,255,.1); }
+  #agents .atitle { color: #ddd; }
+  #agents .aghead .chev { color: #999; font-size: 11px; transition: transform .15s ease; }
+  #agents.expanded .aghead .chev { transform: rotate(90deg); }
+  #agents .aghead.working  .dot { background: #38bdf8; }
+  #agents .aghead.approval .dot { background: #f87171; }
+  #agents .aghead.input    .dot { background: #ffd75f; animation: agpulse 1.8s ease-out infinite; }
+  #agents .aglist { display: none; flex-direction: column; gap: .25em;
+                    max-height: 60vh; overflow-y: auto; scrollbar-width: none; }
+  #agents.expanded .aglist { display: flex; }
+  #agents .aglist::-webkit-scrollbar { width: 0; }
   #agents .sess { background: rgba(10,10,10,.62); backdrop-filter: blur(10px);
                   border-radius: 12px; overflow: hidden; }
   #agents .shead { display: flex; align-items: center; gap: .5em; padding: .45em .7em;
@@ -1918,7 +1936,7 @@ PAGE = """<!doctype html>
   // groups. Each pane shows its state, a peek (output) and a play (its last
   // clip) button; tap a pane label to aim the reply box at it.
   const AG_RANK = { input: 0, approval: 1, working: 2, stopped: 3 };  // needs-you first
-  let agOpen = {};                              // session -> expanded (persist across polls)
+  let agOpen = {}, agTop = false;              // session / top-level expanded (persist)
   const agEsc = (s) => s.replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
   async function pollAgents() {
     if (document.hidden) return;
@@ -1935,7 +1953,7 @@ PAGE = """<!doctype html>
     const best = (ps) => Math.min(...ps.map((p) => AG_RANK[p.state] ?? 9));
     const names = Object.keys(groups).sort((x, y) =>
       best(groups[x]) - best(groups[y]) || x.localeCompare(y));
-    box.innerHTML = names.map((s) => {
+    const sessHtml = names.map((s) => {
       const ps = groups[s].sort((a, b) =>
         (AG_RANK[a.state] ?? 9) - (AG_RANK[b.state] ?? 9) || a.name.localeCompare(b.name));
       const rows = ps.map((p) =>
@@ -1952,10 +1970,22 @@ PAGE = """<!doctype html>
         + '<span class="scount">' + ps.length + '</span></div>'
         + '<div class="panes">' + rows + '</div></div>';
     }).join('');
+    // Collapse the whole tree behind one pill; its dot/count give the glance.
+    const topState = ['input', 'approval', 'working', 'stopped'][
+      Math.min(...list.map((a) => AG_RANK[a.state] ?? 9))] || 'stopped';
+    box.innerHTML =
+      '<div class="aghead ' + topState + '"><span class="chev">▸</span>'
+      + '<span class="dot"></span><span class="atitle">agents</span>'
+      + '<span class="scount">' + list.length + '</span></div>'
+      + '<div class="aglist">' + sessHtml + '</div>';
     box.classList.add('on');
+    box.classList.toggle('expanded', agTop);
   }
   $('agents').addEventListener('click', (e) => {
     e.stopPropagation();
+    if (e.target.closest('.aghead')) {          // top pill → show/hide the tree
+      agTop = !agTop; $('agents').classList.toggle('expanded', agTop); return;
+    }
     const head = e.target.closest('.shead');
     if (head) {
       const g = head.parentElement, s = decodeURIComponent(g.dataset.sess);
