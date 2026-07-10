@@ -409,7 +409,7 @@ def _last_speaker() -> dict | None:
         return None
 
 
-def _peek_pane(pane: str, lines: int = 24) -> list[str]:
+def _peek_pane(pane: str, lines: int = 60) -> list[str]:
     """The last N non-blank, ANSI-stripped lines of a pane — for the peek panel."""
     from urllib.parse import unquote
     pane = unquote(pane or "")
@@ -1019,7 +1019,7 @@ PAGE = """<!doctype html>
   #peek {
     position: fixed; left: 50%; transform: translateX(-50%);
     top: max(8px, env(safe-area-inset-top)); z-index: 26; display: none;
-    width: min(92vw, 560px); max-height: 72vh; overflow: auto;
+    width: min(97vw, 960px); max-height: 80vh; overflow: auto;
     background: rgba(8,8,10,.96); backdrop-filter: blur(14px); border-radius: 12px;
     padding: .5em .7em; box-shadow: 0 10px 40px rgba(0,0,0,.5);
   }
