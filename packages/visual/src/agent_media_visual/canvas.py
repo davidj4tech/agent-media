@@ -557,15 +557,16 @@ def send_input(text: str, target: str) -> tuple[bool, str]:
         out = _media_run([_amux_bin(), "send", name, text])
         return (True, f"amux:{name}") if out else (False, "amux send failed")
     if target.startswith("tmux:"):
-        # An auto-discovered (non-amux) Claude Code session — type into its
-        # active pane directly, same literal-then-Enter path as `amux send`.
-        name = target[len("tmux:"):]
-        pane = _media_run(["tmux", "display-message", "-t", name, "-p",
-                           "#{pane_id}"])
-        if not pane:
-            return False, f"unknown tmux session {name!r}"
+        # An auto-discovered (non-amux) Claude Code pane — type into it
+        # directly, same literal-then-Enter path as `amux send`. The target is
+        # a pane id; only genuine `claude` panes are valid — typing text+Enter
+        # into a bare shell pane would be host command execution, so validate
+        # against _tmux_cc_panes() (which already filters cmd=="claude").
+        pane = target[len("tmux:"):]
+        if pane not in {p["pane"] for p in _tmux_cc_panes()}:
+            return False, f"not a live claude pane: {pane!r}"
         err = _send_to_pane(pane, text)
-        return (False, err) if err else (True, f"tmux:{name}")
+        return (False, err) if err else (True, f"tmux:{pane}")
     speaker = _last_speaker()
     if not speaker:
         return False, "no speaker on record yet"
@@ -2244,6 +2245,11 @@ PAGE = """<!doctype html>
 """
 
 
+# Cap request bodies: an unbounded Content-Length (e.g. 5 GB) would force a
+# multi-GB read/alloc — a trivial remote OOM on a RAM-tight host (#139).
+_MAX_BODY = 64 * 1024
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -2375,6 +2381,21 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = self.path.split("?", 1)[0]
+        # Reject oversized bodies before reading a byte (#139).
+        try:
+            clen = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            clen = 0
+        if clen > _MAX_BODY:
+            self._send(413, b"request body too large\n", "text/plain")
+            return
+        # Every state-changing POST needs the same auth as /input (#138):
+        # otherwise a drive-by page can speak, play audio, spoof screens, or
+        # drive media (CSRF). Read-only GET endpoints stay open by design.
+        if path in ("/show", "/ctl", "/say", "/play"):
+            if not _authorized(self):
+                self._json(401, {"error": "unauthorized"})
+                return
         if path == "/show":
             self._show()
         elif path == "/ctl":
@@ -2403,7 +2424,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _read_json(self) -> dict | None:
         try:
-            n = int(self.headers.get("Content-Length", "0"))
+            # Never read past the cap even if a caller reached here without the
+            # do_POST guard (defence in depth for the #139 OOM).
+            n = min(int(self.headers.get("Content-Length", "0")), _MAX_BODY)
             return json.loads(self.rfile.read(n) or b"{}")
         except (ValueError, json.JSONDecodeError):
             return None
