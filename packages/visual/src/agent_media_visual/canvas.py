@@ -245,18 +245,21 @@ paired — loading the canvas…
 
 
 def _qr(url: str) -> str:
-    """A terminal QR for `url`. Full-block, double-width modules (██ per dark
-    cell) — these render on far more fonts/terminals than half-blocks (▀▄),
-    which silently break on many setups (e-ink, minimal fonts). Falls back to
-    the URL alone if `qrcode` isn't importable. QR is a nicety, never fatal."""
+    """A COMPACT terminal QR for `url` — half-block rows (▀▄) at low error
+    correction and a 1-module quiet zone, so it stays short. A tall QR scrolls
+    off (or gets collapsed into scrollback) before you can scan it, which is the
+    real failure mode here, not the glyphs. Falls back to the URL alone if
+    `qrcode` isn't importable. QR is a nicety, never fatal."""
     try:
+        import io
         import qrcode
-        qr = qrcode.QRCode(border=2,
-                           error_correction=qrcode.constants.ERROR_CORRECT_M)
+        qr = qrcode.QRCode(border=1,
+                           error_correction=qrcode.constants.ERROR_CORRECT_L)
         qr.add_data(url)
         qr.make(fit=True)
-        return "\n".join("".join("██" if cell else "  " for cell in row)
-                         for row in qr.get_matrix())
+        buf = io.StringIO()
+        qr.print_ascii(out=buf, invert=True)   # invert → scannable on a dark terminal
+        return buf.getvalue().rstrip("\n")
     except Exception:  # noqa: BLE001
         return "  (pip install qrcode for a scannable QR — or open the URL below)"
 
