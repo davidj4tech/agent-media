@@ -484,13 +484,27 @@ def _pane_turns(pane: str, limit: int = 12) -> list[str]:
     return ["\n".join(lines)] if lines else []
 
 
+def _child_env() -> dict:
+    """Environment for shell-outs that RENDER speech in-process (`media say`,
+    replay). `media say` submits and renders in the calling process, so the TTS
+    renderer (`edge-tts`) is looked up on PATH — and this systemd user service
+    ships a bare PATH (unlike sink-speech, which pins the venv bin). Prepend the
+    venv bin + ~/.local/bin so the renderer resolves, same gap the _media_bin /
+    _amux_bin fallbacks paper over for their own executables."""
+    env = dict(os.environ)
+    extra = [str(Path(sys.executable).parent), str(Path.home() / ".local" / "bin")]
+    env["PATH"] = os.pathsep.join(extra + ([env["PATH"]] if env.get("PATH") else []))
+    return env
+
+
 def _say(text: str) -> bool:
     """Speak arbitrary text through the speech channel — per-turn 'play'."""
     text = (text or "").strip()
     if not text:
         return False
     try:
-        subprocess.run([_media_bin(), "say", text], timeout=20, check=False)
+        subprocess.run([_media_bin(), "say", text], env=_child_env(),
+                       timeout=20, check=False)
         return True
     except (OSError, subprocess.SubprocessError):
         return False
@@ -504,7 +518,7 @@ def _play_pane(pane: str) -> bool:
     pane = unquote(pane or "")
     if not pane:
         return False
-    env = {**os.environ, "TTS_POPUP_PANE": pane}
+    env = {**_child_env(), "TTS_POPUP_PANE": pane}
     try:
         subprocess.run([_media_bin(), "replay-at-cursor"], env=env,
                        timeout=10, check=False)
@@ -543,15 +557,16 @@ def send_input(text: str, target: str) -> tuple[bool, str]:
         out = _media_run([_amux_bin(), "send", name, text])
         return (True, f"amux:{name}") if out else (False, "amux send failed")
     if target.startswith("tmux:"):
-        # An auto-discovered (non-amux) Claude Code session — type into its
-        # active pane directly, same literal-then-Enter path as `amux send`.
-        name = target[len("tmux:"):]
-        pane = _media_run(["tmux", "display-message", "-t", name, "-p",
-                           "#{pane_id}"])
-        if not pane:
-            return False, f"unknown tmux session {name!r}"
+        # An auto-discovered (non-amux) Claude Code pane — type into it
+        # directly, same literal-then-Enter path as `amux send`. The target is
+        # a pane id; only genuine `claude` panes are valid — typing text+Enter
+        # into a bare shell pane would be host command execution, so validate
+        # against _tmux_cc_panes() (which already filters cmd=="claude").
+        pane = target[len("tmux:"):]
+        if pane not in {p["pane"] for p in _tmux_cc_panes()}:
+            return False, f"not a live claude pane: {pane!r}"
         err = _send_to_pane(pane, text)
-        return (False, err) if err else (True, f"tmux:{name}")
+        return (False, err) if err else (True, f"tmux:{pane}")
     speaker = _last_speaker()
     if not speaker:
         return False, "no speaker on record yet"
@@ -974,6 +989,11 @@ PAGE = """<!doctype html>
   #ctl button:active { background: rgba(255,255,255,.14); }
   #ctl button.lit { color: #ffd75f; }
   .ic { width: 19px; height: 19px; display: block; margin: auto; }
+  /* Loading spinner: a play button becomes this arc while its clip is rendered
+     + queued for speech (say/replay block for seconds before audio starts). */
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .ic.spin { animation: spin .7s linear infinite; transform-origin: 50% 50%; }
+  html.eink .ic.spin { animation: none; opacity: .55; }   /* no motion on e-ink (ghosts) */
   #target .ic { width: 16px; height: 16px; display: inline-block;
                 vertical-align: -3px; margin-right: .35em; }
   #send .ic { margin: auto; }
@@ -1053,7 +1073,7 @@ PAGE = """<!doctype html>
     position: fixed; left: 50%; transform: translateX(-50%); z-index: 25;
     bottom: calc(max(2vh, env(safe-area-inset-bottom)) + 3.4em);  /* above the input */
     display: none; width: min(96vw, 620px);
-    flex-direction: column-reverse; gap: .25em;   /* pill at bottom, tree drops UP */
+    flex-direction: column; gap: .25em;   /* pill on top, session list below it */
   }
   #agents.on { display: flex; }
   #agents.hide { display: none !important; }       /* hidden while composing a reply */
@@ -1144,6 +1164,19 @@ PAGE = """<!doctype html>
     animation: none; box-shadow: 0 0 0 2px #000; }
   html.eink #peek { background: #fff; color: #000; border: 1px solid #000; }
   html.eink #peek pre { color: #000; }
+  /* Keyboard navigation (tmux-chooser style): the .cursor row is where j/k
+     landed — the top "agents" pill is itself selectable (l/h expand/collapse
+     the whole tree). Amber ring + tint, matching the input/controller focus. */
+  #agents .aghead.cursor, #agents .shead.cursor, #agents .pane.cursor,
+  #peek .turn.cursor {
+    box-shadow: inset 0 0 0 2px rgba(255,215,95,.85);
+    background: rgba(255,215,95,.14);
+  }
+  #peek .turn.cursor { border-radius: 8px; }
+  html.eink #agents .aghead.cursor, html.eink #agents .shead.cursor,
+  html.eink #agents .pane.cursor, html.eink #peek .turn.cursor {
+    box-shadow: inset 0 0 0 2px #000; background: rgba(0,0,0,.08);
+  }
 </style>
 </head>
 <body>
@@ -1174,6 +1207,7 @@ PAGE = """<!doctype html>
   <symbol id="i-notes" viewBox="0 0 24 24"><path fill="currentColor" d="M7 19a2 2 0 110-4c.4 0 .7.1 1 .2V6l9-1.8V15a2 2 0 11-2-2c.4 0 .7.1 1 .2V7.5L9 8.9V19z"/><path stroke="currentColor" stroke-width="1.6" stroke-linecap="round" d="M4 4.5l1.5 1"/></symbol>
   <symbol id="i-book" viewBox="0 0 24 24"><path stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M4 7h16M4 12h16M4 17h10"/></symbol>
   <symbol id="i-reply" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M9 6L4 11l5 5M4 11h11a5 5 0 015 5v2"/></symbol>
+  <symbol id="i-spinner" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" d="M12 3a9 9 0 1 0 9 9"/></symbol>
 </svg>
 <img id="a" class="layer" alt="">
 <img id="b" class="layer" alt="">
@@ -1240,6 +1274,7 @@ PAGE = """<!doctype html>
     <b>Tab</b><span>cycle channel  (in control)</span>
     <b>c · f</b><span>captions · sound fx</span>
     <b>Enter</b><span>reply input</span>
+    <b>a</b><span>agent tree: j/k move · l reply/open · h close · g/G ends · p peek · q exit</span>
     <b>?</b><span>this help</span>
   </div>
 </div>
@@ -1541,6 +1576,7 @@ PAGE = """<!doctype html>
         }
       }
       else if (d.kind === 'state') {
+        if (d.speaking) stopSaySpin();     // audio started → the play button stops loading
         setSpeaking(!!d.speaking);
         if (d.speaking) {
           setSubtitle(d.sentence || null);
@@ -1829,6 +1865,15 @@ PAGE = """<!doctype html>
     if (e.target === $('text')) return;          // the input box owns its keys
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const k = e.key;
+    // Tree / peek navigation runs BEFORE the mode machinery, so j/k/Enter/p/Esc
+    // mean "move the cursor", not "reply / control / toggle playback".
+    if ($('peek').classList.contains('on') && peekKey(k)) { e.preventDefault(); return; }
+    if (agFocused && agKey(k)) { e.preventDefault(); return; }
+    if (k === 'a' && !agFocused && $('agents').classList.contains('on')
+        && !$('agents').classList.contains('hide')
+        && !$('peek').classList.contains('on')) {
+      e.preventDefault(); agFocus(); return;
+    }
     if (k === 'Tab') {                           // walk / cycle
       e.preventDefault();
       if (mode === 'control') $('chan').onclick();          // control: next channel
@@ -1947,9 +1992,11 @@ PAGE = """<!doctype html>
   // clip) button; tap a pane label to aim the reply box at it.
   const AG_RANK = { input: 0, approval: 1, working: 2, stopped: 3 };  // needs-you first
   let agOpen = {}, agTop = false;              // session / top-level expanded (persist)
+  let agFocused = false, agCursor = 0, peekCursor = 0;   // vim-nav cursors
   const agEsc = (s) => s.replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
   async function pollAgents() {
     if (document.hidden) return;
+    if (agFocused) return;   // frozen while the tree has key focus — don't re-render under the cursor
     let list;
     try {
       const r = await fetch('/agents');
@@ -2003,16 +2050,36 @@ PAGE = """<!doctype html>
     }
     const row = e.target.closest('.pane');
     if (!row) return;
-    if (e.target.closest('.pl')) { playPane(row.dataset.pane); return; }
+    if (e.target.closest('.pl')) { playPane(row.dataset.pane, e.target.closest('.pl')); return; }
     if (e.target.closest('.pk')) { peekPane(row.dataset.pane, decodeURIComponent(row.dataset.name)); return; }
     targetAgent(decodeURIComponent(row.dataset.name), row.dataset.source, row.dataset.pane);
   });
-  async function playPane(pane) {
+  // ---- play-load spinner: say/replay block for seconds (render + queue) before
+  // audio starts, so a tapped play button spins until speech actually begins
+  // (a 'state' event with speaking:true clears it) or a fallback timeout fires.
+  let saySpinEl = null, saySpinPrev = '', saySpinTimer = null;
+  function startSaySpin(btn) {
+    stopSaySpin();
+    if (!btn) return;
+    saySpinEl = btn; saySpinPrev = btn.innerHTML;
+    btn.innerHTML = '<svg class="ic spin"><use href="#i-spinner"/></svg>';
+    saySpinTimer = setTimeout(stopSaySpin, 25000);   // never spin forever
+  }
+  function stopSaySpin() {
+    clearTimeout(saySpinTimer); saySpinTimer = null;
+    if (saySpinEl) { saySpinEl.innerHTML = saySpinPrev; saySpinEl = null; saySpinPrev = ''; }
+  }
+  async function playPane(pane, btn) {
     if (!pane) return;
+    startSaySpin(btn);
     try {
-      await fetch('/play', { method: 'POST',
+      // /play is an auth-gated state-changing POST (it drives audio) — send the
+      // token like /input, else the server 401s and the clip never plays.
+      const r = await authed('/play', { method: 'POST',
         headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pane }) });
-    } catch (_) {}
+      const j = await r.json().catch(() => null);
+      if (!r.ok || (j && j.ok === false)) stopSaySpin();   // rejected / nothing to replay → drop the spinner now
+    } catch (_) { stopSaySpin(); }
   }
   let peekTurns = [];
   async function peekPane(pane, name) {
@@ -2030,23 +2097,29 @@ PAGE = """<!doctype html>
     $('peek').innerHTML = '<div class="ph">' + agEsc(name) + '</div>'
       + (blocks || '<div class="tbody" style="max-height:none">(no transcript / output)</div>');
     $('peek').classList.add('on');
-    requestAnimationFrame(() => { $('peek').scrollTop = $('peek').scrollHeight; });
+    peekCursor = peekTurns.length - 1;      // start on the latest turn (the open one)
+    requestAnimationFrame(() => { $('peek').scrollTop = $('peek').scrollHeight; peekPaintCursor(); });
   }
   function hidePeek() { $('peek').classList.remove('on'); }
   $('peek').addEventListener('click', (e) => {
     e.stopPropagation();
     const play = e.target.closest('.tplay');
-    if (play) { sayTurn(peekTurns[+play.parentElement.dataset.i]); return; }
+    if (play) { sayTurn(peekTurns[+play.parentElement.dataset.i], play); return; }
     const turn = e.target.closest('.turn');
     if (turn) { turn.classList.toggle('open'); return; }  // expand/collapse a snapshot
     hidePeek();
   });
-  async function sayTurn(text) {
+  async function sayTurn(text, btn) {
     if (!text) return;
+    startSaySpin(btn);
     try {
-      await fetch('/say', { method: 'POST',
+      // /say is an auth-gated state-changing POST (it speaks) — send the token
+      // like /input, else the server 401s and nothing is spoken.
+      const r = await authed('/say', { method: 'POST',
         headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
-    } catch (_) {}
+      const j = await r.json().catch(() => null);
+      if (!r.ok || (j && j.ok === false)) stopSaySpin();   // rejected / render failed → drop the spinner
+    } catch (_) { stopSaySpin(); }
   }
   async function targetAgent(name, source, pane) {
     await openInput();
@@ -2059,6 +2132,113 @@ PAGE = """<!doctype html>
     tIdx = idx; drawTarget();
     $('text').focus();
   }
+
+  // ---- vim-key navigation: the agent tree + peek panel, tmux-chooser style --
+  // 'a' focuses the tree; j/k (or arrows) walk the visible heads/panes; l/Enter
+  // opens a session or aims the reply box at a pane; h collapses; g/G jump; p
+  // peeks; Esc/q leave. In the peek panel j/k walk turns, Enter expands, p plays.
+  function agRows() {
+    // Visible navigable rows in view order: the top "agents" pill first, then —
+    // when the tree is expanded — each session head and its panes (a closed
+    // session's panes are display:none, so skipped).
+    const head = $('agents').querySelector('.aghead');
+    const out = head ? [head] : [];
+    if ($('agents').classList.contains('expanded'))
+      for (const sess of $('agents').querySelectorAll('.aglist .sess')) {
+        out.push(sess.querySelector('.shead'));
+        if (sess.classList.contains('open'))
+          for (const p of sess.querySelectorAll('.pane')) out.push(p);
+      }
+    return out;
+  }
+  function agPaintCursor() {
+    for (const el of $('agents').querySelectorAll('.cursor')) el.classList.remove('cursor');
+    const rows = agRows();
+    if (!rows.length) return;
+    agCursor = Math.max(0, Math.min(agCursor, rows.length - 1));
+    const cur = rows[agCursor];
+    cur.classList.add('cursor');
+    cur.scrollIntoView({ block: 'nearest' });
+  }
+  function agFocus() {
+    agFocused = true; agTop = true; agCursor = 0;
+    $('agents').classList.add('expanded');
+    agPaintCursor();
+  }
+  function agBlur() {
+    agFocused = false;
+    for (const el of $('agents').querySelectorAll('.cursor')) el.classList.remove('cursor');
+  }
+  function agKey(k) {
+    const rows = agRows();
+    if (!rows.length) { if (k === 'Escape' || k === 'q') { agBlur(); return true; } return false; }
+    const cur = rows[agCursor];
+    const isTop = cur.classList.contains('aghead'), isPane = cur.classList.contains('pane');
+    if (k === 'j' || k === 'ArrowDown') { agCursor = Math.min(agCursor + 1, rows.length - 1); agPaintCursor(); return true; }
+    if (k === 'k' || k === 'ArrowUp')   { agCursor = Math.max(agCursor - 1, 0); agPaintCursor(); return true; }
+    if (k === 'g') { agCursor = 0; agPaintCursor(); return true; }
+    if (k === 'G') { agCursor = rows.length - 1; agPaintCursor(); return true; }
+    if (k === 'l' || k === 'Enter' || k === 'ArrowRight') {
+      if (isTop) {                          // expand the whole tree from the pill
+        agTop = true; $('agents').classList.add('expanded'); agPaintCursor();
+      } else if (isPane) {                  // aim the reply box at this pane (leaves the tree)
+        agBlur();
+        targetAgent(decodeURIComponent(cur.dataset.name), cur.dataset.source, cur.dataset.pane);
+      } else {                              // expand the session — its panes appear
+        const sess = cur.parentElement;
+        agOpen[decodeURIComponent(sess.dataset.sess)] = true;
+        sess.classList.add('open'); agPaintCursor();
+      }
+      return true;
+    }
+    if (k === 'h' || k === 'ArrowLeft') {
+      if (isTop) {                          // collapse the whole tree back into the pill
+        agTop = false; $('agents').classList.remove('expanded'); agPaintCursor();
+      } else if (isPane) {                  // collapse the parent, land on its head
+        const sess = cur.closest('.sess');
+        agOpen[decodeURIComponent(sess.dataset.sess)] = false;
+        sess.classList.remove('open');
+        agCursor = agRows().indexOf(sess.querySelector('.shead'));
+        agPaintCursor();
+      } else if (cur.parentElement.classList.contains('open')) {  // collapse an open session
+        agOpen[decodeURIComponent(cur.parentElement.dataset.sess)] = false;
+        cur.parentElement.classList.remove('open'); agPaintCursor();
+      } else {                              // a closed head: step up to the pill
+        agCursor = 0; agPaintCursor();
+      }
+      return true;
+    }
+    if (k === 'p') {
+      if (isPane && cur.dataset.pane)
+        peekPane(cur.dataset.pane, decodeURIComponent(cur.dataset.name));
+      return true;
+    }
+    if (k === 'Escape' || k === 'q') { agBlur(); return true; }
+    return false;
+  }
+  function peekRows() { return Array.from($('peek').querySelectorAll('.turn')); }
+  function peekPaintCursor() {
+    const rows = peekRows();
+    for (const el of rows) el.classList.remove('cursor');
+    if (!rows.length) return;
+    peekCursor = Math.max(0, Math.min(peekCursor, rows.length - 1));
+    const cur = rows[peekCursor];
+    cur.classList.add('cursor');
+    cur.scrollIntoView({ block: 'nearest' });
+  }
+  function peekKey(k) {
+    const rows = peekRows();
+    if (!rows.length) { if (k === 'Escape') { hidePeek(); return true; } return false; }
+    if (k === 'j' || k === 'ArrowDown') { peekCursor = Math.min(peekCursor + 1, rows.length - 1); peekPaintCursor(); return true; }
+    if (k === 'k' || k === 'ArrowUp')   { peekCursor = Math.max(peekCursor - 1, 0); peekPaintCursor(); return true; }
+    if (k === 'l' || k === 'ArrowRight') { rows[peekCursor].classList.add('open'); return true; }     // expand the snippet
+    if (k === 'h' || k === 'ArrowLeft')  { rows[peekCursor].classList.remove('open'); return true; }  // collapse it
+    if (k === 'Enter') { rows[peekCursor].classList.toggle('open'); return true; }
+    if (k === 'p') { sayTurn(peekTurns[+rows[peekCursor].dataset.i], rows[peekCursor].querySelector('.tplay')); return true; }
+    if (k === 'Escape') { hidePeek(); return true; }
+    return false;
+  }
+
   pollAgents();
   setInterval(pollAgents, 4000);
   document.addEventListener('visibilitychange',
@@ -2067,6 +2247,11 @@ PAGE = """<!doctype html>
 </body>
 </html>
 """
+
+
+# Cap request bodies: an unbounded Content-Length (e.g. 5 GB) would force a
+# multi-GB read/alloc — a trivial remote OOM on a RAM-tight host (#139).
+_MAX_BODY = 64 * 1024
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -2200,6 +2385,21 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = self.path.split("?", 1)[0]
+        # Reject oversized bodies before reading a byte (#139).
+        try:
+            clen = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            clen = 0
+        if clen > _MAX_BODY:
+            self._send(413, b"request body too large\n", "text/plain")
+            return
+        # Every state-changing POST needs the same auth as /input (#138):
+        # otherwise a drive-by page can speak, play audio, spoof screens, or
+        # drive media (CSRF). Read-only GET endpoints stay open by design.
+        if path in ("/show", "/ctl", "/say", "/play"):
+            if not _authorized(self):
+                self._json(401, {"error": "unauthorized"})
+                return
         if path == "/show":
             self._show()
         elif path == "/ctl":
@@ -2228,7 +2428,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _read_json(self) -> dict | None:
         try:
-            n = int(self.headers.get("Content-Length", "0"))
+            # Never read past the cap even if a caller reached here without the
+            # do_POST guard (defence in depth for the #139 OOM).
+            n = min(int(self.headers.get("Content-Length", "0")), _MAX_BODY)
             return json.loads(self.rfile.read(n) or b"{}")
         except (ValueError, json.JSONDecodeError):
             return None
