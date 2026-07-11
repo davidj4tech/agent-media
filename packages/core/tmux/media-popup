@@ -30,7 +30,8 @@
 #           the focused one; Esc clears the highlight (then Esc again quits).
 #           Purely optional — Space stays play/pause and every hotkey is direct.
 #   PgUp/PgDn  forwarded to the pane behind the popup, so you can page its
-#           output/scrollback without closing the popup first.
+#           output/scrollback without closing the popup first. Ctrl+PgDn /
+#           Ctrl+PgUp forward End / Home (jump to the bottom/newest or top).
 #
 # Mouse (SGR 1006): clickable regions are laid out across both rows —
 #   row 1: channel glyph (top-left) switches channel · title jumps to source ·
@@ -814,6 +815,10 @@ read_escape() {
     case "$seq" in
         '5~') ESC_KIND=page; ESC_PAGE=PageUp ;;
         '6~') ESC_KIND=page; ESC_PAGE=PageDown ;;
+        # Ctrl+PgDn / Ctrl+PgUp (mod 5 = Ctrl) → End / Home: jump the pane to
+        # the bottom/newest or top/oldest.
+        '6;5~') ESC_KIND=page; ESC_PAGE=End ;;
+        '5;5~') ESC_KIND=page; ESC_PAGE=Home ;;
         *)    ESC_KIND=other ;;
     esac
     return 0
@@ -836,11 +841,12 @@ handle_arrow() {
     esac
 }
 
-# Forward PgUp/PgDn to the pane behind the popup (the caller). The popup grabs
-# the keyboard while it's up, so without this Page keys are swallowed; passing
-# them through lets you page the underlying pane's output/scrollback without
-# closing the popup first. HL_PANE is that caller pane (the active pane when
-# `prefix a` opened the popup).
+# Forward PgUp/PgDn (and Ctrl+PgDn → End) to the pane behind the popup (the
+# caller). The popup grabs the keyboard while it's up, so without this Page keys
+# are swallowed; passing them through lets you page the underlying pane's
+# output/scrollback — or jump it to the bottom with End — without closing the
+# popup first. HL_PANE is that caller pane (the active pane when `prefix a`
+# opened the popup).
 handle_page() {
     [ -n "$HL_PANE" ] && tmux send-keys -t "$HL_PANE" "$ESC_PAGE" 2>/dev/null
 }
