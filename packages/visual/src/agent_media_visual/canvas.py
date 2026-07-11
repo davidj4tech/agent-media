@@ -497,6 +497,14 @@ def _child_env() -> dict:
     return env
 
 
+# `media say` / replay block until the utterance finishes PLAYING (not merely
+# rendering), so a per-turn play of a long assistant turn legitimately runs for
+# minutes. This subprocess timeout is only a hung-process backstop, NOT a length
+# limit — a low cap kills `media say` mid-sentence and cuts the audio off. Keep
+# it well past any real turn; override via MEDIA_VISUAL_SAY_TIMEOUT if needed.
+_SAY_TIMEOUT_S = int(os.environ.get("MEDIA_VISUAL_SAY_TIMEOUT") or 900)
+
+
 def _say(text: str) -> bool:
     """Speak arbitrary text through the speech channel — per-turn 'play'."""
     text = (text or "").strip()
@@ -504,7 +512,7 @@ def _say(text: str) -> bool:
         return False
     try:
         subprocess.run([_media_bin(), "say", text], env=_child_env(),
-                       timeout=20, check=False)
+                       timeout=_SAY_TIMEOUT_S, check=False)
         return True
     except (OSError, subprocess.SubprocessError):
         return False
@@ -521,7 +529,7 @@ def _play_pane(pane: str) -> bool:
     env = {**_child_env(), "TTS_POPUP_PANE": pane}
     try:
         subprocess.run([_media_bin(), "replay-at-cursor"], env=env,
-                       timeout=10, check=False)
+                       timeout=_SAY_TIMEOUT_S, check=False)
         return True
     except (OSError, subprocess.SubprocessError):
         return False
