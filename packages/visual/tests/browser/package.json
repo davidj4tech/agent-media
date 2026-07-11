@@ -1,0 +1,11 @@
+{
+  "name": "canvas-browser-harness",
+  "private": true,
+  "description": "Headless Playwright harness for the visual canvas client JS",
+  "scripts": {
+    "test": "node harness.js"
+  },
+  "dependencies": {
+    "playwright": "^1.61.1"
+  }
+}
