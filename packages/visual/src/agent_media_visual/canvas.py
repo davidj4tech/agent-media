@@ -1103,6 +1103,10 @@ PAGE = """<!doctype html>
     transition: opacity .25s ease;
   }
   #toast.on { opacity: 1; }
+  html.eink #toast {
+    background: #fff; color: #000; border: 2px solid #000;
+    backdrop-filter: none; box-shadow: none;
+  }
   /* In-page input sheet (token / typed-seek / open-URL): replaces native
      window.prompt so it respects the e-ink theme and isn't a dead modal on a
      keyboardless wall (#142). Scrim + card, matching #help. */
