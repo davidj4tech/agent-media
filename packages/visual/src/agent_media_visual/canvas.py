@@ -2073,10 +2073,12 @@ PAGE = """<!doctype html>
     if (!pane) return;
     startSaySpin(btn);
     try {
-      const r = await fetch('/play', { method: 'POST',
+      // /play is an auth-gated state-changing POST (it drives audio) — send the
+      // token like /input, else the server 401s and the clip never plays.
+      const r = await authed('/play', { method: 'POST',
         headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pane }) });
       const j = await r.json().catch(() => null);
-      if (j && j.ok === false) stopSaySpin();   // nothing to replay → drop the spinner now
+      if (!r.ok || (j && j.ok === false)) stopSaySpin();   // rejected / nothing to replay → drop the spinner now
     } catch (_) { stopSaySpin(); }
   }
   let peekTurns = [];
@@ -2111,10 +2113,12 @@ PAGE = """<!doctype html>
     if (!text) return;
     startSaySpin(btn);
     try {
-      const r = await fetch('/say', { method: 'POST',
+      // /say is an auth-gated state-changing POST (it speaks) — send the token
+      // like /input, else the server 401s and nothing is spoken.
+      const r = await authed('/say', { method: 'POST',
         headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
       const j = await r.json().catch(() => null);
-      if (j && j.ok === false) stopSaySpin();   // render/submit failed → drop the spinner
+      if (!r.ok || (j && j.ok === false)) stopSaySpin();   // rejected / render failed → drop the spinner
     } catch (_) { stopSaySpin(); }
   }
   async function targetAgent(name, source, pane) {
