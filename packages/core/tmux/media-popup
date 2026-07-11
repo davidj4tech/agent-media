@@ -29,6 +29,8 @@
 #   ← →     (or ↑ ↓) move a focus highlight across the buttons; Enter activates
 #           the focused one; Esc clears the highlight (then Esc again quits).
 #           Purely optional — Space stays play/pause and every hotkey is direct.
+#   PgUp/PgDn  forwarded to the pane behind the popup, so you can page its
+#           output/scrollback without closing the popup first.
 #
 # Mouse (SGR 1006): clickable regions are laid out across both rows —
 #   row 1: channel glyph (top-left) switches channel · title jumps to source ·
@@ -801,10 +803,19 @@ read_escape() {
     case "$c" in                              # arrow keys (CSI or SS3 form)
         A|B|C|D) ESC_KIND=arrow; ESC_ARROW="$c"; return 0 ;;
     esac
-    # Other CSI (PgUp/Del/etc.) — drain to the final byte (0x40–0x7E) and drop.
-    case "$c" in [@-~]) ESC_KIND=other; return 0 ;; esac
-    while IFS= read -rsn1 -t 0.02 c; do case "$c" in [@-~]) break ;; esac; done
-    ESC_KIND=other
+    # Other CSI — gather the whole parameter run up to the final byte (0x40–
+    # 0x7E) so we can recognize PgUp (ESC [ 5 ~) / PgDn (ESC [ 6 ~) and forward
+    # them to the pane behind the popup; everything else is drained and dropped.
+    local seq="$c"
+    case "$c" in
+        [@-~]) : ;;                            # already the final byte
+        *) while IFS= read -rsn1 -t 0.02 c; do seq="$seq$c"; case "$c" in [@-~]) break ;; esac; done ;;
+    esac
+    case "$seq" in
+        '5~') ESC_KIND=page; ESC_PAGE=PageUp ;;
+        '6~') ESC_KIND=page; ESC_PAGE=PageDown ;;
+        *)    ESC_KIND=other ;;
+    esac
     return 0
 }
 
@@ -823,6 +834,15 @@ handle_arrow() {
         C|B) focus_move 1 ;;     # right / down → next button
         D|A) focus_move -1 ;;    # left  / up   → prev button
     esac
+}
+
+# Forward PgUp/PgDn to the pane behind the popup (the caller). The popup grabs
+# the keyboard while it's up, so without this Page keys are swallowed; passing
+# them through lets you page the underlying pane's output/scrollback without
+# closing the popup first. HL_PANE is that caller pane (the active pane when
+# `prefix a` opened the popup).
+handle_page() {
+    [ -n "$HL_PANE" ] && tmux send-keys -t "$HL_PANE" "$ESC_PAGE" 2>/dev/null
 }
 
 # Map a parsed mouse event to an action. A left-press is matched against the
@@ -895,6 +915,7 @@ while true; do
             case "$ESC_KIND" in
                 mouse) handle_mouse ;;
                 arrow) handle_arrow ;;
+                page)  handle_page ;;
             esac
             [ -n "$QUIT" ] && break
             # Re-pull the (slow) snapshot only on a real action; always redraw so
