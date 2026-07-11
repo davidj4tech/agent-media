@@ -122,8 +122,24 @@ def render_status(*, idle: Optional[bool], pos: Optional[float],
 
 # --- IPC plumbing ----------------------------------------------------------
 
+def _active_speech_target() -> Target:
+    """The target speech is *actually* playing on — the now-playing mirror's
+    recorded target, falling back to the configured default when idle.
+
+    The daemon that started playback resolves its target from its own env
+    (`MEDIA_SPEECH_DEFAULT_TARGET`, e.g. the phone), but a popup keypress spawns
+    a short-lived `media` in the user's shell, which usually lacks that var and
+    so would default to `local`. Reading the wrong player makes the status show
+    `○` and pause act on an empty local mpv. Follow the live player instead —
+    the same precedence the nav/skip path already uses (now-playing target, then
+    SPEECH_TARGET). When idle there's no row, so this is just SPEECH_TARGET.
+    """
+    name = (StateStore().get_now_playing("speech") or {}).get("target")
+    return Target(name=name) if name else SPEECH_TARGET
+
+
 def _sock():
-    return _socket_for(SPEECH_TARGET)
+    return _socket_for(_active_speech_target())
 
 
 def _get(prop: str):
@@ -1089,17 +1105,17 @@ def cmd_toggle(a) -> int:
 
 
 def cmd_pause(a) -> int:
-    SinkSpeech().pause(SPEECH_TARGET)
+    SinkSpeech().pause(_active_speech_target())
     return 0
 
 
 def cmd_resume(a) -> int:
-    SinkSpeech().resume(SPEECH_TARGET)
+    SinkSpeech().resume(_active_speech_target())
     return 0
 
 
 def cmd_stop(a) -> int:
-    SinkSpeech().stop(SPEECH_TARGET)
+    SinkSpeech().stop(_active_speech_target())
     return 0
 
 
@@ -1166,7 +1182,7 @@ def _silence_current_if_covered(scope: str, key: str) -> bool:
                else ex.get("source_tmux_session") == key)
     if covered:
         try:
-            SinkSpeech().stop(SPEECH_TARGET)
+            SinkSpeech().stop(_active_speech_target())
         except Exception:  # noqa: BLE001 — a dead/absent broker mustn't fail the mute
             pass
         return True
