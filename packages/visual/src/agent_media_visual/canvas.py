@@ -48,6 +48,7 @@ from pathlib import Path
 from .state import spool_dir
 
 DEFAULT_PORT = 8781
+MAX_SSE_CLIENTS = 64        # held-open /events streams before we shed load (#137)
 
 
 class Hub:
@@ -62,11 +63,17 @@ class Hub:
         self.last_state: dict | None = None  # latest speech-state event
         self.last_video: dict | None = None  # latest video-sync event
 
-    def attach(self) -> queue.Queue:
-        q: queue.Queue = queue.Queue(maxsize=16)
+    def attach(self) -> queue.Queue | None:
+        # Cap held-open /events streams: an unbounded fan-out lets thousands of
+        # half-open clients (mobile backgrounding, days-long walls) exhaust
+        # ThreadingHTTPServer's threads/fds (#137). Reject past the cap; the
+        # SSE handler turns None into a 503 and the browser retries.
         with self._lock:
+            if len(self._clients) >= MAX_SSE_CLIENTS:
+                return None
+            q: queue.Queue = queue.Queue(maxsize=16)
             self._clients.append(q)
-        return q
+            return q
 
     def detach(self, q: queue.Queue) -> None:
         with self._lock:
@@ -362,6 +369,28 @@ def _tmux_cc_panes() -> list[dict]:
                        "dir": cwd, "preview": preview,
                        "source": "tmux", "pane": pane_id})
     return agents
+
+
+# /agents fan-out is expensive — `tmux list-panes` plus a `capture-pane` per
+# claude pane, per request. Every connected canvas polls it, so N screens × M
+# panes forked subprocesses on a short timer (#141). Memoize the whole payload
+# for a couple of seconds so a burst of client polls collapses to one sweep.
+_AGENTS_TTL = 2.0
+_AGENTS_LOCK = threading.Lock()
+_AGENTS_CACHE: dict = {"t": 0.0, "data": None}
+
+
+def _agents_payload() -> list[dict]:
+    now = time.monotonic()
+    with _AGENTS_LOCK:
+        if (_AGENTS_CACHE["data"] is not None
+                and now - _AGENTS_CACHE["t"] < _AGENTS_TTL):
+            return _AGENTS_CACHE["data"]
+        amux = [{**a, "session": a.get("name")} for a in _amux_sessions()]
+        data = amux + _tmux_cc_panes()
+        _AGENTS_CACHE["t"] = now
+        _AGENTS_CACHE["data"] = data
+        return data
 
 
 def _media_run(argv: list[str], timeout: int = 10) -> str:
@@ -1074,6 +1103,58 @@ PAGE = """<!doctype html>
     transition: opacity .25s ease;
   }
   #toast.on { opacity: 1; }
+  /* In-page input sheet (token / typed-seek / open-URL): replaces native
+     window.prompt so it respects the e-ink theme and isn't a dead modal on a
+     keyboardless wall (#142). Scrim + card, matching #help. */
+  #sheet {
+    position: fixed; inset: 0; z-index: 50; display: none;
+    align-items: center; justify-content: center;
+    background: rgba(6,6,8,.55); backdrop-filter: blur(4px);
+  }
+  #sheet.on { display: flex; }
+  #sheet .card {
+    width: min(92vw, 460px); padding: 1em 1.2em; border-radius: 16px;
+    background: rgba(16,16,18,.96); backdrop-filter: blur(16px); color: #eee;
+    box-shadow: 0 10px 40px rgba(0,0,0,.5); font: 14px/1.5 system-ui, sans-serif;
+  }
+  #sheet .sh { font-weight: 600; color: #ffd75f; margin-bottom: .6em; }
+  #sheet input {
+    width: 100%; box-sizing: border-box; padding: .55em .7em; border-radius: 10px;
+    border: 1px solid rgba(255,255,255,.18); background: rgba(0,0,0,.35);
+    color: #eee; font: 16px/1.3 system-ui, sans-serif; outline: none;
+  }
+  #sheet input:focus { border-color: rgba(255,215,95,.7); }
+  #sheet .btns { display: flex; justify-content: flex-end; gap: .5em; margin-top: .9em; }
+  #sheet button {
+    min-height: 40px; padding: 0 1.1em; border: 0; border-radius: 10px;
+    cursor: pointer; font: 600 14px/1 system-ui, sans-serif;
+  }
+  #sheet .ok { background: rgba(255,215,95,.9); color: #1a1a1a; }
+  #sheet .cancel { background: rgba(255,255,255,.12); color: #eee; }
+  html.eink #sheet { background: rgba(255,255,255,.7); backdrop-filter: none; }
+  html.eink #sheet .card { background: #fff; color: #000; border: 2px solid #000; }
+  html.eink #sheet .sh { color: #000; }
+  html.eink #sheet input { background: #fff; color: #000; border-color: #000; }
+  html.eink #sheet .ok { background: #000; color: #fff; }
+  html.eink #sheet .cancel { background: #fff; color: #000; border: 1px solid #000; }
+  /* Room-legible disconnect: a stalled/offline wall looks live from across a
+     room with only the 8px dot, so after ~10s down we grey the canvas (scrim
+     backdrop-filter, no conflict with the .layer filters) and float a big
+     "reconnecting…" banner. Driven together with the #137 watchdog. */
+  #offbar {
+    position: fixed; inset: 0; z-index: 45; display: none;
+    align-items: center; justify-content: center; pointer-events: none;
+    background: rgba(6,6,8,.5); backdrop-filter: grayscale(1) blur(2px);
+  }
+  #offbar.on { display: flex; }
+  #offbar .msg {
+    padding: .6em 1.4em; border-radius: 16px; color: #ffd75f;
+    background: rgba(20,20,22,.92); backdrop-filter: blur(12px);
+    font: 600 22px/1.3 system-ui, sans-serif; letter-spacing: .01em;
+    box-shadow: 0 8px 40px rgba(0,0,0,.5);
+  }
+  html.eink #offbar { background: rgba(255,255,255,.72); backdrop-filter: none; }
+  html.eink #offbar .msg { background: #fff; color: #000; border: 2px solid #000; }
   /* Agent tree: sessions as collapsible groups; each holds its claude panes
      with live state, a peek (output) and a play (its last clip) button. Tap a
      pane label to aim the reply box at it. Hidden until there's a session. */
@@ -1225,9 +1306,18 @@ PAGE = """<!doctype html>
 <div id="sub"></div>
 <div id="fig">▣ figure</div>
 <div id="dot" title="disconnected"></div>
+<div id="offbar"><div class="msg">reconnecting…</div></div>
 <div id="toast"></div>
 <div id="agents"></div>
 <div id="peek"></div>
+<div id="sheet"><div class="card">
+  <div class="sh" id="sheettitle"></div>
+  <input id="sheetin" type="text" autocomplete="off" autocapitalize="off" spellcheck="false">
+  <div class="btns">
+    <button class="cancel" id="sheetcancel">cancel</button>
+    <button class="ok" id="sheetok">OK</button>
+  </div>
+</div></div>
 <div id="inp">
   <button id="target"></button>
   <textarea id="text" rows="1" autocomplete="off" enterkeyhint="send"
@@ -1462,6 +1552,7 @@ PAGE = """<!doctype html>
     if (on === speaking) return;
     speaking = on;
     if (on) speakStartT = Date.now();
+    pumpSeq(on);                               // beat pump runs only while speaking
     document.body.classList.toggle('speaking', on);
     for (const el of layers)
       for (const a of el.getAnimations())
@@ -1507,7 +1598,14 @@ PAGE = """<!doctype html>
     for (let i = 0; i < seq.length; i++) if (frac >= seq[i].at) idx = i;
     if (idx > seqIdx) setBeat(idx);
   }
-  setInterval(applySeq, 1000);
+  // The beat pump only means anything while the voice is talking — run its 1s
+  // timer only then (and never while backgrounded), started/stopped by
+  // setSpeaking, instead of a forever-ticking interval (#141).
+  let seqTimer = null;
+  function pumpSeq(on) {
+    clearInterval(seqTimer); seqTimer = null;
+    if (on) seqTimer = setInterval(() => { if (!document.hidden) applySeq(); }, 1000);
+  }
 
   // ---- video sync: muted YouTube mirror of the phone's music ---------------
   // The server streams {"kind":"video", vid, t, paused, rate} while the phone
@@ -1542,7 +1640,7 @@ PAGE = """<!doctype html>
     document.getElementById('ytwrap').classList
       .toggle('on', !!ytVid && !speaking && !einkOn() && Date.now() > figHold);
   }
-  setInterval(vidVisible, 5000);        // restores the video after a fig hold
+  setInterval(() => { if (!document.hidden) vidVisible(); }, 5000);  // restores video after a fig hold; idle while backgrounded (#141)
   function syncVideo(d) {
     if (einkOn()) return;            // no video on e-ink — don't even load the API
     if (!d.vid) {
@@ -1569,10 +1667,19 @@ PAGE = """<!doctype html>
     vidVisible();
   }
 
-  const es = new EventSource('/events');
-  es.onmessage = (e) => {
+  // SSE stream + self-heal (#137). A stalled stream (mobile backgrounding,
+  // half-open TCP on a days-long wall) silently stops delivering; onerror
+  // isn't guaranteed to fire. So the server now sends a real `{"kind":"ping"}`
+  // data frame that fires onmessage, the client stamps lastEventTs on EVERY
+  // frame, and a watchdog tears the EventSource down and reconnects after ~45s
+  // of silence.
+  let es = null, lastEventTs = Date.now();
+  function onSseMessage(e) {
+    lastEventTs = Date.now();               // any frame (incl. ping) = the stream is live
+    setDisconnected(false);                 // a live frame clears the reconnect banner
     try {
       const d = JSON.parse(e.data);
+      if (d.kind === 'ping') return;        // heartbeat only — nothing to render
       if (d.kind === 'video') {
         d.rx = Date.now(); syncVideo(d);
         // Follow the selected channel (popup Tab / another canvas) — unless
@@ -1620,9 +1727,39 @@ PAGE = """<!doctype html>
         figImg ? figureCue() : whoosh();
       }
     } catch (_) {}
-  };
-  es.onopen = () => $('dot').classList.remove('off');
-  es.onerror = () => $('dot').classList.add('off');
+  }
+  // Room-legible disconnect (#142), coordinated with the #137 watchdog: a brief
+  // blip only dims the 8px dot; after ~10s down, grey the canvas and float the
+  // big "reconnecting…" banner. Repeated onerror/retry must NOT keep resetting
+  // the escalation timer, or a real outage would never surface.
+  let offTimer = null;
+  function setDisconnected(on) {
+    if (on) {
+      if (!offTimer && !$('offbar').classList.contains('on'))
+        offTimer = setTimeout(() => {
+          offTimer = null; $('offbar').classList.add('on');
+        }, 10000);
+    } else {
+      clearTimeout(offTimer); offTimer = null;
+      $('offbar').classList.remove('on');
+    }
+  }
+  function connectEvents() {
+    try { if (es) es.close(); } catch (_) {}
+    es = new EventSource('/events');
+    es.onmessage = onSseMessage;
+    es.onopen = () => { lastEventTs = Date.now(); $('dot').classList.remove('off'); setDisconnected(false); };
+    es.onerror = () => { $('dot').classList.add('off'); setDisconnected(true); };
+  }
+  connectEvents();
+  // Watchdog: reconnect a stream that has gone quiet past the heartbeat window
+  // (a silent stall may never fire onerror, so escalate the banner here too).
+  setInterval(() => {
+    if (document.hidden) return;            // backgrounded timers throttle; don't churn
+    if (Date.now() - lastEventTs > 45000) {
+      lastEventTs = Date.now(); setDisconnected(true); connectEvents();
+    }
+  }, 15000);
 
   // Keep a phone/tablet screen awake while the canvas is up (best-effort;
   // needs one tap on some browsers to count as a user gesture).
@@ -1632,7 +1769,7 @@ PAGE = """<!doctype html>
   }
   wake();
   document.addEventListener('visibilitychange',
-    () => { if (!document.hidden) wake(); });
+    () => { if (!document.hidden) { lastEventTs = Date.now(); wake(); } });
 
   // ---- audio controller: same verbs as the tmux popup, as touch buttons ----
   const GLYPH = { speech: 'note', music: 'notes', book: 'book' };
@@ -1720,7 +1857,7 @@ PAGE = """<!doctype html>
     if (m === 'input') $('text').focus();
     else if (document.activeElement === $('text')) $('text').blur();
     clearInterval(pollTimer);
-    if (ctrl) { poll(); pollTimer = setInterval(poll, 2000); }
+    if (ctrl) { poll(); pollTimer = setInterval(() => { if (!document.hidden) poll(); }, 2000); }
     if (!active && !$('sub').classList.contains('on'))
       $('cap').classList.remove('hide');
     resetHide();
@@ -1772,15 +1909,48 @@ PAGE = """<!doctype html>
     }
     if (!window.open(url, '_blank')) toast(url);   // popup blocked → show it
   }
+  // In-page input sheet — replaces native prompt() so it honours the e-ink
+  // theme and isn't a dead modal on a keyboardless wall (#142). Resolves to the
+  // entered string, or null on cancel / Esc / tap-away.
+  let sheetResolve = null;
+  function askSheet(title, placeholder, value) {
+    return new Promise((resolve) => {
+      if (sheetResolve) { const r = sheetResolve; sheetResolve = null; r(null); }
+      sheetResolve = resolve;
+      $('sheettitle').textContent = title;
+      const inp = $('sheetin');
+      inp.placeholder = placeholder || '';
+      inp.value = value || '';
+      $('sheet').classList.add('on');
+      setTimeout(() => { inp.focus(); inp.select(); }, 30);
+    });
+  }
+  function closeSheet(val) {
+    if (!$('sheet').classList.contains('on')) return;
+    $('sheet').classList.remove('on');
+    const r = sheetResolve; sheetResolve = null;
+    if (r) r(val);
+  }
+  $('sheetok').onclick = (e) => { e.stopPropagation(); closeSheet($('sheetin').value); };
+  $('sheetcancel').onclick = (e) => { e.stopPropagation(); closeSheet(null); };
+  $('sheet').addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (e.target === $('sheet')) closeSheet(null);   // tap the scrim → cancel
+  });
+  $('sheetin').addEventListener('keydown', (e) => {
+    e.stopPropagation();                             // the sheet owns its keys
+    if (e.key === 'Enter') { e.preventDefault(); closeSheet($('sheetin').value); }
+    else if (e.key === 'Escape') { e.preventDefault(); closeSheet(null); }
+  });
   // Popup `s` / `o` — typed seek and open-URL (music/book only; speech uses h/l).
-  function typedSeek() {
+  async function typedSeek() {
     if (ch === 'speech') { toast('typed seek — music / book only'); return; }
-    const t = prompt(ch + ' seek — H:MM:SS · +90 · -5:00');
+    const t = await askSheet('seek — ' + ch, 'H:MM:SS · +90 · -5:00', '');
     if (t && t.trim()) act('seek-to', 1, t.trim());
   }
-  function typedOpen() {
+  async function typedOpen() {
     if (ch === 'speech') { toast('open URL — music / book only'); return; }
-    const u = prompt(ch + ' — paste a URL to play');
+    const u = await askSheet('open in ' + ch, 'paste a URL to play', '');
     if (u && u.trim()) act('open-url', 1, u.trim());
   }
   function toggleHelp() { $('help').classList.toggle('on'); }
@@ -1788,18 +1958,23 @@ PAGE = """<!doctype html>
   // ---- input box: reply to whoever just spoke (token-authed) ---------------
   let targets = ['speaker'], tIdx = 0, targetLabels = {};
   function token() { return localStorage.getItem('amux_token') || ''; }
-  function askToken() {
-    const t = prompt('amux auth token (from ~/.amux/auth_token):');
-    if (t) localStorage.setItem('amux_token', t.trim());
-    return !!t;
+  async function askToken() {
+    const t = await askSheet('amux auth token', 'from ~/.amux/auth_token', '');
+    if (t && t.trim()) { localStorage.setItem('amux_token', t.trim()); return true; }
+    return false;
   }
   async function authed(url, opts) {
     opts = opts || {};
     opts.headers = Object.assign({'X-Auth-Token': token()}, opts.headers);
     let r = await fetch(url, opts);
-    if (r.status === 401 && askToken()) {
-      opts.headers['X-Auth-Token'] = token();
-      r = await fetch(url, opts);
+    if (r.status === 401) {
+      // Point at the phone-friendly pairing QR (a 40-char token is misery to
+      // type on a wall) and offer the in-page sheet — no native modal (#142).
+      toast('not paired — scan the QR at ' + location.host + '/pair, or enter the token');
+      if (await askToken()) {
+        opts.headers['X-Auth-Token'] = token();
+        r = await fetch(url, opts);
+      }
     }
     return r;
   }
@@ -1835,7 +2010,7 @@ PAGE = """<!doctype html>
         body: JSON.stringify({text: text, target: targets[tIdx]}),
       }).then(r => r.json());
       if (r.ok) { $('text').value = ''; growText(); $('send').textContent = '✓'; }
-      else { $('send').textContent = '✕'; console.warn(r.detail); }
+      else { $('send').textContent = '✕'; toast(r.detail || 'send failed'); }
     } catch (_) { $('send').textContent = '✕'; }
     setTimeout(() => { $('send').innerHTML = icon('send'); }, 1200);
   }
@@ -2049,7 +2224,9 @@ PAGE = """<!doctype html>
   $('agents').addEventListener('click', (e) => {
     e.stopPropagation();
     if (e.target.closest('.aghead')) {          // top pill → show/hide the tree
-      agTop = !agTop; $('agents').classList.toggle('expanded', agTop); return;
+      agTop = !agTop; $('agents').classList.toggle('expanded', agTop);
+      scheduleAgents();                         // expanded → fast poll now (#141)
+      return;
     }
     const head = e.target.closest('.shead');
     if (head) {
@@ -2247,10 +2424,20 @@ PAGE = """<!doctype html>
     return false;
   }
 
-  pollAgents();
-  setInterval(pollAgents, 4000);
+  // Adaptive cadence (#141): poll fast only while the tree is expanded and
+  // someone's watching states change; when collapsed, drop to a slow heartbeat
+  // — enough to keep the "who needs me" pill's dot/count live and to discover
+  // new agents, without the every-4s host-side subprocess storm. Idle while
+  // backgrounded (pollAgents already no-ops on document.hidden).
+  let agTimer = null;
+  function scheduleAgents() {
+    clearTimeout(agTimer);
+    const ms = document.hidden ? 30000 : (agTop ? 4000 : 12000);
+    agTimer = setTimeout(() => { pollAgents().then(scheduleAgents); }, ms);
+  }
+  pollAgents().then(scheduleAgents);
   document.addEventListener('visibilitychange',
-    () => { if (!document.hidden) pollAgents(); });
+    () => { if (!document.hidden) { pollAgents(); scheduleAgents(); } });
 </script>
 </body>
 </html>
@@ -2307,9 +2494,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/agents":
             # Live session states for the agent strip ("who needs me") — read-
             # only, so open on the tailnet-bound server (only /input is gated).
-            # amux-registered sessions + auto-discovered Claude Code tmux panes.
-            amux = [{**a, "session": a.get("name")} for a in _amux_sessions()]
-            self._json(200, {"agents": amux + _tmux_cc_panes()})
+            # amux-registered sessions + auto-discovered Claude Code tmux panes,
+            # memoized ~2s so concurrent canvases don't each fork the sweep (#141).
+            self._json(200, {"agents": _agents_payload()})
         elif path == "/peek":
             # A pane's Claude Code session as assistant turns (read-only, open
             # like /agents) — latest turn full, older ones collapsible snapshots.
@@ -2363,11 +2550,14 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _sse(self) -> None:
+        q = HUB.attach()
+        if q is None:                       # over the client cap → shed load (#137)
+            self._send(503, b"too many canvas clients\n", "text/plain")
+            return
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        q = HUB.attach()
         try:
             self.wfile.write(b"retry: 2000\n\n")
             if HUB.last is not None:
@@ -2380,7 +2570,10 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     self._event(q.get(timeout=15))
                 except queue.Empty:
-                    self.wfile.write(b": ping\n\n")
+                    # A real data frame, not an SSE `: comment` — EventSource
+                    # ignores comments, so a comment heartbeat can't drive the
+                    # client's stall watchdog. onmessage fires on this (#137).
+                    self.wfile.write(b'data: {"kind":"ping"}\n\n')
                     self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
