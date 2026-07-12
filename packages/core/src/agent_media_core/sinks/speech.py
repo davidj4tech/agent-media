@@ -245,6 +245,14 @@ class SinkSpeech:
             ipc.command_batch(sock, cmds)
         except (ipc.MpvIpcError, OSError) as e:
             log.warning("sink-speech: play_playlist batch failed: %s", e)
+            # The fallback chain is exhausted — this reply never sounded.
+            # Queue a "missed speech" phone notification that retries until
+            # the (probably dozed) phone wakes and can show it.
+            try:
+                from ._miss_notify import record_miss
+                record_miss(target.name)
+            except Exception:  # noqa: BLE001 — alerting must not break playback
+                pass
 
     def snapshot(self, target: Target = DEFAULT_TARGET) -> dict:
         """One-round-trip read of the state the playlist monitor needs each tick
