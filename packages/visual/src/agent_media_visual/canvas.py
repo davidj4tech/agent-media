@@ -113,16 +113,21 @@ HUB = Hub()
 # on — a browser page can only *prevent* sleep, never end it, and the server
 # deliberately never reaches out to screens itself (no ssh/adb creds here).
 
-_VIEWERS: dict[str, float] = {}
+_VIEWERS: dict[str, tuple[float, bool]] = {}   # name -> (last seen, focused)
 _VIEWERS_LOCK = threading.Lock()
 
 
-def _viewer_seen(name: str) -> None:
+def _viewer_seen(name: str, focused: bool = True) -> None:
+    """`focused` is the page's own report of being the active window (blur/
+    focus events) — screen-blank fires neither, so a dark-but-foreground
+    canvas stays focused=True and thus wake-eligible. This is the only
+    focus signal that works everywhere (GNOME Wayland offers services no
+    way to ask, see canvas-wake-watch.py)."""
     name = re.sub(r"[^A-Za-z0-9._-]", "", name or "")[:32]
     if not name:
         return
     with _VIEWERS_LOCK:
-        _VIEWERS[name] = time.time()
+        _VIEWERS[name] = (time.time(), bool(focused))
 
 
 _WHOIS_CACHE: dict[str, tuple[str, float]] = {}
@@ -158,7 +163,8 @@ def _wake_ignored() -> set[str]:
 
 
 def _wake_target() -> "str | None":
-    """The most recently active non-ignored screen, if fresh enough that
+    """The most recently active screen that is neither ignored nor blurred
+    (its canvas must still be the active window there), if fresh enough that
     David is plausibly still near it (MEDIA_VISUAL_WAKE_WINDOW seconds,
     default 12h) — else None and nobody's display gets poked."""
     try:
@@ -167,10 +173,11 @@ def _wake_target() -> "str | None":
         window = 43200.0
     ignored = _wake_ignored()
     with _VIEWERS_LOCK:
-        live = {n: ts for n, ts in _VIEWERS.items() if n.lower() not in ignored}
+        live = {n: v for n, v in _VIEWERS.items()
+                if n.lower() not in ignored and v[1]}
         if not live:
             return None
-        name, ts = max(live.items(), key=lambda kv: kv[1])
+        name, (ts, _) = max(live.items(), key=lambda kv: kv[1][0])
     return name if time.time() - ts <= window else None
 
 
@@ -1885,20 +1892,25 @@ PAGE = """<!doctype html>
   // wake target for figure pushes). Identity = our tailnet IP, so no pairing
   // needed; only an explicit SCREEN override rides the token.
   let seenLast = 0;
-  function seen(force) {
-    if (document.hidden) return;
+  function seen(force, focused) {
     const now = Date.now();
     if (!force && now - seenLast < 30000) return;
     seenLast = now;
+    const body = {focused: focused !== undefined ? focused : document.hasFocus()};
+    if (SCREEN) body.screen = SCREEN;
     const opts = {method: 'POST', keepalive: true,
                   headers: {'Content-Type': 'application/json'},
-                  body: JSON.stringify(SCREEN ? {screen: SCREEN} : {})};
+                  body: JSON.stringify(body)};
     if (SCREEN && token()) opts.headers['X-Auth-Token'] = token();
     try { fetch('/seen', opts); } catch (_) {}
   }
   for (const ev of ['pointerdown', 'keydown', 'touchstart'])
-    document.addEventListener(ev, () => seen(false), {passive: true});
-  window.addEventListener('focus', () => seen(false));
+    document.addEventListener(ev, () => seen(false, true), {passive: true});
+  // blur/focus track "is the canvas the active window" — and ONLY that:
+  // screen-blank fires neither, so a dark-but-foreground canvas stays
+  // wake-eligible, while switching window/tab (blur) rules this screen out.
+  window.addEventListener('focus', () => seen(true, true));
+  window.addEventListener('blur', () => seen(true, false));
   document.addEventListener('visibilitychange',
     () => { if (!document.hidden) seen(false); });
   // A canvas parked foreground on a big screen stays current without touches.
@@ -2744,11 +2756,13 @@ class Handler(BaseHTTPRequestHandler):
             # EXPLICIT ?screen override still demands the token (it's the one
             # form that could redirect wakes elsewhere).
             body = self._read_json() or {}
+            focused = body.get("focused")
+            focused = True if focused is None else bool(focused)
             explicit = str(body.get("screen") or "")
             if explicit and _authorized(self):
-                _viewer_seen(explicit)
+                _viewer_seen(explicit, focused)
             else:
-                _viewer_seen(_screen_from_ip(self.client_address[0]))
+                _viewer_seen(_screen_from_ip(self.client_address[0]), focused)
             self._json(200, {"ok": True})
         elif path == "/ctl":
             self._ctl()

@@ -9,12 +9,17 @@ activity so the display comes back on. Stdlib only.
 Foreground checks (first one whose tool exists wins):
   X11      xdotool getactivewindow getwindowname
   sway     swaymsg -t get_tree (focused node's name)
-  GNOME    best-effort via org.gnome.Shell.Introspect; if the desktop exposes
-           none of these, set CANVAS_WAKE_NO_FOCUS_CHECK=1 to always wake.
+  GNOME Wayland: there is NO service-visible way to ask (xdotool can't see
+           native Wayland windows, Shell.Introspect is AccessDenied) — set
+           CANVAS_WAKE_NO_FOCUS_CHECK=1 and rely on the server's gate: the
+           page reports its own blur/focus in /seen beacons, and a blurred
+           screen never becomes the wake target in the first place.
 
 Wake actions (all tried, errors ignored — first effective one wins):
-  org.gnome.ScreenSaver.SimulateUserActivity (GNOME/cinnamon/mate)
-  xset dpms force on                          (X11)
+  mutter DisplayConfig PowerSaveMode=0 (GNOME Wayland — verified on sp4;
+           SimulateUserActivity/ResetIdletime are gone/debug-gated in
+           modern GNOME)
+  xset dpms force on                   (X11)
 
 Config (env):
   CANVAS_URL                  default http://100.103.43.93:8781 (red5)
@@ -95,9 +100,9 @@ def canvas_is_foreground() -> bool:
 
 
 def wake_display() -> None:
-    _run(["gdbus", "call", "--session", "--dest", "org.gnome.ScreenSaver",
-          "--object-path", "/org/gnome/ScreenSaver",
-          "--method", "org.gnome.ScreenSaver.SimulateUserActivity"])
+    _run(["busctl", "--user", "set-property", "org.gnome.Mutter.DisplayConfig",
+          "/org/gnome/Mutter/DisplayConfig", "org.gnome.Mutter.DisplayConfig",
+          "PowerSaveMode", "i", "0"])
     _run(["xset", "dpms", "force", "on"])
 
 

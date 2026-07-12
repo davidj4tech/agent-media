@@ -36,15 +36,27 @@ def test_env_token_wins(monkeypatch):
 
 def test_wake_target_picks_freshest_viewer():
     canvas._VIEWERS.clear()
-    canvas._VIEWERS["sp4"] = time.time() - 3600
+    canvas._VIEWERS["sp4"] = (time.time() - 3600, True)
     canvas._viewer_seen("hpo")
     assert canvas._wake_target() == "hpo"
+
+
+def test_wake_target_skips_blurred_screens():
+    # Freshest screen's canvas lost the foreground (page beaconed blur) —
+    # fall through to the older screen whose canvas is still up front.
+    canvas._VIEWERS.clear()
+    canvas._VIEWERS["hpo"] = (time.time() - 3600, True)
+    canvas._viewer_seen("sp4", focused=False)
+    assert canvas._wake_target() == "hpo"
+    canvas._VIEWERS.clear()
+    canvas._viewer_seen("sp4", focused=False)   # only viewer, blurred
+    assert canvas._wake_target() is None
 
 
 def test_wake_target_skips_ignored_screens(monkeypatch):
     monkeypatch.setenv("MEDIA_VISUAL_WAKE_IGNORE", "p8a, ftv")
     canvas._VIEWERS.clear()
-    canvas._VIEWERS["hpo"] = time.time() - 3600
+    canvas._VIEWERS["hpo"] = (time.time() - 3600, True)
     canvas._viewer_seen("p8a")            # freshest, but ignored
     assert canvas._wake_target() == "hpo"
     canvas._VIEWERS.clear()
@@ -55,7 +67,7 @@ def test_wake_target_skips_ignored_screens(monkeypatch):
 def test_wake_target_none_when_empty_or_stale():
     canvas._VIEWERS.clear()
     assert canvas._wake_target() is None
-    canvas._VIEWERS["hpo"] = time.time() - 90000   # > the 12h default window
+    canvas._VIEWERS["hpo"] = (time.time() - 90000, True)   # > 12h window
     assert canvas._wake_target() is None
 
 
