@@ -630,7 +630,10 @@ After=am-sinks.service
 Requires=am-sinks.service
 
 [Service]
-ExecStart=/bin/sh -c "exec parec --device=%i.monitor --rate=48000 --format=s16le --channels=2 > /tmp/snapfifo-%i"
+# --latency-msec bounds the capture-stream buffer: if the FIFO reader stalls,
+# pulse would otherwise queue ~4MB (~21s) that never drains — audio then
+# arrives permanently late. Bounded, a stall drops stale audio instead.
+ExecStart=/bin/sh -c "exec parec --latency-msec=500 --device=%i.monitor --rate=48000 --format=s16le --channels=2 > /tmp/snapfifo-%i"
 Restart=always
 RestartSec=2
 
