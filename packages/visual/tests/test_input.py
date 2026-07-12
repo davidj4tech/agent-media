@@ -1,5 +1,7 @@
 """The input box backend: auth, amux picker, reply-to-speaker delivery."""
 
+import json
+
 from agent_media_visual import canvas
 
 
@@ -31,12 +33,23 @@ def test_env_token_wins(monkeypatch):
 
 
 def test_amux_ls_parsing(monkeypatch):
-    monkeypatch.setattr(canvas, "_media_run", lambda argv, timeout=10:
-                        " 1  scratch          /home/x/scratch YOLO\n"
-                        " 12 blog             /home/x/blog\n"
-                        "not a session line\n")
+    monkeypatch.setattr(canvas, "_media_run", lambda argv, timeout=10: json.dumps([
+        {"name": "scratch", "state": "working", "dir": "/home/x/scratch",
+         "flags": ["YOLO"], "preview": "…"},
+        {"name": "blog", "state": "stopped", "dir": "/home/x/blog"},
+        {"state": "working"},          # nameless → dropped
+        "not a session dict",          # junk entry → dropped
+    ]))
     names = [s["name"] for s in canvas._amux_sessions()]
     assert names == ["scratch", "blog"]
+
+
+def test_amux_ls_non_json_degrades_empty(monkeypatch):
+    # An old amux without --json prints the plain table (or usage noise);
+    # _amux_sessions must degrade to [] rather than raise.
+    monkeypatch.setattr(canvas, "_media_run", lambda argv, timeout=10:
+                        " 1  scratch          /home/x/scratch YOLO\n")
+    assert canvas._amux_sessions() == []
 
 
 def test_send_input_rejects_empty_and_unknown(monkeypatch):
