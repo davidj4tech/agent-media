@@ -54,6 +54,46 @@ def _set_mpv_volume(level: int) -> None:
         pass
 
 
+def _set_mpv_time(secs: float) -> None:
+    """Best-effort: seek the Mopidy-Mpv renderer to an absolute position.
+
+    MPD `seekcur` can't move mpv-routed tracks (they bypass Mopidy's pipeline
+    the same way they bypass its mixer — see `_set_mpv_volume`), so seeks are
+    mirrored too. A no-op when mpv is idle (GStreamer track) or its socket is
+    absent, so GStreamer seeks are never double-applied.
+    """
+    sock = _mpv_socket()
+    if not sock or not os.path.exists(sock):
+        return
+    try:
+        if ipc.get_property(sock, "idle-active") is not False:
+            return
+        ipc.set_property(sock, "time-pos", float(max(0.0, secs)))
+    except Exception:  # noqa: BLE001  (best-effort; mpv may be idle/down)
+        pass
+
+
+def mpv_now_props() -> Optional[dict]:
+    """One batched snapshot of the Mopidy-Mpv renderer, or None when it's
+    idle/unreachable. Used by status/label paths for `mpv:` tracks: MPD's
+    tags for them are just the bare filename, while mpv has the embedded
+    media-title, chapter, and a real duration."""
+    sock = _mpv_socket()
+    if not sock or not os.path.exists(sock):
+        return None
+    try:
+        props = ipc.get_properties(
+            sock,
+            ["idle-active", "pause", "time-pos", "duration",
+             "media-title", "chapter-metadata/by-key/title"],
+            timeout=1.0)
+    except (ipc.MpvIpcError, OSError):
+        return None
+    if props.get("idle-active") is not False:
+        return None
+    return props
+
+
 def _to_music_uri(uri: str) -> str:
     """Route YouTube through the Mopidy-Mpv backend (robust mpv+yt-dlp) while
     leaving everything else on GStreamer.
@@ -210,6 +250,21 @@ def _parse_kv(text: str) -> dict:
     return out
 
 
+def _localise_youtube(uri: str) -> str:
+    """Swap an `mpv:<watch-url>` for an `mpv:<rooms-local file>` when possible.
+
+    The rooms host can no longer stream YouTube (datacenter IP bot-block), so
+    music_fetch acquires the audio via the phone's residential IP into the
+    rooms cache. On any failure the watch URL passes through unchanged — the
+    old streaming path stays as the fallback.
+    """
+    if not uri.startswith(("mpv:http://", "mpv:https://")):
+        return uri
+    from . import music_fetch
+    local = music_fetch.ensure_local(uri[len("mpv:"):])
+    return f"mpv:{local}" if local else uri
+
+
 class SinkMusic:
     """Sink protocol implementation for Mopidy / MPD."""
 
@@ -217,21 +272,31 @@ class SinkMusic:
              replace: bool = True, **_: object) -> None:
         playlist = _expand_youtube_playlist(uri)
         if playlist:
-            # YouTube playlist → queue each track as mpv: (Mopidy-YouTube's own
-            # playlist expansion is unreliable; mpv+yt-dlp is robust).
+            # YouTube playlist → play the first track as soon as it's fetched;
+            # a detached helper downloads and appends the rest as they land
+            # (Mopidy-YouTube's own playlist expansion is unreliable).
+            from . import music_fetch
+            first = _localise_youtube(playlist[0])
             with _connect(target) as s:
                 if replace:
                     _cmd(s, "clear")
-                for track_uri in playlist:
-                    _cmd(s, f'add "{track_uri}"')
+                _cmd(s, f'add "{first}"')
                 _cmd(s, "play")
+            music_fetch.spawn_append_fetched(
+                [u[len("mpv:"):] for u in playlist[1:]])
             return
         uri = _to_music_uri(uri)  # YouTube → mpv: backend; else unchanged
+        uri = _localise_youtube(uri)  # …and mpv:<watch-url> → local file
         with _connect(target) as s:
             if replace:
                 _cmd(s, "clear")
             _cmd(s, f'add "{uri}"')
             _cmd(s, "play")
+
+    def enqueue(self, uri: str, target: Target = DEFAULT_TARGET) -> None:
+        """Append to the queue without clearing it or forcing playback."""
+        with _connect(target) as s:
+            _cmd(s, f'add "{uri}"')
 
     def pause(self, target: Target = DEFAULT_TARGET) -> None:
         with _connect(target) as s:
@@ -279,6 +344,7 @@ class SinkMusic:
         secs = max(0.0, position_ms / 1000.0)
         with _connect(target) as s:
             _cmd(s, f"seekcur {secs:.3f}")
+        _set_mpv_time(secs)  # mpv-routed tracks ignore MPD seekcur
 
     def next(self, target: Target = DEFAULT_TARGET) -> None:
         with _connect(target) as s:
@@ -292,6 +358,38 @@ class SinkMusic:
         """Play/pause toggle (MPD `pause` with no arg toggles state)."""
         with _connect(target) as s:
             _cmd(s, "pause")
+
+    def set_speed(self, rate: float, target: Target = DEFAULT_TARGET) -> bool:
+        """Pitch-corrected playback speed (mpv `speed`, clamped 0.25–4.0).
+
+        Only mpv-routed tracks have a speed control — MPD/GStreamer has no
+        such concept — so this returns False when the renderer is idle or
+        unreachable and the caller can say so instead of silently no-opping.
+        """
+        sock = _mpv_socket()
+        if not sock or not os.path.exists(sock):
+            return False
+        try:
+            if ipc.get_property(sock, "idle-active") is not False:
+                return False
+            ipc.set_property(sock, "speed",
+                             float(min(4.0, max(0.25, rate))))
+            return True
+        except (ipc.MpvIpcError, OSError):
+            return False
+
+    def current_speed(self, target: Target = DEFAULT_TARGET) -> Optional[float]:
+        """The renderer's playback speed, or None when no mpv track is live."""
+        sock = _mpv_socket()
+        if not sock or not os.path.exists(sock):
+            return None
+        try:
+            if ipc.get_property(sock, "idle-active") is not False:
+                return None
+            v = ipc.get_property(sock, "speed")
+            return float(v) if v is not None else None
+        except (ipc.MpvIpcError, OSError, TypeError, ValueError):
+            return None
 
     def now_playing_uri(self, target: Target = DEFAULT_TARGET) -> Optional[str]:
         with _connect(target) as s:
@@ -321,16 +419,26 @@ class SinkMusic:
 
     def seek_relative(self, secs: float,
                       target: Target = DEFAULT_TARGET) -> None:
-        """Seek the current track by ±secs. Computed from `elapsed` and
-        issued as an absolute seekcur so we don't depend on Mopidy
-        supporting relative `seekcur +N` syntax."""
+        """Seek the current track by ±secs. Computed from the live position
+        and issued as an absolute seekcur so we don't depend on Mopidy
+        supporting relative `seekcur +N` syntax. For mpv-routed tracks the
+        renderer's time-pos is the truth (MPD's elapsed drifts after a
+        mirrored seek) and the seek is mirrored onto mpv."""
+        props = mpv_now_props()
+        cur = None
+        if props and props.get("time-pos") is not None:
+            cur = float(props["time-pos"])
         with _connect(target) as s:
-            st = _parse_kv(_cmd(s, "status"))
-            try:
-                cur = float(st.get("elapsed", "0") or 0)
-            except ValueError:
-                cur = 0.0
-            _cmd(s, f"seekcur {max(0.0, cur + secs):.3f}")
+            if cur is None:
+                st = _parse_kv(_cmd(s, "status"))
+                try:
+                    cur = float(st.get("elapsed", "0") or 0)
+                except ValueError:
+                    cur = 0.0
+            dest = max(0.0, cur + secs)
+            _cmd(s, f"seekcur {dest:.3f}")
+        if props:
+            _set_mpv_time(dest)
 
     def volume_delta(self, delta: int,
                      target: Target = DEFAULT_TARGET) -> None:
@@ -341,4 +449,8 @@ class SinkMusic:
                 cur = int(st.get("volume", "100") or 100)
             except ValueError:
                 cur = 100
-            _cmd(s, f"setvol {max(0, min(100, cur + delta))}")
+            lvl = max(0, min(100, cur + delta))
+            _cmd(s, f"setvol {lvl}")
+        # Mirror onto the Mopidy-Mpv renderer, same as duck()/unduck():
+        # mpv-routed tracks bypass the MPD mixer, so setvol alone is silent.
+        _set_mpv_volume(lvl)

@@ -71,8 +71,14 @@ def test_expand_ytdlp_error_falls_back(monkeypatch):
 
 # ---- play() wiring --------------------------------------------------------
 
-def test_play_queues_each_playlist_track(monkeypatch):
+def test_play_starts_first_track_and_defers_rest(monkeypatch):
+    # Playlist contract: the first track plays immediately; the tail is handed
+    # to the detached fetch-and-append helper (downloads happen off-process).
+    from agent_media_core.sinks import music_fetch
     monkeypatch.setattr(m, "_expand_youtube_playlist", lambda uri: ["mpv:a", "mpv:b"])
+    deferred = []
+    monkeypatch.setattr(music_fetch, "spawn_append_fetched",
+                        lambda urls: deferred.extend(urls))
 
     cmds = []
 
@@ -84,7 +90,8 @@ def test_play_queues_each_playlist_track(monkeypatch):
     monkeypatch.setattr(m, "_cmd", lambda s, line: cmds.append(line))
 
     m.SinkMusic().play("yt:https://www.youtube.com/playlist?list=PL1")
-    assert cmds == ['clear', 'add "mpv:a"', 'add "mpv:b"', 'play']
+    assert cmds == ['clear', 'add "mpv:a"', 'play']
+    assert deferred == ["b"]
 
 
 def test_play_single_track_unaffected(monkeypatch):

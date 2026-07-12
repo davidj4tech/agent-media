@@ -349,6 +349,18 @@ def music_volume(level: int, target: str = "local") -> dict:
 
 
 @mcp.tool()
+def music_speed(rate: float, target: str = "local") -> dict:
+    """Set music playback speed (pitch-corrected tempo; 1.0 = normal,
+    clamped to 0.25–4.0). Works on mpv-routed tracks — fetched YouTube in
+    the rooms cache and the phone player — which is all YouTube playback
+    now. MPD/GStreamer streams (radio, local:) have no speed control;
+    those return ok=False.
+    """
+    ok = _music().set_speed(max(0.25, min(4.0, rate)), _target(target))
+    return {"ok": ok, "rate": max(0.25, min(4.0, rate))}
+
+
+@mcp.tool()
 def music_now_playing(target: str = "local") -> dict:
     """Current track URI + playback position in ms."""
     t = _target(target)

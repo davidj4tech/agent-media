@@ -2086,6 +2086,15 @@ def _music_status_line(m: "SinkMusic", width: int, hide_idle: bool,
 def _music_now_label(m: "SinkMusic") -> str:
     """Current track as 'Artist — Title' (the music channel's marquee)."""
     song = m.current_song()
+    if (song.get("file") or "").startswith("mpv:"):
+        # mpv-routed track: MPD tags are just the bare filename; the renderer
+        # has the embedded media-title (and chapter, for DJ sets/albums).
+        from .sinks.music import mpv_now_props
+        props = mpv_now_props()
+        if props:
+            label = _mpv_music_label(props)
+            if label:
+                return label
     title = song.get("Title") or song.get("Name") or ""
     if not title:
         title = (song.get("file") or "").rsplit("/", 1)[-1]
@@ -2120,11 +2129,12 @@ def _phone_music_props() -> Optional[dict]:
     return props
 
 
-def _phone_music_label(props: dict) -> str:
-    """Marquee label for phone-local playback: the embedded title, plus the
-    current chapter when the file has chapters. The phone caches downloads by
-    video id, so an unembedded file's media-title is a bare `<id>.<ext>`
-    filename — strip the extension rather than showing it."""
+def _mpv_music_label(props: dict) -> str:
+    """Marquee label from an mpv props snapshot (phone player or the rooms
+    Mopidy-Mpv renderer): the embedded title, plus the current chapter when
+    the file has chapters. Both caches key downloads by video id, so an
+    unembedded file's media-title is a bare `<id>.<ext>` filename — strip the
+    extension rather than showing it."""
     chap = str(props.get("chapter-metadata/by-key/title") or "").strip()
     title = str(props.get("media-title") or "").strip()
     if "." in title and " " not in title:
@@ -2146,7 +2156,22 @@ def _music_now_status(m: "SinkMusic", width: int, hide_idle: bool,
                              dur=props.get("duration"),
                              paused=bool(props.get("pause")), muted=False,
                              width=width, hide_idle=hide_idle, bar=bar)
-        return line, _phone_music_label(props)
+        return line, _mpv_music_label(props)
+    try:
+        song = m.current_song()
+    except OSError:
+        song = {}
+    if (song.get("file") or "").startswith("mpv:"):
+        # mpv-routed rooms track: MPD reports no duration and filename-only
+        # tags; the renderer knows the real position, length, and title.
+        from .sinks.music import mpv_now_props
+        mprops = mpv_now_props()
+        if mprops:
+            line = render_status(idle=False, pos=mprops.get("time-pos"),
+                                 dur=mprops.get("duration"),
+                                 paused=bool(mprops.get("pause")), muted=False,
+                                 width=width, hide_idle=hide_idle, bar=bar)
+            return line, _mpv_music_label(mprops)
     return (_music_status_line(m, width, hide_idle, bar), _music_now_label(m))
 
 
@@ -2257,6 +2282,34 @@ def cmd_music(a) -> int:
                             max(0.0, s))[1],
             offset=lambda s: b.seek_relative(s),
         )
+    if a.action == "speed":
+        # Pitch-corrected tempo (mpv-routed tracks only — fetched YouTube in
+        # rooms, the phone player). MPD/GStreamer streams have no speed knob.
+        arg = (a.uri or "").strip()
+        if not arg:
+            cur = b.current_speed()
+            print(f"{cur:.2f}×" if cur is not None
+                  else "— (no speed control: no mpv track live)")
+            return 0
+        if arg in ("reset", "normal", "1x"):
+            rate, relative = 1.0, False
+        else:
+            relative = arg[0] in "+-"
+            try:
+                val = float(arg)
+            except ValueError:
+                print(f"media music speed: bad rate {arg!r} "
+                      "(want 0.25–4, ±delta, or 'reset')", file=sys.stderr)
+                return 2
+            rate = ((b.current_speed() or 1.0) + val) if relative else val
+        if not b.set_speed(rate):
+            print("media music speed: no mpv track live "
+                  "(MPD/GStreamer streams have no speed control)",
+                  file=sys.stderr)
+            return 1
+        cur = b.current_speed()
+        print(f"⏩ {cur:.2f}×" if cur is not None else f"⏩ {rate:.2f}×")
+        return 0
     if a.action == "volume":
         b.volume_delta(int(float(a.uri or 0)))
         return 0
@@ -2753,11 +2806,13 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument("action",
                    choices=("play", "pause", "resume", "stop", "toggle",
                             "next", "prev", "status", "now", "now-status",
-                            "seek", "volume"))
+                            "seek", "volume", "speed"))
     s.add_argument("uri", nargs="?",
                    help="for 'play': Mopidy URI (e.g. yt:https://...); "
                         "for 'seek': time H:MM:SS (absolute) or +90/-5:00 "
-                        "(relative); for 'volume': ±delta")
+                        "(relative); for 'volume': ±delta; for 'speed': "
+                        "rate 0.25–4 (absolute), ±delta, 'reset', or empty "
+                        "to show the current rate")
     s.add_argument("--width", type=int, default=12,
                    help="for 'status': progress-bar width")
     s.add_argument("--show-idle", action="store_true",

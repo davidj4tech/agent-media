@@ -190,6 +190,21 @@ class SinkMusicLocal:
         except (ipc.MpvIpcError, OSError, TypeError, ValueError):
             pass
 
+    def set_speed(self, rate: float, target: Target = DEFAULT_TARGET) -> bool:
+        """Pitch-corrected playback speed on the phone mpv (0.25–4.0)."""
+        try:
+            self._set("speed", float(min(4.0, max(0.25, rate))))
+            return True
+        except (ipc.MpvIpcError, OSError):
+            return False
+
+    def current_speed(self, target: Target = DEFAULT_TARGET) -> Optional[float]:
+        try:
+            v = ipc.get_property(self._endpoint(), "speed")
+            return float(v) if v is not None else None
+        except (ipc.MpvIpcError, OSError, TypeError, ValueError):
+            return None
+
     def current_volume(self, target: Target = DEFAULT_TARGET) -> Optional[int]:
         """The phone mpv's volume 0-100, or None when unreadable."""
         try:
