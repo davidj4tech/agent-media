@@ -48,6 +48,34 @@ def test_wake_target_none_when_empty_or_stale():
     assert canvas._wake_target() is None
 
 
+def test_screen_from_ip_parses_and_caches(monkeypatch):
+    canvas._WHOIS_CACHE.clear()
+    calls = []
+
+    class _R:
+        returncode = 0
+        stdout = json.dumps({"Node": {"ComputedName": "hpo.tail.ts.net"}})
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        return _R()
+
+    monkeypatch.setattr(canvas.subprocess, "run", fake_run)
+    assert canvas._screen_from_ip("100.1.2.3") == "hpo"
+    assert canvas._screen_from_ip("100.1.2.3") == "hpo"   # served from cache
+    assert len(calls) == 1
+
+
+def test_screen_from_ip_unresolvable(monkeypatch):
+    canvas._WHOIS_CACHE.clear()
+
+    def fake_run(argv, **kw):
+        raise OSError("no tailscale here")
+
+    monkeypatch.setattr(canvas.subprocess, "run", fake_run)
+    assert canvas._screen_from_ip("192.168.1.9") == ""
+
+
 def test_viewer_seen_sanitizes_names():
     canvas._VIEWERS.clear()
     canvas._viewer_seen("héllo wörld/../x" + "y" * 64)
