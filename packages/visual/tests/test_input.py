@@ -1,6 +1,8 @@
 """The input box backend: auth, amux picker, reply-to-speaker delivery."""
 
 import json
+import re
+import time
 
 from agent_media_visual import canvas
 
@@ -30,6 +32,29 @@ def test_token_file_and_header_match(tmp_path, monkeypatch):
 def test_env_token_wins(monkeypatch):
     monkeypatch.setenv("AMUX_AUTH_TOKEN", "envtok")
     assert canvas._authorized(_Req({"X-Auth-Token": "envtok"})) is True
+
+
+def test_wake_target_picks_freshest_viewer():
+    canvas._VIEWERS.clear()
+    canvas._VIEWERS["sp4"] = time.time() - 3600
+    canvas._viewer_seen("hpo")
+    assert canvas._wake_target() == "hpo"
+
+
+def test_wake_target_none_when_empty_or_stale():
+    canvas._VIEWERS.clear()
+    assert canvas._wake_target() is None
+    canvas._VIEWERS["hpo"] = time.time() - 90000   # > the 12h default window
+    assert canvas._wake_target() is None
+
+
+def test_viewer_seen_sanitizes_names():
+    canvas._VIEWERS.clear()
+    canvas._viewer_seen("héllo wörld/../x" + "y" * 64)
+    canvas._viewer_seen("")            # empty → not registered
+    canvas._viewer_seen("!!!")         # nothing survives the strip → dropped
+    (name,) = canvas._VIEWERS
+    assert re.fullmatch(r"[A-Za-z0-9._-]{1,32}", name)
 
 
 def test_amux_ls_parsing(monkeypatch):

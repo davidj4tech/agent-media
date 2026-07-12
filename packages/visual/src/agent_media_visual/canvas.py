@@ -106,6 +106,40 @@ class Hub:
 HUB = Hub()
 
 
+# --- viewer activity: which screen most recently had eyes on it ---------------
+# A canvas names itself once via ?screen=<name> (persisted in localStorage) and
+# then beacons /seen on interaction/focus. Every show event is stamped with the
+# freshest screen ("wake"), so a per-host wake agent can turn THAT display back
+# on — a browser page can only *prevent* sleep, never end it, and the server
+# deliberately never reaches out to screens itself (no ssh/adb creds here).
+
+_VIEWERS: dict[str, float] = {}
+_VIEWERS_LOCK = threading.Lock()
+
+
+def _viewer_seen(name: str) -> None:
+    name = re.sub(r"[^A-Za-z0-9._-]", "", name or "")[:32]
+    if not name:
+        return
+    with _VIEWERS_LOCK:
+        _VIEWERS[name] = time.time()
+
+
+def _wake_target() -> "str | None":
+    """The most recently active screen, if fresh enough that David is
+    plausibly still near it (MEDIA_VISUAL_WAKE_WINDOW seconds, default 12h) —
+    else None and nobody's display gets poked."""
+    try:
+        window = float(os.environ.get("MEDIA_VISUAL_WAKE_WINDOW") or 43200)
+    except ValueError:
+        window = 43200.0
+    with _VIEWERS_LOCK:
+        if not _VIEWERS:
+            return None
+        name, ts = max(_VIEWERS.items(), key=lambda kv: kv[1])
+    return name if time.time() - ts <= window else None
+
+
 # --- audio controller backend: shell to the `media` CLI ----------------------
 # One code path with the tmux popup: every button runs the same CLI verb the
 # popup's hotkey runs, on this host — where `media` already resolves the
@@ -1391,6 +1425,13 @@ PAGE = """<!doctype html>
   }
   function einkOn() { return localStorage.getItem('eink') === '1'; }
   if (einkOn()) document.documentElement.classList.add('eink');
+  // ---- screen name: ?screen=hpo names this device once (persisted) — the
+  // page then beacons activity so the server knows whose display to wake.
+  if (qs.has('screen')) {
+    localStorage.setItem('screen', qs.get('screen'));
+    history.replaceState(null, '', location.pathname);
+  }
+  const SCREEN = localStorage.getItem('screen') || '';
   const layers = [$('a'), $('b')];
   // Static icons; stateful ones (pp, sfx, chan, target) are set in their
   // draw functions below.
@@ -1696,6 +1737,7 @@ PAGE = """<!doctype html>
       }
       else if (d.kind === 'state') {
         if (d.speaking) stopSaySpin();     // audio started → the play button stops loading
+        if (d.speaking) holdWake(45000);   // rolling hold while a voice is live
         setSpeaking(!!d.speaking);
         if (d.speaking) {
           setSubtitle(d.sentence || null);
@@ -1707,6 +1749,7 @@ PAGE = """<!doctype html>
         applySeq();
       }
       else if (d.sequence) {
+        holdWake(((d.estdur || 60) + 30) * 1000);  // see the whole story out
         seq = d.sequence; seqIdx = -1; seqEst = d.estdur || 0;
         seqCap = d.caption || null;
         shownFigure = false; shownSession = d.session || null;
@@ -1724,6 +1767,7 @@ PAGE = """<!doctype html>
         else { setBeat(0); applySeq(); }
       }
       else if (d.image) {
+        holdWake(90000);
         seq = null; seqIdx = -1; show(d);
         shownFigure = d.purpose === 'figure'; shownSession = d.session || null;
         figImg = shownFigure; updFig();
@@ -1765,15 +1809,56 @@ PAGE = """<!doctype html>
     }
   }, 15000);
 
-  // Keep a phone/tablet screen awake while the canvas is up (best-effort;
-  // needs one tap on some browsers to count as a user gesture).
-  let lock = null;
-  async function wake() {
-    try { lock = await navigator.wakeLock.request('screen'); } catch (_) {}
+  // Hold the screen awake only while something FRESH is showing, then release
+  // so a short system screen-off delay works again (a permanent lock meant
+  // "awake when idle, dark when a figure lands" — the worst pairing). A page
+  // can only PREVENT sleep; turning a dark screen back ON is the per-host
+  // wake agent's job (it watches /events for show events stamped wake=<us>).
+  let lock = null, wakeUntil = 0;
+  async function holdWake(ms) {
+    wakeUntil = Math.max(wakeUntil, Date.now() + ms);
+    if (!lock) {
+      try { lock = await navigator.wakeLock.request('screen'); } catch (_) {}
+      if (lock) lock.addEventListener('release', () => { lock = null; });
+    }
   }
-  wake();
+  setInterval(() => {
+    if (lock && Date.now() > wakeUntil) {
+      try { lock.release(); } catch (_) {} lock = null;
+    }
+  }, 10000);
+  holdWake(90000);   // fresh page: hold briefly, then obey the system timeout
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+      lastEventTs = Date.now();
+      if (Date.now() < wakeUntil) holdWake(30000);  // re-grab a dropped lock
+    }
+  });
+
+  // Activity beacon: tell the server this screen has eyes on it (names the
+  // wake target for figure pushes). Paired screens only — /seen is gated.
+  let seenLast = 0;
+  function seen(force) {
+    if (!SCREEN || document.hidden || !token()) return;
+    const now = Date.now();
+    if (!force && now - seenLast < 30000) return;
+    seenLast = now;
+    try {
+      fetch('/seen', {method: 'POST', keepalive: true,
+                      headers: {'X-Auth-Token': token(),
+                                'Content-Type': 'application/json'},
+                      body: JSON.stringify({screen: SCREEN})});
+    } catch (_) {}
+  }
+  for (const ev of ['pointerdown', 'keydown', 'touchstart'])
+    document.addEventListener(ev, () => seen(false), {passive: true});
+  window.addEventListener('focus', () => seen(false));
   document.addEventListener('visibilitychange',
-    () => { if (!document.hidden) { lastEventTs = Date.now(); wake(); } });
+    () => { if (!document.hidden) seen(false); });
+  // A canvas parked foreground on a big screen stays current without touches.
+  setInterval(() => { if (!document.hidden && document.hasFocus()) seen(true); },
+              600000);
+  seen(true);
 
   // ---- audio controller: same verbs as the tmux popup, as touch buttons ----
   const GLYPH = { speech: 'note', music: 'notes', book: 'book' };
@@ -2601,12 +2686,18 @@ class Handler(BaseHTTPRequestHandler):
         # Every state-changing POST needs the same auth as /input (#138):
         # otherwise a drive-by page can speak, play audio, spoof screens, or
         # drive media (CSRF). Read-only GET endpoints stay open by design.
-        if path in ("/show", "/ctl", "/say", "/play"):
+        if path in ("/show", "/ctl", "/say", "/play", "/seen"):
             if not _authorized(self):
                 self._json(401, {"error": "unauthorized"})
                 return
         if path == "/show":
             self._show()
+        elif path == "/seen":
+            # Screen-activity beacon (paired canvases only — an open /seen
+            # could redirect wakes to a spoofed screen name).
+            body = self._read_json() or {}
+            _viewer_seen(str(body.get("screen") or ""))
+            self._json(200, {"ok": True})
         elif path == "/ctl":
             self._ctl()
         elif path == "/input":
@@ -2689,6 +2780,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, b"missing image\n", "text/plain")
                 return
             event["image"] = ref(image)
+        # Stamp the screen worth waking (most recently active viewer) so each
+        # host's wake agent can decide "is that me?" locally.
+        wake = _wake_target()
+        if wake:
+            event["wake"] = wake
         HUB.publish(event)
         self._send(200, b"shown\n", "text/plain")
 
