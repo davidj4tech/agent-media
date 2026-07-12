@@ -1290,12 +1290,13 @@ def cmd_pane_muted(a) -> int:
 
 
 # Speed [ / ] ladder. At/above 1.0x, presses hop these rungs — the gaps widen
-# (1.0→1.5→2.0→3.0 is +0.5,+0.5,+1.0) so a held key accelerates. Below 1.0x, fine
+# (1.0→1.25→1.5→2.0→3.0) so a held key accelerates. Below 1.0x, fine
 # flat 0.1 steps for precise control (no ladder). Symmetric for up/down. As a
 # position ladder (snap off the live speed) it needs no cross-press accel state —
 # each listening-mode [ / ] press is a separate `media speed` process.
+# Keep in sync with SPEED_RUNGS in tmux/media-popup (book channel's shell copy).
 _SPEED_MIN, _SPEED_MAX, _SPEED_FLAT = 0.3, 3.0, 0.1
-_SPEED_RUNGS = (1.0, 1.5, 2.0, 3.0)
+_SPEED_RUNGS = (1.0, 1.25, 1.5, 2.0, 3.0)
 
 
 def _speed_next(cur: float, direction: int) -> float:
@@ -2119,7 +2120,7 @@ def _phone_music_props() -> Optional[dict]:
     try:
         props = ipc.get_properties(
             music_local.endpoint(),
-            ["idle-active", "pause", "time-pos", "duration",
+            ["idle-active", "pause", "time-pos", "duration", "speed",
              "media-title", "chapter-metadata/by-key/title"],
             timeout=1.5)
     except (ipc.MpvIpcError, OSError):
@@ -2146,17 +2147,27 @@ def _mpv_music_label(props: dict) -> str:
     return chap or title
 
 
+def _speed_str(props: dict) -> str:
+    """Compact speed readout from an mpv props snapshot: '1.25', '' at 1.0×."""
+    try:
+        v = float(props.get("speed") or 1.0)
+    except (TypeError, ValueError):
+        return ""
+    return "" if abs(v - 1.0) < 1e-3 else f"{v:g}"
+
+
 def _music_now_status(m: "SinkMusic", width: int, hide_idle: bool,
                       bar: bool = True) -> tuple:
-    """(status line, marquee label) for whichever backend is actually playing:
-    the phone's local mpv when it has a track loaded, else Mopidy."""
+    """(status line, marquee label, speed) for whichever backend is actually
+    playing: the phone's local mpv when it has a track loaded, else Mopidy.
+    speed is '' at 1.0× or when the track has no speed control (MPD)."""
     props = _phone_music_props()
     if props is not None:
         line = render_status(idle=False, pos=props.get("time-pos"),
                              dur=props.get("duration"),
                              paused=bool(props.get("pause")), muted=False,
                              width=width, hide_idle=hide_idle, bar=bar)
-        return line, _mpv_music_label(props)
+        return line, _mpv_music_label(props), _speed_str(props)
     try:
         song = m.current_song()
     except OSError:
@@ -2171,8 +2182,9 @@ def _music_now_status(m: "SinkMusic", width: int, hide_idle: bool,
                                  dur=mprops.get("duration"),
                                  paused=bool(mprops.get("pause")), muted=False,
                                  width=width, hide_idle=hide_idle, bar=bar)
-            return line, _mpv_music_label(mprops)
-    return (_music_status_line(m, width, hide_idle, bar), _music_now_label(m))
+            return line, _mpv_music_label(mprops), _speed_str(mprops)
+    return (_music_status_line(m, width, hide_idle, bar),
+            _music_now_label(m), "")
 
 
 def _music_live_backend(m: "SinkMusic"):
@@ -2226,12 +2238,13 @@ def cmd_music(a) -> int:
     if a.action in ("status", "now", "now-status"):
         # All three follow the LIVE backend (phone mpv when it has a track
         # loaded, else Mopidy). `now-status` is the popup's fused form: status
-        # line + marquee label in one spawn and one phone round-trip.
-        line, label = ("○" if a.show_idle else ""), ""
+        # line + marquee label + speed readout in one spawn and one phone
+        # round-trip (the speed line is '' at 1.0× / no speed control).
+        line, label, spd = ("○" if a.show_idle else ""), "", ""
         try:
-            line, label = _music_now_status(m, a.width,
-                                            hide_idle=not a.show_idle,
-                                            bar=not a.no_bar)
+            line, label, spd = _music_now_status(m, a.width,
+                                                 hide_idle=not a.show_idle,
+                                                 bar=not a.no_bar)
         except Exception:  # noqa: BLE001 — popup must never see a traceback
             pass
         if a.action == "status":
@@ -2241,6 +2254,7 @@ def cmd_music(a) -> int:
         else:
             print(line)
             print(label)
+            print(spd)
         return 0
     if a.action == "play":
         if not a.uri:
@@ -2293,6 +2307,10 @@ def cmd_music(a) -> int:
             return 0
         if arg in ("reset", "normal", "1x"):
             rate, relative = 1.0, False
+        elif arg in ("up", "down"):
+            # The popup's [ / ] keys: hop the shared speech/book speed ladder.
+            rate = _speed_next(b.current_speed() or 1.0,
+                               1 if arg == "up" else -1)
         else:
             relative = arg[0] in "+-"
             try:
@@ -2811,8 +2829,9 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="for 'play': Mopidy URI (e.g. yt:https://...); "
                         "for 'seek': time H:MM:SS (absolute) or +90/-5:00 "
                         "(relative); for 'volume': ±delta; for 'speed': "
-                        "rate 0.25–4 (absolute), ±delta, 'reset', or empty "
-                        "to show the current rate")
+                        "rate 0.25–4 (absolute), ±delta, 'up'/'down' "
+                        "(ladder), 'reset', or empty to show the current "
+                        "rate")
     s.add_argument("--width", type=int, default=12,
                    help="for 'status': progress-bar width")
     s.add_argument("--show-idle", action="store_true",

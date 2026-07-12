@@ -84,7 +84,7 @@ def mpv_now_props() -> Optional[dict]:
     try:
         props = ipc.get_properties(
             sock,
-            ["idle-active", "pause", "time-pos", "duration",
+            ["idle-active", "pause", "time-pos", "duration", "speed",
              "media-title", "chapter-metadata/by-key/title"],
             timeout=1.0)
     except (ipc.MpvIpcError, OSError):

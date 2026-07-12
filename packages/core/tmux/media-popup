@@ -16,7 +16,7 @@
 #           the title: ↪ = another pane). Still recorded for replay, never
 #           plays live or ducks. 🔒 in the title = subject muted; 🔒N indicator
 #           = N muted in total.                                          (speech)
-#   [ / ]   slower / faster (accel)    ⌫   reset speed (0 also works)           (speech/book)
+#   [ / ]   slower / faster (accel)    ⌫   reset speed (0 also works)           (all channels)
 #   < / >   older/newer — speech: turn · music: track · book: part.
 #           < is ⏮: restarts the current item first if you're past its start
 #           (grace = MEDIA_POPUP_PREV_RESTART_S, def 3s), else steps back.
@@ -69,9 +69,10 @@ export TTS_POPUP_PANE="$HL_PANE"
 
 speed=1.0
 bspeed=1.0              # book channel speed (tracked separately from speech)
-# Speed [ / ] ladder: at/above 1.0x, presses hop the rungs (1.0 1.5 2.0 3.0 —
-# widening gaps, so a held key accelerates); below 1.0x, fine flat 0.1 steps.
-SPEED_RUNGS="1.0 1.5 2.0 3.0"
+# Speed [ / ] ladder: at/above 1.0x, presses hop the rungs (1.0 1.25 1.5 2.0
+# 3.0 — widening gaps, so a held key accelerates); below 1.0x, fine flat 0.1
+# steps. Keep in sync with _SPEED_RUNGS in cli.py (speech/music CLI ladder).
+SPEED_RUNGS="1.0 1.25 1.5 2.0 3.0"
 hist_idx=1
 # Fused speech keys: instead of running `$MEDIA <verb>` and then a separate
 # `popup-status` redraw (two Python spawns per press), a fusable speech key
@@ -88,6 +89,7 @@ SPEECH_SOCK="${MEDIA_SPEECH_SOCKET:-$HOME/.local/state/agent-media/sink-speech.s
 # each fetch so they're honest regardless of who changed them.
 MUTED=""        # 1 when the active channel is muted
 SPD=""          # active channel's actual speed ("" / "1" → hidden)
+MSPD=""         # music speed as reported by now-status line 3
 PART=""         # "2/5" when a multi-part book/playlist is active
 LOADING=""      # 1 while the book channel is resolving a load (YouTube gap)
 IDLE=""         # 1 when the book channel has a queued-but-unstarted entry
@@ -168,7 +170,7 @@ fetch() {
         # `now-status` follows the live backend (phone mpv when `play --where
         # auto` routed there, else Mopidy) — separate status/now calls would
         # each re-probe the phone bridge.
-        { IFS= read -r STATUS; IFS= read -r t; } < <(
+        { IFS= read -r STATUS; IFS= read -r t; IFS= read -r MSPD; } < <(
             $MEDIA music now-status --show-idle --no-bar 2>/dev/null)
         t="${t#"${t%%[![:space:]]*}"}"; t="${t%"${t##*[![:space:]]}"}"
         [ -n "$t" ] && LABEL="$t" || LABEL="(no music)"
@@ -241,8 +243,13 @@ fetch() {
             # unmuted) and clobber the real remote state.
             [ "$(sock_get mute)" = "true" ] && MUTED=1
             SPD=$(sock_get speed)   # mpv returns e.g. 0.700000 — normalize
-            [ -n "$SPD" ] && SPD=$(awk -v s="$SPD" 'BEGIN{printf "%.1f", s}')
+            [ -n "$SPD" ] && SPD=$(awk -v s="$SPD" 'BEGIN{printf "%g", s+0}')
             bspeed="${SPD:-$bspeed}"
+            ;;
+        music)
+            # The renderer may be remote (Mopidy host / phone bridge), so the
+            # speed rides in as now-status line 3 ('' at 1.0× / no control).
+            SPD="${MSPD:-}"
             ;;
     esac
     # Part number, shown only for a genuinely multi-part book/playlist.
@@ -360,7 +367,7 @@ draw() {
     local ind=""
     [ "$VOL_SHOW" -gt 0 ] && ind="$ind $VOL_TXT"
     [ -n "$PART" ] && ind="$ind $PART"
-    [ -n "$SPD" ] && [ "$SPD" != "1.0" ] && ind="$ind ${SPD}×"
+    [ -n "$SPD" ] && [ "$SPD" != "1.0" ] && [ "$SPD" != "1" ] && ind="$ind ${SPD}×"
     [ -n "$MUTED" ] && ind="$ind 🔇"
     [ -n "$MCOUNT" ] && ind="$ind 🔒$MCOUNT"
     # While the book channel resolves a load (the YouTube gap), show an animated
@@ -505,12 +512,18 @@ show_link() {  # $1 = url
 
 bump_speed() {        # $1 = direction: 1 faster / -1 slower — hops the speed ladder
     local dir="$1"
-    # Speech may play on a *remote* target (the phone, Grade B), so route through
-    # the target-aware CLI — which owns the same rung ladder — instead of poking
-    # red5's idle local mpv over a socket. (Book plays locally; keep its path.)
+    # Speech may play on a *remote* target (the phone, Grade B), and music's
+    # renderer lives wherever Mopidy does — both route through the target-aware
+    # CLI, which owns the same rung ladder, instead of poking a local socket.
+    # (Book plays locally; keep its direct-socket path.)
     if [ "$CHANNEL" = "speech" ]; then
         if [ "$dir" -gt 0 ]; then $MEDIA speed up >/dev/null 2>&1
         else $MEDIA speed down >/dev/null 2>&1; fi
+        return
+    fi
+    if [ "$CHANNEL" = "music" ]; then
+        if [ "$dir" -gt 0 ]; then $MEDIA music speed up >/dev/null 2>&1
+        else $MEDIA music speed down >/dev/null 2>&1; fi
         return
     fi
     local sock; sock=$(sock_for); [ -z "$sock" ] && return
@@ -528,7 +541,7 @@ bump_speed() {        # $1 = direction: 1 faster / -1 slower — hops the speed 
             if (c > 1.0+eps) { v=1.0; for(i=n;i>=1;i--) if(R[i]<c-eps){v=R[i];break} }
             else { v=c-0.1; if (v<0.3) v=0.3 }
         }
-        if (v<0.3) v=0.3; if (v>3.0) v=3.0; printf "%.1f", v
+        if (v<0.3) v=0.3; if (v>3.0) v=3.0; printf "%g", v
     }')
     [ -z "$v" ] && return
     printf '{"command":["set_property","speed",%s]}\n' "$v" | socat - "UNIX-CONNECT:$sock" >/dev/null 2>&1
@@ -749,12 +762,13 @@ handle_key() {
         M)   [ "$CHANNEL" = "speech" ] && \
                  { _mr=$(TTS_POPUP_PANE="$HL_PANE" $MEDIA mute-pane --subject toggle 2>/dev/null); \
                    tmux display-message "🔒 ${_mr:-pane mute toggled}" 2>/dev/null; } ;;
-        '[') { [ "$CHANNEL" = "speech" ] || [ "$CHANNEL" = "book" ]; } && bump_speed -1 ;;
-        ']') { [ "$CHANNEL" = "speech" ] || [ "$CHANNEL" = "book" ]; } && bump_speed 1 ;;
+        '[') bump_speed -1 ;;
+        ']') bump_speed 1 ;;
         # Backspace = "undo the speed change" → reset to 1.0 (⌫ is the primary
         # key; 0 kept as an alias). Terminals send DEL (0x7f) or BS (0x08).
         $'\177'|$'\b'|0)
              if [ "$CHANNEL" = "book" ]; then bspeed=1.0; $MEDIA book speed reset 2>/dev/null
+             elif [ "$CHANNEL" = "music" ]; then $MEDIA music speed reset >/dev/null 2>&1
              elif [ "$CHANNEL" = "speech" ]; then speed=1.0; $MEDIA speed reset; fi ;;
         v)   # Toggle auto-highlight (copy-mode follow-along) on/off. Speech
              # only; immediate feedback fires for the current sentence and the
