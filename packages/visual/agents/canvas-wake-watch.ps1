@@ -23,7 +23,8 @@ param(
   [string]$Canvas = "http://100.103.43.93:8781",   # red5's canvas (tailnet IP)
   [string]$Screen = $env:COMPUTERNAME.ToLower(),
   [string]$MatchTitle = "agent-media canvas",
-  [switch]$FiguresOnly                              # skip ambient art, wake only for [[visual/reveal]] figures
+  [switch]$FiguresOnly,                             # skip ambient art, wake only for [[visual/reveal]] figures
+  [switch]$VoiceWake                                # opt-in: also wake when a voice starts (relights every reply)
 )
 
 Add-Type -TypeDefinition @"
@@ -62,7 +63,7 @@ while ($true) {
       try { $d = $line.Substring(5).Trim() | ConvertFrom-Json } catch { continue }
       if ($d.wake -ne $Screen) { continue }
       $isVisual = [bool]($d.image -or $d.sequence)
-      $isVoice = ($d.kind -eq "state") -and $d.speaking   # clip start or unpause
+      $isVoice = $VoiceWake -and ($d.kind -eq "state") -and $d.speaking
       if (-not ($isVisual -or $isVoice)) { continue }
       if ($FiguresOnly -and $isVisual -and $d.purpose -ne "figure") { continue }
       if ([WakeUtil]::FgTitle() -notlike "*$MatchTitle*") { continue }

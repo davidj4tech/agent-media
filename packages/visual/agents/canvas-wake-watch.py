@@ -58,6 +58,9 @@ SCREEN = os.environ.get("CANVAS_SCREEN") or socket.gethostname().split(".")[0]
 MATCH = os.environ.get("CANVAS_MATCH_TITLE") or "agent-media canvas"
 FIGURES_ONLY = os.environ.get("CANVAS_WAKE_FIGURES_ONLY") == "1"
 NO_FOCUS = os.environ.get("CANVAS_WAKE_NO_FOCUS_CHECK") == "1"
+# Voice-start wakes (incl. unpause) are opt-in: during an active conversation
+# every reply relights the screen, defeating a short screen-off delay.
+VOICE_WAKE = os.environ.get("CANVAS_WAKE_ON_VOICE") == "1"
 
 
 def _run(argv: list[str], timeout: float = 3.0) -> str:
@@ -154,7 +157,8 @@ def watch() -> None:
             if d.get("wake") != SCREEN:
                 continue
             is_visual = bool(d.get("image") or d.get("sequence"))
-            is_voice = d.get("kind") == "state" and d.get("speaking")
+            is_voice = (VOICE_WAKE and d.get("kind") == "state"
+                        and d.get("speaking"))
             if not (is_visual or is_voice):   # voice = clip start or unpause
                 continue
             if FIGURES_ONLY and is_visual and d.get("purpose") != "figure":
