@@ -113,21 +113,40 @@ HUB = Hub()
 # on — a browser page can only *prevent* sleep, never end it, and the server
 # deliberately never reaches out to screens itself (no ssh/adb creds here).
 
-_VIEWERS: dict[str, tuple[float, bool]] = {}   # name -> (last seen, focused)
+_VIEWERS: dict[str, dict] = {}   # name -> {ts, focused, blur_ts}
 _VIEWERS_LOCK = threading.Lock()
 
+# A blur this close before the host's screen-blank is *caused by* the blank
+# (GNOME takes window focus when it blanks) and must not count against the
+# canvas — the screen went dark on it, nobody switched away from it.
+_BLANK_BLAME_S = 6.0
 
-def _viewer_seen(name: str, focused: bool = True) -> None:
-    """`focused` is the page's own report of being the active window (blur/
-    focus events) — screen-blank fires neither, so a dark-but-foreground
-    canvas stays focused=True and thus wake-eligible. This is the only
-    focus signal that works everywhere (GNOME Wayland offers services no
-    way to ask, see canvas-wake-watch.py)."""
+
+def _viewer_seen(name: str, focused: "bool | None" = True,
+                 blank: "bool | None" = None) -> None:
+    """`focused` is the page's own blur/focus report of being the active
+    window — the only focus signal that works everywhere (GNOME Wayland
+    offers services no way to ask, see canvas-wake-watch.py). `blank` comes
+    from the host's wake agent watching the screensaver: blank=True right
+    after a blur means the blur was the blank's doing, so the canvas was
+    still up front when the lights went out — restore its eligibility."""
     name = re.sub(r"[^A-Za-z0-9._-]", "", name or "")[:32]
     if not name:
         return
+    now = time.time()
     with _VIEWERS_LOCK:
-        _VIEWERS[name] = (time.time(), bool(focused))
+        v = _VIEWERS.setdefault(name, {"ts": 0.0, "focused": False,
+                                       "blur_ts": 0.0})
+        if blank is not None:
+            if blank and not v["focused"] and \
+                    now - v["blur_ts"] <= _BLANK_BLAME_S:
+                v["focused"] = True
+            return   # agent housekeeping, not viewer activity — ts untouched
+        v["ts"] = now
+        if focused is not None:
+            if not focused and v["focused"]:
+                v["blur_ts"] = now
+            v["focused"] = bool(focused)
 
 
 _WHOIS_CACHE: dict[str, tuple[str, float]] = {}
@@ -174,11 +193,11 @@ def _wake_target() -> "str | None":
     ignored = _wake_ignored()
     with _VIEWERS_LOCK:
         live = {n: v for n, v in _VIEWERS.items()
-                if n.lower() not in ignored and v[1]}
+                if n.lower() not in ignored and v["focused"]}
         if not live:
             return None
-        name, (ts, _) = max(live.items(), key=lambda kv: kv[1][0])
-    return name if time.time() - ts <= window else None
+        name, v = max(live.items(), key=lambda kv: kv[1]["ts"])
+    return name if time.time() - v["ts"] <= window else None
 
 
 # --- audio controller backend: shell to the `media` CLI ----------------------
@@ -2620,6 +2639,14 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, PAGE.encode(), "text/html; charset=utf-8")
         elif path == "/healthz":
             self._send(200, b"ok\n", "text/plain")
+        elif path == "/seen":
+            # Read-only registry dump (debugging which screen would wake) —
+            # open like /sessions; the POST twin is what mutates.
+            with _VIEWERS_LOCK:
+                snap = {n: {"age_s": round(time.time() - v["ts"], 1),
+                            "focused": v["focused"]}
+                        for n, v in _VIEWERS.items()}
+            self._json(200, {"viewers": snap, "target": _wake_target()})
         elif path == "/events":
             self._sse()
         elif path == "/last":
@@ -2758,11 +2785,14 @@ class Handler(BaseHTTPRequestHandler):
             body = self._read_json() or {}
             focused = body.get("focused")
             focused = True if focused is None else bool(focused)
+            blank = body.get("blank")
+            blank = None if blank is None else bool(blank)
             explicit = str(body.get("screen") or "")
             if explicit and _authorized(self):
-                _viewer_seen(explicit, focused)
+                _viewer_seen(explicit, focused, blank)
             else:
-                _viewer_seen(_screen_from_ip(self.client_address[0]), focused)
+                _viewer_seen(_screen_from_ip(self.client_address[0]),
+                             focused, blank)
             self._json(200, {"ok": True})
         elif path == "/ctl":
             self._ctl()

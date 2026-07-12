@@ -34,9 +34,14 @@ def test_env_token_wins(monkeypatch):
     assert canvas._authorized(_Req({"X-Auth-Token": "envtok"})) is True
 
 
+def _viewer(age_s=0.0, focused=True, blur_age_s=None):
+    return {"ts": time.time() - age_s, "focused": focused,
+            "blur_ts": time.time() - (blur_age_s or 0.0)}
+
+
 def test_wake_target_picks_freshest_viewer():
     canvas._VIEWERS.clear()
-    canvas._VIEWERS["sp4"] = (time.time() - 3600, True)
+    canvas._VIEWERS["sp4"] = _viewer(age_s=3600)
     canvas._viewer_seen("hpo")
     assert canvas._wake_target() == "hpo"
 
@@ -45,7 +50,7 @@ def test_wake_target_skips_blurred_screens():
     # Freshest screen's canvas lost the foreground (page beaconed blur) —
     # fall through to the older screen whose canvas is still up front.
     canvas._VIEWERS.clear()
-    canvas._VIEWERS["hpo"] = (time.time() - 3600, True)
+    canvas._VIEWERS["hpo"] = _viewer(age_s=3600)
     canvas._viewer_seen("sp4", focused=False)
     assert canvas._wake_target() == "hpo"
     canvas._VIEWERS.clear()
@@ -53,10 +58,31 @@ def test_wake_target_skips_blurred_screens():
     assert canvas._wake_target() is None
 
 
+def test_blank_blames_coincident_blur():
+    # GNOME steals window focus when it blanks: blur then blank within the
+    # blame window means the canvas was up front when the lights went out.
+    canvas._VIEWERS.clear()
+    canvas._viewer_seen("sp4", focused=True)
+    canvas._viewer_seen("sp4", focused=False)          # blur (from the blank)
+    canvas._viewer_seen("sp4", focused=None, blank=True)
+    assert canvas._wake_target() == "sp4"
+
+
+def test_blank_does_not_excuse_old_blur():
+    # Switched to vim long before the screen blanked — canvas was NOT the
+    # active window; the later blank must not resurrect it.
+    canvas._VIEWERS.clear()
+    canvas._viewer_seen("sp4", focused=True)
+    canvas._viewer_seen("sp4", focused=False)
+    canvas._VIEWERS["sp4"]["blur_ts"] = time.time() - 60
+    canvas._viewer_seen("sp4", focused=None, blank=True)
+    assert canvas._wake_target() is None
+
+
 def test_wake_target_skips_ignored_screens(monkeypatch):
     monkeypatch.setenv("MEDIA_VISUAL_WAKE_IGNORE", "p8a, ftv")
     canvas._VIEWERS.clear()
-    canvas._VIEWERS["hpo"] = (time.time() - 3600, True)
+    canvas._VIEWERS["hpo"] = _viewer(age_s=3600)
     canvas._viewer_seen("p8a")            # freshest, but ignored
     assert canvas._wake_target() == "hpo"
     canvas._VIEWERS.clear()
@@ -67,7 +93,7 @@ def test_wake_target_skips_ignored_screens(monkeypatch):
 def test_wake_target_none_when_empty_or_stale():
     canvas._VIEWERS.clear()
     assert canvas._wake_target() is None
-    canvas._VIEWERS["hpo"] = (time.time() - 90000, True)   # > 12h window
+    canvas._VIEWERS["hpo"] = _viewer(age_s=90000)   # > 12h window
     assert canvas._wake_target() is None
 
 

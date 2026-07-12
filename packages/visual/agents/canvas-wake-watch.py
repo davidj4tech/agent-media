@@ -49,6 +49,7 @@ import os
 import shutil
 import socket
 import subprocess
+import threading
 import time
 import urllib.request
 
@@ -99,6 +100,39 @@ def canvas_is_foreground() -> bool:
     return False  # no tool worked — err on not waking
 
 
+def _post_blank(blank: bool) -> None:
+    """Tell the server this host's screen just blanked/unblanked. GNOME takes
+    window focus when it blanks, so the canvas page fires a blur it doesn't
+    deserve — the server pairs this blank report with that blur and restores
+    the canvas's wake eligibility (identity from our tailnet source IP)."""
+    try:
+        req = urllib.request.Request(
+            URL + "/seen", data=json.dumps({"blank": blank}).encode(),
+            method="POST", headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=5):
+            pass
+    except Exception:  # noqa: BLE001 — housekeeping, never fatal
+        pass
+
+
+def watch_screensaver() -> None:
+    """Follow org.gnome.ScreenSaver.ActiveChanged and relay blanks."""
+    while True:
+        try:
+            p = subprocess.Popen(
+                ["gdbus", "monitor", "--session", "--dest",
+                 "org.gnome.ScreenSaver"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+            for line in p.stdout:  # type: ignore[union-attr]
+                # "…ScreenSaver.ActiveChanged (true,)" — true = blanked
+                if "ActiveChanged" not in line:
+                    continue
+                _post_blank("true" in line.split("ActiveChanged", 1)[1])
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(5)
+
+
 def wake_display() -> None:
     _run(["busctl", "--user", "set-property", "org.gnome.Mutter.DisplayConfig",
           "/org/gnome/Mutter/DisplayConfig", "org.gnome.Mutter.DisplayConfig",
@@ -125,11 +159,17 @@ def watch() -> None:
                 continue
             if FIGURES_ONLY and is_visual and d.get("purpose") != "figure":
                 continue
-            if canvas_is_foreground():
+            fg = canvas_is_foreground()
+            print(f"wake event: visual={is_visual} voice={bool(is_voice)} "
+                  f"foreground={fg}", flush=True)
+            if fg:
                 wake_display()
+                print("wake_display() fired", flush=True)
 
 
 if __name__ == "__main__":
+    if shutil.which("gdbus"):
+        threading.Thread(target=watch_screensaver, daemon=True).start()
     while True:
         try:
             watch()
