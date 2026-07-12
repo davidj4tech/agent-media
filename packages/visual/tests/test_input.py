@@ -41,6 +41,17 @@ def test_wake_target_picks_freshest_viewer():
     assert canvas._wake_target() == "hpo"
 
 
+def test_wake_target_skips_ignored_screens(monkeypatch):
+    monkeypatch.setenv("MEDIA_VISUAL_WAKE_IGNORE", "p8a, ftv")
+    canvas._VIEWERS.clear()
+    canvas._VIEWERS["hpo"] = time.time() - 3600
+    canvas._viewer_seen("p8a")            # freshest, but ignored
+    assert canvas._wake_target() == "hpo"
+    canvas._VIEWERS.clear()
+    canvas._viewer_seen("P8A")            # case-insensitive, only viewer
+    assert canvas._wake_target() is None
+
+
 def test_wake_target_none_when_empty_or_stale():
     canvas._VIEWERS.clear()
     assert canvas._wake_target() is None

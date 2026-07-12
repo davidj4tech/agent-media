@@ -149,18 +149,28 @@ def _screen_from_ip(ip: str) -> str:
     return name
 
 
+def _wake_ignored() -> set[str]:
+    """Screens that may view and control but never claim wake targeting
+    (MEDIA_VISUAL_WAKE_IGNORE, comma/space separated — e.g. the phone: a
+    glance at its canvas shouldn't keep the big screens dark afterwards)."""
+    raw = os.environ.get("MEDIA_VISUAL_WAKE_IGNORE") or ""
+    return {n for n in re.split(r"[,\s]+", raw.strip().lower()) if n}
+
+
 def _wake_target() -> "str | None":
-    """The most recently active screen, if fresh enough that David is
-    plausibly still near it (MEDIA_VISUAL_WAKE_WINDOW seconds, default 12h) —
-    else None and nobody's display gets poked."""
+    """The most recently active non-ignored screen, if fresh enough that
+    David is plausibly still near it (MEDIA_VISUAL_WAKE_WINDOW seconds,
+    default 12h) — else None and nobody's display gets poked."""
     try:
         window = float(os.environ.get("MEDIA_VISUAL_WAKE_WINDOW") or 43200)
     except ValueError:
         window = 43200.0
+    ignored = _wake_ignored()
     with _VIEWERS_LOCK:
-        if not _VIEWERS:
+        live = {n: ts for n, ts in _VIEWERS.items() if n.lower() not in ignored}
+        if not live:
             return None
-        name, ts = max(_VIEWERS.items(), key=lambda kv: kv[1])
+        name, ts = max(live.items(), key=lambda kv: kv[1])
     return name if time.time() - ts <= window else None
 
 
