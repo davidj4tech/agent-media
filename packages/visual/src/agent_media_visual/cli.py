@@ -44,7 +44,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from agent_media_core.intake._env import load_env_file
 
-from .canvas import DEFAULT_PORT
+from .canvas import DEFAULT_PORT, _amux_token
 from .engines import generate_image
 from .generate import shape_prompt, shape_story
 from .state import gc_spool, save_push, spool_dir
@@ -67,9 +67,15 @@ def _image_ref(name: str, targets: list[str]) -> str:
 
 
 def _push_one(base: str, payload: dict) -> str:
+    # /show is token-gated (same amux token the pairing flow installs on
+    # phones); a canvas on another host must share this host's token.
+    headers = {"Content-Type": "application/json"}
+    token = _amux_token()
+    if token:
+        headers["X-Auth-Token"] = token
     req = urllib.request.Request(
         base + "/show", data=json.dumps(payload).encode(),
-        method="POST", headers={"Content-Type": "application/json"})
+        method="POST", headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:
             resp.read()
