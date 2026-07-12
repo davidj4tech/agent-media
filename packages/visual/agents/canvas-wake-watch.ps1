@@ -1,7 +1,8 @@
 # canvas-wake-watch.ps1 — turn this PC's display on when the canvas asks.
 #
-# Watches the agent-media canvas SSE stream; when a show event arrives stamped
-# wake=<this screen> AND the canvas is the foreground window here, it forces
+# Watches the agent-media canvas SSE stream; when a wake-worthy event arrives
+# stamped wake=<this screen> — a pushed visual, or a voice starting (fresh
+# clip or unpause) — AND the canvas is the foreground window here, it forces
 # the display awake with a 1px mouse jiggle (SendInput counts as user input,
 # which ends DPMS-off). A browser page cannot do this itself — wake locks only
 # prevent sleep — hence this tiny host-side half.
@@ -14,9 +15,10 @@
 #     "powershell -WindowStyle Hidden -ExecutionPolicy Bypass -File %USERPROFILE%\canvas-wake-watch.ps1"
 #   schtasks /Run /TN canvas-wake-watch
 #
-# One-time page setup on this screen: open <canvas>/?screen=<name> in the
-# browser and pair it (QR at /pair) — the page's activity beacons are what
-# make this screen the wake target.
+# No page setup needed: the server names each screen from its tailnet source
+# IP, and this script's default -Screen (the computer name, lowercased) must
+# simply match that tailscale name. ?screen=<name> on the page is an optional
+# paired override for odd cases.
 param(
   [string]$Canvas = "http://100.103.43.93:8781",   # red5's canvas (tailnet IP)
   [string]$Screen = $env:COMPUTERNAME.ToLower(),
@@ -59,8 +61,10 @@ while ($true) {
       if (-not $line.StartsWith("data:")) { continue }
       try { $d = $line.Substring(5).Trim() | ConvertFrom-Json } catch { continue }
       if ($d.wake -ne $Screen) { continue }
-      if (-not ($d.image -or $d.sequence)) { continue }
-      if ($FiguresOnly -and $d.purpose -ne "figure") { continue }
+      $isVisual = [bool]($d.image -or $d.sequence)
+      $isVoice = ($d.kind -eq "state") -and $d.speaking   # clip start or unpause
+      if (-not ($isVisual -or $isVoice)) { continue }
+      if ($FiguresOnly -and $isVisual -and $d.purpose -ne "figure") { continue }
       if ([WakeUtil]::FgTitle() -notlike "*$MatchTitle*") { continue }
       [WakeUtil]::Jiggle()
     }

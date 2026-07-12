@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """canvas-wake-watch — turn a Linux desktop's display on when the canvas asks.
 
-Watches the agent-media canvas SSE stream; when a show event arrives stamped
-wake=<this screen> AND the canvas is the foreground window here, simulates
-user activity so the display comes back on. Stdlib only.
+Watches the agent-media canvas SSE stream; when a wake-worthy event arrives
+stamped wake=<this screen> — a pushed visual, or a voice starting (fresh clip
+or unpause) — AND the canvas is the foreground window here, simulates user
+activity so the display comes back on. Stdlib only.
 
 Foreground checks (first one whose tool exists wins):
   X11      xdotool getactivewindow getwindowname
@@ -32,8 +33,9 @@ Install as a systemd user service:
   [Install]
   WantedBy=default.target
 
-One-time page setup on this screen: open <canvas>/?screen=<name> and pair it
-(QR at /pair) — the page's activity beacons make this screen the wake target.
+No page setup needed: the server names each screen from its tailnet source
+IP; CANVAS_SCREEN (default: this hostname) must simply match the tailscale
+machine name. ?screen=<name> on the page is an optional paired override.
 """
 from __future__ import annotations
 
@@ -112,9 +114,11 @@ def watch() -> None:
                 continue
             if d.get("wake") != SCREEN:
                 continue
-            if not (d.get("image") or d.get("sequence")):
+            is_visual = bool(d.get("image") or d.get("sequence"))
+            is_voice = d.get("kind") == "state" and d.get("speaking")
+            if not (is_visual or is_voice):   # voice = clip start or unpause
                 continue
-            if FIGURES_ONLY and d.get("purpose") != "figure":
+            if FIGURES_ONLY and is_visual and d.get("purpose") != "figure":
                 continue
             if canvas_is_foreground():
                 wake_display()

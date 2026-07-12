@@ -125,6 +125,30 @@ def _viewer_seen(name: str) -> None:
         _VIEWERS[name] = time.time()
 
 
+_WHOIS_CACHE: dict[str, tuple[str, float]] = {}
+
+
+def _screen_from_ip(ip: str) -> str:
+    """Tailnet machine name for a client IP via `tailscale whois` (cached 1h —
+    the mapping only changes when David re-homes a device). The server binds
+    the tailnet IP, so every viewer arrives with a resolvable source address;
+    "" when it isn't one (subnet-routed guest, tailscaled hiccup)."""
+    hit = _WHOIS_CACHE.get(ip)
+    if hit and time.time() - hit[1] < 3600:
+        return hit[0]
+    name = ""
+    try:
+        r = subprocess.run(["tailscale", "whois", "--json", ip],
+                           capture_output=True, text=True, timeout=3)
+        if r.returncode == 0:
+            name = str((json.loads(r.stdout).get("Node") or {})
+                       .get("ComputedName") or "").split(".")[0]
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        pass
+    _WHOIS_CACHE[ip] = (name, time.time())
+    return name
+
+
 def _wake_target() -> "str | None":
     """The most recently active screen, if fresh enough that David is
     plausibly still near it (MEDIA_VISUAL_WAKE_WINDOW seconds, default 12h) —
@@ -705,6 +729,7 @@ def speech_state() -> dict:
 
 def _state_poller() -> None:
     last_key = None
+    was_speaking = False
     while True:
         if HUB.watchers() == 0:
             time.sleep(2)
@@ -714,6 +739,14 @@ def _state_poller() -> None:
         except Exception:  # noqa: BLE001 — the poller must outlive any hiccup
             time.sleep(2)
             continue
+        # Voice starting (fresh clip OR unpause) is a wake-worthy moment: stamp
+        # the transition — and only the transition, so wake agents see one
+        # event per resume, not the ~1 Hz progress ticks.
+        if st["speaking"] and not was_speaking:
+            wake = _wake_target()
+            if wake:
+                st["wake"] = wake
+        was_speaking = st["speaking"]
         key = (st["speaking"], st.get("pos"), st.get("sentence"))
         # Broadcast on any change; while speaking, pos ticks every poll, so
         # watchers get a ~1 Hz progress signal without idle-time chatter.
@@ -1425,10 +1458,13 @@ PAGE = """<!doctype html>
   }
   function einkOn() { return localStorage.getItem('eink') === '1'; }
   if (einkOn()) document.documentElement.classList.add('eink');
-  // ---- screen name: ?screen=hpo names this device once (persisted) — the
-  // page then beacons activity so the server knows whose display to wake.
+  // ---- screen name OVERRIDE: normally the server derives this device's name
+  // from its tailnet source IP (nothing to configure). ?screen=<name> pins a
+  // different name once (persisted; needs pairing — an override could
+  // redirect wakes); ?screen= (empty) clears it.
   if (qs.has('screen')) {
-    localStorage.setItem('screen', qs.get('screen'));
+    if (qs.get('screen')) localStorage.setItem('screen', qs.get('screen'));
+    else localStorage.removeItem('screen');
     history.replaceState(null, '', location.pathname);
   }
   const SCREEN = localStorage.getItem('screen') || '';
@@ -1836,19 +1872,19 @@ PAGE = """<!doctype html>
   });
 
   // Activity beacon: tell the server this screen has eyes on it (names the
-  // wake target for figure pushes). Paired screens only — /seen is gated.
+  // wake target for figure pushes). Identity = our tailnet IP, so no pairing
+  // needed; only an explicit SCREEN override rides the token.
   let seenLast = 0;
   function seen(force) {
-    if (!SCREEN || document.hidden || !token()) return;
+    if (document.hidden) return;
     const now = Date.now();
     if (!force && now - seenLast < 30000) return;
     seenLast = now;
-    try {
-      fetch('/seen', {method: 'POST', keepalive: true,
-                      headers: {'X-Auth-Token': token(),
-                                'Content-Type': 'application/json'},
-                      body: JSON.stringify({screen: SCREEN})});
-    } catch (_) {}
+    const opts = {method: 'POST', keepalive: true,
+                  headers: {'Content-Type': 'application/json'},
+                  body: JSON.stringify(SCREEN ? {screen: SCREEN} : {})};
+    if (SCREEN && token()) opts.headers['X-Auth-Token'] = token();
+    try { fetch('/seen', opts); } catch (_) {}
   }
   for (const ev of ['pointerdown', 'keydown', 'touchstart'])
     document.addEventListener(ev, () => seen(false), {passive: true});
@@ -2686,17 +2722,23 @@ class Handler(BaseHTTPRequestHandler):
         # Every state-changing POST needs the same auth as /input (#138):
         # otherwise a drive-by page can speak, play audio, spoof screens, or
         # drive media (CSRF). Read-only GET endpoints stay open by design.
-        if path in ("/show", "/ctl", "/say", "/play", "/seen"):
+        if path in ("/show", "/ctl", "/say", "/play"):
             if not _authorized(self):
                 self._json(401, {"error": "unauthorized"})
                 return
         if path == "/show":
             self._show()
         elif path == "/seen":
-            # Screen-activity beacon (paired canvases only — an open /seen
-            # could redirect wakes to a spoofed screen name).
+            # Screen-activity beacon. Identity comes from the tailnet source
+            # IP — a caller can only name itself — so no pairing needed. An
+            # EXPLICIT ?screen override still demands the token (it's the one
+            # form that could redirect wakes elsewhere).
             body = self._read_json() or {}
-            _viewer_seen(str(body.get("screen") or ""))
+            explicit = str(body.get("screen") or "")
+            if explicit and _authorized(self):
+                _viewer_seen(explicit)
+            else:
+                _viewer_seen(_screen_from_ip(self.client_address[0]))
             self._json(200, {"ok": True})
         elif path == "/ctl":
             self._ctl()
