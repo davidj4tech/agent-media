@@ -19,6 +19,10 @@ Config (all optional):
   MEDIA_MUSIC_LOCAL_SSH / MEDIA_MUSIC_LOCAL_FETCH
       the residential fetcher, shared with sink-music-local
       (default ``p8ar`` / ``bin/play-local``).
+  MEDIA_MUSIC_ROOMS_FETCH_SSH / MEDIA_MUSIC_ROOMS_FETCH_CMD
+      override the fetcher for the ROOMS lane only (e.g. an always-on
+      residential box like pn running ``bin/fetch-track``), leaving the
+      phone-playout lane on its own helper. Default: the shared pair above.
   MEDIA_MUSIC_ROOMS_SSH
       host that renders rooms audio (runs Mopidy + mopidy-mpv). Default:
       derived from MEDIA_MPD_HOST/MPD_HOST — loopback or this machine means
@@ -74,6 +78,18 @@ def cache_dir() -> str:
     return os.environ.get("MEDIA_MUSIC_ROOMS_CACHE", ".cache/music-offline")
 
 
+def fetch_ssh_host() -> str:
+    """Residential host the rooms lane downloads on (default: the phone)."""
+    return (os.environ.get("MEDIA_MUSIC_ROOMS_FETCH_SSH", "").strip()
+            or music_local.ssh_host())
+
+
+def fetch_helper() -> str:
+    """Fetcher command on that host (must honor ``--fetch-only <url>``)."""
+    return (os.environ.get("MEDIA_MUSIC_ROOMS_FETCH_CMD", "").strip()
+            or music_local.fetch_cmd())
+
+
 def watch_id(url: str) -> Optional[str]:
     """The 11-char video id of a YouTube URL/id, or None."""
     u = url.strip()
@@ -106,9 +122,9 @@ def _cached_path(vid: str) -> Optional[str]:
 def _phone_fetch(url: str) -> Optional[str]:
     """Download `url` on the phone; return the phone-side file path."""
     timeout = float(os.environ.get("MEDIA_MUSIC_ROOMS_FETCH_TIMEOUT", "600"))
-    remote = f"{music_local.fetch_cmd()} --fetch-only {shlex.quote(url)}"
+    remote = f"{fetch_helper()} --fetch-only {shlex.quote(url)}"
     try:
-        r = subprocess.run(["ssh", *_SSH_OPTS, music_local.ssh_host(), remote],
+        r = subprocess.run(["ssh", *_SSH_OPTS, fetch_ssh_host(), remote],
                            capture_output=True, text=True, timeout=timeout)
     except (subprocess.TimeoutExpired, OSError) as e:
         log.warning("music_fetch: phone fetch failed: %s", e)
@@ -128,7 +144,7 @@ def _copy_to_rooms(phone_path: str) -> Optional[str]:
     cache = shlex.quote(cache_dir())
     qbase, qstem = shlex.quote(base), shlex.quote(stem)
     reader = subprocess.Popen(
-        ["ssh", *_SSH_OPTS, music_local.ssh_host(), f"cat {shlex.quote(phone_path)}"],
+        ["ssh", *_SSH_OPTS, fetch_ssh_host(), f"cat {shlex.quote(phone_path)}"],
         stdout=subprocess.PIPE)
     try:
         r = _rooms_run(
@@ -147,7 +163,7 @@ def _copy_to_rooms(phone_path: str) -> Optional[str]:
     dest = (r.stdout or "").strip().splitlines()
     # Best-effort title sidecar (for cache files predating embedded tags).
     sidecar = subprocess.Popen(
-        ["ssh", *_SSH_OPTS, music_local.ssh_host(),
+        ["ssh", *_SSH_OPTS, fetch_ssh_host(),
          f"cat {shlex.quote(phone_path.rsplit('.', 1)[0] + '.title')} 2>/dev/null"],
         stdout=subprocess.PIPE)
     try:
