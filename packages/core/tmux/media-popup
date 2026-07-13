@@ -5,7 +5,7 @@
 # line 2 is the live clock. Tab cycles channels; single-key hotkeys drive the
 # `media` CLI and route to the active channel:
 #
-#   Tab     switch channel (speech ⇆ music ⇆ book)
+#   Tab / n switch channel (speech ⇆ music ⇆ book) — n matches the canvas
 #   Space   play/pause toggle          r   replay latest clip   (speech)
 #   p       play clip at copy-mode cursor (speech) — the spoken clip whose
 #           text sits at/above the cursor; no copy-mode → this pane's latest
@@ -638,7 +638,7 @@ handle_key() {
     # Transport keys route to the active channel; speech-only keys (r, m,
     # [, ], 0, v) no-op on the music channel.
     case "$key" in
-        $'\t') case "$CHANNEL" in
+        $'\t'|n) case "$CHANNEL" in
                    speech) CHANNEL=music ;;
                    music)  CHANNEL=book ;;
                    *)      CHANNEL=speech ;;

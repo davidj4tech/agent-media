@@ -16,7 +16,7 @@ mapfile -t L <<'EOF'
  ┌────────────────────┐
  │ all channels       │
  ├─────┬──────────────┤
- │ Tab │ next channel │
+ │Tab n│ next channel │
  │ Spc │ play/pause   │
  │ h l │ seek -/+5s   │
  │ H L │ seek -/+30s  │
