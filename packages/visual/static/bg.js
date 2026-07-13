@@ -40,6 +40,12 @@
     EINK: qp.get('eink') === '1',
     // scrim behind OWUI's chat so bubbles read over the artwork
     SCRIM: true,
+    // artwork-only backdrop: while the canvas is the click-through wallpaper,
+    // hide its own chrome (caption, agents strip, reply bar, audio controller,
+    // status dot, toasts…) so only the images + Ken Burns show behind OWUI. The
+    // full canvas returns the moment you bring it forward with the ▣ button.
+    // Same-origin only (needs to reach into the iframe); ?bare=0 disables.
+    BARE: qp.get('bare') !== '0',
   };
   // Where the canvas is reachable from OWUI's origin. Default is the same-origin
   // '/canvas' mount the shipped Caddyfile serves. Override without editing this
@@ -113,9 +119,39 @@
     backdrop-filter: blur(6px); }` : ''}
   `;
 
+  // ---- artwork-only backdrop ----------------------------------------------
+  // Inject a stylesheet INTO the same-origin canvas iframe that hides its UI
+  // chrome; gate it on an `amc-bare` class on the iframe's <html>, toggled with
+  // the front/back state. Keeps the image layers (#a/#b), Ken Burns, the beat
+  // vignette (#pulse), reveal figures (#fig) and the music mirror (#ytwrap).
+  function styleIframe() {
+    if (!CFG.BARE) return;
+    try {
+      const doc = frame.contentDocument;
+      if (!doc || !doc.head || doc.getElementById('amc-bare-style')) return;
+      const st = doc.createElement('style');
+      st.id = 'amc-bare-style';
+      st.textContent = `
+        html.amc-bare #cap, html.amc-bare #sub, html.amc-bare #dot,
+        html.amc-bare #offbar, html.amc-bare #toast, html.amc-bare #agents,
+        html.amc-bare #peek, html.amc-bare #sheet, html.amc-bare #inp,
+        html.amc-bare #ctl, html.amc-bare #help { display: none !important; }`;
+      doc.head.appendChild(st);
+      applyBare();
+    } catch (_) { /* cross-origin BASE → no reach-in; canvas shows full, fine */ }
+  }
+  function applyBare() {
+    if (!CFG.BARE) return;
+    try {
+      const bare = !frame.classList.contains('amc-front');
+      frame.contentDocument.documentElement.classList.toggle('amc-bare', bare);
+    } catch (_) {}
+  }
+
   function toggleFront() {
     const front = frame.classList.toggle('amc-front');
     fab.classList.toggle('amc-on', front);
+    applyBare();   // back → artwork-only; front → full interactive canvas
     // When we bring it forward, poke the iframe so its controller reveals and
     // its AudioContext unlocks on this genuine user gesture. Same-origin only;
     // a cross-origin BASE (canvas on its own host) makes this a no-op — the
@@ -135,6 +171,10 @@
     document.head.appendChild(owui);
     document.body.appendChild(frame);
     document.body.appendChild(fab);
+    // hide the canvas chrome as soon as its document is reachable (and again on
+    // every navigation inside the iframe, e.g. an ?eink reload)
+    frame.addEventListener('load', styleIframe);
+    styleIframe();
     fab.addEventListener('click', toggleFront);
     // Esc sends the canvas back when it's forward
     document.addEventListener('keydown', (e) => {
