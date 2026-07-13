@@ -12,54 +12,63 @@ set -u
 
 mapfile -t L <<'EOF'
 
- agent-media popup keys
- ┌────────────────────┐
- │ all channels       │
- ├─────┬──────────────┤
- │Tab n│ next channel │
- │ Spc │ play/pause   │
- │ h l │ seek -/+5s   │
- │ H L │ seek -/+30s  │
- │ - = │ volume -/+5  │
- │ < > │ prev/next    │
- │ g   │ go to source │
- │ q   │ close        │
- ├─────┴──────────────┤
- │ speech only        │
- ├─────┬──────────────┤
- │ r   │ replay last  │
- │ p   │ clip @cursor │
- │ m   │ mute now     │
- │ M   │ keep muted 🔒│
- │ v   │ highlight    │
- ├─────┴──────────────┤
- │ book & music       │
- ├─────┬──────────────┤
- │ s   │ typed seek   │
- │ o   │ open URL     │
- │ w   │ web UI       │
- ├─────┴──────────────┤
- │ speech & book      │
- ├─────┬──────────────┤
- │ [ ] │ speed -/+    │
- │ ⌫   │ reset speed  │
- ├─────┴──────────────┤
- │ mouse (click)      │
- ├─────┬──────────────┤
- │ TL  │ channel      │
- │ TR  │ close        │
- │ ttl │ source       │
- │ < > │ prev/next    │
- │prog │ play/pause   │
- │ whl │ volume -/+   │
- ├─────┴──────────────┤
- │ keyboard focus     │
- ├─────┬──────────────┤
- │ ← → │ move focus   │
- │ Ent │ activate     │
- │ Esc │ clear focus  │
- └─────┴──────────────┘
+ ╭ all channels ───────╮
+ │ Tab n  next channel │
+ │ Spc    play/pause   │
+ │ h l    seek -/+5s   │
+ │ H L    seek -/+30s  │
+ │ - =    volume -/+5  │
+ │ < >    prev/next    │
+ │ g      go to source │
+ │ q      close        │
+ ╰─────────────────────╯
+ ╭ speech only ────────╮
+ │ r      replay last  │
+ │ p      clip @cursor │
+ │ m      mute now     │
+ │ M      keep muted 🔒│
+ │ v      highlight    │
+ ╰─────────────────────╯
+ ╭ book & music ───────╮
+ │ s      typed seek   │
+ │ o      open URL     │
+ │ w      web UI       │
+ ╰─────────────────────╯
+ ╭ speech & book ──────╮
+ │ [ ]    speed -/+    │
+ │ ⌫      reset speed  │
+ ╰─────────────────────╯
+ ╭ mouse (click) ──────╮
+ │ TL     channel      │
+ │ TR     close        │
+ │ ttl    source       │
+ │ < >    prev/next    │
+ │ prog   play/pause   │
+ │ whl    volume -/+   │
+ ╰─────────────────────╯
+ ╭ keyboard focus ─────╮
+ │ ← →    move focus   │
+ │ Ent    activate     │
+ │ Esc    clear focus  │
+ ╰─────────────────────╯
 EOF
+
+# Colorize: box frames in the pane-border grey (colour245 ≈ #8a8a8a), section
+# titles embedded in the top border in the popup border's blue (colour39 =
+# #00afff, bold) — the same title-on-a-border motif as the pane titles. Done
+# here, not in the heredoc, to keep the table itself grep-/edit-friendly.
+B=$'\033[38;5;245m'; H=$'\033[1;38;5;39m'; R=$'\033[0m'
+for i in "${!L[@]}"; do
+    line=${L[i]}
+    case "$line" in
+        ' ╭'*) rest=${line#' ╭ '}; rest=${rest%╮}
+               title=${rest%% ─*}; dashes=${rest#"$title"}
+               L[i]=" ${B}╭ ${R}${H}${title}${R}${B}${dashes}╮${R}" ;;
+        ' │'*) inner=${line#' │'}; inner=${inner%│}
+               L[i]=" ${B}│${R}${inner}${B}│${R}" ;;
+        ' ╰'*) L[i]=" ${B}${line# }${R}" ;;
+    esac
+done
 
 # The popup's real size from the pty winsize (ioctl) — not $LINES/$COLUMNS or
 # tput, both of which can carry a stale value and make the pager overshoot.
@@ -82,14 +91,15 @@ draw() {
     [ "$end" -gt "$total" ] && end=$total
     for (( i = off; i < end; i++ )); do printf '%s\r\n' "${L[i]}"; done
     # Footer pinned to the bottom row: scroll arrows (only when there's more in
-    # that direction) + key hint, reverse-video, clipped to width.
+    # that direction) + key hint, white on subtle grey (reverse-video read as a
+    # glaring white bar), clipped to width.
     local up="·" dn="·"
     [ "$off" -gt 0 ] && up="↑"
     [ "$off" -lt "$maxoff" ] && dn="↓"
     local hint
     if [ "$maxoff" -eq 0 ]; then hint=" q/Esc close"
     else hint=" $up$dn j/k scroll · q/Esc quit"; fi
-    printf '\033[%d;1H\033[7m%s\033[0m' "$rows" "${hint:0:cols}"
+    printf '\033[%d;1H\033[48;5;237;38;5;231m%s\033[0m' "$rows" "${hint:0:cols}"
 }
 
 draw

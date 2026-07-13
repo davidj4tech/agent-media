@@ -703,8 +703,16 @@ def _title_status_line(pos: Optional[float], dur: Optional[float],
 
 
 def cmd_now_pane(a) -> int:
-    """Print the popup's subject-pane title (see `_subject_label`)."""
+    """Print the popup's subject-pane title (see `_subject_label`).
+
+    With `--width N` the body is windowed through `_marquee` (own state key,
+    so it doesn't double-advance the status bar's crawl) — used by the control
+    popup's border title, re-expanded by tmux once per status-interval.
+    """
     prefix, body = _subject_label()
+    width = getattr(a, "width", None)
+    if width:
+        body = _marquee(body, max(1, width - len(prefix)), key="popup-border")
     if prefix or body:
         print(f"{prefix}{body}")
     return 0
@@ -2776,9 +2784,12 @@ def _build_parser() -> argparse.ArgumentParser:
     ps.set_defaults(func=cmd_popup_status)
 
     sub.add_parser("now", help="text currently being spoken").set_defaults(func=cmd_now)
-    sub.add_parser("now-pane",
-                   help="title of the pane that produced the now-playing speech"
-                   ).set_defaults(func=cmd_now_pane)
+    s = sub.add_parser("now-pane",
+                       help="title of the pane that produced the now-playing speech")
+    s.add_argument("--width", type=int,
+                   help="marquee-window the title to WIDTH columns (scrolls one "
+                        "column per call; used by the popup border title)")
+    s.set_defaults(func=cmd_now_pane)
     sub.add_parser("goto-pane",
                    help="focus the pane that produced the now-playing speech"
                    ).set_defaults(func=cmd_goto_pane)

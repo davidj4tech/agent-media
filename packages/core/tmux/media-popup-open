@@ -38,26 +38,34 @@ lw="$cw"; [ "$lw" -gt 64 ] && lw=64; [ "$lw" -lt "$MIN" ] && lw="$MIN"
 # speech (`media popup-channel` resolves this). The help round-trip below
 # overrides `chan` from the flag file, so an explicit choice is preserved.
 chan=$(media popup-channel 2>/dev/null); chan=${chan:-speech}
+# Border style comes from the global popup-border-style (active-pane blue, set
+# in tmux.conf.local) — no -S override here. The border title is a fixed label:
+# tmux expands display-popup -T exactly once (cmd-display-menu.c,
+# format_single_from_target) and never on redraw, so a live marquee on the
+# border is impossible without -B + the TUI drawing its own border (on the
+# radar; `media now-pane --width` already exists for it) — the scrolling
+# marquee stays on the TUI's line 1.
 popup() { tmux display-popup ${client:+-c "$client"} -E "$@"; }
 # Optional: forward a mouse-event debug log path so `prefix a` can calibrate
 # click coordinates. Set with `tmux setenv -g MEDIA_POPUP_DEBUG /tmp/popup.log`.
 dbg=""; [ -n "${MEDIA_POPUP_DEBUG:-}" ] && dbg="MEDIA_POPUP_DEBUG=$MEDIA_POPUP_DEBUG "
-# Anchor the control popup directly over the input field at the BOTTOM (matching
-# the browser canvas's bottom dock). `-y` is the popup's BOTTOM edge (display
-# corner semantics), so place it near the client's bottom row.
+# Anchor the control popup at the BOTTOM-RIGHT (near the input field, like the
+# browser canvas's bottom dock, but out of the typing line's way). `-y` is the
+# popup's BOTTOM edge (display corner semantics), so place it near the
+# client's bottom row.
 PH=4
 PY=$(( ch - 1 )); [ "$PY" -lt "$PH" ] && PY=$PH
 while :; do
-    popup -w "$w" -h "$PH" -x C -y "$PY" -s 'bg=default' -S 'bg=default' \
+    popup -w "$w" -h "$PH" -x R -y "$PY" -s 'bg=default' -T ' agent-media ' \
         "${dbg}TTS_POPUP_PANE=$pane MEDIA_POPUP_HELP_FLAG=$flag MEDIA_POPUP_LINK_FLAG=$linkflag MEDIA_POPUP_CHANNEL=$chan media-popup"
     if [ -f "$flag" ]; then            # `?` → keymap overlay, then reopen
         chan=$(cat "$flag" 2>/dev/null); chan=${chan:-speech}
         rm -f "$flag"
-        popup -w "$hw" -h "$hh" -s 'bg=default' -S 'bg=default' media-popup-help
+        popup -w "$hw" -h "$hh" -s 'bg=default' -T ' agent-media help ' media-popup-help
     elif [ -f "$linkflag" ]; then      # `w` → full-width web-UI link, then reopen
         IFS=$'\t' read -r chan url < "$linkflag"; chan=${chan:-speech}
         rm -f "$linkflag"
-        popup -w "$lw" -h 5 -s 'bg=default' -S 'bg=default' "MEDIA_POPUP_LINK=$url media-popup-link"
+        popup -w "$lw" -h 5 -s 'bg=default' "MEDIA_POPUP_LINK=$url media-popup-link"
     else
         break                          # normal close → done
     fi
