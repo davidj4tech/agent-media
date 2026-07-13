@@ -113,13 +113,40 @@ on the `/ws` upgrade in the access log.
 > default `:2019`), so `caddy reload` / `systemctl --user reload` work. `admin
 > off` would break reload. Access log at `~/owui-caddy/access.log`.
 
+### Artwork-only backdrop (default)
+
+Behind OWUI the canvas is a **wallpaper**, so bg.js hides the canvas's own
+chrome (caption, agents strip, reply bar, audio controller, status dot, toasts)
+by injecting a stylesheet into the same-origin iframe — only the image layers +
+Ken Burns + beat vignette + reveal figures + music mirror show. Bringing the
+canvas forward with the ▣ button reveals the full interactive canvas (incl. the
+audio controller) again. `?bare=0` opts out (show the full canvas always).
+Same-origin only — a cross-origin `AMC_BASE` can't reach into the iframe, so it
+shows the full canvas.
+
+### Gotcha: HTTPS breaks plain-http OWUI connections (the "post-login 500")
+
+Serving OWUI over **HTTPS** means the browser blocks any **plain-`http`**
+resource OWUI fetches client-side (mixed content), and any host only resolvable
+inside the container (`host.containers.internal`) is unreachable from the
+browser anyway. Symptom seen here: a red *"Failed to connect to
+http://host.containers.internal:8783/v1 OpenAPI tool server"* on every load —
+an OWUI **tool server** (in the admin user's `settings.ui.toolServers`) pointing
+at the completions-shim, which isn't even a tool server (`/v1/openapi.json` →
+404). Removed it (the shim still works as a **model** via
+`openai.api_base_urls`, which OWUI calls server-side). Rule of thumb: any OWUI
+connection the *browser* touches must be **https + same-origin** (proxy it
+through this Caddy) — backend-only connections can stay `http://host.containers…`.
+
 ### Known polish (not blocking)
 
-The OWUI **transparency selectors are version-brittle** (v0.10.2). Handled so
-far: `html/body/#app` + OWUI's full-viewport `bg-white dark:bg-black` backdrop
-div (without which the canvas is fully hidden). The **chat-page scrim**
-(`main`, `[class*="messages"]`) is best-effort and unverified against the
-logged-in chat DOM — re-tune if bubbles are hard to read over the artwork.
+The OWUI **transparency selectors are version-brittle** (v0.10.2). Handled:
+`html/body/#app`, the login `bg-white dark:bg-black` inset backdrop, and the
+chat-page `bg-white dark:bg-gray-900 h-screen` shell. If a future OWUI reshuffles
+these classes, the canvas goes hidden (opaque) or bleeds through everywhere —
+re-probe the DOM for the full-viewport backdrop and update `bg.js`. A chat scrim
+(for legibility over busy artwork) is available but off by default in favour of
+the clean artwork-only look.
 
 ## Framing
 
