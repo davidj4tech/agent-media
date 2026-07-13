@@ -1744,50 +1744,64 @@ def _do_replay(index: int, session: Optional[str] = None) -> int:
         if cpi and len(cpi) == len(clip_uris):
             np_extras["clip_paragraph_idx"] = cpi
         np_extras["current_sentence_idx"] = 0
-    StateStore().set_now_playing(
-        "speech", uri=clip_uris[0], started_at=time.time(),
-        target=SPEECH_TARGET.name, extras=np_extras)
-    if len(clip_uris) > 1 and have_durations:
-        # Spawn a detached highlight tracker so copy-mode follows along
-        # even though _do_replay returns immediately.
+    if have_durations:
+        # Spawn a detached follower so the replay behaves like live playback
+        # even though _do_replay returns immediately: it mirrors the player's
+        # live position into now_playing (else the popup's bar sits frozen at
+        # 00:00 for the whole replay — and forever after, since nothing would
+        # clear the row) and, for multi-clip turns with a pane, fires the
+        # copy-mode highlight per sentence.
         # TTS_POPUP_PANE is the original pane that opened the popup; TMUX_PANE
         # inside display-popup is the popup's own ephemeral pane.
         pane = _caller_pane()
-        if pane and clip_sentences and len(clip_sentences) == len(clip_uris):
-            # Supersede any tracker still polling from a prior replay. The
-            # tracker only self-exits when the speech mpv goes idle, so
-            # replaying again before the prior playlist finishes (rapid < / >
-            # traversal, re-pressing r/Space) would otherwise leave the old
-            # tracker running on the shared socket — it never sees "its"
-            # playback end and keeps highlighting the new clip with the old
-            # clip's sentences. killpg the previous one (start_new_session ⇒
-            # the child's pid is its own pgid). Mirrors the per-pane pidfile
-            # pattern _tmux_highlight_text uses for its clear-timer.
-            import re as _re
-            import signal as _signal
-            _pane_safe = _re.sub(r"[^A-Za-z0-9_-]", "_", pane)
-            _trk_pidfile = f"/tmp/media-replay-track-{_pane_safe}.pid"
-            try:
-                with open(_trk_pidfile) as _f:
-                    _old_pgid = int(_f.read().strip())
-                os.killpg(_old_pgid, _signal.SIGTERM)
-            except (OSError, ValueError, ProcessLookupError, PermissionError):
-                pass
-            _trk = subprocess.Popen(
-                [sys.executable, "-m", "agent_media_core.cli",
-                 "replay-track",
-                 "--sentences", json.dumps(clip_sentences),
-                 "--pane", pane],
-                start_new_session=True,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            try:
-                with open(_trk_pidfile, "w") as _f:
-                    _f.write(str(_trk.pid))
-            except OSError:
-                pass
+        # Supersede any tracker still polling from a prior replay. The
+        # tracker only self-exits when the speech mpv goes idle, so
+        # replaying again before the prior playlist finishes (rapid < / >
+        # traversal, re-pressing r/Space) would otherwise leave the old
+        # tracker running on the shared socket — it never sees "its"
+        # playback end and keeps highlighting the new clip with the old
+        # clip's sentences. killpg the previous one (start_new_session ⇒
+        # the child's pid is its own pgid). Mirrors the per-pane pidfile
+        # pattern _tmux_highlight_text uses for its clear-timer. Killed
+        # BEFORE the set_now_playing below so a dying tracker can never
+        # race a clear against the fresh row.
+        import re as _re
+        import signal as _signal
+        _pane_safe = _re.sub(r"[^A-Za-z0-9_-]", "_", pane) if pane else "nopane"
+        _trk_pidfile = f"/tmp/media-replay-track-{_pane_safe}.pid"
+        try:
+            with open(_trk_pidfile) as _f:
+                _old_pgid = int(_f.read().strip())
+            os.killpg(_old_pgid, _signal.SIGTERM)
+        except (OSError, ValueError, ProcessLookupError, PermissionError):
+            pass
+        # Highlight only multi-clip turns from a known pane (single-clip
+        # replays never highlighted); the position mirror runs regardless.
+        _hl = (pane and len(clip_uris) > 1
+               and clip_sentences and len(clip_sentences) == len(clip_uris))
+        _trk = subprocess.Popen(
+            [sys.executable, "-m", "agent_media_core.cli",
+             "replay-track",
+             "--sentences", json.dumps(clip_sentences) if _hl else "",
+             "--pane", pane,
+             "--durations", json.dumps(clip_durations)],
+            start_new_session=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            with open(_trk_pidfile, "w") as _f:
+                _f.write(str(_trk.pid))
+        except OSError:
+            pass
+        # Stamp the follower as the row's writer: the store's orphan guard
+        # then self-heals the row if the tracker dies uncleanly, instead of
+        # the bar freezing at its last mirrored position forever.
+        np_extras["writer_pid"] = _trk.pid
+    StateStore().set_now_playing(
+        "speech", uri=clip_uris[0], started_at=time.time(),
+        target=SPEECH_TARGET.name, extras=np_extras)
     return 0
 
 
@@ -1971,19 +1985,81 @@ def cmd_replay_at_cursor(a) -> int:
 
 
 def cmd_replay_track(a) -> int:
-    """Internal: poll playlist-pos and fire tmux highlights during replay.
+    """Internal: follow a replay the way the live intake path follows a reply.
 
     Spawned detached by _do_replay so it outlives the media-replay process.
+    Two jobs per poll tick:
+    - Mirror the player's live position/pause/speed/mute into the replay's
+      now_playing row (written by _do_replay, stamped with our pid) so the
+      popup's progress bar moves during a replay — without this it sat frozen
+      at 00:00 for the whole replay and forever after.
+    - Fire the copy-mode sentence highlight (multi-clip turns with a pane).
+    On observed end-of-playback we clear the row, like the live path's
+    ``finally`` does; if we die uncleanly instead, the row still carries our
+    pid so the store's orphan guard self-heals it on the next read.
     """
     from .intake.submit import _tmux_highlight_text, _restore_fullscreen
-    sentences: list[str] = json.loads(a.sentences)
+    sentences: list[str] = json.loads(a.sentences) if a.sentences else []
+    durations: list[float] = json.loads(a.durations) if a.durations else []
     pane: str = a.pane
-    if not sentences or not pane:
+    highlight = bool(sentences and pane)
+    # Cumulative start offset of each clip on the turn-wide timeline.
+    offsets: list[float] = []
+    _acc = 0.0
+    for d in durations:
+        offsets.append(_acc)
+        _acc += d
+    if highlight:
+        # Ensure _tmux_highlight_text sees the right pane + a truthy TMUX.
+        os.environ["TMUX_PANE"] = pane
+        if not os.environ.get("TMUX"):
+            os.environ["TMUX"] = "x"  # fallback: truthy, tmux resolves socket
+
+    state = StateStore()
+
+    def _owns(ex: dict) -> bool:
+        # A newer writer (a live reply, or the next replay's tracker) may have
+        # taken the row over; only touch a row that's still ours. Our own seed
+        # row already carries our pid (_do_replay stamps it at spawn).
+        return ex.get("writer_pid") in (None, os.getpid())
+
+    def _mirror(snap: dict) -> None:
+        try:
+            np = state.get_now_playing("speech")
+            if not np:
+                return
+            ex = np.get("extras") or {}
+            if not _owns(ex):
+                return
+            pos = snap.get("playlist-pos")
+            idx = int(pos) if pos is not None and pos >= 0 else 0
+            base = offsets[idx] if idx < len(offsets) else 0.0
+            ex["live_pos_s"] = base + (snap.get("time-pos") or 0.0)
+            ex["live_pause"] = bool(snap.get("pause"))
+            ex["live_speed"] = snap.get("speed") or 1.0
+            ex["live_mute"] = bool(snap.get("mute"))
+            ex["writer_pid"] = os.getpid()
+            if idx < len(sentences):
+                # Keeps `media current-sentence` (and popup skips) working.
+                ex["current_sentence"] = sentences[idx]
+                ex["current_sentence_idx"] = idx
+            state.set_now_playing(
+                "speech", uri=np.get("uri") or "",
+                started_at=np.get("started_at") or time.time(),
+                target=np.get("target") or SPEECH_TARGET.name,
+                extras=ex)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _finish() -> int:
+        _restore_fullscreen()  # no-op unless MEDIA_HIGHLIGHT_DUMP dumped
+        try:
+            np = state.get_now_playing("speech")
+            if np and _owns(np.get("extras") or {}):
+                state.clear_now_playing("speech")
+        except Exception:  # noqa: BLE001
+            pass
         return 0
-    # Ensure _tmux_highlight_text sees the right pane + a truthy TMUX.
-    os.environ["TMUX_PANE"] = pane
-    if not os.environ.get("TMUX"):
-        os.environ["TMUX"] = "x"  # fallback: truthy, tmux will resolve socket
 
     # Wait for mpv to start playing the first clip — _do_replay's loadfile
     # returns immediately and there's a brief idle window before playback
@@ -1998,51 +2074,37 @@ def cmd_replay_track(a) -> int:
         time.sleep(0.05)
 
     last_pos = -1
-    idle_streak = 0
+    fail_streak = 0
     while True:
         time.sleep(0.15)
         try:
-            idle = bool(ipc.get_property(_sock(), "idle-active"))
+            # One batched snapshot per tick — over the phone bridge each hop
+            # is slow, and this loop is per-tick anyway for the mirror.
+            snap = ipc.get_properties(
+                _sock(), ["idle-active", "playlist-pos", "time-pos",
+                          "pause", "speed", "mute"])
         except Exception:  # noqa: BLE001
-            idle_streak += 1
-            if idle_streak >= 5:
-                _restore_fullscreen()  # no-op unless MEDIA_HIGHLIGHT_DUMP dumped
-                return 0
+            fail_streak += 1
+            if fail_streak >= 5:
+                return _finish()
             continue
-        idle_streak = 0
-        if idle:
+        fail_streak = 0
+        if snap.get("idle-active"):
             # Require 2 consecutive idle readings to avoid race with playlist
             # advancement (mpv flickers idle briefly between clips).
             time.sleep(0.15)
             try:
                 if bool(ipc.get_property(_sock(), "idle-active")):
-                    _restore_fullscreen()  # no-op unless MEDIA_HIGHLIGHT_DUMP dumped
-                    return 0
+                    return _finish()
             except Exception:  # noqa: BLE001
                 pass
             continue
-        try:
-            pos = int(ipc.get_property(_sock(), "playlist-pos") or 0)
-        except Exception:  # noqa: BLE001
-            continue
-        if pos != last_pos and 0 <= pos < len(sentences):
+        _mirror(snap)
+        pos_raw = snap.get("playlist-pos")
+        pos = int(pos_raw) if pos_raw is not None else 0
+        if highlight and pos != last_pos and 0 <= pos < len(sentences):
             _tmux_highlight_text(sentences[pos], first=(pos == 0))
-            # Update now_playing so `media current-sentence` works during replay.
-            try:
-                state = StateStore()
-                np = state.get_now_playing("speech")
-                if np:
-                    ex = np.get("extras") or {}
-                    ex["current_sentence"] = sentences[pos]
-                    ex["current_sentence_idx"] = pos
-                    state.set_now_playing(
-                        "speech", uri=np.get("uri") or "",
-                        started_at=np.get("started_at") or time.time(),
-                        target=np.get("target") or SPEECH_TARGET.name,
-                        extras=ex)
-            except Exception:  # noqa: BLE001
-                pass
-            last_pos = pos
+        last_pos = pos
     return 0
 
 
@@ -2829,8 +2891,9 @@ def _build_parser() -> argparse.ArgumentParser:
         ).set_defaults(func=cmd_replay_at_cursor)
 
     s = sub.add_parser("replay-track", help=argparse.SUPPRESS)
-    s.add_argument("--sentences", required=True)
-    s.add_argument("--pane", required=True)
+    s.add_argument("--sentences", default="")
+    s.add_argument("--pane", default="")
+    s.add_argument("--durations", default="")
     s.set_defaults(func=cmd_replay_track)
 
     s = sub.add_parser("history", help="list recent spoken clips")
