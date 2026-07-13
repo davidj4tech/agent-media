@@ -81,6 +81,7 @@ hist_idx=1
 # action's stdout (e.g. replay-prev's resolved history cursor).
 SPEECH_ACT=()
 ACT_OUT=""
+LAST_ACT=""     # last key a mouse/touch hit fired, for the debug flash
 CHANNEL="${MEDIA_POPUP_CHANNEL:-speech}"   # speech | music | book (Tab cycles); the
                         # launcher restores it across a `?` help round-trip
 BOOK_SOCK="${MEDIA_BOOK_SOCKET:-$HOME/.local/state/agent-media/sink-book.sock}"
@@ -130,6 +131,20 @@ SCROLL_DONE=0
 # line.
 mouse_on()  { printf '\033[?1000h\033[?1006h'; }
 mouse_off() { printf '\033[?1000l\033[?1006l'; }
+
+# Keypress flash: surface each key (and the echo of any fused action it fired)
+# as a tmux message, so a silent no-op is visible — you see the key registered
+# and what, if anything, it resolved to (e.g. `< → clip 2` moved, `< → clip 1`
+# when there was nothing older to step back to). The message rides above the
+# popup like the channel-switch note. When MEDIA_POPUP_DEBUG is a file, also
+# append a durable log line. Callers gate the *whether* via flash_on; this just
+# renders — so the file-append stays debug-only and never hits an empty path.
+flash_on() { [ -n "${MEDIA_POPUP_DEBUG:-}" ] || [ "$HL" = on ]; }
+dbg_flash() {
+    tmux display-message "⌨ $1" 2>/dev/null
+    [ -n "${MEDIA_POPUP_DEBUG:-}" ] && printf '%s\n' "$1" >> "$MEDIA_POPUP_DEBUG" 2>/dev/null
+    return 0
+}
 
 # The popup tty runs raw (-echo -icanon, set below) so single keys arrive
 # instantly and mouse bytes don't echo. The typed prompts (typed_seek /
@@ -871,7 +886,7 @@ handle_page() {
 # it dispatched something, so the caller only pays for a `fetch` on a real action
 # (not on the release event or an empty click). Set MEDIA_POPUP_DEBUG=<file> to
 # log every parsed event — handy for calibrating row/col.
-act() { ACTED=1; handle_key "$1"; }
+act() { ACTED=1; LAST_ACT="$1"; handle_key "$1"; }
 handle_mouse() {
     [ "$ESC_KIND" = mouse ] || return
     [ -n "${MEDIA_POPUP_DEBUG:-}" ] && \
@@ -931,7 +946,7 @@ while true; do
     if [ "$key" = $'\e' ]; then
         # ESC [ … is a mouse click, an arrow (focus nav), or an ignored CSI.
         if read_escape; then
-            ACTED=""
+            ACTED=""; ACT_OUT=""; LAST_ACT=""
             case "$ESC_KIND" in
                 mouse) handle_mouse ;;
                 arrow) handle_arrow ;;
@@ -941,16 +956,29 @@ while true; do
             # Re-pull the (slow) snapshot only on a real action; always redraw so
             # the focus highlight tracks the arrows without a flicker of fetch.
             [ -n "$ACTED" ] && do_refresh
+            if [ -n "$ACTED" ] && flash_on; then
+                m="touch '$LAST_ACT' · $CHANNEL"
+                [ -n "$ACT_OUT" ] && m="$m → clip $ACT_OUT"
+                dbg_flash "$m"
+            fi
             draw; continue
         fi
         # Bare Esc: clear the focus highlight first; quit only when none is set.
         if [ -n "$FOCUS" ]; then FOCUS=""; draw; continue; fi
         break
     fi
+    ACT_OUT=""                         # so the debug flash below shows THIS key's echo
     handle_key "$key"
     [ -n "$QUIT" ] && break
     # Refresh the snapshot so the bar/label reflect the action immediately
     # (fused into one spawn when the key stashed a SPEECH_ACT verb).
     do_refresh
+    if flash_on; then
+        m="'$key' · $CHANNEL"
+        # A fused speech action (e.g. < / >) echoes its resolved clip cursor;
+        # for speech nav that's the clearest signal of "did it actually move".
+        [ -n "$ACT_OUT" ] && m="$m → clip $ACT_OUT"
+        dbg_flash "$m"
+    fi
     draw
 done
