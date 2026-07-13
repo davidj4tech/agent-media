@@ -125,10 +125,22 @@ function stall(on) {
     return route.abort();
   });
 
+  // Intercept /ctl too: controller taps must never drive the real `media` CLI
+  // (pause the house audio, flip the shared popup-channel state) from a test.
+  await page.route('**/ctl', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' }));
+
   // Count /agents polls from the page.
   const agentsReqs = [];
   page.on('request', (r) => { if (r.url().endsWith('/agents')) agentsReqs.push(Date.now()); });
   const pollsIn = (t0, t1) => agentsReqs.filter(t => t >= t0 && t <= t1).length;
+
+  // Track /status polls (T16 reads the channel param to observe `n` cycling).
+  const statusReqs = [];
+  page.on('request', (r) => {
+    const m = r.url().match(/\/status\?channel=(\w+)/);
+    if (m) statusReqs.push(m[1]);
+  });
 
   // ---- T1: load + SSE connect ----------------------------------------------
   await page.goto(`http://127.0.0.1:${PROXY_PORT}/`, { waitUntil: 'domcontentloaded' });
@@ -379,6 +391,66 @@ function stall(on) {
     const toastSolid = ts.bg === 'rgb(255, 255, 255)' && ts.color === 'rgb(0, 0, 0)' &&
       ts.bw === '2px' && ts.blur === 'none' && ts.shadow === 'none';
     rec('T15 e-ink toast is solid + legible', toastSolid, JSON.stringify(ts));
+  }
+
+  // ---- T16: focus ring — taps and Tab walk passive→input→agents→control→… ---
+  // The same ring for both surfaces; `n` (not Tab) cycles the channel in
+  // CONTROL; Esc bails out; widget taps never advance the ring.
+  {
+    inputMode = 'block';
+    await page.evaluate(() => localStorage.setItem('eink', '0'));
+    await page.goto(`http://127.0.0.1:${PROXY_PORT}/`, { waitUntil: 'domcontentloaded' });
+    await sleep(1500);   // let the first /agents poll land
+    const state = () => page.evaluate(() => ({
+      input: document.getElementById('inp').classList.contains('on'),
+      ctl: document.getElementById('ctl').classList.contains('on'),
+      agents: document.getElementById('agents').classList.contains('on'),
+      agExpanded: document.getElementById('agents').classList.contains('expanded'),
+      agCursor: !!document.getElementById('agents').querySelector('.cursor'),
+      typing: document.activeElement === document.getElementById('text'),
+    }));
+    const tap = () => page.mouse.click(640, 300);   // bare canvas, away from widgets
+    const fmt = (s) => JSON.stringify(s);
+
+    let s = await state();
+    const hasTree = s.agents;
+    rec('T16a page starts passive', !s.input && !s.ctl, `tree=${hasTree}`);
+
+    await tap(); await sleep(300); s = await state();
+    rec('T16b tap: passive -> input (field focused)', s.input && s.typing, fmt(s));
+
+    await tap(); await sleep(300); s = await state();
+    if (hasTree)
+      rec('T16c tap: input -> agents (tree cursor)', !s.input && !s.ctl && s.agExpanded && s.agCursor, fmt(s));
+    else
+      rec('T16c tap: input -> control (no tree)', !s.input && s.ctl, fmt(s));
+    if (hasTree) { await tap(); await sleep(300); s = await state(); }
+    rec('T16d ring reaches control', s.ctl && !s.agCursor, fmt(s));
+
+    const chanBefore = statusReqs[statusReqs.length - 1];
+    await page.keyboard.press('n'); await sleep(400); s = await state();
+    const chanAfter = statusReqs[statusReqs.length - 1];
+    rec("T16e 'n' in control cycles channel", s.ctl && chanAfter && chanAfter !== chanBefore,
+      `'${chanBefore}' -> '${chanAfter}'`);
+
+    await tap(); await sleep(300); s = await state();
+    rec('T16f tap in control wraps to passive', !s.input && !s.ctl, fmt(s));
+
+    for (let i = 0; i < (hasTree ? 3 : 2); i++) { await page.keyboard.press('Tab'); await sleep(250); }
+    s = await state();
+    rec('T16g Tab walks the same ring to control', s.ctl, fmt(s));
+    await page.keyboard.press('Escape'); await sleep(300); s = await state();
+    rec('T16h Esc bails out to passive', !s.input && !s.ctl, fmt(s));
+
+    for (let i = 0; i < (hasTree ? 3 : 2); i++) { await tap(); await sleep(250); }
+    s = await state();
+    if (s.ctl) {
+      await page.click('#pp'); await sleep(300); s = await state();
+      rec('T16i controller button tap stays in control', s.ctl, fmt(s));
+      await page.click('#xbtn'); await sleep(300); s = await state();
+      rec('T16j x button drops to passive', !s.ctl && !s.input, fmt(s));
+    } else rec('T16i/j reached control for widget-tap checks', false, fmt(s));
+    await page.screenshot({ path: SHOTS + '/09-ring.png' });
   }
 
   await browser.close();

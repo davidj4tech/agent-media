@@ -2012,22 +2012,21 @@ PAGE = """<!doctype html>
     } catch (_) {}
   }
 
-  // Three focus states, mirroring the tmux-popup model:
+  // Four focus states, mirroring the tmux-popup model:
   //   passive — just the image; the bottom input rests dim, hotkeys OFF.
-  //   input   — bottom field focused; type a reply (Enter sends, Esc → passive).
-  //   control — controller focused; single-key hotkeys live, Tab cycles channel.
-  // Tab and bare-canvas taps walk the same ring: passive→input→agents→control
-  // →passive (the agents stop only when the tree exists); Esc / q bail out to
-  // passive from anywhere. Channel cycling is `n` / the channel button.
+  //   input   — bottom field focused; type a reply (Enter sends).
+  //   agents  — the tree expanded under a key cursor (drops out when empty).
+  //   control — controller focused; single-key hotkeys live (`n` = channel).
+  // Tab and bare-canvas taps walk the ring passive→input→agents→control→
+  // passive; Esc / q bail out to passive from anywhere. EVERY transition goes
+  // through setMode — it owns all class toggles, timers, and the tree cursor.
   let mode = 'passive';
+  const RING = { passive: 'input', input: 'agents',
+                 agents: 'control', control: 'passive' };
 
   function tabNext() {
-    if (agFocused) { agBlur(); setMode('control'); return; }  // agents → control
-    if (mode === 'control') { setMode('passive'); return; }   // control: wrap around
-    if (mode === 'passive') { openInput(); return; }
-    setMode('passive');                                       // input → agents…
-    if ($('agents').classList.contains('on')) agFocus();
-    else setMode('control');                                  // …or straight on
+    if (RING[mode] === 'input') openInput();   // also refreshes reply targets
+    else setMode(RING[mode]);
   }
 
   function resetHide() {                        // idle CONTROL auto-returns to passive
@@ -2037,22 +2036,34 @@ PAGE = """<!doctype html>
   }
 
   function setMode(m) {
+    if (m === 'agents' && !$('agents').classList.contains('on'))
+      m = 'control';                 // no tree → that ring stop drops out
+    const was = mode;
     mode = m;
     const ctrl = (m === 'control');
-    const active = (m === 'control' || m === 'input');   // dock is engaged
+    const active = (ctrl || m === 'input');   // dock is engaged
     visible = ctrl;                          // controller (polled) only in CONTROL
     $('inp').classList.toggle('on', m === 'input');       // focus ring
     $('inp').classList.toggle('under', ctrl);             // hidden beneath controller
     $('ctl').classList.toggle('on', ctrl);
     $('ctl').classList.toggle('focused', ctrl);
-    // Clear the tree while typing, and while the controller holds the dock —
+    // Hide the tree while typing, and while the controller holds the dock —
     // the pill at the bottom edge would poke through the controller's rows.
-    // Collapse it too: an expanded tree surviving .hide would pop back
-    // open (over the input's spot) when the dock is handed back. agTop is
-    // what re-renders read — clearing the class alone gets re-expanded on
-    // the next /agents poll.
-    $('agents').classList.toggle('hide', m === 'input' || ctrl);
-    if (m === 'input' || ctrl) { agTop = false; $('agents').classList.remove('expanded'); }
+    $('agents').classList.toggle('hide', active);
+    if (m === 'agents') {
+      // Expand under a key cursor; pollAgents freezes re-renders while here.
+      agTop = true; agCursor = 0;
+      $('agents').classList.add('expanded');
+      agPaintCursor();
+    } else if (was === 'agents' || active) {
+      // Leaving the tree (or burying it under the dock) collapses it back to
+      // the pill — agTop is what re-renders read, so clearing the class alone
+      // gets re-expanded on the next /agents poll. A tree the user expanded
+      // by tapping the pill in PASSIVE stays as they left it.
+      agTop = false;
+      $('agents').classList.remove('expanded');
+      agClearCursor();
+    }
     $('cap').classList.toggle('hide', active);
     if (m === 'input') $('text').focus();
     else if (document.activeElement === $('text')) $('text').blur();
@@ -2256,11 +2267,10 @@ PAGE = """<!doctype html>
     // Tree / peek navigation runs BEFORE the mode machinery, so j/k/Enter/p/Esc
     // mean "move the cursor", not "reply / control / toggle playback".
     if ($('peek').classList.contains('on') && peekKey(k)) { e.preventDefault(); return; }
-    if (agFocused && agKey(k)) { e.preventDefault(); return; }
-    if (k === 'a' && !agFocused && $('agents').classList.contains('on')
-        && !$('agents').classList.contains('hide')
+    if (mode === 'agents' && agKey(k)) { e.preventDefault(); return; }
+    if (k === 'a' && mode === 'passive' && $('agents').classList.contains('on')
         && !$('peek').classList.contains('on')) {
-      e.preventDefault(); agFocus(); return;
+      e.preventDefault(); setMode('agents'); return;
     }
     if (k === 'Tab') { e.preventDefault(); tabNext(); return; }  // walk / cycle
     if (k === 'Escape' || (k === 'q' && mode === 'control')) {
@@ -2376,11 +2386,11 @@ PAGE = """<!doctype html>
   // clip) button; tap a pane label to aim the reply box at it.
   const AG_RANK = { input: 0, approval: 1, working: 2, stopped: 3 };  // needs-you first
   let agOpen = {}, agTop = false;              // session / top-level expanded (persist)
-  let agFocused = false, agCursor = 0, peekCursor = 0;   // vim-nav cursors
+  let agCursor = 0, peekCursor = 0;   // vim-nav cursors (tree focus = mode 'agents')
   const agEsc = (s) => s.replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
   async function pollAgents() {
     if (document.hidden) return;
-    if (agFocused) return;   // frozen while the tree has key focus — don't re-render under the cursor
+    if (mode === 'agents') return;   // frozen while the tree has key focus — don't re-render under the cursor
     let list;
     try {
       const r = await fetch('/agents');
@@ -2546,23 +2556,12 @@ PAGE = """<!doctype html>
     cur.classList.add('cursor');
     cur.scrollIntoView({ block: 'nearest' });
   }
-  function agFocus() {
-    agFocused = true; agTop = true; agCursor = 0;
-    $('agents').classList.add('expanded');
-    agPaintCursor();
-  }
-  function agBlur() {
-    agFocused = false;
-    // Collapse back to the pill: the expanded tree occupies the input's
-    // spot now, so leaving the tree must hand the dock back. Reset agTop
-    // as well — re-renders re-apply 'expanded' from it.
-    agTop = false;
-    $('agents').classList.remove('expanded');
+  function agClearCursor() {
     for (const el of $('agents').querySelectorAll('.cursor')) el.classList.remove('cursor');
   }
   function agKey(k) {
     const rows = agRows();
-    if (!rows.length) { if (k === 'Escape' || k === 'q') { agBlur(); return true; } return false; }
+    if (!rows.length) { if (k === 'Escape' || k === 'q') { setMode('passive'); return true; } return false; }
     const cur = rows[agCursor];
     const isTop = cur.classList.contains('aghead'), isPane = cur.classList.contains('pane');
     if (k === 'j' || k === 'ArrowDown') { agCursor = Math.min(agCursor + 1, rows.length - 1); agPaintCursor(); return true; }
@@ -2572,8 +2571,8 @@ PAGE = """<!doctype html>
     if (k === 'l' || k === 'Enter' || k === 'ArrowRight') {
       if (isTop) {                          // expand the whole tree from the pill
         agTop = true; $('agents').classList.add('expanded'); agPaintCursor();
-      } else if (isPane) {                  // aim the reply box at this pane (leaves the tree)
-        agBlur();
+      } else if (isPane) {                  // aim the reply box at this pane
+        // targetAgent → openInput → setMode('input') collapses the tree.
         targetAgent(decodeURIComponent(cur.dataset.name), cur.dataset.source, cur.dataset.pane);
       } else {                              // expand the session — its panes appear
         const sess = cur.parentElement;
@@ -2604,7 +2603,7 @@ PAGE = """<!doctype html>
         peekPane(cur.dataset.pane, decodeURIComponent(cur.dataset.name));
       return true;
     }
-    if (k === 'Escape' || k === 'q') { agBlur(); return true; }
+    if (k === 'Escape' || k === 'q') { setMode('passive'); return true; }
     return false;
   }
   function peekRows() { return Array.from($('peek').querySelectorAll('.turn')); }
