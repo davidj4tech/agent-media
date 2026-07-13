@@ -1051,7 +1051,7 @@ PAGE = """<!doctype html>
   #ytwrap iframe { width: 100vw; height: 100vh; border: 0; }
   #cap {
     position: fixed; left: 50%;
-    bottom: calc(max(2vh, env(safe-area-inset-bottom)) + 68px);  /* above #inp */
+    bottom: calc(max(2vh, env(safe-area-inset-bottom)) + 98px);  /* above #inp */
     transform: translateX(-50%); max-width: 82vw;
     padding: .55em 1.1em; border-radius: 999px;
     font: 15px/1.45 system-ui, sans-serif; color: #eee; text-align: center;
@@ -1153,7 +1153,8 @@ PAGE = """<!doctype html>
      in INPUT mode. Tapping it (or first Tab) focuses it. */
   #inp {
     position: fixed; left: 50%; transform: translateX(-50%);
-    bottom: max(2vh, env(safe-area-inset-bottom));
+    /* Lifted to leave the bottom edge to the agents pill beneath it. */
+    bottom: calc(max(2vh, env(safe-area-inset-bottom)) + 30px);
     width: min(96vw, 620px); box-sizing: border-box;
     display: flex; align-items: flex-end; gap: .4em;   /* buttons hug the bottom as text grows */
     padding: .5em .6em; border-radius: 18px;
@@ -1165,6 +1166,10 @@ PAGE = """<!doctype html>
   #inp.on { opacity: 1; background: rgba(10,10,10,.74);
             box-shadow: 0 0 0 2px rgba(255,215,95,.75); }  /* INPUT focus ring */
   #inp.under { opacity: 0; pointer-events: none; }  /* CONTROL: controller takes the dock */
+  /* An expanded agent tree grows up from the pill straight through the
+     input's spot — clear the input while the menu is open (but not while
+     composing, when the tree itself is .hide). */
+  #agents.expanded.on:not(.hide) ~ #inp { opacity: 0; pointer-events: none; }
   #target {
     background: rgba(255,255,255,.1); border: 0; color: #ffd75f;
     font: 600 13px/1.4 system-ui, sans-serif; padding: .45em .8em;
@@ -1267,9 +1272,11 @@ PAGE = """<!doctype html>
      pane label to aim the reply box at it. Hidden until there's a session. */
   #agents {
     position: fixed; left: 50%; transform: translateX(-50%); z-index: 25;
-    bottom: calc(max(2vh, env(safe-area-inset-bottom)) + 3.4em);  /* above the input */
+    bottom: max(1vh, env(safe-area-inset-bottom));  /* just under the input */
     display: none; width: min(96vw, 620px);
-    flex-direction: column; gap: .25em;   /* pill on top, session list below it */
+    /* Pill at the bottom edge; the expanded session list grows UPWARD from
+       it (over the input's spot — see the #inp sibling rule below). */
+    flex-direction: column-reverse; gap: .25em;
   }
   #agents.on { display: flex; }
   #agents.hide { display: none !important; }       /* hidden while composing a reply */
@@ -1283,6 +1290,15 @@ PAGE = """<!doctype html>
     -webkit-tap-highlight-color: transparent;
   }
   #agents .aghead:active { background: rgba(255,255,255,.1); }
+  /* Collapsed, the pill sits over the artwork all day — keep it transparent
+     until it's engaged so it doesn't stamp a dark chip on every image. The
+     text-shadow keeps the count legible over light art. On eink the #eee
+     text NEEDS the chip (white on paper-white), so keep it there. */
+  #agents:not(.expanded) .aghead { background: transparent; backdrop-filter: none;
+                                   text-shadow: 0 1px 4px rgba(0,0,0,.9); }
+  #agents:not(.expanded) .aghead:active { background: rgba(10,10,10,.62); }
+  html.eink #agents:not(.expanded) .aghead { background: rgba(10,10,10,.62);
+                                             text-shadow: none; }
   #agents .atitle { color: #ddd; }
   #agents .aghead .chev { color: #999; font-size: 11px; transition: transform .15s ease; }
   #agents.expanded .aghead .chev { transform: rotate(90deg); }
@@ -1462,7 +1478,7 @@ PAGE = """<!doctype html>
   </div>
 </div>
 <div id="help">
-  <div class="hh">canvas keys · Tab: passive→input→control · Esc / q → passive</div>
+  <div class="hh">canvas keys · Tab: passive→input→agents→control · Esc / q → passive</div>
   <div class="hg">
     <b>Space</b><span>play / pause</span>
     <b>h · l</b><span>sentence −/+ (music/book: seek ∓5s)</span>
@@ -2000,8 +2016,18 @@ PAGE = """<!doctype html>
   //   passive — just the image; the bottom input rests dim, hotkeys OFF.
   //   input   — bottom field focused; type a reply (Enter sends, Esc → passive).
   //   control — controller focused; single-key hotkeys live, Tab cycles channel.
-  // Tab walks passive→input→control; Esc / q drop back to passive.
+  // Tab walks passive→input→agents→control (the agents stop only when the
+  // tree exists); Esc / q drop back to passive.
   let mode = 'passive';
+
+  function tabNext() {
+    if (agFocused) { agBlur(); setMode('control'); return; }  // agents → control
+    if (mode === 'control') { $('chan').onclick(); return; }  // control: next channel
+    if (mode === 'passive') { setMode('input'); return; }
+    setMode('passive');                                       // input → agents…
+    if ($('agents').classList.contains('on')) agFocus();
+    else setMode('control');                                  // …or straight on
+  }
 
   function resetHide() {                        // idle CONTROL auto-returns to passive
     clearTimeout(hideTimer);
@@ -2018,7 +2044,9 @@ PAGE = """<!doctype html>
     $('inp').classList.toggle('under', ctrl);             // hidden beneath controller
     $('ctl').classList.toggle('on', ctrl);
     $('ctl').classList.toggle('focused', ctrl);
-    $('agents').classList.toggle('hide', m === 'input');  // clear the tree while typing
+    // Clear the tree while typing, and while the controller holds the dock —
+    // the pill at the bottom edge would poke through the controller's rows.
+    $('agents').classList.toggle('hide', m === 'input' || ctrl);
     $('cap').classList.toggle('hide', active);
     if (m === 'input') $('text').focus();
     else if (document.activeElement === $('text')) $('text').blur();
@@ -2190,7 +2218,7 @@ PAGE = """<!doctype html>
     // Enter sends; Shift+Enter is a newline (and the box grows to fit).
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendText(); }
     else if (e.key === 'Escape') { e.preventDefault(); setMode('passive'); }
-    else if (e.key === 'Tab') { e.preventDefault(); setMode('control'); }  // input → control
+    else if (e.key === 'Tab') { e.preventDefault(); tabNext(); }  // input → agents/control
   });
 
   document.body.addEventListener('click', (e) => {
@@ -2204,7 +2232,8 @@ PAGE = """<!doctype html>
   });
 
   // ---- popup-parity key bindings (for canvases with a keyboard) ------------
-  // Focus walks with Tab (passive→input→control) and unwinds with Esc/q. In
+  // Focus walks with Tab (passive→input→agents→control) and unwinds with
+  // Esc/q. In
   // CONTROL the full tmux-popup (prefix a) hotkey set is live: Tab channel ·
   // Space play/pause · h/l sentence · H/L paragraph · </> prev/next · -/= vol ·
   // m mute · M keep-muted · v highlight · p clip@cursor · g source · w web UI ·
@@ -2223,12 +2252,7 @@ PAGE = """<!doctype html>
         && !$('peek').classList.contains('on')) {
       e.preventDefault(); agFocus(); return;
     }
-    if (k === 'Tab') {                           // walk / cycle
-      e.preventDefault();
-      if (mode === 'control') $('chan').onclick();          // control: next channel
-      else setMode(mode === 'passive' ? 'input' : 'control');
-      return;
-    }
+    if (k === 'Tab') { e.preventDefault(); tabNext(); return; }  // walk / cycle
     if (k === 'Escape' || (k === 'q' && mode === 'control')) {
       e.preventDefault();
       if ($('help').classList.contains('on')) { toggleHelp(); return; }
@@ -2518,6 +2542,9 @@ PAGE = """<!doctype html>
   }
   function agBlur() {
     agFocused = false;
+    // Collapse back to the pill: the expanded tree occupies the input's
+    // spot now, so leaving the tree must hand the dock back.
+    $('agents').classList.remove('expanded');
     for (const el of $('agents').querySelectorAll('.cursor')) el.classList.remove('cursor');
   }
   function agKey(k) {
