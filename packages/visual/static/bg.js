@@ -95,6 +95,12 @@
   const owui = document.createElement('style');
   owui.textContent = `
   html, body, #app { background: transparent !important; }
+  /* OWUI's full-viewport app backdrop — a Tailwind 'bg-white dark:bg-black'
+     layer on an absolute inset div (verified on v0.10.2). It's the thing that
+     hides the canvas if left opaque. Matched by colour + full-screen geometry
+     so normal buttons/cards (also bg-white) are untouched. */
+  .bg-white.absolute.w-full.h-full,
+  .dark\\:bg-black.absolute.w-full.h-full { background: transparent !important; }
   ${CFG.SCRIM ? `
   /* scrim behind the chat so bubbles read over the artwork; widen/adjust the
      selector to whatever wraps OWUI's message list in your version. */

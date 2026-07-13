@@ -1,0 +1,24 @@
+# systemd USER unit — the isolated OWUI-canvas front door (see deploy/README.md,
+# "It's live on red5"). Install to ~/.config/systemd/user/, then:
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now owui-canvas-caddy.service
+# Needs linger (`loginctl enable-linger $USER`) to survive logout/reboot.
+#
+# This is a SEPARATE caddy from the system one (/etc/caddy, :80/:443). It owns
+# only :8443 (admin off, no HTTP redirects — set in ~/owui-caddy/Caddyfile), so
+# injecting bg.js can never affect the system Caddy's public sites. The binary
+# at ~/owui-caddy/caddy is the replace-response build (stock Caddy can't inject).
+
+[Unit]
+Description=OWUI canvas front door — isolated Caddy (replace-response) injecting bg.js behind Open WebUI on :8443
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=%h/owui-caddy/caddy run --config %h/owui-caddy/Caddyfile
+ExecReload=%h/owui-caddy/caddy reload --config %h/owui-caddy/Caddyfile
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

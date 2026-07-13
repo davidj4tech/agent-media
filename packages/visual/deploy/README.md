@@ -56,22 +56,56 @@ The Caddyfile fixes this by **also** routing the canvas's own root endpoints to
 routes, verified not to shadow any OWUI route). Keep that list in lockstep with
 `canvas.py`'s `do_GET`/`do_POST` dispatch. `smoke-test.sh` step 4 guards it.
 
-## Deploy reality (as of this stage)
+## It's live on red5
 
-OWUI runs on **`red5:3000`** (podman quadlet `open-webui`, user unit
-`open-webui.service`) with **no Caddy in front of it**. `bg.js` *requires* a
-reverse proxy (for both the injection and the same-origin canvas routes), so
-standing that proxy up in front of the live OWUI — and any OWUI restart/config
-change it entails — is deferred to a deploy step with sign-off. This stage
-ships the asset + the Caddyfile + this doc.
+Deployed and verified: **<https://red5.eagle-dubhe.ts.net:8443>** shows OWUI with
+the canvas behind it. Key constraint: red5 **already runs a system Caddy**
+(`/etc/caddy/Caddyfile`, `:80`/`:443`) fronting the public `mel.ryer.org` Matrix
+homeserver — that one is **not touched**. The OWUI front door is a **separate,
+isolated Caddy instance** so the injection can never affect the Matrix box.
 
-To bring it up:
+How it was stood up (all under `~/owui-caddy/`, nothing in `/etc`):
 
-1. Build Caddy with `replace-response` (above).
-2. Drop `owui-canvas.Caddyfile` in place, set the tanet hostname + ports
-   (`:3000` OWUI, `:8781` canvas), reload Caddy.
-3. `./smoke-test.sh https://owui.<your-tailnet>.ts.net`
-4. Walk the browser checklist the smoke test prints.
+1. **Plugin Caddy, no build:** downloaded a prebuilt binary with
+   `replace-response` from the official build service (`caddy` here is v2.11.4)
+   — the stock system Caddy (2.6.2) lacks the `http.handlers.replace_response`
+   module. Verified with `caddy list-modules | grep replace`.
+2. **TLS:** `sudo tailscale cert --cert-file red5.crt --key-file red5.key
+   red5.eagle-dubhe.ts.net` (a real Let's-Encrypt-via-Tailscale cert; valid ~90
+   days — **renewal is the one open follow-up**, see below).
+3. **`~/owui-caddy/Caddyfile`** — the template here, adapted for red5:
+   - site `red5.eagle-dubhe.ts.net:8443` with explicit `tls red5.crt red5.key`;
+   - upstreams at the **tailnet IP** `100.103.43.93` (`:3000` OWUI, `:8781`
+     canvas) — both **refuse on `127.0.0.1`**;
+   - globals `order replace after encode`, plus `admin off` +
+     `auto_https disable_redirects` so it stays off the system Caddy's `:2019`
+     admin and `:80` redirect.
+4. **Persistence:** systemd **user** unit `owui-canvas-caddy.service`
+   (`~/.config/systemd/user/`, enabled; linger is on), so it survives reboot —
+   same pattern as the other `agent-media-*` user units.
+5. **Verified:** `smoke-test.sh`-style curls (bg.js served, `/canvas/` loads,
+   root `/events` + `/status` proxy, and the `<script …bg.js>` tag injected into
+   OWUI's HTML) **plus** a headless Playwright load confirming the iframe renders
+   the real canvas (`#dot` inside) behind the OWUI login form.
+
+> **Open follow-up — cert renewal.** Caddy's `tls <file> <file>` does **not**
+> auto-renew a `tailscale cert`. Before ~Oct 2026, re-run step 2 and
+> `systemctl --user reload owui-canvas-caddy.service` (a weekly root timer would
+> automate it; not set up yet since `tailscale cert` needs root).
+
+### Redeploy / iterate
+
+`bg.js` is served `no-cache`, so edits to `../static/bg.js` show on a browser
+refresh — no Caddy reload. Config changes: edit `~/owui-caddy/Caddyfile` then
+`systemctl --user reload owui-canvas-caddy.service`.
+
+### Known polish (not blocking)
+
+The OWUI **transparency selectors are version-brittle** (v0.10.2). Handled so
+far: `html/body/#app` + OWUI's full-viewport `bg-white dark:bg-black` backdrop
+div (without which the canvas is fully hidden). The **chat-page scrim**
+(`main`, `[class*="messages"]`) is best-effort and unverified against the
+logged-in chat DOM — re-tune if bubbles are hard to read over the artwork.
 
 ## Framing
 

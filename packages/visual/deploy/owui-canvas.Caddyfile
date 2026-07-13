@@ -23,15 +23,39 @@
 #  and set window.AMC_BASE — see deploy/README.md, "canvas on its own host".)
 #
 # HTML injection (job 4) needs Caddy built WITH the replace-response plugin —
-# it is NOT in the standard binary:
+# it is NOT in the stock binary. Either build it, or (no Go needed) download a
+# prebuilt binary from the official build service:
 #
 #     xcaddy build --with github.com/caddyserver/replace-response
+#     # OR:
+#     curl -L "https://caddyserver.com/api/download?os=linux&arch=amd64\
+#             &p=github.com/caddyserver/replace-response" -o caddy
 #
-# Ports here: OWUI :3000 (the running podman quadlet), canvas :8781. Adjust the
-# hostname to your tailnet. OWUI has NO in-app custom-JS hook (v0.10.2 stores no
-# such config key), so this proxy-layer injection is the ONLY way to load bg.js.
+# The plugin's Caddyfile directive is `replace` (the MODULE id is
+# http.handlers.replace_response, but do NOT write that as a directive), and it
+# must be placed in the handler order — hence the `order` global below.
+#
+# Ports here: OWUI :3000 (the running podman quadlet), canvas :8781. Upstreams
+# may bind the TAILNET IP, not loopback — on red5 both refuse on 127.0.0.1, so
+# point at the tailnet IP (e.g. 100.103.43.93). Adjust the hostname to your
+# tailnet. OWUI has NO in-app custom-JS hook (v0.10.2 stores no such config
+# key), so this proxy-layer injection is the ONLY way to load bg.js.
+#
+# COEXISTING with another Caddy? (red5 already runs a system Caddy on :80/:443
+# for other sites.) Run THIS as a separate instance on its own port and keep out
+# of the system one's way — see deploy/README.md, "It's live on red5". The
+# admin/auto_https globals below do exactly that.
+{
+	# the replace-response plugin's directive is `replace`; place it before the
+	# terminal reverse_proxy in the handler chain.
+	order replace after encode
+	# only needed when a SECOND caddy already owns :80 + the :2019 admin API:
+	auto_https disable_redirects
+	admin off
+}
 
-owui.example.ts.net {                       # your tailnet hostname
+owui.example.ts.net {
+	# your tailnet hostname
 
 	# 1) the background client (static file straight from the visual package)
 	handle /canvas/bg.js {
@@ -39,24 +63,24 @@ owui.example.ts.net {                       # your tailnet hostname
 		rewrite * /bg.js
 		file_server
 		header Content-Type "application/javascript; charset=utf-8"
-		header Cache-Control "no-cache"     # you'll iterate on it; don't let it stick
+		header Cache-Control "no-cache" # you'll iterate on it; don't let it stick
 	}
 
 	# 2) the canvas page itself — the iframe target (strip the /canvas prefix)
 	handle /canvas/* {
 		uri strip_prefix /canvas
 		reverse_proxy 127.0.0.1:8781 {
-			flush_interval -1               # SSE: never buffer, keep the stream open
+			flush_interval -1 # SSE: never buffer, keep the stream open
 		}
 	}
 
 	# 3) the canvas's ORIGIN-ABSOLUTE endpoints — the fix (see header). Closed
 	#    set = canvas.py's top-level routes; none collide with OWUI's.
 	@canvas path /events /img/* /persona/* /status /ctl /show /input /play /say \
-	             /last /seen /agents /sessions /peek /pair /healthz
+ /last /seen /agents /sessions /peek /pair /healthz
 	handle @canvas {
 		reverse_proxy 127.0.0.1:8781 {
-			flush_interval -1               # /events is SSE; the rest are cheap JSON
+			flush_interval -1 # /events is SSE; the rest are cheap JSON
 		}
 	}
 
@@ -76,7 +100,8 @@ owui.example.ts.net {                       # your tailnet hostname
 
 		# insert the loader just before </head>. bg.js embeds the real canvas
 		# page as a same-origin iframe behind OWUI and injects the OWUI-
-		# transparency override, so this one tag is all we add.
-		replace_response "</head>" `<script defer src="/canvas/bg.js"></script></head>`
+		# transparency override, so this one tag is all we add. (Directive is
+		# `replace`, ordered by the global block above.)
+		replace "</head>" `<script defer src="/canvas/bg.js"></script></head>`
 	}
 }
