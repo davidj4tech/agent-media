@@ -1287,7 +1287,7 @@ def main() -> None:
     load_env_file("visual-canvas")
     if sys.argv[1:2] == ["pair"]:            # `media-visual-canvas pair`
         raise SystemExit(_cmd_pair(sys.argv[2:]))
-    ap = argparse.ArgumentParser(description="agent-media visual canvas (spike)")
+    ap = argparse.ArgumentParser(description="agent-media visual canvas")
     ap.add_argument("--port", type=int,
                     default=int(os.environ.get("MEDIA_VISUAL_PORT") or DEFAULT_PORT))
     ap.add_argument("--bind", default=os.environ.get("MEDIA_VISUAL_BIND") or "0.0.0.0")

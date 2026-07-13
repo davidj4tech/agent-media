@@ -29,20 +29,25 @@ Design premises (from the discussion that spawned this):
   stream. Synthesized sound effects (WebAudio, no assets): a whoosh when a
   new image lands, a chime up/down when speech starts/stops — toggled with
   the 🔈 button, persisted per device.
-- **Audio controller** — tap the canvas to reveal a touch version of the
-  tmux popup (`prefix a`), in the popup's own geometry: a compact panel
-  anchored top-right that slides in from the right edge (mirroring the
-  binding's `display-popup -w 34 -h 4 -x R -y 6`): channel cycle
-  (speech ⇆ music ⇆ book), marquee
+- **Focus ring** — taps and Tab walk the same ring:
+  passive → input (reply box) → agents (tree cursor) → control → passive.
+  Esc / q bail out to passive from anywhere; idle modes unwind on their
+  own (control 15s, input/agents 30s — a reply draft is never discarded).
+  The first few taps toast a hint teaching the walk.
+- **Audio controller** — the ring's CONTROL stop: a touch version of the
+  tmux popup (`prefix a`), docked at the bottom: channel cycle
+  (speech ⇆ music ⇆ book — the `n` key or the channel button), marquee
   title, live clock, prev/play-pause/next, volume, and on speech mute +
   speed. Every button runs the same `media` CLI verb the popup's hotkey
   runs — one code path — including the popup's ⏮ replay-cursor semantics
-  on speech. Auto-hides after 12s. **Popup-parity key bindings** for
-  canvases with a keyboard: Tab channel · Space play/pause · h/l H/L
-  sentence/paragraph · </> prev/next · -/= vol · m mute · [/] speed,
-  0 reset · r replay · Enter input box · Esc close. One monochrome
-  inline-SVG icon set (currentColor) — no emoji, so buttons render
-  identically on every device.
+  on speech. **Popup-parity key bindings** for canvases with a keyboard:
+  n channel · Space play/pause · h/l H/L sentence/paragraph ·
+  </> prev/next · -/= vol · m mute · [/] speed, 0 reset · r replay ·
+  Enter input box · Esc close · ? help. One monochrome inline-SVG icon
+  set (currentColor) — no emoji, so buttons render identically on every
+  device. The page itself ships as real files
+  (`static/canvas.{html,css,js}`), assembled into one self-contained
+  response at import.
 - **Input box** — the canvas talks back. The keyboard button (or Enter)
   opens a reply bar; the default target is *whoever just spoke* (resolved
   from the speech history's source pane, probed live so dead panes are
