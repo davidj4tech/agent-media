@@ -99,6 +99,20 @@ How it was stood up (all under `~/owui-caddy/`, nothing in `/etc`):
 refresh — no Caddy reload. Config changes: edit `~/owui-caddy/Caddyfile` then
 `systemctl --user reload owui-canvas-caddy.service`.
 
+### Gotcha fixed: the websocket must bypass the rewriter
+
+OWUI opens a socket.io **websocket** at `/ws/*`. A WebSocket is an HTTP-Upgrade,
+and the `replace-response` handler buffers the body to rewrite it — it can't
+hijack the connection, so routing `/ws` through the rewriter breaks socket.io
+(**the post-login 500**). The Caddyfile routes `/ws`, `/api`, `/_app`, `/static`,
+`/assets`, `/cache` (and `manifest.json`/favicon/etc.) **raw** to OWUI; only real
+HTML pages go through `replace`. Confirmed by a clean `101 Switching Protocols`
+on the `/ws` upgrade in the access log.
+
+> The isolated instance runs its admin API on **`localhost:2021`** (not the
+> default `:2019`), so `caddy reload` / `systemctl --user reload` work. `admin
+> off` would break reload. Access log at `~/owui-caddy/access.log`.
+
 ### Known polish (not blocking)
 
 The OWUI **transparency selectors are version-brittle** (v0.10.2). Handled so

@@ -1,10 +1,11 @@
 # agent-media canvas behind Open WebUI ---------------------------------------
 #
-# Puts the ambient canvas *behind* OWUI's chat in one browser tab. Four jobs:
+# Puts the ambient canvas *behind* OWUI's chat in one browser tab. Five jobs:
 #   1. serve the background client            (/canvas/bg.js → the static file)
 #   2. serve the canvas page as the iframe    (/canvas/*     → :8781, strip pfx)
 #   3. proxy the canvas's ROOT endpoints too  (/events /img/* /ctl … → :8781)
-#   4. serve OWUI and inject the <script> into its HTML
+#   4. proxy OWUI's realtime/api/assets RAW (esp. the /ws websocket)
+#   5. serve OWUI's HTML pages and inject the <script> before </head>
 #
 # Job 3 is the one the spike missed and the re-port fixes. canvas.js requests
 # its endpoints with ORIGIN-ABSOLUTE paths — new EventSource('/events'),
@@ -22,7 +23,7 @@
 # (Prefer not to share the root namespace? Serve the canvas on its own hostname
 #  and set window.AMC_BASE — see deploy/README.md, "canvas on its own host".)
 #
-# HTML injection (job 4) needs Caddy built WITH the replace-response plugin —
+# HTML injection (job 5) needs Caddy built WITH the replace-response plugin —
 # it is NOT in the stock binary. Either build it, or (no Go needed) download a
 # prebuilt binary from the official build service:
 #
@@ -49,9 +50,11 @@
 	# the replace-response plugin's directive is `replace`; place it before the
 	# terminal reverse_proxy in the handler chain.
 	order replace after encode
-	# only needed when a SECOND caddy already owns :80 + the :2019 admin API:
+	# only needed when a SECOND caddy already owns :80 + the default :2019 admin:
 	auto_https disable_redirects
-	admin off
+	# give this instance its OWN localhost admin port (not the default :2019) so
+	# `caddy reload` still works. `admin off` would break reload entirely.
+	admin localhost:2021
 }
 
 owui.example.ts.net {
@@ -84,7 +87,18 @@ owui.example.ts.net {
 		}
 	}
 
-	# 4) OWUI — inject the background client into every HTML response
+	# 4) OWUI realtime + assets + API — proxy RAW, NEVER through the rewriter.
+	#    CRITICAL: the websocket (/ws) is an HTTP-Upgrade; the replace-response
+	#    handler buffers the body and can't hijack the connection, so routing /ws
+	#    through it breaks socket.io — the post-login 500. These paths also have
+	#    no </head> to inject, so bypassing the rewriter is pure win.
+	@owui_raw path /ws/* /api/* /_app/* /static/* /assets/* /cache/* \
+ /manifest.json /favicon.ico /opensearch.xml /robots.txt
+	handle @owui_raw {
+		reverse_proxy 127.0.0.1:3000
+	}
+
+	# 5) OWUI HTML pages — inject the background client before </head>
 	handle {
 		reverse_proxy 127.0.0.1:3000 {
 			# replace-response needs an UNcompressed body to rewrite, so ask
