@@ -1,0 +1,82 @@
+# agent-media canvas behind Open WebUI ---------------------------------------
+#
+# Puts the ambient canvas *behind* OWUI's chat in one browser tab. Four jobs:
+#   1. serve the background client            (/canvas/bg.js → the static file)
+#   2. serve the canvas page as the iframe    (/canvas/*     → :8781, strip pfx)
+#   3. proxy the canvas's ROOT endpoints too  (/events /img/* /ctl … → :8781)
+#   4. serve OWUI and inject the <script> into its HTML
+#
+# Job 3 is the one the spike missed and the re-port fixes. canvas.js requests
+# its endpoints with ORIGIN-ABSOLUTE paths — new EventSource('/events'),
+# <img src="/img/…">, fetch('/ctl' | '/status' | …) — NOT relative to /canvas.
+# So proxying only /canvas/* loads the iframe page but leaves its SSE + images
+# resolving to <owui-origin>/events etc., which fall through to OWUI. We must
+# ALSO route the canvas's own root paths to :8781. Keeping them same-origin
+# means OWUI's CSP and the browser's CORS never see a cross-origin request —
+# the thing that would otherwise silently break EventSource against :8781.
+#
+# The @canvas set below is the closed list of canvas.py's top-level routes. It
+# is verified NOT to shadow any OWUI route: OWUI serves /, /api/*, /ws/*,
+# /_app/*, /static/*, /cache/*, /health, /manifest.json — none overlap. Re-check
+# this list against canvas.py's do_GET/do_POST dispatch when either side moves.
+# (Prefer not to share the root namespace? Serve the canvas on its own hostname
+#  and set window.AMC_BASE — see deploy/README.md, "canvas on its own host".)
+#
+# HTML injection (job 4) needs Caddy built WITH the replace-response plugin —
+# it is NOT in the standard binary:
+#
+#     xcaddy build --with github.com/caddyserver/replace-response
+#
+# Ports here: OWUI :3000 (the running podman quadlet), canvas :8781. Adjust the
+# hostname to your tailnet. OWUI has NO in-app custom-JS hook (v0.10.2 stores no
+# such config key), so this proxy-layer injection is the ONLY way to load bg.js.
+
+owui.example.ts.net {                       # your tailnet hostname
+
+	# 1) the background client (static file straight from the visual package)
+	handle /canvas/bg.js {
+		root * /home/ryer/projects/agent-media/packages/visual/static
+		rewrite * /bg.js
+		file_server
+		header Content-Type "application/javascript; charset=utf-8"
+		header Cache-Control "no-cache"     # you'll iterate on it; don't let it stick
+	}
+
+	# 2) the canvas page itself — the iframe target (strip the /canvas prefix)
+	handle /canvas/* {
+		uri strip_prefix /canvas
+		reverse_proxy 127.0.0.1:8781 {
+			flush_interval -1               # SSE: never buffer, keep the stream open
+		}
+	}
+
+	# 3) the canvas's ORIGIN-ABSOLUTE endpoints — the fix (see header). Closed
+	#    set = canvas.py's top-level routes; none collide with OWUI's.
+	@canvas path /events /img/* /persona/* /status /ctl /show /input /play /say \
+	             /last /seen /agents /sessions /peek /pair /healthz
+	handle @canvas {
+		reverse_proxy 127.0.0.1:8781 {
+			flush_interval -1               # /events is SSE; the rest are cheap JSON
+		}
+	}
+
+	# 4) OWUI — inject the background client into every HTML response
+	handle {
+		reverse_proxy 127.0.0.1:3000 {
+			# replace-response needs an UNcompressed body to rewrite, so ask
+			# OWUI not to gzip. (Drop this line and the injection silently no-ops.)
+			header_up Accept-Encoding identity
+
+			# bg.js embeds the canvas as a same-origin <iframe src="/canvas/">.
+			# Current canvas.py sets NO X-Frame-Options / CSP frame-ancestors, so
+			# same-origin framing is already allowed — nothing to relax. If a
+			# future OWUI ships a restrictive frame-src, uncomment to drop it:
+			# header_down -Content-Security-Policy
+		}
+
+		# insert the loader just before </head>. bg.js embeds the real canvas
+		# page as a same-origin iframe behind OWUI and injects the OWUI-
+		# transparency override, so this one tag is all we add.
+		replace_response "</head>" `<script defer src="/canvas/bg.js"></script></head>`
+	}
+}

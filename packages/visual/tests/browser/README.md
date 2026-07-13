@@ -30,6 +30,22 @@ Exit 0 = all pass, 2 = failures (see `results.json`), 3 = harness error.
 Screenshots land in `shots/`. Ports override via `MEDIA_HARNESS_PORT` /
 `MEDIA_HARNESS_PROXY_PORT`.
 
+## bg.js — the OWUI background loader
+
+```sh
+node bg-harness.js               # 11 checks, ~30s, screenshots 10–12
+```
+
+A second, smaller harness for `../../static/bg.js` (the canvas-behind-Open-WebUI
+loader — see `../../deploy/README.md`). It serves a **mock OWUI shell**
+same-origin with a throwaway canvas, loads `bg.js` into it with `?canvasbase=`
+(so the iframe points at the throwaway `/`), and asserts: the iframe loads the
+real canvas (`#dot` inside), it's behind + click-through by default, the ▣ FAB
+flips it front↔back (`pointer-events`/z-index), Esc backs it out when OWUI holds
+focus, the OWUI transparency + chat scrim land, and the `?eink=1` path is white
+with the canvas in DU4 e-ink mode. Results in `bg-results.json`; ports override
+via `MEDIA_BG_PORT` / `MEDIA_BG_PROXY_PORT`. Same `/input`+`/ctl` route-blocks.
+
 ## Gotchas
 
 - **`/input` is always route-intercepted in the browser.** With
