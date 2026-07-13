@@ -1,0 +1,17 @@
+[Unit]
+Description=agent-media completions shim — OpenAI /v1/chat/completions over a live Claude session
+After=network-online.target
+
+[Service]
+# Point at the session OWUI should drive, and mute it so agent-media stays
+# silent (OWUI + tts-shim voice it). Dedicate a session to OWUI. Set the amux
+# token if the canvas doesn't trust the tailnet.
+Environment=MEDIA_COMPLETIONS_TARGET=amux:owui
+Environment=MEDIA_COMPLETIONS_MUTE=1
+# Environment=MEDIA_COMPLETIONS_TOKEN=...
+ExecStart=%h/projects/agent-media/.venv/bin/media-completions-shim --bind 127.0.0.1 --port 8783
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target
