@@ -44,6 +44,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs
 
 from .state import spool_dir
 
@@ -213,13 +214,25 @@ def _media_bin() -> str:
     return str(Path(sys.executable).parent / "media")
 
 
-def _media(args: list[str], timeout: int = 10) -> str:
+def _run(argv: list[str], timeout: int = 10) -> str:
+    """stdout of `argv`, stripped; "" on any failure or timeout."""
     try:
-        out = subprocess.run([_media_bin(), *args], capture_output=True,
-                             text=True, timeout=timeout)
+        out = subprocess.run(argv, capture_output=True, text=True,
+                             timeout=timeout)
         return (out.stdout or "").strip()
     except (OSError, subprocess.SubprocessError):
         return ""
+
+
+def _media(args: list[str], timeout: int = 10) -> str:
+    return _run([_media_bin(), *args], timeout)
+
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI.sub("", text)
 
 
 def _book_title() -> str:
@@ -254,7 +267,6 @@ def channel_status(channel: str) -> dict:
     """Controller snapshot for one channel: marquee label + progress line +
     indicator flags. Mirrors the popup's fetch()."""
     muted = False
-    part = ""
     if channel == "music":
         status = _media(["music", "status", "--show-idle", "--no-bar"])
         label = " ".join(_media(["music", "now"]).split()) or "(no music)"
@@ -270,7 +282,7 @@ def channel_status(channel: str) -> dict:
         muted = True
         status = status.replace(" [M]", "").replace("[M]", "").strip()
     return {"channel": channel, "label": label, "status": status or "○",
-            "muted": muted, "part": part}
+            "muted": muted}
 
 
 # --- the input box backend: reply to whoever just spoke ----------------------
@@ -409,7 +421,7 @@ def _amux_sessions() -> list[dict]:
     """Sessions from `amux ls --json`: [{name, state, dir, flags, preview}]
     where state is working / input / approval / stopped. Empty list if amux is
     old (no --json) or absent, so callers degrade gracefully."""
-    out = _media_run([_amux_bin(), "ls", "--json"])
+    out = _run([_amux_bin(), "ls", "--json"])
     try:
         data = json.loads(out) if out else []
     except (ValueError, TypeError):
@@ -439,7 +451,7 @@ def _tmux_cc_panes() -> list[dict]:
     EXCLUDING amux's own `amux-*` sessions (those come from `amux ls`). One agent
     per CC pane, replyable by its pane id. Display name is the session, with the
     window appended when a session holds more than one CC pane."""
-    out = _media_run(["tmux", "list-panes", "-a", "-F",
+    out = _run(["tmux", "list-panes", "-a", "-F",
                       "#{pane_id}\t#{pane_current_command}\t#{session_name}\t"
                       "#{window_name}\t#{pane_current_path}"])
     agents: list[dict] = []
@@ -452,9 +464,8 @@ def _tmux_cc_panes() -> list[dict]:
         # filter (no need to capture shells/editors). Skip amux-managed ones.
         if not pane_id or cmd != "claude" or sess.startswith("amux-"):
             continue
-        cap = re.sub(r"\x1b\[[0-9;]*m", "",
-                     _media_run(["tmux", "capture-pane", "-t", pane_id,
-                                 "-p", "-S", "-40"]))
+        cap = _strip_ansi(_run(["tmux", "capture-pane", "-t", pane_id,
+                                "-p", "-S", "-40"]))
         preview = next((ln.strip()[:60] for ln in reversed(cap.splitlines())
                         if ln.strip()), "")
         agents.append({"name": (win if win and win != sess else sess),
@@ -487,17 +498,8 @@ def _agents_payload() -> list[dict]:
         return data
 
 
-def _media_run(argv: list[str], timeout: int = 10) -> str:
-    try:
-        out = subprocess.run(argv, capture_output=True, text=True,
-                             timeout=timeout)
-        return (out.stdout or "").strip()
-    except (OSError, subprocess.SubprocessError):
-        return ""
-
-
 def _pane_alive(pane: str) -> bool:
-    return bool(_media_run(["tmux", "display-message", "-pt", pane,
+    return bool(_run(["tmux", "display-message", "-pt", pane,
                             "#{pane_id}"]))
 
 
@@ -534,13 +536,10 @@ def _last_speaker() -> dict | None:
 
 def _peek_pane(pane: str, lines: int = 60) -> list[str]:
     """The last N non-blank, ANSI-stripped lines of a pane — for the peek panel."""
-    from urllib.parse import unquote
-    pane = unquote(pane or "")
     if not pane:
         return []
-    cap = re.sub(r"\x1b\[[0-9;]*m", "",
-                 _media_run(["tmux", "capture-pane", "-t", pane, "-p",
-                             "-S", f"-{lines * 3}"]))
+    cap = _strip_ansi(_run(["tmux", "capture-pane", "-t", pane, "-p",
+                            "-S", f"-{lines * 3}"]))
     out = [ln.rstrip() for ln in cap.splitlines() if ln.strip()]
     return out[-lines:]
 
@@ -549,7 +548,7 @@ def _pane_session(pane: str) -> str:
     """The Claude Code session uuid for a pane — walk the pane process's whole
     descendant tree for a process carrying CLAUDE_CODE_SESSION_ID (claude may be
     a grandchild via a wrapper, not a direct child)."""
-    ppid = _media_run(["tmux", "display-message", "-t", pane, "-p", "#{pane_pid}"])
+    ppid = _run(["tmux", "display-message", "-t", pane, "-p", "#{pane_pid}"])
     if not ppid.isdigit():
         return ""
     stack, seen = [ppid], set()
@@ -564,7 +563,7 @@ def _pane_session(pane: str) -> str:
                     return kv.split(b"=", 1)[1].decode().strip()
         except OSError:
             pass
-        stack += _media_run(["pgrep", "-P", pid]).split()
+        stack += _run(["pgrep", "-P", pid]).split()
     return ""
 
 
@@ -572,13 +571,11 @@ def _pane_turns(pane: str, limit: int = 12) -> list[str]:
     """A pane's Claude Code session as assistant turns (oldest→newest), read from
     its transcript (~/.claude/projects/<cwd-slug>/<session>.jsonl). Falls back to
     one block of the raw pane capture when no transcript is found."""
-    from urllib.parse import unquote
-    pane = unquote(pane or "")
     if not pane:
         return []
     session = _pane_session(pane)
     if session:
-        cwd = _media_run(["tmux", "display-message", "-t", pane, "-p",
+        cwd = _run(["tmux", "display-message", "-t", pane, "-p",
                           "#{pane_current_path}"])
         path = (Path.home() / ".claude" / "projects"
                 / cwd.replace("/", "-") / f"{session}.jsonl")
@@ -645,8 +642,8 @@ def _play_pane(pane: str) -> bool:
     """Replay a pane's last spoken clip through the speech channel — 'play the
     output' (b). Reuses `replay-at-cursor`, which resolves the pane's latest clip
     from the speech history via TTS_POPUP_PANE."""
-    from urllib.parse import unquote
-    pane = unquote(pane or "")
+    # The pane arrives RAW in the /play JSON body — no unquote here: a tmux id
+    # with a two-digit number ("%12") would percent-decode into a control char.
     if not pane:
         return False
     env = {**_child_env(), "TTS_POPUP_PANE": pane}
@@ -661,7 +658,7 @@ def _play_pane(pane: str) -> bool:
 def _send_to_pane(pane: str, text: str) -> str:
     """Type `text` + Enter into a tmux pane (amux's literal-then-Enter timing,
     which Claude Code's input buffering needs). Returns "" or an error."""
-    probe = _media_run(["tmux", "display-message", "-pt", pane, "#{pane_id}"])
+    probe = _run(["tmux", "display-message", "-pt", pane, "#{pane_id}"])
     if not probe:
         return f"pane {pane} is gone"
     try:
@@ -685,7 +682,7 @@ def send_input(text: str, target: str) -> tuple[bool, str]:
         name = target[len("amux:"):]
         if name not in {s["name"] for s in _amux_sessions()}:
             return False, f"unknown amux session {name!r}"
-        out = _media_run([_amux_bin(), "send", name, text])
+        out = _run([_amux_bin(), "send", name, text])
         return (True, f"amux:{name}") if out else (False, "amux send failed")
     if target.startswith("tmux:"):
         # An auto-discovered (non-amux) Claude Code pane — type into it
@@ -1060,15 +1057,12 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/peek":
             # A pane's Claude Code session as assistant turns (read-only, open
             # like /agents) — latest turn full, older ones collapsible snapshots.
-            pane = next((v for k, _, v in (kv.partition("=")
-                         for kv in query.split("&")) if k == "pane"), "")
+            # parse_qs percent-decodes the client's encodeURIComponent exactly
+            # once — downstream must treat the pane id as raw from here.
+            pane = (parse_qs(query).get("pane") or [""])[0]
             self._json(200, {"pane": pane, "turns": _pane_turns(pane)})
         elif path == "/pair":
-            code = ""
-            for kv in query.split("&"):
-                k, _, v = kv.partition("=")
-                if k == "c":
-                    code = v
+            code = (parse_qs(query).get("c") or [""])[0]
             token = _amux_token()
             if not token:
                 self._send(503, b"no amux token configured on the host\n",
@@ -1080,11 +1074,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(403, b"invalid or expired pairing code\n",
                            "text/plain")
         elif path == "/status":
-            channel = "speech"
-            for kv in query.split("&"):
-                k, _, v = kv.partition("=")
-                if k == "channel" and v in ("speech", "music", "book"):
-                    channel = v
+            channel = (parse_qs(query).get("channel") or [""])[0]
+            if channel not in ("music", "book"):
+                channel = "speech"
             self._json(200, channel_status(channel))
         elif path.startswith("/img/"):
             self._image(path[len("/img/"):])

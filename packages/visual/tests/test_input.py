@@ -135,7 +135,7 @@ def test_viewer_seen_sanitizes_names():
 
 
 def test_amux_ls_parsing(monkeypatch):
-    monkeypatch.setattr(canvas, "_media_run", lambda argv, timeout=10: json.dumps([
+    monkeypatch.setattr(canvas, "_run", lambda argv, timeout=10: json.dumps([
         {"name": "scratch", "state": "working", "dir": "/home/x/scratch",
          "flags": ["YOLO"], "preview": "…"},
         {"name": "blog", "state": "stopped", "dir": "/home/x/blog"},
@@ -149,7 +149,7 @@ def test_amux_ls_parsing(monkeypatch):
 def test_amux_ls_non_json_degrades_empty(monkeypatch):
     # An old amux without --json prints the plain table (or usage noise);
     # _amux_sessions must degrade to [] rather than raise.
-    monkeypatch.setattr(canvas, "_media_run", lambda argv, timeout=10:
+    monkeypatch.setattr(canvas, "_run", lambda argv, timeout=10:
                         " 1  scratch          /home/x/scratch YOLO\n")
     assert canvas._amux_sessions() == []
 
@@ -171,7 +171,7 @@ def test_send_input_amux_route(monkeypatch):
         seen["argv"] = argv
         return "sent"
 
-    monkeypatch.setattr(canvas, "_media_run", fake_run)
+    monkeypatch.setattr(canvas, "_run", fake_run)
     ok, detail = canvas.send_input("hello there", "amux:scratch")
     assert ok and detail == "amux:scratch"
     assert seen["argv"][0].endswith("amux")

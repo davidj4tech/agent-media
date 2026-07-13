@@ -780,34 +780,36 @@
     }
     if (k === 'Enter') { e.preventDefault(); openInput(); return; }
     if (mode !== 'control') return;              // hotkeys are live only in CONTROL
-    const keys = {
-      ' ': () => act('toggle'),
-      'h': () => act('skip-'),  'l': () => act('skip+'),
-      'H': () => act('para-'),  'L': () => act('para+'),
-      '<': () => $('prev').onclick(), '>': () => $('next').onclick(),
-      ',': () => $('prev').onclick(), '.': () => $('next').onclick(),
-      '-': () => act('vol-'),   '=': () => act('vol+'), '+': () => act('vol+'),
-      'n': () => $('chan').onclick(),               // next channel (was Tab)
-      'm': () => act('mute'),   'M': () => act('mute-keep'),
-      'v': () => act('highlight'), 'p': () => act('clip-cursor', 1),
-      'g': () => act('goto'),   'w': () => openWeb(),
-      's': () => typedSeek(),   'o': () => typedOpen(),
-      '[': () => act('speed-'), ']': () => act('speed+'),
-      '0': () => act('speed0'), 'Backspace': () => act('speed0'),
-      'r': () => act('replay', 1),
-      'c': () => $('cc').onclick(new Event('x')),
-      'x': () => $('sfx').onclick(new Event('x')),   // sfx — s is typed-seek, f is fit
-      'f': () => $('fit').onclick(new Event('x')),
-      'e': () => { localStorage.setItem('eink', einkOn() ? '0' : '1');
-                   location.reload(); },
-      '?': () => toggleHelp(),
-    };
-    const fn = keys[k];
+    const fn = CTL_KEYS[k];
     if (!fn) return;
     e.preventDefault();
     fn();
     resetHide();
   });
+  // CONTROL-mode hotkeys (popup parity). Named functions are shared with the
+  // touch buttons — one code path per verb, whichever surface fired it.
+  const CTL_KEYS = {
+    ' ': () => act('toggle'),
+    'h': () => act('skip-'),  'l': () => act('skip+'),
+    'H': () => act('para-'),  'L': () => act('para+'),
+    '<': prevTrack, '>': nextTrack,
+    ',': prevTrack, '.': nextTrack,
+    '-': () => act('vol-'),   '=': () => act('vol+'), '+': () => act('vol+'),
+    'n': nextChannel,
+    'm': () => act('mute'),   'M': () => act('mute-keep'),
+    'v': () => act('highlight'), 'p': () => act('clip-cursor', 1),
+    'g': () => act('goto'),   'w': openWeb,
+    's': typedSeek,           'o': typedOpen,
+    '[': () => act('speed-'), ']': () => act('speed+'),
+    '0': () => act('speed0'), 'Backspace': () => act('speed0'),
+    'r': () => act('replay', 1),
+    'c': toggleCc,
+    'x': toggleSfx,   // sfx — s is typed-seek, f is fit
+    'f': cycleFit,
+    'e': () => { localStorage.setItem('eink', einkOn() ? '0' : '1');
+                 location.reload(); },
+    '?': toggleHelp,
+  };
   $('xbtn').onclick = (e) => { e.stopPropagation(); setMode('passive'); };
   function drawSfx() {
     $('sfx').innerHTML = icon(sfxOn() ? 'bell' : 'bell-off');
@@ -816,27 +818,26 @@
   drawSfx();
   function drawCc() { $('cc').classList.toggle('lit', subsOn()); }
   drawCc();
-  $('cc').onclick = (e) => {
-    e.stopPropagation();
+  function toggleCc() {
     localStorage.setItem('subs', subsOn() ? '0' : '1');
     drawCc();
     if (!subsOn()) setSubtitle(null);
     resetHide();
-  };
-  $('sfx').onclick = (e) => {
-    e.stopPropagation();
+  }
+  $('cc').onclick = (e) => { e.stopPropagation(); toggleCc(); };
+  function toggleSfx() {
     localStorage.setItem('sfx', sfxOn() ? '0' : '1');
     drawSfx();
     if (sfxOn()) chime(true);              // audible confirmation + unlocks audio
     resetHide();
-  };
+  }
+  $('sfx').onclick = (e) => { e.stopPropagation(); toggleSfx(); };
   function drawFit() {
     $('fit').classList.toggle('lit', fitMode() !== 'auto');
     $('fit').style.opacity = fitMode() === 'fill' ? 0.55 : 1;
   }
   drawFit();
-  $('fit').onclick = (e) => {
-    e.stopPropagation();
+  function cycleFit() {
     const next = { auto: 'fit', fit: 'fill', fill: 'auto' }[fitMode()] || 'auto';
     localStorage.setItem('fit', next);
     drawFit();
@@ -854,8 +855,9 @@
     clearTimeout(capTimer);
     capTimer = setTimeout(() => $('cap').classList.remove('on'), 2500);
     resetHide();
-  };
-  $('chan').onclick = () => {
+  }
+  $('fit').onclick = (e) => { e.stopPropagation(); cycleFit(); };
+  function nextChannel() {
     ch = ORDER[(ORDER.indexOf(ch) + 1) % ORDER.length];
     histIdx = 1;
     chTouched = Date.now();
@@ -863,7 +865,14 @@
     $('title').textContent = '…';
     poll();
     resetHide();
-  };
+  }
+  $('chan').onclick = nextChannel;
+  function prevTrack() { act('prev', histIdx); }
+  function nextTrack() {
+    if (ch !== 'speech') { act('next'); return; }
+    if (histIdx > 1) { histIdx -= 1; act('replay', histIdx); }
+    else act('jump-end');
+  }
   $('pp').onclick  = () => act('toggle');
   $('skb').onclick = () => act('skip-');    // sentence back (±5s music/book)
   $('skf').onclick = () => act('skip+');    // sentence forward
@@ -872,12 +881,8 @@
   $('sdn').onclick = () => act('speed-');
   $('sup').onclick = () => act('speed+');
   $('mute').onclick = () => act('mute');
-  $('prev').onclick = () => act('prev', histIdx);
-  $('next').onclick = () => {
-    if (ch !== 'speech') { act('next'); return; }
-    if (histIdx > 1) { histIdx -= 1; act('replay', histIdx); }
-    else act('jump-end');
-  };
+  $('prev').onclick = prevTrack;
+  $('next').onclick = nextTrack;
 
   // ---- agent tree: sessions → their claude panes, with live state ----------
   // Poll /agents (open on the tailnet), group by session into collapsible
