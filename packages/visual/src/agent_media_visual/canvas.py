@@ -50,6 +50,23 @@ from .state import spool_dir
 DEFAULT_PORT = 8781
 
 
+def _vendor_dir() -> Path:
+    """Vendored front-end libs (marked, DOMPurify) served at /vendor/<f>.
+    Populate with packages/visual/vendor.sh; absent → #peek degrades to escaped
+    text (the visual-cue chips still render)."""
+    return Path(__file__).resolve().parent / "vendor"
+
+
+def _persona_dir() -> Path:
+    """SillyTavern persona portraits, served at /persona/<slug>/<file>. Layout:
+    <slug>/neutral.<ext> (+ optional happy/sad/angry/surprised). <slug> is the
+    persona's TTS voice, slugified. The tts-shim references these URLs when a
+    persona speaks (see packages/tts-shim/.../personas.py)."""
+    base = os.environ.get("MEDIA_PERSONA_DIR") or str(
+        Path.home() / ".config" / "agent-media" / "personas")
+    return Path(base)
+
+
 class Hub:
     """Fan-out of show events to connected SSE clients; remembers the last
     image event (and the latest speech state) so a screen that (re)connects
@@ -410,9 +427,12 @@ def _last_speaker() -> dict | None:
 
 
 def _peek_pane(pane: str, lines: int = 60) -> list[str]:
-    """The last N non-blank, ANSI-stripped lines of a pane — for the peek panel."""
-    from urllib.parse import unquote
-    pane = unquote(pane or "")
+    """The last N non-blank, ANSI-stripped lines of a pane — for the peek panel.
+
+    Caller (`_pane_turns`) already unquoted the pane id; do NOT unquote again —
+    `unquote` isn't idempotent, so a second pass mangles pane ids whose digits
+    form valid hex (`%13` → 0x13), which returned an empty/garbage peek."""
+    pane = pane or ""
     if not pane:
         return []
     cap = re.sub(r"\x1b\[[0-9;]*m", "",
@@ -1135,6 +1155,30 @@ PAGE = """<!doctype html>
                  min-width: 30px; min-height: 26px; border-radius: 6px; }
   #peek .tplay:active { background: rgba(255,255,255,.14); }
   #peek .tplay .ic { width: 15px; height: 15px; }
+  /* markdown-rendered turns (vendored marked + DOMPurify at /vendor) */
+  #peek .tbody { white-space: normal; }
+  #peek .tbody p { margin: .35em 0; }
+  #peek .tbody h1, #peek .tbody h2, #peek .tbody h3 {
+                font-size: 14px; margin: .5em 0 .2em; color: #eef; }
+  #peek .tbody ul, #peek .tbody ol { margin: .35em 0; padding-left: 1.2em; }
+  #peek .tbody a { color: #9cf; }
+  #peek .tbody blockquote { margin: .35em 0; padding-left: .6em;
+                border-left: 2px solid rgba(255,255,255,.2); color: #bcc; }
+  #peek .tbody :not(pre) > code { background: rgba(255,255,255,.1);
+                padding: .05em .35em; border-radius: 4px;
+                font: 12px/1.4 ui-monospace, Menlo, monospace; }
+  #peek .tbody pre { background: rgba(255,255,255,.06); padding: .5em .6em;
+                border-radius: 8px; overflow-x: auto; white-space: pre; margin: .4em 0; }
+  #peek .tbody pre code { color: #ccd; }
+  /* visual-cue chips: [[visual:]] / [[reveal:]] collapsed to a typed badge.
+     The full image-spec sits in the title (hover) — signal, not noise. */
+  #peek .amc-cue { display: inline-block; vertical-align: baseline;
+                padding: .05em .55em; margin: 0 .15em; border-radius: 999px;
+                font: 600 11px/1.5 system-ui, sans-serif; letter-spacing: .03em;
+                color: #ffd75f; background: rgba(255,215,95,.14);
+                border: 1px solid rgba(255,215,95,.35); cursor: help; }
+  #peek .amc-cue.reveal { color: #8fd0ff; background: rgba(143,208,255,.14);
+                border-color: rgba(143,208,255,.4); }
   html.eink #peek .tbody { color: #000; -webkit-mask-image: none; mask-image: none; }
   html.eink #peek .turn { border-top-color: #000; }
   html.eink #agents .sess { background: #fff; color: #000; border: 1px solid #000; }
@@ -1144,7 +1188,13 @@ PAGE = """<!doctype html>
     animation: none; box-shadow: 0 0 0 2px #000; }
   html.eink #peek { background: #fff; color: #000; border: 1px solid #000; }
   html.eink #peek pre { color: #000; }
+  html.eink #peek .tbody pre { background: #fff; border: 1px solid #000; }
+  html.eink #peek .tbody :not(pre) > code { background: rgba(0,0,0,.08); color: #000; }
+  html.eink #peek .amc-cue, html.eink #peek .amc-cue.reveal {
+    color: #000; background: #fff; border: 1px solid #000; }
 </style>
+<script defer src="/vendor/marked.min.js"></script>
+<script defer src="/vendor/purify.min.js"></script>
 </head>
 <body>
 <!-- Unified icon set: one monochrome inline-SVG sprite (currentColor, uniform
@@ -1276,7 +1326,7 @@ PAGE = """<!doctype html>
   function fitMode() { return localStorage.getItem('fit') || 'auto'; }
   function wantFit(purpose) {
     const m = fitMode();
-    return m === 'fit' || (m === 'auto' && purpose === 'figure');
+    return m === 'fit' || (m === 'auto' && (purpose === 'figure' || purpose === 'portrait'));
   }
   let lastPurpose = null;
   function kenBurns(el) {
@@ -1948,6 +1998,35 @@ PAGE = """<!doctype html>
   const AG_RANK = { input: 0, approval: 1, working: 2, stopped: 3 };  // needs-you first
   let agOpen = {}, agTop = false;              // session / top-level expanded (persist)
   const agEsc = (s) => s.replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
+  // ---- transcript rendering: vendored marked + DOMPurify, cue chips ---------
+  // A turn renders as sanitized markdown when the vendored libs are present
+  // (served from /vendor), else escaped text. Either way, [[visual:]] /
+  // [[reveal:]] markers collapse to a typed chip: you see a cue fired and its
+  // kind, the full image spec parked in the hover title — not the wall of prose.
+  const CUE_RE = /\\[\\[(visual|reveal)\\s*:\\s*([^\\]]*)\\]\\]/gi;
+  const escAttr = (s) => agEsc(s).replace(/"/g, '&quot;');
+  function cueChip(c) {
+    const label = c.kind === 'reveal' ? '▣ figure · speech waits' : '▣ figure';
+    const cls = 'amc-cue' + (c.kind === 'reveal' ? ' reveal' : '');
+    const title = c.desc ? ' title="' + escAttr(c.desc) + '"' : '';
+    return '<span class="' + cls + '"' + title + '>' + label + '</span>';
+  }
+  function renderTurn(raw) {
+    const cues = [];
+    const s = String(raw || '').replace(CUE_RE, (_, kind, desc) => {
+      const i = cues.length;
+      cues.push({ kind: kind.toLowerCase(), desc: desc.trim() });
+      return '\\uE000' + i + '\\uE001';        // private-use sentinel survives md
+    });
+    let html;
+    if (window.marked && window.DOMPurify) {
+      try { html = DOMPurify.sanitize(marked.parse(s, { breaks: true })); }
+      catch (_) { html = agEsc(s).replace(/\\n/g, '<br>'); }
+    } else {
+      html = agEsc(s).replace(/\\n/g, '<br>');
+    }
+    return html.replace(/\\uE000(\\d+)\\uE001/g, (_, i) => cueChip(cues[+i]));
+  }
   async function pollAgents() {
     if (document.hidden) return;
     let list;
@@ -2026,7 +2105,7 @@ PAGE = """<!doctype html>
     const blocks = peekTurns.map((t, i) =>
       '<div class="turn' + (i === last ? ' open' : '') + '" data-i="' + i + '">'
       + '<button class="tplay" title="play this turn">' + icon('play') + '</button>'
-      + '<div class="tbody">' + agEsc(t) + '</div></div>').join('');
+      + '<div class="tbody">' + renderTurn(t) + '</div></div>').join('');
     $('peek').innerHTML = '<div class="ph">' + agEsc(name) + '</div>'
       + (blocks || '<div class="tbody" style="max-height:none">(no transcript / output)</div>');
     $('peek').classList.add('on');
@@ -2148,8 +2227,52 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, channel_status(channel))
         elif path.startswith("/img/"):
             self._image(path[len("/img/"):])
+        elif path.startswith("/vendor/"):
+            self._vendor(path[len("/vendor/"):])
+        elif path.startswith("/persona/"):
+            self._persona(path[len("/persona/"):])
         else:
             self._send(404, b"not found\n", "text/plain")
+
+    def _persona(self, rel: str) -> None:
+        # /persona/<slug>/<file> — a persona portrait sprite (no traversal).
+        parts = [p for p in rel.split("/") if p not in ("", ".", "..")]
+        if len(parts) != 2:
+            self._send(404, b"not found\n", "text/plain")
+            return
+        f = _persona_dir() / os.path.basename(parts[0]) / os.path.basename(parts[1])
+        if not f.is_file():
+            self._send(404, b"no such portrait\n", "text/plain")
+            return
+        data = f.read_bytes()
+        ext = f.suffix.lstrip(".").lower()
+        ctype = {"png": "image/png", "webp": "image/webp", "jpg": "image/jpeg",
+                 "jpeg": "image/jpeg", "gif": "image/gif"}.get(ext, "application/octet-stream")
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "max-age=3600")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _vendor(self, name: str) -> None:
+        # Vendored front-end libs (marked, DOMPurify) for #peek. Absent → #peek
+        # falls back to escaped text, so a 404 here is non-fatal.
+        name = os.path.basename(name)  # no traversal
+        if not name.endswith(".js"):
+            self._send(404, b"not found\n", "text/plain")
+            return
+        f = _vendor_dir() / name
+        if not f.is_file():
+            self._send(404, b"not vendored (run vendor.sh)\n", "text/plain")
+            return
+        data = f.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/javascript; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "max-age=86400")
+        self.end_headers()
+        self.wfile.write(data)
 
     def _image(self, name: str) -> None:
         name = os.path.basename(name)  # no traversal
@@ -2247,7 +2370,8 @@ class Handler(BaseHTTPRequestHandler):
         event: dict = {
             "caption": (body.get("caption") or None),
             "prompt": (body.get("prompt") or None),
-            "purpose": ("figure" if body.get("purpose") == "figure" else None),
+            "purpose": (body.get("purpose")
+                        if body.get("purpose") in ("figure", "portrait") else None),
             # Which session's reply this visual belongs to — the page dims a
             # figure while a DIFFERENT session is speaking (else a stale
             # diagram reads as belonging to whatever voice is talking).

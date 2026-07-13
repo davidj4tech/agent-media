@@ -1,0 +1,59 @@
+# agent-media canvas behind Open WebUI ---------------------------------------
+#
+# Puts the ambient canvas *behind* OWUI's chat in one browser tab. Three jobs:
+#   1. serve the background client  (/canvas/bg.js  → the static file)
+#   2. proxy the canvas SSE + image spool, SAME-ORIGIN  (/canvas/* → :8781)
+#   3. serve OWUI and inject the <script> into its HTML
+#
+# Job 2 is the important one: keeping the SSE stream and images under OWUI's
+# own origin means OWUI's Content-Security-Policy and the browser's CORS never
+# see a cross-origin request — the thing that would otherwise silently break
+# EventSource against :8781.
+#
+# HTML injection (job 3) needs Caddy built WITH the replace-response plugin —
+# it is NOT in the standard binary:
+#
+#     xcaddy build --with github.com/caddyserver/replace-response
+#
+# Replace the two ports if yours differ: OWUI here is :8080, canvas is :8781.
+
+owui.example.ts.net {                       # your tailnet hostname
+
+	# 1) the background client (static file straight from the visual package)
+	handle /canvas/bg.js {
+		root * /home/ryer/projects/agent-media/packages/visual/static
+		rewrite * /bg.js
+		file_server
+		header Content-Type "application/javascript; charset=utf-8"
+		header Cache-Control "no-cache"     # you'll iterate on it; don't let it stick
+	}
+
+	# 2) proxy the canvas server's SSE stream + /img spool, same-origin
+	handle /canvas/* {
+		uri strip_prefix /canvas
+		reverse_proxy 127.0.0.1:8781 {
+			flush_interval -1               # SSE: never buffer, keep the stream open
+		}
+	}
+
+	# 3) OWUI — inject the background client into every HTML response
+	handle {
+		reverse_proxy 127.0.0.1:8080 {
+			# replace-response needs an UNcompressed body to rewrite, so ask
+			# OWUI not to gzip. (Drop this line and the injection silently no-ops.)
+			header_up Accept-Encoding identity
+
+			# bg.js embeds the canvas as a same-origin <iframe src="/canvas/">.
+			# If OWUI ships a restrictive CSP (frame-src 'none'/'self' only), the
+			# iframe may be blocked — uncomment to relax it to same-origin frames.
+			# NOTE: youtube is NOT needed here — the video mirror loads inside the
+			# iframe's OWN document, under canvas.py's CSP, not OWUI's.
+			# header_down -Content-Security-Policy
+		}
+
+		# insert the loader just before </head>. bg.js embeds the real canvas
+		# page as a same-origin iframe behind OWUI and injects the OWUI-
+		# transparency override, so this one tag is all we add.
+		replace_response "</head>" `<script defer src="/canvas/bg.js"></script></head>`
+	}
+}

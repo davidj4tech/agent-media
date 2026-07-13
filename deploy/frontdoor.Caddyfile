@@ -1,0 +1,72 @@
+# agent-media unified front door ---------------------------------------------
+# One Caddy, one entry point, each surface on its own tailnet name. Glance is
+# the home page; OWUI and SillyTavern are the two chat surfaces (work/voice vs
+# personas); the canvas is the shared live layer behind OWUI.
+#
+# WHY subdomains, not paths: OWUI and SillyTavern are SPAs with absolute asset
+# and websocket paths — path-prefixing them under one host breaks them. Give
+# each its own name. On a tailnet you get these names via Tailscale Serve, a
+# wildcard cert, or local DNS (e.g. Pi-hole custom records). Ports assumed:
+# OWUI :8080 · canvas :8781 · tts-shim :8782 · SillyTavern :8000 · Glance :8083.
+
+# --- reusable: the canvas embedded behind a chat SPA (same-origin) -----------
+# Needs Caddy built with the replace-response plugin (see visual/deploy/
+# owui-canvas.Caddyfile for the full rationale). Arg 0 = the static dir holding
+# bg.js.
+(canvas_behind) {
+	handle /canvas/bg.js {
+		root * {args[0]}
+		rewrite * /bg.js
+		file_server
+		header Content-Type "application/javascript; charset=utf-8"
+		header Cache-Control "no-cache"
+	}
+	handle /canvas/* {
+		uri strip_prefix /canvas
+		reverse_proxy 127.0.0.1:8781 {
+			flush_interval -1        # SSE: never buffer
+		}
+	}
+}
+
+# --- home: the front door (Glance portal + live agents widget) ---------------
+home.example.ts.net {
+	reverse_proxy 127.0.0.1:8083
+}
+
+# --- chat: OWUI (voice/Call, tmux-agent front door) + canvas background ------
+chat.example.ts.net {
+	import canvas_behind /home/ryer/projects/agent-media/packages/visual/static
+	handle {
+		reverse_proxy 127.0.0.1:8080 {
+			header_up Accept-Encoding identity     # replace-response needs plaintext
+		}
+		replace_response "</head>" `<script defer src="/canvas/bg.js"></script></head>`
+	}
+}
+
+# --- personas: SillyTavern (voiced by the SAME tts-shim as OWUI) -------------
+personas.example.ts.net {
+	# In SillyTavern: TTS extension → OpenAI-compatible → http://127.0.0.1:8782/v1
+	# (the shim) for agent-media voice + canvas. ST needs listen + a whitelist/
+	# basic-auth entry for the proxy host (config.yaml: listen: true).
+	reverse_proxy 127.0.0.1:8000
+}
+
+# --- canvas: the bare wall/TV display (unchanged, its own name) --------------
+canvas.example.ts.net {
+	reverse_proxy 127.0.0.1:8781 {
+		flush_interval -1
+	}
+}
+
+# --- home assistant: the house (its own Lovelace surface) --------------------
+# HA owns home control; Glance just links here + pulls a few entities. Caddy
+# proxies HA's websocket frontend transparently. In HA's configuration.yaml set:
+#   http:
+#     use_x_forwarded_for: true
+#     trusted_proxies: [127.0.0.1, ::1]   # the Caddy host
+# or HA refuses the proxied connection.
+ha.example.ts.net {
+	reverse_proxy 127.0.0.1:8123
+}

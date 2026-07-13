@@ -1,0 +1,16 @@
+[Unit]
+Description=agent-media TTS shim — OpenAI-compatible /v1/audio/speech for OWUI/SillyTavern
+After=network-online.target
+
+[Service]
+# Localhost-only by default: OWUI/SillyTavern run on the same host and call the
+# shim over the loopback. If a front-end lives on another tailnet host, bind the
+# Tailscale IP instead (--bind 100.x.y.z) and set MEDIA_SHIM_API_KEY so the
+# open /v1/audio/speech endpoint isn't reachable unauthenticated.
+Environment=MEDIA_SHIM_CANVAS=1
+ExecStart=%h/projects/agent-media/.venv/bin/media-tts-shim --bind 127.0.0.1 --port 8782
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

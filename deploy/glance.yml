@@ -1,0 +1,101 @@
+# Glance — the agent-media front door (portal + light ops dashboard).
+# Run: glance --config glance.yml   (or the container). Served at :8083.
+# Docs: https://github.com/glanceapp/glance — verify widget fields/classes
+# against your installed version; the custom-api template below is the one bit
+# most likely to need a tweak.
+
+server:
+  port: 8083
+  host: 0.0.0.0
+
+pages:
+  - name: Home
+    columns:
+      # -- left: is everything up? ------------------------------------------
+      - size: small
+        widgets:
+          - type: monitor
+            title: Services
+            cache: 30s
+            sites:
+              - title: Chat (OWUI)
+                url: http://127.0.0.1:8080
+              - title: Personas (SillyTavern)
+                url: http://127.0.0.1:8000
+              - title: Canvas
+                url: http://127.0.0.1:8781/healthz
+              - title: TTS shim
+                url: http://127.0.0.1:8782/healthz
+
+          # -- home state, pulled from Home Assistant -----------------------
+          # Long-lived token: HA → profile → Long-Lived Access Tokens. Swap the
+          # entity_ids below for yours. Root is HA's /api/states array — if your
+          # Glance version can't address the root array via `.JSON.Array ""`,
+          # that's the one line to adjust (same caveat as the /agents widget).
+          - type: custom-api
+            title: Home (HA)
+            cache: 10s
+            url: http://127.0.0.1:8123/api/states
+            headers:
+              Authorization: Bearer YOUR_HA_LONG_LIVED_TOKEN
+            template: |
+              <ul class="list list-gap-10 list-with-separator">
+              {{ range .JSON.Array "" }}
+                {{ $id := .String "entity_id" }}
+                {{ if or (eq $id "person.david") (eq $id "binary_sensor.study_presence") (eq $id "sensor.living_room_temperature") (eq $id "media_player.house") }}
+                  <li class="flex justify-between items-center">
+                    <span>{{ .String "attributes.friendly_name" }}</span>
+                    <span class="color-highlight">{{ .String "state" }} {{ .String "attributes.unit_of_measurement" }}</span>
+                  </li>
+                {{ end }}
+              {{ end }}
+              </ul>
+
+      # -- middle: the live ops dashboard (agent-media /agents) --------------
+      - size: full
+        widgets:
+          - type: custom-api
+            title: Agents (live)
+            cache: 3s
+            url: http://127.0.0.1:8781/agents
+            template: |
+              <ul class="list list-gap-10 list-with-separator">
+              {{ range .JSON.Array "agents" }}
+                {{ $s := .String "state" }}
+                <li class="flex justify-between items-center">
+                  <span class="size-h4">{{ .String "session" }}</span>
+                  <span class="{{ if or (eq $s "input") (eq $s "approval") }}color-negative{{ else if eq $s "working" }}color-positive{{ else }}color-base{{ end }}">
+                    {{ $s }}
+                  </span>
+                </li>
+              {{ else }}
+                <p class="color-base">no active agents</p>
+              {{ end }}
+              </ul>
+
+          - type: bookmarks
+            title: Surfaces
+            groups:
+              - title: Talk
+                links:
+                  - title: OWUI — chat / Call mode
+                    url: http://chat.example.ts.net
+                  - title: SillyTavern — personas
+                    url: http://personas.example.ts.net
+              - title: Watch
+                links:
+                  - title: Canvas (wall / TV)
+                    url: http://canvas.example.ts.net
+
+      # -- right: reference ---------------------------------------------------
+      - size: small
+        widgets:
+          - type: bookmarks
+            title: Docs & repos
+            groups:
+              - title: agent-media
+                links:
+                  - title: Channels / restructure notes
+                    url: http://home.example.ts.net   # swap for your git/docs host
+                  - title: SillyTavern proposal
+                    url: http://home.example.ts.net
