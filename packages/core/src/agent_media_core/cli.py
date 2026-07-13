@@ -344,7 +344,29 @@ def _with_visual_glyph(line: str) -> str:
     return line
 
 
+def _miss_alert_line() -> str:
+    """Flashing `⚠ <target> unreachable (N lost)` — shown INSTEAD of the
+    progress bar while spoken replies are known lost and the target hasn't
+    acknowledged (the miss ledger is pending). A frozen `▶ 00:00` bar reads
+    as playback; a lost reply must read as a fault. The status bar redraws
+    ~1/s, so alternating the glyph on the epoch second makes it blink."""
+    try:
+        from .sinks._miss_notify import pending_miss
+        pm = pending_miss()
+    except Exception:  # noqa: BLE001 — an alert lookup must never break status
+        return ""
+    if not pm:
+        return ""
+    count, _latest = pm
+    glyph = "⚠" if int(time.time()) % 2 else " "
+    return f"{glyph} {_active_speech_target().name} unreachable ({count} lost)"
+
+
 def cmd_status(a) -> int:
+    alert = _miss_alert_line()
+    if alert:
+        print(alert)
+        return 0
     idle, pos, dur, paused, muted, speed, playing = _speech_display_state()
     # Optional title-overlay bar (EXPERIMENTAL): the whole `▶ pos title dur`
     # segment becomes one background-progress bar, times embedded in the fill.
@@ -396,11 +418,16 @@ def cmd_popup_status(a) -> int:
         # Leading line = the action's own output (collapsed to one line), which
         # the caller reads before the three status fields.
         print(" ".join(buf.getvalue().split()))
-    idle, pos, dur, paused, muted, speed, _ = _speech_display_state()
-    print(_with_visual_glyph(
-        render_status(idle=idle, pos=pos, dur=dur, paused=paused, muted=muted,
-                      width=a.width, hide_idle=not a.show_idle,
-                      bar=not getattr(a, "no_bar", False), speed=speed)))
+    alert = _miss_alert_line()
+    if alert:
+        print(alert)
+    else:
+        idle, pos, dur, paused, muted, speed, _ = _speech_display_state()
+        print(_with_visual_glyph(
+            render_status(idle=idle, pos=pos, dur=dur, paused=paused,
+                          muted=muted, width=a.width,
+                          hide_idle=not a.show_idle,
+                          bar=not getattr(a, "no_bar", False), speed=speed)))
     prefix, body = _subject_label()
     print(f"{prefix}{body}" if (prefix or body) else "")
     m = StateStore().list_mutes()

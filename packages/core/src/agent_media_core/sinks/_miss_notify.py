@@ -60,6 +60,22 @@ def miss_host(target_name: str = "") -> str:
             or os.environ.get("MEDIA_MUSIC_LOCAL_SSH", "p8ar"))
 
 
+def pending_miss() -> "tuple[int, int] | None":
+    """``(count, latest_epoch)`` of losses still awaiting phone
+    acknowledgement, or None. The ledger is non-empty exactly while replies
+    are lost and the target hasn't answered, so consumers (`media status`)
+    can alert on it. Capped at GIVE_UP_S like the retrier, so a ledger left
+    behind by an expired/crashed notifier can't alert forever."""
+    try:
+        lines = [ln for ln in _ledger().read_text().splitlines() if ln]
+        latest = int(lines[-1])
+    except (OSError, ValueError, IndexError):
+        return None
+    if time.time() - latest > GIVE_UP_S:
+        return None
+    return len(lines), latest
+
+
 def record_miss(target_name: str = "") -> None:
     """Append this loss to the ledger and ensure a retrier is running.
     Never raises — this runs inside playback's failure path."""
