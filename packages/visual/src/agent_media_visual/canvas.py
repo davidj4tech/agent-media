@@ -330,6 +330,16 @@ def _pair_code_path() -> Path:
     return spool_dir() / "pair-code"
 
 
+def _persona_dir() -> Path:
+    """SillyTavern persona portraits, served at /persona/<slug>/<file>. Layout:
+    <slug>/neutral.<ext> (+ optional happy/sad/angry/surprised). <slug> is the
+    persona's TTS voice, slugified. The tts-shim references these URLs when a
+    persona speaks (see packages/tts-shim/.../personas.py)."""
+    base = os.environ.get("MEDIA_PERSONA_DIR") or str(
+        Path.home() / ".config" / "agent-media" / "personas")
+    return Path(base)
+
+
 def _pair_consume(code: str) -> bool:
     """True (and burn the code) when `code` matches a fresh minted one."""
     p = _pair_code_path()
@@ -1080,8 +1090,31 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, channel_status(channel))
         elif path.startswith("/img/"):
             self._image(path[len("/img/"):])
+        elif path.startswith("/persona/"):
+            self._persona(path[len("/persona/"):])
         else:
             self._send(404, b"not found\n", "text/plain")
+
+    def _persona(self, rel: str) -> None:
+        # /persona/<slug>/<file> — a persona portrait sprite (no traversal).
+        parts = [p for p in rel.split("/") if p not in ("", ".", "..")]
+        if len(parts) != 2:
+            self._send(404, b"not found\n", "text/plain")
+            return
+        f = _persona_dir() / os.path.basename(parts[0]) / os.path.basename(parts[1])
+        if not f.is_file():
+            self._send(404, b"no such portrait\n", "text/plain")
+            return
+        data = f.read_bytes()
+        ext = f.suffix.lstrip(".").lower()
+        ctype = {"png": "image/png", "webp": "image/webp", "jpg": "image/jpeg",
+                 "jpeg": "image/jpeg", "gif": "image/gif"}.get(ext, "application/octet-stream")
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "max-age=3600")
+        self.end_headers()
+        self.wfile.write(data)
 
     def _image(self, name: str) -> None:
         name = os.path.basename(name)  # no traversal
@@ -1219,7 +1252,8 @@ class Handler(BaseHTTPRequestHandler):
         event: dict = {
             "caption": (body.get("caption") or None),
             "prompt": (body.get("prompt") or None),
-            "purpose": ("figure" if body.get("purpose") == "figure" else None),
+            "purpose": (body.get("purpose")
+                        if body.get("purpose") in ("figure", "portrait") else None),
             # Which session's reply this visual belongs to — the page dims a
             # figure while a DIFFERENT session is speaking (else a stale
             # diagram reads as belonging to whatever voice is talking).

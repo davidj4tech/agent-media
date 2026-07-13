@@ -41,7 +41,7 @@
   function fitMode() { return localStorage.getItem('fit') || 'auto'; }
   function wantFit(purpose) {
     const m = fitMode();
-    return m === 'fit' || (m === 'auto' && purpose === 'figure');
+    return m === 'fit' || (m === 'auto' && (purpose === 'figure' || purpose === 'portrait'));
   }
   let lastPurpose = null;
   function kenBurns(el) {
