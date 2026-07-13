@@ -1121,12 +1121,15 @@ PAGE = """<!doctype html>
     cursor: pointer; -webkit-tap-highlight-color: transparent;
     flex: 0 0 auto;
   }
-  /* Narrow screens: tighter buttons so the clock keeps its digits. */
+  /* Narrow screens: tighter buttons so the merged transport+volume row
+     (10 buttons when all shown) keeps every key on the panel. */
   @media (max-width: 430px) {
-    #ctl button { min-width: 31px; min-height: 34px; font-size: 17px; }
-    #clock { font-size: 13px; }
+    #ctl button { min-width: 29px; min-height: 34px; font-size: 17px; }
+    #ctl .row { gap: .1em; }
+    #clock { font-size: 13px; min-width: 70px; }
   }
   #ctl button:active { background: rgba(255,255,255,.14); }
+  #vdn { margin-left: auto; }   /* splits transport (left) from volume (right) */
   #ctl button.lit { color: #ffd75f; }
   .ic { width: 19px; height: 19px; display: block; margin: auto; }
   /* Loading spinner: a play button becomes this arc while its clip is rendered
@@ -1144,7 +1147,7 @@ PAGE = """<!doctype html>
     0%, 12%  { transform: translateX(0); }
     88%, 100% { transform: translateX(var(--marq-shift, -40%)); }
   }
-  #clock { flex: 1; min-width: 78px; text-align: center;
+  #clock { flex: 0 0 auto; min-width: 78px; text-align: center;
            font-variant-numeric: tabular-nums;
            color: #ddd; white-space: nowrap; overflow: hidden;
            border-radius: 8px; padding: .25em .2em; }
@@ -1451,25 +1454,22 @@ PAGE = """<!doctype html>
   <div class="row">
     <button id="chan"></button>
     <div id="marq"><span id="title">agent-media</span></div>
+    <span id="clock">○</span>
     <button id="kbd"></button>
     <button id="cc"></button>
     <button id="fit"></button>
     <button id="sfx"></button>
     <button id="xbtn"></button>
   </div>
-  <!-- Transport row: turn-prev · sentence-back · play/pause · clock ·
-       sentence-fwd · turn-next. The volume/speed/mute cluster gets its own
-       row below — nine buttons plus the clock overflowed a phone-width panel
-       and clipped the time display. -->
+  <!-- Transport + volume/speed/mute share one row (the clock lives up top,
+       which is what made this fit a phone panel). #vdn's auto margin splits
+       the transport cluster (left) from the volume cluster (right). -->
   <div class="row">
     <button id="prev"></button>
     <button id="skb"></button>
     <button id="pp"></button>
-    <span id="clock">○</span>
     <button id="skf"></button>
     <button id="next"></button>
-  </div>
-  <div class="row">
     <button id="vdn"></button>
     <button id="vup"></button>
     <button id="sdn" class="sp"></button>
@@ -2046,7 +2046,12 @@ PAGE = """<!doctype html>
     $('ctl').classList.toggle('focused', ctrl);
     // Clear the tree while typing, and while the controller holds the dock —
     // the pill at the bottom edge would poke through the controller's rows.
+    // Collapse it too: an expanded tree surviving .hide would pop back
+    // open (over the input's spot) when the dock is handed back. agTop is
+    // what re-renders read — clearing the class alone gets re-expanded on
+    // the next /agents poll.
     $('agents').classList.toggle('hide', m === 'input' || ctrl);
+    if (m === 'input' || ctrl) { agTop = false; $('agents').classList.remove('expanded'); }
     $('cap').classList.toggle('hide', active);
     if (m === 'input') $('text').focus();
     else if (document.activeElement === $('text')) $('text').blur();
@@ -2222,7 +2227,10 @@ PAGE = """<!doctype html>
   });
 
   document.body.addEventListener('click', (e) => {
-    wake();
+    // A tap = eyes on the screen: hold it awake a while. (This was the
+    // spike's wake(), left dangling when dc58afa introduced holdWake —
+    // the throw silently killed every bare-canvas tap since.)
+    holdWake(90000);
     if ($('help').classList.contains('on')) { toggleHelp(); return; }
     if ($('peek').classList.contains('on')) { hidePeek(); return; }  // tap-away closes peek
     if ($('ctl').contains(e.target)) { resetHide(); return; }  // buttons self-handle
@@ -2543,7 +2551,9 @@ PAGE = """<!doctype html>
   function agBlur() {
     agFocused = false;
     // Collapse back to the pill: the expanded tree occupies the input's
-    // spot now, so leaving the tree must hand the dock back.
+    // spot now, so leaving the tree must hand the dock back. Reset agTop
+    // as well — re-renders re-apply 'expanded' from it.
+    agTop = false;
     $('agents').classList.remove('expanded');
     for (const el of $('agents').querySelectorAll('.cursor')) el.classList.remove('cursor');
   }
