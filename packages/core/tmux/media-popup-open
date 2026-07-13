@@ -65,7 +65,7 @@ while :; do
     elif [ -f "$linkflag" ]; then      # `w` → full-width web-UI link, then reopen
         IFS=$'\t' read -r chan url < "$linkflag"; chan=${chan:-speech}
         rm -f "$linkflag"
-        popup -w "$lw" -h 5 -s 'bg=default' "MEDIA_POPUP_LINK=$url media-popup-link"
+        popup -w "$lw" -h 5 -s 'bg=default' -T ' web UI ' "MEDIA_POPUP_LINK=$url media-popup-link"
     else
         break                          # normal close → done
     fi
