@@ -3,7 +3,7 @@
 Stdlib-only HTTP server. Endpoints:
 
   GET  /          the canvas page (cross-fade + Ken Burns, SSE client,
-                  tap-to-reveal audio controller)
+                  audio controller — Tab / tap walk the focus ring)
   GET  /events    Server-Sent Events stream of `show` events
   GET  /img/<f>   serve a generated image from the spool dir
   POST /show      {"image": "<spool filename | absolute URL>",
@@ -1096,7 +1096,7 @@ PAGE = """<!doctype html>
   }
   body.speaking #pulse { animation: breathe 2.8s ease-in-out infinite; }
   @keyframes breathe { 0%, 100% { opacity: 0; } 50% { opacity: .65; } }
-  /* --- audio controller (tap anywhere to reveal) — kin of the tmux popup ---
+  /* --- audio controller (Tab / tap walk to CONTROL) — kin of the tmux popup ---
      Geometry mirrors the tmux binding (`display-popup -w 34 -h 4 -x R -y 6`):
      a compact panel anchored to the RIGHT edge near the top, sliding in from
      the right, instead of a wide bottom sheet. */
@@ -1478,7 +1478,7 @@ PAGE = """<!doctype html>
   </div>
 </div>
 <div id="help">
-  <div class="hh">canvas keys · Tab: passive→input→agents→control · Esc / q → passive</div>
+  <div class="hh">canvas keys · Tab / tap: passive→input→agents→control→… · Esc / q → passive</div>
   <div class="hg">
     <b>Space</b><span>play / pause</span>
     <b>h · l</b><span>sentence −/+ (music/book: seek ∓5s)</span>
@@ -1492,7 +1492,7 @@ PAGE = """<!doctype html>
     <b>g</b><span>go to source pane</span>
     <b>s · o</b><span>typed seek · open URL  (music/book)</span>
     <b>w</b><span>web UI  (music/book)</span>
-    <b>Tab</b><span>cycle channel  (in control)</span>
+    <b>n</b><span>next channel  (in control)</span>
     <b>c · f</b><span>captions · sound fx</span>
     <b>Enter</b><span>reply input</span>
     <b>a</b><span>agent tree: j/k move · l reply/open · h close · g/G ends · p peek · q exit</span>
@@ -2016,14 +2016,15 @@ PAGE = """<!doctype html>
   //   passive — just the image; the bottom input rests dim, hotkeys OFF.
   //   input   — bottom field focused; type a reply (Enter sends, Esc → passive).
   //   control — controller focused; single-key hotkeys live, Tab cycles channel.
-  // Tab walks passive→input→agents→control (the agents stop only when the
-  // tree exists); Esc / q drop back to passive.
+  // Tab and bare-canvas taps walk the same ring: passive→input→agents→control
+  // →passive (the agents stop only when the tree exists); Esc / q bail out to
+  // passive from anywhere. Channel cycling is `n` / the channel button.
   let mode = 'passive';
 
   function tabNext() {
     if (agFocused) { agBlur(); setMode('control'); return; }  // agents → control
-    if (mode === 'control') { $('chan').onclick(); return; }  // control: next channel
-    if (mode === 'passive') { setMode('input'); return; }
+    if (mode === 'control') { setMode('passive'); return; }   // control: wrap around
+    if (mode === 'passive') { openInput(); return; }
     setMode('passive');                                       // input → agents…
     if ($('agents').classList.contains('on')) agFocus();
     else setMode('control');                                  // …or straight on
@@ -2235,14 +2236,15 @@ PAGE = """<!doctype html>
     if ($('peek').classList.contains('on')) { hidePeek(); return; }  // tap-away closes peek
     if ($('ctl').contains(e.target)) { resetHide(); return; }  // buttons self-handle
     if ($('inp').contains(e.target)) { openInput(); return; }  // tap field → INPUT
-    // Tap on the bare canvas: reveal / dismiss the controller (passive ⇄ control).
-    setMode(mode === 'control' ? 'passive' : 'control');
+    // A bare-canvas tap walks the same ring as Tab (passive→input→agents→
+    // control→passive) — so a tap in CONTROL dismisses the controller.
+    tabNext();
   });
 
   // ---- popup-parity key bindings (for canvases with a keyboard) ------------
   // Focus walks with Tab (passive→input→agents→control) and unwinds with
   // Esc/q. In
-  // CONTROL the full tmux-popup (prefix a) hotkey set is live: Tab channel ·
+  // CONTROL the full tmux-popup (prefix a) hotkey set is live: n channel ·
   // Space play/pause · h/l sentence · H/L paragraph · </> prev/next · -/= vol ·
   // m mute · M keep-muted · v highlight · p clip@cursor · g source · w web UI ·
   // s typed-seek · o open-URL · [/] speed, 0/⌫ reset · r replay · c cc · f sfx ·
@@ -2276,6 +2278,7 @@ PAGE = """<!doctype html>
       '<': () => $('prev').onclick(), '>': () => $('next').onclick(),
       ',': () => $('prev').onclick(), '.': () => $('next').onclick(),
       '-': () => act('vol-'),   '=': () => act('vol+'), '+': () => act('vol+'),
+      'n': () => $('chan').onclick(),               // next channel (was Tab)
       'm': () => act('mute'),   'M': () => act('mute-keep'),
       'v': () => act('highlight'), 'p': () => act('clip-cursor', 1),
       'g': () => act('goto'),   'w': () => openWeb(),
