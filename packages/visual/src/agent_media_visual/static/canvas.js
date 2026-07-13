@@ -528,10 +528,16 @@
     else setMode(RING[mode]);
   }
 
-  function resetHide() {                        // idle CONTROL auto-returns to passive
+  function resetHide() {              // idle non-passive modes unwind to passive
     clearTimeout(hideTimer);
-    if (mode === 'control')
-      hideTimer = setTimeout(() => setMode('passive'), 15000);
+    if (mode === 'passive') return;
+    // CONTROL rests quickly (15s, its old cadence); INPUT and AGENTS linger
+    // (30s) — and a reply draft in progress is never discarded: re-arm and
+    // look again later instead of dropping the mode out from under it.
+    hideTimer = setTimeout(() => {
+      if (mode === 'input' && $('text').value.trim()) { resetHide(); return; }
+      setMode('passive');
+    }, mode === 'control' ? 15000 : 30000);
   }
 
   function setMode(m) {
@@ -599,6 +605,15 @@
     t.classList.add('on');
     clearTimeout(toastT);
     toastT = setTimeout(() => t.classList.remove('on'), 2600);
+  }
+  // The ring is invisible to a newcomer (the `?` help needs a keyboard), so
+  // the first few bare-canvas taps narrate where the walk goes — then it
+  // stays quiet forever (per-device counter).
+  function ringHint() {
+    const n = +(localStorage.getItem('ringhint') || 0);
+    if (n >= 3) return;
+    localStorage.setItem('ringhint', String(n + 1));
+    toast('tap walks: reply → agents → controls → off  ·  ✕ / Esc exits');
   }
   // Popup `w` — open the active channel's web UI (music → Iris, book → mpvc).
   // No UI configured/installed (empty result) → a toast instead of a dead tab;
@@ -748,6 +763,7 @@
     if ($('inp').contains(e.target)) { openInput(); return; }  // tap field → INPUT
     // A bare-canvas tap walks the same ring as Tab (passive→input→agents→
     // control→passive) — so a tap in CONTROL dismisses the controller.
+    ringHint();
     tabNext();
   });
 
@@ -762,6 +778,7 @@
   document.addEventListener('keydown', (e) => {
     if (e.target === $('text')) return;          // the input box owns its keys
     if (e.metaKey || e.ctrlKey || e.altKey) return;
+    resetHide();                       // any key = activity; re-arm idle unwind
     const k = e.key;
     // Tree / peek navigation runs BEFORE the mode machinery, so j/k/Enter/p/Esc
     // mean "move the cursor", not "reply / control / toggle playback".
