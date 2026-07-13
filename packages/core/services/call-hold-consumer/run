@@ -1,0 +1,16 @@
+#!/usr/bin/env sh
+# House-media call-hold consumer.
+#
+# Pauses this host's local speech sink when the external-hold flag is set, so a
+# phone's call detector on another host can duck the house media by reaching
+# across the tailnet with `media-call-guard --hold` (and `--release`). Unlike
+# the phone's own `call-guard` service, this one does NO call detection of its
+# own — `MEDIA_CALL_GUARD_LIST_CMD=true` makes call_active() always false, so it
+# is a pure flag watcher. On a PipeWire/systemd host this runs under
+# `/bin/sh <this>`; the venv bin (with media-call-guard) is put on PATH by the
+# generated unit. Config is overridable via ~/.config/agent-media.env.
+exec 2>&1
+export MEDIA_CALL_GUARD_LIST_CMD="${MEDIA_CALL_GUARD_LIST_CMD:-true}"
+export MEDIA_CALL_GUARD_SOCKETS="${MEDIA_CALL_GUARD_SOCKETS:-$HOME/.local/state/agent-media/sink-speech.sock}"
+export MEDIA_CALL_GUARD_DUCK_SOCKETS="${MEDIA_CALL_GUARD_DUCK_SOCKETS-}"
+exec media-call-guard

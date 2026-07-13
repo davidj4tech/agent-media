@@ -187,6 +187,16 @@ class Config:
         self.hold_flag = os.environ.get(
             "MEDIA_CALL_GUARD_HOLD_FLAG",
             str(state_dir() / _DEFAULT_HOLD_FLAG_NAME))
+        # Optional shell commands fired on the *call* rising/falling edge (not
+        # the flag hold). Lets a phone's call detection reach across the tailnet
+        # to duck another host's media, e.g.
+        #   MEDIA_CALL_GUARD_CALL_ENGAGE_CMD="ssh sp4 media-call-guard --hold"
+        #   MEDIA_CALL_GUARD_CALL_RELEASE_CMD="ssh sp4 media-call-guard --release"
+        # Best-effort and fire-and-forget: a failing hook never wedges the guard.
+        self.call_engage_cmd = os.environ.get(
+            "MEDIA_CALL_GUARD_CALL_ENGAGE_CMD", "").strip()
+        self.call_release_cmd = os.environ.get(
+            "MEDIA_CALL_GUARD_CALL_RELEASE_CMD", "").strip()
 
 
 def _resolve_sockets() -> list[str]:
@@ -505,10 +515,32 @@ class FlagHold:
         return self._held
 
 
+def _run_call_hook(cmd: str, label: str, dry_run: bool = False) -> None:
+    """Fire a call-edge hook command, best-effort. Runs in its own thread with a
+    short timeout so a slow/hanging command (e.g. an SSH that stalls) never
+    delays the guard's own pause. Failures are logged, never raised."""
+    if not cmd:
+        return
+    if dry_run:
+        log.info("[dry-run] would run %s hook: %s", label, cmd)
+        return
+
+    def _work() -> None:
+        try:
+            subprocess.run(cmd, shell=True, timeout=15.0,
+                           capture_output=True, text=True)
+            log.info("call %s hook fired", label)
+        except (OSError, subprocess.SubprocessError) as e:
+            log.warning("call %s hook failed: %s", label, e)
+
+    threading.Thread(target=_work, daemon=True).start()
+
+
 def _run_loop(cfg: Config, dry_run: bool = False) -> None:
     hold = PauseHold(cfg.pause_list)  # event-hold only guards the *paused* sockets
     flaghold = FlagHold(cfg.hold_engage_s, cfg.hold_release_s)
     prev_want = False        # was anything holding the pause last cycle?
+    prev_call = False        # last cycle's call state, for firing edge hooks
     call_in_episode = False  # did a call participate in the current hold?
     last_call = False        # last known call state (kept across query failures)
     ducked: dict = {}        # duck socket -> its pre-duck volume, for restoring
@@ -524,6 +556,11 @@ def _run_loop(cfg: Config, dry_run: bool = False) -> None:
             if notifs is not None:
                 last_call = call_active(notifs, cfg)
         call = last_call
+        if call and not prev_call:
+            _run_call_hook(cfg.call_engage_cmd, "engage", dry_run=dry_run)
+        elif prev_call and not call:
+            _run_call_hook(cfg.call_release_cmd, "release", dry_run=dry_run)
+        prev_call = call
         flag = flaghold.update(flag_present(cfg), _now())
         want = call or flag
 
