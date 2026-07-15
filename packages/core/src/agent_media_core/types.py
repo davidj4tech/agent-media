@@ -17,6 +17,7 @@ class Source(str, Enum):
 
     CLAUDE_CODE = "claude-code"
     CODEX = "codex"
+    HERMES = "hermes"
     PI = "pi"
     OPENCODE = "opencode"
     HA_SSE = "ha-sse"
