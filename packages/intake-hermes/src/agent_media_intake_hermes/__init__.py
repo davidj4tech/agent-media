@@ -119,6 +119,16 @@ def main() -> int:
         _emit_noop()
         return 0
 
+    # Layer in the machine-local env file (~/.config/agent-media.env) so this
+    # hook honours the same speech routing (MEDIA_SPEECH_DEFAULT_TARGET=phone,
+    # per-engine voices, remote-say bridge, …) as the built-in stdin hooks —
+    # they call this too. Real env vars set before now always win.
+    try:
+        from agent_media_core.intake._env import load_env_file
+        load_env_file("hook-hermes")
+    except Exception:  # noqa: BLE001 — never let config layering break the hook
+        pass
+
     try:
         raw = sys.stdin.read()
     except Exception:  # noqa: BLE001
