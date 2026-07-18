@@ -129,3 +129,6 @@ def test_ctl_skip_actions_all_channels():
         "skip", "--unit", "paragraph", "--dir", "-1", "--seek-fallback", "-30"]
     assert canvas.ctl_argv("music", "skip-", 1) == ["music", "seek", "-5"]
     assert canvas.ctl_argv("book", "para+", 1) == ["book", "seek", "+30"]
+    assert canvas.ctl_argv("speech", "web", 1) == ["speech-web"]
+    assert canvas.ctl_argv("music", "web", 1) == ["music-web"]
+    assert canvas.ctl_argv("book", "web", 1) == ["book-web"]

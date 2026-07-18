@@ -938,6 +938,8 @@ def ctl_argv(channel: str, action: str, arg: int,
             "clip-cursor": ["replay-at-cursor"],
             # g — focus the speaking pane in tmux.
             "goto": ["goto-pane"],
+            # w — open the visual canvas.
+            "web": ["speech-web"],
             "speed-": ["speed", "down"],
             "speed+": ["speed", "up"],
             "speed0": ["speed", "reset"],
@@ -965,7 +967,7 @@ def ctl_argv(channel: str, action: str, arg: int,
             # g — focus the channel's pane/UI (ncmpcpp / mpvc).
             "goto": ["goto-track" if channel == "music" else "goto-book"],
             # w — print the channel's web-UI URL (the browser opens it).
-            "web": ["music-web" if channel == "music" else "book-web"],
+            "web": [f"{channel}-web"],
         }
         # s / o — typed seek and open-URL both carry a free-text arg.
         if action == "seek-to" and sarg:

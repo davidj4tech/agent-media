@@ -615,11 +615,10 @@
     localStorage.setItem('ringhint', String(n + 1));
     toast('tap walks: reply → agents → controls → off  ·  ✕ / Esc exits');
   }
-  // Popup `w` — open the active channel's web UI (music → Iris, book → mpvc).
-  // No UI configured/installed (empty result) → a toast instead of a dead tab;
-  // a blocked popup → surface the URL so it's still reachable.
+  // Popup `w` — open the active channel's web UI (speech → canvas, music →
+  // Iris, book → mpvc). No UI configured/installed (empty result) → a toast
+  // instead of a dead tab; a blocked popup → surface the URL so it's reachable.
   async function openWeb() {
-    if (ch === 'speech') { toast('web UI — music / book only'); return; }
     const r = await act('web');
     const url = r && r.out && r.out.trim();
     if (!url || url.slice(0, 4) !== 'http') {

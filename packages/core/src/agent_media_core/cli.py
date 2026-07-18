@@ -923,13 +923,15 @@ def cmd_open_mpvc(a) -> int:
 
 
 def _print_open_url(url: str) -> int:
-    """Print a URL (clickable in most terminals — the reliable path, since mel
-    is headless and this usually runs over SSH/tmux from a phone) and also fire
-    a real browser via the stdlib webbrowser module, but only when a display or
-    $BROWSER is actually present so a headless run doesn't spawn a pointless or
-    hanging opener.
+    """Print a URL for client-side opening.
+
+    The tmux popup consumes stdout and presents it to the attached client as an
+    OSC 8 link. Avoid opening a browser on the media host in that path; it is
+    usually a headless SSH/tmux server, not the device in the user's hand.
     """
     print(url)
+    if (os.environ.get("MEDIA_WEB_PRINT_ONLY") or "").strip() == "1":
+        return 0
     if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY") \
             or os.environ.get("BROWSER"):
         try:
@@ -938,6 +940,50 @@ def _print_open_url(url: str) -> int:
         except Exception:  # noqa: BLE001
             pass
     return 0
+
+
+def _first_url(raw: str, fallback: str = "") -> str:
+    return (raw.replace(",", " ").split() or [fallback])[0]
+
+
+def _tailscale_magicdns_name() -> str:
+    """This node's short MagicDNS name for URLs opened from another tailnet device."""
+    try:
+        r = subprocess.run(["tailscale", "status", "--json"], capture_output=True,
+                           text=True, timeout=3)
+        data = json.loads(r.stdout or "{}") if r.returncode == 0 else {}
+        self_node = data.get("Self") or {}
+        # MagicDNS adds the tailnet search domain, so the short name keeps the
+        # popup link readable while still opening on phones/laptops in the tailnet.
+        name = str(self_node.get("HostName") or "").strip()
+        if name:
+            return name
+        name = str(self_node.get("DNSName") or "").strip().rstrip(".")
+        if name:
+            return name
+    except (OSError, subprocess.SubprocessError, TypeError, ValueError):
+        pass
+    return ""
+
+
+def _canvas_web_url() -> str:
+    if raw := os.environ.get("MEDIA_CANVAS_URL"):
+        return _first_url(raw)
+    try:
+        port = int(os.environ.get("MEDIA_VISUAL_PORT") or "8781")
+    except ValueError:
+        port = 8781
+    if host := (os.environ.get("MEDIA_VISUAL_MAGICDNS_HOST")
+                or _tailscale_magicdns_name()):
+        return f"http://{host}:{port}/"
+    if raw := os.environ.get("MEDIA_VISUAL_URL"):
+        return _first_url(raw)
+    return f"http://127.0.0.1:{port}"
+
+
+def cmd_speech_web(a) -> int:
+    """Open the visual canvas for the speech channel."""
+    return _print_open_url(_canvas_web_url())
 
 
 def cmd_book_web(a) -> int:
@@ -2805,6 +2851,9 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("open-mpvc",
                    help="open a new tmux window running mpvc-tui for the book"
                    ).set_defaults(func=cmd_open_mpvc)
+    sub.add_parser("speech-web",
+                   help="print/open the visual canvas URL for speech"
+                   ).set_defaults(func=cmd_speech_web)
     sub.add_parser("book-web",
                    help="print/open the mpvc-web browser control URL for the book"
                    ).set_defaults(func=cmd_book_web)
