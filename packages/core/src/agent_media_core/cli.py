@@ -344,6 +344,41 @@ def _with_visual_glyph(line: str) -> str:
     return line
 
 
+def _skew_alert_line() -> str:
+    """Read the version skew ledger produced by `media doctor`. Flashing `⚠`
+    shown in the status bar if any host is running stale agent-media/dotfiles code.
+    Auto-triggers a background check every 2 hours."""
+    try:
+        from pathlib import Path
+        import stat
+        d = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local" / "state")))
+        logdir = d / "agent-media"
+        logdir.mkdir(parents=True, exist_ok=True)
+        ledger = logdir / "version-skew.log"
+        
+        # Async check every 2h
+        try:
+            mtime = ledger.stat().st_mtime
+        except FileNotFoundError:
+            mtime = 0
+            
+        if time.time() - mtime > 7200:
+            ledger.touch() # prevent concurrent spawns
+            import subprocess
+            subprocess.Popen(
+                [sys.argv[0], "doctor"],
+                start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+            
+        skew = ledger.read_text().strip()
+        if not skew:
+            return ""
+        glyph = "⚠" if int(time.time()) % 2 else " "
+        return f"{glyph} skew: {skew.replace(chr(10), ', ')}"
+    except OSError:
+        return ""
+
+
 def _miss_alert_line() -> str:
     """Flashing `⚠ <target> unreachable (N lost)` — shown INSTEAD of the
     progress bar while spoken replies are known lost and the target hasn't
@@ -363,7 +398,7 @@ def _miss_alert_line() -> str:
 
 
 def cmd_status(a) -> int:
-    alert = _miss_alert_line()
+    alert = _skew_alert_line() or _miss_alert_line()
     if alert:
         print(alert)
         return 0
@@ -2796,6 +2831,70 @@ def cmd_popup_channel(a) -> int:
     return 0
 
 
+def cmd_doctor(a) -> int:
+    """Check agent cluster health (version skew across hosts)."""
+    import subprocess
+    from pathlib import Path
+    
+    hosts = os.environ.get("MEDIA_DOCTOR_HOSTS", "p8ar red5 sp4").split()
+    repos = ["agent-media", "dotfiles"]
+    skewed = []
+    
+    # Read local hashes
+    local_hashes = {}
+    for r in repos:
+        path = str(Path.home() / "projects" / r) if r != "dotfiles" else str(Path.home() / r)
+        try:
+            local_hashes[r] = subprocess.run(
+                ["git", "-C", path, "rev-parse", "HEAD"],
+                capture_output=True, text=True, check=True
+            ).stdout.strip()
+            print(f"local {r:12}: {local_hashes[r][:7]}")
+        except (OSError, subprocess.CalledProcessError):
+            pass
+
+    for host in hosts:
+        print(f"checking {host}...", end="", flush=True)
+        host_skewed = False
+        for r, l_hash in local_hashes.items():
+            try:
+                # Phone uses dotfiles at ~/dotfiles, agent-media at ~/agent-media (not in projects/)
+                r_path = f"~/{r}"
+                res = subprocess.run(
+                    ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", host,
+                     f"git -C {r_path} rev-parse HEAD"],
+                    capture_output=True, text=True, timeout=12)
+                if res.returncode == 0:
+                    r_hash = res.stdout.strip()
+                    if r_hash != l_hash:
+                        print(f" [{r} skewed: {r_hash[:7]}]", end="")
+                        host_skewed = True
+            except Exception:
+                pass
+                
+        if host_skewed:
+            skewed.append(host)
+            print()
+        else:
+            print(" ok")
+
+    d = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local" / "state")))
+    ledger = d / "agent-media" / "version-skew.log"
+    try:
+        ledger.parent.mkdir(parents=True, exist_ok=True)
+        if skewed:
+            ledger.write_text("\n".join(skewed) + "\n")
+            print(f"\nwrote {len(skewed)} skewed host(s) to ledger.")
+            return 1
+        else:
+            ledger.unlink(missing_ok=True)
+            print("\nall hosts up to date.")
+            return 0
+    except OSError as e:
+        log.error("doctor: failed to write ledger: %s", e)
+        return 1
+
+
 # --- CLI -------------------------------------------------------------------
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -3020,6 +3119,9 @@ def _build_parser() -> argparse.ArgumentParser:
     pc.add_argument("--set", choices=POPUP_CHANNELS, default=None,
                     help="remember this as the last-viewed channel")
     pc.set_defaults(func=cmd_popup_channel)
+
+    doc = sub.add_parser("doctor", help="check cluster health (version skew)")
+    doc.set_defaults(func=cmd_doctor)
 
     return p
 
