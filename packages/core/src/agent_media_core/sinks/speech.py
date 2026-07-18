@@ -33,6 +33,27 @@ _BROKER_OWNER_KEY = "user-data/am-owner"
 BROKER_TTL_S = 20.0
 
 
+def _broker_default_volume() -> float:
+    """The broker's configured resting volume — the same MEDIA_SPEECH_VOLUME the
+    `sink-speech` run script launches mpv with (default 170, louder than mpv's
+    nominal 100). unduck restores to this so a duck cycle can't quietly pull
+    speech below its intended level."""
+    try:
+        return float(os.environ.get("MEDIA_SPEECH_VOLUME", "170"))
+    except (TypeError, ValueError):
+        return 170.0
+
+
+def _broker_max_volume() -> float:
+    """The broker's --volume-max ceiling (MEDIA_SPEECH_VOLUME_MAX, default 200).
+    Duck levels clamp to this rather than a bare 100 so they stay valid across
+    the broker's amplified range."""
+    try:
+        return float(os.environ.get("MEDIA_SPEECH_VOLUME_MAX", "200"))
+    except (TypeError, ValueError):
+        return 200.0
+
+
 def _broker_owner_id() -> str:
     """Stable id for this claimer. Same-host/same-pid callers are already
     serialized by the local flock, so host:pid is enough to tell hosts apart."""
@@ -388,10 +409,17 @@ class SinkSpeech:
             pass
 
     def duck(self, target: Target = DEFAULT_TARGET, level: int = 50) -> None:
-        ipc.set_property(_socket_for(target), "volume", max(0, min(100, level)))
+        # Clamp to the broker's configured ceiling, not a bare 100 — the broker
+        # runs with --volume-max above 100 for the louder default, so the duck
+        # level must be free to sit anywhere in that range.
+        ipc.set_property(_socket_for(target), "volume",
+                         max(0, min(_broker_max_volume(), level)))
 
     def unduck(self, target: Target = DEFAULT_TARGET) -> None:
-        ipc.set_property(_socket_for(target), "volume", 100)
+        # Restore to the broker's *configured* default, not a hardcoded 100,
+        # or every duck/unduck cycle would quietly pull speech below the
+        # louder MEDIA_SPEECH_VOLUME the broker launched with.
+        ipc.set_property(_socket_for(target), "volume", _broker_default_volume())
 
     def position(self, target: Target = DEFAULT_TARGET) -> Optional[int]:
         try:

@@ -29,11 +29,32 @@ rm -f "$SOCK"
 : "${MEDIA_SPEECH_SAMPLERATE:=48000}"
 : "${MEDIA_SPEECH_FORMAT:=s16}"
 : "${MEDIA_SPEECH_CHANNELS:=stereo}"
+# Louder default. --volume is mpv's *software* gain; 100 is nominal, so to go
+# above it we also lift --volume-max (mpv clamps --volume to it). Amplifying
+# past 100 risks clipping on already-hot clips — that's exactly what the
+# loudness filter below guards against by normalizing peaks. Both overridable.
+: "${MEDIA_SPEECH_VOLUME:=170}"
+: "${MEDIA_SPEECH_VOLUME_MAX:=200}"
+# Per-stream loudness normalization (EBU R128-ish). Each channel is its own
+# mpv/Mopidy, so we can't read the music's live level — but pulling every
+# stream toward one target loudness makes speech sit at the same perceived
+# level as the music instead of booming or vanishing under it. dynaudnorm is
+# frame-based (works on short TTS clips with no two-pass/startup lag, unlike
+# loudnorm). Set MEDIA_SPEECH_LOUDNORM= (empty) to disable.
+# maxgain is the real ceiling on *quiet* clips: dynaudnorm won't amplify a
+# frame beyond it even to reach targetrms, so a low maxgain leaves quiet TTS
+# quiet no matter how high --volume goes. Raised to 30 so soft clips actually
+# reach the target loudness; targetrms=0.95 pushes the resting level up too.
+: "${MEDIA_SPEECH_LOUDNORM:=dynaudnorm=targetrms=0.95:maxgain=30:gausssize=15}"
+AF="scaletempo2"
+[ -n "$MEDIA_SPEECH_LOUDNORM" ] && AF="$AF,$MEDIA_SPEECH_LOUDNORM"
 exec mpv --idle=yes --ao="$MEDIA_SPEECH_AO" --force-window=no \
-  --input-ipc-server="$SOCK" --volume=100 --keep-open=no \
+  --input-ipc-server="$SOCK" \
+  --volume-max="$MEDIA_SPEECH_VOLUME_MAX" --volume="$MEDIA_SPEECH_VOLUME" \
+  --keep-open=no \
   --gapless-audio=no --audio-stream-silence=no --ytdl=no \
   --network-timeout=60 \
-  --af=scaletempo2 --audio-pitch-correction=no \
+  --af="$AF" --audio-pitch-correction=no \
   --audio-samplerate="$MEDIA_SPEECH_SAMPLERATE" \
   --audio-format="$MEDIA_SPEECH_FORMAT" \
   --audio-channels="$MEDIA_SPEECH_CHANNELS"
