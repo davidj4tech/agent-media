@@ -129,7 +129,7 @@ class Coordinator:
     # ---- public API used by sink-speech --------------------------------
 
     def pre_pause_remote(self) -> None:
-        """Start remote MPRIS detect-and-pause in a background thread.
+        """Start remote MPRIS and Android media detect-and-pause in a background thread.
 
         Call this before render_text so the ~4.8s SSH cold-connect overlaps
         with rendering.  before_speech() waits up to 6s for it to finish
@@ -259,14 +259,21 @@ class Coordinator:
         if mpris_hosts or android_hosts:
             if self._remote_pause_done is not None:
                 self._remote_pause_done.wait(timeout=14)
+                self._remote_pause_done = None
             else:
                 for host in mpris_hosts:
-                    remote = _mpris.remote_playing_players(host)
-                    self._mpris_remote_paused[host] = remote
-                    _mpris.pause_remote(host, remote)
+                    try:
+                        remote = _mpris.remote_playing_players(host)
+                        self._mpris_remote_paused[host] = remote
+                        _mpris.pause_remote(host, remote)
+                    except Exception:  # noqa: BLE001
+                        pass
                 for host in android_hosts:
-                    if _android.pause_for_speech(host):
-                        self._android_paused.append(host)
+                    try:
+                        if _android.pause_for_speech(host):
+                            self._android_paused.append(host)
+                    except Exception:  # noqa: BLE001
+                        pass
 
         # Book channel (sink-book): a longform audiobook must *pause* for
         # speech — you can't half-hear narration. Independent of the Mopidy
