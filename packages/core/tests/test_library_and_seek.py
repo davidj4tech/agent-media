@@ -94,21 +94,21 @@ class _FakeSrv:
 def test_seek_absolute_jumps(capsys):
     srv = _FakeSrv()
     assert cli._book_seek_action(srv, "1:33:35", "") == 0
-    assert srv.calls == [("seek", 5615.0, "local")]
+    assert srv.calls == [("seek", 5615.0, "")]
     assert "⏱" in capsys.readouterr().out
 
 
 def test_seek_signed_is_relative(capsys):
     srv = _FakeSrv()
     assert cli._book_seek_action(srv, "-5:00", "") == 0
-    assert srv.calls == [("skip", -300.0, "local")]
+    assert srv.calls == [("skip", -300.0, "")]
 
 
 def test_skip_forces_relative_on_bare_number(capsys):
     """`book skip 30` (bare, unsigned) must offset +30, not jump to 0:30."""
     srv = _FakeSrv()
     assert cli._book_seek_action(srv, "30", "", force_relative=True) == 0
-    assert srv.calls == [("skip", 30.0, "local")]
+    assert srv.calls == [("skip", 30.0, "")]
 
 
 def test_seek_bad_timecode_returns_2(capsys):

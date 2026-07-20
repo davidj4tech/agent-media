@@ -18,10 +18,12 @@ playing?" without starting mpv.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shlex
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Optional
@@ -124,29 +126,62 @@ def _remote_book_cache_ssh(target: Target) -> str:
             or os.environ.get("MEDIA_MUSIC_LOCAL_SSH", ""))
 
 
-def _stage_local_for_remote(path: Path, target: Target) -> Optional[str]:
-    """Copy a red5-local file to the target's XDG book cache and return remote path."""
-    if target.name in ("", "local") or not path.is_file():
+def _remote_cache_path(path: Path, target: Target, *, create: bool = True) -> Optional[tuple[str, str, str]]:
+    """Return (ssh_host, remote_dir, remote_path) for a target book cache."""
+    if target.name in ("", "local"):
         return None
     host = _remote_book_cache_ssh(target)
     if not host:
         return None
     cache_expr = _remote_book_cache_dir(target)
+    mkdir = "mkdir -p \"$d\" && " if create else ""
+    remote_cmd = (
+        f"d={shlex.quote(cache_expr)}; "
+        "eval \"d=$d\"; case \"$d\" in /*) ;; *) d=\"$HOME/$d\";; esac; "
+        f"{mkdir}cd \"$d\" && pwd"
+    )
+    p = subprocess.run(
+        ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", host, remote_cmd],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        timeout=12, check=False,
+    )
+    if p.returncode != 0 or not p.stdout.strip():
+        return None
+    remote_dir = p.stdout.strip().splitlines()[-1]
+    return host, remote_dir, f"{remote_dir}/{path.name}"
+
+
+def remote_cached_path(path: Path, target: Target) -> Optional[str]:
+    """Return target-local cached path when the file is already present."""
     try:
-        # Resolve the cache on the phone. Relative paths are under remote HOME.
-        remote_cmd = (
-            f"d={shlex.quote(cache_expr)}; "
-            "eval \"d=$d\"; case \"$d\" in /*) ;; *) d=\"$HOME/$d\";; esac; "
-            "mkdir -p \"$d\" && cd \"$d\" && pwd"
-        )
+        resolved = _remote_cache_path(path, target, create=False)
+        if not resolved:
+            return None
+        host, _remote_dir, remote_path = resolved
+        size = path.stat().st_size
+        test_cmd = f"test -f {shlex.quote(remote_path)} && test $(wc -c < {shlex.quote(remote_path)}) -eq {size}"
         p = subprocess.run(
-            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", host, remote_cmd],
-            text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", host, test_cmd],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             timeout=12, check=False,
         )
-        if p.returncode != 0 or not p.stdout.strip():
+        return remote_path if p.returncode == 0 else None
+    except Exception:
+        return None
+
+
+def _stage_local_for_remote(path: Path, target: Target) -> Optional[str]:
+    """Copy a red5-local file to the target's XDG book cache and return remote path."""
+    if not path.is_file():
+        return None
+    try:
+        cached = remote_cached_path(path, target)
+        if cached:
+            return cached
+        resolved = _remote_cache_path(path, target, create=True)
+        if not resolved:
             return None
-        remote_dir = p.stdout.strip().splitlines()[-1]
+        host, remote_dir, remote_path = resolved
         subprocess.run(
             ["rsync", "-a", "-s", "-e", "ssh -o ConnectTimeout=8",
              str(path), f"{host}:{remote_dir}/"],
@@ -154,10 +189,90 @@ def _stage_local_for_remote(path: Path, target: Target) -> Optional[str]:
             timeout=float(os.environ.get("MEDIA_BOOK_CACHE_COPY_TIMEOUT", "600")),
             check=True,
         )
-        return f"{remote_dir}/{path.name}"
+        return remote_path
     except Exception as e:  # noqa: BLE001 - fall back to host path/URL handling
-        log.warning("sink-book: staging %s to %s failed: %s", path, host, e)
+        log.warning("sink-book: staging %s failed: %s", path, e)
         return None
+
+
+def start_stage_local_for_remote(path: Path, target: Target, *, start_ms: int = -1,
+                                 title: str = "") -> bool:
+    """Stage a local file to a remote target in the background, then play it."""
+    if target.name in ("", "local") or not path.is_file():
+        return False
+    _write_stage_status({
+        "status": "copying", "uri": str(path), "target": target.name,
+        "title": title or path.stem, "total": path.stat().st_size,
+        "copied": 0, "remote_path": "", "error": "",
+    })
+    code = r'''
+import json
+import subprocess
+import sys
+import time
+from pathlib import Path
+from agent_media_core.intake._env import load_env_file
+load_env_file()
+from agent_media_core.sinks.book import _remote_cache_path, remote_cached_path, stage_status_path
+from agent_media_core.types import Target
+from agent_media_core import mcp_server
+path = Path(sys.argv[1])
+target = Target(sys.argv[2])
+start_ms = int(sys.argv[3])
+title = sys.argv[4] or path.stem
+total = path.stat().st_size
+status_path = stage_status_path()
+def write(status, copied=0, remote_path='', error=''):
+    status_path.parent.mkdir(parents=True, exist_ok=True)
+    status_path.write_text(json.dumps({
+        'status': status, 'uri': str(path), 'target': target.name,
+        'title': title, 'total': total, 'copied': int(copied or 0),
+        'remote_path': remote_path, 'error': error, 'ts': time.time(),
+    }))
+try:
+    cached = remote_cached_path(path, target)
+    if cached:
+        write('playing', total, cached)
+        mcp_server.book_play(cached, resume=(start_ms < 0), start_ms=start_ms, target=target.name, title=title)
+        write('done', total, cached)
+        raise SystemExit(0)
+    resolved = _remote_cache_path(path, target, create=True)
+    if not resolved:
+        write('error', 0, '', 'could not resolve remote cache')
+        raise SystemExit(1)
+    host, remote_dir, remote_path = resolved
+    write('copying', 0, remote_path)
+    proc = subprocess.Popen(
+        ['rsync', '-a', '--info=progress2', '-s', '-e', 'ssh -o ConnectTimeout=8',
+         str(path), f'{host}:{remote_dir}/'],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+    )
+    copied = 0
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        parts = line.strip().split()
+        if parts:
+            n = parts[0].replace(',', '')
+            if n.isdigit():
+                copied = int(n)
+                write('copying', min(copied, total), remote_path)
+    rc = proc.wait()
+    if rc != 0:
+        write('error', copied, remote_path, f'rsync exited {rc}')
+        raise SystemExit(rc)
+    write('playing', total, remote_path)
+    mcp_server.book_play(remote_path, resume=(start_ms < 0), start_ms=start_ms, target=target.name, title=title)
+    write('done', total, remote_path)
+except Exception as e:
+    write('error', 0, '', str(e))
+    raise
+'''
+    subprocess.Popen(
+        [sys.executable, "-c", code, str(path), target.name, str(start_ms), title],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    return True
 
 
 def _abs_config() -> tuple[str, str]:
@@ -187,6 +302,30 @@ def load_intent_path() -> Path:
     """Marker file the book sink drops on each play() so book_observer.py can
     distinguish agent-media-initiated loads from external (Iris) ones."""
     return state_dir() / "book-load-intent.json"
+
+
+def stage_status_path() -> Path:
+    return state_dir() / "book-stage.json"
+
+
+def read_stage_status() -> Optional[dict]:
+    try:
+        data = json.loads(stage_status_path().read_text())
+        if time.time() - float(data.get("ts") or 0) > 86400:
+            return None
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _write_stage_status(data: dict) -> None:
+    try:
+        p = stage_status_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        data["ts"] = time.time()
+        p.write_text(json.dumps(data))
+    except Exception:
+        pass
 
 
 def _write_load_intent(uri: str, start_ms: int) -> None:

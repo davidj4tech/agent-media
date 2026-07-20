@@ -2390,19 +2390,24 @@ def _music_live_backend(m: "SinkMusic"):
 def _resolve_music_where(where: str) -> str:
     """Resolve a `--where` value to a concrete backend: 'phone' or 'rooms'.
 
-    Mirrors the old `play-music` router so it can retire: 'local'/'rooms' map
-    straight to Mopidy ('rooms'); 'phone' to the phone-local backend; 'auto'
-    picks phone when it's the only listener (no other room connected to the
-    snapserver) and rooms otherwise. On an unreachable snapserver, fall back to
-    MEDIA_MUSIC_AUTO_DEFAULT (default 'phone' — offline-capable, survives a hub
-    hiccup). When the phone backend isn't configured, 'auto' always means rooms.
+    ``default`` follows MEDIA_MUSIC_DEFAULT_TARGET, then the speech default
+    device. Explicit ``auto`` keeps the old listener-aware routing.
     """
     if where in ("local", "rooms"):
         return "rooms"
     if where == "phone":
         return "phone"
-    # auto
     from .sinks.music_local import configured as _local_configured
+    if where in ("", "default"):
+        default_target = (os.environ.get("MEDIA_MUSIC_DEFAULT_TARGET")
+                          or os.environ.get("MEDIA_SPEECH_DEFAULT_TARGET")
+                          or "")
+        if default_target in ("phone", "local-phone", "phone-local") and _local_configured():
+            return "phone"
+        if default_target in ("rooms", "local"):
+            return "rooms"
+        where = "auto"
+    # auto
     if not _local_configured():
         return "rooms"
     from . import snapcast
@@ -2808,7 +2813,32 @@ def _srv():
     return srv
 
 
+def _book_stage_status(width: int, bar: bool = True) -> Optional[str]:
+    try:
+        from .sinks.book import read_stage_status
+        st = read_stage_status()
+    except Exception:
+        return None
+    if not st or st.get("status") not in ("copying", "playing", "error"):
+        return None
+    if st.get("status") == "error":
+        return "! copy failed"
+    total = int(st.get("total") or 0)
+    copied = int(st.get("copied") or 0)
+    if total <= 0:
+        return "⬇ copying…"
+    if not bar:
+        pct = min(100, int(copied * 100 / total))
+        return f"⬇ {pct}%"
+    return render_status(idle=False, pos=copied / 1000.0, dur=total / 1000.0,
+                         paused=False, muted=False, width=width,
+                         hide_idle=False, bar=True).replace("▶", "⬇", 1)
+
+
 def _book_status_line(srv, width: int, hide_idle: bool, bar: bool = True) -> str:
+    staged = _book_stage_status(width, bar=bar)
+    if staged:
+        return staged
     np = srv.book_now_playing(target="")
     if np.get("idle"):
         return render_status(idle=True, pos=None, dur=None, paused=None,
@@ -2939,9 +2969,9 @@ def _book_seek_action(srv, time_str: str, tgt: str, *,
     """Move the book playhead, shared by ``book seek`` and ``book skip``."""
     return _do_timecode_seek(
         time_str, force_relative=force_relative,
-        jump=lambda s: (srv.book_seek(position_secs=s, target=tgt or "local")
+        jump=lambda s: (srv.book_seek(position_secs=s, target=tgt)
                         .get("position_ms") or 0) / 1000,
-        offset=lambda s: srv.book_skip(seconds=s, target=tgt or "local"),
+        offset=lambda s: srv.book_skip(seconds=s, target=tgt),
     )
 
 
@@ -2970,7 +3000,18 @@ def cmd_book(a) -> int:
             print("\n\n")
             return 0
         print(np.get("title") or np.get("media_title") or np.get("uri") or "")
-        print(np.get("chapter_title") or "")
+        try:
+            from .sinks.book import read_stage_status
+            staged = read_stage_status()
+        except Exception:
+            staged = None
+        if staged and staged.get("status") == "copying":
+            total = int(staged.get("total") or 0)
+            copied = int(staged.get("copied") or 0)
+            pct = int(copied * 100 / total) if total else 0
+            print(f"copying {pct}%: {staged.get('title') or ''}")
+        else:
+            print(np.get("chapter_title") or "")
         print(np.get("uri") or "")
         return 0
     if bc == "bookmark":
@@ -3004,7 +3045,7 @@ def cmd_book(a) -> int:
             return _prev_with_restart(
                 elapsed=lambda: pos,
                 restart=lambda: srv.book_seek(position_secs=0,
-                                              target=tgt or "local"),
+                                              target=tgt),
                 step_back=lambda: srv.book_prev(target=tgt),
             )
         return _ok(srv.book_prev(target=tgt))
@@ -3024,12 +3065,12 @@ def cmd_book(a) -> int:
         print(f"speed: {r['speed']}")
         return 0
     if bc == "bed":
-        return _ok(srv.book_bed(a.mode, target=tgt or "local"))
+        return _ok(srv.book_bed(a.mode, target=tgt))
     return 2
 
 
 def cmd_focus(a) -> int:
-    return _ok(_srv().focus(a.channel, target="local"))
+    return _ok(_srv().focus(a.channel, target=getattr(a, "target", "") or ""))
 
 
 def cmd_abs_scan(a) -> int:
@@ -3461,8 +3502,8 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="for 'bookmark': finish a range from the last bookmark")
     s.add_argument("--slot", default="",
                    help="for 'bookmark': named register (e.g. 1, 2) for overlapping ranges")
-    s.add_argument("--where", choices=("auto", "local", "rooms", "phone"),
-                   default="auto",
+    s.add_argument("--where", choices=("default", "auto", "local", "rooms", "phone"),
+                   default="default",
                    help="for 'play': where to play — 'phone' downloads on the "
                         "phone (residential IP, dodges 403, offline) and plays "
                         "locally; 'rooms'/'local' use Mopidy; 'auto' picks phone "
@@ -3473,6 +3514,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     f = sub.add_parser("focus", help="bring a channel to the front (book|music)")
     f.add_argument("channel", choices=("book", "music"))
+    f.add_argument("--target", default="", help="book target; empty follows book/speech default")
     f.set_defaults(func=cmd_focus)
 
     search = sub.add_parser("search", help="unified search (music/book library)")

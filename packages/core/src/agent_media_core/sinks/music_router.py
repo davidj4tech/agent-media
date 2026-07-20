@@ -24,6 +24,7 @@ keeps a single source of truth even as playback moves between backends.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Optional
 
 from ..types import Target
@@ -36,6 +37,19 @@ log = logging.getLogger(__name__)
 # Target names that mean "play on the phone-local backend". Everything else
 # (local, rooms, snapcast-*) is Mopidy's job.
 _PHONE_TARGETS = {"phone", "local-phone", "phone-local"}
+
+
+def default_target() -> Target:
+    """Default music target: music override, then speech/default device."""
+    return Target(os.environ.get("MEDIA_MUSIC_DEFAULT_TARGET")
+                  or os.environ.get("MEDIA_SPEECH_DEFAULT_TARGET")
+                  or "local")
+
+
+def _resolve_target(target: Target) -> Target:
+    if target.name in ("", "local"):
+        return default_target()
+    return target
 
 
 class SinkMusicRouter:
@@ -65,6 +79,7 @@ class SinkMusicRouter:
 
     def play(self, uri: str, target: Target = Target(name="local"),
              replace: bool = True, **opts) -> None:
+        target = _resolve_target(target)
         if target.name in _PHONE_TARGETS:
             self.local.play(uri, target, replace=replace, **opts)
         else:

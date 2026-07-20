@@ -853,7 +853,7 @@ def test_book_play_passes_flags(monkeypatch):
 def test_book_skip_default_is_plus_30(monkeypatch):
     fake = _FakeSrv()
     assert _run(monkeypatch, fake, ["book", "skip"]) == 0
-    assert ("book_skip", 30.0, "local") in fake.calls
+    assert ("book_skip", 30.0, "") in fake.calls
 
 
 def test_book_failure_maps_to_exit_1(monkeypatch):
@@ -879,7 +879,7 @@ def test_book_playlist_play_resume_flag(monkeypatch):
 def test_focus_and_channels(monkeypatch):
     fake = _FakeSrv()
     assert _run(monkeypatch, fake, ["focus", "music"]) == 0
-    assert ("focus", "music", "local") in fake.calls
+    assert ("focus", "music", "") in fake.calls
     assert _run(monkeypatch, fake, ["channels"]) == 0
 
 

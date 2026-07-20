@@ -116,6 +116,12 @@ class Coordinator:
         # are spawn-free, so an unused book channel costs nothing here.
         self.book = book if book is not None else SinkBook()
         self.music_target = music_target
+        if book_target.name in ("", "local"):
+            book_target = Target(name=(
+                os.environ.get("MEDIA_BOOK_DEFAULT_TARGET")
+                or os.environ.get("MEDIA_SPEECH_DEFAULT_TARGET")
+                or book_target.name
+                or "local"))
         self.book_target = book_target
         self._mpris_paused: list[str] = []
         self._mpris_remote_paused: dict[str, list[str]] = {}

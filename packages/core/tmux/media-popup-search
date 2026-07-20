@@ -33,7 +33,14 @@ title=${sel%%$'\t'*}
 clean_title=$(printf '%s' "$title" | sed 's/  \[[^]]*\]$//')
 printf 'Playing: %s\n' "$title"
 if [ "$channel" = book ]; then
-    media book play --title "$clean_title" "$uri"
+    out=$(media book play --title "$clean_title" "$uri" 2>&1)
+    rc=$?
+    printf '%s\n' "$out"
+    case "$out" in
+        ⬇*) read -r -p "enter to close; playback will start when ready" _ ;;
+        *)  sleep 0.8 ;;
+    esac
+    exit "$rc"
 else
     media music play "$uri"
 fi

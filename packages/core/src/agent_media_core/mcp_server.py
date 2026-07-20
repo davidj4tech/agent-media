@@ -53,6 +53,7 @@ from .route import (
 from . import library
 from .sinks import SinkBook, SinkMusic, SinkSpeech
 from .sinks.book import normalize_uri
+from .sinks.music_router import SinkMusicRouter
 from .state import StateStore
 from .types import Event, Priority, Source, Target
 
@@ -76,9 +77,9 @@ def _speech() -> SinkSpeech:
     return _speech._v  # type: ignore[attr-defined]
 
 
-def _music() -> SinkMusic:
+def _music() -> SinkMusicRouter:
     if not hasattr(_music, "_v"):
-        _music._v = SinkMusic()  # type: ignore[attr-defined]
+        _music._v = SinkMusicRouter()  # type: ignore[attr-defined]
     return _music._v  # type: ignore[attr-defined]
 
 
@@ -107,6 +108,19 @@ def _save_book_bookmark(book: SinkBook, state: StateStore,
 
 
 def _target(name: str) -> Target:
+    return Target(name=name or "local")
+
+
+def _music_target(name: str = "") -> Target:
+    """Resolve the music channel output target.
+
+    Empty uses MEDIA_MUSIC_DEFAULT_TARGET; if unset, follow speech so the
+    connected/default device can own music just like books.
+    """
+    if not name:
+        name = (os.environ.get("MEDIA_MUSIC_DEFAULT_TARGET")
+                or os.environ.get("MEDIA_SPEECH_DEFAULT_TARGET")
+                or "local")
     return Target(name=name or "local")
 
 
@@ -298,7 +312,7 @@ def mute_status() -> dict:
 # --- music sink controls --------------------------------------------------
 
 @mcp.tool()
-def music_play(uri: str, replace: bool = True, target: str = "local",
+def music_play(uri: str, replace: bool = True, target: str = "",
                content_type: str = "") -> dict:
     """Play a URI on the music sink (Mopidy) — music or longform alike.
 
@@ -313,68 +327,68 @@ def music_play(uri: str, replace: bool = True, target: str = "local",
             bare YouTube/HTTP URL as music, so set `audiobook` explicitly
             for spoken-word content from YouTube.
     """
-    _music().play(uri, _target(target), replace=replace)
+    _music().play(uri, _music_target(target), replace=replace)
     ct = coerce_content_type(content_type) or detect_content_type(uri)
     _state().set_music_intent(uri, ct.value)
     return {"ok": True, "uri": uri, "content_type": ct.value}
 
 
 @mcp.tool()
-def music_pause(target: str = "local") -> dict:
+def music_pause(target: str = "") -> dict:
     """Pause music."""
-    _music().pause(_target(target))
+    _music().pause(_music_target(target))
     return {"ok": True}
 
 
 @mcp.tool()
-def music_resume(target: str = "local") -> dict:
+def music_resume(target: str = "") -> dict:
     """Resume music."""
-    _music().resume(_target(target))
+    _music().resume(_music_target(target))
     return {"ok": True}
 
 
 @mcp.tool()
-def music_stop(target: str = "local") -> dict:
+def music_stop(target: str = "") -> dict:
     """Stop music and clear the playlist."""
-    _music().stop(_target(target))
+    _music().stop(_music_target(target))
     _state().clear_music_intent()
     return {"ok": True}
 
 
 @mcp.tool()
-def music_volume(level: int, target: str = "local") -> dict:
+def music_volume(level: int, target: str = "") -> dict:
     """Set music volume (0-100). For temporary ducking during speech,
     let the route coordinator handle it — this is for the listener's
     own preference.
     """
-    _music().duck(_target(target), max(0, min(100, level)))
+    _music().duck(_music_target(target), max(0, min(100, level)))
     return {"ok": True, "level": level}
 
 
 @mcp.tool()
-def music_speed(rate: float, target: str = "local") -> dict:
+def music_speed(rate: float, target: str = "") -> dict:
     """Set music playback speed (pitch-corrected tempo; 1.0 = normal,
     clamped to 0.25–4.0). Works on mpv-routed tracks — fetched YouTube in
     the rooms cache and the phone player — which is all YouTube playback
     now. MPD/GStreamer streams (radio, local:) have no speed control;
     those return ok=False.
     """
-    ok = _music().set_speed(max(0.25, min(4.0, rate)), _target(target))
+    ok = _music().set_speed(max(0.25, min(4.0, rate)), _music_target(target))
     return {"ok": ok, "rate": max(0.25, min(4.0, rate))}
 
 
 @mcp.tool()
-def music_now_playing(target: str = "local") -> dict:
+def music_now_playing(target: str = "") -> dict:
     """Current track URI + playback position in ms."""
-    t = _target(target)
+    t = _music_target(target)
     m = _music()
     return {"uri": m.now_playing_uri(t), "position_ms": m.position(t)}
 
 
 @mcp.tool()
-def music_seek(position_ms: int, target: str = "local") -> dict:
+def music_seek(position_ms: int, target: str = "") -> dict:
     """Seek the current music track to absolute position (ms)."""
-    _music().seek_cur(_target(target), max(0, position_ms))
+    _music().seek_cur(_music_target(target), max(0, position_ms))
     return {"ok": True, "position_ms": position_ms}
 
 
@@ -425,6 +439,20 @@ def book_play(uri: str, resume: bool = True, start_ms: int = -1,
                     "reason": ("downloading on phone; will auto-play when ready"
                                if started
                                else "not cached and audiobook-fetch unavailable")}
+    if t.name not in ("", "local") and not norm.startswith(("http://", "https://", "rtsp://")):
+        p = Path(norm).expanduser()
+        if p.is_file():
+            try:
+                from .sinks.book import remote_cached_path, start_stage_local_for_remote
+                if remote_cached_path(p, t):
+                    pass
+                elif start_stage_local_for_remote(
+                    p, t, start_ms=(start_ms if start_ms is not None else -1), title=title
+                ):
+                    return {"ok": False, "fetching": True, "uri": norm,
+                            "reason": "copying to phone cache; will auto-play when ready"}
+            except Exception:
+                pass
     # Save the outgoing book's place before switching away from it.
     _save_book_bookmark(b, st, t)
     if start_ms is not None and start_ms >= 0:
@@ -547,14 +575,25 @@ def book_now_playing(target: str = "") -> dict:
                       ("metadata/by-key/artist", "artist")):
         if props.get(prop):
             info[key] = props[prop]
-    # Prefer the title remembered when agent-media started playback. Stream
-    # media-title is often just "download?token=..." for ABS URLs.
+    # Prefer the title remembered when agent-media started this exact playback.
+    # Never apply pending/copying state to a different live mpv URI, or the popup
+    # can claim a selected future book while the previous book is still loaded.
     try:
         np = _state().get_now_playing("book") or {}
-        ex = np.get("extras") or {}
-        if isinstance(ex, dict):
-            info.update({k: v for k, v in ex.items()
-                         if k in ("title", "chapter_title", "source") and v})
+        state_uri = str(np.get("uri") or "")
+        live_uri = str(uri or "")
+        live_name = Path(live_uri.split("?", 1)[0]).name
+        state_name = Path(state_uri.split("?", 1)[0]).name
+        same_playback = bool(state_uri) and (
+            live_uri.startswith(state_uri)
+            or state_uri.startswith(live_uri)
+            or (live_name and state_name and live_name == state_name)
+        )
+        if same_playback:
+            ex = np.get("extras") or {}
+            if isinstance(ex, dict):
+                info.update({k: v for k, v in ex.items()
+                             if k in ("title", "chapter_title", "source") and v})
     except Exception:
         pass
     return info
@@ -971,7 +1010,7 @@ def search(channel: str, query: str = "") -> dict:
     return {"error": "not implemented"}
 
 @mcp.tool()
-def focus(channel: str, target: str = "local") -> dict:
+def focus(channel: str, target: str = "") -> dict:
     """Bring a channel to the front; push the other into its bed.
 
     Args:
@@ -982,17 +1021,19 @@ def focus(channel: str, target: str = "local") -> dict:
     ch = channel.strip().lower()
     if ch not in (FOCUS_BOOK, FOCUS_MUSIC):
         return {"ok": False, "reason": f"unknown channel {channel!r}"}
-    b, m, st, t = _book(), _music(), _state(), _target(target)
+    b, m, st = _book(), _music(), _state()
+    mt = _target(target or "local")
+    bt = _book_target(target)
     # Save the book's place before focus pauses it.
     if ch == FOCUS_MUSIC:
-        _save_book_bookmark(b, st, t)
+        _save_book_bookmark(b, st, bt)
     result = apply_focus(ch, music=m, book=b, state=st,
-                         music_target=t, book_target=t)
+                         music_target=mt, book_target=bt)
     return {"ok": True, **result}
 
 
 @mcp.tool()
-def book_bed(mode: str, target: str = "local") -> dict:
+def book_bed(mode: str, target: str = "") -> dict:
     """Set how the music bed behaves under a foregrounded book.
 
     Args:
@@ -1009,9 +1050,9 @@ def book_bed(mode: str, target: str = "local") -> dict:
     # If the book is already in front, re-apply so the change takes effect now.
     reapplied = False
     if st.get_focus() == FOCUS_BOOK:
-        t = _target(target)
         apply_focus(FOCUS_BOOK, music=_music(), book=_book(), state=st,
-                    music_target=t, book_target=t)
+                    music_target=_target(target or "local"),
+                    book_target=_book_target(target))
         reapplied = True
     return {"ok": True, "bed": md, "applied_now": reapplied}
 
