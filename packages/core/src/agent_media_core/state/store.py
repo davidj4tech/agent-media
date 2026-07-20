@@ -74,6 +74,26 @@ CREATE TABLE IF NOT EXISTS resume_pos (
     updated_at REAL NOT NULL
 );
 
+-- Explicit media bookmarks, keyed by channel + stable media id when available
+-- (YouTube video id), else URI/path. These are user-created capture points,
+-- with optional notes and org export hooks layered above the store.
+CREATE TABLE IF NOT EXISTS bookmarks (
+    channel     TEXT NOT NULL,
+    media_id    TEXT NOT NULL,
+    uri         TEXT NOT NULL,
+    title       TEXT,
+    pos_ms      INTEGER NOT NULL,
+    end_pos_ms  INTEGER,
+    duration_ms INTEGER,
+    note        TEXT,
+    transcript  TEXT,
+    updated_at  REAL NOT NULL,
+    extras      TEXT,
+    PRIMARY KEY (channel, media_id)
+);
+CREATE INDEX IF NOT EXISTS bookmarks_updated_idx ON bookmarks (updated_at);
+CREATE INDEX IF NOT EXISTS bookmarks_channel_updated_idx ON bookmarks (channel, updated_at);
+
 -- Book channel playlists: an ordered list of part URIs plus a remembered
 -- cursor (which part). Per-part within-offset resume reuses resume_pos
 -- above (keyed by URI), so a playlist only needs to remember which part;
@@ -145,6 +165,14 @@ class StateStore:
         self._local = threading.local()
         with self._cursor() as cur:
             cur.executescript(SCHEMA)
+            # Existing user DBs may have the pre-transcript bookmarks table from
+            # an in-flight build; add the column without disturbing saved rows.
+            cur.execute("PRAGMA table_info(bookmarks)")
+            cols = {row[1] for row in cur.fetchall()}
+            if "end_pos_ms" not in cols:
+                cur.execute("ALTER TABLE bookmarks ADD COLUMN end_pos_ms INTEGER")
+            if "transcript" not in cols:
+                cur.execute("ALTER TABLE bookmarks ADD COLUMN transcript TEXT")
             cur.execute("INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
                         ("schema_version", str(SCHEMA_VERSION)))
 
@@ -390,6 +418,98 @@ class StateStore:
         with self._cursor() as cur:
             cur.execute("DELETE FROM meta WHERE key = ?",
                         (self._MUSIC_INTENT_KEY,))
+
+    # ---- bookmarks --------------------------------------------------------
+
+    def set_bookmark(self, channel: str, media_id: str, uri: str, pos_ms: int,
+                     title: Optional[str] = None,
+                     end_pos_ms: Optional[int] = None,
+                     duration_ms: Optional[int] = None,
+                     note: Optional[str] = None,
+                     transcript: Optional[str] = None,
+                     extras: Optional[dict] = None) -> None:
+        if not channel or not media_id or not uri:
+            return
+        with self._cursor() as cur:
+            cur.execute(
+                "INSERT OR REPLACE INTO bookmarks "
+                "(channel, media_id, uri, title, pos_ms, end_pos_ms, duration_ms, note, transcript, updated_at, extras) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (channel, media_id, uri, title, max(0, int(pos_ms)),
+                 None if end_pos_ms is None else max(0, int(end_pos_ms)),
+                 duration_ms, note, transcript, time.time(),
+                 json.dumps(extras) if extras else None),
+            )
+
+    def get_bookmark(self, channel: str, media_id: str) -> Optional[dict]:
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT channel, media_id, uri, title, pos_ms, end_pos_ms, duration_ms, note, transcript, updated_at, extras "
+                "FROM bookmarks WHERE channel = ? AND media_id = ?",
+                (channel, media_id),
+            )
+            row = cur.fetchone()
+        if row is None:
+            return None
+        channel_, media_id_, uri, title, pos_ms, end_pos_ms, duration_ms, note, transcript, updated_at, extras = row
+        return {
+            "channel": channel_, "media_id": media_id_, "uri": uri,
+            "title": title, "pos_ms": pos_ms, "end_pos_ms": end_pos_ms,
+            "duration_ms": duration_ms,
+            "note": note, "transcript": transcript, "updated_at": updated_at,
+            "extras": json.loads(extras) if extras else None,
+        }
+
+    _BOOKMARK_PENDING_PREFIX = "bookmark_pending:"
+
+    def set_bookmark_pending(self, channel: str, data: Optional[dict],
+                             slot: str = "") -> None:
+        key = self._BOOKMARK_PENDING_PREFIX + channel + ":" + (slot or "default")
+        with self._cursor() as cur:
+            if data is None:
+                cur.execute("DELETE FROM meta WHERE key = ?", (key,))
+            else:
+                cur.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                            (key, json.dumps(data)))
+
+    def get_bookmark_pending(self, channel: str, slot: str = "") -> Optional[dict]:
+        key = self._BOOKMARK_PENDING_PREFIX + channel + ":" + (slot or "default")
+        with self._cursor() as cur:
+            cur.execute("SELECT value FROM meta WHERE key = ?", (key,))
+            row = cur.fetchone()
+        if not row:
+            return None
+        try:
+            return json.loads(row[0])
+        except (json.JSONDecodeError, TypeError):
+            return None
+
+    def list_bookmarks(self, limit: int = 20,
+                       channel: Optional[str] = None) -> list[dict]:
+        with self._cursor() as cur:
+            if channel:
+                cur.execute(
+                    "SELECT channel, media_id, uri, title, pos_ms, end_pos_ms, duration_ms, note, transcript, updated_at, extras "
+                    "FROM bookmarks WHERE channel = ? ORDER BY updated_at DESC LIMIT ?",
+                    (channel, max(1, int(limit))),
+                )
+            else:
+                cur.execute(
+                    "SELECT channel, media_id, uri, title, pos_ms, end_pos_ms, duration_ms, note, transcript, updated_at, extras "
+                    "FROM bookmarks ORDER BY updated_at DESC LIMIT ?",
+                    (max(1, int(limit)),),
+                )
+            rows = cur.fetchall()
+        out = []
+        for channel_, media_id, uri, title, pos_ms, end_pos_ms, duration_ms, note, transcript, updated_at, extras in rows:
+            out.append({
+                "channel": channel_, "media_id": media_id, "uri": uri,
+                "title": title, "pos_ms": pos_ms, "end_pos_ms": end_pos_ms,
+            "duration_ms": duration_ms,
+                "note": note, "transcript": transcript, "updated_at": updated_at,
+                "extras": json.loads(extras) if extras else None,
+            })
+        return out
 
     # ---- book resume bookmarks -------------------------------------------
     #

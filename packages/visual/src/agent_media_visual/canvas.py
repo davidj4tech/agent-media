@@ -923,6 +923,8 @@ def ctl_argv(channel: str, action: str, arg: int,
         return ["popup-channel", "--set", channel]
     if channel == "speech":
         table = {
+            "bookmark": ["bookmark", "--channel", "speech"],
+            "bookmark-end": ["bookmark", "--channel", "speech", "--range-end"],
             "toggle": ["toggle"],
             "prev": ["replay-prev", "--idx", str(arg)],
             "replay": ["replay", str(arg)],
@@ -968,6 +970,9 @@ def ctl_argv(channel: str, action: str, arg: int,
             "goto": ["goto-track" if channel == "music" else "goto-book"],
             # w — print the channel's web-UI URL (the browser opens it).
             "web": [f"{channel}-web"],
+            # b — capture the current channel position.
+            "bookmark": [channel, "bookmark"],
+            "bookmark-end": [channel, "bookmark", "--range-end"],
         }
         # s / o — typed seek and open-URL both carry a free-text arg.
         if action == "seek-to" and sarg:
@@ -982,7 +987,8 @@ def ctl_argv(channel: str, action: str, arg: int,
             # (pausing an already-stopped channel is a no-op that strands you).
             status = _media(["book", "status", "--no-bar"])
             return ["book", "pause"] if status.startswith("▶") else ["book", "resume"]
-        return table.get(action)
+        argv = table.get(action)
+        return argv or None
     return None
 
 

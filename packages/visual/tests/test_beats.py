@@ -132,3 +132,8 @@ def test_ctl_skip_actions_all_channels():
     assert canvas.ctl_argv("speech", "web", 1) == ["speech-web"]
     assert canvas.ctl_argv("music", "web", 1) == ["music-web"]
     assert canvas.ctl_argv("book", "web", 1) == ["book-web"]
+    assert canvas.ctl_argv("speech", "bookmark", 1) == ["bookmark", "--channel", "speech"]
+    assert canvas.ctl_argv("speech", "bookmark-end", 1) == ["bookmark", "--channel", "speech", "--range-end"]
+    assert canvas.ctl_argv("music", "bookmark", 1) == ["music", "bookmark"]
+    assert canvas.ctl_argv("music", "bookmark-end", 1) == ["music", "bookmark", "--range-end"]
+    assert canvas.ctl_argv("book", "bookmark", 1) == ["book", "bookmark"]

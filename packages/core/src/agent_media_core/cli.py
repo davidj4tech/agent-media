@@ -17,6 +17,7 @@ import datetime
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -2409,6 +2410,211 @@ def _resolve_music_where(where: str) -> str:
     return "rooms" if others else "phone"
 
 
+
+def _bookmark_media_id(uri: str) -> str:
+    """Stable bookmark key: YouTube id when visible, else URI/path."""
+    from .sinks import music_fetch
+    if vid := music_fetch.watch_id(uri or ""):
+        return vid
+    base = (uri or "").rsplit("/", 1)[-1]
+    stem = base.rsplit(".", 1)[0]
+    if music_fetch.watch_id(stem):
+        return stem
+    return uri or base
+
+
+def _save_bookmark(channel: str, media_id: str, uri: str, pos_ms: int,
+                   title: str = "", duration_ms: Optional[int] = None,
+                   note: str = "", transcript: Optional[str] = None,
+                   extras: Optional[dict] = None,
+                   range_end: bool = False, slot: str = "") -> int:
+    """Save a point bookmark, or let the next bookmark on that item close it.
+
+    Pressing `b` once always creates a new point bookmark and remembers it as
+    the pending range start. Pressing `bb` sends `--range-end`, which adds
+    `end_pos_ms` to that pending bookmark. A later single `b` starts a fresh
+    bookmark instead of closing the previous one.
+    """
+    st = StateStore()
+    pos_ms = max(0, int(pos_ms))
+    start = st.get_bookmark_pending(channel, slot=slot)
+    same_item = bool(start and start.get("item_id") == media_id)
+    if range_end:
+        if not same_item:
+            print(f"bookmark range: no matching {channel} start", file=sys.stderr)
+            return 1
+        a, b = int(start.get("pos_ms") or 0), pos_ms
+        st.set_bookmark(
+            channel=channel, media_id=start.get("media_id") or media_id, uri=uri,
+            pos_ms=min(a, b), end_pos_ms=max(a, b), title=title or start.get("title"),
+            duration_ms=duration_ms or start.get("duration_ms"),
+            note=note or start.get("note"), transcript=transcript or start.get("transcript"),
+            extras={**(start.get("extras") or {}), **(extras or {}),
+                    "item_id": media_id, "range": True, "slot": slot or "default"},
+        )
+        st.set_bookmark_pending(channel, None, slot=slot)
+        print(f"bookmarked range {fmt_time(min(a, b)/1000.0)}-{fmt_time(max(a, b)/1000.0)} {title}".rstrip())
+        return 0
+
+    bookmark_id = f"{media_id}@{pos_ms}"
+    data = {
+        "channel": channel, "item_id": media_id, "media_id": bookmark_id, "uri": uri,
+        "pos_ms": pos_ms, "title": title or None,
+        "duration_ms": duration_ms, "note": note or None,
+        "transcript": transcript,
+        "extras": {**(extras or {}), "slot": slot or "default"},
+    }
+    st.set_bookmark(
+        channel=channel, media_id=bookmark_id, uri=uri, pos_ms=pos_ms,
+        title=title or None, duration_ms=duration_ms, note=note or None,
+        transcript=transcript,
+        extras={**(extras or {}), "item_id": media_id, "slot": slot or "default"},
+    )
+    st.set_bookmark_pending(channel, data, slot=slot)
+    print(f"bookmarked {fmt_time(pos_ms / 1000.0)} {title}".rstrip())
+    return 0
+
+
+def _speech_bookmark(note: str = "", range_end: bool = False,
+                     slot: str = "") -> int:
+    np = _now_speaking()
+    if not np:
+        print("media bookmark: no speech loaded", file=sys.stderr)
+        return 1
+    ex = np.get("extras") or {}
+    text = (ex.get("text") or "").strip()
+    sent = (ex.get("current_sentence") or "").strip()
+    uri = np.get("uri") or f"speech:{np.get('started_at')}"
+    title = sent or (" ".join(text.split())[:80] if text else "speech")
+    pos = int((np.get("pause_pos_ms") or 0) or 0)
+    return _save_bookmark(
+        "speech", str(np.get("started_at") or uri), uri, pos,
+        title=title, note=note, transcript=text or sent or None,
+        extras={"pane": ex.get("pane"), "session": ex.get("session")},
+        range_end=range_end, slot=slot)
+
+
+def _book_bookmark(note: str = "", target: str = "", range_end: bool = False,
+                   slot: str = "") -> int:
+    srv = _srv()
+    np = srv.book_now_playing(target=target or "")
+    if np.get("idle"):
+        print("media bookmark: no book loaded", file=sys.stderr)
+        return 1
+    uri = np.get("uri") or ""
+    pos = int(np.get("position_ms") or 0)
+    dur = int(np.get("duration_ms") or 0) or None
+    title = uri.rsplit("/", 1)[-1] or uri
+    return _save_bookmark(
+        "book", _bookmark_media_id(uri), uri, pos, title=title,
+        duration_ms=dur, note=note, extras={"speed": np.get("speed")},
+        range_end=range_end, slot=slot)
+
+
+def _music_bookmark(m: "SinkMusic", note: str = "", range_end: bool = False,
+                    slot: str = "") -> int:
+    b = _music_live_backend(m)
+    uri = b.now_playing_uri() or ""
+    if not uri and b is m:
+        uri = (m.current_song() or {}).get("file") or ""
+    if not uri:
+        print("media bookmark: no music loaded", file=sys.stderr)
+        return 1
+    pos = b.position()
+    if pos is None and b is m:
+        try:
+            pos = int(float((m.status_dict() or {}).get("elapsed") or 0) * 1000)
+        except (TypeError, ValueError):
+            pos = 0
+    props = _phone_music_props()
+    if props is None and b is m:
+        from .sinks.music import mpv_now_props
+        props = mpv_now_props() or {}
+    dur = None
+    try:
+        if props and props.get("duration") is not None:
+            dur = int(float(props.get("duration")) * 1000)
+    except (TypeError, ValueError):
+        dur = None
+    _, label, _ = _music_now_status(m, width=0, hide_idle=True, bar=False)
+    media_id = _bookmark_media_id(uri)
+    return _save_bookmark(
+        "music", media_id, uri, pos or 0, title=label or "",
+        duration_ms=dur, note=note,
+        extras={"backend": "phone" if b is not m else "rooms"},
+        range_end=range_end, slot=slot)
+
+
+def _cmd_bookmarks(limit_s: str = "", channel: Optional[str] = None,
+                   json_out: bool = False) -> int:
+    try:
+        limit = int(limit_s or 20)
+    except ValueError:
+        limit = 20
+    rows = StateStore().list_bookmarks(limit, channel=channel)
+    if json_out:
+        print(json.dumps(rows, ensure_ascii=False))
+        return 0
+    for bm in rows:
+        title = bm.get("title") or bm.get("uri") or bm.get("media_id")
+        note = f" — {bm.get('note')}" if bm.get("note") else ""
+        print(f"{bm.get('channel') or '?'}  {fmt_time((bm.get('pos_ms') or 0) / 1000.0)}  {title}{note}")
+    return 0
+
+
+def _cmd_bookmark_pick(channel: Optional[str] = None) -> int:
+    rows = StateStore().list_bookmarks(500, channel=channel)
+    if not rows:
+        print("media bookmarks pick: no bookmarks", file=sys.stderr)
+        return 1
+    if not shutil.which("fzf"):
+        print("media bookmarks pick: fzf not installed", file=sys.stderr)
+        return 1
+    lines = []
+    by_key = {}
+    for i, bm in enumerate(rows):
+        key = str(i)
+        title = bm.get("title") or bm.get("uri") or bm.get("media_id")
+        searchable = " ".join(str(x or "") for x in (
+            bm.get("channel"), title, bm.get("note"), bm.get("transcript"), bm.get("uri")))
+        line = f"{key}	{bm.get('channel')}	{fmt_time((bm.get('pos_ms') or 0)/1000.0)}	{searchable}"
+        by_key[key] = bm
+        lines.append(line)
+    proc = subprocess.run(
+        ["fzf", "--with-nth", "2..", "--delimiter", "\t", "--prompt", "bookmark> "],
+        input="\n".join(lines), text=True, capture_output=True)
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return proc.returncode
+    bm = by_key.get(proc.stdout.split("\t", 1)[0])
+    if not bm:
+        return 1
+    print(bm.get("uri") or "")
+    return 0
+
+
+def cmd_bookmark(a) -> int:
+    ch = getattr(a, "channel", "music")
+    note = getattr(a, "note", "") or ""
+    range_end = bool(getattr(a, "range_end", False))
+    slot = getattr(a, "slot", "") or ""
+    if ch == "music":
+        return _music_bookmark(SinkMusic(), note, range_end=range_end, slot=slot)
+    if ch == "book":
+        return _book_bookmark(note, range_end=range_end, slot=slot)
+    if ch == "speech":
+        return _speech_bookmark(note, range_end=range_end, slot=slot)
+    print("media bookmark: unsupported channel", file=sys.stderr)
+    return 2
+
+
+def cmd_bookmarks(a) -> int:
+    if getattr(a, "pick", False):
+        return _cmd_bookmark_pick(channel=getattr(a, "channel", None))
+    return _cmd_bookmarks(getattr(a, "limit", "20") or "20",
+                          channel=getattr(a, "channel", None),
+                          json_out=bool(getattr(a, "json", False)))
+
+
 def cmd_music(a) -> int:
     from .route import coerce_content_type, detect_content_type
 
@@ -2434,6 +2640,10 @@ def cmd_music(a) -> int:
             print(label)
             print(spd)
         return 0
+    if a.action == "bookmark":
+        return _music_bookmark(m, a.uri or "", range_end=bool(getattr(a, "range_end", False)), slot=getattr(a, "slot", "") or "")
+    if a.action == "bookmarks":
+        return _cmd_bookmarks(a.uri or "", channel="music")
     if a.action == "play":
         if not a.uri:
             print("media music play: a URI is required", file=sys.stderr)
@@ -2696,6 +2906,8 @@ def cmd_book(a) -> int:
         if not np.get("idle"):
             print(np.get("uri") or "")
         return 0
+    if bc == "bookmark":
+        return _book_bookmark(getattr(a, "note", "") or "", target=tgt, range_end=bool(getattr(a, "range_end", False)), slot=getattr(a, "slot", "") or "")
     if bc == "play":
         r = srv.book_play(a.uri, resume=not a.no_resume,
                           start_ms=(a.start_ms if a.start_ms is not None else -1),
@@ -3069,18 +3281,34 @@ def _build_parser() -> argparse.ArgumentParser:
                         "one interrupts/precedes instead of resuming them")
     s.set_defaults(func=cmd_say)
 
+    s = sub.add_parser("bookmark", help="bookmark current media position")
+    s.add_argument("note", nargs="?", help="optional note")
+    s.add_argument("--range-end", action="store_true", help="finish a range from the last bookmark")
+    s.add_argument("--slot", default="", help="named bookmark register (e.g. 1, 2) for overlapping ranges")
+    s.add_argument("--channel", choices=("music", "book", "speech"), default="music")
+    s.set_defaults(func=cmd_bookmark)
+
+    s = sub.add_parser("bookmarks", help="list media bookmarks")
+    s.add_argument("limit", nargs="?", default="20")
+    s.add_argument("--channel", choices=("music", "book", "speech"), default=None)
+    s.add_argument("--json", action="store_true")
+    s.add_argument("--pick", action="store_true", help="choose with fzf and print URI")
+    s.set_defaults(func=cmd_bookmarks)
+
     s = sub.add_parser("music", help="music control via Mopidy/MPD")
     s.add_argument("action",
                    choices=("play", "pause", "resume", "stop", "toggle",
                             "next", "prev", "status", "now", "now-status",
-                            "seek", "volume", "speed"))
+                            "seek", "volume", "speed", "bookmark",
+                            "bookmarks"))
     s.add_argument("uri", nargs="?",
                    help="for 'play': Mopidy URI (e.g. yt:https://...); "
                         "for 'seek': time H:MM:SS (absolute) or +90/-5:00 "
                         "(relative); for 'volume': ±delta; for 'speed': "
                         "rate 0.25–4 (absolute), ±delta, 'up'/'down' "
                         "(ladder), 'reset', or empty to show the current "
-                        "rate")
+                        "rate; for 'bookmark': optional note; for "
+                        "'bookmarks': optional limit")
     s.add_argument("--width", type=int, default=12,
                    help="for 'status': progress-bar width")
     s.add_argument("--show-idle", action="store_true",
@@ -3097,6 +3325,10 @@ def _build_parser() -> argparse.ArgumentParser:
                             "ambient"),
                    help="for 'play': interruption content type "
                         "(audiobook/podcast pause instead of duck)")
+    s.add_argument("--range-end", action="store_true",
+                   help="for 'bookmark': finish a range from the last bookmark")
+    s.add_argument("--slot", default="",
+                   help="for 'bookmark': named register (e.g. 1, 2) for overlapping ranges")
     s.add_argument("--where", choices=("auto", "local", "rooms", "phone"),
                    default="auto",
                    help="for 'play': where to play — 'phone' downloads on the "
@@ -3179,6 +3411,12 @@ def _add_book_parser(sub) -> None:
 
     bnow = b.add_parser("now", help="URI of what the book channel is reading")
     bnow.add_argument("--target", default="")
+
+    bbm = b.add_parser("bookmark", help="bookmark current book position")
+    bbm.add_argument("note", nargs="?")
+    bbm.add_argument("--range-end", action="store_true")
+    bbm.add_argument("--slot", default="")
+    bbm.add_argument("--target", default="")
 
     pl = b.add_parser("playlist", help="manage book playlists")
     pl.set_defaults(func=cmd_book)

@@ -772,7 +772,7 @@
   // CONTROL the full tmux-popup (prefix a) hotkey set is live: n channel ·
   // Space play/pause · h/l sentence · H/L paragraph · </> prev/next · -/= vol ·
   // m mute · M keep-muted · v highlight · p clip@cursor · g source · w web UI ·
-  // s typed-seek · o open-URL · [/] speed, 0/⌫ reset · r replay · c cc · f sfx ·
+  // b bookmark · s typed-seek · o open-URL · [/] speed, 0/⌫ reset · r replay · c cc · f sfx ·
   // ? help. Enter → input; Esc/q → passive.
   document.addEventListener('keydown', (e) => {
     if (e.target === $('text')) return;          // the input box owns its keys
@@ -804,6 +804,13 @@
   });
   // CONTROL-mode hotkeys (popup parity). Named functions are shared with the
   // touch buttons — one code path per verb, whichever surface fired it.
+  let lastBookmark = { ch: '', t: 0 };
+  function bookmarkAct() {
+    const now = Date.now();
+    const range = lastBookmark.ch === ch && (now - lastBookmark.t) <= 2000;
+    lastBookmark = range ? { ch: '', t: 0 } : { ch, t: now };
+    act(range ? 'bookmark-end' : 'bookmark');
+  }
   const CTL_KEYS = {
     ' ': () => act('toggle'),
     'h': () => act('skip-'),  'l': () => act('skip+'),
@@ -815,6 +822,7 @@
     'm': () => act('mute'),   'M': () => act('mute-keep'),
     'v': () => act('highlight'), 'p': () => act('clip-cursor', 1),
     'g': () => act('goto'),   'w': openWeb,
+    'b': bookmarkAct,
     's': typedSeek,           'o': typedOpen,
     '[': () => act('speed-'), ']': () => act('speed+'),
     '0': () => act('speed0'), 'Backspace': () => act('speed0'),
