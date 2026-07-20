@@ -27,6 +27,8 @@ Config (all overridable; backend is "unavailable" when the endpoint is unset):
                               (the phone's mpv-music.sock bridged to TCP).
   MEDIA_MUSIC_LOCAL_SSH       ssh host for the download helper (default p8ar).
   MEDIA_MUSIC_LOCAL_FETCH     phone-side helper (default ``bin/play-local``).
+  MEDIA_MUSIC_LOCAL_CACHE     phone cache dir relative to $HOME (default
+                              ``.cache/music-offline``).
   MEDIA_MUSIC_LOCAL_FETCH_TIMEOUT  seconds to wait for download+load (default 120).
 """
 
@@ -69,9 +71,113 @@ def fetch_cmd() -> str:
     return os.environ.get("MEDIA_MUSIC_LOCAL_FETCH", "bin/play-local")
 
 
+def cache_dir() -> str:
+    return os.environ.get("MEDIA_MUSIC_LOCAL_CACHE", ".cache/music-offline")
+
+
 def configured() -> bool:
     """True when a phone endpoint is set — gates the router and CLI/MCP routing."""
     return endpoint() is not None
+
+
+def _watch_id(uri: str) -> Optional[str]:
+    """Best-effort YouTube id extraction, shared with the rooms cache."""
+    from . import music_fetch
+    return music_fetch.watch_id(uri)
+
+
+def _rooms_cached_path(vid: str) -> Optional[str]:
+    from . import music_fetch
+    return music_fetch.cached_path_for_id(vid)
+
+
+def _phone_cached_path(vid: str) -> Optional[str]:
+    host = ssh_host()
+    cache = shlex.quote(cache_dir())
+    qvid = shlex.quote(vid)
+    remote = (f"ls -1 \"$HOME\"/{cache}/{qvid}.* 2>/dev/null | "
+              "grep -v -e '\\.title$' -e '\\.part$' -e '\\.json$' | head -1")
+    try:
+        r = subprocess.run(["ssh", *_SSH_OPTS, host, remote],
+                           capture_output=True, text=True, timeout=8)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    lines = [ln for ln in (r.stdout or "").strip().splitlines() if ln]
+    return lines[0] if r.returncode == 0 and lines else None
+
+
+def _rooms_reader(path: str) -> subprocess.Popen:
+    from . import music_fetch
+    rooms_host = music_fetch.rooms_ssh_host()
+    if rooms_host is None:
+        return subprocess.Popen(["cat", path], stdout=subprocess.PIPE)
+    return subprocess.Popen(["ssh", *_SSH_OPTS, rooms_host,
+                             f"cat {shlex.quote(path)}"],
+                            stdout=subprocess.PIPE)
+
+
+def _copy_rooms_to_phone(rooms_path: str) -> Optional[str]:
+    """Seed the phone cache from rooms cache; return the phone-side path."""
+    host = ssh_host()
+    base = rooms_path.rsplit("/", 1)[-1]
+    stem = base.rsplit(".", 1)[0]
+    cache = shlex.quote(cache_dir())
+    qbase, qstem = shlex.quote(base), shlex.quote(stem)
+    reader = _rooms_reader(rooms_path)
+    try:
+        r = subprocess.run(
+            ["ssh", *_SSH_OPTS, host,
+             f"mkdir -p \"$HOME\"/{cache} && "
+             f"cat > \"$HOME\"/{cache}/.{qbase}.part && "
+             f"mv \"$HOME\"/{cache}/.{qbase}.part \"$HOME\"/{cache}/{qbase} && "
+             f"echo \"$HOME\"/{cache}/{qbase}"],
+            stdin=reader.stdout, capture_output=True, text=True, timeout=600)
+    finally:
+        reader.stdout.close()
+        reader.wait()
+    if reader.returncode != 0 or r.returncode != 0:
+        log.warning("sink-music-local: rooms-to-phone cache copy failed: %s",
+                    (r.stderr or "").strip()[-200:])
+        return None
+    phone_path = (r.stdout or "").strip().splitlines()[-1]
+    sidecar = rooms_path.rsplit(".", 1)[0] + ".title"
+    if os.path.exists(sidecar):
+        title = subprocess.Popen(["cat", sidecar], stdout=subprocess.PIPE)
+        try:
+            subprocess.run(
+                ["ssh", *_SSH_OPTS, host,
+                 f"cat > \"$HOME\"/{cache}/{qstem}.title; "
+                 f"[ -s \"$HOME\"/{cache}/{qstem}.title ] || "
+                 f"rm -f \"$HOME\"/{cache}/{qstem}.title"],
+                stdin=title.stdout, capture_output=True, text=True, timeout=30)
+        finally:
+            title.stdout.close()
+            title.wait()
+    return phone_path if phone_path.startswith("/") else None
+
+
+def _phone_title(vid: str) -> str:
+    host = ssh_host()
+    remote = f"cat \"$HOME\"/{shlex.quote(cache_dir())}/{shlex.quote(vid)}.title 2>/dev/null"
+    try:
+        r = subprocess.run(["ssh", *_SSH_OPTS, host, remote],
+                           capture_output=True, text=True, timeout=5)
+    except (subprocess.TimeoutExpired, OSError):
+        return ""
+    return (r.stdout or "").strip() if r.returncode == 0 else ""
+
+
+def seed_from_rooms_cache(uri: str) -> Optional[str]:
+    """Ensure the phone has rooms' cached copy of this YouTube item, if any."""
+    vid = _watch_id(uri)
+    if not vid:
+        return None
+    if cached := _phone_cached_path(vid):
+        return cached
+    rooms = _rooms_cached_path(vid)
+    if not rooms:
+        return None
+    return _copy_rooms_to_phone(rooms)
 
 
 class SinkMusicLocal:
@@ -98,6 +204,16 @@ class SinkMusicLocal:
         download must originate on the residential IP. `replace=False` appends to
         the phone's mpv playlist instead of replacing it.
         """
+        if seeded := seed_from_rooms_cache(uri):
+            title = _phone_title(_watch_id(uri) or "")
+            mode = "replace" if replace else "append-play"
+            cmd = ["loadfile", seeded, mode]
+            if title:
+                opts = "force-media-title=%%%d%%%s" % (len(title.encode("utf-8")), title)
+                cmd = ["loadfile", seeded, mode, -1, opts]
+            ipc.command(self._endpoint(), *cmd)
+            return
+
         host = ssh_host()
         mode = "" if replace else " --add"
         # The helper accepts a bare URL or a yt: URI and handles the yt: strip.

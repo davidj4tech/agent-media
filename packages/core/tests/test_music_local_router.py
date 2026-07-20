@@ -107,6 +107,60 @@ def test_router_play_routes_by_target():
     assert ("play", "yt:y", True) in local.calls
 
 
+# ---- phone cache seeding -----------------------------------------------------
+
+def test_seed_from_rooms_cache_copies_when_phone_missing(monkeypatch):
+    from agent_media_core.sinks import music_local
+
+    monkeypatch.setattr(music_local, "_phone_cached_path", lambda vid: None)
+    monkeypatch.setattr(music_local, "_rooms_cached_path",
+                        lambda vid: f"/home/u/.cache/music-offline/{vid}.mka")
+    copied = {}
+
+    def copy(path):
+        copied["path"] = path
+        return "/data/data/com.termux/files/home/.cache/music-offline/a82hE1aupo8.mka"
+
+    monkeypatch.setattr(music_local, "_copy_rooms_to_phone", copy)
+    got = music_local.seed_from_rooms_cache("https://youtu.be/a82hE1aupo8")
+    assert copied["path"] == "/home/u/.cache/music-offline/a82hE1aupo8.mka"
+    assert got.endswith("a82hE1aupo8.mka")
+
+
+def test_seed_from_rooms_cache_uses_phone_cache_first(monkeypatch):
+    from agent_media_core.sinks import music_local
+
+    monkeypatch.setattr(music_local, "_phone_cached_path",
+                        lambda vid: "/phone/cache/a82hE1aupo8.mka")
+
+    def no_rooms(*a, **k):
+        raise AssertionError("rooms cache should not be probed")
+
+    monkeypatch.setattr(music_local, "_rooms_cached_path", no_rooms)
+    assert music_local.seed_from_rooms_cache("a82hE1aupo8") == "/phone/cache/a82hE1aupo8.mka"
+
+
+def test_phone_play_loads_seeded_file_without_fetch(monkeypatch):
+    from agent_media_core.sinks import music_local
+
+    monkeypatch.setattr(music_local, "seed_from_rooms_cache",
+                        lambda uri: "/phone/cache/a82hE1aupo8.mka")
+    monkeypatch.setattr(music_local, "_watch_id", lambda uri: "a82hE1aupo8")
+    monkeypatch.setattr(music_local, "_phone_title", lambda vid: "Cached Title")
+    calls = []
+    monkeypatch.setattr(music_local.ipc, "command",
+                        lambda ep, *cmd: calls.append((ep, cmd)))
+
+    def no_fetch(*a, **k):
+        raise AssertionError("download helper should not run")
+
+    monkeypatch.setattr(music_local.subprocess, "run", no_fetch)
+    SinkMusicLocal(ep="tcp://phone:6601").play("https://youtu.be/a82hE1aupo8")
+    assert calls[0][0] == "tcp://phone:6601"
+    assert calls[0][1][:3] == ("loadfile", "/phone/cache/a82hE1aupo8.mka", "replace")
+    assert "force-media-title" in calls[0][1][4]
+
+
 # ---- auto routing (_resolve_music_where) ------------------------------------
 
 def test_resolve_where_explicit(monkeypatch):
