@@ -979,6 +979,8 @@ def ctl_argv(channel: str, action: str, arg: int,
             return [channel, "seek", "--", sarg]
         if action == "open-url" and sarg:
             return [channel, "play", sarg]
+        if action == "search":
+            return ["search", channel] + ([sarg] if sarg else [])
         if action == "toggle":
             if channel == "music":
                 return ["music", "toggle"]

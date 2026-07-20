@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Full-size fzf picker for agent-media popup search.
+set -u
+channel="${1:-book}"
+case "$channel" in book|music) ;; *) channel=book ;; esac
+
+err="${TMPDIR:-/tmp}/media-popup-search.err.$$"
+trap 'rm -f "$err"' EXIT
+
+# Build the list before fzf so API/config failures stay visible in this popup.
+lines=$(media search --lines "$channel" 2>"$err")
+rc=$?
+if [ "$rc" -ne 0 ]; then
+    cat "$err" >&2
+    echo
+    read -r -p "search failed (enter to close)" _
+    exit "$rc"
+fi
+if [ -z "$lines" ]; then
+    echo "media search: no results" >&2
+    echo
+    read -r -p "enter to close" _
+    exit 1
+fi
+
+sel=$(printf '%s\n' "$lines" | fzf --with-nth=1 --delimiter=$'\t' --prompt="$channel> ")
+rc=$?
+[ "$rc" -eq 0 ] || exit "$rc"
+[ -n "$sel" ] || exit 1
+
+uri=${sel#*$'\t'}
+title=${sel%%$'\t'*}
+clean_title=$(printf '%s' "$title" | sed 's/  \[[^]]*\]$//')
+printf 'Playing: %s\n' "$title"
+if [ "$channel" = book ]; then
+    media book play --title "$clean_title" "$uri"
+else
+    media music play "$uri"
+fi

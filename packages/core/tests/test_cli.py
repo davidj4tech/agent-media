@@ -766,8 +766,8 @@ class _FakeSrv:
     def __init__(self):
         self.calls = []
 
-    def book_play(self, uri, resume=True, start_ms=-1, target=""):
-        self.calls.append(("book_play", uri, resume, start_ms, target))
+    def book_play(self, uri, resume=True, start_ms=-1, target="", title=""):
+        self.calls.append(("book_play", uri, resume, start_ms, target, title))
         return {"ok": True, "uri": uri, "resumed_from_ms": 0}
 
     def book_resume(self, target=""):
@@ -847,7 +847,7 @@ def test_book_play_passes_flags(monkeypatch):
     fake = _FakeSrv()
     assert _run(monkeypatch, fake,
                 ["book", "play", "yt:foo", "--no-resume", "--target", "rooms"]) == 0
-    assert ("book_play", "yt:foo", False, -1, "rooms") in fake.calls
+    assert ("book_play", "yt:foo", False, -1, "rooms", "") in fake.calls
 
 
 def test_book_skip_default_is_plus_30(monkeypatch):

@@ -29,7 +29,9 @@ hh="$ch"; [ "$hh" -gt 5 ] && hh=$(( hh - 1 ))
 
 flag="${TMPDIR:-/tmp}/media-popup-help.$$"
 linkflag="${TMPDIR:-/tmp}/media-popup-link.$$"
-rm -f "$flag" "$linkflag"
+searchflag="${TMPDIR:-/tmp}/media-popup-search.$$"
+chanflag="${TMPDIR:-/tmp}/media-popup-channel.$$"
+rm -f "$flag" "$linkflag" "$searchflag" "$chanflag"
 # Link popup width: the FULL client width (uncapped, unlike the control popup),
 # so a long web-UI URL fits on one line — Termux's long-press URL detection (no
 # OSC 8) fails on a wrap. Bounded for sanity.
@@ -46,6 +48,31 @@ chan=$(media popup-channel 2>/dev/null); chan=${chan:-speech}
 # radar; `media now-pane --width` already exists for it) — the scrolling
 # marquee stays on the TUI's line 1.
 popup() { tmux display-popup ${client:+-c "$client"} -E "$@"; }
+trim_title() {
+    local s="$1" max=54
+    s=${s//$'\n'/ }
+    s="${s#"${s%%[![:space:]]*}"}"; s="${s%"${s##*[![:space:]]}"}"
+    [ -z "$s" ] && s="agent-media"
+    if [ "${#s}" -gt "$max" ]; then s="${s:0:$((max - 1))}…"; fi
+    printf ' %s ' "$s"
+}
+popup_title() {
+    local t=""
+    case "$chan" in
+        book)
+            t=$(media book meta 2>/dev/null | head -1)
+            [ -n "$t" ] && trim_title "☰ $t" || trim_title "☰ book"
+            ;;
+        music)
+            t=$(media music now-status --show-idle --no-bar 2>/dev/null | sed -n '2p')
+            [ -n "$t" ] && trim_title "♫ $t" || trim_title "♫ music"
+            ;;
+        speech|*)
+            t=$(TTS_POPUP_PANE=$pane media now-pane --session-only 2>/dev/null | head -1)
+            [ -n "$t" ] && trim_title "♪ $t" || trim_title "♪ speech"
+            ;;
+    esac
+}
 # Optional: forward a mouse-event debug log path so `prefix a` can calibrate
 # click coordinates. Set with `tmux setenv -g MEDIA_POPUP_DEBUG /tmp/popup.log`.
 dbg=""; [ -n "${MEDIA_POPUP_DEBUG:-}" ] && dbg="MEDIA_POPUP_DEBUG=$MEDIA_POPUP_DEBUG "
@@ -56,8 +83,14 @@ dbg=""; [ -n "${MEDIA_POPUP_DEBUG:-}" ] && dbg="MEDIA_POPUP_DEBUG=$MEDIA_POPUP_D
 PH=4
 PY=$(( ch - 1 )); [ "$PY" -lt "$PH" ] && PY=$PH
 while :; do
-    popup -w "$w" -h "$PH" -x R -y "$PY" -s 'bg=default' -T ' agent-media ' \
-        "${dbg}TTS_POPUP_PANE=$pane MEDIA_POPUP_HELP_FLAG=$flag MEDIA_POPUP_LINK_FLAG=$linkflag MEDIA_POPUP_CHANNEL=$chan media-popup"
+    title=$(popup_title)
+    popup -w "$w" -h "$PH" -x R -y "$PY" -s 'bg=default' -T "$title" \
+        "${dbg}TTS_POPUP_PANE=$pane MEDIA_POPUP_HELP_FLAG=$flag MEDIA_POPUP_LINK_FLAG=$linkflag MEDIA_POPUP_SEARCH_FLAG=$searchflag MEDIA_POPUP_CHANNEL_FLAG=$chanflag MEDIA_POPUP_CHANNEL=$chan media-popup"
+    if [ -f "$chanflag" ]; then
+        chan=$(cat "$chanflag" 2>/dev/null); chan=${chan:-speech}
+        rm -f "$chanflag"
+        continue                        # Tab/n changed channel; reopen with new -T
+    fi
     if [ -f "$flag" ]; then            # `?` → keymap overlay, then reopen
         chan=$(cat "$flag" 2>/dev/null); chan=${chan:-speech}
         rm -f "$flag"
@@ -66,8 +99,14 @@ while :; do
         IFS=$'\t' read -r chan url < "$linkflag"; chan=${chan:-speech}
         rm -f "$linkflag"
         popup -w "$lw" -h 5 -s 'bg=default' -T ' web UI ' "MEDIA_POPUP_LINK=$url media-popup-link"
+    elif [ -f "$searchflag" ]; then    # `/` → full-size fzf search, then reopen
+        chan=$(cat "$searchflag" 2>/dev/null); chan=${chan:-book}
+        rm -f "$searchflag"
+        sw="$cw"; [ "$sw" -gt 90 ] && sw=90; [ "$sw" -lt "$MIN" ] && sw="$MIN"
+        sh="$ch"; [ "$sh" -gt 24 ] && sh=24; [ "$sh" -lt 10 ] && sh="$ch"
+        popup -w "$sw" -h "$sh" -s 'bg=default' -T " search $chan " "media-popup-search $chan"
     else
         break                          # normal close → done
     fi
 done
-rm -f "$flag" "$linkflag"
+rm -f "$flag" "$linkflag" "$searchflag" "$chanflag"

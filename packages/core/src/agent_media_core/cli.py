@@ -745,6 +745,10 @@ def cmd_now_pane(a) -> int:
     so it doesn't double-advance the status bar's crawl) — used by the control
     popup's border title, re-expanded by tmux once per status-interval.
     """
+    if getattr(a, "session_only", False):
+        pane, sess, _following = _subject()
+        print(sess or (_tmux_session_for_pane(pane) if pane else ""))
+        return 0
     prefix, body = _subject_label()
     width = getattr(a, "width", None)
     if width:
@@ -2960,12 +2964,21 @@ def cmd_book(a) -> int:
         if not np.get("idle"):
             print(np.get("uri") or "")
         return 0
+    if bc == "meta":
+        np = srv.book_now_playing(target=tgt)
+        if np.get("idle"):
+            print("\n\n")
+            return 0
+        print(np.get("title") or np.get("media_title") or np.get("uri") or "")
+        print(np.get("chapter_title") or "")
+        print(np.get("uri") or "")
+        return 0
     if bc == "bookmark":
         return _book_bookmark(getattr(a, "note", "") or "", target=tgt, range_end=bool(getattr(a, "range_end", False)), slot=getattr(a, "slot", "") or "")
     if bc == "play":
         r = srv.book_play(a.uri, resume=not a.no_resume,
                           start_ms=(a.start_ms if a.start_ms is not None else -1),
-                          target=tgt)
+                          target=tgt, title=getattr(a, "title", "") or "")
         if r.get("fetching"):
             print(f"⬇ {r.get('reason', 'fetching')}: {r['uri']}")
             return 0
@@ -2978,9 +2991,9 @@ def cmd_book(a) -> int:
         r = srv.book_resume(target=tgt)
         return _ok(r)
     if bc == "pause":
-        return _ok(srv.book_pause(target=tgt or "local"))
+        return _ok(srv.book_pause(target=tgt))
     if bc == "stop":
-        return _ok(srv.book_stop(target=tgt or "local"))
+        return _ok(srv.book_stop(target=tgt))
     if bc == "next":
         return _ok(srv.book_next(target=tgt))
     if bc == "prev":
@@ -3001,8 +3014,13 @@ def cmd_book(a) -> int:
     if bc == "seek":
         return _book_seek_action(srv, a.time, tgt)
     if bc == "speed":
-        rate = 1.0 if a.factor == "reset" else float(a.factor)
-        r = srv.book_speed(rate, target=tgt or "local")
+        if a.factor in ("up", "down"):
+            np = srv.book_now_playing(target=tgt)
+            cur = float(np.get("speed") or 1.0) if not np.get("idle") else 1.0
+            rate = _speed_next(cur, 1 if a.factor == "up" else -1)
+        else:
+            rate = 1.0 if a.factor == "reset" else float(a.factor)
+        r = srv.book_speed(rate, target=tgt)
         print(f"speed: {r['speed']}")
         return 0
     if bc == "bed":
@@ -3012,6 +3030,62 @@ def cmd_book(a) -> int:
 
 def cmd_focus(a) -> int:
     return _ok(_srv().focus(a.channel, target="local"))
+
+
+def cmd_abs_scan(a) -> int:
+    from . import library
+    if library.trigger_abs_scan():
+        print("Audiobookshelf scan started")
+        return 0
+    print("media abs-scan: failed to start Audiobookshelf scan", file=sys.stderr)
+    return 1
+
+
+def cmd_search(a) -> int:
+    query = " ".join(a.query) if getattr(a, "query", None) else ""
+    m = _srv()
+    res = m.search(a.channel, query)
+    if "error" in res:
+        print(f"media search: {res['error']}", file=sys.stderr)
+        return 1
+    if not res.get("results"):
+        print("media search: no results", file=sys.stderr)
+        return 1
+
+    if getattr(a, "lines", False):
+        for r in res["results"]:
+            print(f"{r['title']}\t{r['uri']}")
+        return 0
+
+    import shutil
+    import subprocess
+
+    if not shutil.which("fzf"):
+        print("media search: fzf not installed", file=sys.stderr)
+        for r in res["results"]:
+            print(f"{r['uri']}  ({r['title']})")
+        return 1
+
+    lines = [f"{i}\t{r['title']}\t{r['uri']}" for i, r in enumerate(res["results"])]
+    proc = subprocess.run(
+        ["fzf", "--with-nth", "2..", "--delimiter", "\t", "--prompt", "search> "],
+        input="\n".join(lines), text=True, stdout=subprocess.PIPE,
+    )
+    if proc.returncode != 0 or not (proc.stdout or "").strip():
+        return proc.returncode
+
+    try:
+        idx = int(proc.stdout.split("\t", 1)[0])
+        selected = res["results"][idx]
+    except Exception:
+        return 1
+
+    print(f"Playing: {selected['title']}")
+    if a.channel == "book":
+        m.book_play(uri=selected['uri'], title=re.sub(r"  \[[^]]+\]$", "", selected["title"]))
+    else:
+        m.music_play(uri=selected['uri'])
+    return 0
 
 
 def cmd_channels(a) -> int:
@@ -3200,6 +3274,7 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument("--width", type=int,
                    help="marquee-window the title to WIDTH columns (scrolls one "
                         "column per call; used by the popup border title)")
+    s.add_argument("--session-only", action="store_true")
     s.set_defaults(func=cmd_now_pane)
     sub.add_parser("goto-pane",
                    help="focus the pane that produced the now-playing speech"
@@ -3400,6 +3475,16 @@ def _build_parser() -> argparse.ArgumentParser:
     f.add_argument("channel", choices=("book", "music"))
     f.set_defaults(func=cmd_focus)
 
+    search = sub.add_parser("search", help="unified search (music/book library)")
+    search.add_argument("--lines", action="store_true",
+                        help="print title<TAB>uri rows for an external picker")
+    search.add_argument("channel", choices=("music", "book"))
+    search.add_argument("query", nargs="*")
+    search.set_defaults(func=cmd_search)
+
+    sub.add_parser("abs-scan", help="trigger an Audiobookshelf library scan"
+                   ).set_defaults(func=cmd_abs_scan)
+
     sub.add_parser("channels", help="both channels at a glance (focus, bed, what's on)"
                    ).set_defaults(func=cmd_channels)
 
@@ -3419,8 +3504,8 @@ def _add_book_parser(sub) -> None:
     """The `media book ...` subtree — the longform/audiobook channel.
 
     Mirrors `media music` but with book-shaped transport (resume bookmarks,
-    skip ±s, speed) and playlists. `--target rooms|local` overrides where the
-    book plays; empty uses MEDIA_BOOK_DEFAULT_TARGET.
+    skip ±s, speed) and playlists. `--target rooms|local|phone` overrides where
+    the book plays; empty uses MEDIA_BOOK_DEFAULT_TARGET, then speech default.
     """
     book = sub.add_parser("book", help="longform / audiobook channel")
     book.set_defaults(func=cmd_book)
@@ -3432,7 +3517,8 @@ def _add_book_parser(sub) -> None:
                     help="start from the beginning, ignoring the bookmark")
     bp.add_argument("--start-ms", type=int, default=None,
                     help="explicit start offset in ms")
-    bp.add_argument("--target", default="", help="rooms|local")
+    bp.add_argument("--target", default="", help="rooms|local|phone")
+    bp.add_argument("--title", default="", help=argparse.SUPPRESS)
 
     br = b.add_parser("resume", help="resume the book (reopens the last if idle)")
     br.add_argument("--target", default="")
@@ -3468,6 +3554,8 @@ def _add_book_parser(sub) -> None:
 
     bnow = b.add_parser("now", help="URI of what the book channel is reading")
     bnow.add_argument("--target", default="")
+    bmeta = b.add_parser("meta", help="book title/chapter/URI for popup")
+    bmeta.add_argument("--target", default="")
 
     bbm = b.add_parser("bookmark", help="bookmark current book position")
     bbm.add_argument("note", nargs="?")

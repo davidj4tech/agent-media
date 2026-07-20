@@ -23,6 +23,7 @@ import logging
 import os
 import threading
 import time
+from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
@@ -110,13 +111,15 @@ def _target(name: str) -> Target:
 
 
 def _book_target(name: str = "") -> Target:
-    """Resolve the book channel's output target. An empty name means "use
-    the configured default" (MEDIA_BOOK_DEFAULT_TARGET, default `local`) —
-    so books can default to the rooms without every caller passing it, while
-    an explicit `local`/`rooms` still wins.
+    """Resolve the book channel's output target.
+
+    Empty uses MEDIA_BOOK_DEFAULT_TARGET; if unset, follow
+    MEDIA_SPEECH_DEFAULT_TARGET so book playback lands wherever speech does.
     """
     if not name:
-        name = os.environ.get("MEDIA_BOOK_DEFAULT_TARGET", "local")
+        name = (os.environ.get("MEDIA_BOOK_DEFAULT_TARGET")
+                or os.environ.get("MEDIA_SPEECH_DEFAULT_TARGET")
+                or "local")
     return Target(name=name or "local")
 
 
@@ -384,7 +387,7 @@ def music_seek(position_ms: int, target: str = "local") -> dict:
 
 @mcp.tool()
 def book_play(uri: str, resume: bool = True, start_ms: int = -1,
-              target: str = "") -> dict:
+              target: str = "", title: str = "") -> dict:
     """Play longform audio (audiobook / podcast) on the book channel.
 
     Use this instead of `music_play` for spoken-word you want to come back
@@ -431,13 +434,21 @@ def book_play(uri: str, resume: bool = True, start_ms: int = -1,
     else:
         start = 0
     b.play(norm, t, start_ms=start)
+    display_title = title.strip()
+    if not display_title:
+        try:
+            from urllib.parse import unquote
+            display_title = Path(unquote(norm.split("?", 1)[0])).stem
+        except Exception:
+            pass
     st.set_now_playing(sink="book", uri=norm, started_at=time.time(),
-                       content_type="audiobook", target=t.name)
+                       content_type="audiobook", target=t.name,
+                       extras={"title": display_title} if display_title else None)
     st.set_book_last(norm)
     # An ad-hoc book breaks the playlist context, so `book next` won't try to
     # advance a list the listener has stepped away from.
     st.clear_playlist_active()
-    return {"ok": True, "uri": norm, "resumed_from_ms": start}
+    return {"ok": True, "uri": norm, "resumed_from_ms": start, "target": t.name}
 
 
 @mcp.tool()
@@ -459,18 +470,18 @@ def book_resume(target: str = "") -> dict:
 
 
 @mcp.tool()
-def book_pause(target: str = "local") -> dict:
+def book_pause(target: str = "") -> dict:
     """Pause the book channel and save its place."""
-    b, t = _book(), _target(target)
+    b, t = _book(), _book_target(target)
     _save_book_bookmark(b, _state(), t)
     b.pause(t)
     return {"ok": True}
 
 
 @mcp.tool()
-def book_stop(target: str = "local") -> dict:
+def book_stop(target: str = "") -> dict:
     """Stop the book channel, saving its place first so you can resume later."""
-    b, st, t = _book(), _state(), _target(target)
+    b, st, t = _book(), _state(), _book_target(target)
     _save_book_bookmark(b, st, t)
     b.stop(t)
     st.clear_now_playing("book")
@@ -479,44 +490,74 @@ def book_stop(target: str = "local") -> dict:
 
 
 @mcp.tool()
-def book_skip(seconds: float = 30, target: str = "local") -> dict:
+def book_skip(seconds: float = 30, target: str = "") -> dict:
     """Skip the book by ±seconds (negative = back). Default +30s."""
-    _book().skip(seconds, _target(target))
+    _book().skip(seconds, _book_target(target))
     return {"ok": True, "seconds": seconds}
 
 
 @mcp.tool()
-def book_seek(position_secs: float, target: str = "local") -> dict:
+def book_seek(position_secs: float, target: str = "") -> dict:
     """Seek the book to an absolute position (seconds from the start).
 
     Unlike `book_skip` (which moves ±relative), this jumps to a specific
     time — e.g. `position_secs=5615` for 1:33:35. Clamped to the file length.
     """
-    pos = _book().seek_to(position_secs, _target(target))
+    pos = _book().seek_to(position_secs, _book_target(target))
     return {"ok": True, "position_ms": pos}
 
 
 @mcp.tool()
-def book_speed(rate: float, target: str = "local") -> dict:
+def book_speed(rate: float, target: str = "") -> dict:
     """Set book playback speed (0.25–4.0; 1.0 = normal)."""
-    applied = _book().set_speed(rate, _target(target))
+    applied = _book().set_speed(rate, _book_target(target))
     return {"ok": True, "speed": applied}
 
 
 @mcp.tool()
-def book_now_playing(target: str = "local") -> dict:
+def book_now_playing(target: str = "") -> dict:
     """What the book channel is playing — URI, position, duration, speed."""
-    b, t = _book(), _target(target)
-    if b.idle(t):
+    t = _book_target(target)
+    try:
+        from .sinks import _mpv_ipc as ipc
+        from .sinks.book import _socket_for
+        props = ipc.get_properties(_socket_for(t), [
+            "idle-active", "path", "time-pos", "duration", "pause", "speed",
+            "media-title", "chapter-metadata/by-key/title",
+            "metadata/by-key/album", "metadata/by-key/artist",
+        ], timeout=1.2)
+    except Exception:
         return {"idle": True}
-    return {
+    if props.get("idle-active") is True:
+        return {"idle": True}
+    uri = props.get("path")
+    info = {
         "idle": False,
-        "uri": b.now_playing_uri(t),
-        "position_ms": b.position(t),
-        "duration_ms": b.duration(t),
-        "paused": b.paused(t),
-        "speed": b.speed(t),
+        "uri": uri,
+        "position_ms": (int(float(props["time-pos"]) * 1000)
+                        if props.get("time-pos") is not None else None),
+        "duration_ms": (int(float(props["duration"]) * 1000)
+                        if props.get("duration") is not None else None),
+        "paused": bool(props.get("pause")),
+        "speed": float(props.get("speed") or 1.0),
     }
+    for prop, key in (("media-title", "media_title"),
+                      ("chapter-metadata/by-key/title", "chapter_title"),
+                      ("metadata/by-key/album", "album"),
+                      ("metadata/by-key/artist", "artist")):
+        if props.get(prop):
+            info[key] = props[prop]
+    # Prefer the title remembered when agent-media started playback. Stream
+    # media-title is often just "download?token=..." for ABS URLs.
+    try:
+        np = _state().get_now_playing("book") or {}
+        ex = np.get("extras") or {}
+        if isinstance(ex, dict):
+            info.update({k: v for k, v in ex.items()
+                         if k in ("title", "chapter_title", "source") and v})
+    except Exception:
+        pass
+    return info
 
 
 # --- book playlists -------------------------------------------------------
@@ -800,6 +841,134 @@ def book_playlist_rm(name: str) -> dict:
 # The book and music channels can play at once (book in front, music as a
 # quiet bed). `focus` chooses which is in front; `book_bed` chooses whether
 # the music bed ducks (instrumental) or pauses (lyrics) under the book.
+
+def _abs_config() -> tuple[str, str]:
+    """Audiobookshelf URL/token, accepting the existing abs-bridge env names."""
+    url = os.environ.get("MEDIA_AUDIOBOOKSHELF_URL") or os.environ.get("ABS_URL") or ""
+    token = os.environ.get("MEDIA_AUDIOBOOKSHELF_TOKEN") or os.environ.get("ABS_TOKEN") or ""
+    if url and token:
+        return url, token
+    try:
+        for line in (Path.home() / ".config" / "agent-media" / "abs-bridge.env").read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            v = v.strip().strip('"\'')
+            if k == "ABS_URL" and not url:
+                url = v
+            elif k == "ABS_TOKEN" and not token:
+                token = v
+    except OSError:
+        pass
+    return url, token
+
+
+def search(channel: str, query: str = "") -> dict:
+    """Search for media across ABS, red5 cache, and the connected device."""
+    import shlex
+    import subprocess
+    import urllib.parse
+    import urllib.request
+    import json
+    if channel == "book":
+        url, token = _abs_config()
+        if not url or not token:
+            return {"error": "Audiobookshelf URL/token not set (MEDIA_AUDIOBOOKSHELF_* or ABS_* in abs-bridge.env)"}
+        url = url.rstrip("/")
+        req = urllib.request.Request(f"{url}/api/libraries", headers={"Authorization": f"Bearer {token}"})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                libraries = json.loads(r.read())["libraries"]
+        except Exception as e:
+            return {"error": f"failed to fetch libraries: {e}"}
+
+        q = query.casefold().strip()
+        results = []
+        for lib in libraries:
+            # Fetch the library and let fzf/client-side filtering do the search.
+            # ABS's /search endpoint is version-sensitive and returns 400 here.
+            req_url = f"{url}/api/libraries/{lib['id']}/items?limit=1000"
+            req = urllib.request.Request(req_url, headers={"Authorization": f"Bearer {token}"})
+            try:
+                with urllib.request.urlopen(req, timeout=20) as r:
+                    res = json.loads(r.read())
+            except Exception:
+                continue
+            for item in res.get("results", []):
+                metadata = item.get("media", {}).get("metadata", {})
+                title = metadata.get("title") or item.get("title")
+                author = metadata.get("authorName") or ""
+                searchable = " ".join((str(title or ""), str(author), str(item.get("relPath") or ""))).casefold()
+                if not title or (q and q not in searchable):
+                    continue
+                # /play is a session endpoint and 404s for API tokens; /download streams bytes.
+                uri = f"{url}/api/items/{item['id']}/download"
+                label = f"{title} — {author}" if author else title
+                results.append({"uri": uri, "title": f"{label}  [ABS]"})
+
+        # Merge red5 cache/library files that ABS may not know about.
+        exts = {".m4a", ".m4b", ".mp3", ".opus", ".ogg", ".flac", ".wav", ".webm", ".mka"}
+        cache_root = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))) / "agent-media" / "books"
+        default_local_dirs = f"{cache_root} {library.abs_import_dir()} {library.library_dir()}"
+        local_dirs = os.environ.get("MEDIA_BOOK_LOCAL_DIRS", default_local_dirs)
+        seen_paths: set[str] = set()
+        for token in shlex.split(local_dirs):
+            root = Path(os.path.expandvars(token)).expanduser()
+            if not root.is_dir():
+                continue
+            label = "red5-cache" if root == cache_root else "red5-library"
+            for path in sorted(root.rglob("*")):
+                if not path.is_file() or path.name.startswith(".") or path.suffix.lower() not in exts:
+                    continue
+                key = str(path.resolve())
+                if key in seen_paths:
+                    continue
+                seen_paths.add(key)
+                title = path.stem
+                searchable = " ".join((title, str(path.relative_to(root)))).casefold()
+                if q and q not in searchable:
+                    continue
+                results.append({"uri": str(path), "title": f"{title}  [{label}]"})
+
+        # Merge connected-device cache files. These are playable directly when
+        # the book target follows speech to `phone`.
+        target_name = (os.environ.get("MEDIA_BOOK_DEFAULT_TARGET")
+                       or os.environ.get("MEDIA_SPEECH_DEFAULT_TARGET") or "")
+        if target_name:
+            host = (os.environ.get(f"MEDIA_BOOK_CACHE_SSH_{target_name.upper().replace('-', '_')}")
+                    or os.environ.get(f"MEDIA_SPEECH_CLIP_SSH_{target_name.upper().replace('-', '_')}")
+                    or os.environ.get("MEDIA_MUSIC_LOCAL_SSH") or "")
+            remote_dirs = os.environ.get(
+                f"MEDIA_BOOK_CACHE_DIRS_{target_name.upper().replace('-', '_')}",
+                "${XDG_CACHE_HOME:-$HOME/.cache}/agent-media/books",
+            )
+            if host:
+                find_expr = " -o ".join(f"-iname '*{ext}'" for ext in sorted(exts))
+                remote = (
+                    "for d in " + remote_dirs + "; do "
+                    "[ -d \"$d\" ] && find \"$d\" -type f \\( " + find_expr + " \\); "
+                    "done 2>/dev/null"
+                )
+                try:
+                    proc = subprocess.run(
+                        ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=4", host, remote],
+                        text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=8,
+                        check=False,
+                    )
+                except Exception:
+                    proc = None
+                if proc and proc.returncode == 0:
+                    for line in proc.stdout.splitlines():
+                        path_s = line.strip()
+                        if not path_s:
+                            continue
+                        title = Path(path_s).stem
+                        if q and q not in f"{title} {path_s}".casefold():
+                            continue
+                        results.append({"uri": path_s, "title": f"{title}  [{target_name}-cache]"})
+        return {"results": results}
+    return {"error": "not implemented"}
 
 @mcp.tool()
 def focus(channel: str, target: str = "local") -> dict:

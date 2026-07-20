@@ -111,6 +111,7 @@ VOL_TICKS=8     # ~1.6s at TICK=0.2
 # marquee scrolls smoothly, but the `media` CLI costs ~150ms/call, so we
 # only refresh this snapshot every FETCH_EVERY ticks (~1s) — and right after
 # a keypress so actions feel instant.
+BORDER="agent-media"    # desired border title (sent to launcher via flag file)
 LABEL="agent-media"     # marquee text (pane title / current track)
 LINK=""                 # http(s) source URL for the current track (music/book);
                         # wraps the marquee in an OSC 8 hyperlink when set
@@ -189,18 +190,19 @@ fetch() {
         { IFS= read -r STATUS; IFS= read -r t; IFS= read -r MSPD; } < <(
             $MEDIA music now-status --show-idle --no-bar 2>/dev/null)
         t="${t#"${t%%[![:space:]]*}"}"; t="${t%"${t##*[![:space:]]}"}"
-        [ -n "$t" ] && LABEL="$t" || LABEL="(no music)"
+        [ -n "$t" ] && BORDER="$t" || BORDER="music"
+        LABEL="$BORDER"
         LINK=$(url_for "$(mpd_currentsong_file)")
     elif [ "$CHANNEL" = "book" ]; then
         STATUS=$($MEDIA book status --show-idle --no-bar 2>/dev/null)
-        # `media book now` yields a bare URI; the socket's media-title reads
-        # far nicer in the marquee. Falls back to a placeholder when idle.
-        t=$(printf '{"command":["get_property","media-title"]}\n' \
-              | socat - "UNIX-CONNECT:$BOOK_SOCK" 2>/dev/null | jq -r '.data // empty' 2>/dev/null \
-              | tr '\n' ' ')
-        t="${t#"${t%%[![:space:]]*}"}"; t="${t%"${t##*[![:space:]]}"}"
-        [ -n "$t" ] && LABEL="$t" || LABEL="(audiobook)"
-        LINK=$(url_for "$(sock_get path)")
+        local btitle bchap buri
+        { IFS= read -r btitle; IFS= read -r bchap; IFS= read -r buri; } < <(
+            $MEDIA book meta 2>/dev/null)
+        btitle="${btitle#"${btitle%%[![:space:]]*}"}"; btitle="${btitle%"${btitle##*[![:space:]]}"}"
+        bchap="${bchap#"${bchap%%[![:space:]]*}"}"; bchap="${bchap%"${bchap##*[![:space:]]}"}"
+        [ -n "$btitle" ] && BORDER="$btitle" || BORDER="book"
+        [ -n "$bchap" ] && LABEL="$bchap" || LABEL="$BORDER"
+        LINK=$(url_for "${buri:-$(sock_get path)}")
     else
         # One aggregate call — status line + speaking-pane title + durable-mute
         # count — instead of three separate `media` spawns. Each spawn is a full
@@ -222,6 +224,9 @@ fetch() {
         fi
         t="${t#"${t%%[![:space:]]*}"}"; t="${t%"${t##*[![:space:]]}"}"
         [ -n "$t" ] && LABEL="$t" || LABEL="agent-media"
+        local sess
+        sess=$(TTS_POPUP_PANE="$HL_PANE" $MEDIA now-pane --session-only 2>/dev/null || true)
+        [ -n "$sess" ] && BORDER="$sess" || BORDER="speech"
         LINK=""                          # speech marquee is a pane title, not a URL
     fi
     # Refresh socket-backed indicators (speech/book have a socket; music/MPD
@@ -542,6 +547,8 @@ bump_speed() {        # $1 = direction: 1 faster / -1 slower — hops the speed 
         else $MEDIA music speed down >/dev/null 2>&1; fi
         return
     fi
+    $MEDIA book speed "$([ "$dir" -gt 0 ] && printf up || printf down)" >/dev/null 2>&1
+    return
     local sock; sock=$(sock_for); [ -z "$sock" ] && return
     local cur; cur=$(sock_get speed); [ -z "$cur" ] && cur=1.0
     # At/above 1.0x hop the rungs (1.0 1.5 2.0 3.0); below 1.0x take fine flat 0.1
@@ -570,12 +577,9 @@ book_toggle() {
     # pause — pausing an already-stopped channel is a no-op and leaves you
     # stuck. Reload the last book at its bookmark instead. `book resume`'s
     # idle branch handles the reopen; on a *paused* channel it just unpauses.
-    if [ "$(sock_get idle-active)" = "true" ]; then
-        $MEDIA book resume 2>/dev/null; return
-    fi
-    case "$($MEDIA book status --no-bar 2>/dev/null)" in
-        '⏸'*) $MEDIA book resume 2>/dev/null ;;
-        *)    $MEDIA book pause  2>/dev/null ;;
+    case "$($MEDIA book status --show-idle --no-bar 2>/dev/null)" in
+        '⏸'*|'○'*) $MEDIA book resume 2>/dev/null ;;
+        *)         $MEDIA book pause  2>/dev/null ;;
     esac
 }
 
@@ -702,6 +706,9 @@ handle_key() {
                # exit: the canvas follows the selected channel live (its video
                # layer and controller sync to this).
                ($MEDIA popup-channel --set "$CHANNEL" >/dev/null 2>&1 &)
+               if [ -n "${MEDIA_POPUP_CHANNEL_FLAG:-}" ]; then
+                   printf '%s' "$CHANNEL" > "$MEDIA_POPUP_CHANNEL_FLAG"; QUIT=1; return
+               fi
                tmux display-message "♪ channel: $CHANNEL" 2>/dev/null ;;
         # Fusable speech keys stash their verb in SPEECH_ACT (run+redraw in one
         # spawn by the loop); music/book keep their own direct calls.
@@ -729,6 +736,19 @@ handle_key() {
         # Open a URL on the active channel — music (ducks) or book (pauses).
         # Clipboard-first: copy a link, then `o`, Enter.
         o)   typed_open ;;
+        /)   search_ch="$CHANNEL"
+             [ "$search_ch" = "speech" ] && search_ch=book
+             if [ -n "${MEDIA_POPUP_SEARCH_FLAG:-}" ]; then
+                 printf '%s' "$search_ch" > "$MEDIA_POPUP_SEARCH_FLAG"; QUIT=1; return
+             fi
+             # Standalone fallback (not opened through media-popup-open): run fzf inline.
+             mouse_off
+             printf '\033[H\033[2J\033[?25h'
+             $MEDIA search "$search_ch"
+             printf '\033[?25l'
+             mouse_on
+             draw
+             do_refresh ;;
         b)   bookmark_key ;;
         '-') xport volume -5; show_volume ;;
         '='|'+') xport volume 5; show_volume ;;

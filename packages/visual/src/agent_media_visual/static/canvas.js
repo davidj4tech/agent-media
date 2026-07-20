@@ -677,6 +677,11 @@
     const u = await askSheet('open in ' + ch, 'paste a URL to play', '');
     if (u && u.trim()) act('open-url', 1, u.trim());
   }
+  async function webSearch() {
+    if (ch === 'speech') { toast('search — music / book only'); return; }
+    const q = await askSheet('search ' + ch, 'query (title/author/etc)', '');
+    if (q !== null) act('search', 1, q.trim());
+  }
   function toggleHelp() { $('help').classList.toggle('on'); }
 
   // ---- input box: reply to whoever just spoke (token-authed) ---------------
@@ -824,6 +829,7 @@
     'g': () => act('goto'),   'w': openWeb,
     'b': bookmarkAct,
     's': typedSeek,           'o': typedOpen,
+    '/': webSearch,
     '[': () => act('speed-'), ']': () => act('speed+'),
     '0': () => act('speed0'), 'Backspace': () => act('speed0'),
     'r': () => act('replay', 1),

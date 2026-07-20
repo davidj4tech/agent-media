@@ -21,6 +21,7 @@ import shutil
 import subprocess
 from pathlib import Path
 from typing import Optional
+import urllib.request
 
 
 # Bare 11-char YouTube id from the common URL shapes (after any `yt:` strip).
@@ -37,6 +38,63 @@ def library_dir() -> Path:
     if override:
         return Path(override).expanduser()
     return Path.home() / "media" / "audiobooks"
+
+
+def abs_import_dir() -> Path:
+    """Host directory Audiobookshelf scans for books.
+
+    Override with MEDIA_AUDIOBOOK_ABS_DIR / ABS_AUDIOBOOK_DIR. The current
+    container setup mounts ~/audiobooks as /audiobooks, so prefer that when it
+    exists; fall back to the historical agent-media library.
+    """
+    override = os.environ.get("MEDIA_AUDIOBOOK_ABS_DIR") or os.environ.get("ABS_AUDIOBOOK_DIR")
+    if override:
+        return Path(override).expanduser()
+    p = Path.home() / "audiobooks"
+    return p if p.exists() else library_dir()
+
+
+def _abs_cfg() -> tuple[str, str, str]:
+    url = os.environ.get("MEDIA_AUDIOBOOKSHELF_URL") or os.environ.get("ABS_URL") or ""
+    token = os.environ.get("MEDIA_AUDIOBOOKSHELF_TOKEN") or os.environ.get("ABS_TOKEN") or ""
+    lib = os.environ.get("ABS_LIBRARY", "")
+    try:
+        for line in (Path.home() / ".config" / "agent-media" / "abs-bridge.env").read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            v = v.strip().strip('"\'')
+            if k == "ABS_URL" and not url:
+                url = v
+            elif k == "ABS_TOKEN" and not token:
+                token = v
+            elif k == "ABS_LIBRARY" and not lib:
+                lib = v
+    except OSError:
+        pass
+    return url.rstrip("/"), token, lib
+
+
+def trigger_abs_scan() -> bool:
+    """Ask Audiobookshelf to rescan its book library after an import."""
+    url, token, want = _abs_cfg()
+    if not url or not token:
+        return False
+    try:
+        req = urllib.request.Request(f"{url}/api/libraries", headers={"Authorization": f"Bearer {token}"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            libs = __import__("json").loads(r.read()).get("libraries", [])
+        lib = next((l for l in libs if l.get("id") == want or l.get("name") == want), None) if want else None
+        lib = lib or next((l for l in libs if l.get("mediaType") == "book"), None)
+        if not lib:
+            return False
+        req = urllib.request.Request(f"{url}/api/libraries/{lib['id']}/scan", method="POST",
+                                     headers={"Authorization": f"Bearer {token}"})
+        with urllib.request.urlopen(req, timeout=10):
+            return True
+    except Exception:
+        return False
 
 
 def is_youtube(uri: str) -> bool:
