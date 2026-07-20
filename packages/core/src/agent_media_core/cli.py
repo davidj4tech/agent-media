@@ -2562,7 +2562,58 @@ def _cmd_bookmarks(limit_s: str = "", channel: Optional[str] = None,
     return 0
 
 
-def _cmd_bookmark_pick(channel: Optional[str] = None) -> int:
+def _resume_bookmark(bm: dict) -> int:
+    """Play the bookmarked item on its channel, seeking to the saved position.
+
+    music: play (phone/rooms per auto) then seek to pos_ms.
+    book:  book_play with an explicit start offset (its own fetch/resume path).
+    speech: live speech can't be re-entered mid-clip, so hand back the URI.
+    """
+    ch = bm.get("channel")
+    uri = bm.get("uri") or ""
+    pos_ms = int(bm.get("pos_ms") or 0)
+    if not uri:
+        print("media bookmarks: bookmark has no uri", file=sys.stderr)
+        return 1
+    if ch == "book":
+        srv = _srv()
+        r = srv.book_play(uri, resume=False, start_ms=pos_ms, target="")
+        if r.get("fetching"):
+            print(f"⬇ {r.get('reason', 'fetching')}: {uri}")
+            return 0
+        if not r.get("ok", True):
+            print(r.get("reason", "book play failed"), file=sys.stderr)
+            return 1
+        print(f"▶ {uri} (from {fmt_time(pos_ms / 1000.0)})")
+        return 0
+    if ch == "music":
+        m = SinkMusic()
+        where = _resolve_music_where("auto")
+        try:
+            if where == "phone":
+                from .sinks.music_local import SinkMusicLocal, configured
+                if not configured():
+                    print("media bookmarks: phone backend not configured",
+                          file=sys.stderr)
+                    return 2
+                SinkMusicLocal().play(uri, replace=True)
+            else:
+                m.play(uri, replace=True)
+        except Exception as e:  # noqa: BLE001
+            print(f"media bookmarks: resume failed: {e}", file=sys.stderr)
+            return 1
+        StateStore().set_music_intent(uri, None)
+        if pos_ms > 0:
+            _music_live_backend(m).seek_cur(position_ms=pos_ms)
+        print(f"▶ {uri} (from {fmt_time(pos_ms / 1000.0)})")
+        return 0
+    # speech (and anything else): no live resume — emit the reference.
+    print(uri)
+    return 0
+
+
+def _cmd_bookmark_pick(channel: Optional[str] = None,
+                       resume: bool = True) -> int:
     rows = StateStore().list_bookmarks(500, channel=channel)
     if not rows:
         print("media bookmarks pick: no bookmarks", file=sys.stderr)
@@ -2588,6 +2639,8 @@ def _cmd_bookmark_pick(channel: Optional[str] = None) -> int:
     bm = by_key.get(proc.stdout.split("\t", 1)[0])
     if not bm:
         return 1
+    if resume:
+        return _resume_bookmark(bm)
     print(bm.get("uri") or "")
     return 0
 
@@ -2609,7 +2662,8 @@ def cmd_bookmark(a) -> int:
 
 def cmd_bookmarks(a) -> int:
     if getattr(a, "pick", False):
-        return _cmd_bookmark_pick(channel=getattr(a, "channel", None))
+        return _cmd_bookmark_pick(channel=getattr(a, "channel", None),
+                                  resume=not getattr(a, "print_uri", False))
     return _cmd_bookmarks(getattr(a, "limit", "20") or "20",
                           channel=getattr(a, "channel", None),
                           json_out=bool(getattr(a, "json", False)))
@@ -3292,7 +3346,10 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument("limit", nargs="?", default="20")
     s.add_argument("--channel", choices=("music", "book", "speech"), default=None)
     s.add_argument("--json", action="store_true")
-    s.add_argument("--pick", action="store_true", help="choose with fzf and print URI")
+    s.add_argument("--pick", action="store_true",
+                   help="choose with fzf and resume the selected bookmark")
+    s.add_argument("--print-uri", dest="print_uri", action="store_true",
+                   help="with --pick: print the URI instead of resuming")
     s.set_defaults(func=cmd_bookmarks)
 
     s = sub.add_parser("music", help="music control via Mopidy/MPD")

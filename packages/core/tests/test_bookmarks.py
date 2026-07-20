@@ -52,3 +52,59 @@ def test_music_bookmark_command_saves_live_position(monkeypatch):
     assert saved["pos_ms"] == 123000
     assert saved["title"] == "Cool Mix"
     assert saved["note"] == "note"
+
+
+# ---- resume-on-select --------------------------------------------------------
+
+def test_resume_bookmark_music_plays_and_seeks(monkeypatch):
+    from agent_media_core import cli
+
+    played = {}
+    seeked = {}
+
+    class FakeMusic:
+        def play(self, uri, replace=True):
+            played["uri"] = uri
+            played["replace"] = replace
+
+    class FakeBackend:
+        def seek_cur(self, position_ms=0): seeked["pos"] = position_ms
+
+    monkeypatch.setattr(cli, "SinkMusic", lambda: FakeMusic())
+    monkeypatch.setattr(cli, "_resolve_music_where", lambda where: "rooms")
+    monkeypatch.setattr(cli, "_music_live_backend", lambda m: FakeBackend())
+    monkeypatch.setattr(cli, "StateStore",
+                        lambda: type("S", (), {"set_music_intent":
+                                               lambda self, u, c: None})())
+    bm = {"channel": "music", "uri": "https://youtu.be/a82hE1aupo8",
+          "pos_ms": 123000}
+    assert cli._resume_bookmark(bm) == 0
+    assert played["uri"] == "https://youtu.be/a82hE1aupo8"
+    assert played["replace"] is True
+    assert seeked["pos"] == 123000
+
+
+def test_resume_bookmark_book_uses_start_ms(monkeypatch):
+    from agent_media_core import cli
+
+    called = {}
+
+    class FakeSrv:
+        def book_play(self, uri, resume=True, start_ms=-1, target=""):
+            called.update(uri=uri, resume=resume, start_ms=start_ms)
+            return {"ok": True, "uri": uri}
+
+    monkeypatch.setattr(cli, "_srv", lambda: FakeSrv())
+    bm = {"channel": "book", "uri": "yt:https://youtu.be/xyz", "pos_ms": 45000}
+    assert cli._resume_bookmark(bm) == 0
+    assert called["uri"] == "yt:https://youtu.be/xyz"
+    assert called["resume"] is False
+    assert called["start_ms"] == 45000
+
+
+def test_resume_bookmark_speech_prints_uri(monkeypatch, capsys):
+    from agent_media_core import cli
+
+    bm = {"channel": "speech", "uri": "speech:12345", "pos_ms": 0}
+    assert cli._resume_bookmark(bm) == 0
+    assert capsys.readouterr().out.strip() == "speech:12345"
