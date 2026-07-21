@@ -32,32 +32,57 @@ _YT_ID = re.compile(
 _YT_HOST = re.compile(r"^https?://(?:[\w-]+\.)?(?:youtube\.com|youtu\.be)/", re.I)
 
 
-def library_dir() -> Path:
-    """Where synced audiobook files live (override: MEDIA_AUDIOBOOK_LIB)."""
-    override = os.environ.get("MEDIA_AUDIOBOOK_LIB")
+def _suffix(target=None) -> str:
+    """Env-var suffix for a target (accepts a Target, a name str, or None)."""
+    name = getattr(target, "name", target) or ""
+    return str(name).upper().replace("-", "_")
+
+
+def _tenv(base: str, target=None) -> Optional[str]:
+    """Per-target override of an env var, falling back to the global.
+
+    e.g. MEDIA_AUDIOBOOK_ABS_DIR_ALICE -> MEDIA_AUDIOBOOK_ABS_DIR. Mirrors the
+    existing MEDIA_SPEECH_PLAYOUT_MS_<TARGET> convention in submit.py.
+    """
+    if target is not None:
+        sfx = _suffix(target)
+        if sfx:
+            v = os.environ.get(f"{base}_{sfx}")
+            if v:
+                return v
+    return os.environ.get(base)
+
+
+def library_dir(target=None) -> Path:
+    """Where synced audiobook files live (override: MEDIA_AUDIOBOOK_LIB).
+
+    Per-target override: MEDIA_AUDIOBOOK_LIB_<TARGET>.
+    """
+    override = _tenv("MEDIA_AUDIOBOOK_LIB", target)
     if override:
         return Path(override).expanduser()
     return Path.home() / "media" / "audiobooks"
 
 
-def abs_import_dir() -> Path:
+def abs_import_dir(target=None) -> Path:
     """Host directory Audiobookshelf scans for books.
 
-    Override with MEDIA_AUDIOBOOK_ABS_DIR / ABS_AUDIOBOOK_DIR. The current
-    container setup mounts ~/audiobooks as /audiobooks, so prefer that when it
-    exists; fall back to the historical agent-media library.
+    Override with MEDIA_AUDIOBOOK_ABS_DIR / ABS_AUDIOBOOK_DIR (or their
+    per-target _<TARGET> forms). The current container setup mounts
+    ~/audiobooks as /audiobooks, so prefer that when it exists; fall back to
+    the historical agent-media library.
     """
-    override = os.environ.get("MEDIA_AUDIOBOOK_ABS_DIR") or os.environ.get("ABS_AUDIOBOOK_DIR")
+    override = _tenv("MEDIA_AUDIOBOOK_ABS_DIR", target) or _tenv("ABS_AUDIOBOOK_DIR", target)
     if override:
         return Path(override).expanduser()
     p = Path.home() / "audiobooks"
-    return p if p.exists() else library_dir()
+    return p if p.exists() else library_dir(target)
 
 
-def _abs_cfg() -> tuple[str, str, str]:
-    url = os.environ.get("MEDIA_AUDIOBOOKSHELF_URL") or os.environ.get("ABS_URL") or ""
-    token = os.environ.get("MEDIA_AUDIOBOOKSHELF_TOKEN") or os.environ.get("ABS_TOKEN") or ""
-    lib = os.environ.get("ABS_LIBRARY", "")
+def _abs_cfg(target=None) -> tuple[str, str, str]:
+    url = _tenv("MEDIA_AUDIOBOOKSHELF_URL", target) or _tenv("ABS_URL", target) or ""
+    token = _tenv("MEDIA_AUDIOBOOKSHELF_TOKEN", target) or _tenv("ABS_TOKEN", target) or ""
+    lib = _tenv("ABS_LIBRARY", target) or ""
     try:
         for line in (Path.home() / ".config" / "agent-media" / "abs-bridge.env").read_text().splitlines():
             line = line.strip()
@@ -76,9 +101,13 @@ def _abs_cfg() -> tuple[str, str, str]:
     return url.rstrip("/"), token, lib
 
 
-def trigger_abs_scan() -> bool:
-    """Ask Audiobookshelf to rescan its book library after an import."""
-    url, token, want = _abs_cfg()
+def trigger_abs_scan(target=None) -> bool:
+    """Ask Audiobookshelf to rescan its book library after an import.
+
+    Per-target library selection via ABS_LIBRARY_<TARGET> (falls back to
+    ABS_LIBRARY, then the first book-type library).
+    """
+    url, token, want = _abs_cfg(target)
     if not url or not token:
         return False
     try:
@@ -106,9 +135,12 @@ def video_id(uri: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
-def cached_path(vid: str) -> Optional[Path]:
-    """The library file for video id `vid` (yt-dlp names it ``... [<vid>].ext``)."""
-    d = library_dir()
+def cached_path(vid: str, target=None) -> Optional[Path]:
+    """The library file for video id `vid` (yt-dlp names it ``... [<vid>].ext``).
+
+    Searches the per-target library dir when `target` is given.
+    """
+    d = library_dir(target)
     if not d.is_dir():
         return None
     # The bracketed id is unambiguous; match it literally to avoid title clashes.
@@ -121,10 +153,16 @@ def fetch_cmd() -> Optional[str]:
     return os.environ.get("MEDIA_AUDIOBOOK_FETCH") or shutil.which("audiobook-fetch")
 
 
-def start_fetch(url: str, *, play: bool = False) -> bool:
+def start_fetch(url: str, *, play: bool = False, target=None) -> bool:
     """Kick off a detached `audiobook-fetch` for `url`. Returns False if the
     helper isn't installed. With `play=True` the helper plays the result on the
-    book channel when the (phone) download + sync finishes."""
+    book channel when the (phone) download + sync finishes.
+
+    When `target` is given, the helper syncs into that target's ABS library
+    dir via the AUDIOBOOK_LIB env var it already honors. NOTE: the helper's
+    internal `media book play` / `media abs-scan` calls don't forward a target,
+    so playback/scan still hit the default book channel + library unless the
+    external helper is updated to pass `--target` through."""
     fetch = fetch_cmd()
     if not fetch:
         return False
@@ -132,9 +170,13 @@ def start_fetch(url: str, *, play: bool = False) -> bool:
     if play:
         argv.append("--play")
     argv.append(url)
+    env = None
+    if target is not None and _suffix(target):
+        env = dict(os.environ)
+        env["AUDIOBOOK_LIB"] = str(abs_import_dir(target))
     subprocess.Popen(
         argv, stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        start_new_session=True,
+        start_new_session=True, env=env,
     )
     return True

@@ -3075,7 +3075,8 @@ def cmd_focus(a) -> int:
 
 def cmd_abs_scan(a) -> int:
     from . import library
-    if library.trigger_abs_scan():
+    tgt = getattr(a, "target", "") or None
+    if library.trigger_abs_scan(tgt):
         print("Audiobookshelf scan started")
         return 0
     print("media abs-scan: failed to start Audiobookshelf scan", file=sys.stderr)
@@ -3524,8 +3525,10 @@ def _build_parser() -> argparse.ArgumentParser:
     search.add_argument("query", nargs="*")
     search.set_defaults(func=cmd_search)
 
-    sub.add_parser("abs-scan", help="trigger an Audiobookshelf library scan"
-                   ).set_defaults(func=cmd_abs_scan)
+    abs_scan = sub.add_parser("abs-scan", help="trigger an Audiobookshelf library scan")
+    abs_scan.add_argument("--target", default="",
+                          help="per-target ABS library (ABS_LIBRARY_<TARGET>); empty = default")
+    abs_scan.set_defaults(func=cmd_abs_scan)
 
     sub.add_parser("channels", help="both channels at a glance (focus, bed, what's on)"
                    ).set_defaults(func=cmd_channels)

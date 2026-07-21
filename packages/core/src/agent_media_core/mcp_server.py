@@ -428,13 +428,13 @@ def book_play(uri: str, resume: bool = True, start_ms: int = -1,
     # Gated by MEDIA_BOOK_DIRECT_YT=1 so datacenter hosts keep the safe path.
     if library.is_youtube(norm):
         vid = library.video_id(norm)
-        cached = library.cached_path(vid) if vid else None
+        cached = library.cached_path(vid, t) if vid else None
         if cached is not None:
             norm = str(cached)
         elif os.environ.get("MEDIA_BOOK_DIRECT_YT", "0") not in ("", "0", "false", "no"):
             pass  # residential: fall through and let the book mpv stream it
         else:
-            started = library.start_fetch(norm, play=True)
+            started = library.start_fetch(norm, play=True, target=t)
             return {"ok": False, "fetching": started, "uri": norm,
                     "reason": ("downloading on phone; will auto-play when ready"
                                if started
@@ -947,9 +947,12 @@ def search(channel: str, query: str = "") -> dict:
                 results.append({"uri": uri, "title": f"{label}  [ABS]"})
 
         # Merge red5 cache/library files that ABS may not know about.
+        # `search` has no target param; use the default book target so the
+        # per-target dir resolvers behave exactly as the untargeted default.
+        t = _book_target("")
         exts = {".m4a", ".m4b", ".mp3", ".opus", ".ogg", ".flac", ".wav", ".webm", ".mka"}
         cache_root = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))) / "agent-media" / "books"
-        default_local_dirs = f"{cache_root} {library.abs_import_dir()} {library.library_dir()}"
+        default_local_dirs = f"{cache_root} {library.abs_import_dir(t)} {library.library_dir(t)}"
         local_dirs = os.environ.get("MEDIA_BOOK_LOCAL_DIRS", default_local_dirs)
         seen_paths: set[str] = set()
         for token in shlex.split(local_dirs):
