@@ -159,21 +159,22 @@ def start_fetch(url: str, *, play: bool = False, target=None) -> bool:
     book channel when the (phone) download + sync finishes.
 
     When `target` is given, the helper syncs into that target's ABS library
-    dir via the AUDIOBOOK_LIB env var it already honors. NOTE: the helper's
-    internal `media book play` / `media abs-scan` calls don't forward a target,
-    so playback/scan still hit the default book channel + library unless the
-    external helper is updated to pass `--target` through."""
+    dir via the AUDIOBOOK_LIB env var it already honors, and receives
+    `--target <name>` so its internal `media book play` / `media abs-scan`
+    calls hit that target's book channel + library too."""
     fetch = fetch_cmd()
     if not fetch:
         return False
     argv = [fetch]
     if play:
         argv.append("--play")
-    argv.append(url)
     env = None
-    if target is not None and _suffix(target):
+    name = getattr(target, "name", target) or ""
+    if target is not None and name:
         env = dict(os.environ)
         env["AUDIOBOOK_LIB"] = str(abs_import_dir(target))
+        argv += ["--target", str(name)]
+    argv.append(url)
     subprocess.Popen(
         argv, stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
