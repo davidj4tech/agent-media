@@ -3338,8 +3338,10 @@ def cmd_doctor(a) -> int:
         host_skewed = False
         for r, l_hash in local_hashes.items():
             try:
-                # Phone uses dotfiles at ~/dotfiles, agent-media at ~/agent-media (not in projects/)
-                r_path = f"~/{r}"
+                if r == "dotfiles":
+                    r_path = "~/dotfiles"
+                else:
+                    r_path = "~/projects/agent-media"
                 res = subprocess.run(
                     ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", host,
                      f"git -C {r_path} rev-parse HEAD"],

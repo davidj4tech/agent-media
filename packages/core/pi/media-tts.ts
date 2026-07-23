@@ -6,7 +6,7 @@
  * and delivers to the Snapcast feed.
  *
  * Install once:
- *   pi install /home/mel/agent-media/packages/core/pi
+ *   pi install /home/mel/projects/agent-media/packages/core/pi
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";

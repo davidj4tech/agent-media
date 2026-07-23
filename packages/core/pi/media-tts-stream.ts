@@ -17,7 +17,7 @@
  * MEDIA_SPEECH_*), loaded by the hook. No per-extension TTS config here.
  *
  * Install once:
- *   pi install /home/mel/agent-media/packages/core/pi
+ *   pi install /home/mel/projects/agent-media/packages/core/pi
  *
  * Env:
  *   MEDIA_HOOK_ENABLED        "0" disables all agent-media hooks
