@@ -341,3 +341,73 @@ def test_low_priority_skips_when_busy(tmp_path, monkeypatch):
     low2.acquire(P.LOW)
     assert low2._fd is not None
     low2.release()
+
+def test_paused_holder_not_overtaken(tmp_path, monkeypatch):
+    """A deliberately-paused holder (popup Space) must NOT be overtaken by a
+    waiter, and its now_playing name must survive an incoming sibling.
+
+    The holder stops advancing its clip uri while paused, so the progress-aware
+    give-up can't see it's healthy — the pause exemption is what keeps the
+    waiter from timing out, taking the token unserialized, and clobbering the
+    shared speech now_playing row with its own session.
+    """
+    from agent_media_core.state import StateStore
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.delenv("MEDIA_SPEECH_SERIALIZE", raising=False)
+    monkeypatch.setenv("MEDIA_SPEECH_LOCK_TIMEOUT_S", "0.3")
+
+    store = StateStore()
+    # Paused holder's now_playing: live_pause mirrored into extras (the same
+    # signal the playlist/remote loop records), so no real broker is needed.
+    store.set_now_playing(
+        "speech", uri="clip-a-000", started_at=time.time(),
+        target="local", extras={"source_session": "sess-A", "live_pause": True})
+
+    a = S._SpeechPlaybackLock()
+    a.acquire(P.NORMAL, session="sess-A")
+    assert a._fd is not None
+
+    b = S._SpeechPlaybackLock()
+    t0 = time.monotonic()
+    b.acquire(P.NORMAL, session="sess-B")
+    waited = time.monotonic() - t0
+    # Paused holder is exempt from the give-up: the waiter keeps waiting well
+    # past the timeout instead of overtaking.
+    assert b._fd is None
+    assert waited >= 0.6       # did NOT bail at the 0.3s deadline
+
+    # The paused holder's name is intact — no sibling clobbered now_playing.
+    np = store.get_now_playing("speech")
+    assert np is not None
+    assert (np.get("extras") or {}).get("source_session") == "sess-A"
+
+    a.release()
+
+
+def test_wedged_holder_still_times_out(tmp_path, monkeypatch):
+    """A genuinely wedged holder (not paused, not advancing) still times out so
+    a waiter proceeds unserialized rather than being lost forever."""
+    from agent_media_core.state import StateStore
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.delenv("MEDIA_SPEECH_SERIALIZE", raising=False)
+    monkeypatch.setenv("MEDIA_SPEECH_LOCK_TIMEOUT_S", "0.3")
+
+    store = StateStore()
+    # Not paused: live_pause False, uri never advances -> wedged.
+    store.set_now_playing(
+        "speech", uri="clip-a-000", started_at=time.time(),
+        target="local", extras={"source_session": "sess-A", "live_pause": False})
+
+    a = S._SpeechPlaybackLock()
+    a.acquire(P.NORMAL, session="sess-A")
+
+    b = S._SpeechPlaybackLock()
+    t0 = time.monotonic()
+    b.acquire(P.NORMAL, session="sess-B")
+    waited = time.monotonic() - t0
+    assert b._fd is None            # gave up (proceeds unserialized)
+    assert 0.3 <= waited < 1.5      # bailed at the deadline, didn't hang
+
+    a.release()

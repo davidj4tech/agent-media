@@ -864,9 +864,12 @@ class _SpeechPlaybackLock:
     with precedence is waiting. Dead-pid
     entries are reaped on scan, so a crashed waiter never wedges anyone, and
     `flock` is released on fd close / process death, so a crashed holder frees
-    the token. A paused response would hold it indefinitely, so non-LOW waiters
-    give up after MEDIA_SPEECH_LOCK_TIMEOUT_S (default 600) and play
-    unserialized rather than be lost. Set MEDIA_SPEECH_SERIALIZE=0 to disable.
+    the token. A genuinely *wedged* holder would hold it indefinitely, so
+    non-LOW waiters give up after MEDIA_SPEECH_LOCK_TIMEOUT_S (default 600) and
+    play unserialized rather than be lost — but a holder that's *deliberately*
+    paused (popup Space) is exempted from that give-up, so a queued reply never
+    overtakes it and clobbers its now_playing name. Set MEDIA_SPEECH_SERIALIZE=0
+    to disable.
 
     Rendering is intentionally left outside the lock so sessions still render
     their clips in parallel; only the broker hand-off serializes.
@@ -1018,8 +1021,8 @@ class _SpeechPlaybackLock:
         """A cheap signature of the current speaker's progress: (clip uri,
         message start). The shared speech now_playing row is rewritten every
         sentence with the new clip uri, so this changes as long as someone is
-        actively speaking — and stays put when the holder is paused, wedged, or
-        gone. Returns None if it can't be read (treated as "no progress info").
+        actively speaking — and stays put when the holder is wedged or gone.
+        Returns None if it can't be read (treated as "no progress info").
         """
         store = self._progress_store
         if store is None:
@@ -1034,6 +1037,44 @@ class _SpeechPlaybackLock:
         if not np:
             return None
         return (np.get("uri"), np.get("started_at"))
+
+    def _holder_paused(self) -> bool:
+        """True when the current speech holder is *deliberately* paused (popup
+        Space), as opposed to wedged. A paused clip stops advancing its
+        now_playing uri, so without this the progress-aware give-up below can't
+        tell it apart from a stalled holder and would overtake it — clobbering
+        the shared speech now_playing row (and thus the popup/status name) with
+        the overtaking session. Authoritative for both local and remote targets:
+        reads the broker's live `pause` property from whatever target is
+        actually playing. Best-effort — any read failure returns False so a
+        genuinely wedged/unreadable holder still times out as before.
+        """
+        store = self._progress_store
+        if store is None:
+            try:
+                store = self._progress_store = StateStore()
+            except Exception:  # noqa: BLE001
+                return False
+        try:
+            np = store.get_now_playing("speech")
+        except Exception:  # noqa: BLE001
+            return False
+        if not np:
+            return False
+        # Prefer the live pause the playlist/remote loop mirrors into extras
+        # (a local DB hit, no bridge round-trip); fall back to reading the
+        # broker directly for the local per-sentence loop, which doesn't record
+        # it. The uri-mirrored `live_pause` is only trustworthy while it exists.
+        ex = np.get("extras") or {}
+        if isinstance(ex, dict) and "live_pause" in ex:
+            return bool(ex.get("live_pause"))
+        try:
+            from ..sinks.speech import _socket_for
+            from ..sinks import _mpv_ipc as ipc
+            sock = _socket_for(Target(name=np.get("target") or "local"))
+            return bool(ipc.get_property(sock, "pause"))
+        except Exception:  # noqa: BLE001
+            return False
 
     def _take(self, *, skip_if_busy: bool = False) -> None:
         try:
@@ -1055,6 +1096,12 @@ class _SpeechPlaybackLock:
         timeout = float(os.environ.get("MEDIA_SPEECH_LOCK_TIMEOUT_S", "600"))
         deadline = time.monotonic() + timeout
         last_sig = self._holder_progress_sig()
+        # A deliberately-paused holder buys ONE extra grace window (so a queued
+        # reply doesn't overtake a pane the user just paused), but not infinite
+        # grace: renewing the deadline every poll would let a paused pane block
+        # a waiter forever. After the single renewal the give-up fires as it
+        # would for a wedged holder, so the waiter proceeds unserialized.
+        paused_grace_used = False
         try:
             while True:
                 try:
@@ -1070,6 +1117,19 @@ class _SpeechPlaybackLock:
                         # Current speaker advanced a clip — it's healthy, reset.
                         last_sig = sig
                         deadline = time.monotonic() + timeout
+                    elif self._holder_paused() and not paused_grace_used:
+                        # Deliberately paused (popup Space), not wedged: a paused
+                        # clip stops advancing its uri, so the sig check above
+                        # can't see it's healthy. Grant one extra grace window so
+                        # we don't overtake — and don't clobber the paused clip's
+                        # now_playing name — the instant the user pauses. EXTEND
+                        # the deadline (not reset it): the first poll fires at ~t0
+                        # when the deadline is still ~now+timeout, so a reset would
+                        # be a no-op — adding a window is what actually buys the
+                        # extra grace. Bounded (once): a still-paused holder past
+                        # that window is then treated like any stalled one.
+                        paused_grace_used = True
+                        deadline += timeout
                     if time.monotonic() >= deadline:
                         log.warning("speech lock: holder stalled >%ss; proceeding "
                                     "unserialized", timeout)
