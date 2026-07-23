@@ -17,6 +17,7 @@ import datetime
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -957,6 +958,93 @@ def cmd_open_mpvc(a) -> int:
     try:
         subprocess.run(["tmux", "new-window", "-n", _MPVC_WINDOW, cmd],
                        capture_output=True)
+    except Exception:  # noqa: BLE001
+        return 1
+    return 0
+
+
+def _ask_context(channel: str) -> str:
+    """A one-line "what I'm listening to" blurb for the active channel.
+
+    Recombines what the popup already surfaces per channel into a compact,
+    paste-ready line so `media open-pi` can seed a fresh pi/nvim session with
+    the user's current place in their listening. Never raises — a broken
+    backend just yields an empty (or partial) blurb rather than a traceback in
+    the popup's `a` path.
+    """
+    ch = (channel or "speech").strip()
+    try:
+        if ch == "music":
+            m = SinkMusic()
+            line, label, _ = _music_now_status(m, 20, hide_idle=True, bar=False)
+            label = " ".join((label or "").split())
+            clock = (line or "").lstrip("▶⏸○ ").strip()
+            if not label:
+                return ""
+            return (f"I'm listening to music: {label}"
+                    + (f" [{clock}]" if clock else ""))
+        if ch == "book":
+            srv = _srv()
+            np = srv.book_now_playing(target="")
+            if np.get("idle"):
+                return ""
+            title = (np.get("title") or np.get("media_title")
+                     or np.get("uri") or "").strip()
+            chap = (np.get("chapter_title") or "").strip()
+            pos = float(np.get("position_ms") or 0) / 1000.0
+            dur = float(np.get("duration_ms") or 0) / 1000.0
+            clock = f"{_hms(pos)} / {_hms(dur)}" if dur else _hms(pos)
+            what = " — ".join(p for p in (title, chap) if p)
+            if not what:
+                return ""
+            return f"I'm listening to an audiobook: {what} [{clock}]"
+        # speech (default): the clip I'm hearing right now.
+        np = _now_speaking()
+        if not np:
+            return ""
+        ex = np.get("extras") or {}
+        ctx = ((ex.get("current_sentence") or "").strip()
+               or (ex.get("text") or "").strip())
+        ctx = " ".join(ctx.split())
+        if not ctx:
+            return ""
+        return f'From the agent speech I\'m listening to: "{ctx}"'
+    except Exception:  # noqa: BLE001 — the popup must never see a traceback
+        return ""
+
+
+def cmd_ask_context(a) -> int:
+    """Print the listening-context blurb for CHANNEL (see `_ask_context`)."""
+    print(_ask_context(getattr(a, "channel", "") or "speech"))
+    return 0
+
+
+def cmd_open_pi(a) -> int:
+    """Open a fresh pi window seeded with my listening context + a question.
+
+    The music/book/speech analogue of speech's `g`: the popup's `a` key reads a
+    question, and this opens a new tmux window running the user's pi launcher
+    with `"<listening context>\n\n<question>"` as the first message — a new
+    conversation *about what I'm hearing*, which is what a listening-context ask
+    almost always is (the player is the context's origin, not an ongoing chat).
+
+    The launcher is `MEDIA_PI_CMD` (default `p` — the user's pi-in-nvim wrapper,
+    a zsh function, so it's run through `zsh -ic`; set e.g. `p -c` to continue
+    the last session, or `pi` for raw pi instead of the nvim wrapper).
+    """
+    question = (getattr(a, "question", "") or "").strip()
+    context = _ask_context(getattr(a, "channel", "") or "speech")
+    prompt = "\n\n".join(p for p in (context, question) if p)
+    if not prompt:
+        return 1
+    pi_cmd = os.environ.get("MEDIA_PI_CMD", "p")
+    # `p` is a zsh *function* (pi-in-nvim), so it only resolves in an
+    # interactive zsh; `zsh -ic` gets us that. shlex-quote twice: once for the
+    # inner `p '<prompt>'`, once to hand that whole line to zsh as one arg.
+    inner = f"{pi_cmd} {shlex.quote(prompt)}"
+    cmd = f"zsh -ic {shlex.quote(inner)}"
+    try:
+        subprocess.run(["tmux", "new-window", cmd], capture_output=True)
     except Exception:  # noqa: BLE001
         return 1
     return 0
@@ -3333,6 +3421,22 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("open-mpvc",
                    help="open a new tmux window running mpvc-tui for the book"
                    ).set_defaults(func=cmd_open_mpvc)
+    p_ac = sub.add_parser("ask-context",
+                          help="print a one-line 'what I'm listening to' blurb "
+                               "for CHANNEL (popup `a` context seed)")
+    p_ac.add_argument("--channel", default="speech",
+                      choices=POPUP_CHANNELS,
+                      help="speech (default) / music / book")
+    p_ac.set_defaults(func=cmd_ask_context)
+    p_op = sub.add_parser("open-pi",
+                          help="open a fresh pi window seeded with my listening "
+                               "context + a question (popup `a`)")
+    p_op.add_argument("--channel", default="speech",
+                      choices=POPUP_CHANNELS,
+                      help="which channel's context to seed with")
+    p_op.add_argument("question", nargs="?", default="",
+                      help="the question to ask (context is prepended)")
+    p_op.set_defaults(func=cmd_open_pi)
     sub.add_parser("speech-web",
                    help="print/open the visual canvas URL for speech"
                    ).set_defaults(func=cmd_speech_web)

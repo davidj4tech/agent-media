@@ -20,6 +20,7 @@ mapfile -t L <<'EOF'
  │ - =    volume -/+5  │
  │ < >    prev/next    │
  │ g      go to source │
+ │ a      ask pi       │
  │ q      close        │
  ╰─────────────────────╯
  ╭ speech only ────────╮
