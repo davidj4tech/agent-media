@@ -20,7 +20,7 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 import urllib.request
 
 
@@ -30,6 +30,7 @@ _YT_ID = re.compile(
     r"([0-9A-Za-z_-]{11})"
 )
 _YT_HOST = re.compile(r"^https?://(?:[\w-]+\.)?(?:youtube\.com|youtu\.be)/", re.I)
+_YT_LIST = re.compile(r"[?&]list=([0-9A-Za-z_-]+)")
 
 
 def _suffix(target=None) -> str:
@@ -127,12 +128,62 @@ def trigger_abs_scan(target=None) -> bool:
 
 
 def is_youtube(uri: str) -> bool:
-    return bool(_YT_HOST.match(uri.strip()))
+    u = uri.strip()
+    for prefix in ("yt:", "youtube:"):
+        if u.startswith(prefix):
+            u = u[len(prefix):]
+            break
+    return bool(_YT_HOST.match(u))
+
+
+def youtube_playlist_url(uri: str) -> Optional[str]:
+    """Canonical YouTube playlist URL, or None for a single video/non-YouTube.
+
+    A watch URL with both ``v=`` and ``list=`` is treated as the single shared
+    video, matching the music sink's behavior.
+    """
+    u = uri.strip()
+    for prefix in ("yt:", "youtube:"):
+        if u.startswith(prefix):
+            u = u[len(prefix):]
+            break
+    if u.startswith("playlist:"):
+        pid = u[len("playlist:"):]
+        return f"https://www.youtube.com/playlist?list={pid}" if pid else None
+    if not _YT_HOST.match(u) or "/playlist" not in u.lower():
+        return None
+    m = _YT_LIST.search(u)
+    return f"https://www.youtube.com/playlist?list={m.group(1)}" if m else None
 
 
 def video_id(uri: str) -> Optional[str]:
     m = _YT_ID.search(uri)
     return m.group(1) if m else None
+
+
+def expand_youtube_playlist(uri: str, *, limit: Optional[int] = None) -> Optional[list[str]]:
+    """Expand a YouTube playlist into watch URLs using the active book profile.
+
+    ``yt-profile book use ...`` controls ``active-book.txt``; yt-dlp reads it
+    through the user's normal config/cookies, so private account playlists work
+    without a separate account selector here.
+    """
+    purl = youtube_playlist_url(uri)
+    if not purl:
+        return None
+    cap = int(limit or os.environ.get("MEDIA_AUDIOBOOK_PLAYLIST_MAX", "200"))
+    ytdlp = os.environ.get("MEDIA_YTDLP_BIN", "yt-dlp")
+    try:
+        proc = subprocess.run(
+            [ytdlp, "--flat-playlist", "--no-warnings", "--ignore-errors",
+             "--print", "%(id)s", "--playlist-end", str(cap), purl],
+            capture_output=True, text=True, timeout=300, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    ids = [ln.strip() for ln in proc.stdout.splitlines()
+           if ln.strip() and ln.strip() != "NA"]
+    return [f"https://www.youtube.com/watch?v={vid}" for vid in ids] or None
 
 
 def cached_path(vid: str, target=None) -> Optional[Path]:
@@ -153,15 +204,18 @@ def fetch_cmd() -> Optional[str]:
     return os.environ.get("MEDIA_AUDIOBOOK_FETCH") or shutil.which("audiobook-fetch")
 
 
-def start_fetch(url: str, *, play: bool = False, target=None) -> bool:
-    """Kick off a detached `audiobook-fetch` for `url`. Returns False if the
-    helper isn't installed. With `play=True` the helper plays the result on the
-    book channel when the (phone) download + sync finishes.
+def start_fetch_many(urls: Sequence[str], *, play: bool = False, target=None) -> bool:
+    """Kick off a detached `audiobook-fetch` for one or more URLs.
+
+    Returns False if the helper isn't installed. With `play=True` the helper
+    plays the last fetched file on the book channel when the phone download +
+    sync finishes.
 
     When `target` is given, the helper syncs into that target's ABS library
     dir via the AUDIOBOOK_LIB env var it already honors, and receives
     `--target <name>` so its internal `media book play` / `media abs-scan`
-    calls hit that target's book channel + library too."""
+    calls hit that target's book channel + library too.
+    """
     fetch = fetch_cmd()
     if not fetch:
         return False
@@ -174,10 +228,14 @@ def start_fetch(url: str, *, play: bool = False, target=None) -> bool:
         env = dict(os.environ)
         env["AUDIOBOOK_LIB"] = str(abs_import_dir(target))
         argv += ["--target", str(name)]
-    argv.append(url)
+    argv.extend(str(u) for u in urls)
     subprocess.Popen(
         argv, stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         start_new_session=True, env=env,
     )
     return True
+
+
+def start_fetch(url: str, *, play: bool = False, target=None) -> bool:
+    return start_fetch_many([url], play=play, target=target)

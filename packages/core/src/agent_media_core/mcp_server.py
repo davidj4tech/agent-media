@@ -426,7 +426,24 @@ def book_play(uri: str, resume: bool = True, start_ms: int = -1,
     # EXCEPT on a residential host (e.g. the phone): no 403, so the book mpv can
     # play the YouTube URL directly via yt-dlp — no fetch/cache indirection.
     # Gated by MEDIA_BOOK_DIRECT_YT=1 so datacenter hosts keep the safe path.
-    if library.is_youtube(norm):
+    playlist = library.expand_youtube_playlist(norm)
+    if playlist:
+        cached_by_url = {
+            u: library.cached_path(library.video_id(u) or "", t)
+            for u in playlist
+        }
+        uncached = [u for u, p in cached_by_url.items() if p is None]
+        started = library.start_fetch_many(uncached, play=True, target=t) if uncached else False
+        first_cached = next((p for p in cached_by_url.values() if p is not None), None)
+        if first_cached is not None and not started:
+            norm = str(first_cached)
+        else:
+            return {"ok": False, "fetching": started, "uri": norm,
+                    "count": len(playlist), "uncached": len(uncached),
+                    "reason": (f"downloading {len(uncached)} playlist item(s) on phone; "
+                               "will auto-play the last fetched item when ready"
+                               if started else "playlist not cached and audiobook-fetch unavailable")}
+    elif library.is_youtube(norm):
         vid = library.video_id(norm)
         cached = library.cached_path(vid, t) if vid else None
         if cached is not None:

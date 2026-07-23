@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+
 import pytest
 
 from agent_media_core import library
@@ -46,10 +48,37 @@ def test_cached_path_no_library_dir(tmp_path, monkeypatch):
     assert library.cached_path("6Pm736hLECw") is None
 
 
+def test_youtube_playlist_url_detects_real_playlists():
+    assert library.youtube_playlist_url("yt:playlist:PLxyz") == "https://www.youtube.com/playlist?list=PLxyz"
+    assert library.youtube_playlist_url("https://www.youtube.com/playlist?list=PL123") == "https://www.youtube.com/playlist?list=PL123"
+    assert library.youtube_playlist_url("https://www.youtube.com/watch?v=6Pm736hLECw&list=PLx") is None
+
+
+def test_expand_youtube_playlist_uses_ytdlp(monkeypatch):
+    def fake_run(cmd, **kw):
+        assert "--flat-playlist" in cmd
+        assert "https://www.youtube.com/playlist?list=PL123" in cmd
+        return subprocess.CompletedProcess(cmd, 0, stdout="id1\nNA\nid2\n", stderr="")
+
+    monkeypatch.setattr(library.subprocess, "run", fake_run)
+    assert library.expand_youtube_playlist("playlist:PL123") == [
+        "https://www.youtube.com/watch?v=id1",
+        "https://www.youtube.com/watch?v=id2",
+    ]
+
+
 def test_start_fetch_without_helper(monkeypatch):
     monkeypatch.setenv("MEDIA_AUDIOBOOK_FETCH", "")
     monkeypatch.setattr(library.shutil, "which", lambda _: None)
     assert library.start_fetch("https://youtu.be/x") is False
+
+
+def test_start_fetch_many_passes_all_urls(monkeypatch):
+    monkeypatch.setenv("MEDIA_AUDIOBOOK_FETCH", "/bin/audiobook-fetch")
+    launched = []
+    monkeypatch.setattr(library.subprocess, "Popen", lambda argv, **kw: launched.append(argv))
+    assert library.start_fetch_many(["u1", "u2"], play=True)
+    assert launched == [["/bin/audiobook-fetch", "--play", "u1", "u2"]]
 
 
 # --- timecode parsing ------------------------------------------------------

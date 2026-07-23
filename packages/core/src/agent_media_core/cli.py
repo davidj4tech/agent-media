@@ -3109,12 +3109,22 @@ def cmd_book(a) -> int:
                           start_ms=(a.start_ms if a.start_ms is not None else -1),
                           target=tgt, title=getattr(a, "title", "") or "")
         if r.get("fetching"):
-            print(f"⬇ {r.get('reason', 'fetching')}: {r['uri']}")
+            extra = f" [{r['count']} items]" if r.get("count") else ""
+            print(f"⬇ {r.get('reason', 'fetching')}{extra}: {r['uri']}")
             return 0
         if not r.get("ok", True):
             print(r.get("reason", "book play failed"), file=sys.stderr)
             return 1
         print(f"▶ {r['uri']} (from {fmt_time((r.get('resumed_from_ms') or 0)/1000)})")
+        return 0
+    if bc == "import-youtube":
+        from . import library
+        urls = library.expand_youtube_playlist(a.uri) or [a.uri]
+        if not urls or not library.start_fetch_many(urls, play=a.play, target=tgt):
+            print("media book import-youtube: audiobook-fetch unavailable or playlist expansion failed", file=sys.stderr)
+            return 1
+        kind = "playlist" if len(urls) > 1 else "video"
+        print(f"⬇ importing YouTube {kind}: {len(urls)} item(s) into Audiobookshelf")
         return 0
     if bc == "resume":
         r = srv.book_resume(target=tgt)
@@ -3668,6 +3678,11 @@ def _add_book_parser(sub) -> None:
                     help="explicit start offset in ms")
     bp.add_argument("--target", default="", help="rooms|local|phone")
     bp.add_argument("--title", default="", help=argparse.SUPPRESS)
+
+    biy = b.add_parser("import-youtube", help="download a YouTube video/playlist into Audiobookshelf")
+    biy.add_argument("uri", help="YouTube video or playlist URL")
+    biy.add_argument("--target", default="", help="rooms|local|phone")
+    biy.add_argument("--play", action="store_true", help="play the last fetched item when ready")
 
     br = b.add_parser("resume", help="resume the book (reopens the last if idle)")
     br.add_argument("--target", default="")
