@@ -18,9 +18,16 @@ rm -f "$SOCK"
 # re-inits the audio output. The openal AO (the Termux default) handles that
 # reinit badly: it underruns and restarts, heard as playback briefly "stopping"
 # every time the speed crosses 1.0×. Verified on the phone: 4 crossings → 4
-# underruns baseline, 0 with scaletempo2 pinned. `audio-pitch-correction=no`
-# only stops mpv *also* auto-inserting a second scaletempo2; the explicit filter
-# still preserves pitch, so faster speech doesn't chipmunk.
+# underruns baseline, 0 with scaletempo2 pinned.
+#
+# Pitch correction must stay ON. `audio-pitch-correction=no` does NOT merely
+# suppress a second auto-inserted scaletempo2 (the old comment here claimed
+# that) — it makes mpv apply speed by RESAMPLING and never hand the speed to
+# any scaletempo2, pinned or not, so speech chipmunks. Measured on mpv 0.40 with
+# a 200 Hz tone at 1.5×: `=no` → 300 Hz (+7 semitones), `=yes` → 201 Hz. With
+# `=yes` mpv reuses the pinned filter rather than inserting its own (verified:
+# `af` reports one scaletempo2, and four crossings of 1.0× via IPC produced no
+# AO reinit), so the underrun fix above still holds.
 #
 # Belt-and-suspenders: pin one output format so a clip whose native rate/
 # channels differ from the previous one can't force the same AO reinit at a
@@ -54,7 +61,7 @@ exec mpv --idle=yes --ao="$MEDIA_SPEECH_AO" --force-window=no \
   --keep-open=no \
   --gapless-audio=no --audio-stream-silence=no --ytdl=no \
   --network-timeout=60 \
-  --af="$AF" --audio-pitch-correction=no \
+  --af="$AF" --audio-pitch-correction="${MEDIA_SPEECH_PITCH_CORRECTION:-yes}" \
   --audio-samplerate="$MEDIA_SPEECH_SAMPLERATE" \
   --audio-format="$MEDIA_SPEECH_FORMAT" \
   --audio-channels="$MEDIA_SPEECH_CHANNELS"
