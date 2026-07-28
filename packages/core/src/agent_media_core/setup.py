@@ -613,11 +613,21 @@ _AM_SINKS_UNIT = """\
 Description=agent-media: PipeWire null sinks for rooms audio
 After=pipewire.service pipewire-pulse.service wireplumber.service
 Requires=pipewire.service
+# The null sinks live in PipeWire's runtime, so restarting pipewire destroys
+# them. Without PartOf this RemainAfterExit oneshot stays "active" forever while
+# the sinks are silently gone; every parec capture then falls back to the same
+# monitor and both Snapcast streams carry identical audio (red5, 2026-07-26).
+PartOf=pipewire.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
 {execstarts}
+# Pin the default sink so speech sent to the default `local` target lands on the
+# whole-house feed. Retried because WirePlumber may not have adopted the
+# just-created node yet; never fails the unit.
+ExecStartPost=/bin/sh -c 'for i in 1 2 3 4 5; do pactl set-default-sink {speech_sink} && exit 0; sleep 0.5; done; exit 0'
+{execstops}
 
 [Install]
 WantedBy=default.target
@@ -694,7 +704,15 @@ def cmd_server(args: argparse.Namespace) -> int:
         f'|| pactl load-module module-null-sink sink_name={s} '
         f'sink_properties=device.description={s}"'
         for s in sinks)
-    for name, content in (("am-sinks.service", _AM_SINKS_UNIT.format(execstarts=execstarts)),
+    # One unload per sink, in reverse. $$ is systemd's escape for a literal '$':
+    # unescaped, systemd would expand $id itself and hand sh an empty string.
+    execstops = "\n".join(
+        f"""ExecStop=/bin/sh -c 'id=$$(pactl list short modules """
+        f"""| grep -E "sink_name={s}[[:space:]]" | cut -f1); """
+        f"""[ -n "$$id" ] && pactl unload-module $$id; true'"""
+        for s in reversed(sinks))
+    for name, content in (("am-sinks.service", _AM_SINKS_UNIT.format(execstarts=execstarts, execstops=execstops,
+                                                        speech_sink=ROOMS_SPEECH_SINK)),
                           ("am-snapfifo@.service", _AM_SNAPFIFO_UNIT)):
         dest = root / name
         # A stow-managed dotfiles checkout symlinks these unit paths into the
@@ -879,8 +897,13 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="Wire this host as a Snapcast rooms render hub "
                              "(PipeWire null sinks + parec->FIFO + rooms env; "
                              "PipeWire/systemd hosts only)")
-    sp.add_argument("--music", action="store_true",
-                    help="also wire the am-music sink/bridge (default: am only)")
+    # Music is on by default: a rooms hub without am-music is the broken state.
+    # A `media-setup server` run that forgot --music is what dropped the sink on
+    # red5 (2026-07-26). --music stays accepted so existing invocations still work.
+    sp.add_argument("--music", dest="music", action="store_true", default=True,
+                    help="wire the am-music sink/bridge (default: on)")
+    sp.add_argument("--no-music", dest="music", action="store_false",
+                    help="omit the am-music sink/bridge (am only)")
     sp.add_argument("--now", action="store_true",
                     help="enable --now the units after writing")
     sp.add_argument("--dry-run", action="store_true")
