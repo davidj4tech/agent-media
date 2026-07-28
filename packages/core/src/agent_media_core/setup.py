@@ -697,6 +697,17 @@ def cmd_server(args: argparse.Namespace) -> int:
     for name, content in (("am-sinks.service", _AM_SINKS_UNIT.format(execstarts=execstarts)),
                           ("am-snapfifo@.service", _AM_SNAPFIFO_UNIT)):
         dest = root / name
+        # A stow-managed dotfiles checkout symlinks these unit paths into the
+        # repo, so write_text() would follow the link and silently rewrite the
+        # committed file. That clobbered am-sinks.service on red5 (2026-07-26):
+        # it dropped the am-music sink, and both Snapcast streams then captured
+        # the same monitor. Refuse to write through a symlink -- the file has
+        # another owner, and the breakage is invisible until someone reads
+        # `git status`.
+        if dest.is_symlink():
+            print(f"media-setup: {name} is a symlink -> {dest.readlink()} "
+                  f"(stow-managed?); refusing to write through it", file=sys.stderr)
+            continue
         if args.dry_run:
             print(f"# would write {dest}:\n{content}")
         elif dest.exists() and dest.read_text() == content:
