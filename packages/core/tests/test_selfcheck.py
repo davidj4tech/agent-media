@@ -119,3 +119,13 @@ def test_adopted_app_names_read_from_the_heal_config():
 def test_adopted_app_names_tolerate_a_missing_config(tmp_path):
     assert cli._adopted_app_names(tmp_path) == []
     assert cli._adopted_app_names(None) == []
+
+
+def test_parked_services_are_reported_but_not_problems():
+    """runit's `down` file means "leave this stopped" — beets-web on the phone
+    is parked deliberately. Reporting it as broken forever is how a health
+    check teaches you to ignore it."""
+    facts = {"install": "editable", "services": "7", "parked": "beets-web"}
+    assert cli.health_problems(facts) == []
+    facts["down"] = "media-mcp"
+    assert any("media-mcp" in p for p in cli.health_problems(facts))

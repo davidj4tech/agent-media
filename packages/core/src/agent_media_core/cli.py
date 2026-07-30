@@ -3389,6 +3389,12 @@ def _runit_service_states(root: "Optional[Path]") -> "list[tuple[str, str]]":
                        for a in apps)
         if not ours:
             continue
+        # runit's `down` file is the standing "leave this stopped" marker. A
+        # parked service looks identical to a dead one in `sv status`, and
+        # reporting it forever is how a health check teaches you to ignore it.
+        if (target / "down").exists():
+            out.append((entry.name, "parked"))
+            continue
         try:
             r = subprocess.run(["sv", "status", str(entry)],
                                capture_output=True, text=True, timeout=10,
@@ -3490,10 +3496,13 @@ def selfcheck_facts() -> "dict[str, str]":
             pass
 
     services = _runit_service_states(root) + _systemd_service_states()
-    down = [n for n, s in services if s != "up"]
+    down = [n for n, s in services if s not in ("up", "parked")]
+    parked = [n for n, s in services if s == "parked"]
     facts["services"] = str(len(services))
     if down:
         facts["down"] = ",".join(down)
+    if parked:
+        facts["parked"] = ",".join(parked)   # reported, never a problem
     loops = _crash_loops()
     if loops:
         facts["crashloop"] = ",".join(f"{n}:{c}" for n, c in loops)
