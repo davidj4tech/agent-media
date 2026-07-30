@@ -129,3 +129,44 @@ def test_parked_services_are_reported_but_not_problems():
     assert cli.health_problems(facts) == []
     facts["down"] = "media-mcp"
     assert any("media-mcp" in p for p in cli.health_problems(facts))
+
+
+def test_probe_reports_the_checked_out_branch():
+    """doctor needs the branch, not just the head, to tell 'stale' from
+    'deliberately somewhere else'."""
+    assert "branch --show-current" in cli._REMOTE_PROBE
+    assert "agent-media-branch=" in cli._REMOTE_PROBE
+    assert "dotfiles-branch=" in cli._REMOTE_PROBE
+
+
+def test_repo_note_silent_when_in_step():
+    note, skew = cli.repo_note(
+        "agent-media", "abc123", "main",
+        {"agent-media-head": "abc123", "agent-media-branch": "main"})
+    assert note is None and skew is False
+
+
+def test_repo_note_flags_a_host_behind_on_the_same_branch():
+    note, skew = cli.repo_note(
+        "agent-media", "abc1234567", "main",
+        {"agent-media-head": "def4567890", "agent-media-branch": "main"})
+    assert skew is True
+    assert "skewed: def4567" in note
+
+
+def test_repo_note_tolerates_a_host_on_another_branch():
+    """pn sat on owui-agent-media-bridge for weeks; that is deliberate, not
+    stale, and reporting it every run trains you to ignore doctor."""
+    note, skew = cli.repo_note(
+        "agent-media", "abc123", "main",
+        {"agent-media-head": "def456",
+         "agent-media-branch": "owui-agent-media-bridge"})
+    assert skew is False
+    assert note == "agent-media on branch owui-agent-media-bridge"
+
+
+def test_repo_note_falls_back_to_skew_without_branch_info():
+    """A host too old to report its branch is still checked the old way."""
+    note, skew = cli.repo_note(
+        "dotfiles", "abc123", "main", {"dotfiles-head": "def4560000"})
+    assert skew is True and "skewed" in note

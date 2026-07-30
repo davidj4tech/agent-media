@@ -3525,6 +3525,25 @@ def health_problems(facts: "dict[str, str]") -> "list[str]":
     return problems
 
 
+def repo_note(repo: str, local_head: str, local_branch: str,
+              facts: "dict[str, str]") -> "tuple[Optional[str], bool]":
+    """How a host's checkout of `repo` compares to ours: (note, counts_as_skew).
+
+    A host parked on a feature branch is not stale — it is somewhere else on
+    purpose. Reporting that as skew on every run is noise you learn to scroll
+    past, and a health check you scroll past is no health check, so say where
+    it is and don't count it. Only a host on the SAME branch at a different
+    commit is behind.
+    """
+    remote_head = facts.get(f"{repo}-head", "")
+    if not remote_head or remote_head == local_head:
+        return None, False
+    remote_branch = facts.get(f"{repo}-branch", "")
+    if remote_branch and local_branch and remote_branch != local_branch:
+        return f"{repo} on branch {remote_branch}", False
+    return f"{repo} skewed: {remote_head[:7]}", True
+
+
 def parse_selfcheck(text: str) -> "dict[str, str]":
     """Parse `media selfcheck` output (key=value lines) into a dict."""
     facts = {}
@@ -3573,6 +3592,8 @@ case "$out" in
 esac
 git -C ~/projects/agent-media rev-parse HEAD 2>/dev/null | sed 's/^/agent-media-head=/'
 git -C ~/dotfiles rev-parse HEAD 2>/dev/null | sed 's/^/dotfiles-head=/'
+git -C ~/projects/agent-media branch --show-current 2>/dev/null | sed 's/^/agent-media-branch=/'
+git -C ~/dotfiles branch --show-current 2>/dev/null | sed 's/^/dotfiles-branch=/'
 """
 
 
@@ -3597,6 +3618,7 @@ def cmd_doctor(a) -> int:
 
     # Read local hashes
     local_hashes = {}
+    local_branches = {}
     for r in repos:
         path = str(Path.home() / "projects" / r) if r != "dotfiles" else str(Path.home() / r)
         try:
@@ -3605,6 +3627,13 @@ def cmd_doctor(a) -> int:
                 capture_output=True, text=True, check=True
             ).stdout.strip()
             print(f"local {r:12}: {local_hashes[r][:7]}")
+        except (OSError, subprocess.CalledProcessError):
+            continue
+        try:
+            local_branches[r] = subprocess.run(
+                ["git", "-C", path, "branch", "--show-current"],
+                capture_output=True, text=True, check=True
+            ).stdout.strip()
         except (OSError, subprocess.CalledProcessError):
             pass
 
@@ -3639,10 +3668,10 @@ def cmd_doctor(a) -> int:
 
         facts = parse_selfcheck(res.stdout)
         for r, l_hash in local_hashes.items():
-            r_hash = facts.get(f"{r}-head", "")
-            if r_hash and r_hash != l_hash:
-                notes.append(f"{r} skewed: {r_hash[:7]}")
-                host_skewed = True
+            note, is_skew = repo_note(r, l_hash, local_branches.get(r, ""), facts)
+            if note:
+                notes.append(note)
+            host_skewed = host_skewed or is_skew
         problems = health_problems(facts)
         notes.extend(problems)
 
