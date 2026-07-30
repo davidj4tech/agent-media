@@ -114,6 +114,65 @@ def cmd_doctor(a) -> int:
         return 1
 ```
 
+## Beyond skew: can the code actually run?
+
+Skew monitoring answers "is this host on the right commit?" — which turns out
+not to be the same question as "does this host work". On 2026-07-30 the phone
+was on the correct commit while every entrypoint raised
+`ModuleNotFoundError: agent_media_core`: Termux had upgraded python 3.13 → 3.14
+in place, stranding the site-packages the install lived in. `media-mcp`
+crash-looped roughly 1250 times overnight and nothing said a word, because the
+only health signal in the system was a git hash comparison that read perfectly
+healthy.
+
+Three additions, each covering a different failure mode:
+
+### `media selfcheck`
+
+Prints this host's install health as `key=value` lines: interpreter version,
+module path, `install=editable|copy`, checkout commit, service states,
+crash-loop counts. `media doctor` now runs it on every host in the same ssh
+round trip that fetches the git revisions, and reports both kinds of trouble.
+
+`install=copy` deserves its own mention. The phone's venv held a *non-editable*
+copy of the package, and `call-guard` runs out of that venv — so `git pull`
+deployed nothing to it and it ran whatever the code was on install day. Nothing
+was broken enough to notice; it was simply the wrong code, indefinitely.
+
+Hosts too old to have the subcommand answer `selfcheck=unsupported` and are
+reported as skewed (which they are), never as broken. A host whose install is
+genuinely dead cannot run `media selfcheck` to say so, so the remote probe falls
+back to importing via the venv python directly — the distinction between
+"broken" and "just old" has to survive the thing being broken.
+
+Unhealthy hosts land in the same ledger as skewed ones, suffixed with `!`, so
+the status bar's existing ⚠ covers both (the label is now `fleet:`, not
+`skew:`).
+
+### `services/_common/crash-notify`
+
+A runit `finish` script for each service. runit restarts a dead service
+instantly, so a service that dies on startup spins as fast as the OS allows.
+After 3 failures in 60s this backs off to one attempt per 10s and fires one
+notification per 30 minutes, with the last log line as the body.
+
+It is plain POSIX sh with no agent-media imports, on purpose: the failure it
+exists to report is usually "the Python package won't import", and a notifier
+written in the broken runtime cannot report its own death. It also records exit
+codes to `~/.local/state/agent-media/sv-crash/<svc>.log`, which is what
+`selfcheck` reads — and how `call-hold-consumer` was finally diagnosed (exit
+111, once per second, forever: its shebang was `#!/usr/bin/env sh` and Android
+has no `/usr/bin`).
+
+### `scripts/termux-python-heal.sh`
+
+Repairs the layout the other two check for: rebuilds `<checkout>/.venv` as an
+editable install and relinks `$PREFIX/bin/media*` into it. `--install-hook`
+registers it as an apt `DPkg::Post-Invoke`, so a Termux python upgrade repairs
+itself instead of silently breaking the phone. `--check` reports without
+touching anything; it is safe to run on non-Termux hosts (it understands both
+symlinked and shebang-style console scripts).
+
 ## Applying to Other Packages
 
 To drop this into `agent-sessions`, `agent-workspace`, or `pi-workspace`:
