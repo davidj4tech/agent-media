@@ -3586,7 +3586,11 @@ def cmd_doctor(a) -> int:
     import subprocess
     from pathlib import Path
 
-    hosts = os.environ.get("MEDIA_DOCTOR_HOSTS", "p8ar red5 sp4").split()
+    # pn was missing from this list, so nothing ever looked at it — it sat on a
+    # retired repo with 40 stale symlinks and doctor had no opinion. Unreachable
+    # hosts are reported and skipped, so listing a host that's often off costs
+    # one ssh timeout, not a false alarm.
+    hosts = os.environ.get("MEDIA_DOCTOR_HOSTS", "p8ar red5 pn sp4").split()
     repos = ["agent-media", "dotfiles"]
     skewed = []
     unhealthy = []
