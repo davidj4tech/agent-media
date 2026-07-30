@@ -411,3 +411,109 @@ def test_wedged_holder_still_times_out(tmp_path, monkeypatch):
     assert 0.3 <= waited < 1.5      # bailed at the deadline, didn't hang
 
     a.release()
+
+
+def test_acquire_orders_by_submission_not_acquire_time(tmp_path, monkeypatch):
+    """Same-session order follows the caller's submission time, not the moment
+    the token is asked for.
+
+    Rendering happens before acquire() and takes longer for a longer reply, so
+    a short follow-up submitted *after* a long reply can reach acquire() first.
+    With `seq` carrying submission time it still recognises the long reply as
+    its elder; stamping seq at acquire() time is what let the pair be heard
+    back to front.
+    """
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.delenv("MEDIA_SPEECH_SERIALIZE", raising=False)
+    monkeypatch.setenv("MEDIA_SPEECH_LOCK_TIMEOUT_S", "0.3")
+
+    # The long reply: submitted at t=100, still rendering, so it reaches
+    # acquire() *after* the short one — but registers with its own seq.
+    early = S._SpeechPlaybackLock()
+    early._rank = S._PRIO_RANK[P.NORMAL]
+    early._session = "sess-1"
+    early._seq = 100.0
+    early._register()
+
+    # The short reply: submitted at t=103, rendered fast, acquiring now. It
+    # takes the seq it was given, not "now", so it sees the elder sibling and
+    # stands aside (here nobody ever claims the token, so it eventually gives
+    # up and speaks — bounded, not a spin).
+    late = S._SpeechPlaybackLock()
+    t0 = time.monotonic()
+    late.acquire(P.NORMAL, session="sess-1", seq=103.0)
+    assert late._seq == 103.0
+    assert late._earlier_sibling_waiting() is True
+    assert time.monotonic() - t0 >= 0.3     # it did defer, rather than barging
+
+    late.release()
+    early._unregister()
+
+
+def test_pending_sibling_holds_its_place_while_rendering(tmp_path, monkeypatch):
+    """A sibling that has only *announced* (still rendering its clips) still
+    counts as an earlier sibling — that's what stops a faster-rendering later
+    reply from speaking first."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.delenv("MEDIA_SPEECH_SERIALIZE", raising=False)
+
+    now = time.time()
+    early = S._SpeechPlaybackLock()
+    early.announce(P.NORMAL, session="sess-1", seq=now - 3)
+
+    late = S._SpeechPlaybackLock()
+    late._session, late._seq = "sess-1", now
+    assert late._earlier_sibling_waiting() is True
+
+    # Pending entries are same-session ordering only: they neither preempt
+    # another session nor make an in-progress speaker yield.
+    other = S._SpeechPlaybackLock()
+    other._session, other._seq = "sess-2", now
+    other._rank = S._PRIO_RANK[P.NORMAL]
+    assert other._preempting_rank() == -1
+    assert other._earlier_sibling_waiting() is False
+
+    # Once the render finishes and it acquires for real, it's a normal waiter.
+    early.acquire(P.NORMAL, session="sess-1", seq=now - 3)
+    assert early._fd is not None
+    assert early._pending is False
+    early.release()
+    assert late._earlier_sibling_waiting() is False   # entry gone on release
+
+
+def test_pending_sibling_expires(tmp_path, monkeypatch):
+    """A wedged/abandoned render must not mute the rest of its session: a
+    pending entry stops counting after MEDIA_SPEECH_PENDING_TTL_S."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.delenv("MEDIA_SPEECH_SERIALIZE", raising=False)
+    monkeypatch.setenv("MEDIA_SPEECH_PENDING_TTL_S", "0.2")
+
+    now = time.time()
+    stuck = S._SpeechPlaybackLock()
+    stuck.announce(P.NORMAL, session="sess-1", seq=now)
+
+    late = S._SpeechPlaybackLock()
+    late._session, late._seq = "sess-1", now + 1
+    assert late._earlier_sibling_waiting() is True
+    time.sleep(0.3)
+    assert late._earlier_sibling_waiting() is False   # TTL expired; go ahead
+
+    stuck.release()
+
+
+def test_pending_urgent_sibling_does_not_trigger_yield(tmp_path, monkeypatch):
+    """An URGENT sibling that's still rendering has nothing to hand over to, so
+    the current speaker keeps going until it actually contends."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.delenv("MEDIA_SPEECH_SERIALIZE", raising=False)
+
+    speaking = S._SpeechPlaybackLock()
+    speaking.acquire(P.NORMAL, session="sess-1", seq=time.time())
+    assert speaking._fd is not None
+
+    pending_urgent = S._SpeechPlaybackLock()
+    pending_urgent.announce(P.URGENT, session="sess-1", seq=time.time())
+    assert speaking.should_yield() is False
+
+    pending_urgent.release()
+    speaking.release()

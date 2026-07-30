@@ -811,6 +811,16 @@ def _rank_of(priority: Priority) -> int:
     return _PRIO_RANK.get(priority, _PRIO_RANK[Priority.NORMAL])
 
 
+def _pending_ttl_s() -> float:
+    """How long a *pending* (announced-but-not-yet-rendered) waiter entry keeps
+    holding its place in its session's queue. A render that takes longer than
+    this is assumed broken, and the entry stops blocking its siblings."""
+    try:
+        return float(os.environ.get("MEDIA_SPEECH_PENDING_TTL_S", "120"))
+    except ValueError:
+        return 120.0
+
+
 def _pid_alive(pid: int) -> bool:
     """Best-effort liveness check used to reap stale waiter entries."""
     try:
@@ -851,6 +861,17 @@ class _SpeechPlaybackLock:
     ordering is enforced at admission via a per-clip submission timestamp; a
     clip already speaking otherwise finishes rather than being cut short.
 
+    That timestamp is the caller's *submission* time (`acquire(seq=...)`), NOT
+    the moment the token is asked for — rendering happens before acquire() and
+    takes longer for a longer reply, so acquire-time ordering would hand the
+    queue to whichever sibling was shortest. For the same reason a sibling that
+    is still rendering announces itself as a *pending* waiter up front
+    (`announce()`), so a later, faster-rendering sibling can see it and defer
+    instead of speaking first. Pending entries are same-session-ordering only:
+    they never preempt another session and never make a speaker yield, and they
+    stop counting after MEDIA_SPEECH_PENDING_TTL_S so a wedged render can't
+    mute its session forever.
+
     The one same-session exception is URGENT — a deliberate "stop and hear this"
     barge-in. An URGENT clip interrupts its session's in-progress clip at the
     next boundary and jumps ahead of its queued siblings. By default the
@@ -885,8 +906,11 @@ class _SpeechPlaybackLock:
         # message with no session id still preempts by priority as before.
         self._session: str = ""
         # Submission time, used to order same-session siblings. Set once in
-        # acquire() and preserved across yield_to_higher() re-takes.
+        # announce()/acquire() and preserved across yield_to_higher() re-takes.
         self._seq: float = 0.0
+        # True between announce() and acquire(): we're still rendering, so we
+        # hold our place in our session's queue but don't contend with anyone.
+        self._pending: bool = False
         # Whether this is a supersede barge-in — one that drops the same-session
         # messages it interrupts/precedes instead of letting them resume.
         self._supersede: bool = False
@@ -903,11 +927,14 @@ class _SpeechPlaybackLock:
         try:
             d = _speech_wait_dir()
             d.mkdir(parents=True, exist_ok=True)
-            # Three lines: rank, submission seq, session id. Session goes last
-            # (own line) so an id containing odd characters can't corrupt the
-            # numeric fields. Older single-line (rank-only) files still parse.
+            # Four lines: rank, submission seq, session id, pending flag. The
+            # session keeps its own line so an id containing odd characters
+            # can't corrupt the numeric fields; the pending flag is appended
+            # after it rather than inserted, so older three-line (and
+            # single-line, rank-only) files still parse.
             (d / self._token).write_text(
-                f"{self._rank}\n{self._seq!r}\n{self._session}")
+                f"{self._rank}\n{self._seq!r}\n"
+                f"{self._session}\n{1 if self._pending else 0}")
         except OSError:
             pass
 
@@ -923,10 +950,12 @@ class _SpeechPlaybackLock:
         when a message carries no session id."""
         return bool(self._session) and bool(other) and other == self._session
 
-    def _other_waiters(self) -> "list[tuple[int, float, str]]":
-        """(rank, seq, session) for every *other* live waiter. Reaps stale
-        (dead-pid) entries as a side effect."""
-        out: "list[tuple[int, float, str]]" = []
+    def _other_waiters(self) -> "list[tuple[int, float, str, bool]]":
+        """(rank, seq, session, pending) for every *other* live waiter. Reaps
+        stale (dead-pid) entries as a side effect, and drops pending entries
+        whose render has blown past MEDIA_SPEECH_PENDING_TTL_S."""
+        out: "list[tuple[int, float, str, bool]]" = []
+        pending_floor = time.time() - _pending_ttl_s()
         try:
             entries = list(_speech_wait_dir().iterdir())
         except OSError:
@@ -954,24 +983,34 @@ class _SpeechPlaybackLock:
             except ValueError:
                 seq = 0.0
             session = lines[2] if len(lines) > 2 else ""
-            out.append((rank, seq, session))
+            pending = len(lines) > 3 and lines[3].strip() == "1"
+            if pending and seq < pending_floor:
+                continue    # render wedged/abandoned; stop holding the queue
+            out.append((rank, seq, session, pending))
         return out
 
     def _preempting_rank(self) -> int:
         """Highest rank among other live waiters from a *different* session;
         -1 if none. Same-session waiters are excluded — within a session,
-        priority never preempts (canonical order wins)."""
+        priority never preempts (canonical order wins). Pending (still
+        rendering) waiters are excluded too: they hold a place in their own
+        session's queue, they don't contend for the token."""
         best = -1
-        for rank, _seq, session in self._other_waiters():
-            if self._same_session(session):
+        for rank, _seq, session, pending in self._other_waiters():
+            if pending or self._same_session(session):
                 continue
             best = max(best, rank)
         return best
 
     def _earlier_sibling_waiting(self) -> bool:
         """True if a same-session waiter was submitted before me. It must speak
-        first to preserve canonical order, regardless of either one's priority."""
-        for _rank, seq, session in self._other_waiters():
+        first to preserve canonical order, regardless of either one's priority.
+
+        Counts *pending* siblings — ones still rendering their clips. A long
+        reply takes longer to render than a short one submitted after it, so
+        without this a two-sentence follow-up sails past its own session's
+        still-rendering predecessor and the pair is heard back to front."""
+        for _rank, seq, session, _pending in self._other_waiters():
             if self._same_session(session) and seq < self._seq:
                 return True
         return False
@@ -984,8 +1023,12 @@ class _SpeechPlaybackLock:
         same-session case that DOES barge in: a deliberate "stop and hear this"
         that interrupts (and jumps ahead of) our own earlier message rather than
         queueing behind it in canonical order. Everything below URGENT still
-        queues within a session."""
-        for rank, _seq, session in self._other_waiters():
+        queues within a session. A pending (still rendering) URGENT sibling
+        doesn't count — it barges in once it actually wants the token, and
+        until then there's nothing to hand over to."""
+        for rank, _seq, session, pending in self._other_waiters():
+            if pending:
+                continue
             if self._same_session(session) and rank >= _PRIO_RANK[Priority.URGENT]:
                 return True
         return False
@@ -996,16 +1039,43 @@ class _SpeechPlaybackLock:
     def _disabled() -> bool:
         return os.environ.get("MEDIA_SPEECH_SERIALIZE", "1").lower() in ("0", "false", "no")
 
-    def acquire(self, priority: Priority = Priority.NORMAL, *,
-                session: str = "", supersede: bool = False) -> None:
+    def announce(self, priority: Priority = Priority.NORMAL, *,
+                 session: str = "", seq: float = 0.0) -> None:
+        """Claim a place in this session's queue *before* rendering starts.
+
+        Rendering runs outside the lock (deliberately — sessions render in
+        parallel), and a long reply takes longer to render than a short one
+        submitted right after it. Without this the short one reaches acquire()
+        first, finds nobody waiting, and speaks ahead of its own predecessor.
+        Announcing publishes a pending waiter entry so the sibling defers.
+
+        Idempotent-ish and best-effort: acquire() rewrites the same entry as a
+        real waiter, release() removes it. Safe to skip calling — ordering then
+        degrades to the pre-existing acquire-time behaviour.
+        """
         if self._disabled():
             return
         self._rank = _rank_of(priority)
         self._session = session or ""
-        # Stamp submission order for same-session sibling ordering. Set once —
-        # yield_to_higher() re-takes without restamping, so a yielded reply
-        # keeps its original place among its session's clips.
-        self._seq = time.time()
+        self._seq = seq or time.time()
+        self._pending = True
+        self._register()
+
+    def acquire(self, priority: Priority = Priority.NORMAL, *,
+                session: str = "", supersede: bool = False,
+                seq: float = 0.0) -> None:
+        if self._disabled():
+            return
+        self._rank = _rank_of(priority)
+        self._session = session or ""
+        # Stamp submission order for same-session sibling ordering. Prefer the
+        # caller's submission time (`seq`) over "now": now is post-render, and
+        # ordering by it hands the queue to whichever sibling rendered fastest.
+        # Set once — yield_to_higher() re-takes without restamping, so a yielded
+        # reply keeps its original place among its session's clips.
+        self._seq = seq or self._seq or time.time()
+        # No longer merely pending: from here we actually contend for the token.
+        self._pending = False
         # A supersede barge-in publishes a per-session marker at its own seq so
         # the same-session clips it interrupts/precedes (all with an earlier
         # seq) can see they've been dropped and abort. Only meaningful with a
@@ -1152,6 +1222,23 @@ class _SpeechPlaybackLock:
                         or (not self._is_urgent()
                             and (self._urgent_sibling_waiting()
                                  or self._earlier_sibling_waiting()))):
+                    # Bound the deferral on the same progress-aware deadline as
+                    # the wait above, and for the same reason: whoever we're
+                    # standing aside for normally takes the token straight away
+                    # (and every clip anyone plays pushes the deadline out), but
+                    # if nobody ever does — a sibling wedged between announce()
+                    # and acquire(), say — we'd spin here forever rather than
+                    # merely speak out of order. Checked before handing the
+                    # token back, so on give-up we keep the lock we hold.
+                    sig = self._holder_progress_sig()
+                    if sig is not None and sig != last_sig:
+                        last_sig = sig
+                        deadline = time.monotonic() + timeout
+                    if time.monotonic() >= deadline:
+                        log.warning("speech lock: deferred >%ss with nobody "
+                                    "taking the token; proceeding", timeout)
+                        self._fd = fd
+                        return
                     try:
                         fcntl.flock(fd, fcntl.LOCK_UN)
                     except OSError:
@@ -1639,6 +1726,14 @@ def submit_event(event: Event,
     # popup can resume the conversation when its source pane has since been
     # closed — `goto-pane` falls back to `claude --resume <session>`.
     source_session = (event.metadata or {}).get("session") or ""
+    # Claim this reply's place in its session's speech queue *now*, before the
+    # renders below: a shorter sibling submitted a moment later would otherwise
+    # finish rendering first, find the queue empty, and speak ahead of us.
+    # Created here, acquired for real once the clips exist (and released on
+    # every path out, including muted / render-failed).
+    playback_lock = _SpeechPlaybackLock()
+    playback_lock.announce(event.priority, session=source_session,
+                           seq=started_at)
     # The tmux session that owns the source pane, captured now while the pane
     # is guaranteed alive. Persisted so the popup's < / > can scope history
     # traversal to "this tmux session's clips" without resolving a (possibly
@@ -1654,6 +1749,11 @@ def submit_event(event: Event,
     # but is never played through the broker and never ducks music. Decided
     # once, up front, so we also skip the remote pre-pause below.
     muted = state.resolve_mute(source_pane, source_tmux_session)
+    if muted:
+        # Nothing will be played, so give the queue slot announced above back
+        # immediately rather than making this session's next reply wait on a
+        # render it will never hear.
+        playback_lock.release()
 
     fallback_info: dict = {}
     _fallback_lock = threading.Lock()
@@ -1768,6 +1868,7 @@ def submit_event(event: Event,
         clip_para.append(pi)
 
     if not clip_data:
+        playback_lock.release()   # nothing to say; stop holding our queue slot
         return None
 
     # Compute per-clip offsets for a single spanning progress bar. ffprobe is a
@@ -1804,11 +1905,12 @@ def submit_event(event: Event,
         # Serialize playback across sessions: only one response feeds the shared
         # broker/Snapcast stream at a time (rendering above already ran in
         # parallel). Acquired before before_speech() so other media isn't paused
-        # while we're still queued behind another speaker.
-        playback_lock = _SpeechPlaybackLock()
+        # while we're still queued behind another speaker. `seq=started_at` is
+        # what keeps same-session order canonical — see announce() above.
         playback_lock.acquire(
             event.priority, session=source_session,
-            supersede=bool((event.metadata or {}).get("supersede")))
+            supersede=bool((event.metadata or {}).get("supersede")),
+            seq=started_at)
         # Superseded before we started (a later URGENT in this session dropped
         # us): hand the token straight back and skip playback entirely — no
         # broker claim, no music duck, no history row.
@@ -2323,7 +2425,8 @@ def submit_stream(sentences,
         playback_lock = _SpeechPlaybackLock()
         playback_lock.acquire(
             event.priority, session=source_session,
-            supersede=bool((event.metadata or {}).get("supersede")))
+            supersede=bool((event.metadata or {}).get("supersede")),
+            seq=started_at)
         i = 0
         nav_jump = False
         try:
