@@ -1,0 +1,79 @@
+#!/bin/sh
+# Crash-loop watchdog for the runit services in this directory.
+#
+# Called from each service's `finish` script, which runit runs every time `run`
+# exits. Two jobs:
+#
+#   1. Back off. runit restarts a dead service immediately, so a service that
+#      dies on startup spins as fast as the OS allows — media-mcp managed ~1250
+#      restarts overnight against a missing module. After a few rapid failures
+#      we sleep before letting runit try again.
+#   2. Say something. That crash loop ran in complete silence: nothing watches
+#      service health, so a broken deploy is invisible until someone notices a
+#      feature missing hours later.
+#
+# Deliberately POSIX sh with no agent-media imports: the failure this exists to
+# report is usually "the Python package won't import" (a Termux python upgrade
+# leaves the old site-packages stranded), and a notifier written in the broken
+# runtime can't report its own death.
+#
+# Usage:  crash-notify <service-name> <exit-code> <exit-status>
+set -u
+
+svc="${1:-unknown}"
+code="${2:-?}"
+
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/agent-media"
+crashdir="$STATE/sv-crash"
+mkdir -p "$crashdir" 2>/dev/null || exit 0
+log="$crashdir/$svc.log"
+stamp="$crashdir/$svc.notified"
+
+now=$(date +%s)
+echo "$now $code" >> "$log" 2>/dev/null || exit 0
+
+# Keep only the last 60s of failures; the tail is both the crash-loop signal
+# and the file's own garbage collection.
+window_start=$((now - 60))
+recent=$(awk -v t="$window_start" '$1 >= t' "$log" 2>/dev/null)
+printf '%s\n' "$recent" > "$log" 2>/dev/null
+n=$(printf '%s\n' "$recent" | grep -c . 2>/dev/null || echo 0)
+
+# Under the threshold this is an ordinary restart (a `sv restart`, a one-off
+# blip) — no backoff, no noise.
+[ "$n" -lt 3 ] && exit 0
+
+# Notify at most once every 30 min per service, so a service left broken for a
+# day doesn't refill the shade every minute.
+send=1
+if [ -f "$stamp" ]; then
+    last=$(cat "$stamp" 2>/dev/null || echo 0)
+    [ $((now - last)) -lt 1800 ] && send=0
+fi
+
+[ "${MEDIA_NOTIFY_DISABLED:-0}" = "1" ] && send=0
+
+if [ "$send" = 1 ]; then
+    echo "$now" > "$stamp" 2>/dev/null
+    detail=""
+    svlog="${XDG_STATE_HOME:-$HOME/.local/state}/sv-log/$svc/current"
+    if [ -r "$svlog" ]; then
+        # Last non-blank line, minus svlogd's timestamp prefix.
+        detail=$(grep . "$svlog" 2>/dev/null | tail -1 | cut -c26-160)
+    fi
+    [ -z "$detail" ] && detail="exit code $code"
+    title="agent-media: $svc is crash-looping"
+    body="$n restarts in 60s. $detail"
+    if command -v termux-notification >/dev/null 2>&1; then
+        termux-notification --id "agent-media:sv-crash:$svc" \
+            --title "$title" --content "$body" --priority high 2>/dev/null
+    elif command -v notify-send >/dev/null 2>&1; then
+        notify-send "$title" "$body" 2>/dev/null
+    fi
+    logger -t agent-media "$title — $body" 2>/dev/null
+fi
+
+# Slow the loop down. Not so long that a genuine restart feels wedged, long
+# enough that a broken service costs ~6 attempts a minute instead of thousands.
+sleep 10
+exit 0

@@ -376,7 +376,9 @@ def _skew_alert_line() -> str:
         if not skew:
             return ""
         glyph = "⚠" if int(time.time()) % 2 else " "
-        return f"{glyph} skew: {skew.replace(chr(10), ', ')}"
+        # "fleet", not "skew": the ledger now also carries hosts whose install
+        # is broken or whose services are down (marked with a trailing !).
+        return f"{glyph} fleet: {skew.replace(chr(10), ', ')}"
     except OSError:
         return ""
 
@@ -3311,15 +3313,244 @@ def cmd_popup_channel(a) -> int:
     return 0
 
 
-def cmd_doctor(a) -> int:
-    """Check agent cluster health (version skew across hosts)."""
+SELFCHECK_SENTINEL = "selfcheck=1"
+
+
+def _checkout_root() -> "Optional[Path]":
+    """The agent-media git checkout this process's code lives in, if any."""
+    from pathlib import Path
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        if (parent / ".git").exists() and (parent / "packages" / "core").is_dir():
+            return parent
+    return None
+
+
+def _sv_dir() -> "Optional[Path]":
+    """The runit service directory in use, if this host runs runit."""
+    from pathlib import Path
+    cands = [os.environ.get("SVDIR"),
+             (os.environ.get("PREFIX", "") + "/var/service") if os.environ.get("PREFIX") else None,
+             "/data/data/com.termux/files/usr/var/service",
+             "/var/service", "/etc/service", "/service"]
+    for c in cands:
+        if c and Path(c).is_dir():
+            return Path(c)
+    return None
+
+
+def _runit_service_states(root: "Optional[Path]") -> "list[tuple[str, str]]":
+    """(name, state) for the runit services that belong to this checkout.
+
+    Only ours: the service dir also holds sshd, mopidy, snapclient and friends,
+    and agent-media has no business grading those.
+    """
     import subprocess
     from pathlib import Path
-    
+    svdir = _sv_dir()
+    if svdir is None or root is None:
+        return []
+    out = []
+    for entry in sorted(svdir.iterdir()):
+        try:
+            target = entry.resolve()
+        except OSError:
+            continue
+        if root not in target.parents:
+            continue
+        try:
+            r = subprocess.run(["sv", "status", str(entry)],
+                               capture_output=True, text=True, timeout=10,
+                               env={**os.environ, "SVDIR": str(svdir)})
+            line = (r.stdout or r.stderr or "").strip()
+        except (OSError, subprocess.SubprocessError):
+            line = "unknown"
+        state = "up" if line.startswith("run:") else "down"
+        out.append((entry.name, state))
+    return out
+
+
+def _systemd_service_states() -> "list[tuple[str, str]]":
+    """(unit, state) for this user's agent-media systemd units."""
+    import subprocess
+    out = []
+    try:
+        r = subprocess.run(
+            ["systemctl", "--user", "list-units", "--no-legend", "--plain",
+             "--all", "agent-media*", "am-*"],
+            capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return out
+    for line in (r.stdout or "").splitlines():
+        parts = line.split()
+        if len(parts) < 4 or not parts[0].endswith(".service"):
+            continue
+        unit, active = parts[0], parts[2]
+        out.append((unit[:-len(".service")], "up" if active == "active" else active))
+    return out
+
+
+def _crash_loops(within_s: int = 900) -> "list[tuple[str, int]]":
+    """(service, failures) from the runit finish-script crash ledger.
+
+    Written by services/_common/crash-notify, which is plain sh precisely so it
+    still records when the Python install is the thing that's broken.
+    """
+    import time as _time
+    from pathlib import Path
+    d = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local" / "state")))
+    crashdir = d / "agent-media" / "sv-crash"
+    out = []
+    if not crashdir.is_dir():
+        return out
+    floor = _time.time() - within_s
+    for f in sorted(crashdir.glob("*.log")):
+        n = 0
+        try:
+            for line in f.read_text().splitlines():
+                ts = line.split(" ", 1)[0]
+                try:
+                    if float(ts) >= floor:
+                        n += 1
+                except ValueError:
+                    continue
+        except OSError:
+            continue
+        if n:
+            out.append((f.stem, n))
+    return out
+
+
+def selfcheck_facts() -> "dict[str, str]":
+    """Runtime health of the agent-media install on THIS host.
+
+    `media doctor` compared git HEADs and nothing else, which is exactly how a
+    dead install hid for hours on 2026-07-30: the phone's checkout was current
+    while every entrypoint raised ModuleNotFoundError (Termux had upgraded
+    python out from under site-packages) and media-mcp crash-looped ~1250 times
+    in silence. A current checkout says nothing about whether the code can run.
+
+    Returns flat key=value facts so `doctor` can collect them over ssh from
+    hosts running a different version of this file.
+    """
+    import subprocess
+    import sys as _sys
+    from pathlib import Path
+
+    facts: "dict[str, str]" = {}
+    facts["python"] = "%d.%d" % _sys.version_info[:2]
+
+    import agent_media_core
+    mod = Path(agent_media_core.__file__).resolve()
+    root = _checkout_root()
+    facts["module"] = str(mod)
+    if root is None:
+        # Installed as a copy with no checkout beside it: `git pull` deploys
+        # nothing here, which is how call-guard ran weeks-old code.
+        facts["install"] = "copy"
+    else:
+        facts["install"] = "editable"
+        facts["checkout"] = str(root)
+        try:
+            facts["commit"] = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"],
+                capture_output=True, text=True, timeout=10).stdout.strip()[:7]
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+    services = _runit_service_states(root) + _systemd_service_states()
+    down = [n for n, s in services if s != "up"]
+    facts["services"] = str(len(services))
+    if down:
+        facts["down"] = ",".join(down)
+    loops = _crash_loops()
+    if loops:
+        facts["crashloop"] = ",".join(f"{n}:{c}" for n, c in loops)
+    return facts
+
+
+def health_problems(facts: "dict[str, str]") -> "list[str]":
+    """Human-readable problems implied by a selfcheck fact set (empty = well)."""
+    problems = []
+    if facts.get("selfcheck") == "broken":
+        return ["install broken: agent_media_core will not import"]
+    if facts.get("selfcheck") == "unsupported":
+        return []      # too old to selfcheck; skew reporting still applies
+    if facts.get("install") == "copy":
+        problems.append("install is a copy, not editable — git pull won't deploy")
+    if facts.get("down"):
+        problems.append(f"services down: {facts['down']}")
+    if facts.get("crashloop"):
+        problems.append(f"crash-looping: {facts['crashloop']}")
+    return problems
+
+
+def parse_selfcheck(text: str) -> "dict[str, str]":
+    """Parse `media selfcheck` output (key=value lines) into a dict."""
+    facts = {}
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        facts[k.strip()] = v.strip()
+    return facts
+
+
+def cmd_selfcheck(a) -> int:
+    """Report this host's install health as key=value lines."""
+    print(SELFCHECK_SENTINEL)
+    try:
+        facts = selfcheck_facts()
+    except Exception as e:  # noqa: BLE001
+        print(f"error={e}")
+        return 1
+    for k, v in facts.items():
+        print(f"{k}={v}")
+    problems = health_problems(facts)
+    for p in problems:
+        print(f"problem={p}")
+    return 1 if problems else 0
+
+
+# One remote command per host: the selfcheck when it's available, plus the git
+# revisions doctor has always compared. The fallbacks matter — a host whose
+# install is dead can't run `media selfcheck` to say so, which is precisely the
+# case worth shouting about, and a host on an older agent-media doesn't have the
+# subcommand at all yet must not be reported as broken.
+_REMOTE_PROBE = r"""
+out=$(media selfcheck 2>/dev/null)
+case "$out" in
+  *selfcheck=1*) printf '%s\n' "$out" ;;
+  *) V=$HOME/projects/agent-media/.venv/bin/python
+     if [ -x "$V" ] && "$V" -c 'import agent_media_core' 2>/dev/null; then
+       echo selfcheck=unsupported
+     elif command -v media >/dev/null 2>&1 || [ -x "$V" ]; then
+       echo selfcheck=broken
+     else
+       echo selfcheck=absent
+     fi ;;
+esac
+git -C ~/projects/agent-media rev-parse HEAD 2>/dev/null | sed 's/^/agent-media-head=/'
+git -C ~/dotfiles rev-parse HEAD 2>/dev/null | sed 's/^/dotfiles-head=/'
+"""
+
+
+def cmd_doctor(a) -> int:
+    """Check agent cluster health: version skew AND whether the code can run.
+
+    Skew alone was never enough — a host can sit on the right commit with a
+    dead install (see selfcheck_facts). Both kinds of trouble land in the same
+    ledger, so the status bar's ⚠ covers both.
+    """
+    import subprocess
+    from pathlib import Path
+
     hosts = os.environ.get("MEDIA_DOCTOR_HOSTS", "p8ar red5 sp4").split()
     repos = ["agent-media", "dotfiles"]
     skewed = []
-    
+    unhealthy = []
+
     # Read local hashes
     local_hashes = {}
     for r in repos:
@@ -3333,44 +3564,72 @@ def cmd_doctor(a) -> int:
         except (OSError, subprocess.CalledProcessError):
             pass
 
+    # Local host first: `doctor` is usually run from the machine doing the
+    # deploying, and its own install can rot exactly like a remote one.
+    print("checking local...", end="", flush=True)
+    try:
+        local_problems = health_problems(selfcheck_facts())
+    except Exception as e:  # noqa: BLE001
+        local_problems = [f"selfcheck failed: {e}"]
+    if local_problems:
+        print(" " + "; ".join(f"[{p}]" for p in local_problems))
+        unhealthy.append("local")
+    else:
+        print(" ok")
+
     for host in hosts:
         print(f"checking {host}...", end="", flush=True)
+        notes = []
         host_skewed = False
+        try:
+            res = subprocess.run(
+                ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", host,
+                 "sh"], input=_REMOTE_PROBE,
+                capture_output=True, text=True, timeout=45)
+        except Exception:  # noqa: BLE001
+            print(" unreachable")
+            continue
+        if res.returncode != 0 and not res.stdout.strip():
+            print(" unreachable")
+            continue
+
+        facts = parse_selfcheck(res.stdout)
         for r, l_hash in local_hashes.items():
-            try:
-                if r == "dotfiles":
-                    r_path = "~/dotfiles"
-                else:
-                    r_path = "~/projects/agent-media"
-                res = subprocess.run(
-                    ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", host,
-                     f"git -C {r_path} rev-parse HEAD"],
-                    capture_output=True, text=True, timeout=12)
-                if res.returncode == 0:
-                    r_hash = res.stdout.strip()
-                    if r_hash != l_hash:
-                        print(f" [{r} skewed: {r_hash[:7]}]", end="")
-                        host_skewed = True
-            except Exception:
-                pass
-                
-        if host_skewed:
-            skewed.append(host)
-            print()
+            r_hash = facts.get(f"{r}-head", "")
+            if r_hash and r_hash != l_hash:
+                notes.append(f"{r} skewed: {r_hash[:7]}")
+                host_skewed = True
+        problems = health_problems(facts)
+        notes.extend(problems)
+
+        if notes:
+            print(" " + " ".join(f"[{n}]" for n in notes))
         else:
             print(" ok")
+        if host_skewed:
+            skewed.append(host)
+        if problems:
+            unhealthy.append(host)
 
+    # One line per troubled host. A `!` suffix marks "running, but not well" so
+    # the status bar can distinguish a stale host from a broken one at a glance.
+    entries = [f"{h}!" for h in unhealthy] + [h for h in skewed if h not in unhealthy]
     d = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local" / "state")))
     ledger = d / "agent-media" / "version-skew.log"
     try:
         ledger.parent.mkdir(parents=True, exist_ok=True)
-        if skewed:
-            ledger.write_text("\n".join(skewed) + "\n")
-            print(f"\nwrote {len(skewed)} skewed host(s) to ledger.")
+        if entries:
+            ledger.write_text("\n".join(entries) + "\n")
+            bits = []
+            if skewed:
+                bits.append(f"{len(skewed)} skewed")
+            if unhealthy:
+                bits.append(f"{len(unhealthy)} unhealthy")
+            print(f"\nwrote {' + '.join(bits)} host(s) to ledger.")
             return 1
         else:
             ledger.unlink(missing_ok=True)
-            print("\nall hosts up to date.")
+            print("\nall hosts up to date and healthy.")
             return 0
     except OSError as e:
         log.error("doctor: failed to write ledger: %s", e)
@@ -3655,8 +3914,13 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="remember this as the last-viewed channel")
     pc.set_defaults(func=cmd_popup_channel)
 
-    doc = sub.add_parser("doctor", help="check cluster health (version skew)")
+    doc = sub.add_parser("doctor",
+                         help="check cluster health (version skew + install/services)")
     doc.set_defaults(func=cmd_doctor)
+
+    sc = sub.add_parser("selfcheck",
+                        help="report this host's install health (key=value lines)")
+    sc.set_defaults(func=cmd_selfcheck)
 
     return p
 

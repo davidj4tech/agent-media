@@ -1,0 +1,4 @@
+#!/bin/sh
+# runit runs this after `run` exits. Back off + report crash loops; see
+# ../_common/crash-notify.
+exec "$(dirname "$0")/../_common/crash-notify" sink-speech "$@"
