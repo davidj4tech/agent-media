@@ -173,6 +173,29 @@ itself instead of silently breaking the phone. `--check` reports without
 touching anything; it is safe to run on non-Termux hosts (it understands both
 symlinked and shebang-style console scripts).
 
+agent-media was not the only casualty: `mopidy` and `beets` were `pip --user`
+installs in the same stranded tree, and their runit services had been down just
+as quietly. `scripts/termux-apps.conf` lists them, and the heal script gives
+each its own venv — so "repair" means "rebuild", not "remember the original pip
+incantation". Two guards, since this is code touching things it doesn't own:
+the section is Termux-only (red5 runs the real house Mopidy and must not grow a
+second one), and it only ever *adopts* an app the host already has. Only the
+entrypoints named in the config are linked, because an app's venv also contains
+scripts called `flask`, `pygmentize` and `normalizer`.
+
+Versions there are pinned to what the phone was running, because this is a
+restore rather than an upgrade — and because the current releases don't build
+on Termux at all (beets 2.x pulls numpy, Mopidy 4.x pulls pygobject from PyPI;
+both fail CMake). Mopidy 3 instead expects gi/GStreamer from the system, hence
+`--system-site-packages`.
+
+Which exposes the last layer: Termux ships some modules as **apt** packages
+(`pygobject`, `gst-python`, `python-brotli`) and upgrading `python` does not
+rebuild them — their files stay in the old `site-packages` and vanish from the
+new interpreter's view. No venv can substitute for those. `--apt-repair`
+reinstalls them; it detaches when apt holds its own lock, so it can't deadlock
+against the post-invoke hook that may have called it.
+
 ## Applying to Other Packages
 
 To drop this into `agent-sessions`, `agent-workspace`, or `pi-workspace`:
