@@ -286,6 +286,12 @@ heal_app() {  # name flags entrypoints requirements...
     command -v uv >/dev/null 2>&1 || { say "app $_name: uv missing"; return 2; }
     mkdir -p "$APPS_VENVS" "$APPBIN" 2>/dev/null
     say "app $_name: rebuilding $_venv"
+    # Start clean: uv refuses to create over an existing venv, so a half-built
+    # one from an interrupted run would wedge every later attempt.
+    case "$_venv" in
+        "$APPS_VENVS"/?*) rm -rf "$_venv" ;;
+        *) say "app $_name: refusing to remove $_venv"; return 1 ;;
+    esac
     # shellcheck disable=SC2086
     if ! uv venv $_flags --python "$sys_py" "$_venv" >/dev/null 2>&1; then
         say "app $_name: uv venv failed"; return 1
