@@ -104,3 +104,18 @@ def test_crash_notify_backs_off_only_once_looping(tmp_path):
     # And it left the ledger `media doctor` reads.
     log = tmp_path / "agent-media" / "sv-crash" / "demo.log"
     assert len(log.read_text().strip().splitlines()) == 3
+
+
+def test_adopted_app_names_read_from_the_heal_config():
+    """mopidy and beets are watched too — they died in the same python upgrade
+    as agent-media and were down just as silently."""
+    root = Path(__file__).resolve().parents[3]
+    names = cli._adopted_app_names(root)
+    assert "mopidy" in names and "beets" in names
+    # Comments and the format preamble must not become app names.
+    assert all(not n.startswith("#") for n in names)
+
+
+def test_adopted_app_names_tolerate_a_missing_config(tmp_path):
+    assert cli._adopted_app_names(tmp_path) == []
+    assert cli._adopted_app_names(None) == []

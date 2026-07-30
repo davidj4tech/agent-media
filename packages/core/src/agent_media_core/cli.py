@@ -3339,24 +3339,55 @@ def _sv_dir() -> "Optional[Path]":
     return None
 
 
-def _runit_service_states(root: "Optional[Path]") -> "list[tuple[str, str]]":
-    """(name, state) for the runit services that belong to this checkout.
+def _adopted_app_names(root: "Optional[Path]") -> "list[str]":
+    """App names from scripts/termux-apps.conf — the non-agent-media installs
+    the heal script keeps alive (mopidy, beets). Their services are worth
+    watching here: they died in the same python upgrade, just as silently.
+    """
+    if root is None:
+        return []
+    conf = root / "packages" / "core" / "scripts" / "termux-apps.conf"
+    names = []
+    try:
+        for line in conf.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "|" not in line:
+                continue
+            name = line.split("|", 1)[0].strip()
+            if name:
+                names.append(name)
+    except OSError:
+        pass
+    return names
 
-    Only ours: the service dir also holds sshd, mopidy, snapclient and friends,
-    and agent-media has no business grading those.
+
+def _runit_service_states(root: "Optional[Path]") -> "list[tuple[str, str]]":
+    """(name, state) for the runit services this checkout is responsible for.
+
+    Ours by two routes: the service dir symlinks into the checkout, or the
+    service is one of the adopted apps (`mopidy`, `beets-web`). The same dir
+    also holds sshd, snapclient and friends, which agent-media has no business
+    grading.
     """
     import subprocess
     from pathlib import Path
     svdir = _sv_dir()
     if svdir is None or root is None:
         return []
+    apps = _adopted_app_names(root)
     out = []
     for entry in sorted(svdir.iterdir()):
         try:
             target = entry.resolve()
         except OSError:
             continue
-        if root not in target.parents:
+        ours = root in target.parents
+        # `mopidy` for app mopidy, `beets-web` for app beets — the service name
+        # is the app name or a variant of it.
+        if not ours:
+            ours = any(entry.name == a or entry.name.startswith(f"{a}-")
+                       for a in apps)
+        if not ours:
             continue
         try:
             r = subprocess.run(["sv", "status", str(entry)],
