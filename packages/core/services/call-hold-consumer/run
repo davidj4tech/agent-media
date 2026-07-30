@@ -1,4 +1,4 @@
-#!/usr/bin/env sh
+#!/data/data/com.termux/files/usr/bin/sh
 # House-media call-hold consumer.
 #
 # Pauses this host's local speech sink when the external-hold flag is set, so a
