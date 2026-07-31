@@ -610,7 +610,7 @@ def _handle_pretooluse(payload: dict) -> int:
     if not ask:
         return 0
     # Best-effort: prepend any prose Claude wrote before the question in this
-    # same turn. NOTE (verified 2026-06-25, see git history): at PreToolUse fire
+    # same turn. NOTE (verified 2026-06-25, re-verified 2026-07-31): at PreToolUse fire
     # time this almost always yields nothing, and it is NOT fixable here. The
     # PreToolUse payload carries no assistant text (only tool_name/tool_input/
     # transcript_path/etc.), AND Claude Code does not flush the current turn to
@@ -619,8 +619,14 @@ def _handle_pretooluse(payload: dict) -> int:
     # text + AskUserQuestion tool_use lines entirely absent. So neither source
     # has the prose while the modal is up; retrying/waiting can't help. The
     # working path is for the *caller* to speak the lead via the `say` tool
-    # before invoking AskUserQuestion. This call is left as a harmless fallback
-    # in case a future Claude Code flushes earlier.
+    # before invoking AskUserQuestion (see the global CLAUDE.md rule); the
+    # question then queues behind it rather than preempting, because the
+    # playback lock orders by pane — see _order_session in intake/submit.py.
+    # This call is left as a harmless fallback in case a future Claude Code
+    # flushes earlier.
+    # Re-probe (2026-07-31): a live watcher on the transcript saw the lead-text
+    # and AskUserQuestion lines appear together only *after* the answer, 59s
+    # after the modal went up. Still frozen; still not fixable here.
     lead = ""
     tp_raw = (payload.get("transcript_path") or "").strip()
     if tp_raw:

@@ -148,6 +148,21 @@ def test_same_session_high_does_not_preempt(tmp_path, monkeypatch):
     tb.join(timeout=3)
 
 
+def test_order_session_prefers_pane_over_session_id():
+    """A spoken lead-in (`say` MCP tool: pane, no session id) and the
+    AskUserQuestion read-out that follows it (hook: same pane, plus a session
+    id) must land in the *same* ordering bucket, or the HIGH-priority question
+    preempts the prose it was supposed to follow."""
+    say = S._order_session("%7", "")
+    ask = S._order_session("%7", "0e3c-…-abcd")
+    assert say == ask == "%7"
+    # Different panes stay distinct, so cross-session preemption still applies.
+    assert S._order_session("%8", "0e3c-…-abcd") != ask
+    # Off tmux there's no pane: fall back to the session id as before.
+    assert S._order_session("", "sess-1") == "sess-1"
+    assert S._order_session("", "") == ""
+
+
 def test_cross_session_high_still_preempts(tmp_path, monkeypatch):
     """The cross-session preemption path is unchanged: a HIGH clip from a
     *different* session still makes the NORMAL holder yield."""

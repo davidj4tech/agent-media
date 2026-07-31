@@ -811,6 +811,25 @@ def _rank_of(priority: Priority) -> int:
     return _PRIO_RANK.get(priority, _PRIO_RANK[Priority.NORMAL])
 
 
+def _order_session(source_pane: str, source_session: str) -> str:
+    """The identity the playback lock orders a clip within (see
+    `_SpeechPlaybackLock`): same identity -> canonical submission order,
+    different identity -> priority preemption.
+
+    Prefer the *pane* over the Claude session id. One pane is one conversation's
+    worth of speech no matter which producer emitted it, but the producers don't
+    agree on a session id: the Stop / PreToolUse hooks tag events with the hook
+    payload's session id while the `say` MCP tool tags none at all. Keying on
+    that id makes a spoken lead-in and the AskUserQuestion read-out that follows
+    it look like two different sessions, so the HIGH-priority question preempts
+    the prose it was meant to follow. Both producers live in (or were spawned
+    from) the agent's pane and inherit its TMUX_PANE, so the pane is the id they
+    do share. Off tmux there is no pane, so fall back to the session id and the
+    old behaviour.
+    """
+    return source_pane or source_session
+
+
 def _pending_ttl_s() -> float:
     """How long a *pending* (announced-but-not-yet-rendered) waiter entry keeps
     holding its place in its session's queue. A render that takes longer than
@@ -856,7 +875,10 @@ class _SpeechPlaybackLock:
     single Claude session, speech does not preempt speech: a session's own clips
     play in submission (canonical) order regardless of priority, so a short
     HIGH notification can't cut ahead of that same session's longer NORMAL
-    reply — it queues behind it. (A message with no session id is treated as
+    reply — it queues behind it. "Session" here is the *pane* wherever there is
+    one (see `_order_session`), so everything one conversation says — hook
+    read-outs and `say` MCP calls alike — is ordered together rather than
+    preempting itself. (A clip with neither pane nor session id is treated as
     its own session, so it still preempts by priority as before.) Same-session
     ordering is enforced at admission via a per-clip submission timestamp; a
     clip already speaking otherwise finishes rather than being cut short.
@@ -1726,13 +1748,14 @@ def submit_event(event: Event,
     # popup can resume the conversation when its source pane has since been
     # closed — `goto-pane` falls back to `claude --resume <session>`.
     source_session = (event.metadata or {}).get("session") or ""
+    order_session = _order_session(source_pane, source_session)
     # Claim this reply's place in its session's speech queue *now*, before the
     # renders below: a shorter sibling submitted a moment later would otherwise
     # finish rendering first, find the queue empty, and speak ahead of us.
     # Created here, acquired for real once the clips exist (and released on
     # every path out, including muted / render-failed).
     playback_lock = _SpeechPlaybackLock()
-    playback_lock.announce(event.priority, session=source_session,
+    playback_lock.announce(event.priority, session=order_session,
                            seq=started_at)
     # The tmux session that owns the source pane, captured now while the pane
     # is guaranteed alive. Persisted so the popup's < / > can scope history
@@ -1908,7 +1931,7 @@ def submit_event(event: Event,
         # while we're still queued behind another speaker. `seq=started_at` is
         # what keeps same-session order canonical — see announce() above.
         playback_lock.acquire(
-            event.priority, session=source_session,
+            event.priority, session=order_session,
             supersede=bool((event.metadata or {}).get("supersede")),
             seq=started_at)
         # Superseded before we started (a later URGENT in this session dropped
@@ -2276,6 +2299,7 @@ def submit_stream(sentences,
 
     source_pane = (event.metadata or {}).get("pane") or os.environ.get("TMUX_PANE", "")
     source_session = (event.metadata or {}).get("session") or ""
+    order_session = _order_session(source_pane, source_session)
     source_tmux_session = _tmux_session_for_pane(source_pane)
     source_window = _tmux_window_for_pane(source_pane)
     # Durable per-pane / per-session mute: render the stream into clips for
@@ -2424,7 +2448,7 @@ def submit_stream(sentences,
         # parallel via the producer thread while we wait our turn for the broker).
         playback_lock = _SpeechPlaybackLock()
         playback_lock.acquire(
-            event.priority, session=source_session,
+            event.priority, session=order_session,
             supersede=bool((event.metadata or {}).get("supersede")),
             seq=started_at)
         i = 0
