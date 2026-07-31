@@ -482,7 +482,59 @@ def make_handler(hosts: dict[str, str | None]):
             self.send_error(404, "not found")
 
         def do_POST(self) -> None:
-            if self.path.rstrip("/") not in ("/v1/chat/completions", "/chat/completions"):
+            path = self.path.rstrip("/")
+
+            # The OpenClaw Home Assistant integration talks to whatever host it
+            # is pointed at as if it were a full OpenClaw gateway, not just an
+            # OpenAI-compatible chat endpoint. When an Assist pipeline is bound
+            # to this shim, HA calls POST /tools/invoke {"tool":"sessions_list"}
+            # every 30s for session management. We only implement the speech
+            # half of that interface, so this used to 404 on a loop (~2,900/day
+            # in the journal) while voice itself worked fine.
+            #
+            # Answer the handful of read-only tools with an honest, minimal
+            # response: this process IS a single fixed session (the tmux pane
+            # the bridge injects into), so report exactly that. Anything that
+            # would mutate state is refused rather than faked, so a caller
+            # never believes it changed something here.
+            if path == "/tools/invoke":
+                length = int(self.headers.get("content-length", "0") or "0")
+                raw = self.rfile.read(length) if length else b"{}"
+                try:
+                    body = json.loads(raw)
+                except json.JSONDecodeError:
+                    self._send_json({"ok": False, "error": "invalid json"}, status=400)
+                    return
+
+                tool = str(body.get("tool") or "")
+                if tool in ("sessions_list", "sessions.list", "list_sessions"):
+                    self._send_json({
+                        "ok": True,
+                        "result": {
+                            "sessions": [
+                                {
+                                    "id": "tmux-voice-bridge",
+                                    "title": "tmux voice bridge",
+                                    "agent": "tmux",
+                                    "status": "ready",
+                                }
+                            ]
+                        },
+                    })
+                    return
+
+                # Unknown or state-changing tool: refuse explicitly. 200 with
+                # ok=false, so the client stops retrying a transport error but
+                # is not told the operation succeeded.
+                self._send_json({
+                    "ok": False,
+                    "error": f"tool {tool!r} not supported by tmux-voice-bridge",
+                    "hint": "this endpoint implements chat completions; "
+                            "full tool support lives on the OpenClaw gateway",
+                }, status=200)
+                return
+
+            if path not in ("/v1/chat/completions", "/chat/completions"):
                 self.send_error(404, "not found")
                 return
             length = int(self.headers.get("content-length", "0") or "0")
