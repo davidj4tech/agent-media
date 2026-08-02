@@ -3427,8 +3427,17 @@ def _systemd_service_states() -> "list[tuple[str, str]]":
     return out
 
 
-def _crash_loops(within_s: int = 900) -> "list[tuple[str, int]]":
-    """(service, failures) from the runit finish-script crash ledger.
+# A restart is one exit; a crash LOOP is several in quick succession. Match the
+# threshold crash-notify itself acts on, so a deliberate `sv restart` — which
+# also writes a ledger line — isn't reported as breakage. Reporting routine
+# restarts is how a health check earns the scroll-past it later dies of.
+_CRASH_LOOP_MIN = 3
+
+
+def _crash_loops(within_s: int = 900,
+                 minimum: int = _CRASH_LOOP_MIN) -> "list[tuple[str, int]]":
+    """(service, failures) from the runit finish-script crash ledger, for
+    services that failed at least `minimum` times inside the window.
 
     Written by services/_common/crash-notify, which is plain sh precisely so it
     still records when the Python install is the thing that's broken.
@@ -3453,7 +3462,7 @@ def _crash_loops(within_s: int = 900) -> "list[tuple[str, int]]":
                     continue
         except OSError:
             continue
-        if n:
+        if n >= minimum:
             out.append((f.stem, n))
     return out
 

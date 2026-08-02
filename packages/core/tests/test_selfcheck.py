@@ -72,10 +72,27 @@ def test_crash_loops_counts_recent_failures_only(monkeypatch, tmp_path):
     d.mkdir(parents=True)
     now = time.time()
     (d / "media-mcp.log").write_text(
-        f"{now - 10} 1\n{now - 20} 1\n{now - 99999} 1\n")   # third is ancient
+        f"{now - 10} 1\n{now - 20} 1\n{now - 30} 1\n{now - 99999} 1\n")  # last is ancient
     (d / "quiet.log").write_text(f"{now - 99999} 1\n")
     loops = dict(cli._crash_loops())
-    assert loops == {"media-mcp": 2}
+    assert loops == {"media-mcp": 3}
+
+
+def test_a_single_restart_is_not_a_crash_loop(monkeypatch, tmp_path):
+    """`sv restart` writes a ledger line too. Reporting that as breakage is how
+    a health check earns the scroll-past it later dies of."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    d = tmp_path / "agent-media" / "sv-crash"
+    d.mkdir(parents=True)
+    now = time.time()
+    (d / "media-mcp.log").write_text(f"{now - 5} -1\n")
+    assert cli._crash_loops() == []
+    # Two is still ambiguous; three in the window is a loop.
+    (d / "media-mcp.log").write_text(f"{now - 5} -1\n{now - 8} -1\n")
+    assert cli._crash_loops() == []
+    (d / "media-mcp.log").write_text(
+        f"{now - 5} -1\n{now - 8} -1\n{now - 11} -1\n")
+    assert cli._crash_loops() == [("media-mcp", 3)]
 
 
 CRASH_NOTIFY = (Path(__file__).resolve().parents[1]
