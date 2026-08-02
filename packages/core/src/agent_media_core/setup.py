@@ -307,6 +307,21 @@ def service_templates_dir() -> Path:
     return Path(__file__).resolve().parent.parent.parent / "services"
 
 
+def service_template_names() -> list[str]:
+    """Installable service names under services/.
+
+    Underscore-prefixed directories are shared assets, not services —
+    `_common/` holds crash-notify, has no `run`, and installing it fails with
+    "template missing", which took the whole `install-services` run down with
+    it (and with it every ansible rollout of the audio_server role).
+    """
+    templates = service_templates_dir()
+    if not templates.is_dir():
+        return []
+    return sorted(p.name for p in templates.iterdir()
+                  if p.is_dir() and not p.name.startswith("_"))
+
+
 def tmux_dir() -> Path:
     """Repo-shipped tmux integration under packages/core/tmux/."""
     return Path(__file__).resolve().parent.parent.parent / "tmux"
@@ -578,7 +593,7 @@ def cmd_install_services(args: argparse.Namespace) -> int:
         print(f"media-setup: service templates not found at {templates}",
               file=sys.stderr)
         return 1
-    names = args.services or [p.name for p in templates.iterdir() if p.is_dir()]
+    names = args.services or service_template_names()
 
     backend = _service_backend(getattr(args, "backend", None))
     if backend == "systemd":
@@ -834,8 +849,7 @@ def cmd_status(_: argparse.Namespace) -> int:
             cmds = [h.get("command") for g in groups for h in (g.get("hooks") or [])]
             print(f"hook {event}: {cmds or '(none)'}")
     templates = service_templates_dir()
-    names = ([p.name for p in sorted(templates.iterdir()) if p.is_dir()]
-             if templates.is_dir() else [])
+    names = service_template_names()
     backend = _service_backend(None)
     print(f"service backend: {backend}")
     if backend == "runit":
