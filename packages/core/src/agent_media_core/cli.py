@@ -28,7 +28,7 @@ from typing import Optional
 from ._paths import state_dir
 from .sinks import _mpv_ipc as ipc
 from .sinks.music import SinkMusic
-from .sinks.speech import SinkSpeech, _socket_for
+from .sinks.speech import SinkSpeech, _broker_max_volume, _socket_for
 from .state import StateStore
 from .types import Event, Priority, Source, Target
 
@@ -1365,8 +1365,17 @@ def cmd_seek(a) -> int:
 
 
 def cmd_volume(a) -> int:
+    """Nudge the broker's software volume by ±delta (the popup's -/= keys).
+
+    The ceiling is the broker's own --volume-max (MEDIA_SPEECH_VOLUME_MAX,
+    default 200), not a hardcoded number: mpv refuses a volume above its max,
+    and a clamp *below* the resting level made the first press of either key
+    snap down to the clamp — so "louder" made speech quieter.
+    """
     cur = _get("volume") or 100
-    ipc.set_property(_sock(), "volume", max(0, min(150, int(cur) + a.delta)))
+    ceiling = _broker_max_volume()
+    ipc.set_property(_sock(), "volume",
+                     max(0, min(int(ceiling), int(cur) + a.delta)))
     return 0
 
 
