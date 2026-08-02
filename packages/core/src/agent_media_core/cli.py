@@ -118,7 +118,7 @@ def render_status(*, idle: Optional[bool], pos: Optional[float],
         line += " [M]"
     if isinstance(speed, (int, float)) and abs(speed - 1.0) > 0.05:
         glyph = "⏩" if speed > 1.0 else "🐢"
-        line += f" {glyph}{speed:.2g}×"
+        line += f" {glyph}{round(speed, 2):g}×"
     return line
 
 
@@ -326,6 +326,26 @@ def _speech_display_state():
             snap.get("speed"), playing)
 
 
+def _sticky_speech_speed(live: Optional[float]) -> Optional[float]:
+    """The speech rate to *show*, including while nothing is playing.
+
+    Speed is a property of the long-lived broker mpv, so a 1.5× set mid-reply
+    still applies to the next one — but the readout used to vanish the moment
+    playback stopped (the remote/phone path has no now_playing mirror when
+    idle, so there's nothing to read). Keep a copy in the store: a live reading
+    always wins and refreshes it (so a broker restart back to 1.0 self-heals on
+    the next clip), and when there's none we fall back to what was last set.
+    """
+    st = StateStore()
+    if isinstance(live, (int, float)):
+        live = float(live)
+        prev = st.get_speech_speed() or 1.0
+        if abs(live - prev) > 0.005:
+            st.set_speech_speed(live)
+        return live
+    return st.get_speech_speed()
+
+
 def _speech_visual_flag() -> str:
     """"figure"/"reveal" while the now-playing speech message carries a
     purposeful visual ([[visual:]]/[[reveal:]] marker), else "". Drives the
@@ -426,12 +446,13 @@ def cmd_status(a) -> int:
 
 
 def cmd_popup_status(a) -> int:
-    """Aggregate the speech popup's whole redraw into ONE process: three lines —
-    status / subject-pane label / durable-mute count. The popup used to spawn
-    `status` + `now-pane` + `mute-count` separately (~3× Python startup) on every
-    refresh, which made it slow to open and slow to react. Emits exactly three
-    newline-terminated fields (any may be empty) so the caller reads them with
-    three `read -r`s.
+    """Aggregate the speech popup's whole redraw into ONE process: four lines —
+    status / subject-pane label / durable-mute count / speed. The popup used to
+    spawn `status` + `now-pane` + `mute-count` separately (~3× Python startup) on
+    every refresh, which made it slow to open and slow to react. Emits exactly
+    four newline-terminated fields (any may be empty) so the caller reads them
+    with four `read -r`s. Readers that only want the status line (the canvas
+    controller) take the leading fields and ignore the rest.
 
     With ``--act VERB [ARGS…]`` it first runs that media subcommand *in this
     process* (reusing main()'s parser/dispatch) and prepends its stdout,
@@ -458,6 +479,7 @@ def cmd_popup_status(a) -> int:
         # the caller reads before the three status fields.
         print(" ".join(buf.getvalue().split()))
     alert = _miss_alert_line()
+    speed = None
     if alert:
         print(alert)
     else:
@@ -473,6 +495,13 @@ def cmd_popup_status(a) -> int:
     n = sum(1 for v in m["panes"].values() if v) + \
         sum(1 for v in m["sessions"].values() if v)
     print(n if n else "")
+    # Fourth field: the speech rate as its own indicator, shown by the popup
+    # whether or not anything is playing (the status line above only carries it
+    # mid-clip). Empty at 1.0× — there's nothing worth a column then.
+    sp = _sticky_speech_speed(speed)
+    # %g on the rounded value, not %.2g: two *significant* digits turns the
+    # ladder's 1.25 rung into a wrong "1.2".
+    print(f"{round(sp, 2):g}" if sp is not None and abs(sp - 1.0) > 0.05 else "")
     return 0
 
 
@@ -737,7 +766,7 @@ def _title_status_line(pos: Optional[float], dur: Optional[float],
     if muted:
         line += " [M]"
     if isinstance(speed, (int, float)) and abs(speed - 1.0) > 0.05:
-        line += f" {'⏩' if speed > 1.0 else '🐢'}{speed:.2g}×"
+        line += f" {'⏩' if speed > 1.0 else '🐢'}{round(speed, 2):g}×"
     return line
 
 
@@ -1555,6 +1584,9 @@ def cmd_speed(a) -> int:
         target = max(_SPEED_MIN, min(_SPEED_MAX, float(f)))
     target = round(target, 2)
     ipc.set_property(sock, "speed", target)
+    # Remember it: the rate sticks on the broker across clips, so the popup
+    # keeps showing it while idle (see _sticky_speech_speed).
+    StateStore().set_speech_speed(target)
     if _remote_speech():
         _patch_speech_mirror(live_speed=target)
     return 0

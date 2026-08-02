@@ -723,6 +723,38 @@ class StateStore:
             row = cur.fetchone()
         return row[0] if row else None
 
+    _SPEECH_SPEED_KEY = "speech_speed"
+
+    def set_speech_speed(self, rate: Optional[float]) -> None:
+        """Remember the speech broker's playback rate.
+
+        The rate lives on the long-lived broker mpv, so it persists across
+        clips — but a *remote* broker (the phone) can only be read over the
+        bridge, and while idle there's no now_playing mirror to read it from.
+        Stashing it here lets the popup show "you're still at 1.5×" between
+        replies without paying a round-trip. 1.0 clears the row (nothing to
+        show).
+        """
+        with self._cursor() as cur:
+            if rate is None or abs(float(rate) - 1.0) <= 0.005:
+                cur.execute("DELETE FROM meta WHERE key = ?",
+                            (self._SPEECH_SPEED_KEY,))
+            else:
+                cur.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                            (self._SPEECH_SPEED_KEY, repr(float(rate))))
+
+    def get_speech_speed(self) -> Optional[float]:
+        with self._cursor() as cur:
+            cur.execute("SELECT value FROM meta WHERE key = ?",
+                        (self._SPEECH_SPEED_KEY,))
+            row = cur.fetchone()
+        if not row:
+            return None
+        try:
+            return float(row[0])
+        except (ValueError, TypeError):
+            return None
+
     _ROOMS_DUCK_KEY = "rooms_duck"
 
     def set_rooms_duck(self, marker: Optional[dict]) -> None:

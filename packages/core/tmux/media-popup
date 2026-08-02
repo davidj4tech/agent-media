@@ -181,7 +181,7 @@ trap cleanup EXIT
 # cached snapshot. Speech marquee = the caller pane's title; music marquee =
 # the current track. Trims surrounding whitespace; collapses newlines.
 fetch() {
-    local t smc=""
+    local t smc="" SSPD=""
     if [ "$CHANNEL" = "music" ]; then
         # Fused status+label: one `media` spawn AND one phone round-trip.
         # `now-status` follows the live backend (phone mpv when `play --where
@@ -216,10 +216,10 @@ fetch() {
         # the three status fields, so a keypress costs one spawn, not two.
         ACT_OUT=""
         if [ "$#" -gt 0 ]; then
-            { IFS= read -r ACT_OUT; IFS= read -r STATUS; IFS= read -r t; IFS= read -r smc; } < <(
+            { IFS= read -r ACT_OUT; IFS= read -r STATUS; IFS= read -r t; IFS= read -r smc; IFS= read -r SSPD; } < <(
                 TTS_POPUP_PANE="$HL_PANE" $MEDIA popup-status --show-idle --no-bar --act "$@" 2>/dev/null)
         else
-            { IFS= read -r STATUS; IFS= read -r t; IFS= read -r smc; } < <(
+            { IFS= read -r STATUS; IFS= read -r t; IFS= read -r smc; IFS= read -r SSPD; } < <(
                 TTS_POPUP_PANE="$HL_PANE" $MEDIA popup-status --show-idle --no-bar 2>/dev/null)
         fi
         t="${t#"${t%%[![:space:]]*}"}"; t="${t%"${t##*[![:space:]]}"}"
@@ -236,6 +236,11 @@ fetch() {
     # strip the text — we render a single 🔇 glyph instead of [M] + glyph.
     case "$STATUS" in *'[M]'*) MUTED=1 ;; esac
     STATUS="${STATUS/ \[M\]/}"
+    # Same for the speed readout the status line carries mid-clip (⏩1.5× /
+    # 🐢0.8×): the popup renders speed as its own indicator instead — from the
+    # sticky field below, so it survives playback ending — and showing both
+    # would print it twice.
+    STATUS="${STATUS/ ⏩*×/}"; STATUS="${STATUS/ 🐢*×/}"
     # Total durable mutes (the "don't forget you muted things" badge). The
     # *subject's* own mute is shown in the title (🔒 prefix from `now-pane`);
     # this is the global count. Speech-only; folded into the popup-status call
@@ -254,11 +259,18 @@ fetch() {
         HL=off
     fi
     case "$CHANNEL" in
+        speech)
+            # Speed rides in as popup-status line 4 ('' at 1.0×). It's the
+            # *sticky* rate — the broker keeps it between replies — so unlike
+            # the rest of the cluster it stays up while nothing is playing,
+            # which is the point: a 1.5× you set earlier still applies.
+            SPD="${SSPD:-}"
+            ;;
         book)
             # Book plays locally on this host, so its live speed/mute come
             # straight off the socket. Speech may play on a *remote* target
             # (the phone) — its mute rides in on `media status` as [M] (caught
-            # above) and its speed as the ⏩/🐢 glyph in the status line, both
+            # above) and its speed as popup-status' own field (above), both
             # fed from the intake monitor's local mirror. Reading the local
             # socket for speech would just report red5's idle broker (1.0×,
             # unmuted) and clobber the real remote state.

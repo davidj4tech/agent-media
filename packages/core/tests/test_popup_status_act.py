@@ -2,7 +2,7 @@
 
 The speech popup fuses a keypress's action and its redraw into ONE `media`
 spawn: `popup-status --act VERB …` runs VERB in-process, prepends its stdout
-as a leading line, then emits the usual three status fields. Without --act the
+as a leading line, then emits the usual four status fields. Without --act the
 output is unchanged (backward compatible with the status bar / timed refresh).
 """
 
@@ -15,16 +15,26 @@ from agent_media_core import cli
 
 @pytest.fixture(autouse=True)
 def stub_status(monkeypatch):
-    # Make the three status fields deterministic and side-effect free.
+    # Make the status fields deterministic and side-effect free.
     monkeypatch.setattr(cli, "_speech_display_state",
                         lambda: (True, None, None, False, False, None, False))
     monkeypatch.setattr(cli, "render_status", lambda **k: "STATUS")
     monkeypatch.setattr(cli, "_subject_label", lambda: ("", "the pane"))
 
     class FakeStore:
+        speed = None            # the sticky speech rate, class-level so every
+                                # instantiation inside cmd_popup_status shares it
+
         def list_mutes(self):
             return {"panes": {}, "sessions": {}}
+
+        def get_speech_speed(self):
+            return FakeStore.speed
+
+        def set_speech_speed(self, rate):
+            FakeStore.speed = rate
     monkeypatch.setattr(cli, "StateStore", FakeStore)
+    return FakeStore
 
 
 def _run(act=None):
@@ -32,10 +42,10 @@ def _run(act=None):
     return cli.cmd_popup_status(a)
 
 
-def test_no_act_emits_three_lines(capsys):
+def test_no_act_emits_four_lines(capsys):
     assert _run(None) == 0
     out = capsys.readouterr().out.splitlines()
-    assert out == ["STATUS", "the pane", ""]
+    assert out == ["STATUS", "the pane", "", ""]
 
 
 def test_act_prepends_action_output(monkeypatch, capsys):
@@ -49,7 +59,7 @@ def test_act_prepends_action_output(monkeypatch, capsys):
 
     assert _run(["now"]) == 0
     out = capsys.readouterr().out.splitlines()
-    assert out == ["spoken text here", "STATUS", "the pane", ""]
+    assert out == ["spoken text here", "STATUS", "the pane", "", ""]
 
 
 def test_act_output_collapsed_to_one_line(monkeypatch, capsys):
@@ -63,7 +73,7 @@ def test_act_output_collapsed_to_one_line(monkeypatch, capsys):
     _run(["now"])
     out = capsys.readouterr().out.splitlines()
     assert out[0] == "line one line two"
-    assert out[1:] == ["STATUS", "the pane", ""]
+    assert out[1:] == ["STATUS", "the pane", "", ""]
 
 
 def test_act_error_does_not_blank_the_redraw(monkeypatch, capsys):
@@ -75,11 +85,36 @@ def test_act_error_does_not_blank_the_redraw(monkeypatch, capsys):
 
     assert _run(["now"]) == 0
     out = capsys.readouterr().out.splitlines()
-    assert out == ["", "STATUS", "the pane", ""]      # empty action line, then status
+    assert out == ["", "STATUS", "the pane", "", ""]  # empty action line, then status
+
+
+def test_speed_field_survives_playback_stopping(stub_status, capsys):
+    """The point of the field: a 1.5× set mid-reply still applies to the next
+    one, so the popup keeps showing it after the status line has gone idle."""
+    stub_status.speed = 1.5
+    _run(None)
+    assert capsys.readouterr().out.splitlines()[-1] == "1.5"
+
+
+def test_speed_field_empty_at_normal_rate(stub_status, capsys):
+    stub_status.speed = 1.0
+    _run(None)
+    assert capsys.readouterr().out.splitlines()[-1] == ""
+
+
+def test_live_speed_refreshes_the_sticky_copy(monkeypatch, stub_status, capsys):
+    """A live reading wins — so a broker restarted back to 1.0 self-heals on the
+    next clip instead of the popup insisting on a rate that no longer applies."""
+    stub_status.speed = 1.5
+    monkeypatch.setattr(cli, "_speech_display_state",
+                        lambda: (False, 1.0, 10.0, False, False, 1.0, True))
+    _run(None)
+    assert capsys.readouterr().out.splitlines()[-1] == ""
+    assert stub_status.speed in (None, 1.0)
 
 
 def test_act_bad_verb_does_not_crash(capsys):
     # A malformed action (parse failure -> SystemExit) is swallowed; redraw stays.
     assert _run(["definitely-not-a-verb"]) == 0
     out = capsys.readouterr().out.splitlines()
-    assert out[-3:] == ["STATUS", "the pane", ""]
+    assert out[-4:] == ["STATUS", "the pane", "", ""]
