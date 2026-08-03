@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Full-size fzf chapter picker for the music channel (popup `c`).
+# Lists the live mpv track's embedded chapters (fetched DJ sets/albums carry
+# them in the .mka) and jumps to the selection. The list opens positioned on
+# the chapter that's playing now (the ▸ row).
+set -u
+
+err="${TMPDIR:-/tmp}/media-popup-chapters.err.$$"
+trap 'rm -f "$err"' EXIT
+
+# Build the list before fzf so backend failures stay visible in this popup.
+lines=$(media music chapters --lines 2>"$err")
+rc=$?
+if [ "$rc" -ne 0 ] || [ -z "$lines" ]; then
+    cat "$err" >&2
+    echo
+    read -r -p "no chapters (enter to close)" _
+    exit 1
+fi
+
+cur=$(printf '%s\n' "$lines" | grep -n '^▸' | head -1 | cut -d: -f1)
+sel=$(printf '%s\n' "$lines" \
+    | fzf --with-nth=1 --delimiter=$'\t' --prompt='chapter> ' \
+          ${cur:+--bind "load:pos($cur)"})
+rc=$?
+[ "$rc" -eq 0 ] || exit "$rc"
+[ -n "$sel" ] || exit 1
+
+media music chapter "${sel#*$'\t'}"
+sleep 0.6    # let the ⏭ confirmation register before the popup reopens

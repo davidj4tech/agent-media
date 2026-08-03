@@ -954,3 +954,56 @@ def test_channel_is_playing_swallows_probe_errors(monkeypatch):
         raise OSError("MPD down")
     monkeypatch.setattr(cli.SinkMusic, "status_dict", boom)
     assert cli._channel_is_playing("music") is False
+
+
+# --- music chapters (popup `c` picker backend) -----------------------------
+
+class _ChapArgs:
+    def __init__(self, action, uri=None, lines=False):
+        self.action, self.uri, self.lines = action, uri, lines
+
+
+_CHAPS = [{"title": "Intro", "time": 0.0},
+          {"title": "Deep Blue", "time": 200.0},
+          {"title": "", "time": 3725.0}]
+
+
+def test_music_chapters_lists_with_marker_and_lines(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_music_mpv_chapters",
+                        lambda: ("ep", _CHAPS, 1))
+    assert cli._cmd_music_chapters(_ChapArgs("chapters")) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert out[0].startswith("   1")
+    assert out[1].startswith("▸  2") and "3:20" in out[1]
+    assert "chapter 3" in out[2] and "1:02:05" in out[2]  # untitled + H:MM:SS
+    assert "\t" not in out[0]
+
+    assert cli._cmd_music_chapters(_ChapArgs("chapters", lines=True)) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert out[0].endswith("\t1") and out[2].endswith("\t3")
+
+
+def test_music_chapter_jump_is_one_based(monkeypatch, capsys):
+    from agent_media_core.sinks import _mpv_ipc as ipc
+    monkeypatch.setattr(cli, "_music_mpv_chapters",
+                        lambda: ("ep", _CHAPS, 0))
+    calls = []
+    monkeypatch.setattr(ipc, "set_property",
+                        lambda ep, name, val: calls.append((ep, name, val)))
+    assert cli._cmd_music_chapters(_ChapArgs("chapter", "2")) == 0
+    assert calls == [("ep", "chapter", 1)]
+    assert "Deep Blue" in capsys.readouterr().out
+
+
+def test_music_chapter_rejects_bad_numbers(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_music_mpv_chapters",
+                        lambda: ("ep", _CHAPS, 0))
+    assert cli._cmd_music_chapters(_ChapArgs("chapter", "7")) == 2
+    assert cli._cmd_music_chapters(_ChapArgs("chapter", "x")) == 2
+
+
+def test_music_chapters_no_track_and_no_chapters(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_music_mpv_chapters", lambda: None)
+    assert cli._cmd_music_chapters(_ChapArgs("chapters")) == 1
+    monkeypatch.setattr(cli, "_music_mpv_chapters", lambda: ("ep", [], None))
+    assert cli._cmd_music_chapters(_ChapArgs("chapters")) == 1

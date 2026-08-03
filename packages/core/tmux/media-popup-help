@@ -35,6 +35,9 @@ mapfile -t L <<'EOF'
  │ o      open URL     │
  │ w      web UI       │
  ╰─────────────────────╯
+ ╭ music only ─────────╮
+ │ c      chapters     │
+ ╰─────────────────────╯
  ╭ speech & book ──────╮
  │ [ ]    speed -/+    │
  │ ⌫      reset speed  │

@@ -2518,6 +2518,90 @@ def _music_live_backend(m: "SinkMusic"):
     return m
 
 
+def _music_mpv_chapters() -> Optional[tuple[str, list, Optional[int]]]:
+    """(endpoint, chapter-list, current index) from the live mpv renderer —
+    the phone player first, then the rooms Mopidy-Mpv — or None when neither
+    has a track loaded. One batched round-trip per candidate endpoint (the
+    phone bridge costs ~600ms per connect). MPD/GStreamer streams never
+    appear here: they have no chapter metadata to browse."""
+    from .sinks import music_local
+    from .sinks import _mpv_ipc as ipc
+    from .sinks.music import _mpv_socket
+    endpoints = []
+    if music_local.configured():
+        endpoints.append(music_local.endpoint())
+    sock = _mpv_socket()
+    if sock and os.path.exists(sock):
+        endpoints.append(sock)
+    for ep in endpoints:
+        # The tcp bridge (socat fork-per-connection) drops a connect now and
+        # then — same reason ipc.command() retries — and a dozing phone can
+        # eat the first few round-trips entirely while its radio wakes up. A
+        # one-shot failure here would misread a playing phone as "no
+        # chapters", and the picker is user-initiated (latency is fine), so
+        # be generous: several attempts, long per-try timeout.
+        attempts = 5 if str(ep).startswith("tcp://") else 1
+        props = None
+        for i in range(attempts):
+            try:
+                props = ipc.get_properties(
+                    ep, ["idle-active", "chapter-list", "chapter"],
+                    timeout=3.0)
+                break
+            except (ipc.MpvIpcError, OSError):
+                continue
+        if props is None or props.get("idle-active") is not False:
+            continue
+        cur = props.get("chapter")
+        return ep, list(props.get("chapter-list") or []), (
+            int(cur) if isinstance(cur, int) else None)
+    return None
+
+
+def _cmd_music_chapters(a) -> int:
+    """`music chapters [--lines]` / `music chapter N` — browse and jump the
+    embedded chapters of the live mpv track (fetched DJ sets/albums). Numbers
+    are 1-based to match the printed list; `--lines` emits
+    `display<TAB>number` rows for an external picker (media-popup-chapters)."""
+    from .sinks import _mpv_ipc as ipc
+    got = _music_mpv_chapters()
+    if got is None:
+        print("media music chapters: no mpv track live "
+              "(MPD/GStreamer streams have no chapters)", file=sys.stderr)
+        return 1
+    ep, chaps, cur = got
+    if not chaps:
+        print("media music chapters: this track has no chapters",
+              file=sys.stderr)
+        return 1
+    if a.action == "chapter":
+        try:
+            n = int(a.uri or "")
+        except ValueError:
+            print(f"media music chapter: bad chapter {a.uri!r} "
+                  f"(want 1–{len(chaps)})", file=sys.stderr)
+            return 2
+        if not 1 <= n <= len(chaps):
+            print(f"media music chapter: {n} out of range "
+                  f"(1–{len(chaps)})", file=sys.stderr)
+            return 2
+        try:
+            ipc.set_property(ep, "chapter", n - 1)
+        except (ipc.MpvIpcError, OSError) as e:
+            print(f"media music chapter: {e}", file=sys.stderr)
+            return 1
+        title = str(chaps[n - 1].get("title") or "").strip() or f"chapter {n}"
+        print(f"⏭ {n:02d} · {title}")
+        return 0
+    for i, ch in enumerate(chaps):
+        title = str(ch.get("title") or "").strip() or f"chapter {i + 1}"
+        mark = "▸" if cur == i else " "
+        row = (f"{mark} {i + 1:2d}  "
+               f"{_hms(float(ch.get('time') or 0)):>7}  {title}")
+        print(f"{row}\t{i + 1}" if a.lines else row)
+    return 0
+
+
 def _resolve_music_where(where: str) -> str:
     """Resolve a `--where` value to a concrete backend: 'phone' or 'rooms'.
 
@@ -2834,6 +2918,8 @@ def cmd_music(a) -> int:
             print(label)
             print(spd)
         return 0
+    if a.action in ("chapters", "chapter"):
+        return _cmd_music_chapters(a)
     if a.action == "bookmark":
         return _music_bookmark(m, a.uri or "", range_end=bool(getattr(a, "range_end", False)), slot=getattr(a, "slot", "") or "")
     if a.action == "bookmarks":
@@ -3972,7 +4058,7 @@ def _build_parser() -> argparse.ArgumentParser:
                    choices=("play", "pause", "resume", "stop", "toggle",
                             "next", "prev", "status", "now", "now-status",
                             "seek", "volume", "speed", "bookmark",
-                            "bookmarks"))
+                            "bookmarks", "chapters", "chapter"))
     s.add_argument("uri", nargs="?",
                    help="for 'play': Mopidy URI (e.g. yt:https://...); "
                         "for 'seek': time H:MM:SS (absolute) or +90/-5:00 "
@@ -3980,7 +4066,11 @@ def _build_parser() -> argparse.ArgumentParser:
                         "rate 0.25–4 (absolute), ±delta, 'up'/'down' "
                         "(ladder), 'reset', or empty to show the current "
                         "rate; for 'bookmark': optional note; for "
-                        "'bookmarks': optional limit")
+                        "'bookmarks': optional limit; for 'chapter': "
+                        "1-based chapter number (see 'chapters')")
+    s.add_argument("--lines", action="store_true",
+                   help="for 'chapters': print display<TAB>number rows "
+                        "for an external picker")
     s.add_argument("--width", type=int, default=12,
                    help="for 'status': progress-bar width")
     s.add_argument("--show-idle", action="store_true",

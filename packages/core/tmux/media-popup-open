@@ -31,7 +31,8 @@ flag="${TMPDIR:-/tmp}/media-popup-help.$$"
 linkflag="${TMPDIR:-/tmp}/media-popup-link.$$"
 searchflag="${TMPDIR:-/tmp}/media-popup-search.$$"
 chanflag="${TMPDIR:-/tmp}/media-popup-channel.$$"
-rm -f "$flag" "$linkflag" "$searchflag" "$chanflag"
+chapflag="${TMPDIR:-/tmp}/media-popup-chapters.$$"
+rm -f "$flag" "$linkflag" "$searchflag" "$chanflag" "$chapflag"
 # Link popup width: the FULL client width (uncapped, unlike the control popup),
 # so a long web-UI URL fits on one line — Termux's long-press URL detection (no
 # OSC 8) fails on a wrap. Bounded for sanity.
@@ -85,7 +86,7 @@ PY=$(( ch - 1 )); [ "$PY" -lt "$PH" ] && PY=$PH
 while :; do
     title=$(popup_title)
     popup -w "$w" -h "$PH" -x R -y "$PY" -s 'bg=default' -T "$title" \
-        "${dbg}TTS_POPUP_PANE=$pane MEDIA_POPUP_HELP_FLAG=$flag MEDIA_POPUP_LINK_FLAG=$linkflag MEDIA_POPUP_SEARCH_FLAG=$searchflag MEDIA_POPUP_CHANNEL_FLAG=$chanflag MEDIA_POPUP_CHANNEL=$chan media-popup"
+        "${dbg}TTS_POPUP_PANE=$pane MEDIA_POPUP_HELP_FLAG=$flag MEDIA_POPUP_LINK_FLAG=$linkflag MEDIA_POPUP_SEARCH_FLAG=$searchflag MEDIA_POPUP_CHAPTERS_FLAG=$chapflag MEDIA_POPUP_CHANNEL_FLAG=$chanflag MEDIA_POPUP_CHANNEL=$chan media-popup"
     if [ -f "$chanflag" ]; then
         chan=$(cat "$chanflag" 2>/dev/null); chan=${chan:-speech}
         rm -f "$chanflag"
@@ -105,8 +106,14 @@ while :; do
         sw="$cw"; [ "$sw" -gt 90 ] && sw=90; [ "$sw" -lt "$MIN" ] && sw="$MIN"
         sh="$ch"; [ "$sh" -gt 24 ] && sh=24; [ "$sh" -lt 10 ] && sh="$ch"
         popup -w "$sw" -h "$sh" -s 'bg=default' -T " search $chan " "media-popup-search $chan"
+    elif [ -f "$chapflag" ]; then     # `c` → full-size chapter picker, then reopen
+        chan=$(cat "$chapflag" 2>/dev/null); chan=${chan:-music}
+        rm -f "$chapflag"
+        sw="$cw"; [ "$sw" -gt 90 ] && sw=90; [ "$sw" -lt "$MIN" ] && sw="$MIN"
+        sh="$ch"; [ "$sh" -gt 24 ] && sh=24; [ "$sh" -lt 10 ] && sh="$ch"
+        popup -w "$sw" -h "$sh" -s 'bg=default' -T ' chapters ' media-popup-chapters
     else
         break                          # normal close → done
     fi
 done
-rm -f "$flag" "$linkflag" "$searchflag" "$chanflag"
+rm -f "$flag" "$linkflag" "$searchflag" "$chanflag" "$chapflag"
