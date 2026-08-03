@@ -25,8 +25,10 @@
 #   w       the channel's web UI — speech → canvas, music → Mopidy-Iris,
 #           book → simple-mpv-webui. Shows an OSC 8 link for the attached
 #           client (+ raw URL + copies it to the tmux paste buffer)
-#   c       chapter browser (music) — fzf list of the live track's embedded
-#           chapters, opens on the one playing; Enter jumps to it
+#   c       channel browser — music: fzf list of the live track's embedded
+#           chapters, opened on the one playing, Enter jumps; speech: fzf
+#           list of this conversation's clips (ctrl-a = every conversation
+#           in played order), Enter replays
 #   b       bookmark music/book position
 #   v       toggle auto-highlight (speech)   ?  help   q / Esc  close
 #   ← →     (or ↑ ↓) move a focus highlight across the buttons; Enter activates
@@ -778,17 +780,19 @@ handle_key() {
         # Ask pi about my current place in what I'm listening to (all channels):
         # read a question, seed a fresh pi window with the channel's context.
         a)   typed_ask ;;
-        # Chapter browser — music only (fetched DJ sets/albums carry embedded
-        # chapters). Full-size fzf picker via the flag-file round-trip, like `/`.
-        c)   if [ "$CHANNEL" != "music" ]; then
-                 tmux display-message "☰ chapters — music only" 2>/dev/null
-             elif [ -n "${MEDIA_POPUP_CHAPTERS_FLAG:-}" ]; then
-                 printf '%s' "$CHANNEL" > "$MEDIA_POPUP_CHAPTERS_FLAG"; QUIT=1; return
+        # Channel browser — music: the live track's embedded chapters;
+        # speech: this conversation's clips (ctrl-a inside = all, played
+        # order). Full-size fzf picker via the flag-file round-trip, like `/`.
+        c)   if [ "$CHANNEL" = "book" ]; then
+                 tmux display-message "☰ no browser on book (yet)" 2>/dev/null
+             elif [ -n "${MEDIA_POPUP_BROWSE_FLAG:-}" ]; then
+                 printf '%s' "$CHANNEL" > "$MEDIA_POPUP_BROWSE_FLAG"; QUIT=1; return
              else
                  # Standalone fallback (not opened through media-popup-open).
                  mouse_off
                  printf '\033[H\033[2J\033[?25h'
-                 media-popup-chapters
+                 if [ "$CHANNEL" = "music" ]; then media-popup-chapters
+                 else media-popup-clips; fi
                  printf '\033[?25l'
                  mouse_on
                  draw

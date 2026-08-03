@@ -1007,3 +1007,77 @@ def test_music_chapters_no_track_and_no_chapters(monkeypatch, capsys):
     assert cli._cmd_music_chapters(_ChapArgs("chapters")) == 1
     monkeypatch.setattr(cli, "_music_mpv_chapters", lambda: ("ep", [], None))
     assert cli._cmd_music_chapters(_ChapArgs("chapters")) == 1
+
+
+# --- speech clip browser (popup `c` picker backend) ------------------------
+
+class _HistArgs:
+    def __init__(self, n=20, session=False, lines=False):
+        self.n, self.session, self.lines = n, session, lines
+
+
+def _hist_rows():
+    import time as _t
+    now = _t.time()
+    return [
+        {"id": 42, "started_at": now, "text": "latest reply\nsecond line",
+         "extras": {"source_window": "proj-alpha"}},
+        {"id": 41, "started_at": now - 60, "text": "older reply",
+         "extras": {}},
+    ]
+
+
+def test_history_lines_unscoped_labels_and_ids(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_speech_history",
+                        lambda n, session=None: _hist_rows())
+    assert cli.cmd_history(_HistArgs(lines=True)) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert "▪proj-alpha" in out[0] and out[0].endswith("\t42")
+    assert "latest reply second line" in out[0]      # newline collapsed
+    assert "▪" not in out[1] and out[1].endswith("\t41")  # no window recorded
+
+
+def test_history_lines_session_scoped_drops_labels(monkeypatch, capsys):
+    seen = {}
+    def fake_hist(n, session=None):
+        seen["session"] = session
+        return _hist_rows()
+    monkeypatch.setattr(cli, "_speech_history", fake_hist)
+    monkeypatch.setattr(cli, "_anchor_session", lambda: "sess-1")
+    assert cli.cmd_history(_HistArgs(session=True, lines=True)) == 0
+    assert seen["session"] == "sess-1"
+    out = capsys.readouterr().out.splitlines()
+    assert "▪" not in out[0] and out[0].endswith("\t42")
+
+
+def test_history_session_falls_back_unscoped_without_anchor(monkeypatch, capsys):
+    seen = {}
+    def fake_hist(n, session=None):
+        seen["session"] = session
+        return _hist_rows()
+    monkeypatch.setattr(cli, "_speech_history", fake_hist)
+    monkeypatch.setattr(cli, "_anchor_session", lambda: None)
+    assert cli.cmd_history(_HistArgs(session=True, lines=True)) == 0
+    assert seen["session"] is None
+    assert "▪proj-alpha" in capsys.readouterr().out  # unscoped view keeps labels
+
+
+class _ReplayArgs:
+    def __init__(self, index=1, id=None):
+        self.index, self.id = index, id
+
+
+def test_replay_by_id_bypasses_traversal_scope(monkeypatch):
+    monkeypatch.setattr(cli, "_speech_history",
+                        lambda n, session=None: _hist_rows())
+    played = []
+    monkeypatch.setattr(cli, "_replay_row", lambda row: played.append(row["id"]) or 0)
+    assert cli.cmd_replay(_ReplayArgs(id=41)) == 0
+    assert played == [41]
+
+
+def test_replay_by_id_unknown_errors(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_speech_history",
+                        lambda n, session=None: _hist_rows())
+    assert cli.cmd_replay(_ReplayArgs(id=999)) == 1
+    assert "no clip with id" in capsys.readouterr().err

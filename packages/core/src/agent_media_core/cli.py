@@ -1890,7 +1890,15 @@ def _do_replay(index: int, session: Optional[str] = None) -> int:
     if len(rows) < index:
         print("media: no clip to replay", file=sys.stderr)
         return 1
-    row = rows[index - 1]
+    return _replay_row(rows[index - 1])
+
+
+def _replay_row(row: dict) -> int:
+    """Play one speech-history row: push its clips to the speech target and
+    refresh now_playing (+ position follower). The traversal path addresses
+    rows by index (`_do_replay`); the clip browser addresses them by history
+    id (`replay --id`), which stays stable while a picker is open even if new
+    clips land meanwhile."""
     uri = row.get("uri")
     if not uri:
         return 1
@@ -2031,6 +2039,15 @@ def _do_replay(index: int, session: Optional[str] = None) -> int:
 
 
 def cmd_replay(a) -> int:
+    if getattr(a, "id", None) is not None:
+        # Clip browser: address the row by stable history id, not a
+        # traversal index — indexes shift when a new clip lands while the
+        # picker is open.
+        for row in _speech_history(2000):
+            if row.get("id") == a.id:
+                return _replay_row(row)
+        print(f"media replay: no clip with id {a.id}", file=sys.stderr)
+        return 1
     # Scope < / > / r traversal to the current tmux session's clips.
     return _do_replay(a.index, session=_anchor_session())
 
@@ -2334,11 +2351,30 @@ def cmd_replay_track(a) -> int:
 
 
 def cmd_history(a) -> int:
-    for r in _speech_history(a.n):
-        ts = datetime.datetime.fromtimestamp(
-            r.get("started_at") or 0).strftime("%H:%M")
-        txt = (r.get("text") or "").replace("\n", " ").strip()[:80]
-        print(f"{ts}  {txt}")
+    """List recent spoken clips; the clip browser's data source.
+
+    ``--session`` scopes to the popup's anchor conversation (falling back to
+    all clips when none resolves — same degradation as < / > traversal).
+    ``--lines`` emits ``display<TAB>history-id`` rows for an external picker
+    (media-popup-clips); unscoped lines carry a ▪window label so interleaved
+    conversations stay tellable-apart in the played-order view."""
+    session = _anchor_session() if getattr(a, "session", False) else None
+    scoped = session is not None
+    today = datetime.date.today()
+    for r in _speech_history(a.n, session=session):
+        dt = datetime.datetime.fromtimestamp(r.get("started_at") or 0)
+        ts = dt.strftime("%H:%M") if dt.date() == today \
+            else dt.strftime("%d %b %H:%M")
+        txt = (r.get("text") or "").replace("\n", " ").strip()
+        if not getattr(a, "lines", False):
+            print(f"{ts}  {txt[:80]}")
+            continue
+        label = ""
+        if not scoped:
+            ex = r.get("extras") or {}
+            win = str(ex.get("source_window") or "").strip()
+            label = f" ▪{win[:18]}" if win else ""
+        print(f"{ts}{label}  {txt[:120]}\t{r.get('id')}")
     return 0
 
 
@@ -4005,6 +4041,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("replay", help="replay the Nth most recent clip (1=latest)")
     s.add_argument("index", nargs="?", type=int, default=1)
+    s.add_argument("--id", type=int, default=None,
+                   help="replay by stable history id instead (see "
+                        "'history --lines'; used by the clip browser)")
     s.set_defaults(func=cmd_replay)
 
     s = sub.add_parser("replay-prev", help=argparse.SUPPRESS)  # popup < (restart-first)
@@ -4024,6 +4063,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("history", help="list recent spoken clips")
     s.add_argument("n", nargs="?", type=int, default=20)
+    s.add_argument("--session", action="store_true",
+                   help="only the popup's anchor conversation (all clips "
+                        "when none resolves)")
+    s.add_argument("--lines", action="store_true",
+                   help="print display<TAB>history-id rows for an external "
+                        "picker")
     s.set_defaults(func=cmd_history)
 
     s = sub.add_parser("say", help="speak text (stdin if no arg)")

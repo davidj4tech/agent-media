@@ -29,6 +29,7 @@ mapfile -t L <<'EOF'
  │ m      mute now     │
  │ M      keep muted 🔒│
  │ v      highlight    │
+ │ c      clip browser │
  ╰─────────────────────╯
  ╭ book & music ───────╮
  │ s      typed seek   │
