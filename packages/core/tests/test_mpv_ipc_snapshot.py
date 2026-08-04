@@ -79,3 +79,76 @@ def test_snapshot_returns_when_all_answered_not_all_success(tmp_path):
     assert "time-pos" not in out and "duration" not in out
     # ...and crucially we didn't wait out the 2s deadline for the missing ones.
     assert elapsed < 1.0, f"snapshot stalled ({elapsed:.2f}s) — regressed to deadline wait"
+
+
+def _flaky_mpv(sock_path, dead_rounds, names):
+    """A stub that eats its first `dead_rounds` connections (accepts, reads,
+    never replies — a socat bridge drop / dozing phone) and answers every
+    request on the connection after that."""
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv.bind(str(sock_path))
+    srv.listen(4)
+
+    def serve():
+        for round_no in range(dead_rounds + 1):
+            conn, _ = srv.accept()
+            if round_no < dead_rounds:
+                conn.recv(4096)      # swallow the payload, say nothing
+                conn.close()
+                continue
+            with conn:
+                buf = b""
+                seen = 0
+                while seen < len(names):
+                    chunk = conn.recv(4096)
+                    if not chunk:
+                        break
+                    buf += chunk
+                    while b"\n" in buf:
+                        line, buf = buf.split(b"\n", 1)
+                        if not line.strip():
+                            continue
+                        msg = json.loads(line.decode())
+                        seen += 1
+                        conn.sendall((json.dumps(
+                            {"error": "success",
+                             "data": f"val-{msg['command'][1]}",
+                             "request_id": msg["request_id"]}) + "\n").encode())
+        srv.close()
+
+    threading.Thread(target=serve, daemon=True).start()
+    for _ in range(100):
+        if sock_path.exists():
+            break
+        time.sleep(0.01)
+
+
+def test_snapshot_retries_past_dead_rounds(tmp_path):
+    sock = tmp_path / "mpv.sock"
+    names = ["idle-active", "chapter"]
+    _flaky_mpv(sock, dead_rounds=2, names=names)
+    out = ipc.get_properties(sock, names, timeout=0.5, attempts=4)
+    assert out == {n: f"val-{n}" for n in names}
+
+
+def test_snapshot_default_stays_single_shot(tmp_path):
+    sock = tmp_path / "mpv.sock"
+    names = ["idle-active", "chapter"]
+    _flaky_mpv(sock, dead_rounds=1, names=names)
+    start = time.time()
+    out = ipc.get_properties(sock, names, timeout=0.5)
+    # One dead round, no retry: empty snapshot, back well under 2 timeouts —
+    # the per-tick pollers' cadence must not grow a hidden retry stall.
+    assert out == {}
+    assert time.time() - start < 1.0
+
+
+def test_snapshot_reraises_connect_error_after_retries(tmp_path):
+    sock = tmp_path / "nobody-home.sock"
+    start = time.time()
+    try:
+        ipc.get_properties(sock, ["idle-active"], timeout=0.5, attempts=3)
+        raise AssertionError("expected OSError for a missing socket")
+    except OSError:
+        pass
+    assert time.time() - start < 3.0

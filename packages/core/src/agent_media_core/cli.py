@@ -2570,23 +2570,18 @@ def _music_mpv_chapters() -> Optional[tuple[str, list, Optional[int]]]:
     if sock and os.path.exists(sock):
         endpoints.append(sock)
     for ep in endpoints:
-        # The tcp bridge (socat fork-per-connection) drops a connect now and
-        # then — same reason ipc.command() retries — and a dozing phone can
-        # eat the first few round-trips entirely while its radio wakes up. A
-        # one-shot failure here would misread a playing phone as "no
-        # chapters", and the picker is user-initiated (latency is fine), so
-        # be generous: several attempts, long per-try timeout.
+        # Generous retries: a dozing phone eats the first few round-trips
+        # while its radio wakes, and a one-shot failure would misread a
+        # playing phone as "no chapters". The picker is user-initiated, so
+        # the extra seconds beat the wrong answer.
         attempts = 5 if str(ep).startswith("tcp://") else 1
-        props = None
-        for i in range(attempts):
-            try:
-                props = ipc.get_properties(
-                    ep, ["idle-active", "chapter-list", "chapter"],
-                    timeout=3.0)
-                break
-            except (ipc.MpvIpcError, OSError):
-                continue
-        if props is None or props.get("idle-active") is not False:
+        try:
+            props = ipc.get_properties(
+                ep, ["idle-active", "chapter-list", "chapter"],
+                timeout=3.0, attempts=attempts)
+        except (ipc.MpvIpcError, OSError):
+            continue
+        if props.get("idle-active") is not False:
             continue
         cur = props.get("chapter")
         return ep, list(props.get("chapter-list") or []), (

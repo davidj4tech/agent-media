@@ -188,7 +188,7 @@ def get_property(sock_path: str | Path, name: str, timeout: float = 2.0) -> Any:
 
 
 def get_properties(sock_path: str | Path, names: list,
-                   timeout: float = 2.0) -> dict:
+                   timeout: float = 2.0, attempts: int = 1) -> dict:
     """Fetch several properties over ONE connection (request_id-matched).
 
     A monitor that reads playlist-pos + idle + pause + time-pos every tick would
@@ -196,7 +196,37 @@ def get_properties(sock_path: str | Path, names: list,
     them on one socket makes the whole snapshot one round-trip. Returns
     ``{name: value}`` for the ones that answered success; missing/errored names
     are simply absent (callers treat that as unknown). Async events are ignored.
+
+    ``attempts``: transport retries. A round where *nothing* answered — connect
+    refused, or every reply eaten (a tcp bridge drop; a dozing phone whose
+    radio takes seconds to wake) — is a transport failure and, with attempts
+    > 1, retried. A round where ANY request was answered is authoritative:
+    missing names are then real per-property errors, not transport loss. The
+    default stays single-shot so per-tick pollers (replay tracker, popup
+    status) can't stall their cadence on a dead endpoint; user-initiated
+    actions (the chapter browser) pass a generous count instead. Exhaustion
+    re-raises the last connect error, or returns {} when connections opened
+    but nothing answered (the pre-retry semantics).
     """
+    last_err: Optional[OSError] = None
+    for attempt in range(max(1, attempts)):
+        if attempt:
+            time.sleep(0.2)
+        try:
+            out, answered = _get_properties_once(sock_path, names, timeout)
+        except OSError as e:
+            last_err = e
+            continue
+        if answered:
+            return out
+    if last_err is not None:
+        raise last_err
+    return {}
+
+
+def _get_properties_once(sock_path: str | Path, names: list,
+                         timeout: float) -> tuple[dict, int]:
+    """One transport round of `get_properties`: ({answered-ok}, #answered)."""
     idx = {i + 1: n for i, n in enumerate(names)}
     s = _open(sock_path, timeout)
     try:
@@ -235,7 +265,7 @@ def get_properties(sock_path: str | Path, names: list,
                     answered.add(rid)
                     if msg.get("error") == "success":
                         out[idx[rid]] = msg.get("data")
-        return out
+        return out, len(answered)
     finally:
         s.close()
 
