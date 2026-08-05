@@ -27,3 +27,11 @@ active, and before speaking either (a) wait for it to finish, or (b) actively
 pause/flush it (media pause / speech-flush, or --urgent/--supersede) so the two
 voices never fight. This is the intended payoff of the breadcrumb + control
 channel work — treat speech as something to manage, not a parallel stream.
+
+## Refinement (2026-08-05): the user talking to CeCe IS the barge-in signal
+No STT needed for the common case. When David speaks to CeCe in the voice chat,
+that inbound turn is itself the "user is speaking" signal. Reflex: at the START
+of CeCe's turn, if canvas /speech shows speaking=true (e.g. Claude Code TTS on
+the phone), pause it (media pause) BEFORE replying, so the phone speech doesn't
+compete with the live conversation. STT-triggered barge-in is only needed for
+detecting speech that never routes through CeCe.
