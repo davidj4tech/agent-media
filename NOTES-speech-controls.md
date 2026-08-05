@@ -51,3 +51,10 @@ agent-media (or just the control/duck path) ran ON the phone, the pause could
 land locally and skip BOTH the cloud hop AND the red5->phone leg. Possibly the
 snappiest option of all. Weigh against phone-deploy cost/maintenance. Evaluate
 alongside the local barge-in trigger above.
+
+### CORRECTION (David, same night): agent-media ALREADY runs on the phone
+So the "phone-native" branch above is not a fresh deploy — the runtime is
+already there. The work is likely just wiring the duck/control path to fire
+LOCALLY on the phone (poke the phone's own mpv) instead of round-tripping via
+red5. That makes it the most promising low-latency option, not the most costly.
+Start here tomorrow.
