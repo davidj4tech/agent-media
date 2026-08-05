@@ -5,8 +5,10 @@ visual-canvas server (a5a1c94): should it and the pre-existing
 `speech-state.service` converge into one speech-state service that both the
 remote duckers and the peek read from?
 
-**Verdict: no convergence. Two endpoints, two contracts. Version the ducker
-script; optionally mirror its probe as a field in /speech for new consumers.**
+**Verdict: no convergence. Two endpoints, two contracts. Optionally mirror the
+ducker's probe as a `local_audio` field in /speech for new consumers.**
+(Superseded 2026-08-05: the original verdict also said "version the ducker
+script" — see the correction in (d); it is already versioned in dotfiles.)
 
 ## (a) The two services today
 
