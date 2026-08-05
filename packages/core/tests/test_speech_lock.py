@@ -400,6 +400,42 @@ def test_paused_holder_not_overtaken(tmp_path, monkeypatch):
     a.release()
 
 
+def test_idle_broker_is_not_a_paused_holder(tmp_path, monkeypatch):
+    """`pause` on an IDLE broker is a leftover, not a deliberate hold.
+
+    The extras path above carries `live_pause` only while a clip is playing;
+    the local per-sentence loop records none, so the exemption falls back to
+    reading the broker. mpv keeps `pause` across an unloaded clip, so a sink
+    parked at pause=true with nothing loaded reads as "deliberately paused" —
+    and a holder wedged in front of it buys the extra grace window on top of
+    its own. That is how a hook that wedged at 16:35 on 2026-08-05 kept every
+    later reply queued behind it.
+    """
+    from agent_media_core.state import StateStore
+    from agent_media_core.sinks import _mpv_ipc as ipc
+    from agent_media_core.sinks import speech as speech_sink
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+
+    store = StateStore()
+    # No live_pause in extras -> the exemption must consult the broker.
+    store.set_now_playing(
+        "speech", uri="clip-a-000", started_at=time.time(),
+        target="local", extras={"source_session": "sess-A"})
+
+    props = {"pause": True, "idle-active": True}
+    monkeypatch.setattr(speech_sink, "_socket_for", lambda target: "/nonexistent.sock")
+    monkeypatch.setattr(ipc, "get_property", lambda sock, name, **kw: props[name])
+
+    waiter = S._SpeechPlaybackLock()
+    assert waiter._holder_paused() is False     # idle: no clip to protect
+
+    # Same pause, but something is actually loaded — that IS a deliberate hold.
+    props["idle-active"] = False
+    waiter._progress_store = None
+    assert waiter._holder_paused() is True
+
+
 def test_wedged_holder_still_times_out(tmp_path, monkeypatch):
     """A genuinely wedged holder (not paused, not advancing) still times out so
     a waiter proceeds unserialized rather than being lost forever."""

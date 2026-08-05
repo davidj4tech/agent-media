@@ -1272,7 +1272,9 @@ class _SpeechPlaybackLock:
         the overtaking session. Authoritative for both local and remote targets:
         reads the broker's live `pause` property from whatever target is
         actually playing. Best-effort — any read failure returns False so a
-        genuinely wedged/unreadable holder still times out as before.
+        genuinely wedged/unreadable holder still times out as before, and an
+        *idle* broker is never counted as paused: pause with nothing loaded is
+        a leftover, not a deliberate hold.
         """
         store = self._progress_store
         if store is None:
@@ -1297,6 +1299,14 @@ class _SpeechPlaybackLock:
             from ..sinks.speech import _socket_for
             from ..sinks import _mpv_ipc as ipc
             sock = _socket_for(Target(name=np.get("target") or "local"))
+            # An idle broker has nothing loaded, so its `pause` is left over
+            # from whatever played last, not a clip the user chose to hold.
+            # Granting grace for it protects nothing and lets a wedged holder
+            # buy the extra window on top of its own — seen 2026-08-05, when a
+            # hook wedged at 16:35 with the sink parked at pause=true and
+            # idle-active=true, and every later reply queued behind it.
+            if ipc.get_property(sock, "idle-active"):
+                return False
             return bool(ipc.get_property(sock, "pause"))
         except Exception:  # noqa: BLE001
             return False
