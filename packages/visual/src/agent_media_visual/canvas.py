@@ -792,6 +792,42 @@ def _speech_events(limit: int = 20) -> list:
     return out
 
 
+def _local_audio_playing() -> bool:
+    """True if the *local* speech mpv is actively playing (core-idle False).
+    Same probe the :8675 ducker endpoint uses: a 0.5s-capped unix-socket
+    property read, fail-open — unreadable/absent socket reads as False, so a
+    consumer never sticks 'ducked'. Blind to phone playback by design."""
+    sock = (Path(os.environ.get("XDG_STATE_HOME")
+                 or (Path.home() / ".local" / "state"))
+            / "agent-media" / "sink-speech.sock")
+    try:
+        s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        s.settimeout(0.5)
+        s.connect(str(sock))
+        s.sendall(b'{"command":["get_property","core-idle"]}\n')
+        data = b""
+        while True:
+            try:
+                chunk = s.recv(4096)
+            except _socket.timeout:
+                break
+            if not chunk:
+                break
+            data += chunk
+            for line in data.decode(errors="ignore").splitlines():
+                try:
+                    o = json.loads(line)
+                except ValueError:
+                    continue
+                if o.get("request_id") == 0 and o.get("error") == "success":
+                    s.close()
+                    return not bool(o.get("data"))
+        s.close()
+    except Exception:  # noqa: BLE001 — fail open, exactly like the ducker
+        pass
+    return False
+
+
 def _state_poller() -> None:
     last_key = None
     was_speaking = False
@@ -1122,6 +1158,7 @@ class Handler(BaseHTTPRequestHandler):
             # poller broadcasts, plus the recent start/end breadcrumbs.
             st = speech_state()
             st["events"] = _speech_events(20)
+            st["local_audio"] = _local_audio_playing()
             self._json(200, st)
         elif path == "/status":
             channel = (parse_qs(query).get("channel") or [""])[0]
