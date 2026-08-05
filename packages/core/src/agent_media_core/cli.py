@@ -2350,6 +2350,40 @@ def cmd_replay_track(a) -> int:
     return 0
 
 
+def _hist_ts(r, today) -> str:
+    dt = datetime.datetime.fromtimestamp(r.get("started_at") or 0)
+    return dt.strftime("%H:%M") if dt.date() == today \
+        else dt.strftime("%d %b %H:%M")
+
+
+def _hist_txt(r) -> str:
+    return (r.get("text") or "").replace("\n", " ").strip()
+
+
+def _print_history_grouped(rows) -> None:
+    """tmux-choose-tree-ish rendering of the all-conversations view: one
+    ▪window header per conversation (most recently heard first), its clips
+    indented beneath with tree connectors, newest first. Header lines carry
+    no TAB/history-id field, so the picker's replay step can tell them from
+    clip rows and skip them."""
+    groups: dict = {}   # source_session -> [rows], insertion = played order
+    for r in rows:
+        key = (r.get("extras") or {}).get("source_session") or ""
+        groups.setdefault(key, []).append(r)
+    today = datetime.date.today()
+    for grp in groups.values():
+        win = next((str((r.get("extras") or {}).get("source_window") or "")
+                    .strip() for r in grp
+                    if (r.get("extras") or {}).get("source_window")), "")
+        label = win[:48] if win else "(untagged)"
+        n = len(grp)
+        print(f"▪{label} — {n} clip{'s' if n != 1 else ''}")
+        for i, r in enumerate(grp):
+            branch = "└─" if i == n - 1 else "├─"
+            print(f"  {branch} {_hist_ts(r, today)}  {_hist_txt(r)[:110]}"
+                  f"\t{r.get('id')}")
+
+
 def cmd_history(a) -> int:
     """List recent spoken clips; the clip browser's data source.
 
@@ -2357,15 +2391,17 @@ def cmd_history(a) -> int:
     all clips when none resolves — same degradation as < / > traversal).
     ``--lines`` emits ``display<TAB>history-id`` rows for an external picker
     (media-popup-clips); unscoped lines carry a ▪window label so interleaved
-    conversations stay tellable-apart in the played-order view."""
+    conversations stay tellable-apart. ``--group`` (with --lines, unscoped)
+    instead groups clips under per-conversation headers, choose-tree style."""
     session = _anchor_session() if getattr(a, "session", False) else None
     scoped = session is not None
+    rows = _speech_history(a.n, session=session)
+    if getattr(a, "lines", False) and getattr(a, "group", False) and not scoped:
+        _print_history_grouped(rows)
+        return 0
     today = datetime.date.today()
-    for r in _speech_history(a.n, session=session):
-        dt = datetime.datetime.fromtimestamp(r.get("started_at") or 0)
-        ts = dt.strftime("%H:%M") if dt.date() == today \
-            else dt.strftime("%d %b %H:%M")
-        txt = (r.get("text") or "").replace("\n", " ").strip()
+    for r in rows:
+        ts, txt = _hist_ts(r, today), _hist_txt(r)
         if not getattr(a, "lines", False):
             print(f"{ts}  {txt[:80]}")
             continue
@@ -4064,6 +4100,10 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument("--lines", action="store_true",
                    help="print display<TAB>history-id rows for an external "
                         "picker")
+    s.add_argument("--group", action="store_true",
+                   help="with --lines: group clips under per-conversation "
+                        "▪window headers, tmux choose-tree style (the clip "
+                        "browser's ^a view)")
     s.set_defaults(func=cmd_history)
 
     s = sub.add_parser("say", help="speak text (stdin if no arg)")

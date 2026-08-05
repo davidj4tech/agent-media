@@ -1012,8 +1012,9 @@ def test_music_chapters_no_track_and_no_chapters(monkeypatch, capsys):
 # --- speech clip browser (popup `c` picker backend) ------------------------
 
 class _HistArgs:
-    def __init__(self, n=20, session=False, lines=False):
+    def __init__(self, n=20, session=False, lines=False, group=False):
         self.n, self.session, self.lines = n, session, lines
+        self.group = group
 
 
 def _hist_rows():
@@ -1060,6 +1061,50 @@ def test_history_session_falls_back_unscoped_without_anchor(monkeypatch, capsys)
     assert cli.cmd_history(_HistArgs(session=True, lines=True)) == 0
     assert seen["session"] is None
     assert "▪proj-alpha" in capsys.readouterr().out  # unscoped view keeps labels
+
+
+def _grouped_rows():
+    import time as _t
+    now = _t.time()
+    return [
+        {"id": 42, "started_at": now, "text": "alpha newest",
+         "extras": {"source_session": "s1", "source_window": "proj-alpha"}},
+        {"id": 41, "started_at": now - 30, "text": "beta reply",
+         "extras": {"source_session": "s2", "source_window": "proj-beta"}},
+        {"id": 40, "started_at": now - 60, "text": "alpha older",
+         "extras": {"source_session": "s1", "source_window": "proj-alpha"}},
+        {"id": 39, "started_at": now - 90, "text": "untagged reply",
+         "extras": {}},
+    ]
+
+
+def test_history_group_renders_choose_tree(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_speech_history",
+                        lambda n, session=None: _grouped_rows())
+    assert cli.cmd_history(_HistArgs(lines=True, group=True)) == 0
+    out = capsys.readouterr().out.splitlines()
+    # One header per conversation, most recently heard first; interleaved
+    # clips regroup under their own header.
+    assert out[0] == "▪proj-alpha — 2 clips"
+    assert "├─" in out[1] and out[1].endswith("\t42")
+    assert "└─" in out[2] and out[2].endswith("\t40")
+    assert out[3] == "▪proj-beta — 1 clip"
+    assert "└─" in out[4] and out[4].endswith("\t41")
+    assert out[5] == "▪(untagged) — 1 clip"
+    assert out[6].endswith("\t39")
+    # Headers carry no TAB field — the picker's accept guard relies on it.
+    assert "\t" not in out[0] and "\t" not in out[3]
+
+
+def test_history_group_ignored_when_session_scoped(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_speech_history",
+                        lambda n, session=None: _hist_rows())
+    monkeypatch.setattr(cli, "_anchor_session", lambda: "s1")
+    assert cli.cmd_history(_HistArgs(session=True, lines=True,
+                                     group=True)) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert all("├─" not in l and "└─" not in l for l in out)
+    assert out[0].endswith("\t42")   # flat scoped rows, ids intact
 
 
 class _ReplayArgs:
