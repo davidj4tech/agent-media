@@ -2371,11 +2371,14 @@ def _print_history_grouped(rows) -> None:
         key = (r.get("extras") or {}).get("source_session") or ""
         groups.setdefault(key, []).append(r)
     today = datetime.date.today()
-    for grp in groups.values():
+    for key, grp in groups.items():
         win = next((str((r.get("extras") or {}).get("source_window") or "")
                     .strip() for r in grp
                     if (r.get("extras") or {}).get("source_window")), "")
-        label = win[:48] if win else "(untagged)"
+        # Clips predating source_window still have distinct conversations
+        # (keyed by session id) — label those groups by a session-id stub so
+        # they stay tellable-apart, not all "(untagged)".
+        label = win[:48] if win else (f"…{key[-4:]}" if key else "(untagged)")
         n = len(grp)
         print(f"▪{label} — {n} clip{'s' if n != 1 else ''}")
         for i, r in enumerate(grp):

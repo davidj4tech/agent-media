@@ -1075,6 +1075,8 @@ def _grouped_rows():
          "extras": {"source_session": "s1", "source_window": "proj-alpha"}},
         {"id": 39, "started_at": now - 90, "text": "untagged reply",
          "extras": {}},
+        {"id": 38, "started_at": now - 120, "text": "old windowless clip",
+         "extras": {"source_session": "abc-1234"}},
     ]
 
 
@@ -1092,6 +1094,10 @@ def test_history_group_renders_choose_tree(monkeypatch, capsys):
     assert "└─" in out[4] and out[4].endswith("\t41")
     assert out[5] == "▪(untagged) — 1 clip"
     assert out[6].endswith("\t39")
+    # Session-tagged but windowless: labeled by a session-id stub, not
+    # lumped into (untagged).
+    assert out[7] == "▪…1234 — 1 clip"
+    assert out[8].endswith("\t38")
     # Headers carry no TAB field — the picker's accept guard relies on it.
     assert "\t" not in out[0] and "\t" not in out[3]
 
