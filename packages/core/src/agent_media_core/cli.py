@@ -366,39 +366,104 @@ def _with_visual_glyph(line: str) -> str:
     return line
 
 
+_SKEW_REPOS = ("agent-media", "dotfiles")
+
+# How often the ledger is refreshed in the background. A clean fleet is checked
+# rarely; a fleet with a warning UP is rechecked far more often, because that is
+# the state where being wrong is visible. A verdict goes stale the moment the
+# host it names is fixed, and nothing tells us that happened — so the only way a
+# corrected host clears promptly is to look again soon.
+_SKEW_INTERVAL_CLEAN_S = 7200
+_SKEW_INTERVAL_WARNING_S = 600
+
+
+def _repo_head(name: str) -> str:
+    """HEAD sha of a local repo, read straight out of `.git`.
+
+    Deliberately not `git rev-parse`: this is called from the status bar, which
+    tmux redraws every second, and two subprocesses per second to answer a
+    question two file reads can answer is not a trade worth making.
+    """
+    from pathlib import Path
+    base = Path.home() / name if name == "dotfiles" else Path.home() / "projects" / name
+    git = base / ".git"
+    try:
+        head = (git / "HEAD").read_text().strip()
+    except OSError:
+        return ""
+    if not head.startswith("ref: "):
+        return head                      # detached
+    ref = head[5:].strip()
+    try:
+        return (git / ref).read_text().strip()
+    except OSError:
+        pass
+    try:                                 # ref was packed
+        for line in (git / "packed-refs").read_text().splitlines():
+            if line.endswith(" " + ref):
+                return line.split(" ", 1)[0]
+    except OSError:
+        pass
+    return ""
+
+
+def _local_head_sig() -> str:
+    """The local revisions a verdict was formed against, e.g.
+    `agent-media=981f27d dotfiles=8756927`. Stamped into the ledger by doctor
+    and re-checked on read: if local HEAD has moved since, every host was
+    compared against code this machine no longer runs, so the verdict describes
+    a fleet that no longer exists and must not stay on screen."""
+    return " ".join(f"{r}={_repo_head(r)[:7]}" for r in _SKEW_REPOS)
+
+
 def _skew_alert_line() -> str:
     """Read the version skew ledger produced by `media doctor`. Flashing `⚠`
     shown in the status bar if any host is running stale agent-media/dotfiles code.
-    Auto-triggers a background check every 2 hours."""
+    Auto-triggers a background check in the background (see the intervals above).
+    """
     try:
         from pathlib import Path
-        import stat
         d = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local" / "state")))
         logdir = d / "agent-media"
         logdir.mkdir(parents=True, exist_ok=True)
         ledger = logdir / "version-skew.log"
-        
-        # Async check every 2h
+
         try:
             mtime = ledger.stat().st_mtime
         except FileNotFoundError:
             mtime = 0
-            
-        if time.time() - mtime > 7200:
-            ledger.touch() # prevent concurrent spawns
+
+        raw = ledger.read_text() if mtime else ""
+        stamp = ""
+        entries = []
+        for line in raw.splitlines():
+            if line.startswith("# judged "):
+                stamp = line[len("# judged "):].strip()
+            elif line.strip():
+                entries.append(line.strip())
+
+        # A verdict formed against code we have since moved off describes a
+        # fleet that no longer exists. Drop it and re-check now rather than
+        # showing a warning we know is answering an old question.
+        if entries and stamp and stamp != _local_head_sig():
+            entries = []
+            mtime = 0
+
+        interval = _SKEW_INTERVAL_WARNING_S if entries else _SKEW_INTERVAL_CLEAN_S
+        if time.time() - mtime > interval:
+            ledger.touch()  # prevent concurrent spawns
             import subprocess
             subprocess.Popen(
                 [sys.argv[0], "doctor"],
                 start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
             )
-            
-        skew = ledger.read_text().strip()
-        if not skew:
+
+        if not entries:
             return ""
         glyph = "⚠" if int(time.time()) % 2 else " "
         # "fleet", not "skew": the ledger now also carries hosts whose install
         # is broken or whose services are down (marked with a trailing !).
-        return f"{glyph} fleet: {skew.replace(chr(10), ', ')}"
+        return f"{glyph} fleet: {', '.join(entries)}"
     except OSError:
         return ""
 
@@ -3933,7 +3998,11 @@ def cmd_doctor(a) -> int:
     try:
         ledger.parent.mkdir(parents=True, exist_ok=True)
         if entries:
-            ledger.write_text("\n".join(entries) + "\n")
+            # Stamp the local revisions this verdict was formed against, so a
+            # reader can tell a current judgement from one that was overtaken
+            # by a deploy (see _local_head_sig).
+            ledger.write_text(
+                f"# judged {_local_head_sig()}\n" + "\n".join(entries) + "\n")
             bits = []
             if skewed:
                 bits.append(f"{len(skewed)} skewed")
