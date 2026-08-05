@@ -770,6 +770,28 @@ def speech_state() -> dict:
     return state
 
 
+def _speech_events(limit: int = 20) -> list:
+    """The newest `limit` start/end breadcrumbs from the speech event log
+    (written by agent_media_core.intake.submit at the moment playback begins
+    and in its closing finally). Oldest first, so a reader replays them in
+    the order they happened. Empty list when the log is missing or garbled —
+    a peek endpoint must degrade to less data, never to an error."""
+    state = Path(os.environ.get("XDG_STATE_HOME")
+                 or (Path.home() / ".local" / "state"))
+    path = state / "agent-media" / "speech-events.jsonl"
+    try:
+        lines = path.read_text().splitlines()[-limit:]
+    except OSError:
+        return []
+    out = []
+    for ln in lines:
+        try:
+            out.append(json.loads(ln))
+        except ValueError:
+            continue
+    return out
+
+
 def _state_poller() -> None:
     last_key = None
     was_speaking = False
@@ -1093,6 +1115,14 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._send(403, b"invalid or expired pairing code\n",
                            "text/plain")
+        elif path == "/speech":
+            # One-shot speech-state peek for outside agents (a voice-mode
+            # Claude asking "is the phone talking, and about what?" through
+            # the tmux relay's read-only fast lane). Same snapshot the SSE
+            # poller broadcasts, plus the recent start/end breadcrumbs.
+            st = speech_state()
+            st["events"] = _speech_events(20)
+            self._json(200, st)
         elif path == "/status":
             channel = (parse_qs(query).get("channel") or [""])[0]
             if channel not in ("music", "book"):

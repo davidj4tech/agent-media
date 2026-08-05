@@ -1359,6 +1359,41 @@ def cmd_stop(a) -> int:
     return 0
 
 
+def cmd_speech_flush(a) -> int:
+    """Drop every queued/pending reply. The clip currently speaking is not
+    cut (pause/stop/supersede handle that); flushed replies still land in
+    history, marked flushed, so nothing the user browses later is lost."""
+    from .intake.submit import request_speech_flush
+    request_speech_flush()
+    print("speech: pending queue flushed — the current clip, if any, plays out; "
+          "flushed replies are archived unheard")
+    return 0
+
+
+def cmd_speech_hold(a) -> int:
+    """Hold the start of new speech playback, with a mandatory expiry."""
+    from .intake.submit import (release_speech_hold, set_speech_hold,
+                                speech_hold_until)
+    if a.release:
+        release_speech_hold()
+        print("speech: hold released")
+        return 0
+    if a.seconds is None:
+        until = speech_hold_until()
+        if until:
+            print(f"speech: hold active, {until - time.time():.0f}s remaining")
+        else:
+            print("speech: no hold active")
+        return 0
+    until = set_speech_hold(a.seconds)
+    if not until:
+        print("speech: could not write the hold marker", file=sys.stderr)
+        return 1
+    print(f"speech: holding new playback for {until - time.time():.0f}s "
+          "(expires on its own; `media speech-hold --release` lifts it early)")
+    return 0
+
+
 def cmd_seek(a) -> int:
     ipc.command(_sock(), "seek", a.secs, "relative")
     return 0
@@ -4017,6 +4052,19 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="max chars before truncation (default 80)")
     s.set_defaults(func=cmd_current_sentence)
     sub.add_parser("toggle", help="play/pause").set_defaults(func=cmd_toggle)
+    s = sub.add_parser("speech-flush",
+                       help="drop every queued/pending reply; the clip "
+                            "currently speaking plays out")
+    s.set_defaults(func=cmd_speech_flush)
+
+    s = sub.add_parser("speech-hold",
+                       help="hold NEW speech playback for N seconds "
+                            "(bounded by MEDIA_SPEECH_HOLD_MAX_S, default "
+                            "300); no args: show; --release: lift now")
+    s.add_argument("seconds", nargs="?", type=float, default=None)
+    s.add_argument("--release", action="store_true")
+    s.set_defaults(func=cmd_speech_hold)
+
     sub.add_parser("pause").set_defaults(func=cmd_pause)
     sub.add_parser("resume").set_defaults(func=cmd_resume)
     sub.add_parser("stop").set_defaults(func=cmd_stop)

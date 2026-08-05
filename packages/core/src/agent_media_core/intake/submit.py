@@ -14,6 +14,7 @@ from __future__ import annotations
 import concurrent.futures
 import fcntl
 import hashlib
+import json
 import logging
 import os
 import re
@@ -796,6 +797,138 @@ def _speech_wait_dir() -> Path:
 def _speech_supersede_dir() -> Path:
     state = Path(os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state"))
     return state / "agent-media" / "speech-supersede"
+
+
+def _speech_events_path() -> Path:
+    state = Path(os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state"))
+    return state / "agent-media" / "speech-events.jsonl"
+
+
+def _speech_event(kind: str, **fields) -> None:
+    """Append a start/end breadcrumb to the speech event log.
+
+    One JSON object per line, newest last: {"ts": ..., "event": "start"|"end",
+    "text": ..., "session": ..., ...}. Served by the visual-canvas server's
+    /speech endpoint, so an outside agent — a voice-mode Claude peeking through
+    the tmux relay — can see when playback began and ended and what was said,
+    without opening the sqlite store. Best-effort throughout: speech must never
+    fail because its diary could not be written.
+    """
+    try:
+        path = _speech_events_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        rec: dict = {"ts": round(time.time(), 3), "event": kind}
+        rec.update({k: v for k, v in fields.items() if v not in (None, "")})
+        with path.open("a") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        # Trim once the log grows past ~256 KiB, keeping the newest 200 events.
+        # Two writers racing the trim can lose a line from the OLD tail, never
+        # corrupt a fresh one — acceptable for a diary that only ever needs its
+        # recent past.
+        if path.stat().st_size > 256 * 1024:
+            tail = path.read_text().splitlines()[-200:]
+            path.write_text("\n".join(tail) + "\n")
+    except OSError:
+        pass
+
+
+def _speech_flush_path() -> Path:
+    state = Path(os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state"))
+    return state / "agent-media" / "speech-flush"
+
+
+def _speech_hold_path() -> Path:
+    state = Path(os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state"))
+    return state / "agent-media" / "speech-hold"
+
+
+def request_speech_flush() -> float:
+    """Drop every *pending* reply — queued behind the speaker, still
+    rendering, or waiting out a hold — as of now (`media speech-flush`).
+
+    Writes a monotonic-max timestamp marker, exactly like the supersede
+    marker but global: any submission whose seq predates it skips playback at
+    the last checkpoint before its first clip would play. Two deliberate
+    limits: the clip already *speaking* is not cut (that is what pause / stop
+    / supersede are for), and a flushed reply STILL writes its history row,
+    marked flushed — the flush cancels audio, never the archived record.
+    """
+    now = time.time()
+    try:
+        path = _speech_flush_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            prev = float(path.read_text().strip())
+        except (OSError, ValueError):
+            prev = 0.0
+        path.write_text(repr(max(prev, now)))
+    except OSError:
+        pass
+    return now
+
+
+def _speech_flushed(seq: float) -> bool:
+    """True when a flush was requested after this submission was made."""
+    try:
+        return float(_speech_flush_path().read_text().strip()) > seq
+    except (OSError, ValueError):
+        return False
+
+
+def set_speech_hold(seconds: float) -> float:
+    """Hold the START of new speech playback, returning the expiry epoch
+    (0.0 if the marker could not be written).
+
+    The timeout is mandatory and lives inside the marker itself, clamped to
+    MEDIA_SPEECH_HOLD_MAX_S (default 300): expiry needs no process alive to
+    enforce it, so a crashed or forgetful holder can never silence the phone
+    forever. In-flight audio is not paused (pair with `media pause` for
+    that); held replies keep their queue order and play when the hold lifts.
+    """
+    try:
+        cap = float(os.environ.get("MEDIA_SPEECH_HOLD_MAX_S", "300"))
+    except ValueError:
+        cap = 300.0
+    until = time.time() + max(1.0, min(float(seconds), cap))
+    try:
+        path = _speech_hold_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(repr(until))
+    except OSError:
+        return 0.0
+    return until
+
+
+def release_speech_hold() -> None:
+    try:
+        _speech_hold_path().unlink()
+    except OSError:
+        pass
+
+
+def speech_hold_until() -> float:
+    """The active hold's expiry epoch, or 0.0. Expired markers are reaped on
+    read, so an abandoned hold cleans itself up the first time anyone looks."""
+    path = _speech_hold_path()
+    try:
+        until = float(path.read_text().strip())
+    except (OSError, ValueError):
+        return 0.0
+    if until <= time.time():
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        return 0.0
+    return until
+
+
+def _wait_speech_hold() -> None:
+    """Block while a hold is active. Re-reads the marker each tick so an early
+    `media speech-hold --release` lifts it immediately; the expiry stored in
+    the marker bounds the wait even if nobody ever releases it."""
+    while speech_hold_until() > 0.0:
+        time.sleep(0.2)
 
 
 # Priority -> numeric rank. Higher rank preempts lower; equal ranks queue.
@@ -1659,18 +1792,29 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
     import subprocess
 
     timeout = float(os.environ.get("MEDIA_REMOTE_SAY_TIMEOUT", "180"))
+    seq = time.time()
+    session = (event.metadata or {}).get("session") or ""
     lock = _SpeechPlaybackLock()
-    lock.acquire(event.priority,
-                 session=(event.metadata or {}).get("session") or "",
-                 supersede=bool((event.metadata or {}).get("supersede")))
+    lock.acquire(event.priority, session=session,
+                 supersede=bool((event.metadata or {}).get("supersede")),
+                 seq=seq)
     # Superseded before we started: skip this whole-reply remote render. (The
     # remote say is one blocking pipe, so this is the only place it can drop —
     # once handed off it can't be cut mid-utterance like the clip loops.)
     if lock.should_abort():
         lock.release()
         return None
+    # Same last-checkpoint gate as the local path: wait out an active hold,
+    # then drop if a flush arrived while we were queued or held. This path has
+    # never written history rows, so a flush here loses nothing extra.
+    _wait_speech_hold()
+    if _speech_flushed(seq):
+        lock.release()
+        return None
     try:
         coordinator.before_speech()
+        _speech_event("start", text=text[:400], session=session,
+                      source=event.source.value, target="remote-say")
         try:
             subprocess.run(cmd, shell=True, input=text.encode(),
                            timeout=timeout,
@@ -1685,6 +1829,8 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
                 pass
         finally:
             coordinator.after_speech()
+            _speech_event("end", text=text[:160], session=session,
+                          source=event.source.value, target="remote-say")
     finally:
         lock.release()
     return None
@@ -1921,6 +2067,41 @@ def submit_event(event: Event,
         _acc += d
     _clip_sentences = [s for s, _ in clip_data]
 
+    def _archive(*, flushed: bool = False) -> Optional[int]:
+        """The one history write, shared by every path that records this reply
+        — played, muted, or flushed — so they cannot drift in what they store.
+        The archive is sacrosanct: a reply that rendered gets its row whether
+        or not its audio was ever heard, and nothing downstream (flush
+        included) may alter or remove it."""
+        extras = {"engine": engine, "voice": voice,
+                  "priority": event.priority.value,
+                  "source_pane": source_pane,
+                  "source_session": source_session,
+                  "source_tmux_session": source_tmux_session,
+                  "source_window": source_window,
+                  "clip_uris": [str(p) for _, p in clip_data],
+                  "clip_sentences": _clip_sentences,
+                  "clip_durations_s": durations,
+                  "clip_paragraph_idx": clip_para,
+                  **(event.metadata or {})}
+        if fallback_info:
+            extras["fallback"] = fallback_info
+        if muted:
+            extras["muted"] = True   # rendered but never played (popup can replay)
+        if flushed:
+            extras["flushed"] = True   # playback cancelled by speech-flush;
+            #                            rendered and archived, never heard
+        return state.add_history(
+            sink="speech",
+            uri=str(first_clip),
+            started_at=started_at,
+            ended_at=time.time(),
+            target=target.name,
+            source=event.source.value,
+            text=text,
+            extras=extras,
+        )
+
     # A muted pane skips playback entirely: the clips are already rendered
     # (above), so we fall straight through to the history write below — no
     # broker, no before/after_speech, no duck.
@@ -1940,6 +2121,20 @@ def submit_event(event: Event,
         if playback_lock.should_abort():
             playback_lock.release()
             return None
+        # An active hold (`media speech-hold N`) gates the START of playback:
+        # we keep the token but do not feed the broker until the hold lifts.
+        # The expiry lives in the marker itself, so this wait is bounded even
+        # if whoever asked for the hold has vanished.
+        _wait_speech_hold()
+        # Flushed while queued, rendering, or held (`media speech-flush`):
+        # cancel only the playback. The reply is still archived below, marked
+        # flushed, so the history a human browses later holds the full text
+        # either way — only the audio is skipped. The clip already SPEAKING
+        # when the flush was requested is deliberately not cut; pause / stop /
+        # supersede exist for that.
+        if _speech_flushed(started_at):
+            playback_lock.release()
+            return _archive(flushed=True)
         # Cross-host: also claim the shared remote broker so another machine's
         # reply can't stop+clear our still-playing playlist. Waits out a healthy
         # remote holder, takes over an expired one. No-op for local/rooms.
@@ -1959,6 +2154,12 @@ def submit_event(event: Event,
         _nav_flag_path(target).unlink(missing_ok=True)
         try:
             coordinator.before_speech()
+            # Speech-started breadcrumb — the moment we commit to feeding the
+            # broker. Its "end" twin is in the finally below, so every exit
+            # (finished, superseded, yielded-then-done, error) closes the pair.
+            _speech_event("start", text=text[:400], session=source_session,
+                          pane=source_pane, source=event.source.value,
+                          target=target.name)
             mute_watcher = _MuteDuckWatcher(sink, target, coordinator)
             # Shared per-clip marker — drives the popup (status bar, current
             # sentence, skip map). Identical for both playback paths below.
@@ -2205,6 +2406,9 @@ def submit_event(event: Event,
             highlighter.drain()
             _restore_fullscreen()   # no-op unless MEDIA_HIGHLIGHT_DUMP dumped
             coordinator.after_speech()
+            _speech_event("end", text=text[:160], session=source_session,
+                          pane=source_pane, source=event.source.value,
+                          target=target.name, played=bool(played_any))
             state.clear_now_playing("speech")
             # Drop the cross-host broker claim before the flock so the next host
             # (and the next local waiter) can take over immediately. No-op local.
@@ -2214,31 +2418,7 @@ def submit_event(event: Event,
         if not played_any:
             return None
 
-    extras = {"engine": engine, "voice": voice,
-              "priority": event.priority.value,
-              "source_pane": source_pane,
-              "source_session": source_session,
-              "source_tmux_session": source_tmux_session,
-              "source_window": source_window,
-              "clip_uris": [str(p) for _, p in clip_data],
-          "clip_sentences": [s for s, _ in clip_data],
-          "clip_durations_s": durations,
-          "clip_paragraph_idx": clip_para,
-              **(event.metadata or {})}
-    if fallback_info:
-        extras["fallback"] = fallback_info
-    if muted:
-        extras["muted"] = True   # rendered but never played (popup can replay)
-    return state.add_history(
-        sink="speech",
-        uri=str(first_clip),
-        started_at=started_at,
-        ended_at=time.time(),
-        target=target.name,
-        source=event.source.value,
-        text=text,
-        extras=extras,
-    )
+    return _archive()
 
 
 def submit_stream(sentences,
