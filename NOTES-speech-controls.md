@@ -44,3 +44,10 @@ instant, the pause must fire from something ALREADY on red5 — a small local
 listener that, on a "user is speaking" signal, poke the sink socket directly
 (local unix-socket, no cloud hop). Real new plumbing; design fresh, don't rush.
 Relates to the OpenWebUI STT tie-in (STT could be that local signal source).
+
+### Branch to explore (David, 2026-08-05 night): agent-media on the phone
+Today a duck travels me -> Cloudflare -> red5 -> (red5 drives phone TTS). If
+agent-media (or just the control/duck path) ran ON the phone, the pause could
+land locally and skip BOTH the cloud hop AND the red5->phone leg. Possibly the
+snappiest option of all. Weigh against phone-deploy cost/maintenance. Evaluate
+alongside the local barge-in trigger above.
