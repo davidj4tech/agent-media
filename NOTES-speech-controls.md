@@ -35,3 +35,12 @@ of CeCe's turn, if canvas /speech shows speaking=true (e.g. Claude Code TTS on
 the phone), pause it (media pause) BEFORE replying, so the phone speech doesn't
 compete with the live conversation. STT-triggered barge-in is only needed for
 detecting speech that never routes through CeCe.
+
+## TOP TODO tomorrow: local barge-in trigger (kill the ~1s relay hop)
+The fast-lane control commit (tmux-relay d011d9c) removed the QUEUEING delay for
+media pause / speech-flush, but a pause still crosses Cloudflare (my side -> D1 ->
+red5 runner), so ~1s of unavoidable round-trip remains. To make the duck feel
+instant, the pause must fire from something ALREADY on red5 — a small local
+listener that, on a "user is speaking" signal, poke the sink socket directly
+(local unix-socket, no cloud hop). Real new plumbing; design fresh, don't rush.
+Relates to the OpenWebUI STT tie-in (STT could be that local signal source).
