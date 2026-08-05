@@ -19,3 +19,11 @@ versioned, in ~/dotfiles/packages/voice/, stow-symlinked into ~/.local/bin and
 
 Still open (separate idea): add a "local_audio": bool field to canvas /speech
 (cheap core-idle unix-socket read) for new consumers; leave :8675 untouched.
+
+## Operating pattern (agreed 2026-08-05): manage the speech channel, don't talk over it
+David's ask: when TTS is playing, the voice agent should not barrel ahead in
+parallel. Use the breadcrumb (canvas /speech `speaking`) to know when speech is
+active, and before speaking either (a) wait for it to finish, or (b) actively
+pause/flush it (media pause / speech-flush, or --urgent/--supersede) so the two
+voices never fight. This is the intended payoff of the breadcrumb + control
+channel work — treat speech as something to manage, not a parallel stream.
