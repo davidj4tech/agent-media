@@ -522,16 +522,29 @@ def test_agreeing_advert_is_silent(monkeypatch, tmp_path, capsys):
 # A trigger that fires --hold and then dies leaves music quiet indefinitely.
 # Cece asked for this directly: she has no automatic hook for "conversation
 # ended", so a chat closing abruptly must not strand the duck.
+#
+# These AGE THE FLAG on disk (os.utime) rather than patching the guard's clock.
+# The first version patched _now(), passed, and shipped a hold that could never
+# expire: _now() is time.monotonic() and st_mtime is epoch, so the subtraction
+# was nonsense. Patching the clock made the test agree with the bug. Touching
+# the real file is the only version that would have failed.
+
+
+def _age(path, seconds):
+    """Backdate the flag's mtime, as if it were written `seconds` ago."""
+    st = os.stat(path)
+    os.utime(path, (st.st_atime, st.st_mtime - seconds))
+
 
 def test_hold_without_ttl_never_expires(monkeypatch, tmp_path):
-    """The Automate mic-detect bridge writes an empty flag; dictation lasts
-    as long as it lasts, and must not be cut off."""
+    """The Automate mic-detect bridge writes an empty flag; dictation lasts as
+    long as it lasts, and must not be cut off."""
     flag = tmp_path / "call-guard.hold"
     monkeypatch.setenv("MEDIA_CALL_GUARD_HOLD_FLAG", str(flag))
     cfg = call_guard.Config()
     call_guard._set_hold(cfg)
     assert flag.read_text() == ""
-    monkeypatch.setattr(call_guard, "_now", lambda: os.stat(flag).st_mtime + 86_400)
+    _age(flag, 86_400)
     assert call_guard.flag_present(cfg) is True
 
 
@@ -542,10 +555,10 @@ def test_hold_with_ttl_expires_and_clears_the_flag(monkeypatch, tmp_path):
     call_guard._set_hold(cfg, ttl=120)
     assert "ttl=120" in flag.read_text()
 
-    monkeypatch.setattr(call_guard, "_now", lambda: os.stat(flag).st_mtime + 60)
+    _age(flag, 60)
     assert call_guard.flag_present(cfg) is True          # still inside the window
 
-    monkeypatch.setattr(call_guard, "_now", lambda: os.stat(flag).st_mtime + 121)
+    _age(flag, 61)                                       # now 121s old
     assert call_guard.flag_present(cfg) is False
     # Deleted, not merely ignored: the ordinary release path then runs and
     # auto-resume happens without anyone noticing the trigger died.
@@ -553,27 +566,27 @@ def test_hold_with_ttl_expires_and_clears_the_flag(monkeypatch, tmp_path):
 
 
 def test_heartbeat_extends_the_hold(monkeypatch, tmp_path):
-    """Re-running --hold refreshes mtime, so a heartbeat extends rather than
-    stacking a second hold."""
+    """Re-running --hold refreshes mtime, so a caller who is still talking
+    extends the hold rather than stacking a second one."""
     flag = tmp_path / "call-guard.hold"
     monkeypatch.setenv("MEDIA_CALL_GUARD_HOLD_FLAG", str(flag))
     cfg = call_guard.Config()
     call_guard._set_hold(cfg, ttl=60)
-    first = os.stat(flag).st_mtime
 
-    monkeypatch.setattr(call_guard, "_now", lambda: first + 59)
+    _age(flag, 59)                                       # nearly expired
     call_guard._set_hold(cfg, ttl=60)                    # heartbeat
-    assert os.stat(flag).st_mtime >= first
-    monkeypatch.setattr(call_guard, "_now", lambda: os.stat(flag).st_mtime + 30)
+    _age(flag, 30)
     assert call_guard.flag_present(cfg) is True
+    assert flag.exists()
 
 
 def test_unreadable_ttl_is_treated_as_no_ttl(monkeypatch, tmp_path):
     """Garbage in the flag must not expire a hold early — failing open keeps
-    the duck, which is recoverable; failing closed un-ducks mid-conversation."""
+    the duck, which is recoverable by hand; failing closed un-ducks someone
+    mid-conversation, which is not."""
     flag = tmp_path / "call-guard.hold"
     flag.write_text("ttl=banana\n")
     monkeypatch.setenv("MEDIA_CALL_GUARD_HOLD_FLAG", str(flag))
     cfg = call_guard.Config()
-    monkeypatch.setattr(call_guard, "_now", lambda: os.stat(flag).st_mtime + 99_999)
+    _age(flag, 99_999)
     assert call_guard.flag_present(cfg) is True

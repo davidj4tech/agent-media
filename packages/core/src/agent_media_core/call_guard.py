@@ -521,8 +521,13 @@ def flag_present(cfg: Config) -> bool:
     except OSError:
         return False
 
+    # time.time(), NOT _now(). _now() is time.monotonic() — seconds since
+    # boot — and st_mtime is epoch seconds, so subtracting one from the other
+    # yields a large negative number and the hold never expires. That shipped
+    # once; the live test caught it and the unit test did not, because the test
+    # patched _now() and so encoded the same wrong assumption as the code.
     ttl = _flag_ttl(cfg.hold_flag)
-    if ttl is not None and (_now() - stat.st_mtime) > ttl:
+    if ttl is not None and (time.time() - stat.st_mtime) > ttl:
         log.info("external hold expired after %.0fs without a heartbeat — releasing", ttl)
         try:
             os.unlink(cfg.hold_flag)
