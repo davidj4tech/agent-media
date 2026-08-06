@@ -1,0 +1,6 @@
+#!/bin/sh
+# runit runs this after `run` exits. Back off + report crash loops.
+# crash-notify lives in the core package; this service sits one package over,
+# hence the longer relative path.
+exec "$(dirname "$0")/../../../core/services/_common/crash-notify" \
+  am-control-emacs "$@"

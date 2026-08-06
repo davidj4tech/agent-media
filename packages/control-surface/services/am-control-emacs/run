@@ -1,0 +1,29 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# Phone control daemon: a dedicated, -Q Emacs whose only job is to answer
+# `emacsclient -s am-control -e '(am-control-…)'`.
+#
+# Why on the phone: fetch, mpv and call_guard already live here, so a control
+# action taken here skips the ~0.8s tailnet round-trip to red5 — the same
+# saving as the barge-in TODO. Transport and hold run local; play/queue-add
+# still go to red5, which owns the library and history (docs §6.3).
+#
+# `-Q` on purpose: this is a remote control, not an editor. It ignores the
+# phone's own Emacs config, so it starts small and an unrelated config change
+# cannot break ducking. It runs a NAMED server, so it never collides with the
+# generic `emacsd` service or its default socket.
+exec 2>&1
+export PATH="${PREFIX:-/data/data/com.termux/files/usr}/bin:$PATH"
+# runsvdir doesn't propagate agent-media.env, so source it here — the daemon
+# needs MEDIA_MUSIC_LOCAL_ENDPOINT to resolve music to this device's own mpv
+# socket rather than red5's Mopidy over the tailnet.
+[ -f "$HOME/.config/agent-media.env" ] && . "$HOME/.config/agent-media.env"
+
+# pwd -P resolves the runit symlink ($PREFIX/var/service/am-control-emacs)
+# back to the real repo path, so a plain `git pull` is enough and nothing is
+# hard-coded to a checkout location.
+here="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
+init="$here/../../phone/am-control-init.el"
+
+# --fg-daemon so runit supervises the process directly rather than losing it
+# to a fork (matching the other services here).
+exec emacs -Q --fg-daemon=am-control -l "$init"

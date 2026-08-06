@@ -1,0 +1,5 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# XDG-portable log dir — works on Termux and any Linux user-runit setup.
+LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/sv-log/am-control-emacs"
+mkdir -p "$LOG_DIR"
+exec svlogd -tt "$LOG_DIR"
