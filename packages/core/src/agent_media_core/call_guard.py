@@ -480,15 +480,65 @@ class PauseHold:
         log.info("event-hold released")
 
 
+def _flag_ttl(path: str) -> float | None:
+    """Seconds this hold is good for, or None when it never expires.
+
+    Carried in the flag file's own contents (``ttl=120``) rather than in the
+    guard's environment, for two reasons. It is per-caller: the Automate
+    mic-detect bridge writes an empty flag and must keep its current
+    behaviour — dictation lasts as long as it lasts, and a TTL that released
+    mid-sentence would be a regression. And it needs no restart: a new caller
+    opts in by writing a different file, not by reconfiguring a running
+    service.
+    """
+    try:
+        with open(path) as fh:
+            body = fh.read(64)
+    except OSError:
+        return None
+    for line in body.splitlines():
+        key, _, value = line.partition("=")
+        if key.strip() == "ttl":
+            try:
+                seconds = float(value.strip())
+            except ValueError:
+                return None
+            return seconds if seconds > 0 else None
+    return None
+
+
 def flag_present(cfg: Config) -> bool:
-    """Whether the external-hold flag file exists (a request to pause + hold)."""
-    return os.path.exists(cfg.hold_flag)
+    """Whether the external-hold flag is present AND still valid.
+
+    An expired flag is deleted, not merely ignored. A trigger that fires
+    ``--hold`` and then dies — a chat closed mid-conversation, a crashed
+    caller — otherwise leaves music quiet indefinitely, and the whole point of
+    a TTL is that nobody has to notice. Deleting it also means the ordinary
+    release path runs: absence for the debounce window, then auto-resume.
+    """
+    try:
+        stat = os.stat(cfg.hold_flag)
+    except OSError:
+        return False
+
+    ttl = _flag_ttl(cfg.hold_flag)
+    if ttl is not None and (_now() - stat.st_mtime) > ttl:
+        log.info("external hold expired after %.0fs without a heartbeat — releasing", ttl)
+        try:
+            os.unlink(cfg.hold_flag)
+        except OSError:                          # pragma: no cover - racing release
+            pass
+        return False
+    return True
 
 
-def _set_hold(cfg: Config) -> None:
+def _set_hold(cfg: Config, ttl: float | None = None) -> None:
     p = Path(cfg.hold_flag)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.touch()
+    # Rewriting rather than touching is what makes a heartbeat work: mtime is
+    # the clock the TTL is measured against, so re-running --hold extends the
+    # hold instead of starting a second one.
+    p.write_text(f"ttl={ttl:g}\n" if ttl else "")
 
 
 def _clear_hold(cfg: Config) -> None:
@@ -714,6 +764,12 @@ def main() -> int:
                         help="log what would be paused without touching playback")
     parser.add_argument("--hold", action="store_true",
                         help="set the external-hold flag (pause + hold now) and exit")
+    parser.add_argument("--ttl", type=float, metavar="SECONDS",
+                        help="with --hold: release automatically after SECONDS unless "
+                             "another --hold arrives first. Re-run --hold --ttl to "
+                             "heartbeat. Without it a hold lasts until --release, which "
+                             "is right for a trigger that reliably fires both edges and "
+                             "wrong for one that can die mid-conversation.")
     parser.add_argument("--release", action="store_true",
                         help="clear the external-hold flag (auto-resume) and exit")
     args = parser.parse_args()
@@ -729,8 +785,9 @@ def main() -> int:
     if args.hold or args.release:
         cfg.hold_flag = resolve_trigger_flag(cfg)
     if args.hold:
-        _set_hold(cfg)
-        print(f"hold flag set: {cfg.hold_flag}")
+        _set_hold(cfg, args.ttl)
+        suffix = f" (expires in {args.ttl:g}s unless refreshed)" if args.ttl else ""
+        print(f"hold flag set: {cfg.hold_flag}{suffix}")
         return 0
     if args.release:
         _clear_hold(cfg)
