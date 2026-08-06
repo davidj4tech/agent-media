@@ -142,6 +142,20 @@ on hold has broken the contract.
 `mpc pause … mpc play`: the release sits in an `unwind-protect`, so a `C-g`
 or an error during a voice chat cannot leave music stuck quiet.
 
+**Holds nest, so they must balance.** `am-control-hold` bumps a depth counter
+and only the release that returns it to zero actually un-ducks — that is what
+makes a nested `with-hold` safe. The flip side: calling `hold` more often than
+`release` strands a hold, and nothing will un-duck until the counter clears.
+Prefer `am-control-with-hold` over bare pairs. If music is quiet and you
+suspect a stranded hold, `am-control-now` shows `[held]`, and:
+
+```elisp
+(am-control-hold-reset)   ; force released, zero the counter
+```
+
+(I stranded one this way while benchmarking. The counter behaved correctly;
+the caller did not.)
+
 ## empv adapter
 
 | Key (under `C-c m`) | Command |

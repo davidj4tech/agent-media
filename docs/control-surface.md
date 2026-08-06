@@ -564,6 +564,33 @@ The empv adapter was written against a **real empv install** (MELPA build
 `empv--youtube-item-extract-link`. empv's playback functions are never
 called.
 
+### Direct mpv fast path — added 2026-08-06
+
+Deploying the phone daemon revealed the next bottleneck by measurement: with
+the tailnet hop gone, `media`'s ~650ms of Python startup *was* the latency.
+`lisp/am-control-mpv.el` removes it where it is safe.
+
+Measured on p8ar:
+
+| | via `media` | direct |
+|---|---|---|
+| `status` | ~650 ms | ~7 ms (3-property batch over the socket) |
+| `hold` + `release` | ~1300 ms | **0.08 ms** |
+| same, called via `emacsclient` from a shell | — | ~45–110 ms (emacsclient startup is now the floor) |
+
+So in-daemon the cost is essentially gone; a *shell* caller now pays for
+spawning `emacsclient`, not for the work. For barge-in that means the trigger
+should ideally already be resident, not a shell hook.
+
+The boundary of what goes direct is the important part, and it is narrow:
+transport and status yes (cli.py implements them as a bare backend call with
+no state write, and agent-media live-probes mpv, so red5 still sees them);
+**volume never**, because call-guard owns it during a duck and restores it
+after — the standing objection to §4's Mode B, unchanged. Ducking goes through
+call-guard's flag file, which is its documented external trigger, so this uses
+the supported interface rather than reaching around it. Restricted to Unix
+sockets; a `tcp://` endpoint keeps the CLI path.
+
 ### Outstanding
 
 1. **Deploy to the phone** — `git pull` in `~/projects/agent-media` on p8ar,
