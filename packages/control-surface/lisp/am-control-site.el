@@ -40,6 +40,18 @@ Hold is routed here.  See `am-control-site-configure'.")
   "Host that owns the library, content-type policy, history and state store.
 `play' and `queue-add' are routed here.")
 
+(defvar am-control-site-phone-hold-flag
+  "/storage/emulated/0/agent-media/call-guard.hold"
+  "call_guard's hold flag on the phone, as the phone's services see it.
+
+Passed explicitly when holding over ssh, and that is not belt-and-braces.
+The phone's services get this path from `~/.config/agent-media.env', which
+their runit run scripts source — a non-interactive ssh does not.  So
+`ssh phone media-call-guard --hold' resolves the *default*
+`$XDG_STATE_HOME/agent-media/call-guard.hold' instead, writes a flag nobody
+polls, reports success, and ducks nothing.  Naming the path is what makes a
+remote hold actually reach the guard.")
+
 (defvar am-control-site-ssh
   '("ssh" "-o" "BatchMode=yes" "-o" "ConnectTimeout=6")
   "ssh prefix for dispatched actions.
@@ -119,7 +131,10 @@ on stops determining the answer."
   (unless (am-control-site-phone-p)
     (setq am-control-remote-hold-command
           (append am-control-site-ssh
-                  (list am-control-site-phone-host "media-call-guard")))))
+                  (list am-control-site-phone-host
+                        "env" (concat "MEDIA_CALL_GUARD_HOLD_FLAG="
+                                      am-control-site-phone-hold-flag)
+                        "media-call-guard")))))
 
 ;;;###autoload
 (defun am-control-site-setup (&optional adapter)
