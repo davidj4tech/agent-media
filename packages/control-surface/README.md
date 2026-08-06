@@ -14,58 +14,123 @@ untouched below the contract line.
 ```
 lisp/am-control.el              THE CONTRACT — the only file that shells out
 lisp/am-control-hold.el         duck-and-hold for a voice chat
+lisp/am-control-mpv.el          the direct JSON-IPC fast path
+lisp/am-control-site.el         which end of each action THIS host is; the
+                                one entry point every front door calls
 lisp/adapters/am-adapter-empv.el   empv.el as a front-end
+spacemacs/am-control/           Spacemacs layer — a thin caller of the above
+phone/am-control-init.el        `emacs -Q' init for the phone's control daemon
+services/am-control-emacs/      runit service that runs it
 tests/am-control-test.el        ERT; `media` is stubbed, no player is touched
 ```
 
 Adapters call `am-control-*` and nothing else. That single rule is what makes
 an adapter reviewable in isolation and removable without a trace.
 
+The three front doors — a vanilla init, the Spacemacs layer, the phone daemon
+— all funnel through `am-control-site-setup`, so none of them can drift from
+the others. Editors are taste; where a daemon runs is not.
+
 ## Install
 
-```elisp
-(add-to-list 'load-path "~/projects/agent-media/packages/control-surface/lisp")
-(add-to-list 'load-path "~/projects/agent-media/packages/control-surface/lisp/adapters")
-(require 'am-control)
-(require 'am-control-hold)
+### Vanilla Emacs
 
-(setq am-control-adapter 'empv)
-(am-control-setup)
+One `load` and one call. No package manager, no `load-path` lines: the file
+puts `lisp/` and `lisp/adapters/` on the path itself, resolved from
+`load-file-name`, so this works from any clone on any host.
+
+```elisp
+(load "~/projects/agent-media/packages/control-surface/lisp/am-control-site.el")
+(am-control-site-setup 'empv)   ; or nil — contract only, scriptable, no UI
 ```
+
+`empv` is a soft dependency, needed only for the picker (`s` / `a`). Every
+transport binding works without it; install it from MELPA if you want search.
+
+### Spacemacs
+
+The layer ships from this repo — add the directory to the layer path and the
+layer to the list:
+
+```elisp
+dotspacemacs-configuration-layer-path
+  '("~/.spacemacs.d/private/"
+    "~/projects/agent-media/packages/control-surface/spacemacs/")
+
+dotspacemacs-configuration-layers '(… am-control)
+```
+
+That installs `empv` from MELPA and calls the same `am-control-site-setup`.
+Leader keys are opt-in, because which prefix is free is a property of *your*
+config: `(am-control/bind-leader "am")` puts everything under Spacemacs'
+stock-but-empty `SPC a m` music prefix. `C-c m` is bound either way.
+
+### evil
+
+Mostly nothing to do: `C-c m` passes through evil untouched, and a Spacemacs
+leader binding *is* a normal-state binding.
+
+The exception is the status buffer, and it was a bug rather than a missing
+nicety. `*am-control: music*` advertises `g refresh SPC toggle n/p next/prev
+h hold q bury` in its own footer, and under evil every one of those was
+shadowed — `n` search-next, `p` paste, `SPC` forward-char, `h` backward-char,
+`q` record-macro, `g` a prefix. `am-control-evil.el` re-binds the mode map
+into normal and motion states, reading the keys back out of the adapter's map
+so the two cannot drift, and leaving `j`/`k` and the rest of evil's motions
+intact. `am-control-site-setup` wires this up whenever evil is present, or
+when it later loads.
+
+For evil *without* Spacemacs there is an opt-in global prefix:
+
+```elisp
+(setq am-control-evil-prefix "SPC m")   ; before am-control-site-setup
+```
+
+It reports what it displaces (`SPC` is `evil-forward-char` in motion state, and
+a key holding a command cannot also be a prefix), because silently eating a vim
+motion is not something to discover a week later.
+
+### The phone
+
+Nothing to do — `phone/am-control-init.el` calls the same setup, and
+`services/am-control-emacs` runs it as a named `emacs -Q` daemon. See
+[§ The phone daemon](#the-phone-daemon).
 
 ### Per-host configuration
 
-Dispatch is **per-action, not per-host**. The same files run unmodified on
-both machines; only these prefixes differ.
+Dispatch is **per-action, not per-host**: the same files run unmodified
+everywhere, and `am-control-site-configure` decides which end of each action
+this host is. It is the one place that knows, so a change to where a daemon
+runs is a one-line fix in the repo rather than an edit to every init file that
+happens to drive the surface.
 
-On **red5** (everything is local, `media-call-guard` lives in the venv):
+| Host | `toggle next prev seek status` | `play` `queue-add` | `hold` `release` |
+|---|---|---|---|
+| phone (Termux) | local — Unix socket, so the direct fast path engages | ssh hub | **local** |
+| hub (`media` on PATH) | local | local | **ssh phone** |
+| anywhere else | ssh hub | ssh hub | **ssh phone** |
 
-```elisp
-(setq am-control-local-command  '("media")
-      am-control-remote-command '("media")
-      am-control-local-hold-command
-        '("/home/ryer/projects/agent-media/.venv/bin/media-call-guard")
-      am-control-remote-hold-command
-        '("/home/ryer/projects/agent-media/.venv/bin/media-call-guard"))
-```
+`play` and `queue-add` go to the hub because they need the library,
+content-type policy and history. Everything else is a bare backend call.
 
-On the **phone** (Termux — `media` and `media-call-guard` are both on PATH;
-note this is Termux's Emacs, *not* the Android Emacs app, which lives in a
-separate sandbox and cannot invoke `media`):
+**Hold does not follow `media`.** `media-call-guard --hold` does nothing but
+touch a flag file, and the process that *polls* that flag — `call_guard` — runs
+on the phone (runit service `call-guard`), where mpv and the call notifications
+are. A hold performed anywhere else lands in a state dir no daemon watches and
+silently does nothing. So off-phone, `hold` and `release` are absent from
+`am-control-local-actions`: that routes them over ssh **and** disables the
+direct `write-region`, which is gated on exactly that (see
+`am-control-hold--direct-p`), so the flag gets touched on the host that reads
+it. Note this is `am-control-remote-hold-command`, not
+`am-control-remote-command` — the two remotes are different hosts, which is the
+whole reason hold has a prefix pair of its own.
 
-```elisp
-(setq am-control-local-command  '("media")
-      am-control-remote-command '("ssh" "red5" "media")
-      am-control-local-hold-command '("media-call-guard")
-      am-control-remote-hold-command
-        '("ssh" "red5" "/home/ryer/projects/agent-media/.venv/bin/media-call-guard"))
-```
+Overriding any of it is a plain `setq` after setup: `am-control-site-hub-host`,
+`am-control-site-phone-host`, `am-control-site-ssh`, or the
+`am-control-{local,remote}-*` variables directly.
 
-Which actions go where is `am-control-local-actions`, default
-`(toggle next prev seek hold release status)` — the actions that only touch
-the local player. `play` and `queue-add` go remote because they need the
-library, content-type policy and history. Set it to nil to force everything
-remote, which reproduces a pure red5 surface exactly.
+Termux note: this is Termux's Emacs, *not* the Android Emacs app, which lives
+in a separate sandbox and cannot invoke `media`.
 
 ## The contract
 

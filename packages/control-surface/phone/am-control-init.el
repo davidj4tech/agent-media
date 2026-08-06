@@ -25,35 +25,20 @@
       auto-save-default nil
       create-lockfiles nil)
 
-;; This file lives at <repo>/packages/control-surface/phone/, so the lisp
-;; directories are siblings.  Resolving relative to `load-file-name' means a
-;; plain `git pull' is enough — no path is hard-coded to a checkout location.
-(let* ((here (file-name-directory (or load-file-name buffer-file-name
-                                      default-directory)))
-       (root (expand-file-name ".." here)))
-  (add-to-list 'load-path (expand-file-name "lisp" root))
-  (add-to-list 'load-path (expand-file-name "lisp/adapters" root)))
-
-(require 'am-control)
-(require 'am-control-hold)
-
-;; Per-action dispatch (docs/control-surface.md §6.3).  On the phone the
-;; local half is genuinely local: `media' and `media-call-guard' are both on
-;; PATH here, and the mpv they talk to is on the same device — a Unix socket,
-;; not the tcp bridge red5 uses.  play/queue-add still go to red5, which owns
-;; the library, content-type policy and history.
-(setq am-control-local-command  '("media")
-      am-control-remote-command '("ssh" "-o" "BatchMode=yes"
-                                  "-o" "ConnectTimeout=6" "red5" "media")
-      am-control-local-hold-command '("media-call-guard")
-      am-control-remote-hold-command
-      '("ssh" "-o" "BatchMode=yes" "-o" "ConnectTimeout=6" "red5"
-        "/home/ryer/projects/agent-media/.venv/bin/media-call-guard"))
+;; Where each action has to happen is `am-control-site's business, not this
+;; file's — the same wiring a vanilla init or the Spacemacs layer loads, so
+;; the phone cannot drift from them.  Resolved relative to `load-file-name',
+;; so a plain `git pull' is enough and no path is hard-coded to a checkout.
+(load (expand-file-name
+       "../lisp/am-control-site.el"
+       (file-name-directory (or load-file-name buffer-file-name default-directory)))
+      nil 'nomessage)
 
 ;; No adapter: this daemon exists to be scripted (from the agent, a Termux
 ;; widget, a Tasker action), not to browse.  empv's picker is a keyboard
-;; idiom and belongs on red5.  Set `am-control-adapter' here if that changes.
-(setq am-control-adapter nil)
+;; idiom and belongs where there is a keyboard.  Pass `empv' here if that
+;; changes.
+(am-control-site-setup nil)
 
 (require 'server)
 (setq server-name "am-control")
