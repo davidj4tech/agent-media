@@ -18,6 +18,16 @@ export PATH="${PREFIX:-/data/data/com.termux/files/usr}/bin:$PATH"
 # socket rather than red5's Mopidy over the tailnet.
 [ -f "$HOME/.config/agent-media.env" ] && . "$HOME/.config/agent-media.env"
 
+# Emacs picks its server-socket directory as $XDG_RUNTIME_DIR/emacs, falling
+# back to $TMPDIR/emacs$UID. runsvdir sets neither, so without this the daemon
+# lands in $PREFIX/tmp/emacs<uid> while every interactive shell (Termux exports
+# XDG_RUNTIME_DIR=$HOME/tmp) looks in $HOME/tmp/emacs — and `emacsclient -s
+# am-control` fails with "error accessing socket" despite a healthy daemon.
+# Pin it to the interactive value so the short socket name works everywhere.
+: "${XDG_RUNTIME_DIR:=$HOME/tmp}"
+export XDG_RUNTIME_DIR
+mkdir -p "$XDG_RUNTIME_DIR"
+
 # pwd -P resolves the runit symlink ($PREFIX/var/service/am-control-emacs)
 # back to the real repo path, so a plain `git pull` is enough and nothing is
 # hard-coded to a checkout location.
