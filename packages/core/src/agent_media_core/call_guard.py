@@ -53,7 +53,12 @@ resume; we never resume it after a call.
 
 **External hold (opt-in).** Any external trigger can pause+duck playback by
 touching a flag file — ``media-call-guard --hold`` sets it, ``--release`` clears
-it (or point ``MEDIA_CALL_GUARD_HOLD_FLAG`` elsewhere). The flag is checked on a
+it (or point ``MEDIA_CALL_GUARD_HOLD_FLAG`` elsewhere). Both the guard and the
+trigger must resolve that variable *the same way*: the CLI reports success
+whichever path it lands on, so a trigger running in an environment that does
+not see the guard's setting (a non-interactive ssh, a cron job, a desktop
+launcher) will write a flag nothing polls and duck nothing. The flag is
+checked on a
 fast tick (``MEDIA_CALL_GUARD_FLAG_POLL_S``, default 0.3s) — decoupled from the
 slower call-notification poll — and *debounced*: it must be present for
 ``MEDIA_CALL_GUARD_HOLD_ENGAGE_S`` (default 1.5s) before engaging, so short
@@ -189,10 +194,22 @@ class Config:
             str(state_dir() / _DEFAULT_HOLD_FLAG_NAME))
         # Optional shell commands fired on the *call* rising/falling edge (not
         # the flag hold). Lets a phone's call detection reach across the tailnet
-        # to duck another host's media, e.g.
-        #   MEDIA_CALL_GUARD_CALL_ENGAGE_CMD="ssh sp4 media-call-guard --hold"
-        #   MEDIA_CALL_GUARD_CALL_RELEASE_CMD="ssh sp4 media-call-guard --release"
-        # Best-effort and fire-and-forget: a failing hook never wedges the guard.
+        # to duck another host's media.
+        #
+        # Name the remote's flag path explicitly. A non-interactive ssh sources
+        # no profile, so if the far end sets MEDIA_CALL_GUARD_HOLD_FLAG in an
+        # env file that only its service manager reads, a bare
+        # `ssh HOST media-call-guard --hold` resolves the *default* path
+        # instead: it writes a flag that host's guard never polls, prints
+        # "hold flag set", and ducks nothing. Two paths, one watched, and the
+        # failure is silent in the direction that matters.
+        #
+        #   F=/storage/emulated/0/agent-media/call-guard.hold  # the far end's
+        #   MEDIA_CALL_GUARD_CALL_ENGAGE_CMD="ssh sp4 env MEDIA_CALL_GUARD_HOLD_FLAG=$F media-call-guard --hold"
+        #   MEDIA_CALL_GUARD_CALL_RELEASE_CMD="ssh sp4 env MEDIA_CALL_GUARD_HOLD_FLAG=$F media-call-guard --release"
+        #
+        # Best-effort and fire-and-forget: a failing hook never wedges the guard
+        # — which is also why a wrong path here never announces itself.
         self.call_engage_cmd = os.environ.get(
             "MEDIA_CALL_GUARD_CALL_ENGAGE_CMD", "").strip()
         self.call_release_cmd = os.environ.get(
