@@ -263,5 +263,16 @@ the assertions read that binding rather than one of their own)."
                (should (progn (am-control-release) t)))
       (delete-directory tmp t))))
 
+(ert-deftest am-control-test-hold-survives-a-cold-mpv-module ()
+  "A fresh daemon whose FIRST action is a hold must not hit a void variable.
+`am-control-prefer-direct' is defined in am-control-mpv, which loads on
+demand.  Every other test in this file runs under `am-test-with-capture',
+which binds that variable — so only an explicitly cold call reaches the path
+a just-started daemon takes, which is how this shipped broken."
+  (when (featurep 'am-control-mpv)
+    (unload-feature 'am-control-mpv t))
+  (makunbound 'am-control-prefer-direct)
+  (should (progn (am-control-hold--direct-p) t)))
+
 (provide 'am-control-test)
 ;;; am-control-test.el ends here

@@ -35,8 +35,15 @@ The guard is idempotent, but tracking depth keeps a nested
 (defun am-control-hold--direct-p ()
   "Non-nil when we may touch the flag file ourselves rather than spawn.
 Only when the action is dispatched locally — a hold routed to the remote
-host must actually happen on that host's flag file, not this one."
-  (and am-control-prefer-direct
+host must actually happen on that host's flag file, not this one.
+
+The `require' comes first because `am-control-prefer-direct' is defined in
+am-control-mpv, which loads on demand: reading it cold is a void-variable
+error, and hold is exactly the action likely to be a fresh daemon's first —
+it is on the barge-in path.  `am-control--direct' requires before reading
+for the same reason."
+  (and (require 'am-control-mpv nil t)
+       am-control-prefer-direct
        (memq 'hold am-control-local-actions)
        (memq 'release am-control-local-actions)))
 
