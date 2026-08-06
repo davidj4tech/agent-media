@@ -88,6 +88,36 @@ CLI it replaces. Adapters should be **optimistic**: show the intent
 immediately, reconcile on the next `am-control-status` poll. `status` is the
 one synchronous call.
 
+### The direct fast path
+
+Once the network hop was gone, `media`'s ~650ms Python startup was the whole
+cost. `am-control-mpv.el` removes it by speaking mpv's JSON-IPC straight from
+elisp, and `am-control-hold` touches call-guard's flag file itself.
+
+| | via `media` | direct |
+|---|---|---|
+| `status` | ~650 ms | **~2 ms** |
+| `toggle` / `seek` | ~650 ms | **~1 ms** |
+| `hold` | ~650 ms | **~0 ms** (one `write-region`) |
+
+What goes direct is deliberately narrow:
+
+- **Yes** — `toggle`, `next`, `prev`, `seek` (simple ±seconds), `status`.
+  `media music <verb>` implements these as a bare backend call with no state
+  write, so going direct is equivalent; agent-media live-probes mpv, so red5
+  still sees them on its next poll.
+- **No** — anything touching **volume**. call-guard owns music volume during a
+  duck and restores it after; a front-end writing volume races that restore.
+  Hold therefore goes through the flag file, which is call-guard's documented
+  external trigger — using the supported interface, not reaching around it.
+- **No** — `play`, `queue-add`, `stop`, `prev --restart-first`, timecode seeks.
+  These need the library, policy, history, or real parsing.
+
+It only engages for a **Unix-socket** endpoint (a `tcp://` one is red5's
+bridge to the phone — going direct there would still cross the tailnet). Every
+case degrades to the CLI: no endpoint, unreachable socket, idle player, action
+routed remote, or `am-control-prefer-direct` nil.
+
 ### Scriptable from anywhere
 
 Every entry point is callable non-interactively, so the agent, a tmux binding

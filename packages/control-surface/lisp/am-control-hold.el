@@ -24,10 +24,51 @@
 
 (require 'am-control)
 
+;; Defined in am-control-mpv, which is loaded on demand.
+(defvar am-control-prefer-direct)
+
 (defvar am-control-hold--depth 0
   "Nesting depth of active holds.
 The guard is idempotent, but tracking depth keeps a nested
 `am-control-with-hold' from releasing early on the inner exit.")
+
+(defun am-control-hold--direct-p ()
+  "Non-nil when we may touch the flag file ourselves rather than spawn.
+Only when the action is dispatched locally — a hold routed to the remote
+host must actually happen on that host's flag file, not this one."
+  (and am-control-prefer-direct
+       (memq 'hold am-control-local-actions)
+       (memq 'release am-control-local-actions)))
+
+(defun am-control-hold--engage ()
+  "Set the hold, directly if we can, else via `media-call-guard --hold'.
+
+`media-call-guard --hold' does nothing but touch this file, so spawning
+Python (~650ms on the phone) to do it buys nothing and sits squarely on the
+barge-in critical path. Ducking is what needs to be fast."
+  (if (am-control-hold--direct-p)
+      (let ((f (am-control-hold-flag-path)))
+        (condition-case err
+            (progn (make-directory (file-name-directory f) t)
+                   (write-region "" nil f nil 'silent))
+          (error (am-control--log "hold flag write failed: %S" err)
+                 (am-control--run 'hold (append (am-control--prefix 'hold 'hold)
+                                                (list "--hold"))))))
+    (am-control--run 'hold (append (am-control--prefix 'hold 'hold)
+                                   (list "--hold")))))
+
+(defun am-control-hold--disengage ()
+  "Clear the hold, directly if we can, else via `media-call-guard --release'."
+  (if (am-control-hold--direct-p)
+      (condition-case err
+          (delete-file (am-control-hold-flag-path))
+        (file-missing nil)             ; already released — idempotent
+        (error (am-control--log "hold flag delete failed: %S" err)
+               (am-control--run 'release
+                                (append (am-control--prefix 'release 'hold)
+                                        (list "--release")))))
+    (am-control--run 'release (append (am-control--prefix 'release 'hold)
+                                      (list "--release")))))
 
 ;;;###autoload
 (defun am-control-hold ()
@@ -37,8 +78,7 @@ call-guard decides which, not us."
   (interactive)
   (setq am-control-hold--depth (1+ am-control-hold--depth))
   (when (= am-control-hold--depth 1)
-    (am-control--run 'hold (append (am-control--prefix 'hold 'hold)
-                                   (list "--hold")))))
+    (am-control-hold--engage)))
 
 ;;;###autoload
 (defun am-control-release ()
@@ -47,8 +87,7 @@ Un-ducking never starts playback, so this is always safe to call."
   (interactive)
   (setq am-control-hold--depth (max 0 (1- am-control-hold--depth)))
   (when (zerop am-control-hold--depth)
-    (am-control--run 'release (append (am-control--prefix 'release 'hold)
-                                      (list "--release")))))
+    (am-control-hold--disengage)))
 
 ;;;###autoload
 (defun am-control-hold-toggle ()
@@ -78,8 +117,7 @@ For the case where Emacs lost track — e.g. a crash mid-hold left the
 counter non-zero while the flag file is already gone."
   (interactive)
   (setq am-control-hold--depth 0)
-  (am-control--run 'release (append (am-control--prefix 'release 'hold)
-                                    (list "--release"))))
+  (am-control-hold--disengage))
 
 (provide 'am-control-hold)
 ;;; am-control-hold.el ends here

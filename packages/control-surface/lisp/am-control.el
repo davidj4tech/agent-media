@@ -32,11 +32,20 @@
 
 (require 'json)
 (require 'subr-x)
+(require 'cl-lib)
 
 (defgroup am-control nil
   "Control surface for the agent-media music channel."
   :group 'multimedia
   :prefix "am-control-")
+
+;; am-control-mpv is loaded on demand (it is a pure optimisation, and the CLI
+;; path must work without it), so declare its surface for the byte compiler.
+(declare-function am-control-mpv-usable-p "am-control-mpv" ())
+(declare-function am-control-mpv-command "am-control-mpv" (&rest args))
+(declare-function am-control-mpv-get-properties "am-control-mpv" (props))
+(declare-function am-control-mpv-invalidate "am-control-mpv" ())
+(defvar am-control-prefer-direct)
 
 
 ;;; Dispatch configuration
@@ -76,6 +85,34 @@ A poller must never wedge the UI; on timeout the last snapshot stands."
 (defcustom am-control-debug nil
   "When non-nil, log every dispatched command and non-zero exit to *am-control*."
   :type 'boolean)
+
+
+;;; call-guard's hold flag
+;;
+;; The flag file is call-guard's *documented* external trigger — "any external
+;; trigger can pause+duck playback by touching a flag file" (call_guard.py) —
+;; so reading and touching it is using the supported interface, not reaching
+;; around one. call-guard keeps ownership of what a hold actually does: it
+;; debounces, ducks music, pauses speech, and auto-resumes on release.
+
+(defcustom am-control-hold-flag nil
+  "Path to call-guard's external-hold flag file.
+nil means resolve it the way call_guard.py does: `MEDIA_CALL_GUARD_HOLD_FLAG'
+from the environment, else `$XDG_STATE_HOME/agent-media/call-guard.hold'."
+  :type '(choice (const :tag "Resolve like call_guard.py" nil) file))
+
+(defun am-control-hold-flag-path ()
+  "Resolved path of call-guard's hold flag."
+  (or am-control-hold-flag
+      (getenv "MEDIA_CALL_GUARD_HOLD_FLAG")
+      (expand-file-name
+       "agent-media/call-guard.hold"
+       (or (getenv "XDG_STATE_HOME")
+           (expand-file-name ".local/state" (or (getenv "HOME") "~"))))))
+
+(defun am-control-hold-flag-present-p ()
+  "Non-nil when a hold is currently engaged."
+  (file-exists-p (am-control-hold-flag-path)))
 
 
 ;;; Plumbing — the only code here that shells out
@@ -132,6 +169,21 @@ Only `status' uses this — every other action is fire-and-forget."
 (defun am-control--media (action &rest args)
   (am-control--run action (append (am-control--prefix action 'media) args)))
 
+(defun am-control--direct (action mpv-args)
+  "Try ACTION over mpv's socket directly.  Non-nil if it was handled.
+
+Only for actions the CLI implements as a bare backend call — verified in
+cli.py's transport block, which writes no state for toggle/next/prev/seek.
+Anything touching volume, the library or history must not come through here.
+
+Also requires ACTION to be dispatched locally: if the user has routed it to
+the remote host, honour that rather than quietly short-circuiting it."
+  (and (memq action am-control-local-actions)
+       (require 'am-control-mpv nil t)
+       (am-control-mpv-usable-p)
+       (prog1 (apply #'am-control-mpv-command mpv-args)
+         (am-control--log "direct %s: %S" action mpv-args))))
+
 
 ;;; The contract — nine actions
 
@@ -157,27 +209,44 @@ interruption content type (music/audiobook/podcast/dj-set/ambient)."
 (defun am-control-toggle ()
   "Toggle pause/resume on the music channel."
   (interactive)
-  (am-control--media 'toggle "music" "toggle"))
+  (or (am-control--direct 'toggle '("cycle" "pause"))
+      (am-control--media 'toggle "music" "toggle")))
 
 ;;;###autoload
 (defun am-control-next ()
   "Skip to the next track."
   (interactive)
-  (am-control--media 'next "music" "next"))
+  (or (am-control--direct 'next '("playlist-next" "weak"))
+      (am-control--media 'next "music" "next"))
+  (when (fboundp 'am-control-mpv-invalidate) (am-control-mpv-invalidate)))
 
 ;;;###autoload
 (defun am-control-prev (&optional restart)
   "Go to the previous track.  With RESTART, restart the current one first."
   (interactive "P")
+  ;; `--restart-first' carries real logic (restart if past the track's start,
+  ;; within a grace window), so it always goes to the CLI.
   (if restart
       (am-control--media 'prev "music" "prev" "--restart-first")
-    (am-control--media 'prev "music" "prev")))
+    (or (am-control--direct 'prev '("playlist-prev" "weak"))
+        (am-control--media 'prev "music" "prev")))
+  (when (fboundp 'am-control-mpv-invalidate) (am-control-mpv-invalidate)))
+
+(defun am-control--relative-seconds (spec)
+  "Seconds for SPEC if it is a plain signed second count, else nil.
+Only this simplest form is fast-pathed; timecodes and absolute jumps keep
+the CLI's `_do_timecode_seek' parsing rather than reimplementing it here."
+  (when (string-match "\\`\\([-+]\\)\\([0-9]+\\)\\'" (string-trim spec))
+    (let ((n (string-to-number (match-string 2 spec))))
+      (if (equal (match-string 1 spec) "-") (- n) n))))
 
 ;;;###autoload
 (defun am-control-seek (spec)
   "Seek by SPEC: \"+90\", \"-5:00\" (relative) or \"1:23:45\" (absolute)."
   (interactive "sSeek: ")
-  (am-control--media 'seek "music" "seek" spec))
+  (let ((secs (am-control--relative-seconds spec)))
+    (or (and secs (am-control--direct 'seek (list "seek" secs "relative")))
+        (am-control--media 'seek "music" "seek" spec))))
 
 ;;;###autoload
 (defun am-control-seek-forward (&optional secs)
@@ -203,6 +272,51 @@ Keys: :backend :uri :title :chapter :pos-ms :dur-ms :paused :speed :volume
 The pipeline is authoritative: this is derived from the live player, so it
 cannot disagree with what the popup shows.  Adapters must not maintain their
 own now-playing model alongside it."
+  (or (am-control--status-direct)
+      (am-control--status-cli)))
+
+(defun am-control--status-direct ()
+  "Status straight off the local mpv socket, or nil to fall back.
+
+Reads the same properties `_phone_music_props' batches in cli.py, in one
+round-trip, so it agrees with the popup by construction — both are reading
+the live player. Skips ~650ms of Python startup, which dominates the CLI
+path once the network hop is gone.
+
+`held' still comes from call-guard's flag file rather than from mpv: volume
+is call-guard's to own, so the surface reports the hold, it does not infer
+it from a volume level."
+  (when (and (require 'am-control-mpv nil t) (am-control-mpv-usable-p))
+    (when-let* ((p (am-control-mpv-get-properties
+                    '("pause" "time-pos" "duration" "speed" "media-title"
+                      "chapter-metadata/by-key/title" "volume" "path"))))
+      (cl-flet ((get (k) (let ((v (alist-get k p nil nil #'equal)))
+                           (if (eq v :json-false) nil v)))
+                (ms (v) (and (numberp v) (round (* v 1000)))))
+        (let* ((title (get "media-title"))
+               (chapter (get "chapter-metadata/by-key/title"))
+               ;; Match _mpv_music_label: cache files are named by video id,
+               ;; so an unembedded title is a bare `<id>.<ext>` — strip it.
+               (title (and (stringp title)
+                           (if (and (string-match-p "\\." title)
+                                    (not (string-match-p " " title)))
+                               (file-name-sans-extension title)
+                             title)))
+               (label (cond ((and chapter title) (concat chapter " · " title))
+                            (t (or chapter title)))))
+          (list :backend "phone"
+                :uri (get "path")
+                :title (and label (not (string-empty-p label)) label)
+                :chapter chapter
+                :pos-ms (ms (alist-get "time-pos" p nil nil #'equal))
+                :dur-ms (ms (alist-get "duration" p nil nil #'equal))
+                :paused (eq (alist-get "pause" p nil nil #'equal) t)
+                :speed (get "speed")
+                :volume (let ((v (get "volume"))) (and (numberp v) (round v)))
+                :held (am-control-hold-flag-present-p)))))))
+
+(defun am-control--status-cli ()
+  "Status via `media music status --json' — the authoritative slow path."
   (let* ((argv (append (am-control--prefix 'status 'media)
                        (list "music" "status" "--json")))
          (out (am-control--run-sync 'status argv)))

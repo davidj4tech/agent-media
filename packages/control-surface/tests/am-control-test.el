@@ -18,24 +18,44 @@
 (require 'cl-lib)
 (require 'am-control)
 (require 'am-control-hold)
+;; Needed for its defcustoms to be known special vars before we let-bind them.
+(require 'am-control-mpv)
 
 (defvar am-test--runs nil
   "Commands captured instead of executed.")
 
 (defun am-test--capture (_action argv) (push argv am-test--runs) nil)
 
+(defvar am-test--prefer-direct nil
+  "Value `am-control-prefer-direct' takes inside `am-test-with-capture'.
+Default nil so CLI-shape tests assert the CLI; the fast-path tests bind it.")
+
 (defmacro am-test-with-capture (&rest body)
-  "Run BODY with dispatch captured into `am-test--runs' (newest first)."
-  `(let ((am-test--runs nil)
-         (am-control-local-command '("media"))
-         (am-control-remote-command '("ssh" "red5" "media"))
-         (am-control-local-hold-command '("media-call-guard"))
-         (am-control-remote-hold-command '("ssh" "red5" "media-call-guard"))
-         (am-control-local-actions '(toggle next prev seek hold release status))
-         (am-control-hold--depth 0))
-     (cl-letf (((symbol-function 'am-control--run) #'am-test--capture))
-       ,@body
-       (nreverse am-test--runs))))
+  "Run BODY with dispatch captured into `am-test--runs' (newest first).
+
+`am-control-prefer-direct' is nil here so these assert the CLI argv, which
+is what they are about; the fast path has its own tests that opt in.
+
+`am-control-hold-flag' is pointed at a temp path unconditionally. Without
+that, a hold test would touch the REAL call-guard flag and duck the machine
+running the suite — the elisp version of the mistake conftest.py guards
+against on the Python side."
+  `(let* ((am-test--runs nil)
+          (am-test--flagdir (make-temp-file "am-test-flag" t))
+          (am-control-hold-flag (expand-file-name "call-guard.hold"
+                                                  am-test--flagdir))
+          (am-control-prefer-direct am-test--prefer-direct)
+          (am-control-local-command '("media"))
+          (am-control-remote-command '("ssh" "red5" "media"))
+          (am-control-local-hold-command '("media-call-guard"))
+          (am-control-remote-hold-command '("ssh" "red5" "media-call-guard"))
+          (am-control-local-actions '(toggle next prev seek hold release status))
+          (am-control-hold--depth 0))
+     (unwind-protect
+         (cl-letf (((symbol-function 'am-control--run) #'am-test--capture))
+           ,@body
+           (nreverse am-test--runs))
+       (delete-directory am-test--flagdir t))))
 
 
 ;;; Dispatch routing — the heart of the design
@@ -151,6 +171,97 @@ Music ducks and speech pauses; that split is the pipeline's policy."
   (cl-letf (((symbol-function 'am-control-status)
              (lambda () '(:title "T" :paused t :held t))))
     (should (equal (am-control-now-string) "⏸ T [held]"))))
+
+;;; Direct mpv fast path
+;;
+;; The fast path must be a pure optimisation: same effect, or it declines and
+;; the CLI runs. These pin the decision, not the IPC (that is exercised against
+;; a real mpv in tests/run-mpv-integration.sh).
+
+(defmacro am-test-with-direct (usable &rest body)
+  "Run BODY with the direct path reporting USABLE and mpv commands captured."
+  `(let ((am-mpv-calls nil))
+     (cl-letf (((symbol-function 'am-control-mpv-usable-p) (lambda () ,usable))
+               ((symbol-function 'am-control-mpv-command)
+                (lambda (&rest a) (push a am-mpv-calls) '(t)))
+               ((symbol-function 'am-control-mpv-invalidate) #'ignore))
+       (let ((cli (let ((am-test--prefer-direct t)) (am-test-with-capture ,@body))))
+         (list :mpv (nreverse am-mpv-calls) :cli cli)))))
+
+(ert-deftest am-control-test-direct-transport-skips-cli ()
+  "When mpv is reachable, transport goes direct and spawns nothing."
+  (let ((r (am-test-with-direct t (am-control-toggle) (am-control-next))))
+    (should (equal (plist-get r :mpv)
+                   '(("cycle" "pause") ("playlist-next" "weak"))))
+    (should (null (plist-get r :cli)))))
+
+(ert-deftest am-control-test-direct-declines-to-cli ()
+  "Unreachable mpv must fall back, not fail."
+  (let ((r (am-test-with-direct nil (am-control-toggle))))
+    (should (null (plist-get r :mpv)))
+    (should (equal (plist-get r :cli) '(("media" "music" "toggle"))))))
+
+(ert-deftest am-control-test-remote-action-never-goes-direct ()
+  "An action routed remote must honour that, not short-circuit locally."
+  (let* ((am-control-local-actions nil)
+         (r (am-test-with-direct t
+              (let ((am-control-local-actions nil)) (am-control-toggle)))))
+    (should (null (plist-get r :mpv)))
+    (should (equal (plist-get r :cli) '(("ssh" "red5" "media" "music" "toggle"))))))
+
+(ert-deftest am-control-test-seek-fast-path-only-simple-forms ()
+  "Timecodes keep the CLI's parsing rather than a reimplementation."
+  (let ((r (am-test-with-direct t (am-control-seek "+30") (am-control-seek "1:23:45"))))
+    (should (equal (plist-get r :mpv) '(("seek" 30 "relative"))))
+    (should (equal (plist-get r :cli) '(("media" "music" "seek" "1:23:45"))))))
+
+(ert-deftest am-control-test-prev-restart-never-fast-pathed ()
+  "--restart-first carries real logic; it must reach the CLI."
+  (let ((r (am-test-with-direct t (am-control-prev t))))
+    (should (null (plist-get r :mpv)))
+    (should (equal (plist-get r :cli)
+                   '(("media" "music" "prev" "--restart-first"))))))
+
+(ert-deftest am-control-test-relative-seconds-parsing ()
+  (should (equal (am-control--relative-seconds "+90") 90))
+  (should (equal (am-control--relative-seconds "-15") -15))
+  (should (null (am-control--relative-seconds "1:23")))
+  (should (null (am-control--relative-seconds "90")))     ; absolute
+  (should (null (am-control--relative-seconds "-5:00"))))
+
+
+;;; Hold via the flag file
+
+(ert-deftest am-control-test-hold-touches-flag-directly ()
+  "Ducking is the barge-in critical path: it must not spawn Python.
+Uses the harness's temp flag (it rebinds `am-control-hold-flag' itself, so
+the assertions read that binding rather than one of their own)."
+  (let* ((am-test--prefer-direct t)
+         (spawned (am-test-with-capture
+                   (am-control-hold)
+                   (should (am-control-hold-flag-present-p))
+                   (am-control-release)
+                   (should-not (am-control-hold-flag-present-p)))))
+    (should (null spawned))))
+
+(ert-deftest am-control-test-hold-falls-back-when-remote ()
+  "A hold routed to the remote host must run there, not touch a local file."
+  (let* ((am-control-local-actions nil)
+         (am-control-hold--depth 0)
+         (runs (am-test-with-capture
+                (let ((am-control-local-actions nil)) (am-control-hold)))))
+    (should (equal runs '(("ssh" "red5" "media-call-guard" "--hold"))))))
+
+(ert-deftest am-control-test-hold-release-is-idempotent-on-disk ()
+  "Releasing an already-released hold must not error."
+  (let* ((tmp (make-temp-file "am-hold" t))
+         (am-control-hold-flag (expand-file-name "call-guard.hold" tmp))
+         (am-control-hold--depth 1))
+    (unwind-protect
+        (progn (am-control-release)
+               (setq am-control-hold--depth 1)
+               (should (progn (am-control-release) t)))
+      (delete-directory tmp t))))
 
 (provide 'am-control-test)
 ;;; am-control-test.el ends here
