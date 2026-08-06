@@ -87,6 +87,7 @@ import re
 import signal
 import socket
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -134,6 +135,15 @@ _DEFAULT_POLL_S = 1.5
 # macro firing on voice-typing start/stop) touches this to pause + hold, and
 # removes it to auto-resume. See `--hold` / `--release` and `_run_loop`.
 _DEFAULT_HOLD_FLAG_NAME = "call-guard.hold"
+
+# Where a running guard publishes the hold-flag path it is actually polling.
+# Deliberately at the DEFAULT location and deliberately not overridable: it is
+# the one file a trigger can find without already knowing the answer. A remote
+# `ssh HOST media-call-guard --hold' sources no profile, so it cannot see a
+# MEDIA_CALL_GUARD_HOLD_FLAG set in an env file that only the service manager
+# reads — it would resolve the default path, write a flag nothing polls, and
+# report success. Publishing the answer here is what lets it find out.
+_FLAG_ADVERT_NAME = "call-guard.flag-path"
 
 # The flag file is a cheap local stat, so we check it on a fast tick — decoupled
 # from the (expensive) notification poll for calls, which stays at poll_s.
@@ -488,6 +498,64 @@ def _clear_hold(cfg: Config) -> None:
         pass
 
 
+def advert_path() -> Path:
+    """Where the running guard publishes the flag path it polls."""
+    return state_dir() / _FLAG_ADVERT_NAME
+
+
+def publish_flag_path(cfg: Config) -> None:
+    """Advertise the flag path this guard polls, for triggers that can't know it.
+
+    Best-effort: a guard that cannot write the advert must still guard.
+    """
+    try:
+        p = advert_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(cfg.hold_flag + "\n")
+    except OSError as exc:                      # pragma: no cover - unwritable state dir
+        log.warning("could not publish flag path: %s", exc)
+
+
+def unpublish_flag_path() -> None:
+    """Remove the advert on a clean stop, so nothing follows a dead guard."""
+    try:
+        advert_path().unlink()
+    except (FileNotFoundError, OSError):
+        pass
+
+
+def advertised_flag_path() -> str | None:
+    """The flag path a running guard published, or None if there is no advert."""
+    try:
+        value = advert_path().read_text().strip()
+    except OSError:
+        return None
+    return value or None
+
+
+def resolve_trigger_flag(cfg: Config) -> str:
+    """The flag path a --hold/--release should write, and why.
+
+    Explicit beats discovery: an operator who set MEDIA_CALL_GUARD_HOLD_FLAG
+    gets exactly that, because overriding it is how you drive a guard that is
+    not running yet. But a mismatch with a live guard is worth saying out loud
+    — it is precisely the case that used to duck nothing and report success.
+    """
+    explicit = os.environ.get("MEDIA_CALL_GUARD_HOLD_FLAG")
+    advertised = advertised_flag_path()
+    if explicit:
+        if advertised and advertised != explicit:
+            print(f"warning: the running guard polls {advertised}, "
+                  f"not {explicit} — this hold will not reach it",
+                  file=sys.stderr)
+        return explicit
+    if advertised and advertised != cfg.hold_flag:
+        print(f"note: following the running guard's flag path: {advertised}",
+              file=sys.stderr)
+        return advertised
+    return cfg.hold_flag
+
+
 def _hold_reason(call: bool, flag: bool) -> str:
     if call and flag:
         return "call + external hold"
@@ -658,6 +726,8 @@ def main() -> int:
     signal.signal(signal.SIGINT, _on_signal)
     cfg = Config()
 
+    if args.hold or args.release:
+        cfg.hold_flag = resolve_trigger_flag(cfg)
     if args.hold:
         _set_hold(cfg)
         print(f"hold flag set: {cfg.hold_flag}")
@@ -676,7 +746,11 @@ def main() -> int:
              cfg.duck_volume, cfg.poll_s, cfg.flag_poll_s, cfg.hold_engage_s,
              cfg.hold_release_s, cfg.hold_flag,
              " [dry-run]" if args.dry_run else "")
-    _run_loop(cfg, dry_run=args.dry_run)
+    publish_flag_path(cfg)
+    try:
+        _run_loop(cfg, dry_run=args.dry_run)
+    finally:
+        unpublish_flag_path()
     log.info("call_guard stopped")
     return 0
 

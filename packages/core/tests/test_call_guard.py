@@ -446,3 +446,71 @@ def test_duck_saves_and_unduck_restores_volume(monkeypatch, tmp_path):
     call_guard.unduck_sockets(cfg, saved)
     assert props["volume"] == 70.0          # restored
     assert saved == {}
+
+
+# --- hold-flag advertisement -------------------------------------------------
+#
+# The failure these guard against is silent in the direction that matters: a
+# trigger writes a flag nothing polls, prints "hold flag set", and ducks
+# nothing. Seen for real on `ssh phone media-call-guard --hold`, where the
+# phone's MEDIA_CALL_GUARD_HOLD_FLAG lives in an env file only its service
+# manager sources.
+
+def _state(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.delenv("MEDIA_CALL_GUARD_HOLD_FLAG", raising=False)
+
+
+def test_guard_publishes_the_flag_path_it_polls(monkeypatch, tmp_path):
+    _state(monkeypatch, tmp_path)
+    monkeypatch.setenv("MEDIA_CALL_GUARD_HOLD_FLAG", "/shared/call-guard.hold")
+    call_guard.publish_flag_path(call_guard.Config())
+    assert call_guard.advertised_flag_path() == "/shared/call-guard.hold"
+    # The advert itself must sit at the DEFAULT location — a trigger that knew
+    # where to look for it would not have needed it.
+    assert call_guard.advert_path().parent == tmp_path / "agent-media"
+
+
+def test_stop_removes_the_advert(monkeypatch, tmp_path):
+    _state(monkeypatch, tmp_path)
+    call_guard.publish_flag_path(call_guard.Config())
+    call_guard.unpublish_flag_path()
+    assert call_guard.advertised_flag_path() is None
+    call_guard.unpublish_flag_path()            # idempotent
+
+
+def test_trigger_follows_a_running_guard(monkeypatch, tmp_path):
+    """The fix: a trigger that cannot see the guard's env still reaches it."""
+    _state(monkeypatch, tmp_path)
+    monkeypatch.setenv("MEDIA_CALL_GUARD_HOLD_FLAG", "/shared/call-guard.hold")
+    call_guard.publish_flag_path(call_guard.Config())
+    monkeypatch.delenv("MEDIA_CALL_GUARD_HOLD_FLAG")   # as a bare ssh sees it
+    cfg = call_guard.Config()
+    assert cfg.hold_flag.endswith("agent-media/call-guard.hold")   # the default
+    assert call_guard.resolve_trigger_flag(cfg) == "/shared/call-guard.hold"
+
+
+def test_explicit_beats_the_advert_but_warns(monkeypatch, tmp_path, capsys):
+    """Overriding is how you drive a guard that isn't up yet — but say so."""
+    _state(monkeypatch, tmp_path)
+    monkeypatch.setenv("MEDIA_CALL_GUARD_HOLD_FLAG", "/shared/call-guard.hold")
+    call_guard.publish_flag_path(call_guard.Config())
+    monkeypatch.setenv("MEDIA_CALL_GUARD_HOLD_FLAG", "/elsewhere/call-guard.hold")
+    cfg = call_guard.Config()
+    assert call_guard.resolve_trigger_flag(cfg) == "/elsewhere/call-guard.hold"
+    assert "will not reach it" in capsys.readouterr().err
+
+
+def test_no_advert_leaves_resolution_alone(monkeypatch, tmp_path):
+    """No guard here, or an older one: behave exactly as before."""
+    _state(monkeypatch, tmp_path)
+    cfg = call_guard.Config()
+    assert call_guard.resolve_trigger_flag(cfg) == cfg.hold_flag
+
+
+def test_agreeing_advert_is_silent(monkeypatch, tmp_path, capsys):
+    _state(monkeypatch, tmp_path)
+    cfg = call_guard.Config()
+    call_guard.publish_flag_path(cfg)
+    assert call_guard.resolve_trigger_flag(cfg) == cfg.hold_flag
+    assert capsys.readouterr().err == ""
