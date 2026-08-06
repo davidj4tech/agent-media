@@ -2610,7 +2610,8 @@ def _phone_music_props() -> Optional[dict]:
         props = ipc.get_properties(
             music_local.endpoint(),
             ["idle-active", "pause", "time-pos", "duration", "speed",
-             "media-title", "chapter-metadata/by-key/title"],
+             "media-title", "chapter-metadata/by-key/title", "volume",
+             "path"],
             timeout=1.5)
     except (ipc.MpvIpcError, OSError):
         return None
@@ -2674,6 +2675,87 @@ def _music_now_status(m: "SinkMusic", width: int, hide_idle: bool,
             return line, _mpv_music_label(mprops), _speed_str(mprops)
     return (_music_status_line(m, width, hide_idle, bar),
             _music_now_label(m), "")
+
+
+def _music_hold_active() -> Optional[bool]:
+    """Whether call-guard's external hold is engaged, or None when unknown.
+
+    A read of the same flag file `media-call-guard --hold` sets, so a control
+    surface can *render* a held state without owning the mechanism. Never
+    writes: holding and releasing stay call-guard's job.
+    """
+    try:
+        from .call_guard import Config, flag_present
+        return bool(flag_present(Config()))
+    except Exception:  # noqa: BLE001 — call-guard is optional on a host
+        return None
+
+
+def _ms(v) -> Optional[int]:
+    return int(v * 1000) if isinstance(v, (int, float)) else None
+
+
+def _music_status_json(m: "SinkMusic") -> dict:
+    """Structured music-channel snapshot for a control surface.
+
+    Same live-backend rule as `_music_now_status` — the phone's mpv when it
+    has a track loaded, else Mopidy — so a front-end reading this can never
+    disagree with what the popup shows. One round-trip either way.
+
+    Every field is nullable by design: a surface renders what it got and polls
+    again rather than blocking. This is a *read*; the pipeline stays the only
+    writer, which is what lets a front-end be removed without leaving state
+    behind.
+    """
+    out: dict = {"backend": None, "uri": None, "title": None, "chapter": None,
+                 "pos_ms": None, "dur_ms": None, "paused": None, "speed": None,
+                 "volume": None, "held": _music_hold_active()}
+
+    props = _phone_music_props()
+    if props is not None:
+        chap = str(props.get("chapter-metadata/by-key/title") or "").strip()
+        vol = props.get("volume")
+        out.update(
+            backend="phone",
+            title=_mpv_music_label(props) or None,
+            chapter=chap or None,
+            pos_ms=_ms(props.get("time-pos")),
+            dur_ms=_ms(props.get("duration")),
+            paused=bool(props.get("pause")),
+            speed=props.get("speed"),
+            volume=int(vol) if isinstance(vol, (int, float)) else None,
+            uri=str(props.get("path") or "") or None,
+        )
+        return out
+
+    out["backend"] = "mopidy"
+    try:
+        st = m.status_dict()
+    except OSError:
+        return out
+    state = st.get("state", "stop")
+    if state in ("", "stop"):
+        return out
+
+    def _f(key):
+        try:
+            return float(st[key]) if st.get(key) else None
+        except (ValueError, KeyError):
+            return None
+
+    out.update(paused=(state == "pause"),
+               pos_ms=_ms(_f("elapsed")), dur_ms=_ms(_f("duration")))
+    try:
+        vol = int(st.get("volume", ""))
+        out["volume"] = vol if vol >= 0 else None
+    except (ValueError, TypeError):
+        pass
+    try:
+        out["title"] = _music_now_label(m) or None
+        out["uri"] = m.now_playing_uri()
+    except OSError:
+        pass
+    return out
 
 
 def _music_live_backend(m: "SinkMusic"):
@@ -3067,6 +3149,15 @@ def cmd_music(a) -> int:
     from .route import coerce_content_type, detect_content_type
 
     m = SinkMusic()
+    if a.action == "status" and getattr(a, "json", False):
+        # Structured read for a control surface. Kept ahead of the formatted
+        # branch so the human status line is byte-for-byte unchanged when the
+        # flag is absent.
+        try:
+            print(json.dumps(_music_status_json(m)))
+        except Exception as e:  # noqa: BLE001 — a poller must never see a traceback
+            print(json.dumps({"backend": None, "error": str(e)}))
+        return 0
     if a.action in ("status", "now", "now-status"):
         # All three follow the LIVE backend (phone mpv when it has a track
         # loaded, else Mopidy). `now-status` is the popup's fused form: status
@@ -4277,6 +4368,11 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="for 'status': emit '○' when idle instead of empty")
     s.add_argument("--no-bar", action="store_true",
                    help="for 'status': show only the times (no progress bar)")
+    s.add_argument("--json", action="store_true",
+                   help="for 'status': emit a JSON object (backend, uri, "
+                        "title, chapter, pos_ms, dur_ms, paused, speed, "
+                        "volume, held) instead of the progress bar — for "
+                        "control surfaces that need structured state")
     s.add_argument("--add", action="store_true",
                    help="for 'play': queue without clearing the playlist")
     s.add_argument("--restart-first", action="store_true",
