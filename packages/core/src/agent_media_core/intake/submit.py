@@ -838,8 +838,41 @@ def _speech_flush_path() -> Path:
 
 
 def _speech_hold_path() -> Path:
+    """The unnamed holder's marker — one file, as it has always been."""
     state = Path(os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state"))
     return state / "agent-media" / "speech-hold"
+
+
+def _speech_hold_dir() -> Path:
+    """Per-owner markers, one file each.
+
+    A directory rather than one file holding a map of owners: two holders
+    racing on a read-modify-write of a shared file can drop one of the two
+    holds, and the loser is silently un-held while it believes it is holding.
+    Separate files need no lock — each holder only ever writes its own — and an
+    expired one is reaped by whoever reads next, exactly like the single
+    marker.
+    """
+    return _speech_hold_path().with_name("speech-hold.d")
+
+
+_OWNER_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$")
+
+
+def _owner_marker(owner: str) -> Path:
+    """Marker path for `owner`, or raise if the name cannot be a filename.
+
+    Owners come from callers (`--owner cece`), so they are untrusted input on
+    a path: a name containing a slash or `..` would write outside the hold
+    directory. Validated rather than sanitised — silently rewriting an owner
+    name would let two different callers collide on one marker.
+    """
+    if not _OWNER_OK.match(owner):
+        raise ValueError(
+            f"invalid hold owner {owner!r}: use letters, digits, dot, dash or "
+            "underscore (max 32 chars)"
+        )
+    return _speech_hold_dir() / owner
 
 
 def request_speech_flush() -> float:
@@ -875,7 +908,7 @@ def _speech_flushed(seq: float) -> bool:
         return False
 
 
-def set_speech_hold(seconds: float) -> float:
+def set_speech_hold(seconds: float, owner: str | None = None) -> float:
     """Hold the START of new speech playback, returning the expiry epoch
     (0.0 if the marker could not be written).
 
@@ -884,14 +917,19 @@ def set_speech_hold(seconds: float) -> float:
     enforce it, so a crashed or forgetful holder can never silence the phone
     forever. In-flight audio is not paused (pair with `media pause` for
     that); held replies keep their queue order and play when the hold lifts.
+
+    With `owner`, the hold is one of several: speech stays held while ANY
+    owner's hold is live, and releasing yours cannot lift someone else's.
+    Without one it writes the original single marker, so an existing caller
+    keeps working unchanged.
     """
     try:
         cap = float(os.environ.get("MEDIA_SPEECH_HOLD_MAX_S", "300"))
     except ValueError:
         cap = 300.0
     until = time.time() + max(1.0, min(float(seconds), cap))
+    path = _speech_hold_path() if owner is None else _owner_marker(owner)
     try:
-        path = _speech_hold_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(repr(until))
     except OSError:
@@ -899,17 +937,28 @@ def set_speech_hold(seconds: float) -> float:
     return until
 
 
-def release_speech_hold() -> None:
-    try:
-        _speech_hold_path().unlink()
-    except OSError:
-        pass
+def release_speech_hold(owner: str | None = None, everyone: bool = False) -> None:
+    """Lift a hold. Yours by default — never everyone's by accident.
+
+    `owner=None` releases the unnamed marker only, so a legacy caller lifts
+    exactly what it set. `everyone=True` is the deliberate override for a
+    stuck channel, and is the only way one caller can drop another's hold.
+    """
+    if everyone:
+        targets = [_speech_hold_path(), *_speech_hold_dir().glob("*")]
+    elif owner is not None:
+        targets = [_owner_marker(owner)]
+    else:
+        targets = [_speech_hold_path()]
+    for path in targets:
+        try:
+            path.unlink()
+        except OSError:
+            pass
 
 
-def speech_hold_until() -> float:
-    """The active hold's expiry epoch, or 0.0. Expired markers are reaped on
-    read, so an abandoned hold cleans itself up the first time anyone looks."""
-    path = _speech_hold_path()
+def _read_marker(path: Path) -> float:
+    """One marker's expiry, reaping it if it has passed. 0.0 when not held."""
     try:
         until = float(path.read_text().strip())
     except (OSError, ValueError):
@@ -921,6 +970,38 @@ def speech_hold_until() -> float:
             pass
         return 0.0
     return until
+
+
+def speech_holders() -> dict[str, float]:
+    """Live holds as ``{owner: expiry}``; the unnamed one appears as ''.
+
+    Expired markers are reaped on read, so an abandoned hold cleans itself up
+    the first time anyone looks — including a holder that died between its two
+    edges, which is the failure the mandatory expiry exists to bound.
+    """
+    held: dict[str, float] = {}
+    legacy = _read_marker(_speech_hold_path())
+    if legacy:
+        held[""] = legacy
+    try:
+        markers = sorted(_speech_hold_dir().glob("*"))
+    except OSError:
+        markers = []
+    for path in markers:
+        until = _read_marker(path)
+        if until:
+            held[path.name] = until
+    return held
+
+
+def speech_hold_until() -> float:
+    """The latest expiry among live holds, or 0.0 when nothing holds.
+
+    Speech is held while ANY owner holds it, so the consumer waits for the
+    last one to lift. Unchanged for the single-holder case.
+    """
+    held = speech_holders()
+    return max(held.values()) if held else 0.0
 
 
 def _wait_speech_hold() -> None:

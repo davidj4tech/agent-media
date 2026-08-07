@@ -1435,27 +1435,71 @@ def cmd_speech_flush(a) -> int:
     return 0
 
 
+def _hold_owner(explicit: str | None) -> str | None:
+    """Who this hold belongs to.
+
+    Explicit wins; then MEDIA_SPEECH_HOLD_OWNER; then the tmux pane, so that
+    several sessions each hold their own without anybody having to invent a
+    name. Falling back to the pane matters because the common case is now N
+    Claude sessions in N panes: with one shared marker the second session to
+    release would lift the first session's hold and talk over it.
+
+    None means the unnamed marker — the pre-owner behaviour, kept for callers
+    outside tmux that never asked for any of this.
+    """
+    if explicit:
+        return explicit
+    env = os.environ.get("MEDIA_SPEECH_HOLD_OWNER", "").strip()
+    if env:
+        return env
+    pane = os.environ.get("TMUX_PANE", "").strip()
+    if pane:
+        # "%42" -> "pane42": the marker is a filename, and '%' is legal but
+        # reads like an escape in half the places these names get printed.
+        return "pane" + pane.lstrip("%")
+    return None
+
+
 def cmd_speech_hold(a) -> int:
     """Hold the start of new speech playback, with a mandatory expiry."""
     from .intake.submit import (release_speech_hold, set_speech_hold,
-                                speech_hold_until)
+                                speech_holders)
+    owner = _hold_owner(getattr(a, "owner", None))
+
     if a.release:
-        release_speech_hold()
-        print("speech: hold released")
-        return 0
-    if a.seconds is None:
-        until = speech_hold_until()
-        if until:
-            print(f"speech: hold active, {until - time.time():.0f}s remaining")
+        if getattr(a, "all", False):
+            release_speech_hold(everyone=True)
+            print("speech: all holds released")
         else:
-            print("speech: no hold active")
+            release_speech_hold(owner)
+            print(f"speech: hold released ({owner or 'unnamed'})")
         return 0
-    until = set_speech_hold(a.seconds)
+
+    if a.seconds is None:
+        held = speech_holders()
+        if not held:
+            print("speech: no hold active")
+            return 0
+        now = time.time()
+        parts = ", ".join(
+            f"{name or 'unnamed'} ({until - now:.0f}s)"
+            for name, until in sorted(held.items(), key=lambda kv: -kv[1])
+        )
+        print(f"speech: held by {parts}")
+        return 0
+
+    try:
+        until = set_speech_hold(a.seconds, owner)
+    except ValueError as exc:
+        print(f"speech: {exc}", file=sys.stderr)
+        return 2
     if not until:
         print("speech: could not write the hold marker", file=sys.stderr)
         return 1
-    print(f"speech: holding new playback for {until - time.time():.0f}s "
-          "(expires on its own; `media speech-hold --release` lifts it early)")
+    who = owner or "unnamed"
+    print(f"speech: {who} holding new playback for {until - time.time():.0f}s "
+          "(expires on its own; `media speech-hold --release` lifts it early). "
+          "Speech stays held while any owner holds it.")
     return 0
 
 
@@ -4223,6 +4267,13 @@ def _build_parser() -> argparse.ArgumentParser:
                             "300); no args: show; --release: lift now")
     s.add_argument("seconds", nargs="?", type=float, default=None)
     s.add_argument("--release", action="store_true")
+    s.add_argument("--owner", default=None,
+                   help="whose hold this is (default: MEDIA_SPEECH_HOLD_OWNER, "
+                        "else this tmux pane). Speech stays held while any "
+                        "owner holds it, and --release only lifts your own.")
+    s.add_argument("--all", action="store_true",
+                   help="with --release: lift EVERY hold, including other "
+                        "sessions'. The escape hatch for a stuck channel.")
     s.set_defaults(func=cmd_speech_hold)
 
     sub.add_parser("pause").set_defaults(func=cmd_pause)
