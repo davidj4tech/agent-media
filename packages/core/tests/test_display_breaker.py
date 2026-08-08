@@ -114,3 +114,15 @@ def test_remote_snapshot_asks_for_the_latency_exemption(monkeypatch):
 
     assert cli._remote_snapshot() is not None
     assert seen.get("slow_s") == 0
+    # One lost packet is not an outage on a link that drops a fifth of them.
+    assert seen.get("attempts", 1) > 1
+    assert 0 < seen.get("breaker_s", 45) <= 10
+
+
+def test_display_failure_window_is_short():
+    """A dropped read must not blank the popup for the chatter cool-off."""
+    ipc._record(EP, elapsed=0.01, failed=True, slow_s=0, breaker_s=5)
+    until = _breaker.load("mpv")[EP]
+    assert until - time.time() <= 6, (
+        "one lost packet shut the display out for the full window — on this "
+        "link that leaves the popup blank more often than not")

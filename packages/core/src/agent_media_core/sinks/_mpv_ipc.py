@@ -100,7 +100,8 @@ def _guard(endpoint: str | Path, critical: bool = False) -> None:
 
 
 def _record(endpoint: str | Path, elapsed: float, failed: bool,
-            slow_s: float | None = None) -> None:
+            slow_s: float | None = None,
+            breaker_s: float | None = None) -> None:
     """Open the breaker when a remote call was slow or failed; close on a fast one.
 
     `slow_s` overrides the latency budget for this one call; `0` means latency
@@ -112,11 +113,18 @@ def _record(endpoint: str | Path, elapsed: float, failed: bool,
     almost permanently and a short utterance's few seconds of playback are never
     once observed, so the popup reads blank. Failure still trips it, so an
     unreachable bridge doesn't make every redraw wait out the timeout.
+
+    `breaker_s` overrides how long this call's failure keeps the endpoint shut.
+    The default window is sized for policy chatter, where being wrong costs one
+    unducked track; for a display read it is the length of time the screen lies
+    about what is playing. This link drops a fifth of its packets, so a read
+    fails now and then with nothing wrong at the far end — and a 45s penalty for
+    one lost packet leaves the popup blank far more often than not.
     """
     if not _is_remote(endpoint):
         return
     key = str(endpoint)
-    window = _breaker_s()
+    window = _breaker_s() if breaker_s is None else breaker_s
     if window <= 0:
         return
     limit = _slow_s() if slow_s is None else slow_s
@@ -339,7 +347,8 @@ def get_property(sock_path: str | Path, name: str, timeout: float = 2.0) -> Any:
 
 def get_properties(sock_path: str | Path, names: list,
                    timeout: float = 2.0, attempts: int = 1,
-                   slow_s: float | None = None) -> dict:
+                   slow_s: float | None = None,
+                   breaker_s: float | None = None) -> dict:
     """Fetch several properties over ONE connection (request_id-matched).
 
     A monitor that reads playlist-pos + idle + pause + time-pos every tick would
@@ -359,9 +368,10 @@ def get_properties(sock_path: str | Path, names: list,
     re-raises the last connect error, or returns {} when connections opened
     but nothing answered (the pre-retry semantics).
 
-    ``slow_s``: per-call latency budget for the breaker (see `_record`). Pass 0
-    for a read that only displays something, so ordinary bridge latency doesn't
-    breaker the endpoint the display depends on.
+    ``slow_s`` / ``breaker_s``: per-call breaker policy (see `_record`). A read
+    that only displays something passes 0 and a short window, so neither
+    ordinary bridge latency nor one lost packet shuts it out of the endpoint
+    whose state it is trying to show.
     """
     _guard(sock_path)
     t0 = time.monotonic()
@@ -383,7 +393,8 @@ def get_properties(sock_path: str | Path, names: list,
             raise last_err
         return {}
     finally:
-        _record(sock_path, time.monotonic() - t0, not ok, slow_s=slow_s)
+        _record(sock_path, time.monotonic() - t0, not ok, slow_s=slow_s,
+                breaker_s=breaker_s)
 
 
 def _get_properties_once(sock_path: str | Path, names: list,

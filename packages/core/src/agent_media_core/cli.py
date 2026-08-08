@@ -303,8 +303,14 @@ def _remote_snapshot():
     the phone is this link's normal, not a fault, and judging the read by the
     budget that keeps policy chatter from delaying speech left the breaker open
     almost always — a short utterance then played and finished without a single
-    snapshot landing, and the popup showed nothing. Failure still trips it, so a
-    phone that is simply gone doesn't make every redraw wait out the timeout.
+    snapshot landing, and the popup showed nothing.
+
+    Failure still trips it, so a phone that is simply gone doesn't make every
+    redraw wait out the timeout — but gently, and only after a retry. This link
+    loses a fifth of its packets, so single-shot reads fail regularly with
+    nothing wrong at the far end, and the default 45s penalty for one lost
+    packet blanked the popup most of the time. One retry absorbs the drop; a
+    5s window keeps a genuine outage cheap to notice and cheap to leave.
     """
     try:
         ttl = float(os.environ.get("MEDIA_REMOTE_SNAPSHOT_TTL", "1.0"))
@@ -316,7 +322,8 @@ def _remote_snapshot():
     try:
         snap = ipc.get_properties(
             _sock(), ["idle-active", "pause", "time-pos", "duration",
-                      "mute", "speed"], timeout=2.0, slow_s=0)
+                      "mute", "speed"], timeout=2.0, attempts=2,
+            slow_s=0, breaker_s=5)
     except (ipc.MpvIpcError, OSError):
         return None
     if not snap:
