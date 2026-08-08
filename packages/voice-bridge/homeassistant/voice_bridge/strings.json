@@ -1,0 +1,32 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Voice Bridge",
+        "description": "Send Assist transcripts to tmux-voice-bridge, which types them into a tmux pane (or hands them to a waiting agent-media `converse`).",
+        "data": {
+          "url": "Bridge URL",
+          "timeout": "Timeout (seconds)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "No answer from the bridge. Is tmux-voice-bridge running, and is the URL reachable from Home Assistant?",
+      "bad_reply": "The bridge answered, but not with the expected chat-completions shape."
+    },
+    "abort": {
+      "already_configured": "That bridge URL is already set up."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Voice Bridge",
+        "data": {
+          "url": "Bridge URL",
+          "timeout": "Timeout (seconds)"
+        }
+      }
+    }
+  }
+}

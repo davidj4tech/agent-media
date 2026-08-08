@@ -104,11 +104,18 @@ not from this confirmation.
 
 ## HA wiring
 
-Point HA's conversation agent at `http://127.0.0.1:18790/v1/chat/completions`
-(or wherever you bound it). Any integration that speaks OpenAI-compatible
-chat completions works — the
-[OpenClaw](https://github.com/openclaw/openclaw) custom integration is
-one option.
+Install the bundled conversation agent — [`homeassistant/`](./homeassistant/)
+— and point a pipeline at it. It's about a hundred lines whose only job is to
+POST transcripts here, and it registers a real `conversation.*` entity, so it
+appears in the Assist pipeline picker.
+
+Any integration that speaks OpenAI-compatible chat completions will also work
+(the [OpenClaw](https://github.com/openclaw/openclaw) custom integration was
+what this setup used before). Two things to know if you go that route: the
+bridge then has to satisfy that integration's extra protocol — `/tools/invoke`
+here exists solely for OpenClaw's alive-check — and an integration using the
+legacy `conversation.async_set_agent` API registers no entity on HA 2026.7, so
+it can't be selected in the UI at all.
 
 Typical pipeline:
 
