@@ -310,14 +310,20 @@ class SinkSpeech:
         ipc.command(_socket_for(target), "loadfile",
                     _clip_uri_for(uri, target), "append", critical=True)
 
+    # critical: a person pressed a key. The slow-endpoint breaker exists to drop
+    # *observational* chatter (is anything playing? duck it) when a remote
+    # endpoint is answering slowly — but the phone lane makes that same endpoint
+    # the control path, and silently skipping a pause is indistinguishable from
+    # the button being broken. Speech that arrives late is a nuisance; a pause
+    # that never happens is a bug the user cannot work around.
     def pause(self, target: Target = DEFAULT_TARGET) -> None:
-        ipc.set_property(_socket_for(target), "pause", True)
+        ipc.set_property(_socket_for(target), "pause", True, critical=True)
 
     def resume(self, target: Target = DEFAULT_TARGET) -> None:
-        ipc.set_property(_socket_for(target), "pause", False)
+        ipc.set_property(_socket_for(target), "pause", False, critical=True)
 
     def stop(self, target: Target = DEFAULT_TARGET) -> None:
-        ipc.command(_socket_for(target), "stop")
+        ipc.command(_socket_for(target), "stop", critical=True)
 
     # ---- cross-host broker ownership -------------------------------------
     #

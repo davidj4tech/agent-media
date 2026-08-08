@@ -1976,7 +1976,14 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
         return None
     started_at = time.time()
     history_id: Optional[int] = None
-    target_name = (event.target.name if event.target else "remote")
+    # Resolve the target exactly as the local path does. This branch runs before
+    # submit_event's own resolution, so event.target is usually None here — and
+    # recording a placeholder like "remote" is not cosmetic: _active_speech_target
+    # reads this row to decide which player the popup talks to, so an unmatched
+    # name sends pause/resume to the idle local mpv while the audio plays on the
+    # phone. The control appears to do nothing.
+    target_name = (event.target.name if event.target
+                   else os.environ.get("MEDIA_SPEECH_DEFAULT_TARGET", "local"))
     try:
         coordinator.before_speech()
         _speech_event("start", text=text[:400], session=session,

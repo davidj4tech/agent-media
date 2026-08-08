@@ -404,5 +404,6 @@ def _get_properties_once(sock_path: str | Path, names: list,
         s.close()
 
 
-def set_property(sock_path: str | Path, name: str, value: Any) -> None:
-    command(sock_path, "set_property", name, value)
+def set_property(sock_path: str | Path, name: str, value: Any,
+                 critical: bool = False) -> None:
+    command(sock_path, "set_property", name, value, critical=critical)
