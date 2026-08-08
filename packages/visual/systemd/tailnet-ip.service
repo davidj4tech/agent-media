@@ -1,0 +1,28 @@
+[Unit]
+# Publishes this host's tailnet IPv4 as TS_IP in %t/tailnet-ip.env, for services
+# that must BIND to the tailnet interface rather than dial across it.
+#
+# Why not bind to a MagicDNS name: a name is resolved once, at start, so if
+# tailscaled's DNS isn't up yet the bind fails outright — a boot race that has
+# cost real downtime on this fleet.
+#
+# Why not 0.0.0.0: hosts with a public interface would expose tailnet-only
+# services (canvas, clip server) to the internet. Binding the tailnet address
+# is the whole privacy posture of those services.
+#
+# Why not a hardcoded 100.x: it stops being true when the address is
+# reassigned, and it isn't yours to ship in a public repo.
+#
+# Blocks until tailscaled hands out an address, so dependents start with a
+# usable value rather than racing it.
+Description=Publish this host's tailnet IPv4 as TS_IP
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'for i in $(seq 1 60); do ip=$(tailscale ip -4 2>/dev/null | head -1); if [ -n "$ip" ]; then printf "TS_IP=%%s\\n" "$ip" > %t/tailnet-ip.env; echo "tailnet-ip: $ip"; exit 0; fi; sleep 2; done; echo "tailnet-ip: no address after 120s" >&2; exit 1'
+
+[Install]
+WantedBy=default.target

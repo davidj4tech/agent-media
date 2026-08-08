@@ -1,6 +1,7 @@
 [Unit]
 Description=agent-media visual canvas — SSE image page shown alongside spoken replies (tailnet-only)
-After=network-online.target
+After=network-online.target tailnet-ip.service
+Requires=tailnet-ip.service
 
 [Service]
 # The venv bin (media, edge-tts) + ~/.local/bin (amux) on PATH: `media say` /
@@ -10,9 +11,12 @@ After=network-online.target
 Environment=PATH=%h/projects/agent-media/.venv/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 # Bind to the Tailscale IP only (never the public interface — the images
 # illustrate your replies, same privacy posture as the clip server on 8780).
-# Pushers must therefore use the tailnet URL too: set
-# MEDIA_VISUAL_URL=http://<tailscale-ip>:8781 in ~/.config/agent-media.env.
-ExecStart=%h/projects/agent-media/.venv/bin/media-visual-canvas --bind 100.103.43.93 --port 8781
+# TS_IP comes from tailnet-ip.service; a literal address here stops being true
+# the moment the tailnet reassigns it, and a MagicDNS name can't be used for a
+# bind (resolved once at start, so it loses the boot race with tailscaled).
+# Pushers use the name instead: MEDIA_VISUAL_URL=http://<host>:8781.
+EnvironmentFile=%t/tailnet-ip.env
+ExecStart=%h/projects/agent-media/.venv/bin/media-visual-canvas --bind ${TS_IP} --port 8781
 Restart=always
 RestartSec=2
 

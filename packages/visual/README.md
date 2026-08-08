@@ -106,7 +106,7 @@ Tailscale IP only — same privacy posture as the clip server on 8780:
 cp systemd/agent-media-visual-canvas.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now agent-media-visual-canvas
-# phone/TV browser → http://red5:8781/ (MagicDNS) or http://100.103.43.93:8781/
+# phone/TV browser → http://red5:8781/ (MagicDNS name of the host)
 media-visual --say "All tests pass and the branch is merged."   # manual demo
 ```
 

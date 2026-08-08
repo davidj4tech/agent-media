@@ -75,7 +75,7 @@ How it was stood up (all under `~/owui-caddy/`, nothing in `/etc`):
    days — **renewal is the one open follow-up**, see below).
 3. **`~/owui-caddy/Caddyfile`** — the template here, adapted for red5:
    - site `red5.eagle-dubhe.ts.net:8443` with explicit `tls red5.crt red5.key`;
-   - upstreams at the **tailnet IP** `100.103.43.93` (`:3000` OWUI, `:8781`
+   - upstreams at the **tailnet host** `red5` (`:3000` OWUI, `:8781`
      canvas) — both **refuse on `127.0.0.1`**;
    - globals `order replace after encode`, plus `admin off` +
      `auto_https disable_redirects` so it stays off the system Caddy's `:2019`
