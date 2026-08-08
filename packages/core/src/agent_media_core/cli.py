@@ -282,15 +282,74 @@ def _remote_speech() -> bool:
     return str(_sock()).startswith("tcp://")
 
 
+_SNAP_CACHE: dict = {"at": 0.0, "value": None}
+
+
+def _remote_snapshot():
+    """One batched read of the remote player, or None if it can't be reached.
+
+    idle/pause/time-pos/duration/mute/speed in a single round trip. The point is
+    that the player is the source of truth: a mirror maintained here has to be
+    patched at every control site, and whatever gets missed reads stale — which
+    is how "resume" came to look like "restart".
+
+    Cached briefly because a popup redraw is not a rare event and each call
+    crosses a link that drops a quarter of its packets. MEDIA_REMOTE_SNAPSHOT_TTL
+    tunes it; 0 disables the cache.
+
+    Not `critical` — a redraw we skip costs nothing, and keypresses go through
+    the control path, which is critical and bypasses the breaker. But it is
+    exempt from the breaker's *latency* rule (`slow_s=0`): a 2s round trip to
+    the phone is this link's normal, not a fault, and judging the read by the
+    budget that keeps policy chatter from delaying speech left the breaker open
+    almost always — a short utterance then played and finished without a single
+    snapshot landing, and the popup showed nothing. Failure still trips it, so a
+    phone that is simply gone doesn't make every redraw wait out the timeout.
+    """
+    try:
+        ttl = float(os.environ.get("MEDIA_REMOTE_SNAPSHOT_TTL", "1.0"))
+    except ValueError:
+        ttl = 1.0
+    now = time.monotonic()
+    if ttl > 0 and _SNAP_CACHE["value"] is not None and now - _SNAP_CACHE["at"] < ttl:
+        return _SNAP_CACHE["value"]
+    try:
+        snap = ipc.get_properties(
+            _sock(), ["idle-active", "pause", "time-pos", "duration",
+                      "mute", "speed"], timeout=2.0, slow_s=0)
+    except (ipc.MpvIpcError, OSError):
+        return None
+    if not snap:
+        return None
+    _SNAP_CACHE["at"], _SNAP_CACHE["value"] = now, snap
+    return snap
+
+
 def _speech_display_state():
     """`(idle, pos, dur, paused, muted, speed, playing)` for the speech channel.
 
-    Remote target (the phone): read the intake monitor's local now_playing
-    mirror — a DB hit, not a ~600ms bridge round-trip — so the status bar and
-    popup stay responsive. Local target: one batched snapshot off the local mpv,
-    enriched with the response timeline (offset+pos / total) from now_playing.
+    Remote target (the phone): one batched, briefly-cached snapshot off the
+    remote player itself, falling back to now_playing's announced duration when
+    there is no player to ask. Local target: one batched snapshot off the local
+    mpv, enriched with the response timeline (offset+pos / total) from
+    now_playing.
     """
     if _remote_speech():
+        snap = _remote_snapshot()
+        if snap is not None:
+            # Ground truth, in one round trip. Every field the popup shows comes
+            # from the player itself, so a control nobody special-cased here
+            # still displays correctly — which the hand-patched mirror below
+            # could never manage.
+            if snap.get("idle-active"):
+                return (True, None, None, False, False, None, False)
+            return (False, snap.get("time-pos"), snap.get("duration"),
+                    bool(snap.get("pause")), bool(snap.get("mute")),
+                    snap.get("speed") or 1.0, True)
+
+        # Fallback: the far side has no player we can query — a renderer that
+        # just speaks (Android TTS, a bare `say`) — or the bridge is unreachable.
+        # All we have is whatever it announced up front, so extrapolate.
         np = _now_speaking()
         ex = (np or {}).get("extras") if np else None
         if ex and ex.get("total_duration_s"):
@@ -304,14 +363,11 @@ def _speech_display_state():
                     os.kill(int(wp), 0)
                 except (OSError, ValueError):
                     return (True, None, None, False, False, None, False)
-            lp = ex.get("live_pos_s")
             ps = ex.get("play_started_at")
+            lp = ex.get("live_pos_s")
             if lp is None and ps:
-                # Remote-say: the far side sent one duration and we stamped the
-                # moment playback began, so position is wall clock since then.
-                # Clamped to the duration — an overrun means the utterance has
-                # finished and the cleanup has not landed yet, and a bar past
-                # 100% is how that reads as a fault rather than a lag.
+                # Clamped: an overrun means the utterance finished and cleanup
+                # has not landed, and a bar past 100% reads as a fault.
                 pos = min(max(time.time() - float(ps), 0.0),
                           float(ex["total_duration_s"]))
             else:
@@ -1425,6 +1481,7 @@ def cmd_toggle(a) -> int:
         except Exception:  # noqa: BLE001
             ipc.set_property(_sock(), "pause", new_pause)
         _patch_speech_mirror(live_pause=new_pause)
+        _SNAP_CACHE["value"] = None   # next redraw asks the player, not the cache
         return 0
     if _get("idle-active"):
         pane = os.environ.get("TTS_POPUP_PANE") or os.environ.get("TMUX_PANE", "")
