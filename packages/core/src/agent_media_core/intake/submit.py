@@ -1866,6 +1866,55 @@ def _wait_and_claim_broker(sink: "SinkSpeech", target: Target) -> None:
         time.sleep(0.3)
 
 
+def _watch_remote_progress(proc, state: StateStore, target_name: str,
+                           started_at: float) -> None:
+    """Read the remote renderer's progress line and make the popup honest.
+
+    A remote renderer may announce, on stdout, the length of what it is about
+    to play:
+
+        DURATION <seconds>
+
+    That is the entire protocol. It arrives once, immediately before playback
+    starts, and the two facts together — a duration measured where the audio
+    exists, and the local clock at the moment it arrives — are enough to
+    extrapolate position for the rest of the utterance. No streaming, no
+    polling across a link that drops a quarter of its packets.
+
+    A renderer that says nothing (Android TTS, a bare `say`) is unaffected: the
+    row simply carries no duration and the display stays blank, which is the
+    correct answer when nothing has been measured.
+
+    Best-effort throughout. This is a progress bar; it must never be the reason
+    an utterance fails.
+    """
+    if not proc.stdout:
+        return
+    try:
+        for raw in proc.stdout:
+            line = raw.decode("utf-8", "replace").strip()
+            if not line.startswith("DURATION "):
+                continue
+            try:
+                duration = float(line.split(None, 1)[1])
+            except (IndexError, ValueError):
+                continue
+            if duration <= 0:
+                continue
+            state.set_now_playing(
+                "speech", uri=f"remote-say:{target_name}",
+                started_at=started_at, target=target_name,
+                extras={"kind": "remote-say", "writer_pid": os.getpid(),
+                        "total_duration_s": duration,
+                        # Stamped here, not at submit: rendering happens before
+                        # this line is sent, and counting that as playback would
+                        # start the bar seconds ahead of the audio.
+                        "play_started_at": time.time()})
+            return
+    except Exception:  # noqa: BLE001 — a progress bar must not break speech
+        return
+
+
 def _kill_process_group(proc) -> None:
     """Kill a Popen and everything it spawned. Best-effort, never raises.
 
@@ -1958,11 +2007,24 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
             # out of session slots and every other remote call starts failing
             # too. Own the whole process group and kill it.
             proc = subprocess.Popen(cmd, shell=True, stdin=subprocess.PIPE,
-                                    stdout=subprocess.DEVNULL,
+                                    stdout=subprocess.PIPE,
                                     stderr=subprocess.DEVNULL,
                                     start_new_session=True)
+            # Hand over the text, then listen for the one line the far side may
+            # send back before it starts playing (see _watch_remote_progress).
             try:
-                proc.communicate(text.encode(), timeout=timeout)
+                if proc.stdin:
+                    proc.stdin.write(text.encode())
+                    proc.stdin.close()
+            except OSError:
+                pass
+            watcher = threading.Thread(
+                target=_watch_remote_progress,
+                args=(proc, state, target_name, started_at),
+                daemon=True)
+            watcher.start()
+            try:
+                proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
                 _kill_process_group(proc)
                 raise

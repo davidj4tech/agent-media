@@ -305,7 +305,17 @@ def _speech_display_state():
                 except (OSError, ValueError):
                     return (True, None, None, False, False, None, False)
             lp = ex.get("live_pos_s")
-            pos = lp if lp is not None else (ex.get("clip_offset_s") or 0.0)
+            ps = ex.get("play_started_at")
+            if lp is None and ps:
+                # Remote-say: the far side sent one duration and we stamped the
+                # moment playback began, so position is wall clock since then.
+                # Clamped to the duration — an overrun means the utterance has
+                # finished and the cleanup has not landed yet, and a bar past
+                # 100% is how that reads as a fault rather than a lag.
+                pos = min(max(time.time() - float(ps), 0.0),
+                          float(ex["total_duration_s"]))
+            else:
+                pos = lp if lp is not None else (ex.get("clip_offset_s") or 0.0)
             return (False, pos, ex.get("total_duration_s"),
                     bool(ex.get("live_pause")), bool(ex.get("live_mute")),
                     ex.get("live_speed") or 1.0, True)
