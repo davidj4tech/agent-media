@@ -332,6 +332,32 @@ def _remote_snapshot():
     return snap
 
 
+def _speech_in_flight() -> bool:
+    """Is a reply being spoken right now, judged without touching the network?
+
+    now_playing is written and cleared on this host, so unlike a read across
+    the bridge it cannot come back false because a packet was lost. That
+    distinction matters wherever a *control* has to choose what to do: an
+    observation that fails looks identical to one that says "nothing is
+    playing", and acting on the second when you got the first is how pause
+    turned into a no-op mid-utterance.
+
+    Same zombie guard as the display: the row is only as alive as the process
+    that wrote it, and a crash without cleanup would otherwise leave the answer
+    stuck at True forever.
+    """
+    np = _now_speaking()
+    if not np:
+        return False
+    wp = (np.get("extras") or {}).get("writer_pid")
+    if wp:
+        try:
+            os.kill(int(wp), 0)
+        except (OSError, ValueError):
+            return False
+    return True
+
+
 def _speech_display_state():
     """`(idle, pos, dur, paused, muted, speed, playing)` for the speech channel.
 
@@ -1470,24 +1496,32 @@ def cmd_toggle(a) -> int:
     # replays "what this pane just said"; fall back to the latest overall.
     # Otherwise flip pause.
     if _remote_speech():
-        # Over the phone bridge each get_property is a full ~600ms round-trip,
-        # so the old idle-read + pause-read + pause-write cost ~2s (and could hit
-        # a "property unavailable" retry storm). Decide from the local mirror and
-        # do ONE idempotent write; patch the mirror so the glyph flips at once.
-        idle, _pos, _dur, paused, _muted, _speed, playing = _speech_display_state()
-        if not playing:
+        # Decide from LOCAL state, act with ONE atomic command.
+        #
+        # This used to read the player to find out whether anything was playing
+        # and what `pause` currently was, then write back the opposite. Both
+        # halves were wrong over a bridge that loses a fifth of its packets.
+        # The read fails often with nothing wrong at the far end, and a failed
+        # read looks exactly like "nothing is playing" — so Space fell through
+        # to the replay branch, which on this lane loads a pseudo-URI mpv
+        # cannot open and does nothing at all. Pressing pause during speech
+        # simply had no effect, intermittently, for no visible reason.
+        #
+        # So: whether a reply is in flight comes from now_playing, which is
+        # written on this host and cannot be dropped in transit; and the toggle
+        # is `cycle pause`, which flips it at the player. Read-then-write also
+        # raced the renderer — say.sh clears pause before each clip — and cost
+        # two round trips to do one thing.
+        if not _speech_in_flight():
             pane = os.environ.get("TTS_POPUP_PANE") or os.environ.get("TMUX_PANE", "")
             return _do_replay(_history_index_for_pane(pane) or 1)
-        new_pause = not paused
-        # Fire-and-forget: pausing suspends the phone's audio device (~0.6s), but
-        # we don't need to wait for that "ok" — the mirror patch is what the popup
-        # reads back and the monitor confirms ground truth next tick. Returns in
-        # ~0.3s (connect+send) instead of ~0.7s. Falls back to a waited set.
+        # critical: a keypress is not policy chatter. Fire-and-forget, because
+        # pausing suspends the phone's audio device (~0.6s) and the reply adds
+        # nothing — the next redraw reads the player itself.
         try:
-            ipc.send_nowait(_sock(), "set_property", "pause", new_pause)
+            ipc.send_nowait(_sock(), "cycle", "pause", critical=True)
         except Exception:  # noqa: BLE001
-            ipc.set_property(_sock(), "pause", new_pause)
-        _patch_speech_mirror(live_pause=new_pause)
+            ipc.command(_sock(), "cycle", "pause", critical=True)
         _SNAP_CACHE["value"] = None   # next redraw asks the player, not the cache
         return 0
     if _get("idle-active"):
