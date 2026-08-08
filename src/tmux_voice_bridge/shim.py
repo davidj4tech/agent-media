@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import time
@@ -176,6 +177,14 @@ def parse_session_token(tok: str | None, host: str | None) -> tuple[str, str | N
         return "main", None
 
     tok_lower = tok.lower().strip()
+
+    # Drop filler words people naturally say when reading the grammar aloud:
+    # "switch to local session scratch" means session `scratch`, not a session
+    # literally called `session-scratch`. Only strip a LEADING filler, so a
+    # session genuinely named "session-foo" is still reachable by saying it.
+    tok_lower = re.sub(r"^(?:the\s+|session\s+|window\s+)+", "", tok_lower).strip()
+    if not tok_lower:
+        return "main", None
 
     # Handle number words
     if tok_lower in NUMBER_WORDS:
@@ -380,12 +389,62 @@ def inject_remote(host: str, session: str, text: str) -> None:
     )
 
 
-def do_inject(text: str) -> None:
+def converse_socket() -> Path:
+    """Where agent-media's `converse` tool waits for a spoken reply.
+
+    Must stay in step with agent_media_core.capture.rendezvous.socket_path().
+    Deliberately duplicated rather than imported: agent-media is an optional
+    peer that lives in its own venv (this runs on the system python), and the
+    client is twenty lines of stdlib. Importing it would silently no-op.
+    """
+    override = os.environ.get("MEDIA_CONVERSE_SOCK")
+    if override:
+        return Path(override)
+    base = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
+    return Path(base) / "agent-media" / "converse.sock"
+
+
+def offer_to_converse(text: str) -> bool:
+    """Hand the transcript to a waiting agent-media `converse` call, if any.
+
+    converse speaks a question and then blocks on a unix socket for the answer.
+    When it's armed, this transcript IS that answer and must not also be typed
+    into the pane.
+
+    Returns False — meaning "inject as normal" — for every failure mode there
+    is: no agent-media, no socket, a stale socket, a slow or vanished peer. The
+    human's words are never dropped on the floor.
+    """
+    if not text.strip():
+        return False
+    path = converse_socket()
+    if not path.exists():
+        return False
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.settimeout(2.0)
+            s.connect(str(path))
+            s.sendall(json.dumps({"text": text}).encode() + b"\n")
+            return s.recv(64).startswith(b'{"ok"')
+    except OSError:
+        return False
+
+
+def do_inject(text: str) -> bool:
+    """Deliver a transcript. True if a waiting `converse` took it instead.
+
+    The return value drives what HA says back: with a TTS stage on the
+    pipeline that sentence is spoken aloud, so "Sent to local session main"
+    would be an outright lie when the words went to an agent instead.
+    """
+    if offer_to_converse(text):
+        return True
     host, session = load_target()
     if host is None:
         inject_local(session, text)
     else:
         inject_remote(host, session, text)
+    return False
 
 
 def extract_user_text(body: dict) -> str:
@@ -557,10 +616,14 @@ def make_handler(hosts: dict[str, str | None]):
                           file=sys.stderr, flush=True)
                 else:
                     try:
-                        do_inject(user_text)
-                        host, session = load_target()
-                        response_text = f"Sent to {describe_target(host, session)}."
-                        print(f"[shim] injected -> {response_text!r}", file=sys.stderr, flush=True)
+                        if do_inject(user_text):
+                            response_text = "Sent to the agent."
+                            print("[shim] converse -> took the transcript",
+                                  file=sys.stderr, flush=True)
+                        else:
+                            host, session = load_target()
+                            response_text = f"Sent to {describe_target(host, session)}."
+                            print(f"[shim] injected -> {response_text!r}", file=sys.stderr, flush=True)
                     except subprocess.CalledProcessError as err:
                         response_text = f"Injection failed: {err}"
                         print(f"[shim] {response_text}",
