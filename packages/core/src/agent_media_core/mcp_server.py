@@ -677,7 +677,7 @@ def book_now_playing(target: str = "") -> dict:
     try:
         from .sinks import _mpv_ipc as ipc
         from .sinks.book import _socket_for
-        props = ipc.get_properties(_socket_for(t), [
+        props = ipc.display_properties(_socket_for(t), [
             "idle-active", "path", "time-pos", "duration", "pause", "speed",
             "media-title", "chapter-metadata/by-key/title",
             "metadata/by-key/album", "metadata/by-key/artist",

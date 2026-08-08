@@ -530,28 +530,37 @@ class SinkBook:
             except (ipc.MpvIpcError, OSError):
                 time.sleep(0.15)
 
+    # Transport is `critical` throughout: the breaker exists to drop the
+    # observational chatter that would otherwise delay playback, and every such
+    # caller treats a skip as "unknown, carry on". A keypress has no such
+    # fallback — skipping it doesn't degrade the control, it removes it, and
+    # the user is left pressing pause at an audiobook that keeps talking. The
+    # book channel shares the phone's bridge with speech, so it inherits the
+    # same open breaker; without this flag a book control was silently dropped
+    # for the whole cool-off whenever anything else had tripped it.
     def pause(self, target: Target = DEFAULT_TARGET) -> None:
         try:
-            ipc.set_property(_socket_for(target), "pause", True)
+            ipc.set_property(_socket_for(target), "pause", True, critical=True)
         except (ipc.MpvIpcError, OSError):
             pass
 
     def resume(self, target: Target = DEFAULT_TARGET) -> None:
         try:
-            ipc.set_property(_socket_for(target), "pause", False)
+            ipc.set_property(_socket_for(target), "pause", False, critical=True)
         except (ipc.MpvIpcError, OSError):
             pass
 
     def stop(self, target: Target = DEFAULT_TARGET) -> None:
         try:
-            ipc.command(_socket_for(target), "stop")
+            ipc.command(_socket_for(target), "stop", critical=True)
         except (ipc.MpvIpcError, OSError):
             pass
 
     def skip(self, seconds: float, target: Target = DEFAULT_TARGET) -> None:
         """Seek ±seconds, clamped by mpv to the file bounds."""
         try:
-            ipc.command(_socket_for(target), "seek", seconds, "relative")
+            ipc.command(_socket_for(target), "seek", seconds, "relative",
+                        critical=True)
         except (ipc.MpvIpcError, OSError):
             pass
 
@@ -559,7 +568,8 @@ class SinkBook:
         """Seek to an absolute position (seconds from the start), clamped by
         mpv to the file bounds. Returns the resulting position in ms."""
         try:
-            ipc.command(_socket_for(target), "seek", max(0.0, float(seconds)), "absolute")
+            ipc.command(_socket_for(target), "seek", max(0.0, float(seconds)),
+                        "absolute", critical=True)
         except (ipc.MpvIpcError, OSError):
             return None
         return self.position(target)
@@ -567,7 +577,7 @@ class SinkBook:
     def set_speed(self, rate: float, target: Target = DEFAULT_TARGET) -> float:
         rate = max(_MIN_SPEED, min(_MAX_SPEED, float(rate)))
         try:
-            ipc.set_property(_socket_for(target), "speed", rate)
+            ipc.set_property(_socket_for(target), "speed", rate, critical=True)
         except (ipc.MpvIpcError, OSError):
             pass
         return rate

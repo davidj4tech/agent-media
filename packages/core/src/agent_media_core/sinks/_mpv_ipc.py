@@ -397,6 +397,33 @@ def get_properties(sock_path: str | Path, names: list,
                 breaker_s=breaker_s)
 
 
+def display_properties(sock_path: str | Path, names: list,
+                       timeout: float = 2.0) -> dict:
+    """A snapshot whose only purpose is to be shown to someone.
+
+    The breaker's defaults are sized for policy chatter — "is anything playing,
+    should I duck it" — where being skipped costs one unducked track and being
+    slow delays speech. A read that feeds a status line or a progress bar is
+    the opposite case on every axis, and judging it by those defaults is what
+    left the popup blank while audio was plainly coming out of the phone:
+
+    - latency is not a fault. Every honest answer from a phone on the far side
+      of the world takes ~2s, which the default budget calls slow, so the
+      breaker sat open permanently on the endpoint the display depends on.
+    - one lost packet is not an outage. This link drops a fifth of them, and a
+      single-shot read that fails costs the full cool-off — reads every second,
+      blanked for forty-five.
+    - a stale display is the whole cost of being wrong, so the cool-off should
+      be short: long enough to stop hammering a phone that is genuinely gone,
+      short enough that recovery is not something you wait for.
+
+    Failure still opens the breaker, briefly, so a dead endpoint doesn't make
+    every redraw wait out the connect timeout.
+    """
+    return get_properties(sock_path, names, timeout=timeout, attempts=2,
+                          slow_s=0, breaker_s=5)
+
+
 def _get_properties_once(sock_path: str | Path, names: list,
                          timeout: float) -> tuple[dict, int]:
     """One transport round of `get_properties`: ({answered-ok}, #answered)."""

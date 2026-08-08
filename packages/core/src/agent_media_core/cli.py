@@ -320,10 +320,9 @@ def _remote_snapshot():
     if ttl > 0 and _SNAP_CACHE["value"] is not None and now - _SNAP_CACHE["at"] < ttl:
         return _SNAP_CACHE["value"]
     try:
-        snap = ipc.get_properties(
+        snap = ipc.display_properties(
             _sock(), ["idle-active", "pause", "time-pos", "duration",
-                      "mute", "speed"], timeout=2.0, attempts=2,
-            slow_s=0, breaker_s=5)
+                      "mute", "speed"], timeout=2.0)
     except (ipc.MpvIpcError, OSError):
         return None
     if not snap:
@@ -2807,7 +2806,7 @@ def _phone_music_props() -> Optional[dict]:
     if not music_local.configured():
         return None
     try:
-        props = ipc.get_properties(
+        props = ipc.display_properties(
             music_local.endpoint(),
             ["idle-active", "pause", "time-pos", "duration", "speed",
              "media-title", "chapter-metadata/by-key/title", "volume",
