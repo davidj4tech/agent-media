@@ -1976,6 +1976,7 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
         return None
     started_at = time.time()
     history_id: Optional[int] = None
+    failure: Optional[str] = None      # set if the far side never spoke the text
     # Resolve the target exactly as the local path does. This branch runs before
     # submit_event's own resolution, so event.target is usually None here — and
     # recording a placeholder like "remote" is not cosmetic: _active_speech_target
@@ -2035,11 +2036,23 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
             except subprocess.TimeoutExpired:
                 _kill_process_group(proc)
                 raise
+            # A non-zero exit is the far side telling us the reply was never
+            # spoken — a renderer that failed, or, as happened here, a command
+            # pointing at a script that no longer exists. Unchecked, the only
+            # symptom is silence: history still records the utterance as though
+            # it had played, so `media history` agrees with the agent that it
+            # spoke and nothing anywhere disagrees with the room. Speech is
+            # write-only over this link; the exit status is the entire feedback
+            # channel, so refusing to read it is refusing to know.
+            if proc.returncode:
+                raise RuntimeError(          # handled just below, never escapes
+                    f"remote renderer exited {proc.returncode}")
         except Exception as e:  # noqa: BLE001 — remote render must never crash the hook
+            failure = str(e)
             log.warning("intake: remote-say failed: %s", e)
             try:
                 state.log_error("intake", "remote-say failed",
-                                extras={"detail": str(e),
+                                extras={"detail": str(e), "cmd": cmd[:200],
                                         "source": event.source.value})
             except Exception:  # noqa: BLE001
                 pass
@@ -2062,6 +2075,9 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
                     source=event.source.value,
                     text=text,
                     extras={"kind": "remote-say", "cmd": cmd[:200],
+                            # The transcript must not claim what the room
+                            # didn't hear; the clip browser reads this too.
+                            **({"failed": failure} if failure else {}),
                             **{k: v for k, v in (event.metadata or {}).items()
                                if k in ("kind", "session")}},
                 )
