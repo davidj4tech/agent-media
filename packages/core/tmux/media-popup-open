@@ -111,7 +111,12 @@ while :; do
         rm -f "$browseflag"
         sw="$cw"; [ "$sw" -gt 90 ] && sw=90; [ "$sw" -lt "$MIN" ] && sw="$MIN"
         sh="$ch"; [ "$sh" -gt 24 ] && sh=24; [ "$sh" -lt 10 ] && sh="$ch"
-        if [ "$chan" = "speech" ]; then
+        if [ "$chan" = "docs" ]; then
+            # `d` — not a channel but the same round-trip: pick a document,
+            # then it plays on the book channel. Taller than the others,
+            # because a doc list is browsed by reading titles.
+            popup -w "$sw" -h "$sh" -s 'bg=default' -T ' docs ' media-popup-docs
+        elif [ "$chan" = "speech" ]; then
             # TTS_POPUP_PANE: the clip list's "this conversation" anchor
             # falls back to the opening pane's last speaker when idle.
             popup -w "$sw" -h "$sh" -s 'bg=default' -T ' clips ' \

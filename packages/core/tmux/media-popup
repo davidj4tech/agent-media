@@ -798,6 +798,21 @@ handle_key() {
                  draw
                  do_refresh
              fi ;;
+        # Documents — pick a file from the doc roots and listen to it. Always
+        # available, on any channel: what you want to hear a design note about
+        # has nothing to do with what happens to be playing. It lands on the
+        # book channel, so headings are chapters and it resumes where you left.
+        d)   if [ -n "${MEDIA_POPUP_BROWSE_FLAG:-}" ]; then
+                 printf 'docs' > "$MEDIA_POPUP_BROWSE_FLAG"; QUIT=1; return
+             else
+                 mouse_off
+                 printf '\033[H\033[2J\033[?25h'
+                 media-popup-docs
+                 printf '\033[?25l'
+                 mouse_on
+                 draw
+                 do_refresh
+             fi ;;
         /)   search_ch="$CHANNEL"
              [ "$search_ch" = "speech" ] && search_ch=book
              if [ -n "${MEDIA_POPUP_SEARCH_FLAG:-}" ]; then

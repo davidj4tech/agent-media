@@ -3652,6 +3652,55 @@ def _book_seek_action(srv, time_str: str, tgt: str, *,
     )
 
 
+def cmd_doc(a) -> int:
+    """Documents, played as short audiobooks.
+
+    Rendering goes to the book channel rather than to speech, and not for
+    convenience: that channel already has chapters, a resume position and
+    bookmarks, which is exactly the set of things a ten-minute document needs
+    and a spoken reply does not. Headings become the chapter marks, so the
+    popup's chapter browser navigates the document by section — nobody listens
+    to a reference doc front to back.
+    """
+    from . import docs as docmod
+
+    if a.doc_cmd == "list":
+        rows = docmod.list_docs()
+        if getattr(a, "lines", False):
+            # display<TAB>slug — the shape the clip browser's picker consumes.
+            for d in rows:
+                print(f"{d.as_row()}\t{d.slug}")
+        else:
+            for d in rows:
+                print(d.as_row())
+        return 0
+
+    doc = docmod.find_doc(a.name)
+    if not doc:
+        print(f"media doc: no document matching {a.name!r}", file=sys.stderr)
+        return 1
+
+    if a.doc_cmd == "text":
+        print(docmod.speakable_text(doc.path.read_text(errors="replace")))
+        return 0
+
+    # Synthesis is the slow part and the reason for the cache; say so, because
+    # a first play of a long document is tens of seconds of apparent silence.
+    clip = docmod.render_doc(doc.path, force=getattr(a, "force", False))
+    if not clip:
+        print(f"media doc: nothing to play in {doc.path}", file=sys.stderr)
+        return 1
+    srv = _srv()
+    r = srv.book_play(str(clip), resume=not getattr(a, "no_resume", False),
+                      start_ms=-1, target=getattr(a, "target", "") or "",
+                      title=doc.title)
+    if r.get("error"):
+        print(f"media doc: {r['error']}", file=sys.stderr)
+        return 1
+    print(doc.title)
+    return 0
+
+
 def cmd_book(a) -> int:
     srv = _srv()
     bc = a.book_cmd
@@ -4713,6 +4762,24 @@ def _add_book_parser(sub) -> None:
     skip ±s, speed) and playlists. `--target rooms|local|phone` overrides where
     the book plays; empty uses MEDIA_BOOK_DEFAULT_TARGET, then speech default.
     """
+    doc = sub.add_parser("doc", help="listen to a document (docs/, org, ...)")
+    doc.set_defaults(func=cmd_doc)
+    d = doc.add_subparsers(dest="doc_cmd", required=True)
+
+    dl = d.add_parser("list", help="list documents")
+    dl.add_argument("--lines", action="store_true",
+                    help="display<TAB>slug rows for the popup picker")
+
+    dp = d.add_parser("play", help="render (cached) and play on the book channel")
+    dp.add_argument("name", help="slug, path, or a substring of either")
+    dp.add_argument("--target", default="", help="rooms|local|phone")
+    dp.add_argument("--no-resume", action="store_true")
+    dp.add_argument("--force", action="store_true",
+                    help="re-render even if the cached audio is current")
+
+    dt = d.add_parser("text", help="print the speakable projection (no audio)")
+    dt.add_argument("name")
+
     book = sub.add_parser("book", help="longform / audiobook channel")
     book.set_defaults(func=cmd_book)
     b = book.add_subparsers(dest="book_cmd", required=True)
