@@ -100,6 +100,13 @@ One exception to the keystroke path: if core's MCP `converse` tool is waiting
 on the rendezvous socket, the transcript goes there instead — see
 [`capture/rendezvous.py`](./packages/core/src/agent_media_core/capture/rendezvous.py).
 
+Install it like any other package here (`pip install -e packages/voice-bridge`).
+This directory is the canonical copy; the standalone `davidj4tech/tmux-voice-bridge`
+repo is retired. It stays a *peer* of core rather than an intake adapter — it
+injects keystrokes into tmux, it doesn't feed the speech pipeline — and it
+installs standalone with no agent-media present, which is why the rendezvous
+client is duplicated rather than imported. See RESTRUCTURE.md Phase 5.
+
 ---
 
 ## Quick start

@@ -43,8 +43,9 @@ agent-media/
     │   │                # target: local | snapcast-mel | snapcast-sp4r | bt-* | matrix-room
     │   └── state/       # SQLite: queue, now-playing, history, errors
     ├── astrotunes/      # unchanged (returns music recommendations)
-    └── voice-bridge/    # transient — staging for tmux-voice-bridge git history
-                         # dissolves into core/intake/ha-stt + core/transcribe/ at Phase 5
+    └── voice-bridge/    # permanent sibling package — HA Assist transcripts →
+                         # tmux panes (or a waiting core `converse`). NOT an
+                         # intake adapter; see Phase 5 for why it doesn't merge.
 ```
 
 ## Invariants (locked)
@@ -142,6 +143,24 @@ New plan:
   there if/when the matrix adapter grows a record/send flow.
 - voice-bridge can adopt `core._notify` + `core.state` for observability
   without merging.
+
+**Status — done 2026-08-08.** The tree diagram above said "dissolves into
+core at Phase 5" for months after this section superseded it; that stale line
+is corrected. The substantive gap was that `packages/voice-bridge/` was a May
+subtree snapshot while the live code kept developing in the standalone
+`tmux-voice-bridge` repo — three commits and 127 lines apart, with the
+editable install and systemd unit both pointing outside the monorepo. The
+sibling package is now the canonical copy: subtree-pulled, installed from
+`packages/voice-bridge`, and the service runs it from agent-media's venv.
+
+What plan B predicted held up. When `converse` needed voice-bridge to hand a
+transcript to core, the answer wasn't a merge — it was a unix socket and a
+twenty-line stdlib client, precisely because the two are peers with different
+lifecycles. `core/capture/` stopped being an empty slot the same day
+(`capture/rendezvous.py`).
+
+Still open: voice-bridge adopting `core._notify` / `core.state` for
+observability. It logs to the journal and nowhere else.
 
 ### Phase 6 — MCP control surface + cleanup
 - MCP exposes:

@@ -393,9 +393,12 @@ def converse_socket() -> Path:
     """Where agent-media's `converse` tool waits for a spoken reply.
 
     Must stay in step with agent_media_core.capture.rendezvous.socket_path().
-    Deliberately duplicated rather than imported: agent-media is an optional
-    peer that lives in its own venv (this runs on the system python), and the
-    client is twenty lines of stdlib. Importing it would silently no-op.
+    Deliberately duplicated rather than imported. This package installs and
+    runs standalone — voice-injection into tmux is useful with no agent-media
+    anywhere — so it cannot depend on core being importable. It historically
+    ran on the system python while core lived in its own venv, where the
+    import failed silently and took the feature with it. Sharing a venv today
+    doesn't change the contract: twenty lines of stdlib is the cheaper coupling.
     """
     override = os.environ.get("MEDIA_CONVERSE_SOCK")
     if override:

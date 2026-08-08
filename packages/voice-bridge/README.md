@@ -160,11 +160,10 @@ rendezvous socket; if a `converse` call is armed, the transcript is that
 answer and goes there instead of into the pane.
 
 The client is twenty lines of stdlib, deliberately duplicated rather than
-imported: agent-media is an optional peer living in its own venv (this runs on
-the system python), so an import would silently no-op. Every failure path —
-no agent-media, no socket, a stale socket, a slow peer — returns False and
-injects as normal. A duplicated transcript is harmless; a dropped one makes
-you repeat yourself.
+imported: this package installs and runs standalone, so it cannot depend on
+agent-media being importable. Every failure path — no agent-media, no socket,
+a stale socket, a slow peer — returns False and injects as normal. A
+duplicated transcript is harmless; a dropped one makes you repeat yourself.
 
 Note this is half-duplex: you still start talking. `converse` decides where
 your words land, not when the mic opens.
