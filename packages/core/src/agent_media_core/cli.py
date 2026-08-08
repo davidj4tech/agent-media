@@ -264,7 +264,21 @@ def _caller_pane() -> str:
 # --- speech subcommands ----------------------------------------------------
 
 def _remote_speech() -> bool:
-    """Speech plays on a remote target (the phone, over a tcp:// bridge)."""
+    """Speech plays somewhere this host cannot observe.
+
+    Two shapes. A tcp:// speech socket is the phone driven over a bridge — we
+    still control that mpv, just remotely. MEDIA_REMOTE_SAY_CMD is stronger:
+    the whole reply is handed to another host which renders and plays it, so
+    there is no mpv here at all.
+
+    The second case matters for what the popup shows. Falling through to the
+    local broker would display whatever it last played — a finished clip, with
+    a progress bar advancing through audio nobody is hearing. Stale readings
+    are worse than blank ones: they make a working system look wrong and hide
+    that speech has moved.
+    """
+    if os.environ.get("MEDIA_REMOTE_SAY_CMD"):
+        return True
     return str(_sock()).startswith("tcp://")
 
 

@@ -1937,9 +1937,16 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
         # whole utterance and the control surface looks broken rather than
         # remote. uri is the command, since there is no clip here to point at.
         try:
+            # writer_pid lets the display's zombie guard notice if this process
+            # dies mid-utterance; without it a crash would freeze the row.
+            # Deliberately no total_duration_s: the audio is rendered and played
+            # on another device and never reports back, so any figure here would
+            # be invented. The popup shows nothing rather than a progress bar
+            # tracking a length nobody measured.
             state.set_now_playing("speech", uri=f"remote-say:{target_name}",
                                   started_at=started_at, target=target_name,
-                                  extras={"kind": "remote-say", "text": text[:400]})
+                                  extras={"kind": "remote-say", "text": text[:400],
+                                          "writer_pid": os.getpid()})
         except Exception:  # noqa: BLE001 — observability must not break speech
             pass
         try:
