@@ -340,9 +340,17 @@ def event_stream(sock_path: str | Path,
         s.close()
 
 
-def get_property(sock_path: str | Path, name: str, timeout: float = 2.0) -> Any:
+def get_property(sock_path: str | Path, name: str, timeout: float = 2.0,
+                 critical: bool = False) -> Any:
     # `command` already retries transient failures for tcp:// (bridge) endpoints.
-    return command(sock_path, "get_property", name, timeout=timeout)
+    #
+    # `critical` is for a read a *control* depends on — the volume a nudge is
+    # relative to, the playlist-pos a skip steps from. Skipping those doesn't
+    # save any chatter, it just makes the control compute from a wrong default
+    # (volume snapping to 100, a sentence skip degrading to a time-seek). Like
+    # every critical call it never trips the breaker on latency, only failure.
+    return command(sock_path, "get_property", name, timeout=timeout,
+                   critical=critical)
 
 
 def get_properties(sock_path: str | Path, names: list,

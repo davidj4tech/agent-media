@@ -19,11 +19,13 @@ def broker(monkeypatch):
     class Broker:
         volume = 150
 
-        def get(self, prop):
+        def get(self, prop, critical=False):
+            assert critical, "a volume nudge must not be dropped by the breaker"
             return Broker.volume if prop == "volume" else None
 
-        def set(self, sock, prop, value):
+        def set(self, sock, prop, value, critical=False):
             assert prop == "volume"
+            assert critical, "a volume nudge must not be dropped by the breaker"
             Broker.volume = value
 
     monkeypatch.setattr(cli, "_sock", lambda: "sock")

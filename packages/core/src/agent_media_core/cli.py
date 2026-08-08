@@ -144,9 +144,9 @@ def _sock():
     return _socket_for(_active_speech_target())
 
 
-def _get(prop: str):
+def _get(prop: str, critical: bool = False):
     try:
-        return ipc.get_property(_sock(), prop)
+        return ipc.get_property(_sock(), prop, critical=critical)
     except ipc.MpvIpcError:
         return None
 
@@ -1526,7 +1526,8 @@ def cmd_toggle(a) -> int:
     if _get("idle-active"):
         pane = os.environ.get("TTS_POPUP_PANE") or os.environ.get("TMUX_PANE", "")
         return _do_replay(_history_index_for_pane(pane) or 1)
-    ipc.set_property(_sock(), "pause", not bool(_get("pause")))
+    ipc.set_property(_sock(), "pause", not bool(_get("pause", critical=True)),
+                     critical=True)
     return 0
 
 
@@ -1624,8 +1625,24 @@ def cmd_speech_hold(a) -> int:
     return 0
 
 
+# Every speech control below sends `critical=True`.
+#
+# The breaker exists to stop *policy* chatter — "is anything playing, should I
+# duck it" — from delaying speech, and those callers all treat a skip as
+# "unknown, carry on". A keypress is not chatter: skipping it doesn't save a
+# round trip anyone was waiting on, it makes the control silently do nothing.
+# Pause was made critical when this bit it once (a paused clip parked at 100%);
+# the rest were left behind, so one dropped display read on a lossy bridge shut
+# jump, skip, volume, mute, speed and replay for the whole 45s cool-off while
+# the player sat there answering probes in milliseconds. From a terminal that
+# printed "endpoint slow"; from the popup or the canvas the button just did
+# nothing, which is indistinguishable from a broken control.
+#
+# Critical calls still *report* failure — they only skip the pre-emptive
+# refusal, and (slow_s=0) they never arm the breaker against the display read
+# on latency alone, which is what kept the popup blank before.
 def cmd_seek(a) -> int:
-    ipc.command(_sock(), "seek", a.secs, "relative")
+    ipc.command(_sock(), "seek", a.secs, "relative", critical=True)
     return 0
 
 
@@ -1637,15 +1654,17 @@ def cmd_volume(a) -> int:
     and a clamp *below* the resting level made the first press of either key
     snap down to the clamp — so "louder" made speech quieter.
     """
-    cur = _get("volume") or 100
+    cur = _get("volume", critical=True) or 100
     ceiling = _broker_max_volume()
     ipc.set_property(_sock(), "volume",
-                     max(0, min(int(ceiling), int(cur) + a.delta)))
+                     max(0, min(int(ceiling), int(cur) + a.delta)),
+                     critical=True)
     return 0
 
 
 def cmd_mute(a) -> int:
-    ipc.set_property(_sock(), "mute", not bool(_get("mute")))
+    ipc.set_property(_sock(), "mute", not bool(_get("mute", critical=True)),
+                     critical=True)
     return 0
 
 
@@ -1845,7 +1864,7 @@ def cmd_speed(a) -> int:
         if _remote_speech():
             sp = _speech_display_state()[5]
             return float(sp) if isinstance(sp, (int, float)) else 1.0
-        cur = _get("speed")
+        cur = _get("speed", critical=True)
         return float(cur) if isinstance(cur, (int, float)) else 1.0
 
     if f == "reset":
@@ -1857,7 +1876,7 @@ def cmd_speed(a) -> int:
     else:
         target = max(_SPEED_MIN, min(_SPEED_MAX, float(f)))
     target = round(target, 2)
-    ipc.set_property(sock, "speed", target)
+    ipc.set_property(sock, "speed", target, critical=True)
     # Remember it: the rate sticks on the broker across clips, so the popup
     # keeps showing it while idle (see _sticky_speech_speed).
     StateStore().set_speech_speed(target)
@@ -1874,7 +1893,7 @@ def _seek_to_end(sock) -> int:
     # Clear those first so the clip actually finishes.
     for prop in ("pause", "mute"):
         try:
-            ipc.set_property(sock, prop, False)
+            ipc.set_property(sock, prop, False, critical=True)
         except ipc.MpvIpcError:
             pass
     # On a multi-clip replay the response's clips are queued as one mpv
@@ -1886,13 +1905,13 @@ def _seek_to_end(sock) -> int:
     # "`>` repeated the current clip instead of ending it" bug, hit whenever
     # the popup's `>` landed while the last clip was already playing.
     try:
-        count = ipc.get_property(sock, "playlist-count")
-        pos = ipc.get_property(sock, "playlist-pos")
+        count = ipc.get_property(sock, "playlist-count", critical=True)
+        pos = ipc.get_property(sock, "playlist-pos", critical=True)
         if isinstance(count, int) and count > 1 and pos != count - 1:
-            ipc.set_property(sock, "playlist-pos", count - 1)
+            ipc.set_property(sock, "playlist-pos", count - 1, critical=True)
     except ipc.MpvIpcError:
         pass
-    ipc.command(sock, "seek", 100, "absolute-percent")
+    ipc.command(sock, "seek", 100, "absolute-percent", critical=True)
     return 0
 
 
@@ -1900,7 +1919,7 @@ def cmd_jump(a) -> int:
     """Seek to the start or end of the current clip."""
     sock = _sock()
     if a.where == "start":
-        ipc.command(sock, "seek", 0, "absolute")
+        ipc.command(sock, "seek", 0, "absolute", critical=True)
         return 0
     # End-of-response. On a *replay* the clips are queued as one mpv playlist,
     # so seeking the last entry to its end finishes the whole response. During
@@ -1918,7 +1937,7 @@ def cmd_jump(a) -> int:
             ex = {}
     sentences = ex.get("clip_sentences") or []
     try:
-        count = ipc.get_property(sock, "playlist-count")
+        count = ipc.get_property(sock, "playlist-count", critical=True)
     except ipc.MpvIpcError:
         count = 1
     playlist = isinstance(count, int) and count > 1
@@ -2034,7 +2053,8 @@ def cmd_skip(a) -> int:
 
     def _time_seek() -> int:
         try:
-            ipc.command(sock, "seek", float(a.seek_fallback), "relative")
+            ipc.command(sock, "seek", float(a.seek_fallback), "relative",
+                        critical=True)
             return 0
         except ipc.MpvIpcError:
             return 1
@@ -2051,11 +2071,11 @@ def cmd_skip(a) -> int:
     n = len(sentences)
 
     try:
-        idle = bool(ipc.get_property(sock, "idle-active"))
+        idle = bool(ipc.get_property(sock, "idle-active", critical=True))
     except ipc.MpvIpcError:
         idle = True
     try:
-        raw = ipc.get_property(sock, "playlist-count")
+        raw = ipc.get_property(sock, "playlist-count", critical=True)
         count = int(raw) if isinstance(raw, int) else 1
     except ipc.MpvIpcError:
         count = 1
@@ -2068,7 +2088,7 @@ def cmd_skip(a) -> int:
     playlist = count > 1
     if playlist:
         try:
-            cur = int(ipc.get_property(sock, "playlist-pos") or 0)
+            cur = int(ipc.get_property(sock, "playlist-pos", critical=True) or 0)
         except ipc.MpvIpcError:
             cur = 0
     else:
@@ -2092,7 +2112,7 @@ def cmd_skip(a) -> int:
         if target >= n:
             return _seek_to_end(sock)
         try:
-            ipc.set_property(sock, "playlist-pos", target)
+            ipc.set_property(sock, "playlist-pos", target, critical=True)
         except ipc.MpvIpcError:
             return 1
         # Rapid presses race mpv's async entry loads: an earlier in-flight
@@ -2100,8 +2120,9 @@ def cmd_skip(a) -> int:
         # "bouncing back" a moment later). Verify once, best-effort.
         try:
             time.sleep(0.15)
-            if int(ipc.get_property(sock, "playlist-pos") or -1) != target:
-                ipc.set_property(sock, "playlist-pos", target)
+            if int(ipc.get_property(sock, "playlist-pos",
+                                    critical=True) or -1) != target:
+                ipc.set_property(sock, "playlist-pos", target, critical=True)
         except (ipc.MpvIpcError, TypeError, ValueError):
             pass
         _force_highlight_sentence(sentences[target])
@@ -2206,8 +2227,8 @@ def _replay_row(row: dict) -> int:
         # traceback (_open raises raw FileNotFoundError/ConnectionRefused).
         sink.play(clip_uris[0], SPEECH_TARGET)
         try:
-            ipc.set_property(_sock(), "pause", False)
-            ipc.set_property(_sock(), "mute", False)
+            ipc.set_property(_sock(), "pause", False, critical=True)
+            ipc.set_property(_sock(), "mute", False, critical=True)
         except (ipc.MpvIpcError, OSError):
             pass
     clip_sentences: list[str] = ex.get("clip_sentences") or []
@@ -3037,7 +3058,7 @@ def _cmd_music_chapters(a) -> int:
                   f"(1–{len(chaps)})", file=sys.stderr)
             return 2
         try:
-            ipc.set_property(ep, "chapter", n - 1)
+            ipc.set_property(ep, "chapter", n - 1, critical=True)
         except (ipc.MpvIpcError, OSError) as e:
             print(f"media music chapter: {e}", file=sys.stderr)
             return 1

@@ -252,17 +252,23 @@ class _FakeIpc:
     def __init__(self, props=None):
         self.props = props or {}
         self.calls = []
+        self.uncritical = []      # calls that would be dropped by an open breaker
 
-    def command(self, sock, *args):
-        self.calls.append(("command", *args))
+    def _note(self, entry, critical):
+        self.calls.append(entry)
+        if not critical:
+            self.uncritical.append(entry)
+
+    def command(self, sock, *args, timeout=5.0, critical=False):
+        self._note(("command", *args), critical)
         return None
 
-    def set_property(self, sock, name, value):
-        self.calls.append(("set", name, value))
+    def set_property(self, sock, name, value, critical=False):
+        self._note(("set", name, value), critical)
         self.props[name] = value
 
-    def get_property(self, sock, name, timeout=2.0):
-        self.calls.append(("get", name))
+    def get_property(self, sock, name, timeout=2.0, critical=False):
+        self._note(("get", name), critical)
         return self.props.get(name)
 
 
@@ -294,6 +300,56 @@ def test_jump_end_lands_on_last_clip_of_playlist(monkeypatch):
     # Jumps to the final playlist entry before seeking to its end.
     assert ("set", "playlist-pos", 2) in fake.calls
     assert fake.calls[-1] == ("command", "seek", 100, "absolute-percent")
+
+
+def test_every_speech_control_bypasses_the_slow_endpoint_breaker(monkeypatch):
+    """A keypress must reach the player even while the breaker is open.
+
+    The breaker drops *policy* chatter so it can't delay speech, and every such
+    caller treats a skip as "unknown, carry on". A control has no such fallback:
+    skipping it doesn't degrade the action, it removes it. Only pause was marked
+    critical, so on a bridge that drops a fifth of its packets one lost display
+    read shut jump, skip, seek, volume, mute and speed for the whole cool-off —
+    while the player answered direct probes in milliseconds. In a terminal that
+    printed "endpoint slow"; in the popup and on the canvas the button simply
+    did nothing.
+    """
+    class _Store:
+        def get_now_playing(self, ch):
+            return {"target": "phone",
+                    "extras": {"clip_sentences": ["a", "b", "c"],
+                               "current_sentence_idx": 0}}
+
+        def set_speech_speed(self, rate):
+            pass
+
+    fake = _FakeIpc({"playlist-count": 1, "volume": 100, "speed": 1.0,
+                     "idle-active": False, "playlist-pos": 0})
+    monkeypatch.setattr(cli, "ipc", fake)
+    monkeypatch.setattr(cli, "_sock", lambda: "tcp://phone.example:6602")
+    monkeypatch.setattr(cli, "StateStore", _Store)
+    monkeypatch.setattr(cli, "_remote_speech", lambda: False)
+    monkeypatch.setattr(cli, "_broker_max_volume", lambda: 200)
+    monkeypatch.setattr(cli, "_write_nav_request", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_write_skip_cursor", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_read_skip_cursor", lambda: None)
+    monkeypatch.setattr(cli, "_force_highlight_sentence", lambda *a, **k: None)
+
+    def _a(**kw):
+        return type("A", (), kw)()
+
+    cli.cmd_jump(_a(where="end"))
+    cli.cmd_jump(_a(where="start"))
+    cli.cmd_seek(_a(secs=5.0))
+    cli.cmd_volume(_a(delta=5))
+    cli.cmd_mute(_a())
+    cli.cmd_speed(_a(factor="up"))
+    cli.cmd_skip(_a(unit="sentence", dir=1, seek_fallback=5))
+
+    assert fake.calls, "the controls sent nothing at all"
+    assert fake.uncritical == [], (
+        "these control calls still honour the breaker, so an open one drops "
+        f"them silently: {fake.uncritical}")
 
 
 def test_jump_start_seeks_zero(monkeypatch):
@@ -989,9 +1045,12 @@ def test_music_chapter_jump_is_one_based(monkeypatch, capsys):
                         lambda: ("ep", _CHAPS, 0))
     calls = []
     monkeypatch.setattr(ipc, "set_property",
-                        lambda ep, name, val: calls.append((ep, name, val)))
+                        lambda ep, name, val, critical=False:
+                        calls.append((ep, name, val, critical)))
     assert cli._cmd_music_chapters(_ChapArgs("chapter", "2")) == 0
-    assert calls == [("ep", "chapter", 1)]
+    # critical: a chapter jump is a keypress, not chatter — the book/music lane
+    # shares the phone bridge, so an open breaker would swallow it silently.
+    assert calls == [("ep", "chapter", 1, True)]
     assert "Deep Blue" in capsys.readouterr().out
 
 
