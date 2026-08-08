@@ -1867,32 +1867,46 @@ def _wait_and_claim_broker(sink: "SinkSpeech", target: Target) -> None:
 
 
 def _watch_remote_progress(proc, state: StateStore, target_name: str,
-                           started_at: float) -> None:
-    """Read the remote renderer's progress line and make the popup honest.
+                           started_at: float,
+                           report: Optional[dict] = None) -> None:
+    """Read the remote renderer's report lines and make the popup honest.
 
-    A remote renderer may announce, on stdout, the length of what it is about
-    to play:
+    A remote renderer may announce, on stdout, two things about what it is
+    about to play:
 
-        DURATION <seconds>
+        CLIP <basename>     the file it rendered, in the dir this target's
+                            clips already resolve against
+        DURATION <seconds>  how long that file is
 
-    That is the entire protocol. It arrives once, immediately before playback
-    starts, and the two facts together — a duration measured where the audio
-    exists, and the local clock at the moment it arrives — are enough to
-    extrapolate position for the rest of the utterance. No streaming, no
-    polling across a link that drops a quarter of its packets.
+    That is the entire protocol, and both lines are optional. They arrive once,
+    immediately before playback starts. The duration plus the local clock at
+    the moment it arrives are enough to extrapolate position without polling a
+    link that drops a quarter of its packets. The basename is what makes the
+    reply *replayable*: the audio already exists on the far side, so asking for
+    it again is a local loadfile there, not a transfer from here.
 
     A renderer that says nothing (Android TTS, a bare `say`) is unaffected: the
-    row simply carries no duration and the display stays blank, which is the
-    correct answer when nothing has been measured.
+    row carries no duration and no clip, and the display stays blank, which is
+    the correct answer when nothing has been measured.
+
+    `report`, when given, collects what was announced for the caller to record
+    in history — the thread outlives neither the process nor the caller's wait.
 
     Best-effort throughout. This is a progress bar; it must never be the reason
     an utterance fails.
     """
     if not proc.stdout:
         return
+    duration = 0.0
+    clip = ""
     try:
         for raw in proc.stdout:
             line = raw.decode("utf-8", "replace").strip()
+            if line.startswith("CLIP "):
+                clip = line.split(None, 1)[1].strip()
+                if report is not None and clip:
+                    report["clip"] = clip
+                continue
             if not line.startswith("DURATION "):
                 continue
             try:
@@ -1901,15 +1915,20 @@ def _watch_remote_progress(proc, state: StateStore, target_name: str,
                 continue
             if duration <= 0:
                 continue
+            if report is not None:
+                report["duration"] = duration
+            extras = {"kind": "remote-say", "writer_pid": os.getpid(),
+                      "total_duration_s": duration,
+                      # Stamped here, not at submit: rendering happens before
+                      # this line is sent, and counting that as playback would
+                      # start the bar seconds ahead of the audio.
+                      "play_started_at": time.time()}
+            if clip:
+                extras["clip_uris"] = [clip]
+                extras["clips_remote"] = True
             state.set_now_playing(
                 "speech", uri=f"remote-say:{target_name}",
-                started_at=started_at, target=target_name,
-                extras={"kind": "remote-say", "writer_pid": os.getpid(),
-                        "total_duration_s": duration,
-                        # Stamped here, not at submit: rendering happens before
-                        # this line is sent, and counting that as playback would
-                        # start the bar seconds ahead of the audio.
-                        "play_started_at": time.time()})
+                started_at=started_at, target=target_name, extras=extras)
             return
     except Exception:  # noqa: BLE001 — a progress bar must not break speech
         return
@@ -1977,6 +1996,7 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
     started_at = time.time()
     history_id: Optional[int] = None
     failure: Optional[str] = None      # set if the far side never spoke the text
+    report: dict = {}                  # what the renderer announced (clip, duration)
     # Resolve the target exactly as the local path does. This branch runs before
     # submit_event's own resolution, so event.target is usually None here — and
     # recording a placeholder like "remote" is not cosmetic: _active_speech_target
@@ -2028,7 +2048,7 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
                 pass
             watcher = threading.Thread(
                 target=_watch_remote_progress,
-                args=(proc, state, target_name, started_at),
+                args=(proc, state, target_name, started_at, report),
                 daemon=True)
             watcher.start()
             try:
@@ -2078,6 +2098,14 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
                             # The transcript must not claim what the room
                             # didn't hear; the clip browser reads this too.
                             **({"failed": failure} if failure else {}),
+                            # What the renderer said it made. `clips_remote`
+                            # tells replay the audio is already on the far
+                            # side, so it must not try to ship it there.
+                            **({"clip_uris": [report["clip"]],
+                                "clips_remote": True} if report.get("clip")
+                               else {}),
+                            **({"total_duration_s": report["duration"]}
+                               if report.get("duration") else {}),
                             **{k: v for k, v in (event.metadata or {}).items()
                                if k in ("kind", "session")}},
                 )

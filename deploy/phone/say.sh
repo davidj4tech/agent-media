@@ -20,7 +20,17 @@ set -eu
 
 VENV="${MEDIA_VENV:-$HOME/projects/agent-media/.venv}"
 SOCK="${MEDIA_SPEECH_SOCK:-$HOME/.local/state/agent-media/sink-speech.sock}"
-CLIP="${MEDIA_SAY_CLIP:-$HOME/.cache/agent-media-say.mp3}"
+
+# One file per utterance, in the dir the caller already resolves remote clips
+# against (MEDIA_SPEECH_CLIP_LOCALDIR_<TARGET>). This was a single fixed path
+# that every reply overwrote, which made replay impossible in principle: by the
+# time you wanted to hear something again, the file was whatever had been said
+# since. Naming each one and reporting it back is what lets the popup ask for a
+# specific reply — and the audio is already on this device, so playing it is a
+# local loadfile, not a transfer.
+CLIPDIR="${MEDIA_SAY_CLIPDIR:-$HOME/.cache/agent-media/clips-relay}"
+CLIPKEEP="${MEDIA_SAY_CLIPKEEP:-200}"
+CLIP="${MEDIA_SAY_CLIP:-$CLIPDIR/remote-$(date +%Y%m%dT%H%M%S)-$$.mp3}"
 
 text=$(cat)
 [ -n "$text" ] || exit 0
@@ -54,6 +64,25 @@ sys.exit(0 if ok else 1)
 PYEOF
 
 [ -s "$CLIP" ] || exit 1
+
+# Keep the dir from growing without limit — it had reached 31k files. Prune
+# before announcing, so the file we are about to name is never the one pruned.
+if [ "$CLIPKEEP" -gt 0 ] 2>/dev/null; then
+    (
+        cd "$CLIPDIR" 2>/dev/null || exit 0
+        # shellcheck disable=SC2012  # names here are ours: timestamp + pid
+        ls -1t 2>/dev/null | tail -n "+$((CLIPKEEP + 1))" | while read -r old; do
+            [ "$old" = "$(basename "$CLIP")" ] || rm -f -- "$old"
+        done
+    )
+fi
+
+# Two lines out, both optional, both read by _watch_remote_progress:
+#   CLIP <basename>   what was rendered, so the caller can ask for it again
+#   DURATION <secs>   how long it is, so the caller can draw a progress bar
+# Basename only: the caller maps it into this same dir via its own config, and
+# has no business knowing our absolute paths.
+printf 'CLIP %s\n' "$(basename "$CLIP")"
 
 dur=$(ffprobe -v quiet -show_entries format=duration -of csv=p=0 "$CLIP" 2>/dev/null || true)
 case "$dur" in ''|*[!0-9.]*) ;; *) printf 'DURATION %s\n' "$dur" ;; esac
