@@ -147,6 +147,27 @@ the phone. Codex and others need their own equivalent.
 | `TMUX_VOICE_TARGET_FILE` | `$XDG_STATE_HOME/tmux-voice-bridge/target` | Persisted current target |
 | `TMUX_VOICE_HOSTS_FILE` | `$XDG_CONFIG_HOME/tmux-voice-bridge/hosts.json` | Host map |
 | `TMUX_VOICE_ENTER_DELAY` | `0.12` | Seconds between paste-buffer and the trailing `Enter`. Avoids a race where TUIs (e.g. Claude Code's Ink renderer) absorb `Enter` into the pasted text instead of submitting. Set to `0` to disable. |
+| `MEDIA_CONVERSE_SOCK` | `$XDG_RUNTIME_DIR/agent-media/converse.sock` | Rendezvous socket for agent-media's `converse` tool (see below). Must match agent-media's setting. |
+
+## agent-media `converse` handoff
+
+[agent-media](https://github.com/davidj4tech/agent-media) has an MCP tool,
+`converse`, that speaks a question and then blocks waiting for the spoken
+answer — so an agent can ask something mid-task instead of guessing.
+
+The listening half is this bridge. Before injecting, `do_inject()` checks the
+rendezvous socket; if a `converse` call is armed, the transcript is that
+answer and goes there instead of into the pane.
+
+The client is twenty lines of stdlib, deliberately duplicated rather than
+imported: agent-media is an optional peer living in its own venv (this runs on
+the system python), so an import would silently no-op. Every failure path —
+no agent-media, no socket, a stale socket, a slow peer — returns False and
+injects as normal. A duplicated transcript is harmless; a dropped one makes
+you repeat yourself.
+
+Note this is half-duplex: you still start talking. `converse` decides where
+your words land, not when the mic opens.
 
 ## Prerequisites for a new session
 
