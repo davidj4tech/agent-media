@@ -2531,6 +2531,34 @@ def _print_history_grouped(rows) -> None:
                   f"\t{r.get('id')}")
 
 
+def cmd_errors(a) -> int:
+    """Show recent errors from every component.
+
+    Components log failures they recover from — a render that fell back to
+    another engine, a transcript that couldn't be injected — and until now
+    nothing read that table, so those failures were invisible unless you
+    happened to be tailing the journal.
+    """
+    import time as _t
+    from .state import StateStore
+    since = (_t.time() - a.since * 60) if getattr(a, "since", 0) else None
+    rows = StateStore().recent_errors(component=a.component or None,
+                                      limit=a.n, since=since)
+    if not rows:
+        scope = f" for {a.component}" if a.component else ""
+        window = f" in the last {a.since}m" if getattr(a, "since", 0) else ""
+        print(f"no errors{scope}{window}")
+        return 0
+    for r in rows:
+        when = _t.strftime("%m-%d %H:%M:%S", _t.localtime(r["at"]))
+        line = f"{when}  {r['component']:<16} {r['message']}"
+        extras = r.get("extras")
+        if extras and getattr(a, "verbose", False):
+            line += f"  {extras}"
+        print(line)
+    return 0
+
+
 def cmd_history(a) -> int:
     """List recent spoken clips; the clip browser's data source.
 
@@ -4353,6 +4381,17 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument("--pane", default="")
     s.add_argument("--durations", default="")
     s.set_defaults(func=cmd_replay_track)
+
+    s = sub.add_parser("errors", help="recent errors from every component")
+    s.add_argument("n", nargs="?", type=int, default=20)
+    s.add_argument("--component", default="",
+                   help="filter to one component (intake, coordinator, "
+                        "voice-bridge, hook-claude-code)")
+    s.add_argument("--since", type=int, default=0, metavar="MIN",
+                   help="only errors from the last MIN minutes")
+    s.add_argument("--verbose", "-v", action="store_true",
+                   help="include the extras payload")
+    s.set_defaults(func=cmd_errors)
 
     s = sub.add_parser("history", help="list recent spoken clips")
     s.add_argument("n", nargs="?", type=int, default=20)

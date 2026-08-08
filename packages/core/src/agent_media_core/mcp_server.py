@@ -321,6 +321,26 @@ def speech_history(limit: int = 10) -> list[dict]:
 
 
 @mcp.tool()
+def errors(limit: int = 20, component: str = "", since_minutes: int = 0) -> list[dict]:
+    """Recent errors from every component — intake, coordinator, voice-bridge.
+
+    Check this when something "just didn't happen": a reply that never sounded,
+    a transcript that went nowhere, speech that fell back to another engine.
+    Components log failures they recover from silently, so an empty result is
+    meaningful and a repeated message usually indicates a broken assumption
+    rather than a blip.
+
+    Args:
+        limit: Max rows, most recent first.
+        component: Filter to one component (e.g. "intake", "voice-bridge").
+        since_minutes: Only errors from the last N minutes. 0 = no limit.
+    """
+    since = (time.time() - since_minutes * 60) if since_minutes > 0 else None
+    return _state().recent_errors(component=component or None,
+                                  limit=limit, since=since)
+
+
+@mcp.tool()
 def speech_replay_last(target: str = "local") -> dict:
     """Replay the most recent speech clip."""
     # Skip notif/converse prompt clips: replay the last real response.

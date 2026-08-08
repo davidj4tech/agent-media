@@ -159,8 +159,16 @@ twenty-line stdlib client, precisely because the two are peers with different
 lifecycles. `core/capture/` stopped being an empty slot the same day
 (`capture/rendezvous.py`).
 
-Still open: voice-bridge adopting `core._notify` / `core.state` for
-observability. It logs to the journal and nowhere else.
+Observability landed too, via `voice-bridge/observe.py`. Doing it exposed a
+gap: eleven call sites wrote to `state.errors` and *nothing read it*, so
+recovered failures were invisible unless you were tailing the journal — which
+is how injection into a tmux session that no longer existed stayed broken for
+weeks. Added `StateStore.recent_errors()`, `media errors`, and an MCP `errors`
+tool; voice-bridge now reports a failed injection there plus a throttled
+notification. The reporting path degrades to a no-op when core isn't
+importable, because this package still installs standalone.
+
+Phase 5 is complete.
 
 ### Phase 6 — MCP control surface + cleanup
 - MCP exposes:

@@ -829,6 +829,41 @@ class StateStore:
 
     # ---- errors -----------------------------------------------------------
 
+    def recent_errors(self, *, component: Optional[str] = None,
+                      limit: int = 20, since: Optional[float] = None) -> list[dict]:
+        """Most recent errors first.
+
+        Everything wrote here and nothing read it, which is how a bridge
+        injecting into a tmux session that no longer existed stayed broken for
+        weeks. `media errors` and the MCP `errors` tool read this.
+        """
+        q = ("SELECT id, at, component, message, extras FROM errors")
+        clauses, args = [], []
+        if component:
+            clauses.append("component = ?")
+            args.append(component)
+        if since is not None:
+            clauses.append("at >= ?")
+            args.append(since)
+        if clauses:
+            q += " WHERE " + " AND ".join(clauses)
+        q += " ORDER BY at DESC, id DESC LIMIT ?"
+        args.append(int(limit))
+        cols = ("id", "at", "component", "message", "extras")
+        with self._cursor() as cur:
+            cur.execute(q, args)
+            rows = cur.fetchall()
+        out = []
+        for r in rows:
+            d = dict(zip(cols, r))
+            if d.get("extras"):
+                try:
+                    d["extras"] = json.loads(d["extras"])
+                except ValueError:
+                    pass
+            out.append(d)
+        return out
+
     def log_error(self, component: str, message: str,
                   *, extras: Optional[dict] = None,
                   at: Optional[float] = None) -> None:

@@ -29,6 +29,8 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from . import observe
+
 
 def _state_dir() -> Path:
     root = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
@@ -629,8 +631,15 @@ def make_handler(hosts: dict[str, str | None]):
                             print(f"[shim] injected -> {response_text!r}", file=sys.stderr, flush=True)
                     except subprocess.CalledProcessError as err:
                         response_text = f"Injection failed: {err}"
-                        print(f"[shim] {response_text}",
-                              file=sys.stderr, flush=True)
+                        # The human just spoke and their words went nowhere.
+                        # HA still gets its 200, so without this the only
+                        # trace is a journal line nobody reads.
+                        host, session = load_target()
+                        observe.report(
+                            "injection failed — spoken text was not delivered",
+                            target=describe_target(host, session),
+                            chars=len(user_text),
+                            detail=str(err)[-200:])
 
             stream = bool(body.get("stream"))
             non_stream, chunks = build_completion(response_text, body)
