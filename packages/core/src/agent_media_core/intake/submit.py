@@ -2005,6 +2005,17 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
     # phone. The control appears to do nothing.
     target_name = (event.target.name if event.target
                    else os.environ.get("MEDIA_SPEECH_DEFAULT_TARGET", "local"))
+    # Tag the row exactly as the local path does. These are not decoration:
+    # `media replay` and the popup's < / > scope traversal to one conversation
+    # by extras.source_session, and rows carrying no tag are *excluded* rather
+    # than leaked across conversations. Writing only `session` here meant every
+    # phone-lane reply was invisible to that scoping — so `r` reported nothing
+    # to replay and the popup's history navigation skipped straight past a
+    # whole lane's worth of speech, while the same clip replayed fine when
+    # addressed by id.
+    source_pane = (event.metadata or {}).get("pane") or os.environ.get("TMUX_PANE", "")
+    source_tmux_session = _tmux_session_for_pane(source_pane)
+    source_window = _tmux_window_for_pane(source_pane)
     try:
         coordinator.before_speech()
         _speech_event("start", text=text[:400], session=session,
@@ -2095,6 +2106,10 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
                     source=event.source.value,
                     text=text,
                     extras={"kind": "remote-say", "cmd": cmd[:200],
+                            "source_pane": source_pane,
+                            "source_session": session,
+                            "source_tmux_session": source_tmux_session,
+                            "source_window": source_window,
                             # The transcript must not claim what the room
                             # didn't hear; the clip browser reads this too.
                             **({"failed": failure} if failure else {}),
