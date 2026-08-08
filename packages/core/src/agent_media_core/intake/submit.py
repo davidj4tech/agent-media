@@ -1866,6 +1866,30 @@ def _wait_and_claim_broker(sink: "SinkSpeech", target: Target) -> None:
         time.sleep(0.3)
 
 
+def _kill_process_group(proc) -> None:
+    """Kill a Popen and everything it spawned. Best-effort, never raises.
+
+    Only safe because the process was started with start_new_session=True, so
+    it leads its own group and we can't signal anything of ours.
+    """
+    import os
+    import signal
+    try:
+        pgid = os.getpgid(proc.pid)
+    except OSError:
+        return
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(pgid, sig)
+        except OSError:
+            return
+        try:
+            proc.wait(timeout=3)
+            return
+        except Exception:  # noqa: BLE001 — still alive; escalate to SIGKILL
+            continue
+
+
 def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
                        state: StateStore, event: Event) -> Optional[int]:
     """Render a reply on a remote low-latency hub instead of locally.
@@ -1919,9 +1943,22 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
         except Exception:  # noqa: BLE001 — observability must not break speech
             pass
         try:
-            subprocess.run(cmd, shell=True, input=text.encode(),
-                           timeout=timeout,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            # Not subprocess.run(..., timeout=): with shell=True the timeout
+            # kills the *shell*, and whatever it spawned (an ssh, here) is
+            # reparented and runs forever. A remote renderer that blocks — an
+            # Android TTS that never returns because the screen is off, say —
+            # then leaks one orphaned ssh per utterance until the far end runs
+            # out of session slots and every other remote call starts failing
+            # too. Own the whole process group and kill it.
+            proc = subprocess.Popen(cmd, shell=True, stdin=subprocess.PIPE,
+                                    stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL,
+                                    start_new_session=True)
+            try:
+                proc.communicate(text.encode(), timeout=timeout)
+            except subprocess.TimeoutExpired:
+                _kill_process_group(proc)
+                raise
         except Exception as e:  # noqa: BLE001 — remote render must never crash the hook
             log.warning("intake: remote-say failed: %s", e)
             try:
