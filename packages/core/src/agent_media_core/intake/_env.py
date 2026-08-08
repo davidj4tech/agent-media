@@ -14,6 +14,21 @@ log = logging.getLogger(__name__)
 _PACKAGE_DEFAULTS = Path(__file__).resolve().parent.parent / "defaults.env"
 
 
+def _dequote(v: str) -> str:
+    """Remove one matched pair of surrounding quotes, and only that.
+
+    This was `.strip('"').strip("'")`, which removes quote characters from
+    either end whether or not they pair up. A value that merely *ends* in a
+    quote — a command whose last argument is quoted, say — came back with its
+    closing quotes eaten and its opening ones intact, so the shell that later
+    ran it died on an unterminated string. The failure surfaces far from here,
+    in a command that looks correct in the file it was read from.
+    """
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+        return v[1:-1]
+    return v
+
+
 def _load_one(path: str, label: str) -> None:
     """Merge a single env file into os.environ without overwriting.
 
@@ -36,7 +51,7 @@ def _load_one(path: str, label: str) -> None:
                 if "=" not in line:
                     continue
                 k, v = line.split("=", 1)
-                k, v = k.strip(), v.strip().strip('"').strip("'")
+                k, v = k.strip(), _dequote(v.strip())
                 if k and not os.environ.get(k):
                     os.environ[k] = v
     except FileNotFoundError:
