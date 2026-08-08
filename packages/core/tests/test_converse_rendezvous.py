@@ -31,11 +31,16 @@ def _armed(timeout_s=5.0):
 
     t = threading.Thread(target=serve)
     t.start()
-    for _ in range(50):                     # wait for the bind
+    # Wait for the bind, and *assert* it happened. A bounded wait that gives up
+    # silently turns "the thread was slow" into "the assertion under test did
+    # not hold" — which is how this read on a loaded machine: the concurrency
+    # test found nothing to collide with and reported a missing Busy.
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
         if socket_path().exists():
-            break
+            return t, out
         time.sleep(0.02)
-    return t, out
+    raise AssertionError("rendezvous never armed within 10s")
 
 
 def test_offer_with_nobody_waiting_falls_back_to_injection():

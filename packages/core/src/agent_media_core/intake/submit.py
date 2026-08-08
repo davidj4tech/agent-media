@@ -1896,16 +1896,28 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
         lock.release()
         return None
     # Same last-checkpoint gate as the local path: wait out an active hold,
-    # then drop if a flush arrived while we were queued or held. This path has
-    # never written history rows, so a flush here loses nothing extra.
+    # then drop if a flush arrived while we were queued or held.
     _wait_speech_hold()
     if _speech_flushed(seq):
         lock.release()
         return None
+    started_at = time.time()
+    history_id: Optional[int] = None
+    target_name = (event.target.name if event.target else "remote")
     try:
         coordinator.before_speech()
         _speech_event("start", text=text[:400], session=session,
                       source=event.source.value, target="remote-say")
+        # The remote renders and plays; nothing is on this host to observe. Say
+        # so explicitly, or the popup and `speech now-playing` sit blank for the
+        # whole utterance and the control surface looks broken rather than
+        # remote. uri is the command, since there is no clip here to point at.
+        try:
+            state.set_now_playing("speech", uri=f"remote-say:{target_name}",
+                                  started_at=started_at, target=target_name,
+                                  extras={"kind": "remote-say", "text": text[:400]})
+        except Exception:  # noqa: BLE001 — observability must not break speech
+            pass
         try:
             subprocess.run(cmd, shell=True, input=text.encode(),
                            timeout=timeout,
@@ -1922,9 +1934,29 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
             coordinator.after_speech()
             _speech_event("end", text=text[:160], session=session,
                           source=event.source.value, target="remote-say")
+            # History too: replay can't work (the audio never existed here),
+            # but the transcript is what `speech history` and the clip browser
+            # actually show, and losing it means the phone lane leaves no trace
+            # of anything the agent said.
+            try:
+                state.clear_now_playing("speech")
+                history_id = state.add_history(
+                    sink="speech",
+                    uri=f"remote-say:{target_name}",
+                    started_at=started_at,
+                    ended_at=time.time(),
+                    target=target_name,
+                    source=event.source.value,
+                    text=text,
+                    extras={"kind": "remote-say", "cmd": cmd[:200],
+                            **{k: v for k, v in (event.metadata or {}).items()
+                               if k in ("kind", "session")}},
+                )
+            except Exception:  # noqa: BLE001
+                pass
     finally:
         lock.release()
-    return None
+    return history_id
 
 
 def submit_event(event: Event,
