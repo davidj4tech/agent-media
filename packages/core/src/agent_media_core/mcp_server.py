@@ -184,6 +184,90 @@ def say(text: str,
     return {"history_id": history_id}
 
 
+@mcp.tool()
+def converse(text: str,
+             target: str = "",
+             timeout_s: float = 90.0,
+             voice: str = "",
+             engine: str = "") -> dict:
+    """Speak `text`, then wait for the human's spoken reply and return it.
+
+    Use for a genuine mid-task question — a choice you cannot make from the
+    code, an ambiguity worth one sentence of clarification. The call does NOT
+    return until there is a reply or `timeout_s` elapses, so it costs the human
+    their attention: for anything that needs no answer, use `say`.
+
+    The human still initiates speaking (tap-to-talk / wake word); this only
+    routes their next transcript here instead of into the tmux pane.
+
+    Args:
+        text: The question to speak.
+        target: Sink target. Empty = MEDIA_SPEECH_DEFAULT_TARGET.
+        timeout_s: How long to wait for a reply before giving up.
+        voice: Override the render voice. Empty = default.
+        engine: Override engine (edge / openai / qwen / realtime).
+
+    Returns {"reply": "..."} — or {"reply": None, "reason": ...} on timeout or
+    if another converse call already holds the rendezvous.
+    """
+    from .capture.rendezvous import Busy, Rendezvous
+    from .intake.submit import submit_event
+
+    tgt = _target(target or os.environ.get(
+        "MEDIA_SPEECH_DEFAULT_TARGET", "local"))
+
+    # kind=converse keeps the question out of speech_history's response list
+    # (same treatment as notif clips) — it's a prompt, not a reply.
+    submit_event(Event(
+        text=text, source=Source.MCP,
+        priority=Priority.NORMAL,
+        voice=voice or None,
+        engine=engine or None,
+        target=tgt,
+        metadata={"kind": "converse"},
+    ), state=_state())
+
+    # submit_event blocks until the clips finish, but "finished" means mpv is
+    # done — with a Snapcast target the audio is still in flight down the
+    # buffer. Opening the ear on that edge transcribes the tail of our own
+    # question. Poll idle (cheap, and it returns True on IPC error so a hiccup
+    # can't wedge us) and then wait out the buffer.
+    _await_quiet(tgt)
+
+    try:
+        with Rendezvous(timeout_s=timeout_s) as rv:
+            log.info("converse: listening (up to %.0fs)", timeout_s)
+            t0 = time.monotonic()
+            reply = rv.wait()
+    except Busy as exc:
+        log.warning("converse: %s", exc)
+        return {"reply": None, "reason": str(exc)}
+
+    waited = time.monotonic() - t0
+    if reply is None:
+        log.info("converse: no reply after %.1fs", waited)
+        return {"reply": None, "reason": "timeout"}
+    log.info("converse: reply after %.1fs (%d chars)", waited, len(reply))
+    return {"reply": reply}
+
+
+def _await_quiet(target: Target, max_wait_s: float = 120.0) -> None:
+    """Block until the spoken prompt has actually left the speakers.
+
+    MEDIA_CONVERSE_ECHO_MS covers the sink-to-ear buffer for the target; the
+    parec->snapfifo path is bounded at ~500ms, so the default leaves headroom.
+    """
+    speech = _speech()
+    deadline = time.monotonic() + max_wait_s
+    while time.monotonic() < deadline and not speech.idle(target):
+        time.sleep(0.1)
+    try:
+        echo_ms = int(os.environ.get("MEDIA_CONVERSE_ECHO_MS", "900"))
+    except ValueError:
+        echo_ms = 900
+    time.sleep(max(echo_ms, 0) / 1000)
+
+
 # --- speech sink controls --------------------------------------------------
 
 @mcp.tool()
@@ -215,26 +299,33 @@ def speech_now_playing(target: str = "local") -> dict:
     return {"idle": s.idle(t), "position_ms": s.position(t)}
 
 
+_PROMPT_KINDS = {"notif", "converse"}
+
+
+def _is_prompt_clip(row: dict) -> bool:
+    """True for clips that asked the human something rather than answering."""
+    extras = row.get("extras")
+    return (isinstance(extras, dict)
+            and extras.get("kind") in _PROMPT_KINDS)
+
+
 @mcp.tool()
 def speech_history(limit: int = 10) -> list[dict]:
     """The last N speech clips. Most recent first."""
-    # Exclude "Claude is waiting" notif clips: they're alerts, not responses.
+    # Exclude "Claude is waiting" notif clips and converse questions: they're
+    # prompts, not responses.
     # Over-fetch so filtering still leaves `limit` real responses.
     rows = _state().recent_history(sink="speech", limit=max(limit * 4, limit + 50))
-    rows = [r for r in rows
-            if not (isinstance(r.get("extras"), dict)
-                    and r["extras"].get("kind") == "notif")]
+    rows = [r for r in rows if not _is_prompt_clip(r)]
     return rows[:limit]
 
 
 @mcp.tool()
 def speech_replay_last(target: str = "local") -> dict:
     """Replay the most recent speech clip."""
-    # Skip "Claude is waiting" notif clips: replay the last real response.
+    # Skip notif/converse prompt clips: replay the last real response.
     rows = _state().recent_history(sink="speech", limit=50)
-    rows = [r for r in rows
-            if not (isinstance(r.get("extras"), dict)
-                    and r["extras"].get("kind") == "notif")]
+    rows = [r for r in rows if not _is_prompt_clip(r)]
     if not rows:
         return {"ok": False, "reason": "no history"}
     uri = rows[0].get("uri")

@@ -15,7 +15,7 @@ packages/
 ├── intake-codex/     ┘
 ├── snapcast-room/    am-snap: whole-house Snapcast routing CLI
 ├── visual/           generated-image canvas + touch audio controller alongside TTS
-└── voice-bridge/     STT: mic → text → core intake
+└── voice-bridge/     HA Assist transcripts → tmux panes (or a waiting `converse`)
 examples/
 └── agent-media-engine-espeak/   reference render-engine plugin to copy
 ```
@@ -90,8 +90,15 @@ popup. Opt-in Stop-hook wiring: `MEDIA_SPEECH_VISUAL=1`.
 
 ### [`voice-bridge/`](./packages/voice-bridge/) — `tmux-voice-bridge`
 
-STT companion — mic capture → transcribe → `submit_event` into core's intake
-pipeline; also voice-injects Home Assistant Assist transcripts into tmux panes.
+Transcript companion. It does **not** capture or transcribe audio — HA Assist
+on a phone/earbud does the mic, endpointing and STT, then POSTs the text to
+this shim's OpenAI-compatible `/v1/chat/completions`. The shim parses a small
+command grammar and injects the rest as keystrokes into a target tmux pane
+(local or over SSH).
+
+One exception to the keystroke path: if core's MCP `converse` tool is waiting
+on the rendezvous socket, the transcript goes there instead — see
+[`capture/rendezvous.py`](./packages/core/src/agent_media_core/capture/rendezvous.py).
 
 ---
 
