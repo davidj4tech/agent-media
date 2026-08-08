@@ -65,18 +65,6 @@ PYEOF
 
 [ -s "$CLIP" ] || exit 1
 
-# Keep the dir from growing without limit — it had reached 31k files. Prune
-# before announcing, so the file we are about to name is never the one pruned.
-if [ "$CLIPKEEP" -gt 0 ] 2>/dev/null; then
-    (
-        cd "$CLIPDIR" 2>/dev/null || exit 0
-        # shellcheck disable=SC2012  # names here are ours: timestamp + pid
-        ls -1t 2>/dev/null | tail -n "+$((CLIPKEEP + 1))" | while read -r old; do
-            [ "$old" = "$(basename "$CLIP")" ] || rm -f -- "$old"
-        done
-    )
-fi
-
 # Two lines out, both optional, both read by _watch_remote_progress:
 #   CLIP <basename>   what was rendered, so the caller can ask for it again
 #   DURATION <secs>   how long it is, so the caller can draw a progress bar
@@ -126,3 +114,24 @@ while [ "$waited" -lt "$ticks" ]; do
     sleep 0.2
     waited=$((waited + 1))
 done
+
+# Now that the audio is done, keep the clip dir from growing without limit — it
+# had reached 25k files. After playback, never before: this is housekeeping, and
+# housekeeping must not stand between someone speaking and being heard.
+#
+# Batched through xargs and capped per run. The first version of this deleted
+# one file per `rm`, which on a 25k-file dir meant ~25k process spawns on a
+# phone — it never finished, every timeout above it fired, and the reply was
+# lost to a cleanup nobody asked for. A bounded chunk drains a backlog over
+# several utterances and costs a fixed, small amount on any single one.
+case "$CLIPKEEP" in
+    ''|*[!0-9]*|0) ;;
+    *)
+        old=$(cd "$CLIPDIR" 2>/dev/null &&
+              # shellcheck disable=SC2012  # our own names: timestamp + pid
+              ls -1t 2>/dev/null | tail -n "+$((CLIPKEEP + 1))" | head -n 400)
+        if [ -n "$old" ]; then
+            printf '%s\n' "$old" | (cd "$CLIPDIR" && xargs rm -f) 2>/dev/null || true
+        fi
+        ;;
+esac
