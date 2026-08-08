@@ -145,6 +145,14 @@ _DEFAULT_HOLD_FLAG_NAME = "call-guard.hold"
 # report success. Publishing the answer here is what lets it find out.
 _FLAG_ADVERT_NAME = "call-guard.flag-path"
 
+# Heartbeat for the thing that WRITES the flag. call_guard cannot tell a
+# working mic-detect trigger from a dead one — both look like "no flag" — and
+# that is exactly how barge-in stayed broken for two days in August 2026 while
+# every service reported healthy. Touching this on each external hold turns a
+# silent failure into an observable one: `media selfcheck` reports how long it
+# has been quiet, and doctor complains once that exceeds a day.
+_LAST_HOLD_NAME = "call-guard.last-hold"
+
 # The flag file is a cheap local stat, so we check it on a fast tick — decoupled
 # from the (expensive) notification poll for calls, which stays at poll_s.
 _DEFAULT_FLAG_POLL_S = 0.3
@@ -558,6 +566,21 @@ def advert_path() -> Path:
     return state_dir() / _FLAG_ADVERT_NAME
 
 
+def last_hold_path() -> Path:
+    """Where the guard records the most recent EXTERNAL hold."""
+    return state_dir() / _LAST_HOLD_NAME
+
+
+def note_external_hold() -> None:
+    """Timestamp an external hold, best-effort. mtime is the whole record."""
+    try:
+        p = last_hold_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.touch()
+    except OSError as exc:                      # pragma: no cover - unwritable
+        log.debug("could not record last hold: %s", exc)
+
+
 def publish_flag_path(cfg: Config) -> None:
     """Advertise the flag path this guard polls, for triggers that can't know it.
 
@@ -710,6 +733,10 @@ def _run_loop(cfg: Config, dry_run: bool = False) -> None:
             if not prev_want:
                 log.info("pausing/ducking phone audio (%s)",
                          _hold_reason(call, flag))
+                if flag:
+                    # Only the flag path proves the external trigger is alive;
+                    # a phone call would tick this without mic-detect running.
+                    note_external_hold()
                 if not dry_run:
                     hold.start()  # instant re-pause on any un-pause
                 pause_sockets(cfg, dry_run=dry_run, quiet=False)

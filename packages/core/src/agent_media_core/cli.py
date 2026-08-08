@@ -3975,6 +3975,43 @@ def selfcheck_facts() -> "dict[str, str]":
     loops = _crash_loops()
     if loops:
         facts["crashloop"] = ",".join(f"{n}:{c}" for n, c in loops)
+    facts.update(_mic_detect_facts())
+    return facts
+
+
+def _mic_detect_facts() -> "dict[str, str]":
+    """How long since the external hold trigger last fired, on hosts that run
+    the guard.
+
+    Only meaningful where call-guard runs, so absence of the guard means no
+    facts rather than a misleading zero. The reference point is the LATER of the guard's
+    start and the last hold: a guard that came up ten minutes ago has had no
+    chance to see a hold yet, and flagging that would train everyone to ignore
+    the warning.
+    """
+    import time as _time
+    from pathlib import Path
+
+    try:
+        from .call_guard import advert_path, last_hold_path
+    except Exception:                                # pragma: no cover
+        return {}
+
+    advert = advert_path()
+    try:
+        guard_started = advert.stat().st_mtime
+    except OSError:
+        return {}                                    # no guard here
+
+    facts = {"mic_detect": "watched"}
+    last = last_hold_path()
+    try:
+        last_hold = last.stat().st_mtime
+    except OSError:
+        last_hold = 0.0
+    if last_hold:
+        facts["mic_detect_last_hold_s"] = str(int(_time.time() - last_hold))
+    facts["mic_detect_quiet_s"] = str(int(_time.time() - max(guard_started, last_hold)))
     return facts
 
 
@@ -3991,6 +4028,24 @@ def health_problems(facts: "dict[str, str]") -> "list[str]":
         problems.append(f"services down: {facts['down']}")
     if facts.get("crashloop"):
         problems.append(f"crash-looping: {facts['crashloop']}")
+    quiet = facts.get("mic_detect_quiet_s")
+    if quiet:
+        import os as _os
+        try:
+            limit = float(_os.environ.get("MEDIA_MIC_DETECT_QUIET_MAX_S", "86400"))
+        except ValueError:
+            limit = 86400.0
+        try:
+            quiet_s = float(quiet)
+        except ValueError:
+            quiet_s = 0.0
+        if limit > 0 and quiet_s > limit:
+            ever = facts.get("mic_detect_last_hold_s")
+            when = f"last fired {float(ever) / 3600:.0f}h ago" if ever else "never fired"
+            problems.append(
+                f"mic-detect quiet for {quiet_s / 3600:.0f}h ({when}) — the "
+                "external hold trigger may be dead; speech barge-in fails silently"
+            )
     return problems
 
 
