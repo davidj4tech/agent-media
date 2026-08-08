@@ -1,5 +1,8 @@
 # Speech breadcrumb + control channel — OpenWebUI STT integration idea
 
+Status: **active**
+Date: 2026-08-05
+
 The new speech-state breadcrumb (GET /speech peek, non-queueing) and control channel
 (interrupt/supersede barge-in, flush, timed hold) are a natural fit for the OpenWebUI STT work:
 
@@ -15,7 +18,7 @@ speaking-state signal.
 ## RESOLVED 2026-08-05 (was: version the ducker script)
 Premise was wrong — speech-state-server.py and its systemd unit are ALREADY
 versioned, in ~/dotfiles/packages/voice/, stow-symlinked into ~/.local/bin and
-~/.config/systemd/user/. Nothing to move. See DECISION-speech-state-convergence.md.
+~/.config/systemd/user/. Nothing to move. See ../decisions/2026-08-05-speech-state-convergence.md.
 
 Still open (separate idea): add a "local_audio": bool field to canvas /speech
 (cheap core-idle unix-socket read) for new consumers; leave :8675 untouched.

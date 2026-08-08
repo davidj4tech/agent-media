@@ -19,4 +19,4 @@ Config (environment):
 
 The engine shells out to `MEDIA_OPENAI_PYTHON` (or an auto-discovered pipx
 `openai`/`llm` venv, else `python3`) so this package itself doesn't depend on
-the `openai` library. See the core repo's `docs/EXTENSIONS.md` for the contract.
+the `openai` library. See the core repo's `docs/reference/extensions.md` for the contract.

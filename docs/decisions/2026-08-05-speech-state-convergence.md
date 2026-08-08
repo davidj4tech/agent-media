@@ -1,5 +1,8 @@
 # Decision: keep /speech and speech-state.service separate
 
+Status: **accepted**
+Date: 2026-08-05
+
 2026-08-05. Question raised after the /speech breadcrumb peek landed on the
 visual-canvas server (a5a1c94): should it and the pre-existing
 `speech-state.service` converge into one speech-state service that both the

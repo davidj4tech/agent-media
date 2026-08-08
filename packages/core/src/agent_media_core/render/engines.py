@@ -3,7 +3,7 @@
 `edge` is the only engine core ships — it's zero-config (no API key) and is the
 universal default. Every other engine (openai, qwen, realtime, …) is an
 optional package registered under the `agent_media.render_engines` entry-point
-group and discovered at runtime (see ../extensions.py and docs/EXTENSIONS.md),
+group and discovered at runtime (see ../extensions.py and docs/reference/extensions.md),
 so core imports none of them.
 
 `render_text(..., engine="<name>")` dispatches `edge` directly and any other

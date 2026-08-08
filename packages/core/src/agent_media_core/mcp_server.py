@@ -10,7 +10,7 @@ Two entrypoints over the same tool definitions:
                        127.0.0.1:8765 — set MEDIA_MCP_HOST to the
                        Tailscale IP to expose on the tailnet).
 
-Tools cover the surface RESTRUCTURE.md called for: speech.{pause,
+Tools cover the surface docs/reference/restructure.md called for: speech.{pause,
 resume,stop,now_playing,history,replay_last} and music.{play,pause,
 resume,stop,volume,now_playing,seek} plus a convenience `say` that
 submits a one-shot Event through the same intake pipeline the hooks

@@ -24,4 +24,4 @@ Config (environment):
 | `MEDIA_RENDER_VOICE_REALTIME` | `marin` | voice |
 | `MEDIA_REALTIME_MODEL` | `gpt-realtime` | model |
 
-See the core repo's `docs/EXTENSIONS.md` for the contract.
+See the core repo's `docs/reference/extensions.md` for the contract.

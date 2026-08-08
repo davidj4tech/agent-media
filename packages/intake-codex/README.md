@@ -10,4 +10,4 @@ pip install agent-media-intake-codex   # pulls in agent-media-core
 # wire `media-hook-codex` into Codex's notify bridge
 ```
 
-See the core repo's `docs/EXTENSIONS.md` (§2 Intake adapters).
+See the core repo's `docs/reference/extensions.md` (§2 Intake adapters).

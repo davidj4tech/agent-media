@@ -23,7 +23,7 @@ examples/
 Core is small and self-contained; optional capabilities (extra TTS engines,
 extra event sources) are separate packages that core discovers at runtime — it
 never imports them. A base install is zero-config: the `edge` engine needs no
-API key. See **[`docs/EXTENSIONS.md`](./docs/EXTENSIONS.md)** for the contract.
+API key. See **[`docs/reference/extensions.md`](./docs/reference/extensions.md)** for the contract.
 
 > **Music recommendation** lives in its own repo now:
 > [`davidj4tech/astrotunes`](https://github.com/davidj4tech/astrotunes) — picks
@@ -105,7 +105,7 @@ This directory is the canonical copy; the standalone `davidj4tech/tmux-voice-bri
 repo is retired. It stays a *peer* of core rather than an intake adapter — it
 injects keystrokes into tmux, it doesn't feed the speech pipeline — and it
 installs standalone with no agent-media present, which is why the rendezvous
-client is duplicated rather than imported. See RESTRUCTURE.md Phase 5.
+client is duplicated rather than imported. See docs/reference/restructure.md Phase 5.
 
 ---
 

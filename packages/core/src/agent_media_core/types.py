@@ -2,7 +2,7 @@
 
 The architecture is event-driven: any intake source produces an `Event`,
 route applies policy, render produces audio if needed, sinks play it to a
-target. See RESTRUCTURE.md for the full picture.
+target. See docs/reference/restructure.md for the full picture.
 """
 
 from __future__ import annotations

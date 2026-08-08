@@ -58,7 +58,7 @@ Rules core enforces (see `agent_media_core/extensions.py`):
   logged and skipped/failed-over, never fatal.
 - Discovery is cached for the process; engines are resolved on first use.
 
-**Working example:** [`examples/agent-media-engine-espeak`](../examples/agent-media-engine-espeak)
+**Working example:** [`examples/agent-media-engine-espeak`](../../examples/agent-media-engine-espeak)
 is a complete espeak-ng engine you can install and copy.
 
 ---

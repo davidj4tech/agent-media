@@ -13,7 +13,7 @@ they parse a verb and call into `sinks/`. Everything underneath them —
 acquisition, playout, ducking, state — is the *pipeline*, and it is the part
 that took real work to get right.
 
-`docs/channel-architecture.md` already names the intended shape:
+`channel-architecture.md` already names the intended shape:
 
 > players are NOT rivals, they're control surfaces landing on different
 > channels

@@ -68,7 +68,7 @@ Design premises (from the discussion that spawned this):
   fresh scene. Disable with `MEDIA_VISUAL_CONTINUITY=0`.
 - **Pluggable engines** — image backends register under the
   `agent_media.visual_engines` entry-point group (mirrors core's render
-  engines; see [`docs/EXTENSIONS.md`](../../docs/EXTENSIONS.md)). Two
+  engines; see [`docs/reference/extensions.md`](../../docs/reference/extensions.md)). Two
   built-ins: `venice` (raster, the default) and `svg` — animated clip-art
   emitted directly by the gateway LLM (SMIL loops play inside `<img>`;
   validated: well-formed, no scripts/external refs). Select with
