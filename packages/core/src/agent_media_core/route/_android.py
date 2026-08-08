@@ -36,6 +36,7 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+import time
 
 log = logging.getLogger(__name__)
 
@@ -59,16 +60,88 @@ _DEFAULT_PAUSE_CMD = "/system/bin/cmd media_session dispatch pause >/dev/null 2>
 _DEFAULT_RESUME_CMD = "/system/bin/cmd media_session dispatch play >/dev/null 2>&1"
 
 
+# --- slow-host breaker -----------------------------------------------------
+#
+# Same reasoning as the mpv bridge breaker: a phone on a lossy 400ms link costs
+# ~3s per SSH command, and speech was paying that twice per sentence before a
+# word came out. Pausing the phone's media is best-effort by nature (every call
+# site already tolerates failure), so when a host proves slow, stop asking it
+# for a while rather than making the user wait on it every time.
+
+_NS = "android"
+_slow_until: dict[str, float] | None = None      # lazy; unix-epoch deadlines
+
+
+def _state() -> dict[str, float]:
+    """Breaker deadlines, loaded once per process from the shared store.
+
+    Shared on disk because speech is produced by short-lived processes (the
+    Stop hook forks per reply), so an in-memory breaker would start cold and
+    re-pay the discovery cost on every single utterance.
+    """
+    global _slow_until
+    if _slow_until is None:
+        from .. import _breaker
+        _slow_until = _breaker.load(_NS)
+    return _slow_until
+
+
+def _slow_s() -> float:
+    try:
+        return float(os.environ.get("MEDIA_ANDROID_SLOW_MS", "1500")) / 1000
+    except ValueError:
+        return 1.5
+
+
+def _breaker_s() -> float:
+    """Cool-off for a slow host. 0 disables the breaker."""
+    try:
+        return float(os.environ.get("MEDIA_ANDROID_BREAKER_S", "20"))
+    except ValueError:
+        return 20.0
+
+
+def reset_breaker(host: str | None = None) -> None:
+    """Forget breaker state — for tests, and for an explicit user retry."""
+    from .. import _breaker
+    state = _state()
+    if host is None:
+        state.clear()
+        _breaker.clear(_NS)
+    else:
+        state.pop(host, None)
+        _breaker.store(_NS, state)
+
+
 def _ssh(host: str, script: str) -> str | None:
+    state = _state()
+    until = state.get(host)
+    if until and time.time() < until:
+        return None                      # same contract as an unreachable host
+    t0 = time.monotonic()
+    out: str | None = None
     try:
         r = subprocess.run(
             ["ssh", *_SSH_OPTS, host, "sh -s"],
             input=script,
             capture_output=True, text=True, timeout=_SSH_CMD_TIMEOUT,
         )
-        return (r.stdout or "").strip() if r.returncode == 0 else None
+        out = (r.stdout or "").strip() if r.returncode == 0 else None
+        return out
     except Exception:  # noqa: BLE001
         return None
+    finally:
+        window = _breaker_s()
+        if window > 0:
+            slow = out is None or time.monotonic() - t0 >= _slow_s()
+            was_open = host in state
+            if slow:
+                state[host] = time.time() + window
+            elif was_open:
+                state.pop(host, None)
+            if slow or was_open:
+                from .. import _breaker
+                _breaker.store(_NS, state)
 
 
 def pause_hosts() -> list[str]:
@@ -136,7 +209,52 @@ def pause_for_speech(host: str) -> bool:
     MEDIA_ANDROID_RESUME_ON_UNKNOWN=1. With
     MEDIA_ANDROID_REQUIRE_PLAYING_DETECTION=1, unknown hosts are skipped
     entirely (no pause).
+
+    Reads the state and acts on it in ONE ssh round-trip. Split across two
+    commands this cost ~6s per sentence on a phone at 400ms RTT — the per-
+    command overhead, not the work — and speech waited on all of it. The
+    decision is cheap and pure, so it moves to the phone; we just report back
+    which branch was taken.
     """
+    state = _ssh(host, _pause_for_speech_script()) or "unknown"
+    state = state.splitlines()[-1].strip() if state else "unknown"
+    if state not in ("playing", "stopped", "unknown"):
+        state = "unknown"
+
+    if state == "playing":
+        return True          # the script already dispatched pause
+    if state == "stopped":
+        return False         # confirmed idle — nothing paused, nothing to resume
+    # unknown: the script paused defensively unless detection was required
+    if require_detection():
+        return False
+    return resume_on_unknown()
+
+
+def _pause_for_speech_script() -> str:
+    """Classify playback and pause in one shot; echo the state we found.
+
+    Mirrors `playback_state` + `pause_for_speech` policy, evaluated on the
+    phone. `require_detection` is folded in so an unknown host is left alone
+    when the operator asked for positive detection only.
+    """
+    skip_unknown = "1" if require_detection() else "0"
+    return f"""
+out=$(/system/bin/dumpsys media_session 2>&1)
+case "$out" in
+  *state=3*|*state=8*) st=playing ;;
+  *"Permission Denial"*|*"not found"*|"") st=unknown ;;
+  *) st=stopped ;;
+esac
+if [ "$st" = playing ] || {{ [ "$st" = unknown ] && [ "{skip_unknown}" = 0 ]; }}; then
+  {pause_cmd()}
+fi
+echo "$st"
+"""
+
+
+def _pause_for_speech_legacy(host: str) -> bool:
+    """The original two-round-trip form. Kept for reference/debugging."""
     state = playback_state(host)
     if state == "playing":
         pause(host)

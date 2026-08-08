@@ -165,9 +165,11 @@ class SinkSpeech:
                 # falls back to its current device.
                 log.warning("sink-speech: set audio-device %s failed: %s",
                             device, e)
+        # critical: this call IS the speech. A slow phone bridge must delay it,
+        # never skip it — the breaker only exists to drop policy chatter.
         ipc.command(sock, "loadfile",
                     _clip_uri_for(uri, target, self._prefer_url(target)),
-                    "replace")
+                    "replace", critical=True)
         # A fresh response must be audible regardless of a lingering
         # pause/mute left on the broker (e.g. a popup Space/m while idle) —
         # otherwise it loads into a paused/muted broker and plays silently.
@@ -264,7 +266,7 @@ class SinkSpeech:
         cmds.append(["set_property", "mute", False])
         cmds.append(["set_property", "playlist-pos", 0])
         try:
-            ipc.command_batch(sock, cmds)
+            ipc.command_batch(sock, cmds, critical=True)
         except (ipc.MpvIpcError, OSError) as e:
             log.warning("sink-speech: play_playlist batch failed: %s", e)
             # The fallback chain is exhausted — this reply never sounded.
@@ -306,7 +308,7 @@ class SinkSpeech:
     def queue(self, uri: str, target: Target = DEFAULT_TARGET) -> None:
         """Append a clip to mpv's playlist without interrupting what's playing."""
         ipc.command(_socket_for(target), "loadfile",
-                    _clip_uri_for(uri, target), "append")
+                    _clip_uri_for(uri, target), "append", critical=True)
 
     def pause(self, target: Target = DEFAULT_TARGET) -> None:
         ipc.set_property(_socket_for(target), "pause", True)

@@ -339,22 +339,26 @@ class SinkMusicLocal:
         return int(pos * 1000) if pos is not None else None
 
     def now_playing_uri(self, target: Target = DEFAULT_TARGET) -> Optional[str]:
+        # One pipelined round-trip, not two sequential ones: over the phone
+        # bridge each round-trip is the whole cost of the call.
         try:
-            if ipc.get_property(self._endpoint(), "idle-active"):
-                return None
-            return ipc.get_property(self._endpoint(), "path")
+            p = ipc.get_properties(self._endpoint(), ["idle-active", "path"])
         except (ipc.MpvIpcError, OSError):
             return None
+        if p.get("idle-active"):
+            return None
+        return p.get("path")
 
     def active(self, target: Target = DEFAULT_TARGET) -> bool:
         """True when the phone mpv has a file loaded and isn't paused. Cheap;
         the router uses this to decide whether phone-local is the live backend."""
         try:
-            if ipc.get_property(self._endpoint(), "idle-active"):
-                return False
-            return not bool(ipc.get_property(self._endpoint(), "pause"))
+            p = ipc.get_properties(self._endpoint(), ["idle-active", "pause"])
         except (ipc.MpvIpcError, OSError):
             return False
+        if not p or p.get("idle-active"):
+            return False
+        return not bool(p.get("pause"))
 
     def loaded(self, target: Target = DEFAULT_TARGET) -> bool:
         """True when a file is loaded (playing OR paused) — so the coordinator

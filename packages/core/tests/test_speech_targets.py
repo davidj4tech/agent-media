@@ -67,7 +67,7 @@ def test_play_sets_audio_device_then_loadfile(monkeypatch):
     monkeypatch.setattr(speech.ipc, "set_property",
                         lambda sock, name, value: calls.append(("set", name, value)))
     monkeypatch.setattr(speech.ipc, "command",
-                        lambda sock, *args: calls.append(("cmd", *args)))
+                        lambda sock, *args, **kw: calls.append(("cmd", *args)))
     speech.SinkSpeech().play("/tmp/x.mp3", Target("rooms"))
     assert calls[0] == ("set", "audio-device", "pulse/am")
     assert calls[1] == ("cmd", "loadfile", "/tmp/x.mp3", "replace")
@@ -78,7 +78,7 @@ def test_play_local_skips_device_set(monkeypatch):
     monkeypatch.setattr(speech.ipc, "set_property",
                         lambda sock, name, value: calls.append(("set", name, value)))
     monkeypatch.setattr(speech.ipc, "command",
-                        lambda sock, *args: calls.append(("cmd", *args)))
+                        lambda sock, *args, **kw: calls.append(("cmd", *args)))
     speech.SinkSpeech().play("/tmp/x.mp3", Target("local"))
     # local uses the broker's default device — no audio-device switch...
     assert not [c for c in calls if c[0] == "set" and c[1] == "audio-device"]
