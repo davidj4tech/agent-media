@@ -81,8 +81,14 @@ def _guard(endpoint: str | Path, critical: bool = False) -> None:
     chatter (is anything playing? duck it) from delaying speech, and every such
     call site treats failure as "unknown, carry on". Delivering the audio is a
     different matter — skipping that doesn't degrade speech, it silences it. So
-    playback commands always attempt, however slow the endpoint is, while still
-    recording timing so the observational calls stay breakered.
+    playback commands always attempt, however slow the endpoint is.
+
+    They no longer breaker the endpoint on latency, though (see `_record`). A
+    call that exempts itself from the skip and then sets a deadline can only
+    ever penalise the calls that don't exempt themselves — here, the display
+    read. One `pause` keypress at 5s on a 450ms-RTT link would blank the popup
+    for the whole cool-off, so the control the user just pressed worked and the
+    screen sat unchanged, which is indistinguishable from a control that didn't.
     """
     if critical or not _is_remote(endpoint):
         return
@@ -166,7 +172,8 @@ def _send(sock_path: str | Path, command: list[Any], timeout: float = 5.0,
         failed = False
         return reply
     finally:
-        _record(sock_path, time.monotonic() - t0, failed)
+        _record(sock_path, time.monotonic() - t0, failed,
+                slow_s=0 if critical else None)
 
 
 def _send_inner(sock_path: str | Path, command: list[Any], timeout: float = 5.0) -> dict:
@@ -246,13 +253,15 @@ def command_batch(sock_path: str | Path, commands: list, timeout: float = 5.0,
                     pass
             finally:
                 s.close()
-            _record(sock_path, time.monotonic() - t0, False)
+            _record(sock_path, time.monotonic() - t0, False,
+                    slow_s=0 if critical else None)
             return
         except OSError as e:
             last = e
             if attempt + 1 < attempts:
                 time.sleep(0.04)
-    _record(sock_path, time.monotonic() - t0, True)
+    _record(sock_path, time.monotonic() - t0, True,
+            slow_s=0 if critical else None)
     raise last
 
 
@@ -279,7 +288,8 @@ def send_nowait(sock_path: str | Path, *args: Any, timeout: float = 3.0,
         finally:
             s.close()
     finally:
-        _record(sock_path, time.monotonic() - t0, failed)
+        _record(sock_path, time.monotonic() - t0, failed,
+                slow_s=0 if critical else None)
 
 
 def event_stream(sock_path: str | Path,

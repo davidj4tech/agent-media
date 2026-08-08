@@ -12,6 +12,8 @@ own staleness — failure still must, or a phone that is simply gone makes
 every redraw wait out the timeout.
 """
 
+import time
+
 import pytest
 
 from agent_media_core import _breaker
@@ -58,6 +60,41 @@ def test_display_read_closes_a_breaker_opened_by_chatter():
     assert EP in _open_endpoints()
     ipc._record(EP, elapsed=2.0, failed=False, slow_s=0)  # display answers fine
     assert _open_endpoints() == set()
+
+
+def test_slow_control_keypress_does_not_blank_the_display(monkeypatch):
+    """A control that bypasses the skip must not set a deadline for others.
+
+    Transport controls are `critical`, so they attempt however slow the link
+    is — but they were still recording that slowness, which opened the breaker
+    that the *display* read honours. One `pause` at 5s on a 450ms-RTT link
+    blanked the popup for the whole cool-off window, so the keypress worked and
+    the screen sat unchanged. That is indistinguishable from a dead control,
+    and it is what "the controls aren't responding" turned out to mean.
+    """
+    def fake_send_inner(sock, command, timeout):
+        time.sleep(0.02)
+        return {"error": "success", "data": None}
+
+    monkeypatch.setattr(ipc, "_send_inner", fake_send_inner)
+    monkeypatch.setenv("MEDIA_MPV_SLOW_MS", "1")   # anything counts as slow
+    monkeypatch.setattr(ipc, "_breaker_until", None)
+
+    ipc.command(EP, "set_property", "pause", True, critical=True)
+    assert _open_endpoints() == set(), (
+        "a slow keypress breakered the endpoint the popup reads — the control "
+        "lands, the display freezes, and it looks like nothing happened")
+
+
+def test_failed_control_still_trips_the_breaker(monkeypatch):
+    def boom(sock, command, timeout):
+        raise OSError("unreachable")
+
+    monkeypatch.setattr(ipc, "_send_inner", boom)
+    monkeypatch.setattr(ipc, "_breaker_until", None)
+    with pytest.raises((ipc.MpvIpcError, OSError)):
+        ipc.command(EP, "set_property", "pause", True, critical=True)
+    assert EP in _open_endpoints()
 
 
 def test_remote_snapshot_asks_for_the_latency_exemption(monkeypatch):
