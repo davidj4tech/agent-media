@@ -3686,14 +3686,24 @@ def cmd_doc(a) -> int:
     from . import docs as docmod
 
     if a.doc_cmd == "list":
-        rows = docmod.list_docs()
-        if getattr(a, "lines", False):
-            # display<TAB>slug — the shape the clip browser's picker consumes.
+        rows = docmod.list_docs(tag=getattr(a, "tag", "") or "",
+                                include_inbox=getattr(a, "all", False))
+        # `| head` closes the pipe early, and an unhandled BrokenPipeError
+        # prints a traceback over the output the user was reading. A listing
+        # that can't be piped isn't a listing.
+        try:
             for d in rows:
-                print(f"{d.as_row()}\t{d.slug}")
-        else:
-            for d in rows:
-                print(d.as_row())
+                if getattr(a, "lines", False):
+                    # display<TAB>slug — the shape the clip picker consumes.
+                    print(f"{d.as_row()}\t{d.slug}")
+                else:
+                    print(d.as_row())
+            sys.stdout.flush()
+        except BrokenPipeError:
+            try:
+                sys.stdout.close()
+            finally:
+                os._exit(0)
         return 0
 
     doc = docmod.find_doc(a.name)
@@ -3702,7 +3712,8 @@ def cmd_doc(a) -> int:
         return 1
 
     if a.doc_cmd == "text":
-        print(docmod.speakable_text(doc.path.read_text(errors="replace")))
+        print(docmod.speakable_text(doc.path.read_text(errors="replace"),
+                                    doc.fmt))
         return 0
 
     # Synthesis is the slow part and the reason for the cache; say so, because
@@ -4790,6 +4801,12 @@ def _add_book_parser(sub) -> None:
     dl = d.add_parser("list", help="list documents")
     dl.add_argument("--lines", action="store_true",
                     help="display<TAB>slug rows for the popup picker")
+    dl.add_argument("--all", action="store_true",
+                    help="include unclarified inbox captures (a queue, not "
+                         "a library — left out by default)")
+    dl.add_argument("--tag", default="",
+                    help="only documents carrying this filetag/keyword "
+                         "(PARA membership is a tag, not a folder)")
 
     dp = d.add_parser("play", help="render (cached) and play on the book channel")
     dp.add_argument("name", help="slug, path, or a substring of either")

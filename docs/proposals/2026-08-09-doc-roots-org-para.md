@@ -1,6 +1,6 @@
 # Proposal: where document playback meets GTD, PARA, org-roam and Denote
 
-Status: **proposed**
+Status: **partly built** (org support and roots landed 2026-08-09)
 Date: 2026-08-09
 
 Now that documents can be listened to, the question is which documents — and

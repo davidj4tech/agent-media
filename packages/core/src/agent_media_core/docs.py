@@ -55,27 +55,79 @@ class Doc:
     kind: str = ""
     status: str = ""
     date: str = ""
+    tags: list = field(default_factory=list)
+
+    @property
+    def fmt(self) -> str:
+        return "org" if str(self.path).lower().endswith(".org") else "md"
 
     def as_row(self) -> str:
         bits = [b for b in (self.date, self.kind, self.status) if b]
-        return f"{self.title}" + (f"  ({', '.join(bits)})" if bits else "")
+        bits += self.tags[:3]
+        # Capture notes take their title from the captured text, which can be
+        # a whole paragraph or a JSON blob. A picker row is a label, not the
+        # document.
+        title = self.title if len(self.title) <= 88 else self.title[:87] + "…"
+        return f"{title}" + (f"  ({', '.join(bits)})" if bits else "")
 
 
 _TITLE_RE = re.compile(r"^#\s+(.+?)\s*$", re.M)
 _STATUS_RE = re.compile(r"^Status:\s*\**(.+?)\**\s*$", re.M)
 _DATE_RE = re.compile(r"^Date:\s*(\S+)\s*$", re.M)
+# Org's own front matter. `#+filetags:` takes either `:a:b:` or bare words.
+_ORG_TITLE_RE = re.compile(r"^#\+title:\s*(.+?)\s*$", re.M | re.I)
+_ORG_TAGS_RE = re.compile(r"^#\+filetags:\s*(.+?)\s*$", re.M | re.I)
+_ORG_FIRST_HEAD = re.compile(r"^\*+\s+(.+?)\s*$", re.M)
+# Denote: 20260809T075902--title-slug__keyword1_keyword2.org — identity, title
+# and keywords in the filename, so a picker can list and filter 900 notes
+# without opening one of them.
+_DENOTE = re.compile(r"^(\d{8}T\d{6})(?:--([^_.]+))?(?:__([^.]+))?$")
+
+
+def _org_tags(raw: str) -> list:
+    return [t for t in re.split(r"[:\s,]+", raw.strip()) if t]
 
 
 def describe(path: Path, root: Optional[Path] = None) -> Doc:
-    """Title/status/date from the file's first few lines — the three-line
-    header the docs layout asks for. Falls back to the filename, so a document
-    that predates the convention still lists."""
+    """Title/status/date/tags from the file's first lines.
+
+    Markdown uses the repo layout's `# Title` + `Status:` + `Date:`; org uses
+    its own `#+title:` / `#+filetags:`. A Denote filename carries all three
+    without opening the file at all, so it wins when present — which is the
+    point of that convention with 900 notes in the tree.
+    """
     try:
         head = path.read_text(errors="replace")[:2000]
     except OSError:
         head = ""
-    m = _TITLE_RE.search(head)
-    title = m.group(1) if m else path.stem.replace("-", " ")
+    is_org = path.suffix.lower() == ".org"
+    tags: list = []
+    title = ""
+
+    dn = _DENOTE.match(path.stem)
+    if dn:
+        if dn.group(2):
+            title = dn.group(2).replace("-", " ").strip().capitalize()
+        if dn.group(3):
+            tags = [t for t in dn.group(3).split("_") if t]
+
+    if is_org:
+        m = _ORG_TITLE_RE.search(head)
+        if m and not title:
+            title = m.group(1)
+        tm = _ORG_TAGS_RE.search(head)
+        if tm:
+            tags = tags or _org_tags(tm.group(1))
+        if not title:
+            h = _ORG_FIRST_HEAD.search(head)
+            if h:
+                title = h.group(1)
+    else:
+        m = _TITLE_RE.search(head)
+        if m and not title:
+            title = m.group(1)
+    if not title:
+        title = path.stem.replace("-", " ")
     st = _STATUS_RE.search(head)
     dt = _DATE_RE.search(head)
     # Older docs write "Status: built** (2026-08-06). First pass implemented —
@@ -88,19 +140,59 @@ def describe(path: Path, root: Optional[Path] = None) -> Doc:
         status = status.strip(" *_").lower()[:24]
     kind = path.parent.name if root and path.parent != root else ""
     slug = path.stem
+    date = dt.group(1) if dt else ""
+    if not date and dn:
+        d = dn.group(1)
+        date = f"{d[0:4]}-{d[4:6]}-{d[6:8]}"      # Denote's ID is the date
     return Doc(path=path, slug=slug, title=title, kind=kind,
-               status=status, date=dt.group(1) if dt else "")
+               status=status, date=date, tags=tags)
 
 
-def list_docs() -> list[Doc]:
+SUFFIXES = (".md", ".org")
+
+# Emacs lock/backup droppings and our own dated backups. A picker that lists
+# `inbox.org.bak-2026-08-09` next to `inbox.org` makes the user do the
+# filtering that the tool exists to do.
+_SKIP = re.compile(r"(^\.#|~$|\.bak(-|$)|^\.)", re.I)
+
+
+INBOX_TAG = "inbox"
+
+
+def list_docs(tag: str = "", include_inbox: bool = False) -> list[Doc]:
+    """Documents under the roots. `tag` filters on filetags/keywords.
+
+    Filtering is by tag rather than by directory on purpose. Where these files
+    live, PARA membership is a filetag and a note routinely belongs to several
+    places at once — which is the one thing a directory cannot express.
+
+    Unclarified captures are left out by default. In this tree they are 650 of
+    940 documents, and GTD is explicit about what they are: an inbox is a queue
+    of things not yet decided about, not a library you browse. Listing them
+    with everything else means the reader does the sorting the tool exists to
+    do. Asking for the tag by name overrides this — that is a deliberate look
+    at the queue.
+    """
     out: list[Doc] = []
+    seen: set = set()
     for root in doc_roots():
         if not root.is_dir():
             continue
-        for p in sorted(root.rglob("*.md")):
-            if p.name.lower() == "readme.md":
+        for p in sorted(root.rglob("*")):
+            if p.suffix.lower() not in SUFFIXES or not p.is_file():
                 continue
+            if _SKIP.search(p.name) or p.name.lower() == "readme.md":
+                continue
+            rp = p.resolve()
+            if rp in seen:          # overlapping roots (~/org and ~/org/roam)
+                continue
+            seen.add(rp)
             out.append(describe(p, root))
+    if tag:
+        t = tag.lower()
+        out = [d for d in out if any(t == x or t in x for x in d.tags)]
+    elif not include_inbox:
+        out = [d for d in out if INBOX_TAG not in [x.lower() for x in d.tags]]
     # Newest dated first, undated (reference) after — reference is browsed by
     # name, the dated kinds by recency.
     return sorted(out, key=lambda d: (d.date == "", d.date, d.title), reverse=True)
@@ -230,10 +322,154 @@ def speakable_sections(md: str) -> list[Section]:
     return [s for s in sections if s.text.strip() or s.heading]
 
 
-def speakable_text(md: str) -> str:
+# --- org ------------------------------------------------------------------
+
+_ORG_HEADING = re.compile(r"^(\*+)\s+(.*?)\s*$")
+_ORG_BLOCK = re.compile(r"^\s*#\+begin_(\w+)", re.I)
+_ORG_KEYWORD = re.compile(r"^\s*#\+\w+:")
+_ORG_COMMENT = re.compile(r"^\s*#(\s|$)")
+_ORG_DRAWER = re.compile(r"^\s*:(\w+):\s*$")
+_ORG_DRAWER_END = re.compile(r"^\s*:END:\s*$", re.I)
+_ORG_LINK = re.compile(r"\[\[([^\]]+?)\](?:\[([^\]]*?)\])?\]")
+_ORG_EMPH = re.compile(r"(?<![\w*/=~+])([*/=~+])(\S(?:.*?\S)?)\1(?![\w*/=~+])")
+_ORG_TODO = re.compile(r"^(TODO|NEXT|DONE|WAITING|SOMEDAY|CANCELLED|HOLD)\s+")
+_ORG_PRIORITY = re.compile(r"^\[#([A-C])\]\s*")
+_ORG_HEAD_TAGS = re.compile(r"\s+(:[\w@#%:]+:)\s*$")
+_ORG_TIMESTAMP = re.compile(r"[<\[](\d{4}-\d{2}-\d{2})(?:\s+\w{3})?"
+                            r"(?:\s+\d{2}:\d{2})?[^>\]]*[>\]]")
+_ORG_CHECKBOX = re.compile(r"^\s*[-+*]\s+\[([ xX-])\]\s*")
+
+
+def speak_inline_org(s: str) -> str:
+    """Org inline markup → words.
+
+    `[[url][text]]` keeps the text and drops the target, exactly as a markdown
+    link does; a bare `[[url]]` has no text worth saying, so it is announced.
+    """
+    s = _ORG_LINK.sub(lambda m: (m.group(2) or "a link"), s)
+    s = _ORG_TIMESTAMP.sub(lambda m: m.group(1), s)
+    s = _ORG_EMPH.sub(r"\2", s)
+    s = _BARE_URL.sub("a link", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _org_heading_text(raw: str) -> str:
+    """Strip the machinery, keep the words: TODO state and priority spoken,
+    the trailing `:tag:tag:` dropped — it is metadata, not a sentence."""
+    raw = _ORG_HEAD_TAGS.sub("", raw)
+    state = ""
+    m = _ORG_TODO.match(raw)
+    if m:
+        state = m.group(1).lower().replace("cancelled", "cancelled")
+        raw = raw[m.end():]
+    p = _ORG_PRIORITY.match(raw)
+    if p:
+        raw = raw[p.end():]
+        state = (state + f", priority {p.group(1)}").lstrip(", ")
+    text = speak_inline_org(raw)
+    return f"{text} — {state}" if state else text
+
+
+def speakable_sections_org(src: str) -> list[Section]:
+    """Org's equivalent of the markdown projection.
+
+    Same rule — announce what can't be spoken — applied to a different set of
+    tokens: source blocks and examples are announced, quotes are read (they
+    are prose), drawers and `#+keyword:` lines vanish entirely because they
+    are machinery the reader never sees either.
+    """
+    sections: list[Section] = []
+    cur = Section(heading="", text="", level=1)
+    buf: list[str] = []
+
+    def flush():
+        # Blank lines are kept, then runs collapsed: a paragraph break is the
+        # only pacing cue the renderer gets, and dropping them turns a section
+        # into one breathless run-on.
+        body = re.sub(r"\n{3,}", "\n\n", "\n".join(buf)).strip()
+        if body or cur.heading:
+            sections.append(Section(heading=cur.heading, text=body,
+                                    level=cur.level))
+        buf.clear()
+
+    lines = src.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+
+        b = _ORG_BLOCK.match(line)
+        if b:
+            kind = b.group(1).lower()
+            end = re.compile(rf"^\s*#\+end_{kind}", re.I)
+            n = 0
+            i += 1
+            body: list[str] = []
+            while i < len(lines) and not end.match(lines[i]):
+                body.append(lines[i])
+                n += 1
+                i += 1
+            i += 1
+            if kind in ("quote", "verse"):
+                buf.extend(speak_inline_org(x) for x in body)
+            elif kind == "src":
+                buf.append(f"A code example follows, {_plural(n, 'line', 'lines')}.")
+            elif kind == "example":
+                buf.append(f"An example follows, {_plural(n, 'line', 'lines')}.")
+            continue
+
+        if _ORG_DRAWER.match(line) and not _ORG_DRAWER_END.match(line):
+            i += 1
+            while i < len(lines) and not _ORG_DRAWER_END.match(lines[i]):
+                i += 1
+            i += 1
+            continue
+
+        if _ORG_KEYWORD.match(line) or _ORG_COMMENT.match(line):
+            i += 1
+            continue
+
+        if _TABLE_ROW.match(line):
+            rows = 0
+            while i < len(lines) and _TABLE_ROW.match(lines[i]):
+                if not re.match(r"^\s*\|[-+\s|]+\|?\s*$", lines[i]):
+                    rows += 1
+                i += 1
+            buf.append(f"A table follows, {_plural(rows, 'row', 'rows')}.")
+            continue
+
+        h = _ORG_HEADING.match(line)
+        if h:
+            flush()
+            cur = Section(heading=_org_heading_text(h.group(2)), text="",
+                          level=len(h.group(1)))
+            i += 1
+            continue
+
+        cb = _ORG_CHECKBOX.match(line)
+        if cb:
+            mark = cb.group(1)
+            state = "done" if mark in "xX" else ("partly done" if mark == "-"
+                                                 else "to do")
+            buf.append(f"{speak_inline_org(line[cb.end():])} — {state}")
+            i += 1
+            continue
+
+        buf.append(speak_inline_org(_LIST_BULLET.sub("", line)))
+        i += 1
+
+    flush()
+    return [s for s in sections if s.text.strip() or s.heading]
+
+
+def sections_for(text: str, fmt: str = "md") -> list[Section]:
+    return (speakable_sections_org(text) if fmt == "org"
+            else speakable_sections(text))
+
+
+def speakable_text(md: str, fmt: str = "md") -> str:
     """The whole document as one block — for renderers without chapters."""
     parts = []
-    for s in speakable_sections(md):
+    for s in sections_for(md, fmt):
         if s.heading:
             parts.append(s.heading + ".")
         if s.text:
@@ -303,7 +539,7 @@ def render_doc(path: Path, engine: Optional[str] = None,
         md = path.read_text(errors="replace")
     except OSError:
         return None
-    sections = speakable_sections(md)
+    sections = sections_for(md, 'org' if path.suffix.lower() == '.org' else 'md')
     if not sections:
         return None
 
