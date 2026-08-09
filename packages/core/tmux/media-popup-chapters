@@ -1,4 +1,19 @@
 #!/usr/bin/env bash
+# --- read-whole-file guard -------------------------------------------------
+# Everything below lives in one brace group, and that is load-bearing.
+#
+# bash reads a script lazily, from a byte offset in the open file. Edit the
+# file while an instance is running and that instance resumes at the old
+# offset in the new text — mid-token, mid-function — and starts executing
+# whatever happens to be there. For a long-lived popup the visible result is a
+# UI whose keys do arbitrary things, including the key that closes it: on
+# 2026-08-09 an edit to this file left a popup that could not be quit and cost
+# a whole tmux session.
+#
+# A compound command must be parsed in full before any of it runs, so wrapping
+# the body forces bash to read the entire file up front. After that, editing
+# the file cannot affect a running copy at all.
+{
 # Full-size fzf chapter picker for the music channel (popup `c`).
 # Lists the live mpv track's embedded chapters (fetched DJ sets/albums carry
 # them in the .mka) and jumps to the selection. The list opens positioned on
@@ -28,3 +43,5 @@ rc=$?
 
 media music chapter "${sel#*$'\t'}"
 sleep 0.6    # let the ⏭ confirmation register before the popup reopens
+exit $?
+}
