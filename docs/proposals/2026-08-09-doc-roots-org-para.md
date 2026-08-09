@@ -1,6 +1,6 @@
 # Proposal: where document playback meets GTD, PARA, org-roam and Denote
 
-Status: **partly built** (org support and roots landed 2026-08-09)
+Status: **built** (org support, roots and `media doc agenda` landed 2026-08-09)
 Date: 2026-08-09
 
 Now that documents can be listened to, the question is which documents — and
@@ -116,5 +116,8 @@ like anything else in the system.
 - Does the picker want one flat list across all roots, or a root-first
   chooser? 882 notes plus a repo tree is a lot for one fzf list, though tag
   filtering may make it moot.
-- Should `media doc agenda` speak the agenda, or a *summary* of it? The raw
-  agenda is dense and full of timestamps.
+- ~~Should `media doc agenda` speak the agenda, or a summary?~~ **Summary.**
+  The raw agenda is 322 entries, 153 past their date and 234 of them transits
+  — twenty minutes of noise. It is a briefing with spoken caps, and
+  `astro.org` gets its own skippable chapter so generated entries stop
+  crowding real commitments out of every capped list.

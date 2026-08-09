@@ -523,8 +523,6 @@ def render_doc(path: Path, engine: Optional[str] = None,
     often than it is edited, and synthesis is by far the slowest thing here.
     Returns None if nothing could be rendered.
     """
-    from .render import render_text
-
     engine = engine or os.environ.get("MEDIA_RENDER_ENGINE", "edge")
     voice = voice or os.environ.get(
         "MEDIA_RENDER_VOICE_" + engine.upper()) or ""
@@ -542,7 +540,35 @@ def render_doc(path: Path, engine: Optional[str] = None,
     sections = sections_for(md, 'org' if path.suffix.lower() == '.org' else 'md')
     if not sections:
         return None
+    return _render_sections_to(sections, final, engine, voice)
 
+
+def render_sections(sections: list, stem: str, engine: Optional[str] = None,
+                    voice: Optional[str] = None,
+                    force: bool = True) -> Optional[Path]:
+    """Render already-built sections (an agenda, a summary) to chaptered audio.
+
+    Same pipeline as a document, minus the file: the caller has composed the
+    text itself, so there is no mtime to cache on and nothing to re-read.
+    """
+    engine = engine or os.environ.get("MEDIA_RENDER_ENGINE", "edge")
+    voice = voice or os.environ.get(
+        "MEDIA_RENDER_VOICE_" + engine.upper()) or ""
+    outdir = doc_cache_dir()
+    outdir.mkdir(parents=True, exist_ok=True)
+    final = outdir / f"{stem}.mp3"
+    if final.exists() and not force:
+        return final
+    if not sections:
+        return None
+    return _render_sections_to(sections, final, engine, voice)
+
+
+def _render_sections_to(sections: list, final: Path, engine: str,
+                        voice: str) -> Optional[Path]:
+    from .render import render_text
+
+    outdir = final.parent
     work = outdir / f".{final.stem}.parts"
     work.mkdir(parents=True, exist_ok=True)
     parts: list[Path] = []

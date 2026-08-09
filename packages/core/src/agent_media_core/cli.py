@@ -3706,6 +3706,27 @@ def cmd_doc(a) -> int:
                 os._exit(0)
         return 0
 
+    if a.doc_cmd == "agenda":
+        from . import agenda as ag
+        sections = ag.agenda_sections(ag.load_entries())
+        if getattr(a, "text", False):
+            print(ag.agenda_text(ag.load_entries()))
+            return 0
+        # Never cached: the whole value of an agenda is that it is current,
+        # and "today" changes underneath any key we could cache it on.
+        clip = docmod.render_sections(sections, "agenda", force=True)
+        if not clip:
+            print("media doc: nothing on the agenda", file=sys.stderr)
+            return 1
+        srv = _srv()
+        r = srv.book_play(str(clip), resume=False, start_ms=-1,
+                          target=getattr(a, "target", "") or "", title="Agenda")
+        if r.get("error"):
+            print(f"media doc: {r['error']}", file=sys.stderr)
+            return 1
+        print("Agenda")
+        return 0
+
     doc = docmod.find_doc(a.name)
     if not doc:
         print(f"media doc: no document matching {a.name!r}", file=sys.stderr)
@@ -4817,6 +4838,10 @@ def _add_book_parser(sub) -> None:
 
     dt = d.add_parser("text", help="print the speakable projection (no audio)")
     dt.add_argument("name")
+
+    da = d.add_parser("agenda", help="today's agenda, spoken")
+    da.add_argument("--text", action="store_true", help="print, don't play")
+    da.add_argument("--target", default="", help="rooms|local|phone")
 
     book = sub.add_parser("book", help="longform / audiobook channel")
     book.set_defaults(func=cmd_book)

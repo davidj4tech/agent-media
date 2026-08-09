@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Print the org agenda as JSON on stdout, by asking the running Emacs.
+#
+# This lives in the control-surface package, not in core, and that is the whole
+# point. Core must keep working with Emacs uninstalled, dead, or wedged, so it
+# may not shell out to a front end; it defines a data contract instead — a
+# command that prints a JSON array of entries — and anything able to satisfy
+# that contract can be plugged in with MEDIA_AGENDA_CMD. The dependency points
+# one way: control surface → core, never back.
+#
+# Wire it up with:
+#   MEDIA_AGENDA_CMD=am-agenda-export
+#
+# Exits non-zero when no Emacs answers, which is core's cue to fall back to its
+# own file scan.
+set -euo pipefail
+
+EL="${AM_AGENDA_EL:-$(cd "$(dirname "$0")/../lisp" && pwd)/agenda-export.el}"
+[ -r "$EL" ] || { echo "am-agenda-export: missing $EL" >&2; exit 2; }
+
+out=$(mktemp "${TMPDIR:-/tmp}/am-agenda.XXXXXX.json")
+trap 'rm -f "$out"' EXIT
+
+# Via a file rather than the return value: emacsclient --eval round-trips
+# through shell quoting twice, and org headings are full of apostrophes,
+# quotes and brackets that do not survive that reliably.
+emacsclient --eval "(progn (load \"$EL\") (media-agenda-export \"$out\"))" \
+    >/dev/null 2>&1 || {
+        echo "am-agenda-export: no Emacs answered" >&2
+        exit 1
+    }
+
+[ -s "$out" ] || { echo "am-agenda-export: empty export" >&2; exit 1; }
+cat "$out"
