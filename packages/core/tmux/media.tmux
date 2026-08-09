@@ -65,6 +65,11 @@ bind -T speech l run-shell -b "media skip --unit sentence  --dir 1"  \; switch-c
 bind -T speech H run-shell -b "media skip --unit paragraph --dir -1" \; switch-client -T speech
 bind -T speech L run-shell -b "media skip --unit paragraph --dir 1"  \; switch-client -T speech
 bind -T speech r run-shell -b "media replay" \; switch-client -T speech
+# Documents: `d` picks one to listen to (the agenda is the first entry), `D`
+# goes straight to the agenda. A popup rather than run-shell, because both
+# render before they play and a silent 30s is indistinguishable from a hang.
+bind -T speech d display-popup -w 90% -h 24 -E "media-popup-docs" \; switch-client -T speech
+bind -T speech D display-popup -w 60 -h 8 -E "media doc agenda" \; switch-client -T speech
 # Exit (also: any unbound key falls through to normal input).
 bind -T speech q      display-message "🎧 listening off"
 bind -T speech Escape display-message "🎧 listening off"

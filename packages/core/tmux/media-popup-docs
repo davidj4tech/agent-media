@@ -13,26 +13,42 @@ list_cmd="media doc list --lines"
 err="${TMPDIR:-/tmp}/media-popup-docs.err.$$"
 trap 'rm -f "$err"' EXIT
 
-# Build the view before fzf so a backend failure stays visible here rather
-# than becoming an empty picker.
-lines=$($list_cmd 2>"$err")
-if [ $? -ne 0 ] || [ -z "$lines" ]; then
-    cat "$err" >&2
-    echo "no documents found (set MEDIA_DOC_ROOTS to add more)" >&2
+die() {                     # never vanish silently: the popup closing with no
+    echo "$*" >&2           # output is indistinguishable from "nothing happened"
     echo
     read -r -p "enter to close" _
     exit 1
+}
+
+command -v fzf >/dev/null 2>&1 || die "media-popup-docs: fzf is not installed"
+
+# Build the view before fzf so a backend failure stays visible here rather
+# than becoming an empty picker.
+if ! lines=$($list_cmd 2>"$err"); then
+    die "media doc list failed:$(printf '\n')$(cat "$err")"
 fi
+
+# The agenda first, and always: it is the one entry whose value is that it is
+# current, so it should never be something you have to go and find. Everything
+# else in this list is a document; this is the day.
+lines=$(printf 'Today'"'"'s agenda  (now)\t--agenda\n%s\n' "$lines")
 
 sel=$(printf '%s\n' "$lines" \
     | fzf --with-nth=1 --delimiter=$'\t' --prompt='docs> ' \
           --header='enter listen (renders on first play) · esc cancel')
 rc=$?
-[ "$rc" -eq 0 ] || exit "$rc"
-[ -n "$sel" ] || exit 1
+[ "$rc" -eq 0 ] || exit "$rc"          # esc / ctrl-c: a deliberate no-op
+[ -n "$sel" ] || exit 0
 
 slug=${sel#*$'\t'}
-[ -n "$slug" ] || exit 1
+[ "$slug" != "$sel" ] && [ -n "$slug" ] || die "media-popup-docs: no slug in selection"
 
-printf 'rendering %s ...\n' "$slug"
-media doc play "$slug"
+if [ "$slug" = "--agenda" ]; then
+    printf 'building the agenda ...\n'
+    media doc agenda || die "media doc agenda failed"
+else
+    # Rendering a long document is tens of seconds of synthesis on first play,
+    # so say what is happening — an unexplained pause reads as a hang.
+    printf 'rendering %s ...\n' "$slug"
+    media doc play "$slug" || die "media doc play $slug failed"
+fi
