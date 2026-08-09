@@ -3689,6 +3689,22 @@ def _book_seek_action(srv, time_str: str, tgt: str, *,
     )
 
 
+def _tmux_session_name() -> str:
+    """The tmux session this ran from, or "" outside tmux.
+
+    Cheap and best-effort: it only ever changes the *order* of a list, so a
+    failure here costs nothing worth an error path.
+    """
+    if not os.environ.get("TMUX"):
+        return ""
+    try:
+        r = subprocess.run(["tmux", "display-message", "-p", "#S"],
+                           capture_output=True, text=True, timeout=2)
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def cmd_doc(a) -> int:
     """Documents, played as short audiobooks.
 
@@ -3699,11 +3715,19 @@ def cmd_doc(a) -> int:
     popup's chapter browser navigates the document by section — nobody listens
     to a reference doc front to back.
     """
+    from pathlib import Path
     from . import docs as docmod
 
     if a.doc_cmd == "list":
+        # Context is on by default and visible in the rows: the popup is
+        # opened from a pane that has a directory and a session, and those are
+        # the two things that say what "relevant now" means. `--no-context`
+        # gets the plain global list back.
+        ctx = not getattr(a, "no_context", False)
         rows = docmod.list_docs(tag=getattr(a, "tag", "") or "",
-                                include_inbox=getattr(a, "all", False))
+                                include_inbox=getattr(a, "all", False),
+                                cwd=Path.cwd() if ctx else None,
+                                session=_tmux_session_name() if ctx else "")
         # `| head` closes the pipe early, and an unhandled BrokenPipeError
         # prints a traceback over the output the user was reading. A listing
         # that can't be piped isn't a listing.
@@ -3743,7 +3767,7 @@ def cmd_doc(a) -> int:
         print("Agenda")
         return 0
 
-    doc = docmod.find_doc(a.name)
+    doc = docmod.find_doc(a.name, cwd=Path.cwd())
     if not doc:
         print(f"media doc: no document matching {a.name!r}", file=sys.stderr)
         return 1
@@ -4852,6 +4876,9 @@ def _add_book_parser(sub) -> None:
     dl = d.add_parser("list", help="list documents")
     dl.add_argument("--lines", action="store_true",
                     help="display<TAB>slug rows for the popup picker")
+    dl.add_argument("--no-context", action="store_true",
+                    help="plain global list: ignore the current directory "
+                         "and tmux session")
     dl.add_argument("--all", action="store_true",
                     help="include unclarified inbox captures (a queue, not "
                          "a library — left out by default)")

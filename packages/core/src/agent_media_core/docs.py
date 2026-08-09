@@ -56,6 +56,7 @@ class Doc:
     status: str = ""
     date: str = ""
     tags: list = field(default_factory=list)
+    origin: str = ""          # "proj" | "sess" | "" — why it is near the top
 
     @property
     def fmt(self) -> str:
@@ -68,7 +69,11 @@ class Doc:
         # a whole paragraph or a JSON blob. A picker row is a label, not the
         # document.
         title = self.title if len(self.title) <= 88 else self.title[:87] + "…"
-        return f"{title}" + (f"  ({', '.join(bits)})" if bits else "")
+        # The marker says *why* this row is near the top. Context that reorders
+        # silently is indistinguishable from context that filters — the user
+        # sees a different list and cannot tell what changed it.
+        mark = {"proj": "▸proj ", "sess": "▸sess "}.get(self.origin, "")
+        return f"{mark}{title}" + (f"  ({', '.join(bits)})" if bits else "")
 
 
 _TITLE_RE = re.compile(r"^#\s+(.+?)\s*$", re.M)
@@ -168,6 +173,58 @@ _PRUNE_DIRS = {".git", ".hg", ".svn", "node_modules", "__pycache__",
                ".venv", "venv", ".tox", ".mypy_cache", ".ruff_cache"}
 
 
+def project_root(start: Optional[Path] = None) -> Optional[Path]:
+    """The repository containing `start`, or None when there isn't one.
+
+    A repository, and nothing else. "The tree I am in" is only meaningful
+    while it has an edge — a git root is exactly that edge, chosen by the
+    person who made the project. Falling back to the bare directory sounds
+    harmless and isn't: run from /tmp it offered a picker full of pytest
+    fixtures, and from a home directory it would walk everything the user
+    owns, afresh, every time the picker opens.
+    """
+    try:
+        cur = (start or Path.cwd()).resolve()
+    except OSError:
+        return None
+    if not cur.is_dir():
+        cur = cur.parent
+    for d in [cur, *cur.parents]:
+        if (d / ".git").exists():
+            return d
+        if d == d.parent:
+            break
+    return None
+
+
+def _session_terms(session: str) -> list:
+    """What a tmux session name should match against.
+
+    `p-agent-media` has to become `agent-media`: the notes for it are filed as
+    `roam/sessions/agent-media/`, and there is no tag of that name at all — a
+    tag-only match would find nothing for the session you are actually in.
+    Short and numeric names ("1") are dropped; they match everything or
+    nothing, and neither is useful.
+    """
+    s = (session or "").strip().lower()
+    if not s:
+        return []
+    terms = {s}
+    for prefix in ("p-", "proj-", "s-"):
+        if s.startswith(prefix) and len(s) > len(prefix) + 2:
+            terms.add(s[len(prefix):])
+    return [t for t in terms if len(t) >= 3 and not t.isdigit()]
+
+
+def _matches_session(doc: Doc, terms: list) -> bool:
+    """Tag *or* path segment. Both conventions are in use in the same tree."""
+    if not terms:
+        return False
+    tags = {t.lower() for t in doc.tags}
+    parts = {p.lower() for p in doc.path.parts}
+    return any(t in tags or t in parts for t in terms)
+
+
 def walk_docs(root: Path):
     """Yield document files under `root`, skipping hidden and vendor trees.
 
@@ -186,8 +243,15 @@ def walk_docs(root: Path):
                 yield Path(dirpath) / name
 
 
-def list_docs(tag: str = "", include_inbox: bool = False) -> list[Doc]:
-    """Documents under the roots. `tag` filters on filetags/keywords.
+def list_docs(tag: str = "", include_inbox: bool = False,
+              cwd: Optional[Path] = None, session: str = "") -> list[Doc]:
+    """Documents under the roots, plus the tree you are standing in.
+
+    `cwd` adds the enclosing repository as a root (bounded at the git root);
+    `session` promotes anything matching the tmux session. Neither removes
+    anything — see the sort below.
+
+    `tag` filters on filetags/keywords.
 
     Filtering is by tag rather than by directory on purpose. Where these files
     live, PARA membership is a filetag and a note routinely belongs to several
@@ -202,11 +266,13 @@ def list_docs(tag: str = "", include_inbox: bool = False) -> list[Doc]:
     """
     out: list[Doc] = []
     seen: set = set()
-    for root in doc_roots():
-        if not root.is_dir():
-            continue
+
+    def collect(root: Path, keep_readme: bool, limit: int = 0):
+        n = 0
         for p in sorted(walk_docs(root)):
-            if _SKIP.search(p.name) or p.name.lower() == "readme.md":
+            if _SKIP.search(p.name):
+                continue
+            if not keep_readme and p.name.lower() == "readme.md":
                 continue
             # An empty file is a placeholder someone has not written yet, not a
             # document. Offering it in a picker means the only way to discover
@@ -222,22 +288,77 @@ def list_docs(tag: str = "", include_inbox: bool = False) -> list[Doc]:
                 continue
             seen.add(rp)
             out.append(describe(p, root))
+            n += 1
+            if limit and n >= limit:
+                return
+
+    for root in doc_roots():
+        if root.is_dir():
+            collect(root, keep_readme=False)
+
+    # The tree you are standing in, as an extra root. Additive: these files are
+    # not under any configured root, so without this they are unreachable.
+    #
+    # READMEs are kept here and dropped there, which is not an inconsistency: a
+    # root's README is its index, generated from the others and pointless to
+    # hear, while a project's README is usually the one document worth hearing.
+    proj = project_root(cwd) if cwd is not None else None
+    if proj and proj.is_dir():
+        collect(proj, keep_readme=True, limit=_project_max())
+
     if tag:
         t = tag.lower()
         out = [d for d in out if any(t == x or t in x for x in d.tags)]
     elif not include_inbox:
         out = [d for d in out if INBOX_TAG not in [x.lower() for x in d.tags]]
-    # Newest dated first, undated (reference) after — reference is browsed by
-    # name, the dated kinds by recency.
-    return sorted(out, key=lambda d: (d.date == "", d.date, d.title), reverse=True)
+
+    # Context promotes, it never filters. A list that quietly shrinks because
+    # of where you are standing is the same failure as one that quietly
+    # truncates: you cannot tell the difference between "not relevant" and
+    # "not there". So relevance is a sort key and a visible marker, and
+    # everything else stays one fzf keystroke away.
+    terms = _session_terms(session or "")
+    for d in out:
+        if proj and _under(d.path, proj):
+            d.origin = "proj"
+        elif _matches_session(d, terms):
+            d.origin = "sess"
+    rank = {"proj": 0, "sess": 1}
+    return sorted(out, key=lambda d: (rank.get(d.origin, 2),
+                                      d.date == "", _rev(d.date), _rev(d.title)))
 
 
-def find_doc(needle: str) -> Optional[Doc]:
-    """Resolve a path, an exact slug, or a unique substring of either."""
+def _rev(s: str):
+    """Sort key that reverses a string's order within an ascending sort."""
+    return tuple(-ord(c) for c in s)
+
+
+def _under(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent)
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def _project_max() -> int:
+    try:
+        return max(0, int(os.environ.get("MEDIA_DOC_PROJECT_MAX", "200")))
+    except ValueError:
+        return 200
+
+
+def find_doc(needle: str, cwd: Optional[Path] = None) -> Optional[Doc]:
+    """Resolve a path, an exact slug, or a unique substring of either.
+
+    Takes `cwd` for the same reason the listing does: a slug the picker just
+    showed from the project tree has to resolve, or Enter fails on exactly the
+    rows context added.
+    """
     p = Path(needle).expanduser()
     if p.is_file():
         return describe(p)
-    docs = list_docs()
+    docs = list_docs(cwd=cwd)
     for d in docs:
         if d.slug == needle:
             return d
