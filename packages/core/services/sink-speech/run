@@ -2,12 +2,33 @@
 # Speech sink: long-running mpv broker for TTS playback.
 # Socket: $XDG_STATE_HOME/agent-media/sink-speech.sock
 #
-# AO defaults to openal — proven to survive BT route changes on Termux
-# (2026-05-14). On a PipeWire/Pulse host, set MEDIA_SPEECH_AO=pulse so
-# per-clip `audio-device=pulse/<sink>` routing (decision 1C) works; the
-# openal AO doesn't understand pulse device ids.
+# AO prefers pulse when a sound server is actually answering, else openal —
+# which survives BT route changes on Termux (2026-05-14). On a PipeWire/Pulse
+# host pulse is also what makes per-clip `audio-device=pulse/<sink>` routing
+# (decision 1C) work; the openal AO doesn't understand pulse device ids.
+#
+# The probe exists because the openal/opensles AOs open the Android audio
+# device DIRECTLY, and the device only hands out so many engines. The phone
+# runs five idle mpv brokers (speech, book, music, voice, generic) beside up to
+# three snapclients, and once they have taken the engines between them every
+# later open fails with a bare "could not open device" — mpv then drops the
+# file and exits 0, so say.sh reports CLIP/DURATION and the reply is simply
+# never heard. Nothing upstream can tell that apart from success. Silent since
+# ~2026-08-09 09:17 on p8a; found 2026-08-10.
+#
+# pulseaudio holds ONE engine and mixes every client into it, so routing the
+# brokers through it removes the contention entirely rather than racing for a
+# scarce resource. Probe rather than hardcode: `pactl info` answering is the
+# only reliable evidence a server is up, and if it isn't, openal direct is
+# still the best available fallback.
 exec 2>&1
-: "${MEDIA_SPEECH_AO:=openal}"
+if [ -z "${MEDIA_SPEECH_AO:-}" ]; then
+  if command -v pactl >/dev/null 2>&1 && pactl info >/dev/null 2>&1; then
+    MEDIA_SPEECH_AO=pulse
+  else
+    MEDIA_SPEECH_AO=openal
+  fi
+fi
 STATE="${XDG_STATE_HOME:-$HOME/.local/state}/agent-media"
 SOCK="$STATE/sink-speech.sock"
 mkdir -p "$STATE"
