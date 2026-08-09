@@ -3741,7 +3741,21 @@ def cmd_doc(a) -> int:
     # a first play of a long document is tens of seconds of apparent silence.
     clip = docmod.render_doc(doc.path, force=getattr(a, "force", False))
     if not clip:
-        print(f"media doc: nothing to play in {doc.path}", file=sys.stderr)
+        # Say *why* there is nothing. "Nothing to play" reads as a fault in the
+        # player; usually it means the document is empty, or is entirely made
+        # of the things the projection announces rather than reads.
+        try:
+            size = doc.path.stat().st_size
+        except OSError:
+            size = -1
+        if size == 0:
+            why = "the file is empty"
+        elif not docmod.speakable_text(
+                doc.path.read_text(errors="replace"), doc.fmt).strip():
+            why = "nothing in it is speakable (all code, tables or properties)"
+        else:
+            why = "rendering failed — check `media errors`"
+        print(f"media doc: {doc.path}: {why}", file=sys.stderr)
         return 1
     srv = _srv()
     r = srv.book_play(str(clip), resume=not getattr(a, "no_resume", False),

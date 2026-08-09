@@ -183,6 +183,15 @@ def list_docs(tag: str = "", include_inbox: bool = False) -> list[Doc]:
                 continue
             if _SKIP.search(p.name) or p.name.lower() == "readme.md":
                 continue
+            # An empty file is a placeholder someone has not written yet, not a
+            # document. Offering it in a picker means the only way to discover
+            # that is to choose it and be told there is nothing to play — the
+            # tool knew, and made the user find out.
+            try:
+                if p.stat().st_size == 0:
+                    continue
+            except OSError:
+                continue
             rp = p.resolve()
             if rp in seen:          # overlapping roots (~/org and ~/org/roam)
                 continue

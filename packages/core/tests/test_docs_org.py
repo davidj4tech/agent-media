@@ -151,3 +151,15 @@ def test_long_capture_titles_are_truncated_in_a_row(tmp_path):
     p = tmp_path / "x.org"
     p.write_text("#+title: " + ("word " * 60) + "\n")
     assert len(describe(p).as_row()) < 120
+
+
+def test_empty_documents_are_not_offered(tmp_path, monkeypatch):
+    """A placeholder nobody has written is not something you can listen to.
+
+    Listing it means the only way to find out is to choose it and be told
+    there is nothing to play — the tool knew, and made the user find out.
+    """
+    monkeypatch.setenv("MEDIA_DOC_ROOTS", str(tmp_path))
+    (tmp_path / "real.org").write_text("#+title: Real\n\n* Something\n")
+    (tmp_path / "placeholder.org").write_text("")
+    assert [d.title for d in list_docs()] == ["Real"]
