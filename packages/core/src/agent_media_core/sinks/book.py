@@ -456,6 +456,26 @@ class SinkBook:
             staged = _stage_local_for_remote(Path(norm).expanduser(), target)
             if staged:
                 norm = staged
+            else:
+                # Staging failed, so `norm` is still a path on *this* host —
+                # and handing that to a player on another device asks it to
+                # open a file it cannot possibly see. It fails the way an
+                # unreadable file always fails on mpv: silently, staying idle,
+                # with the caller's play() returning perfectly normally.
+                #
+                # That is how a dead ssh alias left after a hostname change
+                # presented as "nothing happens when I select a document".
+                # Nothing in the chain disagreed with the user until someone
+                # went looking at the remote player itself.
+                log.error("sink-book: could not stage %s for %s — the remote "
+                          "player cannot read this host's paths", norm, target.name)
+                try:
+                    from ..state import StateStore
+                    StateStore().log_error(
+                        "sink-book", "staging failed; nothing will play",
+                        extras={"uri": str(norm), "target": target.name})
+                except Exception:  # noqa: BLE001 — reporting must not break playback
+                    pass
         if endpoint == self._sock:
             self._ensure_broker()
             device = _device_for(target)
