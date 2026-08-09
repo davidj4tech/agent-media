@@ -3519,6 +3519,22 @@ def _book_stage_status(width: int, bar: bool = True) -> Optional[str]:
         return None
     if not st or st.get("status") not in ("copying", "playing", "error"):
         return None
+    # A staging report describes a transfer that was happening *then*. This
+    # file is not cleared on success, so an old failure sat in the status line
+    # indefinitely — in one case a 44-minute-old error about a different
+    # document, covering the clock of the one actually playing. A progress
+    # indicator that outlives the thing it reports on is worse than none: it
+    # says the current item is broken when it is playing perfectly.
+    try:
+        age = time.time() - float(st.get("ts") or 0)
+    except (TypeError, ValueError):
+        age = 0.0
+    try:
+        stale_after = float(os.environ.get("MEDIA_BOOK_STAGE_STALE_S", "90"))
+    except ValueError:
+        stale_after = 90.0
+    if stale_after > 0 and age > stale_after:
+        return None
     if st.get("status") == "error":
         return "! copy failed"
     total = int(st.get("total") or 0)
