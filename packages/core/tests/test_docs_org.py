@@ -163,3 +163,33 @@ def test_empty_documents_are_not_offered(tmp_path, monkeypatch):
     (tmp_path / "real.org").write_text("#+title: Real\n\n* Something\n")
     (tmp_path / "placeholder.org").write_text("")
     assert [d.title for d in list_docs()] == ["Real"]
+
+
+def test_hidden_directories_are_not_walked(tmp_path, monkeypatch):
+    """The name filter only ever looked at the file name, so a note inside a
+    dotted directory passed it. Walking in is the bug; not listing what was
+    found there was only the symptom."""
+    monkeypatch.setenv("MEDIA_DOC_ROOTS", str(tmp_path))
+    (tmp_path / "visible.org").write_text("#+title: Visible\n")
+    for d in (".trash", ".git", "node_modules"):
+        sub = tmp_path / d
+        sub.mkdir()
+        (sub / "hidden.org").write_text("#+title: Hidden\n")
+    assert [x.title for x in list_docs()] == ["Visible"]
+
+
+def test_hidden_can_be_opted_into(tmp_path, monkeypatch):
+    monkeypatch.setenv("MEDIA_DOC_ROOTS", str(tmp_path))
+    monkeypatch.setenv("MEDIA_DOC_INCLUDE_HIDDEN", "1")
+    (tmp_path / ".notes").mkdir()
+    (tmp_path / ".notes" / "n.org").write_text("#+title: Dotted\n")
+    assert [x.title for x in list_docs()] == ["Dotted"]
+
+
+def test_vendor_trees_are_pruned_even_when_hidden_is_allowed(tmp_path, monkeypatch):
+    monkeypatch.setenv("MEDIA_DOC_ROOTS", str(tmp_path))
+    monkeypatch.setenv("MEDIA_DOC_INCLUDE_HIDDEN", "1")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "g.org").write_text("#+title: GitInternals\n")
+    (tmp_path / "ok.org").write_text("#+title: OK\n")
+    assert [x.title for x in list_docs()] == ["OK"]

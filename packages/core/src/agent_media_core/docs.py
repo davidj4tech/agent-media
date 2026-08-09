@@ -158,6 +158,33 @@ _SKIP = re.compile(r"(^\.#|~$|\.bak(-|$)|^\.)", re.I)
 
 INBOX_TAG = "inbox"
 
+# Directories that are never documentation, pruned rather than filtered.
+# Pruning matters twice over: `.git` alone holds hundreds of files that a
+# name-based filter would still have to stat, and the filter only ever looked
+# at the *file* name — so a note under `~/org/.trash/` or `.git/` passed it
+# happily. Walking into a hidden directory is the bug; not listing what is
+# found there was only its symptom.
+_PRUNE_DIRS = {".git", ".hg", ".svn", "node_modules", "__pycache__",
+               ".venv", "venv", ".tox", ".mypy_cache", ".ruff_cache"}
+
+
+def walk_docs(root: Path):
+    """Yield document files under `root`, skipping hidden and vendor trees.
+
+    `MEDIA_DOC_INCLUDE_HIDDEN=1` walks them anyway, for a root that genuinely
+    lives in a dotted directory.
+    """
+    include_hidden = os.environ.get("MEDIA_DOC_INCLUDE_HIDDEN", "") == "1"
+    for dirpath, dirnames, filenames in os.walk(root):
+        if not include_hidden:
+            dirnames[:] = [d for d in dirnames
+                           if not d.startswith(".") and d not in _PRUNE_DIRS]
+        else:
+            dirnames[:] = [d for d in dirnames if d not in _PRUNE_DIRS]
+        for name in filenames:
+            if name.lower().endswith(SUFFIXES):
+                yield Path(dirpath) / name
+
 
 def list_docs(tag: str = "", include_inbox: bool = False) -> list[Doc]:
     """Documents under the roots. `tag` filters on filetags/keywords.
@@ -178,9 +205,7 @@ def list_docs(tag: str = "", include_inbox: bool = False) -> list[Doc]:
     for root in doc_roots():
         if not root.is_dir():
             continue
-        for p in sorted(root.rglob("*")):
-            if p.suffix.lower() not in SUFFIXES or not p.is_file():
-                continue
+        for p in sorted(walk_docs(root)):
             if _SKIP.search(p.name) or p.name.lower() == "readme.md":
                 continue
             # An empty file is a placeholder someone has not written yet, not a
