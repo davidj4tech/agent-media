@@ -357,7 +357,7 @@ def _speech_in_flight() -> bool:
     return True
 
 
-def _speech_display_state():
+def _speech_display_state(allow_remote: bool = True):
     """`(idle, pos, dur, paused, muted, speed, playing)` for the speech channel.
 
     Remote target (the phone): one batched, briefly-cached snapshot off the
@@ -365,9 +365,17 @@ def _speech_display_state():
     there is no player to ask. Local target: one batched snapshot off the local
     mpv, enriched with the response timeline (offset+pos / total) from
     now_playing.
+
+    `allow_remote=False` forbids the round trip to the phone and takes the
+    announced-timeline path instead. That path is local (a file read, ~1ms)
+    where the snapshot costs ~2s on this link — fine to pay when a person
+    pressed a key, ruinous for the tmux status line, which re-renders every
+    second in every pane and had every one of them waiting on the tailnet.
+    The extrapolated position is a second or so coarser; on a bar that redraws
+    once a second and shows whole seconds, that is not visible.
     """
     if _remote_speech():
-        snap = _remote_snapshot()
+        snap = _remote_snapshot() if allow_remote else None
         if snap is not None:
             # Ground truth, in one round trip. Every field the popup shows comes
             # from the player itself, so a control nobody special-cased here
@@ -603,22 +611,40 @@ def cmd_status(a) -> int:
     if alert:
         print(alert)
         return 0
-    idle, pos, dur, paused, muted, speed, playing = _speech_display_state()
+    # No remote round trip here by default: this is the tmux status line, so it
+    # runs once a second in every pane, and asking the phone cost ~2s a render.
+    # MEDIA_STATUS_REMOTE=1 restores ground-truth reads for anyone who wants
+    # them and can afford them.
+    idle, pos, dur, paused, muted, speed, playing = _speech_display_state(
+        allow_remote=os.environ.get("MEDIA_STATUS_REMOTE") == "1")
     # Optional title-overlay bar (EXPERIMENTAL): the whole `▶ pos title dur`
     # segment becomes one background-progress bar, times embedded in the fill.
     # `--title` carries the tmux client width; the title-field width is derived
     # from it (_title_window) so one config fits any screen. Only while playing.
     cw = getattr(a, "title", None)
+    # `--now-playing` appends the music/book channel, so one process renders the
+    # whole right-hand side of the bar. They answer different questions and are
+    # never the same thing: this pane's SPEECH, then what the room is listening
+    # to. Both collapse to '' when idle, so a quiet bar stays quiet.
+    np_seg = ""
+    if getattr(a, "now_playing", False):
+        np_seg = _now_playing_segment(_now_playing_window(cw or a.width))
+
     if cw and playing:
         prefix, body = _subject_label()
         if prefix or body:
-            print(_title_status_line(pos, dur, paused, muted, speed, prefix,
-                                     body, _title_window(cw), key="status"))
+            line = _title_status_line(pos, dur, paused, muted, speed, prefix,
+                                      body, _title_window(cw), key="status")
+            print(f"{line} {np_seg}" if np_seg else line)
             return 0
-    print(_with_visual_glyph(
+    speech = _with_visual_glyph(
         render_status(idle=idle, pos=pos, dur=dur, paused=paused, muted=muted,
                       width=a.width, hide_idle=not a.show_idle,
-                      bar=not getattr(a, "no_bar", False), speed=speed)))
+                      bar=not getattr(a, "no_bar", False), speed=speed))
+    if np_seg:
+        print(f"{speech} {np_seg}" if speech else np_seg)
+    else:
+        print(speech)
     return 0
 
 
@@ -862,34 +888,108 @@ def _subject_label() -> "tuple[str, str]":
 
 def _marquee(text: str, width: int, *, key: str = "status",
              gap: str = "   ") -> str:
-    """A `width`-column window into `text`, scrolling one column per call.
+    """A `width`-column window into `text`, scrolling at a steady rate.
 
-    The tmux status bar redraws at most once a second (status-interval floor),
-    so this advances 1 col/call — a coarse crawl, not the popup's smooth glide.
-    Offset persists in a state file (this runs as a fresh process each refresh)
-    and resets when `text` changes. Text that already fits is returned as-is.
+    The offset comes from how long the CURRENT text has been showing, not from
+    a counter bumped once per call. Per-call was wrong in a way that only
+    appears once you have company: this runs as a fresh process for every pane
+    on every redraw, and they all share the one state file, so the marquee
+    sped up in proportion to how many panes were watching it — and drifted
+    into a different phase in each.
+
+    The file now records only *when* the text changed, so a new track still
+    starts from column zero, but the write happens on that change rather than
+    on every redraw. Rate via MEDIA_STATUS_MARQUEE_CPS (columns per second).
+    Text that already fits is returned as-is.
     """
     text = " ".join(text.split())
     if not text or width <= 0:
         return ""
     if len(text) <= width:
         return text
+    try:
+        cps = float(os.environ.get("MEDIA_STATUS_MARQUEE_CPS", "1.0"))
+    except ValueError:
+        cps = 1.0
+    cps = max(0.1, cps)
+
+    now = time.time()
     p = state_dir() / f"marquee-{key}"
     try:
         saved = json.loads(p.read_text())
-        last, off = saved.get("t"), int(saved.get("o", 0))
+        last, since = saved.get("t"), float(saved.get("s", now))
     except Exception:  # noqa: BLE001
-        last, off = None, 0
-    if last != text:
-        off = 0
+        last, since = None, now
+    if last != text or since > now:
+        # New subject (or a clock that went backwards): restart the crawl and
+        # stamp it. This is the only path that writes.
+        since = now
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(json.dumps({"t": text, "s": since}))
+        except OSError:
+            pass
+
     loop = text + gap
-    window = (loop + loop)[off:off + width]
-    try:
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps({"t": text, "o": (off + 1) % len(loop)}))
-    except OSError:
-        pass
-    return window
+    off = int((now - since) * cps) % len(loop)
+    return (loop + loop)[off:off + width]
+
+
+_NOW_PLAYING_CHANNELS = (
+    # (icon, state-relative socket, marquee key). Book first: if a book is
+    # running it is what the room is listening to, and music underneath it is
+    # the bed, not the subject.
+    ("📖", "sink-book.sock", "np-book"),
+    ("♪", None, "np-music"),          # None -> the Mopidy-Mpv renderer socket
+)
+
+
+def _now_playing_segment(window: int) -> str:
+    """`<icon> <scrolling title> [pos/dur]` for the music or book channel.
+
+    Deliberately reads the mpv sockets DIRECTLY rather than going through the
+    service layer. `book_now_playing()` is the natural-looking call and costs
+    ~2.6s, because it reasons about remote targets; `_srv()` alone is ~0.6s.
+    Both are fine for a keypress and hopeless for a status line that redraws
+    every second in every pane. The sockets are local and answer in under a
+    millisecond, and everything this renders is in the snapshot.
+
+    Returns '' when neither channel is playing, so an idle bar stays empty.
+    """
+    from .sinks import _mpv_ipc as ipc
+    from .sinks.music import _mpv_socket
+
+    props = key = icon = None
+    for ch_icon, sock_name, ch_key in _NOW_PLAYING_CHANNELS:
+        sock = str(state_dir() / sock_name) if sock_name else _mpv_socket()
+        if not sock or not os.path.exists(sock):
+            continue
+        try:
+            snap = ipc.get_properties(
+                sock, ["idle-active", "pause", "time-pos", "duration",
+                       "media-title", "chapter-metadata/by-key/title"])
+        except Exception:  # noqa: BLE001 — a dead sink is just "not playing"
+            continue
+        if not snap or snap.get("idle-active"):
+            continue
+        props, key, icon = snap, ch_key, ch_icon
+        break
+
+    if props is None:
+        return ""
+
+    label = _mpv_music_label(props)
+    if not label:
+        return ""
+    pos, dur = props.get("time-pos"), props.get("duration")
+    hours = bool(dur is not None and dur >= 3600)
+    times = f"[{fmt_time(pos, hours=hours)}/{fmt_time(dur, hours=hours)}]"
+    if props.get("pause"):
+        icon = "⏸"
+    # The marquee gets whatever is left after the icon, the times and their
+    # separating spaces, so the segment as a whole honours `window`.
+    body = max(4, window - len(times) - len(icon) - 2)
+    return f"{icon} {_marquee(label, body, key=key)} {times}"
 
 
 def _client_width(v) -> int:
@@ -899,6 +999,17 @@ def _client_width(v) -> int:
         return max(1, int(v))
     except (TypeError, ValueError):
         return 80
+
+
+def _now_playing_window(client_width: int) -> int:
+    """Columns the now-playing segment may occupy, from the tmux client width.
+
+    Sized like `_title_window` so the two segments scale together and a narrow
+    client shrinks both rather than letting one crowd the other off the line.
+    Bounds via MEDIA_STATUS_NOW_PLAYING_{MIN,MAX}."""
+    nmin = int(os.environ.get("MEDIA_STATUS_NOW_PLAYING_MIN", "18"))
+    nmax = int(os.environ.get("MEDIA_STATUS_NOW_PLAYING_MAX", "46"))
+    return max(nmin, min(nmax, client_width // 3))
 
 
 def _title_window(client_width: int) -> int:
@@ -4584,6 +4695,10 @@ def _build_parser() -> argparse.ArgumentParser:
                         "background-progress bar; the title width auto-derives "
                         "from CLIENT_WIDTH — pass tmux #{client_width} so it "
                         "fits any screen (default 80; EXPERIMENTAL)")
+    s.add_argument("--now-playing", action="store_true",
+                   help="append what the music or book channel is playing, "
+                        "scrolling if it doesn't fit — so one process renders "
+                        "the whole status-bar segment (empty when idle)")
     s.set_defaults(func=cmd_status)
 
     ps = sub.add_parser("popup-status",

@@ -11,10 +11,18 @@ from agent_media_core import cli
 
 # --- _marquee --------------------------------------------------------------
 
-def test_marquee_advances_one_col(monkeypatch, tmp_path):
+def test_marquee_advances_over_time(monkeypatch, tmp_path):
+    # Scrolling is a function of ELAPSED TIME, not of how many times it was
+    # called: every pane renders its own copy, so a per-call offset made the
+    # crawl speed up with the number of panes watching. Two calls at the same
+    # instant must therefore agree; a second later must differ.
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    now = [1000.0]
+    monkeypatch.setattr(cli.time, "time", lambda: now[0])
     t = "Aria — refactor the speech sink"
     first = cli._marquee(t, 12, key="t")
+    assert cli._marquee(t, 12, key="t") == first     # same instant, same window
+    now[0] += 1.0
     second = cli._marquee(t, 12, key="t")
     assert len(first) == 12 and len(second) == 12
     assert first != second                      # scrolled
@@ -101,9 +109,14 @@ def test_title_line_pins_prefix_indicator(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     long_body = "refactor the whole speech sink pipeline end to end"
     # The ↪ prefix must stay put while the body scrolls: it appears right after
-    # the left time on consecutive refreshes, and the body advances under it.
+    # the left time on successive refreshes, and the body advances under it.
+    # The clock drives the scroll (see test_marquee_advances_over_time), so the
+    # two refreshes have to be a second apart to differ.
+    now = [1000.0]
+    monkeypatch.setattr(cli.time, "time", lambda: now[0])
     a = _strip_tmux(cli._title_status_line(30, 120, False, False, None,
                                            "↪ ", long_body, 16, key="pin"))
+    now[0] += 1.0
     b = _strip_tmux(cli._title_status_line(30, 120, False, False, None,
                                            "↪ ", long_body, 16, key="pin"))
     assert "↪ " in a and "↪ " in b

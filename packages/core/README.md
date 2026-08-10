@@ -282,6 +282,39 @@ source-file ~/.local/share/agent-media/media.tmux
 view spoken text). `media status` prints a compact progress bar for the
 status line.
 
+### `media status --now-playing`
+
+Appends what the **music or book** channel is playing to the **speech** line,
+so one process renders the whole status-bar segment:
+
+```tmux
+tmux_conf_theme_status_right="... #(MEDIA_STATUS_PANE=#{pane_id} media status --title #{client_width} --now-playing 2>/dev/null) ..."
+```
+
+Speech and now-playing answer different questions and never duplicate each
+other; both collapse to empty when idle, so a quiet bar stays quiet. A book
+outranks music, on the grounds that music under a book is the bed rather than
+the subject. Long titles scroll (`MEDIA_STATUS_MARQUEE_CPS`, default 1 col/s),
+and the segment sizes itself from the client width
+(`MEDIA_STATUS_NOW_PLAYING_{MIN,MAX}`).
+
+Two things make this cheap enough to run once a second in every pane, both of
+which were the opposite before:
+
+- **No remote round trip.** `media status` takes the local announced-timeline
+  path rather than asking the phone's broker, which costs ~2s on that link.
+  `MEDIA_STATUS_REMOTE=1` restores ground-truth reads.
+- **No service layer.** It reads the mpv sockets directly. The natural-looking
+  `book_now_playing()` costs ~2.6s because it reasons about remote targets, and
+  building the service module alone is ~0.6s.
+
+Net: ~0.1s per redraw, against ~3s for the speech line plus an MPRIS-based
+now-playing plugin doing the same job in two processes.
+
+MPRIS (via `mpv-mpris` and Mopidy-MPRIS) stays published for *outside*
+consumers — `playerctl`, a phone lock screen, a status plugin. Nothing inside
+agent-media reads its own state back through it.
+
 ---
 
 ## Snapcast (whole-house audio)
