@@ -1,3 +1,5 @@
+import os
+
 import pytest
 
 
@@ -28,5 +30,12 @@ def _no_remote_say(monkeypatch):
     depending on which room the developer is standing in.
 
     A test that wants the remote path should set it explicitly.
+
+    The per-target keys have to go too, and by prefix rather than by name:
+    the lane is now chosen by MEDIA_REMOTE_SAY_CMD_<TARGET>, so media-lane
+    writes ..._PHONE and scrubbing only the bare name would leave exactly the
+    inherited-config hazard above — passing or failing by which room the
+    developer is standing in — while looking as though it were handled.
     """
-    monkeypatch.delenv("MEDIA_REMOTE_SAY_CMD", raising=False)
+    for key in [k for k in os.environ if k.startswith("MEDIA_REMOTE_SAY_CMD")]:
+        monkeypatch.delenv(key, raising=False)
