@@ -15,6 +15,7 @@ import logging
 import os
 import time
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 from .. import snapcast
@@ -238,6 +239,17 @@ class Coordinator:
         except Exception as e:  # noqa: BLE001
             self._log_err("rooms: snapcast reduck failed", str(e))
 
+    def _probe_book_active(self) -> bool:
+        """Is the book channel playing? Asked concurrently (see before_speech)."""
+        try:
+            return bool(self.book.active(self.book_target))
+        except Exception:  # noqa: BLE001 — surfaced by the caller
+            return False
+
+    def _probe_music_uri(self):
+        """What the music channel is playing. Asked concurrently."""
+        return self.music.now_playing_uri(self.music_target)
+
     def before_speech(self) -> None:
         """Apply interruption for whatever sink-music is currently
         playing. Records baseline volume + position so after_speech can
@@ -248,6 +260,16 @@ class Coordinator:
         # duck lands even when the music is fed by a different player/host than
         # the one this coordinator can poll. No-op unless MEDIA_DUCK_ROOMS_STREAM
         # is set. Uses the same level the user/policy picks for music.
+        # Start the two independent remote probes now, so they overlap each
+        # other and the remote pause instead of running in series. Over the
+        # phone bridge each is a ~2s round trip, and they ask unrelated
+        # questions of unrelated players — "is a book playing" has never
+        # depended on "what is the music". Sequencing them was habit, and on a
+        # 450ms link habit cost four seconds per utterance.
+        probes = ThreadPoolExecutor(max_workers=2)
+        book_active = probes.submit(self._probe_book_active)
+        music_uri = probes.submit(self._probe_music_uri)
+
         rooms_level = _env_duck_level()
         if rooms_level is None:
             rooms_level = policy_for(ContentType.MUSIC).duck_level
@@ -288,7 +310,7 @@ class Coordinator:
         # wrap one clip in the same process). Spawn-free: active() is False
         # when no broker is up, so this is a no-op when the book is unused.
         try:
-            if self.book.active(self.book_target):
+            if book_active.result(timeout=20):
                 self.book.pause(self.book_target)
                 self._book_paused = True
         except Exception as e:  # noqa: BLE001
@@ -302,10 +324,12 @@ class Coordinator:
             return
 
         try:
-            uri = self.music.now_playing_uri(self.music_target)
+            uri = music_uri.result(timeout=20)
         except Exception as e:  # noqa: BLE001
             self._log_err("music: now_playing_uri failed", str(e))
             return
+        finally:
+            probes.shutdown(wait=False)
         if not uri:
             return  # nothing to interrupt via Mopidy
 
