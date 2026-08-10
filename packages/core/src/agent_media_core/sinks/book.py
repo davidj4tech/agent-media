@@ -43,6 +43,11 @@ DEFAULT_TARGET = Target(name="local")
 _MIN_SPEED = 0.25
 _MAX_SPEED = 4.0
 
+# Debian's mpv-mpris drops the cplugin here and symlinks it into
+# /etc/mpv/scripts for autoload. We point at the real file, not the autoload
+# symlink, because this broker's --no-config is what makes the symlink moot.
+_MPRIS_SO = "/usr/lib/mpv-mpris/mpris.so"
+
 
 def _to_book_uri(uri: str) -> str:
     """Wrap any URI as `mpv:...` so the book Mopidy's mopidy-mpv backend can
@@ -469,6 +474,15 @@ class SinkBook:
             if htpw:
                 opts += ",webui-htpasswd_path=" + htpw
             argv += [f"--script={webui}", f"--script-opts={opts}"]
+        # MPRIS, so the book channel shows up in `playerctl` alongside music and
+        # speech. Every other mpv here picks mpris.so up automatically from
+        # /etc/mpv/scripts, but this broker runs --no-config (above), which
+        # disables script-dir loading — so it has to be named explicitly.
+        # Gated on the file existing, like the webui above: Termux has no D-Bus
+        # and no such package, and a missing --script makes mpv exit non-zero.
+        mpris = os.environ.get("MEDIA_BOOK_MPRIS", _MPRIS_SO)
+        if mpris and Path(mpris).is_file():
+            argv.append(f"--script={mpris}")
         subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          start_new_session=True)
