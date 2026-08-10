@@ -178,15 +178,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 except OSError:
                     pass
             finally:
-                # A non-zero renderer exit has to reach the caller, and the
-                # status line is long gone by now — so say it in the body and
-                # let the trailing chunk carry it. remote-say greps stdout for
-                # its protocol lines and checks the exit status of curl, so an
-                # explicit marker is what survives.
+                # A non-zero renderer exit has to reach the caller, but the
+                # status line went out before the first byte of audio was even
+                # rendered, so it cannot carry the verdict.
+                #
+                # The verdict rides the *shape* of the response instead: on
+                # failure the chunked stream is closed without its terminating
+                # zero-length chunk, which curl reports as exit 18 while still
+                # delivering everything sent so far. That keeps the failure in
+                # curl's own exit status, where the caller already looks.
+                #
+                # The obvious alternative — piping curl through something that
+                # greps for an ERROR line — silently loses it, because a shell
+                # pipeline reports the LAST command's status, not curl's. That
+                # version shipped for ten minutes and swallowed every HTTP
+                # error, including a 400.
                 try:
                     if rc:
                         chunk(f"ERROR say.sh exited {rc}\n".encode())
-                    self.wfile.write(b"0\r\n\r\n")
+                        self.close_connection = True
+                    else:
+                        self.wfile.write(b"0\r\n\r\n")
                     self.wfile.flush()
                 except OSError:
                     pass
