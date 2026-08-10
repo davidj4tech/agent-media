@@ -1,0 +1,21 @@
+[Unit]
+Description=agent-media sink-book broker
+After=pipewire.service
+
+[Service]
+Type=simple
+Environment=PATH=/home/ryer/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStartPre=/bin/rm -f %h/.local/state/agent-media/sink-book.sock
+ExecStart=/usr/bin/mpv --idle=yes --no-video --no-terminal --no-config \
+    --input-ipc-server=%h/.local/state/agent-media/sink-book.sock \
+    --ao=pulse \
+    --audio-client-name=agent-media-book \
+    --cache=yes \
+    --script=/usr/lib/mpv-mpris/mpris.so \
+    --script-opts=ytdl_hook-ytdl_path=%h/.local/bin/yt-dlp \
+    --ytdl-raw-options=extractor-args=youtube:player_client=tv
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
