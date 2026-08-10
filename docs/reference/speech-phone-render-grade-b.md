@@ -23,6 +23,22 @@ Contrast:
 - Today's phone-local bridge (`MEDIA_REMOTE_SAY_CMD`): phone renders+plays the
   *whole reply* in one shot → audio works, but red5's sentence loop never runs,
   so **no popup**.
+
+  Since 2026-08-11 it does at least carry a *progress row*: say-http streams
+  `CLIP`/`DURATION` back before playback, and `_watch_remote_progress` turns
+  them into `total_duration_s` + `play_started_at`, which is enough for a bar
+  and for the status line to stop polling the phone's mpv at ~2s a read. That
+  had been built all along and never fired, because **both ends buffered**:
+  curl holds its output when stdout is a pipe (needs `--no-buffer`, set by
+  `media-lane`), and `for line in proc.stdout` reads ahead (now `readline()`).
+  Between them the report arrived at process exit — after the audio had
+  finished. Any renderer wired into `MEDIA_REMOTE_SAY_CMD_*` must flush these
+  two lines unbuffered or the row stays blank.
+
+  Still missing here, and the reason Grade B is still wanted: `current_sentence`.
+  One POST for the whole reply means there are no sentence boundaries to report,
+  so follow-along highlight and `media current-sentence` have nothing to work
+  with on this lane.
 - Grade A: red5 renders clips, ships each to the phone to play → popup intact but
   audio (clip) crosses Germany→AU each sentence.
 - **Grade B (this):** phone renders+plays per sentence, red5 orchestrates → popup

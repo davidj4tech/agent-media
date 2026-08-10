@@ -1900,7 +1900,19 @@ def _watch_remote_progress(proc, state: StateStore, target_name: str,
     duration = 0.0
     clip = ""
     try:
-        for raw in proc.stdout:
+        # readline(), not `for raw in proc.stdout`: iterating a pipe reads
+        # AHEAD, so these two short lines sat in Python's buffer until the far
+        # side closed the stream — by which point the utterance had finished
+        # and the timeline they carry was worthless. Measured on the phone
+        # lane: ~7.2s with iteration vs ~4.4s with readline, on a call that
+        # returned at ~15s.
+        #
+        # The caller's command must not buffer either. curl holds its output
+        # when stdout is a pipe unless told otherwise, which defeated this
+        # entirely regardless of how we read: MEDIA_REMOTE_SAY_CMD_* wants
+        # `--no-buffer` (or the renderer's equivalent), or the report arrives
+        # only at exit and the progress bar never appears.
+        for raw in iter(proc.stdout.readline, b""):
             line = raw.decode("utf-8", "replace").strip()
             if line.startswith("CLIP "):
                 clip = line.split(None, 1)[1].strip()
