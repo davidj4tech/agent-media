@@ -2016,6 +2016,12 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
     source_pane = (event.metadata or {}).get("pane") or os.environ.get("TMUX_PANE", "")
     source_tmux_session = _tmux_session_for_pane(source_pane)
     source_window = _tmux_window_for_pane(source_pane)
+    # Start the remote pause before anything blocking, so its ssh overlaps the
+    # lock wait and the render instead of being paid in series inside
+    # before_speech(). Both local render paths have always done this; the phone
+    # lane never did, which is why the coordination cost showed up here and not
+    # there — on this link it was 17s of a 25s utterance.
+    coordinator.pre_pause_remote()
     try:
         coordinator.before_speech()
         _speech_event("start", text=text[:400], session=session,

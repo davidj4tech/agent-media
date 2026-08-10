@@ -36,6 +36,7 @@ def _run(store, monkeypatch, cmd):
     monkeypatch.setattr(submit, "_speech_flushed", lambda *a, **k: False)
 
     class _Coord:
+        def pre_pause_remote(self): pass
         def before_speech(self): pass
         def after_speech(self): pass
 

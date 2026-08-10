@@ -45,11 +45,19 @@ _SSH_CONNECT_TIMEOUT = 8
 _SSH_CMD_TIMEOUT = 12.0
 _SSH_CONTROL_PERSIST = 300
 
+# No ControlPath here. Naming one mints a SECOND master beside whatever the
+# user's ssh config already maintains, and the two keep separate warmth: this
+# one persisted 300s while the ambient one persisted 600s and was kept alive by
+# every other ssh on the box. Speech is bursty, so the private master was
+# routinely cold — and a cold connect on this link is ~11s, paid inside
+# before_speech, per utterance.
+#
+# Worse, that 11s then tripped the breaker below, which skips the host for 45s.
+# So the pause alternated between costing eleven seconds and silently not
+# happening. Inheriting the ambient master makes it ~0.9s and warm, because
+# everything else on the machine keeps it warm.
 _SSH_OPTS = ["-o", "BatchMode=yes",
-             "-o", f"ConnectTimeout={_SSH_CONNECT_TIMEOUT}",
-             "-o", "ControlMaster=auto",
-             "-o", "ControlPath=/tmp/ssh-am-%r@%h:%p",
-             "-o", f"ControlPersist={_SSH_CONTROL_PERSIST}"]
+             "-o", f"ConnectTimeout={_SSH_CONNECT_TIMEOUT}"]
 
 
 # Dispatch explicit pause / play keys to the active media session. Works
@@ -88,7 +96,7 @@ def _state() -> dict[str, float]:
 
 def _slow_s() -> float:
     try:
-        return float(os.environ.get("MEDIA_ANDROID_SLOW_MS", "1500")) / 1000
+        return float(os.environ.get("MEDIA_ANDROID_SLOW_MS", "5000")) / 1000
     except ValueError:
         return 1.5
 
@@ -133,6 +141,12 @@ def _ssh(host: str, script: str) -> str | None:
     finally:
         window = _breaker_s()
         if window > 0:
+            # Slowness still trips it — a wedged host must stop delaying
+            # speech — but the threshold has to sit above an honest round
+            # trip. It was 900ms against a link whose warm round trip is
+            # ~0.9s, so a working phone was called faulty for being far away
+            # and the pause silently stopped happening for 45s at a time. The
+            # protection is real; only its calibration was wrong.
             slow = out is None or time.monotonic() - t0 >= _slow_s()
             was_open = host in state
             if slow:
