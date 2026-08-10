@@ -784,6 +784,191 @@ class _HighlightScheduler:
             t.join()
 
 
+def _highlight_wanted(event: Event, pane: str) -> bool:
+    """Whether this turn should paint the copy-mode follow-along highlight.
+
+    CLI text is never in the pane, so there is nothing to highlight. Otherwise
+    skip the turn if the user has typed in the source pane recently: grabbing
+    copy-mode mid-keystroke yanks the view out from under them. Two things
+    override the skip ("I'm attending — follow this one"): the `highlight-now`
+    force key (tmux `prefix V`, until they type again), and the control popup
+    being open for this pane.
+    """
+    from ..types import Source as _Source
+    if event.source in (_Source.CLI,):
+        return False
+    window_s = float(os.environ.get("MEDIA_HIGHLIGHT_KEYSTROKE_S", "5"))
+    if (pane and _pane_recent_keystrokes(pane, window_s)
+            and not _force_highlight_active(pane)
+            and not _popup_open_for(pane)):
+        return False
+    return True
+
+
+def _playout_delay_s(target_name: str) -> float:
+    """How long after we start a clip its audio is actually *heard*, in seconds.
+
+    Speech routed through Snapcast (`rooms`) is a fixed buffer late
+    (MEDIA_SNAPCAST_LATENCY_MS). A target that plays on another device via its
+    own local mpv has no such buffer — only the bridge hop and mpv start — so a
+    per-target override wins: MEDIA_SPEECH_PLAYOUT_MS_<TARGET>.
+    """
+    key = f"MEDIA_SPEECH_PLAYOUT_MS_{target_name.upper().replace('-', '_')}"
+    return float(os.environ.get(key)
+                 or os.environ.get("MEDIA_SNAPCAST_LATENCY_MS", "500")) / 1000.0
+
+
+def _apportioned_offsets(sentences: list[str], total: float) -> list[float]:
+    """Sentence start times guessed from the total, by share of characters.
+
+    The honest fallback for a renderer that reports a duration but no sentence
+    marks. Speech rate is near enough constant within one voice that character
+    share tracks time share; it drifts within a reply, but a highlight a beat
+    off is worth far more than no highlight at all.
+    """
+    weights = [max(1, len(s)) for s in sentences]
+    span = sum(weights)
+    offsets: list[float] = []
+    acc = 0
+    for w in weights:
+        offsets.append(total * acc / span)
+        acc += w
+    return offsets
+
+
+def _offsets_from_marks(marks: dict[int, float], count: int,
+                        total: float) -> Optional[list[float]]:
+    """The renderer's own sentence boundaries, when they can be trusted.
+
+    Returns None — meaning "approximate instead" — unless there is exactly one
+    mark per sentence, in order, inside the clip. A count mismatch means the far
+    side split the text differently from us (different commits, most likely),
+    and highlighting sentence k at sentence j's onset is worse than a smooth
+    approximation: it points confidently at the wrong words.
+    """
+    if count <= 0 or sorted(marks) != list(range(count)):
+        return None
+    offsets = [marks[i] for i in range(count)]
+    if offsets != sorted(offsets) or offsets[0] < 0:
+        return None
+    if total > 0 and offsets[-1] > total + 1.0:
+        return None
+    return offsets
+
+
+class _SentenceFollower:
+    """Keep `current_sentence` moving for a lane whose audio plays elsewhere.
+
+    On the phone lane the whole reply is one POST: the phone renders it and
+    plays it on its own mpv, so red5's sentence loop never runs and nothing here
+    can observe playback without paying a ~600ms round trip per poll on a link
+    that already drops a quarter of its packets. But the renderer says when it
+    is about to start and where each sentence begins, and a clock is free — so
+    we follow the *timeline* rather than the player.
+
+    That is enough for everything that reads the row: `media current-sentence`,
+    `media highlight-now`, the popup's sentence view, and the copy-mode
+    follow-along highlight.
+    """
+
+    def __init__(self, state: StateStore, target_name: str, started_at: float,
+                 sentences: list[str], *, pane: str, highlight: bool,
+                 delay_s: float):
+        self.state = state
+        self.target_name = target_name
+        self.started_at = started_at
+        self.sentences = sentences
+        self.pane = pane
+        self.highlight = highlight
+        self.delay_s = delay_s
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def timeline(self, marks: dict[int, float],
+                 total: float) -> Optional[tuple[list[float], bool]]:
+        """(sentence start times, measured?) — or None if there's nothing to follow.
+
+        Measured marks when the renderer reported a usable set, otherwise the
+        duration apportioned across the sentences. The flag rides along to the
+        row so a display can tell a measured timeline from a guessed one.
+        """
+        if not self.sentences or total <= 0:
+            return None
+        measured = _offsets_from_marks(marks, len(self.sentences), total)
+        if measured is None and marks:
+            log.info("intake: remote renderer reported %d sentence marks for "
+                     "%d sentences; approximating instead",
+                     len(marks), len(self.sentences))
+        if measured is not None:
+            return measured, True
+        return _apportioned_offsets(self.sentences, total), False
+
+    def start(self, offsets: list[float], play_started_at: float) -> None:
+        if self._thread is not None:
+            return
+        self._thread = threading.Thread(
+            target=self._run, args=(offsets, play_started_at), daemon=True)
+        self._thread.start()
+
+    def stop(self, timeout: float = 1.5) -> None:
+        """Stop following and wait, so a late write can't resurrect a cleared row."""
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=timeout)
+
+    def _run(self, offsets: list[float], play_started_at: float) -> None:
+        highlighter = _HighlightScheduler(self.delay_s, self.highlight)
+        if self.highlight and self.pane:
+            # _tmux_highlight_text reads the pane from the environment and needs
+            # a truthy TMUX; this thread's process may be the detached playback
+            # child, which has neither. Same fixup cmd_replay_track does.
+            os.environ["TMUX_PANE"] = self.pane
+            if not os.environ.get("TMUX"):
+                os.environ["TMUX"] = "x"
+        mine = os.getpid()
+        current = -1
+        try:
+            while not self._stop.is_set():
+                np = self.state.get_now_playing("speech")
+                if not np:
+                    return                      # the reply ended, or was cut
+                extras = np.get("extras") or {}
+                if extras.get("writer_pid") not in (None, mine):
+                    return                      # someone else owns the row now
+                # Re-read the origin each tick rather than trusting the one we
+                # started with: `media skip` re-stamps it to seek this lane (one
+                # clip, no playlist), and a follower running off a stale origin
+                # would drag the highlight straight back to where it was.
+                base = extras.get("play_started_at") or play_started_at
+                elapsed = time.time() - float(base)
+                idx = 0
+                for i, off in enumerate(offsets):
+                    if elapsed + 0.001 >= off:
+                        idx = i
+                    else:
+                        break
+                if idx != current:
+                    current = idx
+                    extras["current_sentence"] = self.sentences[idx]
+                    extras["current_sentence_idx"] = idx
+                    try:
+                        self.state.set_now_playing(
+                            "speech",
+                            uri=np.get("uri") or f"remote-say:{self.target_name}",
+                            started_at=np.get("started_at") or self.started_at,
+                            target=np.get("target") or self.target_name,
+                            extras=extras)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    highlighter.show(self.sentences[idx], first=(idx == 0),
+                                     force=False)
+                self._stop.wait(0.1)
+        except Exception:  # noqa: BLE001 — a highlight must never break speech
+            pass
+        finally:
+            highlighter.drain()
+
+
 def _speech_lock_path() -> Path:
     state = Path(os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state"))
     return state / "agent-media" / "speech-playback.lock"
@@ -1866,24 +2051,32 @@ def _wait_and_claim_broker(sink: "SinkSpeech", target: Target) -> None:
         time.sleep(0.3)
 
 
+_SENTENCE_MARK_RE = re.compile(r"^SENTENCE\s+(\d+)\s+([0-9]*\.?[0-9]+)\s*$")
+
+
 def _watch_remote_progress(proc, state: StateStore, target_name: str,
                            started_at: float,
-                           report: Optional[dict] = None) -> None:
+                           report: Optional[dict] = None,
+                           follower: Optional[_SentenceFollower] = None) -> None:
     """Read the remote renderer's report lines and make the popup honest.
 
-    A remote renderer may announce, on stdout, two things about what it is
+    A remote renderer may announce, on stdout, three things about what it is
     about to play:
 
-        CLIP <basename>     the file it rendered, in the dir this target's
-                            clips already resolve against
-        DURATION <seconds>  how long that file is
+        CLIP <basename>          the file it rendered, in the dir this target's
+                                 clips already resolve against
+        SENTENCE <idx> <offset>  where sentence <idx> starts, in seconds
+        DURATION <seconds>       how long that file is
 
-    That is the entire protocol, and both lines are optional. They arrive once,
-    immediately before playback starts. The duration plus the local clock at
-    the moment it arrives are enough to extrapolate position without polling a
-    link that drops a quarter of its packets. The basename is what makes the
-    reply *replayable*: the audio already exists on the far side, so asking for
-    it again is a local loadfile there, not a transfer from here.
+    That is the entire protocol, and every line is optional. They arrive once,
+    immediately before playback starts, and `DURATION` comes last — it is the
+    line that says "now", so the marks have to be in hand by the time it lands.
+    The duration plus the local clock at the moment it arrives are enough to
+    extrapolate position without polling a link that drops a quarter of its
+    packets; the marks extend that from a bare progress bar to per-sentence
+    state (see `_SentenceFollower`). The basename is what makes the reply
+    *replayable*: the audio already exists on the far side, so asking for it
+    again is a local loadfile there, not a transfer from here.
 
     A renderer that says nothing (Android TTS, a bare `say`) is unaffected: the
     row carries no duration and no clip, and the display stays blank, which is
@@ -1899,6 +2092,8 @@ def _watch_remote_progress(proc, state: StateStore, target_name: str,
         return
     duration = 0.0
     clip = ""
+    marks: dict[int, float] = {}
+    announced = False
     try:
         # readline(), not `for raw in proc.stdout`: iterating a pipe reads
         # AHEAD, so these two short lines sat in Python's buffer until the far
@@ -1919,7 +2114,12 @@ def _watch_remote_progress(proc, state: StateStore, target_name: str,
                 if report is not None and clip:
                     report["clip"] = clip
                 continue
-            if not line.startswith("DURATION "):
+            if line.startswith("SENTENCE "):
+                m = _SENTENCE_MARK_RE.match(line)
+                if m:
+                    marks[int(m.group(1))] = float(m.group(2))
+                continue
+            if not line.startswith("DURATION ") or announced:
                 continue
             try:
                 duration = float(line.split(None, 1)[1])
@@ -1929,19 +2129,39 @@ def _watch_remote_progress(proc, state: StateStore, target_name: str,
                 continue
             if report is not None:
                 report["duration"] = duration
+            play_started_at = time.time()
             extras = {"kind": "remote-say", "writer_pid": os.getpid(),
                       "total_duration_s": duration,
                       # Stamped here, not at submit: rendering happens before
                       # this line is sent, and counting that as playback would
                       # start the bar seconds ahead of the audio.
-                      "play_started_at": time.time()}
+                      "play_started_at": play_started_at}
             if clip:
                 extras["clip_uris"] = [clip]
                 extras["clips_remote"] = True
+            timeline = follower.timeline(marks, duration) if follower else None
+            offsets, measured = timeline if timeline else (None, False)
+            if offsets:
+                # The sentence view every surface reads: `clip_sentences` names
+                # them, `clip_offsets_s` says where each one starts in the one
+                # clip the far side rendered — which is also what lets `media
+                # skip` seek by sentence on a lane that has no playlist to step.
+                extras["clip_sentences"] = follower.sentences
+                extras["clip_offsets_s"] = offsets
+                extras["clip_durations_s"] = [
+                    b - a for a, b in zip(offsets, offsets[1:] + [duration])]
+                extras["sentence_marks"] = measured
+                extras["current_sentence"] = follower.sentences[0]
+                extras["current_sentence_idx"] = 0
             state.set_now_playing(
                 "speech", uri=f"remote-say:{target_name}",
                 started_at=started_at, target=target_name, extras=extras)
-            return
+            announced = True
+            if offsets:
+                follower.start(offsets, play_started_at)
+            # Keep reading rather than returning: closing this end early would
+            # SIGPIPE a renderer that still has something to say, and the far
+            # side's stdout is also how a late failure reaches us.
     except Exception:  # noqa: BLE001 — a progress bar must not break speech
         return
 
@@ -2050,6 +2270,15 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
     source_pane = (event.metadata or {}).get("pane") or os.environ.get("TMUX_PANE", "")
     source_tmux_session = _tmux_session_for_pane(source_pane)
     source_window = _tmux_window_for_pane(source_pane)
+    # Per-sentence state for a lane that renders and plays the whole reply on
+    # another device. We split the text the same way the local path does; the
+    # renderer tells us where each sentence lands (or, failing that, how long
+    # the whole thing is), and the follower walks that timeline on the clock.
+    follower = _SentenceFollower(
+        state, target_name, started_at, _split_sentences(text),
+        pane=source_pane,
+        highlight=_highlight_wanted(event, source_pane),
+        delay_s=_playout_delay_s(target_name))
     # Start the remote pause before anything blocking, so its ssh overlaps the
     # lock wait and the render instead of being paid in series inside
     # before_speech(). Both local render paths have always done this; the phone
@@ -2099,7 +2328,7 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
                 pass
             watcher = threading.Thread(
                 target=_watch_remote_progress,
-                args=(proc, state, target_name, started_at, report),
+                args=(proc, state, target_name, started_at, report, follower),
                 daemon=True)
             watcher.start()
             try:
@@ -2128,6 +2357,10 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
             except Exception:  # noqa: BLE001
                 pass
         finally:
+            # Before after_speech/clear: a follower still walking its timeline
+            # would otherwise write the row back moments after we cleared it,
+            # leaving a dead reply on every surface until the next one lands.
+            follower.stop()
             coordinator.after_speech()
             _speech_event("end", text=text[:160], session=session,
                           source=event.source.value, target="remote-say")
@@ -2322,24 +2555,7 @@ def submit_event(event: Event,
     except OSError as e:  # noqa: BLE001
         log.warning("intake: text sidecar write failed: %s", e)
 
-    # Only highlight for hook sources — CLI text is never in the pane.
-    from ..types import Source as _Source
-    do_highlight = event.source not in (_Source.CLI,)
-
-    # Skip this turn's highlighting if the user has typed in the source pane
-    # recently: grabbing copy-mode mid-keystroke would yank the view out from
-    # under them. Threshold via MEDIA_HIGHLIGHT_KEYSTROKE_S (0 disables the
-    # skip). Two things override the skip ("I'm attending — follow this one"):
-    # the `highlight-now` force key (tmux `prefix V`, until you type again), and
-    # the control popup being open for this pane.
-    if do_highlight:
-        _ks_window_s = float(
-            os.environ.get("MEDIA_HIGHLIGHT_KEYSTROKE_S", "5"))
-        _src_pane = os.environ.get("TMUX_PANE")
-        if (_src_pane and _pane_recent_keystrokes(_src_pane, _ks_window_s)
-                and not _force_highlight_active(_src_pane)
-                and not _popup_open_for(_src_pane)):
-            do_highlight = False
+    do_highlight = _highlight_wanted(event, os.environ.get("TMUX_PANE") or "")
 
     # Phase 1: resolve all render futures and collect clip durations.
     # Parallel renders are mostly done by now; future.result() is instant
@@ -2384,15 +2600,8 @@ def submit_event(event: Event,
     total_duration_s = sum(durations)
 
     # Delay the highlight so it fires when the audio is actually *heard*, not
-    # when mpv reports idle. For Snapcast rooms that's the buffer drain
-    # (MEDIA_SNAPCAST_LATENCY_MS). For a remote-played target (Grade B: phone
-    # mpv over the bridge, clips pre-fetched local) it's just the bridge
-    # loadfile + mpv start — much smaller — so a per-target override wins:
-    # MEDIA_SPEECH_PLAYOUT_MS_<TARGET>.
-    _playout_key = f"MEDIA_SPEECH_PLAYOUT_MS_{target.name.upper().replace('-', '_')}"
-    _highlight_delay_s = float(
-        os.environ.get(_playout_key)
-        or os.environ.get("MEDIA_SNAPCAST_LATENCY_MS", "500")) / 1000.0
+    # when mpv reports idle.
+    _highlight_delay_s = _playout_delay_s(target.name)
 
     # Cumulative start offset of each clip on the response-wide timeline.
     offsets: list[float] = []

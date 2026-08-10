@@ -2270,6 +2270,36 @@ def cmd_skip(a) -> int:
             pass
         _force_highlight_sentence(sentences[target])
         return 0
+    # One clip holding every sentence, with the boundaries known: the far side
+    # rendered the whole reply in one piece (the phone lane), so there is no
+    # reader loop watching for a nav flag and no playlist to step — but there IS
+    # a timeline. Seek the player to where the sentence starts.
+    offsets = ex.get("clip_offsets_s") or []
+    if len(offsets) == n:
+        if target >= n:
+            return _seek_to_end(sock)
+        try:
+            ipc.command(sock, "seek", float(offsets[target]), "absolute",
+                        critical=True)
+        except ipc.MpvIpcError:
+            return 1
+        # Move the timeline's origin with the playhead. The follower that writes
+        # current_sentence for this lane runs on the clock, not on the player —
+        # left alone it would drag the highlight back to wherever the reply had
+        # got to, a beat after the jump.
+        try:
+            ex["play_started_at"] = time.time() - float(offsets[target])
+            ex["current_sentence"] = sentences[target]
+            ex["current_sentence_idx"] = target
+            StateStore().set_now_playing(
+                "speech", uri=(np or {}).get("uri") or "",
+                started_at=(np or {}).get("started_at") or time.time(),
+                target=(np or {}).get("target") or SPEECH_TARGET.name,
+                extras=ex)
+        except Exception:  # noqa: BLE001 — the seek already happened
+            pass
+        _force_highlight_sentence(sentences[target])
+        return 0
     # Live readout: hand the jump to the reader loop (honored even while
     # paused). Key the flag by the target that's actually playing, falling
     # back to the CLI's resolved speech target — NOT "local", which orphans
