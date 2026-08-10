@@ -32,6 +32,23 @@ _OFF = "-"
 # call, and every unit test that called the loader once passed anyway.
 _OFF_KEYS: set[str] = set()
 
+# Namespaces this loader owns. A `-` is normalised for these keys whether or
+# not any file mentions them: the switch that most needs turning off is a
+# per-target one like MEDIA_REMOTE_SAY_CMD_ROOMS, which by design appears in no
+# file — it exists only to override the global fallback. Left unnormalised the
+# literal "-" is truthy, so the setting reads as ON and something tries to run
+# "-" as a command. Other keys are still handled when a file names them, so an
+# unrelated var whose real value is legitimately `-` is never touched.
+_OFF_PREFIXES = ("MEDIA_", "RELAY_")
+
+
+def _mark_explicit_off() -> None:
+    """Turn `-` into an empty string for this loader's own namespaces."""
+    for k, v in list(os.environ.items()):
+        if v == _OFF and k.startswith(_OFF_PREFIXES):
+            os.environ[k] = ""
+            _OFF_KEYS.add(k)
+
 
 def _dequote(v: str) -> str:
     """Remove one matched pair of surrounding quotes, and only that.
@@ -82,7 +99,13 @@ def _load_one(path: str, label: str, off: set[str] | None = None) -> None:
                 if not k or k in off:
                     continue
                 cur = os.environ.get(k)
-                if cur == _OFF:
+                if cur == _OFF or (not cur and v == _OFF):
+                    # From the environment or from the file — `-` means off
+                    # either way. A config file is the more likely place to
+                    # write it (`MEDIA_REMOTE_SAY_CMD_ROOMS=-` to keep one
+                    # target rendering locally), and left unhandled the literal
+                    # "-" is truthy, so the setting reads as ON with a command
+                    # of "-" that fails when something tries to run it.
                     os.environ[k] = ""
                     off.add(k)
                     continue
@@ -113,6 +136,7 @@ def load_env_file(label: str = "hook") -> None:
     config.
     """
     off = _OFF_KEYS                # honoured by every layer, and by later calls
+    _mark_explicit_off()
     candidates = [
         os.environ.get("MEDIA_ENV_FILE") or "",
         os.environ.get("RELAY_ENV_FILE") or "",

@@ -54,14 +54,15 @@ LOG = os.environ.get("AM_SPEECHD_LOG", "")
 # speechd client picks a room — the only vocabulary the protocol gives us that
 # means anything here.
 #
-# How far this reaches, measured rather than assumed: the chosen target lands
-# on the history row and its now-playing uri, which is what the popup reads to
-# decide which player its controls talk to. It does NOT currently change where
-# the audio comes out. When MEDIA_REMOTE_SAY_CMD is set, agent-media renders
-# every utterance down that one lane whatever the target says, so on a host
-# configured for the phone, `-y rooms` is labelled rooms and heard on the
-# phone. Making the voice pick the room means teaching agent-media to choose
-# the lane from the target; until then the list promises more than it delivers.
+# How far this reaches depends on the host's config, so it is worth being
+# precise. The chosen target always lands on the history row and its
+# now-playing uri, which is what the popup reads to decide which player its
+# controls talk to. Whether it also changes where the audio comes out depends
+# on MEDIA_REMOTE_SAY_CMD_<TARGET> (see submit._remote_say_cmd): a target with
+# its own lane uses it, and a target set to `-` renders and plays locally. A
+# host that only sets the global MEDIA_REMOTE_SAY_CMD sends every target down
+# that one lane, so `-y rooms` is labelled rooms and heard wherever the global
+# lane points — correct, but not what the voice name suggests.
 TARGETS = ("default", "local", "rooms", "phone")
 
 # A speechd client cannot see that "speak" means shipping audio across the

@@ -97,6 +97,43 @@ def test_a_second_load_does_not_refill_it(tmp_path, monkeypatch):
     assert os.environ["MEDIA_REMOTE_SAY_CMD"] == ""
 
 
+def test_the_sentinel_works_from_the_file_too(tmp_path, monkeypatch):
+    """`MEDIA_REMOTE_SAY_CMD_ROOMS=-` in agent-media.env is the natural way to
+    keep one target local. Backfilled literally, "-" is truthy: the setting
+    would read as ON with a command of "-"."""
+    env = _env_file(tmp_path, "MEDIA_REMOTE_SAY_CMD_ROOMS=-\n")
+    monkeypatch.setenv("MEDIA_ENV_FILE", str(env))
+    monkeypatch.delenv("MEDIA_REMOTE_SAY_CMD_ROOMS", raising=False)
+
+    load_env_file("test")
+
+    assert os.environ["MEDIA_REMOTE_SAY_CMD_ROOMS"] == ""
+
+
+def test_off_works_for_a_key_no_file_mentions(tmp_path, monkeypatch):
+    """The switch that most needs turning off — a per-target override like
+    MEDIA_REMOTE_SAY_CMD_ROOMS — appears in no file by design: it exists only
+    to override a global fallback. Normalising only file-named keys left it as
+    a literal "-", which is truthy, so the lane read as ON and ran "-"."""
+    env = _env_file(tmp_path, "MEDIA_REMOTE_SAY_CMD=curl -sS http://p8a:8790/say\n")
+    monkeypatch.setenv("MEDIA_ENV_FILE", str(env))
+    monkeypatch.setenv("MEDIA_REMOTE_SAY_CMD_ROOMS", "-")
+
+    load_env_file("test")
+
+    assert os.environ["MEDIA_REMOTE_SAY_CMD_ROOMS"] == ""
+
+
+def test_a_dash_outside_our_namespace_is_untouched(tmp_path, monkeypatch):
+    env = _env_file(tmp_path, "MEDIA_SPEECH_DEFAULT_TARGET=phone\n")
+    monkeypatch.setenv("MEDIA_ENV_FILE", str(env))
+    monkeypatch.setenv("SOME_OTHER_TOOL_INPUT", "-")
+
+    load_env_file("test")
+
+    assert os.environ["SOME_OTHER_TOOL_INPUT"] == "-"
+
+
 def test_normal_layering_is_unchanged(tmp_path, monkeypatch):
     env = _env_file(tmp_path, "MEDIA_SPEECH_DEFAULT_TARGET=phone\n")
     monkeypatch.setenv("MEDIA_ENV_FILE", str(env))

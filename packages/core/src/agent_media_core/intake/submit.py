@@ -28,7 +28,7 @@ from typing import Callable, Optional
 from .._notify import notify
 from ..render import render_text
 from ..route import Coordinator
-from ..sinks.speech import SinkSpeech
+from ..sinks.speech import SinkSpeech, _env_key
 from ..state import StateStore
 from ..types import Event, Priority, Target
 
@@ -1958,6 +1958,28 @@ def _kill_process_group(proc) -> None:
             continue
 
 
+def _remote_say_cmd(target: Target) -> str:
+    """The remote-say lane for one target, or "" to render and play locally.
+
+    Resolution mirrors every other per-target setting (see sinks.speech._env_key):
+
+      1. ``MEDIA_REMOTE_SAY_CMD_<TARGET>`` — this target's lane
+      2. ``MEDIA_REMOTE_SAY_CMD``         — the host's lane for any target
+
+    The fallback is what keeps single-lane hosts working untouched, but it is
+    also why the target used to be a label and nothing more: one global command
+    served every target, so asking for `rooms` was heard wherever the global
+    lane pointed. A target that should render locally now says so with the off
+    sentinel — ``MEDIA_REMOTE_SAY_CMD_ROOMS=-`` — which is exactly why the
+    sentinel had to exist: an empty value here is indistinguishable from an
+    unset one, and unset means "fall back to the global lane".
+    """
+    per_target = os.environ.get(_env_key("MEDIA_REMOTE_SAY_CMD", target.name))
+    if per_target is not None:
+        return per_target
+    return os.environ.get("MEDIA_REMOTE_SAY_CMD", "")
+
+
 def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
                        state: StateStore, event: Event) -> Optional[int]:
     """Render a reply on a remote low-latency hub instead of locally.
@@ -2166,9 +2188,9 @@ def submit_event(event: Event,
     # reply *there* instead of locally — the hub renders the text to its own
     # Snapcast fifo. The coordinator still ducks from here (it drives the rooms
     # snapserver over the tailnet via MEDIA_SNAP_JSONRPC_HOST), so music dips
-    # under speech as before. Env-gated: unset elsewhere ⇒ the local render+play
-    # path below is unchanged.
-    remote_say = os.environ.get("MEDIA_REMOTE_SAY_CMD")
+    # under speech as before. Env-gated per target (see _remote_say_cmd): no
+    # lane for this target ⇒ the local render+play path below is unchanged.
+    remote_say = _remote_say_cmd(target)
     if remote_say:
         return _submit_remote_say(text, remote_say, coordinator, state, event)
 
@@ -2758,9 +2780,9 @@ def submit_stream(sentences,
     # reply *there* instead of locally — the hub renders the text to its own
     # Snapcast fifo. The coordinator still ducks from here (it drives the rooms
     # snapserver over the tailnet via MEDIA_SNAP_JSONRPC_HOST), so music dips
-    # under speech as before. Env-gated: unset elsewhere ⇒ the local render+play
-    # path below is unchanged.
-    remote_say = os.environ.get("MEDIA_REMOTE_SAY_CMD")
+    # under speech as before. Env-gated per target (see _remote_say_cmd): no
+    # lane for this target ⇒ the local render+play path below is unchanged.
+    remote_say = _remote_say_cmd(target)
     if remote_say:
         return _submit_remote_say(" ".join(sentences), remote_say, coordinator, state, event)
 
