@@ -537,13 +537,24 @@ def _age(path, seconds):
 
 
 def test_hold_without_ttl_never_expires(monkeypatch, tmp_path):
-    """The Automate mic-detect bridge writes an empty flag; dictation lasts as
-    long as it lasts, and must not be cut off."""
+    """Dictation lasts as long as it lasts, and must not be cut off."""
     flag = tmp_path / "call-guard.hold"
     monkeypatch.setenv("MEDIA_CALL_GUARD_HOLD_FLAG", str(flag))
     cfg = call_guard.Config()
     call_guard._set_hold(cfg)
-    assert flag.read_text() == ""
+    assert call_guard._flag_ttl(cfg.hold_flag) is None   # no ttl ⇒ no expiry
+    _age(flag, 86_400)
+    assert call_guard.flag_present(cfg) is True
+
+
+def test_an_empty_flag_from_the_bridge_never_expires(monkeypatch, tmp_path):
+    """The Automate mic-detect bridge writes the flag itself, with no contents
+    at all — it never goes through _set_hold, so the no-ttl guarantee has to
+    hold for a body this code did not write."""
+    flag = tmp_path / "call-guard.hold"
+    flag.write_text("")
+    monkeypatch.setenv("MEDIA_CALL_GUARD_HOLD_FLAG", str(flag))
+    cfg = call_guard.Config()
     _age(flag, 86_400)
     assert call_guard.flag_present(cfg) is True
 

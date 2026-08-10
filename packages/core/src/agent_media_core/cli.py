@@ -4298,16 +4298,27 @@ def _mic_detect_facts() -> "dict[str, str]":
     the guard.
 
     Only meaningful where call-guard runs, so absence of the guard means no
-    facts rather than a misleading zero. The reference point is the LATER of the guard's
-    start and the last hold: a guard that came up ten minutes ago has had no
-    chance to see a hold yet, and flagging that would train everyone to ignore
-    the warning.
+    facts rather than a misleading zero.
+
+    Quiet time is measured from the last hold whenever there has been one, and
+    only from the guard's start when there has never been one — a guard that
+    came up ten minutes ago has had no chance to see a hold yet, and flagging
+    that would train everyone to ignore the warning. It used to be measured
+    from the LATER of the two, which meant every restart of a supervised
+    service reset the clock: deploy, crash or reboot more often than the 24h
+    limit and a permanently dead trigger never gets reported at all. The
+    restart is exactly when you are least likely to notice.
+
+    The source is reported alongside, because the two things that write the
+    flag — the mic-detect bridge and a person running `--hold` — answer
+    different questions, and "fired 3h ago" is not evidence of a live trigger
+    if it was typed.
     """
     import time as _time
     from pathlib import Path
 
     try:
-        from .call_guard import advert_path, last_hold_path
+        from .call_guard import advert_path, last_hold_path, last_hold_source
     except Exception:                                # pragma: no cover
         return {}
 
@@ -4325,7 +4336,11 @@ def _mic_detect_facts() -> "dict[str, str]":
         last_hold = 0.0
     if last_hold:
         facts["mic_detect_last_hold_s"] = str(int(_time.time() - last_hold))
-    facts["mic_detect_quiet_s"] = str(int(_time.time() - max(guard_started, last_hold)))
+        src = last_hold_source()
+        if src:
+            facts["mic_detect_last_hold_src"] = src
+    facts["mic_detect_quiet_s"] = str(
+        int(_time.time() - (last_hold or guard_started)))
     return facts
 
 

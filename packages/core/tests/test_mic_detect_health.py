@@ -92,6 +92,61 @@ def test_zero_disables_the_check(monkeypatch):
     assert health_problems(_mic_detect_facts()) == []
 
 
+def test_a_guard_restart_does_not_reset_the_quiet_clock():
+    """The clock used to run from the LATER of guard-start and last hold, so
+    every restart of a supervised service reset it. Deploy, crash or reboot
+    more often than the limit and a permanently dead trigger is never reported
+    — and a restart is exactly when nobody is watching for it."""
+    call_guard.publish_flag_path(call_guard.Config())
+    call_guard.note_external_hold()
+    _age(call_guard.last_hold_path(), 60 * 60 * 50)    # last fired 50h ago
+    # ...and the guard came up a minute ago, as it does after any deploy.
+    _age(call_guard.advert_path(), 60)
+
+    facts = _mic_detect_facts()
+    assert int(facts["mic_detect_quiet_s"]) > 60 * 60 * 49
+    assert any("mic-detect quiet" in p for p in health_problems(facts))
+
+
+def test_the_heartbeat_records_who_held(monkeypatch, tmp_path):
+    """A hold someone typed is not evidence that mic-detect is alive, and both
+    write the same flag. Without the source the log of 25 holds yesterday
+    cannot answer whether the bridge is running."""
+    flag = tmp_path / "hold"
+    monkeypatch.setenv("MEDIA_CALL_GUARD_HOLD_FLAG", str(flag))
+    cfg = call_guard.Config()
+    call_guard.publish_flag_path(cfg)
+
+    call_guard._set_hold(cfg, source="cli")
+    call_guard.note_external_hold(call_guard._flag_source(cfg.hold_flag))
+    assert _mic_detect_facts()["mic_detect_last_hold_src"] == "cli"
+
+
+def test_an_unlabelled_flag_is_recorded_as_external(monkeypatch, tmp_path):
+    """The Automate bridge writes an empty flag and must keep working. Call it
+    what it is — un-attributed — rather than assuming the only writer we know."""
+    flag = tmp_path / "hold"
+    flag.write_text("")                                # what the bridge writes
+    monkeypatch.setenv("MEDIA_CALL_GUARD_HOLD_FLAG", str(flag))
+    cfg = call_guard.Config()
+    call_guard.publish_flag_path(cfg)
+
+    call_guard.note_external_hold(call_guard._flag_source(cfg.hold_flag))
+    assert _mic_detect_facts()["mic_detect_last_hold_src"] == "external"
+
+
+def test_a_ttl_flag_still_parses_with_a_source(monkeypatch, tmp_path):
+    """ttl and src share the flag's body; adding one must not break the other,
+    since a TTL that stops expiring leaves music quiet indefinitely."""
+    flag = tmp_path / "hold"
+    monkeypatch.setenv("MEDIA_CALL_GUARD_HOLD_FLAG", str(flag))
+    cfg = call_guard.Config()
+
+    call_guard._set_hold(cfg, ttl=120, source="cece")
+    assert call_guard._flag_ttl(cfg.hold_flag) == 120
+    assert call_guard._flag_source(cfg.hold_flag) == "cece"
+
+
 def test_only_the_flag_path_counts_as_proof_of_life(monkeypatch, tmp_path):
     """A phone CALL also ducks audio, but says nothing about whether mic-detect
     is alive — so it must not tick the heartbeat."""

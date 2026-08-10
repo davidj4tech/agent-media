@@ -545,13 +545,38 @@ def flag_present(cfg: Config) -> bool:
     return True
 
 
-def _set_hold(cfg: Config, ttl: float | None = None) -> None:
+def _flag_source(path: str) -> str:
+    """Who wrote this hold flag, from its contents (``src=cli``), or "".
+
+    The heartbeat records only that *something* held, and two very different
+    things write the same flag: the Automate mic-detect bridge, and a person or
+    script running ``--hold`` (the Sam/Cece turn-taking does exactly that). So
+    "the trigger fired yesterday" could mean mic-detect is alive or that someone
+    typed a command, and the file could not tell them apart — which is the whole
+    question the heartbeat exists to answer.
+    """
+    try:
+        with open(path) as fh:
+            body = fh.read(64)
+    except OSError:
+        return ""
+    for line in body.splitlines():
+        key, _, value = line.partition("=")
+        if key.strip() == "src":
+            return value.strip()[:16]
+    return ""
+
+
+def _set_hold(cfg: Config, ttl: float | None = None, source: str = "cli") -> None:
     p = Path(cfg.hold_flag)
     p.parent.mkdir(parents=True, exist_ok=True)
     # Rewriting rather than touching is what makes a heartbeat work: mtime is
     # the clock the TTL is measured against, so re-running --hold extends the
     # hold instead of starting a second one.
-    p.write_text(f"ttl={ttl:g}\n" if ttl else "")
+    body = f"ttl={ttl:g}\n" if ttl else ""
+    if source:
+        body += f"src={source}\n"
+    p.write_text(body)
 
 
 def _clear_hold(cfg: Config) -> None:
@@ -571,14 +596,29 @@ def last_hold_path() -> Path:
     return state_dir() / _LAST_HOLD_NAME
 
 
-def note_external_hold() -> None:
-    """Timestamp an external hold, best-effort. mtime is the whole record."""
+def note_external_hold(source: str = "") -> None:
+    """Timestamp an external hold, best-effort.
+
+    mtime is the timestamp; the contents name the source, because a hold from
+    the mic-detect bridge and a hold someone typed are the same event here and
+    only one of them answers "is barge-in still working". An unlabelled flag —
+    what the Automate bridge writes — is recorded as "external": honest about
+    being un-attributed rather than guessing at the only writer we know of.
+    """
     try:
         p = last_hold_path()
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.touch()
+        p.write_text(f"{source or 'external'}\n")
     except OSError as exc:                      # pragma: no cover - unwritable
         log.debug("could not record last hold: %s", exc)
+
+
+def last_hold_source() -> str:
+    """Who last held, per note_external_hold. "" when there is no record."""
+    try:
+        return last_hold_path().read_text().strip()[:16]
+    except OSError:
+        return ""
 
 
 def publish_flag_path(cfg: Config) -> None:
@@ -736,7 +776,7 @@ def _run_loop(cfg: Config, dry_run: bool = False) -> None:
                 if flag:
                     # Only the flag path proves the external trigger is alive;
                     # a phone call would tick this without mic-detect running.
-                    note_external_hold()
+                    note_external_hold(_flag_source(cfg.hold_flag))
                 if not dry_run:
                     hold.start()  # instant re-pause on any un-pause
                 pause_sockets(cfg, dry_run=dry_run, quiet=False)
@@ -804,6 +844,11 @@ def main() -> int:
                              "wrong for one that can die mid-conversation.")
     parser.add_argument("--release", action="store_true",
                         help="clear the external-hold flag (auto-resume) and exit")
+    parser.add_argument("--source", default="cli", metavar="NAME",
+                        help="with --hold: who is holding, recorded in the "
+                             "heartbeat (default: cli). The mic-detect health "
+                             "check reports it, so a hold you typed is not "
+                             "mistaken for proof the trigger is alive.")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -817,7 +862,7 @@ def main() -> int:
     if args.hold or args.release:
         cfg.hold_flag = resolve_trigger_flag(cfg)
     if args.hold:
-        _set_hold(cfg, args.ttl)
+        _set_hold(cfg, args.ttl, source=args.source)
         suffix = f" (expires in {args.ttl:g}s unless refreshed)" if args.ttl else ""
         print(f"hold flag set: {cfg.hold_flag}{suffix}")
         return 0
