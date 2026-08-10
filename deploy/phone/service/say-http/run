@@ -1,0 +1,19 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# Speak-on-this-device over HTTP, so red5 does not need ssh to make this phone
+# talk.
+#
+# ssh to this device stalls without erroring — a radio doze or a tailnet path
+# change leaves an established connection hanging, and ssh only gives up after
+# ServerAliveInterval x ServerAliveCountMax. With multiplexing those belong to
+# the master, so a per-command timeout the caller passes is inert. One measured
+# utterance sat in a dead socket for 90 of its 104 seconds.
+#
+# Every HTTP request is its own connection with nothing to go stale between
+# them, and curl's --max-time is the caller's own bound rather than a shared
+# master's. Rendering is unchanged: this shells out to say.sh, which stays the
+# single implementation.
+exec 2>&1
+export HOME=/data/data/com.termux/files/home
+export PREFIX=/data/data/com.termux/files/usr
+export PATH="$HOME/projects/agent-media/.venv/bin:$HOME/.local/bin:$PREFIX/bin:$PATH"
+exec python3 "$HOME/projects/agent-media/deploy/phone/say-http.py"
