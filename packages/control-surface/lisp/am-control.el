@@ -32,6 +32,7 @@
 
 (require 'json)
 (require 'subr-x)
+(require 'seq)
 (require 'cl-lib)
 
 (defgroup am-control nil
@@ -117,14 +118,37 @@ from the environment, else `$XDG_STATE_HOME/agent-media/call-guard.hold'."
 
 ;;; Plumbing — the only code here that shells out
 
+(defcustom am-control-search-path
+  '("~/.local/bin" "~/projects/agent-media/.venv/bin")
+  "Extra directories to find our own commands in when `exec-path' misses them.
+
+A daemon started by systemd or a desktop session inherits a minimal PATH —
+/usr/bin and little else — so a prefix of `(\"media\")' fails with \"Searching
+for program: no such file or directory\" on a machine where the command is
+plainly on the user's PATH in every shell.  The remote prefix hides this,
+because there the program being launched is ssh and `media' is resolved by the
+login shell on the far side; it appears the moment someone follows the advice
+to use a bare local command."
+  :type '(repeat directory))
+
+(defun am-control--resolve (program)
+  "Absolute PROGRAM, looked up in `exec-path' then `am-control-search-path'."
+  (or (executable-find program)
+      (seq-some (lambda (dir)
+                  (let ((cand (expand-file-name program dir)))
+                    (and (file-executable-p cand) cand)))
+                am-control-search-path)
+      program))                         ; let the process error name it
+
 (defun am-control--prefix (action kind)
   "Command prefix for ACTION.  KIND is `media' or `hold'."
-  (let ((local (memq action am-control-local-actions)))
-    (pcase kind
-      ('hold (if local am-control-local-hold-command
-               am-control-remote-hold-command))
-      (_     (if local am-control-local-command
-               am-control-remote-command)))))
+  (let* ((local (memq action am-control-local-actions))
+         (prefix (pcase kind
+                   ('hold (if local am-control-local-hold-command
+                            am-control-remote-hold-command))
+                   (_     (if local am-control-local-command
+                            am-control-remote-command)))))
+    (cons (am-control--resolve (car prefix)) (cdr prefix))))
 
 (defun am-control--log (fmt &rest args)
   (when am-control-debug

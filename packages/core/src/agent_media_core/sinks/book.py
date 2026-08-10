@@ -126,6 +126,21 @@ def _remote_book_cache_ssh(target: Target) -> str:
             or os.environ.get("MEDIA_MUSIC_LOCAL_SSH", ""))
 
 
+def _probe_timeout() -> float:
+    """Seconds to allow a remote cache probe.
+
+    Was a flat 12. On a link at 450ms RTT with a fifth of its packets dropped,
+    that probe measures 1.2-5s on a good minute and simply exceeds 12 on a bad
+    one — and the whole staging step then reports failure for a phone that is
+    answering fine. A bound tuned on a fast network becomes a fault injector on
+    a slow one, so it is generous by default and configurable.
+    """
+    try:
+        return float(os.environ.get("MEDIA_BOOK_CACHE_PROBE_TIMEOUT", "45"))
+    except ValueError:
+        return 45.0
+
+
 def _remote_cache_path(path: Path, target: Target, *, create: bool = True) -> Optional[tuple[str, str, str]]:
     """Return (ssh_host, remote_dir, remote_path) for a target book cache."""
     if target.name in ("", "local"):
@@ -143,7 +158,7 @@ def _remote_cache_path(path: Path, target: Target, *, create: bool = True) -> Op
     p = subprocess.run(
         ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", host, remote_cmd],
         text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-        timeout=12, check=False,
+        timeout=_probe_timeout(), check=False,
     )
     if p.returncode != 0 or not p.stdout.strip():
         return None
@@ -163,7 +178,7 @@ def remote_cached_path(path: Path, target: Target) -> Optional[str]:
         p = subprocess.run(
             ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", host, test_cmd],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            timeout=12, check=False,
+            timeout=_probe_timeout(), check=False,
         )
         return remote_path if p.returncode == 0 else None
     except Exception:
@@ -481,7 +496,8 @@ class SinkBook:
             device = _device_for(target)
             if device is not None:
                 try:
-                    ipc.set_property(endpoint, "audio-device", device)
+                    ipc.set_property(endpoint, "audio-device", device,
+                                     critical=True)
                 except ipc.MpvIpcError as e:
                     log.warning("sink-book: set audio-device %s failed: %s", device, e)
 
@@ -519,23 +535,31 @@ class SinkBook:
             except mopidy.MopidyRpcError as e:
                 log.warning("sink-book: Mopidy RPC failed, falling back to "
                             "direct ipc: %s", e)
+        # critical throughout: this call IS the playback. The breaker exists to
+        # drop observational chatter, every caller of which treats a skip as
+        # "unknown, carry on" — but skipping a loadfile does not degrade
+        # playback, it removes it, and the caller has no fallback to reach for.
+        # Left non-critical, an open breaker on this endpoint made `book play`
+        # return cleanly and produce silence, reported only as "staging failed"
+        # from a layer that had nothing to do with it.
         if secs > 0:
             # mpv 0.37: loadfile <url> [<flags> [<options>]] — pass `start`
             # as an option so we resume without racing the async file-load.
             try:
                 ipc.command(endpoint, "loadfile", play_uri, "replace",
-                            f"start={secs:.3f}")
+                            f"start={secs:.3f}", critical=True)
             except (ipc.MpvIpcError, OSError):
                 # Arg-order differs across mpv versions; load then seek.
-                ipc.command(endpoint, "loadfile", play_uri, "replace")
+                ipc.command(endpoint, "loadfile", play_uri, "replace",
+                            critical=True)
                 self._seek_abs(secs, endpoint)
         else:
-            ipc.command(endpoint, "loadfile", play_uri, "replace")
+            ipc.command(endpoint, "loadfile", play_uri, "replace", critical=True)
 
         # Don't let a lingering pause/mute swallow the start.
         for prop in ("pause", "mute"):
             try:
-                ipc.set_property(endpoint, prop, False)
+                ipc.set_property(endpoint, prop, False, critical=True)
             except (ipc.MpvIpcError, OSError):
                 pass
         return norm

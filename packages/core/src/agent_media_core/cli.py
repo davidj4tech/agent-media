@@ -3767,6 +3767,37 @@ def cmd_doc(a) -> int:
         print("Agenda")
         return 0
 
+    if a.doc_cmd == "play" and getattr(a, "stdin", False):
+        # A region or a buffer is not a file. Selection is the editor's job —
+        # it knows what is highlighted and what mode the buffer is in — so the
+        # contract has to accept text as well as a path, or every editor
+        # binding would first have to invent a temporary file.
+        import hashlib
+        text = sys.stdin.read()
+        if not text.strip():
+            print("media doc: nothing on stdin", file=sys.stderr)
+            return 1
+        fmt = getattr(a, "fmt", "") or "md"
+        sections = docmod.sections_for(text, fmt)
+        if not sections:
+            print("media doc: nothing speakable in that text", file=sys.stderr)
+            return 1
+        title = getattr(a, "title", "") or "Selection"
+        # Keyed on the text itself: a buffer changes between readings, and a
+        # path-and-mtime key cannot see that.
+        key = hashlib.sha256(f"{fmt}|{text}".encode()).hexdigest()[:16]
+        clip = docmod.render_sections(sections, f"stdin-{key}", force=False)
+        if not clip:
+            print("media doc: could not render that text", file=sys.stderr)
+            return 1
+        r = _srv().book_play(str(clip), resume=False, start_ms=-1,
+                             target=getattr(a, "target", "") or "", title=title)
+        if r.get("error"):
+            print(f"media doc: {r['error']}", file=sys.stderr)
+            return 1
+        print(title)
+        return 0
+
     doc = docmod.find_doc(a.name, cwd=Path.cwd())
     if not doc:
         print(f"media doc: no document matching {a.name!r}", file=sys.stderr)
@@ -4887,7 +4918,14 @@ def _add_book_parser(sub) -> None:
                          "(PARA membership is a tag, not a folder)")
 
     dp = d.add_parser("play", help="render (cached) and play on the book channel")
-    dp.add_argument("name", help="slug, path, or a substring of either")
+    dp.add_argument("name", nargs="?", default="",
+                    help="slug, path, or a substring of either")
+    dp.add_argument("--stdin", action="store_true",
+                    help="read the text to speak from stdin (a region or a "
+                         "buffer, sent by an editor) instead of a file")
+    dp.add_argument("--fmt", default="md", choices=("md", "org"),
+                    help="markup of the --stdin text (default md)")
+    dp.add_argument("--title", default="", help="display title for --stdin")
     dp.add_argument("--target", default="", help="rooms|local|phone")
     dp.add_argument("--no-resume", action="store_true")
     dp.add_argument("--force", action="store_true",

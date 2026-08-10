@@ -14,7 +14,9 @@ that isn't installed — falls back to edge when `fallback_to_edge=True`.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Callable, Optional
@@ -33,14 +35,40 @@ _EDGE_RETRIES = int(os.environ.get("MEDIA_EDGE_RETRIES", "3"))
 _EDGE_RETRY_BACKOFF_S = float(os.environ.get("MEDIA_EDGE_RETRY_BACKOFF_S", "0.6"))
 
 
+def _engine_path(bin_name: str) -> str:
+    """Absolute `bin_name`, looked up beside our own interpreter first.
+
+    Render engines are console scripts installed into the same virtualenv as
+    agent-media, and they are found only because that venv's bin is on the
+    caller's PATH. A hook, a systemd unit or an editor daemon inherits a
+    minimal PATH — /usr/bin and little else — and then the engine is missing
+    for reasons that have nothing to do with the engine. Since we know where
+    our own interpreter lives, we know where its scripts live too.
+    """
+    if os.path.sep in bin_name:
+        return bin_name
+    cand = Path(sys.executable).parent / bin_name
+    if cand.exists():
+        return str(cand)
+    return shutil.which(bin_name) or bin_name
+
+
 def _render_edge(text: str, outfile: Path, *, voice: str, edge_bin: str) -> tuple[bool, str]:
     err = ""
     for attempt in range(_EDGE_RETRIES + 1):
-        proc = subprocess.run(
-            [edge_bin, "--text", text, "--voice", voice, "--write-media", str(outfile)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-        )
+        try:
+            proc = subprocess.run(
+                [_engine_path(edge_bin), "--text", text, "--voice", voice,
+                 "--write-media", str(outfile)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+            )
+        except OSError as e:
+            # "Not installed" is a documented outcome of this function — the
+            # caller falls back to another engine on it. Letting it escape as
+            # FileNotFoundError instead turned a missing binary into a
+            # traceback out of `media`, with no fallback attempted at all.
+            return False, f"{edge_bin}: {e}"
         err = proc.stderr.decode(errors="replace").strip()
         ok = proc.returncode == 0 and outfile.exists() and outfile.stat().st_size > 0
         if ok:
