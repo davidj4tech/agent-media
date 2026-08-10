@@ -49,6 +49,7 @@ than maintained by hand.
 
 ## Handover
 
+- [2026-08-10](handover/2026-08-10.md) — documents you can listen to; the phone lane leaves ssh
 - [2026-08-09](handover/2026-08-09.md) — speech routing and the phone lane
 
 Handover used to be a single `HANDOVER.md` that was **gitignored** — the
