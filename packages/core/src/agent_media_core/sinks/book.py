@@ -27,7 +27,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 
 from .._paths import state_dir
 from .. import mopidy
@@ -183,6 +183,32 @@ def remote_cached_path(path: Path, target: Target) -> Optional[str]:
         return remote_path if p.returncode == 0 else None
     except Exception:
         return None
+
+
+def http_url_for(path: Path, target: Target) -> Optional[str]:
+    """A URL the target can fetch this file from, or None.
+
+    Transport by pull rather than push. `rsync` over ssh needs a reachable
+    host, a resolvable alias, a writable cache directory and a probe that
+    finishes inside its timeout — and every one of those failed at least once
+    today, each time as silence rather than an error. An HTTP GET needs the
+    file to be under a served directory, and mpv brings range requests,
+    retries and caching with it.
+
+    Only files under `MEDIA_BOOK_HTTP_ROOT` qualify, because only those are
+    actually exposed. An audiobook elsewhere on disk still stages over ssh —
+    this narrows the ssh path to the case that needs it rather than pretending
+    to replace it.
+    """
+    base = os.environ.get(_env_key("MEDIA_BOOK_BASEURL", target.name))
+    root = os.environ.get("MEDIA_BOOK_HTTP_ROOT")
+    if not base or not root:
+        return None
+    try:
+        rel = path.resolve().relative_to(Path(root).expanduser().resolve())
+    except (ValueError, OSError):
+        return None
+    return base.rstrip("/") + "/" + "/".join(quote(p) for p in rel.parts)
 
 
 def _stage_local_for_remote(path: Path, target: Target) -> Optional[str]:
@@ -468,7 +494,15 @@ class SinkBook:
         norm = normalize_uri(uri)
         endpoint = _socket_for(target)
         if target.name not in ("", "local") and not norm.startswith(("http://", "https://", "rtsp://")):
-            staged = _stage_local_for_remote(Path(norm).expanduser(), target)
+            # Pull beats push when the file is already exposed: no ssh, no
+            # remote cache to resolve, no copy to time out halfway.
+            url = http_url_for(Path(norm).expanduser(), target)
+            if url:
+                log.debug("sink-book: serving %s over http as %s", norm, url)
+                norm = url
+                staged = url
+            else:
+                staged = _stage_local_for_remote(Path(norm).expanduser(), target)
             if staged:
                 norm = staged
             else:
