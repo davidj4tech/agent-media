@@ -55,11 +55,14 @@ _speaking = threading.Lock()
 
 
 def tailnet_ip() -> str:
-    """The tailnet address, so this is not exposed to the cellular interface.
+    """The tailnet address (AM_SAY_HTTP_BIND overrides), so this is not exposed to the cellular interface.
 
     Falls back to all-interfaces only when a token is set — an open speak-here
     endpoint on a phone's public IP is not something to offer by accident.
     """
+    forced = os.environ.get("AM_SAY_HTTP_BIND", "").strip()
+    if forced:
+        return forced
     for cmd in (["/data/data/com.termux/files/usr/bin/tailscale", "ip", "-4"],
                 ["tailscale", "ip", "-4"]):
         try:
@@ -69,15 +72,23 @@ def tailnet_ip() -> str:
                 return out[0].strip()
         except (OSError, subprocess.SubprocessError):
             continue
-    for name in ("tun0",):
+    # No tailscale CLI here — on Android it is the app, not a binary — and
+    # Termux cannot always read `ip addr`. Ask the routing table instead:
+    # connecting a UDP socket sends nothing, but it makes the kernel choose a
+    # source address for that destination, which is exactly the question.
+    for probe in (os.environ.get("AM_SAY_HTTP_PEER", "100.100.100.100"),
+                  "100.64.0.1"):
         try:
-            out = subprocess.run(["ip", "-4", "addr", "show", name],
-                                 capture_output=True, text=True, timeout=5).stdout
-            for tok in out.split():
-                if tok.count(".") == 3 and tok.startswith("100."):
-                    return tok.split("/")[0]
-        except (OSError, subprocess.SubprocessError):
-            pass
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                s.connect((probe, 9))
+                ip = s.getsockname()[0]
+            finally:
+                s.close()
+            if ip.startswith("100."):
+                return ip
+        except OSError:
+            continue
     return "" if not TOKEN else "0.0.0.0"
 
 
