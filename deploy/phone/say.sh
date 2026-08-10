@@ -12,10 +12,13 @@
 # `mpv file`, because a one-shot has no IPC socket: pause, resume and skip from
 # the popup have nothing to talk to and silently do nothing.
 #
-# Text in on stdin. One line out, immediately before playback:
+# Text in on stdin. Three kinds of line out, immediately before playback:
+#     CLIP <basename>
+#     SENTENCE <idx> <offset seconds>
 #     DURATION <seconds>
-# That plus the local clock is what draws the caller's progress bar. Keep
-# stdout otherwise quiet.
+# That plus the local clock is what draws the caller's progress bar and moves
+# its sentence highlight. DURATION goes last, because it is the line that means
+# "now". Keep stdout otherwise quiet.
 set -eu
 
 VENV="${MEDIA_VENV:-$HOME/projects/agent-media/.venv}"
@@ -44,33 +47,63 @@ mkdir -p "$(dirname "$CLIP")"
 # the program itself, so a piped stdin is swallowed and the script renders
 # silence.
 txt=$(mktemp "$HOME/.cache/agent-media-say.XXXXXX.txt")
-trap 'rm -f "$txt"' EXIT INT TERM
+srt=$(mktemp "$HOME/.cache/agent-media-say.XXXXXX.srt")
+marks=$(mktemp "$HOME/.cache/agent-media-say.XXXXXX.marks")
+trap 'rm -f "$txt" "$srt" "$marks"' EXIT INT TERM
 printf '%s' "$text" > "$txt"
 
 PATH="$VENV/bin:$PATH"; export PATH   # engines shell out to edge-tts et al
 
-"$VENV/bin/python" - "$CLIP" "$txt" <<'PYEOF' >/dev/null 2>&1
+# Sentence marks come out of the render itself: edge-tts reports word/sentence
+# boundaries as it synthesises, and --write-subtitles hands them back in the
+# SAME request as the audio — no second render, no extra latency. The caller
+# holds no clip and cannot afford to poll this device, so these offsets are the
+# only way its highlight can follow the words. Computed here, in the process
+# that already paid for a Python start; written to a file rather than stdout,
+# because an engine that prints would otherwise land in the report stream.
+"$VENV/bin/python" - "$CLIP" "$txt" "$srt" "$marks" <<'PYEOF' >/dev/null 2>&1
 import os, pathlib, sys
 from agent_media_core.intake._env import load_env_file
 load_env_file("remote-say")
-from agent_media_core.render import render_text
+from agent_media_core.render import render_text, sentence_offsets
 
 out = pathlib.Path(sys.argv[1])
 text = pathlib.Path(sys.argv[2]).read_text()
+srt = pathlib.Path(sys.argv[3])
+marks = pathlib.Path(sys.argv[4])
 engine = os.environ.get("MEDIA_RENDER_ENGINE", "edge")
 voice = os.environ.get("MEDIA_RENDER_VOICE_" + engine.upper()) or None
-ok, _ = render_text(text, out, engine=engine, voice=voice)
+ok, _ = render_text(text, out, engine=engine, voice=voice, subtitles=srt)
+if ok:
+    try:
+        # The same split the caller applies to the same text, so index k here
+        # and sentence k there are the same words. A fallback engine writes no
+        # subtitles; then there are simply no marks, and the caller approximates.
+        from agent_media_core.intake.submit import _split_sentences
+        offsets = sentence_offsets(srt.read_text(), _split_sentences(text))
+        if offsets:
+            marks.write_text("".join(f"SENTENCE {i} {o:.3f}\n"
+                                     for i, o in enumerate(offsets)))
+    except Exception:            # marks are a nicety; the audio is the point
+        pass
 sys.exit(0 if ok else 1)
 PYEOF
 
 [ -s "$CLIP" ] || exit 1
 
-# Two lines out, both optional, both read by _watch_remote_progress:
-#   CLIP <basename>   what was rendered, so the caller can ask for it again
-#   DURATION <secs>   how long it is, so the caller can draw a progress bar
+# The report, all of it optional, all of it read by _watch_remote_progress:
+#   CLIP <basename>       what was rendered, so the caller can ask for it again
+#   SENTENCE <i> <secs>   where sentence i starts, so its highlight can follow
+#   DURATION <secs>       how long it is, so the caller can draw a progress bar
 # Basename only: the caller maps it into this same dir via its own config, and
 # has no business knowing our absolute paths.
 printf 'CLIP %s\n' "$(basename "$CLIP")"
+
+# `if`, not `[ … ] && cat`: under `set -e` the && form exits the script when
+# there are no marks, which would drop the reply on the floor for a nicety.
+if [ -s "$marks" ]; then
+    cat "$marks"
+fi
 
 dur=$(ffprobe -v quiet -show_entries format=duration -of csv=p=0 "$CLIP" 2>/dev/null || true)
 case "$dur" in ''|*[!0-9.]*) ;; *) printf 'DURATION %s\n' "$dur" ;; esac

@@ -53,13 +53,22 @@ def _engine_path(bin_name: str) -> str:
     return shutil.which(bin_name) or bin_name
 
 
-def _render_edge(text: str, outfile: Path, *, voice: str, edge_bin: str) -> tuple[bool, str]:
+def _render_edge(text: str, outfile: Path, *, voice: str, edge_bin: str,
+                 subtitles: Optional[Path] = None) -> tuple[bool, str]:
+    """Render one clip. With `subtitles`, also write the word timings.
+
+    edge-tts reports a WordBoundary as it synthesises, and `--write-subtitles`
+    turns those into an SRT cue per word in the *same* request — no second
+    render, no extra latency. That is what lets a host that only receives the
+    finished audio still know where each sentence starts (see subtitles.py).
+    """
     err = ""
     for attempt in range(_EDGE_RETRIES + 1):
         try:
             proc = subprocess.run(
                 [_engine_path(edge_bin), "--text", text, "--voice", voice,
-                 "--write-media", str(outfile)],
+                 "--write-media", str(outfile)]
+                + (["--write-subtitles", str(subtitles)] if subtitles else []),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
             )
@@ -95,15 +104,19 @@ def _render_one(
     voice: Optional[str],
     edge_voice: str,
     edge_bin: str,
+    subtitles: Optional[Path] = None,
 ) -> tuple[bool, str]:
     """Render via a single engine, no fallback. Returns (ok, err).
 
     `edge` is handled directly; any other engine is resolved from the
-    `agent_media.render_engines` entry-point registry.
+    `agent_media.render_engines` entry-point registry. `subtitles` is edge-only
+    — plugins take no such argument, and passing one would break every one of
+    them; a caller that asked for timings just doesn't get a file, which is how
+    it tells that this render couldn't measure them.
     """
     if engine == "edge":
-        return _render_edge(text, outfile,
-                            voice=voice or edge_voice, edge_bin=edge_bin)
+        return _render_edge(text, outfile, voice=voice or edge_voice,
+                            edge_bin=edge_bin, subtitles=subtitles)
     from ..extensions import get_render_engine
     ext = get_render_engine(engine)
     if ext is None:
@@ -124,6 +137,7 @@ def render_text(
     edge_bin: str = "edge-tts",
     fallback_to_edge: bool = True,
     on_fallback: Optional[Callable[[str, str], None]] = None,
+    subtitles: Optional[Path] = None,
 ) -> tuple[bool, str]:
     """Render `text` to `outfile` via `engine`, with a fallback. Returns (ok, err).
 
@@ -137,7 +151,8 @@ def render_text(
     can log/notify. A fallback equal to the primary (or unset) is a no-op.
     """
     ok, err = _render_one(text, outfile, engine=engine, voice=voice,
-                          edge_voice=edge_voice, edge_bin=edge_bin)
+                          edge_voice=edge_voice, edge_bin=edge_bin,
+                          subtitles=subtitles)
     if ok or not fallback_to_edge:
         # `fallback_to_edge=False` means "no fallback, give me the raw result".
         return ok, err
@@ -153,4 +168,5 @@ def render_text(
     # to the primary's namespace); edge is pinned to edge_voice for back-compat.
     fb_voice = edge_voice if fallback == "edge" else None
     return _render_one(text, outfile, engine=fallback, voice=fb_voice,
-                       edge_voice=edge_voice, edge_bin=edge_bin)
+                       edge_voice=edge_voice, edge_bin=edge_bin,
+                       subtitles=subtitles)
