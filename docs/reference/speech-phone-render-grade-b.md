@@ -1,100 +1,99 @@
 # Grade B — phone-rendered speech with red5's popup following
 
-Status: scoping. Goal: **0-latency speech audio on the phone AND the full popup**
-(now_playing, sentence highlight, skip/replay), while Claude stays on red5.
+Status: **landed 2026-08-11** (commits `59532ee`, `ead33fd`), by a cheaper route
+than this doc originally scoped. Goal was: 0-latency speech audio on the phone
+AND the full popup (now_playing, sentence highlight, skip/replay), while Claude
+stays on red5.
 
 ## The core idea
 
 The popup lives wherever the Claude session/tmux runs — **red5**. The audio
-doesn't have to. So:
+doesn't have to. The phone renders and plays the reply locally, so only the
+*text* crosses Germany→AU and playback is ~0-latency; red5 keeps the state every
+surface reads.
 
-- **red5** keeps the whole speech *orchestration*: sentence split, `now_playing`
-  per sentence, the highlight scheduler, nav (skip/replay), duck, the playback
-  lock. The popup reads exactly the state it does today.
-- **The phone** does the *render + playout*, locally (edge-tts → its own
-  sink-speech mpv). Only the **text** crosses Germany→AU; audio never leaves the
-  phone, so playback is ~0-latency.
+What was missing was never the audio. It was `current_sentence`: the phone lane
+sends the whole reply as ONE POST (`MEDIA_REMOTE_SAY_CMD_PHONE` → `say-http` on
+`p8a:8790` → `deploy/phone/say.sh`), so red5's sentence loop never runs, and
+follow-along highlight, `media current-sentence` and the popup's sentence view
+all had nothing to read.
 
-The two are stitched by driving the phone's sink-speech mpv from red5 over an
-IPC bridge, and pre-rendering clips on the phone so each play is immediate (which
-is what keeps the highlight in sync).
+## What actually landed
 
-Contrast:
-- Today's phone-local bridge (`MEDIA_REMOTE_SAY_CMD`): phone renders+plays the
-  *whole reply* in one shot → audio works, but red5's sentence loop never runs,
-  so **no popup**.
+**The renderer already knew where the sentences were.** edge-tts reports word
+and sentence boundaries as it synthesises, and `--write-subtitles` returns them
+in the *same request* as the audio — no second render, no extra latency. That
+measurement was being thrown away.
 
-  Since 2026-08-11 it does at least carry a *progress row*: say-http streams
-  `CLIP`/`DURATION` back before playback, and `_watch_remote_progress` turns
-  them into `total_duration_s` + `play_started_at`, which is enough for a bar
-  and for the status line to stop polling the phone's mpv at ~2s a read. That
-  had been built all along and never fired, because **both ends buffered**:
-  curl holds its output when stdout is a pipe (needs `--no-buffer`, set by
-  `media-lane`), and `for line in proc.stdout` reads ahead (now `readline()`).
-  Between them the report arrived at process exit — after the audio had
-  finished. Any renderer wired into `MEDIA_REMOTE_SAY_CMD_*` must flush these
-  two lines unbuffered or the row stays blank.
+So the wire protocol grew one line, and nothing else moved:
 
-  Still missing here, and the reason Grade B is still wanted: `current_sentence`.
-  One POST for the whole reply means there are no sentence boundaries to report,
-  so follow-along highlight and `media current-sentence` have nothing to work
-  with on this lane.
-- Grade A: red5 renders clips, ships each to the phone to play → popup intact but
-  audio (clip) crosses Germany→AU each sentence.
-- **Grade B (this):** phone renders+plays per sentence, red5 orchestrates → popup
-  intact *and* low latency.
+    CLIP <basename>          what was rendered, so it can be replayed there
+    SENTENCE <idx> <offset>  where sentence idx starts, in seconds
+    DURATION <seconds>       how long the clip is — sent LAST, it means "now"
 
-## How the highlight stays in sync
+- `deploy/phone/say.sh` renders **one** clip and plays it with **one**
+  `loadfile`, exactly as before — the reliable part of this lane is untouched.
+  It additionally reads its own SRT back through
+  `render/subtitles.py:sentence_offsets`, mapping cues onto the same
+  `_split_sentences` the caller applies to the same text, and prints the marks.
+- `say-http.py` needed no change at all: it already relays every line say.sh
+  writes as its own flushed chunk.
+- `intake/submit.py:_watch_remote_progress` collects the marks and hands them to
+  **`_SentenceFollower`**, a thread that walks the timeline on the clock —
+  nothing polls the phone, because a poll costs ~600ms on a link that drops a
+  quarter of its packets. It writes `current_sentence`, `current_sentence_idx`,
+  `clip_sentences`, `clip_offsets_s`, `clip_durations_s` and fires the existing
+  `_HighlightScheduler`.
+- **No marks?** The duration is apportioned by share of characters
+  (`_apportioned_offsets`). Drifts within a reply; worth far more than nothing.
+  This is also the answer for a fallback engine (openai writes no subtitles) and
+  for a phone on an older commit.
+- **Marks that don't fit?** `_offsets_from_marks` requires exactly one per
+  sentence, in order, inside the clip. A mismatch means the far side split the
+  text differently — an older commit, most likely — and pointing confidently at
+  the wrong words is worse than a smooth guess, so it approximates instead.
+  `sentence_marks` on the row says which of the two you're looking at.
+- `media skip` seeks this lane by sentence (`cli.py:cmd_skip`): one clip, no
+  playlist, so it seeks to `clip_offsets_s[target]` and re-stamps
+  `play_started_at` — which is why the follower re-reads that origin every tick
+  instead of trusting the one it started with.
 
-The local path aligns the highlight to playback by offsetting it
-`MEDIA_SNAPCAST_LATENCY_MS` (~the Snapcast buffer). Grade B has no Snapcast
-buffer: clips are **pre-rendered on the phone** (in parallel, up front, exactly
-like red5's loop pre-renders today), so the per-sentence `play` is just an mpv
-`loadfile` of an already-local file — it starts in tens of ms. red5 fires the
-highlight when it issues the play, offset by a small `MEDIA_PHONE_PLAYOUT_MS`
-(tcp round-trip + mpv start) instead of the ~1 s Snapcast buffer. Net: tighter
-sync than the rooms path, not looser.
+Alignment is forgiving on purpose: the cue stream is what the voice *said*, not
+what we wrote (numbers come back expanded, punctuation is gone, and a cue may
+span two of our sentences because the splitter merges short fragments the voice
+still separates). It interpolates within a spanning cue and returns nothing at
+all rather than boundaries it doesn't believe.
 
-## Pieces to build
+Verified live on the **default** target (`phone`, no env override): marks
+measured on the device, `sentence_marks: True`, sentences stepping at 4.05s and
+7.58s of a 10s reply, and `media current-sentence` following.
 
-1. **Phone sink-speech TCP bridge** — expose the phone's `sink-speech.sock` on a
-   Tailscale TCP port (reuse the `mpv-music-bridge` socat runit service pattern
-   already deployed). Lets red5's `_mpv_ipc` drive it via `tcp://…`.
-2. **Phone-side render-to-clip** — render each sentence to a clip on the phone
-   (edge-tts, AU IP). Reuse the phone's own `render_text`; expose a small
-   "render these sentences → these paths" entry the loop can call (batched,
-   parallel). Clips land in a phone temp dir.
-3. **`SinkSpeech` phone target** — `MEDIA_SPEECH_SOCKET_PHONE=tcp://<phone>:<port>`
-   + a `phone` case in `_device_for` (→ the phone mpv's own default device, i.e.
-   `None`). Then `SinkSpeech.play(phone_clip, phone_target)` loads the
-   phone-local clip on the phone's mpv. `idle/pause/position/paused/muted` already
-   work over the same socket (they're socket-generic).
-4. **submit-loop branch** — a `phone-render` mode in `submit_event`: render the
-   sentence clips on the phone (step 2) instead of locally, then run the existing
-   play loop against the phone target (step 3). `now_playing`, highlight, nav,
-   playback lock — all unchanged; only *where* render+play happen moves.
-5. **Duck** — red5's coordinator ducks the **phone's** music via the Stage-1
-   phone backend (`MEDIA_MUSIC_LOCAL_ENDPOINT` = the phone's mpv-music TCP
-   bridge, already built). So music dips under speech on the device.
+## The three options this doc used to weigh, and why none of them was needed
 
-## Work / risk
+1. **Per-sentence POSTs.** `say-http` holds a global one-utterance lock, so a
+   render cannot overlap the previous sentence's playback without a new
+   endpoint — roughly a second of dead air per sentence on this link.
+2. **Phone renders per sentence into an mpv playlist.** Exact, but it rewrites
+   the one piece of this lane that has been reliable, and adds an idle race
+   between "render N+1" and "N just finished".
+3. **Local approximation only.** Shipped, as the fallback — not as the answer.
 
-- Reuses a lot: the bridge pattern, `_mpv_ipc` tcp support, `SinkSpeech`'s
-  socket abstraction, the Stage-1 phone duck. The genuinely new bits are the
-  phone render-to-clip entry and the submit-loop `phone-render` branch.
-- Rough estimate: a couple of focused hours + live testing on the phone.
-- Retire the `MEDIA_REMOTE_SAY_CMD` bridge once this lands (it becomes the
-  fallback for when the phone's unreachable).
+The subtitles route is option 2's accuracy at option 3's cost.
 
-## Open questions
+## Still open
 
-- **First-sentence latency:** the first clip still waits on its edge-tts render
-  (unavoidable, same as today); later sentences are pre-rendered in parallel so
-  they're instant. Acceptable.
-- **Phone asleep / unreachable mid-reply:** fall back to red5 local render (rooms)
-  or the whole-reply bridge? Pick a graceful degrade.
-- **Shared sink-speech broker:** the phone's mpv is also used by the phone's own
-  `media say`; fine while sessions run only on red5, but worth a guard.
-- **Clip cleanup** on the phone (temp dir GC).
-- **Nav across the bridge:** skip/replay drive the phone mpv's position over tcp —
-  verify latency is acceptable for snappy popup controls.
+- **Auto-highlight is opt-in** and currently off (`media highlight-toggle`, or
+  tmux `prefix V` for one turn). The plumbing is live either way; the row is
+  what `media highlight-now` paints from.
+- **Pause/resume state** on the row is still not mirrored for this lane: the
+  follower runs on a clock, so a pause on the phone's mpv leaves the highlight
+  walking. Nav re-stamps the origin; pause would need the same treatment.
+- **Replay** of a phone-lane clip has the audio (`clips_remote`) but no
+  sentences: history records one clip and the replay tracker's guard is
+  `len(clip_sentences) == len(clip_uris)`. Carrying `clip_offsets_s` into
+  history would let a replay follow along too.
+- **First-sentence latency** is unchanged and still the dominant cost: ~9-16s
+  from submit to audio, nearly all of it the render plus the link.
+- **Phone asleep / unreachable mid-reply:** still an ungraceful degrade.
+- **Shared sink-speech broker** with the phone's own `media say`: fine while
+  sessions run only on red5, but unguarded.
