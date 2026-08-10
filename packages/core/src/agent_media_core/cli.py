@@ -357,7 +357,46 @@ def _speech_in_flight() -> bool:
     return True
 
 
-def _speech_display_state(allow_remote: bool = True):
+def _announced_timeline():
+    """Speech state extrapolated from what the submit process announced, or
+    None when it announced no timeline to extrapolate from.
+
+    None is a real answer, not an error: the `remote-say` path deliberately
+    records no `total_duration_s`, because the audio is rendered and played on
+    another device and never reports its length back. Anything we printed there
+    would be invented — so callers that want a progress bar on that path have
+    to ask the far side, however much the round trip costs.
+    """
+    np = _now_speaking()
+    ex = (np or {}).get("extras") if np else None
+    if not (ex and ex.get("total_duration_s")):
+        return None
+    # Zombie guard: the mirror is only as alive as the submit process that
+    # writes it. If that process died without its cleanup (kill, crash, power
+    # loss), the row would otherwise show a frozen "▶ 00:00 / N:NN" forever.
+    # Both playback paths stamp their pid.
+    wp = ex.get("writer_pid")
+    if wp:
+        try:
+            os.kill(int(wp), 0)
+        except (OSError, ValueError):
+            return (True, None, None, False, False, None, False)
+    ps = ex.get("play_started_at")
+    lp = ex.get("live_pos_s")
+    if lp is None and ps:
+        # Clamped: an overrun means the utterance finished and cleanup has not
+        # landed, and a bar past 100% reads as a fault.
+        pos = min(max(time.time() - float(ps), 0.0),
+                  float(ex["total_duration_s"]))
+    else:
+        pos = lp if lp is not None else (ex.get("clip_offset_s") or 0.0)
+    return (False, pos, ex.get("total_duration_s"),
+            bool(ex.get("live_pause")), bool(ex.get("live_mute")),
+            ex.get("live_speed") or 1.0, True)
+
+
+def _speech_display_state(allow_remote: bool = True,
+                          prefer_local: bool = False):
     """`(idle, pos, dur, paused, muted, speed, playing)` for the speech channel.
 
     Remote target (the phone): one batched, briefly-cached snapshot off the
@@ -366,15 +405,30 @@ def _speech_display_state(allow_remote: bool = True):
     mpv, enriched with the response timeline (offset+pos / total) from
     now_playing.
 
-    `allow_remote=False` forbids the round trip to the phone and takes the
-    announced-timeline path instead. That path is local (a file read, ~1ms)
-    where the snapshot costs ~2s on this link — fine to pay when a person
-    pressed a key, ruinous for the tmux status line, which re-renders every
-    second in every pane and had every one of them waiting on the tailnet.
-    The extrapolated position is a second or so coarser; on a bar that redraws
-    once a second and shows whole seconds, that is not visible.
+    `prefer_local=True` tries the announced timeline FIRST — a file read (~1ms)
+    against a snapshot that costs ~2s on the phone link — and only asks the far
+    side when there is no announced timeline to use. That is the right default
+    for the tmux status line, which redraws every second in every pane.
+
+    It is an optimisation, not a substitute, and on the `remote-say` path it
+    buys nothing: that path records no duration, so the fallback is the only
+    thing that knows the utterance is running at all. Defaulting the status bar
+    to local-ONLY (an earlier version of this) therefore blanked the progress
+    bar for every reply on the phone — which is every reply, by default.
+
+    `allow_remote=False` forbids the round trip outright. It makes the call
+    cheap and, on a remote-say target, blind; use it only where a missing bar
+    is better than a slow one.
     """
     if _remote_speech():
+        # Cheap path first when asked: if the announced timeline is there, it
+        # says everything a status bar shows and costs a file read. When it
+        # ISN'T there we must still ask the far side — see below.
+        if prefer_local:
+            local = _announced_timeline()
+            if local is not None:
+                return local
+
         snap = _remote_snapshot() if allow_remote else None
         if snap is not None:
             # Ground truth, in one round trip. Every field the popup shows comes
@@ -390,32 +444,9 @@ def _speech_display_state(allow_remote: bool = True):
         # Fallback: the far side has no player we can query — a renderer that
         # just speaks (Android TTS, a bare `say`) — or the bridge is unreachable.
         # All we have is whatever it announced up front, so extrapolate.
-        np = _now_speaking()
-        ex = (np or {}).get("extras") if np else None
-        if ex and ex.get("total_duration_s"):
-            # Zombie guard: the mirror is only as alive as the submit process
-            # that writes it. If that process died without its cleanup (kill,
-            # crash, power loss), the row would otherwise show a frozen
-            # "▶ 00:00 / N:NN" forever. Both playback paths stamp their pid.
-            wp = ex.get("writer_pid")
-            if wp:
-                try:
-                    os.kill(int(wp), 0)
-                except (OSError, ValueError):
-                    return (True, None, None, False, False, None, False)
-            ps = ex.get("play_started_at")
-            lp = ex.get("live_pos_s")
-            if lp is None and ps:
-                # Clamped: an overrun means the utterance finished and cleanup
-                # has not landed, and a bar past 100% reads as a fault.
-                pos = min(max(time.time() - float(ps), 0.0),
-                          float(ex["total_duration_s"]))
-            else:
-                pos = lp if lp is not None else (ex.get("clip_offset_s") or 0.0)
-            return (False, pos, ex.get("total_duration_s"),
-                    bool(ex.get("live_pause")), bool(ex.get("live_mute")),
-                    ex.get("live_speed") or 1.0, True)
-        return (True, None, None, False, False, None, False)
+        local = _announced_timeline()
+        return local if local is not None else (
+            True, None, None, False, False, None, False)
     try:
         snap = ipc.get_properties(
             _sock(), ["idle-active", "time-pos", "duration", "pause", "mute",
@@ -611,12 +642,13 @@ def cmd_status(a) -> int:
     if alert:
         print(alert)
         return 0
-    # No remote round trip here by default: this is the tmux status line, so it
-    # runs once a second in every pane, and asking the phone cost ~2s a render.
-    # MEDIA_STATUS_REMOTE=1 restores ground-truth reads for anyone who wants
-    # them and can afford them.
+    # Prefer the local timeline, but do NOT refuse the remote one: this is the
+    # status bar, so cost matters, and on a remote-say target the far side is
+    # the only thing that knows an utterance is running. MEDIA_STATUS_NO_REMOTE
+    # trades the bar away on that path for a guaranteed-fast render.
     idle, pos, dur, paused, muted, speed, playing = _speech_display_state(
-        allow_remote=os.environ.get("MEDIA_STATUS_REMOTE") == "1")
+        allow_remote=os.environ.get("MEDIA_STATUS_NO_REMOTE") != "1",
+        prefer_local=True)
     # Optional title-overlay bar (EXPERIMENTAL): the whole `▶ pos title dur`
     # segment becomes one background-progress bar, times embedded in the fill.
     # `--title` carries the tmux client width; the title-field width is derived

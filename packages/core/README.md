@@ -301,9 +301,13 @@ and the segment sizes itself from the client width
 Two things make this cheap enough to run once a second in every pane, both of
 which were the opposite before:
 
-- **No remote round trip.** `media status` takes the local announced-timeline
-  path rather than asking the phone's broker, which costs ~2s on that link.
-  `MEDIA_STATUS_REMOTE=1` restores ground-truth reads.
+- **Local timeline first.** `media status` uses the announced timeline when the
+  submit process recorded one, instead of asking the phone's broker (~2s on
+  that link). It is an optimisation, not a substitute: the `remote-say` path
+  records no duration on purpose — nothing local measures audio played on
+  another device — so there the far side is still asked, because it is the only
+  thing that knows the utterance is running. `MEDIA_STATUS_NO_REMOTE=1` refuses
+  the round trip outright, which is fast and, on that path, blind.
 - **No service layer.** It reads the mpv sockets directly. The natural-looking
   `book_now_playing()` costs ~2.6s because it reasons about remote targets, and
   building the service module alone is ~0.6s.

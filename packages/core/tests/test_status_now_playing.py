@@ -195,16 +195,52 @@ def test_segment_never_consults_the_service_layer(channels, monkeypatch):
 
 # --- speech state: no remote round trip on the status path ---------------
 
-def test_status_path_does_not_call_the_phone(monkeypatch):
-    """~2s per render on this link, once a second in every pane."""
+def _mirror(**extras):
+    return {"extras": {"writer_pid": None, **extras}}
+
+
+def test_announced_timeline_is_used_instead_of_the_phone(monkeypatch):
+    """~2s per render on this link, once a second in every pane — so when the
+    submit process announced a timeline, use it and don't ask."""
+    monkeypatch.setattr(cli, "_remote_speech", lambda: True)
+    monkeypatch.setattr(cli, "_now_speaking",
+                        lambda: _mirror(total_duration_s=9.0, live_pos_s=3.0))
+
+    def boom():
+        raise AssertionError("must not round-trip when the timeline is local")
+
+    monkeypatch.setattr(cli, "_remote_snapshot", boom)
+    idle, pos, dur, *_ = cli._speech_display_state(prefer_local=True)
+    assert (idle, pos, dur) == (False, 3.0, 9.0)
+
+
+def test_remote_say_still_falls_back_to_the_phone(monkeypatch):
+    """The regression this pins, which reached the live bar: the `remote-say`
+    path records NO total_duration_s on purpose — nothing local measures audio
+    played on another device — so the far side is the only thing that knows the
+    utterance is running. Preferring local must not mean refusing to ask."""
+    monkeypatch.setattr(cli, "_remote_speech", lambda: True)
+    monkeypatch.setattr(cli, "_now_speaking",
+                        lambda: _mirror(kind="remote-say", writer_pid=None))
+    monkeypatch.setattr(cli, "_remote_snapshot",
+                        lambda: {"idle-active": False, "time-pos": 2.0,
+                                 "duration": 5.0, "pause": False,
+                                 "mute": False, "speed": 1.0})
+    idle, pos, dur, *_ = cli._speech_display_state(prefer_local=True)
+    assert (idle, pos, dur) == (False, 2.0, 5.0), \
+        "a phone-targeted reply must still show a progress bar"
+
+
+def test_no_remote_opt_out_is_blind_but_cheap(monkeypatch):
     monkeypatch.setattr(cli, "_remote_speech", lambda: True)
     monkeypatch.setattr(cli, "_now_speaking", lambda: None)
 
     def boom():
-        raise AssertionError("status must not round-trip to the remote broker")
+        raise AssertionError("allow_remote=False must not round-trip")
 
     monkeypatch.setattr(cli, "_remote_snapshot", boom)
-    assert cli._speech_display_state(allow_remote=False)[0] is True
+    assert cli._speech_display_state(allow_remote=False,
+                                     prefer_local=True)[0] is True
 
 
 def test_remote_is_still_used_when_allowed(monkeypatch):
