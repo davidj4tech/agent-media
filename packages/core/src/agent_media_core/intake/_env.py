@@ -13,6 +13,25 @@ log = logging.getLogger(__name__)
 # leave unset, so a fresh checkout has sane per-engine voices with no config.
 _PACKAGE_DEFAULTS = Path(__file__).resolve().parent.parent / "defaults.env"
 
+# "I mean off", as opposed to "this happens to be empty".
+#
+# An empty var is backfilled from the config files (see _load_one), which is
+# right for a login shell exporting OPENAI_API_KEY='' and wrong for someone
+# switching a feature off for one invocation — `MEDIA_REMOTE_SAY_CMD= media
+# say ...` was silently refilled from agent-media.env, so the setting could
+# not be turned off at all without editing the file. Nothing can tell those
+# two empties apart, so the deliberate one says so: a value of `-` is turned
+# into an empty string that no later layer will fill.
+_OFF = "-"
+
+# Keys switched off, remembered for the life of the process rather than for one
+# call. load_env_file runs more than once in a process — cli.py alone calls it
+# at import and again in main() — and by the second call the sentinel has
+# already become an empty string, which is precisely what a load backfills. A
+# per-call set left the switch on for everything that ran after the second
+# call, and every unit test that called the loader once passed anyway.
+_OFF_KEYS: set[str] = set()
+
 
 def _dequote(v: str) -> str:
     """Remove one matched pair of surrounding quotes, and only that.
@@ -29,7 +48,7 @@ def _dequote(v: str) -> str:
     return v
 
 
-def _load_one(path: str, label: str) -> None:
+def _load_one(path: str, label: str, off: set[str] | None = None) -> None:
     """Merge a single env file into os.environ without overwriting.
 
     Existing vars (real env or an earlier, higher-precedence file) are never
@@ -39,7 +58,15 @@ def _load_one(path: str, label: str) -> None:
     A *present-but-empty* var (e.g. `OPENAI_API_KEY=''` exported by a login
     shell) counts as unset for layering: it would otherwise block a real value
     from the config file while contributing nothing, so it gets backfilled.
+
+    A var set to `-` is the deliberate opposite — see _OFF. It becomes empty
+    and is recorded in `off` (defaulting to the process-wide _OFF_KEYS), so
+    neither a lower-precedence file nor a later call can undo the decision.
+    Only keys that appear in an env file are considered, so an unrelated var
+    whose real value is `-` is never touched.
     """
+    if off is None:
+        off = _OFF_KEYS
     try:
         with open(path) as f:
             for raw in f:
@@ -52,7 +79,14 @@ def _load_one(path: str, label: str) -> None:
                     continue
                 k, v = line.split("=", 1)
                 k, v = k.strip(), _dequote(v.strip())
-                if k and not os.environ.get(k):
+                if not k or k in off:
+                    continue
+                cur = os.environ.get(k)
+                if cur == _OFF:
+                    os.environ[k] = ""
+                    off.add(k)
+                    continue
+                if not cur:
                     os.environ[k] = v
     except FileNotFoundError:
         return
@@ -70,10 +104,15 @@ def load_env_file(label: str = "hook") -> None:
     3. ``~/.config/agent-audio-relay.env`` — legacy machine-local
     4. ``<package>/defaults.env`` — shipped universal defaults
 
-    Real env vars set before this runs always win (never overwritten). Unlike
-    the old first-file-wins behaviour, every existing file is read so the
-    shipped defaults can backfill a partial machine-local config.
+    Real env vars set before this runs always win (never overwritten), with
+    one exception in each direction: an empty one is treated as unset and gets
+    backfilled, and one set to `-` is turned into an empty string that stays
+    empty (see _OFF — this is how a setting is switched off for a single
+    invocation). Unlike the old first-file-wins behaviour, every existing file
+    is read so the shipped defaults can backfill a partial machine-local
+    config.
     """
+    off = _OFF_KEYS                # honoured by every layer, and by later calls
     candidates = [
         os.environ.get("MEDIA_ENV_FILE") or "",
         os.environ.get("RELAY_ENV_FILE") or "",
@@ -84,4 +123,4 @@ def load_env_file(label: str = "hook") -> None:
     for path in candidates:
         if not path:
             continue
-        _load_one(path, label)
+        _load_one(path, label, off)
