@@ -205,7 +205,7 @@ class SinkSpeech:
         import shlex
         import subprocess
         host = (os.environ.get(_env_key("MEDIA_SPEECH_CLIP_SSH", target.name))
-                or os.environ.get("MEDIA_MUSIC_LOCAL_SSH", "p8ar"))
+                or os.environ.get("MEDIA_MUSIC_LOCAL_SSH", "p8a"))
         ps = [Path(p) for p in paths]
         srcdir = str(ps[0].parent)
         qnames = " ".join(shlex.quote(p.name) for p in ps)

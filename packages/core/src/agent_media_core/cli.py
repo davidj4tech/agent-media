@@ -4604,13 +4604,18 @@ def cmd_doctor(a) -> int:
     from pathlib import Path
 
     # pn was missing from this list, so nothing ever looked at it — it sat on a
-    # retired repo with 40 stale symlinks and doctor had no opinion. Unreachable
-    # hosts are reported and skipped, so listing a host that's often off costs
-    # one ssh timeout, not a false alarm.
-    hosts = os.environ.get("MEDIA_DOCTOR_HOSTS", "p8ar red5 pn sp4").split()
+    # retired repo with 40 stale symlinks and doctor had no opinion.
+    #
+    # `p8ar` was the phone's old name; it was renamed to `p8a` in 2026-08, and
+    # this list kept the old one. The name stopped resolving, every run printed
+    # "unreachable", and unreachable hosts were skipped — so the phone, the host
+    # that actually renders speech, went unchecked for weeks while the summary
+    # said everything was healthy. It was six commits behind when this was found.
+    hosts = os.environ.get("MEDIA_DOCTOR_HOSTS", "p8a red5 pn sp4").split()
     repos = ["agent-media", "dotfiles"]
     skewed = []
     unhealthy = []
+    unreachable = []
 
     # Read local hashes
     local_hashes = {}
@@ -4657,9 +4662,11 @@ def cmd_doctor(a) -> int:
                 capture_output=True, text=True, timeout=45)
         except Exception:  # noqa: BLE001
             print(" unreachable")
+            unreachable.append(host)
             continue
         if res.returncode != 0 and not res.stdout.strip():
             print(" unreachable")
+            unreachable.append(host)
             continue
 
         facts = parse_selfcheck(res.stdout)
@@ -4698,10 +4705,26 @@ def cmd_doctor(a) -> int:
                 bits.append(f"{len(skewed)} skewed")
             if unhealthy:
                 bits.append(f"{len(unhealthy)} unhealthy")
+            if unreachable:
+                bits.append(f"{len(unreachable)} unreachable")
             print(f"\nwrote {' + '.join(bits)} host(s) to ledger.")
             return 1
         else:
             ledger.unlink(missing_ok=True)
+            # Never claim health for a host we couldn't reach. Saying "all
+            # hosts up to date and healthy" while skipping one is how the phone
+            # sat six commits behind unnoticed: the name had changed, every run
+            # printed "unreachable", and the summary called it a clean bill.
+            #
+            # Unreachable still doesn't reach the ledger, though — that drives
+            # the status bar, and a laptop that is merely off is not a fault.
+            # The distinction is "we didn't look", not "it's broken".
+            if unreachable:
+                print(f"\n{len(unreachable)} host(s) NOT CHECKED: "
+                      f"{', '.join(unreachable)}")
+                print(f"{len(hosts) - len(unreachable)} reachable host(s) "
+                      f"up to date and healthy.")
+                return 0
             print("\nall hosts up to date and healthy.")
             return 0
     except OSError as e:

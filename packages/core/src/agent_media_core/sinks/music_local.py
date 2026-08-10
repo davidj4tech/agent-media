@@ -25,7 +25,7 @@ Config (all overridable; backend is "unavailable" when the endpoint is unset):
 
   MEDIA_MUSIC_LOCAL_ENDPOINT  mpv IPC endpoint, e.g. ``tcp://100.94.14.59:6601``
                               (the phone's mpv-music.sock bridged to TCP).
-  MEDIA_MUSIC_LOCAL_SSH       ssh host for the download helper (default p8ar).
+  MEDIA_MUSIC_LOCAL_SSH       ssh host for the download helper (default p8a).
   MEDIA_MUSIC_LOCAL_FETCH     phone-side helper (default ``bin/play-local``).
   MEDIA_MUSIC_LOCAL_CACHE     phone cache dir relative to $HOME (default
                               ``.cache/music-offline``).
@@ -64,7 +64,7 @@ def endpoint() -> Optional[str]:
 
 
 def ssh_host() -> str:
-    return os.environ.get("MEDIA_MUSIC_LOCAL_SSH", "p8ar")
+    return os.environ.get("MEDIA_MUSIC_LOCAL_SSH", "p8a")
 
 
 def fetch_cmd() -> str:

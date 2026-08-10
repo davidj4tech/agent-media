@@ -12,7 +12,7 @@ same notification instead of stacking the shade.
 Wired into SpeechSink.play_playlist's failure path via record_miss().
 Config: MEDIA_SPEECH_MISS_SSH overrides the ssh host (default: the same
 relay the prefetch uses — MEDIA_SPEECH_CLIP_SSH_<TARGET> /
-MEDIA_MUSIC_LOCAL_SSH / p8ar).
+MEDIA_MUSIC_LOCAL_SSH / p8a).
 """
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ def miss_host(target_name: str = "") -> str:
     key = f"MEDIA_SPEECH_CLIP_SSH_{target_name.upper()}" if target_name else ""
     return (os.environ.get("MEDIA_SPEECH_MISS_SSH")
             or (os.environ.get(key, "") if key else "")
-            or os.environ.get("MEDIA_MUSIC_LOCAL_SSH", "p8ar"))
+            or os.environ.get("MEDIA_MUSIC_LOCAL_SSH", "p8a"))
 
 
 def pending_miss() -> "tuple[int, int] | None":

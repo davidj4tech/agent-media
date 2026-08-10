@@ -46,8 +46,13 @@ def endpoint() -> tuple[str, int]:
 
 def phone_client_prefix() -> str:
     """Snapclient id prefix that marks the phone (excluded from 'other rooms')."""
+    # `p8a`, not the pre-rename `p8ar`. A stale prefix here doesn't fail loudly,
+    # it misroutes: the phone's own snapclients (`p8a`, `p8a-music`) stop being
+    # recognised as the phone, so connected_other_clients() counts them as other
+    # rooms and the auto route reads "someone else is listening" — sending a
+    # phone-only play to the whole house. Prefix-matching covers `-music` too.
     return os.environ.get("MEDIA_SNAP_PHONE_PREFIX",
-                          os.environ.get("MUSIC_PHONE_CLIENT_PREFIX", "p8ar"))
+                          os.environ.get("MUSIC_PHONE_CLIENT_PREFIX", "p8a"))
 
 
 def _rpc(method: str, params: Optional[dict] = None,

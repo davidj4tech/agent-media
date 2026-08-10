@@ -18,7 +18,7 @@ Config (all optional):
 
   MEDIA_MUSIC_LOCAL_SSH / MEDIA_MUSIC_LOCAL_FETCH
       the residential fetcher, shared with sink-music-local
-      (default ``p8ar`` / ``bin/play-local``).
+      (default ``p8a`` / ``bin/play-local``).
   MEDIA_MUSIC_CURRENT_DEVICE_FETCH
       when true (default), prefer the device attached to this SSH session when
       it is the configured phone-local music device. This makes "play music"
