@@ -22,13 +22,40 @@
 # only reliable evidence a server is up, and if it isn't, openal direct is
 # still the best available fallback.
 exec 2>&1
+# WAIT for the sound server before deciding, do not just probe once.
+#
+# The AO is chosen at startup and then fixed for the life of this long-running
+# mpv, so losing the race costs the whole session, not a moment. On 2026-08-11 a
+# Termux restart brought this broker up ~seconds before pulseaudio and it locked
+# onto openal for over an hour: every reply rendered, `loadfile` returned
+# success, speech-events logged start AND end, and nothing was audible — because
+# openal opens the Android audio device directly and the later opens fail into a
+# bare "could not open device" that mpv reports as a played file. Silent success
+# is the worst shape this failure can take, and a one-shot probe invites it on
+# every restart where ordering is not guaranteed (a Termux app restart does not
+# replay .termux/boot, so the documented "pulseaudio starts first" guarantee
+# holds for boots and not for restarts).
+#
+# ~15s of patience, then fall back exactly as before. Bounded, because a device
+# with no pulseaudio at all must still get speech through openal rather than
+# spinning here forever.
 if [ -z "${MEDIA_SPEECH_AO:-}" ]; then
-  if command -v pactl >/dev/null 2>&1 && pactl info >/dev/null 2>&1; then
-    MEDIA_SPEECH_AO=pulse
-  else
-    MEDIA_SPEECH_AO=openal
+  MEDIA_SPEECH_AO=openal
+  if command -v pactl >/dev/null 2>&1; then
+    i=0
+    while [ "$i" -lt 30 ]; do
+      if pactl info >/dev/null 2>&1; then
+        MEDIA_SPEECH_AO=pulse
+        break
+      fi
+      i=$((i + 1))
+      sleep 0.5
+    done
   fi
+  [ "$MEDIA_SPEECH_AO" = openal ] &&
+    echo "sink-speech: no pulseaudio after ~15s, falling back to ao=openal (expect silent playback if other clients hold the device)"
 fi
+echo "sink-speech: ao=$MEDIA_SPEECH_AO"
 STATE="${XDG_STATE_HOME:-$HOME/.local/state}/agent-media"
 SOCK="$STATE/sink-speech.sock"
 mkdir -p "$STATE"
