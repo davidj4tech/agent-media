@@ -25,7 +25,7 @@ app redraws over anything painted into it. The signal is free — a failed searc
 *is* "these words are unreachable" — so `_tmux_highlight_text` returns whether
 it found them, and a miss hands the sentence to the bar instead
 (`_set_follow_rows`). The session's status height goes to 1 + `MEDIA_FOLLOW_ROWS`
-(default 3) and back when the reply ends.
+(default 4) and back when the reply ends.
 
 The decision **latches for the reply**. Changing the status height resizes the
 panes and makes a fullscreen app redraw, so a reply alternating visible and
@@ -104,7 +104,7 @@ of another program's keybindings.
 
 | | |
 |---|---|
-| `MEDIA_FOLLOW_ROWS` | status rows for the sentence (default 3; 0 disables). Keep in step with the `status-format[N]` rows the tmux config lays out. |
+| `MEDIA_FOLLOW_ROWS` | status rows for the sentence (default 4; 0 disables). Keep in step with the `status-format[N]` rows the tmux config lays out. |
 | `MEDIA_FOLLOW_AUTO` | `1` lets the follow pane open with the flag. Unset = the pane only opens by hand. |
 | `MEDIA_FOLLOW_HEIGHT` / `_WIDTH` | the pane's rows / columns (8 / 46). |
 | `MEDIA_FOLLOW_MIN_SPLIT` / `_MIN_ROWS` | when the pane may split beside (90 cols) or below (24 rows). |
