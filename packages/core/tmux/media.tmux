@@ -47,6 +47,15 @@ bind V run-shell -b "media highlight-now"
 # needs no cooperation from whatever owns the screen. Press again to close.
 bind F run-shell -b "media-follow-pane"
 
+# prefix H → the fleet doctor ("health"). The status bar's `⚠ fleet:` says which
+# hosts are stale or broken and re-checks itself on a timer, but acting on it
+# meant leaving the pane and remembering the command — so the warning sat up for
+# days. This shows the full report and offers the deploy (pull + restart) for
+# the hosts that are merely behind. A popup, not run-shell: it is a conversation
+# (it asks before touching anything) and a sweep of the fleet takes seconds.
+# `H` because it is free in both stock tmux and oh-my-tmux; `D` is choose-client.
+bind H display-popup -w 90% -h 70% -E "media-popup-fleet"
+
 # --- Listening mode -------------------------------------------------------
 # A sticky key-table that drives the *speech* channel live with bare keys —
 # the popup's controls, minus the popup, so the pane (and the auto-highlight

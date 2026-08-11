@@ -4660,6 +4660,60 @@ def parse_selfcheck(text: str) -> "dict[str, str]":
     return facts
 
 
+def cmd_restart_services(a) -> int:
+    """Restart the services this checkout owns, so a `git pull` actually lands.
+
+    The counterpart to selfcheck's service enumeration, and deliberately built
+    on the same two functions: anything doctor is willing to call "down" here
+    is something this command is willing to restart, and nothing else. The
+    service dir also holds sshd and snapclient, which agent-media has no
+    business bouncing.
+
+    A `down` file is runit's standing "leave this stopped" marker, so a parked
+    service is reported and left alone — restarting it would override a
+    decision someone made on purpose.
+    """
+    import subprocess
+    from pathlib import Path
+
+    root = _checkout_root()
+    svdir = _sv_dir()
+    services = ([(n, s, "runit") for n, s in _runit_service_states(root)]
+                + [(n, s, "systemd") for n, s in _systemd_service_states()])
+    if not services:
+        print("no services owned by this checkout")
+        return 0
+
+    rc = 0
+    for name, state, kind in services:
+        if state == "parked":
+            print(f"{name}: parked, left alone")
+            continue
+        if getattr(a, "dry_run", False):
+            print(f"{name}: would restart ({kind}, currently {state})")
+            continue
+        if kind == "runit":
+            cmd = ["sv", "restart", str(Path(svdir) / name)]
+            env = {**os.environ, "SVDIR": str(svdir)}
+        else:
+            cmd = ["systemctl", "--user", "restart", f"{name}.service"]
+            env = dict(os.environ)
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True,
+                               timeout=60, env=env)
+        except (OSError, subprocess.SubprocessError) as e:
+            print(f"{name}: restart failed: {e}")
+            rc = 1
+            continue
+        detail = (r.stdout or r.stderr or "").strip().replace("\n", " ")
+        if r.returncode == 0:
+            print(f"{name}: restarted{f' ({detail})' if detail else ''}")
+        else:
+            print(f"{name}: restart FAILED: {detail or r.returncode}")
+            rc = 1
+    return rc
+
+
 def cmd_selfcheck(a) -> int:
     """Report this host's install health as key=value lines."""
     print(SELFCHECK_SENTINEL)
@@ -4701,64 +4755,92 @@ git -C ~/dotfiles branch --show-current 2>/dev/null | sed 's/^/dotfiles-branch=/
 """
 
 
-def cmd_doctor(a) -> int:
-    """Check agent cluster health: version skew AND whether the code can run.
+# Deploy a skewed host and put the new code into service, in that order: a
+# `git pull` alone updates the files an editable install reads, but every
+# long-running service is still executing the code it imported at start. A host
+# that pulled and didn't restart reads as fixed to the next doctor run (its HEAD
+# matches) while continuing to run the stale code — the exact silent-wrong-code
+# state the ledger exists to catch.
+#
+# Restarting is `media restart-services`, invoked AFTER the pull, so the pull
+# deploys the very code that knows which services this checkout owns. That also
+# means a host too old to have the subcommand gains it in the same round trip.
+#
+# Nothing here is forced. A dirty checkout is left alone and reported: an
+# unattended `git stash`/`reset` on a host David may be mid-edit on is a worse
+# outcome than a warning that stays up.
+_REMOTE_FIX = r"""
+for d in "$HOME/projects/agent-media" "$HOME/dotfiles"; do
+  [ -d "$d/.git" ] || continue
+  n=${d##*/}
+  if [ -n "$(git -C "$d" status --porcelain 2>/dev/null)" ]; then
+    echo "fix=$n skipped: uncommitted changes"
+    continue
+  fi
+  b=$(git -C "$d" rev-parse --short HEAD 2>/dev/null)
+  if out=$(git -C "$d" pull --ff-only 2>&1); then
+    a=$(git -C "$d" rev-parse --short HEAD 2>/dev/null)
+    if [ "$b" = "$a" ]; then
+      echo "fix=$n already at $a"
+    else
+      echo "fix=$n pulled $b -> $a"
+    fi
+  else
+    echo "fix=$n FAILED: $(printf '%s' "$out" | tr '\n' ' ')"
+  fi
+done
+if out=$(media restart-services 2>&1); then
+  printf '%s\n' "$out" | sed 's/^/restart=/'
+else
+  printf 'restart=FAILED: %s\n' "$(printf '%s' "$out" | tr '\n' ' ')"
+fi
+"""
 
-    Skew alone was never enough — a host can sit on the right commit with a
-    dead install (see selfcheck_facts). Both kinds of trouble land in the same
-    ledger, so the status bar's ⚠ covers both.
-    """
+
+def _local_repo_state(repos: "list[str]", echo=True) -> "tuple[dict, dict]":
+    """(head, branch) per repo for THIS host — what every other host is judged
+    against."""
     import subprocess
     from pathlib import Path
-
-    # pn was missing from this list, so nothing ever looked at it — it sat on a
-    # retired repo with 40 stale symlinks and doctor had no opinion.
-    #
-    # `p8ar` was the phone's old name; it was renamed to `p8a` in 2026-08, and
-    # this list kept the old one. The name stopped resolving, every run printed
-    # "unreachable", and unreachable hosts were skipped — so the phone, the host
-    # that actually renders speech, went unchecked for weeks while the summary
-    # said everything was healthy. It was six commits behind when this was found.
-    hosts = os.environ.get("MEDIA_DOCTOR_HOSTS", "p8a red5 pn sp4").split()
-    repos = ["agent-media", "dotfiles"]
-    skewed = []
-    unhealthy = []
-    unreachable = []
-
-    # Read local hashes
-    local_hashes = {}
-    local_branches = {}
+    heads, branches = {}, {}
     for r in repos:
         path = str(Path.home() / "projects" / r) if r != "dotfiles" else str(Path.home() / r)
         try:
-            local_hashes[r] = subprocess.run(
+            heads[r] = subprocess.run(
                 ["git", "-C", path, "rev-parse", "HEAD"],
                 capture_output=True, text=True, check=True
             ).stdout.strip()
-            print(f"local {r:12}: {local_hashes[r][:7]}")
+            if echo:
+                print(f"local {r:12}: {heads[r][:7]}")
         except (OSError, subprocess.CalledProcessError):
             continue
         try:
-            local_branches[r] = subprocess.run(
+            branches[r] = subprocess.run(
                 ["git", "-C", path, "branch", "--show-current"],
                 capture_output=True, text=True, check=True
             ).stdout.strip()
         except (OSError, subprocess.CalledProcessError):
             pass
+    return heads, branches
 
-    # Local host first: `doctor` is usually run from the machine doing the
-    # deploying, and its own install can rot exactly like a remote one.
+
+def _scan_local() -> "list[str]":
+    """This host's own problems. `doctor` is usually run from the machine doing
+    the deploying, and its own install can rot exactly like a remote one."""
     print("checking local...", end="", flush=True)
     try:
-        local_problems = health_problems(selfcheck_facts())
+        problems = health_problems(selfcheck_facts())
     except Exception as e:  # noqa: BLE001
-        local_problems = [f"selfcheck failed: {e}"]
-    if local_problems:
-        print(" " + "; ".join(f"[{p}]" for p in local_problems))
-        unhealthy.append("local")
-    else:
-        print(" ok")
+        problems = [f"selfcheck failed: {e}"]
+    print(" " + "; ".join(f"[{p}]" for p in problems) if problems else " ok")
+    return problems
 
+
+def _scan_hosts(hosts: "list[str]", local_hashes: dict,
+                local_branches: dict) -> "tuple[list, list, list]":
+    """Probe each host once: (skewed, unhealthy, unreachable)."""
+    import subprocess
+    skewed, unhealthy, unreachable = [], [], []
     for host in hosts:
         print(f"checking {host}...", end="", flush=True)
         notes = []
@@ -4794,7 +4876,42 @@ def cmd_doctor(a) -> int:
             skewed.append(host)
         if problems:
             unhealthy.append(host)
+    return skewed, unhealthy, unreachable
 
+
+def fix_targets(skewed: "list[str]", unhealthy: "list[str]") -> "list[str]":
+    """Which hosts `--fix` may deploy to: stale ones, and only those.
+
+    A host in the ledger with `!` is not behind, it is broken — a dead install,
+    services down, a crash loop. `git pull` does not fix any of those, and
+    restarting a crash-looping service just spins it faster while the output
+    scrolls past claiming work was done. Those want a person; skew wants a
+    pull. Keeping the automatic path to the second kind only is what makes it
+    safe to run without reading first.
+    """
+    return [h for h in skewed if h not in unhealthy and h != "local"]
+
+
+def _fix_host(host: str) -> "tuple[bool, list[str]]":
+    """Deploy one host. (ok, report lines)."""
+    import subprocess
+    try:
+        res = subprocess.run(
+            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", host, "sh"],
+            input=_REMOTE_FIX, capture_output=True, text=True, timeout=300)
+    except Exception as e:  # noqa: BLE001
+        return False, [f"unreachable while fixing: {e}"]
+    lines = [ln.strip() for ln in (res.stdout or "").splitlines() if ln.strip()]
+    ok = res.returncode == 0 and not any("FAILED" in ln for ln in lines)
+    if not lines:
+        lines = [(res.stderr or "").strip() or "no output"]
+    return ok, lines
+
+
+def _write_ledger(hosts: "list[str]", skewed: "list[str]",
+                  unhealthy: "list[str]", unreachable: "list[str]") -> int:
+    """Publish the verdict the status bar reads."""
+    from pathlib import Path
     # One line per troubled host. A `!` suffix marks "running, but not well" so
     # the status bar can distinguish a stale host from a broken one at a glance.
     entries = [f"{h}!" for h in unhealthy] + [h for h in skewed if h not in unhealthy]
@@ -4838,6 +4955,66 @@ def cmd_doctor(a) -> int:
     except OSError as e:
         log.error("doctor: failed to write ledger: %s", e)
         return 1
+
+
+def cmd_doctor(a) -> int:
+    """Check agent cluster health: version skew AND whether the code can run.
+
+    Skew alone was never enough — a host can sit on the right commit with a
+    dead install (see selfcheck_facts). Both kinds of trouble land in the same
+    ledger, so the status bar's ⚠ covers both.
+
+    With `--fix`, stale hosts are then pulled and restarted and re-judged, so a
+    successful deploy clears the ⚠ in the same run. Diagnosis stays the default:
+    this is triggered from a keystroke, never from the status bar's background
+    re-check, because a pull onto the phone is a live deploy that can cut speech
+    mid-sentence — worth a person's timing, not a timer's.
+    """
+    # pn was missing from this list, so nothing ever looked at it — it sat on a
+    # retired repo with 40 stale symlinks and doctor had no opinion.
+    #
+    # `p8ar` was the phone's old name; it was renamed to `p8a` in 2026-08, and
+    # this list kept the old one. The name stopped resolving, every run printed
+    # "unreachable", and unreachable hosts were skipped — so the phone, the host
+    # that actually renders speech, went unchecked for weeks while the summary
+    # said everything was healthy. It was six commits behind when this was found.
+    hosts = os.environ.get("MEDIA_DOCTOR_HOSTS", "p8a red5 pn sp4").split()
+    repos = ["agent-media", "dotfiles"]
+
+    local_hashes, local_branches = _local_repo_state(repos)
+    unhealthy = ["local"] if _scan_local() else []
+    skewed, host_unhealthy, unreachable = _scan_hosts(
+        hosts, local_hashes, local_branches)
+    unhealthy += host_unhealthy
+
+    targets = fix_targets(skewed, unhealthy)
+    if targets and not getattr(a, "fix", False):
+        # Named on its own line so the popup can offer the fix without
+        # re-deriving which hosts qualify.
+        print(f"\nfixable by pull: {', '.join(targets)}")
+
+    if getattr(a, "fix", False):
+        if not targets:
+            print("\nnothing to fix: no host is merely behind.")
+        else:
+            print(f"\nfixing {', '.join(targets)} ...")
+            for host in targets:
+                ok, lines = _fix_host(host)
+                for ln in lines:
+                    print(f"  {host}: {ln}")
+                if not ok:
+                    print(f"  {host}: fix incomplete — needs a look")
+            # Re-judge only what we touched; the other hosts' verdicts from the
+            # scan above are still current, and a second full sweep would spend
+            # four more ssh round trips to re-learn them.
+            print()
+            re_skewed, re_unhealthy, re_unreachable = _scan_hosts(
+                targets, local_hashes, local_branches)
+            skewed = [h for h in skewed if h not in targets] + re_skewed
+            unhealthy = [h for h in unhealthy if h not in targets] + re_unhealthy
+            unreachable = [h for h in unreachable if h not in targets] + re_unreachable
+
+    return _write_ledger(hosts, skewed, unhealthy, unreachable)
 
 
 # --- CLI -------------------------------------------------------------------
@@ -5191,7 +5368,16 @@ def _build_parser() -> argparse.ArgumentParser:
 
     doc = sub.add_parser("doctor",
                          help="check cluster health (version skew + install/services)")
+    doc.add_argument("--fix", action="store_true",
+                     help="deploy the hosts that are merely behind (pull + "
+                          "restart services), then re-judge them")
     doc.set_defaults(func=cmd_doctor)
+
+    rs = sub.add_parser("restart-services",
+                        help="restart the services this checkout owns")
+    rs.add_argument("--dry-run", action="store_true",
+                    help="name what would be restarted, touch nothing")
+    rs.set_defaults(func=cmd_restart_services)
 
     sc = sub.add_parser("selfcheck",
                         help="report this host's install health (key=value lines)")

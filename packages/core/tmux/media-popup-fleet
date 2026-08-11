@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# --- read-whole-file guard -------------------------------------------------
+# See media-popup-docs for why the body is one brace group: bash reads a script
+# lazily by byte offset, so editing this file while a popup is open makes the
+# running copy resume mid-token in the new text.
+{
+# The `⚠ fleet:` warning, made actionable (prefix D).
+#
+# The status bar already re-runs `media doctor` on a timer, so the fleet's
+# state is never the missing piece — the missing piece was a way to act on it
+# without leaving the pane and remembering the command. This shows the full
+# report, then offers the deploy for the hosts that are merely behind.
+#
+# Deliberately not automatic. `--fix` pulls and restarts services, which on the
+# phone means the speech renderer stops mid-sentence; that is fine when you
+# chose the moment and startling when a timer did.
+set -u
+
+pause() { echo; read -r -p "enter to close" _; }
+
+printf '\033[1mchecking the fleet ...\033[0m\n\n'
+out=$(media doctor 2>&1)
+printf '%s\n' "$out"
+
+# `fixable by pull: a, b` — printed by doctor for exactly this purpose. Hosts
+# marked `!` are broken rather than stale and never appear here: a pull doesn't
+# fix a dead install, and restarting a crash-looping service only spins it.
+line=$(printf '%s\n' "$out" | sed -n 's/^fixable by pull: //p' | tail -1)
+if [ -z "$line" ]; then
+    pause
+    exit 0
+fi
+
+printf '\n\033[1m%s\033[0m can be deployed: git pull + restart services.\n' "$line"
+printf 'Services restart, so speech on those hosts cuts out briefly.\n'
+read -r -p "fix them now? [y/N] " ans
+case "$ans" in
+    y|Y|yes|YES) ;;
+    *) echo "left alone."; pause; exit 0 ;;
+esac
+
+echo
+media doctor --fix 2>&1
+pause
+}
