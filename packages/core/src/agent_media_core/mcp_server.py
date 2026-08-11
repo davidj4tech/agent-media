@@ -249,6 +249,7 @@ def converse(text: str,
             # The doorbell survives the question not being heard — David in
             # another room, or an answerer (Cece) who cannot hear at all.
             doorbell.ring(text, timeout_s)
+            doorbell.post(text, timeout_s)
             t0 = time.monotonic()
             try:
                 reply = rv.wait()

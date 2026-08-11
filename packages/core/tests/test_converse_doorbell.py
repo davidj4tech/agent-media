@@ -10,6 +10,7 @@ an answer to a rendezvous that no longer exists.
 import subprocess
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -94,6 +95,72 @@ def test_empty_question_is_not_announced(calls):
     doorbell.ring("   ", 30)
     time.sleep(0.2)
     assert calls == []
+
+
+# --- the mailbox drop ------------------------------------------------------
+# The one path that survives the answerer not being active, so unlike the
+# notification it is one-way: nothing retracts it, the text expires itself.
+
+@pytest.fixture
+def relay(monkeypatch, tmp_path):
+    """Pretend relay-msg is installed, and capture how it's called."""
+    fake = tmp_path / "relay-msg"
+    fake.write_text("#!/bin/sh\nexit 0\n")
+    fake.chmod(0o755)
+    monkeypatch.setattr(doorbell.shutil, "which",
+                        lambda n: str(fake) if n == "relay-msg" else None)
+    return str(fake)
+
+
+def test_post_addresses_the_answerers_box(calls, relay):
+    doorbell.post("ship it or hold?", 90)
+    argv, _ = _settle(calls)[0]
+    assert argv[0] == relay
+    assert argv[argv.index("--to") + 1] == "cece"
+    # Stated, not inferred: relay-msg would otherwise label it from whichever
+    # box the HOST is configured as, which breaks the reply's threading.
+    assert argv[argv.index("--from") + 1] == "sam"
+    assert "ship it or hold?" in argv[-1]
+
+
+def test_post_says_when_it_expires(calls, relay):
+    """One-way: nothing can retract it, so the text has to invalidate itself."""
+    doorbell.post("still there?", 120)
+    argv, _ = _settle(calls)[0]
+    assert "120s" in argv[-1]
+    assert "--pending" in argv[-1]
+
+
+def test_post_is_configurable_and_disableable(calls, relay, monkeypatch):
+    monkeypatch.setenv("MEDIA_CONVERSE_MAILBOX", "gigi")
+    doorbell.post("q?", 30)
+    argv, _ = _settle(calls)[0]
+    assert argv[argv.index("--to") + 1] == "gigi"
+
+    calls.clear()
+    monkeypatch.setenv("MEDIA_CONVERSE_MAILBOX", "")
+    doorbell.post("q?", 30)
+    time.sleep(0.2)
+    assert calls == []
+
+
+def test_post_without_relay_msg_installed_is_a_no_op(calls, monkeypatch):
+    monkeypatch.setattr(doorbell.shutil, "which", lambda n: None)
+    monkeypatch.setattr(doorbell.Path, "home", staticmethod(lambda: Path("/nonexistent")))
+    doorbell.post("q?", 30)
+    time.sleep(0.2)
+    assert calls == []
+
+
+def test_post_does_not_block_the_answer(relay, monkeypatch):
+    def slow_run(argv, **kw):
+        time.sleep(3)
+        return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+    monkeypatch.setattr(subprocess, "run", slow_run)
+    t0 = time.monotonic()
+    doorbell.post("are you there?", 90)
+    assert time.monotonic() - t0 < 0.5
 
 
 def test_ssh_failure_is_swallowed(monkeypatch):
