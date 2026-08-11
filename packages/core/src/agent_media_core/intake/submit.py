@@ -742,11 +742,13 @@ def _set_follow_rows(show: bool, pane: str = "") -> None:
     and go away when the reply ends.
 
     Per session, not globally: another session's panes should not resize
-    because this one is speaking. `MEDIA_FOLLOW_ROWS` (default 2) is how many
-    rows the sentence gets; 0 turns the whole mechanism off and leaves the
-    status bar however you configured it.
+    because this one is speaking. `MEDIA_FOLLOW_ROWS` (default 3) is how many
+    rows the sentence gets — enough that a long one wraps whole rather than
+    ending in an ellipsis; 0 turns the whole mechanism off and leaves the
+    status bar however you configured it. Keep it in step with how many
+    status-format rows the tmux config lays out.
     """
-    rows = int(os.environ.get("MEDIA_FOLLOW_ROWS", "2") or 0)
+    rows = int(os.environ.get("MEDIA_FOLLOW_ROWS", "3") or 0)
     if rows <= 0:
         return
     if not os.environ.get("TMUX"):
