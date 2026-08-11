@@ -126,7 +126,18 @@ while :; do
         rm -f "$browseflag"
         sw="$cw"; [ "$sw" -gt 90 ] && sw=90; [ "$sw" -lt "$MIN" ] && sw="$MIN"
         sh="$ch"; [ "$sh" -gt 24 ] && sh=24; [ "$sh" -lt 10 ] && sh="$ch"
-        if [ "$chan" = "docs" ]; then
+        if [ "$chan" = "fleet" ]; then
+            # `f` — the fleet doctor. Not a channel and not a browser, but it
+            # wants the same thing the browsers want: room. The control popup
+            # is capped at 34 columns and doctor prints a line per host.
+            # Taller than the browsers, because `--fix` reports per host per
+            # repo and the pull output must not scroll away unread.
+            fh="$ch"; [ "$fh" -gt 30 ] && fh=30; [ "$fh" -lt 10 ] && fh="$ch"
+            popup -w "$sw" -h "$fh" -s 'bg=default' -T ' fleet ' media-popup-fleet
+            # "fleet" is not a channel — reopen on whatever was in hand.
+            chan=$(media popup-channel 2>/dev/null) || chan=speech
+            chan=${chan:-speech}
+        elif [ "$chan" = "docs" ]; then
             # `d` — not a channel but the same round-trip: pick a document,
             # then it plays on the book channel. Taller than the others,
             # because a doc list is browsed by reading titles.

@@ -828,6 +828,22 @@ handle_key() {
                  draw
                  do_refresh
              fi ;;
+        # The fleet doctor — what the status bar's `⚠ fleet:` is telling you
+        # about, and the offer to deploy the hosts that are merely behind.
+        # Here rather than on a global prefix key: every free letter in the
+        # root table is one keystroke from something you press by reflex, and
+        # `prefix H` (the obvious mnemonic) is oh-my-tmux's resize-pane-left.
+        f)   if [ -n "${MEDIA_POPUP_BROWSE_FLAG:-}" ]; then
+                 printf 'fleet' > "$MEDIA_POPUP_BROWSE_FLAG"; QUIT=1; return
+             else
+                 mouse_off
+                 printf '\033[H\033[2J\033[?25h'
+                 media-popup-fleet
+                 printf '\033[?25l'
+                 mouse_on
+                 draw
+                 do_refresh
+             fi ;;
         /)   search_ch="$CHANNEL"
              [ "$search_ch" = "speech" ] && search_ch=book
              if [ -n "${MEDIA_POPUP_SEARCH_FLAG:-}" ]; then

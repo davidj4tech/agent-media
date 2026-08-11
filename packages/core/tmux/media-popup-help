@@ -36,6 +36,7 @@ mapfile -t L <<'EOF'
  │ < >    prev/next    │
  │ g      go to source │
  │ a      ask pi       │
+ │ f      fleet doctor │
  │ q      close        │
  ╰─────────────────────╯
  ╭ speech only ────────╮
