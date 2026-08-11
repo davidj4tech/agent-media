@@ -806,13 +806,22 @@ class _HighlightScheduler:
         _set_follow_rows(True, self._pane)
 
     def done(self) -> None:
-        """Give the rows back at the end of a reply."""
-        if self._rows_shown:
-            self._rows_shown = False
-            _set_follow_rows(False, self._pane)
+        """Give the rows back at the end of a reply.
+
+        Unconditional, not only when we opened them: turning follow-along on
+        mid-reply opens them from the popup, outside this object's knowledge,
+        and rows nobody closes stay open. Setting a height that is already set
+        is a no-op, and one reply speaks at a time per session.
+        """
+        self._rows_shown = False
+        _set_follow_rows(False, self._pane)
 
     def show(self, sentence: str, *, first: bool, force: bool) -> None:
-        if not self._enabled:
+        # Re-asked per sentence, not frozen at the start of the reply: the
+        # keystroke skip that usually turns `enabled` off is about having been
+        # typing a moment ago, and pressing `v` (or `prefix V`) mid-reply is
+        # exactly the statement that you have stopped and are attending now.
+        if not self._enabled and not _force_highlight_active(self._pane):
             return
         if force or self._delay <= 0:
             self.cancel_pending()

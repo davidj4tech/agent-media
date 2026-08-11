@@ -43,7 +43,7 @@ def test_visible_text_costs_no_rows(rows, found):
     h = submit._HighlightScheduler(0.0, True, "%1")
     h.show("Something on screen.", first=True, force=False)
     h.drain()
-    assert rows == [], "rows were taken for a sentence you can already see"
+    assert True not in rows, "rows were taken for a sentence you can already see"
 
 
 def test_unreachable_text_takes_the_rows_and_gives_them_back(rows, found):
@@ -74,7 +74,7 @@ def test_nothing_happens_while_following_along_is_off(rows, found):
     h = submit._HighlightScheduler(0.0, False, "%1")
     h.show("Off screen, but nobody asked to follow.", first=True, force=False)
     h.drain()
-    assert rows == []
+    assert True not in rows
 
 
 def test_a_deferred_highlight_still_reports(rows, found, monkeypatch):
@@ -133,3 +133,32 @@ def test_giving_the_rows_back_is_never_refused(monkeypatch):
     monkeypatch.setattr(submit.subprocess, "run", _run)
     submit._set_follow_rows(False, "%1")
     assert any("status" in a for a in seen), "the rows were never handed back"
+
+
+def test_turning_it_on_mid_reply_revives_the_skipped_turn(rows, found, monkeypatch):
+    """The keystroke skip disables the scheduler for a reply you typed into a
+    moment ago — which is every reply. Pressing `v` (or prefix V) mid-read is
+    the statement that you have stopped, so the rest of the reply follows."""
+    from agent_media_core.intake import submit as S
+    found(False)
+    forced = {"on": False}
+    monkeypatch.setattr(S, "_force_highlight_active", lambda p: forced["on"])
+
+    h = S._HighlightScheduler(0.0, False, "%1")     # skipped this turn
+    h.show("First sentence.", first=True, force=False)
+    assert rows == [], "a skipped turn should stay quiet"
+
+    forced["on"] = True                              # ← the press
+    h.show("Second sentence.", first=False, force=False)
+    assert rows == [True], "the rest of the reply did not start following"
+
+
+def test_the_rows_are_handed_back_even_if_someone_else_opened_them(rows, found):
+    """The popup opens them directly when you turn follow-along on mid-reply,
+    outside the scheduler's knowledge. Rows nobody closes stay open."""
+    from agent_media_core.intake import submit as S
+    found(True)
+    h = S._HighlightScheduler(0.0, True, "%1")
+    h.show("On screen.", first=True, force=False)
+    h.drain()
+    assert rows == [False]

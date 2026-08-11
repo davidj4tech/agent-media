@@ -1502,7 +1502,8 @@ def cmd_highlight_toggle(a) -> int:
     immediately for feedback.
     """
     from .intake.submit import (toggle_auto_highlight, _tmux_highlight_text,
-                                ensure_follow_view)
+                                ensure_follow_view, set_force_highlight,
+                                _set_follow_rows)
     on = toggle_auto_highlight()
     # Prefer the pane that produced the speech; fall back to the popup's
     # caller pane if we never captured a source pane.
@@ -1514,17 +1515,25 @@ def cmd_highlight_toggle(a) -> int:
     # separate switch would mean the feature is "on" and invisible.
     ensure_follow_view(on, pane=pane, deliberate=True)
     if on:
+        # Turning it on IS "I have stopped typing and I am attending now", so
+        # it overrides the keystroke skip the same way `prefix V` does —
+        # otherwise the reply already in flight, which you almost certainly
+        # typed into a moment ago, stays unfollowed to its end.
+        set_force_highlight()
         if pane:
             # Jump to the speaking pane so the follow-along is on screen.
             _focus_pane(pane)
             os.environ["TMUX_PANE"] = pane
             if not os.environ.get("TMUX"):
                 os.environ["TMUX"] = "x"
-            # If a sentence is playing right now, highlight it immediately.
+            # If a sentence is playing right now, highlight it immediately —
+            # and if it cannot be found on screen, hand it to the status rows,
+            # which is the same choice the scheduler makes per sentence. The
+            # reply in flight is the one you turned this on for.
             np = _now_speaking()
             sentence = (np.get("extras") or {}).get("current_sentence") if np else None
-            if sentence:
-                _tmux_highlight_text(sentence, force=True)
+            if sentence and not _tmux_highlight_text(sentence, force=True):
+                _set_follow_rows(True, pane)
         print("highlight: ON")
     else:
         # Kill any in-flight clear-timer (so it can't fire into the pane after
@@ -1536,6 +1545,10 @@ def cmd_highlight_toggle(a) -> int:
                                         _force_cancel_copy_mode)
             _kill_pending_clear(pane)
             _force_cancel_copy_mode(pane)
+        # And take the rows back now rather than at the end of the reply: they
+        # render nothing once the feature is off, so leaving them would sit
+        # four blank lines under you for however long the reply had left.
+        _set_follow_rows(False, pane)
         print("highlight: OFF")
     return 0
 
