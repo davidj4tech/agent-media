@@ -1012,6 +1012,23 @@ def _offsets_from_marks(marks: dict[int, float], count: int,
     return offsets
 
 
+def elapsed_from_row(extras: dict, origin: float) -> float:
+    """How far into the reply we are, according to the row.
+
+    The lanes that play on another device follow a timeline on the clock,
+    because asking the player costs ~600ms on a link that drops a quarter of
+    its packets. A clock does not know the audio was paused — so the row says
+    so instead: `paused_at` freezes the reading at the moment the pause was
+    issued, and the resume pushes `play_started_at` forward by however long it
+    lasted. Both are written by whoever issues the pause (cli's toggle), which
+    is the only party that reliably knows it happened.
+    """
+    base = float(extras.get("play_started_at") or origin)
+    paused_at = extras.get("paused_at")
+    now = float(paused_at) if paused_at else time.time()
+    return max(0.0, now - base)
+
+
 class _SentenceFollower:
     """Keep `current_sentence` moving for a lane whose audio plays elsewhere.
 
@@ -1094,10 +1111,10 @@ class _SentenceFollower:
                     return                      # someone else owns the row now
                 # Re-read the origin each tick rather than trusting the one we
                 # started with: `media skip` re-stamps it to seek this lane (one
-                # clip, no playlist), and a follower running off a stale origin
-                # would drag the highlight straight back to where it was.
-                base = extras.get("play_started_at") or play_started_at
-                elapsed = time.time() - float(base)
+                # clip, no playlist), a pause freezes it, and a follower running
+                # off a stale origin would drag the highlight straight back to
+                # where it was — or read on through silence.
+                elapsed = elapsed_from_row(extras, play_started_at)
                 idx = 0
                 for i, off in enumerate(offsets):
                     if elapsed + 0.001 >= off:

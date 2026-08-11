@@ -1747,6 +1747,50 @@ def _patch_speech_mirror(**live) -> None:
                           content_type=np.get("content_type"), extras=ex)
 
 
+def _stamp_speech_pause(paused: Optional[bool] = None) -> None:
+    """Tell the row the audio stopped (or started again).
+
+    The lanes that play on another device follow their timeline on a clock —
+    asking the player costs ~600ms over a link that drops a quarter of its
+    packets, and the circuit breaker refuses outright once it has been slow.
+    A clock cannot notice a pause, so the sentence highlight read serenely on
+    through the silence and was several sentences ahead by the time the audio
+    resumed.
+
+    Nothing needs to observe the player to know: we are the ones pausing it.
+    `paused_at` freezes the reading where it was; the resume adds however long
+    the pause lasted to the origin, which is the same correction as never
+    having stopped. `paused=None` means "we sent a cycle, so flip whatever the
+    row says" — that is how the remote lane toggles, deliberately, because a
+    read-then-write over that bridge is what used to make pause miss.
+    """
+    try:
+        state = StateStore()
+        np = state.get_now_playing("speech")
+        if not np:
+            return
+        ex = np.get("extras") or {}
+        was_paused = bool(ex.get("paused_at"))
+        now_paused = (not was_paused) if paused is None else paused
+        if now_paused == was_paused:
+            return
+        now = time.time()
+        if now_paused:
+            ex["paused_at"] = now
+        else:
+            started = float(ex.get("play_started_at") or 0)
+            if started:
+                ex["play_started_at"] = started + (now - float(ex["paused_at"]))
+            ex.pop("paused_at", None)
+        ex["live_pause"] = now_paused
+        state.set_now_playing(
+            "speech", uri=np.get("uri") or "",
+            started_at=np.get("started_at") or now,
+            target=np.get("target") or SPEECH_TARGET.name, extras=ex)
+    except Exception:  # noqa: BLE001 — a pause must still reach the player
+        pass
+
+
 def cmd_toggle(a) -> int:
     # If nothing is loaded, "play" means replay a clip (matches the old
     # popup's Space = play/pause-or-replay). Prefer the most recent clip from
@@ -1780,13 +1824,17 @@ def cmd_toggle(a) -> int:
             ipc.send_nowait(_sock(), "cycle", "pause", critical=True)
         except Exception:  # noqa: BLE001
             ipc.command(_sock(), "cycle", "pause", critical=True)
+        # Same decision, recorded: the follow-along on this lane runs on a
+        # clock and would otherwise read on through the silence.
+        _stamp_speech_pause()
         _SNAP_CACHE["value"] = None   # next redraw asks the player, not the cache
         return 0
     if _get("idle-active"):
         pane = os.environ.get("TTS_POPUP_PANE") or os.environ.get("TMUX_PANE", "")
         return _do_replay(_history_index_for_pane(pane) or 1)
-    ipc.set_property(_sock(), "pause", not bool(_get("pause", critical=True)),
-                     critical=True)
+    want = not bool(_get("pause", critical=True))
+    ipc.set_property(_sock(), "pause", want, critical=True)
+    _stamp_speech_pause(want)
     return 0
 
 
@@ -2577,6 +2625,9 @@ def _replay_row(row: dict) -> int:
         np_extras["clip_sentences"] = clip_sentences
         np_extras["clip_offsets_s"] = clip_offsets
         np_extras["current_sentence_idx"] = 0
+        # The origin the follower reads (and that skip/pause re-stamp). Set
+        # here rather than in the follower so both agree from the first tick.
+        np_extras["play_started_at"] = time.time()
     else:
         clip_offsets = []
     if have_durations:
@@ -2980,11 +3031,18 @@ def cmd_replay_track(a) -> int:
         # clock says how far in we are, exactly as the live lane does. A pause
         # drifts this (same limitation as the live lane); everything else about
         # it is steadier than the reading it replaced.
+        from .intake.submit import elapsed_from_row
         total = sum(durations) or (offsets[-1] + 3.0)
         started = time.time()
         last = -1
         while True:
-            elapsed = time.time() - started
+            # The row owns the timeline: `media skip` re-stamps its origin and
+            # a pause freezes it, so reading it back each tick is what keeps a
+            # replay in step with the audio instead of with the wall clock.
+            row = state.get_now_playing("speech")
+            if not row or not _owns(row.get("extras") or {}):
+                return _finish()
+            elapsed = elapsed_from_row(row.get("extras") or {}, started)
             if elapsed > total + 0.5:
                 return _finish()
             idx = 0
