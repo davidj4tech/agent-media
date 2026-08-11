@@ -654,13 +654,24 @@ def _set_follow_rows(show: bool, pane: str = "") -> None:
         return
     if not os.environ.get("TMUX"):
         return
-    if show and not _is_auto_highlight_enabled():
-        # The scheduler's `enabled` is about *this turn* (hook source, not
-        # typing just now); whether following along is switched on at all lives
-        # in the flag, and _tmux_highlight_text checks it separately — so with
-        # the feature off every sentence came back "not found" and the bar grew
-        # four rows to display nothing, since the rows themselves are silent
-        # when it is off. Ask the same question they do.
+    # Three heights, not two:
+    #
+    #   off            1  just the bar. The rows render nothing when the
+    #                     feature is off, so any more would be blank lines.
+    #   on             2  one row: the sentence being spoken, or — between
+    #                     replies — that following along is switched on. This
+    #                     is the confirmation that the switch did something,
+    #                     and it has to exist when nothing is playing, which is
+    #                     when the switch is usually thrown.
+    #   on + unreachable   1 + MEDIA_FOLLOW_ROWS: the words can't be seen in
+    #                     the pane, so the bar carries the whole sentence.
+    #
+    # The scheduler's `enabled` is about *this turn* (hook source, not typing
+    # just now); whether following along is on at all lives in the flag, which
+    # _tmux_highlight_text checks separately — so asking it here is what stops
+    # the bar growing to display nothing.
+    following = _is_auto_highlight_enabled()
+    if show and not following:
         return
     try:
         target = pane or os.environ.get("TMUX_PANE") or ""
@@ -672,7 +683,7 @@ def _set_follow_rows(show: bool, pane: str = "") -> None:
         session = r.stdout.strip()
         if r.returncode != 0 or not session:
             return
-        want = 1 + rows if show else 1
+        want = (1 + rows) if show else (2 if following else 1)
         # Only when it differs: every set redraws the client, and a redraw of
         # the status bar re-runs the very commands that render it.
         if _status_rows(session) == want:

@@ -162,3 +162,53 @@ def test_the_rows_are_handed_back_even_if_someone_else_opened_them(rows, found):
     h.show("On screen.", first=True, force=False)
     h.drain()
     assert rows == [False]
+
+
+# --- the three heights ------------------------------------------------------
+
+@pytest.fixture
+def height(monkeypatch):
+    """Capture the status height asked for, without touching a real session."""
+    asked: list = []
+
+    class _R:
+        returncode = 0
+        stdout = "on"
+
+    def _run(argv, **kw):
+        if "set" in argv and "status" in argv:
+            asked.append(argv[-1])
+        return _R()
+
+    monkeypatch.setenv("TMUX", "x")
+    monkeypatch.setenv("MEDIA_FOLLOW_ROWS", "4")
+    monkeypatch.setattr(submit.subprocess, "run", _run)
+    return asked
+
+
+def test_following_along_owns_one_row_even_with_nothing_playing(height):
+    """The switch is usually thrown between replies, where there is no
+    sentence to fail to find — and a switch with no visible effect is
+    indistinguishable from a broken one. The row says it is on."""
+    submit._set_follow_rows(False, "%1")
+    assert height == ["2"]
+
+
+def test_unreachable_words_take_the_full_height(height):
+    submit._set_follow_rows(True, "%1")
+    assert height == ["5"]
+
+
+def test_switched_off_is_the_bare_bar(height, monkeypatch):
+    monkeypatch.setattr(submit, "_is_auto_highlight_enabled", lambda: False)
+    monkeypatch.setattr(submit, "_status_rows", lambda s: 5)   # was expanded
+    submit._set_follow_rows(False, "%1")
+    assert height == ["on"]          # tmux spells one row `on`
+
+
+def test_a_height_already_set_is_not_reset(height, monkeypatch):
+    """Every set redraws the client, and the redraw re-runs the commands that
+    render the bar."""
+    monkeypatch.setattr(submit, "_status_rows", lambda s: 2)
+    submit._set_follow_rows(False, "%1")
+    assert height == []

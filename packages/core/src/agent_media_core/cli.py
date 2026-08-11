@@ -1530,6 +1530,11 @@ def cmd_highlight_toggle(a) -> int:
             # and if it cannot be found on screen, hand it to the status rows,
             # which is the same choice the scheduler makes per sentence. The
             # reply in flight is the one you turned this on for.
+            # The bar takes its one row now, whether or not anything is
+            # playing: the switch is usually thrown between replies, and a
+            # switch with no visible effect is indistinguishable from a broken
+            # one. (The row says "follow-along on" when idle.)
+            _set_follow_rows(False, pane)
             np = _now_speaking()
             sentence = (np.get("extras") or {}).get("current_sentence") if np else None
             if sentence and not _tmux_highlight_text(sentence, force=True):

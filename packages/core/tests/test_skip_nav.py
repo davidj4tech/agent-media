@@ -155,6 +155,12 @@ def _patch_highlight(monkeypatch):
         calls.append((text, first, force, time.monotonic() - start))
 
     monkeypatch.setattr(S, "_tmux_highlight_text", _rec)
+    # The scheduler asks per sentence whether a force-highlight press is in
+    # effect (that is how turning follow-along on mid-reply revives a skipped
+    # turn), and that flag is a real file in the developer's own state dir —
+    # so without this the suite's answer depends on whether they last pressed
+    # `v`. These tests are about the scheduler, not the ambient flag.
+    monkeypatch.setattr(S, "_force_highlight_active", lambda pane: False)
     return calls
 
 

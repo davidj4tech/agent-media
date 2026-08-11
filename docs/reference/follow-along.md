@@ -24,8 +24,17 @@ fullscreen TUI hold the alternate screen, where there is no scrollback and the
 app redraws over anything painted into it. The signal is free — a failed search
 *is* "these words are unreachable" — so `_tmux_highlight_text` returns whether
 it found them, and a miss hands the sentence to the bar instead
-(`_set_follow_rows`). The session's status height goes to 1 + `MEDIA_FOLLOW_ROWS`
-(default 4) and back when the reply ends.
+(`_set_follow_rows`). Three heights, per session:
+
+| height | when |
+|---|---|
+| 1 (`on`) | follow-along off — the rows render nothing, so more would be blank |
+| 2 | on: one row, the sentence being spoken or "follow-along on" between replies |
+| 1 + `MEDIA_FOLLOW_ROWS` (4) | on, and the words are not reachable in the pane |
+
+The middle height matters more than it looks: the switch is usually thrown
+*between* replies, where there is no sentence to fail to find — and a switch
+with no visible effect is indistinguishable from a broken one.
 
 The decision **latches for the reply**. Changing the status height resizes the
 panes and makes a fullscreen app redraw, so a reply alternating visible and
