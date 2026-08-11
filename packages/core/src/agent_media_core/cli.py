@@ -1577,13 +1577,25 @@ def cmd_current_sentence(a) -> int:
     Designed for tmux status-line use: shows a karaoke-style indicator of
     what's being read aloud right now, without touching the source pane.
     Truncates to --width chars (default 80) with an ellipsis so it fits.
+
+    This is the follow-along that costs no layout — a row of chrome rather than
+    rows taken from the conversation — and it works inside a fullscreen TUI,
+    where the copy-mode highlight has no scrollback to search.
+
+    With --idle-hint, an idle row isn't blank but says whether following along
+    is switched on at all: the question "is it on?" is asked between replies,
+    which is exactly when there is no sentence to show.
     """
     np = _now_speaking()
-    if not np:
-        return 0
-    ex = np.get("extras") or {}
-    sentence = (ex.get("current_sentence") or "").strip()
+    ex = (np or {}).get("extras") or {}
+    sentence = (ex.get("current_sentence") or "").strip() if np else ""
     if not sentence:
+        if getattr(a, "idle_hint", False):
+            from .intake.submit import _is_auto_highlight_enabled
+            if _is_auto_highlight_enabled():
+                # Dim: present enough to answer the question, quiet enough to
+                # ignore. tmux styles rather than ANSI — this is a status line.
+                print("#[fg=colour244]♪ follow-along on#[default]")
         return 0
     sentence = " ".join(sentence.split())  # collapse whitespace
     width = getattr(a, "width", 80) or 80
@@ -5126,6 +5138,9 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="active sentence (for status-line karaoke indicator)")
     s.add_argument("--width", type=int, default=80,
                     help="max chars before truncation (default 80)")
+    s.add_argument("--idle-hint", action="store_true",
+                    help="when nothing is playing, say whether follow-along "
+                         "is switched on (for a permanent status row)")
     s.set_defaults(func=cmd_current_sentence)
 
     s = sub.add_parser("follow",

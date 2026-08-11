@@ -26,7 +26,7 @@ def spawned(monkeypatch):
 
     monkeypatch.setattr(submit.subprocess, "Popen", _popen)
     monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,1,0")
-    monkeypatch.delenv("MEDIA_FOLLOW_AUTO", raising=False)
+    monkeypatch.setenv("MEDIA_FOLLOW_AUTO", "1")
     return calls
 
 
@@ -73,9 +73,11 @@ def test_closing_does_not_need_the_flag(spawned, monkeypatch):
     assert spawned[0][0][1] == "close"
 
 
-def test_the_coupling_can_be_refused(spawned, monkeypatch):
+def test_the_pane_is_opt_in(spawned, monkeypatch):
+    """Unset is off: a pane that opens itself takes rows from the conversation
+    on every reply, and the status row does that job for a row of chrome."""
     _highlight_on(monkeypatch, True)
-    monkeypatch.setenv("MEDIA_FOLLOW_AUTO", "0")
+    monkeypatch.delenv("MEDIA_FOLLOW_AUTO", raising=False)
     submit.ensure_follow_view()
     assert spawned == []
 
@@ -91,7 +93,7 @@ def test_a_missing_helper_is_not_an_error(monkeypatch):
     """A host without the tmux helpers installed still speaks."""
     _highlight_on(monkeypatch, True)
     monkeypatch.setenv("TMUX", "x")
-    monkeypatch.delenv("MEDIA_FOLLOW_AUTO", raising=False)
+    monkeypatch.setenv("MEDIA_FOLLOW_AUTO", "1")
 
     def _boom(*a, **kw):
         raise OSError("no such file")

@@ -726,11 +726,11 @@ def ensure_follow_view(open_: bool = True, *, pane: str = "",
                        deliberate: bool = False) -> None:
     """Open (or close) the follow-along pane to match "I want to read along".
 
-    The copy-mode highlight and the follow pane are two halves of one wish, and
-    only the pane can serve it while a fullscreen TUI owns the screen — so the
-    auto-highlight flag drives both rather than leaving the user to keep two
-    switches in step. `MEDIA_FOLLOW_AUTO=0` opts out of the coupling and leaves
-    the pane entirely to `prefix F`.
+    Opt-in (`MEDIA_FOLLOW_AUTO=1`): a pane that opens itself takes rows from
+    the conversation on every reply, which is a lot to charge for reading along
+    — the status line's sentence row costs one row of chrome and no layout. So
+    the coupling is there for whoever wants the fuller view without a keypress,
+    and off otherwise; `prefix F` opens it on demand either way.
 
     Opening is `auto`, not `open`: where there is room the view splits in
     alongside, and where there isn't it stays shut rather than putting a window
@@ -742,10 +742,11 @@ def ensure_follow_view(open_: bool = True, *, pane: str = "",
     """
     if not os.environ.get("TMUX"):
         return
-    if os.environ.get("MEDIA_FOLLOW_AUTO") == "0":
-        return
-    if open_ and not _is_auto_highlight_enabled():
-        return                  # following along was never asked for
+    if open_:
+        if os.environ.get("MEDIA_FOLLOW_AUTO") != "1":
+            return              # the pane is a keypress away; don't take rows
+        if not _is_auto_highlight_enabled():
+            return              # following along was never asked for
     env = dict(os.environ)
     if pane:
         env["MEDIA_FOLLOW_TARGET"] = pane
