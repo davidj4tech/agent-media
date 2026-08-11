@@ -66,12 +66,16 @@ The cost of following a clock is that it cannot see the audio stop, so the
 things that stop it write to the row instead:
 
 - **pause** — `paused_at` freezes the reading; the resume adds the pause's
-  length to `play_started_at` (`_stamp_speech_pause`, `elapsed_from_row`).
+  length to `play_started_at` (`stamp_speech_pause`, `elapsed_from_row`).
 - **skip** — `media skip` seeks the player and re-stamps `play_started_at`, so
   the follower re-bases instead of dragging the highlight back.
 
-An external pause (the phone's own media keys, a call-guard pause) is not seen
-and will drift. Everything issued through `media` is.
+A pause *nobody here issued* — a media key, the notification controls, MPRIS, a
+call — is reported by the renderer instead, as a `PAUSE <0|1>` line on the same
+stream that carries the sentence marks. It is already polling its own player
+locally at ~2ms a read and the stream is still open, so it costs nothing; the
+alternative would be us polling the link that this whole design exists to
+avoid.
 
 ## Replay
 

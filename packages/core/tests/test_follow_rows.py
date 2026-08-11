@@ -14,6 +14,12 @@ import pytest
 from agent_media_core.intake import submit
 
 
+@pytest.fixture(autouse=True)
+def _following(monkeypatch):
+    """Follow-along switched on, unless a test says otherwise."""
+    monkeypatch.setattr(submit, "_is_auto_highlight_enabled", lambda: True)
+
+
 @pytest.fixture
 def rows(monkeypatch):
     """Record the row heights asked for, instead of resizing a real session."""
@@ -93,3 +99,37 @@ def test_one_row_is_spelled_on(monkeypatch):
     monkeypatch.setattr(submit.subprocess, "run",
                         lambda argv, **kw: calls.append(argv) or _R())
     assert submit._status_rows("s") == 1
+
+
+def test_the_bar_does_not_grow_while_follow_along_is_off(monkeypatch):
+    """The scheduler's `enabled` is about this turn; whether the feature is on
+    at all is the flag, which _tmux_highlight_text checks separately. With it
+    off every sentence came back "not found" and the bar grew four rows to show
+    nothing — the rows are silent when the feature is off."""
+    monkeypatch.setattr(submit, "_is_auto_highlight_enabled", lambda: False)
+    monkeypatch.setenv("TMUX", "x")
+    calls: list = []
+    monkeypatch.setattr(submit.subprocess, "run",
+                        lambda argv, **kw: calls.append(argv))
+    submit._set_follow_rows(True, "%1")
+    assert calls == []
+
+
+def test_giving_the_rows_back_is_never_refused(monkeypatch):
+    """Turning the feature off has already flipped the flag by the time we put
+    the rows away; a close gated on it would strand the bar four rows tall."""
+    monkeypatch.setattr(submit, "_is_auto_highlight_enabled", lambda: False)
+    monkeypatch.setenv("TMUX", "x")
+    seen: list = []
+
+    class _R:
+        returncode = 0
+        stdout = "5"
+
+    def _run(argv, **kw):
+        seen.append(argv)
+        return _R()
+
+    monkeypatch.setattr(submit.subprocess, "run", _run)
+    submit._set_follow_rows(False, "%1")
+    assert any("status" in a for a in seen), "the rows were never handed back"

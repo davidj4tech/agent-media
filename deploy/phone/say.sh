@@ -12,13 +12,17 @@
 # `mpv file`, because a one-shot has no IPC socket: pause, resume and skip from
 # the popup have nothing to talk to and silently do nothing.
 #
-# Text in on stdin. Three kinds of line out, immediately before playback:
+# Text in on stdin. Report lines out, the first three immediately before
+# playback and the last whenever it happens:
 #     CLIP <basename>
 #     SENTENCE <idx> <offset seconds>
 #     DURATION <seconds>
+#     PAUSE <0|1>
 # That plus the local clock is what draws the caller's progress bar and moves
-# its sentence highlight. DURATION goes last, because it is the line that means
-# "now". Keep stdout otherwise quiet.
+# its sentence highlight. DURATION goes last of the three, because it is the
+# line that means "now"; PAUSE arrives during playback, whenever this device's
+# player is paused or resumed by something that isn't the caller. Keep stdout
+# otherwise quiet.
 set -eu
 
 VENV="${MEDIA_VENV:-$HOME/projects/agent-media/.venv}"
@@ -139,11 +143,27 @@ case "$dur" in
     *) ticks=$(awk -v d="$dur" 'BEGIN{printf "%d", (d + 30) * 5}') ;;
 esac
 waited=0
+paused=0
 sleep 0.4
 while [ "$waited" -lt "$ticks" ]; do
     case "$(ipc '{"command":["get_property","idle-active"]}')" in
         *'"data":true'*) break ;;
     esac
+    # Report a pause the caller didn't issue — a media key, the notification
+    # controls, MPRIS, the call guard. The caller follows this reply on a clock
+    # (it cannot afford to poll us: ~600ms a read on this link, and its circuit
+    # breaker shuts for 45s after one slow one), so silence it doesn't know
+    # about is silence its sentence highlight reads straight through. We are
+    # already polling this broker locally at ~2ms a check, and the report
+    # stream is still open — so just say so.
+    case "$(ipc '{"command":["get_property","pause"]}')" in
+        *'"data":true'*) now=1 ;;
+        *)               now=0 ;;
+    esac
+    if [ "$now" != "$paused" ]; then
+        printf 'PAUSE %s\n' "$now"
+        paused="$now"
+    fi
     sleep 0.2
     waited=$((waited + 1))
 done

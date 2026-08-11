@@ -94,3 +94,55 @@ def test_no_reply_in_flight_is_not_an_error(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     cli._stamp_speech_pause(True)      # must not raise
     assert StateStore().get_now_playing("speech") is None
+
+
+# --- a pause we did not issue ----------------------------------------------
+
+class _Pipe:
+    def __init__(self, lines):
+        self._lines = list(lines)
+
+    def readline(self):
+        return self._lines.pop(0) if self._lines else b""
+
+
+class _Proc:
+    def __init__(self, lines):
+        self.stdout = _Pipe(lines)
+
+
+def test_the_far_side_reports_a_pause_it_was_asked_for_by_someone_else(row):
+    """A media key, the notification controls, MPRIS, a call. The renderer is
+    already polling its own player locally at ~2ms a read and its report stream
+    is still open, so it says so — the alternative is us polling a link where a
+    read costs 600ms and trips a 45s breaker."""
+    from agent_media_core.intake import submit
+
+    submit._watch_remote_progress(
+        _Proc([b"DURATION 30.0\n", b"PAUSE 1\n"]), row, "phone", 1000.0)
+    ex = _extras(row)
+    assert ex.get("paused_at"), "the far side's pause was not recorded"
+    assert ex["live_pause"] is True
+    held = elapsed_from_row(ex, 0)
+    time.sleep(0.2)
+    assert elapsed_from_row(_extras(row), 0) == pytest.approx(held)
+
+
+def test_and_reports_the_resume(row):
+    from agent_media_core.intake import submit
+
+    submit._watch_remote_progress(
+        _Proc([b"DURATION 30.0\n", b"PAUSE 1\n", b"PAUSE 0\n"]),
+        row, "phone", 1000.0)
+    assert "paused_at" not in _extras(row)
+    assert _extras(row)["live_pause"] is False
+
+
+def test_a_repeated_report_is_not_a_second_pause(row):
+    from agent_media_core.intake import submit
+
+    submit._watch_remote_progress(
+        _Proc([b"DURATION 30.0\n", b"PAUSE 1\n"]), row, "phone", 1000.0)
+    first = _extras(row)["paused_at"]
+    submit.stamp_speech_pause(row, True)
+    assert _extras(row)["paused_at"] == first

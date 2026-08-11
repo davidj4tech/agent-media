@@ -30,6 +30,8 @@ So the wire protocol grew one line, and nothing else moved:
     CLIP <basename>          what was rendered, so it can be replayed there
     SENTENCE <idx> <offset>  where sentence idx starts, in seconds
     DURATION <seconds>       how long the clip is — sent LAST, it means "now"
+    PAUSE <0|1>              during playback: this device's player was paused
+                             or resumed by something that isn't the caller
 
 - `deploy/phone/say.sh` renders **one** clip and plays it with **one**
   `loadfile`, exactly as before — the reliable part of this lane is untouched.
@@ -101,6 +103,6 @@ been closed there:
 - **Phone asleep / unreachable mid-reply:** still an ungraceful degrade.
 - **Shared sink-speech broker** with the phone's own `media say`: fine while
   sessions run only on red5, but unguarded.
-- **An externally-issued pause** — the phone's own media keys, a call-guard
-  pause — is invisible to the follower and will drift it. Everything issued
-  through `media` is accounted for.
+- Nothing outstanding on the follow-along itself: an externally-issued pause
+  (media keys, notification controls, a call) now comes back as a `PAUSE` line
+  from say.sh, which is already polling that player locally.

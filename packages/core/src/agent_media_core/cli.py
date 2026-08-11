@@ -1748,47 +1748,11 @@ def _patch_speech_mirror(**live) -> None:
 
 
 def _stamp_speech_pause(paused: Optional[bool] = None) -> None:
-    """Tell the row the audio stopped (or started again).
-
-    The lanes that play on another device follow their timeline on a clock —
-    asking the player costs ~600ms over a link that drops a quarter of its
-    packets, and the circuit breaker refuses outright once it has been slow.
-    A clock cannot notice a pause, so the sentence highlight read serenely on
-    through the silence and was several sentences ahead by the time the audio
-    resumed.
-
-    Nothing needs to observe the player to know: we are the ones pausing it.
-    `paused_at` freezes the reading where it was; the resume adds however long
-    the pause lasted to the origin, which is the same correction as never
-    having stopped. `paused=None` means "we sent a cycle, so flip whatever the
-    row says" — that is how the remote lane toggles, deliberately, because a
-    read-then-write over that bridge is what used to make pause miss.
-    """
-    try:
-        state = StateStore()
-        np = state.get_now_playing("speech")
-        if not np:
-            return
-        ex = np.get("extras") or {}
-        was_paused = bool(ex.get("paused_at"))
-        now_paused = (not was_paused) if paused is None else paused
-        if now_paused == was_paused:
-            return
-        now = time.time()
-        if now_paused:
-            ex["paused_at"] = now
-        else:
-            started = float(ex.get("play_started_at") or 0)
-            if started:
-                ex["play_started_at"] = started + (now - float(ex["paused_at"]))
-            ex.pop("paused_at", None)
-        ex["live_pause"] = now_paused
-        state.set_now_playing(
-            "speech", uri=np.get("uri") or "",
-            started_at=np.get("started_at") or now,
-            target=np.get("target") or SPEECH_TARGET.name, extras=ex)
-    except Exception:  # noqa: BLE001 — a pause must still reach the player
-        pass
+    """Record a pause we issued, so the clock-driven follow-along freezes with
+    the audio. The doing lives in intake.submit, because the report stream from
+    a remote renderer stamps the same row for pauses we did NOT issue."""
+    from .intake.submit import stamp_speech_pause
+    stamp_speech_pause(StateStore(), paused)
 
 
 def cmd_toggle(a) -> int:

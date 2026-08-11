@@ -654,6 +654,14 @@ def _set_follow_rows(show: bool, pane: str = "") -> None:
         return
     if not os.environ.get("TMUX"):
         return
+    if show and not _is_auto_highlight_enabled():
+        # The scheduler's `enabled` is about *this turn* (hook source, not
+        # typing just now); whether following along is switched on at all lives
+        # in the flag, and _tmux_highlight_text checks it separately — so with
+        # the feature off every sentence came back "not found" and the bar grew
+        # four rows to display nothing, since the rows themselves are silent
+        # when it is off. Ask the same question they do.
+        return
     try:
         target = pane or os.environ.get("TMUX_PANE") or ""
         if not target:
@@ -911,6 +919,47 @@ def _offsets_from_marks(marks: dict[int, float], count: int,
     if total > 0 and offsets[-1] > total + 1.0:
         return None
     return offsets
+
+
+def stamp_speech_pause(state: StateStore, paused: Optional[bool] = None) -> None:
+    """Record that the audio stopped (or started again) on the now-playing row.
+
+    The lanes that play on another device follow their timeline on a clock, so
+    a pause has to be written down or the highlight reads on through the
+    silence. `paused_at` freezes the reading where it stood; the resume adds
+    the pause's length to `play_started_at`, which is the same correction as
+    never having stopped. `paused=None` flips whatever the row says — that is
+    how the remote lane's `cycle pause` reports itself.
+
+    Called both by whoever issues a pause here (cli's toggle) and by the report
+    stream when the far side says its player was paused by something else.
+    """
+    try:
+        np = state.get_now_playing("speech")
+        if not np:
+            return
+        ex = np.get("extras") or {}
+        was = bool(ex.get("paused_at"))
+        now_paused = (not was) if paused is None else bool(paused)
+        if now_paused == was:
+            return
+        now = time.time()
+        if now_paused:
+            ex["paused_at"] = now
+        else:
+            started = float(ex.get("play_started_at") or 0)
+            if started:
+                ex["play_started_at"] = started + (now - float(ex["paused_at"]))
+            ex.pop("paused_at", None)
+        ex["live_pause"] = now_paused
+        state.set_now_playing(
+            "speech", uri=np.get("uri") or "",
+            started_at=np.get("started_at") or now,
+            target=np.get("target") or os.environ.get(
+                "MEDIA_SPEECH_DEFAULT_TARGET", "local"),
+            extras=ex)
+    except Exception:  # noqa: BLE001 — a pause must still reach the player
+        pass
 
 
 def elapsed_from_row(extras: dict, origin: float) -> float:
@@ -2194,6 +2243,12 @@ def _watch_remote_progress(proc, state: StateStore, target_name: str,
                 m = _SENTENCE_MARK_RE.match(line)
                 if m:
                     marks[int(m.group(1))] = float(m.group(2))
+                continue
+            if line.startswith("PAUSE "):
+                # The far side's player was paused or resumed by something that
+                # isn't us — a media key, the notification controls, a call.
+                # Our clock can't see that; this is how it finds out.
+                stamp_speech_pause(state, line.split(None, 1)[1].strip() == "1")
                 continue
             if not line.startswith("DURATION ") or announced:
                 continue
