@@ -93,6 +93,21 @@ def wait_for_question(timeout_s: float, poll_s: float = 0.3) -> dict | None:
         time.sleep(poll_s)
 
 
+def _mirror(action: str, ttl_s: float | None = None, note: str = "") -> None:
+    """Best-effort publish to the relay's floor mirror. Never load-bearing.
+
+    Wrapped and lazy for the same reason the speech side is: the rendezvous
+    must work identically on a host with no relay installed, and a mirror that
+    can fail an arm would be worse than no mirror.
+    """
+    try:
+        from .floor import publish
+        publish("input", os.environ.get("MEDIA_FLOOR_OWNER", "sam"),
+                action, ttl_s, note)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 class Busy(RuntimeError):
     """Another converse call already holds the rendezvous."""
 
@@ -145,6 +160,10 @@ class Rendezvous:
         srv.listen(1)
         srv.settimeout(self.timeout_s)
         self._srv = srv
+        # The input channel's half of the floor mirror: an armed rendezvous is
+        # a claim on David's next utterance, and until now the only way to see
+        # one was to be on this host and stat a socket.
+        _mirror("arm", self.timeout_s, self.question or "")
         return self
 
     def _write_question(self) -> None:
@@ -208,6 +227,7 @@ class Rendezvous:
             self._srv = None
         socket_path().unlink(missing_ok=True)
         question_path().unlink(missing_ok=True)
+        _mirror("disarm")
 
 
 def offer(text: str, timeout_s: float = 2.0) -> bool:

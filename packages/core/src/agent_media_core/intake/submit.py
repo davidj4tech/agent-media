@@ -1333,6 +1333,9 @@ def set_speech_hold(seconds: float, owner: str | None = None) -> float:
         path.write_text(repr(until))
     except OSError:
         return 0.0
+    # Published only after the marker is written: the mirror must never claim a
+    # hold that does not exist locally, and the local write is what decides.
+    _mirror("speech", owner, "hold", until - time.time())
     return until
 
 
@@ -1354,6 +1357,22 @@ def release_speech_hold(owner: str | None = None, everyone: bool = False) -> Non
             path.unlink()
         except OSError:
             pass
+    _mirror("speech", "*" if everyone else owner, "release")
+
+
+def _mirror(channel: str, owner: str | None, action: str,
+            ttl_s: float | None = None) -> None:
+    """Best-effort publish to the relay's floor mirror. Never load-bearing.
+
+    Imported lazily and wrapped: this is a hot path (every hold, every release)
+    and the mirror is an observability feature. Nothing about a hold may depend
+    on the relay being installed, reachable, or working.
+    """
+    try:
+        from ..capture.floor import publish
+        publish(channel, owner or "unnamed", action, ttl_s)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _read_marker(path: Path) -> float:
