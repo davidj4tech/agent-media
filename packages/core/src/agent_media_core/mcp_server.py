@@ -1228,6 +1228,56 @@ def main() -> None:
     mcp.run()
 
 
+# The full server advertises 37 tools. Every one of them costs context in every
+# session of every MCP client that connects, whether or not media gets touched
+# that day — so exposing the lot to a coding agent is a poor trade when the CLI
+# already covers the same ground for one Bash call and no standing cost.
+#
+# This subset is chosen by *who initiates*: things an agent decides to do
+# mid-task, where it also wants to see the result. Speech is deliberately absent
+# — `say` and the visual markers are driven by the Stop hook, which is strictly
+# better than a tool call (it happens automatically at end of turn and cannot be
+# forgotten). Everything omitted here remains available via the `media` CLI and
+# via the full media-mcp entrypoint.
+NARROW_TOOLS = (
+    "converse",            # genuinely interactive; awkward to drive from a CLI
+    "errors",              # lets an agent see what just went wrong
+    "music_play",
+    "music_pause",
+    "music_resume",
+    "music_now_playing",
+)
+
+
+def _narrow_tool_names() -> list[str]:
+    """Allowlist for the narrow entrypoint; MEDIA_MCP_TOOLS overrides."""
+    raw = os.environ.get("MEDIA_MCP_TOOLS", "").strip()
+    names = [t.strip() for t in raw.split(",") if t.strip()]
+    return names or list(NARROW_TOOLS)
+
+
+def main_narrow() -> None:
+    """stdio entrypoint exposing only the agent-initiated subset of tools.
+
+    Same server object as main(); the tools are registered by decorator at
+    import and the unwanted ones are dropped before serving, so there is no
+    second registry to keep in sync as tools are added.
+    """
+    load_env_file("media-mcp")
+    _configure_logging()
+    keep = set(_narrow_tool_names())
+    known = {t.name for t in mcp._tool_manager.list_tools()}
+    missing = keep - known
+    if missing:
+        # A typo in MEDIA_MCP_TOOLS would otherwise silently serve fewer tools.
+        log.warning("media-mcp narrow: unknown tool(s) ignored: %s",
+                    ", ".join(sorted(missing)))
+    for name in sorted(known - keep):
+        mcp.remove_tool(name)
+    _ensure_autoadvance_watcher()
+    mcp.run()
+
+
 def main_http() -> None:
     """streamable-HTTP entrypoint — for remote callers over Tailscale."""
     load_env_file("media-mcp-http")
