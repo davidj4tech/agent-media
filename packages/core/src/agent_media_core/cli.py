@@ -2926,8 +2926,7 @@ def cmd_replay_track(a) -> int:
     ``finally`` does; if we die uncleanly instead, the row still carries our
     pid so the store's orphan guard self-heals it on the next read.
     """
-    from .intake.submit import (_HighlightScheduler, _restore_fullscreen,
-                                _playout_delay_s)
+    from .intake.submit import _HighlightScheduler, _playout_delay_s
     sentences: list[str] = json.loads(a.sentences) if a.sentences else []
     durations: list[float] = json.loads(a.durations) if a.durations else []
     # Sentence start times within a SINGLE clip — the phone lane renders the
@@ -3010,7 +3009,6 @@ def cmd_replay_track(a) -> int:
 
     def _finish() -> int:
         highlighter.drain()    # fires the tail, then releases the status rows
-        _restore_fullscreen()  # no-op unless MEDIA_HIGHLIGHT_DUMP dumped
         try:
             np = state.get_now_playing("speech")
             if np and _owns(np.get("extras") or {}):

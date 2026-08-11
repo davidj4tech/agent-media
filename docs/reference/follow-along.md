@@ -81,6 +81,25 @@ playlist; `cmd_replay_track` drives it from the row exactly as the live follower
 does, and goes through the same highlight scheduler, so a replay of something
 scrolled out of view takes the status rows as a live reply would.
 
+## The transcript dump, removed 2026-08-11
+
+There used to be a fourth answer to the fullscreen problem, opt-in behind
+`MEDIA_HIGHLIGHT_DUMP=1`: type `Ctrl+O` then `[` into Claude Code to make it
+print its conversation into the pane's real scrollback, so the copy-mode
+highlight had something to search; `Escape` at the end put it back. It re-did
+that on every sentence, because each of Claude's redraws staled the dump.
+
+It went because the status rows answer the same question without typing into
+somebody else's application. It also cleared the pane's history, and its keys
+would have landed in the input box if Claude ever rebound `Ctrl+O`. Nothing on
+the fleet had it enabled.
+
+The one thing it could do that nothing now does: scroll-and-hold reading of a
+*whole conversation*, not just the reply in flight. If that is ever wanted
+again, it should be built as something that renders the transcript itself —
+`media follow` reading history rather than the live row — not as remote control
+of another program's keybindings.
+
 ## Configuration
 
 | | |
