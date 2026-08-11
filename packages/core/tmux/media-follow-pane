@@ -52,20 +52,28 @@ if [ -z "$target" ]; then
     target=$(tmux display-message -p '#{pane_id}')
 fi
 
-# Only split a window wide enough to leave the conversation readable. On a
-# narrow one (a phone client, a half-screen terminal) a 46-column split shoved
-# the Claude pane down to a SINGLE column — the follow-along has to earn its
-# space, not take it. There, it opens as its own window instead: you can't read
-# two columns of text on 43 columns anyway.
+# Where the room is. A 46-column split beside the conversation needs a wide
+# window — on a narrow one it shoved the Claude pane down to a SINGLE column —
+# but narrow terminals are usually tall, and a short strip along the BOTTOM
+# costs rows nobody was reading. Preference order: beside, below, then (only if
+# you asked for it) a window of its own.
 # new-window takes a WINDOW target; handing it a pane id fails with "can't
 # specify pane here" and no view opens at all.
 window=$(tmux display-message -p -t "$target" '#{window_id}')
 winw=$(tmux display-message -p -t "$target" '#{window_width}')
+winh=$(tmux display-message -p -t "$target" '#{window_height}')
 half=$((winw / 2))
 [ "$WIDTH" -lt "$half" ] || WIDTH="$half"
 
 if [ "$winw" -ge "${MEDIA_FOLLOW_MIN_SPLIT:-90}" ]; then
     pane=$(tmux split-window -h -d -t "$target" -l "$WIDTH" \
+           -P -F '#{pane_id}' "exec media follow")
+elif [ "$winh" -ge "${MEDIA_FOLLOW_MIN_ROWS:-24}" ]; then
+    # Too narrow to sit beside, tall enough to sit under: a strip along the
+    # bottom, full width, which is the shape a narrow terminal actually has
+    # going spare. Wide enough to read a sentence per line, short enough that
+    # the conversation keeps most of the window.
+    pane=$(tmux split-window -v -d -t "$target" -l "${MEDIA_FOLLOW_HEIGHT:-8}" \
            -P -F '#{pane_id}' "exec media follow")
 else
     # No room to split. A window opened on your behalf is one you have to be
