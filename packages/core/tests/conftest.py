@@ -39,3 +39,17 @@ def _no_remote_say(monkeypatch):
     """
     for key in [k for k in os.environ if k.startswith("MEDIA_REMOTE_SAY_CMD")]:
         monkeypatch.delenv(key, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_follow_pane(monkeypatch):
+    """Keep the suite out of the developer's terminal.
+
+    Speaking with auto-highlight on now opens the follow-along pane
+    (`ensure_follow_view`), and the suite is very often run from inside the
+    tmux session it would open it in — so an un-scrubbed run would split panes
+    and add windows under the person watching the tests. Same hazard as the
+    phone backend above: real config, real side effect, nothing to do with what
+    the test is asserting. A test that wants the coupling sets this itself.
+    """
+    monkeypatch.setenv("MEDIA_FOLLOW_AUTO", "0")

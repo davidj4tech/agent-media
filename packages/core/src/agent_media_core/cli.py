@@ -1501,13 +1501,18 @@ def cmd_highlight_toggle(a) -> int:
     follow-along is actually visible) and highlights the current sentence
     immediately for feedback.
     """
-    from .intake.submit import toggle_auto_highlight, _tmux_highlight_text
+    from .intake.submit import (toggle_auto_highlight, _tmux_highlight_text,
+                                ensure_follow_view)
     on = toggle_auto_highlight()
     # Prefer the pane that produced the speech; fall back to the popup's
     # caller pane if we never captured a source pane.
     pane = (_spoken_pane()
             or os.environ.get("TTS_POPUP_PANE")
             or os.environ.get("TMUX_PANE", ""))
+    # The pane half of following along, opened/closed with the flag: it is the
+    # half that keeps working when the app owns the screen, so leaving it on a
+    # separate switch would mean the feature is "on" and invisible.
+    ensure_follow_view(on, pane=pane)
     if on:
         if pane:
             # Jump to the speaking pane so the follow-along is on screen.

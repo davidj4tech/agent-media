@@ -706,6 +706,37 @@ def _tmux_highlight_text(text: str, *, first: bool = False,
         pass
 
 
+def ensure_follow_view(open_: bool = True, *, pane: str = "") -> None:
+    """Open (or close) the follow-along pane to match "I want to read along".
+
+    The copy-mode highlight and the follow pane are two halves of one wish, and
+    only the pane can serve it while a fullscreen TUI owns the screen — so the
+    auto-highlight flag drives both rather than leaving the user to keep two
+    switches in step. `MEDIA_FOLLOW_AUTO=0` opts out of the coupling and leaves
+    the pane entirely to `prefix F`.
+
+    Best-effort and detached: this runs on the path to speaking, and a tmux
+    that is slow, absent or unhappy must never delay or fail an utterance.
+    """
+    if not os.environ.get("TMUX"):
+        return
+    if os.environ.get("MEDIA_FOLLOW_AUTO") == "0":
+        return
+    if open_ and not _is_auto_highlight_enabled():
+        return                  # following along was never asked for
+    env = dict(os.environ)
+    if pane:
+        env["MEDIA_FOLLOW_TARGET"] = pane
+    try:
+        subprocess.Popen(["media-follow-pane", "open" if open_ else "close"],
+                         env=env, start_new_session=True,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL)
+    except OSError:
+        pass                    # not installed on this host; the highlight
+                                # still works where it can
+
+
 class _HighlightScheduler:
     """Fire `_tmux_highlight_text` so the on-screen highlight lands *with* the
     audio instead of ahead of it.
@@ -2287,10 +2318,12 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
     # another device. We split the text the same way the local path does; the
     # renderer tells us where each sentence lands (or, failing that, how long
     # the whole thing is), and the follower walks that timeline on the clock.
+    _follow_highlight = _highlight_wanted(event, source_pane)
+    if _follow_highlight:
+        ensure_follow_view(pane=source_pane)
     follower = _SentenceFollower(
         state, target_name, started_at, _split_sentences(text),
-        pane=source_pane,
-        highlight=_highlight_wanted(event, source_pane),
+        pane=source_pane, highlight=_follow_highlight,
         delay_s=_playout_delay_s(target_name))
     # Start the remote pause before anything blocking, so its ssh overlaps the
     # lock wait and the render instead of being paid in series inside
@@ -2568,6 +2601,8 @@ def submit_event(event: Event,
         log.warning("intake: text sidecar write failed: %s", e)
 
     do_highlight = _highlight_wanted(event, os.environ.get("TMUX_PANE") or "")
+    if do_highlight:
+        ensure_follow_view(pane=source_pane)
 
     # Phase 1: resolve all render futures and collect clip durations.
     # Parallel renders are mostly done by now; future.result() is instant
@@ -3042,6 +3077,8 @@ def submit_stream(sentences,
     # popup replay/history, but never play it or duck music. See submit_event.
     muted = state.resolve_mute(source_pane, source_tmux_session)
     do_highlight = event.source not in (_Source.CLI,)
+    if do_highlight:
+        ensure_follow_view(pane=source_pane)
     # Snapcast buffers audio after mpv starts writing, so the sound reaches the
     # listener a beat later than play() returns. Hold the highlight that long so
     # it lands with the speech rather than ahead of it.
