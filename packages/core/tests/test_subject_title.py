@@ -66,8 +66,20 @@ def test_label_falls_back_to_source_window(env, monkeypatch):
     assert "↪" not in prefix                  # dead pane → not "following"
 
 
-def test_label_prefers_live_window_over_stored(env, monkeypatch):
-    _now_playing_from(env, pane="%3", window="stale-stored-title")
+def test_label_names_the_clip_playing_not_the_pane_now(env, monkeypatch):
+    # The pane has moved on to another conversation title while the queue is
+    # still catching up. The bar must name what you're HEARING.
+    _now_playing_from(env, pane="%3", window="title-when-it-was-said")
+    monkeypatch.setattr(cli, "_caller_pane", lambda: "%3")
+    monkeypatch.setattr(cli, "_pane_alive", lambda p: True)
+    monkeypatch.setattr(cli.subprocess, "run",
+                        lambda *a, **k: pytest.fail("queried the live pane"))
+    _prefix, label = cli._subject_label()
+    assert label == "title-when-it-was-said"
+
+
+def test_label_uses_live_window_when_idle(env, monkeypatch):
+    # Nothing playing: the subject is your own pane, so its live name is right.
     monkeypatch.setattr(cli, "_caller_pane", lambda: "%3")
     monkeypatch.setattr(cli, "_pane_alive", lambda p: True)
 
@@ -77,7 +89,7 @@ def test_label_prefers_live_window_over_stored(env, monkeypatch):
 
     monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: _R())
     _prefix, label = cli._subject_label()
-    assert label == "live-window-name"        # live pane wins over stored
+    assert label == "live-window-name"
 
 
 def test_label_empty_when_no_pane_and_no_stored(env, monkeypatch):

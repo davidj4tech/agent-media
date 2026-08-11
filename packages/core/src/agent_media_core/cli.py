@@ -871,24 +871,34 @@ def _subject_label() -> "tuple[str, str]":
     so a marquee can pin them (keep them fixed) while only the title scrolls.
     `('', '')` when no subject pane resolves.
 
-    Prefers the *window name* (which tracks the stable Claude conversation
-    title) over the *pane title* — the pane title is the transient tool-status,
-    so it carries a leading spinner glyph and flips to whatever Claude is doing
-    right now rather than naming what's actually being spoken. Falls back to a
-    spinner-stripped pane title only when the window has no usable name.
+    While something is PLAYING the title comes from the clip itself — the
+    conversation title captured when it was queued (`source_window`) — not from
+    a live lookup of the pane's window name. They diverge constantly: Claude
+    renames the window as the conversation moves on, and the queue runs behind,
+    so a live lookup labels the audio you're hearing with whatever that pane
+    has got up to *since*. Live pane names are for the idle case, where the
+    subject is your own pane and there's no clip to speak for itself.
+
+    Resolving live, we prefer the *window name* (which tracks the stable Claude
+    conversation title) over the *pane title* — the pane title is the transient
+    tool-status, so it carries a leading spinner glyph and flips to whatever
+    Claude is doing right now rather than naming what's actually being spoken.
+    Falls back to a spinner-stripped pane title only when the window has no
+    usable name.
 
     Shared by `now-pane` (popup marquee) and the optional status-bar marquee.
     """
     pane, tmux_sess, following = _subject()
     if not pane:
         return "", ""
+    np = _now_speaking()
+    label = ((np or {}).get("extras", {}).get("source_window") or "").strip()
     # Resolve the live pane name only when the pane is actually open on this
     # server. A pane that's dead here (renumbered by a tmux-resurrect restore,
     # closed since, or — for a rooms hub — living on another host) returns
     # success-with-empty-fields from `display-message`, which the old
     # `returncode != 0` guard sailed straight past, leaving a blank title.
-    label = ""
-    if _pane_alive(pane):
+    if not label and _pane_alive(pane):
         try:
             r = subprocess.run(
                 ["tmux", "display-message", "-p", "-t", pane,
@@ -905,10 +915,9 @@ def _subject_label() -> "tuple[str, str]":
                 # Strip a leading Claude spinner glyph (braille U+2800–U+28FF).
                 label = re.sub(r"^[⠀-⣿]\s*", "", pane_title.strip())
     if not label:
-        # Pane unresolvable here — fall back to the conversation title captured
-        # at speech time and carried in the speech extras (source_window). This
-        # is what lets the bar name a renumbered/closed/remote speaker instead
-        # of showing a bare ↪ with an empty title.
+        # Idle, with a pane that won't resolve here (renumbered/closed/remote):
+        # fall back to the title the LAST clip carried, so the bar names whoever
+        # spoke most recently instead of showing a bare ↪ with an empty title.
         label = (_spoken_extras().get("source_window") or "").strip()
     prefix = ""
     if following:
