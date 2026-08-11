@@ -1503,7 +1503,7 @@ def cmd_highlight_toggle(a) -> int:
     """
     from .intake.submit import (toggle_auto_highlight, _tmux_highlight_text,
                                 ensure_follow_view, set_force_highlight,
-                                _set_follow_rows)
+                                _set_follow_rows, publish_follow_text)
     on = toggle_auto_highlight()
     # Prefer the pane that produced the speech; fall back to the popup's
     # caller pane if we never captured a source pane.
@@ -1535,6 +1535,9 @@ def cmd_highlight_toggle(a) -> int:
             # switch with no visible effect is indistinguishable from a broken
             # one. (The row says "follow-along on" when idle.)
             _set_follow_rows(False, pane)
+            publish_follow_text(
+                ((_now_speaking() or {}).get("extras") or {}).get("current_sentence"),
+                pane)
             np = _now_speaking()
             sentence = (np.get("extras") or {}).get("current_sentence") if np else None
             if sentence and not _tmux_highlight_text(sentence, force=True):
@@ -1553,6 +1556,7 @@ def cmd_highlight_toggle(a) -> int:
         # And take the rows back now rather than at the end of the reply: they
         # render nothing once the feature is off, so leaving them would sit
         # four blank lines under you for however long the reply had left.
+        publish_follow_text(None, pane)     # silent while it is off
         _set_follow_rows(False, pane)
         print("highlight: OFF")
     return 0

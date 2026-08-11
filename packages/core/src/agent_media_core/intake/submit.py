@@ -19,6 +19,7 @@ import logging
 import os
 import re
 import subprocess
+import textwrap
 import threading
 import time
 import uuid
@@ -615,6 +616,68 @@ def _tmux_highlight_text(text: str, *, first: bool = False,
     return True
 
 
+def _follow_session(pane: str) -> tuple[str, int]:
+    """(session, client width) for `pane`, or ("", 0) when tmux can't say."""
+    try:
+        r = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", pane or "",
+             "#{session_name}\t#{client_width}"], capture_output=True, text=True)
+        if r.returncode != 0:
+            return "", 0
+        name, _, width = r.stdout.strip().partition("\t")
+        return name, (int(width) if width.isdigit() else 0)
+    except (OSError, ValueError):
+        return "", 0
+
+
+def publish_follow_text(sentence: Optional[str], pane: str = "") -> None:
+    """Put the follow-along rows' text where the status bar can read it now.
+
+    The bar used to shell out for it — `#(media current-sentence …)` — and a
+    `#()` runs at most once per `status-interval` and serves a cached result in
+    between. Measured against a sentence written at a known moment: **1 to 2
+    seconds** late, which for a thing whose only job is to keep pace with
+    speech is the whole point missed. It also spawned a Python process per
+    second per client to re-answer a question nothing had asked.
+
+    A tmux option is read at draw time, so a `set` plus a status refresh puts
+    the words up immediately and costs no process at all. `sentence=None`
+    clears the rows to the idle hint.
+    """
+    rows = int(os.environ.get("MEDIA_FOLLOW_ROWS", "4") or 0)
+    if rows <= 0 or not os.environ.get("TMUX"):
+        return
+    pane = pane or os.environ.get("TMUX_PANE") or ""
+    session, width = _follow_session(pane)
+    if not session:
+        return
+    width = max(20, width or 80)
+    if not _is_auto_highlight_enabled():
+        # Silent when the feature is off — the same answer the rows gave when
+        # they were rendered by `media current-sentence --follow`, and the
+        # reason the bar can safely keep its formats defined at all times.
+        sentence = ""
+        lines = [""]
+    elif sentence:
+        text = " ".join(str(sentence).split())
+        lines = textwrap.wrap(f"♪ {text}", width=width - 1,
+                              subsequent_indent="  ")[:rows] or [""]
+        if len(lines) == rows and len(f"♪ {text}") > sum(len(x) for x in lines):
+            lines[-1] = lines[-1][:max(0, width - 2)].rstrip() + "…"
+    else:
+        lines = ["#[fg=colour244]♪ follow-along on#[default]"]
+    argv = ["tmux"]
+    for i in range(rows):
+        argv += ([";"] if i else []) + [
+            "set", "-t", session, f"@am_follow_{i}",
+            lines[i] if i < len(lines) else ""]
+    argv += [";", "refresh-client", "-S"]
+    try:
+        subprocess.run(argv, capture_output=True)
+    except OSError:
+        pass
+
+
 def _status_rows(session: str) -> Optional[int]:
     """How many status rows this session shows.
 
@@ -802,6 +865,10 @@ class _HighlightScheduler:
         with self._lock:
             self._timers = [t for t in self._timers if t.is_alive()]
 
+    def publish(self, sentence: str) -> None:
+        """The rows' text, on every path that speaks a sentence."""
+        publish_follow_text(sentence, self._pane)
+
     def _seen(self, found: bool) -> None:
         """Latch the status rows open the first time a sentence can't be found.
 
@@ -825,6 +892,7 @@ class _HighlightScheduler:
         is a no-op, and one reply speaks at a time per session.
         """
         self._rows_shown = False
+        publish_follow_text(None, self._pane)     # back to the idle hint
         _set_follow_rows(False, self._pane)
 
     def show(self, sentence: str, *, first: bool, force: bool) -> None:
@@ -838,6 +906,7 @@ class _HighlightScheduler:
             self.cancel_pending()
             if self._dbg:
                 self._log(f"SHOW-NOW force={force} delay={self._delay} {sentence[:30]!r}")
+            self.publish(sentence)
             self._seen(_tmux_highlight_text(sentence, first=first, force=force))
             return
         self._reap()
@@ -847,6 +916,7 @@ class _HighlightScheduler:
         def _fire():
             if self._dbg:
                 self._log(f"FIRE {sentence[:30]!r}")
+            self.publish(sentence)
             self._seen(_tmux_highlight_text(sentence, first=first))
 
         t = threading.Timer(self._delay, _fire)

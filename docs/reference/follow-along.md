@@ -36,6 +36,15 @@ The middle height matters more than it looks: the switch is usually thrown
 *between* replies, where there is no sentence to fail to find — and a switch
 with no visible effect is indistinguishable from a broken one.
 
+The rows' **text** arrives as tmux options (`@am_follow_0…N`), set by
+`publish_follow_text` as each sentence starts. It was `#(media current-sentence
+…)` at first, which is the obvious way and the wrong one: a `#()` runs at most
+once per `status-interval` and serves a cached result in between. Measured
+against a sentence written at a known moment, the bar was **1 to 2 seconds**
+behind the audio — for a thing whose only job is keeping pace, the whole point
+missed — and it spawned a Python process per second per client to do it. An
+option is read at draw time: same measurement, ~20ms.
+
 The decision **latches for the reply**. Changing the status height resizes the
 panes and makes a fullscreen app redraw, so a reply alternating visible and
 scrolled-off sentences would strobe the window. Once the reader has been sent to
