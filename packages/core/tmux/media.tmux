@@ -40,6 +40,13 @@ bind a \
 # popup, toggles the feature on/off; uppercase V here forces the next turn.)
 bind V run-shell -b "media highlight-now"
 
+# prefix F → the follow-along pane: a split of our own showing the reply being
+# spoken, current sentence marked, scrolling itself. The copy-mode highlight
+# above can only work in a pane with scrollback to search, which a fullscreen
+# TUI (Claude Code) does not have — this is the answer for that case, and it
+# needs no cooperation from whatever owns the screen. Press again to close.
+bind F run-shell -b "media-follow-pane"
+
 # --- Listening mode -------------------------------------------------------
 # A sticky key-table that drives the *speech* channel live with bare keys —
 # the popup's controls, minus the popup, so the pane (and the auto-highlight

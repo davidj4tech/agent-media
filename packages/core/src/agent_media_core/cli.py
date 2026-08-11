@@ -1588,6 +1588,75 @@ def cmd_current_sentence(a) -> int:
     return 0
 
 
+def _follow_size(a) -> tuple[int, int]:
+    import shutil
+    size = shutil.get_terminal_size(fallback=(80, 24))
+    return (getattr(a, "width", None) or size.columns,
+            getattr(a, "height", None) or size.lines)
+
+
+def cmd_follow(a) -> int:
+    """Follow-along pane: the reply being spoken, current sentence marked.
+
+    A surface of our own, for the case the copy-mode highlight can't serve: a
+    fullscreen TUI holds the alternate screen, so there is no scrollback to
+    search and the app redraws over anything we paint. This pane reads the same
+    state the highlight does and touches nobody else's terminal.
+
+    Runs until interrupted. `--once` prints a single frame (scripting, tests).
+    """
+    from . import follow as F
+
+    interval = max(0.05, getattr(a, "interval", 0.2))
+    last_key = None
+    last_sentences: list[str] = []
+    quiet_since: Optional[float] = None
+    out = sys.stdout
+    if not getattr(a, "once", False):
+        out.write("\x1b[?25l")              # hide the cursor while we own the pane
+    try:
+        while True:
+            np = _now_speaking()
+            ex = (np or {}).get("extras") or {}
+            sentences = ex.get("clip_sentences") or []
+            idx = ex.get("current_sentence_idx")
+            if not sentences:
+                # A lane that reports no sentence list still has the text; show
+                # it whole rather than nothing. Mark it only once the audio has
+                # actually started — the row exists from the moment the reply is
+                # submitted, and marking the whole thing while it is still
+                # rendering claims we are reading words nobody has heard yet.
+                whole = (ex.get("text") or "").strip()
+                sentences = [whole] if whole else []
+                idx = 0 if whole and ex.get("play_started_at") else None
+            width, height = _follow_size(a)
+            if sentences:
+                last_sentences = sentences
+                quiet_since = None
+                lines = F.frame(sentences, idx, width, height)
+            else:
+                # Hold the last reply on screen a moment before dimming it, so
+                # the final sentence doesn't lose its mark the instant the audio
+                # stops — that is exactly when you're still reading it.
+                quiet_since = quiet_since or time.time()
+                lines = F.idle_frame(" ".join(last_sentences), width, height)
+            key = (tuple(sentences), idx, width, height, bool(quiet_since))
+            if key != last_key:
+                out.write(F.CLEAR + "\n".join(lines))
+                out.flush()
+                last_key = key
+            if getattr(a, "once", False):
+                out.write("\n")
+                return 0
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        return 0
+    finally:
+        if not getattr(a, "once", False):
+            out.write("\x1b[?25h\n")
+            out.flush()
+
+
 def cmd_text(a) -> int:
     """Return the currently-speaking text, or the latest history entry if idle."""
     np = _now_speaking()
@@ -4876,6 +4945,20 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument("--width", type=int, default=80,
                     help="max chars before truncation (default 80)")
     s.set_defaults(func=cmd_current_sentence)
+
+    s = sub.add_parser("follow",
+                       help="follow-along pane: the reply being spoken, with "
+                            "the current sentence marked (works where the "
+                            "copy-mode highlight can't — fullscreen TUIs)")
+    s.add_argument("--interval", type=float, default=0.2,
+                   help="seconds between repaints (default 0.2)")
+    s.add_argument("--width", type=int, default=None,
+                   help="columns (default: the terminal's)")
+    s.add_argument("--height", type=int, default=None,
+                   help="rows (default: the terminal's)")
+    s.add_argument("--once", action="store_true",
+                   help="print one frame and exit")
+    s.set_defaults(func=cmd_follow)
     sub.add_parser("toggle", help="play/pause").set_defaults(func=cmd_toggle)
     s = sub.add_parser("speech-flush",
                        help="drop every queued/pending reply; the clip "

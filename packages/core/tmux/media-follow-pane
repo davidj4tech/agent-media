@@ -1,0 +1,43 @@
+#!/bin/sh
+# Toggle the follow-along pane (`media follow`) in the current window.
+#
+# The copy-mode highlight paints the pane the reply was written in, which only
+# works while that pane has scrollback to search. Claude Code and every other
+# fullscreen TUI hold the alternate screen: no scrollback, and the app redraws
+# over anything we paint. A pane of our own sidesteps all of it.
+#
+# Split with -d so focus stays where you were typing — the point is to read
+# along, not to move house. The pane is marked with a user option rather than
+# by matching its command line, because `pane_current_command` on a python
+# entry point is "python3", which would also match half the other panes here.
+set -eu
+
+WIDTH="${MEDIA_FOLLOW_WIDTH:-46}"
+
+# -a, not this window: on a narrow client the pane is a window of its own (see
+# below), and a toggle that couldn't see it would open a second one every press.
+existing=$(tmux list-panes -a -F '#{pane_id} #{@media-follow}' 2>/dev/null |
+           awk '$2 == "1" { print $1; exit }')
+
+if [ -n "$existing" ]; then
+    tmux kill-pane -t "$existing"
+    exit 0
+fi
+
+# Only split a window wide enough to leave the conversation readable. On a
+# narrow one (a phone client, a half-screen terminal) a 46-column split shoved
+# the Claude pane down to a SINGLE column — the follow-along has to earn its
+# space, not take it. There, it opens as its own window instead: you can't read
+# two columns of text on 43 columns anyway.
+winw=$(tmux display-message -p '#{window_width}')
+half=$((winw / 2))
+[ "$WIDTH" -lt "$half" ] || WIDTH="$half"
+
+if [ "$winw" -ge "${MEDIA_FOLLOW_MIN_SPLIT:-90}" ]; then
+    pane=$(tmux split-window -h -d -l "$WIDTH" -P -F '#{pane_id}' \
+           "exec media follow")
+else
+    pane=$(tmux new-window -d -n follow -P -F '#{pane_id}' "exec media follow")
+fi
+tmux set -p -t "$pane" @media-follow 1
+tmux select-pane -t "$pane" -T follow
