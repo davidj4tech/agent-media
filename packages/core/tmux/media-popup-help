@@ -72,6 +72,12 @@ mapfile -t L <<'EOF'
  │ Ent    activate     │
  │ Esc    clear focus  │
  ╰─────────────────────╯
+ ╭ pane behind ────────╮
+ │ PgUp   page up      │
+ │ PgDn   page down    │
+ │ S-↑ ↓  page up/down │
+ │ S-← →  top/bottom   │
+ ╰─────────────────────╯
 EOF
 
 # Colorize: box frames in the pane-border grey (colour245 ≈ #8a8a8a), section

@@ -52,6 +52,8 @@
 #   PgUp/PgDn  forwarded to the pane behind the popup, so you can page its
 #           output/scrollback without closing the popup first. Ctrl+PgDn /
 #           Ctrl+PgUp forward End / Home (jump to the bottom/newest or top).
+#   Shift+↑ ↓  the same page up/down, and Shift+← → the same top/bottom, for
+#           hands that would rather not leave the home row.
 #
 # Mouse (SGR 1006): clickable regions are laid out across both rows —
 #   row 1: channel glyph (top-left) switches channel · title jumps to source ·
@@ -1029,6 +1031,13 @@ read_escape() {
         # the bottom/newest or top/oldest.
         '6;5~') ESC_KIND=page; ESC_PAGE=End ;;
         '5;5~') ESC_KIND=page; ESC_PAGE=Home ;;
+        # Shift+arrows (CSI 1;2A-D) are the same four jumps without leaving the
+        # home row: ↑/↓ page, ←/→ jump to the top/bottom. Plain arrows still
+        # move the button focus, so the shifted pair is free for the pane.
+        '1;2A') ESC_KIND=page; ESC_PAGE=PageUp ;;
+        '1;2B') ESC_KIND=page; ESC_PAGE=PageDown ;;
+        '1;2D') ESC_KIND=page; ESC_PAGE=Home ;;
+        '1;2C') ESC_KIND=page; ESC_PAGE=End ;;
         *)    ESC_KIND=other ;;
     esac
     return 0
