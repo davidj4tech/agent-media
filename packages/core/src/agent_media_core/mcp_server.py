@@ -25,7 +25,7 @@ import threading
 import time
 from pathlib import Path
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 
 def _host() -> str:
@@ -60,7 +60,12 @@ from .types import Event, Priority, Source, Target
 
 log = logging.getLogger(__name__)
 
-mcp = FastMCP("agent-media", host=_host(), port=_port())
+# host/port are NOT constructor args in the mcp 2.x API — they are run()
+# kwargs for the HTTP transports (see main_http). Passing them here would be
+# silently ignored and the streamable-HTTP server would bind the SDK default
+# 127.0.0.1:8000 instead of the configured address, i.e. unreachable over the
+# tailnet. stdio (main) ignores both either way.
+mcp = MCPServer("agent-media")
 
 
 # --- shared singletons ----------------------------------------------------
@@ -1229,7 +1234,7 @@ def main_http() -> None:
     _configure_logging()
     _ensure_autoadvance_watcher()
     log.info("media-mcp http listening on %s:%d", _host(), _port())
-    mcp.run(transport="streamable-http")
+    mcp.run(transport="streamable-http", host=_host(), port=_port())
 
 
 if __name__ == "__main__":

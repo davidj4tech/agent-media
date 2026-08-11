@@ -8,7 +8,9 @@ version = "0.0.0"
 description = "Core lib for agent-media: intake/route/render/transcribe/capture/sinks/state"
 requires-python = ">=3.11"
 dependencies = [
-    "mcp>=1.9",
+    # 2.x is required: mcp_server.py uses MCPServer, which replaced the FastMCP
+    # class that mcp 2.0.0 deleted along with the whole mcp.server.fastmcp module.
+    "mcp>=2",
     "markdown-it-py>=3.0",  # code-block suppression for TTS (intake/_text.py)
     "edge-tts>=6",          # default render engine — render/ shells out to `edge-tts`;
                             # without it a fresh install renders nothing ("no TTS").
