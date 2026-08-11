@@ -39,8 +39,24 @@ def test_opening_follows_the_highlight_flag(spawned, monkeypatch):
     submit.ensure_follow_view(pane="%9")
     assert spawned, "the pane was never opened"
     argv, env = spawned[0]
-    assert argv == ["media-follow-pane", "open"]
+    assert argv[0].endswith("media-follow-pane")
     assert env["MEDIA_FOLLOW_TARGET"] == "%9"
+
+
+def test_speaking_opens_it_hands_off_but_a_press_may_take_a_window(
+        spawned, monkeypatch):
+    """`auto` declines to open a window you can't see; a deliberate press says
+    where it went instead."""
+    _highlight_on(monkeypatch, True)
+    submit.ensure_follow_view()
+    submit.ensure_follow_view(deliberate=True)
+    assert [argv[1] for argv, _ in spawned] == ["auto", "open"]
+
+
+def test_the_helper_is_found_off_a_hooks_minimal_path(monkeypatch):
+    """A hook inherits /usr/bin and little else; ~/.local/bin is not on it."""
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    assert submit._follow_helper().endswith("media-follow-pane")
 
 
 def test_nothing_opens_when_the_highlight_is_off(spawned, monkeypatch):
@@ -54,7 +70,7 @@ def test_closing_does_not_need_the_flag(spawned, monkeypatch):
     put the pane away — a close gated on it would never fire."""
     _highlight_on(monkeypatch, False)
     submit.ensure_follow_view(False)
-    assert spawned[0][0] == ["media-follow-pane", "close"]
+    assert spawned[0][0][1] == "close"
 
 
 def test_the_coupling_can_be_refused(spawned, monkeypatch):

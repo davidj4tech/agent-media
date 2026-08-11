@@ -11,10 +11,13 @@
 # by matching its command line, because `pane_current_command` on a python
 # entry point is "python3", which would also match half the other panes here.
 #
-#   media-follow-pane [toggle|open|close]
+#   media-follow-pane [toggle|open|auto|close]
 #
 # `open` and `close` are idempotent, which is what lets the auto-highlight flag
 # drive this: "follow along" is one intent, not two switches to keep in step.
+# `auto` is the hands-off variant used by that coupling: it opens a split, but
+# declines to open a WINDOW you didn't ask for — an unseen window is clutter,
+# not a feature, and on a narrow client that is all it could ever be.
 set -eu
 
 ACTION="${1:-toggle}"
@@ -65,8 +68,17 @@ if [ "$winw" -ge "${MEDIA_FOLLOW_MIN_SPLIT:-90}" ]; then
     pane=$(tmux split-window -h -d -t "$target" -l "$WIDTH" \
            -P -F '#{pane_id}' "exec media follow")
 else
+    # No room to split. A window opened on your behalf is one you have to be
+    # told about: detached, it is invisible, and "the follow-along is on" while
+    # nothing appears is worse than it being off.
+    if [ "$ACTION" = "auto" ]; then
+        exit 0
+    fi
     pane=$(tmux new-window -d -a -t "$window" -n follow \
            -P -F '#{pane_id}' "exec media follow")
+    idx=$(tmux display-message -p -t "$pane" '#{window_index}')
+    tmux display-message -t "$target" \
+        "follow-along → window $idx (too narrow to split; prefix F closes it)"
 fi
 tmux set -p -t "$pane" @media-follow 1
 tmux select-pane -t "$pane" -T follow

@@ -706,7 +706,24 @@ def _tmux_highlight_text(text: str, *, first: bool = False,
         pass
 
 
-def ensure_follow_view(open_: bool = True, *, pane: str = "") -> None:
+def _follow_helper() -> str:
+    """Absolute path to media-follow-pane, or its bare name as a last resort.
+
+    A hook inherits a minimal PATH — /usr/bin and little else — so relying on
+    ~/.local/bin being on it means the view silently never opens in exactly the
+    case it exists for. We know where our own source tree is, and the helper
+    ships beside it. (Same lesson as render's `_engine_path`.)
+    """
+    import shutil
+    found = shutil.which("media-follow-pane")
+    if found:
+        return found
+    local = Path(__file__).resolve().parent.parent.parent.parent / "tmux" / "media-follow-pane"
+    return str(local) if local.exists() else "media-follow-pane"
+
+
+def ensure_follow_view(open_: bool = True, *, pane: str = "",
+                       deliberate: bool = False) -> None:
     """Open (or close) the follow-along pane to match "I want to read along".
 
     The copy-mode highlight and the follow pane are two halves of one wish, and
@@ -714,6 +731,11 @@ def ensure_follow_view(open_: bool = True, *, pane: str = "") -> None:
     auto-highlight flag drives both rather than leaving the user to keep two
     switches in step. `MEDIA_FOLLOW_AUTO=0` opts out of the coupling and leaves
     the pane entirely to `prefix F`.
+
+    Opening is `auto`, not `open`: where there is room the view splits in
+    alongside, and where there isn't it stays shut rather than putting a window
+    you cannot see into the window list. `prefix F` (and the highlight toggle,
+    which is a deliberate press) still open it there, and say where it went.
 
     Best-effort and detached: this runs on the path to speaking, and a tmux
     that is slow, absent or unhappy must never delay or fail an utterance.
@@ -727,8 +749,12 @@ def ensure_follow_view(open_: bool = True, *, pane: str = "") -> None:
     env = dict(os.environ)
     if pane:
         env["MEDIA_FOLLOW_TARGET"] = pane
+    if not open_:
+        action = "close"
+    else:
+        action = "open" if deliberate else "auto"
     try:
-        subprocess.Popen(["media-follow-pane", "open" if open_ else "close"],
+        subprocess.Popen([_follow_helper(), action],
                          env=env, start_new_session=True,
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL)
@@ -2319,8 +2345,9 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
     # renderer tells us where each sentence lands (or, failing that, how long
     # the whole thing is), and the follower walks that timeline on the clock.
     _follow_highlight = _highlight_wanted(event, source_pane)
-    if _follow_highlight:
-        ensure_follow_view(pane=source_pane)
+    ensure_follow_view(pane=source_pane)   # see submit_event: not gated on the
+                                           # keystroke skip, which is about
+                                           # copy-mode, not about our own pane
     follower = _SentenceFollower(
         state, target_name, started_at, _split_sentences(text),
         pane=source_pane, highlight=_follow_highlight,
@@ -2601,8 +2628,12 @@ def submit_event(event: Event,
         log.warning("intake: text sidecar write failed: %s", e)
 
     do_highlight = _highlight_wanted(event, os.environ.get("TMUX_PANE") or "")
-    if do_highlight:
-        ensure_follow_view(pane=source_pane)
+    # Not gated on do_highlight: the keystroke skip exists because grabbing
+    # copy-mode mid-keystroke yanks the view out from under you, and the follow
+    # pane does nothing of the sort — it is a surface of our own. Gating it too
+    # meant the view stayed shut for the reply that *answers what you just
+    # typed*, which is every reply.
+    ensure_follow_view(pane=source_pane)
 
     # Phase 1: resolve all render futures and collect clip durations.
     # Parallel renders are mostly done by now; future.result() is instant
@@ -3078,7 +3109,7 @@ def submit_stream(sentences,
     muted = state.resolve_mute(source_pane, source_tmux_session)
     do_highlight = event.source not in (_Source.CLI,)
     if do_highlight:
-        ensure_follow_view(pane=source_pane)
+        ensure_follow_view(pane=source_pane)   # self-gates on the flag
     # Snapcast buffers audio after mpv starts writing, so the sound reaches the
     # listener a beat later than play() returns. Hold the highlight that long so
     # it lands with the speech rather than ahead of it.

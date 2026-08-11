@@ -1512,7 +1512,7 @@ def cmd_highlight_toggle(a) -> int:
     # The pane half of following along, opened/closed with the flag: it is the
     # half that keeps working when the app owns the screen, so leaving it on a
     # separate switch would mean the feature is "on" and invisible.
-    ensure_follow_view(on, pane=pane)
+    ensure_follow_view(on, pane=pane, deliberate=True)
     if on:
         if pane:
             # Jump to the speaking pane so the follow-along is on screen.
