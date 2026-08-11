@@ -101,3 +101,16 @@ def test_a_dead_pipe_is_not_an_error():
         stdout = None
 
     submit._watch_remote_progress(_Broken(), _State(), "phone", 1.0, {})
+
+
+def test_progress_row_keeps_the_speaker_tags():
+    """The DURATION rewrite must not drop the identity the first row carried —
+    it replaces the row wholesale, so anything missing here is missing for the
+    rest of the utterance (and the title falls back to the pane you're in)."""
+    state = _State()
+    submit._watch_remote_progress(
+        _Proc([b"DURATION 3.0\n"]), state, "phone", 1000.0, None, None,
+        {"source_pane": "%7", "source_window": "title-when-it-was-said"})
+    extras = state.now_playing[1]["extras"]
+    assert extras["source_pane"] == "%7"
+    assert extras["source_window"] == "title-when-it-was-said"

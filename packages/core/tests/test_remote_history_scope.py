@@ -81,3 +81,26 @@ def test_pane_lookup_finds_the_remote_row(store, monkeypatch):
     monkeypatch.setattr(cli, "StateStore", lambda: store)
     assert cli._history_index_for_pane("%42") == 1
     assert cli._history_index_for_pane("%99") is None
+
+
+def test_live_row_names_the_speaker(store, monkeypatch):
+    """The same tags on now_playing, not just history.
+
+    The status bar and popup resolve "who is speaking" from the LIVE row
+    (`_subject`), and fall back to the *calling* pane when it carries no
+    `source_pane`. The phone lane wrote none, so a reply playing while you sat
+    in another window had that window's name printed over it.
+    """
+    seen = []
+    real = store.set_now_playing
+
+    def spy(sink, **kw):
+        seen.append(kw.get("extras") or {})
+        return real(sink, **kw)
+
+    monkeypatch.setattr(store, "set_now_playing", spy)
+    _say(store)
+    assert seen, "the phone lane never announced a live row"
+    assert seen[0]["source_pane"] == "%42"
+    assert seen[0]["source_session"] == "sess-abc"
+    assert seen[0]["source_window"] == "win-1"

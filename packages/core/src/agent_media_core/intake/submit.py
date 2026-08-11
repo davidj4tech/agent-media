@@ -2057,7 +2057,8 @@ _SENTENCE_MARK_RE = re.compile(r"^SENTENCE\s+(\d+)\s+([0-9]*\.?[0-9]+)\s*$")
 def _watch_remote_progress(proc, state: StateStore, target_name: str,
                            started_at: float,
                            report: Optional[dict] = None,
-                           follower: Optional[_SentenceFollower] = None) -> None:
+                           follower: Optional[_SentenceFollower] = None,
+                           source: Optional[dict] = None) -> None:
     """Read the remote renderer's report lines and make the popup honest.
 
     A remote renderer may announce, on stdout, three things about what it is
@@ -2131,6 +2132,7 @@ def _watch_remote_progress(proc, state: StateStore, target_name: str,
                 report["duration"] = duration
             play_started_at = time.time()
             extras = {"kind": "remote-say", "writer_pid": os.getpid(),
+                      **(source or {}),
                       "total_duration_s": duration,
                       # Stamped here, not at submit: rendering happens before
                       # this line is sent, and counting that as playback would
@@ -2270,6 +2272,17 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
     source_pane = (event.metadata or {}).get("pane") or os.environ.get("TMUX_PANE", "")
     source_tmux_session = _tmux_session_for_pane(source_pane)
     source_window = _tmux_window_for_pane(source_pane)
+    # The same identity goes on the LIVE row, not just history: the status bar
+    # and popup name the speaker through now_playing.extras.source_pane, and a
+    # row without it resolves to *the caller's* pane instead — so whichever
+    # window you happened to be looking at got its name printed over the reply
+    # that was actually playing. source_window is the conversation title as it
+    # stood when this was said, which is what those surfaces should show while
+    # it plays, however far the pane has moved on since.
+    source_extras = {"source_pane": source_pane,
+                     "source_session": session,
+                     "source_tmux_session": source_tmux_session,
+                     "source_window": source_window}
     # Per-sentence state for a lane that renders and plays the whole reply on
     # another device. We split the text the same way the local path does; the
     # renderer tells us where each sentence lands (or, failing that, how long
@@ -2303,6 +2316,7 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
             state.set_now_playing("speech", uri=f"remote-say:{target_name}",
                                   started_at=started_at, target=target_name,
                                   extras={"kind": "remote-say", "text": text[:400],
+                                          **source_extras,
                                           "writer_pid": os.getpid()})
         except Exception:  # noqa: BLE001 — observability must not break speech
             pass
@@ -2328,7 +2342,8 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
                 pass
             watcher = threading.Thread(
                 target=_watch_remote_progress,
-                args=(proc, state, target_name, started_at, report, follower),
+                args=(proc, state, target_name, started_at, report, follower,
+                      source_extras),
                 daemon=True)
             watcher.start()
             try:
@@ -2379,10 +2394,7 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
                     source=event.source.value,
                     text=text,
                     extras={"kind": "remote-say", "cmd": cmd[:200],
-                            "source_pane": source_pane,
-                            "source_session": session,
-                            "source_tmux_session": source_tmux_session,
-                            "source_window": source_window,
+                            **source_extras,
                             # The transcript must not claim what the room
                             # didn't hear; the clip browser reads this too.
                             **({"failed": failure} if failure else {}),
