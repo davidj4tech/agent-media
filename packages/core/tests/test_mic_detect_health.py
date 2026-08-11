@@ -21,6 +21,13 @@ def _state(monkeypatch, tmp_path):
     monkeypatch.delenv("MEDIA_MIC_DETECT_QUIET_MAX_S", raising=False)
 
 
+def _age_hold(seconds):
+    """Push both heartbeats back: an untyped hold writes the general record and
+    the trigger-only one, and the health check reads the latter."""
+    _age(call_guard.last_hold_path(), seconds)
+    _age(call_guard.last_external_hold_path(), seconds)
+
+
 def _age(path, seconds):
     st = path.stat()
     import os
@@ -66,7 +73,7 @@ def test_a_stale_hold_is_flagged_with_its_age():
     call_guard.publish_flag_path(call_guard.Config())
     call_guard.note_external_hold()
     _age(call_guard.advert_path(), 60 * 60 * 50)
-    _age(call_guard.last_hold_path(), 60 * 60 * 50)    # last fired 50h ago
+    _age_hold(60 * 60 * 50)                            # last fired 50h ago
     problems = health_problems(_mic_detect_facts())
     assert len(problems) == 1
     assert "50h ago" in problems[0]
@@ -77,7 +84,7 @@ def test_the_threshold_is_tunable(monkeypatch):
     call_guard.publish_flag_path(call_guard.Config())
     call_guard.note_external_hold()
     _age(call_guard.advert_path(), 60 * 90)
-    _age(call_guard.last_hold_path(), 60 * 90)         # 90 minutes
+    _age_hold(60 * 90)                                 # 90 minutes
     assert health_problems(_mic_detect_facts()) == []  # under the 24h default
 
     monkeypatch.setenv("MEDIA_MIC_DETECT_QUIET_MAX_S", "3600")
@@ -99,7 +106,7 @@ def test_a_guard_restart_does_not_reset_the_quiet_clock():
     — and a restart is exactly when nobody is watching for it."""
     call_guard.publish_flag_path(call_guard.Config())
     call_guard.note_external_hold()
-    _age(call_guard.last_hold_path(), 60 * 60 * 50)    # last fired 50h ago
+    _age_hold(60 * 60 * 50)                            # last fired 50h ago
     # ...and the guard came up a minute ago, as it does after any deploy.
     _age(call_guard.advert_path(), 60)
 
@@ -159,3 +166,43 @@ def test_only_the_flag_path_counts_as_proof_of_life(monkeypatch, tmp_path):
     # What the run loop does on an external hold, and only then.
     call_guard.note_external_hold()
     assert call_guard.last_hold_path().exists()
+
+
+# --- a typed hold is not evidence the trigger fired ------------------------
+
+def test_a_typed_hold_does_not_silence_the_alarm():
+    """Found the hard way: investigating a dead trigger means writing the flag
+    by hand to prove the receiving half still works — and that reset the clock
+    on the very alarm that had just caught it. `--hold` says nothing about
+    whether anything out there still fires."""
+    call_guard.publish_flag_path(call_guard.Config())
+    _age(call_guard.advert_path(), 60 * 60 * 30)
+    call_guard.note_external_hold("cli")
+    facts = _mic_detect_facts()
+    assert facts["mic_detect_last_hold_src"] == "cli"
+    assert "mic_detect_last_external_s" not in facts
+    problems = health_problems(facts)
+    assert any("mic-detect quiet" in p for p in problems), \
+        "a hold someone typed silenced the dead-trigger alarm"
+    assert any("a hold was typed" in p for p in problems), \
+        "the report should say a hold happened, just not from the trigger"
+
+
+def test_an_untyped_hold_is_evidence_and_clears_it():
+    call_guard.publish_flag_path(call_guard.Config())
+    _age(call_guard.advert_path(), 60 * 60 * 30)
+    call_guard.note_external_hold()                  # the flag, un-attributed
+    facts = _mic_detect_facts()
+    assert int(facts["mic_detect_last_external_s"]) < 5
+    assert health_problems(facts) == []
+
+
+def test_a_typed_hold_after_a_real_one_keeps_the_real_one(monkeypatch):
+    """The clock belongs to the trigger; typing over it must not move it."""
+    call_guard.publish_flag_path(call_guard.Config())
+    call_guard.note_external_hold()
+    _age(call_guard.last_external_hold_path(), 60 * 60 * 30)
+    call_guard.note_external_hold("cli")
+    facts = _mic_detect_facts()
+    assert int(facts["mic_detect_last_external_s"]) > 60 * 60 * 29
+    assert any("mic-detect quiet" in p for p in health_problems(facts))

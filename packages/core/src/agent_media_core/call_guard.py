@@ -152,6 +152,9 @@ _FLAG_ADVERT_NAME = "call-guard.flag-path"
 # silent failure into an observable one: `media selfcheck` reports how long it
 # has been quiet, and doctor complains once that exceeds a day.
 _LAST_HOLD_NAME = "call-guard.last-hold"
+# ...and the same for holds nobody typed, which is the only kind that proves
+# the trigger still fires. See `note_external_hold`.
+_LAST_EXTERNAL_NAME = "call-guard.last-external"
 
 # The flag file is a cheap local stat, so we check it on a fast tick — decoupled
 # from the (expensive) notification poll for calls, which stays at poll_s.
@@ -596,6 +599,11 @@ def last_hold_path() -> Path:
     return state_dir() / _LAST_HOLD_NAME
 
 
+def last_external_hold_path() -> Path:
+    """Heartbeat for holds that only the *trigger* could have caused."""
+    return state_dir() / _LAST_EXTERNAL_NAME
+
+
 def note_external_hold(source: str = "") -> None:
     """Timestamp an external hold, best-effort.
 
@@ -604,11 +612,19 @@ def note_external_hold(source: str = "") -> None:
     only one of them answers "is barge-in still working". An unlabelled flag —
     what the Automate bridge writes — is recorded as "external": honest about
     being un-attributed rather than guessing at the only writer we know of.
+
+    A second file records only the un-typed ones. The health check reads that,
+    because a `--hold` someone ran is not evidence the trigger is alive — and
+    silencing the alarm for a day is exactly what such a hold used to do. Found
+    the hard way: a hold written by hand to prove the *receiving* half worked
+    reset the clock on the alarm that had just caught the sending half dead.
     """
     try:
         p = last_hold_path()
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(f"{source or 'external'}\n")
+        if (source or "external") != "cli":
+            last_external_hold_path().write_text(f"{source or 'external'}\n")
     except OSError as exc:                      # pragma: no cover - unwritable
         log.debug("could not record last hold: %s", exc)
 

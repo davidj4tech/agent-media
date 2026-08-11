@@ -4760,7 +4760,8 @@ def _mic_detect_facts() -> "dict[str, str]":
     from pathlib import Path
 
     try:
-        from .call_guard import advert_path, last_hold_path, last_hold_source
+        from .call_guard import (advert_path, last_hold_path, last_hold_source,
+                                 last_external_hold_path)
     except Exception:                                # pragma: no cover
         return {}
 
@@ -4781,8 +4782,19 @@ def _mic_detect_facts() -> "dict[str, str]":
         src = last_hold_source()
         if src:
             facts["mic_detect_last_hold_src"] = src
+    # Quiet is measured from the last hold *nobody typed*: a `--hold` someone
+    # ran proves the receiving half works and says nothing about the trigger,
+    # yet it used to reset this clock for a day — silencing the alarm at
+    # exactly the moment someone was investigating the thing it warned about.
+    try:
+        last_external = last_external_hold_path().stat().st_mtime
+    except OSError:
+        last_external = 0.0
+    if last_external:
+        facts["mic_detect_last_external_s"] = str(
+            int(_time.time() - last_external))
     facts["mic_detect_quiet_s"] = str(
-        int(_time.time() - (last_hold or guard_started)))
+        int(_time.time() - (last_external or guard_started)))
     return facts
 
 
@@ -4811,8 +4823,16 @@ def health_problems(facts: "dict[str, str]") -> "list[str]":
         except ValueError:
             quiet_s = 0.0
         if limit > 0 and quiet_s > limit:
-            ever = facts.get("mic_detect_last_hold_s")
-            when = f"last fired {float(ever) / 3600:.0f}h ago" if ever else "never fired"
+            ever = facts.get("mic_detect_last_external_s")
+            if ever:
+                when = f"last fired {float(ever) / 3600:.0f}h ago"
+            elif facts.get("mic_detect_last_hold_s"):
+                # A hold, but a typed one — worth saying, so the reader doesn't
+                # go looking for a trigger event that never happened.
+                typed = float(facts["mic_detect_last_hold_s"]) / 3600
+                when = f"never fired; a hold was typed {typed:.0f}h ago"
+            else:
+                when = "never fired"
             problems.append(
                 f"mic-detect quiet for {quiet_s / 3600:.0f}h ({when}) — the "
                 "external hold trigger may be dead; speech barge-in fails silently"
