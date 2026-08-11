@@ -161,6 +161,11 @@ def _patch_highlight(monkeypatch):
     # so without this the suite's answer depends on whether they last pressed
     # `v`. These tests are about the scheduler, not the ambient flag.
     monkeypatch.setattr(S, "_force_highlight_active", lambda pane: False)
+    # The scheduler also publishes the rows' text to tmux on every sentence.
+    # That is a real subprocess against the developer's own server — which both
+    # slows the "fires synchronously" timing below past its threshold and
+    # writes options into the session they are watching.
+    monkeypatch.setattr(S, "publish_follow_text", lambda *a, **k: None)
     return calls
 
 
