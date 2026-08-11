@@ -2310,6 +2310,12 @@ def _watch_remote_progress(proc, state: StateStore, target_name: str,
                 extras["sentence_marks"] = measured
                 extras["current_sentence"] = follower.sentences[0]
                 extras["current_sentence_idx"] = 0
+                if report is not None:
+                    # For history: the audio lives on the far side and can be
+                    # replayed there, so the timeline that makes it followable
+                    # has to outlive this process too.
+                    report["sentences"] = follower.sentences
+                    report["offsets"] = offsets
             state.set_now_playing(
                 "speech", uri=f"remote-say:{target_name}",
                 started_at=started_at, target=target_name, extras=extras)
@@ -2564,6 +2570,13 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
                                else {}),
                             **({"total_duration_s": report["duration"]}
                                if report.get("duration") else {}),
+                            # The sentence timeline, so a replay of this clip
+                            # can follow along as the live reply did. One clip
+                            # holding every sentence needs the offsets: there
+                            # is no playlist position to read them off.
+                            **({"clip_sentences": report["sentences"],
+                                "clip_offsets_s": report["offsets"]}
+                               if report.get("offsets") else {}),
                             **{k: v for k, v in (event.metadata or {}).items()
                                if k in ("kind", "session")}},
                 )

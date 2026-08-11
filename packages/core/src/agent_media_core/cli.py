@@ -2480,6 +2480,12 @@ def _replay_row(row: dict) -> int:
     ex = row.get("extras") or {}
     clip_uris: list[str] = ex.get("clip_uris") or [uri]
     clip_durations: list[float] = ex.get("clip_durations_s") or []
+    if not clip_durations and len(clip_uris) == 1 and ex.get("total_duration_s"):
+        # A lane that renders the whole reply as one clip measures it once and
+        # records that, never a per-clip list. Without this the replay has "no
+        # durations", so no follower is spawned at all — no progress bar and no
+        # follow-along on every phone-lane replay.
+        clip_durations = [float(ex["total_duration_s"])]
     replay_text: str = row.get("text") or ""
 
     # Re-show the reply's visual concurrently with the (slow, bridge-bound)
@@ -2552,12 +2558,27 @@ def _replay_row(row: dict) -> int:
         np_extras["clip_durations_s"] = clip_durations
     # Carry the sentence + paragraph map so `media skip` can step the replay
     # by sentence/paragraph; the tracker keeps current_sentence_idx fresh.
+    # One clip per sentence (the local lanes): the playlist position IS the
+    # sentence index.
+    clip_offsets: list[float] = ex.get("clip_offsets_s") or []
     if clip_sentences and len(clip_sentences) == len(clip_uris):
         np_extras["clip_sentences"] = clip_sentences
         cpi = ex.get("clip_paragraph_idx")
         if cpi and len(cpi) == len(clip_uris):
             np_extras["clip_paragraph_idx"] = cpi
         np_extras["current_sentence_idx"] = 0
+        clip_offsets = []            # positions, not offsets, drive this one
+    elif (clip_sentences and len(clip_uris) == 1
+            and len(clip_offsets) == len(clip_sentences)):
+        # One clip holding every sentence (the phone lane, which renders the
+        # whole reply in one piece). There is no playlist to step, so the
+        # timeline recorded when it first played is what makes the replay
+        # followable — without it a replayed reply is just audio.
+        np_extras["clip_sentences"] = clip_sentences
+        np_extras["clip_offsets_s"] = clip_offsets
+        np_extras["current_sentence_idx"] = 0
+    else:
+        clip_offsets = []
     if have_durations:
         # Spawn a detached follower so the replay behaves like live playback
         # even though _do_replay returns immediately: it mirrors the player's
@@ -2589,14 +2610,19 @@ def _replay_row(row: dict) -> int:
             os.killpg(_old_pgid, _signal.SIGTERM)
         except (OSError, ValueError, ProcessLookupError, PermissionError):
             pass
-        # Highlight only multi-clip turns from a known pane (single-clip
-        # replays never highlighted); the position mirror runs regardless.
-        _hl = (pane and len(clip_uris) > 1
-               and clip_sentences and len(clip_sentences) == len(clip_uris))
+        # Follow along from a known pane, whether the turn is a clip per
+        # sentence (playlist position picks the sentence) or one clip holding
+        # all of them (the offsets do). A single-clip turn never followed
+        # before, which is every phone-lane reply — the lane most replies now
+        # take. The position mirror runs regardless.
+        _hl = bool(pane and clip_sentences
+                   and (len(clip_sentences) == len(clip_uris) > 1
+                        or clip_offsets))
         _trk = subprocess.Popen(
             [sys.executable, "-m", "agent_media_core.cli",
              "replay-track",
              "--sentences", json.dumps(clip_sentences) if _hl else "",
+             "--offsets", json.dumps(clip_offsets) if _hl else "",
              "--pane", pane,
              "--durations", json.dumps(clip_durations)],
             start_new_session=True,
@@ -2807,6 +2833,34 @@ def cmd_replay_at_cursor(a) -> int:
     return 1
 
 
+def _mirror_clock(state, owns, sentences: list, offsets: list,
+                  idx: int, elapsed: float) -> None:
+    """Write the replay's position from the clock, for a player we can't poll.
+
+    Same fields the polling mirror writes, minus the ones only the player
+    knows (pause, speed, mute) — inventing those would be worse than leaving
+    the display to fall back.
+    """
+    try:
+        np = state.get_now_playing("speech")
+        if not np:
+            return
+        ex = np.get("extras") or {}
+        if not owns(ex):
+            return
+        ex["live_pos_s"] = elapsed
+        ex["writer_pid"] = os.getpid()
+        if idx < len(sentences):
+            ex["current_sentence"] = sentences[idx]
+            ex["current_sentence_idx"] = idx
+        state.set_now_playing(
+            "speech", uri=np.get("uri") or "",
+            started_at=np.get("started_at") or time.time(),
+            target=np.get("target") or SPEECH_TARGET.name, extras=ex)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def cmd_replay_track(a) -> int:
     """Internal: follow a replay the way the live intake path follows a reply.
 
@@ -2821,16 +2875,30 @@ def cmd_replay_track(a) -> int:
     ``finally`` does; if we die uncleanly instead, the row still carries our
     pid so the store's orphan guard self-heals it on the next read.
     """
-    from .intake.submit import _tmux_highlight_text, _restore_fullscreen
+    from .intake.submit import (_HighlightScheduler, _restore_fullscreen,
+                                _playout_delay_s)
     sentences: list[str] = json.loads(a.sentences) if a.sentences else []
     durations: list[float] = json.loads(a.durations) if a.durations else []
+    # Sentence start times within a SINGLE clip — the phone lane renders the
+    # whole reply as one file, so there is no playlist position to read the
+    # sentence off and the timeline recorded at first play is what we follow.
+    offsets: list[float] = json.loads(a.offsets) if getattr(a, "offsets", "") else []
     pane: str = a.pane
     highlight = bool(sentences and pane)
-    # Cumulative start offset of each clip on the turn-wide timeline.
-    offsets: list[float] = []
+    # Through the scheduler, not straight to _tmux_highlight_text: it is what
+    # notices a sentence that can't be found on screen and gives the status
+    # rows over to it. A replay of a reply scrolled out of view is exactly the
+    # case that needs them, and going around it meant the rows never appeared.
+    highlighter = _HighlightScheduler(
+        _playout_delay_s(SPEECH_TARGET.name) if not offsets else 0.0,
+        highlight, pane)
+    # Cumulative start offset of each CLIP on the turn-wide timeline. (Distinct
+    # from the per-sentence `offsets` above, which exist only when one clip
+    # holds the whole reply — the two never both apply.)
+    clip_starts: list[float] = []
     _acc = 0.0
     for d in durations:
-        offsets.append(_acc)
+        clip_starts.append(_acc)
         _acc += d
     if highlight:
         # Ensure _tmux_highlight_text sees the right pane + a truthy TMUX.
@@ -2846,22 +2914,36 @@ def cmd_replay_track(a) -> int:
         # row already carries our pid (_do_replay stamps it at spawn).
         return ex.get("writer_pid") in (None, os.getpid())
 
-    def _mirror(snap: dict) -> None:
+    def _mirror(snap: dict) -> int:
+        """Mirror the player into the row; returns the sentence index in hand."""
+        idx = 0
         try:
             np = state.get_now_playing("speech")
             if not np:
-                return
+                return idx
             ex = np.get("extras") or {}
             if not _owns(ex):
-                return
+                return idx
             pos = snap.get("playlist-pos")
-            idx = int(pos) if pos is not None and pos >= 0 else 0
-            base = offsets[idx] if idx < len(offsets) else 0.0
-            ex["live_pos_s"] = base + (snap.get("time-pos") or 0.0)
+            clip = int(pos) if pos is not None and pos >= 0 else 0
+            base = clip_starts[clip] if clip < len(clip_starts) else 0.0
+            elapsed = base + (snap.get("time-pos") or 0.0)
+            ex["live_pos_s"] = elapsed
             ex["live_pause"] = bool(snap.get("pause"))
             ex["live_speed"] = snap.get("speed") or 1.0
             ex["live_mute"] = bool(snap.get("mute"))
             ex["writer_pid"] = os.getpid()
+            # One clip per sentence → the playlist position is the sentence.
+            # One clip holding all of them → the play position is, read against
+            # the recorded offsets.
+            idx = clip
+            if offsets:
+                idx = 0
+                for i, off in enumerate(offsets):
+                    if elapsed + 0.001 >= off:
+                        idx = i
+                    else:
+                        break
             if idx < len(sentences):
                 # Keeps `media current-sentence` (and popup skips) working.
                 ex["current_sentence"] = sentences[idx]
@@ -2873,8 +2955,10 @@ def cmd_replay_track(a) -> int:
                 extras=ex)
         except Exception:  # noqa: BLE001
             pass
+        return idx
 
     def _finish() -> int:
+        highlighter.drain()    # fires the tail, then releases the status rows
         _restore_fullscreen()  # no-op unless MEDIA_HIGHLIGHT_DUMP dumped
         try:
             np = state.get_now_playing("speech")
@@ -2883,6 +2967,39 @@ def cmd_replay_track(a) -> int:
         except Exception:  # noqa: BLE001
             pass
         return 0
+
+    if offsets:
+        # One clip, a known timeline, and — on the lane that produces those —
+        # a player 400ms away behind a circuit breaker. Polling it is what
+        # killed this: the first slow read trips the breaker for 45s, the next
+        # five reads are refused outright, and the tracker concludes playback
+        # ended and clears the row. Two seconds into a reply that was audibly
+        # still going.
+        #
+        # So don't ask. The offsets say where each sentence starts and the
+        # clock says how far in we are, exactly as the live lane does. A pause
+        # drifts this (same limitation as the live lane); everything else about
+        # it is steadier than the reading it replaced.
+        total = sum(durations) or (offsets[-1] + 3.0)
+        started = time.time()
+        last = -1
+        while True:
+            elapsed = time.time() - started
+            if elapsed > total + 0.5:
+                return _finish()
+            idx = 0
+            for i, off in enumerate(offsets):
+                if elapsed + 0.001 >= off:
+                    idx = i
+                else:
+                    break
+            if idx != last:
+                last = idx
+                _mirror_clock(state, _owns, sentences, offsets, idx, elapsed)
+                if highlight and idx < len(sentences):
+                    highlighter.show(sentences[idx], first=(idx == 0),
+                                     force=False)
+            time.sleep(0.1)
 
     # Wait for mpv to start playing the first clip — _do_replay's loadfile
     # returns immediately and there's a brief idle window before playback
@@ -2922,12 +3039,10 @@ def cmd_replay_track(a) -> int:
             except Exception:  # noqa: BLE001
                 pass
             continue
-        _mirror(snap)
-        pos_raw = snap.get("playlist-pos")
-        pos = int(pos_raw) if pos_raw is not None else 0
-        if highlight and pos != last_pos and 0 <= pos < len(sentences):
-            _tmux_highlight_text(sentences[pos], first=(pos == 0))
-        last_pos = pos
+        idx = _mirror(snap)
+        if highlight and idx != last_pos and 0 <= idx < len(sentences):
+            highlighter.show(sentences[idx], first=(idx == 0), force=False)
+        last_pos = idx
     return 0
 
 
@@ -5279,6 +5394,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("replay-track", help=argparse.SUPPRESS)
     s.add_argument("--sentences", default="")
+    s.add_argument("--offsets", default="")
     s.add_argument("--pane", default="")
     s.add_argument("--durations", default="")
     s.set_defaults(func=cmd_replay_track)
