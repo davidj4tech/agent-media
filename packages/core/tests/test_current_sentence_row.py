@@ -15,7 +15,7 @@ from agent_media_core import cli
 
 
 def _args(**kw):
-    return argparse.Namespace(**{"width": 80, "idle_hint": False, **kw})
+    return argparse.Namespace(**{"width": 80, "follow": False, **kw})
 
 
 @pytest.fixture
@@ -57,16 +57,18 @@ def test_idle_can_answer_is_it_on(speaking, capsys, monkeypatch):
     sentence to show."""
     speaking(None)
     _highlight(monkeypatch, True)
-    cli.cmd_current_sentence(_args(idle_hint=True))
+    cli.cmd_current_sentence(_args(follow=True))
     out = capsys.readouterr().out
     assert "follow-along on" in out
     assert "#[fg=" in out, "a status row styles with tmux formats, not ANSI"
 
 
-def test_the_hint_is_silent_when_the_feature_is_off(speaking, capsys, monkeypatch):
-    speaking(None)
+def test_the_row_is_silent_when_the_feature_is_off(speaking, capsys, monkeypatch):
+    """`v` is one switch for every surface: with follow-along off the row shows
+    nothing at all, not even a sentence that happens to be playing."""
+    speaking("Something is being read right now.")
     _highlight(monkeypatch, False)
-    cli.cmd_current_sentence(_args(idle_hint=True))
+    cli.cmd_current_sentence(_args(follow=True))
     assert capsys.readouterr().out == ""
 
 
@@ -75,5 +77,5 @@ def test_a_playing_row_with_no_sentence_yet_is_not_a_crash(monkeypatch, capsys):
     nothing — the render lane's own gap."""
     monkeypatch.setattr(cli, "_now_speaking", lambda: {"extras": {}})
     _highlight(monkeypatch, True)
-    cli.cmd_current_sentence(_args(idle_hint=True))
+    cli.cmd_current_sentence(_args(follow=True))
     assert "follow-along on" in capsys.readouterr().out

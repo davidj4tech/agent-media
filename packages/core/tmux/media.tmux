@@ -40,12 +40,10 @@ bind a \
 # popup, toggles the feature on/off; uppercase V here forces the next turn.)
 bind V run-shell -b "media highlight-now"
 
-# prefix F → the follow-along pane: a split of our own showing the reply being
-# spoken, current sentence marked, scrolling itself. The copy-mode highlight
-# above can only work in a pane with scrollback to search, which a fullscreen
-# TUI (Claude Code) does not have — this is the answer for that case, and it
-# needs no cooperation from whatever owns the screen. Press again to close.
-bind F run-shell -b "media-follow-pane"
+# The follow-along pane (`media follow` in a split of its own) has no prefix
+# key: the popup's `v` is the one control for following along, and it drives
+# every surface — the copy-mode highlight, the pane, and the status row. One
+# wish, one switch. `media-follow-pane` is still on PATH for a manual split.
 
 # The fleet doctor lives on `f` INSIDE the control popup (prefix a), not on a
 # prefix key of its own. The root key table is nearly full, and the two obvious

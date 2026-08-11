@@ -743,8 +743,13 @@ def ensure_follow_view(open_: bool = True, *, pane: str = "",
     if not os.environ.get("TMUX"):
         return
     if open_:
+        # The pane is the heavyweight surface — it charges the conversation
+        # rows — so it stays opt-in (MEDIA_FOLLOW_AUTO=1) even when `v` asks
+        # for follow-along; the status row already carries the same sentence
+        # for a row of chrome. Where it IS opted into, `v` opens and closes it
+        # along with everything else.
         if os.environ.get("MEDIA_FOLLOW_AUTO") != "1":
-            return              # the pane is a keypress away; don't take rows
+            return
         if not _is_auto_highlight_enabled():
             return              # following along was never asked for
     env = dict(os.environ)
