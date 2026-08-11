@@ -15,6 +15,12 @@ and beats a file plus polling (no latency floor).
 Fails safe in both directions: no socket, a stale socket, or any error means
 `offer()` returns False and voice-bridge injects into tmux exactly as it does
 today. A human's words are never dropped on the floor.
+
+Nothing here is voice-specific. `media converse-reply` calls the same `offer()`
+with typed text, which is the only route for an answerer who cannot reach HA
+Assist's microphone — another agent, over the relay. Such an answerer also
+cannot *hear* the question, so arming publishes it as a sidecar (see
+`question_path`).
 """
 
 from __future__ import annotations
@@ -24,6 +30,7 @@ import json
 import logging
 import os
 import socket
+import time
 from pathlib import Path
 
 
@@ -39,6 +46,51 @@ def socket_path() -> Path:
         return Path(override)
     base = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
     return Path(base) / "agent-media" / "converse.sock"
+
+
+def question_path() -> Path:
+    """Sidecar naming the armed question, beside the socket.
+
+    The question is *spoken*, so an answerer who cannot hear (an agent replying
+    over the relay rather than through HA Assist) has no other way to know what
+    is being asked — or that anything is. Written on arm, removed on disarm.
+    """
+    return socket_path().with_suffix(".question")
+
+
+def pending_question() -> dict | None:
+    """The question currently awaiting an answer, or None.
+
+    None when nothing is armed, when the sidecar is unreadable, and — the case
+    that matters — when the sidecar outlived its socket, since a media-mcp that
+    died mid-converse leaves a question nobody is listening for.
+    """
+    if not socket_path().exists():
+        return None
+    try:
+        data = json.loads(question_path().read_text())
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) and data.get("text") else None
+
+
+def wait_for_question(timeout_s: float, poll_s: float = 0.3) -> dict | None:
+    """Block until a question is armed, or `timeout_s` elapses.
+
+    For an answerer who has just been told there's a question but whose own
+    channel is slow: a relay command is already 5s-granular, so without this
+    it races the arm and gets "nothing waiting" for a question that lands a
+    second later. Polling (not inotify) because the caller's own latency floor
+    dwarfs the difference and this has no daemon to keep alive.
+    """
+    deadline = time.monotonic() + timeout_s
+    while True:
+        q = pending_question()
+        if q is not None:
+            return q
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(poll_s)
 
 
 class Busy(RuntimeError):
@@ -63,8 +115,10 @@ class Rendezvous:
             reply = rv.wait()      # str, or None on timeout
     """
 
-    def __init__(self, timeout_s: float = 90.0) -> None:
+    def __init__(self, timeout_s: float = 90.0,
+                 question: str | None = None) -> None:
         self.timeout_s = timeout_s
+        self.question = question
         self._srv: socket.socket | None = None
 
     def __enter__(self) -> "Rendezvous":
@@ -75,11 +129,16 @@ class Rendezvous:
                 raise Busy(f"a converse call is already waiting on {path}")
             # Stale socket from a media-mcp that died mid-converse.
             path.unlink(missing_ok=True)
+        # Published *before* the bind, because the socket appearing is what
+        # tells an answerer to look: the other order leaves a window where the
+        # rendezvous is armed and the question reads as absent.
+        self._write_question()
         srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
             srv.bind(str(path))
         except OSError as exc:
             srv.close()
+            question_path().unlink(missing_ok=True)
             if exc.errno == errno.EADDRINUSE:
                 raise Busy(f"rendezvous {path} taken") from exc
             raise
@@ -87,6 +146,23 @@ class Rendezvous:
         srv.settimeout(self.timeout_s)
         self._srv = srv
         return self
+
+    def _write_question(self) -> None:
+        """Publish the sidecar. Best-effort: never fail the arm over it."""
+        if not self.question:
+            return
+        qp = question_path()
+        tmp = qp.with_suffix(".question.tmp")
+        try:
+            tmp.write_text(json.dumps({
+                "text": self.question,
+                "asked_at": time.time(),
+                "timeout_s": self.timeout_s,
+            }))
+            tmp.replace(qp)          # atomic: a reader sees whole JSON or none
+        except OSError:
+            log.warning("converse: could not write %s", qp)
+            tmp.unlink(missing_ok=True)
 
     def wait(self) -> str | None:
         """Block for one transcript. Returns the text, or None on timeout."""
@@ -131,6 +207,7 @@ class Rendezvous:
             self._srv.close()
             self._srv = None
         socket_path().unlink(missing_ok=True)
+        question_path().unlink(missing_ok=True)
 
 
 def offer(text: str, timeout_s: float = 2.0) -> bool:

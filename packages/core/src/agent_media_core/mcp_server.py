@@ -203,7 +203,10 @@ def converse(text: str,
     their attention: for anything that needs no answer, use `say`.
 
     The human still initiates speaking (tap-to-talk / wake word); this only
-    routes their next transcript here instead of into the tmux pane.
+    routes their next transcript here instead of into the tmux pane. An
+    answerer with no microphone on that path — another agent, over the relay —
+    can reply with `media converse-reply "<text>"` instead; `media
+    converse-reply --pending` shows them what was asked.
 
     Args:
         text: The question to speak.
@@ -215,6 +218,7 @@ def converse(text: str,
     Returns {"reply": "..."} — or {"reply": None, "reason": ...} on timeout or
     if another converse call already holds the rendezvous.
     """
+    from .capture import doorbell
     from .capture.rendezvous import Busy, Rendezvous
     from .intake.submit import submit_event
 
@@ -240,10 +244,16 @@ def converse(text: str,
     _await_quiet(tgt)
 
     try:
-        with Rendezvous(timeout_s=timeout_s) as rv:
+        with Rendezvous(timeout_s=timeout_s, question=text) as rv:
             log.info("converse: listening (up to %.0fs)", timeout_s)
+            # The doorbell survives the question not being heard — David in
+            # another room, or an answerer (Cece) who cannot hear at all.
+            doorbell.ring(text, timeout_s)
             t0 = time.monotonic()
-            reply = rv.wait()
+            try:
+                reply = rv.wait()
+            finally:
+                doorbell.clear()
     except Busy as exc:
         log.warning("converse: %s", exc)
         return {"reply": None, "reason": str(exc)}

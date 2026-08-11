@@ -1918,6 +1918,50 @@ def cmd_speech_hold(a) -> int:
     return 0
 
 
+def cmd_converse_reply(a) -> int:
+    """Answer a waiting `converse` with typed text.
+
+    The MCP `converse` tool speaks a question and blocks on a unix socket for
+    the answer. Normally that answer is a transcript handed over by
+    tmux-voice-bridge — but the socket does not care where the words came from,
+    and an agent replying over the relay has no microphone on that path. This
+    is that door.
+
+    The caller is usually another agent, so the exit code carries the outcome
+    and the three failures are kept apart: nothing armed is a different problem
+    from armed-but-unacknowledged, and only the first is safe to retry blind.
+    """
+    from .capture.rendezvous import (offer, pending_question, socket_path,
+                                     wait_for_question)
+
+    if a.pending:
+        q = (wait_for_question(a.wait) if a.wait else pending_question())
+        if q is None:
+            print("converse: nothing waiting", file=sys.stderr)
+            return 3
+        if a.json:
+            print(json.dumps(q))
+        else:
+            print(q["text"])
+        return 0
+
+    if not a.text:
+        print("converse: nothing to say — pass the reply text",
+              file=sys.stderr)
+        return 2
+    # Checked before offering only to tell 3 from 4; offer() is authoritative
+    # and races here resolve as a 4, which is the honest answer anyway.
+    if not socket_path().exists():
+        print("converse: nobody waiting", file=sys.stderr)
+        return 3
+    if not offer(a.text):
+        print("converse: nobody took the reply — it was NOT delivered",
+              file=sys.stderr)
+        return 4
+    print("converse: reply delivered")
+    return 0
+
+
 # Every speech control below sends `critical=True`.
 #
 # The breaker exists to stop *policy* chatter — "is anything playing, should I
@@ -5431,6 +5475,23 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="with --release: lift EVERY hold, including other "
                         "sessions'. The escape hatch for a stuck channel.")
     s.set_defaults(func=cmd_speech_hold)
+
+    s = sub.add_parser("converse-reply",
+                       help="answer a waiting `converse` with text — for an "
+                            "answerer with no mic on the HA Assist path "
+                            "(another agent, over the relay)")
+    s.add_argument("text", nargs="?", default=None,
+                   help="the reply to hand to the waiting converse call")
+    s.add_argument("--pending", action="store_true",
+                   help="print the question awaiting an answer, if any "
+                        "(exit 3 when nothing is armed)")
+    s.add_argument("--json", action="store_true",
+                   help="with --pending: the whole record (text, asked_at, "
+                        "timeout_s) instead of just the question")
+    s.add_argument("--wait", type=float, default=0.0, metavar="SECONDS",
+                   help="with --pending: block until a question arms, rather "
+                        "than racing it and reporting none")
+    s.set_defaults(func=cmd_converse_reply)
 
     sub.add_parser("pause").set_defaults(func=cmd_pause)
     sub.add_parser("resume").set_defaults(func=cmd_resume)
