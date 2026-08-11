@@ -536,26 +536,94 @@ def _age(path, seconds):
     os.utime(path, (st.st_atime, st.st_mtime - seconds))
 
 
-def test_hold_without_ttl_never_expires(monkeypatch, tmp_path):
-    """Dictation lasts as long as it lasts, and must not be cut off."""
+def test_hold_without_ttl_outlasts_any_real_hold(monkeypatch, tmp_path):
+    """Dictation lasts as long as it lasts, and must not be cut off. Ten
+    minutes is already far longer than anyone dictates or any spoken turn."""
     flag = tmp_path / "call-guard.hold"
     monkeypatch.setenv("MEDIA_CALL_GUARD_HOLD_FLAG", str(flag))
     cfg = call_guard.Config()
     call_guard._set_hold(cfg)
-    assert call_guard._flag_ttl(cfg.hold_flag) is None   # no ttl ⇒ no expiry
-    _age(flag, 86_400)
+    assert call_guard._flag_ttl(cfg.hold_flag) is None   # no ttl of its own
+    _age(flag, 600)
     assert call_guard.flag_present(cfg) is True
 
 
-def test_an_empty_flag_from_the_bridge_never_expires(monkeypatch, tmp_path):
+def test_an_empty_flag_from_the_bridge_outlasts_any_real_hold(monkeypatch, tmp_path):
     """The Automate mic-detect bridge writes the flag itself, with no contents
-    at all — it never goes through _set_hold, so the no-ttl guarantee has to
-    hold for a body this code did not write."""
+    at all — it never goes through _set_hold, so the guarantee has to hold for
+    a body this code did not write."""
     flag = tmp_path / "call-guard.hold"
     flag.write_text("")
     monkeypatch.setenv("MEDIA_CALL_GUARD_HOLD_FLAG", str(flag))
     cfg = call_guard.Config()
+    _age(flag, 600)
+    assert call_guard.flag_present(cfg) is True
+
+
+# --- the release that never arrives ----------------------------------------
+
+def test_a_hold_nobody_released_is_eventually_released(monkeypatch, tmp_path):
+    """The silent failure this backstop exists for: a --hold reaches the phone,
+    the ssh call carrying --release dies, and the flag stays. Music stays
+    ducked and speech stays paused for as long as the phone runs, with every
+    service up and every health check reporting well. Nothing else in the
+    system notices, because a hold looks exactly like a hold."""
+    flag = tmp_path / "call-guard.hold"
+    monkeypatch.setenv("MEDIA_CALL_GUARD_HOLD_FLAG", str(flag))
+    cfg = call_guard.Config()
+    call_guard._set_hold(cfg, source="cece")           # no ttl, as callers do
+
+    _age(flag, 1_500)
+    assert call_guard.flag_present(cfg) is True        # still inside the backstop
+
+    _age(flag, 400)                                    # now 1900s, past 1800
+    assert call_guard.flag_present(cfg) is False
+    # Deleted, so the ordinary release path runs and audio comes back on its
+    # own — the point is that nobody has to notice.
+    assert not flag.exists()
+
+
+def test_the_backstop_is_tunable_and_can_be_turned_off(monkeypatch, tmp_path):
+    flag = tmp_path / "call-guard.hold"
+    monkeypatch.setenv("MEDIA_CALL_GUARD_HOLD_FLAG", str(flag))
+    monkeypatch.setenv("MEDIA_CALL_GUARD_HOLD_MAX_S", "60")
+    call_guard._set_hold(call_guard.Config())
+    _age(flag, 61)
+    assert call_guard.flag_present(call_guard.Config()) is False
+
+    flag.write_text("")
+    monkeypatch.setenv("MEDIA_CALL_GUARD_HOLD_MAX_S", "0")   # as it used to be
     _age(flag, 86_400)
+    assert call_guard.flag_present(call_guard.Config()) is True
+
+
+def test_an_explicit_ttl_still_wins_over_the_backstop(monkeypatch, tmp_path):
+    """A caller that passes --ttl has said what it means; the backstop is for
+    the callers that say nothing, and must not shorten or extend a stated one."""
+    flag = tmp_path / "call-guard.hold"
+    monkeypatch.setenv("MEDIA_CALL_GUARD_HOLD_FLAG", str(flag))
+    monkeypatch.setenv("MEDIA_CALL_GUARD_HOLD_MAX_S", "1800")
+    cfg = call_guard.Config()
+    call_guard._set_hold(cfg, ttl=120)
+    _age(flag, 200)                                    # past its ttl, inside the backstop
+    assert call_guard.flag_present(cfg) is False
+
+    call_guard._set_hold(cfg, ttl=7200)                # longer than the backstop
+    _age(flag, 3_600)
+    assert call_guard.flag_present(cfg) is True
+
+
+def test_a_heartbeat_keeps_a_long_hold_alive(monkeypatch, tmp_path):
+    """A caller that genuinely needs longer than the backstop re-holds, exactly
+    as the TTL path already documents. This must not become a reason to make
+    the backstop long enough to be useless."""
+    flag = tmp_path / "call-guard.hold"
+    monkeypatch.setenv("MEDIA_CALL_GUARD_HOLD_FLAG", str(flag))
+    cfg = call_guard.Config()
+    call_guard._set_hold(cfg)
+    _age(flag, 1_700)
+    call_guard._set_hold(cfg)                          # still going
+    _age(flag, 1_700)
     assert call_guard.flag_present(cfg) is True
 
 
@@ -594,10 +662,11 @@ def test_heartbeat_extends_the_hold(monkeypatch, tmp_path):
 def test_unreadable_ttl_is_treated_as_no_ttl(monkeypatch, tmp_path):
     """Garbage in the flag must not expire a hold early — failing open keeps
     the duck, which is recoverable by hand; failing closed un-ducks someone
-    mid-conversation, which is not."""
+    mid-conversation, which is not. It gets the same backstop as any hold that
+    named no TTL, which is what "treated as no ttl" now means."""
     flag = tmp_path / "call-guard.hold"
     flag.write_text("ttl=banana\n")
     monkeypatch.setenv("MEDIA_CALL_GUARD_HOLD_FLAG", str(flag))
     cfg = call_guard.Config()
-    _age(flag, 99_999)
+    _age(flag, 600)
     assert call_guard.flag_present(cfg) is True

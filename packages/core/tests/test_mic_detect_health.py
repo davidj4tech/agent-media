@@ -12,7 +12,7 @@ import time
 import pytest
 
 from agent_media_core import call_guard
-from agent_media_core.cli import _mic_detect_facts, health_problems
+from agent_media_core.cli import _hold_facts, _mic_detect_facts, health_problems
 
 
 @pytest.fixture(autouse=True)
@@ -220,3 +220,71 @@ def test_a_restart_cannot_clear_an_alarm_a_typed_hold_witnessed():
     facts = _mic_detect_facts()
     assert int(facts["mic_detect_quiet_s"]) > 60 * 60 * 29
     assert any("mic-detect quiet" in p for p in health_problems(facts))
+
+
+# --- a hold that is in effect right now ------------------------------------
+#
+# The opposite question to the one above, and the more urgent one. Mic-detect
+# quiet means barge-in stopped working; a stuck hold means the phone is silent
+# *now*, with every service up and nothing anywhere saying why.
+
+def _held(monkeypatch, tmp_path, body="", age=0):
+    flag = tmp_path / "hold"
+    flag.write_text(body)
+    monkeypatch.setenv("MEDIA_CALL_GUARD_HOLD_FLAG", str(flag))
+    call_guard.publish_flag_path(call_guard.Config())
+    if age:
+        _age(flag, age)
+    return flag
+
+
+def test_nothing_held_says_nothing(monkeypatch, tmp_path):
+    """A fact that is present whether or not there is a hold reads as a hold."""
+    monkeypatch.setenv("MEDIA_CALL_GUARD_HOLD_FLAG", str(tmp_path / "hold"))
+    call_guard.publish_flag_path(call_guard.Config())
+    assert _hold_facts() == {}
+
+
+def test_no_guard_here_means_no_hold_facts(monkeypatch, tmp_path):
+    """Only the phone runs the guard. Elsewhere the flag path is a file that
+    happens not to exist, which is not the same as 'not held'."""
+    monkeypatch.setenv("MEDIA_CALL_GUARD_HOLD_FLAG", str(tmp_path / "hold"))
+    assert _hold_facts() == {}
+
+
+def test_a_brief_hold_is_reported_but_is_not_a_problem(monkeypatch, tmp_path):
+    """Dictation and a spoken turn hold for seconds. Flagging those would train
+    everyone to ignore the one that matters."""
+    _held(monkeypatch, tmp_path, age=20)
+    facts = _hold_facts()
+    assert int(facts["hold_s"]) >= 20
+    assert health_problems(facts) == []
+
+
+def test_a_hold_that_has_stood_too_long_is_a_problem(monkeypatch, tmp_path):
+    """Found by nearly shipping it: a --hold typed over a connection that then
+    stalled, with --release never reaching the far side. It happened not to
+    stick. Nothing would have said so if it had."""
+    _held(monkeypatch, tmp_path, body="src=cece\n", age=900)
+    facts = _hold_facts()
+    assert facts["hold_src"] == "cece"
+    problems = health_problems(facts)
+    assert any("external hold has stood for 15m" in p for p in problems)
+    assert any("cece" in p and "--release" in p for p in problems)
+
+
+def test_the_warn_threshold_is_tunable(monkeypatch, tmp_path):
+    monkeypatch.setenv("MEDIA_CALL_GUARD_HOLD_WARN_S", "60")
+    _held(monkeypatch, tmp_path, age=120)
+    assert health_problems(_hold_facts())
+
+    monkeypatch.setenv("MEDIA_CALL_GUARD_HOLD_WARN_S", "0")   # escape hatch
+    assert health_problems(_hold_facts()) == []
+
+
+def test_an_unlabelled_hold_is_still_reported(monkeypatch, tmp_path):
+    """The Automate bridge writes an empty flag, and it is just as capable of
+    dying mid-dictation as anything else."""
+    _held(monkeypatch, tmp_path, age=900)
+    problems = health_problems(_hold_facts())
+    assert any("(external)" in p for p in problems)

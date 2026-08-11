@@ -165,6 +165,22 @@ _DEFAULT_FLAG_POLL_S = 0.3
 # release (so the flag flicking off between utterances doesn't drop the hold).
 _DEFAULT_HOLD_ENGAGE_S = 1.5
 _DEFAULT_HOLD_RELEASE_S = 2.0
+# Backstop for a hold whose release never arrives. A caller that passes --ttl
+# has said how long it means to hold and is already safe; the danger is every
+# caller that does not — the Automate bridge (which deletes the flag when the
+# mic stops, and cannot if it is killed mid-dictation) and the turn-taking
+# hold/release pair, whose release travels over ssh to the phone and can be
+# lost with the connection. Either way the flag stays, music stays ducked and
+# speech stays paused for as long as the phone runs, with every health check
+# reporting well — the failure is silent by construction.
+#
+# Well above any real hold: dictation and a spoken turn are minutes at most, so
+# this releases nothing that was still wanted. It is a dead-man's switch, not a
+# TTL. 0 disables it (a hold then lasts until --release, as it used to).
+_DEFAULT_HOLD_MAX_S = 1800.0
+# When to *report* a hold that is still in effect, so it is visible before the
+# backstop fires 25 minutes later. Also the answer to "why is it quiet?".
+_DEFAULT_HOLD_WARN_S = 300.0
 
 _stop = False
 
@@ -210,6 +226,8 @@ class Config:
             "MEDIA_CALL_GUARD_HOLD_ENGAGE_S", _DEFAULT_HOLD_ENGAGE_S)
         self.hold_release_s = _env_float(
             "MEDIA_CALL_GUARD_HOLD_RELEASE_S", _DEFAULT_HOLD_RELEASE_S)
+        self.hold_max_s = _env_float(
+            "MEDIA_CALL_GUARD_HOLD_MAX_S", _DEFAULT_HOLD_MAX_S)
         self.hold_flag = os.environ.get(
             "MEDIA_CALL_GUARD_HOLD_FLAG",
             str(state_dir() / _DEFAULT_HOLD_FLAG_NAME))
@@ -526,6 +544,11 @@ def flag_present(cfg: Config) -> bool:
     caller — otherwise leaves music quiet indefinitely, and the whole point of
     a TTL is that nobody has to notice. Deleting it also means the ordinary
     release path runs: absence for the debounce window, then auto-resume.
+
+    A hold with no TTL of its own gets the backstop instead, because the
+    callers that most need one are exactly the callers that pass no TTL. Most
+    of a hold's lifetime it makes no difference: the backstop is half an hour
+    and no real hold comes close.
     """
     try:
         stat = os.stat(cfg.hold_flag)
@@ -538,8 +561,19 @@ def flag_present(cfg: Config) -> bool:
     # once; the live test caught it and the unit test did not, because the test
     # patched _now() and so encoded the same wrong assumption as the code.
     ttl = _flag_ttl(cfg.hold_flag)
+    backstop = ttl is None
+    if backstop:
+        ttl = cfg.hold_max_s if cfg.hold_max_s > 0 else None
     if ttl is not None and (time.time() - stat.st_mtime) > ttl:
-        log.info("external hold expired after %.0fs without a heartbeat — releasing", ttl)
+        if backstop:
+            log.warning(
+                "external hold has stood for %.0fs with no release (src=%s) — "
+                "releasing; whatever held it is presumed gone",
+                ttl, _flag_source(cfg.hold_flag) or "external")
+        else:
+            log.info(
+                "external hold expired after %.0fs without a heartbeat — releasing",
+                ttl)
         try:
             os.unlink(cfg.hold_flag)
         except OSError:                          # pragma: no cover - racing release
@@ -627,6 +661,24 @@ def note_external_hold(source: str = "") -> None:
             last_external_hold_path().write_text(f"{source or 'external'}\n")
     except OSError as exc:                      # pragma: no cover - unwritable
         log.debug("could not record last hold: %s", exc)
+
+
+def hold_age(cfg: Config) -> float | None:
+    """Seconds the external hold has been in effect, or None when not held.
+
+    Reads the flag itself rather than any state the guard keeps in memory, so a
+    health check can answer "why has it gone quiet?" without the guard's help —
+    including when the guard is the thing that died holding it.
+    """
+    try:
+        return max(0.0, time.time() - os.stat(cfg.hold_flag).st_mtime)
+    except OSError:
+        return None
+
+
+def hold_warn_s() -> float:
+    """How long a hold may stand before it is worth reporting. 0 disables."""
+    return _env_float("MEDIA_CALL_GUARD_HOLD_WARN_S", _DEFAULT_HOLD_WARN_S)
 
 
 def last_hold_source() -> str:

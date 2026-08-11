@@ -4780,7 +4780,38 @@ def selfcheck_facts() -> "dict[str, str]":
     if loops:
         facts["crashloop"] = ",".join(f"{n}:{c}" for n, c in loops)
     facts.update(_mic_detect_facts())
+    facts.update(_hold_facts())
     facts.update(_media_volume_facts())
+    return facts
+
+
+def _hold_facts() -> "dict[str, str]":
+    """A hold that is in effect right now, and how long it has stood.
+
+    The mic-detect facts answer "does anything still fire the trigger". This
+    answers the opposite and more urgent question: is something holding *now*.
+    A hold ducks music and pauses speech, so a stuck one is total silence with
+    every service up — and the release is the half that goes missing, whether
+    an ssh call died between --hold and --release or the Automate bridge was
+    killed mid-dictation. Neither leaves a trace anywhere else.
+    """
+    try:
+        from .call_guard import (Config, advert_path, hold_age, hold_warn_s,
+                                 _flag_source)
+    except Exception:                                # pragma: no cover
+        return {}
+    try:
+        advert_path().stat()
+    except OSError:
+        return {}                                    # no guard here
+    cfg = Config()
+    age = hold_age(cfg)
+    if age is None:
+        return {}                                    # nothing held: say nothing
+    facts = {"hold_s": str(int(age)), "hold_warn_s": str(int(hold_warn_s()))}
+    src = _flag_source(cfg.hold_flag)
+    if src:
+        facts["hold_src"] = src
     return facts
 
 
@@ -4909,6 +4940,19 @@ def health_problems(facts: "dict[str, str]") -> "list[str]":
         if level == 0:
             problems.append(
                 "media volume is 0 — speech renders and plays into silence")
+    held = facts.get("hold_s")
+    if held:
+        try:
+            held_s = float(held)
+            warn_s = float(facts.get("hold_warn_s", "300"))
+        except ValueError:
+            held_s, warn_s = 0.0, 0.0
+        if warn_s > 0 and held_s > warn_s:
+            who = facts.get("hold_src", "external")
+            problems.append(
+                f"external hold has stood for {held_s / 60:.0f}m ({who}) — "
+                "music is ducked and speech paused; a release probably never "
+                "arrived. `media-call-guard --release` lifts it")
     quiet = facts.get("mic_detect_quiet_s")
     if quiet:
         import os as _os
