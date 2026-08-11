@@ -4736,7 +4736,41 @@ def selfcheck_facts() -> "dict[str, str]":
     if loops:
         facts["crashloop"] = ",".join(f"{n}:{c}" for n, c in loops)
     facts.update(_mic_detect_facts())
+    facts.update(_media_volume_facts())
     return facts
+
+
+def _media_volume_facts() -> "dict[str, str]":
+    """The Android media-stream volume, where there is one.
+
+    mpv plays into STREAM_MUSIC, so this being zero is total silence with
+    every part of the stack reporting healthy — the player unpaused and unmuted at
+    volume 150, the renderer fine, the services up. Exactly the failure mode
+    the mic-detect heartbeat exists for, and it cost the same hour to find:
+    everything healthy, nothing audible.
+
+    Reported, never corrected. Someone silencing their phone means it.
+    """
+    import shutil
+    import subprocess
+
+    if shutil.which("termux-volume") is None:
+        return {}                       # not an Android host; nothing to say
+    try:
+        out = subprocess.run(["termux-volume"], capture_output=True, text=True,
+                             timeout=15)
+        if out.returncode != 0:
+            return {}
+        streams = json.loads(out.stdout)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return {}                       # Termux:API missing or wedged
+    for stream in streams:
+        if stream.get("stream") == "music":
+            vol, mx = stream.get("volume"), stream.get("max_volume")
+            if vol is None:
+                return {}
+            return {"media_volume": f"{vol}/{mx}"}
+    return {}
 
 
 def _mic_detect_facts() -> "dict[str, str]":
@@ -4822,6 +4856,15 @@ def health_problems(facts: "dict[str, str]") -> "list[str]":
         problems.append(f"services down: {facts['down']}")
     if facts.get("crashloop"):
         problems.append(f"crash-looping: {facts['crashloop']}")
+    vol = facts.get("media_volume")
+    if vol:
+        try:
+            level = int(vol.split("/")[0])
+        except ValueError:
+            level = -1
+        if level == 0:
+            problems.append(
+                "media volume is 0 — speech renders and plays into silence")
     quiet = facts.get("mic_detect_quiet_s")
     if quiet:
         import os as _os
