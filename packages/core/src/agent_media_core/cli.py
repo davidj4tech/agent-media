@@ -4793,8 +4793,15 @@ def _mic_detect_facts() -> "dict[str, str]":
     if last_external:
         facts["mic_detect_last_external_s"] = str(
             int(_time.time() - last_external))
-    facts["mic_detect_quiet_s"] = str(
-        int(_time.time() - (last_external or guard_started)))
+    # With no un-typed hold on record there is nothing to measure *from*, so
+    # measure from the earliest moment we know we were watching: the guard's
+    # start, or an older typed hold, which proves the guard was already up
+    # then. Taking guard-start alone would let every deploy reset the clock —
+    # the same hole the LATER-of-the-two version had, reopened from the other
+    # side, and found within a minute of shipping it: a restart cleared an
+    # alarm that had been correct for a day.
+    since = last_external or min(x for x in (guard_started, last_hold) if x)
+    facts["mic_detect_quiet_s"] = str(int(_time.time() - since))
     return facts
 
 

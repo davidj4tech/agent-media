@@ -206,3 +206,17 @@ def test_a_typed_hold_after_a_real_one_keeps_the_real_one(monkeypatch):
     facts = _mic_detect_facts()
     assert int(facts["mic_detect_last_external_s"]) > 60 * 60 * 29
     assert any("mic-detect quiet" in p for p in health_problems(facts))
+
+
+def test_a_restart_cannot_clear_an_alarm_a_typed_hold_witnessed():
+    """No un-typed hold on record and a guard that just restarted: the earliest
+    thing we know is the typed hold, which proves the guard was already
+    watching then. Measuring from the restart instead cleared a day-old alarm
+    the moment someone deployed."""
+    call_guard.publish_flag_path(call_guard.Config())
+    call_guard.note_external_hold("cli")
+    _age(call_guard.last_hold_path(), 60 * 60 * 30)   # typed 30h ago
+    _age(call_guard.advert_path(), 60)               # guard came up a minute ago
+    facts = _mic_detect_facts()
+    assert int(facts["mic_detect_quiet_s"]) > 60 * 60 * 29
+    assert any("mic-detect quiet" in p for p in health_problems(facts))
