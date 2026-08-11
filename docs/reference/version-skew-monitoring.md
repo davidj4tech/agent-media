@@ -196,6 +196,49 @@ new interpreter's view. No venv can substitute for those. `--apt-repair`
 reinstalls them; it detaches when apt holds its own lock, so it can't deadlock
 against the post-invoke hook that may have called it.
 
+## Acting on the warning: `media doctor --fix`
+
+Detection was never the gap. The status bar re-checks on a timer (10 min while
+a warning is up, 2 h when clean), so `⚠ fleet:` is always current — what was
+missing was a way to act on it without leaving the pane and remembering the
+command, and warnings you can only read are warnings you learn to live with.
+
+`--fix` deploys the hosts that are **merely behind**: `git pull --ff-only`,
+then `media restart-services`, then a re-probe of just those hosts so a good
+deploy clears the ⚠ in the same run.
+
+The restart is not optional and its position is not arbitrary. An editable
+install means a pull updates the files, but every long-running service is still
+executing the code it imported at start — and the *next* doctor run sees a
+matching HEAD and calls that host healthy. Pulled-but-not-restarted is exactly
+the silent-wrong-code state this whole system exists to catch. Restarting
+*after* the pull also means a host too old to have the subcommand gains it in
+the same round trip.
+
+What it will not do:
+
+- **Touch a host marked `!`.** That host is broken, not stale — dead install,
+  services down, crash loop. A pull fixes none of those, and restarting a
+  crash-looping service just spins it faster while the output claims work was
+  done. Those want a person.
+- **Force anything.** A dirty checkout is reported and skipped; `--ff-only`,
+  never a reset or a stash. An unattended rewrite of a host David may be
+  mid-edit on is worse than a warning that stays up.
+- **Run itself.** The background re-check only ever diagnoses. A pull onto the
+  phone restarts the speech renderer mid-sentence: fine when you chose the
+  moment, startling when a timer did.
+
+The trigger is `f` in the control popup (`prefix a`), which shows the report and
+asks before deploying. It sits with the other things you *open* rather than do,
+and inside the popup because the root key table is nearly full — `prefix H` is
+oh-my-tmux's `resize-pane -L`, and media.tmux is sourced late enough to have
+taken it silently.
+
+`media restart-services` is also useful alone (`--dry-run` names what it would
+touch). It restarts only what selfcheck is willing to grade: services
+symlinked into the checkout plus the adopted Termux apps, never sshd or
+snapclient, and never a runit service parked with a `down` file.
+
 ## Applying to Other Packages
 
 To drop this into `agent-sessions`, `agent-workspace`, or `pi-workspace`:
