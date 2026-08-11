@@ -80,20 +80,27 @@ measured on the device, `sentence_marks: True`, sentences stepping at 4.05s and
 
 The subtitles route is option 2's accuracy at option 3's cost.
 
+## What the marks feed
+
+The sentence state this lane now carries is read by three surfaces — the
+copy-mode highlight, the status rows and the follow pane — described in
+[follow-along.md](follow-along.md). Two things that were open here have since
+been closed there:
+
+- **Pause** no longer drifts the clock: `_stamp_speech_pause` freezes the
+  reading at `paused_at` and credits the pause's length back to
+  `play_started_at` on resume.
+- **Replay** follows along: history carries `clip_sentences` + `clip_offsets_s`,
+  and the replay tracker drives a single-clip reply from that timeline instead
+  of polling a player behind a 45s circuit breaker.
+
 ## Still open
 
-- **Auto-highlight is opt-in** and currently off (`media highlight-toggle`, or
-  tmux `prefix V` for one turn). The plumbing is live either way; the row is
-  what `media highlight-now` paints from.
-- **Pause/resume state** on the row is still not mirrored for this lane: the
-  follower runs on a clock, so a pause on the phone's mpv leaves the highlight
-  walking. Nav re-stamps the origin; pause would need the same treatment.
-- **Replay** of a phone-lane clip has the audio (`clips_remote`) but no
-  sentences: history records one clip and the replay tracker's guard is
-  `len(clip_sentences) == len(clip_uris)`. Carrying `clip_offsets_s` into
-  history would let a replay follow along too.
 - **First-sentence latency** is unchanged and still the dominant cost: ~9-16s
   from submit to audio, nearly all of it the render plus the link.
 - **Phone asleep / unreachable mid-reply:** still an ungraceful degrade.
 - **Shared sink-speech broker** with the phone's own `media say`: fine while
   sessions run only on red5, but unguarded.
+- **An externally-issued pause** — the phone's own media keys, a call-guard
+  pause — is invisible to the follower and will drift it. Everything issued
+  through `media` is accounted for.
