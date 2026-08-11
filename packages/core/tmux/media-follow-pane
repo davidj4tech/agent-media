@@ -27,29 +27,44 @@ WIDTH="${MEDIA_FOLLOW_WIDTH:-46}"
 # may be nowhere near a terminal.
 tmux has-session 2>/dev/null || exit 0
 
-# -a, not this window: on a narrow client the pane is a window of its own (see
-# below), and a toggle that couldn't see it would open a second one every press.
-existing=$(tmux list-panes -a -F '#{pane_id} #{@media-follow}' 2>/dev/null |
-           awk '$2 == "1" { print $1; exit }')
+# Where to put it: the pane the speech (or the key press) came from. A
+# hook-driven open runs detached from any pane, and without a target tmux would
+# size the split against whatever window happens to be current on the server —
+# which is how the strip ended up in a window nobody was looking at.
+target="${MEDIA_FOLLOW_TARGET:-${TMUX_PANE:-}}"
+if [ -z "$target" ]; then
+    target=$(tmux display-message -p '#{pane_id}')
+fi
+here=$(tmux display-message -p -t "$target" '#{window_id}')
 
-if [ -n "$existing" ]; then
-    case "$ACTION" in
-        open) exit 0 ;;                 # already there
-        *)    tmux kill-pane -t "$existing"; exit 0 ;;
-    esac
+# -a, not this window: the view may be somewhere else entirely, and a toggle
+# that couldn't see it would open a second one every press.
+existing=$(tmux list-panes -a -F '#{pane_id} #{window_id} #{@media-follow}' \
+           2>/dev/null | awk '$3 == "1" { print $1, $2; exit }')
+existing_pane=${existing%% *}
+existing_win=${existing##* }
+
+if [ -n "$existing_pane" ]; then
+    if [ "$existing_win" = "$here" ]; then
+        case "$ACTION" in
+            open|auto) exit 0 ;;        # already in front of you
+            *)         tmux kill-pane -t "$existing_pane"; exit 0 ;;
+        esac
+    fi
+    # It exists, but in a window you aren't looking at. Killing it there is
+    # what a naive toggle does, and from here that looks exactly like the key
+    # doing nothing — twice, since the next press then opens one. Bring it to
+    # this window instead. The view holds no state, so re-making it is the
+    # simplest possible "move".
+    tmux kill-pane -t "$existing_pane"
+    if [ "$ACTION" = "close" ]; then
+        exit 0
+    fi
 fi
 # `if`, not `[ … ] && exit`: under `set -e` the && form makes the whole script
 # exit non-zero on every OTHER action, since the test itself is the last status.
 if [ "$ACTION" = "close" ]; then
     exit 0                              # nothing to close
-fi
-
-# Where to put it: the client that is actually being looked at. A hook-driven
-# `open` runs detached from any pane, and without a target tmux would size the
-# split against whatever window happens to be current on the server.
-target="${MEDIA_FOLLOW_TARGET:-${TMUX_PANE:-}}"
-if [ -z "$target" ]; then
-    target=$(tmux display-message -p '#{pane_id}')
 fi
 
 # Where the room is. A 46-column split beside the conversation needs a wide
@@ -59,7 +74,7 @@ fi
 # you asked for it) a window of its own.
 # new-window takes a WINDOW target; handing it a pane id fails with "can't
 # specify pane here" and no view opens at all.
-window=$(tmux display-message -p -t "$target" '#{window_id}')
+window="$here"
 winw=$(tmux display-message -p -t "$target" '#{window_width}')
 winh=$(tmux display-message -p -t "$target" '#{window_height}')
 half=$((winw / 2))
