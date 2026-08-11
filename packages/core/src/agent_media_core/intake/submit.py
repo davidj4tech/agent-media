@@ -526,8 +526,15 @@ def _force_cancel_copy_mode(pane: str) -> None:
 
 
 def _tmux_highlight_text(text: str, *, first: bool = False,
-                         force: bool = False) -> None:
+                         force: bool = False) -> bool:
     """Re-anchor copy-mode in the source pane onto the spoken text.
+
+    Returns True when the sentence was found and marked — which is also the
+    answer to "can you see these words?". copy-mode searches the scrollback of
+    a normal pane and the visible screen of an alternate-screen one, so a
+    failed search means the text is off screen with no way to reach it. That is
+    exactly when a reader needs the words repeated somewhere else (see
+    `_HighlightScheduler`), and it costs nothing extra to ask.
 
     Each call jumps to the bottom and searches backward for this sentence,
     so it tracks the right line regardless of prior position — including
@@ -548,12 +555,12 @@ def _tmux_highlight_text(text: str, *, first: bool = False,
     re-anchors).
     """
     if not os.environ.get("TMUX"):
-        return
+        return False
     if not _is_auto_highlight_enabled():
-        return
+        return False
     pane = os.environ.get("TMUX_PANE")
     if not pane:
-        return
+        return False
 
     # Optional transcript-dump follow-along (MEDIA_HIGHLIGHT_DUMP=1). Print
     # Claude's transcript into scrollback so the scroll-and-hold below can follow
@@ -578,7 +585,7 @@ def _tmux_highlight_text(text: str, *, first: bool = False,
                    and not _popup_open_for(pane))
         if _dumped_pane == pane and not first and _typing:
             _restore_fullscreen()
-            return
+            return False
         if not _typing and _pane_alternate_on(pane):
             _dump_transcript(pane)
 
@@ -607,7 +614,7 @@ def _tmux_highlight_text(text: str, *, first: bool = False,
     # highlight in place rather than stranding the view at the bottom.
     snippet = _anchor_for(text, max_len=_pane_anchor_width(pane))
     if snippet is None:
-        return
+        return False
 
     # Selection length = snippet length, capped so the highlight always fits
     # within a single visual row. cursor-right N beyond the row would drag
@@ -662,7 +669,7 @@ def _tmux_highlight_text(text: str, *, first: bool = False,
             else:
                 subprocess.run(["tmux", "send-keys", "-t", pane, "-X", "cancel"],
                                capture_output=True)
-            return
+            return False
         subprocess.run(["tmux", "send-keys", "-t", pane, "-X",
                         "begin-selection"],
                        capture_output=True)
@@ -703,6 +710,67 @@ def _tmux_highlight_text(text: str, *, first: bool = False,
             except OSError:
                 pass
     except Exception:  # noqa: BLE001
+        return False
+    return True
+
+
+def _status_rows(session: str) -> Optional[int]:
+    """How many status rows this session shows.
+
+    tmux spells one row `on` and none `off`; only 2..5 are numbers. Reading it
+    back as an int alone would make "one row" unrepresentable, and setting it
+    to `1` is an error ("unknown value: 1"), not a synonym.
+    """
+    try:
+        r = subprocess.run(["tmux", "show", "-t", session, "-v", "status"],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            return None
+        raw = r.stdout.strip()
+        return {"on": 1, "off": 0}.get(raw, None) or int(raw)
+    except (OSError, ValueError):
+        return None
+
+
+def _set_follow_rows(show: bool, pane: str = "") -> None:
+    """Give the spoken sentence its own status rows — or take them back.
+
+    The row costs nothing while it sits there empty, but it isn't free: it is a
+    row of the terminal. And most of the time it is redundant, because the
+    words are on screen already — either in the pane's scrollback or in the
+    app's own view. So the rows appear only when the sentence cannot be seen,
+    and go away when the reply ends.
+
+    Per session, not globally: another session's panes should not resize
+    because this one is speaking. `MEDIA_FOLLOW_ROWS` (default 2) is how many
+    rows the sentence gets; 0 turns the whole mechanism off and leaves the
+    status bar however you configured it.
+    """
+    rows = int(os.environ.get("MEDIA_FOLLOW_ROWS", "2") or 0)
+    if rows <= 0:
+        return
+    if not os.environ.get("TMUX"):
+        return
+    try:
+        target = pane or os.environ.get("TMUX_PANE") or ""
+        if not target:
+            return
+        r = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", target, "#{session_name}"],
+            capture_output=True, text=True)
+        session = r.stdout.strip()
+        if r.returncode != 0 or not session:
+            return
+        want = 1 + rows if show else 1
+        # Only when it differs: every set redraws the client, and a redraw of
+        # the status bar re-runs the very commands that render it.
+        if _status_rows(session) == want:
+            return
+        subprocess.run(
+            ["tmux", "set", "-t", session, "status",
+             str(want) if want > 1 else "on"],   # `1` is an error, `on` is one
+            capture_output=True)
+    except OSError:
         pass
 
 
@@ -790,9 +858,11 @@ class _HighlightScheduler:
     lets the natural tail fire before the (often short-lived) process exits.
     """
 
-    def __init__(self, delay_s: float, enabled: bool):
+    def __init__(self, delay_s: float, enabled: bool, pane: str = ""):
         self._delay = delay_s
         self._enabled = enabled
+        self._pane = pane or os.environ.get("TMUX_PANE") or ""
+        self._rows_shown = False
         self._lock = threading.Lock()
         self._timers: list[threading.Timer] = []
         self._dbg = bool(os.environ.get("MEDIA_HL_DEBUG"))
@@ -810,6 +880,26 @@ class _HighlightScheduler:
         with self._lock:
             self._timers = [t for t in self._timers if t.is_alive()]
 
+    def _seen(self, found: bool) -> None:
+        """Latch the status rows open the first time a sentence can't be found.
+
+        Per-sentence flipping would be the obvious rule and the wrong one: the
+        rows change the session's status height, so every flip resizes the
+        panes and makes a fullscreen TUI redraw. One reply that alternated
+        visible/not-visible sentences would strobe. Once the reader has been
+        sent to the rows, they stay for the rest of the reply.
+        """
+        if found or self._rows_shown:
+            return
+        self._rows_shown = True
+        _set_follow_rows(True, self._pane)
+
+    def done(self) -> None:
+        """Give the rows back at the end of a reply."""
+        if self._rows_shown:
+            self._rows_shown = False
+            _set_follow_rows(False, self._pane)
+
     def show(self, sentence: str, *, first: bool, force: bool) -> None:
         if not self._enabled:
             return
@@ -817,7 +907,7 @@ class _HighlightScheduler:
             self.cancel_pending()
             if self._dbg:
                 self._log(f"SHOW-NOW force={force} delay={self._delay} {sentence[:30]!r}")
-            _tmux_highlight_text(sentence, first=first, force=force)
+            self._seen(_tmux_highlight_text(sentence, first=first, force=force))
             return
         self._reap()
         if self._dbg:
@@ -826,7 +916,7 @@ class _HighlightScheduler:
         def _fire():
             if self._dbg:
                 self._log(f"FIRE {sentence[:30]!r}")
-            _tmux_highlight_text(sentence, first=first)
+            self._seen(_tmux_highlight_text(sentence, first=first))
 
         t = threading.Timer(self._delay, _fire)
         t.daemon = True
@@ -845,6 +935,7 @@ class _HighlightScheduler:
             timers = list(self._timers)
         for t in timers:
             t.join()
+        self.done()
 
 
 def _highlight_wanted(event: Event, pane: str) -> bool:
@@ -980,7 +1071,8 @@ class _SentenceFollower:
             self._thread.join(timeout=timeout)
 
     def _run(self, offsets: list[float], play_started_at: float) -> None:
-        highlighter = _HighlightScheduler(self.delay_s, self.highlight)
+        highlighter = _HighlightScheduler(self.delay_s, self.highlight,
+                                          self.pane)
         if self.highlight and self.pane:
             # _tmux_highlight_text reads the pane from the environment and needs
             # a truthy TMUX; this thread's process may be the detached playback
@@ -2777,7 +2869,8 @@ def submit_event(event: Event,
             [p for _, p in clip_data], target)
         played_any = False
         n = len(clip_data)
-        highlighter = _HighlightScheduler(_highlight_delay_s, do_highlight)
+        highlighter = _HighlightScheduler(_highlight_delay_s, do_highlight,
+                                          source_pane)
         # Drop any stale jump request left by a previous response.
         _nav_flag_path(target).unlink(missing_ok=True)
         try:
@@ -3253,7 +3346,8 @@ def submit_stream(sentences,
     else:
         before_called = False
         mute_watcher = _MuteDuckWatcher(sink, target, coordinator)
-        highlighter = _HighlightScheduler(_highlight_delay_s, do_highlight)
+        highlighter = _HighlightScheduler(_highlight_delay_s, do_highlight,
+                                          source_pane)
         # Serialize playback across sessions (rendering keeps streaming in
         # parallel via the producer thread while we wait our turn for the broker).
         playback_lock = _SpeechPlaybackLock()

@@ -1604,9 +1604,25 @@ def cmd_current_sentence(a) -> int:
         return 0
     sentence = " ".join(sentence.split())  # collapse whitespace
     width = getattr(a, "width", 80) or 80
-    if len(sentence) > width:
-        sentence = sentence[: max(0, width - 1)].rstrip() + "…"
-    print(f"♪ {sentence}")
+    row = getattr(a, "row", None)
+    if row is None:
+        if len(sentence) > width:
+            sentence = sentence[: max(0, width - 1)].rstrip() + "…"
+        print(f"♪ {sentence}")
+        return 0
+    # One status row per --row: a sentence longer than the bar gets wrapped
+    # across as many as the caller has laid out, rather than truncated. The
+    # last row it fits in is where the truncation goes, if any.
+    import textwrap
+    lines = textwrap.wrap(f"♪ {sentence}", width=max(8, width),
+                          subsequent_indent="  ") or [""]
+    if row >= len(lines):
+        return 0
+    if row == getattr(a, "rows", 0) - 1 and len(lines) > row + 1:
+        line = lines[row]
+        print(line[: max(0, width - 1)].rstrip() + "…")
+        return 0
+    print(lines[row])
     return 0
 
 
@@ -5146,6 +5162,13 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument("--follow", action="store_true",
                     help="the follow-along row: silent unless follow-along is "
                          "on (popup `v`), and says so when nothing is playing")
+    s.add_argument("--row", type=int, default=None,
+                    help="print only this wrapped line (0-based) — one status "
+                         "row per --row, so a long sentence wraps rather than "
+                         "truncating")
+    s.add_argument("--rows", type=int, default=0,
+                    help="how many rows the caller laid out, so the last one "
+                         "can end with an ellipsis")
     s.set_defaults(func=cmd_current_sentence)
 
     s = sub.add_parser("follow",
