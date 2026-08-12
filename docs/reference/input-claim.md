@@ -39,7 +39,7 @@ Automate mic-detect flow already fires on exactly that edge. It POSTs a claim
 to red5, re-asserting every ~15s:
 
 ```
-POST http://100.103.43.93:8675/input-claim
+POST http://red5:8675/input-claim
 Content-Type: application/json
 
 {"owner":"cece","ttl_s":45,"source":"phone-mic"}
@@ -96,7 +96,7 @@ quo; one that fails closed leaves converse permanently unable to arm.
 ## Watching it
 
 ```bash
-watch -n1 'curl -s http://100.103.43.93:8675/input-claim; \
+watch -n1 'curl -s http://red5:8675/input-claim; \
            ls ~/.local/state/agent-media/speech-hold.d/'
 ```
 
