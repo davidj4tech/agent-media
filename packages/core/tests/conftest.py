@@ -41,6 +41,32 @@ def _no_remote_say(monkeypatch):
         monkeypatch.delenv(key, raising=False)
 
 
+# Keep test transitions out of the production floor history.
+#
+# Same hazard as the fixtures in this file — real config, real side effect —
+# but the damage lands somewhere durable rather than on the developer's desk.
+# Every speech-hold and every armed rendezvous in this suite spawns
+# `relay-floor.sh publish`, so a run deposits rows like `speech/pane7 hold 120`
+# and `input/sam arm 5` into the live D1 table, permanently and
+# indistinguishably from real ones. That table exists for exactly one question
+# — whether the per-owner holds have started colliding now that there are three
+# of us — and it was added (tmux-relay migrations/0008) precisely because the
+# local markers are reaped and that question had no answer on 2026-08-11. A
+# history salted with fixture collisions cannot answer it either, which makes
+# the mirror worse than useless: it looks authoritative while lying.
+#
+# Set at import rather than by an autouse monkeypatch fixture, which is what
+# this was first written as and which leaked. `_armed()` in the rendezvous
+# tests runs the `with Rendezvous(...)` block on a thread, and the tests that
+# assert a *refusal* never join it — so `__exit__`, and its `_mirror("disarm")`,
+# can fire after teardown has already restored the variable. That race let
+# roughly one row per full run through: rare enough to look like it worked.
+# A process-wide assignment has no restore window for the thread to land in.
+#
+# A test that wants to assert on the mirror should monkeypatch it back on.
+os.environ["MEDIA_FLOOR_MIRROR"] = "0"
+
+
 @pytest.fixture(autouse=True)
 def _no_follow_pane(monkeypatch):
     """Keep the suite out of the developer's terminal.
