@@ -29,10 +29,12 @@ import time
 import urllib.request
 
 DEFAULT_MIN_CHARS = 320
-# Long enough for an svg *figure* (the purposeful medium, ~40-75s via the
-# gateway) — the author chose to hold for full illustrative effect; the
-# timeout is the safety net, not the plan.
+# Only the floor, for a host that configures no image budget at all. The real
+# value is derived from the generator's own deadline — see reveal_timeout().
 DEFAULT_REVEAL_TIMEOUT = 75
+# Added to the generator's budget to cover render -> push -> /last visibility.
+# Measured 2026-08-12: a figure reported by /last 6s after the wait gave up.
+REVEAL_MARGIN_S = 20
 CAPTION_MAX = 140
 
 # Inline markers an author writes into a reply to make its visual
@@ -122,13 +124,45 @@ def spawn_visual(raw_reply: str, spoken_text: str, session: str = "",
 
 # --- the reveal wait: speech holds until the canvas shows the image -----------
 
-def reveal_timeout() -> int:
+def _env_int(name: str) -> int:
     try:
-        v = int(os.environ.get("MEDIA_VISUAL_REVEAL_TIMEOUT", "")
-                or DEFAULT_REVEAL_TIMEOUT)
-        return v if v > 0 else DEFAULT_REVEAL_TIMEOUT
+        return int(os.environ.get(name, "") or 0)
     except ValueError:
-        return DEFAULT_REVEAL_TIMEOUT
+        return 0
+
+
+def reveal_timeout() -> int:
+    """How long speech holds for the picture.
+
+    An explicit MEDIA_VISUAL_REVEAL_TIMEOUT wins. Otherwise this is DERIVED
+    from the generator's own deadline, because the two numbers are ordered —
+    a waiter that gives up while the generator is still legitimately working
+    speaks over a picture that was about to arrive, which is the one outcome
+    `reveal` exists to prevent.
+
+    They were independent constants until 2026-08-12, and had drifted exactly
+    that way: MEDIA_VISUAL_SVG_TIMEOUT allowed the generator 240s while this
+    gave up at 75. A flowchart took 99s — well inside the generator's budget —
+    so the hold expired and the reply resumed 6 seconds before the image
+    appeared. Nothing logged an error; the mechanism looked like it had simply
+    not worked.
+
+    Deriving rather than hard-coding a bigger number means tuning the generator
+    retunes the waiter, so the pair cannot silently drift apart again.
+
+    The cost is worst-case dead air: with no image ever arriving, speech now
+    pauses for the generator's full budget plus the margin. That is the right
+    trade for a marker whose entire contract is "wait" — and a host that wants
+    a tighter bound sets MEDIA_VISUAL_REVEAL_TIMEOUT explicitly.
+    """
+    explicit = _env_int("MEDIA_VISUAL_REVEAL_TIMEOUT")
+    if explicit > 0:
+        return explicit
+    for var in ("MEDIA_VISUAL_SVG_TIMEOUT", "MEDIA_VISUAL_TIMEOUT"):
+        budget = _env_int(var)
+        if budget > 0:
+            return budget + REVEAL_MARGIN_S
+    return DEFAULT_REVEAL_TIMEOUT
 
 
 def _canvas_last_url() -> str:

@@ -203,3 +203,62 @@ def test_ambient_reply_has_no_visual_flag(tmp_path, monkeypatch):
                     "transcript_path": str(tmp_path / "t.jsonl"),
                     "session_id": "s1"})
     assert submitted[0].metadata.get("visual") is None
+
+
+# --- the reveal timeout is derived from the generator's budget ---------------
+#
+# These two numbers are ordered: a waiter that expires while the generator is
+# still working speaks over a picture that was about to arrive. They were
+# independent until 2026-08-12 and had drifted to 240 vs 75.
+
+
+def _clear(monkeypatch):
+    for v in ("MEDIA_VISUAL_REVEAL_TIMEOUT", "MEDIA_VISUAL_SVG_TIMEOUT",
+              "MEDIA_VISUAL_TIMEOUT"):
+        monkeypatch.delenv(v, raising=False)
+
+
+def test_reveal_timeout_falls_back_when_nothing_is_configured(monkeypatch):
+    _clear(monkeypatch)
+    assert _visual.reveal_timeout() == _visual.DEFAULT_REVEAL_TIMEOUT
+
+
+def test_reveal_timeout_outlasts_the_svg_generator(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.setenv("MEDIA_VISUAL_SVG_TIMEOUT", "240")
+    assert _visual.reveal_timeout() == 240 + _visual.REVEAL_MARGIN_S
+    assert _visual.reveal_timeout() > 240
+
+
+def test_reveal_timeout_falls_back_to_the_image_budget(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.setenv("MEDIA_VISUAL_TIMEOUT", "90")
+    assert _visual.reveal_timeout() == 90 + _visual.REVEAL_MARGIN_S
+
+
+def test_svg_budget_wins_over_the_generic_one(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.setenv("MEDIA_VISUAL_TIMEOUT", "90")
+    monkeypatch.setenv("MEDIA_VISUAL_SVG_TIMEOUT", "240")
+    assert _visual.reveal_timeout() == 240 + _visual.REVEAL_MARGIN_S
+
+
+def test_an_explicit_override_still_wins(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.setenv("MEDIA_VISUAL_SVG_TIMEOUT", "240")
+    monkeypatch.setenv("MEDIA_VISUAL_REVEAL_TIMEOUT", "30")
+    assert _visual.reveal_timeout() == 30
+
+
+def test_junk_values_do_not_crash_the_hold(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.setenv("MEDIA_VISUAL_REVEAL_TIMEOUT", "soon")
+    monkeypatch.setenv("MEDIA_VISUAL_SVG_TIMEOUT", "also-soon")
+    assert _visual.reveal_timeout() == _visual.DEFAULT_REVEAL_TIMEOUT
+
+
+def test_the_2026_08_12_regression(monkeypatch):
+    """99s of generation inside a 240s budget must not be spoken over."""
+    _clear(monkeypatch)
+    monkeypatch.setenv("MEDIA_VISUAL_SVG_TIMEOUT", "240")
+    assert _visual.reveal_timeout() > 99
