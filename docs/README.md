@@ -27,6 +27,7 @@ than maintained by hand.
 - [extensions](reference/extensions.md) — extending agent-media
 - [hermes-voice](reference/hermes-voice.md)
 - [music-local-and-snapcast](reference/music-local-and-snapcast.md)
+- [input-claim](reference/input-claim.md) — who owns David's next utterance when the owner is off-host (cece live)
 - [restructure](reference/restructure.md) — the package layout and how it got there
 - [rooms-unit-ownership](reference/rooms-unit-ownership.md)
 - [sillytavern](reference/sillytavern.md)

@@ -33,6 +33,8 @@ import socket
 import time
 from pathlib import Path
 
+from . import input_claim
+
 
 log = logging.getLogger(__name__)
 
@@ -112,6 +114,16 @@ class Busy(RuntimeError):
     """Another converse call already holds the rendezvous."""
 
 
+class Claimed(Busy):
+    """Someone off-host owns David's input — a live cece session, typically.
+
+    A subclass of Busy on purpose: every existing `except Busy` handler already
+    does the right thing (don't ask, back off), so this stays compatible, while
+    callers that want to say something better than "busy" can catch it
+    specifically.
+    """
+
+
 def _is_live(path: Path) -> bool:
     """True if something is actually accepting on `path` (vs. a stale inode)."""
     try:
@@ -137,6 +149,23 @@ class Rendezvous:
         self._srv: socket.socket | None = None
 
     def __enter__(self) -> "Rendezvous":
+        # Refuse before binding anything. A live cece session owns the phone
+        # mic, so David's words are going to her acoustically and will never
+        # reach offer() — arming here would claim an utterance that cannot
+        # arrive, block the next asker for the full timeout, and let sam speak
+        # a question into the middle of someone else's conversation.
+        #
+        # An exclusion rather than routing, because there is nothing to route:
+        # verified 2026-08-12 that HA Assist has no wake word and no
+        # assist_satellite entity, so it cannot hear anything unless push-to-
+        # talk is physically pressed. If that ever changes this has to become
+        # real routing, and this comment is the trip-wire.
+        held = input_claim.held() if input_claim.enabled() else None
+        if held is not None:
+            raise Claimed(
+                f"{held['owner']} owns David's input "
+                f"(claimed {held['age_s']:.0f}s ago via "
+                f"{held.get('source') or 'unknown'})")
         path = socket_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.exists():

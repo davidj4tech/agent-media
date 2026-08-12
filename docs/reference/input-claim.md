@@ -1,0 +1,127 @@
+# The input claim — who owns David's next utterance
+
+`converse` decides that locally and well: the asker holds a unix socket open
+for the life of its question, so a dead asker releases the claim by dying. See
+`capture/rendezvous.py`.
+
+This page is about the case that mechanism cannot cover. **Cece is Claude live
+in the Claude Android app** — she runs in Anthropic's cloud, and the phone is
+only her microphone. She has no process on red5 to hold a socket, so the one
+thing that makes the local rendezvous safe has nothing to attach to.
+
+## It is an exclusion, not a delivery channel
+
+Nothing is routed to cece. While she is live she hears David *acoustically*,
+through her own app, and his words never enter this system at all.
+
+Verified 2026-08-12: HA Assist has no wake word (`wake_word_entity` is null on
+all three pipelines) and no `assist_satellite` entity, so it cannot hear
+anything unless Companion push-to-talk is physically pressed. A live cece
+session additionally owns the mic, so push-to-talk could not capture even if
+pressed. Two independent locks.
+
+So the claim's only job is to stop *other* participants stepping on the
+conversation:
+
+- `converse` must not arm — it would claim an utterance that cannot arrive,
+  block the next asker for the full timeout, and let sam speak a question into
+  the middle of someone else's conversation.
+- speech must hold — otherwise sam talks over her.
+
+**If a wake word or an `assist_satellite` is ever added to HA, the first lock
+is gone and this has to become real routing.** That is the trip-wire; there is
+a matching comment in `Rendezvous.__enter__`.
+
+## The signal comes from the mic, over the tailnet
+
+A live session owns the phone's mic, and the phone can see that locally — the
+Automate mic-detect flow already fires on exactly that edge. It POSTs a claim
+to red5, re-asserting every ~15s:
+
+```
+POST http://100.103.43.93:8675/input-claim
+Content-Type: application/json
+
+{"owner":"cece","ttl_s":45,"source":"phone-mic"}
+```
+
+The flow itself is documented in **dotfiles `termux/automate/README.md`**,
+which also holds the `.flo` export and the rebuild instructions.
+
+Landing on red5: `speech-state-server.py` writes `capture/input_claim.py`'s
+state file and sets a `media speech-hold` marker owned by `cece`. `converse`
+then raises `Claimed` (a `Busy` subclass, so existing handlers back off
+correctly) and speech is held by the marker — the existing authority, not a
+second gate.
+
+### Why the tailnet and not the relay
+
+Measured 2026-08-12, p8a → red5: **~0.5s**. The same claim through tmux-relay
+takes 5–10s, because `d1-runner` polls every 5s. That window is exactly when
+sam speaks over the conversation, so it is the defect being fixed — routing the
+claim through Cloudflare would preserve it.
+
+This is also why the claim is not decided in D1 at all. See tmux-relay
+`migrations/0008_floor.sql`: the D1 floor table is a *mirror*, written after the
+fact and never read to decide anything, because a network-gated floor must
+choose between failing open (authority still local, nothing gained) and failing
+closed (a Cloudflare blip silences the house).
+
+## Stopping the re-assert is the release
+
+There is no release call in the normal path, and adding one would be a mistake.
+A release is a thing that can fail — and a floor held by a holder that died
+deadlocks everyone forever. Silence cannot fail.
+
+`DELETE /input-claim?owner=cece` exists only for manual recovery, and
+`MEDIA_INPUT_CLAIM=0` disables the exclusion entirely if something is
+re-asserting a claim you cannot stop from here.
+
+## The numbers
+
+| | value | why |
+|---|---|---|
+| re-assert interval | 15s | frequent enough that the claim never lapses mid-session |
+| `ttl_s` | 45s | three intervals — two posts can fail before the floor frees |
+| speech hold | `ttl × 1.5` | rides past the claim so a late re-assert opens no gap |
+
+The ratio is the point, not the absolute values: the TTL must exceed the
+re-assert interval by enough to absorb a Wi-Fi blip, and stay short enough that
+a vanished phone frees the floor before anyone notices it is stuck.
+
+Every unclear path reads as *unclaimed* — missing file, unparseable JSON, no
+owner, expired. A claim that fails open costs an overlap, which is the status
+quo; one that fails closed leaves converse permanently unable to arm.
+
+## Watching it
+
+```bash
+watch -n1 'curl -s http://100.103.43.93:8675/input-claim; \
+           ls ~/.local/state/agent-media/speech-hold.d/'
+```
+
+With a live session you should see `"held": true`, an `age_s` sawtoothing
+between 0 and 15, and a `cece` marker. Both clear within 45s of the session
+ending. If the claim holds but speech still talks over you, check the marker —
+that is the actual gate; the JSON only feeds it.
+
+The flow's own health is covered by call-guard's `last-external` heartbeat and
+`media selfcheck` / `doctor`; a dead trigger and a quiet one are otherwise the
+same observation, which is how barge-in stayed broken for two days in August
+2026 while every service reported healthy.
+
+## Not built
+
+**Regime B** — cece wanting to ask David something while *not* live. That is a
+true remote asker: no socket to hold, no hot mic to prove she is there. It
+needs an explicit lease, and it is bounded (a question has a natural timeout).
+Nothing here covers it.
+
+## Related
+
+- `capture/input_claim.py` — the landing pad
+- `capture/rendezvous.py` — the `Claimed` exclusion
+- `call_guard.py` — the other consumer of the same mic signal
+- dotfiles `termux/automate/README.md` — the flow, the `.flo`, the flag contract
+- dotfiles `packages/voice/.local/bin/speech-state-server.py` — the endpoint
+- tmux-relay `migrations/0008_floor.sql` — why none of this is decided in D1
