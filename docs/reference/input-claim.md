@@ -124,12 +124,24 @@ The flow's own health is covered by call-guard's `last-external` heartbeat and
 same observation, which is how barge-in stayed broken for two days in August
 2026 while every service reported healthy.
 
-## Not built
+## Regime B lives elsewhere
 
-**Regime B** — cece wanting to ask David something while *not* live. That is a
-true remote asker: no socket to hold, no hot mic to prove she is there. It
-needs an explicit lease, and it is bounded (a question has a natural timeout).
-Nothing here covers it.
+**Cece wanting to ask David something while *not* live** is a different
+problem, and nothing on this page addresses it. A true remote asker has no
+socket to hold and no hot mic to prove she is there, so liveness cannot be
+inferred — it has to be asserted, and bounded, which is what a lease is for.
+
+Built 2026-08-13 in tmux-relay as a one-row `lease` table
+(`migrations/0009_lease.sql`, `relay-lease.sh`). It does **not** reach into
+anything on this page. `relay-lease-watch.sh` polls the row on red5 and, while
+a lease is live, sets an ordinary `speech-hold` marker with the owner
+`lease-<holder>` — so from this side a cold asker is indistinguishable from any
+other holder, and the gate is the same marker file it always was. An absent,
+expired or unreadable lease all mean the same thing: no marker, speech plays.
+
+Do not use it for a live cece. She is already excluded by the mic flag
+documented above, in about half a second over the tailnet; a lease would be a
+slower, weaker version of a signal that already exists.
 
 ## Related
 
@@ -139,3 +151,5 @@ Nothing here covers it.
 - dotfiles `termux/automate/README.md` — the flow, the `.flo`, the flag contract
 - dotfiles `packages/voice/.local/bin/speech-state-server.py` — the endpoint
 - tmux-relay `migrations/0008_floor.sql` — why none of this is decided in D1
+- tmux-relay `migrations/0009_lease.sql` — Regime B, and why a load-bearing
+  table is admissible there without contradicting 0008
