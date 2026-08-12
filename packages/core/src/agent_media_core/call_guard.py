@@ -90,6 +90,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 from pathlib import Path
 
 from ._paths import state_dir
@@ -151,6 +152,16 @@ _FLAG_ADVERT_NAME = "call-guard.flag-path"
 # every service reported healthy. Touching this on each external hold turns a
 # silent failure into an observable one: `media selfcheck` reports how long it
 # has been quiet, and doctor complains once that exceeds a day.
+# The input claim. Interval well under the TTL so two posts can be lost before
+# the floor frees itself; see ClaimHeartbeat for why the ratio is the point.
+_DEFAULT_CLAIM_OWNER = "cece"
+_DEFAULT_CLAIM_TTL_S = 45.0
+_DEFAULT_CLAIM_INTERVAL_S = 15.0
+# Floor on the re-assert interval, so a misconfigured 0 becomes "once a second"
+# rather than a spin against the endpoint. A module constant because the tests
+# need sub-second heartbeats to observe several in a bounded run.
+_CLAIM_MIN_INTERVAL_S = 1.0
+
 _LAST_HOLD_NAME = "call-guard.last-hold"
 # ...and the same for holds nobody typed, which is the only kind that proves
 # the trigger still fires. See `note_external_hold`.
@@ -231,6 +242,16 @@ class Config:
         self.hold_flag = os.environ.get(
             "MEDIA_CALL_GUARD_HOLD_FLAG",
             str(state_dir() / _DEFAULT_HOLD_FLAG_NAME))
+        # The input claim (see ClaimHeartbeat). Off unless a URL is set, which
+        # is the whole gate: a host with nothing to tell simply configures
+        # nothing, and every other guard behaviour is untouched either way.
+        self.claim_url = os.environ.get("MEDIA_INPUT_CLAIM_URL", "").strip()
+        self.claim_owner = os.environ.get(
+            "MEDIA_INPUT_CLAIM_OWNER", _DEFAULT_CLAIM_OWNER).strip()
+        self.claim_ttl_s = _env_float(
+            "MEDIA_INPUT_CLAIM_TTL_S", _DEFAULT_CLAIM_TTL_S)
+        self.claim_interval_s = _env_float(
+            "MEDIA_INPUT_CLAIM_INTERVAL_S", _DEFAULT_CLAIM_INTERVAL_S)
         # Optional shell commands fired on the *call* rising/falling edge (not
         # the flag hold). Lets a phone's call detection reach across the tailnet
         # to duck another host's media.
@@ -507,6 +528,110 @@ class PauseHold:
         self._threads = []
         self._stop = None
         log.info("event-hold released")
+
+
+class ClaimHeartbeat:
+    """Tell red5 that David's input is spoken for, while the mic is hot.
+
+    A live Claude session (cece) runs in Anthropic's cloud with the phone as
+    its microphone, so it has no process on red5 to hold the converse
+    rendezvous socket open — the mechanism that makes a *local* claim safe has
+    nothing to attach to. The hot mic is the only observable proof the session
+    exists, and this daemon is already watching it: the same flag that drives
+    the duck drives the claim.
+
+    ## Why a heartbeat and not an engage/release pair
+
+    The obvious design is one POST on the rising edge and a DELETE on the
+    falling one. That is the shape of the flag contract right above, and it is
+    exactly the shape that needs `MEDIA_CALL_GUARD_HOLD_MAX_S` to survive,
+    because the *release* is the half that goes missing — this process is
+    killed, the phone drops off the tailnet, Android reaps the app.
+
+    A claim has no such half. It carries its own expiry and is re-asserted
+    while it remains true, so stopping IS the release, and a holder that dies
+    frees the floor by falling silent. There is no state left behind to expire
+    and no deadlock to engineer around, which is worth more here than the
+    handful of requests it costs.
+
+    The interval must stay well under the TTL — at the defaults, two posts can
+    be lost before the floor frees. The ratio is the point, not the numbers.
+
+    ## Failure is not this daemon's problem
+
+    Every error is logged and dropped. The claim is an optimisation on top of a
+    system that already worked: a missed one costs an overlap, which is the
+    status quo, while anything that let a failed POST disturb the duck would
+    trade a real feature for a speculative one. This runs on its own thread for
+    the same reason — the guard's loop is a fast local tick and must never wait
+    on a network round trip.
+    """
+
+    def __init__(self, url: str, owner: str, ttl_s: float,
+                 interval_s: float) -> None:
+        self._url = url
+        self._owner = owner
+        self._ttl_s = ttl_s
+        # A heartbeat at or above the TTL cannot keep a claim alive; clamp
+        # rather than refuse, since a misconfigured interval should degrade to
+        # "claims a bit more often" and never to "silently claims nothing".
+        ceiling = max(_CLAIM_MIN_INTERVAL_S, ttl_s / 2)
+        self._interval_s = max(_CLAIM_MIN_INTERVAL_S,
+                               min(interval_s, ceiling))
+        self._stop: threading.Event | None = None
+        self._thread: threading.Thread | None = None
+
+    @property
+    def active(self) -> bool:
+        return self._stop is not None
+
+    def _post_once(self) -> bool:
+        body = json.dumps({
+            "owner": self._owner,
+            "ttl_s": self._ttl_s,
+            "source": "phone-mic",
+        }).encode()
+        req = urllib.request.Request(
+            self._url, data=body, method="POST",
+            headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return 200 <= resp.status < 300
+        except Exception as e:  # noqa: BLE001 — see the class docstring
+            log.warning("input claim: %s", e)
+            return False
+
+    def _worker(self, stop: threading.Event) -> None:
+        # Post immediately: the first claim is the one that matters, because
+        # the collision it prevents happens at the start of the conversation.
+        while True:
+            self._post_once()
+            if stop.wait(self._interval_s):
+                return
+
+    def start(self) -> None:
+        if self.active or not self._url:
+            return
+        self._stop = threading.Event()
+        self._thread = threading.Thread(
+            target=self._worker, args=(self._stop,),
+            name="input-claim", daemon=True)
+        self._thread.start()
+        log.info("input claim: holding for %s (ttl %.0fs, every %.0fs)",
+                 self._owner, self._ttl_s, self._interval_s)
+
+    def stop(self) -> None:
+        if not self.active:
+            return
+        assert self._stop is not None
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+        self._thread = None
+        self._stop = None
+        # Deliberately no DELETE. The claim expires on its own, and a release
+        # that can fail is worse than one that cannot — see the class docstring.
+        log.info("input claim: released (expires within %.0fs)", self._ttl_s)
 
 
 def _flag_ttl(path: str) -> float | None:
@@ -810,6 +935,11 @@ def _run_call_hook(cmd: str, label: str, dry_run: bool = False) -> None:
 def _run_loop(cfg: Config, dry_run: bool = False) -> None:
     hold = PauseHold(cfg.pause_list)  # event-hold only guards the *paused* sockets
     flaghold = FlagHold(cfg.hold_engage_s, cfg.hold_release_s)
+    # A dry run must not tell red5 anything: an empty URL makes start() a
+    # no-op, so the claim goes inert without threading dry_run through it.
+    claim = ClaimHeartbeat("" if dry_run else cfg.claim_url, cfg.claim_owner,
+                           cfg.claim_ttl_s, cfg.claim_interval_s)
+    prev_flag = False        # last cycle's flag state, for the claim edges
     prev_want = False        # was anything holding the pause last cycle?
     prev_call = False        # last cycle's call state, for firing edge hooks
     call_in_episode = False  # did a call participate in the current hold?
@@ -833,6 +963,18 @@ def _run_loop(cfg: Config, dry_run: bool = False) -> None:
             _run_call_hook(cfg.call_release_cmd, "release", dry_run=dry_run)
         prev_call = call
         flag = flaghold.update(flag_present(cfg), _now())
+
+        # Claimed on the FLAG edge, not on `want`. Two reasons to keep this
+        # separate from the duck below: `want` is also raised by a call, and a
+        # call is not cece — claiming her name for it would tell red5 something
+        # untrue. And `want`'s rising edge only fires once, so a flag arriving
+        # during a call would never start the heartbeat at all.
+        if flag and not prev_flag:
+            claim.start()
+        elif prev_flag and not flag:
+            claim.stop()
+        prev_flag = flag
+
         want = call or flag
 
         if want:
@@ -872,6 +1014,7 @@ def _run_loop(cfg: Config, dry_run: bool = False) -> None:
         i += 1
         time.sleep(tick)
     hold.stop()  # on SIGTERM / shutdown
+    claim.stop()  # stop re-asserting; the claim itself ages out on red5
     unduck_sockets(cfg, ducked, dry_run=dry_run)  # don't leave music ducked
 
 

@@ -34,9 +34,16 @@ a matching comment in `Rendezvous.__enter__`.
 
 ## The signal comes from the mic, over the tailnet
 
-A live session owns the phone's mic, and the phone can see that locally — the
-Automate mic-detect flow already fires on exactly that edge. It POSTs a claim
-to red5, re-asserting every ~15s:
+A live session owns the phone's mic, and the phone can see that locally. Two
+pieces, split along what each is actually good at:
+
+- **Automate** toggles a flag file when the mic goes hot. It is the only thing
+  that can observe the mic, and that is all it does. Documented in dotfiles
+  `termux/automate/README.md`, which also holds the `.flo` and the rebuild
+  steps.
+- **`call_guard.ClaimHeartbeat`** watches that flag — it already polls it on a
+  fast tick to drive the duck — and re-asserts the claim every 15s for as long
+  as it is up:
 
 ```
 POST http://red5:8675/input-claim
@@ -45,8 +52,15 @@ Content-Type: application/json
 {"owner":"cece","ttl_s":45,"source":"phone-mic"}
 ```
 
-The flow itself is documented in **dotfiles `termux/automate/README.md`**,
-which also holds the `.flo` export and the rebuild instructions.
+The loop lives in Python rather than in the flow because the first version put
+it in Automate and it did not survive contact: a loop drawn in a GUI parked
+mid-cycle, claimed once and stopped, and could not be tested without dictating
+into a phone. Off unless `MEDIA_INPUT_CLAIM_URL` is set, which is the whole
+gate — every other call-guard behaviour is untouched either way.
+
+The claim is raised on the **flag** edge specifically, not on call-guard's
+combined hold. A phone call also engages that hold, and a call is not cece;
+claiming her name for one would tell red5 something untrue.
 
 Landing on red5: `speech-state-server.py` writes `capture/input_claim.py`'s
 state file and sets a `media speech-hold` marker owned by `cece`. `converse`
@@ -121,7 +135,7 @@ Nothing here covers it.
 
 - `capture/input_claim.py` — the landing pad
 - `capture/rendezvous.py` — the `Claimed` exclusion
-- `call_guard.py` — the other consumer of the same mic signal
+- `call_guard.py` — `ClaimHeartbeat`, and the duck that shares the same signal
 - dotfiles `termux/automate/README.md` — the flow, the `.flo`, the flag contract
 - dotfiles `packages/voice/.local/bin/speech-state-server.py` — the endpoint
 - tmux-relay `migrations/0008_floor.sql` — why none of this is decided in D1
