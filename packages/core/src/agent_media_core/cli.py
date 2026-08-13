@@ -28,6 +28,7 @@ from typing import Optional
 from ._paths import state_dir
 from .sinks import _mpv_ipc as ipc
 from .sinks.music import SinkMusic
+from .sinks.music_router import SinkMusicRouter
 from .sinks.speech import SinkSpeech, _broker_max_volume, _socket_for
 from .state import StateStore
 from .types import Event, Priority, Source, Target
@@ -1335,7 +1336,7 @@ def _ask_context(channel: str) -> str:
     ch = (channel or "speech").strip()
     try:
         if ch == "music":
-            m = SinkMusic()
+            m = SinkMusicRouter(SinkMusic())
             line, label, _ = _music_now_status(m, 20, hide_idle=True, bar=False)
             label = " ".join((label or "").split())
             clock = (line or "").lstrip("▶⏸○ ").strip()
@@ -3837,7 +3838,7 @@ def cmd_bookmark(a) -> int:
     range_end = bool(getattr(a, "range_end", False))
     slot = getattr(a, "slot", "") or ""
     if ch == "music":
-        return _music_bookmark(SinkMusic(), note, range_end=range_end, slot=slot)
+        return _music_bookmark(SinkMusicRouter(SinkMusic()), note, range_end=range_end, slot=slot)
     if ch == "book":
         return _book_bookmark(note, range_end=range_end, slot=slot)
     if ch == "speech":
@@ -3858,7 +3859,7 @@ def cmd_bookmarks(a) -> int:
 def cmd_music(a) -> int:
     from .route import coerce_content_type, detect_content_type
 
-    m = SinkMusic()
+    m = SinkMusicRouter(SinkMusic())
     if a.action == "status" and getattr(a, "json", False):
         # Structured read for a control surface. Kept ahead of the formatted
         # branch so the human status line is byte-for-byte unchanged when the
