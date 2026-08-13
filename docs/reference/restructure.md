@@ -93,6 +93,12 @@ Each phase leaves a working system. The order is dictated by "don't break the ca
 - Stand up `sink-music` thin wrapper over Mopidy (no behaviour change).
 - Retire `mpv-tts` + `mpv-voice` services. Existing watcher dispatches to
   `sink-speech` via new socket path.
+  **Done.** `mpv-tts` went in May 2026 (last playback 2026-05-09). `mpv-voice`
+  outlived it as an idle service until 2026-08-13 — silent since 2026-05-07,
+  but still holding one of the few OpenSL engines this device hands out, which
+  is engine starvation for the sinks that are actually playing. Removed from
+  `ansible/host_vars/p8a.yml`, dropped from call-guard's pause set, and its
+  stale sockets deleted.
 - `mpv-music` service stops (Mopidy was already doing the work).
 - Legacy drop-dir watcher continues forwarding to sink-speech.
 
