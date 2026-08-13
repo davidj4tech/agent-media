@@ -16,14 +16,22 @@ Design and rejected alternatives:
 
 ## Status — 2026-08-14: working on p8a
 
-Installed and driving mpv. **A press on the earbuds pauses Termux mpv**: the key
-travels earbud → AVRCP → our MediaSession → mpv IPC → mpv, and mpv's own log
-stops dead at the pause position. That is the path this whole design exists to
-open.
+Installed and driving mpv. **Pause, next and previous all reach Termux mpv from
+the earbuds**: the key travels earbud → AVRCP → our MediaSession → mpv IPC →
+mpv. Verified against a four-entry playlist — `playlist-pos` moved 0 → 1 → back
+on the presses, and mpv's log stops dead at the pause position. That is the path
+this whole design exists to open.
 
-Not yet verified: next/previous (the test material was one long mix, where a
-correct skip looks like nothing happening), car-display metadata from the real
-app rather than the spike, and the lock screen.
+Building a playlist to test with: the phone backend expands nothing —
+`play-local` passes `--no-playlist` to yt-dlp deliberately — so queue track by
+track with `media music play <uri> --where phone --add`. Expect the odd 403 and
+the occasional fetch past the 120 s default (`MEDIA_MUSIC_LOCAL_FETCH_TIMEOUT`);
+both cleared on a retry. Unloaded queue entries show as bare filenames because
+mpv fills a playlist entry's title only once it loads the file — the metadata is
+correct by the time it plays.
+
+Not yet verified: car-display metadata from the real app rather than the spike,
+and the lock screen.
 
 Uninstall the spike before testing this. Both publish a session, and the spike
 holds its silent track permanently, so it competes for the same
