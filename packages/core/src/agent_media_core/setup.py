@@ -595,6 +595,13 @@ def cmd_install_services(args: argparse.Namespace) -> int:
         return 1
     names = args.services or service_template_names()
 
+    # Before the backend dispatch: both backends read agent-media.env, and a
+    # never-overwrites merge is safe to repeat on every run.
+    added = _merge_env_defaults(_agent_media_env_path(), _MPV_ENV_DEFAULTS,
+                                dry_run=getattr(args, "dry_run", False))
+    if added:
+        print(f"media-setup: set {', '.join(added)} in agent-media.env")
+
     backend = _service_backend(getattr(args, "backend", None))
     if backend == "systemd":
         return _install_services_systemd(args, names)
@@ -669,6 +676,25 @@ WantedBy=default.target
 # PipeWire host: per-clip `audio-device=pulse/<sink>` routing needs the pulse
 # AO. (openal — the default that survives Termux BT route changes — does not
 # understand pulse device ids.)
+# Slow-endpoint breaker for a remote mpv bridge. Seeded on every install
+# because the units read ~/.config/agent-media.env directly -- load_env_file()
+# (and so defaults.env) is only reached by cli.py and the intake hooks, so a
+# value that lives solely in defaults.env never reaches a running service.
+#
+# The number has to clear the real round trip to the phone. red5 (Hetzner,
+# Germany) -> p8a (Melbourne) measures 891-1171ms per mpv IPC call; under a
+# threshold below that, every probe records slow and -- because the breaker is
+# persisted and shared across processes -- it stays armed forever. Phone-local
+# playout then goes invisible: SinkMusicLocal.loaded() swallows the error and
+# returns False, so the router never routes to the phone and music_now_playing
+# reports "target 'phone' not yet supported" mid-playback. Tighten per-host if
+# the phone is on the LAN.
+_MPV_ENV_DEFAULTS = (
+    ("MEDIA_MPV_SLOW_MS", "2500"),
+    ("MEDIA_MPV_BREAKER_S", "20"),
+)
+
+
 _ROOMS_ENV_DEFAULTS = (
     ("MEDIA_SPEECH_DEFAULT_TARGET", "rooms"),
     ("MEDIA_ROOMS_SINK", ROOMS_SPEECH_SINK),
