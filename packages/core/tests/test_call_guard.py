@@ -82,7 +82,7 @@ def test_sockets_default_to_state_dir(monkeypatch):
     monkeypatch.delenv("MEDIA_CALL_GUARD_SOCKETS", raising=False)
     cfg = call_guard.Config()
     names = {s.rsplit("/", 1)[-1] for s in cfg.sockets}
-    assert names == {"sink-speech.sock", "mpv-voice.sock", "mpv-music.sock"}
+    assert names == {"sink-speech.sock", "mpv-music.sock"}
 
 
 def test_sockets_overridable(monkeypatch):

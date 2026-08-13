@@ -117,10 +117,16 @@ _DEFAULT_PACKAGES = "com.android.server.telecom,com.google.android.dialer"
 # wedge the detector (and hold audio paused).
 _DEFAULT_EXCLUDE_RE = r"(?i)missed|voicemail"
 
-# The three phone-local mpv IPC sockets to pause: speech, the local voice
-# broker, and the phone-local music bridge. Resolved under the agent-media state
-# dir unless MEDIA_CALL_GUARD_SOCKETS overrides with an explicit path list.
-_DEFAULT_SOCKET_NAMES = ("sink-speech.sock", "mpv-voice.sock", "mpv-music.sock")
+# The phone-local mpv IPC sockets to pause: speech and the phone-local music
+# bridge. Resolved under the agent-media state dir unless
+# MEDIA_CALL_GUARD_SOCKETS overrides with an explicit path list.
+#
+# mpv-voice.sock was dropped 2026-08-13. It was the pre-sink-speech voice
+# broker, superseded by the phase-2 cut-over (246fa60) and silent since
+# 2026-05-07 -- retiring it was already on the plan in
+# docs/reference/restructure.md. Probing a socket nothing plays to only cost a
+# pointless connect on every call, and kept a dead lane looking load-bearing.
+_DEFAULT_SOCKET_NAMES = ("sink-speech.sock", "mpv-music.sock")
 
 # Sockets to DUCK (lower volume) instead of pausing while a hold is active — the
 # phone-local music broker by default. Ducking rather than pausing means music
