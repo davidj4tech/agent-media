@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="net.agentmedia.sessionspike">
+
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application
+        android:label="MediaSession Spike"
+        android:allowBackup="false">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="MediaSession Spike">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".SpikeService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
+
+        <!-- Run 2: the explicit media-button path run 1 lacked. Must be
+             exported so the system can deliver ACTION_MEDIA_BUTTON to it. -->
+        <receiver
+            android:name=".SpikeButtonReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
+            </intent-filter>
+        </receiver>
+
+        <!-- A NotificationListenerService lived here to unlock
+             MediaSessionManager.getActiveSessions(). Google Play Protect HARD
+             BLOCKS sideloaded apps that declare one ("app can request access to
+             sensitive data"), with no install-anyway option, so session
+             enumeration cannot ride along with the experiment. See
+             docs/proposals/2026-08-13-mediasession-spike.md. -->
+    </application>
+</manifest>
