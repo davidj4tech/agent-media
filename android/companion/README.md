@@ -268,13 +268,25 @@ learned and what the transport fix depends on.
 | Title | the track | `Sam` |
 | Artist | `agent-media` | the track |
 | Duration | the track's | unknown |
-| PlaybackState, position, transport | the music mpv | **still the music mpv** |
+| PlaybackState | the music mpv | the speech mpv |
+| Play / pause / stop | the music mpv | the speech mpv |
+| Next / previous / seek | the music mpv | **not offered** — a clip has no next |
 
-Only the metadata moves. The `PlaybackState` we publish is what the framework
-resolves a `PLAY_PAUSE` toggle from, and answering that question about a
-two-second clip is exactly the class of bug `3519172` fixed — so state, position
-and every transport callback stay with music. The duration is dropped while
-speech is in front because the position beside it is still the music track's.
+**The card describes one channel, and its buttons drive that same channel.**
+Until 2026-08-15 the `PlaybackState` and every transport callback stayed with
+music, on the reasoning that resolving a `PLAY_PAUSE` toggle against a
+two-second clip is the class of bug `3519172` fixed. That was half right and the
+wrong half in practice: while Sam spoke with no track open, the card said
+`STOPPED` under a title that said `Sam`, its button showed a play triangle, and
+pressing it sent `pause=false` to an idle music mpv. David pressed it five times
+in a row at 08:22 before a `previous` finally loaded a track. A control labelled
+with one channel and wired to another is worse than a stale toggle.
+
+Pausing Sam mid-reply is also a thing to want, and it is the action the button
+most obviously offers while he is the one talking. Next, previous and seek are
+withdrawn rather than pointed at the music underneath — a clip has none of them.
+The duration is still dropped while speech is in front, because the position
+beside it is not a clip position we track.
 
 - **The clip's own title is unusable.** sink-speech plays rendered files, so
   mpv's `media-title` reads `remote-20260814T190922-18480.mp3` — checked against

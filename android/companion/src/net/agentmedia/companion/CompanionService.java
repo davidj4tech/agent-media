@@ -354,7 +354,12 @@ public class CompanionService extends Service {
         // would win it back is exactly the play button we would no longer
         // receive. It stops when mpv goes idle, which is the case that would
         // otherwise cost battery all day.
-        if (state.loaded()) startSilence(); else stopSilence();
+        // It follows speech too, for the reason the focus claim does: while Sam
+        // is the only thing audible, dropping it would drop our card out of the
+        // shade's media player and hand the addressed-player slot away in the
+        // middle of a reply.
+        if (state.loaded() || FrontChannel.speechInFront(speechState)) startSilence();
+        else stopSilence();
 
         // Focus follows a related predicate, for a related reason: abandoning it
         // on our own pause would forfeit the GAIN that is supposed to tell us to
@@ -389,10 +394,8 @@ public class CompanionService extends Service {
             log("focus: abandoned (nothing open)");
         }
 
-        // The metadata — and only the metadata — follows whichever channel is in
-        // front, so the car display names Sam while Sam is what is audible.
-        // Everything below still describes the music mpv; see FrontChannel for
-        // why that separation is deliberate.
+        // The metadata follows whichever channel is in front, so the car display
+        // names Sam while Sam is what is audible.
         MediaMetadata.Builder md = new MediaMetadata.Builder()
                 .putString(MediaMetadata.METADATA_KEY_TITLE,
                            FrontChannel.title(state, speechState))
@@ -402,23 +405,44 @@ public class CompanionService extends Service {
                          FrontChannel.durationMs(state, speechState));
         session.setMetadata(md.build());
 
+        // And so does the PlaybackState, since 2026-08-15. It used to describe
+        // music alone, on the reasoning that resolving a PLAY_PAUSE toggle
+        // against a two-second clip is the class of bug 3519172 fixed. That was
+        // half right and the wrong half in practice: while Sam spoke with no
+        // track open, the card said STOPPED under a title that said "Sam", its
+        // button showed a play triangle, and pressing it sent pause=false to an
+        // idle music mpv — which does nothing. David pressed it five times in a
+        // row at 08:22 before a `previous` finally loaded a track.
+        //
+        // A control that describes one channel and is labelled with another is
+        // worse than a stale toggle. What the card says is now what is audible,
+        // and the transport below goes to the same place.
+        MpvState front = FrontChannel.speechInFront(speechState) ? speechState : state;
+
         int playbackState;
-        if (!state.connected) playbackState = PlaybackState.STATE_ERROR;
-        else if (!state.loaded()) playbackState = PlaybackState.STATE_STOPPED;
-        else if (state.paused) playbackState = PlaybackState.STATE_PAUSED;
+        if (!front.connected) playbackState = PlaybackState.STATE_ERROR;
+        else if (!front.loaded()) playbackState = PlaybackState.STATE_STOPPED;
+        else if (front.paused) playbackState = PlaybackState.STATE_PAUSED;
         else playbackState = PlaybackState.STATE_PLAYING;
 
+        // A spoken clip has no next, no previous and nothing to seek within, so
+        // the buttons that would claim otherwise are dropped while it is in
+        // front rather than pointed at the music underneath.
+        long actions = PlaybackState.ACTION_PLAY
+                | PlaybackState.ACTION_PAUSE
+                | PlaybackState.ACTION_PLAY_PAUSE
+                | PlaybackState.ACTION_STOP;
+        if (front == state) {
+            actions |= PlaybackState.ACTION_SKIP_TO_NEXT
+                    | PlaybackState.ACTION_SKIP_TO_PREVIOUS
+                    | PlaybackState.ACTION_SEEK_TO;
+        }
+
         PlaybackState.Builder pb = new PlaybackState.Builder()
-                .setActions(PlaybackState.ACTION_PLAY
-                        | PlaybackState.ACTION_PAUSE
-                        | PlaybackState.ACTION_PLAY_PAUSE
-                        | PlaybackState.ACTION_STOP
-                        | PlaybackState.ACTION_SKIP_TO_NEXT
-                        | PlaybackState.ACTION_SKIP_TO_PREVIOUS
-                        | PlaybackState.ACTION_SEEK_TO)
-                .setState(playbackState, state.positionMs(),
-                          state.playing() ? (float) state.speed : 0f);
-        if (!state.connected) {
+                .setActions(actions)
+                .setState(playbackState, front.positionMs(),
+                          front.playing() ? (float) front.speed : 0f);
+        if (!front.connected) {
             // The (code, message) overload is AndroidX-only; the platform
             // Builder takes a bare CharSequence.
             pb.setErrorMessage("mpv unreachable");
@@ -455,9 +479,11 @@ public class CompanionService extends Service {
         // The small icon reports *state*, so it has to follow it: a hardcoded
         // triangle sat there through every pause and read as the app being
         // stuck, which is a poor thing for a status indicator to say when the
-        // session underneath is correct.
-        int icon = state.playing() ? android.R.drawable.ic_media_play
-                                   : android.R.drawable.ic_media_pause;
+        // session underneath is correct. It reads the front channel for the same
+        // reason the card does — while Sam speaks, "playing" is about Sam.
+        boolean audible = FrontChannel.speechInFront(speechState) || state.playing();
+        int icon = audible ? android.R.drawable.ic_media_play
+                           : android.R.drawable.ic_media_pause;
 
         return new Notification.Builder(this, CHANNEL)
                 .setContentTitle(state.loaded() || FrontChannel.speechInFront(speechState)
@@ -492,7 +518,7 @@ public class CompanionService extends Service {
                 log("button: " + name + " (we report " + lastPushedState + ")");
             }
 
-            ButtonPolicy.Press press = ButtonPolicy.interpret(key.getKeyCode(), state);
+            ButtonPolicy.Press press = ButtonPolicy.interpret(key.getKeyCode(), frontState());
             if (press == ButtonPolicy.Press.DEFAULT) {
                 return super.onMediaButtonEvent(intent);
             }
@@ -500,26 +526,35 @@ public class CompanionService extends Service {
             // Consume both the down and the up, so the framework does not also
             // translate the key and undo what we just did.
             if (down) {
-                log("button: " + name + " read as " + press + " — mpv is "
-                        + (state.paused ? "paused" : "playing"));
+                log("button: " + name + " read as " + press + " — " + frontName()
+                        + " is " + (frontState().paused ? "paused" : "playing"));
                 if (press == ButtonPolicy.Press.PLAY) onPlay(); else onPause();
             }
             return true;
         }
 
+        /**
+         * Play and pause go to whichever channel the card is describing. They
+         * used to go to music unconditionally, which is how five presses of a
+         * play button under the title "Sam" set pause=false on an idle music mpv
+         * five times and did nothing at all (p8a, 2026-08-15 08:22).
+         *
+         * Pausing Sam mid-reply is a real thing to want, and it is the action
+         * the button most obviously offers while he is the one talking.
+         */
         @Override public void onPlay() {
-            log("transport: play");
-            ipc.setProperty("pause", Boolean.FALSE);
+            log("transport: play -> " + frontName());
+            frontIpc().setProperty("pause", Boolean.FALSE);
         }
 
         @Override public void onPause() {
-            log("transport: pause");
-            ipc.setProperty("pause", Boolean.TRUE);
+            log("transport: pause -> " + frontName());
+            frontIpc().setProperty("pause", Boolean.TRUE);
         }
 
         @Override public void onStop() {
-            log("transport: stop");
-            ipc.command("stop");
+            log("transport: stop -> " + frontName());
+            frontIpc().command("stop");
         }
 
         @Override public void onSkipToNext() {
@@ -537,6 +572,22 @@ public class CompanionService extends Service {
             ipc.setProperty("time-pos", positionMs / 1000.0);
         }
     };
+
+    // ---- the front channel, for the card and its buttons -----------------
+
+    /** The mpv the session is describing: speech while a clip runs, else music. */
+    private MpvState frontState() {
+        return FrontChannel.speechInFront(speechState) ? speechState : state;
+    }
+
+    /** The connection to it. Next/previous/seek deliberately never come here. */
+    private MpvIpc frontIpc() {
+        return FrontChannel.speechInFront(speechState) ? speechIpc : ipc;
+    }
+
+    private String frontName() {
+        return FrontChannel.name(speechState);
+    }
 
     // ---- the outside readout ---------------------------------------------
 

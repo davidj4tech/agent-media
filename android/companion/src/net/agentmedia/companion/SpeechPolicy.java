@@ -43,11 +43,14 @@ final class SpeechPolicy {
      * pause is left standing for a manual resume (popup Space, `media resume`),
      * which is exactly the policy `call_guard` chose for calls.
      *
-     * Thirty seconds because that is the length of interruption you can still
-     * hold a half-heard sentence across. A call is never inside it, and no
-     * navigation prompt is ever outside it.
+     * Two minutes, David's number (2026-08-15, raised from the thirty seconds
+     * this shipped with). It is the length of interruption you can still hold a
+     * half-heard sentence across, and it is generous on purpose: the failure it
+     * trades against is a sentence you wanted that never came back, which is
+     * worse than one you had stopped waiting for arriving late. A short call
+     * now falls inside it; the deadline below is what catches the rest.
      */
-    static final long RESUME_WINDOW_MS = 30000;
+    static final long RESUME_WINDOW_MS = 120000;   // 2 minutes
 
     /**
      * How long a pause of ours may stand before it is cleaned up.
