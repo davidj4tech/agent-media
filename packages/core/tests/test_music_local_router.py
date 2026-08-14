@@ -83,6 +83,59 @@ def test_router_falls_back_to_mopidy_when_phone_idle(monkeypatch):
     assert ("duck", 9) in mopidy.calls and not local.calls
 
 
+def test_unduck_follows_the_duck_not_the_live_backend(monkeypatch):
+    """The track ends mid-reply, so liveness flips between duck and restore.
+
+    Observed on p8a 2026-08-15: the duck at 07:42:51 went to the phone, the
+    track ended at 07:45:01, and the restore at 07:45:31 was routed to Mopidy.
+    The phone sat at 10 with nothing left that knew — the fourth cause of "the
+    music got quieter after Sam spoke and never came back".
+    """
+    monkeypatch.setattr("agent_media_core.sinks.music_router._local_configured",
+                        lambda: True)
+    mopidy = _FakeBackend(loaded=False, uri="yt:mopidy")
+    local = _FakeBackend(loaded=True, uri="/cache/track.webm")
+    r = SinkMusicRouter(mopidy=mopidy, local=local)
+
+    r.duck(level=10)
+    local._loaded = False               # the track ended while Sam was speaking
+    r.unduck(restore=110)
+
+    assert ("unduck", 110) in local.calls
+    assert ("unduck", 110) not in mopidy.calls
+
+
+def test_unduck_without_a_duck_still_follows_the_live_backend(monkeypatch):
+    """No duck of ours in force, so there is nothing to route by. Restoring a
+    volume on a backend nobody ducked is the failure to avoid here, so this
+    falls back to observing rather than to the last backend seen."""
+    monkeypatch.setattr("agent_media_core.sinks.music_router._local_configured",
+                        lambda: True)
+    mopidy = _FakeBackend(loaded=False, uri="yt:mopidy")
+    local = _FakeBackend(loaded=False, uri=None)
+    r = SinkMusicRouter(mopidy=mopidy, local=local)
+
+    r.unduck(restore=100)
+    assert ("unduck", 100) in mopidy.calls and not local.calls
+
+
+def test_the_duck_route_is_remembered_once_only(monkeypatch):
+    monkeypatch.setattr("agent_media_core.sinks.music_router._local_configured",
+                        lambda: True)
+    mopidy = _FakeBackend(loaded=False, uri="yt:mopidy")
+    local = _FakeBackend(loaded=True, uri="/cache/track.webm")
+    r = SinkMusicRouter(mopidy=mopidy, local=local)
+
+    r.duck(level=10)
+    r.unduck(restore=110)
+    local._loaded = False
+    # A second restore with no duck behind it must not go to the phone on the
+    # strength of the first — the debt was paid.
+    r.unduck(restore=99)
+    assert ("unduck", 99) in mopidy.calls
+    assert ("unduck", 99) not in local.calls
+
+
 def test_router_ignores_phone_when_unconfigured(monkeypatch):
     # No bridge probe should happen when the phone backend isn't configured.
     monkeypatch.setattr("agent_media_core.sinks.music_router._local_configured",

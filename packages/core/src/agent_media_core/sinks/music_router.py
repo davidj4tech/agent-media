@@ -59,6 +59,8 @@ class SinkMusicRouter:
                  local: Optional[SinkMusicLocal] = None) -> None:
         self.mopidy = mopidy or SinkMusic()
         self.local = local or SinkMusicLocal()
+        # Which backend the in-force duck was sent to. See duck()/unduck().
+        self._ducked_backend = None
 
     # ---- backend resolution ---------------------------------------------
 
@@ -128,10 +130,28 @@ class SinkMusicRouter:
         self._backend_for(target).stop(target)
 
     def duck(self, target: Target = Target(name="local"), level: int = 15) -> None:
-        self._observe_backend().duck(target, level)
+        backend = self._observe_backend()
+        self._ducked_backend = backend
+        backend.duck(target, level)
 
     def unduck(self, target: Target = Target(name="local"), restore: int = 100) -> None:
-        self._observe_backend().unduck(target, restore)
+        """Restore the volume of whoever was ducked — not of whoever is live now.
+
+        _observe_backend answers "what is audible", and liveness includes *has a
+        track loaded*. A reply that outlasts the track it was ducked under
+        therefore flips the answer between the duck and the restore: on p8a on
+        2026-08-15 the duck at 07:42:51 went to the phone, the track ended at
+        07:45:01, and the restore at 07:45:31 was routed to Mopidy — which had
+        nothing to restore. The phone sat at 10 with nothing left that knew, and
+        the next thing to play there would have been near-silent.
+
+        This is the fourth cause of the same sentence ("the music got quieter
+        after Sam spoke and never came back") and the same shape as the other
+        three: one owner per volume, and the owner is whoever took it down.
+        """
+        backend = self._ducked_backend or self._observe_backend()
+        self._ducked_backend = None
+        backend.unduck(target, restore)
 
     # seek_cur is deliberately NOT declared here: __getattr__ already routes
     # it to the live backend, and does so with the caller's arguments passed
