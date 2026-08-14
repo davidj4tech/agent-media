@@ -14,6 +14,7 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.view.ViewGroup;
+import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -29,6 +30,7 @@ public class MainActivity extends Activity {
 
     private TextView statusView;
     private TextView logView;
+    private Button focusButton;
     private CompanionService service;
     private final Handler handler = new Handler(Looper.getMainLooper());
 
@@ -45,6 +47,10 @@ public class MainActivity extends Activity {
         @Override public void run() {
             statusView.setText(service == null ? "(service not bound)" : service.status());
             logView.setText(CompanionService.dump());
+            focusButton.setEnabled(service != null);
+            focusButton.setText(service != null && service.focusActs()
+                    ? "focus: acting on mpv — tap for probe only"
+                    : "focus: probe only — tap to act on mpv");
             handler.postDelayed(this, 500);
         }
     };
@@ -74,6 +80,17 @@ public class MainActivity extends Activity {
         statusView.setTextSize(13f);
         statusView.setPadding(0, 12, 0, 12);
         root.addView(statusView);
+
+        // The app always *takes* focus; this only decides whether the policy is
+        // allowed to touch mpv. A fresh install starts as a probe so the first
+        // sideload can show what Android actually delivers before anything acts
+        // on it — and there is no adb here to flip a flag with.
+        focusButton = new Button(this);
+        focusButton.setAllCaps(false);
+        focusButton.setOnClickListener(v -> {
+            if (service != null) service.setFocusActs(!service.focusActs());
+        });
+        root.addView(focusButton);
 
         logView = new TextView(this);
         logView.setTypeface(Typeface.MONOSPACE);

@@ -8,6 +8,7 @@ import android.app.Service;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
 import android.media.AudioAttributes;
 import android.media.AudioFormat;
@@ -47,6 +48,18 @@ public class CompanionService extends Service {
     static final String MPV_HOST = "127.0.0.1";
     static final int MPV_PORT = 6601;
 
+    /**
+     * The focus policy is allowed to touch mpv only when this is on. Off by
+     * default, which makes a fresh install a *probe*: it takes focus and logs
+     * every callback but changes nothing, so the first sideload can answer what
+     * Android actually delivers — and whether taking focus disturbs the
+     * pulseaudio stream underneath — before any behaviour change can muddy it.
+     * One APK does both jobs; every install here is a sideload and a tap
+     * through a chooser, so a build-time flag would cost a round trip.
+     */
+    private static final String PREFS = "companion";
+    private static final String KEY_FOCUS_ACTS = "focus_acts";
+
     private static final String CHANNEL = "agent-media";
     private static final int NOTIF_ID = 1;
     /** How often to refresh position while playing. The session extrapolates between. */
@@ -57,10 +70,14 @@ public class CompanionService extends Service {
 
     private final Handler main = new Handler(Looper.getMainLooper());
     private final MpvState state = new MpvState();
+    private final FocusPolicy focus = new FocusPolicy();
     private MpvIpc ipc;
     private MediaSession session;
     private NotificationManager nm;
     private Silence silence;
+    private FocusControl focusControl;
+    private SharedPreferences prefs;
+    private boolean focusActs = false;
 
     // ---- on-screen log (adb cannot reach this phone) ---------------------
 
@@ -82,7 +99,25 @@ public class CompanionService extends Service {
     }
 
     String status() {
-        return state.toString();
+        return state
+                + "\nfocus=" + (focusControl != null && focusControl.held() ? "held" : "none")
+                + " mode=" + (focusActs ? "acting" : "probe (logs only)")
+                + (focus.owesResume() ? " owes:resume" : "")
+                + (focus.owesUnduck() ? " owes:unduck" : "");
+    }
+
+    boolean focusActs() {
+        return focusActs;
+    }
+
+    /** Flip between the probe and the acting build. Survives a restart. */
+    void setFocusActs(boolean acts) {
+        if (acts == focusActs) return;
+        focusActs = acts;
+        prefs.edit().putBoolean(KEY_FOCUS_ACTS, acts).apply();
+        // Whatever the old mode owed does not carry across the switch.
+        focus.reset();
+        log("focus: mode -> " + (acts ? "acting" : "probe (logs only)"));
     }
 
     // ---- lifecycle -------------------------------------------------------
@@ -90,6 +125,10 @@ public class CompanionService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
+        prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        focusActs = prefs.getBoolean(KEY_FOCUS_ACTS, false);
+        focusControl = new FocusControl(this, main, this::onFocusChange);
+
         nm = getSystemService(NotificationManager.class);
         nm.createNotificationChannel(new NotificationChannel(
                 CHANNEL, "agent-media", NotificationManager.IMPORTANCE_LOW));
@@ -110,6 +149,7 @@ public class CompanionService extends Service {
         ipc.start();
         main.postDelayed(positionPoll, POSITION_POLL_MS);
         log("service started; mpv ipc -> " + MPV_HOST + ":" + MPV_PORT);
+        log("focus: mode " + (focusActs ? "acting" : "probe (logs only)"));
     }
 
     @Override
@@ -121,6 +161,7 @@ public class CompanionService extends Service {
     public void onDestroy() {
         main.removeCallbacks(positionPoll);
         if (ipc != null) ipc.stop();
+        if (focusControl != null) focusControl.abandon();
         stopSilence();
         if (session != null) {
             session.setActive(false);
@@ -136,6 +177,16 @@ public class CompanionService extends Service {
             main.post(() -> {
                 if (state.apply(name, value)) {
                     log("mpv " + name + " = " + value);
+                    // The two guards the policy needs from the outside world:
+                    // a resume from anywhere else cancels a resume we owe, and
+                    // a volume we did not write means something else owns it
+                    // now (call_guard during a call is the live example).
+                    switch (name) {
+                        case "pause":       focus.onPauseChanged(state.paused); break;
+                        case "volume":      focus.onVolumeChanged(state.volume); break;
+                        case "idle-active": if (state.idleActive) focus.reset(); break;
+                        default: break;
+                    }
                     pushSessionState();
                 }
             });
@@ -184,6 +235,17 @@ public class CompanionService extends Service {
         // receive. It stops when mpv goes idle, which is the case that would
         // otherwise cost battery all day.
         if (state.loaded()) startSilence(); else stopSilence();
+
+        // Focus follows the same predicate, and for a related reason:
+        // abandoning it on our own pause would forfeit the GAIN that is
+        // supposed to tell us to resume.
+        if (state.loaded()) {
+            if (!focusControl.held() && focusControl.request()) log("focus: granted");
+        } else if (focusControl.held()) {
+            focusControl.abandon();
+            focus.reset();
+            log("focus: abandoned (mpv idle)");
+        }
 
         MediaMetadata.Builder md = new MediaMetadata.Builder()
                 .putString(MediaMetadata.METADATA_KEY_TITLE, state.title())
@@ -270,6 +332,48 @@ public class CompanionService extends Service {
             ipc.setProperty("time-pos", positionMs / 1000.0);
         }
     };
+
+    // ---- focus -> mpv ----------------------------------------------------
+
+    /**
+     * Android has moved audio focus. Delivered on the main looper (see
+     * FocusControl), so it is safe to touch state here; the IPC writes go to
+     * MpvIpc's sender thread.
+     */
+    private void onFocusChange(int change) {
+        log("focus: " + FocusControl.name(change) + " [" + state + "]");
+        if (!focusActs) {
+            log("focus: probe mode, no action");
+            return;
+        }
+        for (FocusPolicy.Action action : focus.onFocusChange(change, state)) {
+            perform(action);
+        }
+    }
+
+    private void perform(FocusPolicy.Action action) {
+        switch (action) {
+            case PAUSE:
+                log("focus: pause");
+                ipc.setProperty("pause", Boolean.TRUE);
+                break;
+            case RESUME:
+                log("focus: resume");
+                ipc.setProperty("pause", Boolean.FALSE);
+                break;
+            case DUCK:
+                log("focus: duck -> " + FocusPolicy.DUCK_VOLUME);
+                ipc.setProperty("volume", Double.valueOf(FocusPolicy.DUCK_VOLUME));
+                break;
+            case UNDUCK:
+                double restore = focus.volumeToRestore();
+                log("focus: unduck -> " + (int) restore);
+                ipc.setProperty("volume", Double.valueOf(restore));
+                break;
+            default:
+                break;
+        }
+    }
 
     // ---- the stream of zeros --------------------------------------------
 
