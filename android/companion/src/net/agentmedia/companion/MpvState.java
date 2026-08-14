@@ -25,6 +25,11 @@ final class MpvState {
     volatile double volume = 100.0;
     /** Seconds; NaN when unknown. Polled, not observed — see MpvIpc. */
     volatile double position = Double.NaN;
+    /**
+     * Speech mirror only: the coordinator says a response is in flight. See
+     * MpvIpc.SPEAKING_PROPERTY.
+     */
+    volatile boolean speaking = false;
 
     /** Apply one property update. Returns true when something actually changed. */
     boolean apply(String name, Object value) {
@@ -69,6 +74,15 @@ final class MpvState {
                 double v = Json.asDouble(value, 100.0);
                 if (sameNumber(v, volume)) return false;
                 volume = v;
+                return true;
+            }
+            case MpvIpc.SPEAKING_PROPERTY: {
+                // Absent (null) reads as false: an mpv that has never been told
+                // is one whose coordinator does not speak this, and the caller
+                // falls back to its own heuristics.
+                boolean v = Json.asBool(value, false);
+                if (v == speaking) return false;
+                speaking = v;
                 return true;
             }
             case MpvIpc.POSITION_PROPERTY: {

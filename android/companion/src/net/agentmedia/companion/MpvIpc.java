@@ -42,6 +42,14 @@ final class MpvIpc {
     };
 
     /**
+     * The coordinator on red5 sets this on the speech mpv for the length of a
+     * response — `agent_media_core.sinks.speech.SPEAKING_PROPERTY`. It is the
+     * only reliable answer to "is this focus loss ours"; everything else here
+     * is a fallback for a coordinator too old to set it.
+     */
+    static final String SPEAKING_PROPERTY = "user-data/agent-media/speaking";
+
+    /**
      * What the speech connection subscribes to — enough to answer "is a clip
      * running" and "was one just staged". {@code path} is in the set because
      * the focus loss for a clip arrives when mpv *opens* the file, which on p8a
@@ -53,7 +61,9 @@ final class MpvIpc {
      * mpv's media-title is a filename like
      * {@code remote-20260814T190922-18480.mp3}. See FrontChannel.SPEECH_TITLE.
      */
-    static final String[] OBSERVED_SPEECH = { "idle-active", "pause", "path" };
+    static final String[] OBSERVED_SPEECH = {
+        "idle-active", "pause", "path", SPEAKING_PROPERTY,
+    };
 
     /**
      * time-pos is deliberately NOT observed: mpv fires it continuously, and a

@@ -22,6 +22,7 @@ from .. import snapcast
 from ..sinks.book import SinkBook
 from ..sinks.music import SinkMusic
 from ..sinks.music_router import SinkMusicRouter
+from ..sinks import speech as _speech
 from ..state import StateStore
 from ..types import ContentType, Target
 from . import _android, _mpris
@@ -132,6 +133,30 @@ class Coordinator:
         self._android_paused: list[str] = []
         # Whether we paused the book channel for the current clip.
         self._book_paused = False
+        # Serialises the speaking-flag writes so a clear can never overtake the
+        # set it belongs to, and keeps both off the speech path's thread.
+        self._flag_writer = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="speaking-flag")
+
+    # ---- "this loss is ours" -------------------------------------------
+
+    def _speaking(self, on: bool) -> None:
+        """Raise or lower the in-band flag that says a response is in flight.
+
+        Read by the companion app on the phone, which holds audio focus for the
+        music mpv: without it the app cannot tell our own speech from a
+        navigation prompt, and ducks over the duck below. See
+        `sinks.speech.set_speaking` for why watching playback cannot answer it.
+
+        Fire-and-forget on a single worker: the write is a round trip over the
+        phone bridge, and speech must never wait on a diagnostic.
+        """
+        speech_target = Target(name=(
+            os.environ.get("MEDIA_SPEECH_DEFAULT_TARGET") or "local"))
+        try:
+            self._flag_writer.submit(_speech.set_speaking, on, speech_target)
+        except RuntimeError:  # pragma: no cover — executor shut down
+            pass
 
     # ---- public API used by sink-speech --------------------------------
 
@@ -142,6 +167,12 @@ class Coordinator:
         with rendering.  before_speech() waits up to 6s for it to finish
         before playing audio.
         """
+        # Raise the flag as early as anything happens: rendering and relaying a
+        # response opens the clip on the far mpv well before it is audible, and
+        # the focus loss that causes lands then — 37 s ahead of the first clip
+        # on 2026-08-14. before_speech raises it again; both are idempotent.
+        self._speaking(True)
+
         mpris_hosts = _mpris.ssh_hosts() if _mpris.enabled() else []
         android_hosts = _android.pause_hosts()
         if not mpris_hosts and not android_hosts:
@@ -266,6 +297,7 @@ class Coordinator:
         # questions of unrelated players — "is a book playing" has never
         # depended on "what is the music". Sequencing them was habit, and on a
         # 450ms link habit cost four seconds per utterance.
+        self._speaking(True)
         probes = ThreadPoolExecutor(max_workers=2)
         book_active = probes.submit(self._probe_book_active)
         music_uri = probes.submit(self._probe_music_uri)
@@ -409,6 +441,9 @@ class Coordinator:
 
     def after_speech(self) -> None:
         """Restore from whatever before_speech did."""
+        # Lower the flag first: from here on, a focus loss really is somebody
+        # else's and the app should duck for it.
+        self._speaking(False)
         # Restore the source-agnostic rooms (Snapcast) duck first — it's
         # independent of the Mopidy interruption marker handled below (which is
         # absent whenever this coordinator's Mopidy wasn't the one playing).

@@ -140,21 +140,35 @@ spoken reply that is the coordinator, which knows when the whole response ends
 rather than one clip.
 
 Telling the two apart is what the speech connection is for beyond the metadata,
-and the test is **not** "is speech playing". mpv takes the output when it *opens*
-the clip: on p8a the loss landed at 20:16:29 and the first audio at 20:16:40,
-eleven seconds later, so that question answers no for a loss that is entirely
-ours. The signal is the staging — a new `path`, or the unpause — and a loss
-within `STAGING_GRACE_MS` (20 s) of one is ours. Bounded, because for that long
-after a clip is staged a genuine outside interruption does not duck; and measured
-from the staging rather than the ending, so the grace expires with the reply
-instead of being extended by it.
+and **the coordinator says so rather than the app guessing**. It sets
+`user-data/agent-media/speaking` on the speech mpv for the length of a response —
+raised in `pre_pause_remote`, before rendering, and lowered in `after_speech`.
+mpv's `user-data` is observable and arbitrary, so this needs no new channel and
+no script; the app subscribes to it alongside the other three properties.
+
+Watching playback cannot answer the question, and that is not a tuning problem.
+mpv takes the output when it *opens* a clip, and a response is rendered and
+relayed ahead of time: on p8a the loss arrived at 20:16:29 with audio at 20:16:40
+(11 s), and again at 20:26:52 with the clip staged at 20:27:29 — **37 s**. A
+window narrow enough to be useful cannot catch that, and one wide enough stops
+ducking real interruptions.
+
+Two fallbacks remain, for a coordinator too old to set the flag: speech audibly
+playing, and a loss within `STAGING_GRACE_MS` (20 s) of a clip being staged (a
+new `path`, or the unpause). Measured from the staging rather than the ending, so
+the grace expires with the reply instead of being extended by it — and never from
+"a file is loaded", since sink-speech parks the last clip open indefinitely.
+
+The flag is believed for at most `SPEAKING_FLAG_MAX_MS` (5 min). It is cleared in
+`after_speech`, so a process killed mid-response leaves it raised, and a raised
+flag means never ducking for anything.
 
 A transient loss is also acted on 300 ms late, for the reverse race — the speech
 mpv's state travels a different socket and can arrive just after the callback.
 Any newer focus change cancels a deferred one.
 
-`/state` answers this directly: `speech.staged_ms_ago` and
-`speech.owns_the_loss`.
+`/state` answers this directly: `speech.speaking`, `speech.speaking_ms_ago`,
+`speech.staged_ms_ago` and `speech.owns_the_loss`.
 
 Two guards matter more than the table, and both are tested: a resume from
 anywhere else (earbuds, CLI, red5) cancels a resume we owe, and a volume we did

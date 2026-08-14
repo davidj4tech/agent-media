@@ -65,17 +65,42 @@ final class FrontChannel {
     static final long STAGING_GRACE_MS = 20000;
 
     /**
-     * Is this focus loss our own speech? True while a clip is audible, and for
-     * {@link #STAGING_GRACE_MS} after one was staged.
+     * How long the coordinator's flag is believed without being renewed.
      *
-     * @param msSinceStaged since the speech mpv last opened a clip or started
-     *     playing one; {@link Long#MAX_VALUE} when it never has.
+     * It is cleared in `after_speech`, so a process killed mid-response leaves
+     * it raised — and a raised flag means we never duck for anything. The next
+     * response clears it, but the phone should not depend on there being one.
+     * Long enough for the longest reply by a wide margin, short enough that a
+     * crash costs an evening's ducking rather than the machine's uptime.
      */
+    static final long SPEAKING_FLAG_MAX_MS = 300000;   // 5 minutes
+
+    /** Is this focus loss our own speech? See the 3-arg form; no flag known. */
     static boolean ourSpeech(MpvState speech, long msSinceStaged) {
+        return ourSpeech(speech, msSinceStaged, Long.MAX_VALUE);
+    }
+
+    /**
+     * Is this focus loss our own speech?
+     *
+     * Three answers in descending order of trust. The coordinator's flag is the
+     * only one that is actually told to us rather than inferred, and it is the
+     * only one that covers the real case: mpv takes the output when it *opens* a
+     * clip, and a response is rendered and relayed ahead of time, so the loss
+     * has been seen 37 s before the first clip was staged. The two below it are
+     * fallbacks for a coordinator too old to set the flag.
+     *
+     * @param msSinceStaged since the speech mpv last opened or started a clip;
+     *     {@link Long#MAX_VALUE} when it never has.
+     * @param msSinceFlagSet since the coordinator raised the flag;
+     *     {@link Long#MAX_VALUE} when it never has.
+     */
+    static boolean ourSpeech(MpvState speech, long msSinceStaged, long msSinceFlagSet) {
         // An unreachable speech mpv tells us nothing, and a loss we cannot
         // attribute is treated as somebody else's — the duck is the behaviour
         // this app exists to provide, so it is what we fall back to.
         if (!speech.connected) return false;
+        if (speech.speaking && msSinceFlagSet < SPEAKING_FLAG_MAX_MS) return true;
         return speechInFront(speech) || msSinceStaged < STAGING_GRACE_MS;
     }
 

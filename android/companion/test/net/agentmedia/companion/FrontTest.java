@@ -30,6 +30,8 @@ public final class FrontTest {
         testAStagedClipOwnsTheLossBeforeItIsAudible();
         testTheGraceExpires();
         testAnUnreachableSpeechMpvOwnsNothing();
+        testTheCoordinatorsFlagBeatsEveryHeuristic();
+        testAStuckFlagStopsBeingBelieved();
 
         System.out.println();
         if (failures.isEmpty()) {
@@ -156,6 +158,35 @@ public final class FrontTest {
         speech.connected = false;
         no(FrontChannel.ourSpeech(speech, 1000),
            "a loss we cannot attribute ducks, because ducking is the point");
+    }
+
+    /**
+     * The case no window can catch: the coordinator renders and relays a
+     * response before any of it is audible, and mpv takes the output when it
+     * opens the clip — 37 s before staging on p8a, 2026-08-14. The flag is set
+     * at the top of that work, so it is true when nothing else is.
+     */
+    private static void testTheCoordinatorsFlagBeatsEveryHeuristic() {
+        MpvState speech = idle();              // nothing open, nothing staged
+        speech.speaking = true;
+        yes(FrontChannel.ourSpeech(speech, Long.MAX_VALUE, 1000),
+            "the flag answers where playback cannot");
+
+        // And it is not a licence to suppress forever: cleared, the fallbacks
+        // decide again.
+        speech.speaking = false;
+        no(FrontChannel.ourSpeech(speech, Long.MAX_VALUE, 1000),
+           "a lowered flag ducks again immediately");
+    }
+
+    private static void testAStuckFlagStopsBeingBelieved() {
+        // after_speech lowers it, so a process killed mid-response leaves it
+        // raised — and a raised flag means never ducking for anything.
+        MpvState speech = idle();
+        speech.speaking = true;
+        no(FrontChannel.ourSpeech(speech, Long.MAX_VALUE,
+                                  FrontChannel.SPEAKING_FLAG_MAX_MS + 1),
+           "past its lifetime the flag is a leftover, not a fact");
     }
 
     // ---- fixtures --------------------------------------------------------

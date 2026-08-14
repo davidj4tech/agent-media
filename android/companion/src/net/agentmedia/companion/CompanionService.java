@@ -100,6 +100,8 @@ public class CompanionService extends Service {
     private Runnable pendingFocus;
     /** When the speech mpv last opened or started a clip; 0 = never. */
     private volatile long speechStagedAt = 0L;
+    /** When the coordinator last raised the speaking flag; 0 = never. */
+    private volatile long speakingSince = 0L;
     /** Every focus callback seen, newest last — the /state readout's history. */
     private final List<String> focusHistory = new ArrayList<String>();
     /** The PlaybackState we last told the framework, and the last key we saw. */
@@ -274,6 +276,9 @@ public class CompanionService extends Service {
                     boolean staged = ("path".equals(name) && speechState.path != null)
                             || ("pause".equals(name) && !speechState.paused);
                     if (staged) speechStagedAt = System.currentTimeMillis();
+                    if (MpvIpc.SPEAKING_PROPERTY.equals(name) && speechState.speaking) {
+                        speakingSince = System.currentTimeMillis();
+                    }
                     pushSessionState();
                 }
             });
@@ -511,10 +516,15 @@ public class CompanionService extends Service {
             sp.put("idle", Boolean.valueOf(speechState.idleActive));
             sp.put("paused", Boolean.valueOf(speechState.paused));
             long since = sinceSpeechStaged();
+            long flag = sinceSpeaking();
             sp.put("staged_ms_ago", since == Long.MAX_VALUE ? null : Long.valueOf(since));
+            // What the coordinator told us, and how long ago — the difference
+            // between "we know" and "we guessed" when reading a duck decision.
+            sp.put("speaking", Boolean.valueOf(speechState.speaking));
+            sp.put("speaking_ms_ago", flag == Long.MAX_VALUE ? null : Long.valueOf(flag));
             // The answer that decides whether a transient loss ducks at all.
             sp.put("owns_the_loss", Boolean.valueOf(
-                    FrontChannel.ourSpeech(speechState, since)));
+                    FrontChannel.ourSpeech(speechState, since, flag)));
             m.put("speech", sp);
             m.put("last_button", lastButton);
             m.put("focus_mode", focusActs ? "acting" : "probe");
@@ -577,12 +587,21 @@ public class CompanionService extends Service {
 
     /** How long ago the speech mpv staged a clip, for FrontChannel.ourSpeech. */
     private long sinceSpeechStaged() {
-        return speechStagedAt == 0L ? Long.MAX_VALUE
-                                    : System.currentTimeMillis() - speechStagedAt;
+        return since(speechStagedAt);
+    }
+
+    /** How long ago the coordinator raised the speaking flag. */
+    private long sinceSpeaking() {
+        return since(speakingSince);
+    }
+
+    private static long since(long stamp) {
+        return stamp == 0L ? Long.MAX_VALUE : System.currentTimeMillis() - stamp;
     }
 
     private void applyFocus(int change) {
-        boolean ourSpeech = FrontChannel.ourSpeech(speechState, sinceSpeechStaged());
+        boolean ourSpeech = FrontChannel.ourSpeech(
+                speechState, sinceSpeechStaged(), sinceSpeaking());
         List<FocusPolicy.Action> actions = focus.onFocusChange(change, state, ourSpeech);
         if (ourSpeech && actions.isEmpty()) {
             log("focus: our own speech — the coordinator owns the volume");

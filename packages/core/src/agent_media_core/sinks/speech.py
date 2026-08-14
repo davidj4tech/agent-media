@@ -84,6 +84,42 @@ def _env_key(prefix: str, target_name: str) -> str:
     return f"{prefix}_{target_name.upper().replace('-', '_')}"
 
 
+#: mpv `user-data` key the on-device companion app watches to know that the
+#: audio focus about to be taken is ours.
+SPEAKING_PROPERTY = "user-data/agent-media/speaking"
+
+
+def set_speaking(on: bool, target: Target = DEFAULT_TARGET) -> bool:
+    """Tell anything watching this broker that a response is in flight.
+
+    The companion app on the phone holds audio focus on the music mpv's behalf
+    and ducks it when focus is lost. It must not duck for *our own* speech —
+    the coordinator already ducks that same mpv, and two duckers on one volume
+    lose the restore between them (2026-08-14, music left at 10 for two hours).
+
+    The app cannot work out whose loss it is by watching playback, and that is
+    not a tuning problem: mpv takes the output when it *opens* a clip, and with
+    a response rendered and relayed ahead of time the loss arrived 37 s before
+    the first clip was staged (p8a, 20:26:52 vs 20:27:29). Any window narrow
+    enough to be useful is too narrow to catch that, and any window wide enough
+    stops ducking real interruptions.
+
+    So we say so, in band, over the socket the app already watches. mpv's
+    `user-data` is observable and arbitrary, needs no script and no new channel,
+    and an mpv too old to have it (< 0.36) simply reports an error we ignore —
+    the app keeps its own weaker heuristics as the fallback.
+
+    Best-effort by construction: this is diagnostics for someone else's duck,
+    never a reason to delay or drop a clip. Returns True when the write landed.
+    """
+    try:
+        ipc.set_property(_socket_for(target), SPEAKING_PROPERTY, bool(on))
+        return True
+    except (ipc.MpvIpcError, OSError) as e:
+        log.debug("sink-speech: speaking flag %s failed: %s", on, e)
+        return False
+
+
 def _clip_uri_for(uri: str, target: Target, prefer_url: bool = False) -> str:
     """Resolve the clip reference the *remote* player should load (Grade B).
 
