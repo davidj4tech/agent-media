@@ -21,6 +21,9 @@ cases (see `playback_state` / `pause_for_speech`):
                Set MEDIA_ANDROID_RESUME_ON_UNKNOWN=1 to resume anyway, or
                MEDIA_ANDROID_REQUIRE_PLAYING_DETECTION=1 to skip unknown
                hosts entirely (no pause either).
+  - companion → the agent-media companion app is running there, so the key
+               would land on our own music session. Skip entirely; the
+               coordinator already drives that mpv over IPC.
 
 Enabled by setting MEDIA_ANDROID_PAUSE_HOSTS=phone (comma-separated for
 multiple hosts). Cooperates with the MPRIS path in `_mpris.py` — both can
@@ -232,9 +235,13 @@ def pause_for_speech(host: str) -> bool:
     """
     state = _ssh(host, _pause_for_speech_script()) or "unknown"
     state = state.splitlines()[-1].strip() if state else "unknown"
-    if state not in ("playing", "stopped", "unknown"):
+    if state not in ("playing", "stopped", "unknown", "companion"):
         state = "unknown"
 
+    if state == "companion":
+        # Our own session would take the key; see _pause_for_speech_script.
+        log.debug("android: %s runs the companion app — not dispatching", host)
+        return False
     if state == "playing":
         return True          # the script already dispatched pause
     if state == "stopped":
@@ -245,15 +252,44 @@ def pause_for_speech(host: str) -> bool:
     return resume_on_unknown()
 
 
+def companion_port() -> int:
+    """Loopback port of the agent-media companion app's status server."""
+    try:
+        return int(os.environ.get("MEDIA_ANDROID_COMPANION_PORT", "8770"))
+    except (TypeError, ValueError):
+        return 8770
+
+
 def _pause_for_speech_script() -> str:
     """Classify playback and pause in one shot; echo the state we found.
 
     Mirrors `playback_state` + `pause_for_speech` policy, evaluated on the
     phone. `require_detection` is folded in so an unknown host is left alone
     when the operator asked for positive detection only.
+
+    First it asks whether the session it would hit is **ours**. On a phone
+    running the agent-media companion app, the answer is always yes: the app
+    publishes the music channel's MediaSession and holds the Bluetooth
+    addressed-player slot, so a dispatched key reaches agent-media's own music
+    and nothing else. That makes this whole path both useless (it can no longer
+    reach Spotify — the session it was written for) and harmful: `dumpsys
+    media_session` is permission-denied on non-root Termux, so the state reads
+    `unknown`, the pause is dispatched defensively, and the "unknown" branch
+    deliberately does not resume. Every spoken reply therefore paused the music
+    for good — observed on p8a 2026-08-14 at 20:27:13.
+
+    Nothing is lost by skipping: the coordinator drives that same mpv directly
+    over IPC and ducks it for the clip. This is the same rule the MPRIS path
+    already follows — never pause our own player.
     """
     skip_unknown = "1" if require_detection() else "0"
+    port = companion_port()
     return f"""
+if command -v curl >/dev/null 2>&1 \
+   && curl -sf -m 1 "http://127.0.0.1:{port}/state" >/dev/null 2>&1; then
+  echo companion
+  exit 0
+fi
 out=$(/system/bin/dumpsys media_session 2>&1)
 case "$out" in
   *state=3*|*state=8*) st=playing ;;

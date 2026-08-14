@@ -129,8 +129,14 @@ def test_pause_for_speech_unknown_skipped_when_detection_required(monkeypatch):
 # The classify-and-pause decision now lives in hand-written POSIX sh executed
 # on the phone, so exercise it for real rather than trusting the substring.
 
-def _run_script(monkeypatch, dumpsys_output, *, require_detection=False):
-    """Run the generated script under sh with dumpsys and pause stubbed out."""
+def _run_script(monkeypatch, dumpsys_output, *, require_detection=False,
+                companion_answers=False):
+    """Run the generated script under sh with dumpsys and pause stubbed out.
+
+    `companion_answers` stands in for the companion app's status server being
+    up on the phone: the probe is rewritten to succeed or fail outright, since
+    a real curl to loopback here would depend on whatever runs on this host.
+    """
     import subprocess as sp
     if require_detection:
         monkeypatch.setenv("MEDIA_ANDROID_REQUIRE_PLAYING_DETECTION", "1")
@@ -140,6 +146,10 @@ def _run_script(monkeypatch, dumpsys_output, *, require_detection=False):
     script = _android._pause_for_speech_script().replace(
         "/system/bin/dumpsys media_session 2>&1",
         f"printf '%s' {shlex.quote(dumpsys_output)}")
+    probe = script.split("\n")[1]           # the `if command -v curl ...` line
+    assert "curl" in probe, script
+    script = script.replace(
+        probe, "if true; then" if companion_answers else "if false; then")
     r = sp.run(["/bin/sh", "-s"], input=script, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     lines = [ln for ln in r.stdout.strip().splitlines() if ln]
@@ -183,6 +193,31 @@ def test_script_still_pauses_playing_when_detection_required(monkeypatch):
     state, paused = _run_script(monkeypatch, "PlaybackState {state=3}",
                                 require_detection=True)
     assert (state, paused) == ("playing", True)
+
+
+def test_script_skips_the_host_running_the_companion_app(monkeypatch):
+    """A phone running the companion app answers on the status port, and the
+    key we would dispatch lands on OUR music session — the app holds the
+    addressed-player slot. Dispatching there paused agent-media's own music and
+    never resumed it (p8a, 2026-08-14 20:27:13), because `dumpsys` is denied on
+    Termux so the state reads unknown and unknown deliberately does not resume.
+    """
+    state, paused = _run_script(monkeypatch, "Permission Denial",
+                                companion_answers=True)
+    assert (state, paused) == ("companion", False)
+
+
+def test_script_falls_back_when_the_companion_is_not_running(monkeypatch):
+    """No app, no probe answer: the old behaviour, unchanged."""
+    state, paused = _run_script(monkeypatch, "PlaybackState {state=3}",
+                                companion_answers=False)
+    assert (state, paused) == ("playing", True)
+
+
+def test_pause_for_speech_reports_nothing_to_resume_for_companion(monkeypatch):
+    sent = []
+    monkeypatch.setattr(_android, "_ssh", _fake_ssh("companion", sent))
+    assert _android.pause_for_speech("p8ar") is False
 
 
 def test_unreachable_host_reads_as_unknown(monkeypatch):
