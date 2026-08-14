@@ -75,9 +75,10 @@ open it. That is a **separate** runit service from `mpv-music-bridge`, which
 binds the Tailscale address only and must not be touched. Same port number is
 fine — different bind address.
 
-Install: `scp` the APK to `~/storage/downloads/` on the phone, then
-`termux-open --chooser <file>`. adb cannot reach p8a from red5 (adbd binds
-wlan0 only).
+Install: `scp` the APK to `~/storage/downloads/` on the phone, and David opens
+it from Files. That is the whole recipe — `termux-open --chooser` does not
+reliably raise the installer dialog on p8a, so do not offer it. adb cannot
+reach p8a from red5 either (adbd binds wlan0 only).
 
 ## Audio focus
 
