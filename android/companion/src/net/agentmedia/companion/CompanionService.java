@@ -19,6 +19,7 @@ import android.media.session.PlaybackState;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.view.KeyEvent;
 
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -82,6 +83,9 @@ public class CompanionService extends Service {
     private boolean focusActs = false;
     /** Every focus callback seen, newest last — the /state readout's history. */
     private final List<String> focusHistory = new ArrayList<String>();
+    /** The PlaybackState we last told the framework, and the last key we saw. */
+    private volatile String lastPushedState = "none";
+    private volatile String lastButton = "none";
 
     // ---- on-screen log (adb cannot reach this phone) ---------------------
 
@@ -106,7 +110,6 @@ public class CompanionService extends Service {
         return state
                 + "\nfocus=" + (focusControl != null && focusControl.held() ? "held" : "none")
                 + " mode=" + (focusActs ? "acting" : "probe (logs only)")
-                + (focus.owesResume() ? " owes:resume" : "")
                 + (focus.owesUnduck() ? " owes:unduck" : "");
     }
 
@@ -186,12 +189,11 @@ public class CompanionService extends Service {
             main.post(() -> {
                 if (state.apply(name, value)) {
                     log("mpv " + name + " = " + value);
-                    // The two guards the policy needs from the outside world:
-                    // a resume from anywhere else cancels a resume we owe, and
-                    // a volume we did not write means something else owns it
-                    // now (call_guard during a call is the live example).
+                    // The guard the policy needs from the outside world: a
+                    // volume we did not write means something else owns it now
+                    // (call_guard during a call is the live example), so the
+                    // restore is dropped rather than clobbering it.
                     switch (name) {
-                        case "pause":       focus.onPauseChanged(state.paused); break;
                         case "volume":      focus.onVolumeChanged(state.volume); break;
                         case "idle-active": if (state.idleActive) focus.reset(); break;
                         default: break;
@@ -285,6 +287,19 @@ public class CompanionService extends Service {
         }
         session.setPlaybackState(pb.build());
 
+        // What we report is what decides how a PLAY_PAUSE toggle is resolved,
+        // so it has to be visible from /state — guessing at it was exactly what
+        // made the "pause works, play does not" symptom undiagnosable.
+        String named = playbackState == PlaybackState.STATE_PLAYING ? "PLAYING"
+                     : playbackState == PlaybackState.STATE_PAUSED ? "PAUSED"
+                     : playbackState == PlaybackState.STATE_STOPPED ? "STOPPED"
+                     : playbackState == PlaybackState.STATE_ERROR ? "ERROR"
+                     : String.valueOf(playbackState);
+        if (!named.equals(lastPushedState)) {
+            log("session: reporting " + named);
+            lastPushedState = named;
+        }
+
         nm.notify(NOTIF_ID, buildNotification());
     }
 
@@ -311,6 +326,29 @@ public class CompanionService extends Service {
     // ---- session -> mpv --------------------------------------------------
 
     private final MediaSession.Callback callback = new MediaSession.Callback() {
+        /**
+         * The raw key, before the framework decides which transport callback it
+         * means. Logged because every press was arriving as onPause and there
+         * was no way to tell whether the earbud sends a PLAY_PAUSE toggle that
+         * we are resolving wrongly, or a dedicated PAUSE whose PLAY twin goes
+         * somewhere else entirely. Those need opposite fixes.
+         */
+        @Override public boolean onMediaButtonEvent(Intent intent) {
+            KeyEvent key = intent == null ? null
+                    : (KeyEvent) intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT);
+            if (key != null) {
+                String name = KeyEvent.keyCodeToString(key.getKeyCode());
+                String action = key.getAction() == KeyEvent.ACTION_DOWN ? "down"
+                              : key.getAction() == KeyEvent.ACTION_UP ? "up" : "?";
+                if (key.getAction() == KeyEvent.ACTION_DOWN) {
+                    lastButton = name;
+                }
+                log("button: " + name + " " + action
+                        + " (we report " + lastPushedState + ")");
+            }
+            return super.onMediaButtonEvent(intent);
+        }
+
         @Override public void onPlay() {
             log("transport: play");
             ipc.setProperty("pause", Boolean.FALSE);
@@ -361,9 +399,10 @@ public class CompanionService extends Service {
             m.put("duration_s", Double.isNaN(state.duration) ? null : Double.valueOf(state.duration));
             m.put("volume", Double.valueOf(state.volume));
             m.put("speed", Double.valueOf(state.speed));
+            m.put("reported_state", lastPushedState);
+            m.put("last_button", lastButton);
             m.put("focus_mode", focusActs ? "acting" : "probe");
             m.put("focus_held", Boolean.valueOf(focusControl != null && focusControl.held()));
-            m.put("owes_resume", Boolean.valueOf(focus.owesResume()));
             m.put("owes_unduck", Boolean.valueOf(focus.owesUnduck()));
             m.put("restore_volume", Double.valueOf(focus.volumeToRestore()));
             m.put("duck_volume", Integer.valueOf(FocusPolicy.DUCK_VOLUME));
@@ -407,10 +446,6 @@ public class CompanionService extends Service {
             case PAUSE:
                 log("focus: pause");
                 ipc.setProperty("pause", Boolean.TRUE);
-                break;
-            case RESUME:
-                log("focus: resume");
-                ipc.setProperty("pause", Boolean.FALSE);
                 break;
             case DUCK:
                 log("focus: duck -> " + FocusPolicy.DUCK_VOLUME);

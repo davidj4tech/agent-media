@@ -56,16 +56,12 @@ final class FocusPolicy {
     enum Action {
         /** set pause=true */
         PAUSE,
-        /** set pause=false */
-        RESUME,
         /** set volume=DUCK_VOLUME */
         DUCK,
         /** set volume={@link #volumeToRestore()} */
         UNDUCK,
     }
 
-    /** True while a pause of ours is owed a resume. */
-    private boolean pausedByUs = false;
     /** True while a duck of ours is owed a restore. */
     private boolean duckedByUs = false;
     /** The volume to put back, valid only while duckedByUs. */
@@ -73,49 +69,43 @@ final class FocusPolicy {
     /** The last volume this policy asked for; NaN when it has asked for none. */
     private double volumeWeSet = Double.NaN;
 
-    boolean owesResume() { return pausedByUs; }
-
     boolean owesUnduck() { return duckedByUs; }
 
     double volumeToRestore() { return volumeBeforeDuck; }
 
     /**
      * Returns the actions to perform, in order. A list rather than one action
-     * because a single focus change genuinely owes two things: a GAIN that
-     * finds us both ducked and paused must undo both, and no second GAIN is
-     * coming to carry the leftover.
+     * because a permanent loss genuinely owes two: the volume goes back before
+     * the pause, and no second callback is coming to carry the leftover.
      */
     List<Action> onFocusChange(int change, MpvState state) {
         List<Action> actions = new ArrayList<Action>(2);
 
         switch (change) {
             case LOSS:
-                // Permanent: something else owns the output now. Pause, and
-                // owe nothing — Android's convention is that a permanent loss
-                // is not followed by a resume, and silently restarting music
-                // some minutes later is worse than a button press.
+                // Permanent: something else owns the output now. Restore the
+                // volume, then pause, and owe nothing — Android's convention is
+                // that a permanent loss is not followed by a resume, and music
+                // restarting minutes later is worse than a button press.
+                // Unducking first matters: otherwise the volume stays down for
+                // good and the next press of play is near-silence.
                 unduckInto(actions);
                 if (state.playing()) actions.add(Action.PAUSE);
-                pausedByUs = false;
                 return actions;
 
             case LOSS_TRANSIENT:
-                if (!state.loaded()) return Collections.emptyList();
-                // Put the volume back before pausing: a ducked *and* paused
-                // mpv is quiet for no reason, and unducking now is simpler
-                // than carrying the debt across the pause. The GAIN then only
-                // has a resume to do.
-                unduckInto(actions);
-                if (state.playing()) {
-                    pausedByUs = true;
-                    actions.add(Action.PAUSE);
-                }
-                return actions;
-
             case LOSS_TRANSIENT_CAN_DUCK:
-                // A navigation prompt or a notification: duck rather than
-                // pause, which is what the listener expects and what
-                // call_guard already does for calls.
+                // Both transient losses duck. David's rule — duck the music,
+                // pause the speech — supersedes the handover's table here, and
+                // the evidence agrees: on 2026-08-14 our *own* spoken replies
+                // were observed taking focus with LOSS_TRANSIENT (log at
+                // 18:32:20, bracketing the clip exactly). Pausing on that would
+                // stop the music dead for every sentence Sam says, and fight
+                // the coordinator, which is already ducking for the same clip.
+                //
+                // A real call is covered too: call_guard ducks phone-local
+                // music during calls rather than pausing it, so ducking here
+                // converges with the behaviour rather than inventing a second.
                 if (!state.playing() || duckedByUs) return Collections.emptyList();
                 volumeBeforeDuck = state.volume;
                 duckedByUs = true;
@@ -124,15 +114,7 @@ final class FocusPolicy {
                 return actions;
 
             case GAIN:
-                // Volume back before audio: the other order plays a moment of
-                // full-level music that the listener did not ask for.
-                unduckInto(actions);
-                if (pausedByUs) {
-                    pausedByUs = false;
-                    // If it is already running, someone beat us to it.
-                    if (state.paused) actions.add(Action.RESUME);
-                }
-                return actions;
+                return unduckInto(actions);
 
             default:
                 return Collections.emptyList();
@@ -140,20 +122,12 @@ final class FocusPolicy {
     }
 
     /** Append the restore, if one is owed, and clear the debt. */
-    private void unduckInto(List<Action> actions) {
-        if (!duckedByUs) return;
+    private List<Action> unduckInto(List<Action> actions) {
+        if (!duckedByUs) return actions;
         duckedByUs = false;
         volumeWeSet = volumeBeforeDuck;
         actions.add(Action.UNDUCK);
-    }
-
-    /**
-     * Told whenever mpv's pause flag changes. A resume from anywhere else —
-     * the earbuds, the CLI, red5 — cancels the resume we owe, so that when
-     * focus comes back we do not fight the listener.
-     */
-    void onPauseChanged(boolean paused) {
-        if (!paused) pausedByUs = false;
+        return actions;
     }
 
     /**
@@ -174,7 +148,6 @@ final class FocusPolicy {
 
     /** mpv went idle: nothing is owed to a file that is no longer open. */
     void reset() {
-        pausedByUs = false;
         duckedByUs = false;
         volumeWeSet = Double.NaN;
     }

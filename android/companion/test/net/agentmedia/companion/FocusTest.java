@@ -27,11 +27,10 @@ public final class FocusTest {
         testDuckAndRestore();
         testDuckIsNotRepeated();
         testDuckSkippedWhenPaused();
-        testTransientPauseAndResume();
-        testResumeElsewhereCancelsOurs();
+        testTransientLossDucksRatherThanPausing();
         testPermanentLossOwesNothing();
         testPermanentLossRestoresVolumeFirst();
-        testTransientLossWhileDucked();
+        testSecondTransientLossWhileDucked();
         testUserPausedIsNotOurs();
         testForeignVolumeDropsTheRestore();
         testOurOwnDuckEchoIsNotForeign();
@@ -71,7 +70,6 @@ public final class FocusTest {
                 "can-duck loss ducks", FocusPolicy.Action.DUCK);
         yes(p.owesUnduck(), "a duck is owed a restore");
         is(NORMAL, p.volumeToRestore(), "the pre-duck volume is remembered");
-        no(p.owesResume(), "a duck owes no resume");
 
         // The service writes it; mpv echoes it back through the observer.
         s.volume = FocusPolicy.DUCK_VOLUME;
@@ -105,36 +103,25 @@ public final class FocusTest {
         no(p.owesUnduck(), "and no restore owed");
     }
 
-    private static void testTransientPauseAndResume() {
+    private static void testTransientLossDucksRatherThanPausing() {
         FocusPolicy p = new FocusPolicy();
         MpvState s = playing();
 
+        // David's rule: duck the music, pause the speech. Our own spoken
+        // replies were observed arriving as LOSS_TRANSIENT, so pausing here
+        // would stop the music dead for every sentence Sam says.
         actions(p.onFocusChange(FocusPolicy.LOSS_TRANSIENT, s),
-                "transient loss pauses", FocusPolicy.Action.PAUSE);
-        yes(p.owesResume(), "a transient pause is owed a resume");
+                "a transient loss ducks, it does not pause",
+                FocusPolicy.Action.DUCK);
+        yes(p.owesUnduck(), "and owes the restore");
+        is(NORMAL, p.volumeToRestore(), "remembering where it was");
 
-        s.paused = true;
-        p.onPauseChanged(true);
-
-        actions(p.onFocusChange(FocusPolicy.GAIN, s),
-                "gain resumes", FocusPolicy.Action.RESUME);
-        no(p.owesResume(), "nothing owed afterwards");
-    }
-
-    private static void testResumeElsewhereCancelsOurs() {
-        FocusPolicy p = new FocusPolicy();
-        MpvState s = playing();
-        p.onFocusChange(FocusPolicy.LOSS_TRANSIENT, s);
-        s.paused = true;
-        p.onPauseChanged(true);
-
-        // The earbuds, the CLI or red5 press play while we still hold the debt.
-        s.paused = false;
-        p.onPauseChanged(false);
-        no(p.owesResume(), "a resume from anywhere else cancels ours");
+        s.volume = FocusPolicy.DUCK_VOLUME;
+        p.onVolumeChanged(s.volume);
 
         actions(p.onFocusChange(FocusPolicy.GAIN, s),
-                "so focus returning does not fight the listener");
+                "gain puts it back", FocusPolicy.Action.UNDUCK);
+        no(p.owesUnduck(), "nothing owed afterwards");
     }
 
     private static void testPermanentLossOwesNothing() {
@@ -143,7 +130,7 @@ public final class FocusTest {
 
         actions(p.onFocusChange(FocusPolicy.LOSS, s),
                 "permanent loss pauses", FocusPolicy.Action.PAUSE);
-        no(p.owesResume(), "and owes nothing — no silent restart minutes later");
+        no(p.owesUnduck(), "and owes nothing — no silent restart minutes later");
 
         s.paused = true;
         actions(p.onFocusChange(FocusPolicy.GAIN, s),
@@ -164,29 +151,23 @@ public final class FocusTest {
                 FocusPolicy.Action.UNDUCK, FocusPolicy.Action.PAUSE);
         is(NORMAL, p.volumeToRestore(), "back to the pre-duck volume");
         no(p.owesUnduck(), "nothing owed");
-        no(p.owesResume(), "nothing owed");
     }
 
-    private static void testTransientLossWhileDucked() {
+    private static void testSecondTransientLossWhileDucked() {
         FocusPolicy p = new FocusPolicy();
         MpvState s = playing();
         p.onFocusChange(FocusPolicy.LOSS_TRANSIENT_CAN_DUCK, s);
         s.volume = FocusPolicy.DUCK_VOLUME;
         p.onVolumeChanged(s.volume);
 
-        // A duck escalating to a pause: ducked *and* paused is quiet for no
-        // reason, so put the volume back on the way down.
+        // Speech clips arrive back to back; a second loss must not re-read the
+        // baseline from the already-ducked volume.
         actions(p.onFocusChange(FocusPolicy.LOSS_TRANSIENT, s),
-                "escalating loss unducks, then pauses",
-                FocusPolicy.Action.UNDUCK, FocusPolicy.Action.PAUSE);
-        s.volume = NORMAL;
-        s.paused = true;
-        p.onVolumeChanged(s.volume);
-        p.onPauseChanged(true);
+                "a loss while already ducked does nothing");
+        is(NORMAL, p.volumeToRestore(), "the baseline survives it");
 
         actions(p.onFocusChange(FocusPolicy.GAIN, s),
-                "and the gain has only the resume left to do",
-                FocusPolicy.Action.RESUME);
+                "and the gain still restores", FocusPolicy.Action.UNDUCK);
     }
 
     private static void testUserPausedIsNotOurs() {
@@ -194,9 +175,11 @@ public final class FocusTest {
         MpvState s = playing();
         s.paused = true;
 
+        // Nothing to duck and nothing to pause; above all, nothing owed that
+        // would undo the listener's own pause when focus returns.
         actions(p.onFocusChange(FocusPolicy.LOSS_TRANSIENT, s),
-                "already paused: nothing to pause");
-        no(p.owesResume(), "and we never owe a resume for a pause we did not make");
+                "already paused: a transient loss does nothing");
+        no(p.owesUnduck(), "and owes nothing");
 
         actions(p.onFocusChange(FocusPolicy.GAIN, s),
                 "so focus returning leaves the listener's pause alone");
@@ -232,11 +215,10 @@ public final class FocusTest {
         FocusPolicy p = new FocusPolicy();
         MpvState s = playing();
         p.onFocusChange(FocusPolicy.LOSS_TRANSIENT, s);
-        yes(p.owesResume(), "a debt to clear");
+        yes(p.owesUnduck(), "a debt to clear");
 
         p.reset();
-        no(p.owesResume(), "mpv going idle owes nothing to a file that is gone");
-        no(p.owesUnduck(), "nor a volume");
+        no(p.owesUnduck(), "mpv going idle owes nothing to a file that is gone");
     }
 
     private static void testUnknownChangeDoesNothing() {
