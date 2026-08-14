@@ -228,7 +228,14 @@ def _anchor_session() -> Optional[str]:
             ex = {}
     sess = ex.get("source_session")
     if sess:
-        return sess
+        # ...but only if the history has ever heard of it. A lane that renders
+        # on the far side (remote-say to the phone) records now_playing and
+        # writes no history row, so the conversation you are *listening to* can
+        # be one this scope would match zero rows for — and then every scoped
+        # traversal (`<`, `>`, the clip browser) silently does nothing, which
+        # reads as a dead keybinding. An unusable anchor is no anchor.
+        if _speech_history(1, session=sess):
+            return sess
     # Idle: a bare pane id carries no Claude id, so resolve it from that pane's
     # most recent clip (most-recent-first history).
     pane = os.environ.get("TTS_POPUP_PANE", "")
@@ -2764,6 +2771,46 @@ def _prev_with_restart(elapsed, restart, step_back) -> int:
     return 0
 
 
+def _restart_current_playlist() -> int:
+    """Seek a queued turn back to its own start, in place. 0 on success.
+
+    A replayed turn is pushed as ONE mpv playlist, so entry 0 at position 0 is
+    the start of the turn — two cheap property writes (~0.8s even on the phone)
+    against re-pushing every clip over the bridge (~5s), and it needs no
+    speech-history row at all. Returns non-zero when there is no playlist to
+    seek: during a *live* readout each sentence is its own loadfile
+    (playlist-count 1), and seeking that to 0 would restart the sentence, not
+    the turn — so the caller falls back to a history replay.
+    """
+    sock = _sock()
+    try:
+        count = ipc.get_property(sock, "playlist-count", critical=True)
+        if not isinstance(count, int) or count < 2:
+            return 1
+        ipc.set_property(sock, "playlist-pos", 0, critical=True)
+        ipc.command(sock, "seek", 0, "absolute", critical=True)
+        ipc.set_property(sock, "pause", False, critical=True)
+    except (ipc.MpvIpcError, OSError):
+        return 1
+    return 0
+
+
+def _replay_playing_turn(idx: int) -> int:
+    """Re-push the turn that is *currently playing*, by history index. 0 on success.
+
+    `<` mid-turn means "start this again", so it must never resolve to some
+    other conversation's clip: when the playing turn's conversation has no
+    history row to re-push (the remote-render lane writes none), this fails
+    and leaves the caller to seek what's audible back to zero. Only the
+    step-back branch is allowed to widen its scope.
+    """
+    np = _now_speaking() or {}
+    sess = (np.get("extras") or {}).get("source_session")
+    if sess and not _speech_history(1, session=sess):
+        return 1
+    return _do_replay(idx, session=sess or _anchor_session())
+
+
 def cmd_replay_prev(a) -> int:
     """Popup `<` for speech: "previous" with a restart-first grace window.
 
@@ -2779,7 +2826,15 @@ def cmd_replay_prev(a) -> int:
     session = _anchor_session()
     if (not idle) and pos is not None and pos > _prev_restart_threshold():
         # Partway through the current turn → restart it, keep the cursor put.
-        _do_replay(idx, session=session)
+        # In place first (fast, and history-free); a history re-push next; and
+        # if there is no row to re-push — the remote-render lane writes none —
+        # seek what IS playing back to zero rather than doing nothing at all,
+        # because "back to the start" is the one thing `<` was asked for.
+        if _restart_current_playlist() != 0 and _replay_playing_turn(idx) != 0:
+            try:
+                ipc.command(_sock(), "seek", 0, "absolute", critical=True)
+            except (ipc.MpvIpcError, OSError):
+                pass
         new_idx = idx
     else:
         # At the start (or idle) → step back a turn; stay put if there's none.

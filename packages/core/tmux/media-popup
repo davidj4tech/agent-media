@@ -194,9 +194,90 @@ cleanup() {
     mouse_off
     printf '\033[?25h\033[?7h'
     [ -n "${SAVED_STTY:-}" ] && stty "$SAVED_STTY" 2>/dev/null
+    rm -f "${PROBE_FILE:-}" "${PROBE_FILE:-}.part" 2>/dev/null
     "$MEDIA" popup-channel --set "$CHANNEL" 2>/dev/null
 }
 trap cleanup EXIT
+
+# ---- Off-loop speech probe -------------------------------------------------
+# Every speech redraw — and every speech *action*, which is fused into the same
+# spawn — is a round trip to the player, and the player is usually the phone:
+# ~1s for a plain status, ~5s for a `<` (remote snapshot + clip push). The read
+# loop is single-threaded, so doing that inline froze the whole popup for the
+# duration: the timecode stopped, the marquee stopped, and a press looked like
+# it had done nothing. So the speech probe runs in a background subshell that
+# writes its fields to a file, and the loop keeps ticking and collects them
+# when they land. Music/book stay inline — their probes are local and cheap.
+PROBE_FILE="${TMPDIR:-/tmp}/media-popup-probe.$$"
+ASYNC_OUT=""            # result file while a probe is in flight ("" = none)
+ASYNC_ACT=()            # the action that probe is carrying (for the debug flash)
+NEXT_ACT=()             # one queued action, started when the current lands
+ASYNC_QUEUED=""         # 1 when NEXT_ACT holds a queued action
+PF=""                   # 1 while fetch() should consume the collected fields
+PF_ACT=""; PF_STATUS=""; PF_T=""; PF_SMC=""; PF_SSPD=""; PF_SESS=""
+
+# Six lines: the action's stdout (empty with no action), popup-status' four
+# fields, then the subject pane's session. Always six, so the reader's layout
+# doesn't depend on whether an action came along.
+speech_probe() {
+    if [ "$#" -gt 0 ]; then
+        TTS_POPUP_PANE="$HL_PANE" $MEDIA popup-status --show-idle --no-bar --act "$@" 2>/dev/null
+    else
+        printf '\n'
+        TTS_POPUP_PANE="$HL_PANE" $MEDIA popup-status --show-idle --no-bar 2>/dev/null
+    fi
+    TTS_POPUP_PANE="$HL_PANE" $MEDIA now-pane --session-only 2>/dev/null || true
+    printf '\n'
+}
+
+# Start a probe unless one is already running. A second action arriving mid
+# flight is queued (one slot — mashing `<` should step back twice, not spawn
+# two racing replays); a plain refresh arriving mid flight is simply dropped,
+# since the in-flight probe will deliver fresher state than it would.
+speech_probe_start() {
+    if [ -n "$ASYNC_OUT" ]; then
+        if [ "$#" -gt 0 ]; then NEXT_ACT=("$@"); ASYNC_QUEUED=1; fi
+        return
+    fi
+    ASYNC_OUT="$PROBE_FILE"
+    ASYNC_ACT=("$@")
+    ( speech_probe "$@" > "$ASYNC_OUT.part" 2>/dev/null
+      mv -f "$ASYNC_OUT.part" "$ASYNC_OUT" 2>/dev/null ) &
+}
+
+# Non-blocking collect. Returns 0 when fields landed (caller redraws), 1 when
+# the probe is still running or none was started.
+speech_probe_collect() {
+    [ -n "$ASYNC_OUT" ] && [ -f "$ASYNC_OUT" ] || return 1
+    { IFS= read -r PF_ACT; IFS= read -r PF_STATUS; IFS= read -r PF_T
+      IFS= read -r PF_SMC; IFS= read -r PF_SSPD; IFS= read -r PF_SESS
+    } < "$ASYNC_OUT"
+    rm -f "$ASYNC_OUT" 2>/dev/null
+    local acted=""; [ "${#ASYNC_ACT[@]}" -gt 0 ] && acted=1
+    ASYNC_OUT=""; ASYNC_ACT=()
+    # Tab may have moved us to music/book while this was in the air — those
+    # fields would overwrite the channel actually on screen with speech state.
+    # The action still ran; only its redraw is dropped.
+    if [ "$CHANNEL" != "speech" ]; then
+        NEXT_ACT=(); ASYNC_QUEUED=""; PENDING=""
+        return 1
+    fi
+    PF=1; fetch; PF=""
+    if [ -n "$acted" ] && [ -n "$ACT_OUT" ] && flash_on; then
+        dbg_flash "clip $ACT_OUT · $CHANNEL"
+    fi
+    # Fold `replay-prev`'s echoed cursor back into the traversal position.
+    case "$ACT_OUT" in ''|*[!0-9]*) : ;; *) hist_idx="$ACT_OUT" ;; esac
+    if [ -n "$ASYNC_QUEUED" ]; then
+        ASYNC_QUEUED=""
+        local queued=("${NEXT_ACT[@]}")
+        NEXT_ACT=()
+        speech_probe_start "${queued[@]}"
+    else
+        PENDING=""
+    fi
+    return 0
+}
 
 # Pull the progress bar + marquee label for the active channel into the
 # cached snapshot. Speech marquee = the caller pane's title; music marquee =
@@ -235,18 +316,28 @@ fetch() {
         # into this same spawn via `--act`: the reply then has a leading line
         # (the action's own stdout, e.g. replay-prev's cursor → ACT_OUT) before
         # the three status fields, so a keypress costs one spawn, not two.
+        #
+        # Off the read loop (PF=1): the fields were gathered by the background
+        # probe and are already in PF_*, so this whole branch is a few variable
+        # assignments and blocks on nothing. The inline path below is kept for
+        # the first paint (before the loop starts) and as the fallback.
         ACT_OUT=""
-        if [ "$#" -gt 0 ]; then
-            { IFS= read -r ACT_OUT; IFS= read -r STATUS; IFS= read -r t; IFS= read -r smc; IFS= read -r SSPD; } < <(
-                TTS_POPUP_PANE="$HL_PANE" $MEDIA popup-status --show-idle --no-bar --act "$@" 2>/dev/null)
+        local sess
+        if [ -n "$PF" ]; then
+            ACT_OUT="$PF_ACT"; STATUS="$PF_STATUS"; t="$PF_T"
+            smc="$PF_SMC"; SSPD="$PF_SSPD"; sess="$PF_SESS"
         else
-            { IFS= read -r STATUS; IFS= read -r t; IFS= read -r smc; IFS= read -r SSPD; } < <(
-                TTS_POPUP_PANE="$HL_PANE" $MEDIA popup-status --show-idle --no-bar 2>/dev/null)
+            if [ "$#" -gt 0 ]; then
+                { IFS= read -r ACT_OUT; IFS= read -r STATUS; IFS= read -r t; IFS= read -r smc; IFS= read -r SSPD; } < <(
+                    TTS_POPUP_PANE="$HL_PANE" $MEDIA popup-status --show-idle --no-bar --act "$@" 2>/dev/null)
+            else
+                { IFS= read -r STATUS; IFS= read -r t; IFS= read -r smc; IFS= read -r SSPD; } < <(
+                    TTS_POPUP_PANE="$HL_PANE" $MEDIA popup-status --show-idle --no-bar 2>/dev/null)
+            fi
+            sess=$(TTS_POPUP_PANE="$HL_PANE" $MEDIA now-pane --session-only 2>/dev/null || true)
         fi
         t="${t#"${t%%[![:space:]]*}"}"; t="${t%"${t##*[![:space:]]}"}"
         [ -n "$t" ] && LABEL="$t" || LABEL="agent-media"
-        local sess
-        sess=$(TTS_POPUP_PANE="$HL_PANE" $MEDIA now-pane --session-only 2>/dev/null || true)
         [ -n "$sess" ] && BORDER="$sess" || BORDER="speech"
         LINK=""                          # speech marquee is a pane title, not a URL
     fi
@@ -340,6 +431,7 @@ fetch() {
             [ -n "$sg" ] && [ -n "$pl" ] && [ "$pl" -gt 1 ] 2>/dev/null && PART="#$(( sg + 1 ))/$pl"
             ;;
     esac
+    STATUS_AGE=0            # this status is now the fresh one to age from
 }
 
 # Clickable regions, rebuilt every draw(): parallel arrays of row, start col,
@@ -369,6 +461,35 @@ emit() {
     if [ "$FOCUS" = "$2" ] || [ "$PENDING" = "$2" ]; then
         printf '\033[7m%s\033[0m' "$1"
     else printf '%s' "$1"; fi
+}
+
+# Ticks since the on-screen status was collected, and how many make a second
+# (TICK is 0.2s). While a probe is in flight — up to ~5s for a `<` on the
+# phone — there is no fresh position to show, and a clock stuck on the old
+# value is exactly what "the key did nothing" looks like. Advance it locally
+# instead; the probe lands a moment later and corrects it.
+STATUS_AGE=0
+TICKS_PER_SEC=5
+status_ticked() {
+    local s="$1" rest mm ss pos adv
+    [ -n "$ASYNC_OUT" ] || { printf '%s' "$s"; return; }
+    adv=$(( STATUS_AGE / TICKS_PER_SEC ))
+    [ "$adv" -gt 0 ] || { printf '%s' "$s"; return; }
+    # Only the plain playing shape: "▶ MM:SS/MM:SS". Paused, idle, alert lines
+    # and the hour-long form all fall through untouched — there is nothing to
+    # extrapolate, and guessing would be worse than standing still.
+    case "$s" in
+        '▶ '[0-9][0-9]:[0-9][0-9]/[0-9][0-9]:[0-9][0-9]) ;;
+        *) printf '%s' "$s"; return ;;
+    esac
+    rest="${s#▶ }"
+    mm="${rest%%:*}"; ss="${rest#*:}"; ss="${ss%%/*}"
+    pos=$(( 10#$mm * 60 + 10#$ss + adv ))
+    rest="${rest#*/}"                       # duration, MM:SS
+    mm="${rest%%:*}"; ss="${rest#*:}"
+    local dur=$(( 10#$mm * 60 + 10#$ss ))
+    [ "$pos" -gt "$dur" ] && pos=$dur       # never run past the end we know of
+    printf '▶ %02d:%02d/%s' $(( pos / 60 )) $(( pos % 60 )) "$rest"
 }
 
 # FOCUS_KEYS index for a key, or "" when it has no on-screen button.
@@ -459,7 +580,7 @@ draw() {
         # Queued but not playing — tell the user instead of spinning forever.
         status="⏸ idle"
     else
-        status="$STATUS"
+        status=$(status_ticked "$STATUS")
     fi
     # The progress core is the play/pause *button*, so its leading glyph shows
     # the action it triggers, not the current state — flip play⇄pause (▶ when
@@ -1129,7 +1250,20 @@ handle_mouse() {
 # `replay-prev`'s echoed cursor (ACT_OUT) back into hist_idx. Otherwise (music/
 # book, or a key that already ran inline) just re-pull the snapshot.
 do_refresh() {
-    if [ "${#SPEECH_ACT[@]}" -gt 0 ]; then
+    if [ "$CHANNEL" = "speech" ]; then
+        # Speech goes off-loop: the action (if any) rides along with the probe
+        # and both land later, via speech_probe_collect. The popup keeps
+        # ticking meanwhile, with the pressed button lit.
+        # Guarded rather than a bare "${SPEECH_ACT[@]}": under `set -u` an
+        # empty array expansion is only safe on bash ≥4.4, and this script also
+        # runs on the phone.
+        if [ "${#SPEECH_ACT[@]}" -gt 0 ]; then
+            speech_probe_start "${SPEECH_ACT[@]}"
+        else
+            speech_probe_start
+        fi
+        SPEECH_ACT=()
+    elif [ "${#SPEECH_ACT[@]}" -gt 0 ]; then
         fetch "${SPEECH_ACT[@]}"; SPEECH_ACT=()
         case "$ACT_OUT" in ''|*[!0-9]*) : ;; *) hist_idx="$ACT_OUT" ;; esac
     else
@@ -1153,8 +1287,13 @@ while true; do
     IFS= read -rsn1 -t "$TICK" key; rc=$?
     if [ "$rc" -gt 128 ]; then
         ticks=$(( ticks + 1 ))
+        STATUS_AGE=$(( STATUS_AGE + 1 ))
         [ "$VOL_SHOW" -gt 0 ] && VOL_SHOW=$(( VOL_SHOW - 1 ))
-        if [ "$ticks" -ge "$FETCH_EVERY" ]; then fetch; ticks=0; fi
+        speech_probe_collect          # non-blocking; a no-op with none in flight
+        if [ "$ticks" -ge "$FETCH_EVERY" ]; then
+            if [ "$CHANNEL" = "speech" ]; then speech_probe_start; else fetch; fi
+            ticks=0
+        fi
         draw; continue
     fi
     [ "$rc" -ne 0 ] && break
@@ -1171,7 +1310,8 @@ while true; do
             # Re-pull the (slow) snapshot only on a real action; always redraw so
             # the focus highlight tracks the arrows without a flicker of fetch.
             [ -n "$ACTED" ] && do_refresh
-            PENDING=""
+            # A speech probe left in flight keeps its button lit until it lands.
+            [ -z "$ASYNC_OUT" ] && PENDING=""
             if [ -n "$ACTED" ] && flash_on; then
                 m="touch '$LAST_ACT' · $CHANNEL"
                 [ -n "$ACT_OUT" ] && m="$m → clip $ACT_OUT"
@@ -1190,7 +1330,7 @@ while true; do
     # Refresh the snapshot so the bar/label reflect the action immediately
     # (fused into one spawn when the key stashed a SPEECH_ACT verb).
     do_refresh
-    PENDING=""
+    [ -z "$ASYNC_OUT" ] && PENDING=""
     if flash_on; then
         m="'$key' · $CHANNEL"
         # A fused speech action (e.g. < / >) echoes its resolved clip cursor;

@@ -119,3 +119,76 @@ def test_prev_with_restart_idle_steps_back(monkeypatch):
 def test_prev_with_restart_honors_grace(monkeypatch):
     assert _prev_with_restart_calls(monkeypatch, pos=6.0, grace="10") == ["step_back"]
     assert _prev_with_restart_calls(monkeypatch, pos=6.0, grace="2") == ["restart"]
+
+
+# --- restarting a turn the history has never heard of -----------------------
+#
+# The remote-render lane (a reply rendered on the phone) records now_playing
+# and writes NO speech-history row. `<` used to resolve its restart through
+# history, scoped to the playing clip's conversation — which matched nothing,
+# so it printed "no clip to replay" to a stderr the popup discards and did
+# nothing at all. The key looked dead for the whole of that reply.
+
+@pytest.fixture
+def playing(monkeypatch):
+    """Something is playing, 30s in, from conversation `bbb`."""
+    monkeypatch.setattr(cli, "_speech_display_state",
+                        lambda: (False, 30.0, None, False, False, 1.0, True))
+    monkeypatch.setattr(cli, "_now_speaking",
+                        lambda: {"extras": {"source_session": "bbb"}})
+    monkeypatch.setattr(cli, "_anchor_session", lambda: None)
+    monkeypatch.delenv("MEDIA_POPUP_PREV_RESTART_S", raising=False)
+
+
+def _ipc_spy(monkeypatch, playlist_count=1):
+    """Record ipc traffic; `playlist-count` answers with the given depth."""
+    seen = []
+    monkeypatch.setattr(cli, "_sock", lambda: "/nope.sock")
+    monkeypatch.setattr(cli.ipc, "get_property",
+                        lambda s, p, **k: playlist_count if p == "playlist-count" else None)
+    monkeypatch.setattr(cli.ipc, "set_property",
+                        lambda s, p, v, **k: seen.append(("set", p, v)))
+    monkeypatch.setattr(cli.ipc, "command",
+                        lambda s, *a, **k: seen.append(("cmd", *a)))
+    return seen
+
+
+def test_queued_turn_restarts_in_place(playing, monkeypatch, capsys):
+    """A replayed turn is one mpv playlist: index 0 + seek 0 IS its start —
+    no history lookup, no re-push over the bridge."""
+    seen = _ipc_spy(monkeypatch, playlist_count=4)
+    replays = []
+    monkeypatch.setattr(cli, "_do_replay",
+                        lambda i, session=None: replays.append(i) or 0)
+    assert cli.cmd_replay_prev(argparse.Namespace(idx=1)) == 0
+    assert replays == []                                   # never touched history
+    assert ("set", "playlist-pos", 0) in seen
+    assert ("cmd", "seek", 0, "absolute") in seen
+    assert capsys.readouterr().out.strip() == "1"          # cursor stays put
+
+
+def test_unrecorded_turn_seeks_to_zero(playing, monkeypatch, capsys):
+    """No history row for the playing conversation → seek what IS audible back
+    to zero. The one thing it must not do is nothing."""
+    seen = _ipc_spy(monkeypatch, playlist_count=1)          # single loadfile
+    monkeypatch.setattr(cli, "_speech_history",
+                        lambda n=20, session=None: [])      # nothing recorded
+    replays = []
+    monkeypatch.setattr(cli, "_do_replay",
+                        lambda i, session=None: replays.append(i) or 0)
+    assert cli.cmd_replay_prev(argparse.Namespace(idx=1)) == 0
+    assert replays == []            # must NOT re-push another conversation's clip
+    assert ("cmd", "seek", 0, "absolute") in seen
+
+
+def test_recorded_turn_still_replays_from_history(playing, monkeypatch, capsys):
+    """A live readout is one loadfile per sentence, so restarting the *turn*
+    still means re-pushing it — when there is a row to re-push."""
+    _ipc_spy(monkeypatch, playlist_count=1)
+    monkeypatch.setattr(cli, "_speech_history",
+                        lambda n=20, session=None: [{"uri": "x"}])
+    replays = []
+    monkeypatch.setattr(cli, "_do_replay",
+                        lambda i, session=None: replays.append((i, session)) or 0)
+    assert cli.cmd_replay_prev(argparse.Namespace(idx=1)) == 0
+    assert replays == [(1, "bbb")]          # scoped to the conversation playing
