@@ -72,13 +72,20 @@ So a session ends by opening its successor in a new window of the attached
 tmux session:
 
 ```sh
-tmux new-window -t p-agent-media -n <slug> -c ~/projects/agent-media \
-    'cl "read docs/handover/<the file you just wrote>.md and follow it"'
+PROMPT='read docs/handover/<the file you just wrote>.md and follow it. <what to start on>'
+tmux new-window -d -t p-agent-media -n <slug> -c ~/projects/agent-media \
+    "zsh -ic 'cl \"$PROMPT\"'"
 ```
 
-`cl` is `exec claude --dangerously-skip-permissions`. Name the window for the
-work, not the date — `focus`, `android-app` — since that is what makes the
-window list readable a week later.
+**`cl` is a zsh alias** (`exec claude --dangerously-skip-permissions`), so it
+exists only in an interactive shell. `tmux new-window` runs its command through
+a non-interactive `sh`, where the alias is invisible and the window dies with
+status 127 — which looks exactly like nothing happening, because the pane
+closes on exit. Hence `zsh -ic`. To see a launch failure rather than guess at
+it, `set-window-option remain-on-exit on` and `capture-pane`.
+
+Name the window for the work, not the date — `focus`, `speech-bridge` — since
+that is what makes the window list readable a week later.
 
 **It must be a `new-window` in an already-attached session.** Claude Code's TUI
 needs a tmux client at launch; a detached session, or `amux start`, gives it
