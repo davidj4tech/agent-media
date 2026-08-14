@@ -52,11 +52,11 @@ public class CompanionService extends Service {
 
     /**
      * The speech mpv, behind its own loopback bridge
-     * (mpv-speech-bridge-local in dotfiles). Read-only so far: it is what lets
-     * the session's metadata follow whichever channel is in front, instead of
-     * naming a music track while Sam is the thing being heard. Driving it —
-     * pausing speech on a focus loss, the other half of David's rule — is the
-     * next step, not this one.
+     * (packages/core/services/mpv-speech-bridge-local). It carries three jobs:
+     * the metadata follows whichever channel is in front, the coordinator's
+     * speaking flag says whose a focus loss is, and — the other half of David's
+     * rule — speech is paused on a focus loss that is not our own. See
+     * SpeechPolicy.
      */
     static final int MPV_SPEECH_PORT = 6602;
 
@@ -84,9 +84,11 @@ public class CompanionService extends Service {
 
     private final Handler main = new Handler(Looper.getMainLooper());
     private final MpvState state = new MpvState();
-    /** The speech mpv's mirror. Feeds the metadata only — never the transport. */
+    /** The speech mpv's mirror. Feeds the metadata and the speech half of focus. */
     private final MpvState speechState = new MpvState();
     private final FocusPolicy focus = new FocusPolicy();
+    /** The speech half of David's rule; drives speechIpc, never the music one. */
+    private final SpeechPolicy speechFocus = new SpeechPolicy();
     private MpvIpc ipc;
     private MpvIpc speechIpc;
     private MediaSession session;
@@ -134,7 +136,8 @@ public class CompanionService extends Service {
                         : speechState.playing() ? "speaking" : "quiet")
                 + "\nfocus=" + (focusControl != null && focusControl.held() ? "held" : "none")
                 + " mode=" + (focusActs ? "acting" : "probe (logs only)")
-                + (focus.owesUnduck() ? " owes:unduck" : "");
+                + (focus.owesUnduck() ? " owes:unduck" : "")
+                + (speechFocus.owesResume() ? " owes:speech-resume" : "");
     }
 
     boolean focusActs() {
@@ -153,6 +156,15 @@ public class CompanionService extends Service {
             pendingFocus = null;
         }
         focus.reset();
+        // A speech pause is paid before it is forgotten, not after: dropping the
+        // debt would leave the broker paused with nothing left that knows to
+        // undo it. The music's ducked volume is visible and pressable; this is
+        // neither.
+        if (speechFocus.owesResume()) {
+            log("focus: paying the speech pause before the mode switch");
+            performSpeech(SpeechPolicy.Action.RESUME);
+            speechFocus.forget();
+        }
         log("focus: mode -> " + (acts ? "acting" : "probe (logs only)"));
     }
 
@@ -207,7 +219,14 @@ public class CompanionService extends Service {
         main.removeCallbacks(positionPoll);
         if (pendingFocus != null) main.removeCallbacks(pendingFocus);
         if (ipc != null) ipc.stop();
-        if (speechIpc != null) speechIpc.stop();
+        if (speechIpc != null) {
+            // Best-effort, and before the sender is shut down: a speech pause we
+            // still owe outlives this process on the phone's mpv. The write may
+            // not make it out; the coordinator clears pause at the start of the
+            // next response, which is the backstop.
+            if (speechFocus.owesResume()) performSpeech(SpeechPolicy.Action.RESUME);
+            speechIpc.stop();
+        }
         if (status != null) status.stop();
         if (focusControl != null) focusControl.abandon();
         stopSilence();
@@ -276,6 +295,11 @@ public class CompanionService extends Service {
                     boolean staged = ("path".equals(name) && speechState.path != null)
                             || ("pause".equals(name) && !speechState.paused);
                     if (staged) speechStagedAt = System.currentTimeMillis();
+                    // The guard the speech policy needs from outside: a resume
+                    // from anywhere else — the popup, the CLI, or the
+                    // coordinator clearing pause for the next response — means
+                    // the pause we owed is no longer ours to pay.
+                    if ("pause".equals(name)) speechFocus.onPauseChanged(speechState.paused);
                     if (MpvIpc.SPEAKING_PROPERTY.equals(name) && speechState.speaking) {
                         speakingSince = System.currentTimeMillis();
                     }
@@ -313,6 +337,10 @@ public class CompanionService extends Service {
                     });
                 });
             }
+            // The only clock the speech pause has. It runs whether or not music
+            // is playing, which is the case that needs it: a permanent loss
+            // pauses speech and then nothing else happens at all.
+            expireSpeechPause();
             main.postDelayed(this, POSITION_POLL_MS);
         }
     };
@@ -525,6 +553,9 @@ public class CompanionService extends Service {
             // The answer that decides whether a transient loss ducks at all.
             sp.put("owns_the_loss", Boolean.valueOf(
                     FrontChannel.ourSpeech(speechState, since, flag)));
+            // Whether the speech broker is paused *by us* — the one pause on
+            // this phone that nothing else will undo. See SpeechPolicy.
+            sp.put("owes_resume", Boolean.valueOf(speechFocus.owesResume()));
             m.put("speech", sp);
             m.put("last_button", lastButton);
             m.put("focus_mode", focusActs ? "acting" : "probe");
@@ -603,12 +634,17 @@ public class CompanionService extends Service {
         boolean ourSpeech = FrontChannel.ourSpeech(
                 speechState, sinceSpeechStaged(), sinceSpeaking());
         List<FocusPolicy.Action> actions = focus.onFocusChange(change, state, ourSpeech);
-        if (ourSpeech && actions.isEmpty()) {
+        List<SpeechPolicy.Action> speechActions =
+                speechFocus.onFocusChange(change, speechState, ourSpeech, System.currentTimeMillis());
+        if (ourSpeech && actions.isEmpty() && speechActions.isEmpty()) {
             log("focus: our own speech — the coordinator owns the volume");
             return;
         }
         for (FocusPolicy.Action action : actions) {
             perform(action);
+        }
+        for (SpeechPolicy.Action action : speechActions) {
+            performSpeech(action);
         }
     }
 
@@ -629,6 +665,37 @@ public class CompanionService extends Service {
                 break;
             default:
                 break;
+        }
+    }
+
+    /**
+     * The speech half. A different socket from {@link #perform}'s — the music
+     * mpv is never paused for a sentence and the speech mpv is never ducked.
+     */
+    private void performSpeech(SpeechPolicy.Action action) {
+        switch (action) {
+            case PAUSE:
+                log("focus: pause speech");
+                speechIpc.setProperty("pause", Boolean.TRUE);
+                break;
+            case RESUME:
+                log("focus: resume speech");
+                speechIpc.setProperty("pause", Boolean.FALSE);
+                break;
+            default:
+                break;
+        }
+    }
+
+    /**
+     * Pay a speech pause that no GAIN ever came back for. mpv's pause outlives
+     * the clip it was set on, so the cost of forgetting one is a broker that
+     * swallows every later reply — see SpeechPolicy.RESUME_DEADLINE_MS.
+     */
+    private void expireSpeechPause() {
+        for (SpeechPolicy.Action action : speechFocus.onTick(System.currentTimeMillis())) {
+            log("focus: speech pause expired unpaid");
+            performSpeech(action);
         }
     }
 

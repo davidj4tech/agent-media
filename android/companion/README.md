@@ -45,7 +45,8 @@ addressed-player slot.
 | `MpvIpc.java` | The mpv JSON IPC client: line protocol, `request_id` correlation, `observe_property`, reconnect with backoff. Also `android.*`-free. |
 | `MpvState.java` | The mirrored mpv properties. `loaded()`/`playing()` are deliberately the same predicates `agent_media_core.sinks.music_local` uses. |
 | `FrontChannel.java` | Which channel the session's metadata describes — speech while a clip runs, music otherwise. `android.*`-free, so `test/run.sh` covers it. |
-| `FocusPolicy.java` | The audio-focus decision table — what to do with mpv when focus moves, and what is owed back afterwards. `android.*`-free, so `test/run.sh` covers it. |
+| `FocusPolicy.java` | The audio-focus decision table for **music** — duck, restore, and what is owed back afterwards. `android.*`-free, so `test/run.sh` covers it. |
+| `SpeechPolicy.java` | The same for **speech**: pause, resume, and the deadline that stops a pause being stranded on the broker. Also `android.*`-free. |
 | `FocusControl.java` | The `android.*` half of focus: request, abandon, forward the callbacks. Also the tripwire on `FocusPolicy`'s duplicated constants. |
 | `CompanionService.java` | Session, notification, the silent `AudioTrack`, and the wiring in both directions. |
 | `StatusServer.java` | The readout the outside can reach: `/state` and `/log` over loopback HTTP. `android.*`-free, so `test/run.sh` covers it. |
@@ -75,14 +76,16 @@ Requires two socat listeners on loopback, into the two mpv IPC sockets: mpv's
 sockets live inside `com.termux`'s private UID sandbox and no other app can open
 them.
 
-| Service (dotfiles `termux/services/`) | Listener | Socket | What it carries |
+| Service (`packages/core/services/`) | Listener | Socket | What it carries |
 |---|---|---|---|
 | `mpv-music-bridge-local` | `127.0.0.1:6601` | `mpv-music.sock` | transport, focus actions, metadata |
-| `mpv-speech-bridge-local` | `127.0.0.1:6602` | `sink-speech.sock` | read-only so far: is a clip playing |
+| `mpv-speech-bridge-local` | `127.0.0.1:6602` | `sink-speech.sock` | is a clip playing, the coordinator's speaking flag, and the focus pause |
 
-Both are **separate** services from `mpv-music-bridge` / `mpv-speech-bridge`,
-which bind the Tailscale address only and must not be touched. Same port numbers
-are fine — different bind address. Both are declared in `ansible/host_vars/p8a.yml`.
+Both are **separate** services from dotfiles' `mpv-music-bridge` /
+`mpv-speech-bridge`, which bind the Tailscale address only and must not be
+touched. Same port numbers are fine — different bind address. p8a wires the two
+local ones up as whole-dir symlinks (`source: link` in
+`ansible/host_vars/p8a.yml`).
 
 Install: `scp` the APK to `~/storage/downloads/` on the phone, and David opens
 it from Files. That is the whole recipe — `termux-open --chooser` does not
@@ -106,8 +109,8 @@ uid, and adb cannot reach p8a from red5. Before it, diagnosing the app meant
 asking David to read his phone screen aloud.
 
 `/state` answers the questions the on-screen readout was being asked for:
-`focus_mode` (probe or acting), `focus_held`, `owes_resume` / `owes_unduck`,
-`restore_volume`, and `focus_events` — every focus callback the app has seen,
+`focus_mode` (probe or acting), `focus_held`, `owes_unduck`, `restore_volume`,
+`speech.owes_resume`, and `focus_events` — every focus callback the app has seen,
 timestamped.
 
 ## Audio focus
@@ -118,18 +121,43 @@ root of most of the phone-side complexity agent-media carries. Focus follows
 is open *including while paused*: abandoning it on our own pause would forfeit
 the `GAIN` that says to resume.
 
-David's rule is **duck the music, pause the speech**. This is the music half.
-The speech bridge now exists, but the app only *listens* on it (see below); a
-focus loss still does nothing to speech.
+David's rule is **duck the music, pause the speech**, and both halves are now
+live: `FocusPolicy` drives the music mpv on 6601, `SpeechPolicy` the speech mpv
+on 6602. They are separate classes rather than one table with a flag because the
+two channels fail in opposite directions — music ducked under a navigation
+prompt is still music, while speech ducked under one is *gone*: the words keep
+going, nobody hears them, and nothing replays them.
 
-| Focus change | Music | Owed afterwards |
-|---|---|---|
-| `LOSS` | restore volume, then pause | nothing — a permanent loss is not followed by a resume, and music restarting minutes later is worse than a button press |
-| `LOSS_TRANSIENT` | restore volume, then pause | resume on `GAIN` |
-| `LOSS_TRANSIENT_CAN_DUCK` | duck to 10 | restore the previous volume on `GAIN` |
-| `GAIN` | unduck, then resume if we paused it | — |
+| Focus change | Music | Speech | Owed afterwards |
+|---|---|---|---|
+| `LOSS` | restore volume, then pause | pause | music: nothing — a permanent loss is not followed by a resume, and music restarting minutes later is worse than a button press. Speech: **the resume is still owed** (below) |
+| `LOSS_TRANSIENT` | duck to 10 | pause | restore / resume on `GAIN` |
+| `LOSS_TRANSIENT_CAN_DUCK` | duck to 10 | pause — permission to duck is not permission to be inaudible | restore / resume on `GAIN` |
+| `GAIN` | unduck | resume, if we were the one who paused it | — |
 
-**A transient loss caused by our own speech is left alone entirely.** red5's
+**The speech pause is owed back even after a permanent loss, and the music pause
+is not.** mpv's `pause` is a property of the player, not of the clip: it outlives
+the file that was open when it was set. A stranded music pause costs a button
+press, a stranded speech pause costs *every later reply* — and there is no button
+on the speech broker. So the debt survives the clip ending, is paid by the
+`GAIN`, and if no `GAIN` ever comes it is paid anyway after
+`RESUME_DEADLINE_MS` (5 min), which the position poll ticks. A five-minute-old
+half sentence arriving late is the accepted cost of a broker that still works.
+The coordinator clears `pause` at the start of each response
+(`sinks/speech.py`, `reset_state`), which bounds the damage at one reply and is
+also the backstop if the app is killed mid-pause.
+
+**A transient loss caused by our own speech is left alone entirely — both
+halves.** For music, because red5's coordinator is already ducking that mpv (see
+below). For speech, because mpv takes the output when it *opens* the clip: acting
+on that loss would pause the very clip that produced it, which is Sam silencing
+himself on the first word of every reply.
+
+The cost of trusting the flag is that a *genuine* interruption arriving while a
+reply is in flight is read as ours, so it neither ducks the music nor pauses the
+speech. That is inherent — the flag says a response is in flight, not which
+player took the output — and it is the same trade the music duck already makes.
+red5's
 coordinator already ducks this same mpv for its own clip, and two duckers on one
 volume lose the restore between them: on 2026-08-14 at 19:17:38 the app ducked
 130 → 10, restored to 130 on the `GAIN`, and the coordinator — which had captured
@@ -168,13 +196,15 @@ mpv's state travels a different socket and can arrive just after the callback.
 Any newer focus change cancels a deferred one.
 
 `/state` answers this directly: `speech.speaking`, `speech.speaking_ms_ago`,
-`speech.staged_ms_ago` and `speech.owns_the_loss`.
+`speech.staged_ms_ago`, `speech.owns_the_loss`, and `speech.owes_resume` — the
+one pause on this phone that nothing else will undo.
 
-Two guards matter more than the table, and both are tested: a resume from
-anywhere else (earbuds, CLI, red5) cancels a resume we owe, and a volume we did
-not write means something else owns it now — `call_guard` is still live and
-ducks the same mpv during calls — so the restore is dropped rather than
-clobbering it.
+Two guards matter more than the table, and both are tested. A volume we did not
+write means something else owns it now — `call_guard` is still live and ducks the
+same mpv during calls — so the restore is dropped rather than clobbering it. And
+a resume from anywhere else (the popup, the CLI, the coordinator starting the
+next response) cancels a speech resume we owe, for the same reason: whoever
+resumed it owns the pause now.
 
 - **`setWillPauseWhenDucked(true)` is not optional.** From API 26 the framework
   ducks the loser's own players itself and does *not* call the listener. Left at

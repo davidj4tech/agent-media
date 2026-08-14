@@ -5,9 +5,12 @@ import java.util.Arrays;
 import java.util.List;
 
 /**
- * Host-side tests for the audio-focus decision table.
+ * Host-side tests for the audio-focus decision tables — FocusPolicy for music
+ * and SpeechPolicy for speech, the two halves of "duck the music, pause the
+ * speech". Together in one file because most of what matters is how the halves
+ * differ, and a claim about one is only meaningful next to the other.
  *
- * FocusPolicy imports nothing from android.* precisely so this can run under a
+ * Both import nothing from android.* precisely so this can run under a
  * plain JDK in seconds. p8a has no adb, so anything not proven here is debugged
  * by squinting at a phone screen — the table gets tested before it is sideloaded.
  *
@@ -40,6 +43,17 @@ public final class FocusTest {
         testIdleResets();
         testUnknownChangeDoesNothing();
         testButtonsAreReadAgainstOurOwnState();
+
+        testSpeechPausesAndResumes();
+        testSpeechIsNotDuckedByTheCanDuckLoss();
+        testOurOwnSpeechIsNeverPausedByUs();
+        testPermanentLossStillOwesTheSpeechResume();
+        testListenersOwnPauseIsLeftAlone();
+        testForeignResumeDropsTheSpeechDebt();
+        testOurOwnPauseEchoIsNotForeign();
+        testSpeechIsNotPausedTwice();
+        testAnUnpaidSpeechPauseExpires();
+        testUnreachableSpeechIsNotDriven();
 
         System.out.println();
         if (failures.isEmpty()) {
@@ -279,6 +293,160 @@ public final class FocusTest {
         actions(p.onFocusChange(99, playing()), "including a positive one");
     }
 
+    // ---- the speech half -------------------------------------------------
+
+    /** A fixed clock; the policy takes "now" as a parameter so this can exist. */
+    private static final long T0 = 1_000_000L;
+
+    private static void testSpeechPausesAndResumes() {
+        SpeechPolicy p = new SpeechPolicy();
+        MpvState s = playing();
+
+        speech(p.onFocusChange(FocusPolicy.LOSS_TRANSIENT, s, false, T0),
+               "someone else's transient loss pauses speech",
+               SpeechPolicy.Action.PAUSE);
+        yes(p.owesResume(), "and owes the resume");
+
+        // The service writes it; mpv echoes it back through the observer.
+        s.paused = true;
+        p.onPauseChanged(true);
+
+        speech(p.onFocusChange(FocusPolicy.GAIN, s, false, T0 + 4000),
+               "the gain resumes it", SpeechPolicy.Action.RESUME);
+        no(p.owesResume(), "nothing owed afterwards");
+    }
+
+    private static void testSpeechIsNotDuckedByTheCanDuckLoss() {
+        SpeechPolicy p = new SpeechPolicy();
+        // Permission to duck is not permission to be inaudible: a half-heard
+        // sentence is a lost sentence, and nothing replays it. This is the
+        // whole reason the speech half is a different table from the music one.
+        speech(p.onFocusChange(FocusPolicy.LOSS_TRANSIENT_CAN_DUCK, playing(), false, T0),
+               "a can-duck loss pauses speech rather than lowering it",
+               SpeechPolicy.Action.PAUSE);
+    }
+
+    private static void testOurOwnSpeechIsNeverPausedByUs() {
+        SpeechPolicy p = new SpeechPolicy();
+        MpvState s = playing();
+
+        // mpv takes the output when it opens the clip, so acting on the loss
+        // our own clip caused would pause the clip that caused it — Sam
+        // silencing himself on the first word of every reply.
+        speech(p.onFocusChange(FocusPolicy.LOSS_TRANSIENT, s, true, T0),
+               "our own clip's focus loss does not pause it");
+        no(p.owesResume(), "and owes nothing, so the GAIN cannot start it late");
+        speech(p.onFocusChange(FocusPolicy.LOSS_TRANSIENT_CAN_DUCK, s, true, T0),
+               "same for the can-duck loss");
+        speech(p.onFocusChange(FocusPolicy.GAIN, s, true, T0), "and the GAIN is a no-op");
+    }
+
+    private static void testPermanentLossStillOwesTheSpeechResume() {
+        SpeechPolicy p = new SpeechPolicy();
+        MpvState s = playing();
+
+        // The music half deliberately owes nothing after a permanent loss. The
+        // speech half must, and the asymmetry is the point: mpv's pause belongs
+        // to the player, not the clip, so an unpaid one swallows every later
+        // reply — and there is no button on the speech broker to press.
+        speech(p.onFocusChange(FocusPolicy.LOSS, s, false, T0),
+               "a permanent loss pauses speech", SpeechPolicy.Action.PAUSE);
+        yes(p.owesResume(), "and still owes the resume");
+
+        s.paused = true;
+        p.onPauseChanged(true);
+        speech(p.onFocusChange(FocusPolicy.GAIN, s, false, T0 + 1000),
+               "which a later gain pays", SpeechPolicy.Action.RESUME);
+
+        // And it holds even when the clip was ours: a permanent loss is
+        // something taking the output for good, not our own staging.
+        SpeechPolicy q = new SpeechPolicy();
+        speech(q.onFocusChange(FocusPolicy.LOSS, playing(), true, T0),
+               "a permanent loss pauses regardless of whose the clip is",
+               SpeechPolicy.Action.PAUSE);
+    }
+
+    private static void testListenersOwnPauseIsLeftAlone() {
+        SpeechPolicy p = new SpeechPolicy();
+        MpvState s = playing();
+        s.paused = true;                       // popup Space, or the CLI
+
+        speech(p.onFocusChange(FocusPolicy.LOSS_TRANSIENT, s, false, T0),
+               "nothing to pause, and not ours to take over");
+        no(p.owesResume(), "so nothing is owed");
+        speech(p.onFocusChange(FocusPolicy.GAIN, s, false, T0 + 1000),
+               "and the gain does not undo the listener's pause");
+    }
+
+    private static void testForeignResumeDropsTheSpeechDebt() {
+        SpeechPolicy p = new SpeechPolicy();
+        MpvState s = playing();
+        p.onFocusChange(FocusPolicy.LOSS_TRANSIENT, s, false, T0);
+        yes(p.owesResume(), "a pause of ours, owed back");
+
+        // sinks/speech.py clears pause at the start of each response
+        // (reset_state), and the popup can too. Whoever resumed it owns it now.
+        p.onPauseChanged(false);
+        no(p.owesResume(), "a resume from elsewhere cancels ours");
+        speech(p.onFocusChange(FocusPolicy.GAIN, s, false, T0 + 1000),
+               "so the gain does not pause-then-resume on top of it");
+    }
+
+    private static void testOurOwnPauseEchoIsNotForeign() {
+        SpeechPolicy p = new SpeechPolicy();
+        p.onFocusChange(FocusPolicy.LOSS_TRANSIENT, playing(), false, T0);
+        p.onPauseChanged(true);                // mpv echoing our own write back
+        yes(p.owesResume(), "our own pause, observed, is still ours");
+    }
+
+    private static void testSpeechIsNotPausedTwice() {
+        SpeechPolicy p = new SpeechPolicy();
+        MpvState s = playing();
+        p.onFocusChange(FocusPolicy.LOSS_TRANSIENT, s, false, T0);
+        s.paused = true;
+        p.onPauseChanged(true);
+
+        // Losses arrive in runs while an interruption settles.
+        speech(p.onFocusChange(FocusPolicy.LOSS_TRANSIENT, s, false, T0 + 500),
+               "a second loss while already paused by us does nothing");
+        speech(p.onFocusChange(FocusPolicy.GAIN, s, false, T0 + 2000),
+               "and one resume pays for both", SpeechPolicy.Action.RESUME);
+        speech(p.onFocusChange(FocusPolicy.GAIN, s, false, T0 + 2500),
+               "a second gain owes nothing");
+    }
+
+    private static void testAnUnpaidSpeechPauseExpires() {
+        SpeechPolicy p = new SpeechPolicy();
+        MpvState s = playing();
+        p.onFocusChange(FocusPolicy.LOSS, s, false, T0);
+        s.paused = true;
+        p.onPauseChanged(true);
+
+        speech(p.onTick(T0 + SpeechPolicy.RESUME_DEADLINE_MS - 1),
+               "the deadline has not passed yet");
+        yes(p.owesResume(), "still owed");
+
+        // Nothing else on the phone knows about this pause, so it cannot be
+        // left behind: a stale half sentence is the accepted cost of a broker
+        // that still works.
+        speech(p.onTick(T0 + SpeechPolicy.RESUME_DEADLINE_MS),
+               "a resume no gain ever came for is paid anyway",
+               SpeechPolicy.Action.RESUME);
+        no(p.owesResume(), "and only once");
+        speech(p.onTick(T0 + SpeechPolicy.RESUME_DEADLINE_MS * 2), "nothing left to pay");
+    }
+
+    private static void testUnreachableSpeechIsNotDriven() {
+        SpeechPolicy p = new SpeechPolicy();
+        speech(p.onFocusChange(FocusPolicy.LOSS_TRANSIENT, idle(), false, T0),
+               "an idle speech mpv has no clip to pause");
+        MpvState gone = playing();
+        gone.connected = false;
+        speech(p.onFocusChange(FocusPolicy.LOSS_TRANSIENT, gone, false, T0),
+               "and an unreachable one cannot be told anything");
+        no(p.owesResume(), "neither leaves a debt behind");
+    }
+
     // ---- transport keys --------------------------------------------------
 
     private static void testButtonsAreReadAgainstOurOwnState() {
@@ -339,6 +507,11 @@ public final class FocusTest {
 
     private static void actions(List<FocusPolicy.Action> got, String what,
                                 FocusPolicy.Action... want) {
+        is(Arrays.asList(want).toString(), got.toString(), what);
+    }
+
+    private static void speech(List<SpeechPolicy.Action> got, String what,
+                               SpeechPolicy.Action... want) {
         is(Arrays.asList(want).toString(), got.toString(), what);
     }
 

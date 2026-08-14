@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Host-side tests for the companion app's non-Android code.
 #
-# Json, MpvIpc, MpvState and FocusPolicy import nothing from android.*, so they compile and
+# Json, MpvIpc, MpvState and the two focus policies import nothing from android.*,
+# so they compile and
 # run under a plain JDK against a fake mpv on a loopback port. That is the only
 # fast feedback loop this project has: p8a has no adb, so every device test is
 # a sideload and a squint at the phone screen.
@@ -18,6 +19,7 @@ javac -nowarn -d "$OUT" \
     "$APP/src/net/agentmedia/companion/MpvIpc.java" \
     "$APP/src/net/agentmedia/companion/MpvState.java" \
     "$APP/src/net/agentmedia/companion/FocusPolicy.java" \
+    "$APP/src/net/agentmedia/companion/SpeechPolicy.java" \
     "$APP/src/net/agentmedia/companion/FrontChannel.java" \
     "$APP/src/net/agentmedia/companion/StatusServer.java" \
     "$APP/src/net/agentmedia/companion/ButtonPolicy.java" \
