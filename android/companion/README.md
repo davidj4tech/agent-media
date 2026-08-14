@@ -116,10 +116,28 @@ timestamped.
 ## Audio focus
 
 The app holds audio focus **on mpv's behalf** — mpv ignores it, which is the
-root of most of the phone-side complexity agent-media carries. Focus follows
-`loaded()`, the same predicate the silent track uses, so it is held while a file
-is open *including while paused*: abandoning it on our own pause would forfeit
-the `GAIN` that says to resume.
+root of most of the phone-side complexity agent-media carries. It is held while
+*either* channel has something open, and there are two different claims:
+
+| While | Claim | Because |
+|---|---|---|
+| music `loaded()` | `AUDIOFOCUS_GAIN` | mpv is the phone's player and owns the output. Held while paused too — abandoning it on our own pause would forfeit the `GAIN` that says to resume |
+| a speech clip is playing, or a speech pause of ours is outstanding | `AUDIOFOCUS_GAIN_TRANSIENT` | a reply is two seconds of borrowing. `GAIN` would stop the listener's podcast for good, and Android would never start it again |
+
+Music wins the tie, so a clip spoken over our own track does not downgrade a
+permanent claim to a transient one mid-track.
+
+**Speech had no claim at all until 2026-08-15, and that made the speech half
+unreachable.** Focus was requested for `state.loaded()` — the music mpv alone —
+so a spoken reply with no music behind it left the app holding nothing. David
+played YouTube over Sam at 08:10 and *no callback arrived*: you cannot be told
+you lost what you never took. The interruption that lands mid-sentence is the
+whole point of the speech half, and it is exactly the case where music is least
+likely to be playing.
+
+The third term — an outstanding speech pause — is there for the same reason:
+dropping focus while one is owed would forfeit the `GAIN` that pays it, and the
+pause would stand until the deadline discarded the clip.
 
 David's rule is **duck the music, pause the speech**, and both halves are now
 live: `FocusPolicy` drives the music mpv on 6601, `SpeechPolicy` the speech mpv
@@ -234,8 +252,9 @@ resumed it owns the pause now.
   logging every callback; the button on the app's screen switches it to acting,
   and the choice survives a restart. One APK does both because every install
   here is a sideload and a tap through a chooser.
-- **Requesting `GAIN` tells other players to stop.** That is the intent, and it
-  is the first outward-facing thing this app does.
+- **Requesting `GAIN` tells other players to stop.** That is the intent for
+  music, and it is the first outward-facing thing this app does. Speech asks for
+  less on purpose — see the two claims above.
 
 ## What the display says while Sam speaks
 

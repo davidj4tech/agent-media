@@ -34,9 +34,17 @@ final class FocusControl {
         void onFocusChange(int change);
     }
 
+    /** What we are holding: nothing, the music claim, or the speech claim. */
+    static final int NONE = 0;
+    static final int MUSIC = 1;
+    static final int SPEECH = 2;
+
     private final AudioManager am;
-    private final AudioFocusRequest request;
-    private boolean held = false;
+    /** AUDIOFOCUS_GAIN — music: mpv is the player and owns the output. */
+    private final AudioFocusRequest musicRequest;
+    /** AUDIOFOCUS_GAIN_TRANSIENT — speech: borrow the output, give it back. */
+    private final AudioFocusRequest speechRequest;
+    private int held = NONE;
 
     FocusControl(Context ctx, Handler handler, final Callback cb) {
         assertConstantsMatch();
@@ -50,41 +58,71 @@ final class FocusControl {
                 .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
                 .build();
 
-        request = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-                .setAudioAttributes(attrs)
-                .setWillPauseWhenDucked(true)
-                .setOnAudioFocusChangeListener(new AudioManager.OnAudioFocusChangeListener() {
+        AudioManager.OnAudioFocusChangeListener listener =
+                new AudioManager.OnAudioFocusChangeListener() {
                     @Override public void onAudioFocusChange(int change) {
                         cb.onFocusChange(change);
                     }
-                }, handler)
+                };
+
+        musicRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                .setAudioAttributes(attrs)
+                .setWillPauseWhenDucked(true)
+                .setOnAudioFocusChangeListener(listener, handler)
+                .build();
+
+        // Transient, and that is the whole difference. A spoken reply is two
+        // seconds of borrowing: AUDIOFOCUS_GAIN would stop the listener's
+        // podcast for good and Android would never start it again, which is a
+        // heavy price for a sentence. Transient asks the same players to hold,
+        // and hands the output back when we abandon it.
+        speechRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+                .setAudioAttributes(attrs)
+                .setWillPauseWhenDucked(true)
+                .setOnAudioFocusChangeListener(listener, handler)
                 .build();
     }
 
     boolean held() {
+        return held != NONE;
+    }
+
+    /** MUSIC, SPEECH or NONE — for the readout, and to decide a swap. */
+    int kind() {
         return held;
     }
 
     /**
-     * Take focus, if we do not already hold it. Returns true when we hold it
-     * afterwards.
+     * Take focus of the given kind, swapping if we hold the other. Returns true
+     * when we hold it afterwards.
      *
      * This is the app's first outward-facing act: an AUDIOFOCUS_GAIN tells
-     * whatever else is playing to stop. That is the intent — mpv is the player
-     * and should own the output — but it is a real change in how the phone
-     * behaves towards other apps.
+     * whatever else is playing to stop. That is the intent for music — mpv is
+     * the player and should own the output — but it is a real change in how the
+     * phone behaves towards other apps, which is why speech asks for less.
+     *
+     * The music claim wins a tie, so a reply spoken over our own music does not
+     * downgrade a claim we already hold; see CompanionService.
      */
-    boolean request() {
-        if (held) return true;
-        int result = am.requestAudioFocus(request);
-        held = (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED);
-        return held;
+    boolean request(int kind) {
+        if (kind == NONE) return false;
+        if (held == kind) return true;
+        if (held != NONE) abandon();
+        AudioFocusRequest req = (kind == MUSIC) ? musicRequest : speechRequest;
+        int result = am.requestAudioFocus(req);
+        held = (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) ? kind : NONE;
+        return held == kind;
     }
 
     void abandon() {
-        if (!held) return;
-        held = false;
-        am.abandonAudioFocusRequest(request);
+        if (held == NONE) return;
+        AudioFocusRequest req = (held == MUSIC) ? musicRequest : speechRequest;
+        held = NONE;
+        am.abandonAudioFocusRequest(req);
+    }
+
+    static String kindName(int kind) {
+        return kind == MUSIC ? "music" : kind == SPEECH ? "speech" : "none";
     }
 
     /** Human-readable, for the on-screen log — there is no adb on this phone. */

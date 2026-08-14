@@ -134,7 +134,8 @@ public class CompanionService extends Service {
                 + "\nfront=" + FrontChannel.name(speechState)
                 + " speech=" + (!speechState.connected ? "unreachable"
                         : speechState.playing() ? "speaking" : "quiet")
-                + "\nfocus=" + (focusControl != null && focusControl.held() ? "held" : "none")
+                + "\nfocus=" + (focusControl == null ? "none"
+                        : FocusControl.kindName(focusControl.kind()))
                 + " mode=" + (focusActs ? "acting" : "probe (logs only)")
                 + (focus.owesUnduck() ? " owes:unduck" : "")
                 + (speechFocus.owesResume() ? " owes:speech-resume" : "");
@@ -355,15 +356,37 @@ public class CompanionService extends Service {
         // otherwise cost battery all day.
         if (state.loaded()) startSilence(); else stopSilence();
 
-        // Focus follows the same predicate, and for a related reason:
-        // abandoning it on our own pause would forfeit the GAIN that is
-        // supposed to tell us to resume.
-        if (state.loaded()) {
-            if (!focusControl.held() && focusControl.request()) log("focus: granted");
+        // Focus follows a related predicate, for a related reason: abandoning it
+        // on our own pause would forfeit the GAIN that is supposed to tell us to
+        // resume. But it covers BOTH channels, which the first build did not —
+        // and that omission made the speech half unreachable. Focus was
+        // requested for `state.loaded()`, the music mpv alone, so a spoken reply
+        // with no music behind it left the app holding nothing: David played
+        // YouTube over Sam on 2026-08-15 08:10 and no callback arrived at all,
+        // because you cannot be told you lost what you never took. The whole
+        // point of the speech half is the interruption that lands mid-sentence,
+        // which is exactly the case where music is least likely to be playing.
+        //
+        // The third term keeps it while a speech pause of ours is outstanding:
+        // dropping focus there would forfeit the very GAIN that pays it, and the
+        // pause would stand until the deadline discarded the clip.
+        //
+        // Music wins the tie: while a track is open the claim is the permanent
+        // one, and a clip spoken over it must not downgrade the claim to a
+        // transient borrow — that would hand the output back to another app the
+        // moment Sam finished a sentence.
+        int wantFocus = state.loaded() ? FocusControl.MUSIC
+                : (FrontChannel.speechInFront(speechState) || speechFocus.owesResume())
+                        ? FocusControl.SPEECH
+                        : FocusControl.NONE;
+        if (wantFocus != FocusControl.NONE) {
+            if (focusControl.kind() != wantFocus && focusControl.request(wantFocus)) {
+                log("focus: granted (" + FocusControl.kindName(wantFocus) + ")");
+            }
         } else if (focusControl.held()) {
             focusControl.abandon();
             focus.reset();
-            log("focus: abandoned (mpv idle)");
+            log("focus: abandoned (nothing open)");
         }
 
         // The metadata — and only the metadata — follows whichever channel is in
@@ -561,6 +584,11 @@ public class CompanionService extends Service {
             m.put("last_button", lastButton);
             m.put("focus_mode", focusActs ? "acting" : "probe");
             m.put("focus_held", Boolean.valueOf(focusControl != null && focusControl.held()));
+            // Which claim: the permanent one music takes, or the transient
+            // borrow a spoken clip asks for. They behave differently towards
+            // every other app on the phone.
+            m.put("focus_kind", FocusControl.kindName(
+                    focusControl == null ? FocusControl.NONE : focusControl.kind()));
             m.put("owes_unduck", Boolean.valueOf(focus.owesUnduck()));
             m.put("restore_volume", Double.valueOf(focus.volumeToRestore()));
             m.put("duck_volume", Integer.valueOf(FocusPolicy.DUCK_VOLUME));
