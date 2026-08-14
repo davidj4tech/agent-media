@@ -73,7 +73,7 @@ tmux session:
 
 ```sh
 PROMPT='read docs/handover/<the file you just wrote>.md and follow it. <what to start on>'
-tmux new-window -d -t p-agent-media -n <slug> -c ~/projects/agent-media \
+tmux new-window -d -t p-agent-media -c ~/projects/agent-media \
     "zsh -ic 'cl \"$PROMPT\"'"
 ```
 
@@ -84,8 +84,12 @@ status 127 — which looks exactly like nothing happening, because the pane
 closes on exit. Hence `zsh -ic`. To see a launch failure rather than guess at
 it, `set-window-option remain-on-exit on` and `capture-pane`.
 
-Name the window for the work, not the date — `focus`, `speech-bridge` — since
-that is what makes the window list readable a week later.
+**Do not pass `-n <name>`.** tmux turns `automatic-rename` off for any window
+given an explicit name, freezing the tab forever while the pane title keeps
+tracking Claude's live session title — so the window ends up disagreeing with
+itself. Unnamed, David's `automatic-rename-format` derives the label from the
+session title and it stays honest. To thaw one that is already frozen:
+`tmux set -w -t <win> automatic-rename on`.
 
 **It must be a `new-window` in an already-attached session.** Claude Code's TUI
 needs a tmux client at launch; a detached session, or `amux start`, gives it
