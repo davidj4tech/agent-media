@@ -172,7 +172,7 @@ def test_unrecorded_turn_seeks_to_zero(playing, monkeypatch, capsys):
     to zero. The one thing it must not do is nothing."""
     seen = _ipc_spy(monkeypatch, playlist_count=1)          # single loadfile
     monkeypatch.setattr(cli, "_speech_history",
-                        lambda n=20, session=None: [])      # nothing recorded
+                        lambda n=20, session=None, include_live=False: [])      # nothing recorded
     replays = []
     monkeypatch.setattr(cli, "_do_replay",
                         lambda i, session=None: replays.append(i) or 0)
@@ -186,7 +186,7 @@ def test_recorded_turn_still_replays_from_history(playing, monkeypatch, capsys):
     still means re-pushing it — when there is a row to re-push."""
     _ipc_spy(monkeypatch, playlist_count=1)
     monkeypatch.setattr(cli, "_speech_history",
-                        lambda n=20, session=None: [{"uri": "x"}])
+                        lambda n=20, session=None, include_live=False: [{"uri": "x"}])
     replays = []
     monkeypatch.setattr(cli, "_do_replay",
                         lambda i, session=None: replays.append((i, session)) or 0)

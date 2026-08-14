@@ -166,7 +166,45 @@ def _now_speaking() -> Optional[dict]:
     return np
 
 
-def _speech_history(n: int = 20, session: Optional[str] = None):
+def _live_history_row() -> Optional[dict]:
+    """The turn that is speaking *right now*, shaped like a history row.
+
+    History is written when a turn ENDS — every lane calls ``add_history`` on
+    the way out — so for the whole time a reply is audible it is missing from
+    the very list the popup traverses. The turn you are listening to is then
+    not row 1; the *previous* one is. So `r` replayed the turn before the one
+    playing, `<` stepped back one turn too far, and a conversation's first
+    reply scoped to an empty history and every traversal key did nothing at
+    all — a dead keybinding for exactly as long as it was talking.
+
+    now_playing carries the same identity fields, so hand it back as the
+    newest row. `id` is None: it is not a record yet, and `replay --id`
+    addresses records.
+    """
+    np = _now_speaking()
+    if not np or not _speech_in_flight():
+        # The same zombie guard the display uses: a submit process that died
+        # without cleanup leaves a row behind, and resurrecting it here would
+        # put a turn nobody is hearing at the head of the traversal forever.
+        return None
+    ex = np.get("extras") or {}
+    if ex.get("kind") == "notif":
+        return None                     # alerts are not part of the traversal
+    uri = np.get("uri")
+    # A lane that renders on the far side records what it *ran* ("remote-say:
+    # phone"), not a clip anyone here can play. Keep the row — the traversal
+    # still needs it to count and to scope — but strip the pseudo-uri, so
+    # _replay_row refuses it instead of handing mpv a path that is a command.
+    if not ex.get("clip_uris") and not (uri and os.path.exists(uri)):
+        uri = None
+    return {"id": None, "sink": "speech", "uri": uri,
+            "started_at": np.get("started_at"), "ended_at": None,
+            "target": np.get("target"), "source": ex.get("source"),
+            "content_type": None, "text": ex.get("text") or "", "extras": ex}
+
+
+def _speech_history(n: int = 20, session: Optional[str] = None,
+                    include_live: bool = False):
     # `session`, when given, is a *Claude session id* (extras.source_session) —
     # the true "this conversation" boundary. It's preferred over the tmux
     # session because one tmux session can hold several distinct conversations
@@ -185,6 +223,14 @@ def _speech_history(n: int = 20, session: Optional[str] = None):
     rows = [r for r in rows
             if not (isinstance(r.get("extras"), dict)
                     and r["extras"].get("kind") == "notif")]
+    if include_live:
+        live = _live_history_row()
+        # started_at is the same float the lane will hand add_history, so it
+        # dedupes exactly — no window where the turn is listed twice as it
+        # finishes.
+        if live is not None and not any(
+                r.get("started_at") == live["started_at"] for r in rows):
+            rows.insert(0, live)
     if session:
         # Scope traversal to one conversation's clips. Rows that predate the
         # source_session field (or came from a session-less source) carry no
@@ -219,22 +265,14 @@ def _anchor_session() -> Optional[str]:
     conversations sharing one tmux session. Returns None when neither resolves,
     so callers fall back to unscoped (all-conversation) history.
     """
-    np = StateStore().get_now_playing("speech")
-    ex = (np or {}).get("extras") or {}
-    if isinstance(ex, str):
-        try:
-            ex = json.loads(ex)
-        except json.JSONDecodeError:
-            ex = {}
+    ex = (_now_speaking() or {}).get("extras") or {}
     sess = ex.get("source_session")
     if sess:
-        # ...but only if the history has ever heard of it. A lane that renders
-        # on the far side (remote-say to the phone) records now_playing and
-        # writes no history row, so the conversation you are *listening to* can
-        # be one this scope would match zero rows for — and then every scoped
-        # traversal (`<`, `>`, the clip browser) silently does nothing, which
-        # reads as a dead keybinding. An unusable anchor is no anchor.
-        if _speech_history(1, session=sess):
+        # ...but only if the traversal can see anything under that scope. It
+        # normally can — the turn being spoken is itself row 1 — but a stale
+        # or half-written now_playing must not scope every key to an empty
+        # set, which is what a dead keybinding is made of.
+        if _speech_history(1, session=sess, include_live=True):
             return sess
     # Idle: a bare pane id carries no Claude id, so resolve it from that pane's
     # most recent clip (most-recent-first history).
@@ -2547,7 +2585,7 @@ def _replay_visual(extras: dict) -> None:
 
 
 def _do_replay(index: int, session: Optional[str] = None) -> int:
-    rows = _speech_history(max(1, index), session=session)
+    rows = _speech_history(max(1, index), session=session, include_live=True)
     if len(rows) < index:
         print("media: no clip to replay", file=sys.stderr)
         return 1
@@ -2799,14 +2837,14 @@ def _replay_playing_turn(idx: int) -> int:
     """Re-push the turn that is *currently playing*, by history index. 0 on success.
 
     `<` mid-turn means "start this again", so it must never resolve to some
-    other conversation's clip: when the playing turn's conversation has no
-    history row to re-push (the remote-render lane writes none), this fails
-    and leaves the caller to seek what's audible back to zero. Only the
-    step-back branch is allowed to widen its scope.
+    other conversation's clip: when the playing turn's conversation has
+    nothing re-pushable — a lane that rendered on the far side leaves no clip
+    this host can serve — this fails and leaves the caller to seek what's
+    audible back to zero. Only the step-back branch may widen its scope.
     """
     np = _now_speaking() or {}
     sess = (np.get("extras") or {}).get("source_session")
-    if sess and not _speech_history(1, session=sess):
+    if sess and not _speech_history(1, session=sess, include_live=True):
         return 1
     return _do_replay(idx, session=sess or _anchor_session())
 

@@ -2995,6 +2995,13 @@ def submit_event(event: Event,
                           "current_sentence_idx": idx,
                           "clip_paragraph_idx": clip_para,
                           "clip_sentences": _clip_sentences,
+                          # The whole turn's clips, known up front on this
+                          # lane. History records them only when the turn
+                          # ends, so this is what lets the turn you are
+                          # hearing be replayed (popup `r` / `<`) instead of
+                          # the one before it.
+                          "clip_uris": [str(p) for _, p in clip_data],
+                          "clip_durations_s": list(durations),
                           "writer_pid": os.getpid()}
                 # Figure-bearing message ([[visual:]]/[[reveal:]]): surfaces as
                 # the ▣ indicator in the status bar / popup / canvas badge.
@@ -3525,6 +3532,16 @@ def submit_stream(sentences,
                             "current_sentence": sentence,
                             "current_sentence_idx": i,
                             "clip_sentences": known,
+                            # The clips rendered so far. History only learns
+                            # them when the turn ends, so without this the
+                            # turn you are *hearing* can't be replayed — the
+                            # popup's `r` and `<` would restart the previous
+                            # turn instead. Mid-stream that list is partial by
+                            # nature; replaying what has been spoken is still
+                            # the right answer to "again".
+                            "clip_uris": [str(p) for p in paths],
+                            "clip_durations_s": [durations.get(k, 0.0)
+                                                 for k in range(len(paths))],
                             "streaming": True,
                             "writer_pid": os.getpid()})
                 try:
