@@ -1,6 +1,27 @@
 """Tests for the remote (Android) resume settle delay in after_speech."""
 
+import time as _time
+import types
+
 from agent_media_core.route import coordinator as coord_mod
+
+
+def _capture_sleeps(monkeypatch, calls):
+    """Record after_speech's settle delay without patching the *shared* time module.
+
+    `coord_mod.time` IS the stdlib module object, so `setattr(coord_mod.time,
+    "sleep", ...)` replaces time.sleep for every thread in the process — and
+    this suite leaves worker threads running (the coordinator's own flag
+    writer, sentence followers, sink retry loops). Whichever of them happened
+    to be sleeping while these tests ran appended to `calls`, so the
+    assertions below passed or failed on test *order*: green alone, red after
+    the wrong neighbour. Rebinding the module NAME inside the coordinator
+    keeps the patch where the assertion is. `time.time` is passed through
+    because after_speech's caller uses it.
+    """
+    monkeypatch.setattr(coord_mod, "time", types.SimpleNamespace(
+        sleep=lambda s: calls.append(("sleep", s)),
+        time=_time.time, monotonic=_time.monotonic))
 
 
 class _FakeState:
@@ -35,8 +56,7 @@ def test_settle_seconds_tracks_snapcast_latency(monkeypatch):
 
 def test_after_speech_settles_then_resumes_android(monkeypatch):
     calls = []
-    monkeypatch.setattr(coord_mod.time, "sleep",
-                        lambda s: calls.append(("sleep", s)))
+    _capture_sleeps(monkeypatch, calls)
     monkeypatch.setattr(coord_mod._android, "resume",
                         lambda h: calls.append(("resume", h)))
     monkeypatch.setattr(coord_mod, "_remote_resume_settle_s", lambda: 0.9)
@@ -52,8 +72,7 @@ def test_after_speech_settles_then_resumes_android(monkeypatch):
 
 def test_after_speech_no_android_no_sleep(monkeypatch):
     calls = []
-    monkeypatch.setattr(coord_mod.time, "sleep",
-                        lambda s: calls.append(("sleep", s)))
+    _capture_sleeps(monkeypatch, calls)
     monkeypatch.setattr(coord_mod._android, "resume",
                         lambda h: calls.append(("resume", h)))
 
