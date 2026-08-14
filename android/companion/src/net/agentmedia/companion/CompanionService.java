@@ -104,6 +104,15 @@ public class CompanionService extends Service {
     private volatile long speechStagedAt = 0L;
     /** When the coordinator last raised the speaking flag; 0 = never. */
     private volatile long speakingSince = 0L;
+    /**
+     * A speech clip is paused by the card's own pause button. Main-thread only.
+     *
+     * Without it the front channel drops the moment Sam is paused, and the card
+     * that just paused him turns back into a music card whose play button goes
+     * to an idle music mpv — observed on p8a at 08:54:17/08:54:20 on
+     * 2026-08-15, with the reply stranded paused in between.
+     */
+    private boolean speechHeld = false;
     /** Every focus callback seen, newest last — the /state readout's history. */
     private final List<String> focusHistory = new ArrayList<String>();
     /** The PlaybackState we last told the framework, and the last key we saw. */
@@ -131,7 +140,7 @@ public class CompanionService extends Service {
 
     String status() {
         return state
-                + "\nfront=" + FrontChannel.name(speechState)
+                + "\nfront=" + frontName()
                 + " speech=" + (!speechState.connected ? "unreachable"
                         : speechState.playing() ? "speaking" : "quiet")
                 + "\nfocus=" + (focusControl == null ? "none"
@@ -301,7 +310,15 @@ public class CompanionService extends Service {
                     // from anywhere else — the popup, the CLI, or the
                     // coordinator clearing pause for the next response — means
                     // the pause we owed is no longer ours to pay.
-                    if ("pause".equals(name)) speechFocus.onPauseChanged(speechState.paused);
+                    if ("pause".equals(name)) {
+                        speechFocus.onPauseChanged(speechState.paused);
+                        // Resumed by anyone — the card, the popup, the
+                        // coordinator starting the next reply — and the hold is
+                        // over.
+                        if (!speechState.paused) speechHeld = false;
+                    }
+                    // Nothing open is nothing to hold.
+                    if ("idle-active".equals(name) && speechState.idleActive) speechHeld = false;
                     if (MpvIpc.SPEAKING_PROPERTY.equals(name) && speechState.speaking) {
                         speakingSince = System.currentTimeMillis();
                     }
@@ -358,7 +375,7 @@ public class CompanionService extends Service {
         // is the only thing audible, dropping it would drop our card out of the
         // shade's media player and hand the addressed-player slot away in the
         // middle of a reply.
-        if (state.loaded() || FrontChannel.speechInFront(speechState)) startSilence();
+        if (state.loaded() || speechFront()) startSilence();
         else stopSilence();
 
         // Focus follows a related predicate, for a related reason: abandoning it
@@ -380,8 +397,14 @@ public class CompanionService extends Service {
         // one, and a clip spoken over it must not downgrade the claim to a
         // transient borrow — that would hand the output back to another app the
         // moment Sam finished a sentence.
+        // speakingNow() is what holds the claim across the gaps *inside* one
+        // reply. The coordinator pauses the broker before each response and
+        // sink-speech goes briefly idle between clips, and without this term the
+        // app abandoned and re-took focus on every one of those — 08:55:14
+        // granted, 08:55:16 abandoned, mid-reply. Each cycle tells whatever we
+        // interrupted to resume and then to stop again.
         int wantFocus = state.loaded() ? FocusControl.MUSIC
-                : (FrontChannel.speechInFront(speechState) || speechFocus.owesResume())
+                : (speechFront() || speakingNow() || speechFocus.owesResume())
                         ? FocusControl.SPEECH
                         : FocusControl.NONE;
         if (wantFocus != FocusControl.NONE) {
@@ -398,11 +421,11 @@ public class CompanionService extends Service {
         // names Sam while Sam is what is audible.
         MediaMetadata.Builder md = new MediaMetadata.Builder()
                 .putString(MediaMetadata.METADATA_KEY_TITLE,
-                           FrontChannel.title(state, speechState))
+                           FrontChannel.title(state, speechState, speechHeldNow()))
                 .putString(MediaMetadata.METADATA_KEY_ARTIST,
-                           FrontChannel.subtitle(state, speechState))
+                           FrontChannel.subtitle(state, speechState, speechHeldNow()))
                 .putLong(MediaMetadata.METADATA_KEY_DURATION,
-                         FrontChannel.durationMs(state, speechState));
+                         FrontChannel.durationMs(state, speechState, speechHeldNow()));
         session.setMetadata(md.build());
 
         // And so does the PlaybackState, since 2026-08-15. It used to describe
@@ -417,7 +440,7 @@ public class CompanionService extends Service {
         // A control that describes one channel and is labelled with another is
         // worse than a stale toggle. What the card says is now what is audible,
         // and the transport below goes to the same place.
-        MpvState front = FrontChannel.speechInFront(speechState) ? speechState : state;
+        MpvState front = frontState();
 
         int playbackState;
         if (!front.connected) playbackState = PlaybackState.STATE_ERROR;
@@ -474,20 +497,22 @@ public class CompanionService extends Service {
         if (!state.connected) text = "mpv unreachable on " + MPV_HOST + ":" + MPV_PORT;
         else if (!state.loaded()) text = "idle";
         else text = state.paused ? "paused" : "playing";
-        if (FrontChannel.speechInFront(speechState)) text = "speaking — music " + text;
+        if (speechFront()) text = (speechState.paused ? "speech paused — music "
+                                                       : "speaking — music ") + text;
 
         // The small icon reports *state*, so it has to follow it: a hardcoded
         // triangle sat there through every pause and read as the app being
         // stuck, which is a poor thing for a status indicator to say when the
         // session underneath is correct. It reads the front channel for the same
         // reason the card does — while Sam speaks, "playing" is about Sam.
-        boolean audible = FrontChannel.speechInFront(speechState) || state.playing();
+        boolean audible = frontState().playing();
         int icon = audible ? android.R.drawable.ic_media_play
                            : android.R.drawable.ic_media_pause;
 
         return new Notification.Builder(this, CHANNEL)
-                .setContentTitle(state.loaded() || FrontChannel.speechInFront(speechState)
-                        ? FrontChannel.title(state, speechState) : "agent-media")
+                .setContentTitle(state.loaded() || speechFront()
+                        ? FrontChannel.title(state, speechState, speechHeldNow())
+                        : "agent-media")
                 .setContentText(text)
                 .setSmallIcon(icon)
                 .setStyle(new Notification.MediaStyle().setMediaSession(session.getSessionToken()))
@@ -548,8 +573,13 @@ public class CompanionService extends Service {
         }
 
         @Override public void onPause() {
+            boolean speech = speechFront();
             log("transport: pause -> " + frontName());
+            // Remember it, or the front channel drops with the pause and the
+            // play button that should undo this goes to the music mpv instead.
+            if (speech) speechHeld = true;
             frontIpc().setProperty("pause", Boolean.TRUE);
+            pushSessionState();
         }
 
         @Override public void onStop() {
@@ -575,18 +605,37 @@ public class CompanionService extends Service {
 
     // ---- the front channel, for the card and its buttons -----------------
 
+    /**
+     * A clip is paused by someone who means to resume it: the card's pause
+     * button, or a focus pause of ours. Either way the session keeps describing
+     * speech, so the button that paused it can start it again.
+     */
+    private boolean speechHeldNow() {
+        return speechHeld || speechFocus.owesResume();
+    }
+
+    /** Speech owns the session — playing, or held paused. */
+    private boolean speechFront() {
+        return FrontChannel.speechInFront(speechState, speechHeldNow());
+    }
+
     /** The mpv the session is describing: speech while a clip runs, else music. */
     private MpvState frontState() {
-        return FrontChannel.speechInFront(speechState) ? speechState : state;
+        return speechFront() ? speechState : state;
     }
 
     /** The connection to it. Next/previous/seek deliberately never come here. */
     private MpvIpc frontIpc() {
-        return FrontChannel.speechInFront(speechState) ? speechIpc : ipc;
+        return speechFront() ? speechIpc : ipc;
     }
 
     private String frontName() {
-        return FrontChannel.name(speechState);
+        return FrontChannel.name(speechState, speechHeldNow());
+    }
+
+    /** The coordinator says a response is in flight, and said so recently. */
+    private boolean speakingNow() {
+        return speechState.speaking && sinceSpeaking() < FrontChannel.SPEAKING_FLAG_MAX_MS;
     }
 
     // ---- the outside readout ---------------------------------------------
@@ -612,8 +661,8 @@ public class CompanionService extends Service {
             // Which channel the metadata is describing, and the speech mpv it
             // is read from — so "the car still says the track name" is two curl
             // lines rather than another sideload.
-            m.put("front", FrontChannel.name(speechState));
-            m.put("metadata_title", FrontChannel.title(state, speechState));
+            m.put("front", frontName());
+            m.put("metadata_title", FrontChannel.title(state, speechState, speechHeldNow()));
             Map<String, Object> sp = new LinkedHashMap<String, Object>();
             sp.put("connected", Boolean.valueOf(speechState.connected));
             sp.put("idle", Boolean.valueOf(speechState.idleActive));

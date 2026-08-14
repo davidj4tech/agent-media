@@ -24,6 +24,7 @@ public final class FrontTest {
         testSpeechNamesTheMusicUnderneath();
         testFinishedClipHandsTheFrontBack();
         testPausedSpeechIsNotInFront();
+        testAHeldClipKeepsTheFront();
         testUnreachableSpeechFallsBackToMusic();
         testSpeechHidesTheDuration();
         testIdleEverywhere();
@@ -94,6 +95,33 @@ public final class FrontTest {
         MpvState speech = playing("clip.mp3", 4.0);
         speech.paused = true;
         no(FrontChannel.speechInFront(speech), "a paused clip is not in front");
+    }
+
+    /**
+     * The card that paused Sam must still be able to start him again. On p8a on
+     * 2026-08-15 it could not: `transport: pause -> speech` at 08:54:17, then
+     * `transport: play -> music` at 08:54:20, because the front channel dropped
+     * with the pause and took the play button to an idle music mpv with it.
+     */
+    private static void testAHeldClipKeepsTheFront() {
+        MpvState music = playing("Rite of Spring", 900.0);
+        MpvState speech = playing("clip.mp3", 4.0);
+        speech.paused = true;
+
+        no(FrontChannel.speechInFront(speech, false),
+           "a clip nobody is holding is still not in front");
+        yes(FrontChannel.speechInFront(speech, true),
+            "one that was paused on purpose is");
+        is(FrontChannel.SPEECH_TITLE, FrontChannel.title(music, speech, true),
+           "so the card goes on naming Sam while he is paused");
+        is("speech", FrontChannel.name(speech, true), "and the readout says so");
+
+        // The hold cannot outlive the clip: sink-speech going idle leaves
+        // nothing to resume, and holding the front there would strand the card
+        // on a channel with nothing in it.
+        speech.idleActive = true;
+        no(FrontChannel.speechInFront(speech, true),
+           "a hold on a clip that is gone is not a front");
     }
 
     private static void testUnreachableSpeechFallsBackToMusic() {

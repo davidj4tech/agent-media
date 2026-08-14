@@ -9,12 +9,18 @@ package net.agentmedia.companion;
  * (sink-speech.sock) from music, so a session pinned to the music mpv leaves the
  * car display naming a track while Sam is the thing actually being heard.
  *
- * So the *metadata* follows whichever channel is in front, and nothing else
- * does. The PlaybackState — reported state, position, actions — stays with the
- * music mpv, because the framework resolves a PLAY_PAUSE toggle from what we
- * report, and answering that question about a two-second speech clip is exactly
- * the class of bug 3519172 fixed. The transport callbacks likewise still drive
- * music only.
+ * So the session follows whichever channel is in front: the metadata, the
+ * PlaybackState, and the play/pause/stop callbacks all describe and drive the
+ * same one. Next, previous and seek are the exception — they are withdrawn
+ * while speech is in front rather than pointed at the music underneath, because
+ * a clip has none of them.
+ *
+ * The PlaybackState followed music alone until 2026-08-15, on the reasoning
+ * that the framework resolves a PLAY_PAUSE toggle from what we report and
+ * answering that about a two-second clip is the class of bug 3519172 fixed.
+ * What that produced was a card titled "Sam" reporting STOPPED whose play
+ * button went to an idle music mpv — a control labelled with one channel and
+ * wired to another, which is worse than a stale toggle.
  *
  * android.*-free, so test/run.sh covers it.
  */
@@ -45,7 +51,25 @@ final class FrontChannel {
      * display either.
      */
     static boolean speechInFront(MpvState speech) {
-        return speech.playing();
+        return speechInFront(speech, false);
+    }
+
+    /**
+     * @param held a clip is paused by something that means to resume it — the
+     *     card's own pause button, or a focus pause of ours.
+     *
+     * Without this term the front channel drops the instant speech is paused,
+     * and the card that just paused Sam turns back into a music card whose play
+     * button goes to an idle music mpv. Observed on p8a 2026-08-15: {@code
+     * transport: pause -> speech} at 08:54:17, {@code transport: play -> music}
+     * at 08:54:20, and the reply stranded paused in between. A control that can
+     * pause something it cannot resume is worse than one that does neither.
+     *
+     * {@code loaded()} is safe here where it is not above, precisely because
+     * {@code held} is false for the clip sink-speech merely parks.
+     */
+    static boolean speechInFront(MpvState speech, boolean held) {
+        return speech.playing() || (held && speech.loaded());
     }
 
     /**
@@ -105,7 +129,11 @@ final class FrontChannel {
     }
 
     static String title(MpvState music, MpvState speech) {
-        return speechInFront(speech) ? SPEECH_TITLE : music.title();
+        return title(music, speech, false);
+    }
+
+    static String title(MpvState music, MpvState speech, boolean held) {
+        return speechInFront(speech, held) ? SPEECH_TITLE : music.title();
     }
 
     /**
@@ -115,7 +143,11 @@ final class FrontChannel {
      * says whose position it is.
      */
     static String subtitle(MpvState music, MpvState speech) {
-        if (speechInFront(speech) && music.loaded()) return music.title();
+        return subtitle(music, speech, false);
+    }
+
+    static String subtitle(MpvState music, MpvState speech, boolean held) {
+        if (speechInFront(speech, held) && music.loaded()) return music.title();
         return DEFAULT_SUBTITLE;
     }
 
@@ -125,11 +157,19 @@ final class FrontChannel {
      * clip's length would draw a progress bar that is wrong in both directions.
      */
     static long durationMs(MpvState music, MpvState speech) {
-        return speechInFront(speech) ? -1L : music.durationMs();
+        return durationMs(music, speech, false);
+    }
+
+    static long durationMs(MpvState music, MpvState speech, boolean held) {
+        return speechInFront(speech, held) ? -1L : music.durationMs();
     }
 
     /** For the readout: "speech" or "music". */
     static String name(MpvState speech) {
-        return speechInFront(speech) ? "speech" : "music";
+        return name(speech, false);
+    }
+
+    static String name(MpvState speech, boolean held) {
+        return speechInFront(speech, held) ? "speech" : "music";
     }
 }
