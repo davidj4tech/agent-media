@@ -109,6 +109,14 @@ final class FocusControl {
               AudioManager.AUDIOFOCUS_LOSS_TRANSIENT, "LOSS_TRANSIENT");
         check(FocusPolicy.LOSS_TRANSIENT_CAN_DUCK,
               AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK, "LOSS_TRANSIENT_CAN_DUCK");
+
+        // ButtonPolicy duplicates KeyEvent's codes for the same reason.
+        check(ButtonPolicy.KEYCODE_MEDIA_PLAY_PAUSE,
+              android.view.KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, "KEYCODE_MEDIA_PLAY_PAUSE");
+        check(ButtonPolicy.KEYCODE_MEDIA_PLAY,
+              android.view.KeyEvent.KEYCODE_MEDIA_PLAY, "KEYCODE_MEDIA_PLAY");
+        check(ButtonPolicy.KEYCODE_MEDIA_PAUSE,
+              android.view.KeyEvent.KEYCODE_MEDIA_PAUSE, "KEYCODE_MEDIA_PAUSE");
     }
 
     private static void check(int ours, int theirs, String what) {

@@ -336,17 +336,28 @@ public class CompanionService extends Service {
         @Override public boolean onMediaButtonEvent(Intent intent) {
             KeyEvent key = intent == null ? null
                     : (KeyEvent) intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT);
-            if (key != null) {
-                String name = KeyEvent.keyCodeToString(key.getKeyCode());
-                String action = key.getAction() == KeyEvent.ACTION_DOWN ? "down"
-                              : key.getAction() == KeyEvent.ACTION_UP ? "up" : "?";
-                if (key.getAction() == KeyEvent.ACTION_DOWN) {
-                    lastButton = name;
-                }
-                log("button: " + name + " " + action
-                        + " (we report " + lastPushedState + ")");
+            if (key == null) return super.onMediaButtonEvent(intent);
+
+            String name = KeyEvent.keyCodeToString(key.getKeyCode());
+            boolean down = key.getAction() == KeyEvent.ACTION_DOWN;
+            if (down) {
+                lastButton = name;
+                log("button: " + name + " (we report " + lastPushedState + ")");
             }
-            return super.onMediaButtonEvent(intent);
+
+            ButtonPolicy.Press press = ButtonPolicy.interpret(key.getKeyCode(), state);
+            if (press == ButtonPolicy.Press.DEFAULT) {
+                return super.onMediaButtonEvent(intent);
+            }
+
+            // Consume both the down and the up, so the framework does not also
+            // translate the key and undo what we just did.
+            if (down) {
+                log("button: " + name + " read as " + press + " — mpv is "
+                        + (state.paused ? "paused" : "playing"));
+                if (press == ButtonPolicy.Press.PLAY) onPlay(); else onPause();
+            }
+            return true;
         }
 
         @Override public void onPlay() {

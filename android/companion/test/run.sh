@@ -19,6 +19,7 @@ javac -nowarn -d "$OUT" \
     "$APP/src/net/agentmedia/companion/MpvState.java" \
     "$APP/src/net/agentmedia/companion/FocusPolicy.java" \
     "$APP/src/net/agentmedia/companion/StatusServer.java" \
+    "$APP/src/net/agentmedia/companion/ButtonPolicy.java" \
     "$HERE/net/agentmedia/companion/FakeMpv.java" \
     "$HERE/net/agentmedia/companion/IpcTest.java" \
     "$HERE/net/agentmedia/companion/FocusTest.java" \

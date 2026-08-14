@@ -36,6 +36,7 @@ public final class FocusTest {
         testOurOwnDuckEchoIsNotForeign();
         testIdleResets();
         testUnknownChangeDoesNothing();
+        testButtonsAreReadAgainstOurOwnState();
 
         System.out.println();
         if (failures.isEmpty()) {
@@ -227,6 +228,44 @@ public final class FocusTest {
         // we do not recognise must be inert rather than guessed at.
         actions(p.onFocusChange(0, playing()), "an unknown focus change is inert");
         actions(p.onFocusChange(99, playing()), "including a positive one");
+    }
+
+    // ---- transport keys --------------------------------------------------
+
+    private static void testButtonsAreReadAgainstOurOwnState() {
+        MpvState paused = playing();
+        paused.paused = true;
+        MpvState running = playing();
+
+        // The observed bug: the earbuds only ever send the dedicated PAUSE,
+        // because the silent AudioTrack keeps A2DP flowing and they take that
+        // as "playing". Read against our state it can only mean play.
+        is(ButtonPolicy.Press.PLAY,
+           ButtonPolicy.interpret(ButtonPolicy.KEYCODE_MEDIA_PAUSE, paused),
+           "PAUSE pressed while already paused means play");
+        is(ButtonPolicy.Press.DEFAULT,
+           ButtonPolicy.interpret(ButtonPolicy.KEYCODE_MEDIA_PAUSE, running),
+           "PAUSE pressed while playing means what it says");
+
+        is(ButtonPolicy.Press.PAUSE,
+           ButtonPolicy.interpret(ButtonPolicy.KEYCODE_MEDIA_PLAY, running),
+           "PLAY pressed while already playing means pause");
+        is(ButtonPolicy.Press.DEFAULT,
+           ButtonPolicy.interpret(ButtonPolicy.KEYCODE_MEDIA_PLAY, paused),
+           "PLAY pressed while paused means what it says");
+
+        // The toggle is resolved by the framework from the PlaybackState we
+        // publish, which is correct — second-guessing it would break it.
+        is(ButtonPolicy.Press.DEFAULT,
+           ButtonPolicy.interpret(ButtonPolicy.KEYCODE_MEDIA_PLAY_PAUSE, paused),
+           "the toggle is left to the framework");
+        is(ButtonPolicy.Press.DEFAULT,
+           ButtonPolicy.interpret(85 + 1000, paused), "an unrelated key is untouched");
+
+        // Nothing open: no state to read the key against.
+        is(ButtonPolicy.Press.DEFAULT,
+           ButtonPolicy.interpret(ButtonPolicy.KEYCODE_MEDIA_PAUSE, idle()),
+           "idle mpv leaves every key alone");
     }
 
     // ---- fixtures --------------------------------------------------------
