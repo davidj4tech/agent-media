@@ -114,6 +114,21 @@ final class FocusControl {
         return held == kind;
     }
 
+    /**
+     * Android has taken focus away for good (AUDIOFOCUS_LOSS). The request we
+     * registered is dead — the framework will send us nothing more through it —
+     * so the bookkeeping has to agree, or the app believes it still holds focus
+     * and never asks again.
+     *
+     * That is not hypothetical: on p8a on 2026-08-15 the YouTube app took the
+     * output at 09:09:01 and the app went deaf for the rest of the session,
+     * reporting focus_held=true with focus_events frozen at that LOSS. Every
+     * later interruption arrived at nobody.
+     */
+    void lost() {
+        abandon();
+    }
+
     void abandon() {
         if (held == NONE) return;
         AudioFocusRequest req = (held == MUSIC) ? musicRequest : speechRequest;

@@ -139,6 +139,21 @@ The third term — an outstanding speech pause — is there for the same reason:
 dropping focus while one is owed would forfeit the `GAIN` that pays it, and the
 pause would stand until the deadline discarded the clip.
 
+**A permanent `LOSS` kills the request, and the app has to agree.** The
+`AudioFocusRequest` we registered is dead after an `AUDIOFOCUS_LOSS` — nothing
+more will ever arrive through it — so `FocusControl.lost()` drops the
+bookkeeping to `NONE`. Without that the app believed it still held focus and
+never asked again: on 2026-08-15 the YouTube app took the output at 09:09:01 and
+every later interruption arrived at nobody, with `/state` reporting
+`focus_held: true` and `focus_events` frozen on that one line.
+
+Re-requesting is then deliberately *delayed*, because taking it straight back
+would stop the video David just started, one poll after getting out of its way.
+The app asks again when it has something to play — `state.playing()` or speech
+audible — not when it is merely owed something. A paused clip and its
+outstanding resume are reasons to **keep** focus, never to take it. `/state`
+shows this as `focus_lost`.
+
 David's rule is **duck the music, pause the speech**, and both halves are now
 live: `FocusPolicy` drives the music mpv on 6601, `SpeechPolicy` the speech mpv
 on 6602. They are separate classes rather than one table with a flag because the

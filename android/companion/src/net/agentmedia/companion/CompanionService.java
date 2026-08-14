@@ -122,6 +122,16 @@ public class CompanionService extends Service {
     private boolean speechHeld = false;
     /** Consecutive polls that found nothing else playing. See pollForQuiet(). */
     private int quietPolls = 0;
+    /**
+     * Focus was taken from us permanently and we have not asked for it back.
+     *
+     * Two things are true at once after an AUDIOFOCUS_LOSS: our request is dead
+     * and must be re-made before any callback can reach us again, and re-making
+     * it immediately would snatch the output back from the app that just took
+     * it. So we wait, and the thing we wait for is having something to play —
+     * see pushSessionState.
+     */
+    private boolean focusLost = false;
     private AudioManager audio;
     /** Every focus callback seen, newest last — the /state readout's history. */
     private final List<String> focusHistory = new ArrayList<String>();
@@ -423,11 +433,18 @@ public class CompanionService extends Service {
         // app abandoned and re-took focus on every one of those — 08:55:14
         // granted, 08:55:16 abandoned, mid-reply. Each cycle tells whatever we
         // interrupted to resume and then to stop again.
+        // Asking for focus back is what we are actually playing, not what we
+        // are owed. After a permanent loss the paused clip and its outstanding
+        // resume are reasons to KEEP focus, never to take it: re-requesting
+        // there would stop the video David just started, one poll after we got
+        // out of its way.
+        if (state.playing() || speechState.playing()) focusLost = false;
+
         int wantFocus = state.loaded() ? FocusControl.MUSIC
                 : (speechFront() || speakingNow() || speechFocus.owesResume())
                         ? FocusControl.SPEECH
                         : FocusControl.NONE;
-        if (wantFocus != FocusControl.NONE) {
+        if (wantFocus != FocusControl.NONE && !focusLost) {
             if (focusControl.kind() != wantFocus && focusControl.request(wantFocus)) {
                 log("focus: granted (" + FocusControl.kindName(wantFocus) + ")");
             }
@@ -704,6 +721,9 @@ public class CompanionService extends Service {
             m.put("last_button", lastButton);
             m.put("focus_mode", focusActs ? "acting" : "probe");
             m.put("focus_held", Boolean.valueOf(focusControl != null && focusControl.held()));
+            // True while another app owns the output and we are staying out of
+            // its way. Nothing can reach us through the focus listener here.
+            m.put("focus_lost", Boolean.valueOf(focusLost));
             // Which claim: the permanent one music takes, or the transient
             // borrow a spoken clip asks for. They behave differently towards
             // every other app on the phone.
@@ -745,6 +765,15 @@ public class CompanionService extends Service {
                     + (focusActs ? "" : " (probe)"));
             while (focusHistory.size() > 40) focusHistory.remove(0);
         }
+        // Whatever the mode, the bookkeeping follows the framework: a permanent
+        // loss kills the request we registered, and believing otherwise is how
+        // the app stopped hearing anything at all after 09:09:01.
+        if (change == FocusPolicy.LOSS) {
+            focusControl.lost();
+            focusLost = true;
+            log("focus: lost for good — will re-request when we next play");
+        }
+
         if (!focusActs) {
             log("focus: probe mode, no action");
             return;
