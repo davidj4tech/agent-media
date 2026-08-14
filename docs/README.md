@@ -50,6 +50,7 @@ than maintained by hand.
 
 ## Handover
 
+- [2026-08-14 night](handover/2026-08-14-night.md) — the app stops guessing; three duckers become one
 - [2026-08-14 evening](handover/2026-08-14-evening.md) — audio focus landed; why the earbuds only ever sent pause
 - [2026-08-14](handover/2026-08-14.md) — audio focus, the half that retires Automate
 - [2026-08-13](handover/2026-08-13.md) — build the phone companion app
