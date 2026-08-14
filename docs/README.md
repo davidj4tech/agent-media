@@ -50,6 +50,9 @@ than maintained by hand.
 
 ## Handover
 
+- [2026-08-14 evening](handover/2026-08-14-evening.md) — audio focus landed; why the earbuds only ever sent pause
+- [2026-08-14](handover/2026-08-14.md) — audio focus, the half that retires Automate
+- [2026-08-13](handover/2026-08-13.md) — build the phone companion app
 - [2026-08-10](handover/2026-08-10.md) — documents you can listen to; the phone lane leaves ssh
 - [2026-08-09](handover/2026-08-09.md) — speech routing and the phone lane
 
@@ -57,3 +60,32 @@ Handover used to be a single `HANDOVER.md` that was **gitignored** — the
 fastest-rotting document in the repo was the only one with no history, so
 every session's context was overwritten by the next. One file per session,
 tracked, fixes that.
+
+### How a session ends
+
+Writing the handover is only half of it. The other half is **starting the
+session that will read it**, because the moment to do that is while the
+outgoing session still knows what the next one needs — not the next time David
+happens to sit down.
+
+So a session ends by opening its successor in a new window of the attached
+tmux session:
+
+```sh
+tmux new-window -t p-agent-media -n <slug> -c ~/projects/agent-media \
+    'cl "read docs/handover/<the file you just wrote>.md and follow it"'
+```
+
+`cl` is `exec claude --dangerously-skip-permissions`. Name the window for the
+work, not the date — `focus`, `android-app` — since that is what makes the
+window list readable a week later.
+
+**It must be a `new-window` in an already-attached session.** Claude Code's TUI
+needs a tmux client at launch; a detached session, or `amux start`, gives it
+none and it dies on startup. Check with `tmux list-sessions` that the target is
+`(attached)` first — and note the session is `p-agent-media`, not
+`projects-agent-media`.
+
+Hand the successor the handover path in its opening prompt rather than trusting
+it to find the right one. There are several, they are all plausible, and the
+newest is not always the one that matters.
