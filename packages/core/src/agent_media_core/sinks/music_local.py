@@ -75,6 +75,22 @@ def cache_dir() -> str:
     return os.environ.get("MEDIA_MUSIC_LOCAL_CACHE", ".cache/music-offline")
 
 
+def nominal_volume() -> int:
+    """What "normal" means on this backend — the level the mpv-music service
+    starts at (`--volume=130`, see the ceiling note below).
+
+    The coordinator falls back to this when it has no clean pre-duck reading to
+    restore. Its own default is 45, a Mopidy-era number on a 0-100 dial; using
+    that here is not a safe default but an audible drop the listener has to undo
+    by hand, which is exactly what happened on 2026-08-14. Same env var the
+    service reads, so the two cannot drift.
+    """
+    try:
+        return max(1, int(os.environ.get("MEDIA_MUSIC_VOLUME", "130")))
+    except (TypeError, ValueError):
+        return 130
+
+
 def max_volume() -> int:
     """Ceiling for volume writes to the phone mpv.
 
@@ -339,6 +355,11 @@ class SinkMusicLocal:
             return float(v) if v is not None else None
         except (ipc.MpvIpcError, OSError, TypeError, ValueError):
             return None
+
+    def nominal_volume(self, target: Target = DEFAULT_TARGET) -> int:
+        """This backend's normal listening level; see module-level
+        :func:`nominal_volume`."""
+        return nominal_volume()
 
     def current_volume(self, target: Target = DEFAULT_TARGET) -> Optional[int]:
         """The phone mpv's volume 0-100, or None when unreadable."""

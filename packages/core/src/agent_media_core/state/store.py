@@ -783,6 +783,42 @@ class StateStore:
         except (ValueError, TypeError):
             return None
 
+    _MUSIC_DUCK_KEY = "music_duck"
+
+    def set_music_duck(self, marker: Optional[dict]) -> None:
+        """Stash (or clear, with None) the in-force music duck:
+        ``{"level": int, "baseline": int, "target": str}``.
+
+        The twin of :meth:`set_rooms_duck`, and it exists for the same reason
+        the rooms one does — plus a sharper one. The duck used to be recorded
+        only inside the now-playing row, which is shared: another flow can clear
+        or overwrite it between the duck and the restore, and when that happened
+        after_speech found nothing to restore and left the music at the duck
+        level indefinitely (observed on the phone twice on 2026-08-14, once for
+        two hours). A dedicated key makes the debt outlive whatever else
+        happens to that row, and persisting it means a process killed mid-duck
+        still self-heals on the next clip.
+        """
+        with self._cursor() as cur:
+            if marker is None:
+                cur.execute("DELETE FROM meta WHERE key = ?",
+                            (self._MUSIC_DUCK_KEY,))
+            else:
+                cur.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                            (self._MUSIC_DUCK_KEY, json.dumps(marker)))
+
+    def get_music_duck(self) -> Optional[dict]:
+        with self._cursor() as cur:
+            cur.execute("SELECT value FROM meta WHERE key = ?",
+                        (self._MUSIC_DUCK_KEY,))
+            row = cur.fetchone()
+        if not row:
+            return None
+        try:
+            return json.loads(row[0])
+        except (ValueError, TypeError):
+            return None
+
     # ---- history ----------------------------------------------------------
 
     def add_history(self, *, sink: str, uri: str, started_at: float,

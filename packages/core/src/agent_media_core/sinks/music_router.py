@@ -181,3 +181,11 @@ class SinkMusicRouter:
         constant."""
         fn = getattr(self._observe_backend(), "current_volume", None)
         return fn(target) if fn else None
+
+    def nominal_volume(self, target: Target = Target(name="local")):
+        """The live backend's idea of a normal listening level, or None when it
+        has none — the coordinator's last resort when no pre-duck reading is
+        available. The two dials differ (Mopidy 0-100, the phone's mpv 0-170),
+        so this must never be a single constant."""
+        fn = getattr(self._observe_backend(), "nominal_volume", None)
+        return fn(target) if fn else None

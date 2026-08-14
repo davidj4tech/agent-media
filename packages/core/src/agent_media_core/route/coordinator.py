@@ -364,16 +364,34 @@ class Coordinator:
             # fallback (unreadable volume, or a stranded duck left the current
             # volume at/below the duck level — restoring *that* would freeze
             # the music quiet).
-            pre_duck = None
-            try:
-                vol_fn = getattr(self.music, "current_volume", None)
-                pre_duck = vol_fn(self.music_target) if vol_fn else None
-            except Exception:  # noqa: BLE001 — best-effort capture
+            prior = self._music_duck_marker()
+            if concurrency.focus == FOCUS_BOOK:
+                baseline = bed_level()
+            elif prior and prior.get("baseline") is not None:
+                # A duck of ours is already in force — a mid-response re-duck,
+                # or a strand left by a restore that never ran. Keep the
+                # ORIGINAL pre-duck volume rather than re-capturing the ducked
+                # one, exactly as _rooms_duck does. The music path lacked this
+                # guard, and its absence is how 130 became 45 and then stuck.
+                baseline = int(prior["baseline"])
+            else:
                 pre_duck = None
-            extras["baseline_volume"] = (
-                bed_level() if concurrency.focus == FOCUS_BOOK
-                else pre_duck if pre_duck is not None and pre_duck > level
-                else policy.baseline_volume)
+                try:
+                    vol_fn = getattr(self.music, "current_volume", None)
+                    pre_duck = vol_fn(self.music_target) if vol_fn else None
+                except Exception:  # noqa: BLE001 — best-effort capture
+                    pre_duck = None
+                baseline = (pre_duck if pre_duck is not None and pre_duck > level
+                            else self._fallback_baseline(policy.baseline_volume))
+            extras["baseline_volume"] = baseline
+            # Recorded before the duck, so a process killed between the two
+            # still leaves the debt where the next clip can find it.
+            try:
+                self.state.set_music_duck({"level": int(level),
+                                           "baseline": int(baseline),
+                                           "target": self.music_target.name})
+            except Exception:  # noqa: BLE001
+                pass
             try:
                 self.music.duck(self.music_target, level)
             except Exception as e:  # noqa: BLE001
@@ -425,6 +443,17 @@ class Coordinator:
             finally:
                 self._book_paused = False
 
+        # An in-force duck of ours is restored from its own marker, before and
+        # independently of the now-playing row below. That row is shared, and
+        # when something else clears or overwrites it between the duck and the
+        # restore, the early return underneath used to leave the music at the
+        # duck level for good — twice on the phone on 2026-08-14, once for two
+        # hours. The debt is now its own record and is paid whatever happened to
+        # the row.
+        ducked = self._music_duck_marker()
+        if ducked is not None:
+            self._music_unduck(ducked)
+
         np = self.state.get_now_playing("music")
         if not np or not np.get("extras"):
             return
@@ -432,7 +461,9 @@ class Coordinator:
         strategy = interruption.get("strategy")
 
         try:
-            if strategy == "pause":
+            if strategy == "duck" and ducked is not None:
+                pass  # already restored, from the marker above
+            elif strategy == "pause":
                 # Back up by the lead-in window so the listener doesn't
                 # miss the word they were on when speech cut in. Best
                 # effort — if seek fails or position wasn't captured,
@@ -447,7 +478,8 @@ class Coordinator:
                         pass
                 self.music.resume(self.music_target)
             elif strategy == "duck":
-                baseline = int(interruption.get("baseline_volume") or 45)
+                baseline = int(interruption.get("baseline_volume")
+                               or self._fallback_baseline())
                 self.music.unduck(self.music_target, restore=baseline)
         except Exception as e:  # noqa: BLE001
             self._log_err(f"music: restore ({strategy}) failed", str(e))
@@ -455,6 +487,46 @@ class Coordinator:
             # Whether restore succeeded or not, clear the marker so a
             # stuck row doesn't poison the next clip.
             self.state.clear_now_playing("music")
+
+    # ---- the music duck debt --------------------------------------------
+
+    def _music_duck_marker(self) -> Optional[dict]:
+        """The in-force music duck, or None. Best-effort: a state hiccup must
+        never break speech."""
+        try:
+            return self.state.get_music_duck()
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _music_unduck(self, marker: dict) -> None:
+        """Pay the duck debt in ``marker`` and clear it."""
+        baseline = marker.get("baseline")
+        restore = int(baseline) if baseline is not None else self._fallback_baseline()
+        try:
+            self.music.unduck(self.music_target, restore=restore)
+        except Exception as e:  # noqa: BLE001
+            self._log_err("music: unduck failed", str(e))
+        finally:
+            try:
+                self.state.set_music_duck(None)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _fallback_baseline(self, policy_baseline: int = 45) -> int:
+        """Where to put the volume back when no clean pre-duck reading exists.
+
+        The policy's 45 is a Mopidy-era number on a 0-100 dial. The phone's mpv
+        runs `--volume=130` on a 0-170 one, so falling back to 45 there is not a
+        safe default but an audible drop the listener has to undo by hand — and
+        it is precisely what happened on 2026-08-14. Ask the live backend what
+        normal means for it, and keep the policy number as the last resort.
+        """
+        fn = getattr(self.music, "nominal_volume", None)
+        try:
+            nominal = fn(self.music_target) if fn else None
+        except Exception:  # noqa: BLE001
+            nominal = None
+        return int(nominal) if nominal else int(policy_baseline)
 
     # ---- mid-response mute toggling ------------------------------------
 
@@ -484,7 +556,8 @@ class Coordinator:
         interruption = self._duck_interruption()
         if interruption is None:
             return
-        baseline = int(interruption.get("baseline_volume") or 45)
+        baseline = int(interruption.get("baseline_volume")
+                       or self._fallback_baseline())
         try:
             self.music.unduck(self.music_target, restore=baseline)
         except Exception as e:  # noqa: BLE001
