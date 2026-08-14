@@ -12,6 +12,7 @@ import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
 import android.media.AudioAttributes;
 import android.media.AudioFormat;
+import android.media.AudioManager;
 import android.media.AudioTrack;
 import android.media.MediaMetadata;
 import android.media.session.MediaSession;
@@ -80,6 +81,12 @@ public class CompanionService extends Service {
     /** How long a transient loss waits for the speech mpv to say whose it is. */
     private static final long DUCK_DECISION_DELAY_MS = 300;
 
+    /**
+     * How many consecutive quiet polls end an interruption that never said it
+     * was over. Two, so roughly ten seconds — see pollForQuiet().
+     */
+    private static final int QUIET_POLLS_TO_RESUME = 2;
+
     private static final List<String> EVENTS = new ArrayList<String>();
 
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -113,6 +120,9 @@ public class CompanionService extends Service {
      * 2026-08-15, with the reply stranded paused in between.
      */
     private boolean speechHeld = false;
+    /** Consecutive polls that found nothing else playing. See pollForQuiet(). */
+    private int quietPolls = 0;
+    private AudioManager audio;
     /** Every focus callback seen, newest last — the /state readout's history. */
     private final List<String> focusHistory = new ArrayList<String>();
     /** The PlaybackState we last told the framework, and the last key we saw. */
@@ -184,6 +194,7 @@ public class CompanionService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
+        audio = getSystemService(AudioManager.class);
         prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         focusActs = prefs.getBoolean(KEY_FOCUS_ACTS, false);
         focusControl = new FocusControl(this, main, this::onFocusChange);
@@ -359,6 +370,7 @@ public class CompanionService extends Service {
             // The only clock the speech pause has. It runs whether or not music
             // is playing, which is the case that needs it: a permanent loss
             // pauses speech and then nothing else happens at all.
+            pollForQuiet();
             expireSpeechPause();
             main.postDelayed(this, POSITION_POLL_MS);
         }
@@ -375,7 +387,15 @@ public class CompanionService extends Service {
         // is the only thing audible, dropping it would drop our card out of the
         // shade's media player and hand the addressed-player slot away in the
         // middle of a reply.
-        if (state.loaded() || speechFront()) startSilence();
+        // ...and it stops while we are listening for the interruption to end.
+        // Our zeros are a player like any other: isMusicActive() counts them, so
+        // a silent track left running would answer "someone is playing" forever
+        // and pollForQuiet() would never fire. To hear whether anyone else is
+        // making a noise, stop making one yourself — even a silent one. The cost
+        // is the addressed-player slot for the length of the interruption, which
+        // is time we are not the player anyway.
+        boolean listening = speechFocus.owesResume() && !state.loaded();
+        if ((state.loaded() || speechFront()) && !listening) startSilence();
         else stopSilence();
 
         // Focus follows a related predicate, for a related reason: abandoning it
@@ -822,6 +842,48 @@ public class CompanionService extends Service {
             default:
                 break;
         }
+    }
+
+    /**
+     * Notice that an interruption is over when nothing said so.
+     *
+     * Android sends a GAIN after a transient loss and <em>nothing at all</em>
+     * after a permanent one — and a permanent loss is what a real media app
+     * takes. The YouTube app claimed the output with AUDIOFOCUS_GAIN on p8a at
+     * 08:58:19, so the two-minute resume window could never fire for it: the
+     * signal that starts it does not exist.
+     *
+     * So we listen instead. {@code isMusicActive()} is true while any app is
+     * playing on the music stream; when it goes false, whatever took the output
+     * has stopped using it. That is a heuristic where the focus callback is a
+     * fact, which is why it is bounded three ways: only while a pause of ours is
+     * outstanding, only when our own music mpv is idle (otherwise we would be
+     * hearing ourselves), and only after two consecutive quiet polls, so an app
+     * that takes focus and pauses for breath does not get talked over.
+     *
+     * It reuses the GAIN branch of the policy, so the two-minute window and the
+     * manual-resume rule apply exactly as they do to a real one.
+     *
+     * The catch worth knowing: while our own music is loaded — even paused — we
+     * do not listen at all, because the silent track and mpv make the answer
+     * about us. That case falls through to the five-minute deadline.
+     */
+    private void pollForQuiet() {
+        if (!speechFocus.owesResume() || state.loaded() || audio == null) {
+            quietPolls = 0;
+            return;
+        }
+        if (audio.isMusicActive()) {
+            quietPolls = 0;
+            return;
+        }
+        if (++quietPolls < QUIET_POLLS_TO_RESUME) return;
+        quietPolls = 0;
+        List<SpeechPolicy.Action> actions = speechFocus.onFocusChange(
+                FocusPolicy.GAIN, speechState, false, System.currentTimeMillis());
+        if (actions.isEmpty()) return;   // outside the window: David's to lift
+        log("focus: nothing else is playing any more");
+        for (SpeechPolicy.Action action : actions) performSpeech(action);
     }
 
     /**

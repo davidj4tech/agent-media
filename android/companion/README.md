@@ -163,6 +163,27 @@ interruptions, make it resume.*
 | over it | **nothing** — the pause stands. A voice resuming mid-clause after a call is startling rather than helpful, so lifting it is David's (popup Space, `media resume`). This is the policy `call_guard` chose for calls, kept |
 | over `RESUME_DEADLINE_MS` (5 min) | the clip is **discarded** — `stop`, then clear the pause |
 
+**A permanent loss never sends a `GAIN`, so the window would never fire for the
+apps that matter most.** The YouTube app claimed the output with
+`AUDIOFOCUS_GAIN` on p8a at 08:58:19 — a real media app takes focus for good,
+not on loan. Android says nothing when it stops. So while a pause of ours is
+outstanding the app *listens* instead: `AudioManager.isMusicActive()` going
+false means whatever took the output has stopped using it, and that feeds the
+same `GAIN` branch — same two-minute window, same manual-resume rule.
+
+That is a heuristic where the callback is a fact, so it is bounded three ways:
+only while a pause is owed, only while our own music mpv is idle (otherwise we
+are hearing ourselves), and only after two consecutive quiet polls (~10 s), so
+an app that takes focus and pauses for breath is not talked over. **The silent
+`AudioTrack` stops while listening** — our zeros are a player like any other and
+`isMusicActive()` counts them, so leaving it running would answer "someone is
+playing" forever. To hear whether anyone else is making a noise, stop making
+one yourself. The cost is the addressed-player slot for the length of the
+interruption, which is time we are not the player anyway.
+
+While our own music is loaded — even paused — the app does not listen at all,
+because the answer would be about us. That case falls through to the deadline.
+
 That last row is not a third policy, it is the one thing neither of the others
 can be allowed to leave behind. mpv's `pause` is a property of the player, not
 of the clip: it outlives the file that was open when it was set. A stranded
@@ -252,6 +273,14 @@ resumed it owns the pause now.
   logging every callback; the button on the app's screen switches it to acting,
   and the choice survives a restart. One APK does both because every install
   here is a sideload and a tap through a chooser.
+- **An app that never asks for focus is invisible to all of this.** Firefox
+  playing a YouTube video on p8a on 2026-08-15 produced *no callback at all* —
+  checked against the log, which records every callback before any decision is
+  taken — and so played straight over Sam. There is no signal to act on: the
+  same sin mpv commits, and the reason this app exists. `isMusicActive()` cannot
+  separate it from our own speech either, since both are live at once. Detecting
+  it would mean `registerAudioPlaybackCallback` and counting active players,
+  which is a heuristic on top of a heuristic; not built.
 - **Requesting `GAIN` tells other players to stop.** That is the intent for
   music, and it is the first outward-facing thing this app does. Speech asks for
   less on purpose — see the two claims above.
