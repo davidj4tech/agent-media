@@ -25,25 +25,44 @@ final class SpeechPolicy {
     enum Action {
         /** set pause=true on the speech mpv */
         PAUSE,
-        /** set pause=false on the speech mpv */
+        /** set pause=false on the speech mpv — the clip carries on where it stopped */
         RESUME,
+        /** stop the clip, then clear the pause: a clean broker, no stale sentence */
+        DISCARD,
     }
 
     /**
-     * How long a pause of ours may go unpaid before it is paid anyway.
+     * How long an interruption may last and still be one the listener is in the
+     * middle of.
      *
-     * The normal payer is the {@code GAIN}. This is for the case where one
-     * never comes — a permanent loss, or an app that takes the output and is
-     * killed holding it. mpv's {@code pause} is a property of the player, not
-     * of the clip: it outlives the file that was open when it was set, so a
-     * stranded pause is not "the rest of that sentence is lost", it is "the
-     * speech broker is wedged". The coordinator does clear pause at the start
-     * of each response (sinks/speech.py, reset_state), so the damage is bounded
-     * at one reply — but a control surface we set and stopped tracking is not a
-     * thing to leave lying on the phone.
+     * David's rule (2026-08-15): <i>depends how long it was paused for; for
+     * short interruptions, make it resume.</i> Inside this window the `GAIN`
+     * picks the sentence up where it stopped, which is what a navigation prompt
+     * or a notification chime deserves. Outside it, the listener has moved on
+     * and a voice resuming mid-clause is startling rather than helpful — so the
+     * pause is left standing for a manual resume (popup Space, `media resume`),
+     * which is exactly the policy `call_guard` chose for calls.
      *
-     * Long enough that a real interruption is over by the time it fires, and a
-     * five-minute-old half sentence arriving late is the acknowledged cost.
+     * Thirty seconds because that is the length of interruption you can still
+     * hold a half-heard sentence across. A call is never inside it, and no
+     * navigation prompt is ever outside it.
+     */
+    static final long RESUME_WINDOW_MS = 30000;
+
+    /**
+     * How long a pause of ours may stand before it is cleaned up.
+     *
+     * mpv's {@code pause} is a property of the player, not of the clip: it
+     * outlives the file that was open when it was set. So the failure to avoid
+     * is not "the rest of that sentence was lost" — that is the intended
+     * outcome of a long interruption — it is "the speech broker is wedged", and
+     * every later reply loads into it and plays silently.
+     *
+     * This is why the deadline DISCARDs rather than resuming. Between
+     * {@link #RESUME_WINDOW_MS} and here, the pause is David's to lift; past
+     * here, nothing is going to lift it, so the clip is dropped and the broker
+     * handed back clean. The coordinator clearing pause at the start of each
+     * response (sinks/speech.py, reset_state) is the backstop underneath both.
      */
     static final long RESUME_DEADLINE_MS = 300000;   // 5 minutes
 
@@ -88,7 +107,7 @@ final class SpeechPolicy {
                 return pauseInto(speech, nowMs);
 
             case FocusPolicy.GAIN:
-                return resumeInto();
+                return onGain(nowMs);
 
             default:
                 return Collections.emptyList();
@@ -101,28 +120,41 @@ final class SpeechPolicy {
         if (!speech.playing() || pausedByUs) return Collections.emptyList();
         pausedByUs = true;
         pausedAt = nowMs;
-        List<Action> actions = new ArrayList<Action>(1);
-        actions.add(Action.PAUSE);
-        return actions;
-    }
-
-    private List<Action> resumeInto() {
-        if (!pausedByUs) return Collections.emptyList();
-        pausedByUs = false;
-        List<Action> actions = new ArrayList<Action>(1);
-        actions.add(Action.RESUME);
-        return actions;
+        return one(Action.PAUSE);
     }
 
     /**
-     * Pay the debt if it has gone unpaid too long. Called on a timer by the
+     * Focus is back. Whether that resumes the sentence depends on how long it
+     * was gone — see {@link #RESUME_WINDOW_MS}.
+     *
+     * A late GAIN deliberately returns nothing <i>and keeps the debt</i>: the
+     * pause stays for David to lift by hand, and if he never does, the deadline
+     * clears it. Paying it here would be the startling case; forgetting it here
+     * would be the wedged one.
+     */
+    private List<Action> onGain(long nowMs) {
+        if (!pausedByUs) return Collections.emptyList();
+        if (nowMs - pausedAt >= RESUME_WINDOW_MS) return Collections.emptyList();
+        pausedByUs = false;
+        return one(Action.RESUME);
+    }
+
+    /**
+     * Clean up a pause nothing is going to lift. Called on a timer by the
      * service; returns the same list shape as the focus table so the caller has
      * one way to perform an action.
      */
     List<Action> onTick(long nowMs) {
         if (!pausedByUs) return Collections.emptyList();
         if (nowMs - pausedAt < RESUME_DEADLINE_MS) return Collections.emptyList();
-        return resumeInto();
+        pausedByUs = false;
+        return one(Action.DISCARD);
+    }
+
+    private static List<Action> one(Action action) {
+        List<Action> actions = new ArrayList<Action>(1);
+        actions.add(action);
+        return actions;
     }
 
     /**
@@ -143,8 +175,8 @@ final class SpeechPolicy {
      * Deliberately no reset-on-idle twin of {@link FocusPolicy#reset}: mpv's
      * pause belongs to the player, not to the file, so a clip ending while we
      * owe a resume does not cancel the debt — it is precisely the case where
-     * forgetting it wedges the broker. Only a mode switch clears it, and the
-     * service pays it first.
+     * forgetting it wedges the broker. Only the service leaving (a mode switch,
+     * a shutdown) clears it, and it DISCARDs first.
      */
     void forget() {
         pausedByUs = false;

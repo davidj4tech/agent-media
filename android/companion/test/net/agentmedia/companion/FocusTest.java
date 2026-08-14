@@ -52,7 +52,9 @@ public final class FocusTest {
         testForeignResumeDropsTheSpeechDebt();
         testOurOwnPauseEchoIsNotForeign();
         testSpeechIsNotPausedTwice();
-        testAnUnpaidSpeechPauseExpires();
+        testALongInterruptionIsLeftForAManualResume();
+        testTheEdgeOfTheResumeWindow();
+        testAStandingPauseIsEventuallyDiscarded();
         testUnreachableSpeechIsNotDriven();
 
         System.out.println();
@@ -312,8 +314,68 @@ public final class FocusTest {
         p.onPauseChanged(true);
 
         speech(p.onFocusChange(FocusPolicy.GAIN, s, false, T0 + 4000),
-               "the gain resumes it", SpeechPolicy.Action.RESUME);
+               "a gain four seconds later picks the sentence up",
+               SpeechPolicy.Action.RESUME);
         no(p.owesResume(), "nothing owed afterwards");
+    }
+
+    /**
+     * David's rule, 2026-08-15: <i>depends how long it was paused for; for short
+     * interruptions, make it resume.</i> A nav prompt is inside the window and a
+     * call never is.
+     */
+    private static void testALongInterruptionIsLeftForAManualResume() {
+        SpeechPolicy p = new SpeechPolicy();
+        MpvState s = playing();
+        p.onFocusChange(FocusPolicy.LOSS_TRANSIENT, s, false, T0);
+        s.paused = true;
+        p.onPauseChanged(true);
+
+        long late = T0 + SpeechPolicy.RESUME_WINDOW_MS;
+        speech(p.onFocusChange(FocusPolicy.GAIN, s, false, late),
+               "a voice resuming mid-clause after a call is startling, not helpful");
+        yes(p.owesResume(), "but the pause is still ours to account for");
+
+        // David lifting it by hand — call_guard's policy for calls, preserved.
+        p.onPauseChanged(false);
+        no(p.owesResume(), "a manual resume settles it");
+    }
+
+    private static void testTheEdgeOfTheResumeWindow() {
+        SpeechPolicy p = new SpeechPolicy();
+        MpvState s = playing();
+        p.onFocusChange(FocusPolicy.LOSS_TRANSIENT, s, false, T0);
+        speech(p.onFocusChange(FocusPolicy.GAIN, s, false,
+                               T0 + SpeechPolicy.RESUME_WINDOW_MS - 1),
+               "the last millisecond inside the window still resumes",
+               SpeechPolicy.Action.RESUME);
+    }
+
+    /**
+     * The pause that was never lifted. It cannot simply be forgotten: mpv's
+     * pause belongs to the player, not the clip, so every later reply would load
+     * into a paused broker and play silently. It cannot be resumed either — that
+     * is the startling case the window exists to prevent. So the clip is dropped
+     * and the broker handed back clean.
+     */
+    private static void testAStandingPauseIsEventuallyDiscarded() {
+        SpeechPolicy p = new SpeechPolicy();
+        MpvState s = playing();
+        p.onFocusChange(FocusPolicy.LOSS, s, false, T0);
+        s.paused = true;
+        p.onPauseChanged(true);
+
+        // A late GAIN left it standing; nothing has lifted it since.
+        p.onFocusChange(FocusPolicy.GAIN, s, false, T0 + SpeechPolicy.RESUME_WINDOW_MS + 1);
+        yes(p.owesResume(), "still standing after the late gain");
+
+        speech(p.onTick(T0 + SpeechPolicy.RESUME_DEADLINE_MS - 1),
+               "the deadline has not passed yet");
+        speech(p.onTick(T0 + SpeechPolicy.RESUME_DEADLINE_MS),
+               "then the stale clip is dropped, not played",
+               SpeechPolicy.Action.DISCARD);
+        no(p.owesResume(), "and only once");
+        speech(p.onTick(T0 + SpeechPolicy.RESUME_DEADLINE_MS * 2), "nothing left to clear");
     }
 
     private static void testSpeechIsNotDuckedByTheCanDuckLoss() {
@@ -413,27 +475,6 @@ public final class FocusTest {
                "and one resume pays for both", SpeechPolicy.Action.RESUME);
         speech(p.onFocusChange(FocusPolicy.GAIN, s, false, T0 + 2500),
                "a second gain owes nothing");
-    }
-
-    private static void testAnUnpaidSpeechPauseExpires() {
-        SpeechPolicy p = new SpeechPolicy();
-        MpvState s = playing();
-        p.onFocusChange(FocusPolicy.LOSS, s, false, T0);
-        s.paused = true;
-        p.onPauseChanged(true);
-
-        speech(p.onTick(T0 + SpeechPolicy.RESUME_DEADLINE_MS - 1),
-               "the deadline has not passed yet");
-        yes(p.owesResume(), "still owed");
-
-        // Nothing else on the phone knows about this pause, so it cannot be
-        // left behind: a stale half sentence is the accepted cost of a broker
-        // that still works.
-        speech(p.onTick(T0 + SpeechPolicy.RESUME_DEADLINE_MS),
-               "a resume no gain ever came for is paid anyway",
-               SpeechPolicy.Action.RESUME);
-        no(p.owesResume(), "and only once");
-        speech(p.onTick(T0 + SpeechPolicy.RESUME_DEADLINE_MS * 2), "nothing left to pay");
     }
 
     private static void testUnreachableSpeechIsNotDriven() {

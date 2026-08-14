@@ -133,19 +133,33 @@ going, nobody hears them, and nothing replays them.
 | `LOSS` | restore volume, then pause | pause | music: nothing — a permanent loss is not followed by a resume, and music restarting minutes later is worse than a button press. Speech: **the resume is still owed** (below) |
 | `LOSS_TRANSIENT` | duck to 10 | pause | restore / resume on `GAIN` |
 | `LOSS_TRANSIENT_CAN_DUCK` | duck to 10 | pause — permission to duck is not permission to be inaudible | restore / resume on `GAIN` |
-| `GAIN` | unduck | resume, if we were the one who paused it | — |
+| `GAIN` | unduck | resume — but only if the interruption was short (below) | — |
 
-**The speech pause is owed back even after a permanent loss, and the music pause
-is not.** mpv's `pause` is a property of the player, not of the clip: it outlives
-the file that was open when it was set. A stranded music pause costs a button
-press, a stranded speech pause costs *every later reply* — and there is no button
-on the speech broker. So the debt survives the clip ending, is paid by the
-`GAIN`, and if no `GAIN` ever comes it is paid anyway after
-`RESUME_DEADLINE_MS` (5 min), which the position poll ticks. A five-minute-old
-half sentence arriving late is the accepted cost of a broker that still works.
-The coordinator clears `pause` at the start of each response
-(`sinks/speech.py`, `reset_state`), which bounds the damage at one reply and is
-also the backstop if the app is killed mid-pause.
+**Whether a `GAIN` resumes the sentence depends on how long it was gone.**
+David's rule, 2026-08-15: *depends how long it was paused for; for short
+interruptions, make it resume.*
+
+| How long the pause stood | What happens on the `GAIN` |
+|---|---|
+| under `RESUME_WINDOW_MS` (30 s) | resume — the sentence picks up where it stopped. A navigation prompt or a notification chime is always in here |
+| over it | **nothing** — the pause stands. A voice resuming mid-clause after a call is startling rather than helpful, so lifting it is David's (popup Space, `media resume`). This is the policy `call_guard` chose for calls, kept |
+| over `RESUME_DEADLINE_MS` (5 min) | the clip is **discarded** — `stop`, then clear the pause |
+
+That last row is not a third policy, it is the one thing neither of the others
+can be allowed to leave behind. mpv's `pause` is a property of the player, not
+of the clip: it outlives the file that was open when it was set. A stranded
+music pause costs a button press; a stranded speech pause costs *every later
+reply*, which loads into the paused broker and plays silently — and there is no
+button on the speech broker. So the debt survives the clip ending, and past the
+deadline the app drops the clip and hands the broker back idle rather than
+either resuming a five-minute-old half sentence or forgetting the pause exists.
+The position poll is what ticks it. The coordinator clearing `pause` at the
+start of each response (`sinks/speech.py`, `reset_state`) is the backstop
+underneath all of it, and the one that covers the app being killed mid-pause.
+
+**The speech pause is owed back after a permanent loss and the music pause is
+not**, for the same reason: `LOSS` is where a forgotten speech pause is most
+likely, since no `GAIN` is coming by definition.
 
 **A transient loss caused by our own speech is left alone entirely — both
 halves.** For music, because red5's coordinator is already ducking that mpv (see

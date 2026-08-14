@@ -156,13 +156,14 @@ public class CompanionService extends Service {
             pendingFocus = null;
         }
         focus.reset();
-        // A speech pause is paid before it is forgotten, not after: dropping the
-        // debt would leave the broker paused with nothing left that knows to
+        // A speech pause is cleared before it is forgotten, not after: dropping
+        // the debt would leave the broker paused with nothing left that knows to
         // undo it. The music's ducked volume is visible and pressable; this is
-        // neither.
+        // neither. DISCARD rather than RESUME, here and on the way out — leaving
+        // is never a reason to start audio nobody asked for.
         if (speechFocus.owesResume()) {
-            log("focus: paying the speech pause before the mode switch");
-            performSpeech(SpeechPolicy.Action.RESUME);
+            log("focus: clearing the speech pause before the mode switch");
+            performSpeech(SpeechPolicy.Action.DISCARD);
             speechFocus.forget();
         }
         log("focus: mode -> " + (acts ? "acting" : "probe (logs only)"));
@@ -224,7 +225,7 @@ public class CompanionService extends Service {
             // still owe outlives this process on the phone's mpv. The write may
             // not make it out; the coordinator clears pause at the start of the
             // next response, which is the backstop.
-            if (speechFocus.owesResume()) performSpeech(SpeechPolicy.Action.RESUME);
+            if (speechFocus.owesResume()) performSpeech(SpeechPolicy.Action.DISCARD);
             speechIpc.stop();
         }
         if (status != null) status.stop();
@@ -682,19 +683,27 @@ public class CompanionService extends Service {
                 log("focus: resume speech");
                 speechIpc.setProperty("pause", Boolean.FALSE);
                 break;
+            case DISCARD:
+                // Order matters: stop first, so clearing the pause hands back an
+                // idle broker rather than starting a sentence nobody is waiting
+                // for any more.
+                log("focus: discard the stale clip, unpause the broker");
+                speechIpc.command("stop");
+                speechIpc.setProperty("pause", Boolean.FALSE);
+                break;
             default:
                 break;
         }
     }
 
     /**
-     * Pay a speech pause that no GAIN ever came back for. mpv's pause outlives
+     * Clear a speech pause that nothing is going to lift. mpv's pause outlives
      * the clip it was set on, so the cost of forgetting one is a broker that
      * swallows every later reply — see SpeechPolicy.RESUME_DEADLINE_MS.
      */
     private void expireSpeechPause() {
         for (SpeechPolicy.Action action : speechFocus.onTick(System.currentTimeMillis())) {
-            log("focus: speech pause expired unpaid");
+            log("focus: speech pause stood too long to be lifted by hand");
             performSpeech(action);
         }
     }
