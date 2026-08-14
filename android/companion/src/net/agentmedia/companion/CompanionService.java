@@ -313,10 +313,17 @@ public class CompanionService extends Service {
         else if (!state.loaded()) text = "idle";
         else text = state.paused ? "paused" : "playing";
 
+        // The small icon reports *state*, so it has to follow it: a hardcoded
+        // triangle sat there through every pause and read as the app being
+        // stuck, which is a poor thing for a status indicator to say when the
+        // session underneath is correct.
+        int icon = state.playing() ? android.R.drawable.ic_media_play
+                                   : android.R.drawable.ic_media_pause;
+
         return new Notification.Builder(this, CHANNEL)
                 .setContentTitle(state.loaded() ? state.title() : "agent-media")
                 .setContentText(text)
-                .setSmallIcon(android.R.drawable.ic_media_play)
+                .setSmallIcon(icon)
                 .setStyle(new Notification.MediaStyle().setMediaSession(session.getSessionToken()))
                 .setContentIntent(open)
                 .setOngoing(true)
