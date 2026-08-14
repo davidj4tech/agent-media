@@ -82,7 +82,8 @@ def test_sockets_default_to_state_dir(monkeypatch):
     monkeypatch.delenv("MEDIA_CALL_GUARD_SOCKETS", raising=False)
     cfg = call_guard.Config()
     names = {s.rsplit("/", 1)[-1] for s in cfg.sockets}
-    assert names == {"sink-speech.sock", "mpv-music.sock"}
+    # Music is deliberately absent: the companion app owns that volume now.
+    assert names == {"sink-speech.sock"}
 
 
 def test_sockets_overridable(monkeypatch):
@@ -409,21 +410,31 @@ def test_flaghold_release_grace_bridges_blips():
     assert fh.update(False, 12.0) is False  # absent 2.0s — released
 
 
-def test_music_ducked_not_paused_by_default(monkeypatch):
+def test_music_is_not_touched_at_all_by_default(monkeypatch):
+    """The companion app holds audio focus for mpv and ducks the music itself.
+
+    Two duckers on one volume is the bug, not a redundancy: on 2026-08-14 three
+    of them lost the restore between them and left the phone at 10 for two
+    hours. So call_guard neither ducks music nor pauses it — it does not name
+    the socket at all.
+    """
     monkeypatch.delenv("MEDIA_CALL_GUARD_SOCKETS", raising=False)
     monkeypatch.delenv("MEDIA_CALL_GUARD_DUCK_SOCKETS", raising=False)
     cfg = call_guard.Config()
-    assert any(s.endswith("mpv-music.sock") for s in cfg.duck_list)
+    assert cfg.duck_list == []
     assert all(not s.endswith("mpv-music.sock") for s in cfg.pause_list)
     assert any(s.endswith("sink-speech.sock") for s in cfg.pause_list)
 
 
-def test_duck_disabled_via_empty_env(monkeypatch):
-    monkeypatch.setenv("MEDIA_CALL_GUARD_DUCK_SOCKETS", "")
+def test_the_music_duck_can_be_put_back_with_one_env_var(monkeypatch):
+    """Retiring it is a claim about the device — that a real call delivers a
+    focus callback to the app — and a call is hard to rehearse. The way back
+    must not need a code change."""
+    monkeypatch.delenv("MEDIA_CALL_GUARD_SOCKETS", raising=False)
+    monkeypatch.setenv("MEDIA_CALL_GUARD_DUCK_SOCKETS", "/state/mpv-music.sock")
     cfg = call_guard.Config()
-    assert cfg.duck_list == []
-    # with nothing ducked, music falls back into the paused set
-    assert any(s.endswith("mpv-music.sock") for s in cfg.pause_list)
+    assert cfg.duck_list == ["/state/mpv-music.sock"]
+    assert all(not s.endswith("mpv-music.sock") for s in cfg.pause_list)
 
 
 def test_duck_saves_and_unduck_restores_volume(monkeypatch, tmp_path):

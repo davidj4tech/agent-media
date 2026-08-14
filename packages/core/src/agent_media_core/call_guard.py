@@ -17,15 +17,22 @@ enable "Termux:API").
 
 Policy (chosen 2026-07-04):
   * pause on the **ring** — the rising edge of a call, so you can still hear it;
-  * **pause speech/voice**, but **duck** (lower the volume of) phone-local
-    **music** rather than pausing it;
+  * **pause speech/voice**;
   * speech does **not auto-resume** — you un-pause it manually (popup Space /
-    ``media resume``) when the call is done. Music volume, however, is restored
-    automatically (un-ducking never starts playback, so it's always safe).
+    ``media resume``) when the call is done.
 
-Duck sockets are configured via ``MEDIA_CALL_GUARD_DUCK_SOCKETS`` (default: the
-music broker) and ``MEDIA_CALL_GUARD_DUCK_VOLUME`` (default 20). Set the socket
-list to ``""`` to pause music like everything else.
+**Music left this daemon on 2026-08-15.** The companion app now holds Android
+audio focus on mpv's behalf and ducks the phone's music on any focus loss,
+restoring it on the GAIN — which is the signal this whole file exists because
+mpv ignores. Nothing here touches the music broker any more: not a duck, not a
+pause. That is the first retirement the companion app's design predicted, and
+the reason for it is not tidiness but correctness — three separate duckers on
+one volume lost the restore between them on 2026-08-14 and left the music at 10
+for two hours.
+
+The duck machinery remains, unused by default, because retiring a workaround is
+a claim about the device that a real call has not yet tested. See
+``_DEFAULT_DUCK_SOCKET_NAMES`` for the one env line that puts it back.
 
 For a **call**, the daemon leaves speech paused until you resume it, and only
 *ducks* music — restoring its volume when the call ends. (The opt-in external
@@ -126,14 +133,30 @@ _DEFAULT_EXCLUDE_RE = r"(?i)missed|voicemail"
 # 2026-05-07 -- retiring it was already on the plan in
 # docs/reference/restructure.md. Probing a socket nothing plays to only cost a
 # pointless connect on every call, and kept a dead lane looking load-bearing.
-_DEFAULT_SOCKET_NAMES = ("sink-speech.sock", "mpv-music.sock")
+# mpv-music.sock was dropped 2026-08-15: **the companion app owns the music
+# volume now.** It holds Android audio focus on mpv's behalf and ducks the
+# phone's music on any focus loss, a call included, restoring it on the GAIN —
+# the thing this daemon was written to fake because no such signal existed.
+# Two duckers on one volume is not a redundancy, it is the bug: whoever captured
+# the pre-duck level must be the one to put it back, and on 2026-08-14 three of
+# them lost the restore between them and left the music at 10 for two hours.
+_DEFAULT_SOCKET_NAMES = ("sink-speech.sock",)
 
-# Sockets to DUCK (lower volume) instead of pausing while a hold is active — the
-# phone-local music broker by default. Ducking rather than pausing means music
-# dips during a call/hold and its volume is *restored automatically* afterward
-# (always safe, unlike auto-resuming a pause). Set MEDIA_CALL_GUARD_DUCK_SOCKETS=""
-# to pause music like everything else instead.
-_DEFAULT_DUCK_SOCKET_NAMES = ("mpv-music.sock",)
+# Sockets to DUCK (lower volume) instead of pausing while a hold is active.
+# Empty since 2026-08-15 — see above; nothing is ducked from here any more.
+#
+# The machinery stays, because retiring a workaround is a claim about the
+# device: that a real call delivers a focus callback to the app. Focus ducking
+# is proven on p8a for another app taking the output (2026-08-15 07:42:20, duck
+# to 10 and back to 110 on the GAIN) but has NOT been seen for a call, which is
+# by nature hard to rehearse. If a call turns out to arrive silently, one env
+# line puts this back with no code change:
+#
+#     MEDIA_CALL_GUARD_DUCK_SOCKETS=$PREFIX/tmp/mpv-music.sock
+#
+# (duck_list is resolved independently of MEDIA_CALL_GUARD_SOCKETS, so that is
+# the whole restoration.)
+_DEFAULT_DUCK_SOCKET_NAMES = ()
 _DEFAULT_DUCK_VOLUME = 20.0
 
 _DEFAULT_POLL_S = 1.5
