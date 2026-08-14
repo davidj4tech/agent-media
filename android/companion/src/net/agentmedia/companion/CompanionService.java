@@ -77,6 +77,8 @@ public class CompanionService extends Service {
     /** How often to refresh position while playing. The session extrapolates between. */
     private static final long POSITION_POLL_MS = 5000;
     private static final int LOG_LINES = 200;
+    /** How long a transient loss waits for the speech mpv to say whose it is. */
+    private static final long DUCK_DECISION_DELAY_MS = 300;
 
     private static final List<String> EVENTS = new ArrayList<String>();
 
@@ -94,6 +96,8 @@ public class CompanionService extends Service {
     private StatusServer status;
     private SharedPreferences prefs;
     private boolean focusActs = false;
+    /** A deferred transient-loss decision; main-thread only. See onFocusChange. */
+    private Runnable pendingFocus;
     /** Every focus callback seen, newest last — the /state readout's history. */
     private final List<String> focusHistory = new ArrayList<String>();
     /** The PlaybackState we last told the framework, and the last key we saw. */
@@ -138,7 +142,12 @@ public class CompanionService extends Service {
         if (acts == focusActs) return;
         focusActs = acts;
         prefs.edit().putBoolean(KEY_FOCUS_ACTS, acts).apply();
-        // Whatever the old mode owed does not carry across the switch.
+        // Whatever the old mode owed — or was about to do — does not carry
+        // across the switch.
+        if (pendingFocus != null) {
+            main.removeCallbacks(pendingFocus);
+            pendingFocus = null;
+        }
         focus.reset();
         log("focus: mode -> " + (acts ? "acting" : "probe (logs only)"));
     }
@@ -192,6 +201,7 @@ public class CompanionService extends Service {
     @Override
     public void onDestroy() {
         main.removeCallbacks(positionPoll);
+        if (pendingFocus != null) main.removeCallbacks(pendingFocus);
         if (ipc != null) ipc.stop();
         if (speechIpc != null) speechIpc.stop();
         if (status != null) status.stop();
@@ -517,6 +527,13 @@ public class CompanionService extends Service {
      */
     private void onFocusChange(int change) {
         log("focus: " + FocusControl.name(change) + " [" + state + "]");
+        if (pendingFocus != null) {
+            // Any newer focus change supersedes a deferred one — otherwise a
+            // GAIN could be overtaken by the duck it just cancelled, and the
+            // music would stay quiet with nothing owed.
+            main.removeCallbacks(pendingFocus);
+            pendingFocus = null;
+        }
         synchronized (focusHistory) {
             focusHistory.add(new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date())
                     + " " + FocusControl.name(change)
@@ -527,7 +544,30 @@ public class CompanionService extends Service {
             log("focus: probe mode, no action");
             return;
         }
-        for (FocusPolicy.Action action : focus.onFocusChange(change, state)) {
+
+        // A transient loss is answered a beat late, on purpose. The question it
+        // now depends on — is this our own speech — is answered by the speech
+        // mpv's own idle-active/pause, which travels a different socket and can
+        // arrive after the focus callback for the very clip that caused it. A
+        // duck is not time-critical to the millisecond; getting it wrong costs
+        // the volume for the rest of the response.
+        if (change == FocusPolicy.LOSS_TRANSIENT || change == FocusPolicy.LOSS_TRANSIENT_CAN_DUCK) {
+            final int deferred = change;
+            pendingFocus = () -> { pendingFocus = null; applyFocus(deferred); };
+            main.postDelayed(pendingFocus, DUCK_DECISION_DELAY_MS);
+            return;
+        }
+        applyFocus(change);
+    }
+
+    private void applyFocus(int change) {
+        boolean ourSpeech = FrontChannel.speechInFront(speechState);
+        List<FocusPolicy.Action> actions = focus.onFocusChange(change, state, ourSpeech);
+        if (ourSpeech && actions.isEmpty()) {
+            log("focus: our own speech — the coordinator owns the volume");
+            return;
+        }
+        for (FocusPolicy.Action action : actions) {
             perform(action);
         }
     }

@@ -129,6 +129,21 @@ focus loss still does nothing to speech.
 | `LOSS_TRANSIENT_CAN_DUCK` | duck to 10 | restore the previous volume on `GAIN` |
 | `GAIN` | unduck, then resume if we paused it | — |
 
+**A transient loss caused by our own speech is left alone entirely.** red5's
+coordinator already ducks this same mpv for its own clip, and two duckers on one
+volume lose the restore between them: on 2026-08-14 at 19:17:38 the app ducked
+130 → 10, restored to 130 on the `GAIN`, and the coordinator — which had captured
+our ducked 10 as the value to put back — restored to 10 a second later. The music
+played quiet for two hours, which is the same symptom `c2db694` fixed and a
+different cause. Whoever captured the pre-duck volume puts it back, and for a
+spoken reply that is the coordinator, which knows when the whole response ends
+rather than one clip.
+
+Telling the two apart is what the speech connection is for beyond the metadata.
+It costs a 300 ms wait before acting on a transient loss: the speech mpv's state
+travels a different socket and can arrive after the focus callback for the very
+clip that caused it. Any newer focus change cancels a deferred one.
+
 Two guards matter more than the table, and both are tested: a resume from
 anywhere else (earbuds, CLI, red5) cancels a resume we owe, and a volume we did
 not write means something else owns it now — `call_guard` is still live and
@@ -207,5 +222,9 @@ Speech *pausing* — the bridge is there and the app reads it, but nothing write
 to it yet; retiring `call_guard` or the Automate mic-detect hold flag; state
 *push* to red5 (the pull endpoint above now exists); boot start.
 
-Audio focus is written and tested on the host but **not yet verified on the
-device** — see the probe-mode note above.
+Audio focus is **verified acting on the device**: p8a, 2026-08-14 19:17:38,
+`LOSS_TRANSIENT` → duck 130 → 10, `GAIN` at 19:17:56 → restore to 130, with music
+playing straight through both (so taking focus does not disturb the pulseaudio
+stream mpv plays into — the other long-standing unknown). What that same trace
+exposed is the double-duck above, which is fixed but not yet seen fixed on the
+device.

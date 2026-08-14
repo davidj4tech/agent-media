@@ -79,6 +79,14 @@ final class FocusPolicy {
      * the pause, and no second callback is coming to carry the leftover.
      */
     List<Action> onFocusChange(int change, MpvState state) {
+        return onFocusChange(change, state, false);
+    }
+
+    /**
+     * @param ourSpeech a clip of ours is playing right now — the focus loss is
+     *     Sam speaking, not another app. See the transient branch.
+     */
+    List<Action> onFocusChange(int change, MpvState state, boolean ourSpeech) {
         List<Action> actions = new ArrayList<Action>(2);
 
         switch (change) {
@@ -106,6 +114,18 @@ final class FocusPolicy {
                 // A real call is covered too: call_guard ducks phone-local
                 // music during calls rather than pausing it, so ducking here
                 // converges with the behaviour rather than inventing a second.
+                //
+                // Except when the loss IS our own speech: red5's coordinator
+                // already ducks this same mpv for its own clip, and two duckers
+                // on one volume lose the restore between them. Observed on p8a
+                // 2026-08-14 19:17:38 — we ducked 130 -> 10, restored to 130 on
+                // the GAIN, and the coordinator (which had captured 10 as the
+                // value to put back) restored to 10 one second later. The music
+                // then played quiet for two hours. Whoever captured the
+                // pre-duck volume must be the one to put it back, and for a
+                // spoken reply that is the coordinator, which knows when the
+                // whole response ends rather than one clip.
+                if (ourSpeech) return Collections.emptyList();
                 if (!state.playing() || duckedByUs) return Collections.emptyList();
                 volumeBeforeDuck = state.volume;
                 duckedByUs = true;

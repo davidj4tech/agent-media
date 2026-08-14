@@ -34,6 +34,9 @@ public final class FocusTest {
         testUserPausedIsNotOurs();
         testForeignVolumeDropsTheRestore();
         testOurOwnDuckEchoIsNotForeign();
+        testOurOwnSpeechIsNotOursToDuck();
+        testOurOwnSpeechStillPausesOnAPermanentLoss();
+        testOurOwnSpeechDoesNotStrandAnExistingDuck();
         testIdleResets();
         testUnknownChangeDoesNothing();
         testButtonsAreReadAgainstOurOwnState();
@@ -210,6 +213,52 @@ public final class FocusTest {
         // rounding it on the way.
         p.onVolumeChanged(FocusPolicy.DUCK_VOLUME + 0.2);
         yes(p.owesUnduck(), "our own write, rounded, is still ours");
+    }
+
+    /**
+     * The 2026-08-14 19:17 trace: we ducked 130 -> 10 for our own spoken reply,
+     * restored to 130 on the GAIN, and the coordinator — which had captured our
+     * ducked 10 as the volume to put back — restored to 10 a second later. The
+     * music played quiet for two hours. One ducker per volume.
+     */
+    private static void testOurOwnSpeechIsNotOursToDuck() {
+        FocusPolicy p = new FocusPolicy();
+        MpvState s = playing();
+
+        actions(p.onFocusChange(FocusPolicy.LOSS_TRANSIENT, s, true),
+                "our own speech: the coordinator is already ducking this mpv");
+        no(p.owesUnduck(), "and we owe nothing back, so the GAIN cannot fight it");
+
+        actions(p.onFocusChange(FocusPolicy.LOSS_TRANSIENT_CAN_DUCK, s, true),
+                "same for the can-duck loss");
+        actions(p.onFocusChange(FocusPolicy.GAIN, s, true), "and the GAIN is a no-op");
+
+        // Someone else's loss still ducks, clip or no clip: the flag says whose
+        // the loss is, not whether ducking is allowed.
+        actions(p.onFocusChange(FocusPolicy.LOSS_TRANSIENT, s, false),
+                "another app still ducks the music", FocusPolicy.Action.DUCK);
+    }
+
+    private static void testOurOwnSpeechStillPausesOnAPermanentLoss() {
+        FocusPolicy p = new FocusPolicy();
+        // A permanent loss is never our own clip — it is something taking the
+        // output for good — so the flag must not suppress the pause.
+        actions(p.onFocusChange(FocusPolicy.LOSS, playing(), true),
+                "a permanent loss pauses regardless", FocusPolicy.Action.PAUSE);
+    }
+
+    private static void testOurOwnSpeechDoesNotStrandAnExistingDuck() {
+        FocusPolicy p = new FocusPolicy();
+        MpvState s = playing();
+        p.onFocusChange(FocusPolicy.LOSS_TRANSIENT, s, false);
+        yes(p.owesUnduck(), "a real duck, owed back");
+
+        s.volume = FocusPolicy.DUCK_VOLUME;
+        actions(p.onFocusChange(FocusPolicy.LOSS_TRANSIENT, s, true),
+                "a clip arriving mid-duck changes nothing");
+        yes(p.owesUnduck(), "the debt from the real loss survives it");
+        actions(p.onFocusChange(FocusPolicy.GAIN, s, true),
+                "and is still paid on the GAIN", FocusPolicy.Action.UNDUCK);
     }
 
     private static void testIdleResets() {
