@@ -1,0 +1,37 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# mpv-speech-bridge-local — the sink-speech mpv IPC socket, exposed on loopback
+# for the on-device agent-media companion app.
+#
+# The speech twin of mpv-music-bridge-local, and it exists for the same two
+# reasons: the socket lives inside com.termux's private UID sandbox so no other
+# app can open it, and the tailnet bridge (mpv-speech-bridge) must not be
+# widened — it resolves its bind address from a conf file and would otherwise
+# put the IPC socket on whatever wifi p8a is joined to.
+#
+# Same port number as the tailnet bridge on purpose -- different bind address,
+# so there is no conflict and one number to remember. Override with
+# MEDIA_SPEECH_BRIDGE_LOCAL_PORT.
+#
+# What the app needs it for: it publishes ONE MediaSession, for the music
+# channel, and speech is a different mpv it could not see at all. With this the
+# session's metadata can follow whichever channel is in front, and the focus
+# policy can eventually pause speech — David's rule is duck the music, pause the
+# speech, and this is the half that was unreachable. See
+# ../../../../android/companion/README.md.
+#
+# Lives here rather than in dotfiles, with the brokers beside it, because its
+# only consumer is the app in this repo: the two move together. The *tailnet*
+# bridges are still dotfiles' — which address a device exposes is a property of
+# the device, not of agent-media. p8a wires this up as a whole-dir symlink
+# (source: link in ansible/host_vars/p8a.yml).
+exec 2>&1
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/agent-media"
+SOCK="$STATE/sink-speech.sock"
+PORT="${MEDIA_SPEECH_BRIDGE_LOCAL_PORT:-6602}"
+
+# Don't start before sink-speech has created its socket.
+i=0
+while [ ! -S "$SOCK" ] && [ $i -lt 60 ]; do i=$((i + 1)); sleep 1; done
+
+echo "mpv-speech-bridge-local: 127.0.0.1:$PORT -> $SOCK"
+exec socat "TCP4-LISTEN:$PORT,bind=127.0.0.1,reuseaddr,fork" "UNIX-CONNECT:$SOCK"

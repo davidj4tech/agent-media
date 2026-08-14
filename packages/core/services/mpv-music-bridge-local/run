@@ -1,0 +1,35 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# mpv-music-bridge-local — the same mpv-music IPC socket, exposed on loopback
+# for the on-device agent-media companion app.
+#
+# Why a second listener rather than a wider bind on mpv-music-bridge: that one
+# deliberately binds the Tailscale address ONLY, never the LAN/wifi interface,
+# and carries a documented four-step address resolution because netlink is
+# denied to a runit service's sandbox here. Widening it would put the IPC
+# socket on whatever wifi p8a is joined to. This service binds 127.0.0.1 and
+# nothing else, so it is reachable by apps on this phone and by nothing off it.
+#
+# Same port number as the tailnet bridge on purpose -- different bind address,
+# so there is no conflict and one number to remember. Override with
+# MEDIA_MUSIC_BRIDGE_LOCAL_PORT.
+#
+# The companion app needs this because mpv's unix socket lives inside
+# com.termux's private UID sandbox and no other app can open it. See
+# ../../../../android/companion/README.md.
+#
+# Lives here rather than in dotfiles, with the brokers beside it, because its
+# only consumer is the app in this repo: the two move together. The *tailnet*
+# bridges are still dotfiles' — which address a device exposes is a property of
+# the device, not of agent-media. p8a wires this up as a whole-dir symlink
+# (source: link in ansible/host_vars/p8a.yml).
+exec 2>&1
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/agent-media"
+SOCK="$STATE/mpv-music.sock"
+PORT="${MEDIA_MUSIC_BRIDGE_LOCAL_PORT:-6601}"
+
+# Don't start before mpv-music has created its socket.
+i=0
+while [ ! -S "$SOCK" ] && [ $i -lt 60 ]; do i=$((i + 1)); sleep 1; done
+
+echo "mpv-music-bridge-local: 127.0.0.1:$PORT -> $SOCK"
+exec socat "TCP4-LISTEN:$PORT,bind=127.0.0.1,reuseaddr,fork" "UNIX-CONNECT:$SOCK"
