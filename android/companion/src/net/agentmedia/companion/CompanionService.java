@@ -23,6 +23,7 @@ import android.os.Looper;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -76,8 +77,11 @@ public class CompanionService extends Service {
     private NotificationManager nm;
     private Silence silence;
     private FocusControl focusControl;
+    private StatusServer status;
     private SharedPreferences prefs;
     private boolean focusActs = false;
+    /** Every focus callback seen, newest last — the /state readout's history. */
+    private final List<String> focusHistory = new ArrayList<String>();
 
     // ---- on-screen log (adb cannot reach this phone) ---------------------
 
@@ -147,6 +151,10 @@ public class CompanionService extends Service {
 
         ipc = new MpvIpc(MPV_HOST, MPV_PORT, listener);
         ipc.start();
+
+        status = new StatusServer(StatusServer.DEFAULT_PORT, statusSource,
+                                  CompanionService::log);
+        status.start();
         main.postDelayed(positionPoll, POSITION_POLL_MS);
         log("service started; mpv ipc -> " + MPV_HOST + ":" + MPV_PORT);
         log("focus: mode " + (focusActs ? "acting" : "probe (logs only)"));
@@ -161,6 +169,7 @@ public class CompanionService extends Service {
     public void onDestroy() {
         main.removeCallbacks(positionPoll);
         if (ipc != null) ipc.stop();
+        if (status != null) status.stop();
         if (focusControl != null) focusControl.abandon();
         stopSilence();
         if (session != null) {
@@ -333,6 +342,42 @@ public class CompanionService extends Service {
         }
     };
 
+    // ---- the outside readout ---------------------------------------------
+
+    /**
+     * What /state answers. Deliberately covers the questions that could not be
+     * answered from red5 before it existed: is the app acting or only probing,
+     * does it hold focus, what focus changes has it actually seen, and does it
+     * still owe mpv anything.
+     */
+    private final StatusServer.Source statusSource = new StatusServer.Source() {
+        @Override public String state() {
+            Map<String, Object> m = new LinkedHashMap<String, Object>();
+            m.put("connected", Boolean.valueOf(state.connected));
+            m.put("idle", Boolean.valueOf(state.idleActive));
+            m.put("paused", Boolean.valueOf(state.paused));
+            m.put("title", state.title());
+            m.put("position_s", Double.isNaN(state.position) ? null : Double.valueOf(state.position));
+            m.put("duration_s", Double.isNaN(state.duration) ? null : Double.valueOf(state.duration));
+            m.put("volume", Double.valueOf(state.volume));
+            m.put("speed", Double.valueOf(state.speed));
+            m.put("focus_mode", focusActs ? "acting" : "probe");
+            m.put("focus_held", Boolean.valueOf(focusControl != null && focusControl.held()));
+            m.put("owes_resume", Boolean.valueOf(focus.owesResume()));
+            m.put("owes_unduck", Boolean.valueOf(focus.owesUnduck()));
+            m.put("restore_volume", Double.valueOf(focus.volumeToRestore()));
+            m.put("duck_volume", Integer.valueOf(FocusPolicy.DUCK_VOLUME));
+            synchronized (focusHistory) {
+                m.put("focus_events", new ArrayList<String>(focusHistory));
+            }
+            return Json.write(m);
+        }
+
+        @Override public String log() {
+            return dump();
+        }
+    };
+
     // ---- focus -> mpv ----------------------------------------------------
 
     /**
@@ -342,6 +387,12 @@ public class CompanionService extends Service {
      */
     private void onFocusChange(int change) {
         log("focus: " + FocusControl.name(change) + " [" + state + "]");
+        synchronized (focusHistory) {
+            focusHistory.add(new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date())
+                    + " " + FocusControl.name(change)
+                    + (focusActs ? "" : " (probe)"));
+            while (focusHistory.size() > 40) focusHistory.remove(0);
+        }
         if (!focusActs) {
             log("focus: probe mode, no action");
             return;

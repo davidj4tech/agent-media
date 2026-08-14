@@ -47,7 +47,8 @@ addressed-player slot.
 | `FocusPolicy.java` | The audio-focus decision table — what to do with mpv when focus moves, and what is owed back afterwards. `android.*`-free, so `test/run.sh` covers it. |
 | `FocusControl.java` | The `android.*` half of focus: request, abandon, forward the callbacks. Also the tripwire on `FocusPolicy`'s duplicated constants. |
 | `CompanionService.java` | Session, notification, the silent `AudioTrack`, and the wiring in both directions. |
-| `MainActivity.java` | The readout — state and an event log on screen, because there is no adb. |
+| `StatusServer.java` | The readout the outside can reach: `/state` and `/log` over loopback HTTP. `android.*`-free, so `test/run.sh` covers it. |
+| `MainActivity.java` | The on-screen readout — state and an event log, plus the probe/acting button. |
 | `MediaButtonReceiver.java` | Logs the broadcast path. Handles nothing; exists for diagnosis. |
 
 ## Build and test
@@ -79,6 +80,27 @@ Install: `scp` the APK to `~/storage/downloads/` on the phone, and David opens
 it from Files. That is the whole recipe — `termux-open --chooser` does not
 reliably raise the installer dialog on p8a, so do not offer it. adb cannot
 reach p8a from red5 either (adbd binds wlan0 only).
+
+## Reading what it is doing
+
+```sh
+ssh p8a curl -s 127.0.0.1:8770/state   # JSON: mpv state, focus mode, what is owed
+ssh p8a curl -s 127.0.0.1:8770/log     # the event log, newest first
+ssh p8a curl -s 127.0.0.1:8770/        # both
+```
+
+Bound to loopback only, like `mpv-music-bridge-local` and for the same reason —
+never widen it. Everything that needs it already has a shell on the phone.
+
+This exists because the alternatives do not work here: `logcat` from Termux
+shows only Termux's own uid, `dumpsys media_session` is refused to a non-shell
+uid, and adb cannot reach p8a from red5. Before it, diagnosing the app meant
+asking David to read his phone screen aloud.
+
+`/state` answers the questions the on-screen readout was being asked for:
+`focus_mode` (probe or acting), `focus_held`, `owes_resume` / `owes_unduck`,
+`restore_volume`, and `focus_events` — every focus callback the app has seen,
+timestamped.
 
 ## Audio focus
 
@@ -143,8 +165,8 @@ clobbering it.
 ## Not built yet
 
 The speech bridge on `127.0.0.1:6602` and speech pausing; retiring `call_guard`
-or the Automate mic-detect hold flag; the `/state` endpoint and state push to
-red5; boot start.
+or the Automate mic-detect hold flag; state *push* to red5 (the pull endpoint
+above now exists); boot start.
 
 Audio focus is written and tested on the host but **not yet verified on the
 device** — see the probe-mode note above.
