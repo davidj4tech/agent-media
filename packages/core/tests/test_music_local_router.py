@@ -206,3 +206,53 @@ def test_resolve_where_auto_snapserver_down_uses_default(monkeypatch):
     assert cli._resolve_music_where("auto") == "rooms"
     monkeypatch.setenv("MEDIA_MUSIC_AUTO_DEFAULT", "phone")
     assert cli._resolve_music_where("auto") == "phone"
+
+
+# ---- volume ceiling ---------------------------------------------------------
+#
+# The phone mpv runs --volume-max=170 with a default --volume=130, because 100
+# is below nominal on that device. These sets used to clamp at 100, so the
+# first duck cycle after any speech permanently lowered the music: the restore
+# wrote 100 over the captured 130, and `media music volume +N` could not lift it
+# past 100 either. Regression tests, not API tests.
+
+def _phone_sink(monkeypatch, sets):
+    monkeypatch.setenv("MEDIA_MUSIC_LOCAL_ENDPOINT", "tcp://10.0.0.5:6601")
+    from agent_media_core.sinks import music_local
+
+    def fake_set(endpoint, name, value, **kw):
+        sets.append((name, value))
+
+    monkeypatch.setattr(music_local.ipc, "set_property", fake_set)
+    return SinkMusicLocal()
+
+
+def test_unduck_restores_above_100(monkeypatch):
+    sets = []
+    _phone_sink(monkeypatch, sets).unduck(restore=130)
+    assert sets == [("volume", 130)]
+
+
+def test_unduck_still_bounded_by_the_service_ceiling(monkeypatch):
+    sets = []
+    _phone_sink(monkeypatch, sets).unduck(restore=999)
+    assert sets == [("volume", 170)]
+
+
+def test_volume_delta_can_climb_above_100(monkeypatch):
+    sets = []
+    sink = _phone_sink(monkeypatch, sets)
+    from agent_media_core.sinks import music_local
+    monkeypatch.setattr(music_local.ipc, "get_property",
+                        lambda endpoint, name, **kw: 100.0)
+    sink.volume_delta(30)
+    assert sets == [("volume", 130)]
+
+
+def test_volume_ceiling_never_drops_below_100(monkeypatch):
+    """A bad override must not make things quieter than the old behaviour."""
+    from agent_media_core.sinks import music_local
+    monkeypatch.setenv("MEDIA_MUSIC_LOCAL_VOLUME_MAX", "40")
+    assert music_local.max_volume() == 100
+    monkeypatch.setenv("MEDIA_MUSIC_LOCAL_VOLUME_MAX", "not-a-number")
+    assert music_local.max_volume() == 170

@@ -75,6 +75,25 @@ def cache_dir() -> str:
     return os.environ.get("MEDIA_MUSIC_LOCAL_CACHE", ".cache/music-offline")
 
 
+def max_volume() -> int:
+    """Ceiling for volume writes to the phone mpv.
+
+    Not 100. The mpv-music service deliberately runs `--volume-max=170` with a
+    default `--volume=130`, because 100 is *below* nominal on this device and
+    everything sounded quiet. A hard clamp at 100 here silently destroyed that:
+    every duck captured the live level, and the restore clamped it back to 100,
+    so one spoken sentence permanently lowered the music and no amount of
+    `media music volume +N` could lift it again.
+
+    Mirror the service's ceiling instead. Overridable, and never below 100 so a
+    bad value cannot make things quieter than the old behaviour.
+    """
+    try:
+        return max(100, int(os.environ.get("MEDIA_MUSIC_LOCAL_VOLUME_MAX", "170")))
+    except (TypeError, ValueError):
+        return 170
+
+
 def configured() -> bool:
     """True when a phone endpoint is set — gates the router and CLI/MCP routing."""
     return endpoint() is not None
@@ -264,7 +283,7 @@ class SinkMusicLocal:
 
     def unduck(self, target: Target = DEFAULT_TARGET, restore: int = 100) -> None:
         try:
-            self._set("volume", max(0, min(100, restore)))
+            self._set("volume", max(0, min(max_volume(), restore)))
         except (ipc.MpvIpcError, OSError):
             pass
 
@@ -302,7 +321,7 @@ class SinkMusicLocal:
         try:
             cur = ipc.get_property(self._endpoint(), "volume")
             self._set("volume",
-                      max(0, min(100, int(round((cur or 100) + delta)))))
+                      max(0, min(max_volume(), int(round((cur or 100) + delta)))))
         except (ipc.MpvIpcError, OSError, TypeError, ValueError):
             pass
 
