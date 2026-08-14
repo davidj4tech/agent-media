@@ -42,12 +42,18 @@ final class MpvIpc {
     };
 
     /**
-     * What the speech connection subscribes to — only enough to answer "is a
-     * clip running right now". Its title is not among them on purpose: the
-     * clips are rendered files, so mpv's media-title is a filename like
+     * What the speech connection subscribes to — enough to answer "is a clip
+     * running" and "was one just staged". {@code path} is in the set because
+     * the focus loss for a clip arrives when mpv *opens* the file, which on p8a
+     * ran 11 s ahead of the first audio (20:16:29 vs 20:16:40, 2026-08-14):
+     * asking whether speech is playing at loss time answers no for a loss that
+     * is entirely ours. A new path is the staging signal.
+     *
+     * Its title is not among them on purpose: the clips are rendered files, so
+     * mpv's media-title is a filename like
      * {@code remote-20260814T190922-18480.mp3}. See FrontChannel.SPEECH_TITLE.
      */
-    static final String[] OBSERVED_SPEECH = { "idle-active", "pause" };
+    static final String[] OBSERVED_SPEECH = { "idle-active", "pause", "path" };
 
     /**
      * time-pos is deliberately NOT observed: mpv fires it continuously, and a

@@ -98,6 +98,8 @@ public class CompanionService extends Service {
     private boolean focusActs = false;
     /** A deferred transient-loss decision; main-thread only. See onFocusChange. */
     private Runnable pendingFocus;
+    /** When the speech mpv last opened or started a clip; 0 = never. */
+    private volatile long speechStagedAt = 0L;
     /** Every focus callback seen, newest last — the /state readout's history. */
     private final List<String> focusHistory = new ArrayList<String>();
     /** The PlaybackState we last told the framework, and the last key we saw. */
@@ -264,6 +266,14 @@ public class CompanionService extends Service {
             main.post(() -> {
                 if (speechState.apply(name, value)) {
                     log("speech " + name + " = " + value);
+                    // When a clip was staged, so a focus loss arriving before it
+                    // is audible can still be recognised as ours. A path is set
+                    // on loadfile; the unpause is the same episode's other edge.
+                    // Deliberately NOT the clip *ending*: the grace should
+                    // expire with the reply, not be extended by it.
+                    boolean staged = ("path".equals(name) && speechState.path != null)
+                            || ("pause".equals(name) && !speechState.paused);
+                    if (staged) speechStagedAt = System.currentTimeMillis();
                     pushSessionState();
                 }
             });
@@ -500,6 +510,11 @@ public class CompanionService extends Service {
             sp.put("connected", Boolean.valueOf(speechState.connected));
             sp.put("idle", Boolean.valueOf(speechState.idleActive));
             sp.put("paused", Boolean.valueOf(speechState.paused));
+            long since = sinceSpeechStaged();
+            sp.put("staged_ms_ago", since == Long.MAX_VALUE ? null : Long.valueOf(since));
+            // The answer that decides whether a transient loss ducks at all.
+            sp.put("owns_the_loss", Boolean.valueOf(
+                    FrontChannel.ourSpeech(speechState, since)));
             m.put("speech", sp);
             m.put("last_button", lastButton);
             m.put("focus_mode", focusActs ? "acting" : "probe");
@@ -560,8 +575,14 @@ public class CompanionService extends Service {
         applyFocus(change);
     }
 
+    /** How long ago the speech mpv staged a clip, for FrontChannel.ourSpeech. */
+    private long sinceSpeechStaged() {
+        return speechStagedAt == 0L ? Long.MAX_VALUE
+                                    : System.currentTimeMillis() - speechStagedAt;
+    }
+
     private void applyFocus(int change) {
-        boolean ourSpeech = FrontChannel.speechInFront(speechState);
+        boolean ourSpeech = FrontChannel.ourSpeech(speechState, sinceSpeechStaged());
         List<FocusPolicy.Action> actions = focus.onFocusChange(change, state, ourSpeech);
         if (ourSpeech && actions.isEmpty()) {
             log("focus: our own speech — the coordinator owns the volume");

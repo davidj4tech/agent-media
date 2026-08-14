@@ -48,6 +48,37 @@ final class FrontChannel {
         return speech.playing();
     }
 
+    /**
+     * How long after a clip is staged the focus loss it causes may still arrive.
+     *
+     * Measured, not guessed: on p8a on 2026-08-14 the {@code LOSS_TRANSIENT} for
+     * a spoken reply landed at 20:16:29 and the clip's first audio at 20:16:40 —
+     * mpv takes the output when it opens the file, and the relayed clip took
+     * eleven seconds to get going. "Is speech playing right now" therefore
+     * answers *no* for a loss that is entirely ours, which is how the first
+     * build of this rule would have ducked anyway.
+     *
+     * Bounded rather than open-ended because the cost runs the other way too: for
+     * this long after a clip is staged, a genuine outside interruption does not
+     * duck the music.
+     */
+    static final long STAGING_GRACE_MS = 20000;
+
+    /**
+     * Is this focus loss our own speech? True while a clip is audible, and for
+     * {@link #STAGING_GRACE_MS} after one was staged.
+     *
+     * @param msSinceStaged since the speech mpv last opened a clip or started
+     *     playing one; {@link Long#MAX_VALUE} when it never has.
+     */
+    static boolean ourSpeech(MpvState speech, long msSinceStaged) {
+        // An unreachable speech mpv tells us nothing, and a loss we cannot
+        // attribute is treated as somebody else's — the duck is the behaviour
+        // this app exists to provide, so it is what we fall back to.
+        if (!speech.connected) return false;
+        return speechInFront(speech) || msSinceStaged < STAGING_GRACE_MS;
+    }
+
     static String title(MpvState music, MpvState speech) {
         return speechInFront(speech) ? SPEECH_TITLE : music.title();
     }

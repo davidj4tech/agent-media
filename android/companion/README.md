@@ -139,10 +139,22 @@ different cause. Whoever captured the pre-duck volume puts it back, and for a
 spoken reply that is the coordinator, which knows when the whole response ends
 rather than one clip.
 
-Telling the two apart is what the speech connection is for beyond the metadata.
-It costs a 300 ms wait before acting on a transient loss: the speech mpv's state
-travels a different socket and can arrive after the focus callback for the very
-clip that caused it. Any newer focus change cancels a deferred one.
+Telling the two apart is what the speech connection is for beyond the metadata,
+and the test is **not** "is speech playing". mpv takes the output when it *opens*
+the clip: on p8a the loss landed at 20:16:29 and the first audio at 20:16:40,
+eleven seconds later, so that question answers no for a loss that is entirely
+ours. The signal is the staging — a new `path`, or the unpause — and a loss
+within `STAGING_GRACE_MS` (20 s) of one is ours. Bounded, because for that long
+after a clip is staged a genuine outside interruption does not duck; and measured
+from the staging rather than the ending, so the grace expires with the reply
+instead of being extended by it.
+
+A transient loss is also acted on 300 ms late, for the reverse race — the speech
+mpv's state travels a different socket and can arrive just after the callback.
+Any newer focus change cancels a deferred one.
+
+`/state` answers this directly: `speech.staged_ms_ago` and
+`speech.owns_the_loss`.
 
 Two guards matter more than the table, and both are tested: a resume from
 anywhere else (earbuds, CLI, red5) cancels a resume we owe, and a volume we did

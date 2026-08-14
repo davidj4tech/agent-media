@@ -27,6 +27,9 @@ public final class FrontTest {
         testUnreachableSpeechFallsBackToMusic();
         testSpeechHidesTheDuration();
         testIdleEverywhere();
+        testAStagedClipOwnsTheLossBeforeItIsAudible();
+        testTheGraceExpires();
+        testAnUnreachableSpeechMpvOwnsNothing();
 
         System.out.println();
         if (failures.isEmpty()) {
@@ -113,6 +116,46 @@ public final class FrontTest {
         is("agent-media", FrontChannel.title(music, speech), "MpvState's own fallback title");
         is(Long.valueOf(-1L), Long.valueOf(FrontChannel.durationMs(music, speech)),
            "and no duration");
+    }
+
+    /**
+     * The p8a trace of 2026-08-14: the focus loss for a spoken reply arrived at
+     * 20:16:29 and the clip's first audio at 20:16:40. Asking "is speech playing"
+     * at loss time answers no for a loss that is entirely ours — which is how a
+     * rule meant to stop the app ducking over the coordinator would have ducked
+     * anyway.
+     */
+    private static void testAStagedClipOwnsTheLossBeforeItIsAudible() {
+        MpvState speech = playing("clip.mp3", 9.0);
+        speech.paused = true;                       // staged, not yet started
+        no(FrontChannel.speechInFront(speech), "not audible yet");
+        yes(FrontChannel.ourSpeech(speech, 11000),
+            "but the loss eleven seconds after staging is still ours");
+        yes(FrontChannel.ourSpeech(playing("clip.mp3", 9.0), Long.MAX_VALUE),
+            "and an audible clip needs no staging time at all");
+    }
+
+    private static void testTheGraceExpires() {
+        MpvState speech = playing("clip.mp3", 9.0);
+        speech.paused = true;
+        no(FrontChannel.ourSpeech(speech, FrontChannel.STAGING_GRACE_MS + 1),
+           "past the grace, a loss belongs to whatever else is playing");
+        no(FrontChannel.ourSpeech(idle(), Long.MAX_VALUE),
+           "and a speech mpv that has never staged anything owns nothing");
+
+        // The parked case this bound exists for: sink-speech keeps the last clip
+        // open indefinitely, so "a file is loaded" alone would suppress every
+        // duck for the rest of the day.
+        MpvState parked = playing("clip.mp3", 9.0);
+        parked.paused = true;
+        no(FrontChannel.ourSpeech(parked, 3600000L), "a parked broker owns nothing");
+    }
+
+    private static void testAnUnreachableSpeechMpvOwnsNothing() {
+        MpvState speech = playing("clip.mp3", 9.0);
+        speech.connected = false;
+        no(FrontChannel.ourSpeech(speech, 1000),
+           "a loss we cannot attribute ducks, because ducking is the point");
     }
 
     // ---- fixtures --------------------------------------------------------
