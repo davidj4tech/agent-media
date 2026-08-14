@@ -51,6 +51,16 @@ public class CompanionService extends Service {
     static final int MPV_PORT = 6601;
 
     /**
+     * The speech mpv, behind its own loopback bridge
+     * (mpv-speech-bridge-local in dotfiles). Read-only so far: it is what lets
+     * the session's metadata follow whichever channel is in front, instead of
+     * naming a music track while Sam is the thing being heard. Driving it —
+     * pausing speech on a focus loss, the other half of David's rule — is the
+     * next step, not this one.
+     */
+    static final int MPV_SPEECH_PORT = 6602;
+
+    /**
      * The focus policy is allowed to touch mpv only when this is on. Off by
      * default, which makes a fresh install a *probe*: it takes focus and logs
      * every callback but changes nothing, so the first sideload can answer what
@@ -72,8 +82,11 @@ public class CompanionService extends Service {
 
     private final Handler main = new Handler(Looper.getMainLooper());
     private final MpvState state = new MpvState();
+    /** The speech mpv's mirror. Feeds the metadata only — never the transport. */
+    private final MpvState speechState = new MpvState();
     private final FocusPolicy focus = new FocusPolicy();
     private MpvIpc ipc;
+    private MpvIpc speechIpc;
     private MediaSession session;
     private NotificationManager nm;
     private Silence silence;
@@ -108,6 +121,9 @@ public class CompanionService extends Service {
 
     String status() {
         return state
+                + "\nfront=" + FrontChannel.name(speechState)
+                + " speech=" + (!speechState.connected ? "unreachable"
+                        : speechState.playing() ? "speaking" : "quiet")
                 + "\nfocus=" + (focusControl != null && focusControl.held() ? "held" : "none")
                 + " mode=" + (focusActs ? "acting" : "probe (logs only)")
                 + (focus.owesUnduck() ? " owes:unduck" : "");
@@ -155,11 +171,16 @@ public class CompanionService extends Service {
         ipc = new MpvIpc(MPV_HOST, MPV_PORT, listener);
         ipc.start();
 
+        speechIpc = new MpvIpc(MPV_HOST, MPV_SPEECH_PORT, speechListener,
+                               MpvIpc.OBSERVED_SPEECH);
+        speechIpc.start();
+
         status = new StatusServer(StatusServer.DEFAULT_PORT, statusSource,
                                   CompanionService::log);
         status.start();
         main.postDelayed(positionPoll, POSITION_POLL_MS);
-        log("service started; mpv ipc -> " + MPV_HOST + ":" + MPV_PORT);
+        log("service started; mpv ipc -> " + MPV_HOST + ":" + MPV_PORT
+                + ", speech -> " + MPV_HOST + ":" + MPV_SPEECH_PORT);
         log("focus: mode " + (focusActs ? "acting" : "probe (logs only)"));
     }
 
@@ -172,6 +193,7 @@ public class CompanionService extends Service {
     public void onDestroy() {
         main.removeCallbacks(positionPoll);
         if (ipc != null) ipc.stop();
+        if (speechIpc != null) speechIpc.stop();
         if (status != null) status.stop();
         if (focusControl != null) focusControl.abandon();
         stopSilence();
@@ -222,6 +244,38 @@ public class CompanionService extends Service {
         }
     };
 
+    /**
+     * The speech mpv, listened to and never driven. Only two properties are
+     * observed — enough to answer "is a clip running" — so a long reply does not
+     * flood the event log that focus diagnosis is read from.
+     */
+    private final MpvIpc.Listener speechListener = new MpvIpc.Listener() {
+        @Override public void onProperty(final String name, final Object value) {
+            main.post(() -> {
+                if (speechState.apply(name, value)) {
+                    log("speech " + name + " = " + value);
+                    pushSessionState();
+                }
+            });
+        }
+
+        @Override public void onEvent(String event, Map<String, Object> message) { }
+
+        @Override public void onConnected() {
+            main.post(() -> { speechState.connected = true; pushSessionState(); });
+        }
+
+        @Override public void onDisconnected(String why) {
+            // The metadata falls back to music, which is the right answer when
+            // we can no longer tell whether a clip is playing.
+            main.post(() -> { speechState.connected = false; pushSessionState(); });
+        }
+
+        @Override public void onLog(String line) {
+            log("speech: " + line);
+        }
+    };
+
     /** Ask mpv where it is, then refresh the session's position. */
     private final Runnable positionPoll = new Runnable() {
         @Override public void run() {
@@ -258,10 +312,17 @@ public class CompanionService extends Service {
             log("focus: abandoned (mpv idle)");
         }
 
+        // The metadata — and only the metadata — follows whichever channel is in
+        // front, so the car display names Sam while Sam is what is audible.
+        // Everything below still describes the music mpv; see FrontChannel for
+        // why that separation is deliberate.
         MediaMetadata.Builder md = new MediaMetadata.Builder()
-                .putString(MediaMetadata.METADATA_KEY_TITLE, state.title())
-                .putString(MediaMetadata.METADATA_KEY_ARTIST, "agent-media")
-                .putLong(MediaMetadata.METADATA_KEY_DURATION, state.durationMs());
+                .putString(MediaMetadata.METADATA_KEY_TITLE,
+                           FrontChannel.title(state, speechState))
+                .putString(MediaMetadata.METADATA_KEY_ARTIST,
+                           FrontChannel.subtitle(state, speechState))
+                .putLong(MediaMetadata.METADATA_KEY_DURATION,
+                         FrontChannel.durationMs(state, speechState));
         session.setMetadata(md.build());
 
         int playbackState;
@@ -312,6 +373,7 @@ public class CompanionService extends Service {
         if (!state.connected) text = "mpv unreachable on " + MPV_HOST + ":" + MPV_PORT;
         else if (!state.loaded()) text = "idle";
         else text = state.paused ? "paused" : "playing";
+        if (FrontChannel.speechInFront(speechState)) text = "speaking — music " + text;
 
         // The small icon reports *state*, so it has to follow it: a hardcoded
         // triangle sat there through every pause and read as the app being
@@ -321,7 +383,8 @@ public class CompanionService extends Service {
                                    : android.R.drawable.ic_media_pause;
 
         return new Notification.Builder(this, CHANNEL)
-                .setContentTitle(state.loaded() ? state.title() : "agent-media")
+                .setContentTitle(state.loaded() || FrontChannel.speechInFront(speechState)
+                        ? FrontChannel.title(state, speechState) : "agent-media")
                 .setContentText(text)
                 .setSmallIcon(icon)
                 .setStyle(new Notification.MediaStyle().setMediaSession(session.getSessionToken()))
@@ -418,6 +481,16 @@ public class CompanionService extends Service {
             m.put("volume", Double.valueOf(state.volume));
             m.put("speed", Double.valueOf(state.speed));
             m.put("reported_state", lastPushedState);
+            // Which channel the metadata is describing, and the speech mpv it
+            // is read from — so "the car still says the track name" is two curl
+            // lines rather than another sideload.
+            m.put("front", FrontChannel.name(speechState));
+            m.put("metadata_title", FrontChannel.title(state, speechState));
+            Map<String, Object> sp = new LinkedHashMap<String, Object>();
+            sp.put("connected", Boolean.valueOf(speechState.connected));
+            sp.put("idle", Boolean.valueOf(speechState.idleActive));
+            sp.put("paused", Boolean.valueOf(speechState.paused));
+            m.put("speech", sp);
             m.put("last_button", lastButton);
             m.put("focus_mode", focusActs ? "acting" : "probe");
             m.put("focus_held", Boolean.valueOf(focusControl != null && focusControl.held()));

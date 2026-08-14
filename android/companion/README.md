@@ -44,6 +44,7 @@ addressed-player slot.
 | `Json.java` | Minimal JSON codec. No `org.json`, no `android.*` — that is what makes the IPC testable off-device. |
 | `MpvIpc.java` | The mpv JSON IPC client: line protocol, `request_id` correlation, `observe_property`, reconnect with backoff. Also `android.*`-free. |
 | `MpvState.java` | The mirrored mpv properties. `loaded()`/`playing()` are deliberately the same predicates `agent_media_core.sinks.music_local` uses. |
+| `FrontChannel.java` | Which channel the session's metadata describes — speech while a clip runs, music otherwise. `android.*`-free, so `test/run.sh` covers it. |
 | `FocusPolicy.java` | The audio-focus decision table — what to do with mpv when focus moves, and what is owed back afterwards. `android.*`-free, so `test/run.sh` covers it. |
 | `FocusControl.java` | The `android.*` half of focus: request, abandon, forward the callbacks. Also the tripwire on `FocusPolicy`'s duplicated constants. |
 | `CompanionService.java` | Session, notification, the silent `AudioTrack`, and the wiring in both directions. |
@@ -70,11 +71,18 @@ sideload.
 
 ## Phone side
 
-Requires a socat listener on `127.0.0.1:6601` into mpv's IPC socket: mpv's
-socket lives inside `com.termux`'s private UID sandbox and no other app can
-open it. That is a **separate** runit service from `mpv-music-bridge`, which
-binds the Tailscale address only and must not be touched. Same port number is
-fine — different bind address.
+Requires two socat listeners on loopback, into the two mpv IPC sockets: mpv's
+sockets live inside `com.termux`'s private UID sandbox and no other app can open
+them.
+
+| Service (dotfiles `termux/services/`) | Listener | Socket | What it carries |
+|---|---|---|---|
+| `mpv-music-bridge-local` | `127.0.0.1:6601` | `mpv-music.sock` | transport, focus actions, metadata |
+| `mpv-speech-bridge-local` | `127.0.0.1:6602` | `sink-speech.sock` | read-only so far: is a clip playing |
+
+Both are **separate** services from `mpv-music-bridge` / `mpv-speech-bridge`,
+which bind the Tailscale address only and must not be touched. Same port numbers
+are fine — different bind address. Both are declared in `ansible/host_vars/p8a.yml`.
 
 Install: `scp` the APK to `~/storage/downloads/` on the phone, and David opens
 it from Files. That is the whole recipe — `termux-open --chooser` does not
@@ -111,9 +119,8 @@ is open *including while paused*: abandoning it on our own pause would forfeit
 the `GAIN` that says to resume.
 
 David's rule is **duck the music, pause the speech**. This is the music half.
-Speech is a separate Termux mpv (`sink-speech.sock`) and needs its own loopback
-bridge on `127.0.0.1:6602` before it can be driven from here — until then a
-focus loss with nothing loaded in the music mpv is not seen at all.
+The speech bridge now exists, but the app only *listens* on it (see below); a
+focus loss still does nothing to speech.
 
 | Focus change | Music | Owed afterwards |
 |---|---|---|
@@ -145,6 +152,38 @@ clobbering it.
 - **Requesting `GAIN` tells other players to stop.** That is the intent, and it
   is the first outward-facing thing this app does.
 
+## What the display says while Sam speaks
+
+One session, whose **metadata** follows whichever channel is in front —
+`FrontChannel`. Publishing a second session for speech is the thing not to do:
+two sessions compete for the addressed-player slot, which is what the spike
+learned and what the transport fix depends on.
+
+| | Music playing | Sam speaking over it |
+|---|---|---|
+| Title | the track | `Sam` |
+| Artist | `agent-media` | the track |
+| Duration | the track's | unknown |
+| PlaybackState, position, transport | the music mpv | **still the music mpv** |
+
+Only the metadata moves. The `PlaybackState` we publish is what the framework
+resolves a `PLAY_PAUSE` toggle from, and answering that question about a
+two-second clip is exactly the class of bug `3519172` fixed — so state, position
+and every transport callback stay with music. The duration is dropped while
+speech is in front because the position beside it is still the music track's.
+
+- **The clip's own title is unusable.** sink-speech plays rendered files, so
+  mpv's `media-title` reads `remote-20260814T190922-18480.mp3` — checked against
+  the phone's speech mpv, not assumed. Hence the constant. Putting the sentence
+  there instead means the speech sink setting `force-media-title` before each
+  `loadfile`, which is a red5-side change.
+- **Speech in front means *playing*, not *loaded*.** sink-speech keeps the last
+  clip open after it ends, and a broker paused from the popup should not hold the
+  display.
+- **Only `idle-active` and `pause` are observed on the speech connection.** A
+  long reply is a clip every few seconds; subscribing to more would flood the
+  event log that focus diagnosis is read from.
+
 ## Decisions worth knowing
 
 - **The silent track follows `loaded()`, not `playing()`.** It keeps running
@@ -164,9 +203,9 @@ clobbering it.
 
 ## Not built yet
 
-The speech bridge on `127.0.0.1:6602` and speech pausing; retiring `call_guard`
-or the Automate mic-detect hold flag; state *push* to red5 (the pull endpoint
-above now exists); boot start.
+Speech *pausing* — the bridge is there and the app reads it, but nothing writes
+to it yet; retiring `call_guard` or the Automate mic-detect hold flag; state
+*push* to red5 (the pull endpoint above now exists); boot start.
 
 Audio focus is written and tested on the host but **not yet verified on the
 device** — see the probe-mode note above.

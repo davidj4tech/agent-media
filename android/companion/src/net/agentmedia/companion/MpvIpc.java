@@ -36,10 +36,18 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 final class MpvIpc {
 
-    /** Properties we keep a live subscription to. */
+    /** What the music connection keeps a live subscription to. */
     static final String[] OBSERVED = {
         "idle-active", "pause", "media-title", "duration", "path", "speed", "volume",
     };
+
+    /**
+     * What the speech connection subscribes to — only enough to answer "is a
+     * clip running right now". Its title is not among them on purpose: the
+     * clips are rendered files, so mpv's media-title is a filename like
+     * {@code remote-20260814T190922-18480.mp3}. See FrontChannel.SPEECH_TITLE.
+     */
+    static final String[] OBSERVED_SPEECH = { "idle-active", "pause" };
 
     /**
      * time-pos is deliberately NOT observed: mpv fires it continuously, and a
@@ -64,6 +72,7 @@ final class MpvIpc {
     private final String host;
     private final int port;
     private final Listener listener;
+    private final String[] observed;
 
     private final AtomicInteger nextRequestId = new AtomicInteger(1);
     private final Map<Integer, CompletableFuture<Object>> pending =
@@ -94,9 +103,14 @@ final class MpvIpc {
     private static final long REQUEST_TIMEOUT_MS = 3000;
 
     MpvIpc(String host, int port, Listener listener) {
+        this(host, port, listener, OBSERVED);
+    }
+
+    MpvIpc(String host, int port, Listener listener, String[] observed) {
         this.host = host;
         this.port = port;
         this.listener = listener;
+        this.observed = observed;
     }
 
     boolean isConnected() {
@@ -239,12 +253,12 @@ final class MpvIpc {
     private void subscribe() {
         observeIds.clear();
         int id = 1;
-        for (String prop : OBSERVED) {
+        for (String prop : observed) {
             observeIds.put(id, prop);
             command("observe_property", id, prop);
             id++;
         }
-        for (final String prop : OBSERVED) {
+        for (final String prop : observed) {
             getProperty(prop).whenComplete((v, e) -> {
                 if (e == null) listener.onProperty(prop, v);
             });

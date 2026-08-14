@@ -18,13 +18,16 @@ javac -nowarn -d "$OUT" \
     "$APP/src/net/agentmedia/companion/MpvIpc.java" \
     "$APP/src/net/agentmedia/companion/MpvState.java" \
     "$APP/src/net/agentmedia/companion/FocusPolicy.java" \
+    "$APP/src/net/agentmedia/companion/FrontChannel.java" \
     "$APP/src/net/agentmedia/companion/StatusServer.java" \
     "$APP/src/net/agentmedia/companion/ButtonPolicy.java" \
     "$HERE/net/agentmedia/companion/FakeMpv.java" \
     "$HERE/net/agentmedia/companion/IpcTest.java" \
     "$HERE/net/agentmedia/companion/FocusTest.java" \
+    "$HERE/net/agentmedia/companion/FrontTest.java" \
     "$HERE/net/agentmedia/companion/StatusTest.java"
 
 java -cp "$OUT" net.agentmedia.companion.IpcTest
 java -cp "$OUT" net.agentmedia.companion.FocusTest
+java -cp "$OUT" net.agentmedia.companion.FrontTest
 java -cp "$OUT" net.agentmedia.companion.StatusTest
