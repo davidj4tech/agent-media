@@ -356,10 +356,35 @@ hit() { HIT_ROW+=("$1"); HIT_S+=("$2"); HIT_E+=("$3"); HIT_A+=("$4"); }
 # · vol+ · close.
 FOCUS=""
 FOCUS_KEYS=( $'\t' g '<' ' ' '>' '-' '=' 'q' )
-# emit text, reverse-video when this element ($2 = its FOCUS index) is focused.
+# PENDING is the same kind of index, held only while a keypress's action is
+# in flight. A transport action on the speech channel is a round trip to the
+# phone (~5s for `<`: snapshot + push), and the loop is single-threaded, so
+# the frame stays frozen on the OLD timecode for all of it — which reads as
+# "the key did nothing" and invites a second press that queues another
+# replay. Lighting the pressed button for the duration is the whole feedback.
+PENDING=""
+# emit text, reverse-video when this element ($2 = its FOCUS index) is focused
+# — or while its action is still running.
 emit() {
-    if [ "$FOCUS" = "$2" ]; then printf '\033[7m%s\033[0m' "$1"
+    if [ "$FOCUS" = "$2" ] || [ "$PENDING" = "$2" ]; then
+        printf '\033[7m%s\033[0m' "$1"
     else printf '%s' "$1"; fi
+}
+
+# FOCUS_KEYS index for a key, or "" when it has no on-screen button.
+pending_idx() {
+    local k="$1" i
+    for i in "${!FOCUS_KEYS[@]}"; do
+        [ "$k" = "${FOCUS_KEYS[i]}" ] && { printf '%s' "$i"; return; }
+    done
+    printf ''
+}
+
+# Paint the pressed button as "working" before the (slow) action runs.
+mark_pending() {
+    PENDING=$(pending_idx "$1")
+    [ -n "$PENDING" ] && draw
+    return 0
 }
 
 draw() {
@@ -1076,7 +1101,7 @@ handle_page() {
 # it dispatched something, so the caller only pays for a `fetch` on a real action
 # (not on the release event or an empty click). Set MEDIA_POPUP_DEBUG=<file> to
 # log every parsed event — handy for calibrating row/col.
-act() { ACTED=1; LAST_ACT="$1"; handle_key "$1"; }
+act() { ACTED=1; LAST_ACT="$1"; mark_pending "$1"; handle_key "$1"; }
 handle_mouse() {
     [ "$ESC_KIND" = mouse ] || return
     [ -n "${MEDIA_POPUP_DEBUG:-}" ] && \
@@ -1146,6 +1171,7 @@ while true; do
             # Re-pull the (slow) snapshot only on a real action; always redraw so
             # the focus highlight tracks the arrows without a flicker of fetch.
             [ -n "$ACTED" ] && do_refresh
+            PENDING=""
             if [ -n "$ACTED" ] && flash_on; then
                 m="touch '$LAST_ACT' · $CHANNEL"
                 [ -n "$ACT_OUT" ] && m="$m → clip $ACT_OUT"
@@ -1158,11 +1184,13 @@ while true; do
         break
     fi
     ACT_OUT=""                         # so the debug flash below shows THIS key's echo
+    mark_pending "$key"
     handle_key "$key"
     [ -n "$QUIT" ] && break
     # Refresh the snapshot so the bar/label reflect the action immediately
     # (fused into one spawn when the key stashed a SPEECH_ACT verb).
     do_refresh
+    PENDING=""
     if flash_on; then
         m="'$key' · $CHANNEL"
         # A fused speech action (e.g. < / >) echoes its resolved clip cursor;
