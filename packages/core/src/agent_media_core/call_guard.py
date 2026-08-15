@@ -72,11 +72,17 @@ slower call-notification poll — and *debounced*: it must be present for
 voice-typing utterances are ignored and only sustained dictation ducks, and
 absent for ``MEDIA_CALL_GUARD_HOLD_RELEASE_S`` (default 2s) before releasing, so
 the flag flicking between utterances doesn't drop the hold. On release it
-**auto-resumes** (unlike a call). This is the durable half of a "duck while
-Google voice typing is active" feature: an Automate/Tasker/MacroDroid macro
-detects the mic recording and sets/clears the flag (confirmed working with
-Automate's "Audio device recording" block). If a call overlaps a hold episode,
-auto-resume is suppressed — the call's manual-resume policy wins.
+**auto-resumes** (unlike a call). If a call overlaps a hold episode, auto-resume
+is suppressed — the call's manual-resume policy wins.
+
+**The mic itself (2026-08-15).** The companion app answers "is anything
+recording" on ``/mic``, and ``MicSource`` reads it as a second source for the
+same signal — same debounce machinery, same hold, same auto-resume, and its own
+(much shorter) engage threshold, because an Android callback does not flicker
+the way the flag file did. This replaces the Automate "Audio device recording"
+macro that wrote the flag, which was load-bearing, invisible when it died, and
+had died. The flag path stays: it is trigger-agnostic and it is what
+``--hold``/``--release`` and the turn-taking protocol use.
 
 Invoked via the ``media-call-guard`` console script; supervised as the
 ``call-guard`` runit service on the phone. Use ``media-call-guard --probe`` to
@@ -221,7 +227,15 @@ _DEFAULT_FLAG_POLL_S = 0.3
 # The companion app's mic probe, which is the successor to the Automate flow
 # that wrote the flag file. Loopback only, like every other bridge on the phone.
 _DEFAULT_MIC_URL = "http://127.0.0.1:8770/mic"
-_DEFAULT_MIC_POLL_S = 0.5
+_DEFAULT_MIC_POLL_S = 0.25
+# The mic gets its own, much shorter engage debounce. The flag file's 1.5s is
+# not a policy about dictation, it is a defence against a flag that flickers:
+# Automate rewrote it between utterances, so a short threshold would have
+# chattered. The companion app's signal is an Android callback on a recording
+# session, which does not flicker — so the only thing 1.5s buys here is 1.5s of
+# Sam still talking after David has started. Release stays on the shared
+# setting: the gap between two utterances is exactly what must NOT resume him.
+_DEFAULT_MIC_ENGAGE_S = 0.4
 # How long to wait before retrying a mic endpoint that is not answering. Most
 # hosts running this guard have no companion app at all, so a refused connection
 # is the normal case and must cost nothing.
@@ -303,6 +317,8 @@ class Config:
             "MEDIA_CALL_GUARD_MIC_URL", _DEFAULT_MIC_URL).strip()
         self.mic_poll_s = _env_float("MEDIA_CALL_GUARD_MIC_POLL_S",
                                      _DEFAULT_MIC_POLL_S)
+        self.mic_engage_s = _env_float("MEDIA_CALL_GUARD_MIC_ENGAGE_S",
+                                       _DEFAULT_MIC_ENGAGE_S)
         # The input claim (see ClaimHeartbeat). Off unless a URL is set, which
         # is the whole gate: a host with nothing to tell simply configures
         # nothing, and every other guard behaviour is untouched either way.
@@ -1103,6 +1119,8 @@ def _run_call_hook(cmd: str, label: str, dry_run: bool = False) -> None:
 def _run_loop(cfg: Config, dry_run: bool = False) -> None:
     hold = PauseHold(cfg.pause_list)  # event-hold only guards the *paused* sockets
     flaghold = FlagHold(cfg.hold_engage_s, cfg.hold_release_s)
+    # Same debounce, different engage: see _DEFAULT_MIC_ENGAGE_S.
+    michold = FlagHold(cfg.mic_engage_s, cfg.hold_release_s)
     # A dry run must not tell red5 anything: an empty URL makes start() a
     # no-op, so the claim goes inert without threading dry_run through it.
     mic = MicSource(cfg.mic_url, cfg.mic_poll_s)
@@ -1140,7 +1158,12 @@ def _run_loop(cfg: Config, dry_run: bool = False) -> None:
         # whole job is answering "is the trigger still alive".
         raw_flag = flag_present(cfg)
         mic_now = mic.active
-        flag = flaghold.update(raw_flag or mic_now, _now())
+        now = _now()
+        # Both updated every tick, never short-circuited: a debounce that stops
+        # being told what it is watching stops being a debounce.
+        flag_held = flaghold.update(raw_flag, now)
+        mic_held = michold.update(mic_now, now)
+        flag = flag_held or mic_held
 
         # Claimed on the FLAG edge, not on `want`. Two reasons to keep this
         # separate from the duck below: `want` is also raised by a call, and a
@@ -1160,12 +1183,12 @@ def _run_loop(cfg: Config, dry_run: bool = False) -> None:
                 call_in_episode = True
             if not prev_want:
                 log.info("pausing/ducking phone audio (%s)",
-                         _hold_reason(call, flag, mic_now and not raw_flag))
+                         _hold_reason(call, flag, mic_held and not flag_held))
                 if flag:
                     # Only the flag path proves the external trigger is alive;
                     # a phone call would tick this without mic-detect running.
                     note_external_hold(
-                        _flag_source(cfg.hold_flag) if raw_flag
+                        _flag_source(cfg.hold_flag) if flag_held
                         else "companion-mic")
                 if not dry_run:
                     hold.start()  # instant re-pause on any un-pause

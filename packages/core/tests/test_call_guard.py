@@ -861,3 +861,27 @@ def test_the_mic_names_itself_in_the_hold_reason():
     assert call_guard._hold_reason(False, True, False) == "external hold"
     assert call_guard._hold_reason(True, True, True) == "call + mic (companion)"
     assert call_guard._hold_reason(True, False, False) == "call"
+
+
+def test_the_mic_engages_faster_than_the_flag():
+    """The 1.5s the flag waits is a defence against a flag that flickers, and
+    the app's callback does not flicker — so the mic pays 0.4s instead. The
+    *release* stays shared: the gap between two utterances is exactly what must
+    not resume Sam mid-sentence."""
+    cfg = call_guard.Config()
+    assert cfg.mic_engage_s < cfg.hold_engage_s
+
+    mic = call_guard.FlagHold(cfg.mic_engage_s, cfg.hold_release_s)
+    flag = call_guard.FlagHold(cfg.hold_engage_s, cfg.hold_release_s)
+
+    assert mic.update(True, 0.0) is False        # both start unheld
+    assert flag.update(True, 0.0) is False
+    assert mic.update(True, 0.5) is True         # mic is in by half a second
+    assert flag.update(True, 0.5) is False
+    assert flag.update(True, 1.6) is True        # the flag takes its 1.5s
+
+    # A pause between utterances: recording stops, and the hold must survive it.
+    assert mic.update(False, 2.0) is True
+    assert mic.update(True, 3.0) is True         # talking again
+    assert mic.update(False, 4.0) is True
+    assert mic.update(False, 6.1) is False       # quiet for the release window
