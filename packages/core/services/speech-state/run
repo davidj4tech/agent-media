@@ -1,0 +1,10 @@
+#!/bin/sh
+# agent-media speech-state: the cross-host speech/input-claim HTTP endpoint.
+#
+# No BIND here on purpose. The server asks the peer network for this host's
+# address at start-up and retries while tailscaled comes up, so the address is
+# discovered rather than configured. Set BIND (or MEDIA_SPEECH_STATE_BIND) in
+# ~/.config/agent-media.env only to override that.
+exec 2>&1
+[ -f "$HOME/.config/agent-media.env" ] && . "$HOME/.config/agent-media.env"
+exec media-speech-state

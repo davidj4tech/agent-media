@@ -104,7 +104,7 @@ def _mirror(action: str, ttl_s: float | None = None, note: str = "") -> None:
     """
     try:
         from .floor import publish
-        publish("input", os.environ.get("MEDIA_FLOOR_OWNER", "sam"),
+        publish("input", os.environ.get("MEDIA_FLOOR_OWNER", "local"),
                 action, ttl_s, note)
     except Exception:  # noqa: BLE001
         pass

@@ -84,6 +84,14 @@ macro that wrote the flag, which was load-bearing, invisible when it died, and
 had died. The flag path stays: it is trigger-agnostic and it is what
 ``--hold``/``--release`` and the turn-taking protocol use.
 
+**Keeping the app alive (2026-08-16).** Android stops the companion whenever it
+wants — ``LOW_MEMORY`` and ``killDueToPackageUpdate`` were both observed inside
+one day — and with Automate retired it is the only mic trigger, so each kill
+takes barge-in out entirely and silently. ``MicSource`` therefore relaunches it
+(``MEDIA_CALL_GUARD_MIC_REVIVE_CMD``) once the endpoint has been down long
+enough that the app is clearly not coming back on its own. Gated on ``am``
+existing, so no non-Android host ever tries.
+
 Invoked via the ``media-call-guard`` console script; supervised as the
 ``call-guard`` runit service on the phone. Use ``media-call-guard --probe`` to
 dump raw notifications (to calibrate the match against your dialer), or
@@ -97,6 +105,8 @@ import json
 import logging
 import os
 import re
+import shlex
+import shutil
 import signal
 import socket
 import subprocess
@@ -204,7 +214,10 @@ _FLAG_ADVERT_NAME = "call-guard.flag-path"
 # has been quiet, and doctor complains once that exceeds a day.
 # The input claim. Interval well under the TTL so two posts can be lost before
 # the floor frees itself; see ClaimHeartbeat for why the ratio is the point.
-_DEFAULT_CLAIM_OWNER = "cece"
+# Who the claim is filed under. A role, not a name: whoever is holding the
+# mic on the far side. Set MEDIA_INPUT_CLAIM_OWNER to the assistant's own
+# box name where that matters for the floor log.
+_DEFAULT_CLAIM_OWNER = "remote"
 _DEFAULT_CLAIM_TTL_S = 45.0
 _DEFAULT_CLAIM_INTERVAL_S = 15.0
 # Floor on the re-assert interval, so a misconfigured 0 becomes "once a second"
@@ -258,6 +271,28 @@ _DEFAULT_MIC_ENGAGE_S = 0.25
 # reasoning as the flag file's hold_max_s, which is the same failure with a
 # different writer.
 _DEFAULT_MIC_MAX_S = 120.0
+# Reviving the companion app when Android kills it.
+#
+# The app is not a service we supervise; it is an Android app, and Android
+# stops it whenever it likes. Observed on p8a on 2026-08-16: `LOW_MEMORY
+# importance=400` at 08:37 and `killDueToPackageUpdate` twice overnight. Once
+# the Automate flow was retired the app became the ONLY mic trigger, so each of
+# those kills took barge-in out completely — silently, until someone happened
+# to open the app. It had been dead for a quarter of an hour before it was
+# noticed, and the log shows 27 of these transitions.
+#
+# `am` is the gate rather than a config flag: it exists on Android and nowhere
+# else, so a host with no companion app never tries this, which keeps "the
+# endpoint refuses the connection" the ordinary non-event it has always been on
+# every other host.
+_DEFAULT_MIC_REVIVE_CMD = "am start -n net.agentmedia.companion/.MainActivity"
+# Long enough that an app restarting on its own wins the race and we stay out
+# of it; short enough that a kill is a gap, not an outage.
+_DEFAULT_MIC_REVIVE_AFTER_S = 30.0
+# A revive that did not work must not become a loop that launches an activity
+# every half-minute forever. If two attempts have not fixed it, it is not the
+# kind of broken this fixes.
+_DEFAULT_MIC_REVIVE_EVERY_S = 300.0
 # How long to wait before retrying a mic endpoint that is not answering. Most
 # hosts running this guard have no companion app at all, so a refused connection
 # is the normal case and must cost nothing.
@@ -343,6 +378,13 @@ class Config:
                                        _DEFAULT_MIC_ENGAGE_S)
         self.mic_max_s = _env_float("MEDIA_CALL_GUARD_MIC_MAX_S",
                                     _DEFAULT_MIC_MAX_S)
+        # Reviving the companion app (see MicSource). Set to "" to turn off.
+        self.mic_revive_cmd = os.environ.get(
+            "MEDIA_CALL_GUARD_MIC_REVIVE_CMD", _DEFAULT_MIC_REVIVE_CMD).strip()
+        self.mic_revive_after_s = _env_float(
+            "MEDIA_CALL_GUARD_MIC_REVIVE_AFTER_S", _DEFAULT_MIC_REVIVE_AFTER_S)
+        self.mic_revive_every_s = _env_float(
+            "MEDIA_CALL_GUARD_MIC_REVIVE_EVERY_S", _DEFAULT_MIC_REVIVE_EVERY_S)
         # The input claim (see ClaimHeartbeat). Off unless a URL is set, which
         # is the whole gate: a host with nothing to tell simply configures
         # nothing, and every other guard behaviour is untouched either way.
@@ -1031,7 +1073,10 @@ class MicSource:
     """
 
     def __init__(self, url: str, poll_s: float,
-                 backoff_s: float = _MIC_BACKOFF_S) -> None:
+                 backoff_s: float = _MIC_BACKOFF_S,
+                 revive_cmd: str = "",
+                 revive_after_s: float = _DEFAULT_MIC_REVIVE_AFTER_S,
+                 revive_every_s: float = _DEFAULT_MIC_REVIVE_EVERY_S) -> None:
         self._url = url
         self._poll_s = max(0.1, poll_s)
         self._backoff_s = backoff_s
@@ -1039,6 +1084,41 @@ class MicSource:
         self._failing = False
         self._stop_ev: threading.Event | None = None
         self._thread: threading.Thread | None = None
+        self._revive_cmd = revive_cmd
+        self._revive_after_s = revive_after_s
+        self._revive_every_s = revive_every_s
+        self._failing_since: float | None = None
+        self._last_revive: float = 0.0
+
+    def _maybe_revive(self) -> None:
+        """Ask Android to start the companion app again. Best-effort.
+
+        Gated three ways, because the failure this fixes is rare and the cure
+        launches a UI activity: the endpoint must have been down for
+        `revive_after_s` (so an app restarting by itself is left alone), we must
+        not have tried within `revive_every_s`, and `am` must exist — which is
+        what stops every non-Android host from doing anything at all here.
+        """
+        if not self._revive_cmd or self._failing_since is None:
+            return
+        now = _now()
+        if now - self._failing_since < self._revive_after_s:
+            return
+        if now - self._last_revive < self._revive_every_s:
+            return
+        if shutil.which(self._revive_cmd.split()[0]) is None:
+            return
+        self._last_revive = now
+        log.warning("mic source: down %.0fs — reviving with %r",
+                    now - self._failing_since, self._revive_cmd)
+        try:
+            subprocess.Popen(shlex.split(self._revive_cmd),
+                             start_new_session=True,
+                             stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+        except (OSError, ValueError) as e:
+            log.debug("mic source: revive failed: %s", e)
 
     @property
     def active(self) -> bool:
@@ -1065,8 +1145,10 @@ class MicSource:
             try:
                 got = self._read()
                 if self._failing:
-                    log.info("mic source: answering again")
+                    down = _now() - (self._failing_since or _now())
+                    log.info("mic source: answering again (down %.0fs)", down)
                     self._failing = False
+                    self._failing_since = None
                 self._active = got
             except Exception:  # noqa: BLE001 — every failure is the same failure
                 if not self._failing:
@@ -1074,8 +1156,10 @@ class MicSource:
                     log.debug("mic source: %s not answering, backing off",
                               self._url)
                     self._failing = True
+                    self._failing_since = _now()
                 self._active = False
                 wait = self._backoff_s
+                self._maybe_revive()
             self._stop_ev.wait(wait)
 
     def _read(self) -> bool:
@@ -1186,7 +1270,10 @@ def _run_loop(cfg: Config, dry_run: bool = False) -> None:
     sustained = SustainedMic(cfg.mic_max_s)
     # A dry run must not tell red5 anything: an empty URL makes start() a
     # no-op, so the claim goes inert without threading dry_run through it.
-    mic = MicSource(cfg.mic_url, cfg.mic_poll_s)
+    mic = MicSource(cfg.mic_url, cfg.mic_poll_s,
+                    revive_cmd=cfg.mic_revive_cmd,
+                    revive_after_s=cfg.mic_revive_after_s,
+                    revive_every_s=cfg.mic_revive_every_s)
     mic.start()
     claim = ClaimHeartbeat("" if dry_run else cfg.claim_url, cfg.claim_owner,
                            cfg.claim_ttl_s, cfg.claim_interval_s)

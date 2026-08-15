@@ -32,6 +32,7 @@ media-mcp-http         = "agent_media_core.mcp_server:main_http"
 media-mcp-narrow       = "agent_media_core.mcp_server:main_narrow"
 media-book-observer    = "agent_media_core.book_observer:main"
 media-call-guard       = "agent_media_core.call_guard:main"
+media-speech-state     = "agent_media_core.entrypoints.speech_state:main"
 # Optional intake adapters moved to their own packages (still installable,
 # same console-script names): agent-media-intake-matrix / -ha / -codex.
 

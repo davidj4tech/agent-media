@@ -563,7 +563,43 @@ def _with_visual_glyph(line: str) -> str:
     return line
 
 
-_SKEW_REPOS = ("agent-media", "dotfiles")
+# Which repos the fleet is skew-checked against, as `name:path-below-$HOME`.
+#
+# Was a two-name tuple with `dotfiles` special-cased at three separate call
+# sites, because agent-media lives at ~/projects/<name> and dotfiles does not.
+# A second repo's location baked into a conditional is the shape of the problem:
+# anyone who is not this author has no ~/dotfiles, so doctor reported a repo
+# that cannot exist as permanently stale.
+#
+# Paths are relative to $HOME on purpose. They are used twice — locally, and
+# inside shell that runs on a REMOTE host — and a relative path is the only form
+# that means the same thing in both places without knowing the remote's user.
+#
+# The default is this checkout alone. Skew monitoring across several repos is a
+# thing a particular fleet wants, not something the package should assume.
+_DEFAULT_SKEW_REPOS = "agent-media:projects/agent-media"
+
+
+def skew_repos() -> "list[tuple[str, str]]":
+    """[(name, path-relative-to-HOME)], from MEDIA_SKEW_REPOS or the default.
+
+    Entries are `name:relpath`; a bare `name` is shorthand for
+    `name:projects/name`. Empty means skew monitoring is off, which is a
+    legitimate configuration and not an error.
+    """
+    raw = os.environ.get("MEDIA_SKEW_REPOS", _DEFAULT_SKEW_REPOS)
+    out: list[tuple[str, str]] = []
+    for chunk in raw.replace(",", " ").split():
+        name, _, rel = chunk.partition(":")
+        name = name.strip()
+        if not name:
+            continue
+        out.append((name, (rel.strip() or f"projects/{name}").lstrip("/")))
+    return out
+
+
+def _skew_repo_names() -> "list[str]":
+    return [name for name, _ in skew_repos()]
 
 # How often the ledger is refreshed in the background. A clean fleet is checked
 # rarely; a fleet with a warning UP is rechecked far more often, because that is
@@ -582,8 +618,8 @@ def _repo_head(name: str) -> str:
     question two file reads can answer is not a trade worth making.
     """
     from pathlib import Path
-    base = Path.home() / name if name == "dotfiles" else Path.home() / "projects" / name
-    git = base / ".git"
+    rel = dict(skew_repos()).get(name) or f"projects/{name}"
+    git = Path.home() / rel / ".git"
     try:
         head = (git / "HEAD").read_text().strip()
     except OSError:
@@ -610,7 +646,7 @@ def _local_head_sig() -> str:
     and re-checked on read: if local HEAD has moved since, every host was
     compared against code this machine no longer runs, so the verdict describes
     a fleet that no longer exists and must not stay on screen."""
-    return " ".join(f"{r}={_repo_head(r)[:7]}" for r in _SKEW_REPOS)
+    return " ".join(f"{r}={_repo_head(r)[:7]}" for r in _skew_repo_names())
 
 
 def _skew_alert_line() -> str:
@@ -5195,11 +5231,26 @@ case "$out" in
        echo selfcheck=absent
      fi ;;
 esac
-git -C ~/projects/agent-media rev-parse HEAD 2>/dev/null | sed 's/^/agent-media-head=/'
-git -C ~/dotfiles rev-parse HEAD 2>/dev/null | sed 's/^/dotfiles-head=/'
-git -C ~/projects/agent-media branch --show-current 2>/dev/null | sed 's/^/agent-media-branch=/'
-git -C ~/dotfiles branch --show-current 2>/dev/null | sed 's/^/dotfiles-branch=/'
 """
+
+
+def _remote_probe() -> str:
+    """The probe, with one head/branch pair per configured repo appended.
+
+    Generated rather than written out because the repo list is configuration
+    now; a literal here would silently disagree with `skew_repos()` the moment
+    anyone changed it, and the disagreement would present as a host that is
+    never stale.
+    """
+    lines = [_REMOTE_PROBE]
+    for name, rel in skew_repos():
+        d = f'"$HOME/{rel}"'
+        lines.append(
+            f"git -C {d} rev-parse HEAD 2>/dev/null | sed 's/^/{name}-head=/'")
+        lines.append(
+            f"git -C {d} branch --show-current 2>/dev/null "
+            f"| sed 's/^/{name}-branch=/'")
+    return "\n".join(lines) + "\n"
 
 
 # Deploy a skewed host and put the new code into service, in that order: a
@@ -5217,7 +5268,7 @@ git -C ~/dotfiles branch --show-current 2>/dev/null | sed 's/^/dotfiles-branch=/
 # unattended `git stash`/`reset` on a host David may be mid-edit on is a worse
 # outcome than a warning that stays up.
 _REMOTE_FIX = r"""
-for d in "$HOME/projects/agent-media" "$HOME/dotfiles"; do
+for d in "$@"; do
   [ -d "$d/.git" ] || continue
   n=${d##*/}
   if [ -n "$(git -C "$d" status --porcelain 2>/dev/null)" ]; then
@@ -5244,6 +5295,26 @@ fi
 """
 
 
+def _remote_fix() -> str:
+    """`_REMOTE_FIX` with the configured repo directories substituted in.
+
+    Quoted per-entry rather than joined raw: these become a `for d in ...` list
+    in sh, so an unquoted path with a space would silently split into two
+    directories that do not exist, and the loop would report both as absent.
+
+    Passed via `set --` and iterated as `"$@"`, rather than pasted into the
+    `for` list directly. Two reasons, and the tests check a real `sh -n`:
+    with no repos configured -- a legitimate "skew monitoring off" -- a direct
+    paste produces `for d in ; do`, a syntax error that takes the whole remote
+    script down, whereas `set --` with no arguments simply leaves zero
+    positional parameters. And a plain variable would not do: `VAR="a" "b"`
+    assigns the first word and then tries to EXECUTE the second.
+    """
+    dirs = " ".join(f'"$HOME/{rel}"' for _, rel in skew_repos())
+    return f"set -- {dirs}\n" + _REMOTE_FIX
+
+
+
 def _local_repo_state(repos: "list[str]", echo=True) -> "tuple[dict, dict]":
     """(head, branch) per repo for THIS host — what every other host is judged
     against."""
@@ -5251,7 +5322,7 @@ def _local_repo_state(repos: "list[str]", echo=True) -> "tuple[dict, dict]":
     from pathlib import Path
     heads, branches = {}, {}
     for r in repos:
-        path = str(Path.home() / "projects" / r) if r != "dotfiles" else str(Path.home() / r)
+        path = str(Path.home() / (dict(skew_repos()).get(r) or f"projects/{r}"))
         try:
             heads[r] = subprocess.run(
                 ["git", "-C", path, "rev-parse", "HEAD"],
@@ -5295,7 +5366,7 @@ def _scan_hosts(hosts: "list[str]", local_hashes: dict,
         try:
             res = subprocess.run(
                 ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", host,
-                 "sh"], input=_REMOTE_PROBE,
+                 "sh"], input=_remote_probe(),
                 capture_output=True, text=True, timeout=45)
         except Exception:  # noqa: BLE001
             print(" unreachable")
@@ -5345,7 +5416,7 @@ def _fix_host(host: str) -> "tuple[bool, list[str]]":
     try:
         res = subprocess.run(
             ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", host, "sh"],
-            input=_REMOTE_FIX, capture_output=True, text=True, timeout=300)
+            input=_remote_fix(), capture_output=True, text=True, timeout=300)
     except Exception as e:  # noqa: BLE001
         return False, [f"unreachable while fixing: {e}"]
     lines = [ln.strip() for ln in (res.stdout or "").splitlines() if ln.strip()]
@@ -5425,8 +5496,11 @@ def cmd_doctor(a) -> int:
     # "unreachable", and unreachable hosts were skipped — so the phone, the host
     # that actually renders speech, went unchecked for weeks while the summary
     # said everything was healthy. It was six commits behind when this was found.
-    hosts = os.environ.get("MEDIA_DOCTOR_HOSTS", "p8a red5 pn sp4").split()
-    repos = ["agent-media", "dotfiles"]
+    # No default fleet: these were four of one person's machines, and an
+    # unreachable stranger's host reads as a broken install. Unset means
+    # "check this host only", which is right for a fresh install.
+    hosts = os.environ.get("MEDIA_DOCTOR_HOSTS", "").split()
+    repos = _skew_repo_names()
 
     local_hashes, local_branches = _local_repo_state(repos)
     unhealthy = ["local"] if _scan_local() else []

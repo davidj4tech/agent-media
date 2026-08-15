@@ -11,6 +11,8 @@ import subprocess
 import time
 from pathlib import Path
 
+import pytest
+
 from agent_media_core import cli
 
 
@@ -148,12 +150,59 @@ def test_parked_services_are_reported_but_not_problems():
     assert any("media-mcp" in p for p in cli.health_problems(facts))
 
 
-def test_probe_reports_the_checked_out_branch():
+def test_probe_reports_the_checked_out_branch(monkeypatch):
     """doctor needs the branch, not just the head, to tell 'stale' from
-    'deliberately somewhere else'."""
-    assert "branch --show-current" in cli._REMOTE_PROBE
-    assert "agent-media-branch=" in cli._REMOTE_PROBE
-    assert "dotfiles-branch=" in cli._REMOTE_PROBE
+    'deliberately somewhere else'.
+
+    Asserted against the generated probe, not the `_REMOTE_PROBE` literal: the
+    repo lines are built from `skew_repos()` now, and a test pinned to the
+    constant would pass while the thing actually sent to the host had lost
+    them.
+    """
+    monkeypatch.setenv("MEDIA_SKEW_REPOS", "agent-media,dotfiles:dotfiles")
+    probe = cli._remote_probe()
+    assert "branch --show-current" in probe
+    assert "agent-media-branch=" in probe
+    assert "dotfiles-branch=" in probe
+
+
+def test_probe_and_fix_cover_exactly_the_configured_repos(monkeypatch):
+    """The two halves must agree. They were separate literals naming the same
+    two repos; if one drifts, doctor reports a repo it will never fix, or
+    fixes one it never checks."""
+    monkeypatch.setenv("MEDIA_SKEW_REPOS", "alpha,beta:src/beta")
+    probe, fix = cli._remote_probe(), cli._remote_fix()
+    for name, rel in (("alpha", "projects/alpha"), ("beta", "src/beta")):
+        assert f"{name}-head=" in probe
+        assert f'"$HOME/{rel}"' in probe
+        assert f'"$HOME/{rel}"' in fix
+    assert "dotfiles" not in probe and "dotfiles" not in fix
+
+
+@pytest.mark.parametrize("repos", ["agent-media,dotfiles:dotfiles",
+                                   "one:a b/c",
+                                   ""])
+def test_generated_remote_shell_actually_parses(repos, monkeypatch):
+    """Both scripts are piped to `sh` on another host, where a syntax error is
+    a silent no-op attributed to the host being broken. So parse them here.
+
+    Checked with a real `sh -n` because eyeballing missed two forms already:
+    an empty repo list produced `for d in ; do`, and a first attempt at a
+    variable produced `VAR="a" "b"` -- which assigns the first word and then
+    tries to execute the second.
+    """
+    import subprocess
+    monkeypatch.setenv("MEDIA_SKEW_REPOS", repos)
+    for script in (cli._remote_probe(), cli._remote_fix()):
+        r = subprocess.run(["sh", "-n"], input=script,
+                           capture_output=True, text=True)
+        assert r.returncode == 0, f"{r.stderr}\n---\n{script}"
+
+
+def test_no_repos_configured_is_not_an_error(monkeypatch):
+    """A legitimate configuration: skew monitoring off."""
+    monkeypatch.setenv("MEDIA_SKEW_REPOS", "")
+    assert cli.skew_repos() == []
 
 
 def test_repo_note_silent_when_in_step():

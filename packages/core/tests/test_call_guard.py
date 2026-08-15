@@ -4,6 +4,7 @@ import json
 import os
 import socket
 import threading
+import time
 from pathlib import Path
 
 from agent_media_core import call_guard
@@ -918,3 +919,92 @@ def test_a_pause_between_utterances_restarts_the_clock():
     assert m.update(False, 9.5) is False          # breath between utterances
     assert m.update(True, 10.0) is True           # clock starts again
     assert m.update(True, 19.0) is True
+
+
+# --- reviving the companion app ---------------------------------------------
+# Android killed it for LOW_MEMORY on 2026-08-16 and barge-in was gone for a
+# quarter of an hour before anyone noticed. These pin the three gates that stop
+# the cure being worse than the disease.
+
+
+def _dead_url():
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    return f"http://127.0.0.1:{port}/mic"
+
+
+def _revive_probe(monkeypatch):
+    """Capture revive attempts without launching anything."""
+    calls = []
+    monkeypatch.setattr(call_guard.subprocess, "Popen",
+                        lambda argv, **kw: calls.append(argv))
+    # `am` only exists on Android; pretend it does so the gate under test is
+    # the timing one, not the platform one.
+    monkeypatch.setattr(call_guard.shutil, "which", lambda name: "/bin/" + name)
+    return calls
+
+
+def test_revive_waits_before_firing(monkeypatch):
+    """An app restarting on its own must win the race — we stay out of it."""
+    calls = _revive_probe(monkeypatch)
+    source = call_guard.MicSource(_dead_url(), poll_s=0.05, backoff_s=0.05,
+                                  revive_cmd="am start -n x/.Y",
+                                  revive_after_s=60.0, revive_every_s=1.0)
+    source.start()
+    try:
+        assert _settle(source, False)
+        assert calls == []          # down, but nowhere near long enough
+    finally:
+        source.stop()
+
+
+def test_revive_fires_once_down_long_enough(monkeypatch):
+    calls = _revive_probe(monkeypatch)
+    source = call_guard.MicSource(_dead_url(), poll_s=0.05, backoff_s=0.05,
+                                  revive_cmd="am start -n x/.Y",
+                                  revive_after_s=0.0, revive_every_s=300.0)
+    source.start()
+    try:
+        assert _settle(source, False)
+        time.sleep(0.3)
+        assert calls, "endpoint down past the threshold should have revived"
+        assert calls[0][:2] == ["am", "start"]
+        # Rate limit: many failing polls, still one attempt.
+        assert len(calls) == 1
+    finally:
+        source.stop()
+
+
+def test_revive_never_fires_without_am(monkeypatch):
+    """The platform gate. Every host that is not Android lands here, and a
+    refused connection there is the ordinary state, not something to fix."""
+    calls = []
+    monkeypatch.setattr(call_guard.subprocess, "Popen",
+                        lambda argv, **kw: calls.append(argv))
+    monkeypatch.setattr(call_guard.shutil, "which", lambda name: None)
+    source = call_guard.MicSource(_dead_url(), poll_s=0.05, backoff_s=0.05,
+                                  revive_cmd="am start -n x/.Y",
+                                  revive_after_s=0.0, revive_every_s=0.0)
+    source.start()
+    try:
+        assert _settle(source, False)
+        time.sleep(0.3)
+        assert calls == []
+    finally:
+        source.stop()
+
+
+def test_revive_off_when_unconfigured(monkeypatch):
+    calls = _revive_probe(monkeypatch)
+    source = call_guard.MicSource(_dead_url(), poll_s=0.05, backoff_s=0.05,
+                                  revive_cmd="", revive_after_s=0.0,
+                                  revive_every_s=0.0)
+    source.start()
+    try:
+        assert _settle(source, False)
+        time.sleep(0.2)
+        assert calls == []
+    finally:
+        source.stop()

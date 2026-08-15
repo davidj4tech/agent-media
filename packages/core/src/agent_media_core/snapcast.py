@@ -51,8 +51,12 @@ def phone_client_prefix() -> str:
     # recognised as the phone, so connected_other_clients() counts them as other
     # rooms and the auto route reads "someone else is listening" — sending a
     # phone-only play to the whole house. Prefix-matching covers `-music` too.
+    #
+    # Defaults to empty: "no phone in this setup". Naming one particular
+    # device here made the package personal, and the wrong name is the
+    # misroute described above.
     return os.environ.get("MEDIA_SNAP_PHONE_PREFIX",
-                          os.environ.get("MUSIC_PHONE_CLIENT_PREFIX", "p8a"))
+                          os.environ.get("MUSIC_PHONE_CLIENT_PREFIX", ""))
 
 
 def _rpc(method: str, params: Optional[dict] = None,
@@ -107,8 +111,15 @@ def connected_other_clients(timeout: float = 4.0) -> list[str]:
     out: list[str] = []
     for g in server.get("groups", []):
         for c in g.get("clients", []):
-            if c.get("connected") and not str(c.get("id", "")).startswith(prefix):
-                out.append(c["id"])
+            # `startswith("")` is True for EVERY id, so an unset prefix would
+            # mark the whole house as the phone and the auto route would send
+            # every play phone-local. No prefix means no phone, so nothing is
+            # excluded -- the opposite, and the safe, direction.
+            if not c.get("connected"):
+                continue
+            if prefix and str(c.get("id", "")).startswith(prefix):
+                continue
+            out.append(c["id"])
     return out
 
 

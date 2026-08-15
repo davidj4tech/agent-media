@@ -85,7 +85,9 @@ def post(question: str, timeout_s: float) -> None:
     the box configured on the host, which is us either way — but stating it
     keeps the reply threading to the right box when the answer comes back.
     """
-    box = os.environ.get("MEDIA_CONVERSE_MAILBOX", "cece").strip()
+    # Unset means "nobody to ring", which the guard below already handles.
+    # A default box name here would be one household's assistant.
+    box = os.environ.get("MEDIA_CONVERSE_MAILBOX", "").strip()
     if not box or not question.strip():
         return
     cmd = _relay_msg_cmd()
@@ -100,8 +102,11 @@ def post(question: str, timeout_s: float) -> None:
         f"the rendezvous is gone and converse-reply will exit 3. Check with "
         f"media converse-reply --pending before answering a stale one."
     )
-    sender = os.environ.get("MEDIA_CONVERSE_MAILBOX_FROM", "sam")
-    argv = [*cmd, "--from", sender, "--to", box, body]
+    sender = os.environ.get("MEDIA_CONVERSE_MAILBOX_FROM", "").strip()
+    # Without a configured sender, let relay-msg use the host's own box
+    # rather than asserting a name we made up.
+    argv = [*cmd, *(["--from", sender] if sender else []),
+            "--to", box, body]
     threading.Thread(
         target=lambda: _run(argv), daemon=True).start()
 

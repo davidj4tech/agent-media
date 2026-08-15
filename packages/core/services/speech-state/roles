@@ -1,0 +1,4 @@
+# Answers "is speech playing here" and takes input claims for THIS host's
+# speech channel, so it belongs wherever speech is rendered. An observer on
+# another device posts to it; the observing does not happen here.
+requires: render
