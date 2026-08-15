@@ -113,8 +113,14 @@ public class CompanionService extends Service {
      */
     private SideChannel speech;
     private SideChannel book;
-    /** speech.state() and speech.ipc(), which the focus policy reads and drives. */
-    private MpvState speechState;
+    /**
+     * speech.state() and speech.ipc(), which the focus policy reads and drives.
+     * The state starts as an empty, disconnected mirror rather than null, so a
+     * missing speech channel reads as "unreachable" everywhere instead of
+     * needing a null check at each of a dozen call sites — and "unreachable" is
+     * already a case every one of them handles.
+     */
+    private MpvState speechState = new MpvState();
     private MpvIpc speechIpc;
     private final FocusPolicy focus = new FocusPolicy();
     /** The speech half of David's rule; drives speechIpc, never the music one. */
@@ -228,7 +234,7 @@ public class CompanionService extends Service {
         // logcat shows only Termux's uid, so an unrecorded crash is an
         // undiagnosable one — which is exactly how "agent-media keeps stopping"
         // arrived on 2026-08-15 with nothing to read.
-        Crash.install(getFilesDir());
+        Crash.install(this);
         audio = getSystemService(AudioManager.class);
         prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         focusActs = prefs.getBoolean(KEY_FOCUS_ACTS, false);
@@ -261,29 +267,49 @@ public class CompanionService extends Service {
         ipc = new MpvIpc(MPV_HOST, MPV_PORT, listener);
         ipc.start();
 
-        speech = new SideChannel(this, main, "speech", FrontChannel.SPEECH_TITLE,
-                                 MPV_SPEECH_PORT, MpvIpc.OBSERVED_SPEECH,
-                                 NOTIF_SPEECH, CHANNEL,
-                                 android.R.drawable.ic_media_play, speechWatcher);
-        speechState = speech.state();
-        speechIpc = speech.ipc();
-        speech.start();
+        // Both side channels are optional, and the app says so by construction.
+        // Music is the phone's player and the focus policy is the point of the
+        // app; a second and third card are worth having and worth nothing next
+        // to those. A failure here used to be fatal, which on this device means
+        // a dialog, a restart loop, and no way to read why.
+        speech = startChannel("speech", FrontChannel.SPEECH_TITLE, MPV_SPEECH_PORT,
+                              MpvIpc.OBSERVED_SPEECH, NOTIF_SPEECH, speechWatcher);
+        if (speech != null) {
+            speechState = speech.state();
+            speechIpc = speech.ipc();
+        }
 
         // The book bridge may legitimately not be running — a book broker is
         // started on the days there is a book. An unreachable channel simply
         // never shows a card; MpvIpc reconnects with backoff forever, so one
         // appears the moment the bridge does.
-        book = new SideChannel(this, main, "book", "Audiobook",
-                               MPV_BOOK_PORT, MpvIpc.OBSERVED,
-                               NOTIF_BOOK, CHANNEL,
-                               android.R.drawable.ic_media_play, bookWatcher);
-        book.start();
+        book = startChannel("book", "Audiobook", MPV_BOOK_PORT,
+                            MpvIpc.OBSERVED, NOTIF_BOOK, bookWatcher);
 
         main.postDelayed(positionPoll, POSITION_POLL_MS);
         log("service started; music -> " + MPV_HOST + ":" + MPV_PORT
                 + ", speech -> " + MPV_HOST + ":" + MPV_SPEECH_PORT
                 + ", book -> " + MPV_HOST + ":" + MPV_BOOK_PORT);
         log("focus: mode " + (focusActs ? "acting" : "probe (logs only)"));
+    }
+
+    /**
+     * Build and start one side channel, or log why there is not going to be one.
+     * Never throws: see the call site.
+     */
+    private SideChannel startChannel(String name, String label, int port,
+                                     String[] observed, int notifId,
+                                     SideChannel.Watcher watcher) {
+        try {
+            SideChannel c = new SideChannel(this, main, name, label, port, observed,
+                                            notifId, CHANNEL,
+                                            android.R.drawable.ic_media_play, watcher);
+            c.start();
+            return c;
+        } catch (Throwable e) {
+            log(name + ": channel unavailable, carrying on without it: " + e);
+            return null;
+        }
     }
 
     @Override
@@ -675,8 +701,7 @@ public class CompanionService extends Service {
      * now that each channel has a card of its own.
      */
     private boolean speechFront() {
-        return speechState != null
-                && FrontChannel.speechInFront(speechState, speechHeldNow());
+        return FrontChannel.speechInFront(speechState, speechHeldNow());
     }
 
     /** The coordinator says a response is in flight, and said so recently. */
@@ -879,6 +904,7 @@ public class CompanionService extends Service {
      * mpv is never paused for a sentence and the speech mpv is never ducked.
      */
     private void performSpeech(SpeechPolicy.Action action) {
+        if (speechIpc == null) return;
         switch (action) {
             case PAUSE:
                 log("focus: pause speech");
