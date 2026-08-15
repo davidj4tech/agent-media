@@ -1291,10 +1291,11 @@ def main() -> int:
 
     log.info("call_guard starting: packages=%s pause=%s duck=%s@vol%g "
              "poll=%.1fs flag_poll=%.1fs engage=%.1fs release=%.1fs "
-             "hold_flag=%s%s",
+             "mic=%s@%.2fs engage=%.1fs hold_flag=%s%s",
              sorted(cfg.packages), cfg.pause_list, cfg.duck_list,
              cfg.duck_volume, cfg.poll_s, cfg.flag_poll_s, cfg.hold_engage_s,
-             cfg.hold_release_s, cfg.hold_flag,
+             cfg.hold_release_s, cfg.mic_url or "off", cfg.mic_poll_s,
+             cfg.mic_engage_s, cfg.hold_flag,
              " [dry-run]" if args.dry_run else "")
     publish_flag_path(cfg)
     try:
