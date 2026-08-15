@@ -235,7 +235,12 @@ _DEFAULT_MIC_POLL_S = 0.25
 # session, which does not flicker — so the only thing 1.5s buys here is 1.5s of
 # Sam still talking after David has started. Release stays on the shared
 # setting: the gap between two utterances is exactly what must NOT resume him.
-_DEFAULT_MIC_ENGAGE_S = 0.4
+#
+# 0.25s: one mic poll. Below this the poll is the floor and the threshold stops
+# meaning anything — the next step down is the app pushing rather than us
+# asking. Set from use on 2026-08-15, David's call; raise it if a cleared throat
+# starts stopping the audio.
+_DEFAULT_MIC_ENGAGE_S = 0.25
 # How long to wait before retrying a mic endpoint that is not answering. Most
 # hosts running this guard have no companion app at all, so a refused connection
 # is the normal case and must cost nothing.
