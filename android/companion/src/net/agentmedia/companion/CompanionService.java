@@ -133,6 +133,8 @@ public class CompanionService extends Service {
     private Silence silence;
     private FocusControl focusControl;
     private StatusServer status;
+    /** The mic probe — watching only, driving nothing yet. See MicWatch. */
+    private MicWatch mic;
     private SharedPreferences prefs;
     private boolean focusActs = false;
     /** A deferred transient-loss decision; main-thread only. See onFocusChange. */
@@ -299,6 +301,15 @@ public class CompanionService extends Service {
         book = startChannel("book", "Audiobook", MPV_BOOK_PORT,
                             MpvIpc.OBSERVED, NOTIF_BOOK, bookWatcher);
 
+        // Last, and never fatal: it is a probe, and the app worked without it
+        // yesterday. It answers one question — can we see the mic at all —
+        // which decides whether Automate can be retired or has to be replaced
+        // by a microphone we hold ourselves.
+        mic = new MicWatch(audio, main, active ->
+                log("mic: " + (active ? "something is recording" : "quiet")
+                        + " (probe only — nothing is held)"));
+        mic.start();
+
         main.postDelayed(positionPoll, POSITION_POLL_MS);
         log("service started; music -> " + MPV_HOST + ":" + MPV_PORT
                 + ", speech -> " + MPV_HOST + ":" + MPV_SPEECH_PORT
@@ -346,6 +357,7 @@ public class CompanionService extends Service {
             speech.stop();
         }
         if (book != null) book.stop();
+        if (mic != null) mic.stop();
         if (status != null) status.stop();
         if (focusControl != null) focusControl.abandon();
         stopSilence();
@@ -506,6 +518,7 @@ public class CompanionService extends Service {
             // The only clock the speech pause has. It runs whether or not music
             // is playing, which is the case that needs it: a permanent loss
             // pauses speech and then nothing else happens at all.
+            if (mic != null) mic.poll();
             pollForQuiet();
             expireSpeechPause();
             kickMarquee();
@@ -874,6 +887,13 @@ public class CompanionService extends Service {
             synchronized (focusHistory) {
                 m.put("focus_events", new ArrayList<String>(focusHistory));
             }
+            // The mic probe. `mic_seen` is the finding: what a non-privileged
+            // app is actually shown about a recording it does not own.
+            m.put("mic_active", Boolean.valueOf(mic != null && mic.active()));
+            m.put("mic_count", Integer.valueOf(mic == null ? 0 : mic.count()));
+            m.put("mic_seen", mic == null ? "(no probe)" : mic.detail());
+            m.put("mic_events", mic == null
+                    ? new ArrayList<String>() : mic.history());
             return Json.write(m);
         }
 
