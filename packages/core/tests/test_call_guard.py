@@ -885,3 +885,36 @@ def test_the_mic_engages_faster_than_the_flag():
     assert mic.update(True, 3.0) is True         # talking again
     assert mic.update(False, 4.0) is True
     assert mic.update(False, 6.1) is False       # quiet for the release window
+
+
+def test_an_always_on_listener_does_not_hold_the_audio_forever():
+    """Push-to-talk and voice mode look identical on the wire — mic active —
+    and only the duration tells them apart. Without this, starting a voice
+    session pauses speech and the book for as long as it runs."""
+    m = call_guard.SustainedMic(max_s=120.0)
+
+    assert m.update(True, 0.0) is True            # a barge-in reads as one
+    assert m.update(True, 119.0) is True
+    assert m.update(True, 120.0) is False         # ...and then stops counting
+    assert m.update(True, 900.0) is False         # latched, not re-triggering
+
+    assert m.update(False, 901.0) is False        # quiet re-arms it
+    assert m.update(True, 902.0) is True
+
+
+def test_the_backstop_can_be_turned_off():
+    m = call_guard.SustainedMic(max_s=0.0)
+    assert m.update(True, 0.0) is True
+    assert m.update(True, 100_000.0) is True
+
+
+def test_a_pause_between_utterances_restarts_the_clock():
+    """The release debounce holds across the gap between two utterances, so the
+    sustained clock must restart there — otherwise a long dictation with breaks
+    in it would accumulate towards the backstop and cut out mid-message."""
+    m = call_guard.SustainedMic(max_s=10.0)
+    assert m.update(True, 0.0) is True
+    assert m.update(True, 9.0) is True
+    assert m.update(False, 9.5) is False          # breath between utterances
+    assert m.update(True, 10.0) is True           # clock starts again
+    assert m.update(True, 19.0) is True

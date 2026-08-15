@@ -241,6 +241,23 @@ _DEFAULT_MIC_POLL_S = 0.25
 # asking. Set from use on 2026-08-15, David's call; raise it if a cleared throat
 # starts stopping the audio.
 _DEFAULT_MIC_ENGAGE_S = 0.25
+# How long a single unbroken recording can hold the audio down.
+#
+# The mic signal answers "is something recording", and barge-in reads that as
+# "David is talking". Push-to-talk makes those the same thing: the mic opens
+# when he starts and closes when he stops. An always-on listener — voice mode,
+# a call transcriber, a recorder left running — does not. It takes the mic once
+# and keeps it, and without this the hold engages at the top of the session and
+# never releases: speech and book paused for as long as the listener runs, with
+# nothing left that knows to start them.
+#
+# So a recording this long stops counting as a barge-in until the mic goes
+# quiet again. Deliberately generous: dictating for two unbroken minutes is
+# unusual and being wrong that way merely un-pauses Sam early, while being
+# wrong the other way is a phone that has gone silent for the evening. Same
+# reasoning as the flag file's hold_max_s, which is the same failure with a
+# different writer.
+_DEFAULT_MIC_MAX_S = 120.0
 # How long to wait before retrying a mic endpoint that is not answering. Most
 # hosts running this guard have no companion app at all, so a refused connection
 # is the normal case and must cost nothing.
@@ -324,6 +341,8 @@ class Config:
                                      _DEFAULT_MIC_POLL_S)
         self.mic_engage_s = _env_float("MEDIA_CALL_GUARD_MIC_ENGAGE_S",
                                        _DEFAULT_MIC_ENGAGE_S)
+        self.mic_max_s = _env_float("MEDIA_CALL_GUARD_MIC_MAX_S",
+                                    _DEFAULT_MIC_MAX_S)
         # The input claim (see ClaimHeartbeat). Off unless a URL is set, which
         # is the whole gate: a host with nothing to tell simply configures
         # nothing, and every other guard behaviour is untouched either way.
@@ -1066,6 +1085,44 @@ class MicSource:
         return body.split()[0] == "1" if body else False
 
 
+class SustainedMic:
+    """Is this recording a barge-in, or is something just holding the mic?
+
+    Both look identical on the wire, and the difference matters: one wants the
+    audio paused for a few seconds, the other would pause it for an evening.
+    The only thing that separates them from here is how long it goes on for, so
+    that is what this measures. Past ``max_s`` of unbroken recording the answer
+    becomes "not a barge-in" and stays there until the mic goes quiet — a latch,
+    not a timeout, because a listener held open for an hour must not re-engage
+    the hold every ``max_s``.
+
+    ``max_s <= 0`` turns the backstop off.
+    """
+
+    def __init__(self, max_s: float) -> None:
+        self.max_s = max_s
+        self._since: float | None = None
+        self._wedged = False
+
+    def update(self, active: bool, now: float) -> bool:
+        if not active:
+            if self._wedged:
+                log.info("mic quiet again — barge-in re-armed")
+            self._since = None
+            self._wedged = False
+            return False
+        if self._since is None:
+            self._since = now
+        if (not self._wedged and self.max_s > 0
+                and now - self._since >= self.max_s):
+            self._wedged = True
+            log.warning(
+                "mic has been recording for %.0fs without a break — releasing "
+                "the hold. Something is holding the microphone open (voice "
+                "mode, a recorder); that is not a barge-in.", self.max_s)
+        return not self._wedged
+
+
 class FlagHold:
     """Debounced external-hold state derived from the flag file.
 
@@ -1126,6 +1183,7 @@ def _run_loop(cfg: Config, dry_run: bool = False) -> None:
     flaghold = FlagHold(cfg.hold_engage_s, cfg.hold_release_s)
     # Same debounce, different engage: see _DEFAULT_MIC_ENGAGE_S.
     michold = FlagHold(cfg.mic_engage_s, cfg.hold_release_s)
+    sustained = SustainedMic(cfg.mic_max_s)
     # A dry run must not tell red5 anything: an empty URL makes start() a
     # no-op, so the claim goes inert without threading dry_run through it.
     mic = MicSource(cfg.mic_url, cfg.mic_poll_s)
@@ -1162,8 +1220,9 @@ def _run_loop(cfg: Config, dry_run: bool = False) -> None:
         # spoke is kept only for the record — see note_external_hold, whose
         # whole job is answering "is the trigger still alive".
         raw_flag = flag_present(cfg)
-        mic_now = mic.active
         now = _now()
+        # A recording that never stops is not someone talking over Sam.
+        mic_now = sustained.update(mic.active, now)
         # Both updated every tick, never short-circuited: a debounce that stops
         # being told what it is watching stops being a debounce.
         flag_held = flaghold.update(raw_flag, now)
