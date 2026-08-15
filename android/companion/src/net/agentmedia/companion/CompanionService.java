@@ -760,14 +760,34 @@ public class CompanionService extends Service {
             return;
         }
         if (!LIVE_HOLD.equals(liveMode) || speakNow) return;
+        // Urgency picks the tier. The enum is the coordinator's own
+        // (agent_media_core.types.Priority) and arrives on the broker with the
+        // speaking flag, so this is decided before the first word is audible.
+        String prio = speechState.priority;
+        if ("urgent".equals(prio)) {
+            // Take the room. Nothing is held, and pushSessionState's ordinary
+            // claim applies — which for a voice session means Live pauses and
+            // David gets told, the price of something that could not wait.
+            if (heldForSession) {
+                heldForSession = false;
+                nm.cancel(NOTIF_WAITING);
+                performSpeech(SpeechPolicy.Action.RESUME);
+            }
+            log("live: urgent — taking the room");
+            speakNow = true;
+            return;
+        }
         // Something to hold: a clip playing, or a reply the coordinator has
         // announced but not yet staged.
         if (!(speechState.playing() || speakingNow() || speechFront())) return;
         performSpeech(SpeechPolicy.Action.PAUSE);
         if (!heldForSession) {
             heldForSession = true;
-            log("live: holding Sam while the voice session runs");
-            nm.notify(NOTIF_WAITING, waitingCard());
+            log("live: holding Sam while the voice session runs (" + prio + ")");
+            // Low is the ambient tier: it waits, and it does not ask. Anything
+            // else is worth a card, because a reply to something David said is
+            // worth telling him about even when it can wait.
+            if (!"low".equals(prio)) nm.notify(NOTIF_WAITING, waitingCard());
         }
     }
 
@@ -1024,6 +1044,7 @@ public class CompanionService extends Service {
             m.put("mic_seen", mic == null ? "(no probe)" : mic.detail());
             m.put("mic_verdict", bargeIn.why(System.currentTimeMillis()));
             m.put("live_mode", liveMode);
+            m.put("speech_priority", speechState.priority);
             m.put("voice_session", Boolean.valueOf(bargeIn.voiceSession()));
             m.put("mic_events", mic == null
                     ? new ArrayList<String>() : mic.history());

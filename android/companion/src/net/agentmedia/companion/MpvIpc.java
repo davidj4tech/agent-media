@@ -50,6 +50,14 @@ final class MpvIpc {
     static final String SPEAKING_PROPERTY = "user-data/agent-media/speaking";
 
     /**
+     * How much interruption this reply is worth —
+     * `agent_media_core.sinks.speech.PRIORITY_PROPERTY`. One of low / normal /
+     * high / urgent, written with the speaking flag rather than at play time,
+     * because the decision it feeds has to be made before the first word.
+     */
+    static final String PRIORITY_PROPERTY = "user-data/agent-media/priority";
+
+    /**
      * What the speech connection subscribes to — enough to answer "is a clip
      * running" and "was one just staged". {@code path} is in the set because
      * the focus loss for a clip arrives when mpv *opens* the file, which on p8a
@@ -66,6 +74,7 @@ final class MpvIpc {
      */
     static final String[] OBSERVED_SPEECH = {
         "idle-active", "pause", "path", "media-title", SPEAKING_PROPERTY,
+        PRIORITY_PROPERTY,
     };
 
     /**

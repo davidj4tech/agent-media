@@ -87,13 +87,34 @@ the urgent tier will use.
 Only speech is affected. Music is the phone's player, and a call or a voice
 session ducking it is exactly what the focus policy is for.
 
+## Who sets the urgency
+
+The `Priority` enum already exists (`agent_media_core.types`) and is set by
+whoever submits the speech — `media say --urgent`, or the MCP's `priority`
+argument. Nothing promotes anything automatically, and the tiers map onto it
+directly: low waits silently, normal waits and shows the card, high shows the
+card, urgent takes the room.
+
+It now rides to the phone on the broker, beside the speaking flag
+(`user-data/agent-media/priority`), because the decision it feeds has to be
+made before the first word is audible.
+
+Three candidates can set it, and they are not equally trustworthy. **Mechanical
+sources** — an alarm, a timer, a failing build, mail arriving — know their own
+urgency and cannot flatter themselves. **David's standing rules** are a policy
+stated once. **The assistant** is judging a case it has an interest in: the
+incentive runs one way, and a model is a poor judge of whether its own sentence
+is worth interrupting a conversation for.
+
+David's call (2026-08-16): the assistant *may* override the mechanical setting.
+The discipline that makes that safe is naming the deadline — something is about
+to be acted on that is wrong, or he asked to be told the moment it happened —
+and not "this seems important". An override with no deadline behind it is the
+failure mode to watch for, and it is visible: `/state` carries
+`speech_priority`, so every promotion is on the record.
+
 ## Open
 
-- **Urgency has no route in yet.** `media say --urgent` already means something
-  on the speech side; the companion cannot see it. The clean fix is the
-  coordinator setting a property on the speech mpv the way it already sets
-  `speaking`, and the app reading it — no new transport, one more observed
-  property.
 - **"Speak now" resumes, it does not restart.** The reply picks up where it was
   paused. For a clip held from its first word that is right; for one paused
   mid-sentence, replaying the sentence would be kinder.

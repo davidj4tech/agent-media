@@ -187,3 +187,67 @@ def test_an_unnamed_reply_writes_nothing(monkeypatch, tmp_path):
     c._flag_writer.shutdown(wait=True)
 
     assert _titles(rec) == []
+
+
+# --- what the reply is worth interrupting for -------------------------------
+
+
+def _priorities(rec):
+    return [value for _, name, value in rec.writes
+            if name == speech_mod.PRIORITY_PROPERTY]
+
+
+def test_set_priority_writes_the_observed_property(monkeypatch):
+    rec = _Recorder()
+    monkeypatch.setattr(speech_mod.ipc, "set_property", rec)
+    monkeypatch.setenv("MEDIA_SPEECH_SOCKET_PHONE", "tcp://127.0.0.1:6602")
+
+    assert speech_mod.set_priority("urgent", Target(name="phone")) is True
+    assert rec.writes == [("tcp://127.0.0.1:6602",
+                           speech_mod.PRIORITY_PROPERTY, "urgent")]
+
+
+def test_an_unstated_priority_is_normal(monkeypatch):
+    """The phone has to choose a tier for every reply, so there is no such
+    thing as "no answer" — an ordinary answer to a question is normal."""
+    rec = _Recorder()
+    monkeypatch.setattr(speech_mod.ipc, "set_property", rec)
+
+    speech_mod.set_priority("")
+    speech_mod.set_priority("   ")
+    assert _priorities(rec) == ["normal", "normal"]
+
+
+def test_set_priority_never_raises_at_the_caller(monkeypatch):
+    """Same rule as every other flag on this socket: diagnostics for someone
+    else's decision, never a reason to delay or drop a clip."""
+    def boom(*a, **kw):
+        raise OSError("no socket")
+
+    monkeypatch.setattr(speech_mod.ipc, "set_property", boom)
+    assert speech_mod.set_priority("high") is False
+
+
+def test_a_response_carries_its_priority(monkeypatch, tmp_path):
+    rec = _Recorder()
+    c = _coord(monkeypatch, rec, tmp_path)
+
+    c.before_speech(title="an alarm", priority="urgent")
+    c._flag_writer.shutdown(wait=True)
+
+    assert _priorities(rec) == ["urgent"]
+    assert _flags(rec) == [True]
+
+
+def test_the_priority_is_written_before_the_first_word(monkeypatch, tmp_path):
+    """The decision it feeds — wait, ask, or interrupt — has to be made before
+    the reply is audible, so it rides with the speaking flag rather than with
+    the audio."""
+    rec = _Recorder()
+    c = _coord(monkeypatch, rec, tmp_path)
+
+    c.before_speech(priority="low")
+    c._flag_writer.shutdown(wait=True)
+
+    names = [name for _, name, _ in rec.writes]
+    assert speech_mod.PRIORITY_PROPERTY in names

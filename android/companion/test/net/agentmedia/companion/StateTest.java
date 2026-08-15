@@ -14,6 +14,7 @@ public final class StateTest {
         failures += fallsBackToTheFilenameOnly();
         failures += emptyIsNotANewTitle();
         failures += aNewClipReplacesTheOld();
+        failures += priorityDefaultsToNormal();
         if (failures > 0) {
             System.out.println(failures + " failure(s)");
             System.exit(1);
@@ -64,6 +65,21 @@ public final class StateTest {
         s.apply("media-title", "second");
         s.apply("media-title", null);
         return is("second", s.title(), "the newest clip is the one kept");
+    }
+
+    /**
+     * A coordinator too old to state a priority, and an ordinary answer to a
+     * question, deserve the same treatment — so absent reads as normal rather
+     * than as nothing.
+     */
+    private static int priorityDefaultsToNormal() {
+        MpvState s = new MpvState();
+        int f = is("normal", s.priority, "unset is normal");
+        s.apply(MpvIpc.PRIORITY_PROPERTY, "urgent");
+        f += is("urgent", s.priority, "and follows what it is told");
+        s.apply(MpvIpc.PRIORITY_PROPERTY, null);
+        f += is("normal", s.priority, "a cleared flag falls back, not blank");
+        return f;
     }
 
     /** Nothing ever played: the app's own name, as before. */

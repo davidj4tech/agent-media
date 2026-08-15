@@ -35,7 +35,7 @@ class _Coord:
     def pre_pause_remote(self):
         pass
 
-    def before_speech(self, title=""):
+    def before_speech(self, title="", priority=""):
         pass
 
     def after_speech(self):

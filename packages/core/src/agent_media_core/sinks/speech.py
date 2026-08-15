@@ -120,6 +120,38 @@ def set_speaking(on: bool, target: Target = DEFAULT_TARGET) -> bool:
         return False
 
 
+#: mpv `user-data` key carrying how much interruption this reply is worth.
+#: The companion app reads it to choose a tier: wait quietly, ask David with a
+#: card, or take the room. See docs/proposals/2026-08-16-two-assistants-one-room.md.
+PRIORITY_PROPERTY = "user-data/agent-media/priority"
+
+
+def set_priority(priority: str, target: Target = DEFAULT_TARGET) -> bool:
+    """Say what this reply is worth interrupting for.
+
+    The same in-band channel as `set_speaking`, for the same reason: the phone
+    has to decide what to do about a reply *before* it is audible, and the only
+    thing it can see is the broker. A `Priority` value ("low"/"normal"/"high"/
+    "urgent"), passed through as the string it already is.
+
+    Who sets it is the interesting half, and it is not decided here. A
+    mechanical source — an alarm, a timer, mail arriving — knows its own
+    urgency and cannot flatter itself; an assistant marking its own words
+    urgent is judging a case it has an interest in. Both can, and the explicit
+    one wins; this function only carries the answer.
+
+    Best-effort, like every other flag on this socket: never a reason to delay
+    or drop a clip.
+    """
+    value = (priority or "").strip() or "normal"
+    try:
+        ipc.set_property(_socket_for(target), PRIORITY_PROPERTY, value)
+        return True
+    except (ipc.MpvIpcError, OSError) as e:
+        log.debug("sink-speech: priority flag %s failed: %s", value, e)
+        return False
+
+
 #: mpv property that overrides `media-title`. The phone's speech card and the
 #: car display both read `media-title`, and a rendered clip's is its filename.
 TITLE_PROPERTY = "force-media-title"

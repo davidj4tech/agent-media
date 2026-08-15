@@ -37,7 +37,7 @@ def _run(store, monkeypatch, cmd):
 
     class _Coord:
         def pre_pause_remote(self): pass
-        def before_speech(self, title=""): pass
+        def before_speech(self, title="", priority=""): pass
         def after_speech(self): pass
 
     return submit._submit_remote_say(

@@ -30,6 +30,12 @@ final class MpvState {
      * MpvIpc.SPEAKING_PROPERTY.
      */
     volatile boolean speaking = false;
+    /**
+     * Speech mirror only: what this reply is worth interrupting for. See
+     * MpvIpc.PRIORITY_PROPERTY. Absent reads as "normal" — a coordinator too
+     * old to say, and an ordinary answer, deserve the same treatment.
+     */
+    volatile String priority = "normal";
 
     /** Apply one property update. Returns true when something actually changed. */
     boolean apply(String name, Object value) {
@@ -87,6 +93,13 @@ final class MpvState {
                 boolean v = Json.asBool(value, false);
                 if (v == speaking) return false;
                 speaking = v;
+                return true;
+            }
+            case MpvIpc.PRIORITY_PROPERTY: {
+                String v = Json.asString(value);
+                if (v == null || v.trim().isEmpty()) v = "normal";
+                if (v.equals(priority)) return false;
+                priority = v;
                 return true;
             }
             case MpvIpc.POSITION_PROPERTY: {

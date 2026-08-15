@@ -176,6 +176,21 @@ class Coordinator:
         except RuntimeError:  # pragma: no cover — executor shut down
             pass
 
+    def _priority(self, priority: str) -> None:
+        """Carry this reply's priority to the broker, for the phone to read.
+
+        Same worker and same discipline as the two flags above. It is written
+        with the speaking flag rather than at play time because the decision it
+        feeds — hold this reply, ask about it, or interrupt with it — has to be
+        made before the first word is audible.
+        """
+        speech_target = Target(name=(
+            os.environ.get("MEDIA_SPEECH_DEFAULT_TARGET") or "local"))
+        try:
+            self._flag_writer.submit(_speech.set_priority, priority, speech_target)
+        except RuntimeError:  # pragma: no cover — executor shut down
+            pass
+
     # ---- public API used by sink-speech --------------------------------
 
     def pre_pause_remote(self) -> None:
@@ -299,7 +314,7 @@ class Coordinator:
         """What the music channel is playing. Asked concurrently."""
         return self.music.now_playing_uri(self.music_target)
 
-    def before_speech(self, title: str = "") -> None:
+    def before_speech(self, title: str = "", priority: str = "") -> None:
         """Apply interruption for whatever sink-music is currently
         playing. Records baseline volume + position so after_speech can
         restore.
@@ -308,8 +323,14 @@ class Coordinator:
         speech card, the car — and is the same string the popup shows. Optional
         because a caller with nothing to call the reply is not a caller with a
         problem: the display keeps its own fallback.
+
+        ``priority`` says how much interruption this reply is worth, and the
+        phone chooses between waiting for a gap, asking David with a card, and
+        taking the room. Empty means normal, which is what an ordinary answer
+        to a question is.
         """
         self._title(title)
+        self._priority(priority)
         # Source-agnostic rooms duck, applied first and independent of the
         # Mopidy now-playing gate below: lower the Snapcast music stream so the
         # duck lands even when the music is fed by a different player/host than
