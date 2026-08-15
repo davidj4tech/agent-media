@@ -133,8 +133,13 @@ public class CompanionService extends Service {
     private Silence silence;
     private FocusControl focusControl;
     private StatusServer status;
-    /** The mic probe — watching only, driving nothing yet. See MicWatch. */
+    /** The mic probe. See MicWatch; BargeIn decides what it means. */
     private MicWatch mic;
+    /**
+     * Whether an open mic is someone talking over Sam or a conversation holding
+     * the microphone. Fed by both halves; see BargeIn.
+     */
+    private final BargeIn bargeIn = new BargeIn();
     private SharedPreferences prefs;
     private boolean focusActs = false;
     /** A deferred transient-loss decision; main-thread only. See onFocusChange. */
@@ -305,9 +310,12 @@ public class CompanionService extends Service {
         // yesterday. It answers one question — can we see the mic at all —
         // which decides whether Automate can be retired or has to be replaced
         // by a microphone we hold ourselves.
-        mic = new MicWatch(audio, main, active ->
-                log("mic: " + (active ? "something is recording" : "quiet")
-                        + " (probe only — nothing is held)"));
+        bargeIn.logTo(CompanionService::log);
+        mic = new MicWatch(audio, main, active -> {
+            bargeIn.onMic(active, System.currentTimeMillis());
+            log("mic: " + (active ? "something is recording" : "quiet")
+                    + " — " + bargeIn.why(System.currentTimeMillis()));
+        });
         mic.start();
 
         main.postDelayed(positionPoll, POSITION_POLL_MS);
@@ -892,6 +900,7 @@ public class CompanionService extends Service {
             m.put("mic_active", Boolean.valueOf(mic != null && mic.active()));
             m.put("mic_count", Integer.valueOf(mic == null ? 0 : mic.count()));
             m.put("mic_seen", mic == null ? "(no probe)" : mic.detail());
+            m.put("mic_verdict", bargeIn.why(System.currentTimeMillis()));
             m.put("mic_events", mic == null
                     ? new ArrayList<String>() : mic.history());
             return Json.write(m);
@@ -903,7 +912,13 @@ public class CompanionService extends Service {
 
         @Override public String mic() {
             if (mic == null) return "0 (no probe)";
-            return (mic.active() ? "1" : "0") + " n=" + mic.count() + " " + mic.detail();
+            // The answer is "should this hold the audio down", not "is the mic
+            // on" — a voice session holds the mic for its whole length and is
+            // nobody talking over Sam. See BargeIn.
+            long now = System.currentTimeMillis();
+            boolean hold = mic.active() && bargeIn.holding(now);
+            return (hold ? "1" : "0") + " n=" + mic.count()
+                    + " " + bargeIn.why(now) + " " + mic.detail();
         }
 
         @Override public String crash() {
@@ -933,6 +948,11 @@ public class CompanionService extends Service {
                     + (focusActs ? "" : " (probe)"));
             while (focusHistory.size() > 40) focusHistory.remove(0);
         }
+        // Told in every mode, like the history above: whether this recording is
+        // a conversation is a fact about the phone, not something we do to it,
+        // and a probe-mode build should answer it as well as an acting one.
+        bargeIn.onFocus(change, System.currentTimeMillis());
+
         // Whatever the mode, the bookkeeping follows the framework: a permanent
         // loss kills the request we registered, and believing otherwise is how
         // the app stopped hearing anything at all after 09:09:01.
