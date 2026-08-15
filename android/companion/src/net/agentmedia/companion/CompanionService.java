@@ -98,6 +98,21 @@ public class CompanionService extends Service {
     static final String LIVE_YIELD = "yield";
     static final String LIVE_DUCK = "duck";
     static final String LIVE_SHARE = "share";
+    /**
+     * hold — the default, and the tier this app is really for. While a voice
+     * session runs, Sam waits: the reply is paused rather than spoken, a card
+     * offers to say it now, and when the session ends it is delivered by itself.
+     *
+     * The reasoning, from the evening this was chosen: nothing can push into a
+     * model's turn, so Cece cannot be told Sam is speaking. Yield tells her, by
+     * pausing her, and costs a tap. Duck costs nothing and leaves her talking
+     * over him. Waiting costs neither, because the wait ends on its own.
+     */
+    static final String LIVE_HOLD = "hold";
+
+    /** The card's buttons come back here. See onStartCommand. */
+    static final String ACTION_SPEAK_NOW = "net.agentmedia.companion.SPEAK_NOW";
+    static final String ACTION_LATER = "net.agentmedia.companion.LATER";
 
     private static final String CHANNEL = "agent-media";
     /**
@@ -108,6 +123,8 @@ public class CompanionService extends Service {
     private static final int NOTIF_ID = 1;
     private static final int NOTIF_SPEECH = 2;
     private static final int NOTIF_BOOK = 3;
+    /** Not a media card: "Sam has something to say", with a button. */
+    private static final int NOTIF_WAITING = 4;
     /** How often to refresh position while playing. The session extrapolates between. */
     private static final long POSITION_POLL_MS = 5000;
     /** One column per second, the rate the tmux status line has always used. */
@@ -160,7 +177,11 @@ public class CompanionService extends Service {
     private final BargeIn bargeIn = new BargeIn();
     private SharedPreferences prefs;
     private boolean focusActs = false;
-    private volatile String liveMode = LIVE_YIELD;
+    private volatile String liveMode = LIVE_HOLD;
+    /** We paused Sam for the voice session and owe him a delivery. */
+    private boolean heldForSession = false;
+    /** David tapped "Speak now": the hold is off for the rest of this session. */
+    private boolean speakNow = false;
     /** A deferred transient-loss decision; main-thread only. See onFocusChange. */
     private Runnable pendingFocus;
     /** When the speech mpv last opened or started a clip; 0 = never. */
@@ -277,7 +298,7 @@ public class CompanionService extends Service {
         audio = getSystemService(AudioManager.class);
         prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         focusActs = prefs.getBoolean(KEY_FOCUS_ACTS, false);
-        liveMode = prefs.getString(KEY_LIVE_MODE, LIVE_YIELD);
+        liveMode = prefs.getString(KEY_LIVE_MODE, LIVE_HOLD);
         focusControl = new FocusControl(this, main, this::onFocusChange);
 
         nm = getSystemService(NotificationManager.class);
@@ -367,6 +388,22 @@ public class CompanionService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        String action = (intent == null) ? null : intent.getAction();
+        if (ACTION_SPEAK_NOW.equals(action)) {
+            // For the rest of this voice session, Sam is allowed to talk. Not
+            // just this clip: having said yes once, being asked again three
+            // sentences later is the interruption we are trying to avoid.
+            speakNow = true;
+            nm.cancel(NOTIF_WAITING);
+            log("live: David said speak now — releasing the hold");
+            performSpeech(SpeechPolicy.Action.RESUME);
+            pushSessionState();
+        } else if (ACTION_LATER.equals(action)) {
+            // The card goes; the hold stays. It will be delivered when the
+            // session ends, which is what "later" means here.
+            nm.cancel(NOTIF_WAITING);
+            log("live: later — Sam keeps waiting");
+        }
         return START_STICKY;
     }
 
@@ -695,8 +732,65 @@ public class CompanionService extends Service {
         // addressed-player slot follows the silent AudioTrack, and only the
         // music session opens one — so this competes for the shade, not for the
         // earbud. Worth re-checking on the phone all the same.
+        applyLiveHold();
+
         if (speech != null) speech.publish(speechFront() || speech.remembers());
         if (book != null) book.publish(book.state().loaded());
+    }
+
+    /**
+     * The hold tier: while a two-way voice session holds the microphone, Sam
+     * waits rather than talking over it, and says so with a card.
+     *
+     * Called from pushSessionState, so it sees every change either side brings.
+     * The card is posted on the transition only — a notify with the same id
+     * would re-raise one David had swiped away, and this one is swipeable on
+     * purpose.
+     */
+    private void applyLiveHold() {
+        boolean session = bargeIn.voiceSession();
+        if (!session) {
+            if (heldForSession) {
+                heldForSession = false;
+                speakNow = false;
+                nm.cancel(NOTIF_WAITING);
+                log("live: voice session over — Sam carries on");
+                performSpeech(SpeechPolicy.Action.RESUME);
+            }
+            return;
+        }
+        if (!LIVE_HOLD.equals(liveMode) || speakNow) return;
+        // Something to hold: a clip playing, or a reply the coordinator has
+        // announced but not yet staged.
+        if (!(speechState.playing() || speakingNow() || speechFront())) return;
+        performSpeech(SpeechPolicy.Action.PAUSE);
+        if (!heldForSession) {
+            heldForSession = true;
+            log("live: holding Sam while the voice session runs");
+            nm.notify(NOTIF_WAITING, waitingCard());
+        }
+    }
+
+    /** "Sam has something to say", with the two answers to it. */
+    private Notification waitingCard() {
+        PendingIntent speak = PendingIntent.getService(this, 1,
+                new Intent(this, CompanionService.class).setAction(ACTION_SPEAK_NOW),
+                PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+        PendingIntent later = PendingIntent.getService(this, 2,
+                new Intent(this, CompanionService.class).setAction(ACTION_LATER),
+                PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+        String what = speech == null ? null : speech.state().lastTitle();
+        return new Notification.Builder(this, CHANNEL)
+                .setContentTitle("Sam has something to say")
+                .setContentText(what != null ? what
+                        : "Held while the voice session is running")
+                .setSmallIcon(android.R.drawable.ic_media_pause)
+                .addAction(new Notification.Action.Builder(
+                        null, "Speak now", speak).build())
+                .addAction(new Notification.Action.Builder(
+                        null, "Later", later).build())
+                .setOngoing(false)
+                .build();
     }
 
     private Notification buildNotification() {
@@ -954,7 +1048,7 @@ public class CompanionService extends Service {
         @Override public String live(String set) {
             if (set != null && !set.isEmpty()) {
                 if (LIVE_YIELD.equals(set) || LIVE_DUCK.equals(set)
-                        || LIVE_SHARE.equals(set)) {
+                        || LIVE_SHARE.equals(set) || LIVE_HOLD.equals(set)) {
                     liveMode = set;
                     prefs.edit().putString(KEY_LIVE_MODE, set).apply();
                     CompanionService.log("live mode: " + set);
@@ -962,7 +1056,7 @@ public class CompanionService extends Service {
                     // point of setting this is to hear the difference.
                     main.post(() -> pushSessionState());
                 } else {
-                    return "unknown mode: " + set + " (yield|duck|share)\n";
+                    return "unknown mode: " + set + " (hold|yield|duck|share)\n";
                 }
             }
             return liveMode + " (voice session: "
