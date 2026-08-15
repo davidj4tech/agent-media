@@ -75,6 +75,8 @@ mapfile -t L <<'EOF'
  ╭ pane behind ────────╮
  │ PgUp   page up      │
  │ PgDn   page down    │
+ │ Home   pane top     │
+ │ End    pane bottom  │
  │ S-↑ ↓  page up/down │
  │ S-← →  top/bottom   │
  ╰─────────────────────╯

@@ -51,7 +51,8 @@
 #           Purely optional — Space stays play/pause and every hotkey is direct.
 #   PgUp/PgDn  forwarded to the pane behind the popup, so you can page its
 #           output/scrollback without closing the popup first. Ctrl+PgDn /
-#           Ctrl+PgUp forward End / Home (jump to the bottom/newest or top).
+#           Ctrl+PgUp forward End / Home (jump to the bottom/newest or top) —
+#           as do the real Home / End keys (Termux's extra-keys row sends those).
 #   Shift+↑ ↓  the same page up/down, and Shift+← → the same top/bottom, for
 #           hands that would rather not leave the home row.
 #
@@ -1184,6 +1185,12 @@ read_escape() {
         '1;2B') ESC_KIND=page; ESC_PAGE=PageDown ;;
         '1;2D') ESC_KIND=page; ESC_PAGE=Home ;;
         '1;2C') ESC_KIND=page; ESC_PAGE=End ;;
+        # Real Home/End keys — Termux's extra-keys row sends these, as do most
+        # desktop terminals. Both encodings: CSI/SS3 F,H (xterm) and the vt-style
+        # 1~/7~ (Home) and 4~/8~ (End). Without these the popup swallowed End
+        # entirely: only the Ctrl+PgDn / Shift+→ aliases above reached the pane.
+        'F'|'4~'|'8~') ESC_KIND=page; ESC_PAGE=End ;;
+        'H'|'1~'|'7~') ESC_KIND=page; ESC_PAGE=Home ;;
         *)    ESC_KIND=other ;;
     esac
     return 0
