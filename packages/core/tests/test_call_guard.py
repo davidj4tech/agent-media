@@ -763,3 +763,101 @@ def test_unreadable_ttl_is_treated_as_no_ttl(monkeypatch, tmp_path):
     cfg = call_guard.Config()
     _age(flag, 600)
     assert call_guard.flag_present(cfg) is True
+
+
+# --- the mic source (the companion app's probe) -----------------------------
+
+
+class _MicServer:
+    """A one-line HTTP endpoint standing in for the companion app's /mic."""
+
+    def __init__(self, body="0 n=0 -"):
+        self.body = body
+        self.sock = socket.socket()
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.listen(4)
+        self.port = self.sock.getsockname()[1]
+        self._stop = threading.Event()
+        threading.Thread(target=self._serve, daemon=True).start()
+
+    @property
+    def url(self):
+        return f"http://127.0.0.1:{self.port}/mic"
+
+    def _serve(self):
+        while not self._stop.is_set():
+            try:
+                c, _ = self.sock.accept()
+            except OSError:
+                return
+            try:
+                c.recv(4096)
+                body = (self.body + "\n").encode()
+                c.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: "
+                          + str(len(body)).encode() + b"\r\n\r\n" + body)
+            except OSError:
+                pass
+            finally:
+                c.close()
+
+    def close(self):
+        self._stop.set()
+        self.sock.close()
+
+
+def _settle(source, want, tries=50):
+    """Wait for the poller thread to catch up, without pinning a cadence."""
+    import time as _t
+    for _ in range(tries):
+        if source.active is want:
+            return True
+        _t.sleep(0.02)
+    return source.active is want
+
+
+def test_mic_source_reads_the_companions_answer():
+    server = _MicServer("1 n=1 src=6 silenced=false id=4585")
+    source = call_guard.MicSource(server.url, poll_s=0.1)
+    source.start()
+    try:
+        assert _settle(source, True)
+        server.body = "0 n=0 -"
+        assert _settle(source, False)
+    finally:
+        source.stop()
+        server.close()
+
+
+def test_mic_source_is_quiet_when_nothing_answers():
+    """The normal case on every host that is not the phone: the endpoint
+    refuses the connection, and that is not an error, a warning, or a hold."""
+    sock = socket.socket()                      # bind and close to get a dead port
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+
+    source = call_guard.MicSource(f"http://127.0.0.1:{port}/mic",
+                                  poll_s=0.05, backoff_s=0.05)
+    source.start()
+    try:
+        assert _settle(source, False)
+        assert source.active is False
+    finally:
+        source.stop()
+
+
+def test_mic_source_off_without_a_url():
+    source = call_guard.MicSource("", poll_s=0.05)
+    source.start()
+    assert source.active is False
+    source.stop()
+
+
+def test_the_mic_names_itself_in_the_hold_reason():
+    """A hold the mic raised reads differently from the flag file's, because
+    'is the trigger alive' is answered by which one spoke."""
+    assert call_guard._hold_reason(False, True, True) == "mic (companion)"
+    assert call_guard._hold_reason(False, True, False) == "external hold"
+    assert call_guard._hold_reason(True, True, True) == "call + mic (companion)"
+    assert call_guard._hold_reason(True, False, False) == "call"

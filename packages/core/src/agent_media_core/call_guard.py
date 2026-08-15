@@ -218,6 +218,15 @@ _DEFAULT_FLAG_POLL_S = 0.3
 # ENGAGE_S before we duck/pause (so short voice-typing utterances are ignored —
 # only sustained dictation triggers it), and absent for RELEASE_S before we
 # release (so the flag flicking off between utterances doesn't drop the hold).
+# The companion app's mic probe, which is the successor to the Automate flow
+# that wrote the flag file. Loopback only, like every other bridge on the phone.
+_DEFAULT_MIC_URL = "http://127.0.0.1:8770/mic"
+_DEFAULT_MIC_POLL_S = 0.5
+# How long to wait before retrying a mic endpoint that is not answering. Most
+# hosts running this guard have no companion app at all, so a refused connection
+# is the normal case and must cost nothing.
+_MIC_BACKOFF_S = 30.0
+
 _DEFAULT_HOLD_ENGAGE_S = 1.5
 _DEFAULT_HOLD_RELEASE_S = 2.0
 # Backstop for a hold whose release never arrives. A caller that passes --ttl
@@ -286,6 +295,14 @@ class Config:
         self.hold_flag = os.environ.get(
             "MEDIA_CALL_GUARD_HOLD_FLAG",
             str(state_dir() / _DEFAULT_HOLD_FLAG_NAME))
+        # The companion app's mic probe (see MicSource). Defaults to the app's
+        # loopback readout: on the phone that is simply true, and on every other
+        # host nothing is listening, which MicSource reads as "no mic signal"
+        # and backs off from. Set to "" to turn it off outright.
+        self.mic_url = os.environ.get(
+            "MEDIA_CALL_GUARD_MIC_URL", _DEFAULT_MIC_URL).strip()
+        self.mic_poll_s = _env_float("MEDIA_CALL_GUARD_MIC_POLL_S",
+                                     _DEFAULT_MIC_POLL_S)
         # The input claim (see ClaimHeartbeat). Off unless a URL is set, which
         # is the whole gate: a host with nothing to tell simply configures
         # nothing, and every other guard behaviour is untouched either way.
@@ -943,14 +960,89 @@ def resolve_trigger_flag(cfg: Config) -> str:
     return cfg.hold_flag
 
 
-def _hold_reason(call: bool, flag: bool) -> str:
+def _hold_reason(call: bool, flag: bool, mic: bool = False) -> str:
+    external = "mic (companion)" if mic else "external hold"
     if call and flag:
-        return "call + external hold"
-    return "call" if call else "external hold"
+        return f"call + {external}"
+    return "call" if call else external
 
 
 def _now() -> float:
     return time.monotonic()
+
+
+class MicSource:
+    """Is anything on this phone recording? — asked of the companion app.
+
+    The successor to the Automate flow that writes the hold flag. Proved on p8a
+    on 2026-08-15: a non-privileged app *is* shown recordings it does not own
+    (``src=6``, VOICE_RECOGNITION, anonymised but present), so the app can
+    answer this with no permission and no microphone of its own — which is why
+    this exists rather than the app holding the mic and watching to be silenced.
+
+    Its own thread, and that is the point: most hosts running this guard have no
+    companion app, so the endpoint refuses the connection every time, and an
+    unreachable readout must never be something the pause loop waits on. The
+    loop only ever reads a boolean. A failing endpoint backs off to
+    ``backoff_s`` and says so once, not once per poll.
+
+    Off when ``url`` is empty. Unreachable is not an error: it is the ordinary
+    state of every host that is not the phone.
+    """
+
+    def __init__(self, url: str, poll_s: float,
+                 backoff_s: float = _MIC_BACKOFF_S) -> None:
+        self._url = url
+        self._poll_s = max(0.1, poll_s)
+        self._backoff_s = backoff_s
+        self._active = False
+        self._failing = False
+        self._stop_ev: threading.Event | None = None
+        self._thread: threading.Thread | None = None
+
+    @property
+    def active(self) -> bool:
+        return self._active
+
+    def start(self) -> None:
+        if not self._url or self._thread is not None:
+            return
+        self._stop_ev = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        log.info("mic source: %s every %.1fs", self._url, self._poll_s)
+
+    def stop(self) -> None:
+        if self._stop_ev is not None:
+            self._stop_ev.set()
+        self._thread = None
+        self._active = False
+
+    def _run(self) -> None:
+        assert self._stop_ev is not None
+        while not self._stop_ev.is_set() and not _stop:
+            wait = self._poll_s
+            try:
+                got = self._read()
+                if self._failing:
+                    log.info("mic source: answering again")
+                    self._failing = False
+                self._active = got
+            except Exception:  # noqa: BLE001 — every failure is the same failure
+                if not self._failing:
+                    # Debug, not warning: on red5 this is simply "no phone here".
+                    log.debug("mic source: %s not answering, backing off",
+                              self._url)
+                    self._failing = True
+                self._active = False
+                wait = self._backoff_s
+            self._stop_ev.wait(wait)
+
+    def _read(self) -> bool:
+        """One line, first field 1 or 0. Anything else is not an answer."""
+        with urllib.request.urlopen(self._url, timeout=1.0) as resp:
+            body = resp.read(64).decode("utf-8", "replace").strip()
+        return body.split()[0] == "1" if body else False
 
 
 class FlagHold:
@@ -1013,6 +1105,8 @@ def _run_loop(cfg: Config, dry_run: bool = False) -> None:
     flaghold = FlagHold(cfg.hold_engage_s, cfg.hold_release_s)
     # A dry run must not tell red5 anything: an empty URL makes start() a
     # no-op, so the claim goes inert without threading dry_run through it.
+    mic = MicSource(cfg.mic_url, cfg.mic_poll_s)
+    mic.start()
     claim = ClaimHeartbeat("" if dry_run else cfg.claim_url, cfg.claim_owner,
                            cfg.claim_ttl_s, cfg.claim_interval_s)
     prev_flag = False        # last cycle's flag state, for the claim edges
@@ -1039,7 +1133,14 @@ def _run_loop(cfg: Config, dry_run: bool = False) -> None:
         elif prev_call and not call:
             _run_call_hook(cfg.call_release_cmd, "release", dry_run=dry_run)
         prev_call = call
-        flag = flaghold.update(flag_present(cfg), _now())
+        # The flag file and the companion's mic probe are one signal: both mean
+        # "something is listening, get out of the way", and both want the same
+        # debounce, the same event hold and the same auto-resume. Which of them
+        # spoke is kept only for the record — see note_external_hold, whose
+        # whole job is answering "is the trigger still alive".
+        raw_flag = flag_present(cfg)
+        mic_now = mic.active
+        flag = flaghold.update(raw_flag or mic_now, _now())
 
         # Claimed on the FLAG edge, not on `want`. Two reasons to keep this
         # separate from the duck below: `want` is also raised by a call, and a
@@ -1059,11 +1160,13 @@ def _run_loop(cfg: Config, dry_run: bool = False) -> None:
                 call_in_episode = True
             if not prev_want:
                 log.info("pausing/ducking phone audio (%s)",
-                         _hold_reason(call, flag))
+                         _hold_reason(call, flag, mic_now and not raw_flag))
                 if flag:
                     # Only the flag path proves the external trigger is alive;
                     # a phone call would tick this without mic-detect running.
-                    note_external_hold(_flag_source(cfg.hold_flag))
+                    note_external_hold(
+                        _flag_source(cfg.hold_flag) if raw_flag
+                        else "companion-mic")
                 if not dry_run:
                     hold.start()  # instant re-pause on any un-pause
                 pause_sockets(cfg, held, dry_run=dry_run, quiet=False)
@@ -1092,6 +1195,7 @@ def _run_loop(cfg: Config, dry_run: bool = False) -> None:
         i += 1
         time.sleep(tick)
     hold.stop()  # on SIGTERM / shutdown
+    mic.stop()
     claim.stop()  # stop re-asserting; the claim itself ages out on red5
     unduck_sockets(cfg, ducked, dry_run=dry_run)  # don't leave music ducked
 

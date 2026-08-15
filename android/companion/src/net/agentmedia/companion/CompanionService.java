@@ -901,6 +901,11 @@ public class CompanionService extends Service {
             return dump();
         }
 
+        @Override public String mic() {
+            if (mic == null) return "0 (no probe)";
+            return (mic.active() ? "1" : "0") + " n=" + mic.count() + " " + mic.detail();
+        }
+
         @Override public String crash() {
             return Crash.read(getFilesDir());
         }

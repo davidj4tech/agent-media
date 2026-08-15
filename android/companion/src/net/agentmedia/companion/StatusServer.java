@@ -48,6 +48,17 @@ final class StatusServer {
          * other implementor of this interface is a test.
          */
         default String crash() { return "(not recorded)"; }
+
+        /**
+         * Is anything recording right now — one line, first field 1 or 0.
+         *
+         * Deliberately not part of /state: call_guard polls this several times
+         * a second to decide whether to pause Sam, and making barge-in latency
+         * pay for the whole JSON snapshot (three mpv mirrors, two histories)
+         * would be a poor trade. The rest of the line is for a human reading it
+         * over ssh and is not parsed.
+         */
+        default String mic() { return "0 (no probe)"; }
     }
 
     static final int DEFAULT_PORT = 8770;
@@ -144,6 +155,8 @@ final class StatusServer {
             respond(c, 200, "application/json", source.state() + "\n");
         } else if ("/log".equals(path)) {
             respond(c, 200, "text/plain; charset=utf-8", source.log());
+        } else if ("/mic".equals(path)) {
+            respond(c, 200, "text/plain; charset=utf-8", source.mic() + "\n");
         } else if ("/crash".equals(path)) {
             respond(c, 200, "text/plain; charset=utf-8", source.crash());
         } else if ("/".equals(path)) {
@@ -151,7 +164,7 @@ final class StatusServer {
                     source.state() + "\n\n" + source.log());
         } else {
             respond(c, 404, "text/plain; charset=utf-8",
-                    "no such path: " + path + "\ntry /state, /log, /crash or /\n");
+                    "no such path: " + path + "\ntry /state, /mic, /log, /crash or /\n");
         }
     }
 
