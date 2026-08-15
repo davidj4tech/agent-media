@@ -163,10 +163,16 @@ public class CompanionService extends Service {
     }
 
     static String dump() {
+        return dump(LOG_LINES);
+    }
+
+    /** The newest {@code limit} events, newest first. */
+    static String dump(int limit) {
         synchronized (EVENTS) {
             if (EVENTS.isEmpty()) return "(no events yet)";
             StringBuilder sb = new StringBuilder();
-            for (int i = EVENTS.size() - 1; i >= 0; i--) sb.append(EVENTS.get(i)).append('\n');
+            int stop = Math.max(0, EVENTS.size() - limit);
+            for (int i = EVENTS.size() - 1; i >= stop; i--) sb.append(EVENTS.get(i)).append('\n');
             return sb.toString();
         }
     }
@@ -218,6 +224,11 @@ public class CompanionService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
+        // Before anything that can throw. There is no adb on this phone and
+        // logcat shows only Termux's uid, so an unrecorded crash is an
+        // undiagnosable one — which is exactly how "agent-media keeps stopping"
+        // arrived on 2026-08-15 with nothing to read.
+        Crash.install(getFilesDir());
         audio = getSystemService(AudioManager.class);
         prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         focusActs = prefs.getBoolean(KEY_FOCUS_ACTS, false);
@@ -237,6 +248,14 @@ public class CompanionService extends Service {
         // service that takes too long to post its notification.
         startForeground(NOTIF_ID, buildNotification(),
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
+
+        // The readout comes up before the things it is there to explain. It
+        // used to start last, so a crash in the channel setup below took the
+        // one route to the answer down with it.
+        status = new StatusServer(StatusServer.DEFAULT_PORT, statusSource,
+                                  CompanionService::log);
+        status.start();
+
         pushSessionState();
 
         ipc = new MpvIpc(MPV_HOST, MPV_PORT, listener);
@@ -245,7 +264,7 @@ public class CompanionService extends Service {
         speech = new SideChannel(this, main, "speech", FrontChannel.SPEECH_TITLE,
                                  MPV_SPEECH_PORT, MpvIpc.OBSERVED_SPEECH,
                                  NOTIF_SPEECH, CHANNEL,
-                                 android.R.drawable.ic_btn_speak_now, speechWatcher);
+                                 android.R.drawable.ic_media_play, speechWatcher);
         speechState = speech.state();
         speechIpc = speech.ipc();
         speech.start();
@@ -260,9 +279,6 @@ public class CompanionService extends Service {
                                android.R.drawable.ic_media_play, bookWatcher);
         book.start();
 
-        status = new StatusServer(StatusServer.DEFAULT_PORT, statusSource,
-                                  CompanionService::log);
-        status.start();
         main.postDelayed(positionPoll, POSITION_POLL_MS);
         log("service started; music -> " + MPV_HOST + ":" + MPV_PORT
                 + ", speech -> " + MPV_HOST + ":" + MPV_SPEECH_PORT
@@ -713,6 +729,8 @@ public class CompanionService extends Service {
             // Whether the speech broker is paused *by us* — the one pause on
             // this phone that nothing else will undo. See SpeechPolicy.
             sp.put("owes_resume", Boolean.valueOf(speechFocus.owesResume()));
+            sp.put("card", Boolean.valueOf(speech != null && speech.visible()));
+            sp.put("card_failed", Boolean.valueOf(speech != null && speech.failed()));
             m.put("speech", sp);
             Map<String, Object> bk = new LinkedHashMap<String, Object>();
             MpvState bs = book == null ? new MpvState() : book.state();
@@ -721,6 +739,7 @@ public class CompanionService extends Service {
             bk.put("paused", Boolean.valueOf(bs.paused));
             bk.put("title", bs.title());
             bk.put("card", Boolean.valueOf(book != null && book.visible()));
+            bk.put("card_failed", Boolean.valueOf(book != null && book.failed()));
             m.put("book", bk);
             m.put("last_button", lastButton);
             m.put("focus_mode", focusActs ? "acting" : "probe");
@@ -745,6 +764,10 @@ public class CompanionService extends Service {
 
         @Override public String log() {
             return dump();
+        }
+
+        @Override public String crash() {
+            return Crash.read(getFilesDir());
         }
     };
 

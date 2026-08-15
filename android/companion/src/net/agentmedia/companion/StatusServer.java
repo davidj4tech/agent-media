@@ -41,6 +41,13 @@ final class StatusServer {
         String state();
         /** The event log, newest first. */
         String log();
+
+        /**
+         * Any crash this app has recorded about itself. A default because it is
+         * the one readout that is useless while everything works, and every
+         * other implementor of this interface is a test.
+         */
+        default String crash() { return "(not recorded)"; }
     }
 
     static final int DEFAULT_PORT = 8770;
@@ -137,12 +144,14 @@ final class StatusServer {
             respond(c, 200, "application/json", source.state() + "\n");
         } else if ("/log".equals(path)) {
             respond(c, 200, "text/plain; charset=utf-8", source.log());
+        } else if ("/crash".equals(path)) {
+            respond(c, 200, "text/plain; charset=utf-8", source.crash());
         } else if ("/".equals(path)) {
             respond(c, 200, "text/plain; charset=utf-8",
                     source.state() + "\n\n" + source.log());
         } else {
             respond(c, 404, "text/plain; charset=utf-8",
-                    "no such path: " + path + "\ntry /state, /log or /\n");
+                    "no such path: " + path + "\ntry /state, /log, /crash or /\n");
         }
     }
 

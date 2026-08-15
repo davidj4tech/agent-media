@@ -74,6 +74,7 @@ final class SideChannel {
      * three seconds later went to an idle music mpv.
      */
     private boolean heldByUser = false;
+    private boolean failed = false;
 
     SideChannel(Service ctx, Handler main, String name, String label,
                 int port, String[] observed, int notifId, String notifChannel,
@@ -126,6 +127,23 @@ final class SideChannel {
      */
     void publish(boolean show) {
         if (session == null) return;
+        try {
+            publishOrThrow(show);
+        } catch (Throwable e) {
+            // A card is an ornament; the focus policy and the transport are the
+            // app. Losing the whole process over a notification would trade a
+            // missing card for a phone with no companion at all — and on this
+            // device a crash is a dialog, a restart loop and no stack trace.
+            // Say so in the log instead, which is readable over ssh.
+            CompanionService.log(name + ": card failed, carrying on: " + e);
+            failed = true;
+        }
+    }
+
+    /** True once a card has thrown; surfaced in /state so it is not silent. */
+    boolean failed() { return failed; }
+
+    private void publishOrThrow(boolean show) {
         if (!show) {
             if (visible) {
                 visible = false;
