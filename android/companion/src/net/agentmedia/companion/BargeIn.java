@@ -114,6 +114,7 @@ final class BargeIn {
         micOpen = active;
         if (!active) {
             conversation = false;
+            voiceSession = false;
             foreignSince = 0L;
             foreignMs = 0L;
         } else {
@@ -123,7 +124,8 @@ final class BargeIn {
             // that is talking is still evidence about what this recording is.
             foreignMs = 0L;
             if (foreignSince != 0L) foreignSince = now;
-            if (source == VOICE_COMMUNICATION) {
+            voiceSession = source == VOICE_COMMUNICATION;
+            if (voiceSession) {
                 conversation = true;
                 conversationWhy = "conversation (VOICE_COMMUNICATION)";
                 log.line("barge-in: recording opened as VOICE_COMMUNICATION — "
@@ -175,6 +177,12 @@ final class BargeIn {
                     + "this as a conversation, not someone talking over Sam");
         }
     }
+
+    /** True while the open recording is a VOICE_COMMUNICATION one. */
+    private boolean voiceSession = false;
+
+    /** Is a two-way voice session holding the mic right now? */
+    boolean voiceSession() { return micOpen && voiceSession; }
 
     /** Which evidence decided it, for the readout. */
     private String conversationWhy = "conversation";

@@ -38,12 +38,25 @@ final class FocusControl {
     static final int NONE = 0;
     static final int MUSIC = 1;
     static final int SPEECH = 2;
+    /**
+     * Speech, asking the other app to turn down rather than stop.
+     *
+     * For the voice-session case: Claude Live answers an ordinary transient
+     * claim by pausing itself and putting "Tap to resume" on the screen, which
+     * costs a thumb every time Sam says anything. MAY_DUCK asks the framework
+     * for the gentler treatment, and {@code setWillPauseWhenDucked(false)} is
+     * the half that matters — it lets Android duck the other app itself instead
+     * of telling it to pause.
+     */
+    static final int SPEECH_DUCK = 3;
 
     private final AudioManager am;
     /** AUDIOFOCUS_GAIN — music: mpv is the player and owns the output. */
     private final AudioFocusRequest musicRequest;
     /** AUDIOFOCUS_GAIN_TRANSIENT — speech: borrow the output, give it back. */
     private final AudioFocusRequest speechRequest;
+    /** The SPEECH_DUCK claim; see the constant. */
+    private final AudioFocusRequest speechDuckRequest;
     private int held = NONE;
 
     FocusControl(Context ctx, Handler handler, final Callback cb) {
@@ -81,6 +94,20 @@ final class FocusControl {
                 .setWillPauseWhenDucked(true)
                 .setOnAudioFocusChangeListener(listener, handler)
                 .build();
+
+        speechDuckRequest = new AudioFocusRequest.Builder(
+                        AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+                .setAudioAttributes(attrs)
+                .setWillPauseWhenDucked(false)
+                .setOnAudioFocusChangeListener(listener, handler)
+                .build();
+    }
+
+    /** The claim for a kind. One place, because abandon must undo what request did. */
+    private AudioFocusRequest requestFor(int kind) {
+        if (kind == MUSIC) return musicRequest;
+        if (kind == SPEECH_DUCK) return speechDuckRequest;
+        return speechRequest;
     }
 
     boolean held() {
@@ -108,8 +135,7 @@ final class FocusControl {
         if (kind == NONE) return false;
         if (held == kind) return true;
         if (held != NONE) abandon();
-        AudioFocusRequest req = (kind == MUSIC) ? musicRequest : speechRequest;
-        int result = am.requestAudioFocus(req);
+        int result = am.requestAudioFocus(requestFor(kind));
         held = (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) ? kind : NONE;
         return held == kind;
     }
@@ -131,13 +157,14 @@ final class FocusControl {
 
     void abandon() {
         if (held == NONE) return;
-        AudioFocusRequest req = (held == MUSIC) ? musicRequest : speechRequest;
+        AudioFocusRequest req = requestFor(held);
         held = NONE;
         am.abandonAudioFocusRequest(req);
     }
 
     static String kindName(int kind) {
-        return kind == MUSIC ? "music" : kind == SPEECH ? "speech" : "none";
+        return kind == MUSIC ? "music" : kind == SPEECH ? "speech"
+             : kind == SPEECH_DUCK ? "speech-duck" : "none";
     }
 
     /** Human-readable, for the on-screen log — there is no adb on this phone. */

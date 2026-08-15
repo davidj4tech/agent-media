@@ -59,6 +59,14 @@ final class StatusServer {
          * over ssh and is not parsed.
          */
         default String mic() { return "0 (no probe)"; }
+
+        /**
+         * Read (and optionally set) what we do about focus during a voice
+         * session. The one writable knob on this server, and it is here rather
+         * than behind a button because the alternative is a sideload per
+         * experiment. Loopback only, like everything else on this port.
+         */
+        default String live(String set) { return "yield\n"; }
     }
 
     static final int DEFAULT_PORT = 8770;
@@ -155,6 +163,9 @@ final class StatusServer {
             respond(c, 200, "application/json", source.state() + "\n");
         } else if ("/log".equals(path)) {
             respond(c, 200, "text/plain; charset=utf-8", source.log());
+        } else if ("/live".equals(path)) {
+            respond(c, 200, "text/plain; charset=utf-8",
+                    source.live(paramOf(request, "set")));
         } else if ("/mic".equals(path)) {
             respond(c, 200, "text/plain; charset=utf-8", source.mic() + "\n");
         } else if ("/crash".equals(path)) {
@@ -164,8 +175,25 @@ final class StatusServer {
                     source.state() + "\n\n" + source.log());
         } else {
             respond(c, 404, "text/plain; charset=utf-8",
-                    "no such path: " + path + "\ntry /state, /mic, /log, /crash or /\n");
+                    "no such path: " + path + "\ntry /state, /mic, /live, /log, /crash or /\n");
         }
+    }
+
+    /** "GET /live?set=duck HTTP/1.1", "set" -> "duck". Absent -> "". */
+    static String paramOf(String requestLine, String name) {
+        if (requestLine == null) return "";
+        int q = requestLine.indexOf('?');
+        if (q < 0) return "";
+        int end = requestLine.indexOf(' ', q);
+        String query = (end < 0) ? requestLine.substring(q + 1)
+                                 : requestLine.substring(q + 1, end);
+        for (String pair : query.split("&")) {
+            int eq = pair.indexOf('=');
+            if (eq > 0 && pair.substring(0, eq).equals(name)) {
+                return pair.substring(eq + 1);
+            }
+        }
+        return "";
     }
 
     /** "GET /log?x=1 HTTP/1.1" -> "/log". Anything unparseable becomes "". */

@@ -80,6 +80,24 @@ public class CompanionService extends Service {
      */
     private static final String PREFS = "companion";
     private static final String KEY_FOCUS_ACTS = "focus_acts";
+    /**
+     * What to do about audio focus while a two-way voice session (Claude Live,
+     * a call) holds the microphone. Under experiment — see /live.
+     *
+     *   yield  — the old behaviour: claim focus as usual. Live pauses itself
+     *            and asks for a tap before it will listen again.
+     *   duck   — claim MAY_DUCK instead, so Android turns Live down rather
+     *            than telling it to stop.
+     *   share  — claim nothing for speech at all. Sam talks over the session,
+     *            and Live's microphone hears him.
+     *
+     * Settable at runtime and remembered, because every alternative is a
+     * sideload and a tap, and this is a question about how it *feels*.
+     */
+    private static final String KEY_LIVE_MODE = "live_mode";
+    static final String LIVE_YIELD = "yield";
+    static final String LIVE_DUCK = "duck";
+    static final String LIVE_SHARE = "share";
 
     private static final String CHANNEL = "agent-media";
     /**
@@ -142,6 +160,7 @@ public class CompanionService extends Service {
     private final BargeIn bargeIn = new BargeIn();
     private SharedPreferences prefs;
     private boolean focusActs = false;
+    private volatile String liveMode = LIVE_YIELD;
     /** A deferred transient-loss decision; main-thread only. See onFocusChange. */
     private Runnable pendingFocus;
     /** When the speech mpv last opened or started a clip; 0 = never. */
@@ -258,6 +277,7 @@ public class CompanionService extends Service {
         audio = getSystemService(AudioManager.class);
         prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         focusActs = prefs.getBoolean(KEY_FOCUS_ACTS, false);
+        liveMode = prefs.getString(KEY_LIVE_MODE, LIVE_YIELD);
         focusControl = new FocusControl(this, main, this::onFocusChange);
 
         nm = getSystemService(NotificationManager.class);
@@ -592,6 +612,14 @@ public class CompanionService extends Service {
                 : (speechFront() || speakingNow() || speechFocus.owesResume())
                         ? FocusControl.SPEECH
                         : FocusControl.NONE;
+        // A voice session is the one case where taking the output is not
+        // obviously the right thing: Live pauses itself and wants a tap back.
+        // Music is left alone here — it is the phone's player, and a call or a
+        // Live session ducking it is exactly what the focus policy is for.
+        if (wantFocus == FocusControl.SPEECH && bargeIn.voiceSession()) {
+            if (LIVE_SHARE.equals(liveMode)) wantFocus = FocusControl.NONE;
+            else if (LIVE_DUCK.equals(liveMode)) wantFocus = FocusControl.SPEECH_DUCK;
+        }
         if (wantFocus != FocusControl.NONE && !focusLost) {
             if (focusControl.kind() != wantFocus && focusControl.request(wantFocus)) {
                 log("focus: granted (" + FocusControl.kindName(wantFocus) + ")");
@@ -901,6 +929,8 @@ public class CompanionService extends Service {
             m.put("mic_count", Integer.valueOf(mic == null ? 0 : mic.count()));
             m.put("mic_seen", mic == null ? "(no probe)" : mic.detail());
             m.put("mic_verdict", bargeIn.why(System.currentTimeMillis()));
+            m.put("live_mode", liveMode);
+            m.put("voice_session", Boolean.valueOf(bargeIn.voiceSession()));
             m.put("mic_events", mic == null
                     ? new ArrayList<String>() : mic.history());
             return Json.write(m);
@@ -919,6 +949,27 @@ public class CompanionService extends Service {
             boolean hold = mic.active() && bargeIn.holding(now);
             return (hold ? "1" : "0") + " n=" + mic.count()
                     + " " + bargeIn.why(now) + " " + mic.detail();
+        }
+
+        @Override public String live(String set) {
+            if (set != null && !set.isEmpty()) {
+                if (LIVE_YIELD.equals(set) || LIVE_DUCK.equals(set)
+                        || LIVE_SHARE.equals(set)) {
+                    liveMode = set;
+                    prefs.edit().putString(KEY_LIVE_MODE, set).apply();
+                    CompanionService.log("live mode: " + set);
+                    // Re-decide now rather than at the next mpv property: the
+                    // point of setting this is to hear the difference.
+                    main.post(() -> pushSessionState());
+                } else {
+                    return "unknown mode: " + set + " (yield|duck|share)\n";
+                }
+            }
+            return liveMode + " (voice session: "
+                    + (bargeIn.voiceSession() ? "yes" : "no") + ", focus: "
+                    + FocusControl.kindName(focusControl == null
+                            ? FocusControl.NONE : focusControl.kind())
+                    + ")\n";
         }
 
         @Override public String crash() {
