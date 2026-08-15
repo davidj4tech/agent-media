@@ -17,12 +17,17 @@ So there are exactly three ways one of them can learn about the other:
 1. **Asking** — a tool call at the top of a turn. Cheap, but it only happens at
    turn boundaries, which is not when interruptions happen.
 2. **Hearing** — Sam's voice reaches Cece's open microphone as sound in the
-   room, like David's does.
+   room, like David's does. **Closed: tested 2026-08-16, she does not hear
+   him.** `VOICE_COMMUNICATION` turns on acoustic echo cancellation, so Live
+   subtracts whatever the phone is playing as the far end of the call — the
+   same mechanism that stops you echoing on a phone call. It happens below us
+   and cannot be worked around from here. (It would not apply to speech played
+   on a *different* device in the room, which is the one door left open.)
 3. **Android telling her** — an audio-focus claim. The framework interrupts her
    *app*, which is the one channel that does not need her to be listening.
 
-Everything below is built out of (3), with (2) as a curiosity and (1) as the
-fallback.
+Everything below is built out of (3). (2) turned out to be closed, and (1) is
+the fallback.
 
 ## What the phone actually does (measured, not assumed)
 
@@ -46,7 +51,7 @@ fallback.
 |---|---|---|---|
 | yield (transient claim) | yes | yes | no |
 | duck (may-duck claim) | no | no | yes |
-| share (no claim) | only by ear | no | probably |
+| share (no claim) | no — echo-cancelled | no | yes |
 | **hold (wait)** | n/a | no | no |
 
 The first three all pay something. The fourth pays nothing because **the wait
@@ -121,6 +126,6 @@ failure mode to watch for, and it is visible: `/state` carries
 - **Cece asking once per turn** is worth having underneath all of this, since
   she has the tools. It should be a habit at the top of a reply, not a timer —
   and it is a fallback, not the mechanism.
-- **Does Cece hear Sam in `share` mode?** Untested as of writing. If she does,
-  and handles it gracefully, that is turn-taking with no protocol at all — the
-  human solution rather than the API one.
+- **`share` is now strictly the worst mode** — Sam overlaps and Cece cannot
+  even hear that he did. Kept as a diagnostic (it is the only mode that claims
+  nothing at all), not as a candidate.
