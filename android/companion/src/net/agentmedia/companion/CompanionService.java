@@ -116,6 +116,20 @@ public class CompanionService extends Service {
 
     private static final String CHANNEL = "agent-media";
     /**
+     * The one channel allowed to interrupt: "Sam has something to say".
+     *
+     * Everything else this app posts is a media card, and media cards must be
+     * silent and stay in the shade — which is exactly wrong for a question. A
+     * card asking whether to speak is worthless if it has to be gone looking
+     * for, and during a voice session Live's own UI is the whole screen. Only
+     * IMPORTANCE_HIGH gets a floating banner.
+     *
+     * Silent, and a short vibration instead. A chime would land in the middle
+     * of David's sentence, and he is the one thing in the room we are trying
+     * not to talk over.
+     */
+    private static final String CHANNEL_ASK = "agent-media-ask";
+    /**
      * One notification per card. The shade's media player is built from
      * MediaStyle *notifications*, not from sessions alone, so three cards means
      * three ids. Only the first is the foreground-service notification.
@@ -304,6 +318,13 @@ public class CompanionService extends Service {
         nm = getSystemService(NotificationManager.class);
         nm.createNotificationChannel(new NotificationChannel(
                 CHANNEL, "agent-media", NotificationManager.IMPORTANCE_LOW));
+        NotificationChannel ask = new NotificationChannel(
+                CHANNEL_ASK, "agent-media asks", NotificationManager.IMPORTANCE_HIGH);
+        ask.setSound(null, null);
+        ask.enableVibration(true);
+        ask.setDescription("Sam has something to say while you are in a "
+                + "conversation — asked, not spoken");
+        nm.createNotificationChannel(ask);
 
         session = new MediaSession(this, "agent-media music");
         session.setCallback(callback);
@@ -800,7 +821,7 @@ public class CompanionService extends Service {
                 new Intent(this, CompanionService.class).setAction(ACTION_LATER),
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
         String what = speech == null ? null : speech.state().lastTitle();
-        return new Notification.Builder(this, CHANNEL)
+        return new Notification.Builder(this, CHANNEL_ASK)
                 .setContentTitle("Sam has something to say")
                 .setContentText(what != null ? what
                         : "Held while the voice session is running")
@@ -809,6 +830,12 @@ public class CompanionService extends Service {
                         null, "Speak now", speak).build())
                 .addAction(new Notification.Action.Builder(
                         null, "Later", later).build())
+                // A question, so it floats and it times out on its own: left
+                // alone, the hold delivers when the session ends anyway, and a
+                // banner still sitting there tomorrow would be a lie.
+                .setCategory(Notification.CATEGORY_MESSAGE)
+                .setTimeoutAfter(5 * 60 * 1000L)
+                .setAutoCancel(true)
                 .setOngoing(false)
                 .build();
     }
