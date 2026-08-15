@@ -9,6 +9,7 @@ import android.media.MediaMetadata;
 import android.media.session.MediaSession;
 import android.media.session.PlaybackState;
 import android.os.Handler;
+import android.os.SystemClock;
 
 import java.util.Map;
 
@@ -158,7 +159,7 @@ final class SideChannel {
         }
 
         session.setMetadata(new MediaMetadata.Builder()
-                .putString(MediaMetadata.METADATA_KEY_TITLE, title())
+                .putString(MediaMetadata.METADATA_KEY_TITLE, cardTitle())
                 .putString(MediaMetadata.METADATA_KEY_ARTIST, FrontChannel.DEFAULT_SUBTITLE)
                 .putLong(MediaMetadata.METADATA_KEY_DURATION, state.durationMs())
                 .build());
@@ -183,6 +184,10 @@ final class SideChannel {
 
     boolean visible() { return visible; }
 
+    /** The title currently crawling, and when it started. See cardTitle(). */
+    private String shownTitle = "";
+    private long titleSince;
+
     /** Paused from this card, and owed a resume by the hand that did it. */
     boolean heldByUser() { return heldByUser; }
 
@@ -201,12 +206,48 @@ final class SideChannel {
         return (t == null || t.trim().isEmpty()) ? label : t.trim();
     }
 
+    /**
+     * The title as the card should show it *this moment* — windowed if it is
+     * too long, whole if it is not.
+     *
+     * Both the session metadata and the notification take this, and they have
+     * to take the same thing: the shade renders from the session and the older
+     * lock-screen path from the notification, and a marquee that ran in two
+     * places at two offsets would read as a bug in whichever one you were
+     * looking at.
+     */
+    private String cardTitle() {
+        String full = title();
+        if (!full.equals(shownTitle)) {
+            // A new title starts its crawl from column zero rather than
+            // arriving halfway scrolled.
+            shownTitle = full;
+            titleSince = SystemClock.uptimeMillis();
+        }
+        if (!scrolling()) return full;
+        return Marquee.window(full, Marquee.WIDTH,
+                              SystemClock.uptimeMillis() - titleSince);
+    }
+
+    /**
+     * Whether this card is scrolling right now, which is also the question
+     * "does it need republishing on the marquee tick?".
+     *
+     * Only while *playing*. A paused book sits at a fixed frame, which is both
+     * the honest reading — nothing is happening, so nothing should move — and
+     * what keeps this away from the notification churn already on the open
+     * list. A book can be parked in the shade for days.
+     */
+    boolean scrolling() {
+        return visible && state.playing() && Marquee.needed(title(), Marquee.WIDTH);
+    }
+
     private Notification card() {
         PendingIntent open = PendingIntent.getActivity(ctx, 0,
                 new Intent(ctx, MainActivity.class),
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
         return new Notification.Builder(ctx, notifChannel)
-                .setContentTitle(title())
+                .setContentTitle(cardTitle())
                 .setContentText(state.paused ? "paused" : "playing")
                 .setSmallIcon(icon)
                 .setStyle(new Notification.MediaStyle()

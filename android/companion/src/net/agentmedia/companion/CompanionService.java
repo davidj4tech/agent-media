@@ -92,6 +92,8 @@ public class CompanionService extends Service {
     private static final int NOTIF_BOOK = 3;
     /** How often to refresh position while playing. The session extrapolates between. */
     private static final long POSITION_POLL_MS = 5000;
+    /** One column per second, the rate the tmux status line has always used. */
+    private static final long MARQUEE_TICK_MS = 1000;
     private static final int LOG_LINES = 200;
     /** How long a transient loss waits for the speech mpv to say whose it is. */
     private static final long DUCK_DECISION_DELAY_MS = 300;
@@ -157,6 +159,10 @@ public class CompanionService extends Service {
     /** The PlaybackState we last told the framework, and the last key we saw. */
     private volatile String lastPushedState = "none";
     private volatile String lastButton = "none";
+    /** The music title currently crawling, when it started, and whether it is. */
+    private String shownMusicTitle = "";
+    private long musicTitleSince;
+    private boolean marqueeRunning;
     /** Why the previous process died, newest first. Read once; see LastExit. */
     private volatile List<String> lastExits = new ArrayList<String>();
 
@@ -328,6 +334,7 @@ public class CompanionService extends Service {
     @Override
     public void onDestroy() {
         main.removeCallbacks(positionPoll);
+        main.removeCallbacks(marqueeTick);
         if (pendingFocus != null) main.removeCallbacks(pendingFocus);
         if (ipc != null) ipc.stop();
         if (speech != null) {
@@ -424,6 +431,66 @@ public class CompanionService extends Service {
         }
     };
 
+    /**
+     * The music title as the card should show it now — see SideChannel#cardTitle,
+     * which is the same rule for the same reason. A long "Artist — Title" runs
+     * off the card exactly as a book title does.
+     */
+    private String musicCardTitle() {
+        String full = state.title();
+        if (!full.equals(shownMusicTitle)) {
+            shownMusicTitle = full;
+            musicTitleSince = android.os.SystemClock.uptimeMillis();
+        }
+        if (!musicScrolling()) return full;
+        return Marquee.window(full, Marquee.WIDTH,
+                              android.os.SystemClock.uptimeMillis() - musicTitleSince);
+    }
+
+    private boolean musicScrolling() {
+        return state.playing() && Marquee.needed(state.title(), Marquee.WIDTH);
+    }
+
+    /**
+     * Advance every scrolling card by a column.
+     *
+     * One ticker for all three, and it only runs while something is actually
+     * scrolling — which for ordinary titles is never. That matters more here
+     * than it would elsewhere: notification churn is already an open worry on
+     * this app, because the shade's addressed-player slot is what the earbud
+     * button follows, and this is the feature most able to make it worse. So it
+     * is off unless a card is both playing and too long to fit, and it stops
+     * the moment either stops being true.
+     */
+    private final Runnable marqueeTick = new Runnable() {
+        @Override public void run() {
+            boolean any = false;
+            if (musicScrolling()) {
+                any = true;
+                try {
+                    pushSessionState();
+                } catch (Throwable e) {
+                    log("marquee: music card failed, carrying on: " + e);
+                }
+            }
+            if (speech != null && speech.scrolling()) { any = true; speech.publish(true); }
+            if (book != null && book.scrolling()) { any = true; book.publish(true); }
+            marqueeRunning = any;
+            if (any) main.postDelayed(this, MARQUEE_TICK_MS);
+        }
+    };
+
+    /** Start the ticker if anything wants it and it is not already going. */
+    private void kickMarquee() {
+        if (marqueeRunning) return;
+        boolean any = musicScrolling()
+                || (speech != null && speech.scrolling())
+                || (book != null && book.scrolling());
+        if (!any) return;
+        marqueeRunning = true;
+        main.postDelayed(marqueeTick, MARQUEE_TICK_MS);
+    }
+
     /** Ask mpv where it is, then refresh the session's position. */
     private final Runnable positionPoll = new Runnable() {
         @Override public void run() {
@@ -441,6 +508,7 @@ public class CompanionService extends Service {
             // pauses speech and then nothing else happens at all.
             pollForQuiet();
             expireSpeechPause();
+            kickMarquee();
             main.postDelayed(this, POSITION_POLL_MS);
         }
     };
@@ -519,7 +587,7 @@ public class CompanionService extends Service {
         // and the listener gets a music pause button that works *while* Sam
         // talks, which one shared card could never offer.
         MediaMetadata.Builder md = new MediaMetadata.Builder()
-                .putString(MediaMetadata.METADATA_KEY_TITLE, state.title())
+                .putString(MediaMetadata.METADATA_KEY_TITLE, musicCardTitle())
                 .putString(MediaMetadata.METADATA_KEY_ARTIST, FrontChannel.DEFAULT_SUBTITLE)
                 .putLong(MediaMetadata.METADATA_KEY_DURATION, state.durationMs());
         session.setMetadata(md.build());
@@ -565,6 +633,7 @@ public class CompanionService extends Service {
         }
 
         nm.notify(NOTIF_ID, buildNotification());
+        kickMarquee();
 
         // The other two cards. Speech follows the reply — sink-speech parks the
         // last clip open indefinitely, so "loaded" would leave Sam sitting in
@@ -594,7 +663,7 @@ public class CompanionService extends Service {
                            : android.R.drawable.ic_media_pause;
 
         return new Notification.Builder(this, CHANNEL)
-                .setContentTitle(state.loaded() ? state.title() : "agent-media")
+                .setContentTitle(state.loaded() ? musicCardTitle() : "agent-media")
                 .setContentText(text)
                 .setSmallIcon(icon)
                 .setStyle(new Notification.MediaStyle().setMediaSession(session.getSessionToken()))
