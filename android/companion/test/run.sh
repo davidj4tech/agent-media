@@ -25,6 +25,7 @@ javac -nowarn -d "$OUT" \
     "$APP/src/net/agentmedia/companion/ButtonPolicy.java" \
     "$APP/src/net/agentmedia/companion/ExitReason.java" \
     "$APP/src/net/agentmedia/companion/Marquee.java" \
+    "$APP/src/net/agentmedia/companion/BargeIn.java" \
     "$HERE/net/agentmedia/companion/FakeMpv.java" \
     "$HERE/net/agentmedia/companion/IpcTest.java" \
     "$HERE/net/agentmedia/companion/FocusTest.java" \
@@ -32,7 +33,8 @@ javac -nowarn -d "$OUT" \
     "$HERE/net/agentmedia/companion/StatusTest.java" \
     "$HERE/net/agentmedia/companion/ExitTest.java" \
     "$HERE/net/agentmedia/companion/MarqueeTest.java" \
-    "$HERE/net/agentmedia/companion/StateTest.java"
+    "$HERE/net/agentmedia/companion/StateTest.java" \
+    "$HERE/net/agentmedia/companion/BargeInTest.java"
 
 java -cp "$OUT" net.agentmedia.companion.IpcTest
 java -cp "$OUT" net.agentmedia.companion.FocusTest
@@ -41,3 +43,4 @@ java -cp "$OUT" net.agentmedia.companion.StatusTest
 java -cp "$OUT" net.agentmedia.companion.ExitTest
 java -cp "$OUT" net.agentmedia.companion.MarqueeTest
 java -cp "$OUT" net.agentmedia.companion.StateTest
+java -cp "$OUT" net.agentmedia.companion.BargeInTest
