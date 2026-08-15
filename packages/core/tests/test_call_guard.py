@@ -4,6 +4,7 @@ import json
 import os
 import socket
 import threading
+from pathlib import Path
 
 from agent_media_core import call_guard
 
@@ -170,7 +171,8 @@ def test_run_loop_reasserts_pause_each_active_cycle(monkeypatch):
 
     pauses = []
     monkeypatch.setattr(call_guard, "pause_sockets",
-                        lambda cfg, dry_run=False, quiet=False: pauses.append(quiet))
+                        lambda cfg, already=None, dry_run=False, quiet=False:
+                            pauses.append(quiet))
     call_guard._stop = False
     try:
         call_guard._run_loop(cfg)
@@ -309,6 +311,81 @@ def test_resume_sockets_skips_absent_and_dry_run(monkeypatch, tmp_path):
     assert resumed == []
 
 
+def test_a_book_already_paused_is_left_paused(monkeypatch, tmp_path):
+    """The auto-resume restores what the hold stopped, and only that.
+
+    A book is paused deliberately and stays that way for days; before this,
+    the first voice-typing hold to come along would start it playing on
+    release. Speech hid the bug — the coordinator un-pauses it every reply
+    anyway — and the book is what exposed it.
+    """
+    speech = tmp_path / "sink-speech.sock"
+    book = tmp_path / "sink-book.sock"
+    for s in (speech, book):
+        s.write_bytes(b"")
+    monkeypatch.setenv("MEDIA_CALL_GUARD_SOCKETS", f"{speech},{book}")
+    cfg = call_guard.Config()
+
+    # The book was paused before anything happened; speech was playing.
+    monkeypatch.setattr(call_guard.ipc, "get_property",
+                        lambda s, n, **k: str(s).endswith("sink-book.sock"))
+    wrote = []
+    monkeypatch.setattr(call_guard.ipc, "set_property",
+                        lambda s, n, v, **k: wrote.append((Path(s).name, v)))
+
+    held: set = set()
+    call_guard.pause_sockets(cfg, held)
+    assert {Path(s).name for s in held} == {"sink-book.sock"}
+    # Both are still pushed a pause — it is a no-op on the one already stopped,
+    # and cheaper than a branch that could get the answer wrong.
+    assert wrote == [("sink-speech.sock", True), ("sink-book.sock", True)]
+
+    wrote.clear()
+    call_guard.resume_sockets(cfg, held)
+    assert wrote == [("sink-speech.sock", False)]
+
+
+def test_reassert_pass_does_not_claim_our_own_pause(monkeypatch, tmp_path):
+    """The re-assert cycle must not read its own work as the listener's choice.
+
+    If it did, every hold longer than one poll would record both sockets as
+    already-paused and the auto-resume would never resume anything — a hold
+    that quietly becomes permanent.
+    """
+    speech = tmp_path / "sink-speech.sock"
+    speech.write_bytes(b"")
+    monkeypatch.setenv("MEDIA_CALL_GUARD_SOCKETS", str(speech))
+    cfg = call_guard.Config()
+    monkeypatch.setattr(call_guard.ipc, "get_property", lambda s, n, **k: True)
+    monkeypatch.setattr(call_guard.ipc, "set_property", lambda *a, **k: None)
+
+    held: set = set()
+    call_guard.pause_sockets(cfg, held, quiet=True)
+    assert held == set()
+
+
+def test_unreadable_pause_state_resumes_rather_than_strands(monkeypatch, tmp_path):
+    """A broker that will not answer is assumed to have been playing.
+
+    Two ways to be wrong, and they do not cost the same: resuming something
+    that was already stopped is a keypress, while stranding a paused broker is
+    a channel that stays silent with nothing left that knows to start it.
+    """
+    speech = tmp_path / "sink-speech.sock"
+    speech.write_bytes(b"")
+    monkeypatch.setenv("MEDIA_CALL_GUARD_SOCKETS", str(speech))
+    cfg = call_guard.Config()
+
+    def _boom(*a, **k):
+        raise call_guard.ipc.MpvIpcError("no answer")
+    monkeypatch.setattr(call_guard.ipc, "get_property", _boom)
+    monkeypatch.setattr(call_guard.ipc, "set_property", lambda *a, **k: None)
+
+    held: set = set()
+    call_guard.pause_sockets(cfg, held)
+    assert held == set()
+
+
 def _drive_loop(monkeypatch, flag_states, call_states=None):
     """Run _run_loop over the given per-cycle (flag, call) states, capturing the
     pause/resume/hold side effects as an event list."""
@@ -335,9 +412,11 @@ def _drive_loop(monkeypatch, flag_states, call_states=None):
     monkeypatch.setattr(call_guard.time, "sleep", lambda _s: None)
     events = []
     monkeypatch.setattr(call_guard, "pause_sockets",
-                        lambda cfg, dry_run=False, quiet=False: events.append("pause"))
+                        lambda cfg, already=None, dry_run=False, quiet=False:
+                            events.append("pause"))
     monkeypatch.setattr(call_guard, "resume_sockets",
-                        lambda cfg, dry_run=False: events.append("resume"))
+                        lambda cfg, already=None, dry_run=False:
+                            events.append("resume"))
     monkeypatch.setattr(call_guard, "duck_sockets",
                         lambda cfg, saved, dry_run=False, quiet=False: events.append("duck"))
     monkeypatch.setattr(call_guard, "unduck_sockets",

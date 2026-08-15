@@ -380,13 +380,22 @@ def call_active(notifs: list[dict], cfg: Config) -> bool:
     return any(_matches(n, cfg) for n in notifs)
 
 
-def pause_sockets(cfg: Config, dry_run: bool = False, quiet: bool = False) -> None:
+def pause_sockets(cfg: Config, already: set | None = None,
+                  dry_run: bool = False, quiet: bool = False) -> None:
     """Best-effort pause of every configured mpv broker. A missing/idle socket
     is skipped silently — pausing is a safe no-op on a broker playing nothing.
 
     ``quiet`` drops the per-socket log line; the loop sets it on the repeated
     re-assert cycles so only the initial pause (and any error) is logged.
     Duck sockets are skipped here — they're ducked, not paused.
+
+    ``already`` collects the sockets that were **paused before we touched them**,
+    so ``resume_sockets`` can leave those alone. It is the pause-side twin of
+    the ``saved`` volumes the duck path has always kept, and it exists for the
+    same reason: whoever changed a thing owes putting it back, and only that.
+    Populated on the engage pass alone (``quiet=False``); on the re-assert pass
+    a paused socket is one *we* paused a moment ago, and reading it as the
+    listener's choice would turn every hold into a permanent one.
     """
     for sock in cfg.pause_list:
         if not os.path.exists(sock):
@@ -397,19 +406,42 @@ def pause_sockets(cfg: Config, dry_run: bool = False, quiet: bool = False) -> No
                 log.info("[dry-run] would pause %s", sock)
             continue
         try:
+            if already is not None and not quiet:
+                try:
+                    if bool(ipc.get_property(sock, "pause")):
+                        already.add(sock)
+                except (ipc.MpvIpcError, OSError):
+                    # Unreadable: assume it was playing. Pausing something
+                    # already paused costs nothing; resuming something the
+                    # listener stopped is the failure worth avoiding, and this
+                    # branch cannot tell which — so take the cheap mistake.
+                    pass
             ipc.set_property(sock, "pause", True)
             if not quiet:
-                log.info("paused %s", sock)
+                log.info("paused %s%s", sock,
+                         " (was already paused)" if already and sock in already else "")
         except (ipc.MpvIpcError, OSError) as e:
             log.warning("could not pause %s: %s", sock, e)
 
 
-def resume_sockets(cfg: Config, dry_run: bool = False) -> None:
+def resume_sockets(cfg: Config, already: set | None = None,
+                   dry_run: bool = False) -> None:
     """Best-effort un-pause of the paused brokers. Used only by the external-hold
     auto-resume — never after a call. The caller releases the event hold *before*
-    calling this so the un-pause isn't instantly re-held."""
+    calling this so the un-pause isn't instantly re-held.
+
+    Sockets listed in ``already`` are left alone: they were paused before the
+    hold began, so starting them is not a restore but a decision — and one the
+    listener already made the other way. This mattered the moment the book
+    joined the pause list on 2026-08-15. Speech is driven by the coordinator, so
+    an unasked-for un-pause there is overwritten within a reply; a book paused
+    at 5:12 and started again by a voice-typing hold just plays on.
+    """
     for sock in cfg.pause_list:
         if not os.path.exists(sock):
+            continue
+        if already and sock in already:
+            log.info("left paused (it already was) %s", sock)
             continue
         if dry_run:
             log.info("[dry-run] would resume %s", sock)
@@ -989,6 +1021,7 @@ def _run_loop(cfg: Config, dry_run: bool = False) -> None:
     call_in_episode = False  # did a call participate in the current hold?
     last_call = False        # last known call state (kept across query failures)
     ducked: dict = {}        # duck socket -> its pre-duck volume, for restoring
+    held: set = set()        # pause sockets already paused before we engaged
     tick = cfg.flag_poll_s or _DEFAULT_FLAG_POLL_S
     # The flag is a cheap local stat (checked every fast tick); notifications
     # (for calls) are an expensive subprocess, so poll them only every ~poll_s.
@@ -1033,12 +1066,12 @@ def _run_loop(cfg: Config, dry_run: bool = False) -> None:
                     note_external_hold(_flag_source(cfg.hold_flag))
                 if not dry_run:
                     hold.start()  # instant re-pause on any un-pause
-                pause_sockets(cfg, dry_run=dry_run, quiet=False)
+                pause_sockets(cfg, held, dry_run=dry_run, quiet=False)
                 duck_sockets(cfg, ducked, dry_run=dry_run, quiet=False)
             elif i % notif_every == 0:
                 # Periodic re-assert (backstop) at the slow cadence — not every
                 # fast tick. Catches audio that started playing mid-hold.
-                pause_sockets(cfg, dry_run=dry_run, quiet=True)
+                pause_sockets(cfg, held, dry_run=dry_run, quiet=True)
                 duck_sockets(cfg, ducked, dry_run=dry_run, quiet=True)
         elif prev_want:
             # Every hold reason cleared. Release the event hold, then restore.
@@ -1051,7 +1084,8 @@ def _run_loop(cfg: Config, dry_run: bool = False) -> None:
                          "after a call); music volume restored")
             else:
                 log.info("external hold released — resuming")
-                resume_sockets(cfg, dry_run=dry_run)
+                resume_sockets(cfg, held, dry_run=dry_run)
+            held.clear()
             call_in_episode = False
 
         prev_want = want
