@@ -83,7 +83,10 @@ def test_sockets_default_to_state_dir(monkeypatch):
     cfg = call_guard.Config()
     names = {s.rsplit("/", 1)[-1] for s in cfg.sockets}
     # Music is deliberately absent: the companion app owns that volume now.
-    assert names == {"sink-speech.sock"}
+    # Book is deliberately present: it is longform speech, the app's focus
+    # policy does not touch it, and it is the channel most likely to still be
+    # playing when the mic opens.
+    assert names == {"sink-speech.sock", "sink-book.sock"}
 
 
 def test_sockets_overridable(monkeypatch):

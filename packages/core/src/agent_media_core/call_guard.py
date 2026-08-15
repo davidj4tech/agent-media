@@ -140,7 +140,22 @@ _DEFAULT_EXCLUDE_RE = r"(?i)missed|voicemail"
 # Two duckers on one volume is not a redundancy, it is the bug: whoever captured
 # the pre-duck level must be the one to put it back, and on 2026-08-14 three of
 # them lost the restore between them and left the music at 10 for two hours.
-_DEFAULT_SOCKET_NAMES = ("sink-speech.sock",)
+#
+# sink-book.sock was ADDED 2026-08-15, on the same argument that keeps speech
+# here and for the same reason it pauses rather than ducks: a book is longform
+# speech, and a half-heard sentence is a lost one that nothing replays. It is
+# the strongest case of the three -- an audiobook runs for hours, so it is the
+# channel most likely to be the thing playing when the mic opens or the phone
+# rings, and the only one that will still be running twenty minutes later if
+# nobody stops it. The companion app does not cover this: its focus policy
+# ducks music and pauses speech, and the book broker's --ao=openal ignores
+# Android audio focus like the others, so without a line here a call talks over
+# Rothfuss indefinitely.
+#
+# Note the asymmetry with speech that this inherits: no auto-resume. The book
+# stays paused until David lifts it, which for a book is the right default --
+# it is a thing you come back to, and coming back to it is a deliberate act.
+_DEFAULT_SOCKET_NAMES = ("sink-speech.sock", "sink-book.sock")
 
 # Sockets to DUCK (lower volume) instead of pausing while a hold is active.
 # Empty since 2026-08-15 — see above; nothing is ducked from here any more.
