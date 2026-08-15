@@ -58,6 +58,14 @@ final class MpvIpc {
     static final String PRIORITY_PROPERTY = "user-data/agent-media/priority";
 
     /**
+     * How many clips are stacked up on the speech broker, the one already open
+     * included. mpv's own property, no coordinator support needed — the sink
+     * queues a held reply as a playlist entry, so this is the size of the pile
+     * waiting behind a hold.
+     */
+    static final String QUEUE_PROPERTY = "playlist-count";
+
+    /**
      * What the speech connection subscribes to — enough to answer "is a clip
      * running" and "was one just staged". {@code path} is in the set because
      * the focus loss for a clip arrives when mpv *opens* the file, which on p8a
@@ -74,7 +82,7 @@ final class MpvIpc {
      */
     static final String[] OBSERVED_SPEECH = {
         "idle-active", "pause", "path", "media-title", SPEAKING_PROPERTY,
-        PRIORITY_PROPERTY,
+        PRIORITY_PROPERTY, QUEUE_PROPERTY,
     };
 
     /**

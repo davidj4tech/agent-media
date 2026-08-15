@@ -36,6 +36,8 @@ final class MpvState {
      * old to say, and an ordinary answer, deserve the same treatment.
      */
     volatile String priority = "normal";
+    /** Clips on the broker's playlist, the open one included. See MpvIpc. */
+    volatile int queued = 0;
 
     /** Apply one property update. Returns true when something actually changed. */
     boolean apply(String name, Object value) {
@@ -100,6 +102,12 @@ final class MpvState {
                 if (v == null || v.trim().isEmpty()) v = "normal";
                 if (v.equals(priority)) return false;
                 priority = v;
+                return true;
+            }
+            case MpvIpc.QUEUE_PROPERTY: {
+                int v = (int) Json.asDouble(value, 0);
+                if (v == queued) return false;
+                queued = v;
                 return true;
             }
             case MpvIpc.POSITION_PROPERTY: {

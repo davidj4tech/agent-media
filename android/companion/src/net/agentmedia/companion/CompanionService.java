@@ -197,6 +197,17 @@ public class CompanionService extends Service {
     private boolean heldForSession = false;
     /** David tapped "Speak now": the hold is off for the rest of this session. */
     private boolean speakNow = false;
+    /**
+     * How big the pile was when we last said something about it.
+     *
+     * "Later" means do not ask again, and asking once per reply would be
+     * ignoring that. But letting six replies stack up in silence is its own
+     * failure — they all arrive at once when the session ends. So the ask comes
+     * back only when the pile crosses the threshold again.
+     */
+    private int noticedQueue = 0;
+    /** Replies waiting before the pile is worth mentioning again. David's number. */
+    private static final int QUEUE_NUDGE = 3;
     /** A deferred transient-loss decision; main-thread only. See onFocusChange. */
     private Runnable pendingFocus;
     /** When the speech mpv last opened or started a clip; 0 = never. */
@@ -756,6 +767,17 @@ public class CompanionService extends Service {
         // earbud. Worth re-checking on the phone all the same.
         applyLiveHold();
 
+        // The quiet half of the cue: the count sits on the speech card, which
+        // is already in the shade and costs nothing to glance at. The banner is
+        // for crossing a threshold; this is for wondering.
+        if (speech != null) {
+            speech.note(heldForSession
+                    ? (speechState.queued > 1
+                            ? speechState.queued + " waiting"
+                            : "waiting for the conversation to finish")
+                    : null);
+        }
+
         if (speech != null) speech.publish(speechFront() || speech.remembers());
         if (book != null) book.publish(book.state().loaded());
     }
@@ -775,6 +797,7 @@ public class CompanionService extends Service {
             if (heldForSession) {
                 heldForSession = false;
                 speakNow = false;
+                noticedQueue = 0;
                 nm.cancel(NOTIF_WAITING);
                 log("live: voice session over — Sam carries on");
                 performSpeech(SpeechPolicy.Action.RESUME);
@@ -797,18 +820,30 @@ public class CompanionService extends Service {
             }
             log("live: urgent — taking the room");
             speakNow = true;
+            noticedQueue = 0;
             return;
         }
         // Something to hold: a clip playing, or a reply the coordinator has
         // announced but not yet staged.
         if (!(speechState.playing() || speakingNow() || speechFront())) return;
         performSpeech(SpeechPolicy.Action.PAUSE);
+        // The pile grew past another threshold while David was not asking to be
+        // told. Say so once, not once per reply.
+        if (heldForSession && !"low".equals(prio)
+                && speechState.queued >= noticedQueue + QUEUE_NUDGE) {
+            noticedQueue = speechState.queued;
+            log("live: " + speechState.queued + " replies waiting — asking again");
+            nm.notify(NOTIF_WAITING, waitingCard());
+            toast("Sam has " + speechState.queued
+                    + " replies waiting — pull down to answer");
+        }
         if (!heldForSession) {
             heldForSession = true;
             log("live: holding Sam while the voice session runs (" + prio + ")");
             // Low is the ambient tier: it waits, and it does not ask. Anything
             // else is worth a card, because a reply to something David said is
             // worth telling him about even when it can wait.
+            noticedQueue = speechState.queued;
             if (!"low".equals(prio)) {
                 nm.notify(NOTIF_WAITING, waitingCard());
                 // And a toast beside it, because the banner did not arrive.
@@ -842,8 +877,11 @@ public class CompanionService extends Service {
                 new Intent(this, CompanionService.class).setAction(ACTION_LATER),
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
         String what = speech == null ? null : speech.state().lastTitle();
+        int waiting = speechState.queued;
         return new Notification.Builder(this, CHANNEL_ASK)
-                .setContentTitle("Sam has something to say")
+                .setContentTitle(waiting > 1 ? "Sam has " + waiting
+                                               + " replies waiting"
+                                             : "Sam has something to say")
                 .setContentText(what != null ? what
                         : "Held while the voice session is running")
                 .setSmallIcon(android.R.drawable.ic_media_pause)
@@ -1093,6 +1131,7 @@ public class CompanionService extends Service {
             m.put("mic_verdict", bargeIn.why(System.currentTimeMillis()));
             m.put("live_mode", liveMode);
             m.put("speech_priority", speechState.priority);
+            m.put("speech_waiting", Integer.valueOf(speechState.queued));
             m.put("voice_session", Boolean.valueOf(bargeIn.voiceSession()));
             m.put("mic_events", mic == null
                     ? new ArrayList<String>() : mic.history());

@@ -15,6 +15,7 @@ public final class StateTest {
         failures += emptyIsNotANewTitle();
         failures += aNewClipReplacesTheOld();
         failures += priorityDefaultsToNormal();
+        failures += theQueueIsCounted();
         if (failures > 0) {
             System.out.println(failures + " failure(s)");
             System.exit(1);
@@ -80,6 +81,23 @@ public final class StateTest {
         s.apply(MpvIpc.PRIORITY_PROPERTY, null);
         f += is("normal", s.priority, "a cleared flag falls back, not blank");
         return f;
+    }
+
+    /** How many replies are stacked behind a hold — mpv's own playlist-count. */
+    private static int theQueueIsCounted() {
+        MpvState s = new MpvState();
+        int f = (s.queued == 0) ? 0 : fail("starts empty", "0", "" + s.queued);
+        boolean changed = s.apply(MpvIpc.QUEUE_PROPERTY, Double.valueOf(3));
+        f += (s.queued == 3) ? 0 : fail("counts three", "3", "" + s.queued);
+        f += changed ? 0 : fail("a new count is a change", "true", "false");
+        f += s.apply(MpvIpc.QUEUE_PROPERTY, Double.valueOf(3))
+                ? fail("the same count is not", "false", "true") : 0;
+        return f;
+    }
+
+    private static int fail(String what, String want, String got) {
+        System.out.println("FAIL " + what + ": want [" + want + "] got [" + got + "]");
+        return 1;
     }
 
     /** Nothing ever played: the app's own name, as before. */

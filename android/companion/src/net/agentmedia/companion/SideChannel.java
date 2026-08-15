@@ -141,6 +141,26 @@ final class SideChannel {
         }
     }
 
+    /**
+     * A line the service wants on this card instead of the usual state word —
+     * "3 waiting" while a voice session is holding the pile back. Cleared by
+     * passing null. Quiet by design: the shade is where you glance, not where
+     * you are interrupted.
+     */
+    private String note = null;
+
+    void note(String text) {
+        String v = (text == null || text.trim().isEmpty()) ? null : text.trim();
+        if (!eq(v, note)) {
+            note = v;
+            lastCard = null;      // the card reads differently now
+        }
+    }
+
+    private static boolean eq(String a, String b) {
+        return (a == null) ? (b == null) : a.equals(b);
+    }
+
     /** True once a card has thrown; surfaced in /state so it is not silent. */
     boolean failed() { return failed; }
 
@@ -271,8 +291,9 @@ final class SideChannel {
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
         return new Notification.Builder(ctx, notifChannel)
                 .setContentTitle(cardTitle())
-                .setContentText(!state.loaded() ? "last clip"
-                                                : state.paused ? "paused" : "playing")
+                .setContentText(note != null ? note
+                                : !state.loaded() ? "last clip"
+                                : state.paused ? "paused" : "playing")
                 .setSmallIcon(icon)
                 .setStyle(new Notification.MediaStyle()
                         .setMediaSession(session.getSessionToken()))
