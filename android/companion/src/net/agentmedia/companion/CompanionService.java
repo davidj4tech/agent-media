@@ -640,6 +640,21 @@ public class CompanionService extends Service {
         }
     };
 
+    /**
+     * Which build is actually running — the commit build.sh stamped into
+     * versionName. Sideloading is a file copy and a tap through a chooser, and
+     * an install that silently does not take looks exactly like a fix that does
+     * not work. On 2026-08-15 it cost a round trip of arguing with code the
+     * phone had never run.
+     */
+    private String buildStamp() {
+        try {
+            return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (Exception e) {   // NameNotFound is impossible for ourselves
+            return "unknown";
+        }
+    }
+
     // ---- the front channel, for the card and its buttons -----------------
 
     /**
@@ -724,6 +739,7 @@ public class CompanionService extends Service {
             // True while another app owns the output and we are staying out of
             // its way. Nothing can reach us through the focus listener here.
             m.put("focus_lost", Boolean.valueOf(focusLost));
+            m.put("build", buildStamp());
             // Which claim: the permanent one music takes, or the transient
             // borrow a spoken clip asks for. They behave differently towards
             // every other app on the phone.

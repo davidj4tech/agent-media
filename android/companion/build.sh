@@ -24,10 +24,20 @@ rm -rf "$OUT"; mkdir -p "$OUT/gen" "$OUT/classes"
 
 # 1. resources -> R.java + a linked APK with no code yet
 "$BT/aapt2" compile --dir "$HERE/res" -o "$OUT/res.zip"
+# The build stamp is the commit this APK was built from, plus a mark when the
+# tree was dirty. It is read back at runtime and published in /state, because
+# "is the phone running the build I just made?" was answerable only by
+# inference — and inference got it wrong on 2026-08-15, costing a round trip
+# arguing with a fix that was never installed. Every install here is a sideload
+# and a tap; the readout should say what landed.
+STAMP="$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+git -C "$HERE" diff --quiet HEAD -- "$HERE" 2>/dev/null || STAMP="$STAMP+dirty"
+
 "$BT/aapt2" link -o "$OUT/base.apk" \
     -I "$PLATFORM" \
     --manifest "$HERE/AndroidManifest.xml" \
     --java "$OUT/gen" \
+    --version-name "$STAMP" --replace-version \
     --min-sdk-version 31 --target-sdk-version 35 \
     "$OUT/res.zip"
 
