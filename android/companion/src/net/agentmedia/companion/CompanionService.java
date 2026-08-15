@@ -21,6 +21,7 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.view.KeyEvent;
+import android.widget.Toast;
 
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -808,7 +809,27 @@ public class CompanionService extends Service {
             // Low is the ambient tier: it waits, and it does not ask. Anything
             // else is worth a card, because a reply to something David said is
             // worth telling him about even when it can wait.
-            if (!"low".equals(prio)) nm.notify(NOTIF_WAITING, waitingCard());
+            if (!"low".equals(prio)) {
+                nm.notify(NOTIF_WAITING, waitingCard());
+                // And a toast beside it, because the banner did not arrive.
+                //
+                // A heads-up notification is at the mercy of three things we do
+                // not control: the channel's importance as the system has it
+                // (not as we asked for it), Do Not Disturb, and whatever
+                // Bedtime mode is doing at 00:41. A toast is none of those — it
+                // is not a notification at all, so nothing suppresses it. It
+                // cannot carry the two buttons, so it says where they are.
+                toast("Sam has something to say — pull down to answer");
+            }
+        }
+    }
+
+    /** Best-effort; a missed toast is never worth the process. */
+    private void toast(String text) {
+        try {
+            Toast.makeText(this, text, Toast.LENGTH_LONG).show();
+        } catch (Throwable e) {
+            log("toast failed, carrying on: " + e);
         }
     }
 
