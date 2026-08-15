@@ -1,7 +1,7 @@
 """sink-book: longform (audiobook / podcast) player — the book channel.
 
 A second mpv broker, distinct from sink-speech (TTS clips) and sink-music
-(Mopidy). The book channel is its own long-running mpv on mel with
+(Mopidy). The book channel is its own long-running mpv on the hub with
 book-shaped transport: resume-by-URI bookmarks (held in the state store),
 playback speed, skip ±N seconds, and its own PulseAudio/PipeWire stream
 (client name `agent-media-book`) so a later phase can mix it under music.
@@ -463,7 +463,7 @@ class SinkBook:
         # Optional richer browser UI: simple-mpv-webui loads INTO this mpv as a
         # Lua script (needs luasocket on the Lua-5.1 module path) and serves a
         # full audiobook UI — seek, speed, chapters, playlist. It binds 0.0.0.0,
-        # but mel's firewall keeps it tailnet-only (the public zone exposes no
+        # but the hub's firewall keeps it tailnet-only (the public zone exposes no
         # such port). Gated on the script existing; path/port/auth overridable.
         webui = os.environ.get(
             "MEDIA_BOOK_WEBUI",

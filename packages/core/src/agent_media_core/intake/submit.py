@@ -2464,7 +2464,7 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
     """Render a reply on a remote low-latency hub instead of locally.
 
     Used when ``MEDIA_REMOTE_SAY_CMD`` is set (e.g. red5, whose rooms listen to
-    snap-mel in Melbourne). The whole reply text is piped to the remote renderer
+    a remote Snapcast hub). The whole reply text is piped to the remote renderer
     over **stdin** — so no shell on the far side reinterprets quotes/`$`/etc. —
     and the call blocks until the remote finishes, so ``before_speech`` /
     ``after_speech`` bracket the audio and music ducks for its full duration.
@@ -2697,7 +2697,7 @@ def submit_event(event: Event,
         name=os.environ.get("MEDIA_SPEECH_DEFAULT_TARGET", "local"))
 
     # Remote-say bridge: on a headless feeder host (e.g. red5) whose rooms now
-    # listen to a remote low-latency hub (snap-mel, in Melbourne), render the
+    # listen to a remote low-latency Snapcast hub, render the
     # reply *there* instead of locally — the hub renders the text to its own
     # Snapcast fifo. The coordinator still ducks from here (it drives the rooms
     # snapserver over the tailnet via MEDIA_SNAP_JSONRPC_HOST), so music dips
@@ -3279,7 +3279,7 @@ def submit_stream(sentences,
         name=os.environ.get("MEDIA_SPEECH_DEFAULT_TARGET", "local"))
 
     # Remote-say bridge: on a headless feeder host (e.g. red5) whose rooms now
-    # listen to a remote low-latency hub (snap-mel, in Melbourne), render the
+    # listen to a remote low-latency Snapcast hub, render the
     # reply *there* instead of locally — the hub renders the text to its own
     # Snapcast fifo. The coordinator still ducks from here (it drives the rooms
     # snapserver over the tailnet via MEDIA_SNAP_JSONRPC_HOST), so music dips

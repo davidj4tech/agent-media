@@ -64,7 +64,7 @@ def policy_for(content_type: Optional[ContentType]) -> InterruptionPolicy:
 
 # --- Decision 4C: sink-naming convention -----------------------------------
 #
-# Movies on sp4r play through its *default* pulse sink; the whole-house
+# Movies on a room host play through its *default* pulse sink; the whole-house
 # music/agent feed plays through the `am` / `am-music` sinks. Ducking a
 # movie's dialogue is wrong — we want pause-and-resume. So the producing
 # sink's *name* decides duck vs pause, independent of content type:

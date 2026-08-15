@@ -6,7 +6,8 @@ already handles via MPD).  After speech, resumes only the ones we paused.
 
 Remote hosts: set MEDIA_MPRIS_SSH_HOSTS=host1,host2 to also pause/resume
 MPRIS players on remote machines via SSH.  Useful when TTS originates on
-one host but browser media plays on another (e.g. mel TTS → sp4r Chrome).
+one host but browser media plays on another (e.g. the hub speaks while a
+browser on a different machine is playing).
 
 If playerctl is absent or returns errors the calls are silent no-ops so
 the rest of the pipeline is unaffected.
@@ -27,7 +28,7 @@ log = logging.getLogger(__name__)
 _CHROMIUM_INSTANCE = re.compile(r"\.instance\d+$")
 
 _TIMEOUT = 2.0
-_SSH_CONNECT_TIMEOUT = 8        # seconds; sp4r SSH takes ~4.8s cold
+_SSH_CONNECT_TIMEOUT = 8        # seconds; a cold room-host SSH took ~4.8s
 _SSH_CMD_TIMEOUT = 12.0         # subprocess hard cap (connect + script)
 _SSH_CONTROL_PERSIST = 300      # keep ControlMaster alive 5 min between clips
 

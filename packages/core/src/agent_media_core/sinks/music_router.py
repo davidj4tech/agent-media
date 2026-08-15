@@ -2,7 +2,7 @@
 
 The music channel now has two playout backends:
 
-  - `SinkMusic`        — Mopidy/MPD (whole-house via Snapcast, or local mel out)
+  - `SinkMusic`        — Mopidy/MPD (whole-house via Snapcast, or local out)
   - `SinkMusicLocal`   — the phone's local mpv (residential download, offline)
 
 The speech coordinator holds a single `self.music` and, before each clip, calls

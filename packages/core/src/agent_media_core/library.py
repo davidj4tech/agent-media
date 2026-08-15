@@ -1,7 +1,9 @@
 """Audiobook library: resolve YouTube URIs to locally-cached files.
 
-mel's IP is an IONOS datacenter address that YouTube blocks (SABR/PO-token),
-so mel can neither stream nor download YouTube directly. The book channel's
+A datacenter IP is what makes this necessary: YouTube blocks them
+(SABR/PO-token), so a hub hosted in one can neither stream nor download
+YouTube directly. (This began on an IONOS host and is equally true of the
+current Hetzner one.) The book channel's
 mpv therefore cannot play `yt:`/youtube URLs at all. Instead we acquire the
 audio on the phone (residential IP) via `audiobook-fetch`, sync it into a
 local library, and the book channel plays the *local file*.

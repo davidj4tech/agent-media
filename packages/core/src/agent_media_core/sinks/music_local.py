@@ -1,6 +1,6 @@
 """sink-music-local: the music channel's phone-local playout backend.
 
-Datacenter hosts (mel/IONOS, red5/Hetzner) get HTTP 403 on most YouTube CDN
+Datacenter hosts (IONOS, Hetzner, ...) get HTTP 403 on most YouTube CDN
 URLs, so they can't stream or download YouTube. The residential workaround is
 to acquire and play the audio *on the phone*: download bestaudio on the phone's
 residential IP (no 403, ~1/5 the bytes, cached for offline reuse) and play it on

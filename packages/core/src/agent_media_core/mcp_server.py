@@ -5,7 +5,7 @@ Two entrypoints over the same tool definitions:
   * `media-mcp`      — stdio transport, for Claude Code (user-scope
                        registration via `claude mcp add`).
   * `media-mcp-http` — streamable-HTTP transport, for remote callers
-                       (sp4r, HA, anything off-box). Bind via
+                       (a remote room, HA, anything off-box). Bind via
                        MEDIA_MCP_HOST / MEDIA_MCP_PORT (defaults
                        127.0.0.1:8765 — set MEDIA_MCP_HOST to the
                        Tailscale IP to expose on the tailnet).
@@ -547,7 +547,7 @@ def book_play(uri: str, resume: bool = True, start_ms: int = -1,
     b, st, t = _book(), _state(), _book_target(target)
     norm = normalize_uri(uri)
     # Download-first: a YouTube URL is unplayable directly on a datacenter IP
-    # (mel/red5 get 403'd). Resolve it to a cached local file, or start a
+    # (datacenter hosts get 403'd). Resolve it to a cached local file, or start a
     # phone-side fetch (audiobook-fetch) that auto-plays when it finishes.
     #
     # EXCEPT on a residential host (e.g. the phone): no 403, so the book mpv can

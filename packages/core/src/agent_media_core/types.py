@@ -56,8 +56,8 @@ class ContentType(str, Enum):
 class Target:
     """Where to play audio. Resolved by sink implementations.
 
-    `name` is a logical identifier (local, snapcast-mel, snapcast-sp4r,
-    bt-car, matrix-room-<id>). Sinks know how to bind it.
+    `name` is a logical identifier (local, snapcast-<room>, bt-car,
+    matrix-room-<id>). Sinks know how to bind it.
     """
 
     name: str
