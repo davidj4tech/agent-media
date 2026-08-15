@@ -120,6 +120,40 @@ def set_speaking(on: bool, target: Target = DEFAULT_TARGET) -> bool:
         return False
 
 
+#: mpv property that overrides `media-title`. The phone's speech card and the
+#: car display both read `media-title`, and a rendered clip's is its filename.
+TITLE_PROPERTY = "force-media-title"
+
+
+def set_media_title(title: str, target: Target = DEFAULT_TARGET) -> bool:
+    """Name this reply on the speech broker, for anything that shows a title.
+
+    sink-speech plays rendered files, so mpv titles them the only way it can —
+    `remote-20260814T190922-18480.mp3`. The phone's speech card fell back to a
+    constant ("Sam") rather than show that, which says who is talking but not
+    what about, and the car display had the same hole.
+
+    So we say what the popup says: the conversation title captured when the
+    reply was queued (`source_window`). One property, set once per response,
+    read by every display that already reads `media-title` — no new channel and
+    nothing for the app to learn.
+
+    Best-effort like `set_speaking`, and for the same reason: a title is not
+    worth delaying a sentence for. An empty title is a no-op rather than a
+    write, so a reply with nothing to call itself keeps the last one's name off
+    the display by leaving the app's own fallback in charge.
+    """
+    text = (title or "").strip()
+    if not text:
+        return False
+    try:
+        ipc.set_property(_socket_for(target), TITLE_PROPERTY, text)
+        return True
+    except (ipc.MpvIpcError, OSError) as e:
+        log.debug("sink-speech: media title failed: %s", e)
+        return False
+
+
 def _clip_uri_for(uri: str, target: Target, prefer_url: bool = False) -> str:
     """Resolve the clip reference the *remote* player should load (Grade B).
 

@@ -57,12 +57,15 @@ final class MpvIpc {
      * asking whether speech is playing at loss time answers no for a loss that
      * is entirely ours. A new path is the staging signal.
      *
-     * Its title is not among them on purpose: the clips are rendered files, so
-     * mpv's media-title is a filename like
-     * {@code remote-20260814T190922-18480.mp3}. See FrontChannel.SPEECH_TITLE.
+     * {@code media-title} joined them on 2026-08-15. It was excluded because a
+     * rendered clip's title is its filename — {@code
+     * remote-20260814T190922-18480.mp3} — but the coordinator now sets
+     * {@code force-media-title} to the reply's own name, the same string the
+     * popup shows (sinks/speech.py, set_media_title). When it does not, the
+     * card falls back to its label rather than to the filename.
      */
     static final String[] OBSERVED_SPEECH = {
-        "idle-active", "pause", "path", SPEAKING_PROPERTY,
+        "idle-active", "pause", "path", "media-title", SPEAKING_PROPERTY,
     };
 
     /**

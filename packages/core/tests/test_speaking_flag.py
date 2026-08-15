@@ -120,3 +120,70 @@ def test_lowering_cannot_overtake_the_raise(monkeypatch, tmp_path):
     c._flag_writer.shutdown(wait=True)
 
     assert order == [True, False]
+
+
+# ---- and what to call the reply --------------------------------------------
+#
+# The same socket, the same writer, the same fire-and-forget discipline. The
+# phone's speech card and the car display both read `media-title`, and a
+# rendered clip's is its own filename — so the card said "Sam", which is who is
+# talking and not what about. David asked for the popup's title instead.
+
+
+def _titles(rec):
+    return [value for _, name, value in rec.writes
+            if name == speech_mod.TITLE_PROPERTY]
+
+
+def test_set_media_title_writes_the_override(monkeypatch):
+    rec = _Recorder()
+    monkeypatch.setattr(speech_mod.ipc, "set_property", rec)
+    monkeypatch.setenv("MEDIA_SPEECH_SOCKET_PHONE", "tcp://127.0.0.1:6602")
+
+    assert speech_mod.set_media_title("companion focus", Target(name="phone")) is True
+    assert rec.writes == [("tcp://127.0.0.1:6602",
+                           "force-media-title", "companion focus")]
+
+
+def test_an_empty_title_is_not_written(monkeypatch):
+    """A reply with nothing to call itself must not clear the display into
+    blankness — leaving the property alone keeps the app's own fallback in
+    charge, which is a name rather than an empty line."""
+    rec = _Recorder()
+    monkeypatch.setattr(speech_mod.ipc, "set_property", rec)
+
+    assert speech_mod.set_media_title("", Target(name="phone")) is False
+    assert speech_mod.set_media_title("   ") is False
+    assert rec.writes == []
+
+
+def test_a_title_never_raises_at_the_caller(monkeypatch):
+    def boom(*a, **kw):
+        raise speech_mod.ipc.MpvIpcError("nope")
+
+    monkeypatch.setattr(speech_mod.ipc, "set_property", boom)
+    assert speech_mod.set_media_title("anything") is False
+
+
+def test_before_speech_names_the_reply(monkeypatch, tmp_path):
+    rec = _Recorder()
+    c = _coord(monkeypatch, rec, tmp_path)
+
+    c.before_speech(title="agent-media companion")
+    c._flag_writer.shutdown(wait=True)
+
+    assert _titles(rec) == ["agent-media companion"]
+    # And the flag still goes up: the title rides alongside it, never instead.
+    assert _flags(rec) == [True]
+
+
+def test_an_unnamed_reply_writes_nothing(monkeypatch, tmp_path):
+    """Every caller that has a title passes one; the ones that do not are not
+    broken, and must not pay a round trip to say so."""
+    rec = _Recorder()
+    c = _coord(monkeypatch, rec, tmp_path)
+
+    c.before_speech()
+    c._flag_writer.shutdown(wait=True)
+
+    assert _titles(rec) == []

@@ -158,6 +158,24 @@ class Coordinator:
         except RuntimeError:  # pragma: no cover — executor shut down
             pass
 
+    def _title(self, text: str) -> None:
+        """Tell the speech broker what to call this reply.
+
+        Same machinery and same discipline as the flag above: one worker,
+        fire-and-forget, never on the path of the audio. What it carries is the
+        popup's own title — the conversation the reply belongs to — so the
+        phone's speech card and the car display say what the listener is
+        already reading somewhere else.
+        """
+        if not (text or "").strip():
+            return
+        speech_target = Target(name=(
+            os.environ.get("MEDIA_SPEECH_DEFAULT_TARGET") or "local"))
+        try:
+            self._flag_writer.submit(_speech.set_media_title, text, speech_target)
+        except RuntimeError:  # pragma: no cover — executor shut down
+            pass
+
     # ---- public API used by sink-speech --------------------------------
 
     def pre_pause_remote(self) -> None:
@@ -281,11 +299,17 @@ class Coordinator:
         """What the music channel is playing. Asked concurrently."""
         return self.music.now_playing_uri(self.music_target)
 
-    def before_speech(self) -> None:
+    def before_speech(self, title: str = "") -> None:
         """Apply interruption for whatever sink-music is currently
         playing. Records baseline volume + position so after_speech can
         restore.
+
+        ``title`` names the reply for anything that displays one — the phone's
+        speech card, the car — and is the same string the popup shows. Optional
+        because a caller with nothing to call the reply is not a caller with a
+        problem: the display keeps its own fallback.
         """
+        self._title(title)
         # Source-agnostic rooms duck, applied first and independent of the
         # Mopidy now-playing gate below: lower the Snapcast music stream so the
         # duck lands even when the music is fed by a different player/host than

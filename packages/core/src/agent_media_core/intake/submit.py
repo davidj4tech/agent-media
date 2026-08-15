@@ -2547,7 +2547,7 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
     # there — on this link it was 17s of a 25s utterance.
     coordinator.pre_pause_remote()
     try:
-        coordinator.before_speech()
+        coordinator.before_speech(title=source_window)
         _speech_event("start", text=text[:400], session=session,
                       source=event.source.value, target="remote-say")
         # The remote renders and plays; nothing is on this host to observe. Say
@@ -2971,7 +2971,7 @@ def submit_event(event: Event,
         # Drop any stale jump request left by a previous response.
         _nav_flag_path(target).unlink(missing_ok=True)
         try:
-            coordinator.before_speech()
+            coordinator.before_speech(title=source_window)
             # Speech-started breadcrumb — the moment we commit to feeding the
             # broker. Its "end" twin is in the finally below, so every exit
             # (finished, superseded, yielded-then-done, error) closes the pair.
@@ -3501,7 +3501,7 @@ def submit_stream(sentences,
                         pass
 
                 if not before_called:
-                    coordinator.before_speech()
+                    coordinator.before_speech(title=source_window)
                     before_called = True
 
                 durations[i] = _clip_duration(clip_path)

@@ -31,7 +31,7 @@ def store(tmp_path, monkeypatch):
 
 class _Coord:
     def pre_pause_remote(self): pass
-    def before_speech(self): pass
+    def before_speech(self, title=""): pass
     def after_speech(self): pass
 
 

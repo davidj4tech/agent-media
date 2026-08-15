@@ -187,13 +187,18 @@ final class SideChannel {
     boolean heldByUser() { return heldByUser; }
 
     /**
-     * What the card says. The speech label is a constant because the clips are
-     * rendered files and mpv titles them by filename — see
-     * {@link FrontChannel#SPEECH_TITLE}. A book has a real title and uses it.
+     * What the card says: mpv's {@code media-title}, or the channel's label.
+     *
+     * Deliberately not {@link MpvState#title()}, whose fallback is the
+     * filename. For speech that filename is
+     * {@code remote-20260814T190922-18480.mp3}, which is worse than saying
+     * nothing — so the label ("Sam") stands in until the coordinator names the
+     * reply with {@code force-media-title}, which it sets to the same string
+     * the popup shows.
      */
     private String title() {
-        String t = state.title();
-        return (t == null || t.isEmpty() || "agent-media".equals(t)) ? label : t;
+        String t = state.mediaTitle;
+        return (t == null || t.trim().isEmpty()) ? label : t.trim();
     }
 
     private Notification card() {
