@@ -302,9 +302,25 @@ def services_dir() -> Path | None:
     return candidate if candidate.is_dir() else None
 
 
+def _data_dir(name: str) -> Path:
+    """A shipped data directory, wherever this install keeps it.
+
+    Two layouts, and both are real. In the repo these sit beside the package
+    (`packages/core/services`); in a wheel they are force-included *inside* it
+    (`agent_media_core/services`). Installed-first, because that is the layout
+    a stranger has and the one that used to be missing entirely — a wheel
+    carried no `services/` at all, so `install-services` found no templates and
+    reported success having installed nothing.
+    """
+    inside = Path(__file__).resolve().parent / name
+    if inside.is_dir():
+        return inside
+    return Path(__file__).resolve().parent.parent.parent / name
+
+
 def service_templates_dir() -> Path:
     """Repo-shipped templates under packages/core/services/."""
-    return Path(__file__).resolve().parent.parent.parent / "services"
+    return _data_dir("services")
 
 
 def service_template_names() -> list[str]:
@@ -429,7 +445,7 @@ def service_wanted(name: str, roles: set[str] | None) -> tuple[bool, str]:
 
 def tmux_dir() -> Path:
     """Repo-shipped tmux integration under packages/core/tmux/."""
-    return Path(__file__).resolve().parent.parent.parent / "tmux"
+    return _data_dir("tmux")
 
 
 def local_bin() -> Path:
@@ -1049,6 +1065,15 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--dry-run", action="store_true")
     sp.set_defaults(func=cmd_install_hooks)
 
+    sp = sub.add_parser("init",
+                        help="write a starter config.toml for this host")
+    sp.add_argument("--roles", help="comma-separated, e.g. observe,render")
+    sp.add_argument("--config", help="write somewhere other than the default")
+    sp.add_argument("--force", action="store_true",
+                    help="overwrite an existing config")
+    sp.add_argument("--dry-run", action="store_true")
+    sp.set_defaults(func=cmd_init)
+
     sp = sub.add_parser("install-services",
                         help="Install services (runit on Termux, systemd "
                              "--user on regular Linux)")
@@ -1100,6 +1125,77 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_status)
 
     return p
+
+
+
+# --- First run ---------------------------------------------------------------
+
+_STARTER_CONFIG = """\
+# agent-media — what this host is, and who its peers are.
+#
+# Hostnames appear HERE and nowhere else. Code asks for the machine that can do
+# a thing, never for a machine by name.
+#
+# Roles:
+#   observe   this machine has a mic or a dialer worth watching
+#   render    this machine has audio sinks that can be silenced
+#   origin    this machine produces the text to be spoken
+#
+# One machine on its own holds all three, and that is the whole of what
+# "standalone" means -- there is no mode to switch.
+
+[host]
+roles = [{roles}]
+
+# Other machines in the setup, if any. Delete this section when running alone.
+#
+# [peers.hub]
+# host  = "the-hostname"
+# roles = ["render", "origin"]
+"""
+
+
+def _guess_roles() -> "list[str]":
+    """A starting guess, stated as a guess.
+
+    Deliberately shallow: `render` for anything with an audio stack, `observe`
+    only where the companion app could plausibly run. Guessing `origin` is left
+    alone because it is about what the machine is FOR, which no probe answers.
+    """
+    roles = ["render"]
+    prefix = os.environ.get("PREFIX", "")
+    if prefix.startswith("/data/data/com.termux"):
+        roles.insert(0, "observe")
+    return roles
+
+
+def cmd_init(args: argparse.Namespace) -> int:
+    """Write a starter config, if there is not one already."""
+    from .config import config_path
+
+    path = Path(args.config) if args.config else config_path()
+    if path.exists() and not args.force:
+        print(f"media-setup: {path} already exists — leaving it alone "
+              f"(--force to overwrite)")
+        return 0
+
+    roles = args.roles.split(",") if args.roles else _guess_roles()
+    rendered = _STARTER_CONFIG.format(
+        roles=", ".join(f'"{r.strip()}"' for r in roles if r.strip()))
+
+    if args.dry_run:
+        print(f"# would write {path}:")
+        print(rendered)
+        return 0
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(rendered)
+    print(f"media-setup: wrote {path}")
+    print(f"media-setup: this host is [{', '.join(roles)}] — a guess; edit it "
+          f"if wrong, then:\n"
+          f"  media-setup install-services   # installs only what these roles want\n"
+          f"  media-setup install-hooks      # wire up the agent side")
+    return 0
 
 
 def main() -> int:

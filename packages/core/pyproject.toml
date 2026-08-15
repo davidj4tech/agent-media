@@ -38,3 +38,15 @@ media-speech-state     = "agent_media_core.entrypoints.speech_state:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_media_core"]
+
+# Ship the data directories INSIDE the package.
+#
+# They sit beside it in the repo (packages/core/services, .../tmux), which an
+# editable install resolves fine because `__file__` is still in the checkout.
+# A wheel is not a checkout: without this the built wheel carried zero
+# `services/` entries, so `media-setup install-services` found no templates at
+# all and the single most important setup command silently installed nothing —
+# on every non-editable install, which is every install by anyone else.
+[tool.hatch.build.targets.wheel.force-include]
+"services" = "agent_media_core/services"
+"tmux"     = "agent_media_core/tmux"

@@ -30,6 +30,55 @@ API key. See **[`docs/reference/extensions.md`](./docs/reference/extensions.md)*
 > tracks from your transit chart, time of day, mood, and weather, and queues
 > them through core's music sink over the media-mcp boundary.
 
+## Installing
+
+```sh
+pip install "agent-media-core @ git+https://github.com/davidj4tech/agent-media#subdirectory=packages/core"
+media-setup init              # writes ~/.config/agent-media/config.toml
+media-setup install-services  # installs only the services this host's roles want
+media-setup install-hooks     # wire the agent side (Claude Code Stop/Notification)
+```
+
+`init` guesses the roles and says so; edit the file if the guess is wrong.
+
+### One machine or several
+
+A host declares what it **can do**, and services are selected from that rather
+than from its name:
+
+| role | means |
+|---|---|
+| `observe` | there is a mic or a dialer here worth watching |
+| `render` | there are audio sinks here that can be silenced |
+| `origin` | this machine produces the text to be spoken |
+
+```toml
+[host]
+roles = ["observe", "render", "origin"]   # one machine, standing alone
+```
+
+```toml
+[host]
+roles = ["observe", "render"]             # a phone in a larger setup
+
+[peers.hub]
+host  = "the-other-machine"
+roles = ["render", "origin"]
+```
+
+**That is the entire difference between standalone and federated** — a peers
+table with entries in it, or without. There is no mode to switch, and nothing
+else in the configuration changes.
+
+Roles are also what keeps two supervisors off one audio socket: `call-guard`
+requires `observe`, while `call-hold-consumer` (the same binary with detection
+switched off, for a machine that renders but cannot observe) requires `render`
+and *conflicts* with `observe`. Installing both on one host is what broke
+barge-in here for a fortnight.
+
+Hostnames belong in `config.toml` and nowhere else — code asks for the machine
+that can do a thing, never for a machine by name.
+
 ## Packages
 
 ### [`core/`](./packages/core/) — `agent-media-core`

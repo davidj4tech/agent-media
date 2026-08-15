@@ -112,3 +112,55 @@ def test_no_roles_declared_keeps_both(monkeypatch):
     # The pre-roles world, preserved exactly.
     assert setup.service_wanted("call-guard", None)[0] is True
     assert setup.service_wanted("call-hold-consumer", None)[0] is True
+
+
+# --- first run ---------------------------------------------------------------
+
+
+def test_init_writes_a_config_that_parses(tmp_path):
+    from agent_media_core import config
+    p = tmp_path / "config.toml"
+    args = argparse.Namespace(config=str(p), roles="observe,render",
+                              force=False, dry_run=False)
+    assert setup.cmd_init(args) == 0
+    # The output must be loadable by the thing that reads it, not merely
+    # written: a starter config that does not parse is worse than none.
+    assert config.host_roles(p) == {"observe", "render"}
+    assert config.peers(p) == {}          # the peers block is commented out
+
+
+def test_init_does_not_clobber_an_existing_config(tmp_path):
+    p = tmp_path / "config.toml"
+    p.write_text('[host]\nroles = ["origin"]\n')
+    args = argparse.Namespace(config=str(p), roles=None, force=False,
+                              dry_run=False)
+    assert setup.cmd_init(args) == 0
+    assert 'roles = ["origin"]' in p.read_text()
+
+
+def test_init_dry_run_writes_nothing(tmp_path):
+    p = tmp_path / "config.toml"
+    args = argparse.Namespace(config=str(p), roles=None, force=False,
+                              dry_run=True)
+    assert setup.cmd_init(args) == 0
+    assert not p.exists()
+
+
+def test_init_guesses_observe_only_on_termux(monkeypatch):
+    monkeypatch.delenv("PREFIX", raising=False)
+    assert setup._guess_roles() == ["render"]
+    monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")
+    assert setup._guess_roles() == ["observe", "render"]
+
+
+def test_service_templates_are_found_inside_the_package_when_installed(tmp_path,
+                                                                       monkeypatch):
+    """A wheel force-includes the data dirs INTO the package; a checkout keeps
+    them beside it. Installed-first, because that layout shipped broken: the
+    built wheel carried no services/ at all, so install-services found no
+    templates and reported success having installed nothing."""
+    fake_pkg = tmp_path / "agent_media_core"
+    (fake_pkg / "services" / "demo").mkdir(parents=True)
+    monkeypatch.setattr(setup, "__file__", str(fake_pkg / "setup.py"))
+    assert setup.service_templates_dir() == fake_pkg / "services"
+    assert setup.service_template_names() == ["demo"]
