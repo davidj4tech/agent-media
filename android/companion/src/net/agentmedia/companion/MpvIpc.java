@@ -133,6 +133,11 @@ final class MpvIpc {
         return connected;
     }
 
+    /** Which bridge this one talks to; for the log lines that name it. */
+    int port() {
+        return port;
+    }
+
     synchronized void start() {
         if (running) return;
         running = true;

@@ -62,6 +62,14 @@ public class CompanionService extends Service {
     static final int MPV_SPEECH_PORT = 6602;
 
     /**
+     * The book mpv (sink-book.sock), behind mpv-book-bridge-local. Read and
+     * driven for its own card only: an audiobook takes no part in the focus
+     * policy, which is about what happens to speech and music when something
+     * else takes the output.
+     */
+    static final int MPV_BOOK_PORT = 6603;
+
+    /**
      * The focus policy is allowed to touch mpv only when this is on. Off by
      * default, which makes a fresh install a *probe*: it takes focus and logs
      * every callback but changes nothing, so the first sideload can answer what
@@ -74,7 +82,14 @@ public class CompanionService extends Service {
     private static final String KEY_FOCUS_ACTS = "focus_acts";
 
     private static final String CHANNEL = "agent-media";
+    /**
+     * One notification per card. The shade's media player is built from
+     * MediaStyle *notifications*, not from sessions alone, so three cards means
+     * three ids. Only the first is the foreground-service notification.
+     */
     private static final int NOTIF_ID = 1;
+    private static final int NOTIF_SPEECH = 2;
+    private static final int NOTIF_BOOK = 3;
     /** How often to refresh position while playing. The session extrapolates between. */
     private static final long POSITION_POLL_MS = 5000;
     private static final int LOG_LINES = 200;
@@ -91,13 +106,20 @@ public class CompanionService extends Service {
 
     private final Handler main = new Handler(Looper.getMainLooper());
     private final MpvState state = new MpvState();
-    /** The speech mpv's mirror. Feeds the metadata and the speech half of focus. */
-    private final MpvState speechState = new MpvState();
+    /**
+     * The two channels that get their own card in the shade's player but are not
+     * the phone's player. Only music opens an AudioTrack, holds focus, or
+     * answers a media button — see SideChannel.
+     */
+    private SideChannel speech;
+    private SideChannel book;
+    /** speech.state() and speech.ipc(), which the focus policy reads and drives. */
+    private MpvState speechState;
+    private MpvIpc speechIpc;
     private final FocusPolicy focus = new FocusPolicy();
     /** The speech half of David's rule; drives speechIpc, never the music one. */
     private final SpeechPolicy speechFocus = new SpeechPolicy();
     private MpvIpc ipc;
-    private MpvIpc speechIpc;
     private MediaSession session;
     private NotificationManager nm;
     private Silence silence;
@@ -111,15 +133,6 @@ public class CompanionService extends Service {
     private volatile long speechStagedAt = 0L;
     /** When the coordinator last raised the speaking flag; 0 = never. */
     private volatile long speakingSince = 0L;
-    /**
-     * A speech clip is paused by the card's own pause button. Main-thread only.
-     *
-     * Without it the front channel drops the moment Sam is paused, and the card
-     * that just paused him turns back into a music card whose play button goes
-     * to an idle music mpv — observed on p8a at 08:54:17/08:54:20 on
-     * 2026-08-15, with the reply stranded paused in between.
-     */
-    private boolean speechHeld = false;
     /** Consecutive polls that found nothing else playing. See pollForQuiet(). */
     private int quietPolls = 0;
     /**
@@ -160,9 +173,10 @@ public class CompanionService extends Service {
 
     String status() {
         return state
-                + "\nfront=" + frontName()
-                + " speech=" + (!speechState.connected ? "unreachable"
+                + "\nspeech=" + (!speechState.connected ? "unreachable"
                         : speechState.playing() ? "speaking" : "quiet")
+                + " book=" + (book == null || !book.state().connected ? "unreachable"
+                        : book.state().playing() ? "playing" : "quiet")
                 + "\nfocus=" + (focusControl == null ? "none"
                         : FocusControl.kindName(focusControl.kind()))
                 + " mode=" + (focusActs ? "acting" : "probe (logs only)")
@@ -228,16 +242,31 @@ public class CompanionService extends Service {
         ipc = new MpvIpc(MPV_HOST, MPV_PORT, listener);
         ipc.start();
 
-        speechIpc = new MpvIpc(MPV_HOST, MPV_SPEECH_PORT, speechListener,
-                               MpvIpc.OBSERVED_SPEECH);
-        speechIpc.start();
+        speech = new SideChannel(this, main, "speech", FrontChannel.SPEECH_TITLE,
+                                 MPV_SPEECH_PORT, MpvIpc.OBSERVED_SPEECH,
+                                 NOTIF_SPEECH, CHANNEL,
+                                 android.R.drawable.ic_btn_speak_now, speechWatcher);
+        speechState = speech.state();
+        speechIpc = speech.ipc();
+        speech.start();
+
+        // The book bridge may legitimately not be running — a book broker is
+        // started on the days there is a book. An unreachable channel simply
+        // never shows a card; MpvIpc reconnects with backoff forever, so one
+        // appears the moment the bridge does.
+        book = new SideChannel(this, main, "book", "Audiobook",
+                               MPV_BOOK_PORT, MpvIpc.OBSERVED,
+                               NOTIF_BOOK, CHANNEL,
+                               android.R.drawable.ic_media_play, bookWatcher);
+        book.start();
 
         status = new StatusServer(StatusServer.DEFAULT_PORT, statusSource,
                                   CompanionService::log);
         status.start();
         main.postDelayed(positionPoll, POSITION_POLL_MS);
-        log("service started; mpv ipc -> " + MPV_HOST + ":" + MPV_PORT
-                + ", speech -> " + MPV_HOST + ":" + MPV_SPEECH_PORT);
+        log("service started; music -> " + MPV_HOST + ":" + MPV_PORT
+                + ", speech -> " + MPV_HOST + ":" + MPV_SPEECH_PORT
+                + ", book -> " + MPV_HOST + ":" + MPV_BOOK_PORT);
         log("focus: mode " + (focusActs ? "acting" : "probe (logs only)"));
     }
 
@@ -251,14 +280,15 @@ public class CompanionService extends Service {
         main.removeCallbacks(positionPoll);
         if (pendingFocus != null) main.removeCallbacks(pendingFocus);
         if (ipc != null) ipc.stop();
-        if (speechIpc != null) {
+        if (speech != null) {
             // Best-effort, and before the sender is shut down: a speech pause we
             // still owe outlives this process on the phone's mpv. The write may
             // not make it out; the coordinator clears pause at the start of the
             // next response, which is the backstop.
             if (speechFocus.owesResume()) performSpeech(SpeechPolicy.Action.DISCARD);
-            speechIpc.stop();
+            speech.stop();
         }
+        if (book != null) book.stop();
         if (status != null) status.stop();
         if (focusControl != null) focusControl.abandon();
         stopSilence();
@@ -310,58 +340,37 @@ public class CompanionService extends Service {
     };
 
     /**
-     * The speech mpv, listened to and never driven. Only two properties are
-     * observed — enough to answer "is a clip running" — so a long reply does not
-     * flood the event log that focus diagnosis is read from.
+     * The speech channel's extra bookkeeping: everything the focus policy needs
+     * that the card itself does not care about. SideChannel owns the connection
+     * and the display; this owns the questions "was a clip just staged", "is the
+     * coordinator speaking", and "is a pause of ours still ours".
      */
-    private final MpvIpc.Listener speechListener = new MpvIpc.Listener() {
-        @Override public void onProperty(final String name, final Object value) {
-            main.post(() -> {
-                if (speechState.apply(name, value)) {
-                    log("speech " + name + " = " + value);
-                    // When a clip was staged, so a focus loss arriving before it
-                    // is audible can still be recognised as ours. A path is set
-                    // on loadfile; the unpause is the same episode's other edge.
-                    // Deliberately NOT the clip *ending*: the grace should
-                    // expire with the reply, not be extended by it.
-                    boolean staged = ("path".equals(name) && speechState.path != null)
-                            || ("pause".equals(name) && !speechState.paused);
-                    if (staged) speechStagedAt = System.currentTimeMillis();
-                    // The guard the speech policy needs from outside: a resume
-                    // from anywhere else — the popup, the CLI, or the
-                    // coordinator clearing pause for the next response — means
-                    // the pause we owed is no longer ours to pay.
-                    if ("pause".equals(name)) {
-                        speechFocus.onPauseChanged(speechState.paused);
-                        // Resumed by anyone — the card, the popup, the
-                        // coordinator starting the next reply — and the hold is
-                        // over.
-                        if (!speechState.paused) speechHeld = false;
-                    }
-                    // Nothing open is nothing to hold.
-                    if ("idle-active".equals(name) && speechState.idleActive) speechHeld = false;
-                    if (MpvIpc.SPEAKING_PROPERTY.equals(name) && speechState.speaking) {
-                        speakingSince = System.currentTimeMillis();
-                    }
-                    pushSessionState();
-                }
-            });
+    private final SideChannel.Watcher speechWatcher = new SideChannel.Watcher() {
+        @Override public void onChanged(String property, Object value, MpvState st) {
+            // When a clip was staged, so a focus loss arriving before it is
+            // audible can still be recognised as ours. A path is set on
+            // loadfile; the unpause is the same episode's other edge.
+            // Deliberately NOT the clip *ending*: the grace should expire with
+            // the reply, not be extended by it.
+            boolean staged = ("path".equals(property) && st.path != null)
+                    || ("pause".equals(property) && !st.paused);
+            if (staged) speechStagedAt = System.currentTimeMillis();
+            if (MpvIpc.SPEAKING_PROPERTY.equals(property) && st.speaking) {
+                speakingSince = System.currentTimeMillis();
+            }
+            // The guard the speech policy needs from outside: a resume from
+            // anywhere else — the card, the popup, the coordinator clearing
+            // pause for the next response — means the pause we owed is no
+            // longer ours to pay.
+            if ("pause".equals(property)) speechFocus.onPauseChanged(st.paused);
+            pushSessionState();
         }
+    };
 
-        @Override public void onEvent(String event, Map<String, Object> message) { }
-
-        @Override public void onConnected() {
-            main.post(() -> { speechState.connected = true; pushSessionState(); });
-        }
-
-        @Override public void onDisconnected(String why) {
-            // The metadata falls back to music, which is the right answer when
-            // we can no longer tell whether a clip is playing.
-            main.post(() -> { speechState.connected = false; pushSessionState(); });
-        }
-
-        @Override public void onLog(String line) {
-            log("speech: " + line);
+    /** A book takes no part in focus; its card is the whole of its business. */
+    private final SideChannel.Watcher bookWatcher = new SideChannel.Watcher() {
+        @Override public void onChanged(String property, Object value, MpvState st) {
+            pushSessionState();
         }
     };
 
@@ -454,30 +463,18 @@ public class CompanionService extends Service {
             log("focus: abandoned (nothing open)");
         }
 
-        // The metadata follows whichever channel is in front, so the car display
-        // names Sam while Sam is what is audible.
+        // A music card describing music, which it had not been since the
+        // metadata started following the front channel. Speech and book have
+        // cards of their own now, so nothing here has to stand in for them —
+        // and the listener gets a music pause button that works *while* Sam
+        // talks, which one shared card could never offer.
         MediaMetadata.Builder md = new MediaMetadata.Builder()
-                .putString(MediaMetadata.METADATA_KEY_TITLE,
-                           FrontChannel.title(state, speechState, speechHeldNow()))
-                .putString(MediaMetadata.METADATA_KEY_ARTIST,
-                           FrontChannel.subtitle(state, speechState, speechHeldNow()))
-                .putLong(MediaMetadata.METADATA_KEY_DURATION,
-                         FrontChannel.durationMs(state, speechState, speechHeldNow()));
+                .putString(MediaMetadata.METADATA_KEY_TITLE, state.title())
+                .putString(MediaMetadata.METADATA_KEY_ARTIST, FrontChannel.DEFAULT_SUBTITLE)
+                .putLong(MediaMetadata.METADATA_KEY_DURATION, state.durationMs());
         session.setMetadata(md.build());
 
-        // And so does the PlaybackState, since 2026-08-15. It used to describe
-        // music alone, on the reasoning that resolving a PLAY_PAUSE toggle
-        // against a two-second clip is the class of bug 3519172 fixed. That was
-        // half right and the wrong half in practice: while Sam spoke with no
-        // track open, the card said STOPPED under a title that said "Sam", its
-        // button showed a play triangle, and pressing it sent pause=false to an
-        // idle music mpv — which does nothing. David pressed it five times in a
-        // row at 08:22 before a `previous` finally loaded a track.
-        //
-        // A control that describes one channel and is labelled with another is
-        // worse than a stale toggle. What the card says is now what is audible,
-        // and the transport below goes to the same place.
-        MpvState front = frontState();
+        MpvState front = state;
 
         int playbackState;
         if (!front.connected) playbackState = PlaybackState.STATE_ERROR;
@@ -485,18 +482,13 @@ public class CompanionService extends Service {
         else if (front.paused) playbackState = PlaybackState.STATE_PAUSED;
         else playbackState = PlaybackState.STATE_PLAYING;
 
-        // A spoken clip has no next, no previous and nothing to seek within, so
-        // the buttons that would claim otherwise are dropped while it is in
-        // front rather than pointed at the music underneath.
         long actions = PlaybackState.ACTION_PLAY
                 | PlaybackState.ACTION_PAUSE
                 | PlaybackState.ACTION_PLAY_PAUSE
-                | PlaybackState.ACTION_STOP;
-        if (front == state) {
-            actions |= PlaybackState.ACTION_SKIP_TO_NEXT
-                    | PlaybackState.ACTION_SKIP_TO_PREVIOUS
-                    | PlaybackState.ACTION_SEEK_TO;
-        }
+                | PlaybackState.ACTION_STOP
+                | PlaybackState.ACTION_SKIP_TO_NEXT
+                | PlaybackState.ACTION_SKIP_TO_PREVIOUS
+                | PlaybackState.ACTION_SEEK_TO;
 
         PlaybackState.Builder pb = new PlaybackState.Builder()
                 .setActions(actions)
@@ -523,6 +515,13 @@ public class CompanionService extends Service {
         }
 
         nm.notify(NOTIF_ID, buildNotification());
+
+        // The other two cards. Speech follows the reply — sink-speech parks the
+        // last clip open indefinitely, so "loaded" would leave Sam sitting in
+        // the shade all evening — while a book stays until it is closed,
+        // because a book is a thing you come back to tomorrow.
+        if (speech != null) speech.publish(speechFront());
+        if (book != null) book.publish(book.state().loaded());
     }
 
     private Notification buildNotification() {
@@ -534,22 +533,18 @@ public class CompanionService extends Service {
         if (!state.connected) text = "mpv unreachable on " + MPV_HOST + ":" + MPV_PORT;
         else if (!state.loaded()) text = "idle";
         else text = state.paused ? "paused" : "playing";
-        if (speechFront()) text = (speechState.paused ? "speech paused — music "
-                                                       : "speaking — music ") + text;
 
         // The small icon reports *state*, so it has to follow it: a hardcoded
         // triangle sat there through every pause and read as the app being
         // stuck, which is a poor thing for a status indicator to say when the
         // session underneath is correct. It reads the front channel for the same
         // reason the card does — while Sam speaks, "playing" is about Sam.
-        boolean audible = frontState().playing();
+        boolean audible = state.playing();
         int icon = audible ? android.R.drawable.ic_media_play
                            : android.R.drawable.ic_media_pause;
 
         return new Notification.Builder(this, CHANNEL)
-                .setContentTitle(state.loaded() || speechFront()
-                        ? FrontChannel.title(state, speechState, speechHeldNow())
-                        : "agent-media")
+                .setContentTitle(state.loaded() ? state.title() : "agent-media")
                 .setContentText(text)
                 .setSmallIcon(icon)
                 .setStyle(new Notification.MediaStyle().setMediaSession(session.getSessionToken()))
@@ -580,7 +575,7 @@ public class CompanionService extends Service {
                 log("button: " + name + " (we report " + lastPushedState + ")");
             }
 
-            ButtonPolicy.Press press = ButtonPolicy.interpret(key.getKeyCode(), frontState());
+            ButtonPolicy.Press press = ButtonPolicy.interpret(key.getKeyCode(), state);
             if (press == ButtonPolicy.Press.DEFAULT) {
                 return super.onMediaButtonEvent(intent);
             }
@@ -588,40 +583,32 @@ public class CompanionService extends Service {
             // Consume both the down and the up, so the framework does not also
             // translate the key and undo what we just did.
             if (down) {
-                log("button: " + name + " read as " + press + " — " + frontName()
-                        + " is " + (frontState().paused ? "paused" : "playing"));
+                log("button: " + name + " read as " + press + " — music is "
+                        + (state.paused ? "paused" : "playing"));
                 if (press == ButtonPolicy.Press.PLAY) onPlay(); else onPause();
             }
             return true;
         }
 
         /**
-         * Play and pause go to whichever channel the card is describing. They
-         * used to go to music unconditionally, which is how five presses of a
-         * play button under the title "Sam" set pause=false on an idle music mpv
-         * five times and did nothing at all (p8a, 2026-08-15 08:22).
-         *
-         * Pausing Sam mid-reply is a real thing to want, and it is the action
-         * the button most obviously offers while he is the one talking.
+         * This card drives music, full stop. It spent one morning routing to
+         * whichever channel was in front — a necessary trick while one card had
+         * to describe two things, and one that could never let the listener
+         * pause the music *while* Sam talked. Sam has his own card now.
          */
         @Override public void onPlay() {
-            log("transport: play -> " + frontName());
-            frontIpc().setProperty("pause", Boolean.FALSE);
+            log("transport: play -> music");
+            ipc.setProperty("pause", Boolean.FALSE);
         }
 
         @Override public void onPause() {
-            boolean speech = speechFront();
-            log("transport: pause -> " + frontName());
-            // Remember it, or the front channel drops with the pause and the
-            // play button that should undo this goes to the music mpv instead.
-            if (speech) speechHeld = true;
-            frontIpc().setProperty("pause", Boolean.TRUE);
-            pushSessionState();
+            log("transport: pause -> music");
+            ipc.setProperty("pause", Boolean.TRUE);
         }
 
         @Override public void onStop() {
-            log("transport: stop -> " + frontName());
-            frontIpc().command("stop");
+            log("transport: stop -> music");
+            ipc.command("stop");
         }
 
         @Override public void onSkipToNext() {
@@ -658,31 +645,22 @@ public class CompanionService extends Service {
     // ---- the front channel, for the card and its buttons -----------------
 
     /**
-     * A clip is paused by someone who means to resume it: the card's pause
-     * button, or a focus pause of ours. Either way the session keeps describing
-     * speech, so the button that paused it can start it again.
+     * A clip is paused by someone who means to resume it: the speech card's own
+     * pause button, or a focus pause of ours. Either way its card stays, so the
+     * button that paused it can start it again.
      */
     private boolean speechHeldNow() {
-        return speechHeld || speechFocus.owesResume();
+        return (speech != null && speech.heldByUser()) || speechFocus.owesResume();
     }
 
-    /** Speech owns the session — playing, or held paused. */
+    /**
+     * Speech is audible or held. It decides the speech card's visibility, the
+     * silent track and the focus claim — display questions no longer among them,
+     * now that each channel has a card of its own.
+     */
     private boolean speechFront() {
-        return FrontChannel.speechInFront(speechState, speechHeldNow());
-    }
-
-    /** The mpv the session is describing: speech while a clip runs, else music. */
-    private MpvState frontState() {
-        return speechFront() ? speechState : state;
-    }
-
-    /** The connection to it. Next/previous/seek deliberately never come here. */
-    private MpvIpc frontIpc() {
-        return speechFront() ? speechIpc : ipc;
-    }
-
-    private String frontName() {
-        return FrontChannel.name(speechState, speechHeldNow());
+        return speechState != null
+                && FrontChannel.speechInFront(speechState, speechHeldNow());
     }
 
     /** The coordinator says a response is in flight, and said so recently. */
@@ -713,8 +691,11 @@ public class CompanionService extends Service {
             // Which channel the metadata is describing, and the speech mpv it
             // is read from — so "the car still says the track name" is two curl
             // lines rather than another sideload.
-            m.put("front", frontName());
-            m.put("metadata_title", FrontChannel.title(state, speechState, speechHeldNow()));
+            m.put("metadata_title", state.title());
+            // Which cards are in the shade's player right now. One session per
+            // channel since 2026-08-15; only music holds an AudioTrack.
+            m.put("cards", (speech != null && speech.visible() ? "music,speech" : "music")
+                    + (book != null && book.visible() ? ",book" : ""));
             Map<String, Object> sp = new LinkedHashMap<String, Object>();
             sp.put("connected", Boolean.valueOf(speechState.connected));
             sp.put("idle", Boolean.valueOf(speechState.idleActive));
@@ -733,6 +714,14 @@ public class CompanionService extends Service {
             // this phone that nothing else will undo. See SpeechPolicy.
             sp.put("owes_resume", Boolean.valueOf(speechFocus.owesResume()));
             m.put("speech", sp);
+            Map<String, Object> bk = new LinkedHashMap<String, Object>();
+            MpvState bs = book == null ? new MpvState() : book.state();
+            bk.put("connected", Boolean.valueOf(bs.connected));
+            bk.put("idle", Boolean.valueOf(bs.idleActive));
+            bk.put("paused", Boolean.valueOf(bs.paused));
+            bk.put("title", bs.title());
+            bk.put("card", Boolean.valueOf(book != null && book.visible()));
+            m.put("book", bk);
             m.put("last_button", lastButton);
             m.put("focus_mode", focusActs ? "acting" : "probe");
             m.put("focus_held", Boolean.valueOf(focusControl != null && focusControl.held()));

@@ -1,8 +1,10 @@
 # agent-media companion (Android, p8a)
 
-Publishes **one MediaSession** for the music channel so earbud, lock-screen and
-car-stereo transport controls reach agent-media, and drives the Termux mpv that
-does the actual playing over **loopback TCP**.
+Publishes **one MediaSession per channel** — music, speech, book — so each gets
+its own card in the shade's media player, and drives the Termux mpv underneath
+each one over **loopback TCP**. Music is the phone's *player*: it alone holds the
+silent stream, the audio focus and the media-button receiver, so earbud,
+lock-screen and car-stereo transport still reach it and only it.
 
 It is not a player. The only audio it opens is a stream of zeros, because
 Android will not give the Bluetooth addressed-player slot to a session with no
@@ -44,7 +46,8 @@ addressed-player slot.
 | `Json.java` | Minimal JSON codec. No `org.json`, no `android.*` — that is what makes the IPC testable off-device. |
 | `MpvIpc.java` | The mpv JSON IPC client: line protocol, `request_id` correlation, `observe_property`, reconnect with backoff. Also `android.*`-free. |
 | `MpvState.java` | The mirrored mpv properties. `loaded()`/`playing()` are deliberately the same predicates `agent_media_core.sinks.music_local` uses. |
-| `FrontChannel.java` | Which channel the session's metadata describes — speech while a clip runs, music otherwise. `android.*`-free, so `test/run.sh` covers it. |
+| `FrontChannel.java` | Whose focus loss a spoken clip is — the hard question, and since 2026-08-15 the only one this class answers. `android.*`-free, so `test/run.sh` covers it. |
+| `SideChannel.java` | A channel with a card but no claim on the phone: session, notification, transport, IPC for speech and book. |
 | `FocusPolicy.java` | The audio-focus decision table for **music** — duck, restore, and what is owed back afterwards. `android.*`-free, so `test/run.sh` covers it. |
 | `SpeechPolicy.java` | The same for **speech**: pause, resume, and the deadline that stops a pause being stranded on the broker. Also `android.*`-free. |
 | `FocusControl.java` | The `android.*` half of focus: request, abandon, forward the callbacks. Also the tripwire on `FocusPolicy`'s duplicated constants. |
@@ -72,14 +75,16 @@ sideload.
 
 ## Phone side
 
-Requires two socat listeners on loopback, into the two mpv IPC sockets: mpv's
+Requires three socat listeners on loopback, one per mpv IPC socket: mpv's
 sockets live inside `com.termux`'s private UID sandbox and no other app can open
-them.
+them. A missing one costs exactly its own card — `MpvIpc` reconnects with
+backoff forever, so the card appears when the bridge does.
 
 | Service (`packages/core/services/`) | Listener | Socket | What it carries |
 |---|---|---|---|
 | `mpv-music-bridge-local` | `127.0.0.1:6601` | `mpv-music.sock` | transport, focus actions, metadata |
-| `mpv-speech-bridge-local` | `127.0.0.1:6602` | `sink-speech.sock` | is a clip playing, the coordinator's speaking flag, and the focus pause |
+| `mpv-speech-bridge-local` | `127.0.0.1:6602` | `sink-speech.sock` | is a clip playing, the coordinator's speaking flag, the focus pause, and the speech card |
+| `mpv-book-bridge-local` | `127.0.0.1:6603` | `sink-book.sock` | the book card, and nothing else |
 
 Both are **separate** services from dotfiles' `mpv-music-bridge` /
 `mpv-speech-bridge`, which bind the Tailscale address only and must not be
@@ -112,6 +117,35 @@ asking David to read his phone screen aloud.
 `focus_mode` (probe or acting), `focus_held`, `owes_unduck`, `restore_volume`,
 `speech.owes_resume`, and `focus_events` — every focus callback the app has seen,
 timestamped.
+
+## Three cards, one player
+
+Each channel publishes its own `MediaSession` and its own `MediaStyle`
+notification, which is what the shade's media player is actually built from —
+sessions alone do not produce a card. So three ids: 1 (music, and the
+foreground-service notification), 2 (speech), 3 (book).
+
+**Only music opens an `AudioTrack`.** That is the rule the third session rests
+on, and it is the spike's own finding read the right way round: a session with
+no open stream does not get the Bluetooth addressed-player slot. The stream of
+zeros exists to win that slot, so the channels that must never take it simply
+never open one. Speech and book also get no media-button receiver, no audio
+focus, and no skip/seek actions.
+
+A card is shown only while its channel has something to show, and the two
+differ: **a book stays while it is loaded**, because a book is a thing you come
+back to tomorrow, while **the speech card follows the reply** — sink-speech
+parks the last clip open indefinitely, so "loaded" would leave Sam sitting in
+the shade all evening. The speech card also outlives its own pause button, or
+there would be nothing left to resume him with.
+
+This retired the front-channel mechanism, which existed only because one card
+had to describe several channels by taking turns. In one morning that produced a
+card titled `Sam` reporting `STOPPED` whose play button drove an idle music mpv,
+and then a card that could pause Sam but not resume him. Each channel names
+itself now, and the music card is a music card again — which also means its
+pause button works *while* Sam is talking, something one shared card could never
+offer.
 
 ## Audio focus
 

@@ -9,18 +9,17 @@ package net.agentmedia.companion;
  * (sink-speech.sock) from music, so a session pinned to the music mpv leaves the
  * car display naming a track while Sam is the thing actually being heard.
  *
- * So the session follows whichever channel is in front: the metadata, the
- * PlaybackState, and the play/pause/stop callbacks all describe and drive the
- * same one. Next, previous and seek are the exception — they are withdrawn
- * while speech is in front rather than pointed at the music underneath, because
- * a clip has none of them.
+ * <b>This is no longer about the display.</b> Until 2026-08-15 one session had
+ * to describe every channel, and this class decided which one it named — a
+ * mechanism that produced, in one morning, a card titled "Sam" reporting
+ * STOPPED whose play button drove an idle music mpv, and then a card that could
+ * pause Sam but not resume him. Each channel publishes its own session now (see
+ * SideChannel), so each names itself and the taking of turns is gone.
  *
- * The PlaybackState followed music alone until 2026-08-15, on the reasoning
- * that the framework resolves a PLAY_PAUSE toggle from what we report and
- * answering that about a two-second clip is the class of bug 3519172 fixed.
- * What that produced was a card titled "Sam" reporting STOPPED whose play
- * button went to an idle music mpv — a control labelled with one channel and
- * wired to another, which is worse than a stale toggle.
+ * What is left is the question that was always the hard one and never really a
+ * display question at all: <b>whose focus loss is this</b>. `ourSpeech` answers
+ * it, the app ducks and pauses on the answer, and the two constants below are
+ * still the labels a spoken clip cannot supply for itself.
  *
  * android.*-free, so test/run.sh covers it.
  */
@@ -128,48 +127,10 @@ final class FrontChannel {
         return speechInFront(speech) || msSinceStaged < STAGING_GRACE_MS;
     }
 
-    static String title(MpvState music, MpvState speech) {
-        return title(music, speech, false);
-    }
-
-    static String title(MpvState music, MpvState speech, boolean held) {
-        return speechInFront(speech, held) ? SPEECH_TITLE : music.title();
-    }
-
-    /**
-     * The second line. While Sam speaks it names the music underneath, because
-     * the progress bar next to it is still the music track's — a display that
-     * says "Sam" over someone else's position is less coherent than one that
-     * says whose position it is.
-     */
-    static String subtitle(MpvState music, MpvState speech) {
-        return subtitle(music, speech, false);
-    }
-
-    static String subtitle(MpvState music, MpvState speech, boolean held) {
-        if (speechInFront(speech, held) && music.loaded()) return music.title();
-        return DEFAULT_SUBTITLE;
-    }
-
-    /**
-     * Duration for the metadata. Unknown (-1) while speech is in front: the
-     * position we publish belongs to the music track, so pairing it with the
-     * clip's length would draw a progress bar that is wrong in both directions.
-     */
-    static long durationMs(MpvState music, MpvState speech) {
-        return durationMs(music, speech, false);
-    }
-
-    static long durationMs(MpvState music, MpvState speech, boolean held) {
-        return speechInFront(speech, held) ? -1L : music.durationMs();
-    }
-
-    /** For the readout: "speech" or "music". */
-    static String name(MpvState speech) {
-        return name(speech, false);
-    }
-
-    static String name(MpvState speech, boolean held) {
-        return speechInFront(speech, held) ? "speech" : "music";
-    }
+    // title/subtitle/durationMs/name lived here until 2026-08-15. They existed
+    // so one card could describe two channels by taking turns; speech and book
+    // have cards of their own now (SideChannel), each naming itself, and a
+    // display helper nobody calls is a claim about the app that is no longer
+    // true. What remains is the question this class is actually good at: whose
+    // focus loss is this.
 }
