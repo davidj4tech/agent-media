@@ -635,11 +635,18 @@ public class CompanionService extends Service {
         nm.notify(NOTIF_ID, buildNotification());
         kickMarquee();
 
-        // The other two cards. Speech follows the reply — sink-speech parks the
-        // last clip open indefinitely, so "loaded" would leave Sam sitting in
-        // the shade all evening — while a book stays until it is closed,
-        // because a book is a thing you come back to tomorrow.
-        if (speech != null) speech.publish(speechFront());
+        // The other two cards. Both now stay once they have something to say:
+        // a book because it is a thing you come back to tomorrow, and speech
+        // because the clip you just heard is the one you are most likely to
+        // want again. That reverses the earlier rule ("Sam sitting in the shade
+        // all evening"), which was right while the card forgot its clip on the
+        // way out and so had nothing to offer but a stale play button.
+        //
+        // The session stays active with it. The spike's finding holds — the
+        // addressed-player slot follows the silent AudioTrack, and only the
+        // music session opens one — so this competes for the shade, not for the
+        // earbud. Worth re-checking on the phone all the same.
+        if (speech != null) speech.publish(speechFront() || speech.remembers());
         if (book != null) book.publish(book.state().loaded());
     }
 
@@ -650,7 +657,7 @@ public class CompanionService extends Service {
 
         String text;
         if (!state.connected) text = "mpv unreachable on " + MPV_HOST + ":" + MPV_PORT;
-        else if (!state.loaded()) text = "idle";
+        else if (!state.loaded()) text = state.lastTitle() != null ? "last track" : "idle";
         else text = state.paused ? "paused" : "playing";
 
         // The small icon reports *state*, so it has to follow it: a hardcoded
@@ -663,7 +670,10 @@ public class CompanionService extends Service {
                            : android.R.drawable.ic_media_pause;
 
         return new Notification.Builder(this, CHANNEL)
-                .setContentTitle(state.loaded() ? musicCardTitle() : "agent-media")
+                // Not gated on loaded() any more: MpvState#title falls back to
+                // the last track played, which is a better thing for an idle
+                // music card to say than the app's own name.
+                .setContentTitle(musicCardTitle())
                 .setContentText(text)
                 .setSmallIcon(icon)
                 .setStyle(new Notification.MediaStyle().setMediaSession(session.getSessionToken()))

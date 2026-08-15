@@ -50,12 +50,16 @@ final class MpvState {
                 String v = Json.asString(value);
                 if (eq(v, mediaTitle)) return false;
                 mediaTitle = v;
+                remember(v);
                 return true;
             }
             case "path": {
                 String v = Json.asString(value);
                 if (eq(v, path)) return false;
                 path = v;
+                if (mediaTitle == null || mediaTitle.isEmpty()) {
+                    remember(v == null || v.isEmpty() ? null : basename(v));
+                }
                 return true;
             }
             case "duration": {
@@ -108,9 +112,34 @@ final class MpvState {
 
     /** What the lock screen and the car display should say. */
     String title() {
-        if (mediaTitle != null && !mediaTitle.isEmpty()) return mediaTitle;
-        if (path != null && !path.isEmpty()) return basename(path);
+        // Blank counts as absent: mpv reports a cleared title as "" and, on at
+        // least one path, as a run of spaces — which used to render as a card
+        // with no name on it at all.
+        if (mediaTitle != null && !mediaTitle.trim().isEmpty()) return mediaTitle;
+        if (path != null && !path.trim().isEmpty()) return basename(path);
+        if (lastTitle != null) return lastTitle;
         return "agent-media";
+    }
+
+    /**
+     * The last thing this channel actually played, kept after it stops.
+     *
+     * A channel that goes idle used to forget: the card fell back to
+     * "agent-media" and the shade lost the one piece of information worth
+     * having there, which is what you just listened to. mpv clears
+     * {@code media-title} and {@code path} on end-file, so nothing else on this
+     * side can answer it a second later.
+     *
+     * Only ever set, never cleared — an empty title arriving is the end of a
+     * clip, not a new one, and forgetting on it would defeat the whole point.
+     */
+    private volatile String lastTitle = null;
+
+    /** The last played title, or null if this channel has played nothing. */
+    String lastTitle() { return lastTitle; }
+
+    private void remember(String t) {
+        if (t != null && !t.trim().isEmpty()) lastTitle = t.trim();
     }
 
     /** Duration in milliseconds, or -1 when mpv has not reported one. */

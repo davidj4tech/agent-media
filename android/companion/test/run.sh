@@ -31,7 +31,8 @@ javac -nowarn -d "$OUT" \
     "$HERE/net/agentmedia/companion/FrontTest.java" \
     "$HERE/net/agentmedia/companion/StatusTest.java" \
     "$HERE/net/agentmedia/companion/ExitTest.java" \
-    "$HERE/net/agentmedia/companion/MarqueeTest.java"
+    "$HERE/net/agentmedia/companion/MarqueeTest.java" \
+    "$HERE/net/agentmedia/companion/StateTest.java"
 
 java -cp "$OUT" net.agentmedia.companion.IpcTest
 java -cp "$OUT" net.agentmedia.companion.FocusTest
@@ -39,3 +40,4 @@ java -cp "$OUT" net.agentmedia.companion.FrontTest
 java -cp "$OUT" net.agentmedia.companion.StatusTest
 java -cp "$OUT" net.agentmedia.companion.ExitTest
 java -cp "$OUT" net.agentmedia.companion.MarqueeTest
+java -cp "$OUT" net.agentmedia.companion.StateTest

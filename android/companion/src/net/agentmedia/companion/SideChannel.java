@@ -148,6 +148,7 @@ final class SideChannel {
         if (!show) {
             if (visible) {
                 visible = false;
+                lastCard = null;          // a card taken down is posted afresh
                 session.setActive(false);
                 nm.cancel(notifId);
             }
@@ -179,8 +180,24 @@ final class SideChannel {
                           state.playing() ? (float) state.speed : 0f)
                 .build());
 
+        // Re-post only when the card would actually read differently.
+        //
+        // Not an optimisation: a card that outlives its clip is one the listener
+        // can swipe away, and a notify with the same id brings a dismissed card
+        // straight back. Every mpv property on any channel pushes session state,
+        // so without this the swiped speech card would return the moment the
+        // music position moved. Now it stays gone until the next clip changes
+        // what the card says. (The marquee still ticks: the windowed title is
+        // part of the signature, and a scrolling card is a playing one.)
+        String sig = cardTitle() + " " + playbackState + " " + state.paused
+                + " " + state.loaded();
+        if (sig.equals(lastCard)) return;
+        lastCard = sig;
         nm.notify(notifId, card());
     }
+
+    /** What the last posted card said — see the signature check in publish. */
+    private String lastCard = null;
 
     boolean visible() { return visible; }
 
@@ -203,8 +220,14 @@ final class SideChannel {
      */
     private String title() {
         String t = state.mediaTitle;
+        // Then the clip that just played: a card that outlives its clip is only
+        // worth having if it still names it. See MpvState#lastTitle.
+        if (t == null || t.trim().isEmpty()) t = state.lastTitle();
         return (t == null || t.trim().isEmpty()) ? label : t.trim();
     }
+
+    /** Has this channel played anything worth keeping on the card? */
+    boolean remembers() { return state.lastTitle() != null; }
 
     /**
      * The title as the card should show it *this moment* — windowed if it is
@@ -248,7 +271,8 @@ final class SideChannel {
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
         return new Notification.Builder(ctx, notifChannel)
                 .setContentTitle(cardTitle())
-                .setContentText(state.paused ? "paused" : "playing")
+                .setContentText(!state.loaded() ? "last clip"
+                                                : state.paused ? "paused" : "playing")
                 .setSmallIcon(icon)
                 .setStyle(new Notification.MediaStyle()
                         .setMediaSession(session.getSessionToken()))
