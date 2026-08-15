@@ -23,7 +23,22 @@ package net.agentmedia.companion;
  * two minutes stopped counting. That is a guess about what kind of thing is
  * holding the mic, and it costs two minutes of silence before it guesses.
  *
- * <h4>The signal</h4>
+ * <h4>The signal that settled it</h4>
+ *
+ * Android names the difference itself, and we were inferring what it was
+ * willing to say. A Gboard dictation records with
+ * {@code MediaRecorder.AudioSource.VOICE_RECOGNITION} (6); a Claude Live
+ * session records with {@code VOICE_COMMUNICATION} (7) — captured on p8a on
+ * 2026-08-15, unredacted. VOICE_COMMUNICATION *means* a two-way conversation,
+ * so it is not a heuristic that happens to work, it is the API answering the
+ * actual question, at the first poll, with no timing floor.
+ *
+ * Everything else here is the fallback for a source we do not recognise, which
+ * is why it stays. A recording we cannot classify is treated as dictation —
+ * being wrong that way pauses Sam for a moment, and the other way lets him talk
+ * over David.
+ *
+ * <h4>The corroborating signal</h4>
  *
  * <b>Dictation makes no sound; a conversation does.</b> Gboard's voice typing
  * plays nothing at all, so while David dictates the output stays ours. The
@@ -74,6 +89,17 @@ final class BargeIn {
      */
     static final long FOREIGN_AUDIO_MIN_MS = 1200L;
 
+    /**
+     * {@code MediaRecorder.AudioSource.VOICE_COMMUNICATION}. Duplicated rather
+     * than imported to keep this class host-testable, like FocusPolicy's focus
+     * constants. A recording opened with this is a conversation by definition.
+     *
+     * A phone call uses it too, and that is correct: a call is not someone
+     * barging in on Sam either, and call_guard already handles calls by their
+     * own route, with the policy calls need (no auto-resume).
+     */
+    static final int VOICE_COMMUNICATION = 7;
+
     private boolean micOpen = false;
     /** Latched once the mic-open episode has heard another app speak. */
     private boolean conversation = false;
@@ -83,7 +109,7 @@ final class BargeIn {
     private long foreignMs = 0L;
 
     /** The mic opened or closed. Closing ends the episode and clears the latch. */
-    void onMic(boolean active, long now) {
+    void onMic(boolean active, int source, long now) {
         if (active == micOpen) return;
         micOpen = active;
         if (!active) {
@@ -97,6 +123,12 @@ final class BargeIn {
             // that is talking is still evidence about what this recording is.
             foreignMs = 0L;
             if (foreignSince != 0L) foreignSince = now;
+            if (source == VOICE_COMMUNICATION) {
+                conversation = true;
+                conversationWhy = "conversation (VOICE_COMMUNICATION)";
+                log.line("barge-in: recording opened as VOICE_COMMUNICATION — "
+                        + "a conversation, not someone talking over Sam");
+            }
         }
     }
 
@@ -127,7 +159,7 @@ final class BargeIn {
     /** Why, for the readout — this is the line a human reads over ssh. */
     String why(long now) {
         if (!micOpen) return "mic shut";
-        if (conversation) return "conversation (another app spoke)";
+        if (conversation) return conversationWhy;
         long heard = audible(now);
         return heard > 0 ? "dictation (" + heard + "ms of other audio, under "
                            + FOREIGN_AUDIO_MIN_MS + ")"
@@ -137,11 +169,15 @@ final class BargeIn {
     private void check(long now) {
         if (micOpen && !conversation && audible(now) >= FOREIGN_AUDIO_MIN_MS) {
             conversation = true;
+            conversationWhy = "conversation (another app spoke)";
             log.line("barge-in: another app has been audible for "
                     + FOREIGN_AUDIO_MIN_MS + "ms with the mic open — reading "
                     + "this as a conversation, not someone talking over Sam");
         }
     }
+
+    /** Which evidence decided it, for the readout. */
+    private String conversationWhy = "conversation";
 
     /** Foreign audio in this episode, including a run still in progress. */
     private long audible(long now) {

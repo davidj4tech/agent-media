@@ -68,6 +68,16 @@ final class MicWatch {
     private volatile int count = 0;
     /** The last thing we could say about what is recording, for the readout. */
     private volatile String detail = "(nothing seen yet)";
+    /**
+     * The audio source of the first active recording, or -1 when nothing is.
+     *
+     * This turned out to be the whole answer. On 2026-08-15 a Gboard dictation
+     * reported {@code src=6} (VOICE_RECOGNITION) and a Claude Live session
+     * {@code src=7} (VOICE_COMMUNICATION) — the API naming the difference we
+     * had been trying to infer from duration and from what else was audible.
+     * Not redacted for a non-privileged caller on this device.
+     */
+    private volatile int source = -1;
     private final Deque<String> history = new ArrayDeque<String>();
 
     private AudioManager.AudioRecordingCallback callback;
@@ -84,6 +94,9 @@ final class MicWatch {
     int count() { return count; }
 
     String detail() { return detail; }
+
+    /** The active recording's audio source; -1 when nothing is recording. */
+    int source() { return source; }
 
     List<String> history() {
         synchronized (history) {
@@ -141,6 +154,7 @@ final class MicWatch {
     private void apply(List<AudioRecordingConfiguration> configs, String via) {
         int n = (configs == null) ? 0 : configs.size();
         String d = describe(configs);
+        source = sourceOf(configs);
         boolean nowActive = n > 0;
         if (nowActive == active && n == count && d.equals(detail)) return;
 
@@ -185,6 +199,16 @@ final class MicWatch {
             }
         }
         return sb.toString();
+    }
+
+    /** The first active recording's source, or -1. See the field. */
+    private static int sourceOf(List<AudioRecordingConfiguration> configs) {
+        if (configs == null || configs.isEmpty()) return -1;
+        try {
+            return configs.get(0).getClientAudioSource();
+        } catch (Throwable e) {
+            return -1;     // redacted or refused: no worse than not asking
+        }
     }
 
     /** Uptime, not wall clock: this is a log of intervals, not of times of day. */

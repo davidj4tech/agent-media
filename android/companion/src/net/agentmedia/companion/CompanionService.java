@@ -312,7 +312,7 @@ public class CompanionService extends Service {
         // by a microphone we hold ourselves.
         bargeIn.logTo(CompanionService::log);
         mic = new MicWatch(audio, main, active -> {
-            bargeIn.onMic(active, System.currentTimeMillis());
+            bargeIn.onMic(active, mic.source(), System.currentTimeMillis());
             log("mic: " + (active ? "something is recording" : "quiet")
                     + " — " + bargeIn.why(System.currentTimeMillis()));
         });
