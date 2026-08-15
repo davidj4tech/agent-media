@@ -364,6 +364,10 @@ def _parse_roles(text: str) -> set[str]:
 def host_roles() -> set[str] | None:
     """This host's declared roles, or None when nothing declares any.
 
+    Delegates to `config.host_roles`, which reads MEDIA_ROLES, then
+    `[host] roles` in config.toml, then the original plain roles file. Kept as
+    a name here because the installer and its tests are the main caller.
+
     None is not the empty set and the difference is the whole safety argument:
     unconfigured means "filter nothing", so an existing rollout that has never
     heard of roles keeps installing exactly what it installed before. Only a
@@ -371,14 +375,8 @@ def host_roles() -> set[str] | None:
     declaration and does filter — that is how you say "install only the
     services that make no demands".
     """
-    raw = os.environ.get(ROLES_ENV)
-    if raw is None:
-        path = host_roles_path()
-        try:
-            raw = path.read_text()
-        except OSError:
-            return None
-    return _parse_roles(raw)
+    from .config import host_roles as _roles
+    return _roles()
 
 
 def service_roles(name: str) -> tuple[set[str], set[str]]:

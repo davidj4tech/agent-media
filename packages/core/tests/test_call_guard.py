@@ -1008,3 +1008,56 @@ def test_revive_off_when_unconfigured(monkeypatch):
         assert calls == []
     finally:
         source.stop()
+
+
+# --- one guard per socket set -----------------------------------------------
+# The phone ran two guards on sink-speech.sock from 2026-07-30 to 2026-08-16.
+# Neither noticed the other; barge-in failed 7 times in 149 and read as a flake.
+
+
+def _cfg_with_sockets(monkeypatch, tmp_path, sockets):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.setenv("MEDIA_CALL_GUARD_SOCKETS", sockets)
+    monkeypatch.setattr(call_guard, "_sock_lock_fh", None)
+    return call_guard.Config()
+
+
+def test_second_guard_on_the_same_sockets_is_refused(monkeypatch, tmp_path):
+    cfg = _cfg_with_sockets(monkeypatch, tmp_path, "/tmp/a.sock")
+    ok, why = call_guard.claim_sockets(cfg)
+    assert ok, why
+    # A second open() gets its own file description, so flock refuses it —
+    # the same answer a second *process* gets.
+    ok2, why2 = call_guard.claim_sockets(call_guard.Config())
+    assert ok2 is False
+    assert "another call guard" in why2
+    assert "/tmp/a.sock" in why2      # says which sockets, not just "busy"
+
+
+def test_guards_on_different_sockets_coexist(monkeypatch, tmp_path):
+    """The one legitimate two-guard split: speech here, music there. Keying
+    the lock on the socket set rather than on 'a guard is running' is what
+    keeps this possible."""
+    cfg_a = _cfg_with_sockets(monkeypatch, tmp_path, "/tmp/speech.sock")
+    assert call_guard.claim_sockets(cfg_a)[0] is True
+    monkeypatch.setenv("MEDIA_CALL_GUARD_SOCKETS", "/tmp/music.sock")
+    cfg_b = call_guard.Config()
+    assert call_guard.socket_lock_path(cfg_b) != call_guard.socket_lock_path(cfg_a)
+    assert call_guard.claim_sockets(cfg_b)[0] is True
+
+
+def test_lock_records_who_holds_it(monkeypatch, tmp_path):
+    cfg = _cfg_with_sockets(monkeypatch, tmp_path, "/tmp/a.sock")
+    assert call_guard.claim_sockets(cfg)[0] is True
+    assert f"pid={os.getpid()}" in call_guard.socket_lock_path(cfg).read_text()
+
+
+def test_unlockable_state_dir_starts_unchecked(monkeypatch, tmp_path):
+    """Cannot lock means cannot check, which is not a reason to refuse to run:
+    the guard's job is more important than the guard's bookkeeping."""
+    cfg = _cfg_with_sockets(monkeypatch, tmp_path, "/tmp/a.sock")
+    monkeypatch.setattr(call_guard.Path, "open",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("nope")))
+    ok, why = call_guard.claim_sockets(cfg)
+    assert ok is True
+    assert "unchecked" in why

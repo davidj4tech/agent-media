@@ -101,6 +101,8 @@ dump raw notifications (to calibrate the match against your dialer), or
 from __future__ import annotations
 
 import argparse
+import fcntl
+import hashlib
 import json
 import logging
 import os
@@ -1262,6 +1264,68 @@ def _run_call_hook(cmd: str, label: str, dry_run: bool = False) -> None:
     threading.Thread(target=_work, daemon=True).start()
 
 
+def socket_lock_path(cfg: Config) -> Path:
+    """Lock file naming the set of sockets this guard intends to drive.
+
+    Keyed on the socket list, not on "a call guard is running", because two
+    guards on one host are not always wrong: one driving speech while another
+    ducks only music is a legitimate split. What is never right is two guards
+    on the SAME socket, which is the configuration that broke barge-in on the
+    phone for a fortnight — a duplicate service pausing sink-speech.sock
+    alongside the real guard, each reading the other's pause as "already
+    paused", each therefore suppressing its own resume.
+    """
+    key = hashlib.sha256(
+        "\0".join(sorted(cfg.pause_list + cfg.duck_list)).encode()
+    ).hexdigest()[:12]
+    return state_dir() / f"call-guard.{key}.lock"
+
+
+def claim_sockets(cfg: Config) -> "tuple[bool, str]":
+    """Take the lock for this socket set. (ok, message).
+
+    flock, so the lock dies with the process: a guard that is SIGKILLed leaves
+    no stale file to clear by hand, which a pid file would. The handle is
+    parked on the module so it lives as long as the process does — closing it
+    would release the lock while the loop is still running.
+
+    Fails CLOSED. Every previous failure in this subsystem was silent, and
+    silence is what let a fortnight pass; refusing to start is loud, and the
+    thing that refuses to start is the duplicate.
+    """
+    global _sock_lock_fh
+    path = socket_lock_path(cfg)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fh = path.open("a+")
+    except OSError as e:
+        # Cannot lock, so cannot check. Not a reason to refuse to run.
+        return True, f"lock unavailable ({e}) — starting unchecked"
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.seek(0)
+        holder = fh.read().strip() or "unknown"
+        fh.close()
+        return False, (
+            f"another call guard already drives these sockets "
+            f"({holder}); refusing to start a second one. "
+            f"Sockets: {', '.join(sorted(cfg.pause_list + cfg.duck_list))}. "
+            f"If this host really needs two guards, give them different "
+            f"MEDIA_CALL_GUARD_SOCKETS."
+        )
+    fh.seek(0)
+    fh.truncate()
+    fh.write(f"pid={os.getpid()} argv={' '.join(sys.argv[:2])}\n")
+    fh.flush()
+    _sock_lock_fh = fh
+    return True, f"holding {path.name}"
+
+
+# Kept alive for the life of the process; see claim_sockets.
+_sock_lock_fh = None
+
+
 def _run_loop(cfg: Config, dry_run: bool = False) -> None:
     hold = PauseHold(cfg.pause_list)  # event-hold only guards the *paused* sockets
     flaghold = FlagHold(cfg.hold_engage_s, cfg.hold_release_s)
@@ -1448,6 +1512,15 @@ def main() -> int:
              cfg.hold_release_s, cfg.mic_url or "off", cfg.mic_poll_s,
              cfg.mic_engage_s, cfg.hold_flag,
              " [dry-run]" if args.dry_run else "")
+    # Before anything is published or polled: is another guard already on
+    # these sockets? A dry run is only ever a report, so it does not claim.
+    if not args.dry_run:
+        ok, why = claim_sockets(cfg)
+        if not ok:
+            log.error("call_guard: %s", why)
+            return 3
+        log.info("call_guard: %s", why)
+
     publish_flag_path(cfg)
     try:
         _run_loop(cfg, dry_run=args.dry_run)

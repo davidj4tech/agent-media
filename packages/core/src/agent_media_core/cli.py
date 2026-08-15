@@ -5499,7 +5499,14 @@ def cmd_doctor(a) -> int:
     # No default fleet: these were four of one person's machines, and an
     # unreachable stranger's host reads as a broken install. Unset means
     # "check this host only", which is right for a fresh install.
-    hosts = os.environ.get("MEDIA_DOCTOR_HOSTS", "").split()
+    # The fleet, in order of decreasing explicitness: the env var, then the
+    # peers table, then nothing. Naming machines here is what made this
+    # personal -- four of one person's hosts, and an unreachable stranger's
+    # host reads as a broken install. Unset with no peers means "check this
+    # host only", which is right for a fresh install.
+    from .config import peer_hosts
+    raw = os.environ.get("MEDIA_DOCTOR_HOSTS")
+    hosts = raw.split() if raw is not None else peer_hosts()
     repos = _skew_repo_names()
 
     local_hashes, local_branches = _local_repo_state(repos)
