@@ -1,0 +1,11 @@
+# The same binary with detection switched off (MEDIA_CALL_GUARD_LIST_CMD=true),
+# so a detector on ANOTHER host can duck this one's speech across the tailnet.
+#
+# conflicts, not just requires: a host that observes already runs a full
+# call-guard, which watches the hold flag on the same fast tick. Installing
+# both gives one socket two owners with independent debounce timers -- they
+# read each other's pause as "already paused", suppress their own resume, and
+# barge-in fails intermittently. That is exactly what happened on the phone
+# between 2026-07-30 and 2026-08-16.
+requires: render
+conflicts: observe

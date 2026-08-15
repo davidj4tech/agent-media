@@ -1,0 +1,4 @@
+# Detects a call or a live mic on THIS host and pauses its own sinks.
+# Needs something to observe: a host with no mic and no dialer would run a
+# notification poll forever and never fire.
+requires: observe

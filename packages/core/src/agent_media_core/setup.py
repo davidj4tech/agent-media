@@ -322,6 +322,113 @@ def service_template_names() -> list[str]:
                   if p.is_dir() and not p.name.startswith("_"))
 
 
+# --- Host roles: which services belong on THIS machine ---------------------
+#
+# `install-services` used to install every directory under services/, with the
+# only distinction being supervisor type. That is how the phone ended up
+# running `call-hold-consumer` — the house-side flag watcher — alongside its
+# own `call-guard`, two processes pausing the same speech socket with
+# independent debounce timers, which broke barge-in intermittently for a
+# fortnight before anyone noticed. red5 has the mirror-image problem: a
+# `call-guard` unit it has no mic for, sitting installed and disabled.
+#
+# The fix is to say what a host *is* rather than what supervisor it runs:
+#
+#   observe   has a mic or a dialer worth watching  (the phone)
+#   render    has audio sinks that can be silenced  (phone, red5, the TV)
+#   origin    produces the text to be spoken        (red5 today)
+#
+# A host that both observes and renders needs one `call-guard`: it detects and
+# pauses its own sinks directly. A host that only renders needs the same binary
+# with detection switched off. So the two are never both correct, which is why
+# a service declares `conflicts:` and not merely `requires:` — plain overlap
+# would put the consumer back on the phone, since the phone does render.
+
+ROLES_ENV = "MEDIA_ROLES"
+
+
+def host_roles_path() -> Path:
+    return Path.home() / ".config" / "agent-media-roles"
+
+
+def _parse_roles(text: str) -> set[str]:
+    """Roles from a comma- or newline-separated list, `#` comments allowed."""
+    out: set[str] = set()
+    for line in text.splitlines():
+        line = line.split("#", 1)[0]
+        for part in line.replace(",", " ").split():
+            out.add(part.strip().lower())
+    return out
+
+
+def host_roles() -> set[str] | None:
+    """This host's declared roles, or None when nothing declares any.
+
+    None is not the empty set and the difference is the whole safety argument:
+    unconfigured means "filter nothing", so an existing rollout that has never
+    heard of roles keeps installing exactly what it installed before. Only a
+    host that opts in gets filtered. An empty *declaration* is still a
+    declaration and does filter — that is how you say "install only the
+    services that make no demands".
+    """
+    raw = os.environ.get(ROLES_ENV)
+    if raw is None:
+        path = host_roles_path()
+        try:
+            raw = path.read_text()
+        except OSError:
+            return None
+    return _parse_roles(raw)
+
+
+def service_roles(name: str) -> tuple[set[str], set[str]]:
+    """(requires, conflicts) declared by services/<name>/roles.
+
+    Both empty when the file is absent or unreadable, which means "belongs
+    anywhere" — the same fail-open default that keeps undeclared services
+    installing as they always did.
+    """
+    requires: set[str] = set()
+    conflicts: set[str] = set()
+    try:
+        text = (service_templates_dir() / name / "roles").read_text()
+    except OSError:
+        return requires, conflicts
+    for line in text.splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        key, _, rest = line.partition(":")
+        key = key.strip().lower()
+        if key == "requires":
+            requires |= _parse_roles(rest)
+        elif key == "conflicts":
+            conflicts |= _parse_roles(rest)
+    return requires, conflicts
+
+
+def service_wanted(name: str, roles: set[str] | None) -> tuple[bool, str]:
+    """Should `name` be installed on a host with `roles`? Plus a reason.
+
+    The reason is returned rather than logged here so the caller can print one
+    line per skip. A silent skip would be its own bug: the failure this whole
+    mechanism exists to prevent was invisible, and "nothing happened" is what
+    it looked like from the outside.
+    """
+    if roles is None:
+        return True, "no host roles declared"
+    requires, conflicts = service_roles(name)
+    if not requires and not conflicts:
+        return True, "service declares no roles"
+    missing = requires - roles
+    if missing:
+        return False, f"needs role {'+'.join(sorted(missing))}"
+    clash = conflicts & roles
+    if clash:
+        return False, f"conflicts with role {'+'.join(sorted(clash))}"
+    return True, "roles match"
+
+
 def tmux_dir() -> Path:
     """Repo-shipped tmux integration under packages/core/tmux/."""
     return Path(__file__).resolve().parent.parent.parent / "tmux"
@@ -593,7 +700,33 @@ def cmd_install_services(args: argparse.Namespace) -> int:
         print(f"media-setup: service templates not found at {templates}",
               file=sys.stderr)
         return 1
+    explicit = bool(args.services)
     names = args.services or service_template_names()
+
+    # Naming a service explicitly overrides its roles. Filtering an argument
+    # the caller typed would be the silent no-op this mechanism exists to
+    # prevent -- `install-services call-hold-consumer` must either install it
+    # or say why not, never appear to succeed having done nothing.
+    if not explicit:
+        roles = host_roles()
+        kept: list[str] = []
+        for name in names:
+            wanted, why = service_wanted(name, roles)
+            if wanted:
+                kept.append(name)
+            else:
+                print(f"media-setup: skipping {name} — {why}")
+        if roles is not None and len(kept) != len(names):
+            print(f"media-setup: host roles = "
+                  f"{', '.join(sorted(roles)) or '(none)'}")
+        names = kept
+    else:
+        roles = host_roles()
+        for name in names:
+            wanted, why = service_wanted(name, roles)
+            if not wanted:
+                print(f"media-setup: warning: {name} {why} on this host — "
+                      f"installing anyway because you named it")
 
     # Before the backend dispatch: both backends read agent-media.env, and a
     # never-overwrites merge is safe to repeat on every run.

@@ -49,3 +49,66 @@ def test_server_dry_run_systemd(tmp_path, monkeypatch, capsys):
     assert "am-music" in out               # --music wired the second sink
     # dry-run writes nothing
     assert not (tmp_path / "user").exists()
+
+
+# --- host roles -------------------------------------------------------------
+# The regression these guard against is concrete: the phone ran both
+# `call-guard` and `call-hold-consumer` for a fortnight, two processes pausing
+# one speech socket, and barge-in failed intermittently the whole time.
+
+
+def test_host_roles_unset_is_none_not_empty(tmp_path, monkeypatch):
+    # None means "filter nothing", so a host that has never heard of roles
+    # installs exactly what it installed before. An empty set would mean the
+    # opposite -- every declaring service skipped -- and an upgrade that
+    # silently stops installing services is worse than the bug being fixed.
+    monkeypatch.delenv(setup.ROLES_ENV, raising=False)
+    monkeypatch.setattr(setup.Path, "home", staticmethod(lambda: tmp_path))
+    assert setup.host_roles() is None
+
+
+def test_host_roles_from_env_and_file(tmp_path, monkeypatch):
+    monkeypatch.setenv(setup.ROLES_ENV, "observe, render")
+    assert setup.host_roles() == {"observe", "render"}
+    monkeypatch.delenv(setup.ROLES_ENV)
+    monkeypatch.setattr(setup.Path, "home", staticmethod(lambda: tmp_path))
+    (tmp_path / ".config").mkdir()
+    (tmp_path / ".config" / "agent-media-roles").write_text(
+        "# this host\nrender\norigin  # the text comes from here\n")
+    assert setup.host_roles() == {"render", "origin"}
+
+
+def test_service_roles_read_from_repo():
+    # Read from the real service dirs: the point is that these two files exist
+    # and say what the installer needs, not that the parser works on fixtures.
+    assert setup.service_roles("call-guard") == ({"observe"}, set())
+    assert setup.service_roles("call-hold-consumer") == ({"render"}, {"observe"})
+
+
+def test_undeclared_service_installs_everywhere():
+    wanted, why = setup.service_wanted("sink-speech", {"render"})
+    assert wanted and "no roles" in why
+
+
+def test_phone_gets_the_guard_and_not_the_consumer():
+    phone = {"observe", "render"}
+    assert setup.service_wanted("call-guard", phone)[0] is True
+    wanted, why = setup.service_wanted("call-hold-consumer", phone)
+    # The bug in one assertion: the phone DOES render, so a requires-only rule
+    # would install the consumer here. It is `conflicts: observe` that stops it.
+    assert wanted is False
+    assert "observe" in why
+
+
+def test_house_host_gets_the_consumer_and_not_the_guard():
+    red5 = {"render", "origin"}
+    assert setup.service_wanted("call-hold-consumer", red5)[0] is True
+    wanted, why = setup.service_wanted("call-guard", red5)
+    assert wanted is False
+    assert "observe" in why
+
+
+def test_no_roles_declared_keeps_both(monkeypatch):
+    # The pre-roles world, preserved exactly.
+    assert setup.service_wanted("call-guard", None)[0] is True
+    assert setup.service_wanted("call-hold-consumer", None)[0] is True
