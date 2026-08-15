@@ -157,6 +157,8 @@ public class CompanionService extends Service {
     /** The PlaybackState we last told the framework, and the last key we saw. */
     private volatile String lastPushedState = "none";
     private volatile String lastButton = "none";
+    /** Why the previous process died, newest first. Read once; see LastExit. */
+    private volatile List<String> lastExits = new ArrayList<String>();
 
     // ---- on-screen log (adb cannot reach this phone) ---------------------
 
@@ -235,6 +237,11 @@ public class CompanionService extends Service {
         // undiagnosable one — which is exactly how "agent-media keeps stopping"
         // arrived on 2026-08-15 with nothing to read.
         Crash.install(this);
+        // And the deaths Crash cannot see, which is all of them bar an uncaught
+        // exception. On 2026-08-15 the service stopped answering on 8770 with
+        // nothing written to Downloads at all: a real answer, but only to the
+        // question "was it a throw?".
+        lastExits = LastExit.read(this);
         audio = getSystemService(AudioManager.class);
         prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         focusActs = prefs.getBoolean(KEY_FOCUS_ACTS, false);
@@ -291,6 +298,7 @@ public class CompanionService extends Service {
                 + ", speech -> " + MPV_HOST + ":" + MPV_SPEECH_PORT
                 + ", book -> " + MPV_HOST + ":" + MPV_BOOK_PORT);
         log("focus: mode " + (focusActs ? "acting" : "probe (logs only)"));
+        LastExit.log(lastExits);
     }
 
     /**
@@ -773,6 +781,9 @@ public class CompanionService extends Service {
             // its way. Nothing can reach us through the focus listener here.
             m.put("focus_lost", Boolean.valueOf(focusLost));
             m.put("build", buildStamp());
+            // Why the previous process went away — the question `/crash` cannot
+            // answer, because only a throw ever reaches the crash recorder.
+            m.put("last_exit", new ArrayList<String>(lastExits));
             // Which claim: the permanent one music takes, or the transient
             // borrow a spoken clip asks for. They behave differently towards
             // every other app on the phone.
