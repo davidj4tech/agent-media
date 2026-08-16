@@ -55,6 +55,8 @@ addressed-player slot.
 | `StatusServer.java` | The readout the outside can reach: `/state` and `/log` over loopback HTTP. `android.*`-free, so `test/run.sh` covers it. |
 | `MainActivity.java` | The on-screen readout — state and an event log, plus the probe/acting button. |
 | `MediaButtonReceiver.java` | Logs the broadcast path. Handles nothing; exists for diagnosis. |
+| `ShareActivity.java` | "Play with agent-media" in the share sheet. Draws nothing, finishes in `onCreate`, toasts the verdict. |
+| `ShareRequest.java` | The pipe that carries shared text to Termux, and the answer back into one line. `android.*`-free, so `test/run.sh` covers it. |
 
 ## Build and test
 
@@ -86,7 +88,20 @@ backoff forever, so the card appears when the bridge does.
 | `mpv-speech-bridge-local` | `127.0.0.1:6602` | `sink-speech.sock` | is a clip playing, the coordinator's speaking flag, the focus pause, and the speech card |
 | `mpv-book-bridge-local` | `127.0.0.1:6603` | `sink-book.sock` | the book card, and nothing else |
 
-Both are **separate** services from dotfiles' `mpv-music-bridge` /
+A fourth service, `media-share`, is not a bridge: it is the doorway the share
+sheet knocks on.
+
+| Service | Listener | What it does |
+|---|---|---|
+| `media-share` | `127.0.0.1:8771` | `POST /share` — classify a shared link and play it on the channel that fits |
+
+It runs `media` in Termux, which is the point: `ShareActivity` cannot, because
+`media`, mpv and yt-dlp all live inside `com.termux`'s UID. Unlike the bridges
+and the app's own `/state` readout, this endpoint *starts playback*, so the
+loopback bind is a harder rule here than anywhere else — anything that can
+reach it can drive the speakers.
+
+Both bridge sets are **separate** services from dotfiles' `mpv-music-bridge` /
 `mpv-speech-bridge`, which bind the Tailscale address only and must not be
 touched. Same port numbers are fine — different bind address. p8a wires the two
 local ones up as whole-dir symlinks (`source: link` in

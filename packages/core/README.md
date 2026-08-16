@@ -243,6 +243,62 @@ broker needs has to be named with an explicit `--script=` (that's why
 `/etc/mpv/scripts`). `sinks/book.py`'s autospawn path builds the same argv and
 must be kept in step with this unit.
 
+### Play history
+
+```sh
+media recent                  # music, book and speech, newest first
+media recent 50 --channel music
+media recent --lines          # display<TAB>uri, for a picker
+```
+
+The `history` table always had a `sink` column and only the speech lanes ever
+wrote to it. Music and book now write there too, from `set_music_intent` and
+`set_book_last` — the two places each channel already remembered what it was
+playing, so a new play path cannot forget to record itself. Rows de-duplicate
+against the newest row for that channel, so a re-play leaves one row and
+coming back to something after playing anything else leaves two.
+
+**One row per item someone deliberately put on.** A queue that auto-advances
+through forty tracks is one row, not forty; capturing those needs a poller
+watching the renderer (what `book_observer` does for the book channel), which
+is a separate feature.
+
+This is also where the music channel's memory lives, because `music stop`
+clears the intent key — so before this, stop then resume was silence with no
+explanation. `media music resume` (and MCP `music_resume`) now reopen the last
+thing played when nothing is loaded, the way `book resume` always has. An
+unreadable backend counts as "not idle", so a transport key never starts music
+just because Mopidy was unreachable for one probe.
+
+### `media-share` (shared links)
+
+The doorway for a link that arrives from somewhere else — in practice the
+Android share sheet, via the companion app's "Play with agent-media" entry.
+
+```sh
+media share 'https://youtu.be/…'          # classify and play
+media share --dry-run 'https://…'         # say what it would do
+media share --channel book 'https://…'    # override the choice
+```
+
+The channel is chosen from `yt-dlp` metadata, not from the URL, because the
+difference that matters is behavioural: **music ducks** under a spoken clip and
+**longform pauses and rewinds**. A three-hour lecture and a three-minute track
+are the same shape of link and want opposite treatment. Rules (all in
+`share.classify`, all tested): a podcast/audiobook/music host settles it
+outright; a live stream is ambient; a `- Topic`/VEVO channel is music at any
+length; otherwise anything at or past `MEDIA_SHARE_LONGFORM_S` (default 1800)
+goes to the book channel, and short-form stays on music. A probe that fails —
+no network, no yt-dlp, a bot-block — falls back to music rather than refusing.
+
+The service is the on-device half: a loopback listener on `127.0.0.1:8771`
+(`MEDIA_SHARE_PORT`) that the app POSTs to, because no other app on the phone
+can run `media`. It replies with the verdict as soon as it has one and does the
+acquisition on a background thread — a shared DJ set is a long download, and
+the toast should not wait for it. `requires: observe`, so it installs on
+handheld hosts and not on speakers. See
+[`android/companion/README.md`](../../android/companion/README.md).
+
 ### Claude Code hook
 
 Wire in `~/.claude/settings.json`:

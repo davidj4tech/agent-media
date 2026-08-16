@@ -1,0 +1,13 @@
+#!/bin/sh
+# media-share — the loopback endpoint the companion app's share sheet posts to.
+#
+# Bound to 127.0.0.1 inside the server itself (never a BIND here, and never a
+# wider one): the only client is an app on this same phone, and the payload
+# starts playback. Same reasoning as mpv-music-bridge-local beside it, one step
+# stronger — that one exposes state, this one exposes control.
+#
+# Port 8771, next door to the app's own readout on 8770. Override with
+# MEDIA_SHARE_PORT in ~/.config/agent-media.env.
+exec 2>&1
+[ -f "$HOME/.config/agent-media.env" ] && . "$HOME/.config/agent-media.env"
+exec media-share ${MEDIA_SHARE_PORT:+--port "$MEDIA_SHARE_PORT"}

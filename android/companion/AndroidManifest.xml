@@ -30,6 +30,24 @@
             </intent-filter>
         </activity>
 
+        <!-- "Play with agent-media" in the share sheet. NoDisplay because it
+             draws nothing and finishes inside onCreate; noHistory and
+             excludeFromRecents so a share never leaves a ghost window behind
+             the app the link came from. -->
+        <activity
+            android:name=".ShareActivity"
+            android:exported="true"
+            android:label="@string/share_label"
+            android:theme="@android:style/Theme.NoDisplay"
+            android:noHistory="true"
+            android:excludeFromRecents="true">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+
         <service
             android:name=".CompanionService"
             android:exported="false"

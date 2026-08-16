@@ -337,6 +337,22 @@ def speech_history(limit: int = 10) -> list[dict]:
 
 
 @mcp.tool()
+def recently_played(limit: int = 20, channel: str = "") -> list[dict]:
+    """What's been played lately on the music and book channels, newest first.
+
+    One row per item that was deliberately put on — a queue that auto-advanced
+    through many tracks is one row, not many. `channel` filters to
+    music/book/speech; empty returns all three interleaved.
+
+    Use it to answer "what was that thing I had on yesterday" and to replay it:
+    each row carries the `uri` that `music_play` or `book_play` takes.
+    """
+    if channel and channel not in ("music", "book", "speech"):
+        return []
+    return _state().recent_history(sink=channel or None, limit=max(1, limit))
+
+
+@mcp.tool()
 def errors(limit: int = 20, component: str = "", since_minutes: int = 0) -> list[dict]:
     """Recent errors from every component — intake, coordinator, voice-bridge.
 
@@ -469,8 +485,23 @@ def music_pause(target: str = "") -> dict:
 
 @mcp.tool()
 def music_resume(target: str = "") -> dict:
-    """Resume music."""
-    _music().resume(_music_target(target))
+    """Resume music. If nothing is loaded, reopen the last thing played —
+    the same behaviour `book_resume` has."""
+    m, t = _music(), _music_target(target)
+    try:
+        loaded = bool(m.now_playing_uri(t))
+    except Exception:  # noqa: BLE001 — unreadable means "just resume"
+        loaded = True
+    if not loaded:
+        last = _state().get_music_last()
+        if not last:
+            return {"ok": False, "reason": "no music to resume"}
+        ct = last.get("content_type") or "music"
+        m.play(last["uri"], t, replace=True)
+        _state().set_music_intent(last["uri"], ct)
+        return {"ok": True, "uri": last["uri"], "content_type": ct,
+                "reopened": True}
+    m.resume(t)
     return {"ok": True}
 
 
@@ -616,7 +647,7 @@ def book_play(uri: str, resume: bool = True, start_ms: int = -1,
     st.set_now_playing(sink="book", uri=norm, started_at=time.time(),
                        content_type="audiobook", target=t.name,
                        extras={"title": display_title} if display_title else None)
-    st.set_book_last(norm)
+    st.set_book_last(norm, display_title or None)
     # An ad-hoc book breaks the playlist context, so `book next` won't try to
     # advance a list the listener has stepped away from.
     st.clear_playlist_active()

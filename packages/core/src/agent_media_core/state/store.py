@@ -394,13 +394,35 @@ class StateStore:
 
     _MUSIC_INTENT_KEY = "music_content_intent"
 
-    def set_music_intent(self, uri: str, content_type: Optional[str]) -> None:
+    def set_music_intent(self, uri: str, content_type: Optional[str],
+                         title: Optional[str] = None) -> None:
+        """Record what the music channel was deliberately asked to play.
+
+        Also appends a `history` row, because the two are the same event seen
+        twice: this method is called from every place that starts music on
+        purpose (CLI, MCP, a share, a bookmark resume) and nowhere else. Doing
+        it here rather than at those four call sites means a fifth one cannot
+        forget — and `note_play` de-duplicates, so a caller that sets the
+        intent twice for one track still leaves one row.
+
+        The intent itself is transient: `music_stop` clears it, because it
+        drives ducking policy for what is *currently* playing. The history row
+        is not cleared, which is what lets `music resume` reopen the last thing
+        played after a stop. Those two lifetimes are why the memory lives in
+        the table and not in this key.
+
+        `title` is optional and usually absent — a play command knows a URI and
+        nothing else until the renderer loads the file. A share knows better,
+        because it has already fetched the metadata, so it passes one through
+        and its rows read as names instead of video ids.
+        """
         with self._cursor() as cur:
             cur.execute(
                 "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
                 (self._MUSIC_INTENT_KEY,
                  json.dumps({"uri": uri, "content_type": content_type})),
             )
+        self.note_play("music", uri, content_type=content_type, title=title)
 
     def get_music_intent(self) -> Optional[dict]:
         with self._cursor() as cur:
@@ -413,6 +435,20 @@ class StateStore:
             return json.loads(row[0])
         except (json.JSONDecodeError, TypeError):
             return None
+
+    def get_music_last(self) -> Optional[dict]:
+        """The last thing the music channel was asked to play, as
+        `{"uri", "content_type"}` — or None if it has never played anything.
+
+        Read from `history`, not from the intent key, precisely because
+        `music_stop` clears that key. The book channel has kept a `book_last`
+        for exactly this ("reopen what I was on") and music had no equivalent,
+        so stopping music forgot it entirely.
+        """
+        rows = self.recent_history(sink="music", limit=1)
+        if not rows:
+            return None
+        return {"uri": rows[0]["uri"], "content_type": rows[0].get("content_type")}
 
     def clear_music_intent(self) -> None:
         with self._cursor() as cur:
@@ -534,10 +570,18 @@ class StateStore:
             row = cur.fetchone()
         return int(row[0]) if row else None
 
-    def set_book_last(self, uri: str) -> None:
+    def set_book_last(self, uri: str, title: Optional[str] = None) -> None:
+        """Remember the book to reopen when `book resume` finds nothing loaded.
+
+        Appends a `history` row for the same reason `set_music_intent` does —
+        this is called wherever a book is opened, including `book_observer`
+        when mpv loads something we did not start, so the history follows the
+        channel rather than only the commands.
+        """
         with self._cursor() as cur:
             cur.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
                         (self._BOOK_LAST_KEY, uri))
+        self.note_play("book", uri, content_type="audiobook", title=title)
 
     def get_book_last(self) -> Optional[str]:
         with self._cursor() as cur:
@@ -836,6 +880,46 @@ class StateStore:
                  text, json.dumps(extras) if extras else None),
             )
             return cur.lastrowid or 0
+
+    def note_play(self, sink: str, uri: str, *,
+                  content_type: Optional[str] = None,
+                  target: Optional[str] = None,
+                  title: Optional[str] = None,
+                  source: Optional[str] = None) -> Optional[int]:
+        """Append a "this was played" row for the music or book channel.
+
+        Speech has always written history from the intake lanes, where a row
+        means one spoken clip with its text. These two channels record intent
+        instead: one row per *item someone put on*, written where the channel
+        already remembers what it is playing. A queue that auto-advances
+        through forty tracks is one row, not forty — capturing those needs a
+        poller watching the renderer, which is a different feature.
+
+        De-duplicated against the newest row for the same sink: replaying the
+        same URI, or a caller that records the same start twice, leaves one
+        row rather than a run of identical ones. Coming back to something
+        after playing anything else is a genuinely new row.
+
+        Never raises. A failed history write must not take playback down with
+        it — the row is a convenience, the music is the point.
+        """
+        import time
+
+        uri = (uri or "").strip()
+        if not uri:
+            return None
+        try:
+            with self._cursor() as cur:
+                cur.execute("SELECT uri FROM history WHERE sink = ? "
+                            "ORDER BY started_at DESC, id DESC LIMIT 1", (sink,))
+                row = cur.fetchone()
+            if row and row[0] == uri:
+                return None
+            return self.add_history(sink=sink, uri=uri, started_at=time.time(),
+                                    target=target or "", source=source,
+                                    content_type=content_type, text=title)
+        except Exception:  # noqa: BLE001 — see the docstring
+            return None
 
     def recent_history(self, *, sink: Optional[str] = None,
                        limit: int = 20) -> list[dict]:

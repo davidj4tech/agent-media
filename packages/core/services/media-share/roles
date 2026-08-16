@@ -1,0 +1,5 @@
+# Takes shared links from the on-device share sheet. `observe` is the closest
+# role to "a device someone holds": it means a mic or a dialer is here, which
+# is the same set of hosts that have a share sheet at all. A rendering-only
+# speaker has nothing to share FROM, and would bind a port nothing knocks on.
+requires: observe

@@ -13,6 +13,7 @@ submit-time concern (see intake/submit).
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
 import json
 import os
@@ -4042,11 +4043,13 @@ def cmd_music(a) -> int:
             except Exception as e:  # noqa: BLE001
                 print(f"media music play (phone) failed: {e}", file=sys.stderr)
                 return 1
-            StateStore().set_music_intent(a.uri, ct.value)
+            StateStore().set_music_intent(a.uri, ct.value,
+                                          getattr(a, "title", "") or None)
             print(f"playing on phone ({ct.value}): {a.uri}")
             return 0
         m.play(a.uri, replace=not a.add)
-        StateStore().set_music_intent(a.uri, ct.value)
+        StateStore().set_music_intent(a.uri, ct.value,
+                                      getattr(a, "title", "") or None)
         print(f"playing ({ct.value}): {a.uri}")
         return 0
     # Everything below is transport — route to the live backend so the keys
@@ -4111,11 +4114,41 @@ def cmd_music(a) -> int:
             restart=lambda: b.seek_cur(position_ms=0),
             step_back=b.previous,
         )
+    if a.action in ("resume", "toggle") and _music_idle(b):
+        # Nothing is loaded, so there is nothing to un-pause: reopen the last
+        # thing played, the way `book resume` has always done. Before this,
+        # `music stop` then `music resume` was silence with no explanation —
+        # the channel had forgotten, because the only memory it kept was the
+        # intent key that stop deletes.
+        last = StateStore().get_music_last()
+        if last:
+            ct = last.get("content_type") or "music"
+            argv = ["music", "play", last["uri"], "--as", ct]
+            print(f"↻ resuming last played ({ct}): {last['uri']}")
+            return main(argv)
+        print("media music resume: nothing loaded and nothing played yet",
+              file=sys.stderr)
+        return 1
     {
         "pause": b.pause, "resume": b.resume,
         "toggle": b.toggle, "next": b.next, "prev": b.previous,
     }[a.action]()
     return 0
+
+
+def _music_idle(backend) -> bool:
+    """True when the live music backend has nothing loaded at all.
+
+    Deliberately conservative: an unreadable Mopidy raises and counts as NOT
+    idle, so a transport key falls through to its ordinary behaviour rather
+    than surprising the listener by starting something. The phone backend
+    cannot reach here while unreadable — `_music_live_backend` only returns it
+    when `loaded()` already said yes.
+    """
+    try:
+        return not backend.now_playing_uri()
+    except Exception:  # noqa: BLE001 — see the docstring
+        return False
 
 
 # --- book + channel subcommands -------------------------------------------
@@ -5197,6 +5230,99 @@ def cmd_restart_services(a) -> int:
     return rc
 
 
+def cmd_recent(a) -> int:
+    """What's been played lately, newest first, across every channel.
+
+    `media history` is the speech channel's own view — clips, with their text
+    and their replay ids. This is the media view: what went on the music and
+    book channels, and (with `--channel speech`) what was said, in one list.
+    """
+    rows = StateStore().recent_history(sink=a.channel or None, limit=a.n)
+    if a.json:
+        print(json.dumps(rows, default=str))
+        return 0
+    if not rows:
+        where = f" on {a.channel}" if a.channel else ""
+        print(f"nothing played yet{where}")
+        return 0
+    now = time.time()
+    for r in rows:
+        label = (r.get("text") or "").strip().splitlines()[0] if r.get("text") else ""
+        label = label or _recent_label(r.get("uri") or "")
+        ct = r.get("content_type") or ""
+        if a.lines:
+            # display<TAB>uri, for a picker that will play the second field.
+            print(f"{r['sink']}  {label}\t{r.get('uri') or ''}")
+            continue
+        print(f"{_ago(now - float(r.get('started_at') or now)):>5}  "
+              f"{r['sink']:<6} {ct:<9} {label}")
+    return 0
+
+
+def _recent_label(uri: str) -> str:
+    """A readable name for a URI with no title recorded beside it.
+
+    Most rows have no title: the play commands know a URI and nothing more
+    until the renderer loads it. A bare `mpv:https://www.youtube.com/watch?v=…`
+    is unreadable in a list, so show the tail that identifies it.
+    """
+    u = uri.split(":", 1)[-1] if uri.startswith(("yt:", "mpv:", "local:")) else uri
+    if "youtube.com/watch" in u or "youtu.be/" in u:
+        from .sinks.music_fetch import _WATCH_ID_RE
+        m = _WATCH_ID_RE.search(u)
+        if m:
+            return f"youtube:{m.group(1)}"
+    tail = u.rstrip("/").rsplit("/", 1)[-1]
+    return tail or u
+
+
+def _ago(seconds: float) -> str:
+    seconds = max(0.0, seconds)
+    if seconds < 90:
+        return f"{int(seconds)}s"
+    if seconds < 5400:
+        return f"{int(seconds // 60)}m"
+    if seconds < 172800:
+        return f"{int(seconds // 3600)}h"
+    return f"{int(seconds // 86400)}d"
+
+
+def cmd_share(a) -> int:
+    """Play a shared link on whichever channel suits it.
+
+    The Android share sheet reaches this through the on-device listener
+    (`media-share`), but it is a first-class command in its own right: paste a
+    link and it lands on the right channel without you deciding which.
+    """
+    from . import share as sharemod
+
+    text = a.text if a.text is not None else sys.stdin.read()
+    try:
+        url, verdict = sharemod.share(
+            text, channel=a.channel, content_type=a.as_type,
+            where=a.where, probe_timeout=a.timeout, do_probe=not a.no_probe)
+    except sharemod.ShareError as e:
+        if a.json:
+            print(json.dumps({"ok": False, "error": str(e)}))
+        else:
+            print(f"media share: {e}", file=sys.stderr)
+        return 2
+    if not a.json:
+        print(verdict.line())
+        return 0 if a.dry_run else sharemod.dispatch(url, verdict, where=a.where)
+    # `--json` is a one-line contract, so the dispatched command's own chatter
+    # goes to stderr rather than interleaving with it.
+    rc = 0
+    if not a.dry_run:
+        with contextlib.redirect_stdout(sys.stderr):
+            rc = sharemod.dispatch(url, verdict, where=a.where)
+    print(json.dumps({"ok": rc == 0, "url": url, "channel": verdict.channel,
+                      "content_type": verdict.content_type,
+                      "title": verdict.title, "reason": verdict.reason,
+                      "played": not a.dry_run}))
+    return rc
+
+
 def cmd_selfcheck(a) -> int:
     """Report this host's install health as key=value lines."""
     print(SELFCHECK_SENTINEL)
@@ -5886,6 +6012,7 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="for 'bookmark': finish a range from the last bookmark")
     s.add_argument("--slot", default="",
                    help="for 'bookmark': named register (e.g. 1, 2) for overlapping ranges")
+    s.add_argument("--title", default="", help=argparse.SUPPRESS)
     s.add_argument("--where", choices=("default", "auto", "local", "rooms", "phone"),
                    default="default",
                    help="for 'play': where to play — 'phone' downloads on the "
@@ -5938,6 +6065,43 @@ def _build_parser() -> argparse.ArgumentParser:
     sc = sub.add_parser("selfcheck",
                         help="report this host's install health (key=value lines)")
     sc.set_defaults(func=cmd_selfcheck)
+
+    rc = sub.add_parser("recent",
+                        help="what's been played lately, newest first "
+                             "(music, book and speech in one list)")
+    rc.add_argument("n", nargs="?", type=int, default=20,
+                    help="how many rows (default 20)")
+    rc.add_argument("--channel", choices=("music", "book", "speech"),
+                    default="", help="only this channel")
+    rc.add_argument("--lines", action="store_true",
+                    help="display<TAB>uri rows for an external picker")
+    rc.add_argument("--json", action="store_true")
+    rc.set_defaults(func=cmd_recent)
+
+    sh = sub.add_parser("share",
+                        help="play a shared link on the channel that fits it")
+    sh.add_argument("text", nargs="?",
+                    help="a URL, or the text a share sheet sent (the first "
+                         "URL in it wins); stdin when omitted")
+    sh.add_argument("--channel", choices=("music", "book"), default="",
+                    help="override the chosen channel")
+    sh.add_argument("--as", dest="as_type", metavar="TYPE", default="",
+                    choices=("music", "audiobook", "podcast", "dj-set",
+                             "ambient"),
+                    help="override the interruption content type")
+    sh.add_argument("--where", choices=("default", "auto", "local", "rooms",
+                                        "phone"),
+                    default="", help="where to play it (as `media music play`)")
+    sh.add_argument("--no-probe", action="store_true",
+                    help="skip the yt-dlp metadata fetch and classify on the "
+                         "URL alone (fast, and much less accurate)")
+    sh.add_argument("--timeout", type=float, default=30.0,
+                    help="seconds for the metadata fetch (default 30)")
+    sh.add_argument("--dry-run", action="store_true",
+                    help="print the verdict and play nothing")
+    sh.add_argument("--json", action="store_true",
+                    help="emit the verdict as JSON")
+    sh.set_defaults(func=cmd_share)
 
     return p
 

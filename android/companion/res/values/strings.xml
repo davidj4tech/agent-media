@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">agent-media</string>
+    <!-- The share sheet shows this, not app_name: the sheet is a list of verbs. -->
+    <string name="share_label">Play with agent-media</string>
 </resources>
