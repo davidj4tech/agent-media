@@ -37,6 +37,7 @@ from __future__ import annotations
 import logging
 import os
 import shlex
+import socket
 import subprocess
 from typing import Optional
 
@@ -55,6 +56,43 @@ _SSH_OPTS = ["-o", "BatchMode=yes",
              "-o", "ControlMaster=auto",
              "-o", "ControlPath=/tmp/ssh-am-%r@%h:%p",
              "-o", "ControlPersist=300"]
+
+
+def is_self(host: str) -> bool:
+    """True when `host` names the machine this code is running on.
+
+    Every command in this module used to go over ssh unconditionally, which was
+    right while the only caller was the hub: red5 asks the phone to fetch, the
+    phone plays. The share listener broke that assumption — it runs `media
+    music play --where phone` **on the phone**, so the phone ssh'd to itself,
+    and the first real share out of the Android share sheet died on `Host key
+    verification failed`.
+
+    Fixing it by trusting the phone's own host key would work and would be
+    wrong: ssh to yourself is a dependency on sshd, on a key, and on a
+    known_hosts entry, for a subprocess that could just run. The sibling module
+    already draws this line — `music_fetch.rooms_ssh_host()` returns None for
+    loopback or this host and executes locally — so this is that rule, applied
+    to the lane that had not needed it yet.
+
+    Matches on the short name, like the sibling: `p8a`, `p8a.tail….ts.net` and
+    the loopback spellings are all this machine when this machine is p8a.
+    """
+    host = (host or "").strip()
+    if not host or host in ("127.0.0.1", "::1", "localhost"):
+        return True
+    return host.split(".")[0] == socket.gethostname().split(".")[0]
+
+
+def host_argv(host: str, command: str) -> list:
+    """argv that runs `command` on `host` — without ssh when that host is us.
+
+    The command is a shell string either way, so the remote and local forms are
+    the same string run by the same kind of shell.
+    """
+    if is_self(host):
+        return ["sh", "-c", command]
+    return ["ssh", *_SSH_OPTS, host, command]
 
 
 def endpoint() -> Optional[str]:
@@ -133,7 +171,7 @@ def _phone_cached_path(vid: str) -> Optional[str]:
     remote = (f"ls -1 \"$HOME\"/{cache}/{qvid}.* 2>/dev/null | "
               "grep -v -e '\\.title$' -e '\\.part$' -e '\\.json$' | head -1")
     try:
-        r = subprocess.run(["ssh", *_SSH_OPTS, host, remote],
+        r = subprocess.run(host_argv(host, remote),
                            capture_output=True, text=True, timeout=8)
     except (subprocess.TimeoutExpired, OSError):
         return None
@@ -146,8 +184,7 @@ def _rooms_reader(path: str) -> subprocess.Popen:
     rooms_host = music_fetch.rooms_ssh_host()
     if rooms_host is None:
         return subprocess.Popen(["cat", path], stdout=subprocess.PIPE)
-    return subprocess.Popen(["ssh", *_SSH_OPTS, rooms_host,
-                             f"cat {shlex.quote(path)}"],
+    return subprocess.Popen(host_argv(rooms_host, f"cat {shlex.quote(path)}"),
                             stdout=subprocess.PIPE)
 
 
@@ -161,11 +198,11 @@ def _copy_rooms_to_phone(rooms_path: str) -> Optional[str]:
     reader = _rooms_reader(rooms_path)
     try:
         r = subprocess.run(
-            ["ssh", *_SSH_OPTS, host,
-             f"mkdir -p \"$HOME\"/{cache} && "
-             f"cat > \"$HOME\"/{cache}/.{qbase}.part && "
-             f"mv \"$HOME\"/{cache}/.{qbase}.part \"$HOME\"/{cache}/{qbase} && "
-             f"echo \"$HOME\"/{cache}/{qbase}"],
+            host_argv(host,
+                      f"mkdir -p \"$HOME\"/{cache} && "
+                      f"cat > \"$HOME\"/{cache}/.{qbase}.part && "
+                      f"mv \"$HOME\"/{cache}/.{qbase}.part \"$HOME\"/{cache}/{qbase} && "
+                      f"echo \"$HOME\"/{cache}/{qbase}"),
             stdin=reader.stdout, capture_output=True, text=True, timeout=600)
     finally:
         reader.stdout.close()
@@ -180,10 +217,10 @@ def _copy_rooms_to_phone(rooms_path: str) -> Optional[str]:
         title = subprocess.Popen(["cat", sidecar], stdout=subprocess.PIPE)
         try:
             subprocess.run(
-                ["ssh", *_SSH_OPTS, host,
-                 f"cat > \"$HOME\"/{cache}/{qstem}.title; "
-                 f"[ -s \"$HOME\"/{cache}/{qstem}.title ] || "
-                 f"rm -f \"$HOME\"/{cache}/{qstem}.title"],
+                host_argv(host,
+                          f"cat > \"$HOME\"/{cache}/{qstem}.title; "
+                          f"[ -s \"$HOME\"/{cache}/{qstem}.title ] || "
+                          f"rm -f \"$HOME\"/{cache}/{qstem}.title"),
                 stdin=title.stdout, capture_output=True, text=True, timeout=30)
         finally:
             title.stdout.close()
@@ -195,7 +232,7 @@ def _phone_title(vid: str) -> str:
     host = ssh_host()
     remote = f"cat \"$HOME\"/{shlex.quote(cache_dir())}/{shlex.quote(vid)}.title 2>/dev/null"
     try:
-        r = subprocess.run(["ssh", *_SSH_OPTS, host, remote],
+        r = subprocess.run(host_argv(host, remote),
                            capture_output=True, text=True, timeout=5)
     except (subprocess.TimeoutExpired, OSError):
         return ""
@@ -256,13 +293,16 @@ class SinkMusicLocal:
         timeout = float(os.environ.get("MEDIA_MUSIC_LOCAL_FETCH_TIMEOUT", "120"))
         try:
             r = subprocess.run(
-                ["ssh", *_SSH_OPTS, host, remote],
+                host_argv(host, remote),
                 capture_output=True, text=True, timeout=timeout,
             )
         except subprocess.TimeoutExpired as e:
             raise ipc.MpvIpcError(f"sink-music-local: phone fetch timed out: {e}")
         except OSError as e:
-            raise ipc.MpvIpcError(f"sink-music-local: ssh {host} failed: {e}")
+            raise ipc.MpvIpcError(
+                f"sink-music-local: fetch on {host} failed: {e}"
+                if not is_self(host)
+                else f"sink-music-local: local fetch failed: {e}")
         if r.returncode != 0:
             raise ipc.MpvIpcError(
                 f"sink-music-local: phone fetch failed ({r.returncode}): "
