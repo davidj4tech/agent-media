@@ -121,9 +121,18 @@ def fetch_is_local() -> bool:
 
 
 def phone_argv(command: str) -> list:
-    """argv that runs a phone-side `command` — locally when we are the phone."""
+    """argv that runs a phone-side `command` — locally when we are the phone.
+
+    The local form starts from `$HOME`, because the remote one does. `ssh host
+    cmd` runs cmd in the login directory, so every command in this module is
+    written against it — `MEDIA_MUSIC_LOCAL_FETCH` defaults to the *relative*
+    `bin/play-local`, and the cache paths are `"$HOME"/...`. Dropping into
+    `sh -c` without the `cd` inherits the caller's working directory instead,
+    which for the share listener is wherever runit started it: the fetch died
+    with `bin/play-local: not found` on a phone that has it.
+    """
     if fetch_is_local():
-        return ["sh", "-c", command]
+        return ["sh", "-c", 'cd "$HOME" && ' + command]
     return ["ssh", *_SSH_OPTS, ssh_host(), command]
 
 

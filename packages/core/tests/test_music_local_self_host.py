@@ -70,7 +70,8 @@ def test_a_unix_socket_endpoint_means_we_are_the_phone(monkeypatch):
                        "/data/data/com.termux/files/home/.local/state/"
                        "agent-media/mpv-music.sock")
     assert music_local.fetch_is_local()
-    assert music_local.phone_argv("echo hi") == ["sh", "-c", "echo hi"]
+    assert music_local.phone_argv("echo hi") == [
+        "sh", "-c", 'cd "$HOME" && echo hi']
 
 
 def test_a_tcp_endpoint_means_the_phone_is_elsewhere(monkeypatch):
@@ -115,3 +116,28 @@ def test_the_default_fetch_host_is_still_the_phone(monkeypatch):
     # p8a over ssh, and that is the path that carries every fetch today.
     monkeypatch.delenv("MEDIA_MUSIC_LOCAL_SSH", raising=False)
     assert music_local.ssh_host() == "p8a"
+
+
+def test_the_local_form_starts_from_home(monkeypatch, tmp_path):
+    """`ssh host cmd` runs in the login directory and the commands here are
+    written for that: the fetch helper defaults to the *relative*
+    `bin/play-local`. Run from the caller's cwd instead and it is not found —
+    which is exactly how the share listener failed on a phone that has it."""
+    import os
+    import subprocess
+
+    monkeypatch.setenv("MEDIA_MUSIC_LOCAL_SSH", "127.0.0.1")
+    home = tmp_path / "home"
+    (home / "bin").mkdir(parents=True)
+    helper = home / "bin" / "play-local"
+    helper.write_text("#!/bin/sh\necho fetched \"$1\"\n")
+    helper.chmod(0o755)
+    monkeypatch.setenv("HOME", str(home))
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    out = subprocess.run(music_local.phone_argv("bin/play-local a-uri"),
+                         cwd=elsewhere, capture_output=True, text=True,
+                         timeout=10, env={**os.environ, "HOME": str(home)})
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "fetched a-uri"
