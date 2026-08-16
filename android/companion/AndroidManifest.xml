@@ -30,6 +30,13 @@
             </intent-filter>
         </activity>
 
+        <!-- The popup's transport, on the phone. Not exported: it drives
+             playback and is reached from MainActivity. -->
+        <activity
+            android:name=".ControlsActivity"
+            android:exported="false"
+            android:label="@string/controls_label" />
+
         <!-- What played lately, tap to play again. Not exported: it is reached
              from MainActivity, and it can start playback. -->
         <activity

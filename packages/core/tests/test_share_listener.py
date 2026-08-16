@@ -266,3 +266,72 @@ def test_play_rejects_a_channel_that_does_not_exist(server):
     code, body = _post(base, json.dumps({"uri": "x", "channel": "speech"}),
                        path="/play")
     assert code == 422 and "speech" in body["error"]
+
+
+# ---- /channels, /chapters, /control: the app's control screen -------------
+
+def test_channels_answers_all_three(server):
+    _, base = server
+    code, body = _get(base, "/channels")
+    assert code == 200 and body["ok"]
+    assert set(body["channels"]) >= {"speech", "music", "book"}
+
+
+def test_control_presses_one_button(server, monkeypatch):
+    _, base = server
+    seen = []
+    monkeypatch.setattr("agent_media_core.entrypoints.share_control.control",
+                        lambda ch, act, arg="": seen.append((ch, act, arg)) or 0)
+    code, body = _post(base, json.dumps({"channel": "music", "action": "seek",
+                                         "arg": "+30"}), path="/control")
+    assert code == 200 and body["ok"] and body["rc"] == 0
+    assert seen == [("music", "seek", "+30")]
+
+
+def test_control_is_synchronous(server, monkeypatch):
+    # Unlike a share, a press has no download behind it and the caller is about
+    # to re-read /channels — so the answer must already reflect the press.
+    _, base = server
+    done = []
+    monkeypatch.setattr("agent_media_core.entrypoints.share_control.control",
+                        lambda *a, **kw: done.append(1) or 0)
+    _post(base, json.dumps({"channel": "music", "action": "toggle"}),
+          path="/control")
+    assert done == [1]
+
+
+def test_a_refused_verb_is_422(server):
+    _, base = server
+    code, body = _post(base, json.dumps({"channel": "music", "action": "nope"}),
+                       path="/control")
+    assert code == 422 and "no such control" in body["error"]
+
+
+def test_a_failing_command_is_reported_not_hidden(server, monkeypatch):
+    _, base = server
+    monkeypatch.setattr("agent_media_core.entrypoints.share_control.control",
+                        lambda *a, **kw: 1)
+    code, body = _post(base, json.dumps({"channel": "book", "action": "next"}),
+                       path="/control")
+    assert code == 200 and body["ok"] is False and body["rc"] == 1
+
+
+def test_a_control_that_explodes_does_not_500_bare(server, monkeypatch):
+    _, base = server
+
+    def boom(*a, **kw):
+        raise RuntimeError("mpv on fire")
+
+    monkeypatch.setattr("agent_media_core.entrypoints.share_control.control", boom)
+    code, body = _post(base, json.dumps({"channel": "music", "action": "toggle"}),
+                       path="/control")
+    assert code == 500 and body["ok"] is False and "on fire" in body["error"]
+
+
+def test_chapters_endpoint(server, monkeypatch):
+    _, base = server
+    monkeypatch.setattr("agent_media_core.entrypoints.share_control.chapters",
+                        lambda: [{"number": 1, "title": "Intro",
+                                  "start_ms": 0, "current": True}])
+    code, body = _get(base, "/chapters")
+    assert code == 200 and body["rows"][0]["title"] == "Intro"

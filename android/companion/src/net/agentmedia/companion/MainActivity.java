@@ -103,6 +103,15 @@ public class MainActivity extends Activity {
                 startActivity(new Intent(this, RecentActivity.class)));
         root.addView(recentButton);
 
+        // The portable half of the tmux popup: which channel, how far in, and
+        // the verbs a media card has no room for.
+        Button controlsButton = new Button(this);
+        controlsButton.setAllCaps(false);
+        controlsButton.setText("Controls");
+        controlsButton.setOnClickListener(v ->
+                startActivity(new Intent(this, ControlsActivity.class)));
+        root.addView(controlsButton);
+
         logView = new TextView(this);
         logView.setTypeface(Typeface.MONOSPACE);
         logView.setTextSize(12f);

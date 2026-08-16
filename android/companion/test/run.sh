@@ -29,6 +29,8 @@ javac -nowarn -d "$OUT" \
     "$APP/src/net/agentmedia/companion/Loopback.java" \
     "$APP/src/net/agentmedia/companion/ShareRequest.java" \
     "$APP/src/net/agentmedia/companion/RecentList.java" \
+    "$APP/src/net/agentmedia/companion/Channels.java" \
+    "$APP/src/net/agentmedia/companion/Chapters.java" \
     "$APP/src/net/agentmedia/companion/DictationHold.java" \
     "$HERE/net/agentmedia/companion/FakeMpv.java" \
     "$HERE/net/agentmedia/companion/IpcTest.java" \
@@ -41,7 +43,8 @@ javac -nowarn -d "$OUT" \
     "$HERE/net/agentmedia/companion/BargeInTest.java" \
     "$HERE/net/agentmedia/companion/ShareTest.java" \
     "$HERE/net/agentmedia/companion/DictationTest.java" \
-    "$HERE/net/agentmedia/companion/RecentTest.java"
+    "$HERE/net/agentmedia/companion/RecentTest.java" \
+    "$HERE/net/agentmedia/companion/ChannelsTest.java"
 
 java -cp "$OUT" net.agentmedia.companion.IpcTest
 java -cp "$OUT" net.agentmedia.companion.FocusTest
@@ -54,3 +57,4 @@ java -cp "$OUT" net.agentmedia.companion.BargeInTest
 java -cp "$OUT" net.agentmedia.companion.ShareTest
 java -cp "$OUT" net.agentmedia.companion.DictationTest
 java -cp "$OUT" net.agentmedia.companion.RecentTest
+java -cp "$OUT" net.agentmedia.companion.ChannelsTest

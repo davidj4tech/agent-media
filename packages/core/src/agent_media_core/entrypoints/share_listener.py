@@ -13,6 +13,12 @@ of that happens here, in Python, in the repo, under test.
                   in-app list: uri, channel, content_type, label, ago.
     POST /play    body: {"uri", "channel", "content_type"} — replay a row from
                   that list. It does NOT classify: the row already knows.
+    GET  /channels  one snapshot of speech/music/book — what the app's control
+                  screen renders, normalised in `share_control`.
+    GET  /chapters  the live music track's chapters, 1-based.
+    POST /control   {"channel", "action", "arg"} — one whitelisted transport
+                  verb. Not a passthrough: this endpoint presses buttons, it
+                  does not run the CLI.
     GET  /        -> the same JSON shape, minus a verdict: a health probe.
 
 **It answers before it plays.** Classification takes a `yt-dlp -J` round trip
@@ -40,6 +46,7 @@ import time
 from typing import Optional
 
 from .. import share as sharemod
+from . import share_control as control
 
 log = logging.getLogger(__name__)
 
@@ -74,6 +81,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path == "/recent":
             self._send(200, {"ok": True, "rows": recent_rows(query)})
             return
+        if path == "/channels":
+            self._send(200, {"ok": True, "channels": control.channels()})
+            return
+        if path == "/chapters":
+            self._send(200, {"ok": True, "rows": control.chapters()})
+            return
         if path not in ("/", "/health"):
             self._send(404, {"ok": False, "error": "no such path"})
             return
@@ -83,6 +96,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         path = self.path.split("?")[0]
         if path == "/play":
             self._replay()
+            return
+        if path == "/control":
+            self._control()
             return
         if path != "/share":
             self._send(404, {"ok": False, "error": "no such path"})
@@ -119,6 +135,36 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send(400, {"ok": False, "error": "empty or oversized body"})
             return None
         return self.rfile.read(length).decode("utf-8", "replace")
+
+    def _control(self) -> None:
+        """One transport verb, from the whitelist. Synchronous on purpose.
+
+        Unlike a share, a control is instant and its result is the only
+        feedback there is: a surface that has just drawn a pause button needs
+        to know whether it took, and it will poll `/channels` next anyway. So
+        this one does not hand off to a thread.
+        """
+        raw = self._read_body()
+        if raw is None:
+            return
+        try:
+            obj = json.loads(raw)
+        except ValueError:
+            obj = {}
+        if not isinstance(obj, dict):
+            obj = {}
+        try:
+            rc = control.control(str(obj.get("channel") or ""),
+                                 str(obj.get("action") or ""),
+                                 str(obj.get("arg") or ""))
+        except control.ControlError as e:
+            self._send(422, {"ok": False, "error": str(e)})
+            return
+        except Exception as e:  # noqa: BLE001 — a button press must not 500 bare
+            log.warning("control failed: %s", e)
+            self._send(500, {"ok": False, "error": str(e)})
+            return
+        self._send(200, {"ok": rc == 0, "rc": rc})
 
     def _replay(self) -> None:
         """Play something the caller already knows the channel for.
