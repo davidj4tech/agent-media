@@ -101,8 +101,36 @@ rm -f "$SOCK"
 # quiet no matter how high --volume goes. Raised to 30 so soft clips actually
 # reach the target loudness; targetrms=0.95 pushes the resting level up too.
 : "${MEDIA_SPEECH_LOUDNORM:=dynaudnorm=targetrms=0.95:maxgain=30:gausssize=15}"
-AF="scaletempo2"
-[ -n "$MEDIA_SPEECH_LOUDNORM" ] && AF="$AF,$MEDIA_SPEECH_LOUDNORM"
+# Pinning scaletempo2 costs live speed changes, so it is now done only where it
+# pays for itself: on openal.
+#
+# The pin was added because mpv inserts scaletempo2 the moment speed leaves 1.0×
+# and removes it on the way back, and each rebuild of the filter graph re-inits
+# the audio output — which openal, opening the Android device directly, turns
+# into an audible underrun. All true. What went unmeasured is what the pin does
+# to a speed change on the clip already playing: **nothing reaches the audio**.
+# Measured on p8a 2026-08-17, muted, 8 s samples on this broker:
+#
+#     pinned scaletempo2,  speed 1.6  ->  1.18× actual
+#     auto-inserted,       speed 1.6  ->  1.64× actual
+#
+# The property reads back 1.6 either way, and the new rate takes effect on the
+# *next* file, because that is when the graph is rebuilt. Reported as "the speed
+# control only changes the next sentence, not the current line", which is
+# exactly what a pinned filter that never receives the speed looks like.
+#
+# So: unpinned wherever the AO is a mixing server (pulse on both hosts today,
+# which is what the probe above chooses whenever pulseaudio is up), and pinned
+# on the openal fallback, where the underrun is real and a speed change is the
+# rarer event. Being wrong on openal costs a click when you change speed; being
+# wrong on pulse cost the speed control itself.
+case "$MEDIA_SPEECH_AO" in
+  openal|opensles) AF="scaletempo2" ;;
+  *) AF="" ;;
+esac
+if [ -n "$MEDIA_SPEECH_LOUDNORM" ]; then
+  AF="${AF:+$AF,}$MEDIA_SPEECH_LOUDNORM"
+fi
 exec mpv --idle=yes --ao="$MEDIA_SPEECH_AO" --force-window=no \
   --input-ipc-server="$SOCK" \
   --volume-max="$MEDIA_SPEECH_VOLUME_MAX" --volume="$MEDIA_SPEECH_VOLUME" \

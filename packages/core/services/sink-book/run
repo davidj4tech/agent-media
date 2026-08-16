@@ -102,15 +102,23 @@ MPRIS_ARG=""
 # boundary. Set empty to disable.
 : "${MEDIA_BOOK_LOUDNORM:=dynaudnorm=targetrms=0.9:maxgain=20:gausssize=15}"
 
-# scaletempo2 stays pinned in the chain: mpv otherwise inserts it the moment
-# speed leaves 1.0× and removes it when speed returns, and each rebuild of the
-# filter graph re-inits the audio output, which openal hears as an underrun.
+# scaletempo2 is pinned only on openal — see the long note in sink-speech's run,
+# which is where this was measured. Short version: a pinned filter never
+# receives a speed change, so on a pinned chain `speed 1.6` moves playback to
+# 1.18× and the real rate only arrives with the next file. On openal the pin
+# still earns its place, because there the graph rebuild is an audible underrun
+# and a book's speed is set once and left.
 #
-# And pitch correction stays ON — see the header. With `=yes` mpv reuses the
-# pinned filter rather than inserting a second one, so the underrun fix and the
-# pitch fix hold together.
-AF="scaletempo2"
-[ -n "$MEDIA_BOOK_LOUDNORM" ] && AF="$AF,$MEDIA_BOOK_LOUDNORM"
+# Pitch correction stays ON regardless: it is what makes mpv insert scaletempo2
+# at all, and without it speed is applied by resampling — 200 Hz at 1.5× comes
+# out at 300 Hz.
+case "$MEDIA_BOOK_AO" in
+  openal|opensles) AF="scaletempo2" ;;
+  *) AF="" ;;
+esac
+if [ -n "$MEDIA_BOOK_LOUDNORM" ]; then
+  AF="${AF:+$AF,}$MEDIA_BOOK_LOUDNORM"
+fi
 
 # One output format pinned, so a chapter whose native rate differs from the last
 # cannot force the same AO reinit at a boundary. 48 kHz / s16 / stereo is native
