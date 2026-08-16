@@ -93,6 +93,24 @@ final class Channels {
             return verbs.isEmpty() || verbs.contains(action);
         }
 
+        /**
+         * Would pressing the big button pause this, rather than start it?
+         *
+         * Deliberately not {@link #playing}, which means something narrower on
+         * the speech channel: there, it is "a clip is being spoken right now",
+         * and sink-speech parks a finished clip open and unpaused, so a broker
+         * mid-file with nothing coming out reports playing=false. The transport
+         * button asked that question and so never flipped on speech — pause and
+         * resume both left it showing ▶ (reported 2026-08-17; the snapshot at
+         * the time read idle=false, paused=false, playing=false).
+         *
+         * A transport button is about direction, not about audio: something is
+         * loaded and it is not held, so the next press stops it.
+         */
+        boolean advancing() {
+            return !idle && !paused;
+        }
+
         /** What to show as the headline. Never empty — a blank panel reads as broken. */
         String heading() {
             if (title != null && !title.isEmpty()) return title;

@@ -120,7 +120,9 @@ final class Transport {
      * dims, which is "not now" and true.
      */
     void apply(Channels.Channel c) {
-        if (playButton != null) playButton.setText(c != null && c.playing ? "⏸" : "▶");
+        if (playButton != null) {
+            playButton.setText(c != null && c.advancing() ? "⏸" : "▶");
+        }
         for (Map.Entry<TextView, String> e : needs.entrySet()) {
             TextView b = e.getKey();
             if (b == chaptersButton) continue;

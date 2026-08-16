@@ -40,6 +40,8 @@ public final class ChannelsTest {
         testChaptersOnlyForLiveMusic();
         testControlBody();
         testChapterLabels();
+        testTheButtonAsksAboutDirection();
+        testAChannelPublishesItsVerbs();
 
         System.out.println();
         if (failures.isEmpty()) {
@@ -138,6 +140,40 @@ public final class ChannelsTest {
         check("live music may have chapters", m.get("music").mayHaveChapters());
         check("an idle channel may not", !m.get("book").mayHaveChapters());
         check("speech never does", !m.get("speech").mayHaveChapters());
+    }
+
+    private static void testTheButtonAsksAboutDirection() {
+        // The bug this exists for: on the speech channel `playing` means "a
+        // clip is being spoken", and sink-speech parks a finished clip open and
+        // unpaused — so the transport button, which asked `playing`, showed ▶
+        // through both pause and resume.
+        Channels.Channel parked = new Channels.Channel("speech", false, false,
+                false, "a reply", null, Long.valueOf(76065), Long.valueOf(90360),
+                Double.valueOf(1.0), null, false, 0);
+        check("loaded and unheld means the next press pauses", parked.advancing());
+
+        Channels.Channel held = new Channels.Channel("speech", false, false,
+                true, "a reply", null, Long.valueOf(76619), Long.valueOf(90360),
+                Double.valueOf(1.0), null, false, 0);
+        check("paused means the next press plays", !held.advancing());
+
+        Channels.Channel idle = new Channels.Channel("book", true, false, false,
+                null, null, null, null, null, null, false, 0);
+        check("nothing loaded means the next press plays", !idle.advancing());
+    }
+
+    private static void testAChannelPublishesItsVerbs() {
+        String payload = "{\"channels\":{\"book\":{\"idle\":false,"
+                + "\"verbs\":[\"toggle\",\"seek\",\"speed\"]}}}";
+        Channels.Channel book = Channels.parse(payload).get("book");
+        check("a published verb is taken", book.takes("seek"));
+        check("an absent one is not", !book.takes("mute"));
+
+        // An older listener says nothing, and nothing means "do not second-guess
+        // me" — the app drew every button before this existed and must not stop.
+        Channels.Channel quiet = Channels.parse("{\"channels\":{\"book\":{}}}")
+                .get("book");
+        check("no list means every button stays", quiet.takes("mute"));
     }
 
     private static void testControlBody() {
