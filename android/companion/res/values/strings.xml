@@ -4,5 +4,7 @@
     <!-- The share sheet shows this, not app_name: the sheet is a list of verbs. -->
     <string name="share_label">Play with agent-media</string>
     <string name="recent_label">Recently played</string>
-    <string name="controls_label">Controls</string>
+    <!-- controls_label went with ControlsActivity on 2026-08-17: the transport
+         lives under the channel card on the home screen now. -->
+    <string name="diagnostics_label">Diagnostics</string>
 </resources>

@@ -184,9 +184,35 @@ final class FakeMpv implements AutoCloseable {
         } catch (IOException ignored) { }
     }
 
-    /** Drop every live connection, leaving the listener up. */
+    /**
+     * Drop every live connection, leaving the listener up — "mpv went away".
+     *
+     * The wait is the point. A client's {@code connect()} returns as soon as the
+     * TCP handshake completes, which is before this side's acceptor thread has
+     * run and put the socket in {@link #clients} — so a test that connects and
+     * immediately drops could close nothing at all, leave the connection alive,
+     * and then fail waiting for a disconnect that was never going to come. It
+     * looked like a flaky reconnect test and it was this: on 2026-08-17 the
+     * music channel grew three more observed properties, the extra handshake
+     * traffic shifted the timing, and a race that had been losing occasionally
+     * started losing half the time.
+     */
     void dropClient() {
         observers.clear();
+        long deadline = System.currentTimeMillis() + 2000;
+        while (clients.isEmpty() && System.currentTimeMillis() < deadline) {
+            try {
+                Thread.sleep(5);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        closeClients();
+    }
+
+    /** Close what has been accepted, without waiting for anything to arrive. */
+    private void closeClients() {
         for (Socket s : new ArrayList<Socket>(clients)) {
             clients.remove(s);
             try { s.close(); } catch (IOException ignored) { }
@@ -200,7 +226,10 @@ final class FakeMpv implements AutoCloseable {
     @Override
     public void close() {
         running = false;
-        dropClient();
+        // Not dropClient(): shutting down must never sit waiting two seconds
+        // for a connection that is not coming.
+        observers.clear();
+        closeClients();
         try { server.close(); } catch (IOException ignored) { }
     }
 }

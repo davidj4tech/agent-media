@@ -91,6 +91,16 @@ final class MicWatch {
     /** True while something on the phone appears to be recording. */
     boolean active() { return active; }
 
+    /**
+     * Is the watch itself alive — as against "is something recording"?
+     *
+     * The callback being registered is the whole of it: without one, the two
+     * ways this fails (no AudioManager at all, and a registration that threw)
+     * both look exactly like a quiet microphone, which is the failure the home
+     * screen's first pill exists to name.
+     */
+    boolean watching() { return callback != null; }
+
     int count() { return count; }
 
     String detail() { return detail; }

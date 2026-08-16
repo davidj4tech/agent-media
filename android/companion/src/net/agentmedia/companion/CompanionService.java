@@ -285,6 +285,30 @@ public class CompanionService extends Service {
         return focusActs;
     }
 
+    /**
+     * Is the mic watch alive? The home screen's most important pill.
+     *
+     * This app is the only mic trigger since Automate was retired, so a watch
+     * that failed to start is barge-in gone — and it fails silently, which is
+     * how it stayed broken for a fortnight in August 2026.
+     */
+    boolean micWatching() {
+        return mic != null && mic.watching();
+    }
+
+    /** How many of the three channel bridges are answering right now. */
+    int bridgesUp() {
+        int n = state.connected ? 1 : 0;
+        if (speech != null && speech.state().connected) n++;
+        if (book != null && book.state().connected) n++;
+        return n;
+    }
+
+    /** The exits Android has recorded, newest first. See {@link LastExit}. */
+    java.util.List<String> exits() {
+        return lastExits == null ? java.util.Collections.<String>emptyList() : lastExits;
+    }
+
     /** Flip between the probe and the acting build. Survives a restart. */
     void setFocusActs(boolean acts) {
         if (acts == focusActs) return;

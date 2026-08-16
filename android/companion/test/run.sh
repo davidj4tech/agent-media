@@ -34,6 +34,7 @@ javac -nowarn -d "$OUT" \
     "$APP/src/net/agentmedia/companion/DictationHold.java" \
     "$APP/src/net/agentmedia/companion/BookHold.java" \
     "$APP/src/net/agentmedia/companion/CardText.java" \
+    "$APP/src/net/agentmedia/companion/Health.java" \
     "$APP/src/net/agentmedia/companion/Style.java" \
     "$HERE/net/agentmedia/companion/FakeMpv.java" \
     "$HERE/net/agentmedia/companion/IpcTest.java" \
@@ -48,6 +49,7 @@ javac -nowarn -d "$OUT" \
     "$HERE/net/agentmedia/companion/DictationTest.java" \
     "$HERE/net/agentmedia/companion/BookHoldTest.java" \
     "$HERE/net/agentmedia/companion/CardTextTest.java" \
+    "$HERE/net/agentmedia/companion/HealthTest.java" \
     "$HERE/net/agentmedia/companion/RecentTest.java" \
     "$HERE/net/agentmedia/companion/ChannelsTest.java"
 
@@ -63,5 +65,6 @@ java -cp "$OUT" net.agentmedia.companion.ShareTest
 java -cp "$OUT" net.agentmedia.companion.DictationTest
 java -cp "$OUT" net.agentmedia.companion.BookHoldTest
 java -cp "$OUT" net.agentmedia.companion.CardTextTest
+java -cp "$OUT" net.agentmedia.companion.HealthTest
 java -cp "$OUT" net.agentmedia.companion.RecentTest
 java -cp "$OUT" net.agentmedia.companion.ChannelsTest

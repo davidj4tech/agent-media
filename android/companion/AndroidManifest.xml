@@ -44,12 +44,13 @@
             android:noHistory="true"
             android:excludeFromRecents="true" />
 
-        <!-- The popup's transport, on the phone. Not exported: it drives
-             playback and is reached from MainActivity. -->
+        <!-- The event log and the focus switch. Not exported: it is reached
+             from the home screen, and it is where the log went when the home
+             screen stopped being a diagnostic. -->
         <activity
-            android:name=".ControlsActivity"
+            android:name=".DiagnosticsActivity"
             android:exported="false"
-            android:label="@string/controls_label" />
+            android:label="@string/diagnostics_label" />
 
         <!-- What played lately, tap to play again. Not exported: it is reached
              from MainActivity, and it can start playback. -->
