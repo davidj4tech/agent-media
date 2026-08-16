@@ -344,16 +344,24 @@ public class CompanionService extends Service {
         nm.createNotificationChannel(new NotificationChannel(
                 CHANNEL, "agent-media", NotificationManager.IMPORTANCE_LOW));
         session = new MediaSession(this, "agent-media music");
-        session.setActive(true);
-        startForeground(NOTIF_ID, buildNotification(),
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
-
-        // The rest of the session wiring. Off the critical path because a
-        // button arriving in the first few milliseconds is a thing that has
-        // never happened, and the notification is already posted and correct.
+        // The callback and the button receiver go on BEFORE the session goes
+        // active, and they stay on this side of startForeground even though it
+        // is the critical path: they cost nothing measurable, and moving them
+        // after cost the earbud.
+        //
+        // A session's flags for media buttons and transport controls are set
+        // implicitly when it gets a callback, so a session that goes active
+        // without one is announced as handling neither. Something else then
+        // takes the addressed-player slot — on 2026-08-17 it was the speech
+        // card, and `cmd media_session dispatch play` went to Sam instead of
+        // the music, with our own onMediaButtonEvent never firing at all.
+        // That is the whole point of the music session, so it comes first.
         session.setCallback(callback);
         session.setMediaButtonBroadcastReceiver(
                 new ComponentName(this, MediaButtonReceiver.class));
+        session.setActive(true);
+        startForeground(NOTIF_ID, buildNotification(),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
 
         // The deaths Crash cannot see, which is all of them bar an uncaught
         // exception. On 2026-08-15 the service stopped answering on 8770 with
