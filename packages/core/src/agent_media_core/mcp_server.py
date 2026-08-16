@@ -94,6 +94,54 @@ def _book() -> SinkBook:
     return _book._v  # type: ignore[attr-defined]
 
 
+#: How long to wait for mpv to publish `media-title` after a load, so the play
+#: history can show a name instead of a filename. Short by design: this sits
+#: between the caller asking for a book and being told it started. Set 0 to
+#: skip it entirely.
+TITLE_WAIT_S = 2.0
+_TITLE_POLL_S = 0.15
+
+
+def _note_media_title(book: "SinkBook", state: StateStore, target, uri: str) -> None:
+    """Record the title mpv reports for a freshly-loaded book, if it has one.
+
+    A history row is written when a book is *put on*, when the only thing known
+    is a URI. mpv learns the real name a moment later, and a listing of
+    `td565-video-2026-08-11-15-42-38.mp3` is what happens if nobody goes back
+    for it.
+
+    Bounded, synchronous and best-effort: a background thread cannot be used
+    here because the CLI shares this code path and exits as soon as the command
+    returns, taking any thread with it. So it polls briefly and gives up — a
+    missing title costs a nicer label, and nothing else.
+    """
+    try:
+        wait = float(os.environ.get("MEDIA_BOOK_TITLE_WAIT_S", TITLE_WAIT_S))
+    except (TypeError, ValueError):
+        wait = TITLE_WAIT_S
+    if wait <= 0:
+        return
+    from .sinks import _mpv_ipc as ipc
+    from .sinks.book import _socket_for
+
+    deadline = time.time() + wait
+    while time.time() < deadline:
+        try:
+            props = ipc.display_properties(_socket_for(target),
+                                           ["path", "media-title"], timeout=1.0)
+        except Exception:  # noqa: BLE001 — the broker is allowed to be busy
+            props = None
+        if props:
+            # Only trust a title that belongs to the file we just asked for:
+            # mpv may still have the previous one open.
+            if props.get("path") == uri:
+                title = str(props.get("media-title") or "").strip()
+                if title:
+                    state.set_history_title("book", uri, title)
+                    return
+        time.sleep(_TITLE_POLL_S)
+
+
 def _save_book_bookmark(book: SinkBook, state: StateStore,
                         target: Target) -> None:
     """Persist the currently-open book's position as its resume bookmark.
@@ -648,6 +696,10 @@ def book_play(uri: str, resume: bool = True, start_ms: int = -1,
                        content_type="audiobook", target=t.name,
                        extras={"title": display_title} if display_title else None)
     st.set_book_last(norm, display_title or None)
+    # `display_title` may only be the filename stem — that is what the block
+    # above falls back to. The real name lives in the file and mpv publishes it
+    # as `media-title` a moment after the load, so go back and fetch it.
+    _note_media_title(b, st, t, norm)
     # An ad-hoc book breaks the playlist context, so `book next` won't try to
     # advance a list the listener has stepped away from.
     st.clear_playlist_active()

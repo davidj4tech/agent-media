@@ -133,6 +133,17 @@ def default_db_path() -> Path:
     return state_dir() / "state.db"
 
 
+def _uri_filename(uri: str) -> str:
+    """The bare filename a URI ends in, unescaped — the name a caller derives
+    when it has nothing better. `set_history_title` treats it as "no title
+    yet", so a real one can still replace it."""
+    from urllib.parse import unquote
+
+    path = (uri or "").split("#", 1)[0].split("?", 1)[0].rstrip("/")
+    name = unquote(path.rsplit("/", 1)[-1])
+    return name.rsplit(".", 1)[0] if "." in name else name
+
+
 def _pid_alive(pid: int) -> bool:
     """True if a (host-local) process with `pid` currently exists.
 
@@ -920,6 +931,47 @@ class StateStore:
                                     content_type=content_type, text=title)
         except Exception:  # noqa: BLE001 — see the docstring
             return None
+
+    def set_history_title(self, sink: str, uri: str, title: str) -> bool:
+        """Fill in a title the channel only learned after it started playing.
+
+        A history row is written when something is *put on*, and at that moment
+        the only thing anyone knows is a URI: mpv has not opened the file, so
+        `media-title` does not exist yet. The result was a listing of
+        filenames — `td565-video-2026-08-11-15-42-38.mp3` — for episodes that
+        have perfectly good titles a second later.
+
+        So the row gets a name when a name turns up. Returns True if it wrote.
+
+        Two rules keep this from making things worse:
+
+        - It only fills the **newest** row for that (sink, uri). An older
+          listen of the same thing is a different row and keeps its own name.
+        - It will overwrite a title that is merely the filename, because
+          several callers derive one from the URI when they have nothing
+          better, and that derived name is exactly what this is here to
+          replace. It will never overwrite a title that is not the filename.
+        """
+        uri, title = (uri or "").strip(), (title or "").strip()
+        if not uri or not title:
+            return False
+        try:
+            with self._cursor() as cur:
+                cur.execute("SELECT id, text FROM history WHERE sink = ? AND uri = ? "
+                            "ORDER BY started_at DESC, id DESC LIMIT 1", (sink, uri))
+                row = cur.fetchone()
+                if not row:
+                    return False
+                current = (row[1] or "").strip()
+                if current and current != _uri_filename(uri) and current != title:
+                    return False
+                if current == title:
+                    return False
+                cur.execute("UPDATE history SET text = ? WHERE id = ?",
+                            (title, row[0]))
+            return True
+        except Exception:  # noqa: BLE001 — a nicer label is never worth a crash
+            return False
 
     def recent_history(self, *, sink: Optional[str] = None,
                        limit: int = 20) -> list[dict]:

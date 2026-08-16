@@ -142,6 +142,15 @@ def _handle_load(sock, state: StateStore) -> None:
         state.set_now_playing(sink="book", uri=norm, started_at=time.time(),
                               content_type="audiobook")
         state.set_book_last(norm)
+        # We are here *because* the file just loaded, so mpv already knows its
+        # name — the one moment where the title costs nothing to fetch. Without
+        # it an externally-opened book lists as its filename forever.
+        try:
+            title = str(ipc.get_property(sock, "media-title") or "").strip()
+            if title:
+                state.set_history_title("book", norm, title)
+        except Exception:  # noqa: BLE001
+            log.debug("media-title read failed", exc_info=True)
     except Exception:  # noqa: BLE001
         log.debug("now_playing update failed", exc_info=True)
 

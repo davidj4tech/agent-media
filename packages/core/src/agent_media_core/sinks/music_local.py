@@ -194,6 +194,23 @@ def configured() -> bool:
     return endpoint() is not None
 
 
+def _note_title(uri: str, title: str) -> None:
+    """Give the play-history row for `uri` the name the cache knows.
+
+    Best-effort and never fatal: the row is written when something is put on,
+    when a URI is all anyone has, and this is the moment a real title becomes
+    available. Failing to record it costs a nicer label in `media recent` and
+    the phone's list, and nothing else.
+    """
+    if not title:
+        return
+    try:
+        from ..state import StateStore
+        StateStore().set_history_title("music", uri, title)
+    except Exception:  # noqa: BLE001 — see the docstring
+        log.debug("history title update failed for %s", uri, exc_info=True)
+
+
 def _watch_id(uri: str) -> Optional[str]:
     """Best-effort YouTube id extraction, shared with the rooms cache."""
     from . import music_fetch
@@ -325,6 +342,7 @@ class SinkMusicLocal:
                 opts = "force-media-title=%%%d%%%s" % (len(title.encode("utf-8")), title)
                 cmd = ["loadfile", seeded, mode, -1, opts]
             ipc.command(self._endpoint(), *cmd)
+            _note_title(uri, title)
             return
 
         host = ssh_host()
@@ -348,6 +366,10 @@ class SinkMusicLocal:
             raise ipc.MpvIpcError(
                 f"sink-music-local: phone fetch failed ({r.returncode}): "
                 f"{(r.stderr or r.stdout).strip()[-300:]}")
+        # The helper writes a `.title` sidecar beside the audio it just
+        # fetched, so the real name exists by the time this returns — and the
+        # history row written a moment ago has only the URI.
+        _note_title(uri, _phone_title(_watch_id(uri) or ""))
 
     # ---- transport / duck (over the mpv IPC bridge) ----------------------
 
