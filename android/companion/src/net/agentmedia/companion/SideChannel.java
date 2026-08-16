@@ -60,7 +60,6 @@ final class SideChannel {
     private final String label;
     private final int notifId;
     private final String notifChannel;
-    private final int icon;
     private final MpvState state = new MpvState();
     private final MpvIpc ipc;
     private final Watcher watcher;
@@ -79,7 +78,7 @@ final class SideChannel {
 
     SideChannel(Service ctx, Handler main, String name, String label,
                 int port, String[] observed, int notifId, String notifChannel,
-                int icon, Watcher watcher) {
+                Watcher watcher) {
         this.ctx = ctx;
         this.main = main;
         this.nm = ctx.getSystemService(NotificationManager.class);
@@ -87,7 +86,6 @@ final class SideChannel {
         this.label = label;
         this.notifId = notifId;
         this.notifChannel = notifChannel;
-        this.icon = icon;
         this.watcher = watcher;
         this.ipc = new MpvIpc(CompanionService.MPV_HOST, port, listener, observed);
     }
@@ -181,8 +179,9 @@ final class SideChannel {
 
         session.setMetadata(new MediaMetadata.Builder()
                 .putString(MediaMetadata.METADATA_KEY_TITLE, cardTitle())
-                .putString(MediaMetadata.METADATA_KEY_ARTIST, FrontChannel.DEFAULT_SUBTITLE)
+                .putString(MediaMetadata.METADATA_KEY_ARTIST, subtitle())
                 .putLong(MediaMetadata.METADATA_KEY_DURATION, state.durationMs())
+                .putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, Artwork.art(name))
                 .build());
 
         int playbackState;
@@ -209,8 +208,11 @@ final class SideChannel {
         // music position moved. Now it stays gone until the next clip changes
         // what the card says. (The marquee still ticks: the windowed title is
         // part of the signature, and a scrolling card is a playing one.)
-        String sig = cardTitle() + " " + playbackState + " " + state.paused
-                + " " + state.loaded();
+        // The subtitle is in the signature because it is now information — a
+        // book counting down and a queue growing behind Sam both change the
+        // card without changing its title.
+        String sig = cardTitle() + " " + subtitle() + " " + playbackState
+                + " " + state.paused + " " + state.loaded();
         if (sig.equals(lastCard)) return;
         lastCard = sig;
         nm.notify(notifId, card());
@@ -285,16 +287,38 @@ final class SideChannel {
         return visible && state.playing() && Marquee.needed(title(), Marquee.WIDTH);
     }
 
+    /**
+     * The second line: what this channel has to say that its title does not.
+     *
+     * A note the service has set wins — "waiting for the conversation to
+     * finish" is more urgent than anything computed here. Otherwise
+     * {@link CardText} decides, and an empty answer is left empty rather than
+     * padded: "paused" beside a play button was the card saying it twice.
+     */
+    private String subtitle() {
+        if (note != null) return note;
+        if ("speech".equals(name)) {
+            return CardText.speech(state.queued, state.speaking);
+        }
+        if ("book".equals(name)) {
+            return CardText.book(state.durationMs(), state.positionMs());
+        }
+        return "";
+    }
+
     private Notification card() {
         PendingIntent open = PendingIntent.getActivity(ctx, 0,
                 new Intent(ctx, MainActivity.class),
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
         return new Notification.Builder(ctx, notifChannel)
                 .setContentTitle(cardTitle())
-                .setContentText(note != null ? note
-                                : !state.loaded() ? "last clip"
-                                : state.paused ? "paused" : "playing")
-                .setSmallIcon(icon)
+                .setContentText(subtitle())
+                // The channel's own mark, in both places the shade shows one:
+                // a silhouette in the status bar and the tile on the card. Three
+                // cards with the stock play triangle and no art were three cards
+                // you had to read to tell apart.
+                .setSmallIcon(Artwork.icon(name))
+                .setLargeIcon(Artwork.art(name))
                 .setStyle(new Notification.MediaStyle()
                         .setMediaSession(session.getSessionToken()))
                 .setContentIntent(open)

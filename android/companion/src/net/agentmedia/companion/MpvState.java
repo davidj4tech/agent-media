@@ -38,6 +38,10 @@ final class MpvState {
     volatile String priority = "normal";
     /** Clips on the broker's playlist, the open one included. See MpvIpc. */
     volatile int queued = 0;
+    /** Who the open track is by, when its tags say. Null when they do not. */
+    volatile String artist = null;
+    /** Where the open track sits in the queue, zero-based; -1 for nothing. */
+    volatile int playlistPos = -1;
 
     /** Apply one property update. Returns true when something actually changed. */
     boolean apply(String name, Object value) {
@@ -108,6 +112,21 @@ final class MpvState {
                 int v = (int) Json.asDouble(value, 0);
                 if (v == queued) return false;
                 queued = v;
+                return true;
+            }
+            case MpvIpc.ARTIST_PROPERTY: {
+                // Absent is the ordinary case, not a failure: a stream, a
+                // podcast and an untagged file all report null here.
+                String v = Json.asString(value);
+                if (v != null && v.trim().isEmpty()) v = null;
+                if (eq(v, artist)) return false;
+                artist = v;
+                return true;
+            }
+            case MpvIpc.PLAYLIST_POS_PROPERTY: {
+                int v = (int) Json.asDouble(value, -1);
+                if (v == playlistPos) return false;
+                playlistPos = v;
                 return true;
             }
             case MpvIpc.POSITION_PROPERTY: {

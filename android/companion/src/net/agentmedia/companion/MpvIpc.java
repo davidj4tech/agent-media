@@ -36,10 +36,18 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 final class MpvIpc {
 
-    /** What the music connection keeps a live subscription to. */
-    static final String[] OBSERVED = {
-        "idle-active", "pause", "media-title", "duration", "path", "speed", "volume",
-    };
+    /**
+     * Who the open track is by, when the file says so.
+     *
+     * mpv exposes tag metadata a key at a time, and observing a key that is not
+     * there is not an error — it simply reports null and reports again if a
+     * later file has one. Which is exactly the shape the card wants: an artist
+     * where there is one, silence where there is not.
+     */
+    static final String ARTIST_PROPERTY = "metadata/by-key/Artist";
+
+    /** Where in the queue the open track is — zero-based, -1 for nothing. */
+    static final String PLAYLIST_POS_PROPERTY = "playlist-pos";
 
     /**
      * The coordinator on red5 sets this on the speech mpv for the length of a
@@ -64,6 +72,18 @@ final class MpvIpc {
      * waiting behind a hold.
      */
     static final String QUEUE_PROPERTY = "playlist-count";
+
+    /**
+     * What the music connection keeps a live subscription to.
+     *
+     * Below the constants it names rather than at the top of the class, which
+     * is where it used to sit: a static array initializer cannot forward-refer
+     * to a field declared after it.
+     */
+    static final String[] OBSERVED = {
+        "idle-active", "pause", "media-title", "duration", "path", "speed", "volume",
+        ARTIST_PROPERTY, QUEUE_PROPERTY, PLAYLIST_POS_PROPERTY,
+    };
 
     /**
      * What the speech connection subscribes to — enough to answer "is a clip

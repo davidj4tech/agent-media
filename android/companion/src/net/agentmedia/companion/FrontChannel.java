@@ -38,8 +38,11 @@ final class FrontChannel {
      */
     static final String SPEECH_TITLE = "Sam";
 
-    /** Shown when there is nothing better to say. Also the artist line for music. */
-    static final String DEFAULT_SUBTITLE = "agent-media";
+    // DEFAULT_SUBTITLE ("agent-media") was removed on 2026-08-17. It was the
+    // artist line on all three cards at once, which is the app naming itself
+    // three times on the one surface where a line costs something. Each channel
+    // now says what only it knows — see CardText — and an empty line is a
+    // legitimate answer.
 
     private FrontChannel() { }
 

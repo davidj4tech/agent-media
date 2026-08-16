@@ -448,8 +448,7 @@ public class CompanionService extends Service {
                                      SideChannel.Watcher watcher) {
         try {
             SideChannel c = new SideChannel(this, main, name, label, port, observed,
-                                            notifId, CHANNEL,
-                                            android.R.drawable.ic_media_play, watcher);
+                                            notifId, CHANNEL, watcher);
             c.start();
             return c;
         } catch (Throwable e) {
@@ -746,8 +745,9 @@ public class CompanionService extends Service {
         // talks, which one shared card could never offer.
         MediaMetadata.Builder md = new MediaMetadata.Builder()
                 .putString(MediaMetadata.METADATA_KEY_TITLE, musicCardTitle())
-                .putString(MediaMetadata.METADATA_KEY_ARTIST, FrontChannel.DEFAULT_SUBTITLE)
-                .putLong(MediaMetadata.METADATA_KEY_DURATION, state.durationMs());
+                .putString(MediaMetadata.METADATA_KEY_ARTIST, musicSubtitle())
+                .putLong(MediaMetadata.METADATA_KEY_DURATION, state.durationMs())
+                .putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, Artwork.art("music"));
         session.setMetadata(md.build());
 
         MpvState front = state;
@@ -998,6 +998,16 @@ public class CompanionService extends Service {
         }
     }
 
+    /**
+     * The music card's second line: who it is by, or where it is in the queue.
+     *
+     * The artist comes from mpv's own tag metadata, so it is there for a local
+     * file and absent for a stream — and absent is fine. See {@link CardText}.
+     */
+    private String musicSubtitle() {
+        return CardText.music(state.artist, state.playlistPos, state.queued);
+    }
+
     /** Best-effort; a missed toast is never worth the process. */
     private void toast(String text) {
         try {
@@ -1043,19 +1053,13 @@ public class CompanionService extends Service {
                 new Intent(this, MainActivity.class),
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
 
-        String text;
-        if (!state.connected) text = "mpv unreachable on " + MPV_HOST + ":" + MPV_PORT;
-        else if (!state.loaded()) text = state.lastTitle() != null ? "last track" : "idle";
-        else text = state.paused ? "paused" : "playing";
-
-        // The small icon reports *state*, so it has to follow it: a hardcoded
-        // triangle sat there through every pause and read as the app being
-        // stuck, which is a poor thing for a status indicator to say when the
-        // session underneath is correct. It reads the front channel for the same
-        // reason the card does — while Sam speaks, "playing" is about Sam.
-        boolean audible = state.playing();
-        int icon = audible ? android.R.drawable.ic_media_play
-                           : android.R.drawable.ic_media_pause;
+        // Only the thing nothing else can say. "playing" / "paused" next to a
+        // play/pause button was the card saying it twice; who it is by, or
+        // where it sits in the queue, is what the line is worth spending on.
+        // An unreachable mpv is the exception: that one is not visible anywhere
+        // else on this surface.
+        String text = state.connected ? musicSubtitle()
+                : "mpv unreachable on " + MPV_HOST + ":" + MPV_PORT;
 
         return new Notification.Builder(this, CHANNEL)
                 // Not gated on loaded() any more: MpvState#title falls back to
@@ -1063,7 +1067,12 @@ public class CompanionService extends Service {
                 // music card to say than the app's own name.
                 .setContentTitle(musicCardTitle())
                 .setContentText(text)
-                .setSmallIcon(icon)
+                // The channel's mark rather than a transport glyph. The old
+                // icon reported play/pause, which the card's own button already
+                // does; what the status bar cannot otherwise say is *which* of
+                // the three channels is up there.
+                .setSmallIcon(Artwork.icon("music"))
+                .setLargeIcon(Artwork.art("music"))
                 .setStyle(new Notification.MediaStyle().setMediaSession(session.getSessionToken()))
                 .setContentIntent(open)
                 .setOngoing(true)
