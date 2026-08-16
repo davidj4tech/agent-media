@@ -107,14 +107,75 @@ final class RecentRows {
      */
     static String title(RecentList.Item item) {
         String label = item.title();
-        if (label == null) return "";
-        label = label.trim();
-        if (isSpeechFile(label)) return "a spoken reply";
-        if (isUrl(label)) {
-            String host = host(label);
-            return host.isEmpty() ? "a link" : "a link from " + host;
+        label = label == null ? "" : label.trim();
+
+        // A rendered speech clip: remote-20260814T190922-18480.mp3. Gated on the
+        // channel, because a *book* is very often a dated filename too —
+        // td565-video-2026-08-11-15-42-38.mp3 is a real row, and calling that
+        // "a spoken reply" would be a worse lie than the filename.
+        if ("speech".equals(item.channel) && isRenderedClip(label)) {
+            return "a spoken reply";
+        }
+        // Everything else that is not a name goes down one path, because they
+        // are all the same failure: the row is showing what it was *stored* as.
+        //
+        //   - the label is the URL itself (Item.title falls back to it),
+        //   - or it is wreckage: mpv names a URL with no metadata by unquoting
+        //     it and taking the tail after the last slash, so a signed link
+        //     carrying `response-content-type=audio%2Fmpeg` was recorded with
+        //     the title "mpeg&Expires=…&Signature=…", several hundred
+        //     characters of it.
+        //
+        // The URI's own filename is the better name where there is one, and the
+        // host where there is not — `watch` tells you nothing about a YouTube
+        // link, and `youtube.com` at least tells you where you were.
+        if (isUrl(label) || isQueryWreckage(label)) {
+            String source = isUrl(label) ? label : item.uri;
+            String name = fromUri(source);
+            return isName(name) ? name : linkFrom(host(source));
         }
         return label;
+    }
+
+    /** The filename a URI ends in, without its query or its extension. */
+    static String fromUri(String uri) {
+        if (uri == null) return "";
+        String u = uri.trim();
+        int hash = u.indexOf('#');
+        if (hash >= 0) u = u.substring(0, hash);
+        int q = u.indexOf('?');
+        if (q >= 0) u = u.substring(0, q);
+        while (u.endsWith("/")) u = u.substring(0, u.length() - 1);
+        int slash = u.lastIndexOf('/');
+        String tail = slash >= 0 ? u.substring(slash + 1) : u;
+        int dot = tail.lastIndexOf('.');
+        if (dot > 0) tail = tail.substring(0, dot);
+        return tail;
+    }
+
+    private static String linkFrom(String host) {
+        return host.isEmpty() ? "a link" : "a link from " + host;
+    }
+
+    /**
+     * Is this filename worth showing as a title?
+     *
+     * The generic list is short on purpose: these are the path segments that
+     * carry no information about the item at all, so a row named after one is
+     * worse than a row named after where it came from.
+     */
+    private static boolean isName(String s) {
+        if (s == null || s.length() < 3) return false;
+        boolean letter = false;
+        for (int i = 0; i < s.length(); i++) {
+            if (Character.isLetter(s.charAt(i))) { letter = true; break; }
+        }
+        if (!letter) return false;
+        String lower = s.toLowerCase(Locale.US);
+        return !(lower.equals("watch") || lower.equals("index")
+                || lower.equals("play") || lower.equals("stream")
+                || lower.equals("listen") || lower.equals("audio")
+                || lower.equals("file") || lower.equals("download"));
     }
 
     /**
@@ -141,15 +202,28 @@ final class RecentRows {
      * A rendered speech clip: {@code remote-20260814T190922-18480.mp3}.
      *
      * Matched on shape rather than on the prefix alone, because "remote-" is a
-     * plausible start to a real title and the timestamp is not.
+     * plausible start to a real title and the timestamp is not. Only ever asked
+     * about a speech row — see {@link #title}.
      */
-    private static boolean isSpeechFile(String s) {
+    private static boolean isRenderedClip(String s) {
         if (!s.endsWith(".mp3") && !s.endsWith(".wav")) return false;
         int digits = 0;
         for (int i = 0; i < s.length(); i++) {
             if (Character.isDigit(s.charAt(i))) digits++;
         }
         return digits >= 12 && s.indexOf(' ') < 0;
+    }
+
+    /**
+     * Is this "title" a piece of a URL's query string?
+     *
+     * Both marks together, and no spaces: a real title can contain an ampersand
+     * ("Simon &amp; Garfunkel") and, rarely, an equals sign, but not both with
+     * no space anywhere in a long string. Deliberately narrow — a false
+     * positive here throws away the one name a row had.
+     */
+    private static boolean isQueryWreckage(String s) {
+        return s.indexOf('&') >= 0 && s.indexOf('=') >= 0 && s.indexOf(' ') < 0;
     }
 
     private static String host(String url) {

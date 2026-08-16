@@ -25,6 +25,8 @@ public final class RecentRowsTest {
         testTitleKeepsARealLabel();
         testTitleRescuesASpeechFile();
         testTitleRescuesABareUrl();
+        testTitleRescuesQueryWreckage();
+        testAnEmptyLabelFallsBackToTheUri();
         testUnplayableRowsSayWhy();
 
         System.out.println();
@@ -113,14 +115,45 @@ public final class RecentRowsTest {
         check("a real title ending in .mp3 is not touched",
                 "The Wind in the Willows.mp3".equals(RecentRows.title(
                         item("The Wind in the Willows.mp3", "book", 0))));
+        // A real row from p8a, and the reason this is gated on the channel: a
+        // podcast filename is a dated filename too.
+        check("a dated podcast filename is left alone",
+                "td565-video-2026-08-11-15-42-38.mp3".equals(RecentRows.title(
+                        item("td565-video-2026-08-11-15-42-38.mp3", "book", 0))));
+    }
+
+    private static void testTitleRescuesQueryWreckage() {
+        // Also a real row. mpv names a URL with no metadata by unquoting it and
+        // taking the tail after the last slash, so `...content-type=audio%2Fmpeg`
+        // became the stored title.
+        String junk = "mpeg&Expires=1786861383&Signature=WlRhZjKWxkRAVg~EZSNZvSiV"
+                + "Yq2xT9UCSJg4XNavw&Key-Pair-Id=K1YS7LZGUP96OI";
+        RecentList.Item row = new RecentList.Item(junk, "book", "audiobook",
+                "https://content.libsyn.com/p/4/8/7/48750/td565-video-2026-08-11.mp3"
+                        + "?c_id=205007380&Expires=1786861383",
+                "18h", 0);
+        check("the uri gives a better name than the wreckage",
+                "td565-video-2026-08-11".equals(RecentRows.title(row)));
+        check("an ampersand in a real title is safe",
+                "Simon & Garfunkel Live".equals(RecentRows.title(
+                        item("Simon & Garfunkel Live", "music", 0))));
+    }
+
+    private static void testAnEmptyLabelFallsBackToTheUri() {
+        RecentList.Item row = new RecentList.Item("", "music", "", 
+                "https://example.com/sets/a-long-set.mp3", "2h", 0);
+        check("no label, name it from the uri",
+                "a-long-set".equals(RecentRows.title(row)));
     }
 
     private static void testTitleRescuesABareUrl() {
-        check("a bare link names its host",
-                "a link from traffic.libsyn.com".equals(RecentRows.title(
+        // The filename where there is one — it identifies the item...
+        check("a bare link is named by its file",
+                "td565".equals(RecentRows.title(
                         item("https://traffic.libsyn.com/sac/td565.mp3?x=1",
                              "book", 0))));
-        check("www is dropped",
+        // ...and the host where there is not: "watch" says nothing at all.
+        check("a generic path falls back to the host",
                 "a link from youtube.com".equals(RecentRows.title(
                         item("https://www.youtube.com/watch?v=aaa", "music", 0))));
     }
