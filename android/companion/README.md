@@ -54,7 +54,14 @@ addressed-player slot.
 | `FocusControl.java` | The `android.*` half of focus: request, abandon, forward the callbacks. Also the tripwire on `FocusPolicy`'s duplicated constants. |
 | `CompanionService.java` | Session, notification, the silent `AudioTrack`, and the wiring in both directions. |
 | `StatusServer.java` | The readout the outside can reach: `/state` and `/log` over loopback HTTP. `android.*`-free, so `test/run.sh` covers it. |
-| `MainActivity.java` | The on-screen readout — state and an event log, plus the probe/acting button. |
+| `MainActivity.java` | Home: the channel being driven with its transport, the other two as rows, and the health strip. |
+| `DiagnosticsActivity.java` | The event log, the focus probe/acting switch and the exit history — where the old main screen went. |
+| `ChannelCard.java` | One channel, drawn the same in the shade and in the app. Row and driver are the same component at two sizes. |
+| `Transport.java` | The verbs a media card has no room for: seek by an amount, speed, volume, mute, chapters. |
+| `Style.java` | The colours, type sizes and spacing every surface shares. There is no theme to hang them on. |
+| `Artwork.java` | The per-channel mark and tile, drawn in code — no res/drawable, no font dependency. |
+| `Health.java` | The home screen's verdicts: mic watch, bridges, deaths today. `android.*`-free. |
+| `CardText.java` | The second line of a card: artist, queue depth, time left. `android.*`-free. |
 | `WakeActivity.java` | The revive door `call_guard` knocks on after a kill. No window: starts the service and finishes. |
 | `MediaButtonReceiver.java` | Logs the broadcast path. Handles nothing; exists for diagnosis. |
 | `ShareActivity.java` | "Play with agent-media" in the share sheet. Draws nothing, finishes in `onCreate`, toasts the verdict. |
