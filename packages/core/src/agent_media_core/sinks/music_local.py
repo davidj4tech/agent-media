@@ -75,8 +75,10 @@ def is_self(host: str) -> bool:
     loopback or this host and executes locally — so this is that rule, applied
     to the lane that had not needed it yet.
 
-    Matches on the short name, like the sibling: `p8a`, `p8a.tail….ts.net` and
-    the loopback spellings are all this machine when this machine is p8a.
+    Matches on the short name, like the sibling, plus the loopback spellings.
+    That is enough for an ordinary host and NOT enough for the phone, which
+    calls itself `localhost` whatever its tailnet name is — see
+    `fetch_is_local`, which is what the phone lane actually asks.
     """
     host = (host or "").strip()
     if not host or host in ("127.0.0.1", "::1", "localhost"):
@@ -93,6 +95,36 @@ def host_argv(host: str, command: str) -> list:
     if is_self(host):
         return ["sh", "-c", command]
     return ["ssh", *_SSH_OPTS, host, command]
+
+
+def fetch_is_local() -> bool:
+    """True when the phone-side helper should run here instead of over ssh.
+
+    `is_self(ssh_host())` cannot answer this on the device that matters.
+    **Android gives every Termux install the hostname `localhost`** — p8a does
+    not know it is called p8a — so comparing `MEDIA_MUSIC_LOCAL_SSH` against
+    `gethostname()` is False on the phone and False everywhere else, which is
+    to say useless. That is why the first fix for the share sheet's `Host key
+    verification failed` did not fix it.
+
+    The endpoint answers instead, and cannot be wrong about it. This backend's
+    whole identity is the phone's mpv IPC socket, and its *shape* says where
+    that mpv is: a `tcp://` endpoint is the bridged form the hub reaches over
+    Tailscale, while a bare path is a unix socket, reachable only from the
+    device that owns it. If we can open the socket as a file, we are on the
+    phone, and so is the helper that fetches for it.
+    """
+    if is_self(ssh_host()):
+        return True
+    ep = endpoint() or ""
+    return bool(ep) and "://" not in ep
+
+
+def phone_argv(command: str) -> list:
+    """argv that runs a phone-side `command` — locally when we are the phone."""
+    if fetch_is_local():
+        return ["sh", "-c", command]
+    return ["ssh", *_SSH_OPTS, ssh_host(), command]
 
 
 def endpoint() -> Optional[str]:
@@ -171,7 +203,7 @@ def _phone_cached_path(vid: str) -> Optional[str]:
     remote = (f"ls -1 \"$HOME\"/{cache}/{qvid}.* 2>/dev/null | "
               "grep -v -e '\\.title$' -e '\\.part$' -e '\\.json$' | head -1")
     try:
-        r = subprocess.run(host_argv(host, remote),
+        r = subprocess.run(phone_argv(remote),
                            capture_output=True, text=True, timeout=8)
     except (subprocess.TimeoutExpired, OSError):
         return None
@@ -198,7 +230,7 @@ def _copy_rooms_to_phone(rooms_path: str) -> Optional[str]:
     reader = _rooms_reader(rooms_path)
     try:
         r = subprocess.run(
-            host_argv(host,
+            phone_argv(
                       f"mkdir -p \"$HOME\"/{cache} && "
                       f"cat > \"$HOME\"/{cache}/.{qbase}.part && "
                       f"mv \"$HOME\"/{cache}/.{qbase}.part \"$HOME\"/{cache}/{qbase} && "
@@ -217,7 +249,7 @@ def _copy_rooms_to_phone(rooms_path: str) -> Optional[str]:
         title = subprocess.Popen(["cat", sidecar], stdout=subprocess.PIPE)
         try:
             subprocess.run(
-                host_argv(host,
+                phone_argv(
                           f"cat > \"$HOME\"/{cache}/{qstem}.title; "
                           f"[ -s \"$HOME\"/{cache}/{qstem}.title ] || "
                           f"rm -f \"$HOME\"/{cache}/{qstem}.title"),
@@ -232,7 +264,7 @@ def _phone_title(vid: str) -> str:
     host = ssh_host()
     remote = f"cat \"$HOME\"/{shlex.quote(cache_dir())}/{shlex.quote(vid)}.title 2>/dev/null"
     try:
-        r = subprocess.run(host_argv(host, remote),
+        r = subprocess.run(phone_argv(remote),
                            capture_output=True, text=True, timeout=5)
     except (subprocess.TimeoutExpired, OSError):
         return ""
@@ -293,7 +325,7 @@ class SinkMusicLocal:
         timeout = float(os.environ.get("MEDIA_MUSIC_LOCAL_FETCH_TIMEOUT", "120"))
         try:
             r = subprocess.run(
-                host_argv(host, remote),
+                phone_argv(remote),
                 capture_output=True, text=True, timeout=timeout,
             )
         except subprocess.TimeoutExpired as e:

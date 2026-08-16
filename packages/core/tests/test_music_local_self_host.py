@@ -58,6 +58,58 @@ def test_the_local_form_actually_runs(tmp_path):
     assert out.returncode == 0 and out.stdout.strip() == "hello"
 
 
+# ---- the question the phone lane actually asks ---------------------------
+#
+# is_self() is not enough there: Android gives every Termux install the
+# hostname `localhost`, so p8a does not know it is called p8a and no name
+# comparison can tell it. The endpoint's shape can.
+
+def test_a_unix_socket_endpoint_means_we_are_the_phone(monkeypatch):
+    monkeypatch.setenv("MEDIA_MUSIC_LOCAL_SSH", "p8a")
+    monkeypatch.setenv("MEDIA_MUSIC_LOCAL_ENDPOINT",
+                       "/data/data/com.termux/files/home/.local/state/"
+                       "agent-media/mpv-music.sock")
+    assert music_local.fetch_is_local()
+    assert music_local.phone_argv("echo hi") == ["sh", "-c", "echo hi"]
+
+
+def test_a_tcp_endpoint_means_the_phone_is_elsewhere(monkeypatch):
+    # What the hub sees: the same mpv, bridged over Tailscale.
+    monkeypatch.setenv("MEDIA_MUSIC_LOCAL_SSH", "p8a")
+    monkeypatch.setenv("MEDIA_MUSIC_LOCAL_ENDPOINT", "tcp://100.94.14.59:6601")
+    assert not music_local.fetch_is_local()
+    argv = music_local.phone_argv("echo hi")
+    assert argv[0] == "ssh" and argv[-2:] == ["p8a", "echo hi"]
+
+
+def test_no_endpoint_is_not_local(monkeypatch):
+    # The backend is unconfigured; nothing should be assumed about where it is.
+    monkeypatch.setenv("MEDIA_MUSIC_LOCAL_SSH", "p8a")
+    monkeypatch.delenv("MEDIA_MUSIC_LOCAL_ENDPOINT", raising=False)
+    assert not music_local.fetch_is_local()
+
+
+def test_a_hostname_match_still_wins_when_it_can(monkeypatch):
+    # An ordinary host that IS the fetcher and names itself properly does not
+    # need the endpoint hint.
+    monkeypatch.setenv("MEDIA_MUSIC_LOCAL_SSH", socket.gethostname())
+    monkeypatch.setenv("MEDIA_MUSIC_LOCAL_ENDPOINT", "tcp://100.94.14.59:6601")
+    assert music_local.fetch_is_local()
+
+
+def test_the_phone_hostname_trap_is_covered(monkeypatch):
+    # The exact shape of the bug: hostname says localhost, ssh host says p8a,
+    # endpoint is a unix socket. Before the endpoint rule this asked ssh to
+    # connect p8a -> p8a and died on host key verification.
+    monkeypatch.setattr(socket, "gethostname", lambda: "localhost")
+    monkeypatch.setenv("MEDIA_MUSIC_LOCAL_SSH", "p8a")
+    monkeypatch.setenv("MEDIA_MUSIC_LOCAL_ENDPOINT",
+                       "/data/data/com.termux/files/home/.local/state/"
+                       "agent-media/mpv-music.sock")
+    assert not music_local.is_self("p8a"), "the name comparison cannot see it"
+    assert music_local.fetch_is_local(), "but the endpoint can"
+
+
 def test_the_default_fetch_host_is_still_the_phone(monkeypatch):
     # The default must not change: on the hub this module is still talking to
     # p8a over ssh, and that is the path that carries every fetch today.
