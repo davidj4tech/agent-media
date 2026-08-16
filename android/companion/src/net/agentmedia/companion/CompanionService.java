@@ -197,6 +197,8 @@ public class CompanionService extends Service {
     private boolean heldForSession = false;
     /** The other half of the same question: Sam waits while David dictates. */
     private final DictationHold dictation = new DictationHold();
+    /** And the third: the book stops for a conversation, since nothing else stops it. */
+    private final BookHold bookHold = new BookHold();
     /** David tapped "Speak now": the hold is off for the rest of this session. */
     private boolean speakNow = false;
     /**
@@ -796,6 +798,7 @@ public class CompanionService extends Service {
         // earbud. Worth re-checking on the phone all the same.
         applyLiveHold();
         applyDictationHold();
+        applyBookHold();
 
         // The quiet half of the cue: the count sits on the speech card, which
         // is already in the shade and costs nothing to glance at. The banner is
@@ -938,6 +941,52 @@ public class CompanionService extends Service {
             performSpeech(action == DictationHold.Action.PAUSE
                     ? SpeechPolicy.Action.PAUSE
                     : SpeechPolicy.Action.RESUME);
+        }
+    }
+
+    /**
+     * The third hold: the book stops for a conversation.
+     *
+     * The one channel with no handler on this route until 2026-08-16 — see
+     * {@link BookHold} for why a conversation reaches neither {@code call_guard}
+     * nor the focus policy, and why the book is held coarsely rather than
+     * ducked and handed back per utterance.
+     *
+     * Called from pushSessionState with the other two, so it sees the session
+     * starting and the book's own state changing. Silent apart from the log:
+     * the book's card already shows the pause, which is a better place to
+     * notice it than a second notification.
+     */
+    private void applyBookHold() {
+        if (book == null) return;
+        boolean audible = book.state().playing();
+        boolean wasHolding = bookHold.holding();
+        boolean wasSurrendered = bookHold.surrendered();
+        // A call records as VOICE_COMMUNICATION exactly like Live does, so this
+        // is the only thing that tells them apart — and it decides the resume,
+        // not the pause. MODE_IN_CALL is telephony's own; an app cannot put the
+        // phone into it.
+        boolean inCall = audio != null
+                && audio.getMode() == AudioManager.MODE_IN_CALL;
+        BookHold.Action action = bookHold.onState(
+                bargeIn.voiceSession(), audible, inCall, System.currentTimeMillis());
+
+        if (bookHold.holding() && !wasHolding) {
+            log("book: conversation started — " + bookHold.why());
+        } else if (!bookHold.holding() && wasHolding) {
+            log("book: conversation over — " + (action == BookHold.Action.RESUME
+                    ? "picking the book back up"
+                    : "leaving the book where it is"));
+        } else if (bookHold.surrendered() && !wasSurrendered) {
+            log("book: playing again with the conversation still going — "
+                    + "that was David, staying out of it");
+        }
+
+        if (action == BookHold.Action.PAUSE) {
+            log("book: pausing for the conversation");
+            book.ipc().setProperty("pause", Boolean.TRUE);
+        } else if (action == BookHold.Action.RESUME) {
+            book.ipc().setProperty("pause", Boolean.FALSE);
         }
     }
 
@@ -1220,6 +1269,10 @@ public class CompanionService extends Service {
             m.put("dictation", dictation.why());
             m.put("dictation_holding", Boolean.valueOf(dictation.holding()));
             m.put("dictation_owes_resume", Boolean.valueOf(dictation.owesResume()));
+            // And the book's, which answers the other "why has this gone quiet"
+            // — or, before the fix, "why has this NOT gone quiet".
+            m.put("book_hold", bookHold.why());
+            m.put("book_hold_owes_resume", Boolean.valueOf(bookHold.owesResume()));
             m.put("mic_events", mic == null
                     ? new ArrayList<String>() : mic.history());
             return Json.write(m);

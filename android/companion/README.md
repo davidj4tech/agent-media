@@ -50,6 +50,7 @@ addressed-player slot.
 | `SideChannel.java` | A channel with a card but no claim on the phone: session, notification, transport, IPC for speech and book. |
 | `FocusPolicy.java` | The audio-focus decision table for **music** — duck, restore, and what is owed back afterwards. `android.*`-free, so `test/run.sh` covers it. |
 | `SpeechPolicy.java` | The same for **speech**: pause, resume, and the deadline that stops a pause being stranded on the broker. Also `android.*`-free. |
+| `BookHold.java` | And for the **book**, on the one route that reaches it: stop for a conversation, pick it back up afterwards — but never after a call. `android.*`-free. |
 | `FocusControl.java` | The `android.*` half of focus: request, abandon, forward the callbacks. Also the tripwire on `FocusPolicy`'s duplicated constants. |
 | `CompanionService.java` | Session, notification, the silent `AudioTrack`, and the wiring in both directions. |
 | `StatusServer.java` | The readout the outside can reach: `/state` and `/log` over loopback HTTP. `android.*`-free, so `test/run.sh` covers it. |
