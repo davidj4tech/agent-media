@@ -122,8 +122,12 @@ AF="scaletempo2"
 # keep-open=yes: a finished book stays loaded so the card, the bookmark and the
 # resume-by-URI all still have something to point at. The opposite of speech,
 # where a finished clip should let go.
+# No --no-config, deliberately, though red5's unit carried one. The phone has an
+# ~/.config/mpv/mpv.conf that its brokers are meant to read — yt-dlp format and
+# extractor args, and demuxer buffers sized for a phone — and sink-speech reads
+# it on both hosts. Adding the flag here would have quietly changed how the
+# phone plays books to match a line that was only ever red5's habit.
 exec mpv --idle=yes --ao="$MEDIA_BOOK_AO" --force-window=no --no-video \
-  --no-terminal --no-config \
   --input-ipc-server="$SOCK" \
   --audio-client-name=agent-media-book \
   --volume-max="$MEDIA_BOOK_VOLUME_MAX" --volume="$MEDIA_BOOK_VOLUME" \
