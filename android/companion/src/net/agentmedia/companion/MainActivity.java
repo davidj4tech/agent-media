@@ -67,6 +67,7 @@ public class MainActivity extends Activity {
 
     private LinearLayout driverSlot;
     private LinearLayout rowSlot;
+    private TextView rowsLabel;
     private LinearLayout healthStrip;
     private Transport transport;
     private ChannelCard.Views driverCard;
@@ -114,9 +115,17 @@ public class MainActivity extends Activity {
         driverSlot.setPadding(0, dp(Style.gap(3)), 0, 0);
         root.addView(driverSlot);
 
+        rowsLabel = new TextView(this);
+        rowsLabel.setText("TAP TO DRIVE");
+        rowsLabel.setTextSize(Style.LABEL);
+        rowsLabel.setTextColor(Style.FAINT);
+        rowsLabel.setTypeface(Typeface.MONOSPACE);
+        rowsLabel.setLetterSpacing(0.1f);
+        rowsLabel.setPadding(0, dp(Style.gap(5)), 0, dp(Style.gap(1)));
+        root.addView(rowsLabel);
+
         rowSlot = new LinearLayout(this);
         rowSlot.setOrientation(LinearLayout.VERTICAL);
-        rowSlot.setPadding(0, dp(Style.gap(4)), 0, 0);
         root.addView(rowSlot);
 
         healthStrip = new LinearLayout(this);

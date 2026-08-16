@@ -130,6 +130,20 @@ final class ChannelCard {
 
         root.addView(lines, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        if (!driver) {
+            // A row that takes the wheel has to look like it does something.
+            // The rows were tappable from the day the two screens merged and
+            // nothing on screen said so, which is a control you have to be told
+            // about — asked twice on 2026-08-17, which is twice more than a
+            // control should need.
+            TextView chevron = new TextView(ctx);
+            chevron.setText("›");
+            chevron.setTextSize(Style.TITLE);
+            chevron.setTextColor(Style.FAINT);
+            chevron.setPadding(dp(ctx, Style.gap(2)), 0, 0, 0);
+            root.addView(chevron);
+        }
         return new Views(root, art, title, subtitle, barTrack, barFill, clock);
     }
 
