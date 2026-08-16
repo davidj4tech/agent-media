@@ -1,11 +1,5 @@
 package net.agentmedia.companion;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.nio.charset.StandardCharsets;
 import java.util.Map;
 
 /**
@@ -24,17 +18,8 @@ import java.util.Map;
  */
 final class ShareRequest {
 
-    /** Where the Termux-side listener binds. Loopback, always. */
-    static final String HOST = "127.0.0.1";
-    static final int DEFAULT_PORT = 8771;
-
-    /**
-     * Long enough for a yt-dlp metadata probe on a mobile connection, short
-     * enough that a dead listener does not hold the share sheet open. The
-     * listener answers as soon as it has classified — the download it starts
-     * afterwards is not on this clock.
-     */
-    static final int TIMEOUT_MS = 25000;
+    /** Where the Termux-side listener binds. See {@link Loopback}. */
+    static final int DEFAULT_PORT = Loopback.PORT;
 
     /** What to show the sharer: one line, and whether it went well. */
     static final class Result {
@@ -83,31 +68,9 @@ final class ShareRequest {
 
     /** POST the shared text; never throws — the caller has a toast to show. */
     static Result send(int port, String text) {
-        HttpURLConnection c = null;
-        try {
-            URL url = new URL("http://" + HOST + ":" + port + "/share");
-            c = (HttpURLConnection) url.openConnection();
-            c.setRequestMethod("POST");
-            c.setConnectTimeout(TIMEOUT_MS);
-            c.setReadTimeout(TIMEOUT_MS);
-            c.setDoOutput(true);
-            c.setRequestProperty("Content-Type", "application/json");
-            byte[] payload = body(text).getBytes(StandardCharsets.UTF_8);
-            c.setFixedLengthStreamingMode(payload.length);
-            OutputStream os = c.getOutputStream();
-            os.write(payload);
-            os.close();
-            int status = c.getResponseCode();
-            return parse(status, read(status >= 400 ? c.getErrorStream()
-                                                    : c.getInputStream()));
-        } catch (IOException e) {
-            // Nearly always the same cause, so say the useful thing rather
-            // than the accurate-but-opaque one: the service is not running.
-            return new Result(false, "agent-media: no listener on "
-                    + HOST + ":" + port + " (is media-share running?)");
-        } finally {
-            if (c != null) c.disconnect();
-        }
+        Loopback.Reply r = Loopback.post(port, "/share", body(text));
+        if (!r.reached()) return new Result(false, r.failure);
+        return parse(r.status, r.body);
     }
 
     private static String str(Object v) {
@@ -115,13 +78,4 @@ final class ShareRequest {
         return s == null ? "" : s;
     }
 
-    private static String read(InputStream in) throws IOException {
-        if (in == null) return "";
-        java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
-        byte[] chunk = new byte[1024];
-        int n;
-        while ((n = in.read(chunk)) > 0) buf.write(chunk, 0, n);
-        in.close();
-        return new String(buf.toByteArray(), StandardCharsets.UTF_8);
-    }
 }

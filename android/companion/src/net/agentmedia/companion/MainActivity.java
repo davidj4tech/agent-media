@@ -92,6 +92,17 @@ public class MainActivity extends Activity {
         });
         root.addView(focusButton);
 
+        // The only screen here that is about agent-media rather than about this
+        // app's own plumbing. It lives behind a button because the readout
+        // above is what this activity is for — diagnosis — and the history is
+        // something you go and look at.
+        Button recentButton = new Button(this);
+        recentButton.setAllCaps(false);
+        recentButton.setText("Recently played");
+        recentButton.setOnClickListener(v ->
+                startActivity(new Intent(this, RecentActivity.class)));
+        root.addView(recentButton);
+
         logView = new TextView(this);
         logView.setTypeface(Typeface.MONOSPACE);
         logView.setTextSize(12f);

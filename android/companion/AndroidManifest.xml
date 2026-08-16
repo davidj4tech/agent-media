@@ -30,6 +30,13 @@
             </intent-filter>
         </activity>
 
+        <!-- What played lately, tap to play again. Not exported: it is reached
+             from MainActivity, and it can start playback. -->
+        <activity
+            android:name=".RecentActivity"
+            android:exported="false"
+            android:label="@string/recent_label" />
+
         <!-- "Play with agent-media" in the share sheet. NoDisplay because it
              draws nothing and finishes inside onCreate; noHistory and
              excludeFromRecents so a share never leaves a ghost window behind

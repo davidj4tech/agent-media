@@ -9,6 +9,10 @@ of that happens here, in Python, in the repo, under test.
 
     POST /share   body: a URL, shared text, or {"text": "..."}
                   -> {"ok":true,"channel":"book","content_type":"podcast",...}
+    GET  /recent  ?limit=&channel= -> what played, newest first, for the app's
+                  in-app list: uri, channel, content_type, label, ago.
+    POST /play    body: {"uri", "channel", "content_type"} — replay a row from
+                  that list. It does NOT classify: the row already knows.
     GET  /        -> the same JSON shape, minus a verdict: a health probe.
 
 **It answers before it plays.** Classification takes a `yt-dlp -J` round trip
@@ -32,6 +36,8 @@ import logging
 import socketserver
 import sys
 import threading
+import time
+from typing import Optional
 
 from .. import share as sharemod
 
@@ -64,23 +70,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
             pass  # the activity gave up; the dispatch still runs
 
     def do_GET(self) -> None:  # noqa: N802
-        if self.path.split("?")[0] not in ("/", "/health"):
+        path, _, query = self.path.partition("?")
+        if path == "/recent":
+            self._send(200, {"ok": True, "rows": recent_rows(query)})
+            return
+        if path not in ("/", "/health"):
             self._send(404, {"ok": False, "error": "no such path"})
             return
         self._send(200, {"ok": True, "service": "media-share"})
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path.split("?")[0] != "/share":
+        path = self.path.split("?")[0]
+        if path == "/play":
+            self._replay()
+            return
+        if path != "/share":
             self._send(404, {"ok": False, "error": "no such path"})
             return
-        try:
-            length = int(self.headers.get("Content-Length") or 0)
-        except ValueError:
-            length = 0
-        if length <= 0 or length > MAX_BODY:
-            self._send(400, {"ok": False, "error": "empty or oversized body"})
+        raw = self._read_body()
+        if raw is None:
             return
-        raw = self.rfile.read(length).decode("utf-8", "replace")
         text, channel, where = _parse_body(raw)
         try:
             url, verdict = sharemod.share(text, channel=channel,
@@ -100,6 +109,89 @@ class Handler(http.server.BaseHTTPRequestHandler):
                          "line": verdict.line()})
         threading.Thread(target=_play, args=(url, verdict, where),
                          daemon=True, name="share-dispatch").start()
+
+    def _read_body(self) -> Optional[str]:
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if length <= 0 or length > MAX_BODY:
+            self._send(400, {"ok": False, "error": "empty or oversized body"})
+            return None
+        return self.rfile.read(length).decode("utf-8", "replace")
+
+    def _replay(self) -> None:
+        """Play something the caller already knows the channel for.
+
+        `/share` classifies; this does not. A row from `/recent` carries the
+        channel and content type it played under last time, and re-deriving
+        them would be worse than pointless — it would mean a yt-dlp round trip
+        to maybe reach a different answer than the one the listener is looking
+        at. Replay is not a share, it is a repeat.
+        """
+        raw = self._read_body()
+        if raw is None:
+            return
+        try:
+            obj = json.loads(raw)
+        except ValueError:
+            obj = {}
+        uri = str(obj.get("uri") or "").strip() if isinstance(obj, dict) else ""
+        if not uri:
+            self._send(422, {"ok": False, "error": "nothing to play"})
+            return
+        channel = str(obj.get("channel") or "music")
+        if channel not in ("music", "book"):
+            self._send(422, {"ok": False, "error": f"no such channel: {channel}"})
+            return
+        verdict = sharemod.Verdict(
+            channel=channel,
+            content_type=str(obj.get("content_type") or "music"),
+            reason="replayed from history",
+            title=str(obj.get("title") or ""))
+        log.info("replay: %s", verdict.line())
+        self._send(200, {"ok": True, "uri": uri, "channel": verdict.channel,
+                         "content_type": verdict.content_type,
+                         "title": verdict.title, "line": verdict.line()})
+        threading.Thread(target=_play,
+                         args=(uri, verdict, str(obj.get("where") or "")),
+                         daemon=True, name="replay-dispatch").start()
+
+
+def recent_rows(query: str = "") -> list:
+    """Rows for the app's list: what played, newest first.
+
+    Presentation is shared with `media recent` rather than reimplemented —
+    same label, same "3h" — because two renderings of one history drift, and
+    the phone is the harder one to check.
+    """
+    from urllib.parse import parse_qs
+
+    from ..cli import _ago, _recent_label
+    from ..state import StateStore
+
+    args = parse_qs(query or "")
+    channel = (args.get("channel") or [""])[0]
+    if channel not in ("music", "book", "speech", ""):
+        channel = ""
+    try:
+        limit = max(1, min(100, int((args.get("limit") or ["20"])[0])))
+    except ValueError:
+        limit = 20
+
+    now = time.time()
+    rows = []
+    for r in StateStore().recent_history(sink=channel or None, limit=limit):
+        title = (r.get("text") or "").strip()
+        rows.append({
+            "uri": r.get("uri") or "",
+            "channel": r.get("sink") or "",
+            "content_type": r.get("content_type") or "",
+            "label": title.splitlines()[0] if title
+                     else _recent_label(r.get("uri") or ""),
+            "ago": _ago(now - float(r.get("started_at") or now)),
+        })
+    return rows
 
 
 def _parse_body(raw: str) -> tuple[str, str, str]:

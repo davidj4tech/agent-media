@@ -161,7 +161,7 @@ def test_an_oversized_body_is_rejected(server):
 
 def test_unknown_paths_404(server):
     _, base = server
-    assert _post(base, "https://youtu.be/x", path="/play")[0] == 404
+    assert _post(base, "https://youtu.be/x", path="/nope")[0] == 404
 
 
 def test_body_parsing():
@@ -171,3 +171,98 @@ def test_body_parsing():
     # A body that opens like JSON but isn't is still shared text, not an error.
     assert share_listener._parse_body("{not json") == ("{not json", "", "")
     assert share_listener._parse_body('{"url":"u"}') == ("u", "", "")
+
+
+# ---- /recent and /play: what the in-app list is built on ------------------
+
+def _get(base, path):
+    with urllib.request.urlopen(base + path, timeout=5) as r:
+        return r.status, json.loads(r.read())
+
+
+@pytest.fixture()
+def history(tmp_path, monkeypatch):
+    """A state db of our own, so the listing is ours and not this machine's."""
+    from agent_media_core.state import StateStore
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    return StateStore()
+
+
+def test_recent_lists_what_played(server, history):
+    _, base = server
+    history.set_music_intent("mpv:https://www.youtube.com/watch?v=aaaaaaaaaaa",
+                             "dj-set", "A Long Set")
+    history.set_book_last("https://abs.example/ep12.mp3", "Episode 12")
+
+    code, body = _get(base, "/recent")
+    assert code == 200 and body["ok"]
+    rows = body["rows"]
+    assert [r["channel"] for r in rows] == ["book", "music"]
+    assert rows[0]["label"] == "Episode 12"
+    assert rows[1]["content_type"] == "dj-set"
+    # Every row carries what /play needs, so the app never has to guess.
+    assert all(r["uri"] and r["channel"] and r["ago"] for r in rows)
+
+
+def test_recent_labels_a_row_with_no_title(server, history):
+    _, base = server
+    history.note_play("music", "mpv:https://www.youtube.com/watch?v=bbbbbbbbbbb")
+    rows = _get(base, "/recent")[1]["rows"]
+    # The same label `media recent` shows — one implementation, no drift.
+    assert rows[0]["label"] == "youtube:bbbbbbbbbbb"
+
+
+def test_recent_filters_and_limits(server, history):
+    _, base = server
+    for i in range(5):
+        history.note_play("music", f"uri-{i}")
+    history.note_play("book", "a-book")
+    assert len(_get(base, "/recent?limit=2")[1]["rows"]) == 2
+    assert [r["channel"] for r in _get(base, "/recent?channel=book")[1]["rows"]] \
+        == ["book"]
+    # Junk is clamped rather than fatal: a list must always render something.
+    assert _get(base, "/recent?limit=nonsense")[1]["ok"]
+    assert _get(base, "/recent?channel=nonsense")[1]["ok"]
+
+
+def test_recent_on_an_empty_history(server, history):
+    _, base = server
+    assert _get(base, "/recent")[1] == {"ok": True, "rows": []}
+
+
+def test_play_repeats_a_row_without_reclassifying(server, dispatched, monkeypatch):
+    # The point of the endpoint: no yt-dlp round trip, no chance of landing on
+    # a different channel than the row the listener is looking at.
+    _, base = server
+    monkeypatch.setattr(share, "probe",
+                        lambda *a, **kw: pytest.fail("replay must not probe"))
+
+    code, body = _post(base, json.dumps({"uri": "mpv:https://x/y",
+                                         "channel": "book",
+                                         "content_type": "podcast"}),
+                       path="/play")
+    assert code == 200 and body["channel"] == "book"
+    assert dispatched.wait()
+    assert dispatched.calls == [("mpv:https://x/y", "book", "podcast", "")]
+
+
+def test_play_defaults_to_music(server, dispatched):
+    _, base = server
+    code, _ = _post(base, json.dumps({"uri": "local:track:x"}), path="/play")
+    assert code == 200
+    assert dispatched.wait()
+    assert dispatched.calls[0][1:3] == ("music", "music")
+
+
+def test_play_needs_a_uri(server):
+    _, base = server
+    assert _post(base, json.dumps({"channel": "music"}), path="/play")[0] == 422
+    assert _post(base, "not json at all", path="/play")[0] == 422
+
+
+def test_play_rejects_a_channel_that_does_not_exist(server):
+    _, base = server
+    code, body = _post(base, json.dumps({"uri": "x", "channel": "speech"}),
+                       path="/play")
+    assert code == 422 and "speech" in body["error"]
