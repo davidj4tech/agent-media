@@ -14,7 +14,9 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * The verbs, for whichever channel is being driven.
@@ -46,6 +48,15 @@ final class Transport {
     private final Handler main = new Handler(Looper.getMainLooper());
     private TextView playButton;
     private TextView chaptersButton;
+    /**
+     * Every button, against the verb it sends.
+     *
+     * Kept so {@link #apply} can take away the ones this channel does not have.
+     * The book has no volume and no mute — a book is a thing you pause, not one
+     * you silence — and drawing those anyway made two buttons whose only
+     * possible answer was a toast saying no.
+     */
+    private final Map<TextView, String> needs = new LinkedHashMap<TextView, String>();
 
     Transport(Activity ctx, Host host) {
         this.ctx = ctx;
@@ -83,11 +94,13 @@ final class Transport {
 
         LinearLayout extras = row();
         TextView seekTo = button("seek to…");
+        needs.put(seekTo, "seek");
         seekTo.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { askSeek(); }
         });
         extras.addView(seekTo, weight());
         chaptersButton = button("chapters");
+        needs.put(chaptersButton, "chapter");
         chaptersButton.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { showChapters(); }
         });
@@ -98,10 +111,25 @@ final class Transport {
         return root;
     }
 
-    /** Follow the channel: the play button shows the state, chapters knows if. */
+    /**
+     * Follow the channel: state on the play button, and only the verbs it has.
+     *
+     * Gone, not greyed, for a verb the channel does not take at all — greyed
+     * says "not now", and this is "not ever". Chapters is the one exception: it
+     * is a music verb that comes and goes with the track, so it stays put and
+     * dims, which is "not now" and true.
+     */
     void apply(Channels.Channel c) {
         if (playButton != null) playButton.setText(c != null && c.playing ? "⏸" : "▶");
+        for (Map.Entry<TextView, String> e : needs.entrySet()) {
+            TextView b = e.getKey();
+            if (b == chaptersButton) continue;
+            boolean has = c == null || c.takes(e.getValue());
+            b.setVisibility(has ? View.VISIBLE : View.GONE);
+        }
         if (chaptersButton != null) {
+            boolean channelHas = c == null || c.takes("chapter");
+            chaptersButton.setVisibility(channelHas ? View.VISIBLE : View.GONE);
             boolean may = c != null && c.mayHaveChapters();
             chaptersButton.setEnabled(may);
             chaptersButton.setAlpha(may ? 1f : 0.4f);
@@ -190,6 +218,7 @@ final class Transport {
 
     private TextView verb(String label, final String action, final String arg) {
         TextView b = button(label);
+        needs.put(b, action);
         b.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { send(action, arg); }
         });

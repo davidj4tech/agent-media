@@ -123,6 +123,7 @@ public class DiagnosticsActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
         setContentView(root);
+        Edges.fit(root);
         bindService(new Intent(this, CompanionService.class), conn,
                     Context.BIND_AUTO_CREATE);
     }

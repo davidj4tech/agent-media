@@ -79,6 +79,7 @@ public class RecentActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
         setContentView(root);
+        Edges.fit(root);
     }
 
     @Override

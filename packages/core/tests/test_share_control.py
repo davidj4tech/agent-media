@@ -42,6 +42,25 @@ def test_speech_verbs_are_the_bare_commands():
     assert seen == [["toggle"], ["mute"]]
 
 
+def test_a_channel_publishes_the_verbs_it_takes():
+    # So a front end never draws a button that can only be refused. The phone
+    # drew `mute` on the book channel until this existed.
+    assert "mute" in sc.verbs("speech")
+    assert "mute" not in sc.verbs("book")
+    assert "volume" not in sc.verbs("book")
+    assert "chapter" not in sc.verbs("book")
+    assert {"toggle", "seek", "speed", "next", "prev"} <= set(sc.verbs("book"))
+    # And every published verb is one control() will actually accept.
+    for channel in sc.CHANNELS:
+        for action in sc.verbs(channel):
+            assert (channel, action) in sc.VERBS
+
+
+def test_the_snapshot_carries_them():
+    blank = sc._blank("book")
+    assert blank["verbs"] == sc.verbs("book")
+
+
 def test_an_unknown_verb_is_refused():
     with pytest.raises(sc.ControlError):
         sc.control("music", "rm -rf", runner=lambda argv: 0)

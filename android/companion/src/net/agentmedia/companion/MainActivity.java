@@ -132,6 +132,9 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.WRAP_CONTENT));
         scroller.setBackgroundColor(Style.GROUND);
         setContentView(scroller);
+        // Android 15 draws under the status bar; without this the title is
+        // behind the clock. See Edges.
+        Edges.fit(root);
 
         buildCards();
         renderHealth();

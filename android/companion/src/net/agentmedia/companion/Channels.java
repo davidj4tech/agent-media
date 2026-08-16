@@ -1,9 +1,12 @@
 package net.agentmedia.companion;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * The three channels as the control screen sees them, and the verbs it sends.
@@ -40,10 +43,29 @@ final class Channels {
         final Integer volume;
         final boolean muted;
         final int mutedPanes;
+        /**
+         * The actions this channel actually accepts, straight from the
+         * listener's own table — see share_control.VERBS.
+         *
+         * Empty means "the listener did not say", which is an older listener
+         * rather than a channel that takes nothing: {@link #takes} answers yes
+         * to everything in that case, which is exactly how this behaved before
+         * anybody asked.
+         */
+        final Set<String> verbs;
 
         Channel(String name, boolean idle, boolean playing, boolean paused,
                 String title, String chapter, Long posMs, Long durMs,
                 Double speed, Integer volume, boolean muted, int mutedPanes) {
+            this(name, idle, playing, paused, title, chapter, posMs, durMs,
+                 speed, volume, muted, mutedPanes,
+                 Collections.<String>emptySet());
+        }
+
+        Channel(String name, boolean idle, boolean playing, boolean paused,
+                String title, String chapter, Long posMs, Long durMs,
+                Double speed, Integer volume, boolean muted, int mutedPanes,
+                Set<String> verbs) {
             this.name = name;
             this.idle = idle;
             this.playing = playing;
@@ -56,6 +78,19 @@ final class Channels {
             this.volume = volume;
             this.muted = muted;
             this.mutedPanes = mutedPanes;
+            this.verbs = verbs == null ? Collections.<String>emptySet() : verbs;
+        }
+
+        /**
+         * Does this channel take that action?
+         *
+         * The point of asking: a button that can only ever be refused is worse
+         * than no button. There is no `mute` on the book channel — a book is a
+         * thing you pause, not one you silence — and the phone drew one anyway
+         * until the listener started publishing this.
+         */
+        boolean takes(String action) {
+            return verbs.isEmpty() || verbs.contains(action);
         }
 
         /** What to show as the headline. Never empty — a blank panel reads as broken. */
@@ -159,6 +194,17 @@ final class Channels {
                            null, null, false, 0);
     }
 
+    private static Set<String> verbs(Object raw) {
+        Set<String> out = new LinkedHashSet<String>();
+        if (raw instanceof List) {
+            for (Object v : (List<?>) raw) {
+                String s = Json.asString(v);
+                if (s != null && !s.isEmpty()) out.add(s);
+            }
+        }
+        return out;
+    }
+
     private static Channel one(String name, Map<?, ?> r) {
         return new Channel(name,
                 Json.asBool(r.get("idle"), true),
@@ -172,7 +218,8 @@ final class Channels {
                 r.get("volume") instanceof Number
                         ? Integer.valueOf(((Number) r.get("volume")).intValue()) : null,
                 Json.asBool(r.get("muted"), false),
-                (int) Json.asDouble(r.get("muted_panes"), 0));
+                (int) Json.asDouble(r.get("muted_panes"), 0),
+                verbs(r.get("verbs")));
     }
 
     private static Long num(Object v) {

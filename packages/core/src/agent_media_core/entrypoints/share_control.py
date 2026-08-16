@@ -113,10 +113,23 @@ def channels() -> dict:
     }
 
 
+def verbs(channel: str) -> list:
+    """Which actions this channel actually accepts, sorted.
+
+    Read straight off VERBS, because a front end that hardcodes its own list
+    gets it wrong in the direction that shows: the phone drew a `mute` button on
+    the book channel for a fortnight, and pressing it could only ever say no —
+    there is no `("book", "mute")` and there is no reason for one, a book being
+    a thing you pause rather than silence. A surface should be able to ask.
+    """
+    return sorted(action for (name, action) in VERBS if name == channel)
+
+
 def _blank(channel: str) -> dict:
     return {"channel": channel, "idle": True, "playing": False, "paused": None,
             "title": None, "chapter": None, "pos_ms": None, "dur_ms": None,
-            "speed": None, "volume": None, "backend": None}
+            "speed": None, "volume": None, "backend": None,
+            "verbs": verbs(channel)}
 
 
 def _speech() -> dict:
