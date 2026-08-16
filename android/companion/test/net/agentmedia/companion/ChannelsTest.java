@@ -21,7 +21,7 @@ public final class ChannelsTest {
             "{\"ok\":true,\"channels\":{"
             + "\"speech\":{\"channel\":\"speech\",\"idle\":false,\"playing\":true,"
             + "\"paused\":false,\"title\":\"Yes — and there's a catch\","
-            + "\"pos_ms\":4000,\"dur_ms\":21000,\"muted_panes\":2},"
+            + "\"pos_ms\":4000,\"dur_ms\":21000,\"muted_elsewhere\":2},"
             + "\"music\":{\"channel\":\"music\",\"idle\":false,\"playing\":true,"
             + "\"paused\":false,\"title\":\"A Long Set\",\"chapter\":\"Second Movement\","
             + "\"pos_ms\":724000,\"dur_ms\":3511000,\"speed\":1.25,\"volume\":130},"
@@ -115,8 +115,8 @@ public final class ChannelsTest {
         check("detail carries chapter, speed and volume",
                 music.contains("Second Movement"), music.contains("1.25×"),
                 music.contains("vol 130"));
-        check("muted panes are surfaced",
-                m.get("speech").detail().contains("2 muted"));
+        check("mutes elsewhere are surfaced, and say where",
+                m.get("speech").detail().contains("muted in 2 places"));
         check("an idle channel has nothing to add", m.get("book").detail().isEmpty());
     }
 

@@ -160,7 +160,18 @@ def _speech() -> dict:
 
         # The popup's "you have N things muted" badge: a durable mute on a pane
         # you are not looking at should not stay forgotten on a phone either.
-        out["muted_panes"] = len(StateStore().list_mutes() or [])
+        #
+        # Counted, not len()'d. `list_mutes` returns two buckets —
+        # {"panes": {...}, "sessions": {...}} — so len() was 2 whatever was in
+        # them, and the phone showed "2 muted" from the day the badge shipped
+        # with nothing muted anywhere. A number that never moves is worse than
+        # no number: it reads as information.
+        #
+        # Sessions count as well as panes. The key kept its old name for one
+        # release and then stopped lying about what it holds.
+        mutes = StateStore().list_mutes() or {}
+        out["muted_elsewhere"] = sum(
+            1 for bucket in mutes.values() for muted in bucket.values() if muted)
     except Exception:  # noqa: BLE001
         pass
     return out

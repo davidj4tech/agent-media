@@ -42,7 +42,15 @@ final class Channels {
         final Double speed;
         final Integer volume;
         final boolean muted;
-        final int mutedPanes;
+        /**
+         * How many panes and sessions have a standing mute on Sam.
+         *
+         * Not this channel's own state — that is {@link #muted}. This is the
+         * count of places elsewhere where he has been told not to speak, which
+         * is worth carrying to a phone precisely because you cannot see those
+         * places from it.
+         */
+        final int mutedElsewhere;
         /**
          * The actions this channel actually accepts, straight from the
          * listener's own table — see share_control.VERBS.
@@ -56,15 +64,15 @@ final class Channels {
 
         Channel(String name, boolean idle, boolean playing, boolean paused,
                 String title, String chapter, Long posMs, Long durMs,
-                Double speed, Integer volume, boolean muted, int mutedPanes) {
+                Double speed, Integer volume, boolean muted, int mutedElsewhere) {
             this(name, idle, playing, paused, title, chapter, posMs, durMs,
-                 speed, volume, muted, mutedPanes,
+                 speed, volume, muted, mutedElsewhere,
                  Collections.<String>emptySet());
         }
 
         Channel(String name, boolean idle, boolean playing, boolean paused,
                 String title, String chapter, Long posMs, Long durMs,
-                Double speed, Integer volume, boolean muted, int mutedPanes,
+                Double speed, Integer volume, boolean muted, int mutedElsewhere,
                 Set<String> verbs) {
             this.name = name;
             this.idle = idle;
@@ -77,7 +85,7 @@ final class Channels {
             this.speed = speed;
             this.volume = volume;
             this.muted = muted;
-            this.mutedPanes = mutedPanes;
+            this.mutedElsewhere = mutedElsewhere;
             this.verbs = verbs == null ? Collections.<String>emptySet() : verbs;
         }
 
@@ -148,7 +156,13 @@ final class Channels {
             if (!sp.isEmpty()) bits.add(sp);
             if (volume != null) bits.add("vol " + volume);
             if (muted) bits.add("muted");
-            if (mutedPanes > 0) bits.add(mutedPanes + " muted");
+            // "2 muted" said nothing about what the two were — and for its
+            // whole life it was a constant, because the listener was counting
+            // the buckets rather than what was in them.
+            if (mutedElsewhere > 0) {
+                bits.add(mutedElsewhere == 1 ? "muted in 1 pane"
+                                             : "muted in " + mutedElsewhere + " places");
+            }
             StringBuilder sb = new StringBuilder();
             for (String b : bits) {
                 if (sb.length() > 0) sb.append("  ·  ");
@@ -236,7 +250,7 @@ final class Channels {
                 r.get("volume") instanceof Number
                         ? Integer.valueOf(((Number) r.get("volume")).intValue()) : null,
                 Json.asBool(r.get("muted"), false),
-                (int) Json.asDouble(r.get("muted_panes"), 0),
+                (int) Json.asDouble(r.get("muted_elsewhere"), 0),
                 verbs(r.get("verbs")));
     }
 

@@ -191,3 +191,20 @@ def test_a_chapter_read_that_explodes_is_still_an_empty_list(monkeypatch):
 
     monkeypatch.setattr("agent_media_core.cli._music_mpv_chapters", boom)
     assert sc.chapters() == []
+
+
+def test_the_mute_badge_counts_mutes(monkeypatch, tmp_path):
+    """It counted the buckets, not what was in them, and so always said 2."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    from agent_media_core.state import StateStore
+
+    store = StateStore()
+    assert store.list_mutes() == {"panes": {}, "sessions": {}}
+
+    snap = sc.channels()["speech"]
+    assert snap["muted_elsewhere"] == 0, "nothing muted must read as nothing"
+
+    store.set_mute("pane", "%12", True)
+    store.set_mute("session", "projects-agent-media", True)
+    store.set_mute("pane", "%13", False)      # an override that says "do speak"
+    assert sc.channels()["speech"]["muted_elsewhere"] == 2
