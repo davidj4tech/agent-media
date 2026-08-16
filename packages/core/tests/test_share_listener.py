@@ -50,65 +50,85 @@ def test_get_is_a_health_probe(server):
         assert json.loads(r.read())["ok"] is True
 
 
-def test_a_share_is_classified_and_dispatched(server, monkeypatch):
+@pytest.fixture()
+def dispatched(monkeypatch):
+    """Capture what the background thread would have played, and let a test
+    wait for it.
+
+    Patches `_play` — the thread's target — rather than `share.dispatch`
+    underneath it. The distinction is not cosmetic: the target is bound when
+    the handler spawns the thread, but anything it looks up *inside* itself
+    resolves when the thread finally runs, which can be after the test has
+    returned and monkeypatch has put the real function back. That race made
+    this suite occasionally call the real `music play` on the developer's
+    machine — mpv, Mopidy, the lot — and the visible symptom was an unrelated
+    test failing on breaker state written by the leak.
+
+    `wait()` also gives every test a way to leave nothing in flight.
+    """
+    calls = []
+    ran = threading.Event()
+    gate = threading.Event()
+    gate.set()  # tests that want to hold the thread open clear it
+
+    def fake_play(url, verdict, where):
+        gate.wait(10)
+        calls.append((url, verdict.channel, verdict.content_type, where))
+        ran.set()
+
+    monkeypatch.setattr(share_listener, "_play", fake_play)
+    fake_play.calls = calls
+    fake_play.gate = gate
+    fake_play.wait = lambda timeout=5: ran.wait(timeout)
+    yield fake_play
+    gate.set()
+    ran.wait(10)  # never leave a dispatch thread running into the next test
+
+
+def test_a_share_is_classified_and_dispatched(server, monkeypatch, dispatched):
     _, base = server
     monkeypatch.setattr(share, "probe",
                         lambda url, **kw: share.Probe(url=url, probed=True,
                                                       title="A Talk",
                                                       duration_s=5400,
                                                       categories=["Education"]))
-    played = []
-    done = threading.Event()
-
-    def fake_dispatch(url, verdict, where=""):
-        played.append((url, verdict.channel, where))
-        done.set()
-        return 0
-
-    monkeypatch.setattr(share, "dispatch", fake_dispatch)
-
     code, body = _post(base, "A Talk https://youtu.be/jNQXAC9IVRw")
     assert code == 200
     assert body["channel"] == "book" and body["content_type"] == "podcast"
     assert body["url"] == "https://youtu.be/jNQXAC9IVRw"
     assert body["title"] == "A Talk"
-    assert done.wait(5)
-    assert played == [("https://youtu.be/jNQXAC9IVRw", "book", "")]
+    assert dispatched.wait()
+    assert dispatched.calls == [
+        ("https://youtu.be/jNQXAC9IVRw", "book", "podcast", "")]
 
 
-def test_the_response_does_not_wait_for_playback(server, monkeypatch):
+def test_the_response_does_not_wait_for_playback(server, monkeypatch, dispatched):
     # The property the whole split exists for: acquisition can take minutes on
     # a phone, and the toast must not wait for it.
     _, base = server
     monkeypatch.setattr(share, "probe",
                         lambda url, **kw: share.Probe(url=url, probed=True))
-    release = threading.Event()
-    monkeypatch.setattr(share, "dispatch",
-                        lambda *a, **kw: (release.wait(10), 0)[1])
+    dispatched.gate.clear()  # the "download" hangs
 
     started = time.monotonic()
     code, _ = _post(base, "https://youtu.be/jNQXAC9IVRw")
     elapsed = time.monotonic() - started
-    release.set()
     assert code == 200
     assert elapsed < 2.0, f"the response waited {elapsed:.1f}s for playback"
+    dispatched.gate.set()
+    assert dispatched.wait()
 
 
-def test_a_json_body_carries_the_channel_override(server, monkeypatch):
+def test_a_json_body_carries_the_channel_override(server, monkeypatch, dispatched):
     _, base = server
     monkeypatch.setattr(share, "probe",
                         lambda url, **kw: share.Probe(url=url, probed=True))
-    seen = []
-    done = threading.Event()
-    monkeypatch.setattr(share, "dispatch",
-                        lambda url, v, where="": (
-                            seen.append((v.channel, where)), done.set(), 0)[2])
-
     code, body = _post(base, json.dumps({"text": "https://youtu.be/x",
                                          "channel": "book",
                                          "where": "phone"}))
     assert code == 200 and body["channel"] == "book"
-    assert done.wait(5) and seen == [("book", "phone")]
+    assert dispatched.wait()
+    assert dispatched.calls == [("https://youtu.be/x", "book", "music", "phone")]
 
 
 def test_text_with_no_link_is_a_422_not_a_500(server):
