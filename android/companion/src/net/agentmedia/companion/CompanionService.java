@@ -195,6 +195,8 @@ public class CompanionService extends Service {
     private volatile String liveMode = LIVE_HOLD;
     /** We paused Sam for the voice session and owe him a delivery. */
     private boolean heldForSession = false;
+    /** The other half of the same question: Sam waits while David dictates. */
+    private final DictationHold dictation = new DictationHold();
     /** David tapped "Speak now": the hold is off for the rest of this session. */
     private boolean speakNow = false;
     /**
@@ -389,6 +391,12 @@ public class CompanionService extends Service {
             bargeIn.onMic(active, mic.source(), System.currentTimeMillis());
             log("mic: " + (active ? "something is recording" : "quiet")
                     + " — " + bargeIn.why(System.currentTimeMillis()));
+            // The mic opening is the whole signal for the dictation hold, and
+            // it must not wait for the next position poll to be noticed: the
+            // sentence being talked over is happening now. This is also what
+            // stopped MicWatch being a probe — until this call nothing
+            // downstream of it acted, so dictation had no effect at all.
+            pushSessionState();
         });
         mic.start();
 
@@ -766,6 +774,7 @@ public class CompanionService extends Service {
         // music session opens one — so this competes for the shade, not for the
         // earbud. Worth re-checking on the phone all the same.
         applyLiveHold();
+        applyDictationHold();
 
         // The quiet half of the cue: the count sits on the speech card, which
         // is already in the shade and costs nothing to glance at. The banner is
@@ -856,6 +865,58 @@ public class CompanionService extends Service {
                 // cannot carry the two buttons, so it says where they are.
                 toast("Sam has something to say — pull down to answer");
             }
+        }
+    }
+
+    /**
+     * The quiet half: Sam waits while the mic is open for dictation.
+     *
+     * Silent on purpose — no card, no toast. A dictation lasts seconds, and a
+     * notification every time David talks to his keyboard would be worse than
+     * the problem. The log line is there for {@code /log}, which is how this
+     * gets diagnosed from red5.
+     *
+     * Called from pushSessionState like {@link #applyLiveHold}, so it sees both
+     * the mic changing and speech starting — the second one matters, because a
+     * reply staged mid-dictation lands on a broker whose pause the coordinator
+     * has just cleared.
+     */
+    private void applyDictationHold() {
+        boolean micOpen = mic != null && mic.active();
+        boolean audible = speechState.playing();
+        boolean wasHolding = dictation.holding();
+        boolean wasExpired = dictation.expired();
+        DictationHold.Action action = dictation.onState(
+                micOpen, bargeIn.voiceSession(), audible, System.currentTimeMillis());
+
+        if (dictation.holding() && !wasHolding) {
+            log("dictation: mic open — Sam waits");
+        } else if (!dictation.holding() && wasHolding) {
+            log("dictation: mic shut — Sam carries on");
+        } else if (dictation.expired() && !wasExpired) {
+            log("dictation: mic still open after "
+                    + (DictationHold.MAX_HOLD_MS / 1000)
+                    + "s — that is not dictation, letting Sam speak");
+        }
+        // PAUSE arrives on every push while speech is audible and the mic is
+        // open, which is the re-assert; only the first is worth a line.
+        if (action == DictationHold.Action.PAUSE && !wasHolding) {
+            log("dictation: pausing the clip in flight");
+        }
+        if (action == DictationHold.Action.RESUME && heldForSession) {
+            // A dictation that turns into a Live session hands its pause back
+            // — but applyLiveHold has just run, and it wants Sam held for the
+            // conversation. Un-pausing here would have Sam start talking at the
+            // exact moment the session began, which is the failure both holds
+            // exist to prevent. Let the bookkeeping clear and leave the broker
+            // where the other hold put it; it owns the resume from now on.
+            log("dictation: the conversation takes over the hold");
+            return;
+        }
+        if (action != DictationHold.Action.NONE) {
+            performSpeech(action == DictationHold.Action.PAUSE
+                    ? SpeechPolicy.Action.PAUSE
+                    : SpeechPolicy.Action.RESUME);
         }
     }
 
@@ -1133,6 +1194,11 @@ public class CompanionService extends Service {
             m.put("speech_priority", speechState.priority);
             m.put("speech_waiting", Integer.valueOf(speechState.queued));
             m.put("voice_session", Boolean.valueOf(bargeIn.voiceSession()));
+            // The dictation half of the same question. `dictation_owes_resume`
+            // is the one to check when Sam has gone quiet and nobody knows why.
+            m.put("dictation", dictation.why());
+            m.put("dictation_holding", Boolean.valueOf(dictation.holding()));
+            m.put("dictation_owes_resume", Boolean.valueOf(dictation.owesResume()));
             m.put("mic_events", mic == null
                     ? new ArrayList<String>() : mic.history());
             return Json.write(m);
