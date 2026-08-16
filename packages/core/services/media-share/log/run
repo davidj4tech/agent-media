@@ -1,0 +1,11 @@
+#!/bin/sh
+# Where a share goes to be diagnosed.
+#
+# Without this the service's stdout goes to runsvdir's, which is to say
+# nowhere: the first end-to-end test of the share sheet could not be checked
+# at all — the request either arrived or it did not, and nothing said which.
+# A share crosses four boundaries (sheet → activity → loopback → yt-dlp), and
+# the only one with a voice is this one.
+LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/sv-log/media-share"
+mkdir -p "$LOG_DIR"
+exec svlogd -tt "$LOG_DIR"
