@@ -88,6 +88,31 @@ def test_a_shared_title_shows_instead_of_the_id(store, capsys):
     assert "youtube:aaaaaaaaaaa" not in out.out
 
 
+def test_a_signed_url_does_not_swamp_the_line(store, capsys):
+    # Audiobookshelf hands out download URLs with a few hundred characters of
+    # signature after the `?`. One such row filled the entire listing.
+    signed = ("https://abs.example/td565-video-2026-08-11.mp3?c_id=205007380"
+              "&Signature=" + "W" * 400 + "&Key-Pair-Id=K1YS7LZGUP96OI")
+    store.note_play("book", signed)
+    _, out = _run(["recent"], capsys)
+    line = out.out.strip()
+    assert "Signature" not in line
+    assert "td565-video-2026-08-11.mp3" in line
+    assert len(line) < 120
+
+
+def test_a_long_filename_is_truncated_not_wrapped(store, capsys):
+    store.note_play("book", "https://x/" + "a" * 200 + ".mp3")
+    _, out = _run(["recent"], capsys)
+    assert "…" in out.out and len(out.out.strip()) < 120
+
+
+def test_an_escaped_path_reads_as_text(store, capsys):
+    store.note_play("music", "local:track:Some%20Album/02%20Second%20Song.mp3")
+    _, out = _run(["recent"], capsys)
+    assert "02 Second Song.mp3" in out.out
+
+
 def test_recent_survives_a_row_with_no_title(store, capsys):
     store.note_play("music", "https://example.com/stream")
     _, out = _run(["recent"], capsys)

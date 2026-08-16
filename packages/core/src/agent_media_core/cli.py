@@ -5272,8 +5272,14 @@ def _recent_label(uri: str) -> str:
         m = _WATCH_ID_RE.search(u)
         if m:
             return f"youtube:{m.group(1)}"
-    tail = u.rstrip("/").rsplit("/", 1)[-1]
-    return tail or u
+    # Drop the query and fragment before taking the tail. A signed URL — an
+    # Audiobookshelf download, an S3 link — carries a few hundred characters of
+    # signature after the `?`, and one such row filled the whole listing.
+    from urllib.parse import unquote
+
+    u = u.split("#", 1)[0].split("?", 1)[0]
+    tail = unquote(u.rstrip("/").rsplit("/", 1)[-1]) or u
+    return tail if len(tail) <= 70 else tail[:69] + "…"
 
 
 def _ago(seconds: float) -> str:
