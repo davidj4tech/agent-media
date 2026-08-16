@@ -34,13 +34,32 @@ final class RecentList {
         final String contentType;
         final String uri;
         final String ago;
+        /**
+         * When it played, epoch seconds; 0 when the store had no time for it.
+         *
+         * Alongside {@code ago} rather than instead of it: "18m ago" is what a
+         * terminal wants, and a list that groups by day and shows a clock time
+         * cannot get either back out of it.
+         */
+        final double startedAt;
 
         Item(String label, String channel, String contentType, String uri, String ago) {
+            this(label, channel, contentType, uri, ago, 0.0);
+        }
+
+        Item(String label, String channel, String contentType, String uri,
+             String ago, double startedAt) {
             this.label = label;
             this.channel = channel;
             this.contentType = contentType;
             this.uri = uri;
             this.ago = ago;
+            this.startedAt = startedAt;
+        }
+
+        /** When it played, in milliseconds; 0 for "the store did not say". */
+        long startedAtMs() {
+            return startedAt <= 0 ? 0L : (long) (startedAt * 1000.0);
         }
 
         /** The line the list shows: what it was. */
@@ -89,7 +108,8 @@ final class RecentList {
                 Map<?, ?> r = (Map<?, ?>) row;
                 out.add(new Item(str(r.get("label")), str(r.get("channel")),
                                  str(r.get("content_type")), str(r.get("uri")),
-                                 str(r.get("ago"))));
+                                 str(r.get("ago")),
+                                 Json.asDouble(r.get("started_at"), 0.0)));
             }
         } catch (RuntimeException e) {
             return Collections.emptyList();

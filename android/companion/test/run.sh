@@ -29,6 +29,7 @@ javac -nowarn -d "$OUT" \
     "$APP/src/net/agentmedia/companion/Loopback.java" \
     "$APP/src/net/agentmedia/companion/ShareRequest.java" \
     "$APP/src/net/agentmedia/companion/RecentList.java" \
+    "$APP/src/net/agentmedia/companion/RecentRows.java" \
     "$APP/src/net/agentmedia/companion/Channels.java" \
     "$APP/src/net/agentmedia/companion/Chapters.java" \
     "$APP/src/net/agentmedia/companion/DictationHold.java" \
@@ -51,6 +52,7 @@ javac -nowarn -d "$OUT" \
     "$HERE/net/agentmedia/companion/CardTextTest.java" \
     "$HERE/net/agentmedia/companion/HealthTest.java" \
     "$HERE/net/agentmedia/companion/RecentTest.java" \
+    "$HERE/net/agentmedia/companion/RecentRowsTest.java" \
     "$HERE/net/agentmedia/companion/ChannelsTest.java"
 
 java -cp "$OUT" net.agentmedia.companion.IpcTest
@@ -67,4 +69,5 @@ java -cp "$OUT" net.agentmedia.companion.BookHoldTest
 java -cp "$OUT" net.agentmedia.companion.CardTextTest
 java -cp "$OUT" net.agentmedia.companion.HealthTest
 java -cp "$OUT" net.agentmedia.companion.RecentTest
+java -cp "$OUT" net.agentmedia.companion.RecentRowsTest
 java -cp "$OUT" net.agentmedia.companion.ChannelsTest

@@ -203,6 +203,10 @@ def test_recent_lists_what_played(server, history):
     assert rows[1]["content_type"] == "dj-set"
     # Every row carries what /play needs, so the app never has to guess.
     assert all(r["uri"] and r["channel"] and r["ago"] for r in rows)
+    # And when it happened, not only how long ago: the phone's list groups by
+    # day and shows a clock time, and neither can be recovered from "18m".
+    now = time.time()
+    assert all(now - 60 <= r["started_at"] <= now + 1 for r in rows)
 
 
 def test_recent_labels_a_row_with_no_title(server, history):

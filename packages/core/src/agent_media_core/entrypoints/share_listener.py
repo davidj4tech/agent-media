@@ -236,6 +236,12 @@ def recent_rows(query: str = "") -> list:
             "label": title.splitlines()[0] if title
                      else _recent_label(r.get("uri") or ""),
             "ago": _ago(now - float(r.get("started_at") or now)),
+            # The instant as well as the distance. `ago` is what a terminal
+            # wants ("18m ago"); a list on a phone wants to group by day and
+            # show a clock time, and "18m" cannot be turned back into either.
+            # Zero when the store has no time for the row, which the reader
+            # must treat as "unknown", not as 1970.
+            "started_at": float(r.get("started_at") or 0.0),
         })
     return rows
 

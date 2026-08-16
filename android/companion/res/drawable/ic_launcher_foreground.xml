@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Three bars, one per channel, in the order the app lists them: speech, music,
+  book. A level meter is what a media app looks like reduced to three shapes,
+  and three *colours* is what this one is — the same hues the cards, the dots
+  and the driving tile use, so the icon is the palette's first appearance
+  rather than a separate piece of branding.
+
+  Inside the 66dp safe circle of the 108dp canvas, so no launcher mask clips it.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- speech -->
+    <path
+        android:fillColor="#FF6FB2C2"
+        android:pathData="M35,48 h6 a3,3 0 0 1 3,3 v24 a3,3 0 0 1 -3,3 h-6 a3,3 0 0 1 -3,-3 v-24 a3,3 0 0 1 3,-3 z" />
+    <!-- music -->
+    <path
+        android:fillColor="#FFE08060"
+        android:pathData="M51,30 h6 a3,3 0 0 1 3,3 v42 a3,3 0 0 1 -3,3 h-6 a3,3 0 0 1 -3,-3 v-42 a3,3 0 0 1 3,-3 z" />
+    <!-- book -->
+    <path
+        android:fillColor="#FFA292D8"
+        android:pathData="M67,40 h6 a3,3 0 0 1 3,3 v32 a3,3 0 0 1 -3,3 h-6 a3,3 0 0 1 -3,-3 v-32 a3,3 0 0 1 3,-3 z" />
+</vector>
