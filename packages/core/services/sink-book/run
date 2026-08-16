@@ -1,0 +1,139 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# Book sink: the longform mpv broker — audiobooks and podcasts.
+# Socket: $XDG_STATE_HOME/agent-media/sink-book.sock
+#
+# Separate from speech so their controls never collide: a book runs for hours
+# and Sam interrupts it, and one broker for both would mean a pause meant for a
+# sentence stopping a chapter.
+#
+# <h4>Why this file exists here</h4>
+#
+# It is new to this repo on 2026-08-17, and the reason is a bug. The book broker
+# had THREE definitions and no owner:
+#
+#   - the phone's, in dotfiles/termux/services/sink-book/run (runit),
+#   - red5's, hand-written in ~/.config/systemd/user (in no repo at all, with a
+#     .bak beside it),
+#   - and nothing shared with sink-speech, which lives here.
+#
+# So when sink-speech measured what `--audio-pitch-correction=no` actually does
+# — mpv applies speed by RESAMPLING and never hands it to scaletempo2, so 200 Hz
+# at 1.5× comes out at 300 Hz — the fix and the measurement landed in this repo
+# and the book kept the flag. Every audiobook played above 1.0× was pitched up
+# for as long as that lasted, which is the one channel anybody runs fast on
+# purpose. red5's copy escaped only because it never set the flag at all:
+# correct by omission, not by decision.
+#
+# One file, both hosts, like sink-speech. The differences that are real —
+# which AO answers, whether yt-dlp should resolve URLs, whether there is an
+# MPRIS script to load — are decided here from what the host actually has.
+exec 2>&1
+
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/agent-media"
+SOCK="$STATE/sink-book.sock"
+mkdir -p "$STATE"
+rm -f "$SOCK"
+
+# --- the audio output ------------------------------------------------------
+#
+# Prefer pulse when a sound server is actually answering, else openal. The
+# openal/opensles AOs open the Android audio device DIRECTLY and it only hands
+# out so many engines; with several idle mpv brokers and up to three snapclients
+# on the phone, a later open fails with a bare "could not open device", mpv drops
+# the file and exits 0. That silenced speech for a day (2026-08-09/10) and this
+# sink had the identical hardcoded openal. One pulseaudio holds a single engine
+# and mixes everyone into it.
+#
+# WAIT for it rather than probing once: the AO is chosen at startup and then
+# fixed for the life of a broker that may run all day, so losing the race costs
+# the session. On 2026-08-11 sink-speech came up seconds before pulseaudio and
+# locked onto openal for an hour of silent success. ~15s, then fall back — a
+# host with no pulseaudio must still play books.
+if [ -z "${MEDIA_BOOK_AO:-}" ]; then
+  MEDIA_BOOK_AO=openal
+  if command -v pactl >/dev/null 2>&1; then
+    i=0
+    while [ "$i" -lt 30 ]; do
+      if pactl info >/dev/null 2>&1; then
+        MEDIA_BOOK_AO=pulse
+        break
+      fi
+      i=$((i + 1))
+      sleep 0.5
+    done
+  fi
+  [ "$MEDIA_BOOK_AO" = openal ] &&
+    echo "sink-book: no pulseaudio after ~15s, falling back to ao=openal"
+fi
+echo "sink-book: ao=$MEDIA_BOOK_AO"
+
+# --- who resolves a URL ----------------------------------------------------
+#
+# On the hub the book channel is handed YouTube and podcast URLs and lets mpv's
+# ytdl hook resolve them. On the phone it is not: `media book play` stages a
+# file into the XDG book cache first (sinks/book.py), deliberately, because the
+# residential fetch and the offline cache are the phone's whole reason for
+# playing locally — so ytdl there is a fetch nobody asked for on a metered link.
+# Decided from the host rather than configured, because it follows the staging
+# behaviour and not anybody's preference. Override for a host that differs.
+if [ -z "${MEDIA_BOOK_YTDL:-}" ]; then
+  if [ -n "${TERMUX_VERSION:-}" ] || [ -d /data/data/com.termux ]; then
+    MEDIA_BOOK_YTDL=no
+  else
+    MEDIA_BOOK_YTDL=yes
+  fi
+fi
+
+# --- the shade, the desktop, and playerctl ---------------------------------
+#
+# mpv-mpris puts the book on the session bus, which is what exposes it to
+# `playerctl` on the hub (see docs: MPRIS channel exposure, 2026-08-10). There
+# is no such bus on the phone and no such file, so this is loaded only where it
+# exists rather than named per host.
+MPRIS="${MEDIA_BOOK_MPRIS:-/usr/lib/mpv-mpris/mpris.so}"
+MPRIS_ARG=""
+[ -f "$MPRIS" ] && MPRIS_ARG="--script=$MPRIS"
+
+: "${MEDIA_BOOK_VOLUME:=150}"
+: "${MEDIA_BOOK_VOLUME_MAX:=200}"
+# Per-stream loudness normalization, as on speech: a book should sit at the same
+# perceived level as the music rather than booming or vanishing under it.
+# dynaudnorm is frame-based, so there is no two-pass startup lag at a chapter
+# boundary. Set empty to disable.
+: "${MEDIA_BOOK_LOUDNORM:=dynaudnorm=targetrms=0.9:maxgain=20:gausssize=15}"
+
+# scaletempo2 stays pinned in the chain: mpv otherwise inserts it the moment
+# speed leaves 1.0× and removes it when speed returns, and each rebuild of the
+# filter graph re-inits the audio output, which openal hears as an underrun.
+#
+# And pitch correction stays ON — see the header. With `=yes` mpv reuses the
+# pinned filter rather than inserting a second one, so the underrun fix and the
+# pitch fix hold together.
+AF="scaletempo2"
+[ -n "$MEDIA_BOOK_LOUDNORM" ] && AF="$AF,$MEDIA_BOOK_LOUDNORM"
+
+# One output format pinned, so a chapter whose native rate differs from the last
+# cannot force the same AO reinit at a boundary. 48 kHz / s16 / stereo is native
+# on both hosts here, so this never makes a device resample.
+: "${MEDIA_BOOK_SAMPLERATE:=48000}"
+: "${MEDIA_BOOK_FORMAT:=s16}"
+: "${MEDIA_BOOK_CHANNELS:=stereo}"
+
+# keep-open=yes: a finished book stays loaded so the card, the bookmark and the
+# resume-by-URI all still have something to point at. The opposite of speech,
+# where a finished clip should let go.
+exec mpv --idle=yes --ao="$MEDIA_BOOK_AO" --force-window=no --no-video \
+  --no-terminal --no-config \
+  --input-ipc-server="$SOCK" \
+  --audio-client-name=agent-media-book \
+  --volume-max="$MEDIA_BOOK_VOLUME_MAX" --volume="$MEDIA_BOOK_VOLUME" \
+  --keep-open=yes --gapless-audio=no --audio-stream-silence=no \
+  --cache=yes --network-timeout=60 \
+  --ytdl="$MEDIA_BOOK_YTDL" \
+  --script-opts=ytdl_hook-ytdl_path="${MEDIA_BOOK_YTDL_PATH:-$HOME/.local/bin/yt-dlp}" \
+  --ytdl-raw-options=extractor-args=youtube:player_client=tv \
+  $MPRIS_ARG \
+  --af="$AF" --audio-pitch-correction="${MEDIA_BOOK_PITCH_CORRECTION:-yes}" \
+  --audio-samplerate="$MEDIA_BOOK_SAMPLERATE" \
+  --audio-format="$MEDIA_BOOK_FORMAT" \
+  --audio-channels="$MEDIA_BOOK_CHANNELS"
