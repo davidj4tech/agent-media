@@ -318,7 +318,42 @@ public class CompanionService extends Service {
         // undiagnosable one — which is exactly how "agent-media keeps stopping"
         // arrived on 2026-08-15 with nothing to read.
         Crash.install(this);
-        // And the deaths Crash cannot see, which is all of them bar an uncaught
+
+        // Foreground FIRST, and with the shortest path to it there is: a
+        // notification channel, a session for the MediaStyle token, and post.
+        //
+        // "Before anything that can block" was already the intent, but four
+        // things sat in front of it — a binder query for the exit history, a
+        // SharedPreferences read off disk, a second notification channel and
+        // the focus controller — and on 2026-08-16 that cost three deaths in
+        // an hour, all of them `Context.startForegroundService() did not then
+        // call Service.startForeground()`. The window is ten seconds from the
+        // caller's `startForegroundService`, and it is the *caller's* clock:
+        // the activity that starts us is still laying out its own UI on this
+        // same main thread, so what we have left of the ten seconds is not
+        // ours to spend on diagnostics. Each death is a hole in barge-in — the
+        // mic signal is this app and nothing else since Automate was retired —
+        // so the audio talks over David until call_guard notices and revives.
+        //
+        // Everything below this call is allowed to be slow. Nothing above it
+        // may be added without asking what it costs when the phone is busy,
+        // which is exactly when the app is being restarted.
+        nm = getSystemService(NotificationManager.class);
+        nm.createNotificationChannel(new NotificationChannel(
+                CHANNEL, "agent-media", NotificationManager.IMPORTANCE_LOW));
+        session = new MediaSession(this, "agent-media music");
+        session.setActive(true);
+        startForeground(NOTIF_ID, buildNotification(),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
+
+        // The rest of the session wiring. Off the critical path because a
+        // button arriving in the first few milliseconds is a thing that has
+        // never happened, and the notification is already posted and correct.
+        session.setCallback(callback);
+        session.setMediaButtonBroadcastReceiver(
+                new ComponentName(this, MediaButtonReceiver.class));
+
+        // The deaths Crash cannot see, which is all of them bar an uncaught
         // exception. On 2026-08-15 the service stopped answering on 8770 with
         // nothing written to Downloads at all: a real answer, but only to the
         // question "was it a throw?".
@@ -329,9 +364,6 @@ public class CompanionService extends Service {
         liveMode = prefs.getString(KEY_LIVE_MODE, LIVE_HOLD);
         focusControl = new FocusControl(this, main, this::onFocusChange);
 
-        nm = getSystemService(NotificationManager.class);
-        nm.createNotificationChannel(new NotificationChannel(
-                CHANNEL, "agent-media", NotificationManager.IMPORTANCE_LOW));
         NotificationChannel ask = new NotificationChannel(
                 CHANNEL_ASK, "agent-media asks", NotificationManager.IMPORTANCE_HIGH);
         ask.setSound(null, null);
@@ -339,17 +371,6 @@ public class CompanionService extends Service {
         ask.setDescription("Sam has something to say while you are in a "
                 + "conversation — asked, not spoken");
         nm.createNotificationChannel(ask);
-
-        session = new MediaSession(this, "agent-media music");
-        session.setCallback(callback);
-        session.setMediaButtonBroadcastReceiver(
-                new ComponentName(this, MediaButtonReceiver.class));
-        session.setActive(true);
-
-        // Foreground first, before anything that can block: Android kills a
-        // service that takes too long to post its notification.
-        startForeground(NOTIF_ID, buildNotification(),
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
 
         // The readout comes up before the things it is there to explain. It
         // used to start last, so a crash in the channel setup below took the

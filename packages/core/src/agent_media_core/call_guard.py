@@ -287,10 +287,23 @@ _DEFAULT_MIC_MAX_S = 120.0
 # else, so a host with no companion app never tries this, which keeps "the
 # endpoint refuses the connection" the ordinary non-event it has always been on
 # every other host.
-_DEFAULT_MIC_REVIVE_CMD = "am start -n net.agentmedia.companion/.MainActivity"
+#
+# WakeActivity, not MainActivity, since 2026-08-16: it draws nothing and
+# finishes in onCreate, where MainActivity inflates a diagnostic screen and then
+# re-renders it twice a second — on the same main thread the service has ten
+# seconds to reach startForeground on. Three of the deaths this revives from
+# that evening were that timeout, so the old door was helping to close itself.
+_DEFAULT_MIC_REVIVE_CMD = "am start -n net.agentmedia.companion/.WakeActivity"
 # Long enough that an app restarting on its own wins the race and we stay out
 # of it; short enough that a kill is a gap, not an outage.
-_DEFAULT_MIC_REVIVE_AFTER_S = 30.0
+#
+# 30s → 12s on 2026-08-16. The gap is not abstract: it is how long the book and
+# Sam keep talking over David after the app dies, and on that evening it was
+# spent three times. The old number was set when the knock opened a whole UI;
+# a NoDisplay activity that starts a service is cheap enough to knock sooner,
+# and an app coming back on its own still wins the race — it is up in about a
+# second, and a knock that lands on a running service does nothing.
+_DEFAULT_MIC_REVIVE_AFTER_S = 12.0
 # A revive that did not work must not become a loop that launches an activity
 # every half-minute forever. If two attempts have not fixed it, it is not the
 # kind of broken this fixes.

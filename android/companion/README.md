@@ -54,6 +54,7 @@ addressed-player slot.
 | `CompanionService.java` | Session, notification, the silent `AudioTrack`, and the wiring in both directions. |
 | `StatusServer.java` | The readout the outside can reach: `/state` and `/log` over loopback HTTP. `android.*`-free, so `test/run.sh` covers it. |
 | `MainActivity.java` | The on-screen readout — state and an event log, plus the probe/acting button. |
+| `WakeActivity.java` | The revive door `call_guard` knocks on after a kill. No window: starts the service and finishes. |
 | `MediaButtonReceiver.java` | Logs the broadcast path. Handles nothing; exists for diagnosis. |
 | `ShareActivity.java` | "Play with agent-media" in the share sheet. Draws nothing, finishes in `onCreate`, toasts the verdict. |
 | `ShareRequest.java` | The pipe that carries shared text to Termux, and the answer back into one line. `android.*`-free, so `test/run.sh` covers it. |
