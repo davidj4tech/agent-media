@@ -42,6 +42,16 @@ def test_speech_verbs_are_the_bare_commands():
     assert seen == [["toggle"], ["mute"]]
 
 
+def test_speech_prev_and_next_step_the_reader():
+    # Named for the button, not the thing: a front end's ⏮/⏭ is a sentence
+    # here, and the direction rides in the argv because a transport button has
+    # no argument to send.
+    seen = []
+    sc.control("speech", "prev", runner=lambda argv: seen.append(argv) or 0)
+    sc.control("speech", "next", runner=lambda argv: seen.append(argv) or 0)
+    assert seen == [["skip", "--dir", "-1"], ["skip", "--dir", "1"]]
+
+
 def test_a_channel_publishes_the_verbs_it_takes():
     # So a front end never draws a button that can only be refused. The phone
     # drew `mute` on the book channel until this existed.

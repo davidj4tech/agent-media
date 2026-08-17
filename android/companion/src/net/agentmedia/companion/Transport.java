@@ -106,6 +106,10 @@ final class Transport {
         });
         extras.addView(chaptersButton, weight());
         extras.addView(verb("mute", "mute", ""), weight());
+        // Speech only: say the last clip again. The transport row above steps
+        // within the clip being read, and neither of its arrows can go back
+        // past the start of it — which is where "sorry, what?" usually lands.
+        extras.addView(verb("replay", "replay", "1"), weight());
         root.addView(extras);
 
         return root;

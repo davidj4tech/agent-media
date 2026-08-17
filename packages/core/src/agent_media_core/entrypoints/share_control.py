@@ -63,10 +63,19 @@ VERBS = {
     ("book", "skip"): ["book", "skip", "{}"],
     ("book", "speed"): ["book", "speed", "{}"],
 
-    # Speech is not a player in the same sense — there is no queue to skip
-    # through and no volume of its own worth exposing here — so it gets the
-    # verbs the popup gives it and no more.
+    # Speech is not a player in the same sense — there is no queue to page
+    # through — so it gets the verbs the popup gives it and no more.
+    #
+    # `prev`/`next` are the exception, and they are named for the button rather
+    # than the thing: on speech they step the reader a sentence, which is the
+    # popup's h/l. The phone drew no back-or-forward control at all until
+    # 2026-08-17 because the app hides a verb the channel does not publish, and
+    # the one speech does publish was called `skip` and took its direction as
+    # an argument the transport row has no way to send. So the direction is
+    # baked in here, where the argv is written anyway.
     ("speech", "toggle"): ["toggle"],
+    ("speech", "next"): ["skip", "--dir", "1"],
+    ("speech", "prev"): ["skip", "--dir", "-1"],
     ("speech", "seek"): ["seek", "{}"],
     ("speech", "volume"): ["volume", "{}"],
     ("speech", "speed"): ["speed", "{}"],
