@@ -112,8 +112,24 @@ def test_short_music_category_is_plain_music():
     assert (v.channel, v.content_type) == ("music", "music")
 
 
-def test_long_anything_else_is_longform():
+def test_long_and_untalky_stays_on_music_as_a_set():
+    # Length alone does not make a book. A category that is not spoken-word
+    # outranks the clock — a 2.5h upload under "Entertainment" is a set, not a
+    # lecture.
     v = share.classify(_p(categories=["Entertainment"], duration_s=9000))
+    assert (v.channel, v.content_type) == ("music", "dj-set")
+
+
+def test_people_and_blogs_is_not_a_spoken_category():
+    # YouTube's junk drawer: the category an upload gets when nobody chose one.
+    # It put a 61-minute DJ set on the book channel on 2026-08-17.
+    v = share.classify(_p(categories=["People & Blogs"], duration_s=3685))
+    assert (v.channel, v.content_type) == ("music", "dj-set")
+
+
+def test_long_and_uncategorised_is_still_longform():
+    # Nothing to argue with — a bare mp3 from a host we know nothing about.
+    v = share.classify(_p(categories=[], duration_s=9000))
     assert (v.channel, v.content_type) == ("book", "audiobook")
 
 
@@ -139,7 +155,9 @@ def test_short_clip_is_music():
 
 
 def test_the_longform_threshold_is_tunable():
-    p = _p(categories=["Entertainment"], duration_s=1000)
+    # A category with no metadata to argue with, so the clock is the only rule
+    # in play — which is the one this test is about.
+    p = _p(categories=[], duration_s=1000)
     assert share.classify(p).channel == "music"
     assert share.classify(p, longform_s=900).channel == "book"
 

@@ -56,9 +56,13 @@ log = logging.getLogger(__name__)
 # "play this" command, so anything that can reach it can drive the speakers.
 DEFAULT_PORT = 8771
 
-# Anything at or past this is longform: the book channel, which pauses under
-# speech and resumes with a rewind. 30 minutes separates a song or a talk from
-# a lecture, an episode or a set with a plot.
+# Where longform starts: the book channel, which pauses under speech and
+# resumes with a rewind. 30 minutes separates a song or a talk from a lecture
+# or an episode.
+#
+# Past this the clock only gets a say when the metadata has none. A set, an
+# album upload or a live recording runs long and is still music — see
+# SPOKEN_CATEGORIES.
 LONGFORM_S = 1800.0
 
 # A shorter piece still reads as spoken-word when the metadata says so — a
@@ -67,13 +71,20 @@ LONGFORM_S = 1800.0
 SPOKEN_S = 600.0
 
 # yt-dlp categories that mean "someone talking" on YouTube. Coarse on purpose:
-# the duration gate above does the real work, and this only decides which side
-# of the line an ambiguous middle-length item falls.
+# it decides which side of the line a long item falls, and length alone no
+# longer does that.
+#
+# "People & Blogs" is deliberately not here. It is YouTube's junk drawer — the
+# category an upload gets when the uploader did not choose one — so it carries
+# no signal at all, and on 2026-08-17 it put a shared 61-minute DJ set on the
+# book channel, where longform pauses under speech and rewinds on resume. The
+# cost of leaving it out is a long interview in the same bucket ducking where
+# it should have paused, which is the cheaper mistake and the one the sharer
+# can move.
 SPOKEN_CATEGORIES = frozenset({
     "education",
     "news & politics",
     "nonprofits & activism",
-    "people & blogs",
     "science & technology",
     "howto & style",
 })
@@ -297,8 +308,18 @@ def classify(p: Probe, *, channel: str = "", content_type: str = "",
 
     dur = p.duration_s
     if dur is not None and dur >= limit:
-        ct = "podcast" if cats & SPOKEN_CATEGORIES else "audiobook"
-        return v("book", ct, f"{_mins(dur)} long")
+        if cats & SPOKEN_CATEGORIES:
+            return v("book", "podcast", f"{_mins(dur)} long")
+        if cats:
+            # Long, and the metadata says it is not someone talking: a set, a
+            # live recording, an album upload. Length used to be enough to send
+            # it to the book channel on its own, which is how a 61-minute DJ
+            # set ended up as an audiobook. A category that is not spoken-word
+            # outranks the clock.
+            return v("music", "dj-set", f"{_mins(dur)} long, not spoken-word")
+        # No category to argue with — an mp3 from a host we know nothing
+        # about. Long and unlabelled is longform far more often than not.
+        return v("book", "audiobook", f"{_mins(dur)} long")
     if dur is not None and dur >= SPOKEN_S and (cats & SPOKEN_CATEGORIES):
         return v("book", "podcast", f"spoken-word, {_mins(dur)} long")
 
