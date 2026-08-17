@@ -1,0 +1,25 @@
+agent-media
+Copyright 2026 davidj4tech
+
+Licensed under the Apache License, Version 2.0. See LICENSE.
+
+--------------------------------------------------------------------------
+Third-party components
+--------------------------------------------------------------------------
+
+agent-media *drives* several third-party programs; it does not bundle or link
+them, and their licences do not reach this repository's code. Each runs as a
+separate process, reached over an IPC socket, HTTP, or the command line:
+
+  mpv           GPLv2-or-later    playback engine (driven over JSON IPC)
+  Mopidy / MPD  Apache-2.0 / GPL  library + queue on the rooms lane
+  yt-dlp        Unlicense         acquisition, run on the phone
+  Snapcast      GPLv3             whole-house sync (currently disabled)
+  Termux:API    GPLv3             phone sensors and notifications
+
+This matters if the Android companion in `android/` ever *bundles* libmpv
+rather than talking to a separately-installed mpv over TCP, as it does today:
+linking libmpv would make the app a derivative work of a GPL program, and the
+app would have to be licensed accordingly. Keeping mpv at arm's length is a
+deliberate architectural choice, not an accident — see
+docs/proposals/2026-08-13-android-companion-app.md.
