@@ -377,6 +377,17 @@ final class SideChannel {
     private final MediaSession.Callback callback = new MediaSession.Callback() {
         @Override public void onPlay() {
             CompanionService.log("transport: play -> " + name);
+            if (!state.loaded()) {
+                // Nothing to un-pause. Clearing `pause` on an mpv with no file
+                // open is a control that does nothing at all, and on speech
+                // that is most of the time — sink-speech is idle between
+                // replies, so ▶ on Sam's card was a button you could press
+                // forever. The listener knows what play means with nothing
+                // loaded, because the popup's Space has always known: replay
+                // the last thing said. Ask it.
+                replayLastTurn();
+                return;
+            }
             ipc.setProperty("pause", Boolean.FALSE);
         }
 
@@ -391,4 +402,29 @@ final class SideChannel {
             ipc.command("stop");
         }
     };
+
+    /**
+     * Hand an empty ▶ to the listener, which decides what it meant.
+     *
+     * `toggle` rather than a replay verb, because the decision belongs on the
+     * far side and it already makes it: with a reply in flight it pauses, with
+     * nothing loaded it plays the last turn back. Only for speech — a book with
+     * nothing open has nothing to replay, and the card is not shown then anyway.
+     *
+     * Off the session thread: this is a network round trip, and a transport
+     * callback that blocks is a shade that freezes under the finger.
+     */
+    private void replayLastTurn() {
+        if (!"speech".equals(name)) return;
+        new Thread(new Runnable() {
+            @Override public void run() {
+                String problem = Channels.control(
+                        Settings.server(ctx), "speech", "toggle", "");
+                if (!problem.isEmpty()) {
+                    CompanionService.log("transport: play -> speech refused: "
+                                         + problem);
+                }
+            }
+        }, "speech-play").start();
+    }
 }
