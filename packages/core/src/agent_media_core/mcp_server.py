@@ -915,11 +915,21 @@ def _advance_after_eof() -> None:
     _play_playlist_part(name, nxt, t)
 
 
-def _reheal_after_error(last_pos_ms: "int | None") -> bool:
+def _reheal_after_error(last_pos_ms: "int | None",
+                        last_pos_uri: "str | None" = None) -> bool:
     """Reload the last book at the best-known position after an error
     end-file. Prefers the live-tracked position over the saved bookmark so a
     self-heal never restarts from zero; reloads onto the same target the book
-    was last playing to. Returns True if a load was issued."""
+    was last playing to. Returns True if a load was issued.
+
+    The live position is only usable when it was read from *this* book:
+    `last_pos_uri` is the file it was read from, and a mismatch means the
+    watcher's last heartbeat happened before the switch. On 2026-08-17 a
+    shared 61-minute set was loaded, errored, and was rehealed at 1h19m —
+    where the podcast playing before it had got to — which lands past the end
+    of the file and errors again immediately. So a position from another file
+    is no position at all; fall back to this one's bookmark.
+    """
     from .sinks.book import normalize_uri
 
     st, b = _state(), _book()
@@ -927,7 +937,8 @@ def _reheal_after_error(last_pos_ms: "int | None") -> bool:
     if not uri:
         return False
     norm = normalize_uri(uri)
-    pos = last_pos_ms if last_pos_ms and last_pos_ms > 0 else st.get_resume_pos(norm)
+    live = last_pos_ms if last_pos_uri is None or last_pos_uri == norm else None
+    pos = live if live and live > 0 else st.get_resume_pos(norm)
     np = st.get_now_playing("book")
     t = _book_target((np or {}).get("target") or "")
     log.warning("book self-heal: reloading %s at %sms on %s", norm, pos, t.name)
@@ -938,8 +949,11 @@ def _reheal_after_error(last_pos_ms: "int | None") -> bool:
 def _autoadvance_loop() -> None:
     from .sinks import _mpv_ipc as ipc
 
+    from .sinks.book import normalize_uri
+
     sock = _book()._sock
     last_pos_ms: "int | None" = None
+    last_pos_uri: "str | None" = None
     failures = 0
     last_load_at = time.monotonic()
     while True:
@@ -948,11 +962,16 @@ def _autoadvance_loop() -> None:
                 if msg is None:
                     # Heartbeat: remember the live position so an error
                     # end-file can reload where we were, and clear the failure
-                    # streak once playback has settled back in.
+                    # streak once playback has settled back in. The path is
+                    # read in the same breath as the position, because a
+                    # position without the file it came from is what rehealed
+                    # a fresh book at the previous one's offset.
                     try:
                         pos = ipc.get_property(sock, "time-pos")
                         if pos is not None:
                             last_pos_ms = int(pos * 1000)
+                            path = ipc.get_property(sock, "path")
+                            last_pos_uri = normalize_uri(path) if path else None
                             if (time.monotonic() - last_load_at) > _HEAL_RECOVERED_AFTER_S:
                                 failures = 0
                     except (OSError, ipc.MpvIpcError):
@@ -982,7 +1001,7 @@ def _autoadvance_loop() -> None:
                     continue
                 time.sleep(min(2.0 * failures, 8.0))  # back off a flapping net
                 try:
-                    if _reheal_after_error(last_pos_ms):
+                    if _reheal_after_error(last_pos_ms, last_pos_uri):
                         last_load_at = time.monotonic()
                 except Exception:  # noqa: BLE001 — never kill the watcher
                     log.exception("book self-heal: reload failed")
