@@ -203,6 +203,9 @@ def test_phone_play_loads_seeded_file_without_fetch(monkeypatch):
     calls = []
     monkeypatch.setattr(music_local.ipc, "command",
                         lambda ep, *cmd: calls.append((ep, cmd)))
+    # The load is followed by a pause-clear; this test is about the load.
+    monkeypatch.setattr(music_local.ipc, "set_property",
+                        lambda ep, name, value: None)
 
     def no_fetch(*a, **k):
         raise AssertionError("download helper should not run")
@@ -212,6 +215,65 @@ def test_phone_play_loads_seeded_file_without_fetch(monkeypatch):
     assert calls[0][0] == "tcp://phone:6601"
     assert calls[0][1][:3] == ("loadfile", "/phone/cache/a82hE1aupo8.mka", "replace")
     assert "force-media-title" in calls[0][1][4]
+
+
+def test_a_play_that_replaces_the_queue_clears_a_lingering_pause(monkeypatch):
+    # `loadfile … replace` into a paused player loads the track and leaves it
+    # at 0:00, silent — so tapping a music row in the phone's history put the
+    # right thing in the player and nothing came out.
+    from agent_media_core.sinks import music_local
+
+    monkeypatch.setattr(music_local, "seed_from_rooms_cache",
+                        lambda uri: "/phone/cache/a82hE1aupo8.mka")
+    monkeypatch.setattr(music_local, "_watch_id", lambda uri: "a82hE1aupo8")
+    monkeypatch.setattr(music_local, "_phone_title", lambda vid: "")
+    monkeypatch.setattr(music_local, "_note_title", lambda *a: None)
+    monkeypatch.setattr(music_local.ipc, "command", lambda ep, *cmd: None)
+    props = []
+    monkeypatch.setattr(music_local.ipc, "set_property",
+                        lambda ep, name, value: props.append((name, value)))
+
+    SinkMusicLocal(ep="tcp://phone:6601").play("https://youtu.be/a82hE1aupo8")
+    assert ("pause", False) in props
+
+
+def test_adding_to_the_queue_does_not_start_a_paused_player(monkeypatch):
+    # `--add` means enqueue. Starting the player because something was put on
+    # the end of the queue is a different verb than the one that was asked for.
+    from agent_media_core.sinks import music_local
+
+    monkeypatch.setattr(music_local, "seed_from_rooms_cache",
+                        lambda uri: "/phone/cache/a82hE1aupo8.mka")
+    monkeypatch.setattr(music_local, "_watch_id", lambda uri: "a82hE1aupo8")
+    monkeypatch.setattr(music_local, "_phone_title", lambda vid: "")
+    monkeypatch.setattr(music_local, "_note_title", lambda *a: None)
+    monkeypatch.setattr(music_local.ipc, "command", lambda ep, *cmd: None)
+    props = []
+    monkeypatch.setattr(music_local.ipc, "set_property",
+                        lambda ep, name, value: props.append((name, value)))
+
+    SinkMusicLocal(ep="tcp://phone:6601").play("https://youtu.be/a82hE1aupo8",
+                                               replace=False)
+    assert props == []
+
+
+def test_a_player_that_cannot_be_told_still_got_the_track(monkeypatch):
+    # The load already happened; a failure clearing pause is a track sitting
+    # paused, not an exception in a caller that was told to play something.
+    from agent_media_core.sinks import music_local
+
+    monkeypatch.setattr(music_local, "seed_from_rooms_cache",
+                        lambda uri: "/phone/cache/a82hE1aupo8.mka")
+    monkeypatch.setattr(music_local, "_watch_id", lambda uri: "a82hE1aupo8")
+    monkeypatch.setattr(music_local, "_phone_title", lambda vid: "")
+    monkeypatch.setattr(music_local, "_note_title", lambda *a: None)
+    monkeypatch.setattr(music_local.ipc, "command", lambda ep, *cmd: None)
+
+    def refuse(ep, name, value):
+        raise ipc.MpvIpcError("bridge down")
+
+    monkeypatch.setattr(music_local.ipc, "set_property", refuse)
+    SinkMusicLocal(ep="tcp://phone:6601").play("https://youtu.be/a82hE1aupo8")
 
 
 # ---- auto routing (_resolve_music_where) ------------------------------------

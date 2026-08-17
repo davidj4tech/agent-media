@@ -342,6 +342,7 @@ class SinkMusicLocal:
                 opts = "force-media-title=%%%d%%%s" % (len(title.encode("utf-8")), title)
                 cmd = ["loadfile", seeded, mode, -1, opts]
             ipc.command(self._endpoint(), *cmd)
+            self._unpause_if(replace)
             _note_title(uri, title)
             return
 
@@ -366,10 +367,39 @@ class SinkMusicLocal:
             raise ipc.MpvIpcError(
                 f"sink-music-local: phone fetch failed ({r.returncode}): "
                 f"{(r.stderr or r.stdout).strip()[-300:]}")
+        self._unpause_if(replace)
         # The helper writes a `.title` sidecar beside the audio it just
         # fetched, so the real name exists by the time this returns — and the
         # history row written a moment ago has only the URI.
         _note_title(uri, _phone_title(_watch_id(uri) or ""))
+
+    def _unpause_if(self, replace: bool) -> None:
+        """Clear a lingering pause after a play that replaces the queue.
+
+        `loadfile … replace` into a paused player loads the track and leaves it
+        exactly where the pause was: at 0:00, silent. So a tap on a music row in
+        the phone's history put the right thing in the player and nothing came
+        out, which reads as the tap having done nothing at all — the player was
+        paused hours earlier, by a transport button or a duck that never
+        restored, and "play" is not supposed to remember that.
+
+        The speech sink has cleared pause on every fresh clip since the first
+        week, for exactly this reason and in these words. Music never learned it.
+
+        Only when the queue is being replaced: `--add` means enqueue, and
+        starting a paused player because something was added to the end of it
+        would be a different verb than the one that was asked for.
+
+        Best-effort — the load already happened, and a failure here is a track
+        sitting paused rather than an exception in a caller that was told to
+        play something.
+        """
+        if not replace:
+            return
+        try:
+            self._set("pause", False)
+        except (ipc.MpvIpcError, OSError) as e:
+            log.debug("sink-music-local: could not clear pause: %s", e)
 
     # ---- transport / duck (over the mpv IPC bridge) ----------------------
 
