@@ -9,9 +9,23 @@ properties matter more than any single field:
     not remote execution of a large CLI.
 """
 
+import json
+
 import pytest
 
 from agent_media_core.entrypoints import share_control as sc
+
+
+@pytest.fixture(autouse=True)
+def _this_host_is_the_origin(monkeypatch):
+    """No test may reach for ssh.
+
+    Speech history is asked of the origin, and "unset" means read the config
+    file — which on a developer's own machine names a real hub. Declaring this
+    host the origin is the standalone answer: nobody to ask. Tests about the
+    hop say so by patching `_origin_host` themselves.
+    """
+    monkeypatch.setenv("MEDIA_ROLES", "origin render")
 
 
 # ---- the whitelist --------------------------------------------------------
@@ -273,6 +287,105 @@ def test_picking_a_clip_replays_that_record():
     seen = []
     sc.control("speech", "chapter", "91", runner=lambda argv: seen.append(argv) or 0)
     assert seen == [["replay", "--id", "91"]]
+
+
+def test_a_render_host_asks_the_origin_for_the_words(monkeypatch):
+    # The phone records only what it rendered itself, which since July is
+    # nothing: its own store captioned today's audio with a July sentence.
+    monkeypatch.setattr(sc, "_clips_cache", {"at": 0.0, "rows": None})
+    monkeypatch.setattr(sc, "_origin_host", lambda: "red5")
+    asked = []
+    monkeypatch.setattr(sc, "_ask_origin", lambda argv, **kw: asked.append(argv)
+                        or json.dumps([{"number": 1, "title": "18:29  today",
+                                        "text": "today", "start_ms": None,
+                                        "current": False, "ref": "5506"}]))
+    rows = sc.chapters("speech")
+    assert [r["ref"] for r in rows] == ["5506"]
+    assert asked == [["history", "40", "--json"]]
+
+
+def test_the_hub_being_away_leaves_the_phone_its_own_clips(monkeypatch):
+    # Short and old, but true — and a picker with something in it beats one
+    # that says the machine is down.
+    monkeypatch.setattr(sc, "_clips_cache", {"at": 0.0, "rows": None})
+    monkeypatch.setattr(sc, "_origin_host", lambda: "red5")
+    monkeypatch.setattr(sc, "_ask_origin", lambda argv, **kw: None)
+    monkeypatch.setattr("agent_media_core.cli._speech_history",
+                        lambda n=20, **kw: [_clip(7, 1_699_000_000, "in July")])
+    monkeypatch.setattr("agent_media_core.cli._now_speaking", lambda: None)
+    assert [r["ref"] for r in sc.chapters("speech")] == ["7"]
+
+
+def test_the_title_reads_the_same_list_but_not_every_second(monkeypatch):
+    # The card polls about once a second; the ask is cached, and a tap on the
+    # picker is what forces a fresh one.
+    monkeypatch.setattr(sc, "_clips_cache", {"at": 0.0, "rows": None})
+    monkeypatch.setattr(sc, "_origin_host", lambda: "red5")
+    asks = []
+    monkeypatch.setattr(sc, "_ask_origin", lambda argv, **kw: asks.append(argv)
+                        or json.dumps([{"number": 1, "title": "18:29  today",
+                                        "text": "today", "ref": "5506",
+                                        "start_ms": None, "current": False}]))
+    assert sc._clips()[0]["text"] == "today"
+    sc._clips()
+    sc._clips()
+    assert len(asks) == 1
+    sc.chapters("speech")
+    assert len(asks) == 2
+
+
+def test_a_failed_ask_is_not_re_dialled_every_poll(monkeypatch):
+    # Eight seconds of timeout apiece, once a second, for as long as the app
+    # is open — a hub that is asleep must be asked at the same rate as one
+    # that answered.
+    monkeypatch.setattr(sc, "_clips_cache", {"at": 0.0, "rows": None})
+    monkeypatch.setattr(sc, "_origin_host", lambda: "red5")
+    asks = []
+    monkeypatch.setattr(sc, "_ask_origin", lambda argv, **kw: asks.append(argv))
+    monkeypatch.setattr("agent_media_core.cli._speech_history", lambda n=20, **kw: [])
+    monkeypatch.setattr("agent_media_core.cli._now_speaking", lambda: None)
+    sc._clips()
+    sc._clips()
+    sc._clips()
+    assert len(asks) == 1
+
+
+def test_replaying_from_a_render_host_runs_where_the_clips_are(monkeypatch):
+    # Both verbs name a past turn, and the phone knows none of them. Run on the
+    # origin they come back out of this host's speakers anyway — it is the
+    # speech target, so this is the ordinary push path.
+    monkeypatch.setattr(sc, "_origin_host", lambda: "red5")
+    ran = []
+    monkeypatch.setattr(sc, "_ask_origin", lambda argv, **kw: ran.append(argv) or "")
+    assert sc.control("speech", "chapter", "5506") == 0
+    assert sc.control("speech", "replay", "1") == 0
+    assert ran == [["replay", "--id", "5506"], ["replay", "1"]]
+
+
+def test_an_unreachable_hub_refuses_rather_than_replays_the_wrong_turn(monkeypatch):
+    monkeypatch.setattr(sc, "_origin_host", lambda: "red5")
+    monkeypatch.setattr(sc, "_ask_origin", lambda argv, **kw: None)
+    with pytest.raises(sc.ControlError):
+        sc.control("speech", "replay", "1")
+
+
+def test_the_origin_answers_itself(monkeypatch):
+    # No hop, no cache, no ssh: the hub reads its own store, and `--json` on it
+    # must not forward or the two would ask each other in a circle.
+    monkeypatch.setattr("agent_media_core.config.host_roles",
+                        lambda path=None: {"render", "origin"})
+    assert sc._origin_host() is None
+    seen = []
+    sc.control("speech", "replay", "1", runner=lambda argv: seen.append(argv) or 0)
+    assert seen == [["replay", "1"]]
+
+
+def test_a_standalone_host_has_nobody_to_ask(monkeypatch):
+    # origin+render+observe on one machine is a configuration, not a mode.
+    monkeypatch.setattr("agent_media_core.config.host_roles",
+                        lambda path=None: {"render"})
+    monkeypatch.setattr("agent_media_core.config.peer", lambda alias, path=None: None)
+    assert sc._origin_host() is None
 
 
 def test_a_history_read_that_explodes_is_still_an_empty_list(monkeypatch):

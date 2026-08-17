@@ -3391,7 +3391,18 @@ def cmd_history(a) -> int:
     ``--lines`` emits ``display<TAB>history-id`` rows for an external picker
     (media-popup-clips); unscoped lines carry a ▪window label so interleaved
     conversations stay tellable-apart. ``--group`` (with --lines, unscoped)
-    instead groups clips under per-conversation headers, choose-tree style."""
+    instead groups clips under per-conversation headers, choose-tree style.
+
+    ``--json`` emits the phone's picker rows instead, and is the wire format
+    between a render host and its origin: the words are produced where the
+    conversation happens, and every other host has to ask. It shares its
+    shaping with the app's own picker rather than mint a second one, because
+    two renderings of one history is the bug this repo keeps finding."""
+    if getattr(a, "json", False):
+        from .entrypoints.share_control import _speech_clips
+
+        print(json.dumps(_speech_clips(a.n)))
+        return 0
     session = _anchor_session() if getattr(a, "session", False) else None
     scoped = session is not None
     rows = _speech_history(a.n, session=session)
@@ -6075,6 +6086,9 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="with --lines: group clips under per-conversation "
                         "▪window headers, tmux choose-tree style (the clip "
                         "browser's ^a view)")
+    s.add_argument("--json", action="store_true",
+                   help="print the clip-picker rows as JSON — what a render "
+                        "host asks its origin for")
     s.set_defaults(func=cmd_history)
 
     s = sub.add_parser("say", help="speak text (stdin if no arg)")

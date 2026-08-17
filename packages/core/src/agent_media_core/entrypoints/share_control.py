@@ -28,11 +28,25 @@ The verbs are a whitelist rather than a passthrough. The listener is loopback
 and single-user, but `media` is a large CLI and this endpoint's job is
 transport, not remote execution: a surface that can run any subcommand is a
 different security question than one that can press pause.
+
+**Speech history belongs to the origin.** Everything else here is answered by
+the machine the surface is running on, and rightly: the player is local, so its
+position, its pause and its speed are local facts. The *words* are not. They are
+produced where the conversation happens, and a render host records only what it
+rendered itself — which on the phone stopped being anything in July, when the
+lane moved to rendering on the hub and pushing audio over. So the card showed a
+July sentence under a clip playing now, and the clip picker offered July.
+`_origin_clips` asks the origin instead, and the two verbs that act on that list
+are run there too. See `ORIGIN_VERBS`.
 """
 
 from __future__ import annotations
 
+import json
 import logging
+import os
+import subprocess
+import time
 from typing import Optional
 
 log = logging.getLogger(__name__)
@@ -96,9 +110,118 @@ VERBS = {
 
 CHANNELS = ("speech", "music", "book")
 
+#: Verbs that address the speech *history* rather than the local player, and so
+#: have to run where that history is. `replay` and `chapter` both name a past
+#: turn; on a render host the only turns named locally are the ones it rendered
+#: itself, so both were reaching into July. Run on the origin they go through
+#: the ordinary push path and come back out of this host's speakers, which is
+#: what pressing them here means.
+ORIGIN_VERBS = frozenset({("speech", "replay"), ("speech", "chapter")})
+
+#: How stale the origin's clip list may be before it is asked again. The card's
+#: title reads it on every poll (about once a second while the app is open) and
+#: the picker forces a fresh one, so this is the cost of *looking at* the app,
+#: not of running it: nothing polls when nobody is looking.
+ORIGIN_CLIPS_TTL_S = 20.0
+
+_SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8"]
+
+#: Enough to scroll, few enough that the ask stays one small round trip.
+_CLIPS_N = 40
+
+#: `{"at": when, "rows": rows|None}`. A failed ask is cached too — otherwise a
+#: hub that is down or asleep is re-dialled once a second for as long as the
+#: app is open, at eight seconds of timeout apiece.
+_clips_cache: dict = {"at": 0.0, "rows": None}
+
 
 class ControlError(Exception):
     """The verb cannot be performed, with a reason fit to show someone."""
+
+
+def _origin_host() -> Optional[str]:
+    """The host that produces the speech, when it is not this one.
+
+    None means "answer locally": either this host is the origin, or nothing
+    declares one — a standalone install is origin+render+observe and has
+    nobody to ask. Roles come from the config file, so the hostname still
+    appears in exactly one place.
+    """
+    try:
+        from .. import config
+
+        roles = config.host_roles()
+        if roles is None or "origin" in roles:
+            return None
+        found = config.peer("origin")
+        return found.host if found else None
+    except Exception as e:  # noqa: BLE001 — a surface renders what it got
+        log.debug("origin lookup failed: %s", e)
+        return None
+
+
+def _ask_origin(argv: list, timeout: float = 20.0) -> Optional[str]:
+    """Run one `media` subcommand on the origin. None if it could not be asked.
+
+    No ControlPath is named, deliberately: naming one mints a second master
+    beside the ambient one every other ssh on the box keeps warm, and a private
+    master for something this bursty is cold exactly when it is used. Inherited,
+    this hop is about a second.
+    """
+    host = _origin_host()
+    if not host:
+        return None
+    try:
+        r = subprocess.run(["ssh", *_SSH_OPTS, host, "media", *argv],
+                           capture_output=True, text=True, timeout=timeout,
+                           check=False)
+    except Exception as e:  # noqa: BLE001
+        log.debug("origin ask failed (%s): %s", argv, e)
+        return None
+    if r.returncode != 0:
+        log.debug("origin ask rc=%s (%s): %s", r.returncode, argv,
+                  (r.stderr or "").strip()[:200])
+        return None
+    return r.stdout
+
+
+def _origin_clips(max_age: float = ORIGIN_CLIPS_TTL_S) -> Optional[list]:
+    """The origin's clip rows, cached; None when this host is the one to ask.
+
+    `max_age=0` forces a fresh ask — what a tap on the picker deserves, and
+    cheap because it happens once per tap.
+    """
+    if _origin_host() is None:
+        return None
+    if os.environ.get("MEDIA_SHARE_NO_ORIGIN") == "1":
+        return None
+    now = time.time()
+    if _clips_cache["rows"] is not None and now - _clips_cache["at"] <= max_age:
+        return _clips_cache["rows"]
+    if _clips_cache["rows"] is None and now - _clips_cache["at"] <= max_age:
+        return None                      # a recent failure; do not re-dial yet
+    out = _ask_origin(["history", str(_CLIPS_N), "--json"])
+    rows = None
+    if out:
+        try:
+            got = json.loads(out)
+            rows = got if isinstance(got, list) else None
+        except ValueError as e:
+            log.debug("origin clips were not JSON: %s", e)
+    _clips_cache.update(at=now, rows=rows)
+    return rows
+
+
+def _clips(max_age: float = ORIGIN_CLIPS_TTL_S) -> list:
+    """The clip list this surface should show: the origin's, else this host's.
+
+    The fallback is not a formality. A hub that is asleep or off the tailnet
+    leaves the phone holding whatever it rendered itself, which is a short and
+    old list — but it is a true one, and a picker with something in it beats a
+    picker that says the machine is down.
+    """
+    rows = _origin_clips(max_age)
+    return rows if rows is not None else _speech_clips(_CLIPS_N)
 
 
 def _f(value) -> Optional[float]:
@@ -164,9 +287,10 @@ def _speech() -> dict:
         log.debug("speech snapshot failed: %s", e)
         return out
     try:
-        from ..state import StateStore
-
-        rows = StateStore().recent_history(sink="speech", limit=1)
+        # The words come from wherever the conversation is. On the origin that
+        # is this store; on a render host it is a hub away, and reading locally
+        # is how the phone came to caption today's audio with July's sentence.
+        rows = _clips()
         if rows:
             text = (rows[0].get("text") or "").strip()
             out["title"] = text.splitlines()[0][:120] if text else None
@@ -265,7 +389,7 @@ def chapters(channel: str = "music") -> list:
     """
     channel = (channel or "music").strip() or "music"
     if channel == "speech":
-        return _speech_clips()
+        return _clips(max_age=0.0)      # a tap deserves a fresh list
     if channel not in ("music", "book"):
         return []
     try:
@@ -340,6 +464,10 @@ def _speech_clips(n: int = 40) -> list:
         text = _hist_txt(r)[:110] or "(no text)"
         out.append({"number": len(out) + 1,
                     "title": f"{_hist_ts(r, today)}  {text}",
+                    # The words on their own, for the card's heading. The list
+                    # is already the answer to "what was said last"; a second
+                    # reader for that one line is how the two disagreed.
+                    "text": text,
                     "start_ms": None,
                     "current": playing is not None and rid == playing,
                     "ref": str(rid)})
@@ -366,6 +494,18 @@ def control(channel: str, action: str, arg: str = "", runner=None) -> int:
             filled.append(arg)
         else:
             filled.append(part)
+    if (channel, action) in ORIGIN_VERBS and runner is None:
+        # Where the turn is remembered is where it can be played again: the
+        # origin still has the clips, still knows this host is its speech
+        # target, and pushes them back here exactly as it does for a live
+        # reply. Refused rather than run locally when it cannot be reached —
+        # replaying the wrong turn is worse than saying the hub is away.
+        if _origin_host() is not None:
+            out = _ask_origin([*filled])
+            if out is None:
+                raise ControlError("the hub is not answering — try again")
+            _clips_cache.update(at=0.0, rows=None)   # the marker moved
+            return 0
     if runner is None:
         from ..cli import main as runner
     return runner(filled)
