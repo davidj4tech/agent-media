@@ -52,6 +52,13 @@ the mistake `Server.java` exists to prevent:
 | Address + control port | **Where the server is.** The machine running `media`: this phone's Termux, or red5 across the tailnet. |
 | Where the sound comes out | **Where the audio is.** Pointing the app at red5 does not move the sound to the phone — it moves it to red5's speakers and makes this a remote control. |
 
+**The mpv bridges follow the sound, not the server** (`Server.mpvHost()`), which
+is why they are derived rather than typed. The combination that proves it is
+the one this fleet runs: `media` originates on red5 and the audio comes out of
+the phone's own mpv, so the control endpoint is remote while the mpv sockets
+are local. An app that sent both to the same address would be asking red5 for
+the state of a player on this phone.
+
 Three playback locations, of which two are built:
 
 | Location | mpv | Audio focus | Termux here |

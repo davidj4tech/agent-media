@@ -97,8 +97,10 @@ public class SettingsActivity extends Activity {
 
         root.addView(label("mpv bridges"));
         root.addView(note("The media cards in the shade are built from these, "
-                + "one socket per channel. A bridge that is not running costs "
-                + "exactly its own card and nothing else."));
+                + "one socket per channel. They follow the sound rather than "
+                + "the server — local while playback is on this phone — so "
+                + "only the ports are yours to set. A bridge that is not "
+                + "running costs exactly its own card and nothing else."));
         music = portField("Music", current.music, root);
         speech = portField("Speech", current.speech, root);
         book = portField("Book", current.book, root);

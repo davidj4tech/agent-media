@@ -27,6 +27,7 @@ public class ServerTest {
         testBadPortsAreRefused();
         testAUrlIsNotAHostName();
         testOnlyThePhoneOwnsThePhonesAudio();
+        testTheBridgesLiveWhereTheSoundIs();
         testBuiltinIsNamedButNotOffered();
         testAnUnusableConfigurationReadsBackAsTheDefaults();
         testDescribeNeverLeaksTheToken();
@@ -132,6 +133,22 @@ public class ServerTest {
         check("a loopback server can still be a remote control",
                 !new Server("127.0.0.1", 8771, 6601, 6602, 6603, "", Server.SERVER)
                         .ownsThePhonesAudio());
+    }
+
+    private static void testTheBridgesLiveWhereTheSoundIs() {
+        // The arrangement this fleet actually runs: `media` originates on red5,
+        // the sound comes out of the phone's own mpv. Control is then remote
+        // and the mpv sockets are local — an app that sent both to the same
+        // address would ask red5 for the state of a player on this phone.
+        Server split = new Server("red5", 8771, 6601, 6602, 6603, "t", Server.PHONE);
+        check("control goes to the server", "red5".equals(split.host));
+        check("the bridges stay here", "127.0.0.1".equals(split.mpvHost()));
+
+        Server remote = new Server("red5", 8771, 6601, 6602, 6603, "t", Server.SERVER);
+        check("sound at the server takes the bridges with it",
+                "red5".equals(remote.mpvHost()));
+        check("and the default keeps both local",
+                "127.0.0.1".equals(Server.defaults().mpvHost()));
     }
 
     private static void testBuiltinIsNamedButNotOffered() {

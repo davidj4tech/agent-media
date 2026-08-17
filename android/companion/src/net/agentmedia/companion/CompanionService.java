@@ -411,7 +411,7 @@ public class CompanionService extends Service {
 
         pushSessionState();
 
-        ipc = new MpvIpc(server.host, server.music, listener);
+        ipc = new MpvIpc(server.mpvHost(), server.music, listener);
         ipc.start();
 
         // Both side channels are optional, and the app says so by construction.
@@ -453,9 +453,9 @@ public class CompanionService extends Service {
 
         main.postDelayed(positionPoll, POSITION_POLL_MS);
         log("service started; server " + server.describe()
-                + "; music -> " + server.host + ":" + server.music
-                + ", speech -> " + server.host + ":" + server.speech
-                + ", book -> " + server.host + ":" + server.book);
+                + "; music -> " + server.mpvHost() + ":" + server.music
+                + ", speech -> " + server.mpvHost() + ":" + server.speech
+                + ", book -> " + server.mpvHost() + ":" + server.book);
         log("focus: mode " + (focusActs ? "acting" : "probe (logs only)"));
         if (!server.ownsThePhonesAudio()) {
             // Said out loud because it silences the half of this app that has
@@ -476,7 +476,7 @@ public class CompanionService extends Service {
                                      SideChannel.Watcher watcher) {
         try {
             SideChannel c = new SideChannel(this, main, name, label,
-                                            server.host, port, observed,
+                                            server.mpvHost(), port, observed,
                                             notifId, CHANNEL, watcher);
             c.start();
             return c;
@@ -1120,7 +1120,7 @@ public class CompanionService extends Service {
         // An unreachable mpv is the exception: that one is not visible anywhere
         // else on this surface.
         String text = state.connected ? musicSubtitle()
-                : "mpv unreachable on " + server.host + ":" + server.music;
+                : "mpv unreachable on " + server.mpvHost() + ":" + server.music;
 
         return new Notification.Builder(this, CHANNEL)
                 // Not gated on loaded() any more: MpvState#title falls back to
@@ -1319,6 +1319,7 @@ public class CompanionService extends Service {
         srv.put("host", server.host);
         srv.put("control_port", server.control);
         srv.put("playback", server.playback);
+        srv.put("mpv_host", server.mpvHost());
         srv.put("local", server.local());
         srv.put("token", !server.token.isEmpty());
         m.put("server", srv);

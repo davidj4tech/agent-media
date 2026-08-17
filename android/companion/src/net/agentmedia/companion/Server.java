@@ -140,6 +140,26 @@ final class Server {
         return PHONE.equals(playback);
     }
 
+    /**
+     * Where the three mpv IPC bridges are — which is not always {@link #host}.
+     *
+     * <b>The bridges live where the sound is, not where the server is.</b> The
+     * combination that proves it is the one this fleet actually runs: `media`
+     * originates on red5 and the audio comes out of the phone's own mpv. The
+     * control endpoint is then remote and the mpv sockets are local, and an app
+     * that sent both to the same address would ask red5 for the state of a
+     * player on this phone.
+     *
+     * So it is derived rather than configured — a fourth address on the screen
+     * would be a fourth thing to get wrong, and there is no arrangement where
+     * the cards describe a player somewhere other than the one making the
+     * noise. In-app playback has no mpv at all; loopback is the harmless
+     * answer, and nothing will be connecting.
+     */
+    String mpvHost() {
+        return SERVER.equals(playback) ? host : LOOPBACK;
+    }
+
     /** {@code host:control} — how the control endpoint is named in a log. */
     String authority() {
         return host + ":" + control;
