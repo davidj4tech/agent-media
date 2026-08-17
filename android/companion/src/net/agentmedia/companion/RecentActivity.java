@@ -201,11 +201,6 @@ public class RecentActivity extends Activity {
         return true;
     }
 
-    /** How far in a group's contents sit, so the nesting is legible. */
-    private int indent(RecentRows.Entry entry) {
-        return dp(Style.gap(4)) * entry.depth;
-    }
-
     private View headingView(final RecentRows.Entry entry) {
         TextView t = new TextView(this);
         boolean folds = entry.key != null;
@@ -221,7 +216,10 @@ public class RecentActivity extends Activity {
         t.setTypeface(Typeface.MONOSPACE);
         // A nested heading is a step in, and a top one is bolder: the two
         // levels are a place and a conversation inside it, not two lists.
-        t.setPadding(indent(entry), dp(Style.gap(entry.depth == 0 ? 5 : 3)),
+        // No indent for the nesting. On a phone the level costs width the
+        // clips need more — the marker and the weight already say which is
+        // inside which, and a wall of text pushed right says it worse.
+        t.setPadding(0, dp(Style.gap(entry.depth == 0 ? 5 : 3)),
                      0, dp(Style.gap(1)));
         if (entry.depth == 0) t.setTextColor(shownOpen ? Style.INK : Style.MUTED);
         if (folds) {
@@ -250,7 +248,7 @@ public class RecentActivity extends Activity {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(indent(entry), dp(Style.gap(2)), 0, dp(Style.gap(2)));
+        row.setPadding(0, dp(Style.gap(2)), 0, dp(Style.gap(2)));
         row.setMinimumHeight(dp(Style.TOUCH));
 
         TextView when = new TextView(this);
@@ -259,8 +257,16 @@ public class RecentActivity extends Activity {
         when.setTextColor(Style.FAINT);
         when.setTypeface(Typeface.MONOSPACE);
         when.setGravity(Gravity.END);
+        when.setSingleLine(true);
+        // Wide enough for the longest thing it holds, and free to grow past
+        // that: 44dp fits "07:36" at the system's default type size and clips
+        // it at any larger one, which is a setting this list does not get a
+        // say in. A minimum keeps the column straight; WRAP_CONTENT keeps it
+        // honest.
+        when.setMinWidth(dp(52));
         LinearLayout.LayoutParams whenParams = new LinearLayout.LayoutParams(
-                dp(44), ViewGroup.LayoutParams.WRAP_CONTENT);
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
         whenParams.rightMargin = dp(Style.gap(3));
         row.addView(when, whenParams);
 
