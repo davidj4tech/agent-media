@@ -49,6 +49,21 @@ rm -f "$SOCK"
 # the session. On 2026-08-11 sink-speech came up seconds before pulseaudio and
 # locked onto openal for an hour of silent success. ~15s, then fall back — a
 # host with no pulseaudio must still play books.
+# pactl needs XDG_RUNTIME_DIR to find the server, and a runit service has no
+# such variable — the interactive profile sets it, runsv does not pass it, and
+# nothing in between fills it in. So the probe below asked pactl, pactl looked
+# in the wrong place, got "Connection refused", and this broker fell back to
+# openal with pulseaudio running healthily three metres away.
+#
+# That is not a cosmetic fallback: openal opens the Android device directly, the
+# device is already held, and mpv then reports every clip as played with no
+# sound. Found 2026-08-17 while chasing "I can't seem to play the last clip" —
+# the clip was fine, the broker had been deaf since its last restart, and every
+# `sv restart` of these sinks had been doing this quietly.
+#
+# $HOME/tmp is where .termux/boot/start-services puts the pulse socket.
+: "${XDG_RUNTIME_DIR:=$HOME/tmp}"
+export XDG_RUNTIME_DIR
 if [ -z "${MEDIA_BOOK_AO:-}" ]; then
   MEDIA_BOOK_AO=openal
   if command -v pactl >/dev/null 2>&1; then

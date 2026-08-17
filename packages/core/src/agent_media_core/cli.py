@@ -204,6 +204,40 @@ def _live_history_row() -> Optional[dict]:
             "content_type": None, "text": ex.get("text") or "", "extras": ex}
 
 
+def _row_has_audio(row: dict) -> bool:
+    """Did this history row leave anything a replay could play?
+
+    Most rows did. The ones that did not are renders that FAILED — the org
+    reminder whose remote renderer timed out (`curl` exit 28) is the live
+    example, and there were three of them at the top of the history on
+    2026-08-17. Such a row still carries its text and its pane, because the
+    record of "this was said, or meant to be" is worth keeping, but its `uri`
+    is the pseudo-uri the lane recorded for what it *ran* — `remote-say:phone`,
+    a description of a command, not a clip.
+
+    Left in the traversal they are worse than useless: `r` and `<` in the popup
+    address rows by index, so the newest failure is what "replay the last clip"
+    reaches, and it hands mpv a path that is a sentence. Nothing plays and
+    nothing says why — reported as "I can't seem to play the last clip".
+
+    So they are filtered out of the traversal for the same reason notif alerts
+    are: it is a list of things you can hear again. `media recent` reads the
+    store directly and still shows them.
+
+    The test is what the uri IS, not whether the file is still there. A clip
+    pruned from the cache is a different failure with its own handling (the
+    prefetch re-pushes, and mpv complains if it cannot), and a row whose clips
+    live on the far side records bare filenames that exist nowhere on this
+    host — so asking the filesystem here would refuse the phone's whole
+    history.
+    """
+    ex = row.get("extras") if isinstance(row.get("extras"), dict) else {}
+    if ex.get("clip_uris"):
+        return True
+    uri = row.get("uri") or ""
+    return bool(uri) and not uri.startswith("remote-say:")
+
+
 def _speech_history(n: int = 20, session: Optional[str] = None,
                     include_live: bool = False):
     # `session`, when given, is a *Claude session id* (extras.source_session) —
@@ -223,14 +257,21 @@ def _speech_history(n: int = 20, session: Optional[str] = None,
     rows = StateStore().recent_history(sink="speech", limit=fetch)
     rows = [r for r in rows
             if not (isinstance(r.get("extras"), dict)
-                    and r["extras"].get("kind") == "notif")]
+                    and r["extras"].get("kind") == "notif")
+            and _row_has_audio(r)]
     if include_live:
         live = _live_history_row()
         # started_at is the same float the lane will hand add_history, so it
         # dedupes exactly — no window where the turn is listed twice as it
         # finishes.
-        if live is not None and not any(
-                r.get("started_at") == live["started_at"] for r in rows):
+        # ...and it has to clear the same bar as the stored rows. The live row
+        # is built from now_playing, which is just as capable of describing a
+        # render that failed — and being newest, an unplayable one does not
+        # merely sit in the list, it stands directly between `r` and the last
+        # thing that actually made a sound.
+        if (live is not None and _row_has_audio(live)
+                and not any(r.get("started_at") == live["started_at"]
+                            for r in rows)):
             rows.insert(0, live)
     if session:
         # Scope traversal to one conversation's clips. Rows that predate the
@@ -2637,6 +2678,14 @@ def _replay_row(row: dict) -> int:
     clips land meanwhile."""
     uri = row.get("uri")
     if not uri:
+        return 1
+    if not _row_has_audio(row):
+        # The traversal filters these out, so reaching one here means the clip
+        # browser or a `--id` addressed it directly. Refuse rather than hand
+        # mpv `remote-say:phone`, which it will treat as a path and fail on
+        # silently — the failure this whole guard exists to make legible.
+        print("media replay: that one never rendered — nothing to play",
+              file=sys.stderr)
         return 1
     ex = row.get("extras") or {}
     clip_uris: list[str] = ex.get("clip_uris") or [uri]

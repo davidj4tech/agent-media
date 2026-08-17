@@ -641,6 +641,45 @@ def test_skip_playlist_sets_playlist_pos_and_highlights(monkeypatch, tmp_path):
     assert hl["s"] == "b"
 
 
+def test_a_render_that_failed_is_not_in_the_traversal(monkeypatch):
+    """`r` in the popup reaches the newest row. A row that never rendered has
+    no clip — only the pseudo-uri naming the command the lane ran — and used to
+    be handed to mpv as a path, which fails silently. Reported 2026-08-17 as
+    "I can't seem to play the last clip"; three timed-out org reminders were
+    sitting at the top of the history."""
+    failed = {"uri": "remote-say:phone", "text": "Org reminder: Moon enters Taurus",
+              "extras": {"kind": "remote-say", "failed": "remote renderer exited 28"}}
+    real = {"uri": "remote-say:phone", "text": "a real reply",
+            "extras": {"kind": "stop", "clips_remote": True,
+                       "clip_uris": ["remote-20260817T100509-17563.mp3"]}}
+
+    assert not cli._row_has_audio(failed)
+    assert cli._row_has_audio(real)
+
+    class FakeStore:
+        def get_now_playing(self, sink):
+            return None
+
+        def recent_history(self, *, sink, limit):
+            return [failed, failed, real][:limit]
+
+    monkeypatch.setattr(cli, "StateStore", FakeStore)
+    rows = cli._speech_history(5)
+    assert [r["text"] for r in rows] == ["a real reply"], \
+        "the failures must not stand between `r` and the last thing you heard"
+
+
+def test_replay_refuses_a_row_that_never_rendered(monkeypatch):
+    """Belt and braces for the clip browser, which addresses rows by id and so
+    can reach one the traversal filtered out."""
+    played = {}
+    monkeypatch.setattr(cli, "SinkSpeech", lambda: played.setdefault("built", True))
+    rc = cli._replay_row({"uri": "remote-say:phone",
+                          "extras": {"kind": "remote-say", "failed": "exit 28"}})
+    assert rc == 1
+    assert "built" not in played, "nothing should have been pushed to a sink"
+
+
 def test_replay_resolves_history(monkeypatch):
     played = {}
 
