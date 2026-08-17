@@ -641,12 +641,16 @@ def test_skip_playlist_sets_playlist_pos_and_highlights(monkeypatch, tmp_path):
     assert hl["s"] == "b"
 
 
-def test_a_render_that_failed_is_not_in_the_traversal(monkeypatch):
-    """`r` in the popup reaches the newest row. A row that never rendered has
+def test_replay_steps_past_a_render_that_failed(monkeypatch):
+    """`r` in the popup addresses the newest row. A row that never rendered has
     no clip — only the pseudo-uri naming the command the lane ran — and used to
     be handed to mpv as a path, which fails silently. Reported 2026-08-17 as
     "I can't seem to play the last clip"; three timed-out org reminders were
-    sitting at the top of the history."""
+    sitting at the top of the history.
+
+    The failures keep their place in the history — the indices are shared with
+    the pane lookup and the < / > cursor — so the skipping happens here, at the
+    one entry point that means "play something"."""
     failed = {"uri": "remote-say:phone", "text": "Org reminder: Moon enters Taurus",
               "extras": {"kind": "remote-say", "failed": "remote renderer exited 28"}}
     real = {"uri": "remote-say:phone", "text": "a real reply",
@@ -656,6 +660,8 @@ def test_a_render_that_failed_is_not_in_the_traversal(monkeypatch):
     assert not cli._row_has_audio(failed)
     assert cli._row_has_audio(real)
 
+    played = {}
+
     class FakeStore:
         def get_now_playing(self, sink):
             return None
@@ -663,9 +669,24 @@ def test_a_render_that_failed_is_not_in_the_traversal(monkeypatch):
         def recent_history(self, *, sink, limit):
             return [failed, failed, real][:limit]
 
+        def set_now_playing(self, sink, **kw):
+            played["now_playing"] = kw.get("uri")
+
+    class FakeSpeech:
+        def play(self, uri, target):
+            played["uri"] = uri
+
     monkeypatch.setattr(cli, "StateStore", FakeStore)
-    rows = cli._speech_history(5)
-    assert [r["text"] for r in rows] == ["a real reply"], \
+    monkeypatch.setattr(cli, "SinkSpeech", lambda: FakeSpeech())
+
+    # All three rows still count — dropping them would move every index.
+    assert len(cli._speech_history(5)) == 3
+
+    class A:
+        index = 1
+
+    assert cli.cmd_replay(A()) == 0
+    assert played["uri"] == "remote-20260817T100509-17563.mp3", \
         "the failures must not stand between `r` and the last thing you heard"
 
 

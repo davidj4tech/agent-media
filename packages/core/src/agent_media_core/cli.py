@@ -257,21 +257,14 @@ def _speech_history(n: int = 20, session: Optional[str] = None,
     rows = StateStore().recent_history(sink="speech", limit=fetch)
     rows = [r for r in rows
             if not (isinstance(r.get("extras"), dict)
-                    and r["extras"].get("kind") == "notif")
-            and _row_has_audio(r)]
+                    and r["extras"].get("kind") == "notif")]
     if include_live:
         live = _live_history_row()
         # started_at is the same float the lane will hand add_history, so it
         # dedupes exactly — no window where the turn is listed twice as it
         # finishes.
-        # ...and it has to clear the same bar as the stored rows. The live row
-        # is built from now_playing, which is just as capable of describing a
-        # render that failed — and being newest, an unplayable one does not
-        # merely sit in the list, it stands directly between `r` and the last
-        # thing that actually made a sound.
-        if (live is not None and _row_has_audio(live)
-                and not any(r.get("started_at") == live["started_at"]
-                            for r in rows)):
+        if live is not None and not any(
+                r.get("started_at") == live["started_at"] for r in rows):
             rows.insert(0, live)
     if session:
         # Scope traversal to one conversation's clips. Rows that predate the
@@ -2669,12 +2662,34 @@ def _replay_visual(extras: dict) -> None:
             pass
 
 
+#: How far past an addressed row to look for one that can actually be heard.
+#: Bounded so a long run of failed renders cannot turn one keypress into a scan
+#: of the whole history; eight is more consecutive failures than have ever been
+#: seen, and past that the honest answer is "nothing to replay".
+_REPLAY_LOOKAHEAD = 8
+
+
 def _do_replay(index: int, session: Optional[str] = None) -> int:
-    rows = _speech_history(max(1, index), session=session, include_live=True)
+    rows = _speech_history(max(1, index) + _REPLAY_LOOKAHEAD,
+                           session=session, include_live=True)
     if len(rows) < index:
         print("media: no clip to replay", file=sys.stderr)
         return 1
-    return _replay_row(rows[index - 1])
+    # Step past turns that never rendered. They stay in the history and keep
+    # their place in it — the indices are shared with the pane lookup and the
+    # < / > cursor, so dropping them would silently move every other row — but
+    # they are not what "replay" means. On 2026-08-17 three org reminders whose
+    # renderer had timed out sat at the top of the history, and `r` in the popup
+    # kept addressing the newest of them: nothing played, and nothing said why.
+    for offset, row in enumerate(rows[index - 1:]):
+        if not _row_has_audio(row):
+            continue
+        if offset:
+            print(f"media: skipped {offset} turn(s) that never rendered",
+                  file=sys.stderr)
+        return _replay_row(row)
+    print("media: no clip to replay", file=sys.stderr)
+    return 1
 
 
 def _replay_row(row: dict) -> int:
