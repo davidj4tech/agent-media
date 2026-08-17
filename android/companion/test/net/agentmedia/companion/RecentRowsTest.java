@@ -28,6 +28,7 @@ public final class RecentRowsTest {
         testTitleRescuesQueryWreckage();
         testAnEmptyLabelFallsBackToTheUri();
         testUnplayableRowsSayWhy();
+        testTheClockRidesInTheSecondLine();
         testSpeechGroupsByConversation();
         testTmuxSessionsAreSeparatePlaces();
         testAConversationWithNoNameIsStillItsOwn();
@@ -161,6 +162,29 @@ public final class RecentRowsTest {
         check("a generic path falls back to the host",
                 "a link from youtube.com".equals(RecentRows.title(
                         item("https://www.youtube.com/watch?v=aaa", "music", 0))));
+    }
+
+    private static void testTheClockRidesInTheSecondLine() {
+        // It used to be a column of its own, five characters wide on every row
+        // including the ones with no time at all — width taken from the line
+        // beside it, which is a sentence somebody said.
+        RecentList.Item row = item("A Long Set", "music", at(17, 20, 0));
+        check("the clock leads the line",
+                RecentRows.subtitle(row, "20:00").equals("20:00 · music"));
+        // "20:00" and "1h ago" are the same fact twice, and the exact one is
+        // what you scan a list by.
+        check("and the distance goes",
+                !RecentRows.subtitle(row, "20:00").contains("ago"));
+        // Unless there is no clock: a row the store kept no time for has
+        // nothing else to say when it happened.
+        check("no clock, no loss",
+                RecentRows.subtitle(row, "").equals(row.subtitle())
+                && row.subtitle().startsWith("1h ago"));
+        // A row that cannot be played says so instead, clock or no clock.
+        RecentList.Item gone = new RecentList.Item(
+                "clip.mp3", "speech", "", "", "2h", 0);
+        check("a dead row still says why",
+                RecentRows.subtitle(gone, "20:00").startsWith("gone"));
     }
 
     private static void testUnplayableRowsSayWhy() {

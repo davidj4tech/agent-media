@@ -346,11 +346,30 @@ final class RecentRows {
      * by tapping, which is a list keeping a secret it has no reason to keep.
      */
     static String subtitle(RecentList.Item item) {
+        return subtitle(item, "");
+    }
+
+    /**
+     * The same line, with the clock in it.
+     *
+     * The time used to be a column of its own on the left, and a column that
+     * holds five characters costs the width of five characters on every row
+     * including the ones where it is empty — while the line it was next to,
+     * a sentence somebody said, was being ellipsised. It reads just as well
+     * here, in front of the thing it is already sitting beside.
+     *
+     * With a clock, the "3h ago" goes: they are the same fact twice, and the
+     * exact one is the one you scan a list by. Without one — a row the store
+     * kept no time for — the distance is all there is, so it stays.
+     */
+    static String subtitle(RecentList.Item item, String clock) {
         if (!item.playable()) {
             if ("speech".equals(item.channel)) return "gone — the clip was temporary";
             return "cannot be played again";
         }
-        return item.subtitle();
+        if (clock == null || clock.isEmpty()) return item.subtitle();
+        String rest = item.where();
+        return rest.isEmpty() ? clock : clock + " · " + rest;
     }
 
     // ---- the awkward bits --------------------------------------------------

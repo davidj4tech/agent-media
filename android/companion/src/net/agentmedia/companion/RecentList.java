@@ -121,10 +121,18 @@ final class RecentList {
         String subtitle() {
             StringBuilder sb = new StringBuilder();
             if (ago != null && !ago.isEmpty()) sb.append(ago).append(" ago");
-            if (channel != null && !channel.isEmpty()) {
+            String where = where();
+            if (!where.isEmpty()) {
                 if (sb.length() > 0) sb.append(" · ");
-                sb.append(channel);
+                sb.append(where);
             }
+            return sb.toString();
+        }
+
+        /** Where it played — the channel, and what kind of thing it was. */
+        String where() {
+            StringBuilder sb = new StringBuilder();
+            if (channel != null && !channel.isEmpty()) sb.append(channel);
             if (contentType != null && !contentType.isEmpty()
                     && !contentType.equals(channel)) {
                 sb.append(" (").append(contentType).append(")");

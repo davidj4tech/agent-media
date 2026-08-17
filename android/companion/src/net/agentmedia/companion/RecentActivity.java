@@ -252,27 +252,13 @@ public class RecentActivity extends Activity {
         row.setPadding(0, dp(Style.gap(2)), 0, dp(Style.gap(2)));
         row.setMinimumHeight(dp(Style.TOUCH));
 
-        TextView when = new TextView(this);
-        when.setText(entry.clock);
-        when.setTextSize(Style.LABEL);
-        when.setTextColor(Style.FAINT);
-        when.setTypeface(Typeface.MONOSPACE);
-        when.setGravity(Gravity.END);
-        when.setSingleLine(true);
-        // Wide enough for the longest thing it holds, and free to grow past
-        // that: 44dp fits "07:36" at the system's default type size and clips
-        // it at any larger one, which is a setting this list does not get a
-        // say in. A minimum keeps the column straight; WRAP_CONTENT keeps it
-        // honest.
-        when.setMinWidth(dp(52));
-        LinearLayout.LayoutParams whenParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT);
-        whenParams.rightMargin = dp(Style.gap(3));
-        row.addView(when, whenParams);
+        // No time column. It held five characters, cost their width on every
+        // row including the ones with no time at all, and took it from the
+        // line beside it — a sentence somebody said, ellipsised to fit. The
+        // clock moved into the second line, where it reads the same.
 
         // The channel, as a colour rather than a word. It also gives the list a
-        // left edge to run the eye down, which a column of times does not.
+        // left edge to run the eye down, which a column of times did not.
         View dot = new View(this);
         GradientDrawable d = new GradientDrawable();
         d.setColor(Style.accent(item.channel));
@@ -297,7 +283,7 @@ public class RecentActivity extends Activity {
         lines.addView(title);
 
         TextView sub = new TextView(this);
-        sub.setText(RecentRows.subtitle(item));
+        sub.setText(RecentRows.subtitle(item, entry.clock));
         sub.setTextColor(Style.MUTED);
         sub.setTextSize(Style.BODY);
         sub.setSingleLine(true);
