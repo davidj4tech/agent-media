@@ -134,6 +134,9 @@ final class Transport {
             b.setVisibility(has ? View.VISIBLE : View.GONE);
         }
         if (chaptersButton != null) {
+            // Named for what the list is on this channel: speech's rows are
+            // spoken turns, and "chapters" would promise the wrong thing.
+            chaptersButton.setText(speech() ? "clips" : "chapters");
             boolean channelHas = c == null || c.takes("chapter");
             chaptersButton.setVisibility(channelHas ? View.VISIBLE : View.GONE);
             boolean may = c != null && c.mayHaveChapters();
@@ -201,17 +204,24 @@ final class Transport {
     }
 
     private void chapterDialog(final List<Chapters.Chapter> rows) {
+        boolean clips = speech();
         if (rows.isEmpty()) {
-            toast("no chapters in this track");
+            toast(clips ? "nothing said yet" : "no chapters in this track");
             return;
         }
         final String[] labels = new String[rows.size()];
         for (int i = 0; i < rows.size(); i++) labels[i] = rows.get(i).label();
         new AlertDialog.Builder(ctx)
-                .setTitle("chapters")
+                .setTitle(clips ? "recent clips" : "chapters")
+                // By ref, not by row: on speech the rows are history ids, and
+                // a clip landing while this is open would renumber them.
                 .setItems(labels, (d, which) ->
-                        send("chapter", Integer.toString(rows.get(which).number)))
+                        send("chapter", rows.get(which).ref()))
                 .show();
+    }
+
+    private boolean speech() {
+        return "speech".equals(host.channel());
     }
 
     // ---- the furniture -----------------------------------------------------

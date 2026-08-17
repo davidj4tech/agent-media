@@ -172,14 +172,20 @@ final class Channels {
         }
 
         /**
-         * Chapters need an mpv with something loaded in it.
+         * Whether the picker has anything to show.
          *
-         * Music and book both qualify — the book more so, since an m4b has
-         * chapters by definition and a shared YouTube upload usually carries
-         * marks. It was music-only here for as long as the listener could only
-         * read the music mpv's list.
+         * Chapters need an mpv with something loaded in it. Music and book
+         * both qualify — the book more so, since an m4b has chapters by
+         * definition and a shared YouTube upload usually carries marks. It was
+         * music-only here for as long as the listener could only read the
+         * music mpv's list.
+         *
+         * Speech is not that, and the idle test would be exactly backwards on
+         * it: what its picker lists is the clips already spoken, and an idle
+         * speech channel is precisely when you want the one before last again.
          */
         boolean mayHaveChapters() {
+            if ("speech".equals(name)) return true;
             return ("music".equals(name) || "book".equals(name)) && !idle;
         }
     }

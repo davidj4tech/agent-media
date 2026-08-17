@@ -2748,6 +2748,12 @@ def _replay_row(row: dict) -> int:
     # can compute a spanning bar; otherwise omit total_duration_s and let
     # cmd_status fall back to mpv's raw time-pos/duration.
     np_extras: dict = {"text": replay_text}
+    # Which record is audible. A clip picker draws its ▸ from this: without it
+    # the only handle on "where you are" is the text, and two turns can say the
+    # same thing. Absent on a live readout, which is correct — the turn being
+    # spoken for the first time is not a record yet.
+    if row.get("id") is not None:
+        np_extras["history_id"] = row["id"]
     source_pane = ex.get("source_pane")
     if source_pane:
         np_extras["source_pane"] = source_pane

@@ -61,7 +61,8 @@ def test_a_channel_publishes_the_verbs_it_takes():
     # `chapter` the book does take, since 2026-08-17: an m4b has chapters by
     # definition and mpv lifts a YouTube upload's marks.
     assert "chapter" in sc.verbs("book")
-    assert "chapter" not in sc.verbs("speech")
+    # Speech takes it too, since 2026-08-17 — its "chapters" are its clips.
+    assert "chapter" in sc.verbs("speech")
     assert {"toggle", "seek", "speed", "next", "prev"} <= set(sc.verbs("book"))
     # And every published verb is one control() will actually accept.
     for channel in sc.CHANNELS:
@@ -213,10 +214,72 @@ def test_the_book_reads_its_own_mpv(monkeypatch):
     assert rows[1]["current"] and rows[1]["start_ms"] == 600000
 
 
-def test_a_channel_with_no_chapters_at_all_is_an_empty_list(monkeypatch):
+def test_an_unknown_channel_is_an_empty_list(monkeypatch):
     monkeypatch.setattr(
         "agent_media_core.cli._music_mpv_chapters",
         lambda: ("ep", [{"title": "Intro", "time": 0.0}], 0))
+    assert sc.chapters("radio") == []
+
+
+# ---- speech's chapters are its clips ---------------------------------------
+
+def _clip(rid, at, text):
+    return {"id": rid, "started_at": at, "text": text}
+
+
+def test_speech_lists_the_clips_it_has_said(monkeypatch):
+    # The button's question — what is in this, take me to that part — has an
+    # answer on speech, and it is the history.
+    monkeypatch.setattr("agent_media_core.cli._speech_history",
+                        lambda n=20, **kw: [_clip(91, 1_700_000_000, "the last one"),
+                                            _clip(90, 1_699_999_000, "one\nbefore")])
+    monkeypatch.setattr("agent_media_core.cli._now_speaking", lambda: None)
+    rows = sc.chapters("speech")
+    assert [r["number"] for r in rows] == [1, 2]
+    # Addressed by history id, not by position: the list is newest-first, so a
+    # clip landing while the picker is open would renumber every row.
+    assert [r["ref"] for r in rows] == ["91", "90"]
+    assert rows[0]["title"].endswith("the last one")
+    assert "  " in rows[0]["title"]          # a clock time, then the words
+    assert rows[1]["title"].endswith("one before")   # one line, not two
+    assert rows[0]["start_ms"] is None       # these are not one track
+    assert not any(r["current"] for r in rows)
+
+
+def test_the_replayed_clip_is_the_marked_one(monkeypatch):
+    monkeypatch.setattr("agent_media_core.cli._speech_history",
+                        lambda n=20, **kw: [_clip(91, 1_700_000_000, "newest"),
+                                            _clip(90, 1_699_999_000, "older")])
+    monkeypatch.setattr("agent_media_core.cli._now_speaking",
+                        lambda: {"extras": {"history_id": 90}})
+    rows = sc.chapters("speech")
+    assert rows[1]["current"] and not rows[0]["current"]
+
+
+def test_a_clip_with_no_record_is_not_offered(monkeypatch):
+    # The live turn: history is written when a turn ends, so what is being
+    # spoken has no id yet and `replay --id` could not find it.
+    monkeypatch.setattr(
+        "agent_media_core.cli._speech_history",
+        lambda n=20, **kw: [_clip(None, 1_700_000_100, "speaking now"),
+                            _clip(91, 1_700_000_000, "said")])
+    monkeypatch.setattr("agent_media_core.cli._now_speaking", lambda: None)
+    rows = sc.chapters("speech")
+    assert [r["ref"] for r in rows] == ["91"]
+    assert rows[0]["number"] == 1
+
+
+def test_picking_a_clip_replays_that_record():
+    seen = []
+    sc.control("speech", "chapter", "91", runner=lambda argv: seen.append(argv) or 0)
+    assert seen == [["replay", "--id", "91"]]
+
+
+def test_a_history_read_that_explodes_is_still_an_empty_list(monkeypatch):
+    def boom(n=20, **kw):
+        raise OSError("state store gone")
+
+    monkeypatch.setattr("agent_media_core.cli._speech_history", boom)
     assert sc.chapters("speech") == []
 
 

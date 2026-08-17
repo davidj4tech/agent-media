@@ -74,7 +74,14 @@ VERBS = {
     # the one speech does publish was called `skip` and took its direction as
     # an argument the transport row has no way to send. So the direction is
     # baked in here, where the argv is written anyway.
+    #
+    # `chapter` is the other exception, and the same kind: speech has no
+    # chapters, but the chapter button's question — what is in this, take me
+    # to that part — has an answer on this channel, and it is the history.
+    # So the picker lists the clips already said and choosing one replays it
+    # by history id, which is what `replay --id` exists for.
     ("speech", "toggle"): ["toggle"],
+    ("speech", "chapter"): ["replay", "--id", "{}"],
     ("speech", "next"): ["skip", "--dir", "1"],
     ("speech", "prev"): ["skip", "--dir", "-1"],
     ("speech", "seek"): ["seek", "{}"],
@@ -242,16 +249,23 @@ def _focus() -> Optional[str]:
 
 
 def chapters(channel: str = "music") -> list:
-    """The loaded track's chapters, 1-based, with the current one marked.
+    """What this channel can be jumped around by, 1-based, current marked.
 
-    Music or book. It was music only, on the strength of a comment here saying
-    a book has no chapters — which was true when the book channel was streams
-    and false the moment it grew a cache: an m4b has chapters by definition and
-    mpv lifts YouTube's marks too. Speech has none and never will; an MPD or
-    GStreamer stream has none either. An empty list is the honest answer in all
-    of those cases, not an error.
+    Music or book: the loaded track's chapters. It was music only, on the
+    strength of a comment here saying a book has no chapters — which was true
+    when the book channel was streams and false the moment it grew a cache: an
+    m4b has chapters by definition and mpv lifts YouTube's marks too. An MPD or
+    GStreamer stream has none, and an empty list is the honest answer there
+    rather than an error.
+
+    Speech has no chapters and never will — but it has the same *question*
+    answered elsewhere: the clips already spoken, which the popup browses.
+    That list is what this returns for speech, so one button means one thing
+    on all three channels. See `_speech_clips`.
     """
     channel = (channel or "music").strip() or "music"
+    if channel == "speech":
+        return _speech_clips()
     if channel not in ("music", "book"):
         return []
     try:
@@ -280,6 +294,56 @@ def chapters(channel: str = "music") -> list:
                      "start_ms": None if start is None else int(start * 1000),
                      "current": (cur is not None and i == int(cur) + 1)})
     return rows
+
+
+def _speech_clips(n: int = 40) -> list:
+    """Recent spoken turns, newest first, shaped like a chapter list.
+
+    `ref` is the row's history id and not its position, because position is
+    the one thing that does not hold: the list is newest-first, so a clip
+    landing while the picker is open shifts every number by one and the tap
+    that follows plays the wrong turn. `replay --id` is addressed the same way
+    and for the same reason.
+
+    The live turn is deliberately absent. History is written when a turn ends,
+    so what you are hearing right now has no id yet — the popup's traversal
+    keeps it (`include_live`) because stepping needs to count it, but a picker
+    row you cannot replay is not worth drawing. The mark instead follows the
+    clip a replay put on: `_replay_row` stamps its id into now_playing.
+
+    Timestamps ride in the title. `start_ms` is an offset into one track, and
+    these are not one track — a clock time is what tells two turns apart, and
+    it is what the popup's own clip browser shows.
+    """
+    try:
+        from ..cli import _hist_ts, _hist_txt, _speech_history
+
+        rows = _speech_history(n)
+    except Exception as e:  # noqa: BLE001
+        log.debug("clip read failed: %s", e)
+        return []
+    playing = None
+    try:
+        from ..cli import _now_speaking
+
+        playing = ((_now_speaking() or {}).get("extras") or {}).get("history_id")
+    except Exception as e:  # noqa: BLE001 — a marker, never the list's problem
+        log.debug("now-playing read failed: %s", e)
+    import datetime
+
+    today = datetime.date.today()
+    out = []
+    for r in rows:
+        rid = r.get("id")
+        if rid is None:
+            continue
+        text = _hist_txt(r)[:110] or "(no text)"
+        out.append({"number": len(out) + 1,
+                    "title": f"{_hist_ts(r, today)}  {text}",
+                    "start_ms": None,
+                    "current": playing is not None and rid == playing,
+                    "ref": str(rid)})
+    return out
 
 
 def control(channel: str, action: str, arg: str = "", runner=None) -> int:

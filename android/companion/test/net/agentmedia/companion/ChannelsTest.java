@@ -139,7 +139,10 @@ public final class ChannelsTest {
         Map<String, Channels.Channel> m = Channels.parse(FULL);
         check("live music may have chapters", m.get("music").mayHaveChapters());
         check("an idle channel may not", !m.get("book").mayHaveChapters());
-        check("speech never does", !m.get("speech").mayHaveChapters());
+        // Speech's picker is its clips, and idle is when you most want them —
+        // the idle test would be exactly backwards on that channel.
+        check("speech always has clips to offer",
+                m.get("speech").mayHaveChapters());
     }
 
     private static void testTheButtonAsksAboutDirection() {
@@ -198,6 +201,15 @@ public final class ChannelsTest {
         check("the others are not", rows.get(0).label().startsWith("  1"));
         check("the start time is shown", rows.get(1).label().contains("4:12"));
         check("junk is no chapters", Chapters.parse("nope").isEmpty());
+        // A chapter is picked by its number...
+        check("a chapter is its number", rows.get(1).ref().equals("2"));
+        // ...a speech clip by the history id the listener sent, because the
+        // clip list is newest-first and renumbers under the finger.
+        List<Chapters.Chapter> clips = Chapters.parse(
+                "{\"rows\":[{\"number\":1,\"title\":\"14:02  a reply\","
+                + "\"current\":true,\"ref\":\"91\"}]}");
+        check("a clip is its ref", clips.get(0).ref().equals("91"));
+        check("and still reads as a row", clips.get(0).label().startsWith("▸ 1"));
         // An untitled chapter is still tappable.
         check("untitled chapters get a name",
                 Chapters.parse("{\"rows\":[{\"number\":3}]}").get(0)
