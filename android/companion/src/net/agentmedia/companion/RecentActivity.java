@@ -78,12 +78,44 @@ public class RecentActivity extends Activity {
         int pad = dp(Style.gap(4));
         root.setPadding(pad, pad, pad, 0);
 
+        // A way back that is on the screen. The system gesture works and is
+        // invisible, and this is a screen you arrive at from one place and
+        // leave to the same place — so it says so, in the corner where every
+        // other app puts it.
+        LinearLayout top = new LinearLayout(this);
+        top.setOrientation(LinearLayout.HORIZONTAL);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView back = new TextView(this);
+        back.setText("‹");
+        back.setTextSize(Style.TITLE);
+        back.setTextColor(Style.MUTED);
+        back.setGravity(Gravity.CENTER);
+        back.setContentDescription("back");
+        back.setClickable(true);
+        back.setFocusable(true);
+        back.setMinWidth(dp(Style.TOUCH));
+        back.setMinimumHeight(dp(Style.TOUCH));
+        back.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { finish(); }
+        });
+        LinearLayout.LayoutParams backParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        // Pulled left by the padding the screen already has, so the arrow sits
+        // on the edge where a thumb reaches for it and the title stays where it
+        // has always been.
+        backParams.leftMargin = -dp(Style.gap(3));
+        backParams.rightMargin = dp(Style.gap(1));
+        top.addView(back, backParams);
+
         TextView heading = new TextView(this);
         heading.setText("Recently played");
         heading.setTextSize(Style.TITLE);
         heading.setTextColor(Style.INK);
         heading.setTypeface(Typeface.DEFAULT_BOLD);
-        root.addView(heading);
+        top.addView(heading);
+        root.addView(top);
 
         tabs = new Tabs(this, new Tabs.Host() {
             @Override public void drive(String picked) {
