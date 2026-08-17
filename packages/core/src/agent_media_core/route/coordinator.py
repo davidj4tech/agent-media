@@ -133,6 +133,13 @@ class Coordinator:
         self._android_paused: list[str] = []
         # Whether we paused the book channel for the current clip.
         self._book_paused = False
+        # A duck this coordinator decided on but has not applied yet — see
+        # before_speech(defer_music=True) and duck_music_now(). The lock makes
+        # the hand-off single-shot: two callers race to apply it (the far
+        # side's "about to play" line and the grace timer behind it) and
+        # exactly one may win.
+        self._deferred_music: Optional[str] = None
+        self._defer_lock = threading.Lock()
         # Serialises the speaking-flag writes so a clear can never overtake the
         # set it belongs to, and keeps both off the speech path's thread.
         self._flag_writer = ThreadPoolExecutor(
@@ -314,10 +321,21 @@ class Coordinator:
         """What the music channel is playing. Asked concurrently."""
         return self.music.now_playing_uri(self.music_target)
 
-    def before_speech(self, title: str = "", priority: str = "") -> None:
+    def before_speech(self, title: str = "", priority: str = "",
+                      defer_music: bool = False) -> None:
         """Apply interruption for whatever sink-music is currently
         playing. Records baseline volume + position so after_speech can
         restore.
+
+        ``defer_music`` decides everything about the music duck except when it
+        lands, and hands that to the caller through :meth:`duck_music_now`. It
+        exists for a lane where "we are about to speak" and "sound is coming
+        out" are a long way apart: the phone renders its own audio, so this
+        call returns as soon as the text is handed over and the first word is
+        ten seconds later. Ducking there is a hole in the music that starts
+        before anything fills it. Everything else — the flag, the book, the
+        remote pauses — is still applied now, because those are about the
+        commitment rather than the sound.
 
         ``title`` names the reply for anything that displays one — the phone's
         speech card, the car — and is the same string the popup shows. Optional
@@ -410,6 +428,32 @@ class Coordinator:
         if not uri:
             return  # nothing to interrupt via Mopidy
 
+        if defer_music:
+            # Decided, not yet done. The probe above has already been paid for,
+            # so applying it later costs one round trip rather than the whole
+            # sequence again.
+            with self._defer_lock:
+                self._deferred_music = uri
+            return
+        self._interrupt_music(uri, concurrency)
+
+    def duck_music_now(self) -> None:
+        """Apply a duck that ``before_speech(defer_music=True)`` held back.
+
+        Single-shot and safe to call from anywhere: the two callers are the far
+        side saying it is about to play and the timer that does not trust it to,
+        and whichever arrives first is the one that ducks. Calling it with
+        nothing deferred — no music, a bedded book, a lane that never deferred —
+        does nothing, which is what makes it safe to call unconditionally.
+        """
+        with self._defer_lock:
+            uri, self._deferred_music = self._deferred_music, None
+        if not uri:
+            return
+        self._interrupt_music(uri, resolve(self.state))
+
+    def _interrupt_music(self, uri: str, concurrency) -> None:
+        """Pause or duck the music that `uri` names, and record how to undo it."""
         content_type = self._content_type_for(uri)
         policy = policy_for(content_type)
         extras: dict = {}
@@ -489,6 +533,12 @@ class Coordinator:
         # Lower the flag first: from here on, a focus loss really is somebody
         # else's and the app should duck for it.
         self._speaking(False)
+        # A duck decided but never applied — the utterance failed, or the far
+        # side finished before anything asked for it. Dropping it here keeps it
+        # from landing on the *next* reply's music, which would be a duck with
+        # no speech behind it and nothing left to restore it.
+        with self._defer_lock:
+            self._deferred_music = None
         # Restore the source-agnostic rooms (Snapcast) duck first — it's
         # independent of the Mopidy interruption marker handled below (which is
         # absent whenever this coordinator's Mopidy wasn't the one playing).

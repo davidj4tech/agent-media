@@ -2291,7 +2291,8 @@ def _watch_remote_progress(proc, state: StateStore, target_name: str,
                            started_at: float,
                            report: Optional[dict] = None,
                            follower: Optional[_SentenceFollower] = None,
-                           source: Optional[dict] = None) -> None:
+                           source: Optional[dict] = None,
+                           on_about_to_play=None) -> None:
     """Read the remote renderer's report lines and make the popup honest.
 
     A remote renderer may announce, on stdout, three things about what it is
@@ -2315,6 +2316,12 @@ def _watch_remote_progress(proc, state: StateStore, target_name: str,
     A renderer that says nothing (Android TTS, a bare `say`) is unaffected: the
     row carries no duration and no clip, and the display stays blank, which is
     the correct answer when nothing has been measured.
+
+    `on_about_to_play`, when given, is called once on the first of these lines
+    to arrive. They are sent immediately before playback and nothing else on
+    this lane knows that moment: the caller's own call returned when the text
+    was handed over, which on a phone that renders its own audio is ten seconds
+    early. That is what the callback is for — see `Coordinator.duck_music_now`.
 
     `report`, when given, collects what was announced for the caller to record
     in history — the thread outlives neither the process nor the caller's wait.
@@ -2343,6 +2350,14 @@ def _watch_remote_progress(proc, state: StateStore, target_name: str,
         # only at exit and the progress bar never appears.
         for raw in iter(proc.stdout.readline, b""):
             line = raw.decode("utf-8", "replace").strip()
+            if on_about_to_play is not None and line:
+                # Any of the report lines will do: they are all sent in the
+                # same breath, just before the first sample.
+                try:
+                    on_about_to_play()
+                except Exception:  # noqa: BLE001 — a duck is never worth the reply
+                    pass
+                on_about_to_play = None
             if line.startswith("CLIP "):
                 clip = line.split(None, 1)[1].strip()
                 if report is not None and clip:
@@ -2459,6 +2474,20 @@ def _remote_say_cmd(target: Target) -> str:
     return os.environ.get("MEDIA_REMOTE_SAY_CMD", "")
 
 
+def _duck_grace_s() -> float:
+    """How long to wait for the far side to say it is about to play.
+
+    The deadline for a renderer that never announces anything, not a pause for
+    one that does — an announcement applies the duck the moment it lands. Long
+    enough that the phone's own render (seconds, measured) is not cut short by
+    it; short enough that a silent renderer talks over at most this much music.
+    """
+    try:
+        return max(0.0, float(os.environ.get("MEDIA_SPEECH_DUCK_GRACE_S", "3")))
+    except (TypeError, ValueError):
+        return 3.0
+
+
 def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
                        state: StateStore, event: Event) -> Optional[int]:
     """Render a reply on a remote low-latency hub instead of locally.
@@ -2546,9 +2575,22 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
     # lane never did, which is why the coordination cost showed up here and not
     # there — on this link it was 17s of a 25s utterance.
     coordinator.pre_pause_remote()
+    duck_timer: Optional[threading.Timer] = None
     try:
+        # Everything but the music duck, which waits for the far side to say it
+        # is about to play. This lane hands over text and returns; the audio
+        # starts when the phone has finished rendering it, which was measured on
+        # 2026-08-18 at ten seconds later. Ducking at hand-over is a hole in the
+        # music that opens before anything fills it.
         coordinator.before_speech(title=source_window,
-                                  priority=event.priority.value)
+                                  priority=event.priority.value,
+                                  defer_music=True)
+        # ...and a renderer that announces nothing (Android TTS, a bare `say`)
+        # would then never duck at all. So the wait is bounded: whichever comes
+        # first, the announcement or this, applies it exactly once.
+        duck_timer = threading.Timer(_duck_grace_s(), coordinator.duck_music_now)
+        duck_timer.daemon = True
+        duck_timer.start()
         _speech_event("start", text=text[:400], session=session,
                       source=event.source.value, target="remote-say")
         # The remote renders and plays; nothing is on this host to observe. Say
@@ -2592,7 +2634,7 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
             watcher = threading.Thread(
                 target=_watch_remote_progress,
                 args=(proc, state, target_name, started_at, report, follower,
-                      source_extras),
+                      source_extras, coordinator.duck_music_now),
                 daemon=True)
             watcher.start()
             try:
@@ -2624,6 +2666,8 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
             # Before after_speech/clear: a follower still walking its timeline
             # would otherwise write the row back moments after we cleared it,
             # leaving a dead reply on every surface until the next one lands.
+            if duck_timer is not None:
+                duck_timer.cancel()
             follower.stop()
             coordinator.after_speech()
             _speech_event("end", text=text[:160], session=session,
