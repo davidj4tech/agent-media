@@ -3359,6 +3359,10 @@ def _clip_rows(n: int = 40, session: Optional[str] = None) -> list[dict]:
         out.append({"number": len(out) + 1,
                     "id": rid,
                     "ts": _hist_ts(r, today),
+                    # The instant as well as the rendering of it. A list that
+                    # groups by day or says "18m ago" cannot get either back
+                    # out of "14:02", and the phone's list does both.
+                    "at": float(r.get("started_at") or 0.0),
                     "text": _hist_txt(r),
                     "session": ex.get("source_session") or "",
                     "window": str(ex.get("source_window") or "").strip(),

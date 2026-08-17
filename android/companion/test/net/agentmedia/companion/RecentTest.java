@@ -35,7 +35,9 @@ public final class RecentTest {
         testParsesRows();
         testDisplayStrings();
         testParseSurvivesRubbish();
-        testSpeechRowsAreNotPlayable();
+        testSpeechRowsReplayByTheirId();
+        testSpeechReplayOverTheWire();
+        testTheTabIsAQuery();
         testPlayBodyCarriesTheChannel();
         testFetchOverTheWire();
         testPlayOverTheWire();
@@ -87,16 +89,52 @@ public final class RecentTest {
                 RecentList.parse("{\"ok\":true}").isEmpty());
     }
 
-    private static void testSpeechRowsAreNotPlayable() {
-        // Speech clips are in the same history and cannot be re-played: there
-        // is no uri a channel would accept.
+    private static void testSpeechRowsReplayByTheirId() {
+        // They used to be the dead rows of this list — no uri, so nothing to
+        // post to /play. A turn is replayed by history id, and the row carries
+        // one now; the uri stays empty, because the clips live wherever they
+        // were rendered and that is not always this phone.
         RecentList.Item clip = new RecentList.Item(
-                "something Sam said", "speech", "", "clip-17", "1h");
-        check("a speech row is not playable", !clip.playable());
+                "something Sam said", "speech", "", "", "1h", 0.0, 5506L);
+        check("a speech row with an id is playable", clip.playable());
+
+        // Without one there is still nothing to ask for — an older listener,
+        // or a row that never made a sound.
+        RecentList.Item idless = new RecentList.Item(
+                "something Sam said", "speech", "", "", "1h");
+        check("without an id it is not", !idless.playable());
         check("and says so rather than failing silently",
-                RecentList.play(1, clip).contains("cannot be replayed"));
+                RecentList.play(1, idless).contains("cannot be replayed"));
+
         RecentList.Item empty = new RecentList.Item("x", "music", "", "", "1h");
         check("a row with no uri is not playable", !empty.playable());
+    }
+
+    private static void testSpeechReplayOverTheWire() throws Exception {
+        Fake fake = new Fake(200, "{\"ok\":true}");
+        try {
+            RecentList.Item clip = new RecentList.Item(
+                    "a reply", "speech", "", "", "1h", 0.0, 5506L);
+            String line = RecentList.play(fake.port(), clip);
+            String req = fake.request();
+            // The picker's door, not /play: one list, three verbs.
+            check("a clip goes through /control", req.startsWith("POST /control "));
+            check("as the speech chapter verb",
+                    req.contains("speech"), req.contains("chapter"));
+            check("carrying the history id", req.contains("5506"));
+            check("and the toast says what happened", line.contains("replaying"));
+        } finally {
+            fake.close();
+        }
+    }
+
+    private static void testTheTabIsAQuery() {
+        check("all is the absence of a filter",
+                RecentList.path(25, "all").equals("/recent?limit=25"));
+        check("and none is too", RecentList.path(25, "").equals("/recent?limit=25"));
+        check("a channel rides in the query",
+                RecentList.path(25, "speech")
+                          .equals("/recent?limit=25&channel=speech"));
     }
 
     private static void testPlayBodyCarriesTheChannel() {

@@ -214,11 +214,19 @@ def recent_rows(query: str = "") -> list:
     Presentation is shared with `media recent` rather than reimplemented —
     same label, same "3h" — because two renderings of one history drift, and
     the phone is the harder one to check.
+
+    Speech is the exception, and not a cosmetic one. Its rows come from
+    `share_control._clips` — the same list the picker draws, which on a render
+    host is asked of the origin — because a spoken turn is addressed by its
+    history id, and this host's ids are its own. Reading them locally would
+    hand the app a number that means a different turn on the machine that would
+    replay it, which is worse than the stale list it started as.
     """
     from urllib.parse import parse_qs
 
     from ..cli import _ago, _recent_label
     from ..state import StateStore
+    from . import share_control as control
 
     args = parse_qs(query or "")
     channel = (args.get("channel") or [""])[0]
@@ -231,23 +239,52 @@ def recent_rows(query: str = "") -> list:
 
     now = time.time()
     rows = []
-    for r in StateStore().recent_history(sink=channel or None, limit=limit):
-        title = (r.get("text") or "").strip()
-        rows.append({
-            "uri": r.get("uri") or "",
-            "channel": r.get("sink") or "",
-            "content_type": r.get("content_type") or "",
-            "label": title.splitlines()[0] if title
-                     else _recent_label(r.get("uri") or ""),
-            "ago": _ago(now - float(r.get("started_at") or now)),
-            # The instant as well as the distance. `ago` is what a terminal
-            # wants ("18m ago"); a list on a phone wants to group by day and
-            # show a clock time, and "18m" cannot be turned back into either.
-            # Zero when the store has no time for the row, which the reader
-            # must treat as "unknown", not as 1970.
-            "started_at": float(r.get("started_at") or 0.0),
-        })
-    return rows
+    if channel != "speech":
+        for r in StateStore().recent_history(sink=channel or None, limit=limit):
+            if not channel and (r.get("sink") or "") == "speech":
+                continue        # the clip list below owns those
+            title = (r.get("text") or "").strip()
+            rows.append({
+                "id": 0,
+                "uri": r.get("uri") or "",
+                "channel": r.get("sink") or "",
+                "content_type": r.get("content_type") or "",
+                "label": title.splitlines()[0] if title
+                         else _recent_label(r.get("uri") or ""),
+                "ago": _ago(now - float(r.get("started_at") or now)),
+                # The instant as well as the distance. `ago` is what a terminal
+                # wants ("18m ago"); a list on a phone wants to group by day and
+                # show a clock time, and "18m" cannot be turned back into either.
+                # Zero when the store has no time for the row, which the reader
+                # must treat as "unknown", not as 1970.
+                "started_at": float(r.get("started_at") or 0.0),
+            })
+    if channel in ("", "speech"):
+        # The cached list, not a forced one: switching tabs back and forth
+        # should not dial the hub each time, and a screen you just opened is
+        # not a tap on the picker.
+        for r in control._clips()[:limit]:
+            at = float(r.get("at") or 0.0)
+            try:
+                rid = int(r.get("ref") or 0)
+            except (TypeError, ValueError):
+                rid = 0
+            rows.append({
+                # What replays it. Speech rows carry no uri worth keeping —
+                # the clips live wherever they were rendered — so the id is
+                # the whole of the handle, and `/control speech chapter` is
+                # the door, which is the same one the picker taps.
+                "id": rid,
+                "uri": "",
+                "channel": "speech",
+                "content_type": "",
+                "label": (r.get("text") or "").strip(),
+                "ago": _ago(now - at) if at else "",
+                "started_at": at,
+            })
+    if not channel:
+        rows.sort(key=lambda r: r["started_at"], reverse=True)
+    return rows[:limit]
 
 
 def _parse_body(raw: str) -> tuple[str, str, str]:

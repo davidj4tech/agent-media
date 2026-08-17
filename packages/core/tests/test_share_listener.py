@@ -180,6 +180,13 @@ def _get(base, path):
         return r.status, json.loads(r.read())
 
 
+@pytest.fixture(autouse=True)
+def _this_host_is_the_origin(monkeypatch):
+    """No test may reach for ssh: speech rows are asked of the origin, and
+    "unset" means read the config file, which on a real machine names a hub."""
+    monkeypatch.setenv("MEDIA_ROLES", "origin render")
+
+
 @pytest.fixture()
 def history(tmp_path, monkeypatch):
     """A state db of our own, so the listing is ours and not this machine's."""
@@ -228,6 +235,36 @@ def test_recent_filters_and_limits(server, history):
     # Junk is clamped rather than fatal: a list must always render something.
     assert _get(base, "/recent?limit=nonsense")[1]["ok"]
     assert _get(base, "/recent?channel=nonsense")[1]["ok"]
+
+
+def test_recent_speech_rows_come_from_the_clip_list(server, history, monkeypatch):
+    # Not from this host's store: a spoken turn is addressed by its history id,
+    # and on a render host the local ids belong to different turns entirely.
+    _, base = server
+    monkeypatch.setattr(
+        "agent_media_core.entrypoints.share_control._clips",
+        lambda *a, **kw: [{"number": 1, "ref": "5506", "text": "a reply",
+                           "at": time.time() - 30, "current": False}])
+    rows = _get(base, "/recent?channel=speech")[1]["rows"]
+    assert [(r["channel"], r["id"], r["label"]) for r in rows] \
+        == [("speech", 5506, "a reply")]
+    # No uri: the clips live wherever they were rendered, so the id is the
+    # whole of the handle and /control is the door.
+    assert rows[0]["uri"] == "" and rows[0]["ago"]
+
+
+def test_recent_merges_the_channels_in_time_order(server, history, monkeypatch):
+    _, base = server
+    now = time.time()
+    history.note_play("music", "uri-old")
+    monkeypatch.setattr(
+        "agent_media_core.entrypoints.share_control._clips",
+        lambda *a, **kw: [{"number": 1, "ref": "9", "text": "said later",
+                           "at": now + 60, "current": False}])
+    rows = _get(base, "/recent")[1]["rows"]
+    assert [r["channel"] for r in rows] == ["speech", "music"]
+    # And the store's own speech rows are not listed twice beside them.
+    assert sum(1 for r in rows if r["channel"] == "speech") == 1
 
 
 def test_recent_on_an_empty_history(server, history):

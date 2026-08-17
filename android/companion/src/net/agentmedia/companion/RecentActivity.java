@@ -43,8 +43,17 @@ public class RecentActivity extends Activity {
     /** Enough to answer "what was that thing", not a library browser. */
     private static final int LIMIT = 25;
 
+    /**
+     * The tabs. "all" first and selected on entry, because the question this
+     * screen answers — "what was that thing" — usually does not know which
+     * channel it was on; the filter is for when it does.
+     */
+    private static final String[] TABS = {"all", "speech", "music", "book"};
+
     private LinearLayout rows;
     private TextView status;
+    private Tabs tabs;
+    private String channel = "all";
     private final Handler main = new Handler(Looper.getMainLooper());
 
     @Override
@@ -63,6 +72,18 @@ public class RecentActivity extends Activity {
         heading.setTypeface(Typeface.DEFAULT_BOLD);
         root.addView(heading);
 
+        tabs = new Tabs(this, new Tabs.Host() {
+            @Override public void drive(String picked) {
+                if (picked.equals(channel)) return;
+                channel = picked;
+                tabs.select(picked);
+                status.setText("loading…");
+                rows.removeAllViews();
+                load();
+            }
+        }, TABS);
+        root.addView(tabs.build());
+
         status = new TextView(this);
         status.setTextColor(Style.FAINT);
         status.setTextSize(Style.LABEL);
@@ -79,6 +100,7 @@ public class RecentActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
         setContentView(root);
+        tabs.select(channel);
         Edges.fit(root);
     }
 
@@ -92,15 +114,21 @@ public class RecentActivity extends Activity {
     }
 
     private void load() {
+        final String asked = channel;
         new Thread(new Runnable() {
             @Override public void run() {
-                final Loopback.Reply reply =
-                        Loopback.get(Loopback.PORT, "/recent?limit=" + LIMIT);
+                final Loopback.Reply reply = Loopback.get(
+                        Loopback.PORT, RecentList.path(LIMIT, asked));
                 final List<RecentList.Item> items = reply.ok()
                         ? RecentList.parse(reply.body)
                         : java.util.Collections.<RecentList.Item>emptyList();
                 main.post(new Runnable() {
-                    @Override public void run() { render(items, reply); }
+                    @Override public void run() {
+                        // A tab switched while this was in flight: the answer
+                        // is about the old one, and drawing it would leave the
+                        // strip pointing at a list nobody asked for.
+                        if (asked.equals(channel)) render(items, reply);
+                    }
                 });
             }
         }, "recent-fetch").start();
@@ -109,7 +137,10 @@ public class RecentActivity extends Activity {
     private void render(List<RecentList.Item> items, Loopback.Reply reply) {
         rows.removeAllViews();
         if (items.isEmpty()) {
-            status.setText(RecentList.emptyReason(reply));
+            // An empty tab is not a broken listener: say which of the two it is.
+            status.setText(reply != null && reply.ok() && !"all".equals(channel)
+                           ? "nothing on the " + channel + " channel yet"
+                           : RecentList.emptyReason(reply));
             return;
         }
         status.setText(items.size() + " items · tap to play again");
@@ -207,7 +238,8 @@ public class RecentActivity extends Activity {
     private void play(final RecentList.Item item) {
         // Say something immediately: the listener answers before it plays, and
         // acquisition can take a while. Silence after a tap reads as a dead app.
-        toast("playing " + RecentRows.title(item) + "…");
+        toast(("speech".equals(item.channel) ? "replaying " : "playing ")
+              + RecentRows.title(item) + "…");
         new Thread(new Runnable() {
             @Override public void run() {
                 final String line = RecentList.play(Loopback.PORT, item);

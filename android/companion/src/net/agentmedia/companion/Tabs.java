@@ -60,12 +60,23 @@ final class Tabs {
 
     private final Context ctx;
     private final Host host;
+    private final String[] names;
     private final Map<String, Tab> tabs = new LinkedHashMap<String, Tab>();
     private String selected = "";
 
     Tabs(Context ctx, Host host) {
+        this(ctx, host, Channels.ORDER);
+    }
+
+    /**
+     * The same strip over a different set, for a screen whose tabs are not
+     * exactly the three channels — the recent list opens on everything, and
+     * "everything" is a tab there, not a fourth channel.
+     */
+    Tabs(Context ctx, Host host, String[] names) {
         this.ctx = ctx;
         this.host = host;
+        this.names = names;
     }
 
     /** The strip, with a hairline under it for the whole row to sit on. */
@@ -75,7 +86,7 @@ final class Tabs {
 
         LinearLayout strip = new LinearLayout(ctx);
         strip.setOrientation(LinearLayout.HORIZONTAL);
-        for (final String name : Channels.ORDER) {
+        for (final String name : names) {
             Tab tab = tab(name);
             tab.root.setOnClickListener(new View.OnClickListener() {
                 @Override public void onClick(View v) { host.drive(name); }

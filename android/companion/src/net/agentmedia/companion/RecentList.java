@@ -42,19 +42,34 @@ final class RecentList {
          * cannot get either back out of it.
          */
         final double startedAt;
+        /**
+         * The speech history id, or 0.
+         *
+         * A spoken turn has no uri worth keeping — the clips live wherever
+         * they were rendered, which is not always this phone — so the id is
+         * the whole of the handle, and the door is {@code /control speech
+         * chapter}, the same one the clip picker taps.
+         */
+        final long id;
 
         Item(String label, String channel, String contentType, String uri, String ago) {
-            this(label, channel, contentType, uri, ago, 0.0);
+            this(label, channel, contentType, uri, ago, 0.0, 0L);
         }
 
         Item(String label, String channel, String contentType, String uri,
              String ago, double startedAt) {
+            this(label, channel, contentType, uri, ago, startedAt, 0L);
+        }
+
+        Item(String label, String channel, String contentType, String uri,
+             String ago, double startedAt, long id) {
             this.label = label;
             this.channel = channel;
             this.contentType = contentType;
             this.uri = uri;
             this.ago = ago;
             this.startedAt = startedAt;
+            this.id = id;
         }
 
         /** When it played, in milliseconds; 0 for "the store did not say". */
@@ -82,8 +97,15 @@ final class RecentList {
             return sb.toString();
         }
 
-        /** True when this row can be played again. Speech clips cannot. */
+        /**
+         * True when this row can be heard again.
+         *
+         * Speech rows could not, for as long as this list only knew how to
+         * post a uri to {@code /play}. They can: a turn is replayed by id, and
+         * the row now carries one.
+         */
         boolean playable() {
+            if ("speech".equals(channel)) return id > 0;
             return uri != null && !uri.isEmpty()
                     && ("music".equals(channel) || "book".equals(channel));
         }
@@ -109,7 +131,8 @@ final class RecentList {
                 out.add(new Item(str(r.get("label")), str(r.get("channel")),
                                  str(r.get("content_type")), str(r.get("uri")),
                                  str(r.get("ago")),
-                                 Json.asDouble(r.get("started_at"), 0.0)));
+                                 Json.asDouble(r.get("started_at"), 0.0),
+                                 (long) Json.asDouble(r.get("id"), 0.0)));
             }
         } catch (RuntimeException e) {
             return Collections.emptyList();
@@ -129,8 +152,22 @@ final class RecentList {
 
     /** Fetch the list. Returns empty when the listener cannot be reached. */
     static List<Item> fetch(int port, int limit) {
-        Loopback.Reply r = Loopback.get(port, "/recent?limit=" + limit);
+        return fetch(port, limit, "");
+    }
+
+    /** The same, for one channel; "" (or "all") is every channel merged. */
+    static List<Item> fetch(int port, int limit, String channel) {
+        Loopback.Reply r = Loopback.get(port, path(limit, channel));
         return r.ok() ? parse(r.body) : Collections.<Item>emptyList();
+    }
+
+    /** The query for a tab. "all" is the absence of a filter, not a value. */
+    static String path(int limit, String channel) {
+        String q = "/recent?limit=" + limit;
+        if (channel != null && !channel.isEmpty() && !"all".equals(channel)) {
+            q += "&channel=" + channel;
+        }
+        return q;
     }
 
     /** Why the list is empty, in words a person can act on. */
@@ -141,10 +178,22 @@ final class RecentList {
         return "nothing played yet";
     }
 
-    /** Play a row again; returns the line to show. */
+    /**
+     * Play a row again; returns the line to show.
+     *
+     * Each channel is repeated the way that channel repeats: music and book go
+     * back through {@code /play}, which re-acquires and re-routes them, while a
+     * spoken turn is replayed from the history by id. One list, three verbs —
+     * the alternative was a screen that could only offer two of its own rows.
+     */
     static String play(int port, Item item) {
         if (!item.playable()) {
             return "agent-media: that one cannot be replayed";
+        }
+        if ("speech".equals(item.channel)) {
+            String problem = Channels.control(port, "speech", "chapter",
+                                              Long.toString(item.id));
+            return problem.isEmpty() ? "replaying " + item.title() : problem;
         }
         Loopback.Reply r = Loopback.post(port, "/play", playBody(item));
         if (!r.reached()) return r.failure;

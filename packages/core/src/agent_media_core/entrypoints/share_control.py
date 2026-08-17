@@ -457,6 +457,7 @@ def picker_rows(rows: list) -> list:
         text = (r.get("text") or "")[:110] or "(no text)"
         out.append({"number": r.get("number"),
                     "title": f"{r.get('ts', '')}  {text}",
+                    "at": float(r.get("at") or 0.0),
                     # The words alone, for the card's heading. The list already
                     # answers "what was said last"; a second reader for that
                     # one line is how the heading and the list disagreed.
