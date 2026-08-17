@@ -111,3 +111,70 @@ def test_anchor_ignores_clips_with_no_conversation(env, monkeypatch):
 def test_anchor_none_for_an_unexpanded_pane_literal(env, monkeypatch):
     monkeypatch.setenv("TTS_POPUP_PANE", "#{pane_id}")
     assert cli._anchor_session() is None
+
+
+# ---- pane ownership --------------------------------------------------------
+#
+# The clip history can only answer "who spoke here last", and tmux recycles pane
+# ids — one observed pane had carried twelve conversations. Ownership is
+# recorded when a session starts, by agent-config's claude-tmux-session-register
+# hook, so it is right for a live conversation that has said nothing yet and
+# does not decay when a pane is reused.
+
+@pytest.fixture
+def registry(tmp_path, monkeypatch):
+    d = tmp_path / "tmux-sessions"
+    d.mkdir()
+    monkeypatch.setenv("MEDIA_PANE_REGISTRY_DIR", str(d))
+
+    def write(pane, session, pid="self"):
+        import os as _os
+        pid = _os.getpid() if pid == "self" else pid
+        body = f"{session} {pid} /home/x/proj" if pid is not None else session
+        (d / pane.lstrip("%")).write_text(body)
+
+    return write
+
+
+def test_ownership_beats_the_last_speaker_in_a_reused_pane(env, monkeypatch, registry):
+    """The case clip history gets wrong: %27 last spoke as conversation A, but
+    the pane now belongs to B."""
+    monkeypatch.setenv("TTS_POPUP_PANE", "%27")
+    assert cli._anchor_session() == "aaa"          # by clip history alone
+    registry("%27", "bbb")
+    assert cli._anchor_session() == "bbb"
+
+
+def test_a_dead_owner_is_not_an_owner(env, monkeypatch, registry):
+    """A registry entry outlives the session it names, and a recycled pane will
+    have one. An exited pid owns nothing, so fall back to who spoke here."""
+    monkeypatch.setenv("TTS_POPUP_PANE", "%27")
+    registry("%27", "bbb", pid=999_999_999)
+    assert cli._anchor_session() == "aaa"
+
+
+def test_legacy_bare_session_id_is_accepted(env, monkeypatch, registry):
+    """The registry's older shape carries no pid — trust it rather than ignore
+    a pane whose owner simply predates the pid being recorded."""
+    monkeypatch.setenv("TTS_POPUP_PANE", "%27")
+    registry("%27", "bbb", pid=None)
+    assert cli._anchor_session() == "bbb"
+
+
+def test_a_silent_owner_does_not_kill_the_keybinding(env, monkeypatch, registry):
+    """Ownership wins only when there is something to traverse. A conversation
+    that has not spoken yet would otherwise scope every popup key to an empty
+    set, which is a dead keybinding; showing this pane's own past is better."""
+    monkeypatch.setenv("TTS_POPUP_PANE", "%27")
+    registry("%27", "never-spoke")
+    assert cli._anchor_session() == "aaa"
+
+
+def test_now_playing_still_wins_over_ownership(env, monkeypatch, registry):
+    """What you are hearing outranks where you are sitting."""
+    monkeypatch.setenv("TTS_POPUP_PANE", "%27")
+    registry("%27", "bbb")
+    env.set_now_playing("speech", uri="/x.mp3", started_at=9.0,
+                        extras={"source_pane": "%30", "source_tmux_session": "ts1",
+                                "source_session": "aaa"})
+    assert cli._anchor_session() == "aaa"

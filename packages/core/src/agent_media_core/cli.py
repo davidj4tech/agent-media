@@ -289,6 +289,52 @@ def _tmux_session_for_pane(pane: str) -> str:
         return ""
 
 
+def _registered_session_for_pane(pane: str) -> Optional[str]:
+    """Which conversation *currently owns* `pane`, or None.
+
+    Read from the registry `claude-tmux-session-register` (agent-config's
+    SessionStart/SessionEnd hook) already maintains at
+    ~/.claude/tmux-sessions/<pane-number>, so nothing new has to be written to
+    answer this. Format: ``<sessionId> <claudePid> <cwd>``, with a legacy bare
+    ``<sessionId>``; keyed by pane, newest start wins.
+
+    Why prefer it over the clip history: history can only answer "who spoke here
+    last", and that degrades every time tmux recycles a pane id — one observed
+    pane had carried twelve conversations plus fifteen untagged clips, so the
+    honest answer from clips can be a conversation that ended days ago. The
+    registry knows the live occupant even before it has said anything.
+
+    The pid is what makes a stale entry *detectable* rather than merely old: a
+    dead one means the registry is describing a session that has exited, which
+    owns nothing. Fall back in that case rather than trust it.
+
+    MEDIA_PANE_REGISTRY_DIR overrides the location (tests, and any host that
+    keeps its Claude state elsewhere).
+    """
+    if not pane or "#{" in pane:
+        return None
+    root = os.environ.get("MEDIA_PANE_REGISTRY_DIR") or "~/.claude/tmux-sessions"
+    path = os.path.join(os.path.expanduser(root), pane.lstrip("%"))
+    try:
+        with open(path, encoding="utf-8") as fh:
+            fields = fh.read().strip().split()
+    except OSError:
+        return None
+    if not fields:
+        return None
+    sess = fields[0]
+    if len(fields) >= 2 and fields[1].isdigit():
+        # Shared with the now_playing orphan guard rather than reimplemented:
+        # "is this pid still here" has the same conservative-on-error behaviour
+        # in both places, which is the behaviour that matters.
+        from .state.store import _pid_alive
+
+        # The pane's owner has exited; whatever is there now is not this session.
+        if not _pid_alive(int(fields[1])):
+            return None
+    return sess or None
+
+
 def _anchor_session() -> Optional[str]:
     """The *conversation* the popup's < / > traversal should stay within,
     as a Claude session id (extras.source_session).
@@ -316,12 +362,19 @@ def _anchor_session() -> Optional[str]:
     # clips landed on top of it, its pane fell out of the window, and every
     # `--session` view silently widened to all conversations.
     pane = os.environ.get("TTS_POPUP_PANE", "")
-    if pane:
-        sess = StateStore().session_for_pane(pane)
+    if not pane:
+        return None
+    # Ask who *owns* the pane before asking who last spoke in it. Ownership is
+    # recorded when a session starts, so it is right for a conversation that has
+    # not spoken yet, and it does not decay when tmux recycles a pane id.
+    for sess in (_registered_session_for_pane(pane),
+                 StateStore().session_for_pane(pane)):
         # Same guard as the now-playing branch above, and for the same reason:
-        # the store query sees rows the traversal filters out (a clip whose
-        # audio never rendered), and anchoring to a scope with nothing in it is
-        # what a dead keybinding is made of.
+        # both lookups can name a conversation whose rows the traversal filters
+        # out (a clip whose audio never rendered), or one that has said nothing
+        # at all, and anchoring to a scope with nothing in it is what a dead
+        # keybinding is made of. Falling through to the last speaker then shows
+        # a list that is at least this pane's own past.
         if sess and _speech_history(1, session=sess, include_live=True):
             return sess
     return None
