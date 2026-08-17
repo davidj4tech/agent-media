@@ -3441,6 +3441,12 @@ def _clip_rows(n: int = 40, session: Optional[str] = None) -> list[dict]:
                     "text": _hist_txt(r),
                     "session": ex.get("source_session") or "",
                     "window": str(ex.get("source_window") or "").strip(),
+                    # Where it was said, as tmux sees it: which server session
+                    # and which pane. The conversation is the finer grain — one
+                    # tmux session holds several — so a list that shows both
+                    # can nest them, and one that shows neither cannot.
+                    "tmux": str(ex.get("source_tmux_session") or "").strip(),
+                    "pane": str(ex.get("source_pane") or "").strip(),
                     "current": playing is not None and rid == playing})
     return out
 

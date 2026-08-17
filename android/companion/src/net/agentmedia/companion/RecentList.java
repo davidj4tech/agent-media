@@ -60,6 +60,15 @@ final class RecentList {
          */
         final String session;
         final String window;
+        /**
+         * Where tmux says it came from: the server session, and the pane.
+         *
+         * The session is the place — one of them holds several conversations
+         * and outlives all of them — and the pane is the conversation within
+         * it. A list that has both can nest them; one that has neither cannot.
+         */
+        final String tmux;
+        final String pane;
 
         Item(String label, String channel, String contentType, String uri, String ago) {
             this(label, channel, contentType, uri, ago, 0.0, 0L);
@@ -72,13 +81,23 @@ final class RecentList {
 
         Item(String label, String channel, String contentType, String uri,
              String ago, double startedAt, long id) {
-            this(label, channel, contentType, uri, ago, startedAt, id, "", "");
+            this(label, channel, contentType, uri, ago, startedAt, id,
+                 "", "", "", "");
         }
 
         Item(String label, String channel, String contentType, String uri,
              String ago, double startedAt, long id, String session, String window) {
+            this(label, channel, contentType, uri, ago, startedAt, id,
+                 session, window, "", "");
+        }
+
+        Item(String label, String channel, String contentType, String uri,
+             String ago, double startedAt, long id, String session, String window,
+             String tmux, String pane) {
             this.session = session == null ? "" : session;
             this.window = window == null ? "" : window;
+            this.tmux = tmux == null ? "" : tmux;
+            this.pane = pane == null ? "" : pane;
             this.label = label;
             this.channel = channel;
             this.contentType = contentType;
@@ -149,7 +168,8 @@ final class RecentList {
                                  str(r.get("ago")),
                                  Json.asDouble(r.get("started_at"), 0.0),
                                  (long) Json.asDouble(r.get("id"), 0.0),
-                                 str(r.get("session")), str(r.get("window"))));
+                                 str(r.get("session")), str(r.get("window")),
+                                 str(r.get("tmux")), str(r.get("pane"))));
             }
         } catch (RuntimeException e) {
             return Collections.emptyList();

@@ -474,6 +474,8 @@ def picker_rows(rows: list) -> list:
                     "text": text,
                     "session": r.get("session") or "",
                     "window": window,
+                    "tmux": r.get("tmux") or "",
+                    "pane": r.get("pane") or "",
                     "start_ms": None,
                     "current": bool(r.get("current")),
                     "ref": str(r.get("id"))})

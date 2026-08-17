@@ -47,20 +47,34 @@ final class RecentRows {
          * not something you open and close.
          */
         final String key;
+        /** The group enclosing this one, or null at the top. */
+        final String parent;
+        /** 0 for a tmux session, 1 for a conversation inside it and its rows. */
+        final int depth;
 
         private Entry(String heading, RecentList.Item item, String clock) {
-            this(heading, item, clock, null);
+            this(heading, item, clock, null, null, 0);
         }
 
         private Entry(String heading, RecentList.Item item, String clock,
-                      String key) {
+                      String key, String parent, int depth) {
             this.heading = heading;
             this.item = item;
             this.clock = clock;
             this.key = key;
+            this.parent = parent;
+            this.depth = depth;
         }
 
         boolean isHeading() { return heading != null; }
+
+        /** Every group this sits inside, outermost first. */
+        List<String> ancestry() {
+            List<String> out = new ArrayList<String>(2);
+            if (parent != null) out.add(parent);
+            if (key != null && !isHeading()) out.add(key);
+            return out;
+        }
     }
 
     private RecentRows() { }
@@ -94,63 +108,105 @@ final class RecentRows {
     }
 
     /**
-     * The same list, grouped by conversation instead of by day.
+     * The same list, grouped by where it was said instead of by day.
      *
      * For speech, and only for speech. A day is the right bucket for what you
      * played — you remember Saturday, not which conversation a track came from
-     * — and a conversation is the right one for what was said. It is usually a
-     * time bucket too; it just has a name on it.
+     * — and where it was said is the right one for what was said. It is usually
+     * a time bucket too; it just has a name on it.
      *
-     * Conversations are collected rather than broken at each change, because
-     * two of them running side by side interleave clip for clip, and a list
-     * that starts a new heading on every other row has grouped nothing. Order
-     * is first appearance, so the one you heard last is at the top — the same
-     * shape the popup's ^a view has had all along.
+     * Two levels, because that is how the machine is arranged and how you
+     * remember it: the tmux session is the place ("the agent-media window", "the
+     * cron alerts"), and the pane inside it is the conversation. One tmux
+     * session holds several conversations at once and outlives all of them, so
+     * flattening the two loses the distinction that makes a long list findable.
      *
-     * Keyed by session id, not by name: a conversation resumed into another
-     * window is the same conversation, and two windows can share a name.
-     * Falling back to the window when there is no id keeps the sources that
-     * have never had one apart — the reminders a cron job speaks carry no
-     * session at all, and lumping every machine's into one group would be this
-     * screen inventing a conversation that never happened.
+     * Groups are collected rather than broken at each change, because two
+     * conversations running side by side interleave clip for clip and a heading
+     * on every other row has grouped nothing. Order is first appearance at both
+     * levels, so what you heard last is at the top — the same shape the popup's
+     * ^a view has had all along.
      */
     static List<Entry> byConversation(List<RecentList.Item> items) {
         List<Entry> out = new ArrayList<Entry>();
         if (items == null) return out;
-        LinkedHashMap<String, List<RecentList.Item>> groups =
-                new LinkedHashMap<String, List<RecentList.Item>>();
+        LinkedHashMap<String, LinkedHashMap<String, List<RecentList.Item>>> tree =
+                new LinkedHashMap<String,
+                        LinkedHashMap<String, List<RecentList.Item>>>();
         for (RecentList.Item item : items) {
-            String key = item.session == null ? "" : item.session;
-            if (key.isEmpty() && item.window != null && !item.window.isEmpty()) {
-                key = "window:" + item.window;
+            LinkedHashMap<String, List<RecentList.Item>> panes = tree.get(place(item));
+            if (panes == null) {
+                panes = new LinkedHashMap<String, List<RecentList.Item>>();
+                tree.put(place(item), panes);
             }
-            List<RecentList.Item> grp = groups.get(key);
+            List<RecentList.Item> grp = panes.get(conversationKey(item));
             if (grp == null) {
                 grp = new ArrayList<RecentList.Item>();
-                groups.put(key, grp);
+                panes.put(conversationKey(item), grp);
             }
             grp.add(item);
         }
-        for (java.util.Map.Entry<String, List<RecentList.Item>> e : groups.entrySet()) {
-            List<RecentList.Item> grp = e.getValue();
-            String key = e.getKey();
-            out.add(new Entry(conversation(key, grp), null, null, key));
-            for (RecentList.Item item : grp) {
-                long at = item.startedAtMs();
-                out.add(new Entry(null, item, at > 0 ? clock(at) : "", key));
+        for (java.util.Map.Entry<String,
+                LinkedHashMap<String, List<RecentList.Item>>> place : tree.entrySet()) {
+            int clips = 0;
+            for (List<RecentList.Item> grp : place.getValue().values()) clips += grp.size();
+            out.add(new Entry(placeLabel(place.getKey(), clips), null, null,
+                              place.getKey(), null, 0));
+            for (java.util.Map.Entry<String, List<RecentList.Item>> conv
+                    : place.getValue().entrySet()) {
+                List<RecentList.Item> grp = conv.getValue();
+                out.add(new Entry(conversation(conv.getKey(), grp), null, null,
+                                  conv.getKey(), place.getKey(), 1));
+                for (RecentList.Item item : grp) {
+                    long at = item.startedAtMs();
+                    out.add(new Entry(null, item, at > 0 ? clock(at) : "",
+                                      conv.getKey(), place.getKey(), 1));
+                }
             }
         }
         return out;
     }
 
+    /** The tmux session a clip was spoken from, as a group key. */
+    private static String place(RecentList.Item item) {
+        String tmux = item.tmux == null ? "" : item.tmux;
+        return "place:" + tmux;
+    }
+
     /**
-     * What to write on a conversation: its window, else a stub of its id.
+     * Which conversation a clip belongs to.
+     *
+     * Keyed by session id, not by name: a conversation resumed into another
+     * pane is the same conversation, and two panes can share a window name.
+     * Falling back to the pane, then the window, keeps apart the sources that
+     * have never had an id — the reminders a cron job speaks carry no session
+     * at all, and lumping every one of them together would be this screen
+     * inventing a conversation that never happened.
+     */
+    private static String conversationKey(RecentList.Item item) {
+        String key = item.session == null ? "" : item.session;
+        if (!key.isEmpty()) return key;
+        if (item.pane != null && !item.pane.isEmpty()) return "pane:" + item.pane;
+        if (item.window != null && !item.window.isEmpty()) return "window:" + item.window;
+        return "";
+    }
+
+    /** What to write on a tmux session: its name, else that it has none. */
+    private static String placeLabel(String key, int clips) {
+        String name = key.substring("place:".length());
+        if (name.isEmpty()) name = "no session";
+        return trim(name) + " · " + clips + (clips == 1 ? " clip" : " clips");
+    }
+
+    /**
+     * What to write on a conversation: its pane's window, else the pane, else a
+     * stub of the session id.
      *
      * Clips predating the window field still belong to distinct conversations,
      * and calling all of them "untagged" would merge on screen what the
      * grouping just took the trouble to keep apart.
      */
-    private static String conversation(String session, List<RecentList.Item> grp) {
+    private static String conversation(String key, List<RecentList.Item> grp) {
         String name = "";
         for (RecentList.Item item : grp) {
             if (item.window != null && !item.window.isEmpty()) {
@@ -159,13 +215,24 @@ final class RecentRows {
             }
         }
         if (name.isEmpty()) {
-            name = session == null || session.isEmpty()
-                    || session.startsWith("window:")
-                   ? "untagged" : "…" + tail(session, 4);
+            for (RecentList.Item item : grp) {
+                if (item.pane != null && !item.pane.isEmpty()) {
+                    name = item.pane;
+                    break;
+                }
+            }
         }
-        if (name.length() > 28) name = name.substring(0, 28).trim() + "…";
+        if (name.isEmpty()) {
+            name = key == null || key.isEmpty() || key.indexOf(':') >= 0
+                   ? "untagged" : "…" + tail(key, 4);
+        }
         int n = grp.size();
-        return name + " · " + n + (n == 1 ? " clip" : " clips");
+        return trim(name) + " · " + n + (n == 1 ? " clip" : " clips");
+    }
+
+    /** Names run long; a heading is one line. */
+    private static String trim(String name) {
+        return name.length() > 28 ? name.substring(0, 28).trim() + "…" : name;
     }
 
     private static String tail(String s, int n) {

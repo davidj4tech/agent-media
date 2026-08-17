@@ -162,36 +162,48 @@ public class RecentActivity extends Activity {
         }
         status.setText(items.size() + (speech ? " clips · tap to hear again"
                                              : " items · tap to play again"));
-        // Speech groups by conversation, everything else by day: the day is
-        // the bucket you remember playing something in, and the conversation
-        // is the one you remember it being said in.
+        // Speech groups by where it was said — tmux session, then the pane's
+        // conversation — and everything else by day: the day is the bucket you
+        // remember playing something in, and the place is the one you remember
+        // it being said in.
         List<RecentRows.Entry> entries = speech
                 ? RecentRows.byConversation(items)
                 : RecentRows.group(items, System.currentTimeMillis());
-        // Folded, except the one you are in. The rows arrive newest first, so
-        // the first group holds the newest clip — that is the conversation
-        // being spoken, or the one that just was, and it is the only one you
-        // are likely to want without looking for it. The rest are a name and a
-        // count until you ask for them, which is what makes a long history
-        // scannable rather than a wall with headings in it.
+        // Folded, except the one you are in — at both levels. The rows arrive
+        // newest first, so the first session and the first conversation inside
+        // it hold the newest clip: that is what is being spoken, or what just
+        // was, and it is the only thing here you did not come looking for. The
+        // rest are a name and a count until you ask, which is what makes a long
+        // history scannable rather than a wall with headings in it.
         if (speech && fresh) {
+            int wanted = 0;                      // the first heading at each depth
             for (RecentRows.Entry e : entries) {
-                if (!e.isHeading()) continue;
+                if (!e.isHeading() || e.depth != wanted) continue;
                 if (!folded.contains(e.key)) open.add(e.key);
-                break;
+                wanted++;
             }
         }
         for (RecentRows.Entry e : entries) {
-            if (e.isHeading()) {
-                rows.addView(headingView(e));
-            } else if (e.key == null || open.contains(e.key)) {
-                rows.addView(rowView(e));
-            }
+            if (!visible(e)) continue;
+            rows.addView(e.isHeading() ? headingView(e) : rowView(e));
         }
         // Something to stop the last row sitting against the bottom edge.
         View tail = new View(this);
         rows.addView(tail, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(Style.gap(6))));
+    }
+
+    /** Drawn only when everything it sits inside is open. */
+    private boolean visible(RecentRows.Entry entry) {
+        for (String key : entry.ancestry()) {
+            if (!open.contains(key)) return false;
+        }
+        return true;
+    }
+
+    /** How far in a group's contents sit, so the nesting is legible. */
+    private int indent(RecentRows.Entry entry) {
+        return dp(Style.gap(4)) * entry.depth;
     }
 
     private View headingView(final RecentRows.Entry entry) {
@@ -207,7 +219,11 @@ public class RecentActivity extends Activity {
         t.setTextSize(Style.LABEL);
         t.setTextColor(shownOpen ? Style.MUTED : Style.FAINT);
         t.setTypeface(Typeface.MONOSPACE);
-        t.setPadding(0, dp(Style.gap(5)), 0, dp(Style.gap(1)));
+        // A nested heading is a step in, and a top one is bolder: the two
+        // levels are a place and a conversation inside it, not two lists.
+        t.setPadding(indent(entry), dp(Style.gap(entry.depth == 0 ? 5 : 3)),
+                     0, dp(Style.gap(1)));
+        if (entry.depth == 0) t.setTextColor(shownOpen ? Style.INK : Style.MUTED);
         if (folds) {
             // A closed group is a control, so it has to be worth hitting.
             t.setMinimumHeight(dp(Style.TOUCH));
@@ -234,7 +250,7 @@ public class RecentActivity extends Activity {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(0, dp(Style.gap(2)), 0, dp(Style.gap(2)));
+        row.setPadding(indent(entry), dp(Style.gap(2)), 0, dp(Style.gap(2)));
         row.setMinimumHeight(dp(Style.TOUCH));
 
         TextView when = new TextView(this);

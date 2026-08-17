@@ -29,6 +29,7 @@ public final class RecentRowsTest {
         testAnEmptyLabelFallsBackToTheUri();
         testUnplayableRowsSayWhy();
         testSpeechGroupsByConversation();
+        testTmuxSessionsAreSeparatePlaces();
         testAConversationWithNoNameIsStillItsOwn();
 
         System.out.println();
@@ -175,39 +176,75 @@ public final class RecentRowsTest {
 
     private static RecentList.Item clip(String text, long ms, String session,
                                         String window) {
+        return clip(text, ms, session, window, "p-agent-media", "%1");
+    }
+
+    private static RecentList.Item clip(String text, long ms, String session,
+                                        String window, String tmux, String pane) {
         return new RecentList.Item(text, "speech", "", "", "1h", ms / 1000.0,
-                                   1L, session, window);
+                                   1L, session, window, tmux, pane);
     }
 
     private static void testSpeechGroupsByConversation() {
-        // Two conversations interleaved clip for clip — the case that decides
-        // this: broken at each change it would be six headings and no grouping.
+        // Two conversations in one tmux session, interleaved clip for clip —
+        // the case that decides the collecting: broken at each change it would
+        // be four headings under one session and no grouping at all.
         List<RecentList.Item> items = Arrays.asList(
                 clip("newest", at(17, 21, 0), "aaa", "add C function"),
                 clip("theirs", at(17, 20, 0), "bbb", "call guard roles"),
                 clip("mine again", at(17, 19, 0), "aaa", "add C function"),
                 clip("theirs again", at(17, 18, 0), "bbb", "call guard roles"));
         List<RecentRows.Entry> rows = RecentRows.byConversation(items);
-        check("one heading per conversation", countHeadings(rows) == 2);
+
+        check("the tmux session opens the list",
+                rows.get(0).isHeading() && rows.get(0).depth == 0
+                && rows.get(0).heading.startsWith("p-agent-media"));
+        check("counting every clip beneath it",
+                rows.get(0).heading.endsWith("· 4 clips"));
+        check("one heading per conversation inside it", countHeadings(rows) == 3);
         check("the one heard last comes first",
-                rows.get(0).heading.startsWith("add C function"));
-        check("and it counts its clips",
-                rows.get(0).heading.endsWith("· 2 clips"));
+                rows.get(1).depth == 1
+                && rows.get(1).heading.startsWith("add C function"));
+        check("and it counts its own clips",
+                rows.get(1).heading.endsWith("· 2 clips"));
         check("its clips follow it, in order",
-                rows.get(1).item.label.equals("newest")
-                && rows.get(2).item.label.equals("mine again"));
+                rows.get(2).item.label.equals("newest")
+                && rows.get(3).item.label.equals("mine again"));
         check("then the other conversation",
-                rows.get(3).heading.startsWith("call guard roles"));
+                rows.get(4).heading.startsWith("call guard roles"));
         // The rows keep the clock they would have had under day headings: a
         // conversation is a time bucket too, and you still scan down the times.
-        check("rows still carry a clock", rows.get(1).clock.equals("21:00"));
-        // A heading and its rows share a key, which is what lets the screen
-        // fold a group away by matching rather than by counting rows.
-        check("the group is keyed", rows.get(0).key != null
-                && rows.get(0).key.equals(rows.get(1).key)
-                && rows.get(0).key.equals(rows.get(2).key));
-        check("and the other group is keyed differently",
-                !rows.get(0).key.equals(rows.get(3).key));
+        check("rows still carry a clock", rows.get(2).clock.equals("21:00"));
+        // A conversation and its rows share a key, and both sit inside the
+        // session — which is what lets a fold hide a whole branch by matching
+        // rather than counting rows after a heading.
+        check("the conversation is keyed", rows.get(1).key != null
+                && rows.get(1).key.equals(rows.get(2).key)
+                && rows.get(1).key.equals(rows.get(3).key));
+        check("and it knows its session",
+                rows.get(0).key.equals(rows.get(1).parent)
+                && rows.get(0).key.equals(rows.get(2).parent));
+        check("a session sits inside nothing", rows.get(0).parent == null);
+        check("a row is inside both",
+                rows.get(2).ancestry().size() == 2);
+    }
+
+    private static void testTmuxSessionsAreSeparatePlaces() {
+        // The same conversation cannot be in two, but the list holds several
+        // machines' worth: the agent windows, and whatever cron speaks from.
+        List<RecentList.Item> items = Arrays.asList(
+                clip("a reply", at(17, 21, 0), "aaa", "add C function",
+                     "p-agent-media", "%155"),
+                clip("moon enters Libra", at(17, 20, 0), "", "tmux",
+                     "org-alert", "%178"));
+        List<RecentRows.Entry> rows = RecentRows.byConversation(items);
+        check("two sessions, two branches", countHeadings(rows) == 4);
+        check("each named for itself",
+                rows.get(0).heading.startsWith("p-agent-media")
+                && rows.get(3).heading.startsWith("org-alert"));
+        check("and each holds its own clip",
+                rows.get(0).heading.endsWith("· 1 clip")
+                && rows.get(3).heading.endsWith("· 1 clip"));
     }
 
     private static void testAConversationWithNoNameIsStillItsOwn() {
@@ -217,24 +254,27 @@ public final class RecentRowsTest {
                 clip("one", at(17, 21, 0), "abcd1234", ""),
                 clip("two", at(17, 20, 0), "wxyz9876", ""));
         List<RecentRows.Entry> rows = RecentRows.byConversation(items);
-        check("still two groups", countHeadings(rows) == 2);
-        check("named by a stub of the session id",
-                rows.get(0).heading.startsWith("…1234")
-                && rows.get(2).heading.startsWith("…9876"));
+        check("still two conversations", countHeadings(rows) == 3);
+        // The pane names them before the session id has to: %1 is where they
+        // were said, and a stub of a uuid says nothing to anybody.
+        check("named by the pane they were said in",
+                rows.get(1).heading.startsWith("%1"));
 
-        // A spoken reminder from cron has no session at all, only the window it
-        // was spoken from — and two machines' reminders are not one conversation.
+        // A spoken reminder from cron has no session at all — two panes of
+        // those are not one conversation.
         List<RecentRows.Entry> cron = RecentRows.byConversation(Arrays.asList(
-                clip("moon enters Libra", at(17, 21, 0), "", "red5"),
-                clip("describe digest", at(17, 20, 0), "", "agent-digest-pane")));
-        check("no session falls back to the window", countHeadings(cron) == 2);
-        check("each named for its own", cron.get(0).heading.startsWith("red5"));
+                clip("moon enters Libra", at(17, 21, 0), "", "", "org-alert", "%178"),
+                clip("describe digest", at(17, 20, 0), "", "", "org-alert", "%9")));
+        check("no session falls back to the pane", countHeadings(cron) == 3);
+        check("under the one session they share",
+                cron.get(0).heading.startsWith("org-alert · 2 clips"));
 
         List<RecentRows.Entry> none = RecentRows.byConversation(
-                Arrays.asList(clip("orphan", at(17, 21, 0), "", "")));
-        check("and an untagged clip says so",
-                none.get(0).heading.startsWith("untagged"));
-        check("one clip is not 1 clips", none.get(0).heading.endsWith("· 1 clip"));
+                Arrays.asList(clip("orphan", at(17, 21, 0), "", "", "", "")));
+        check("nothing to name it by at all",
+                none.get(0).heading.startsWith("no session")
+                && none.get(1).heading.startsWith("untagged"));
+        check("one clip is not 1 clips", none.get(1).heading.endsWith("· 1 clip"));
     }
 
     private static int countHeadings(List<RecentRows.Entry> rows) {

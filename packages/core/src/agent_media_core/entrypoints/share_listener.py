@@ -288,6 +288,8 @@ def recent_rows(query: str = "") -> list:
                 # name on it.
                 "session": r.get("session") or "",
                 "window": r.get("window") or "",
+                "tmux": r.get("tmux") or "",
+                "pane": r.get("pane") or "",
             })
     if not channel:
         rows.sort(key=lambda r: r["started_at"], reverse=True)
