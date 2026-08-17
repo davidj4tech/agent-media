@@ -22,7 +22,6 @@ import android.widget.TextView;
 
 import java.text.SimpleDateFormat;
 import java.util.Date;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -44,10 +43,10 @@ import java.util.Map;
  * <h4>And what it absorbed</h4>
  *
  * ControlsActivity, which was a second screen that knew the same three channels
- * and put a tab bar on top of them. The tabs were restating what this screen
- * already shows, so the channels themselves became the selector: the one being
- * driven sits at the top with its progress, its clock and every verb the popup
- * has, and the other two are rows underneath. Tap one and it takes the wheel.
+ * and put a tab bar on top of them. Its transport came here; its tab bar came
+ * back too, once the channel rows had a second go at being the selector and
+ * lost — see {@link Tabs}. So: a tab per channel, and under it the one being
+ * driven, with its progress, its clock and every verb the popup has.
  *
  * It opens on whatever is playing, because that is nearly always the answer.
  */
@@ -66,13 +65,10 @@ public class MainActivity extends Activity {
     private Map<String, Channels.Channel> channels;
 
     private LinearLayout driverSlot;
-    private LinearLayout rowSlot;
-    private TextView rowsLabel;
     private LinearLayout healthStrip;
+    private Tabs tabs;
     private Transport transport;
     private ChannelCard.Views driverCard;
-    private final Map<String, ChannelCard.Views> rowCards =
-            new LinkedHashMap<String, ChannelCard.Views>();
 
     private final ServiceConnection conn = new ServiceConnection() {
         @Override public void onServiceConnected(ComponentName name, IBinder binder) {
@@ -110,23 +106,19 @@ public class MainActivity extends Activity {
 
         root.addView(header());
 
+        tabs = new Tabs(this, new Tabs.Host() {
+            @Override public void drive(String channel) { MainActivity.this.drive(channel); }
+        });
+        LinearLayout.LayoutParams stripParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        stripParams.topMargin = dp(Style.gap(2));
+        root.addView(tabs.build(), stripParams);
+
         driverSlot = new LinearLayout(this);
         driverSlot.setOrientation(LinearLayout.VERTICAL);
-        driverSlot.setPadding(0, dp(Style.gap(3)), 0, 0);
+        driverSlot.setPadding(0, dp(Style.gap(4)), 0, 0);
         root.addView(driverSlot);
-
-        rowsLabel = new TextView(this);
-        rowsLabel.setText("TAP TO DRIVE");
-        rowsLabel.setTextSize(Style.LABEL);
-        rowsLabel.setTextColor(Style.FAINT);
-        rowsLabel.setTypeface(Typeface.MONOSPACE);
-        rowsLabel.setLetterSpacing(0.1f);
-        rowsLabel.setPadding(0, dp(Style.gap(5)), 0, dp(Style.gap(1)));
-        root.addView(rowsLabel);
-
-        rowSlot = new LinearLayout(this);
-        rowSlot.setOrientation(LinearLayout.VERTICAL);
-        root.addView(rowSlot);
 
         healthStrip = new LinearLayout(this);
         healthStrip.setOrientation(LinearLayout.HORIZONTAL);
@@ -235,18 +227,17 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Build the driver block and the two rows for the channel being driven.
+     * Build the card and the transport for the channel being driven.
      *
      * Rebuilt when the driven channel changes, and not otherwise: the poll
      * updates the views it made rather than making new ones, so a screen open
-     * for an hour is the same view tree it started as.
+     * for an hour is the same view tree it started as. The strip above is
+     * built once and never rebuilt — a control that survives what it controls.
      */
     private void buildCards() {
         driverSlot.removeAllViews();
-        rowSlot.removeAllViews();
-        rowCards.clear();
 
-        driverCard = ChannelCard.build(this, driving, true);
+        driverCard = ChannelCard.build(this, driving);
         driverSlot.addView(driverCard.root);
 
         transport = new Transport(this, new Transport.Host() {
@@ -256,27 +247,19 @@ public class MainActivity extends Activity {
         driverSlot.addView(transport.build());
         transport.accent(driving);
 
-        for (final String name : Channels.ORDER) {
-            if (name.equals(driving)) continue;
-            ChannelCard.Views row = ChannelCard.build(this, name, false);
-            row.root.setOnClickListener(new View.OnClickListener() {
-                @Override public void onClick(View v) { drive(name); }
-            });
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT);
-            lp.topMargin = dp(Style.gap(2));
-            rowSlot.addView(row.root, lp);
-            rowCards.put(name, row);
-        }
+        tabs.select(driving);
         applyChannels();
     }
 
     /** Take the wheel. A deliberate choice, so stop guessing from now on. */
     private void drive(String channel) {
+        // Before the early return: tapping the tab you are already on is still
+        // a choice, and it has to stop the poll moving you off it a second
+        // later — which is the one way this screen can look like it ignored a
+        // tap.
+        autoPick = false;
         if (channel.equals(driving)) return;
         driving = channel;
-        autoPick = false;
         buildCards();
     }
 
@@ -320,10 +303,7 @@ public class MainActivity extends Activity {
         Channels.Channel driven = channels == null ? null : channels.get(driving);
         if (driverCard != null) ChannelCard.apply(driverCard, driving, driven);
         if (transport != null) transport.apply(driven);
-        for (Map.Entry<String, ChannelCard.Views> e : rowCards.entrySet()) {
-            ChannelCard.apply(e.getValue(), e.getKey(),
-                              channels == null ? null : channels.get(e.getKey()));
-        }
+        if (tabs != null) tabs.apply(channels);
     }
 
     private void renderHealth() {

@@ -54,7 +54,8 @@ addressed-player slot.
 | `FocusControl.java` | The `android.*` half of focus: request, abandon, forward the callbacks. Also the tripwire on `FocusPolicy`'s duplicated constants. |
 | `CompanionService.java` | Session, notification, the silent `AudioTrack`, and the wiring in both directions. |
 | `StatusServer.java` | The readout the outside can reach: `/state` and `/log` over loopback HTTP. `android.*`-free, so `test/run.sh` covers it. |
-| `MainActivity.java` | Home: the channel being driven with its transport, the other two as rows, and the health strip. |
+| `MainActivity.java` | Home: the channel tabs, the one being driven with its transport, and the health strip. |
+| `Tabs.java` | The channel selector: a tab each, underlined in its hue, with a dot when that channel is playing. |
 | `DiagnosticsActivity.java` | The event log, the focus probe/acting switch and the exit history — where the old main screen went. |
 | `ChannelCard.java` | One channel, drawn the same in the shade and in the app. Row and driver are the same component at two sizes. |
 | `Transport.java` | The verbs a media card has no room for: seek by an amount, speed, volume, mute, chapters. |
