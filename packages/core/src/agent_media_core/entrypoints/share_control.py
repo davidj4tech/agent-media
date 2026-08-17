@@ -221,7 +221,7 @@ def _clips(max_age: float = ORIGIN_CLIPS_TTL_S) -> list:
     picker that says the machine is down.
     """
     rows = _origin_clips(max_age)
-    return rows if rows is not None else _speech_clips(_CLIPS_N)
+    return rows if rows is not None else _local_clips()
 
 
 def _f(value) -> Optional[float]:
@@ -385,7 +385,7 @@ def chapters(channel: str = "music") -> list:
     Speech has no chapters and never will — but it has the same *question*
     answered elsewhere: the clips already spoken, which the popup browses.
     That list is what this returns for speech, so one button means one thing
-    on all three channels. See `_speech_clips`.
+    on all three channels. See `picker_rows` and `_clips`.
     """
     channel = (channel or "music").strip() or "music"
     if channel == "speech":
@@ -420,58 +420,47 @@ def chapters(channel: str = "music") -> list:
     return rows
 
 
-def _speech_clips(n: int = 40) -> list:
-    """Recent spoken turns, newest first, shaped like a chapter list.
+def picker_rows(rows: list) -> list:
+    """Clip rows (`cli._clip_rows`) in the shape a picker renders.
 
-    `ref` is the row's history id and not its position, because position is
-    the one thing that does not hold: the list is newest-first, so a clip
-    landing while the picker is open shifts every number by one and the tap
-    that follows plays the wrong turn. `replay --id` is addressed the same way
-    and for the same reason.
+    Chapter-shaped, because on this surface they answer the chapter button and
+    a second shape would mean a second parser on the phone for one list. So:
+    a `title` to show, a `ref` to send back, and `current` for the ▸.
 
-    The live turn is deliberately absent. History is written when a turn ends,
-    so what you are hearing right now has no id yet — the popup's traversal
-    keeps it (`include_live`) because stepping needs to count it, but a picker
-    row you cannot replay is not worth drawing. The mark instead follows the
-    clip a replay put on: `_replay_row` stamps its id into now_playing.
+    `ref` is the history id and not the row's position, because position is the
+    one thing that does not hold — the list is newest-first, so a clip landing
+    while the picker is open shifts every number by one and the tap that
+    follows plays the wrong turn. `replay --id` is addressed this way for the
+    same reason.
 
-    Timestamps ride in the title. `start_ms` is an offset into one track, and
-    these are not one track — a clock time is what tells two turns apart, and
-    it is what the popup's own clip browser shows.
+    `start_ms` is always None. It is an offset into one track and these are not
+    one track; the clock time in the title is what tells two turns apart, and
+    it is what the popup's browser shows too.
     """
-    try:
-        from ..cli import _hist_ts, _hist_txt, _speech_history
-
-        rows = _speech_history(n)
-    except Exception as e:  # noqa: BLE001
-        log.debug("clip read failed: %s", e)
-        return []
-    playing = None
-    try:
-        from ..cli import _now_speaking
-
-        playing = ((_now_speaking() or {}).get("extras") or {}).get("history_id")
-    except Exception as e:  # noqa: BLE001 — a marker, never the list's problem
-        log.debug("now-playing read failed: %s", e)
-    import datetime
-
-    today = datetime.date.today()
     out = []
     for r in rows:
-        rid = r.get("id")
-        if rid is None:
-            continue
-        text = _hist_txt(r)[:110] or "(no text)"
-        out.append({"number": len(out) + 1,
-                    "title": f"{_hist_ts(r, today)}  {text}",
-                    # The words on their own, for the card's heading. The list
-                    # is already the answer to "what was said last"; a second
-                    # reader for that one line is how the two disagreed.
+        text = (r.get("text") or "")[:110] or "(no text)"
+        out.append({"number": r.get("number"),
+                    "title": f"{r.get('ts', '')}  {text}",
+                    # The words alone, for the card's heading. The list already
+                    # answers "what was said last"; a second reader for that
+                    # one line is how the heading and the list disagreed.
                     "text": text,
                     "start_ms": None,
-                    "current": playing is not None and rid == playing,
-                    "ref": str(rid)})
+                    "current": bool(r.get("current")),
+                    "ref": str(r.get("id"))})
     return out
+
+
+def _local_clips(n: int = _CLIPS_N) -> list:
+    """This host's own clip rows, picker-shaped. Empty when they cannot be read."""
+    try:
+        from ..cli import _clip_rows
+
+        return picker_rows(_clip_rows(n))
+    except Exception as e:  # noqa: BLE001 — a surface renders what it got
+        log.debug("clip read failed: %s", e)
+        return []
 
 
 def control(channel: str, action: str, arg: str = "", runner=None) -> int:

@@ -3328,6 +3328,44 @@ def _hist_txt(r) -> str:
     return (r.get("text") or "").replace("\n", " ").strip()
 
 
+def _clip_rows(n: int = 40, session: Optional[str] = None) -> list[dict]:
+    """Recent spoken turns, shaped once for everything that lists them.
+
+    "Clips" are not a second thing beside history; they are history with the
+    three questions a picker asks answered — which turn is this (`number`),
+    what do I say to get it back (`id`), and am I hearing it now (`current`).
+    Three surfaces list this table — `media history`, the popup's fzf browser,
+    the phone's picker — and each of them used to decide separately what a row
+    looks like, which is how the phone's list and the phone's card heading came
+    to disagree about the same turn.
+
+    Rows with no record are dropped. The live turn is one: history is written
+    when a turn ends, so what you are hearing has no id yet and nothing can be
+    told to play it again. The traversal keeps it (`include_live`) because
+    stepping has to count it; a list you choose from does not.
+
+    `text` is not truncated here. How much of a turn fits is the surface's
+    business — a terminal, an fzf line and a phone dialog do not agree — but
+    what a row *is* should not be.
+    """
+    playing = ((_now_speaking() or {}).get("extras") or {}).get("history_id")
+    today = datetime.date.today()
+    out: list[dict] = []
+    for r in _speech_history(n, session=session):
+        rid = r.get("id")
+        if rid is None:
+            continue
+        ex = r.get("extras") or {}
+        out.append({"number": len(out) + 1,
+                    "id": rid,
+                    "ts": _hist_ts(r, today),
+                    "text": _hist_txt(r),
+                    "session": ex.get("source_session") or "",
+                    "window": str(ex.get("source_window") or "").strip(),
+                    "current": playing is not None and rid == playing})
+    return out
+
+
 def _print_history_grouped(rows) -> None:
     """tmux-choose-tree-ish rendering of the all-conversations view: one
     ▪window header per conversation (most recently heard first), its clips
@@ -3336,13 +3374,9 @@ def _print_history_grouped(rows) -> None:
     clip rows and skip them."""
     groups: dict = {}   # source_session -> [rows], insertion = played order
     for r in rows:
-        key = (r.get("extras") or {}).get("source_session") or ""
-        groups.setdefault(key, []).append(r)
-    today = datetime.date.today()
+        groups.setdefault(r["session"], []).append(r)
     for key, grp in groups.items():
-        win = next((str((r.get("extras") or {}).get("source_window") or "")
-                    .strip() for r in grp
-                    if (r.get("extras") or {}).get("source_window")), "")
+        win = next((r["window"] for r in grp if r["window"]), "")
         # Clips predating source_window still have distinct conversations
         # (keyed by session id) — label those groups by a session-id stub so
         # they stay tellable-apart, not all "(untagged)".
@@ -3351,8 +3385,7 @@ def _print_history_grouped(rows) -> None:
         print(f"▪{label} — {n} clip{'s' if n != 1 else ''}")
         for i, r in enumerate(grp):
             branch = "└─" if i == n - 1 else "├─"
-            print(f"  {branch} {_hist_ts(r, today)}  {_hist_txt(r)[:110]}"
-                  f"\t{r.get('id')}")
+            print(f"  {branch} {r['ts']}  {r['text'][:110]}\t{r['id']}")
 
 
 def cmd_errors(a) -> int:
@@ -3384,7 +3417,11 @@ def cmd_errors(a) -> int:
 
 
 def cmd_history(a) -> int:
-    """List recent spoken clips; the clip browser's data source.
+    """List recent spoken clips — every picker's data source, in three skins.
+
+    All three are `_clip_rows` with a different amount of room: plain for a
+    terminal, ``--lines`` for fzf, ``--json`` for the phone. What a row *is* is
+    decided once, over there.
 
     ``--session`` scopes to the popup's anchor conversation (falling back to
     all clips when none resolves — same degradation as < / > traversal).
@@ -3393,34 +3430,28 @@ def cmd_history(a) -> int:
     conversations stay tellable-apart. ``--group`` (with --lines, unscoped)
     instead groups clips under per-conversation headers, choose-tree style.
 
-    ``--json`` emits the phone's picker rows instead, and is the wire format
-    between a render host and its origin: the words are produced where the
-    conversation happens, and every other host has to ask. It shares its
-    shaping with the app's own picker rather than mint a second one, because
-    two renderings of one history is the bug this repo keeps finding."""
-    if getattr(a, "json", False):
-        from .entrypoints.share_control import _speech_clips
-
-        print(json.dumps(_speech_clips(a.n)))
-        return 0
+    ``--json`` is the wire format between a render host and its origin: the
+    words are produced where the conversation happens, and every other host has
+    to ask. It carries the picker's field names (`ref`, `title`) because the
+    app is what reads it.
+    """
     session = _anchor_session() if getattr(a, "session", False) else None
     scoped = session is not None
-    rows = _speech_history(a.n, session=session)
+    if getattr(a, "json", False):
+        from .entrypoints.share_control import picker_rows
+
+        print(json.dumps(picker_rows(_clip_rows(a.n, session=session))))
+        return 0
+    rows = _clip_rows(a.n, session=session)
     if getattr(a, "lines", False) and getattr(a, "group", False) and not scoped:
         _print_history_grouped(rows)
         return 0
-    today = datetime.date.today()
     for r in rows:
-        ts, txt = _hist_ts(r, today), _hist_txt(r)
         if not getattr(a, "lines", False):
-            print(f"{ts}  {txt[:80]}")
+            print(f"{r['ts']}  {r['text'][:80]}")
             continue
-        label = ""
-        if not scoped:
-            ex = r.get("extras") or {}
-            win = str(ex.get("source_window") or "").strip()
-            label = f" ▪{win[:18]}" if win else ""
-        print(f"{ts}{label}  {txt[:120]}\t{r.get('id')}")
+        label = f" ▪{r['window'][:18]}" if r["window"] and not scoped else ""
+        print(f"{r['ts']}{label}  {r['text'][:120]}\t{r['id']}")
     return 0
 
 
