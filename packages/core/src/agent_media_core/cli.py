@@ -238,6 +238,58 @@ def _row_has_audio(row: dict) -> bool:
     return bool(uri) and not uri.startswith("remote-say:")
 
 
+def _adopt_pane_sessions(rows) -> None:
+    """Give a clip with no conversation the one its pane was holding.
+
+    Not every clip spoken into a conversation carries its id. `media say` — the
+    lead-in prose before a question, a hook's aside, anything an agent speaks
+    from its own shell — knows the pane it is standing in and nothing about the
+    Claude session, because there is no session id in the environment to read.
+    The Stop hook is handed one; a shell is not.
+
+    The consequences were not cosmetic. A scoped traversal filters on the id,
+    so those clips were invisible to `<` and `>` inside the very conversation
+    that said them, and the phone's list, grouping on the same field, showed
+    one conversation twice — the same window name, once for the replies and
+    once for the prose. Two names for one thing is the bug this whole afternoon
+    kept finding.
+
+    So a pane's clips are read as belonging to that pane's conversation, taking
+    the *nearest in time* of the ones that named it. Nearest, not newest: a pane
+    that held conversation A this morning and B this afternoon should not hand
+    every one of A's asides to B. A pane that has never named a conversation —
+    the reminders cron speaks — keeps none, which is true of it.
+
+    Mutates the rows it was handed, extras copied rather than scribbled on, so
+    the store's own dicts are left alone.
+    """
+    marks: dict = {}
+    for r in rows:
+        ex = r.get("extras")
+        if not isinstance(ex, dict):
+            continue
+        pane, sess = ex.get("source_pane"), ex.get("source_session")
+        if pane and sess:
+            marks.setdefault(pane, []).append(
+                (float(r.get("started_at") or 0.0), sess))
+    if not marks:
+        return
+    for r in rows:
+        ex = r.get("extras")
+        if not isinstance(ex, dict) or ex.get("source_session"):
+            continue
+        near = marks.get(ex.get("source_pane") or "")
+        if not near:
+            continue
+        at = float(r.get("started_at") or 0.0)
+        ex = dict(ex)
+        ex["source_session"] = min(near, key=lambda m: abs(m[0] - at))[1]
+        # Marked, because "we worked out where this belongs" and "it said so
+        # itself" are different claims, and only one of them can be wrong.
+        ex["session_adopted"] = True
+        r["extras"] = ex
+
+
 def _speech_history(n: int = 20, session: Optional[str] = None,
                     include_live: bool = False):
     # `session`, when given, is a *Claude session id* (extras.source_session) —
@@ -255,6 +307,9 @@ def _speech_history(n: int = 20, session: Optional[str] = None,
     if session:
         fetch = max(fetch, 400)
     rows = StateStore().recent_history(sink="speech", limit=fetch)
+    # Before anything is filtered, because the alerts about to be dropped are
+    # some of the best evidence of which conversation a pane was holding.
+    _adopt_pane_sessions(rows)
     rows = [r for r in rows
             if not (isinstance(r.get("extras"), dict)
                     and r["extras"].get("kind") == "notif")]
