@@ -1189,7 +1189,15 @@ class MicSource:
         self._revive_after_s = revive_after_s
         self._revive_every_s = revive_every_s
         self._failing_since: float | None = None
-        self._last_revive: float = 0.0
+        # None, not 0.0: `_now()` is time.monotonic(), which counts from BOOT,
+        # so 0.0 is not "never tried" — it is a real instant a few minutes
+        # before the machine finished starting. Compared against it, the
+        # rate-limit gate below suppresses the FIRST revive for the whole of
+        # revive_every_s (300s by default) of uptime, which is exactly the
+        # window where the companion app is most likely to be dead: the boot
+        # race. Same family as the TTL bug in 07411e3, which compared a
+        # monotonic clock against a file mtime.
+        self._last_revive: float | None = None
 
     def _maybe_revive(self) -> None:
         """Ask Android to start the companion app again. Best-effort.
@@ -1205,7 +1213,8 @@ class MicSource:
         now = _now()
         if now - self._failing_since < self._revive_after_s:
             return
-        if now - self._last_revive < self._revive_every_s:
+        if (self._last_revive is not None
+                and now - self._last_revive < self._revive_every_s):
             return
         if shutil.which(self._revive_cmd.split()[0]) is None:
             return

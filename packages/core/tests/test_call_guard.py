@@ -1014,6 +1014,35 @@ def test_revive_fires_once_down_long_enough(monkeypatch):
         source.stop()
 
 
+def test_revive_fires_on_a_freshly_booted_host(monkeypatch):
+    """The rate limit must not swallow the first attempt.
+
+    `_now()` is time.monotonic(), which counts from boot, and `_last_revive`
+    started at 0.0 — so on a host whose uptime was under revive_every_s (300s
+    by default) the gate read "we tried 40 seconds ago" when nothing had ever
+    tried, and suppressed the first revive for the rest of that window. That
+    window is the boot race, which is when the companion app is most likely to
+    be dead.
+
+    CI is where this showed up, because a fresh runner has the low uptime a
+    long-lived host never has: the suite passed for months on a machine up for
+    days and failed on both Python versions in Actions.
+    """
+    calls = _revive_probe(monkeypatch)
+    monkeypatch.setattr(call_guard, "_now", lambda: 40.0)   # 40s of uptime
+    source = call_guard.MicSource(_dead_url(), poll_s=0.05, backoff_s=0.05,
+                                  revive_cmd="am start -n x/.Y",
+                                  revive_after_s=0.0, revive_every_s=300.0)
+    source._failing_since = 39.0
+    source._maybe_revive()
+    assert calls, "a host up less than revive_every_s could never revive"
+    assert calls[0][:2] == ["am", "start"]
+
+    # And the rate limit still holds once something HAS been tried.
+    source._maybe_revive()
+    assert len(calls) == 1
+
+
 def test_revive_never_fires_without_am(monkeypatch):
     """The platform gate. Every host that is not Android lands here, and a
     refused connection there is the ordinary state, not something to fix."""
