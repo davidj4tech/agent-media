@@ -55,6 +55,21 @@ public class MainActivity extends Activity {
     /** The channel poll, while this screen is looking. Same as the popup's. */
     private static final long POLL_MS = 1000;
 
+    /**
+     * The same poll against a server across the tailnet.
+     *
+     * A second is right for a listener on this phone's loopback and wrong for
+     * one in Falkenstein: red5 is ~1 s of round trip from Melbourne, and its
+     * answer about the music is itself a round trip back to this phone's mpv
+     * bridge — so a one-second tick asks the phone about the phone by way of
+     * Germany, three times before the first answer lands. The screen is a
+     * window onto state, not a clock; three seconds is still faster than
+     * putting the phone down.
+     */
+    private static final long POLL_REMOTE_MS = 3000;
+
+    private long pollMs = POLL_MS;
+
     private final Handler main = new Handler(Looper.getMainLooper());
     private CompanionService service;
     private boolean polling;
@@ -85,7 +100,7 @@ public class MainActivity extends Activity {
         @Override public void run() {
             if (!polling) return;
             poll();
-            main.postDelayed(this, POLL_MS);
+            main.postDelayed(this, pollMs);
         }
     };
 
@@ -148,6 +163,9 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        // Re-read on every resume: the settings screen is one tap away, and
+        // coming back from it is exactly when this changes.
+        pollMs = Settings.server(this).local() ? POLL_MS : POLL_REMOTE_MS;
         polling = true;
         main.post(tick);
     }
