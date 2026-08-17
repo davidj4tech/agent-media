@@ -119,9 +119,9 @@ final class Transport {
      * Follow the channel: state on the play button, and only the verbs it has.
      *
      * Gone, not greyed, for a verb the channel does not take at all — greyed
-     * says "not now", and this is "not ever". Chapters is the one exception: it
-     * is a music verb that comes and goes with the track, so it stays put and
-     * dims, which is "not now" and true.
+     * says "not now", and this is "not ever". Chapters is the one exception:
+     * music and book both take it, and whether there are any comes and goes
+     * with the track, so it stays put and dims, which is "not now" and true.
      */
     void apply(Channels.Channel c) {
         if (playButton != null) {
@@ -188,7 +188,8 @@ final class Transport {
     private void showChapters() {
         new Thread(new Runnable() {
             @Override public void run() {
-                Loopback.Reply r = Loopback.get(Loopback.PORT, "/chapters");
+                Loopback.Reply r = Loopback.get(
+                        Loopback.PORT, "/chapters?channel=" + host.channel());
                 final List<Chapters.Chapter> rows =
                         r.ok() ? Chapters.parse(r.body)
                                : java.util.Collections.<Chapters.Chapter>emptyList();

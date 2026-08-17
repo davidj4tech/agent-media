@@ -171,9 +171,16 @@ final class Channels {
             return sb.toString();
         }
 
-        /** Chapters are a music-channel thing, and only with a live mpv track. */
+        /**
+         * Chapters need an mpv with something loaded in it.
+         *
+         * Music and book both qualify — the book more so, since an m4b has
+         * chapters by definition and a shared YouTube upload usually carries
+         * marks. It was music-only here for as long as the listener could only
+         * read the music mpv's list.
+         */
         boolean mayHaveChapters() {
-            return "music".equals(name) && !idle;
+            return ("music".equals(name) || "book".equals(name)) && !idle;
         }
     }
 

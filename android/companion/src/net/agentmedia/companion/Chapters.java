@@ -6,12 +6,13 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * The live music track's chapters.
+ * The loaded track's chapters.
  *
- * A fetched DJ set or album upload carries them, and they are how you navigate
- * two hours of audio without scrubbing — the popup gives them their own key for
- * that reason. Music only: an MPD stream has none, and neither does the book
- * channel, so an empty list is a normal answer rather than a failure.
+ * A fetched DJ set or album upload carries them, an audiobook has them by
+ * definition, and they are how you navigate two hours of audio without
+ * scrubbing — the popup gives them their own key for that reason. Music and
+ * book; speech has none, and neither does an MPD stream, so an empty list is a
+ * normal answer rather than a failure.
  *
  * {@code android.*}-free, so {@code test/run.sh} covers it.
  */

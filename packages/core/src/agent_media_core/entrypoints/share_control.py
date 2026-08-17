@@ -62,6 +62,7 @@ VERBS = {
     ("book", "seek"): ["book", "seek", "{}"],
     ("book", "skip"): ["book", "skip", "{}"],
     ("book", "speed"): ["book", "speed", "{}"],
+    ("book", "chapter"): ["book", "chapter", "{}"],
 
     # Speech is not a player in the same sense — there is no queue to page
     # through — so it gets the verbs the popup gives it and no more.
@@ -240,16 +241,28 @@ def _focus() -> Optional[str]:
         return None
 
 
-def chapters() -> list:
-    """The live music track's chapters, 1-based, with the current one marked.
+def chapters(channel: str = "music") -> list:
+    """The loaded track's chapters, 1-based, with the current one marked.
 
-    Music only — the popup says so too. An MPD/GStreamer stream has none, and
-    neither does a book: an empty list is the honest answer, not an error.
+    Music or book. It was music only, on the strength of a comment here saying
+    a book has no chapters — which was true when the book channel was streams
+    and false the moment it grew a cache: an m4b has chapters by definition and
+    mpv lifts YouTube's marks too. Speech has none and never will; an MPD or
+    GStreamer stream has none either. An empty list is the honest answer in all
+    of those cases, not an error.
     """
+    channel = (channel or "music").strip() or "music"
+    if channel not in ("music", "book"):
+        return []
     try:
-        from ..cli import _music_mpv_chapters
+        if channel == "book":
+            from ..cli import _book_mpv_chapters
 
-        got = _music_mpv_chapters()
+            got = _book_mpv_chapters()
+        else:
+            from ..cli import _music_mpv_chapters
+
+            got = _music_mpv_chapters()
     except Exception as e:  # noqa: BLE001
         log.debug("chapter read failed: %s", e)
         return []

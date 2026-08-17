@@ -15,7 +15,8 @@ of that happens here, in Python, in the repo, under test.
                   that list. It does NOT classify: the row already knows.
     GET  /channels  one snapshot of speech/music/book — what the app's control
                   screen renders, normalised in `share_control`.
-    GET  /chapters  the live music track's chapters, 1-based.
+    GET  /chapters  the loaded track's chapters, 1-based. `?channel=` picks
+                  music (the default) or book; anything else has none.
     POST /control   {"channel", "action", "arg"} — one whitelisted transport
                   verb. Not a passthrough: this endpoint presses buttons, it
                   does not run the CLI.
@@ -85,7 +86,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send(200, {"ok": True, "channels": control.channels()})
             return
         if path == "/chapters":
-            self._send(200, {"ok": True, "rows": control.chapters()})
+            from urllib.parse import parse_qs
+
+            channel = (parse_qs(query or "").get("channel") or ["music"])[0]
+            self._send(200, {"ok": True, "rows": control.chapters(channel)})
             return
         if path not in ("/", "/health"):
             self._send(404, {"ok": False, "error": "no such path"})

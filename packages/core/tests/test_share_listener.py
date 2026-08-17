@@ -334,8 +334,14 @@ def test_a_control_that_explodes_does_not_500_bare(server, monkeypatch):
 
 def test_chapters_endpoint(server, monkeypatch):
     _, base = server
+    seen = []
     monkeypatch.setattr("agent_media_core.entrypoints.share_control.chapters",
-                        lambda: [{"number": 1, "title": "Intro",
-                                  "start_ms": 0, "current": True}])
+                        lambda channel="music": seen.append(channel) or [
+                            {"number": 1, "title": "Intro",
+                             "start_ms": 0, "current": True}])
     code, body = _get(base, "/chapters")
     assert code == 200 and body["rows"][0]["title"] == "Intro"
+    # The channel rides in the query, and music is what a caller that does not
+    # say gets — which is every caller written before the book had chapters.
+    code, _ = _get(base, "/chapters?channel=book")
+    assert code == 200 and seen == ["music", "book"]

@@ -58,7 +58,10 @@ def test_a_channel_publishes_the_verbs_it_takes():
     assert "mute" in sc.verbs("speech")
     assert "mute" not in sc.verbs("book")
     assert "volume" not in sc.verbs("book")
-    assert "chapter" not in sc.verbs("book")
+    # `chapter` the book does take, since 2026-08-17: an m4b has chapters by
+    # definition and mpv lifts a YouTube upload's marks.
+    assert "chapter" in sc.verbs("book")
+    assert "chapter" not in sc.verbs("speech")
     assert {"toggle", "seek", "speed", "next", "prev"} <= set(sc.verbs("book"))
     # And every published verb is one control() will actually accept.
     for channel in sc.CHANNELS:
@@ -193,6 +196,28 @@ def test_chapters_are_numbered_from_one_with_the_current_marked(monkeypatch):
 def test_no_live_track_is_an_empty_list_not_an_error(monkeypatch):
     monkeypatch.setattr("agent_media_core.cli._music_mpv_chapters", lambda: None)
     assert sc.chapters() == []
+
+
+def test_the_book_reads_its_own_mpv(monkeypatch):
+    # Not the music one — that was the whole bug: the book channel could not
+    # show the chapters of the thing most likely to have them.
+    monkeypatch.setattr(
+        "agent_media_core.cli._music_mpv_chapters",
+        lambda: ("music-ep", [{"title": "Wrong", "time": 0.0}], 0))
+    monkeypatch.setattr(
+        "agent_media_core.cli._book_mpv_chapters",
+        lambda: ("book-ep", [{"title": "One", "time": 0.0},
+                             {"title": "Two", "time": 600.0}], 1))
+    rows = sc.chapters("book")
+    assert [r["title"] for r in rows] == ["One", "Two"]
+    assert rows[1]["current"] and rows[1]["start_ms"] == 600000
+
+
+def test_a_channel_with_no_chapters_at_all_is_an_empty_list(monkeypatch):
+    monkeypatch.setattr(
+        "agent_media_core.cli._music_mpv_chapters",
+        lambda: ("ep", [{"title": "Intro", "time": 0.0}], 0))
+    assert sc.chapters("speech") == []
 
 
 def test_a_chapter_read_that_explodes_is_still_an_empty_list(monkeypatch):

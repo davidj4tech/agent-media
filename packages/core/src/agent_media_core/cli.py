@@ -3744,6 +3744,78 @@ def _cmd_music_chapters(a) -> int:
     return 0
 
 
+def _book_mpv_chapters(target: str = "") -> Optional[tuple[object, list, Optional[int]]]:
+    """(endpoint, chapter-list, current index) for the book channel's mpv, or
+    None when nothing is loaded.
+
+    The book is the channel most likely to have chapters — an m4b has them by
+    definition, and mpv's ytdl hook lifts YouTube's chapter marks too — and it
+    was the one channel that could not show them, on the strength of a comment
+    saying a book has none. That was true when the book channel was streams.
+    """
+    from .sinks import _mpv_ipc as ipc
+    from .sinks.book import _socket_for
+    from .mcp_server import _book_target
+
+    ep = _socket_for(_book_target(target))
+    # Same generosity as the music side: the phone bridge is a TCP hop through
+    # a dozing radio, and one timed-out round trip would read as "no chapters".
+    attempts = 5 if str(ep).startswith("tcp://") else 1
+    try:
+        props = ipc.get_properties(
+            ep, ["idle-active", "chapter-list", "chapter"],
+            timeout=3.0, attempts=attempts)
+    except (ipc.MpvIpcError, OSError):
+        return None
+    if props.get("idle-active") is not False:
+        return None
+    cur = props.get("chapter")
+    return ep, list(props.get("chapter-list") or []), (
+        int(cur) if isinstance(cur, int) else None)
+
+
+def _cmd_book_chapters(a) -> int:
+    """`book chapters [--lines]` / `book chapter N` — the music command's twin,
+    against the book's mpv. Numbers are 1-based to match the printed list."""
+    from .sinks import _mpv_ipc as ipc
+    got = _book_mpv_chapters(getattr(a, "target", "") or "")
+    if got is None:
+        print("media book chapters: nothing loaded on the book channel",
+              file=sys.stderr)
+        return 1
+    ep, chaps, cur = got
+    if not chaps:
+        print("media book chapters: this book has no chapters",
+              file=sys.stderr)
+        return 1
+    if a.book_cmd == "chapter":
+        try:
+            n = int(a.number)
+        except (TypeError, ValueError):
+            print(f"media book chapter: bad chapter {a.number!r} "
+                  f"(want 1–{len(chaps)})", file=sys.stderr)
+            return 2
+        if not 1 <= n <= len(chaps):
+            print(f"media book chapter: {n} out of range (1–{len(chaps)})",
+                  file=sys.stderr)
+            return 2
+        try:
+            ipc.set_property(ep, "chapter", n - 1, critical=True)
+        except (ipc.MpvIpcError, OSError) as e:
+            print(f"media book chapter: {e}", file=sys.stderr)
+            return 1
+        title = str(chaps[n - 1].get("title") or "").strip() or f"chapter {n}"
+        print(f"⏭ {n:02d} · {title}")
+        return 0
+    for i, ch in enumerate(chaps):
+        title = str(ch.get("title") or "").strip() or f"chapter {i + 1}"
+        mark = "▸" if cur == i else " "
+        row = (f"{mark} {i + 1:2d}  "
+               f"{_hms(float(ch.get('time') or 0)):>7}  {title}")
+        print(f"{row}\t{i + 1}" if getattr(a, "lines", False) else row)
+    return 0
+
+
 def _resolve_music_where(where: str) -> str:
     """Resolve a `--where` value to a concrete backend: 'phone' or 'rooms'.
 
@@ -4640,6 +4712,8 @@ def cmd_book(a) -> int:
         r = srv.book_speed(rate, target=tgt)
         print(f"speed: {r['speed']}")
         return 0
+    if bc in ("chapters", "chapter"):
+        return _cmd_book_chapters(a)
     if bc == "bed":
         return _ok(srv.book_bed(a.mode, target=tgt))
     return 2
@@ -6247,6 +6321,14 @@ def _add_book_parser(sub) -> None:
 
     bs = b.add_parser("speed", help="set playback speed (factor or 'reset')")
     bs.add_argument("factor")
+
+    bch = b.add_parser("chapters", help="list the loaded book's chapters")
+    bch.add_argument("--lines", action="store_true",
+                     help="print display<TAB>number rows for an external picker")
+    bch.add_argument("--target", default="")
+    bcn = b.add_parser("chapter", help="jump to a chapter (1-based; see 'chapters')")
+    bcn.add_argument("number")
+    bcn.add_argument("--target", default="")
 
     bbed = b.add_parser("bed", help="how music behaves under a foregrounded book")
     bbed.add_argument("mode", choices=("duck", "pause"))
