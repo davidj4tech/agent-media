@@ -25,9 +25,13 @@ import android.os.Bundle;
  * lives under a different uid and Android's background-start rules let it
  * launch an exported activity of ours and not much else.
  *
- * Harmless to knock on when the app is already up: a second
- * `startForegroundService` on a running service is one `onStartCommand` with a
- * null action, which does nothing.
+ * Knocking when the app is already up is harmless only because
+ * `onStartCommand` posts the notification on every start. It was NOT harmless
+ * while that call lived in `onCreate` alone: a start delivered to a running
+ * service skips `onCreate`, so nothing satisfied this start's own obligation to
+ * call `startForeground`, and Android killed the app ten seconds later. Five
+ * deaths on 2026-08-17 name this line as the caller. Do not move that call back
+ * into `onCreate` only.
  */
 public class WakeActivity extends Activity {
 

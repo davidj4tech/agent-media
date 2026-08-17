@@ -483,6 +483,26 @@ public class CompanionService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        // Post FIRST, on every start, before looking at what the start was for.
+        //
+        // Each `startForegroundService()` carries its own obligation to call
+        // `startForeground()`, and a knock on an already-running service skips
+        // `onCreate` — so onCreate's call cannot satisfy a later start's
+        // promise. This is what killed the app five times on 2026-08-17
+        // (20:24, 20:38, 20:54, 21:09, 21:25) and ANR'd three more starts after
+        // it: call_guard revives with `am start .WakeActivity`, WakeActivity
+        // calls startForeground**Service**, and when the app was already up
+        // nothing here posted. Ten seconds later:
+        // ForegroundServiceDidNotStartInTimeException, caller
+        // WakeActivity.onCreate:37 in every crash record.
+        //
+        // So the revive was killing the thing it exists to rescue, and each
+        // death is a hole in barge-in, because the mic signal is this app.
+        // Re-posting the same notification is cheap and idempotent — the shade
+        // does not flicker for an identical one.
+        startForeground(NOTIF_ID, buildNotification(),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
+
         String action = (intent == null) ? null : intent.getAction();
         if (ACTION_SPEAK_NOW.equals(action)) {
             // For the rest of this voice session, Sam is allowed to talk. Not
