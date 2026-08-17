@@ -23,6 +23,7 @@ public final class ShareTest {
 
     public static void main(String[] args) throws Exception {
         testBodyIsJson();
+        testBodyCanNameTheChannel();
         testParsePrefersTheLine();
         testParseFallsBackToTheError();
         testParseSurvivesGarbage();
@@ -51,6 +52,20 @@ public final class ShareTest {
         // a body the listener refuses to parse.
         check("quotes in shared text are escaped",
                 ShareRequest.body("say \"hi\"").contains("\\\"hi\\\""));
+    }
+
+    private static void testBodyCanNameTheChannel() {
+        // The sharer has already answered the question yt-dlp would be asked:
+        // they are looking at the book channel, or they picked it in the sheet.
+        String b = ShareRequest.body("https://youtu.be/x", "book");
+        check("the chosen channel rides along", b.contains("\"channel\"")
+                && b.contains("book"));
+        // And "decide for me" leaves the judgement where it belongs — an empty
+        // channel key would be a channel called "", which is not one.
+        check("no choice sends no channel",
+                !ShareRequest.body("https://youtu.be/x", "").contains("channel"));
+        check("and neither does the one-argument form",
+                !ShareRequest.body("https://youtu.be/x").contains("channel"));
     }
 
     private static void testParsePrefersTheLine() {

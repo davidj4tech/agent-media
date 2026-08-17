@@ -73,11 +73,14 @@
              draws nothing and finishes inside onCreate; noHistory and
              excludeFromRecents so a share never leaves a ghost window behind
              the app the link came from. -->
+        <!-- Translucent rather than NoDisplay: it asks which channel now, and
+             a NoDisplay activity may not draw at all. What shows is the
+             dialog; the window behind it stays the app being shared from. -->
         <activity
             android:name=".ShareActivity"
             android:exported="true"
             android:label="@string/share_label"
-            android:theme="@android:style/Theme.NoDisplay"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
             android:noHistory="true"
             android:excludeFromRecents="true">
             <intent-filter>

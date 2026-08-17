@@ -33,8 +33,22 @@ final class ShareRequest {
 
     /** The request body: JSON, so a channel override can be added later. */
     static String body(String text) {
+        return body(text, "");
+    }
+
+    /**
+     * The same, naming the channel it must land on.
+     *
+     * Later arrived: the transport's "open…" is a share typed from inside the
+     * app rather than handed in by another one, and the difference is that this
+     * sharer has already chosen — they are looking at the music channel, so the
+     * link goes to music whatever yt-dlp would have made of it. An empty
+     * channel leaves the judgement where it belongs, on the far side.
+     */
+    static String body(String text, String channel) {
         java.util.Map<String, Object> m = new java.util.LinkedHashMap<String, Object>();
         m.put("text", text == null ? "" : text);
+        if (channel != null && !channel.isEmpty()) m.put("channel", channel);
         return Json.write(m);
     }
 
@@ -65,7 +79,12 @@ final class ShareRequest {
 
     /** POST the shared text; never throws — the caller has a toast to show. */
     static Result send(Server server, String text) {
-        Loopback.Reply r = Loopback.post(server, "/share", body(text));
+        return send(server, text, "");
+    }
+
+    /** The same, onto a channel the sharer has already picked. */
+    static Result send(Server server, String text, String channel) {
+        Loopback.Reply r = Loopback.post(server, "/share", body(text, channel));
         if (!r.reached()) return new Result(false, r.failure);
         if (r.refused()) return new Result(false, Loopback.REFUSED);
         return parse(r.status, r.body);

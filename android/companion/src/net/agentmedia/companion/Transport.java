@@ -49,6 +49,7 @@ final class Transport {
     private final Handler main = new Handler(Looper.getMainLooper());
     private TextView playButton;
     private TextView chaptersButton;
+    private TextView openButton;
     /**
      * Every button, against the verb it sends.
      *
@@ -106,6 +107,11 @@ final class Transport {
             @Override public void onClick(View v) { showChapters(); }
         });
         extras.addView(chaptersButton, weight());
+        openButton = button("open…");
+        openButton.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { askOpen(); }
+        });
+        extras.addView(openButton, weight());
         extras.addView(verb("mute", "mute", ""), weight());
         // Speech only: say the last clip again. The transport row above steps
         // within the clip being read, and neither of its arrows can go back
@@ -133,6 +139,13 @@ final class Transport {
             if (b == chaptersButton) continue;
             boolean has = c == null || c.takes(e.getValue());
             b.setVisibility(has ? View.VISIBLE : View.GONE);
+        }
+        if (openButton != null) {
+            // Music and book only, exactly as the popup's `o` is: speech has
+            // no playlist to put a link into, and there it points at Tab.
+            String name = host.channel();
+            openButton.setVisibility("music".equals(name) || "book".equals(name)
+                                     ? View.VISIBLE : View.GONE);
         }
         if (chaptersButton != null) {
             // Named for what the list is on this channel: speech's rows are
@@ -257,6 +270,74 @@ final class Transport {
 
     private boolean speech() {
         return "speech".equals(host.channel());
+    }
+
+    /**
+     * Put a link on this channel — the popup's `o`, on a phone.
+     *
+     * Clipboard-first, because that is how a link arrives here: you copy it in
+     * a browser and come back, and typing a YouTube URL on a soft keyboard is
+     * not a thing anybody does twice. A buffered link is filled in and can be
+     * played with one more tap; typing over it overrides it.
+     *
+     * It goes to `/share`, not to a play verb, and that is the point: sharing
+     * a link and opening one are the same act from two directions, and the
+     * far side already knows how to fetch, classify and route. The only thing
+     * this end adds is the channel, because a sharer looking at the book
+     * channel has already answered the question yt-dlp would be asked.
+     */
+    private void askOpen() {
+        final String channel = host.channel();
+        final EditText input = new EditText(ctx);
+        input.setInputType(InputType.TYPE_CLASS_TEXT);
+        input.setHint("paste or type a link");
+        input.setTextColor(Style.INK);
+        input.setHintTextColor(Style.FAINT);
+        String buffered = clipboardLink();
+        if (!buffered.isEmpty()) input.setText(buffered);
+        show(dialog()
+                .setTitle("open on " + channel)
+                .setView(input)
+                .setPositiveButton("play", (d, w) -> {
+                    String t = input.getText().toString().trim();
+                    if (!t.isEmpty()) open(t, channel);
+                })
+                .setNegativeButton("cancel", null));
+    }
+
+    /** The clipboard, when it holds something that looks like a link. */
+    private String clipboardLink() {
+        try {
+            android.content.ClipboardManager cm =
+                    (android.content.ClipboardManager)
+                            ctx.getSystemService(Activity.CLIPBOARD_SERVICE);
+            if (cm == null || !cm.hasPrimaryClip()) return "";
+            android.content.ClipData clip = cm.getPrimaryClip();
+            if (clip == null || clip.getItemCount() == 0) return "";
+            CharSequence text = clip.getItemAt(0).coerceToText(ctx);
+            String s = text == null ? "" : text.toString().trim();
+            return s.startsWith("http://") || s.startsWith("https://") ? s : "";
+        } catch (RuntimeException e) {
+            // A clipboard this app is not allowed to read is an empty field,
+            // not a crash on the way to a text box.
+            return "";
+        }
+    }
+
+    private void open(final String link, final String channel) {
+        toast("opening on " + channel + "…");
+        new Thread(new Runnable() {
+            @Override public void run() {
+                final ShareRequest.Result r = ShareRequest.send(
+                        Settings.server(ctx), link, channel);
+                main.post(new Runnable() {
+                    @Override public void run() {
+                        toast(r.message);
+                        host.refreshed();
+                    }
+                });
+            }
+        }, "open-link").start();
     }
 
     // ---- the furniture -----------------------------------------------------
