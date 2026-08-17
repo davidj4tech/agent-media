@@ -9,6 +9,7 @@ import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.Window;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -177,15 +178,49 @@ final class Transport {
         final EditText input = new EditText(ctx);
         input.setInputType(InputType.TYPE_CLASS_TEXT);
         input.setHint("1:23:45, 12:30, or +90 / -5:00");
-        new AlertDialog.Builder(ctx)
+        // The field is built from the activity, not from the dialog's theme,
+        // so left alone it arrives light inside a dark sheet.
+        input.setTextColor(Style.INK);
+        input.setHintTextColor(Style.FAINT);
+        show(dialog()
                 .setTitle("seek — " + host.channel())
                 .setView(input)
                 .setPositiveButton("go", (d, w) -> {
                     String t = input.getText().toString().trim();
                     if (!t.isEmpty()) send("seek", t);
                 })
-                .setNegativeButton("cancel", null)
-                .show();
+                .setNegativeButton("cancel", null));
+    }
+
+    /**
+     * A builder that is dark, because the app is and the platform is not.
+     *
+     * Every view in this app is hand-built and hand-coloured from {@link Style},
+     * and a dialog is the one surface that is not: {@code AlertDialog} draws
+     * itself from the activity's theme, no theme is declared here, and the
+     * platform default landed light. So the clip picker opened as a white sheet
+     * over a dark app — the only light thing in it.
+     *
+     * The theme is named rather than the manifest changed. An application-wide
+     * theme would repaint every window this app has, most of which cover
+     * themselves anyway, to fix the two that ask the platform to draw.
+     */
+    private AlertDialog.Builder dialog() {
+        return new AlertDialog.Builder(
+                ctx, android.R.style.Theme_Material_Dialog_Alert);
+    }
+
+    /** Show it, on the app's own ground rather than Material's grey. */
+    private void show(AlertDialog.Builder b) {
+        AlertDialog d = b.create();
+        Window w = d.getWindow();
+        if (w != null) {
+            GradientDrawable bg = new GradientDrawable();
+            bg.setColor(Style.SURFACE);
+            bg.setCornerRadius(ChannelCard.dp(ctx, 12));
+            w.setBackgroundDrawable(bg);
+        }
+        d.show();
     }
 
     private void showChapters() {
@@ -211,13 +246,12 @@ final class Transport {
         }
         final String[] labels = new String[rows.size()];
         for (int i = 0; i < rows.size(); i++) labels[i] = rows.get(i).label();
-        new AlertDialog.Builder(ctx)
+        show(dialog()
                 .setTitle(clips ? "recent clips" : "chapters")
                 // By ref, not by row: on speech the rows are history ids, and
                 // a clip landing while this is open would renumber them.
                 .setItems(labels, (d, which) ->
-                        send("chapter", rows.get(which).ref()))
-                .show();
+                        send("chapter", rows.get(which).ref())));
     }
 
     private boolean speech() {
