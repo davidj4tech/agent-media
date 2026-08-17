@@ -72,6 +72,8 @@ public final class RecentRowsTest {
         check("older gets a date", rows.get(5).isHeading()
                 && rows.get(5).heading.startsWith("Tue 11 Aug"));
         check("every item is still there", countItems(rows) == 4);
+        // A day is not something you open and close, so it carries no key.
+        check("day breaks do not fold", rows.get(0).key == null);
     }
 
     private static void testARowWithNoTimeKeepsItsPlace() {
@@ -199,6 +201,13 @@ public final class RecentRowsTest {
         // The rows keep the clock they would have had under day headings: a
         // conversation is a time bucket too, and you still scan down the times.
         check("rows still carry a clock", rows.get(1).clock.equals("21:00"));
+        // A heading and its rows share a key, which is what lets the screen
+        // fold a group away by matching rather than by counting rows.
+        check("the group is keyed", rows.get(0).key != null
+                && rows.get(0).key.equals(rows.get(1).key)
+                && rows.get(0).key.equals(rows.get(2).key));
+        check("and the other group is keyed differently",
+                !rows.get(0).key.equals(rows.get(3).key));
     }
 
     private static void testAConversationWithNoNameIsStillItsOwn() {

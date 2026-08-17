@@ -38,11 +38,26 @@ final class RecentRows {
         final RecentList.Item item;
         /** Clock time for an item, "" when the store had no time for it. */
         final String clock;
+        /**
+         * Which group this belongs to, or null when the grouping has none.
+         *
+         * Set on the heading and on every row under it, so a screen that folds
+         * a group away can do it by matching keys rather than by counting how
+         * many rows came after which heading. Day breaks carry none: a day is
+         * not something you open and close.
+         */
+        final String key;
 
         private Entry(String heading, RecentList.Item item, String clock) {
+            this(heading, item, clock, null);
+        }
+
+        private Entry(String heading, RecentList.Item item, String clock,
+                      String key) {
             this.heading = heading;
             this.item = item;
             this.clock = clock;
+            this.key = key;
         }
 
         boolean isHeading() { return heading != null; }
@@ -118,10 +133,11 @@ final class RecentRows {
         }
         for (java.util.Map.Entry<String, List<RecentList.Item>> e : groups.entrySet()) {
             List<RecentList.Item> grp = e.getValue();
-            out.add(new Entry(conversation(e.getKey(), grp), null, null));
+            String key = e.getKey();
+            out.add(new Entry(conversation(key, grp), null, null, key));
             for (RecentList.Item item : grp) {
                 long at = item.startedAtMs();
-                out.add(new Entry(null, item, at > 0 ? clock(at) : ""));
+                out.add(new Entry(null, item, at > 0 ? clock(at) : "", key));
             }
         }
         return out;

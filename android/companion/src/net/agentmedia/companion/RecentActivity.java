@@ -54,6 +54,19 @@ public class RecentActivity extends Activity {
     private TextView status;
     private Tabs tabs;
     private String channel = "all";
+    /**
+     * Which conversations are unfolded, and which you folded yourself.
+     *
+     * Both are kept across reloads. The live conversation is unfolded on every
+     * fetch — it is the one you did not come here looking for — but only until
+     * you close it: a list that re-opens what you just shut, every time
+     * something plays, is a list arguing with you.
+     */
+    private final java.util.Set<String> open = new java.util.HashSet<String>();
+    private final java.util.Set<String> folded = new java.util.HashSet<String>();
+    /** The last list drawn, so a fold can redraw without asking again. */
+    private List<RecentList.Item> shown = java.util.Collections.emptyList();
+    private Loopback.Reply shownReply;
     private final Handler main = new Handler(Looper.getMainLooper());
 
     @Override
@@ -127,14 +140,17 @@ public class RecentActivity extends Activity {
                         // A tab switched while this was in flight: the answer
                         // is about the old one, and drawing it would leave the
                         // strip pointing at a list nobody asked for.
-                        if (asked.equals(channel)) render(items, reply);
+                        if (asked.equals(channel)) render(items, reply, true);
                     }
                 });
             }
         }, "recent-fetch").start();
     }
 
-    private void render(List<RecentList.Item> items, Loopback.Reply reply) {
+    private void render(List<RecentList.Item> items, Loopback.Reply reply,
+                        boolean fresh) {
+        shown = items;
+        shownReply = reply;
         boolean speech = "speech".equals(channel);
         rows.removeAllViews();
         if (items.isEmpty()) {
@@ -149,10 +165,28 @@ public class RecentActivity extends Activity {
         // Speech groups by conversation, everything else by day: the day is
         // the bucket you remember playing something in, and the conversation
         // is the one you remember it being said in.
-        for (RecentRows.Entry e : speech
+        List<RecentRows.Entry> entries = speech
                 ? RecentRows.byConversation(items)
-                : RecentRows.group(items, System.currentTimeMillis())) {
-            rows.addView(e.isHeading() ? headingView(e.heading) : rowView(e));
+                : RecentRows.group(items, System.currentTimeMillis());
+        // Folded, except the one you are in. The rows arrive newest first, so
+        // the first group holds the newest clip — that is the conversation
+        // being spoken, or the one that just was, and it is the only one you
+        // are likely to want without looking for it. The rest are a name and a
+        // count until you ask for them, which is what makes a long history
+        // scannable rather than a wall with headings in it.
+        if (speech && fresh) {
+            for (RecentRows.Entry e : entries) {
+                if (!e.isHeading()) continue;
+                if (!folded.contains(e.key)) open.add(e.key);
+                break;
+            }
+        }
+        for (RecentRows.Entry e : entries) {
+            if (e.isHeading()) {
+                rows.addView(headingView(e));
+            } else if (e.key == null || open.contains(e.key)) {
+                rows.addView(rowView(e));
+            }
         }
         // Something to stop the last row sitting against the bottom edge.
         View tail = new View(this);
@@ -160,15 +194,36 @@ public class RecentActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(Style.gap(6))));
     }
 
-    private View headingView(String text) {
+    private View headingView(final RecentRows.Entry entry) {
         TextView t = new TextView(this);
-        t.setText(text);
+        boolean folds = entry.key != null;
+        boolean shownOpen = folds && open.contains(entry.key);
+        // The marker leads, so the column of triangles is what the eye runs
+        // down — the names are all different lengths and none of them line up.
+        t.setText(folds ? (shownOpen ? "▾  " : "▸  ") + entry.heading
+                        : entry.heading);
         t.setAllCaps(true);
         t.setLetterSpacing(0.1f);
         t.setTextSize(Style.LABEL);
-        t.setTextColor(Style.FAINT);
+        t.setTextColor(shownOpen ? Style.MUTED : Style.FAINT);
         t.setTypeface(Typeface.MONOSPACE);
         t.setPadding(0, dp(Style.gap(5)), 0, dp(Style.gap(1)));
+        if (folds) {
+            // A closed group is a control, so it has to be worth hitting.
+            t.setMinimumHeight(dp(Style.TOUCH));
+            t.setClickable(true);
+            t.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    if (open.remove(entry.key)) {
+                        folded.add(entry.key);      // shut on purpose: stay shut
+                    } else {
+                        open.add(entry.key);
+                        folded.remove(entry.key);
+                    }
+                    render(shown, shownReply, false);
+                }
+            });
+        }
         return t;
     }
 
