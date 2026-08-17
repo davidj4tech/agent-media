@@ -194,6 +194,30 @@ _DEFAULT_DUCK_VOLUME = 20.0
 
 _DEFAULT_POLL_S = 1.5
 
+# Cadence for the notification poll while NOTHING is playing and nothing holds.
+#
+# The notification poll is the expensive one: on Android each
+# `termux-notification-list` spawns `app_process`, a whole ART VM, to reach
+# TermuxApiReceiver. Measured on p8a 2026-08-14 at 111% CPU for the instant it
+# runs; at the 1.5s default that is ~40 VM starts a minute, forever, and it was
+# the phone's idle load and a real battery and heat cost.
+#
+# Most of that work is wasted. The guard exists to get audio out of the way, so
+# when no broker is playing there is nothing to get out of the way of, and the
+# ring can be noticed at leisure.
+#
+# What stops this going slower is NOT local audio — it is `call_engage_cmd`,
+# which tells the *other* host (the one that drives speech) to hold. That host
+# can start talking during a call while the phone itself is silent, and it only
+# finds out via this poll. So the idle cadence is the worst-case lag before a
+# call suppresses a remote reply, and that is what to weigh when changing it.
+# 6s costs at most ~4s over the old default and cuts idle spawns by 4x.
+#
+# The real fix is the same one that retires this daemon's other workarounds:
+# the companion app can read call state from Android directly and push it, at
+# which point nothing here needs polling at all.
+_DEFAULT_IDLE_POLL_S = 6.0
+
 # External-hold flag file. Any external trigger (e.g. a Tasker/MacroDroid/Automate
 # macro firing on voice-typing start/stop) touches this to pause + hold, and
 # removes it to auto-resume. See `--hold` / `--release` and `_run_loop`.
@@ -370,6 +394,11 @@ class Config:
         self.duck_volume = _env_float(
             "MEDIA_CALL_GUARD_DUCK_VOLUME", _DEFAULT_DUCK_VOLUME)
         self.poll_s = _env_float("MEDIA_CALL_GUARD_POLL_S", _DEFAULT_POLL_S)
+        # Never slower than poll_s: an "idle" cadence faster than the busy one
+        # is a misconfiguration, and honouring it would poll MORE while idle.
+        self.idle_poll_s = max(
+            self.poll_s,
+            _env_float("MEDIA_CALL_GUARD_IDLE_POLL_S", _DEFAULT_IDLE_POLL_S))
         self.flag_poll_s = _env_float(
             "MEDIA_CALL_GUARD_FLAG_POLL_S", _DEFAULT_FLAG_POLL_S)
         self.hold_engage_s = _env_float(
@@ -492,6 +521,37 @@ def _matches(notif: dict, cfg: Config) -> bool:
 def call_active(notifs: list[dict], cfg: Config) -> bool:
     """True if any notification looks like a live (incoming/ongoing) call."""
     return any(_matches(n, cfg) for n in notifs)
+
+
+def audio_live(cfg: Config) -> bool:
+    """True when any pause-socket broker has something audible loaded.
+
+    Used only to choose the notification-poll cadence — see
+    ``_DEFAULT_IDLE_POLL_S``. Cheap by construction: one pipelined IPC
+    round-trip per socket over a local unix socket, microseconds, against a
+    poll that spawns an ART VM.
+
+    A *paused* broker counts as not live. Nothing is audible, so nothing needs
+    getting out of the way, and speech stays paused after a call by policy —
+    treating that as live would pin the fast cadence on indefinitely, which is
+    the exact cost this is here to avoid.
+
+    **Fails toward live.** An unreadable or erroring socket returns True, so a
+    broken probe degrades to the old always-fast behaviour rather than to
+    missing calls. Only a socket that does not exist at all is skipped: there
+    is no broker there to be talking over.
+    """
+    for sock in cfg.pause_list:
+        if not os.path.exists(sock):
+            continue
+        try:
+            p = ipc.get_properties(sock, ["idle-active", "pause"])
+        except (ipc.MpvIpcError, OSError) as e:
+            log.debug("liveness probe failed on %s (%s) — assuming live", sock, e)
+            return True
+        if not p.get("idle-active") and not p.get("pause"):
+            return True
+    return False
 
 
 def pause_sockets(cfg: Config, already: set | None = None,
@@ -1364,10 +1424,19 @@ def _run_loop(cfg: Config, dry_run: bool = False) -> None:
     tick = cfg.flag_poll_s or _DEFAULT_FLAG_POLL_S
     # The flag is a cheap local stat (checked every fast tick); notifications
     # (for calls) are an expensive subprocess, so poll them only every ~poll_s.
+    #
+    # Two cadences, chosen per poll: the busy one whenever a broker is audible
+    # or anything already holds, the idle one otherwise. Counted in ticks
+    # rather than against a wall clock deliberately — the loop's only timebase
+    # is `tick`, and the tests drive it with `time.sleep` stubbed out, so a
+    # deadline compared against a real clock would never come due under test.
     notif_every = max(1, round(cfg.poll_s / tick))
+    idle_every = max(notif_every, round(cfg.idle_poll_s / tick))
+    next_notif_i = 0         # cycle index of the next notification poll
     i = 0
     while not _stop:
-        if i % notif_every == 0:
+        notif_due = i >= next_notif_i
+        if notif_due:
             notifs = list_notifications(cfg)
             # On a transient query failure keep the previous reading, not flap.
             if notifs is not None:
@@ -1422,7 +1491,7 @@ def _run_loop(cfg: Config, dry_run: bool = False) -> None:
                     hold.start()  # instant re-pause on any un-pause
                 pause_sockets(cfg, held, dry_run=dry_run, quiet=False)
                 duck_sockets(cfg, ducked, dry_run=dry_run, quiet=False)
-            elif i % notif_every == 0:
+            elif notif_due:
                 # Periodic re-assert (backstop) at the slow cadence — not every
                 # fast tick. Catches audio that started playing mid-hold.
                 pause_sockets(cfg, held, dry_run=dry_run, quiet=True)
@@ -1441,6 +1510,13 @@ def _run_loop(cfg: Config, dry_run: bool = False) -> None:
                 resume_sockets(cfg, held, dry_run=dry_run)
             held.clear()
             call_in_episode = False
+
+        if notif_due:
+            # Schedule the next poll. `want` is this cycle's answer, so a hold
+            # or call keeps the busy cadence for as long as it lasts; the
+            # liveness probe only runs on poll cycles, never every tick.
+            busy = want or audio_live(cfg)
+            next_notif_i = i + (notif_every if busy else idle_every)
 
         prev_want = want
         i += 1

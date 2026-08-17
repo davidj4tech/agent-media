@@ -145,6 +145,10 @@ def _percycle_env(monkeypatch):
     # engage/release, so the orchestration tests can reason per-cycle.
     monkeypatch.setenv("MEDIA_CALL_GUARD_POLL_S", "1")
     monkeypatch.setenv("MEDIA_CALL_GUARD_FLAG_POLL_S", "1")
+    # Flatten the adaptive cadence too, for the same reason as the rest: these
+    # tests reason per-cycle, and an idle cadence would skip notification polls
+    # on quiet cycles and desynchronise the per-cycle state iterators.
+    monkeypatch.setenv("MEDIA_CALL_GUARD_IDLE_POLL_S", "1")
     monkeypatch.setenv("MEDIA_CALL_GUARD_HOLD_ENGAGE_S", "0")
     monkeypatch.setenv("MEDIA_CALL_GUARD_HOLD_RELEASE_S", "0")
 
@@ -1061,3 +1065,113 @@ def test_unlockable_state_dir_starts_unchecked(monkeypatch, tmp_path):
     ok, why = call_guard.claim_sockets(cfg)
     assert ok is True
     assert "unchecked" in why
+
+
+# --- adaptive notification cadence ----------------------------------------
+#
+# The notification poll spawns an ART VM on Android, so it is the guard's whole
+# idle cost. These pin the rule: poll fast when there is audio to protect (or a
+# hold already running), slowly when there is not, and fast whenever the
+# liveness probe cannot answer.
+
+
+def _cadence_env(monkeypatch, poll="1", idle="4"):
+    monkeypatch.setenv("MEDIA_CALL_GUARD_POLL_S", poll)
+    monkeypatch.setenv("MEDIA_CALL_GUARD_FLAG_POLL_S", "1")
+    monkeypatch.setenv("MEDIA_CALL_GUARD_IDLE_POLL_S", idle)
+    monkeypatch.setenv("MEDIA_CALL_GUARD_HOLD_ENGAGE_S", "0")
+    monkeypatch.setenv("MEDIA_CALL_GUARD_HOLD_RELEASE_S", "0")
+
+
+def _count_polls(monkeypatch, cfg, cycles, live):
+    """Run _run_loop for `cycles` ticks; return how many notification polls ran."""
+    polls = []
+    n = {"i": 0}
+
+    def _list(_cfg):
+        polls.append(n["i"])
+        return []
+
+    def _sleep(_s):
+        n["i"] += 1
+        if n["i"] >= cycles:
+            call_guard._stop = True
+    monkeypatch.setattr(call_guard, "list_notifications", _list)
+    monkeypatch.setattr(call_guard, "audio_live", lambda _cfg: live)
+    monkeypatch.setattr(call_guard.time, "sleep", _sleep)
+    call_guard._stop = False
+    try:
+        call_guard._run_loop(cfg)
+    finally:
+        call_guard._stop = False
+    return polls
+
+
+def test_idle_phone_polls_notifications_at_the_slow_cadence(monkeypatch):
+    # Nothing playing, nothing holding: poll every idle_poll_s, not every
+    # poll_s. This is the whole point — ~4x fewer ART spawns while idle.
+    _cadence_env(monkeypatch, poll="1", idle="4")
+    cfg = call_guard.Config()
+    polls = _count_polls(monkeypatch, cfg, cycles=8, live=False)
+    assert polls == [0, 4]
+
+
+def test_live_audio_polls_notifications_at_the_fast_cadence(monkeypatch):
+    # Something is audible, so a call must be noticed promptly to pause it.
+    _cadence_env(monkeypatch, poll="1", idle="4")
+    cfg = call_guard.Config()
+    polls = _count_polls(monkeypatch, cfg, cycles=4, live=True)
+    assert polls == [0, 1, 2, 3]
+
+
+def test_unreadable_socket_counts_as_live(monkeypatch, tmp_path):
+    # Fail toward the expensive-but-correct cadence: a broken probe must not
+    # quietly cost us call detection.
+    sock = tmp_path / "sink-speech.sock"
+    sock.write_bytes(b"")
+    monkeypatch.setenv("MEDIA_CALL_GUARD_SOCKETS", str(sock))
+    cfg = call_guard.Config()
+
+    def _boom(*_a, **_k):
+        raise call_guard.ipc.MpvIpcError("no")
+    monkeypatch.setattr(call_guard.ipc, "get_properties", _boom)
+    assert call_guard.audio_live(cfg) is True
+
+
+def test_absent_socket_is_not_live(monkeypatch, tmp_path):
+    # No broker there at all: nothing to talk over, so it must not pin the
+    # fast cadence on — otherwise a host with no sockets never goes idle.
+    monkeypatch.setenv("MEDIA_CALL_GUARD_SOCKETS",
+                       str(tmp_path / "missing.sock"))
+    cfg = call_guard.Config()
+    assert call_guard.audio_live(cfg) is False
+
+
+def test_paused_broker_is_not_live(monkeypatch, tmp_path):
+    # Speech is left paused after a call by policy. Counting that as live
+    # would hold the fast cadence on indefinitely after every call.
+    sock = tmp_path / "sink-speech.sock"
+    sock.write_bytes(b"")
+    monkeypatch.setenv("MEDIA_CALL_GUARD_SOCKETS", str(sock))
+    cfg = call_guard.Config()
+    monkeypatch.setattr(call_guard.ipc, "get_properties",
+                        lambda *_a, **_k: {"idle-active": False, "pause": True})
+    assert call_guard.audio_live(cfg) is False
+
+
+def test_playing_broker_is_live(monkeypatch, tmp_path):
+    sock = tmp_path / "sink-speech.sock"
+    sock.write_bytes(b"")
+    monkeypatch.setenv("MEDIA_CALL_GUARD_SOCKETS", str(sock))
+    cfg = call_guard.Config()
+    monkeypatch.setattr(call_guard.ipc, "get_properties",
+                        lambda *_a, **_k: {"idle-active": False, "pause": False})
+    assert call_guard.audio_live(cfg) is True
+
+
+def test_idle_cadence_never_faster_than_the_busy_one(monkeypatch):
+    # A misconfigured idle < poll would poll MORE while idle, the exact
+    # opposite of the intent. Clamped at construction.
+    monkeypatch.setenv("MEDIA_CALL_GUARD_POLL_S", "3")
+    monkeypatch.setenv("MEDIA_CALL_GUARD_IDLE_POLL_S", "1")
+    assert call_guard.Config().idle_poll_s == 3.0
