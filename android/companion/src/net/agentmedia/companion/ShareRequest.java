@@ -18,9 +18,6 @@ import java.util.Map;
  */
 final class ShareRequest {
 
-    /** Where the Termux-side listener binds. See {@link Loopback}. */
-    static final int DEFAULT_PORT = Loopback.PORT;
-
     /** What to show the sharer: one line, and whether it went well. */
     static final class Result {
         final boolean ok;
@@ -67,9 +64,10 @@ final class ShareRequest {
     }
 
     /** POST the shared text; never throws — the caller has a toast to show. */
-    static Result send(int port, String text) {
-        Loopback.Reply r = Loopback.post(port, "/share", body(text));
+    static Result send(Server server, String text) {
+        Loopback.Reply r = Loopback.post(server, "/share", body(text));
         if (!r.reached()) return new Result(false, r.failure);
+        if (r.refused()) return new Result(false, Loopback.REFUSED);
         return parse(r.status, r.body);
     }
 

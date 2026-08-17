@@ -9,12 +9,17 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 
 /**
- * The one door through the sandbox wall.
+ * The one door to the server.
  *
  * Everything this app cannot do itself — classify a link, read the play
- * history, start playback — is done by `media` inside com.termux, and reached
- * over loopback HTTP on {@link #PORT}. This is that client: two verbs, no
- * dependencies, and it never throws at the caller.
+ * history, start playback — is done by `media`, and reached over HTTP. This is
+ * that client: two verbs, no dependencies, and it never throws at the caller.
+ *
+ * It was called Loopback because for a long time there was only one server it
+ * could talk to: `media` inside com.termux on this same phone, behind
+ * {@code 127.0.0.1}. The name is kept and the assumption is not — where the
+ * server lives is now {@link Server}'s answer, and this class asks it. On the
+ * default configuration nothing has moved.
  *
  * Separate from its callers because there are two of them now (the share sheet
  * and the recent list) and a second hand-rolled HttpURLConnection would be a
@@ -26,10 +31,11 @@ import java.nio.charset.StandardCharsets;
  */
 final class Loopback {
 
-    static final String HOST = "127.0.0.1";
+    /** Kept for the log lines that name the old default. See {@link Server}. */
+    static final String HOST = Server.LOOPBACK;
 
-    /** Where media-share binds. Never anything but loopback. */
-    static final int PORT = 8771;
+    /** Where media-share binds when nobody has said otherwise. */
+    static final int PORT = Server.CONTROL_PORT;
 
     /**
      * Long enough for a yt-dlp metadata probe on a mobile connection, short
@@ -60,26 +66,47 @@ final class Loopback {
         boolean ok() { return status == 200; }
 
         boolean reached() { return failure == null; }
+
+        /**
+         * The server answered, and said no.
+         *
+         * Worth telling apart from every other failure: it is the one that is
+         * fixed on this phone, in one field, and it is the one a person will
+         * otherwise read as "the server is down".
+         */
+        boolean refused() { return status == 401 || status == 403; }
     }
+
+    /** What to show for a {@link Reply#refused()}. */
+    static final String REFUSED =
+            "agent-media: the server refused the token — check Settings";
 
     private Loopback() {}
 
-    static Reply get(int port, String path) {
-        return request(port, path, "GET", null);
+    static Reply get(Server server, String path) {
+        return request(server, path, "GET", null);
     }
 
-    static Reply post(int port, String path, String body) {
-        return request(port, path, "POST", body == null ? "" : body);
+    static Reply post(Server server, String path, String body) {
+        return request(server, path, "POST", body == null ? "" : body);
     }
 
-    private static Reply request(int port, String path, String method, String body) {
+    private static Reply request(Server server, String path, String method,
+                                 String body) {
+        Server s = server == null ? Server.defaults() : server;
         HttpURLConnection c = null;
         try {
             c = (HttpURLConnection) new URL(
-                    "http://" + HOST + ":" + port + path).openConnection();
+                    "http://" + s.host + ":" + s.control + path).openConnection();
             c.setRequestMethod(method);
             c.setConnectTimeout(TIMEOUT_MS);
             c.setReadTimeout(TIMEOUT_MS);
+            // Sent whenever there is one, on loopback too: a listener that
+            // requires a token should be reachable from a phone configured
+            // with one, and a listener that does not want one ignores it.
+            if (!s.token.isEmpty()) {
+                c.setRequestProperty(Server.TOKEN_HEADER, s.token);
+            }
             if (body != null) {
                 c.setDoOutput(true);
                 c.setRequestProperty("Content-Type", "application/json");
@@ -94,9 +121,13 @@ final class Loopback {
                                                         : c.getInputStream()));
         } catch (IOException e) {
             // Nearly always one cause, so say the useful thing rather than the
-            // accurate-but-opaque one: the Termux service is not running.
-            return new Reply("agent-media: no listener on " + HOST + ":" + port
-                    + " (is media-share running?)");
+            // accurate-but-opaque one: the service is not running. Which
+            // service, and where, is the part that stopped being obvious the
+            // day the address became a setting.
+            return new Reply("agent-media: no listener on " + s.authority()
+                    + (s.local() ? " (is media-share running?)"
+                                 : " (is media-share running there, and bound"
+                                   + " off loopback?)"));
         } finally {
             if (c != null) c.disconnect();
         }

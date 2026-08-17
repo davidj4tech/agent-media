@@ -104,7 +104,7 @@ public final class RecentTest {
                 "something Sam said", "speech", "", "", "1h");
         check("without an id it is not", !idless.playable());
         check("and says so rather than failing silently",
-                RecentList.play(1, idless).contains("cannot be replayed"));
+                RecentList.play(Server.loopback(1), idless).contains("cannot be replayed"));
 
         RecentList.Item empty = new RecentList.Item("x", "music", "", "", "1h");
         check("a row with no uri is not playable", !empty.playable());
@@ -115,7 +115,7 @@ public final class RecentTest {
         try {
             RecentList.Item clip = new RecentList.Item(
                     "a reply", "speech", "", "", "1h", 0.0, 5506L);
-            String line = RecentList.play(fake.port(), clip);
+            String line = RecentList.play(Server.loopback(fake.port()), clip);
             String req = fake.request();
             // The picker's door, not /play: one list, three verbs.
             check("a clip goes through /control", req.startsWith("POST /control "));
@@ -147,7 +147,7 @@ public final class RecentTest {
     private static void testFetchOverTheWire() throws Exception {
         Fake fake = new Fake(200, ROWS);
         try {
-            List<RecentList.Item> items = RecentList.fetch(fake.port(), 25);
+            List<RecentList.Item> items = RecentList.fetch(Server.loopback(fake.port()), 25);
             check("fetch returns the rows", items.size() == 2);
             check("fetch asks for /recent with the limit",
                     fake.request().startsWith("GET /recent?limit=25 "));
@@ -160,7 +160,7 @@ public final class RecentTest {
         Fake fake = new Fake(200,
                 "{\"ok\":true,\"line\":\"Episode 12 → book (podcast): replayed from history\"}");
         try {
-            String line = RecentList.play(fake.port(), RecentList.parse(ROWS).get(0));
+            String line = RecentList.play(Server.loopback(fake.port()), RecentList.parse(ROWS).get(0));
             check("play returns the listener's line", line.contains("replayed from history"));
             String req = fake.request();
             check("play posts to /play", req.startsWith("POST /play "));
@@ -175,19 +175,19 @@ public final class RecentTest {
         int dead = probe.getLocalPort();
         probe.close();
         check("a dead port gives an empty list",
-                RecentList.fetch(dead, 25).isEmpty());
-        Loopback.Reply r = Loopback.get(dead, "/recent");
+                RecentList.fetch(Server.loopback(dead), 25).isEmpty());
+        Loopback.Reply r = Loopback.get(Server.loopback(dead), "/recent");
         check("and the reason names the service",
                 RecentList.emptyReason(r).contains("media-share"));
         check("playing against a dead port says the same",
-                RecentList.play(dead, RecentList.parse(ROWS).get(0))
+                RecentList.play(Server.loopback(dead), RecentList.parse(ROWS).get(0))
                         .contains("media-share"));
     }
 
     private static void testARejectedPlaySurfacesTheReason() throws Exception {
         Fake fake = new Fake(422, "{\"ok\":false,\"error\":\"no such channel: speech\"}");
         try {
-            String line = RecentList.play(fake.port(), RecentList.parse(ROWS).get(0));
+            String line = RecentList.play(Server.loopback(fake.port()), RecentList.parse(ROWS).get(0));
             check("a rejection is shown, not swallowed",
                     line.contains("no such channel"));
         } finally {

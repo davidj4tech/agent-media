@@ -7,4 +7,5 @@
     <!-- controls_label went with ControlsActivity on 2026-08-17: the transport
          lives under the channel card on the home screen now. -->
     <string name="diagnostics_label">Diagnostics</string>
+    <string name="settings_label">Server</string>
 </resources>

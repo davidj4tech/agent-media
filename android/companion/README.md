@@ -39,6 +39,77 @@ Uninstall the spike before testing this. Both publish a session, and the spike
 holds its silent track permanently, so it competes for the same
 addressed-player slot.
 
+## Where the server is
+
+Until 2026-08-18 every address in the app was a constant, and every one of them
+said `127.0.0.1`: `media`, mpv and yt-dlp were assumed to be in `com.termux` on
+this same phone, because on p8a they are. **Settings** (home screen, bottom bar)
+makes that a choice, and it is deliberately *two* choices — conflating them is
+the mistake `Server.java` exists to prevent:
+
+| Setting | What it decides |
+|---|---|
+| Address + control port | **Where the server is.** The machine running `media`: this phone's Termux, or red5 across the tailnet. |
+| Where the sound comes out | **Where the audio is.** Pointing the app at red5 does not move the sound to the phone — it moves it to red5's speakers and makes this a remote control. |
+
+Three playback locations, of which two are built:
+
+| Location | mpv | Audio focus | Termux here |
+|---|---|---|---|
+| **This phone (Termux)** — the default, and unchanged | on this phone | held on mpv's behalf, because mpv ignores it | required |
+| **The server** | on the server | **none** — there is nothing on this phone to duck, and claiming `GAIN` would stop the listener's own music to drive a stereo in another room | not required |
+| **This phone (in the app)** | none | ours, honestly, for the first time | not required |
+
+The third is named in the code and refused by `Server.problem()`. It is the one
+that closes the loop: the server fetches with yt-dlp and renders the speech, the
+app plays the bytes with Android's own player, and the silent `AudioTrack`, the
+duck/restore races and the whole focus-on-mpv's-behalf apparatus become
+unnecessary rather than merely disabled. It is also the answer to the licence
+question — mpv is GPLv2+, so bundling it into this Apache-2.0 APK would relicense
+the app, while running it on red5 is not distribution and owes nothing.
+
+**A default install behaves exactly as it did before Settings existed**:
+`127.0.0.1`, ports 6601/6602/6603 and 8771, playback on the phone, no token.
+Choosing "This phone (Termux)" puts it back.
+
+### What the far side needs
+
+The control endpoint (`media-share`, 8771) is the whole API for the home screen,
+the recent list, the transport and the share sheet — it is `media` over HTTP and
+works against any host that runs it. The three mpv ports are a second, lower
+path: raw JSON IPC, and what the shade's media cards are built from. **A server
+without those bridges costs exactly the cards** — the same bargain a missing
+bridge has always been.
+
+`media-share` declares `requires: observe`, so a rollout will not put it on a
+host with no share sheet. Naming it explicitly overrides that:
+
+```sh
+media-setup install-services media-share      # on the server
+```
+
+### The token
+
+On loopback there is none, and that is deliberate: the phone's UID sandbox is
+the wall. **Off loopback a token is required, and the code enforces it at both
+ends** — `Server.problem()` will not save a non-loopback address without one,
+and `media-share` *refuses to start* when `--bind` is not loopback and
+`MEDIA_SHARE_TOKEN` is unset. This endpoint starts playback: anything that can
+reach it can drive the speakers, and a service that came up anyway would be an
+open control port that reported itself healthy. Tailscale ACLs are a perimeter,
+not a credential.
+
+On the server, in `~/.config/agent-media.env`:
+
+```sh
+MEDIA_SHARE_BIND=100.x.y.z     # the Tailscale address. Never 0.0.0.0
+MEDIA_SHARE_TOKEN=…            # the same string typed into Settings
+```
+
+It travels in `X-Agent-Media-Token`. A 401 is reported on the phone as "the
+server refused the token — check Settings", because it is the one failure fixed
+here in one field, and a bare 401 reads as "the server is down".
+
 ## Layout
 
 | File | What it is |
@@ -59,6 +130,9 @@ addressed-player slot.
 | `DiagnosticsActivity.java` | The event log, the focus probe/acting switch and the exit history — where the old main screen went. |
 | `ChannelCard.java` | One channel, drawn the same in the shade and in the app. Row and driver are the same component at two sizes. |
 | `Transport.java` | The verbs a media card has no room for: seek by an amount, speed, volume, mute, chapters. |
+| `Server.java` | Which agent-media this is a client of, and where its sound comes out. Defaults, validation, the token rule. `android.*`-free, so `test/run.sh` covers it. |
+| `Settings.java` | The SharedPreferences half of it, and the only class that knows where the configuration is kept. |
+| `SettingsActivity.java` | The form: address, token, playback location, bridge ports, and a Test button that says *which* thing was wrong before it is saved over a working one. |
 | `Style.java` | The colours, type sizes and spacing every surface shares. There is no theme to hang them on. |
 | `Artwork.java` | The per-channel mark and tile, drawn in code — no res/drawable, no font dependency. |
 | `RecentRows.java` | Day breaks, clock times, and the titles that are not titles. `android.*`-free. |
@@ -104,7 +178,7 @@ sheet knocks on.
 
 | Service | Listener | What it does |
 |---|---|---|
-| `media-share` | `127.0.0.1:8771` | `POST /share` — classify a shared link and play it on the channel that fits |
+| `media-share` | `127.0.0.1:8771` | `POST /share` — classify a shared link and play it on the channel that fits, plus `/channels`, `/control`, `/recent`, `/play`, `/chapters`: the app's whole control API |
 
 It runs `media` in Termux, which is the point: `ShareActivity` cannot, because
 `media`, mpv and yt-dlp all live inside `com.termux`'s UID. Unlike the bridges
@@ -139,7 +213,13 @@ shows only Termux's own uid, `dumpsys media_session` is refused to a non-shell
 uid, and adb cannot reach p8a from red5. Before it, diagnosing the app meant
 asking David to read his phone screen aloud.
 
-`/state` answers the questions the on-screen readout was being asked for:
+`/state` opens with `server` — the host, the control port, the playback
+location, whether the server is local and whether a token is set (never the
+token itself). Those are the first two questions to ask of a phone that no
+longer describes one fixed arrangement: which agent-media is this, and where is
+its sound coming out.
+
+It also answers the questions the on-screen readout was being asked for:
 `focus_mode` (probe or acting), `focus_held`, `owes_unduck`, `restore_volume`,
 `speech.owes_resume`, and `focus_events` — every focus callback the app has seen,
 timestamped.
@@ -423,8 +503,10 @@ beside it is not a clip position we track.
 
 ## Not built yet
 
-Speech *pausing* — the bridge is there and the app reads it, but nothing writes
-to it yet; retiring `call_guard` or the Automate mic-detect hold flag; state
+Playing in the app itself (`Server.BUILTIN`) — the mode that needs no mpv on
+the phone and puts nothing GPL in the APK; it wants an HTTP audio endpoint on
+the server and a player here. Speech *pausing* — the bridge is there and the app
+reads it, but nothing writes to it yet; retiring `call_guard` or the Automate mic-detect hold flag; state
 *push* to red5 (the pull endpoint above now exists); boot start.
 
 Audio focus is **verified acting on the device**: p8a, 2026-08-14 19:17:38,

@@ -28,18 +28,33 @@ mobile connection). The sharer should not watch a spinner for either, so the
 verdict returns as soon as it is known and the dispatch runs on a background
 thread. The toast says what will happen; the phone then goes and does it.
 
-Bound to 127.0.0.1 and nothing else, with no auth — the same boundary
+Bound to 127.0.0.1 by default, with no auth — the same boundary
 `mpv-music-bridge-local` and the app's own `StatusServer` sit behind, on a
-single-user phone. Do not widen it: unlike those two, this endpoint *starts
-playback*, so anything that can reach it can drive the speakers.
+single-user phone, where the UID sandbox is the wall and nothing else needs to
+knock.
+
+**Widening it costs a token, and the code enforces that rather than advising
+it.** This endpoint *starts playback*: anything that can reach it can drive the
+speakers. So `--bind` off loopback without `MEDIA_SHARE_TOKEN` set is a startup
+failure, not a warning — a service that came up anyway would be an open control
+port that looked healthy. The token is a shared secret in the header
+`X-Agent-Media-Token`; the companion app sends it, and `Server.java` refuses to
+save a non-loopback address without one.
+
+Why widen it at all: the Android app used to assume `media` was in Termux on
+the same phone, which is what puts mpv and yt-dlp on the device. Pointing it at
+a server instead is what removes them — see
+`android/companion/README.md`, "Where the server is".
 """
 
 from __future__ import annotations
 
 import argparse
+import hmac
 import http.server
 import json
 import logging
+import os
 import socketserver
 import sys
 import threading
@@ -57,6 +72,20 @@ PROBE_TIMEOUT_S = 20.0
 
 MAX_BODY = 8192  # a shared link plus its prose; anything larger is not a share
 
+# How the shared secret travels. Matches Server.TOKEN_HEADER in the app.
+TOKEN_HEADER = "X-Agent-Media-Token"
+
+# Set from main(); "" means no token is required, which is only allowed on
+# loopback. Module scope rather than an attribute on the handler because
+# BaseHTTPRequestHandler is instantiated per request.
+TOKEN = ""
+
+LOOPBACK = ("127.0.0.1", "localhost", "::1")
+
+
+def _loopback(bind: str) -> bool:
+    return bind in LOOPBACK
+
 
 class Handler(http.server.BaseHTTPRequestHandler):
     server_version = "agent-media-share/1"
@@ -65,6 +94,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
     # the service log. A share is worth a line; the request line is not.
     def log_message(self, fmt, *args) -> None:  # noqa: A003
         pass
+
+    def _authorised(self) -> bool:
+        """Is this request allowed to be here?
+
+        Compared with `hmac.compare_digest` rather than `==`: the comparison is
+        against a secret and the loop is over a network-controlled string.
+
+        A refusal says nothing about what was wrong with the token, but it does
+        say the token was the problem — the app turns that into "check
+        Settings", which is the one failure a person can fix on the phone.
+        """
+        if not TOKEN:
+            return True
+        offered = self.headers.get(TOKEN_HEADER) or ""
+        return hmac.compare_digest(offered, TOKEN)
 
     def _send(self, code: int, payload: dict) -> None:
         body = (json.dumps(payload) + "\n").encode()
@@ -78,6 +122,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             pass  # the activity gave up; the dispatch still runs
 
     def do_GET(self) -> None:  # noqa: N802
+        if not self._authorised():
+            self._send(401, {"ok": False, "error": "bad or missing token"})
+            return
         path, _, query = self.path.partition("?")
         if path == "/recent":
             self._send(200, {"ok": True, "rows": recent_rows(query)})
@@ -97,6 +144,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self._send(200, {"ok": True, "service": "media-share"})
 
     def do_POST(self) -> None:  # noqa: N802
+        if not self._authorised():
+            self._send(401, {"ok": False, "error": "bad or missing token"})
+            return
         path = self.path.split("?")[0]
         if path == "/play":
             self._replay()
@@ -335,10 +385,28 @@ def main(argv=None) -> int:
     load_env_file("media-share")
     ap = argparse.ArgumentParser(prog="media-share", description=__doc__.split("\n\n")[0])
     ap.add_argument("--port", type=int, default=sharemod.DEFAULT_PORT)
+    ap.add_argument(
+        "--bind", default=os.environ.get("MEDIA_SHARE_BIND", "127.0.0.1"),
+        help="address to listen on (default 127.0.0.1). Anything else needs "
+             "MEDIA_SHARE_TOKEN.")
     a = ap.parse_args(argv if argv is not None else sys.argv[1:])
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    with _Server(("127.0.0.1", a.port), Handler) as srv:
-        log.info("media-share: 127.0.0.1:%d/share", a.port)
+
+    global TOKEN
+    TOKEN = (os.environ.get("MEDIA_SHARE_TOKEN") or "").strip()
+    if not _loopback(a.bind) and not TOKEN:
+        # Fail closed, and say which of the two knobs to turn. A listener that
+        # started anyway would be an open control port on the tailnet that
+        # reported itself healthy.
+        log.error(
+            "media-share: refusing to bind %s with no MEDIA_SHARE_TOKEN — "
+            "this endpoint starts playback. Set it in "
+            "~/.config/agent-media.env, or bind 127.0.0.1.", a.bind)
+        return 2
+
+    with _Server((a.bind, a.port), Handler) as srv:
+        log.info("media-share: %s:%d/share%s", a.bind, a.port,
+                 " (token required)" if TOKEN else "")
         try:
             srv.serve_forever()
         except KeyboardInterrupt:

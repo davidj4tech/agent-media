@@ -205,6 +205,11 @@ public class MainActivity extends Activity {
                 startActivity(new Intent(MainActivity.this, RecentActivity.class));
             }
         }), weight());
+        bar.addView(link("Settings", new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                startActivity(new Intent(MainActivity.this, SettingsActivity.class));
+            }
+        }), weight());
         bar.addView(link("Diagnostics", new View.OnClickListener() {
             @Override public void onClick(View v) {
                 startActivity(new Intent(MainActivity.this, DiagnosticsActivity.class));
@@ -268,7 +273,8 @@ public class MainActivity extends Activity {
     private void poll() {
         new Thread(new Runnable() {
             @Override public void run() {
-                final Map<String, Channels.Channel> got = Channels.fetch(Loopback.PORT);
+                final Map<String, Channels.Channel> got =
+                        Channels.fetch(Settings.server(MainActivity.this));
                 main.post(new Runnable() {
                     @Override public void run() {
                         channels = got;

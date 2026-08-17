@@ -131,7 +131,8 @@ public class RecentActivity extends Activity {
         new Thread(new Runnable() {
             @Override public void run() {
                 final Loopback.Reply reply = Loopback.get(
-                        Loopback.PORT, RecentList.path(LIMIT, asked));
+                        Settings.server(RecentActivity.this),
+                        RecentList.path(LIMIT, asked));
                 final List<RecentList.Item> items = reply.ok()
                         ? RecentList.parse(reply.body)
                         : java.util.Collections.<RecentList.Item>emptyList();
@@ -326,7 +327,8 @@ public class RecentActivity extends Activity {
               + RecentRows.title(item) + "…");
         new Thread(new Runnable() {
             @Override public void run() {
-                final String line = RecentList.play(Loopback.PORT, item);
+                final String line = RecentList.play(
+                        Settings.server(RecentActivity.this), item);
                 main.post(new Runnable() {
                     @Override public void run() { toast(line); }
                 });

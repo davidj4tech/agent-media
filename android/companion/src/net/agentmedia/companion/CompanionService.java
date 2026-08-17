@@ -43,32 +43,17 @@ import java.util.Map;
  */
 public class CompanionService extends Service {
 
-    /**
-     * mpv's IPC socket is inside com.termux's private sandbox and cannot be
-     * opened from here; a socat listener on loopback is the only route. This is
-     * the *second* listener — the tailnet one that agent-media on red5 uses is
-     * a separate service and is not disturbed.
+    /*
+     * Where the three mpv connections go is {@link Server}'s answer now, not a
+     * constant here. The default is unchanged and it is the one this app was
+     * built against: three socat listeners on this phone's loopback, because
+     * mpv's own sockets are inside com.termux's private sandbox and no other
+     * app can open them. What each connection is *for* has not moved either —
+     * music is the phone's player and the focus policy is about it; speech
+     * carries the front-channel metadata, the coordinator's speaking flag and
+     * the pause half of David's rule; the book has a card and no part in
+     * focus at all.
      */
-    static final String MPV_HOST = "127.0.0.1";
-    static final int MPV_PORT = 6601;
-
-    /**
-     * The speech mpv, behind its own loopback bridge
-     * (packages/core/services/mpv-speech-bridge-local). It carries three jobs:
-     * the metadata follows whichever channel is in front, the coordinator's
-     * speaking flag says whose a focus loss is, and — the other half of David's
-     * rule — speech is paused on a focus loss that is not our own. See
-     * SpeechPolicy.
-     */
-    static final int MPV_SPEECH_PORT = 6602;
-
-    /**
-     * The book mpv (sink-book.sock), behind mpv-book-bridge-local. Read and
-     * driven for its own card only: an audiobook takes no part in the focus
-     * policy, which is about what happens to speech and music when something
-     * else takes the output.
-     */
-    static final int MPV_BOOK_PORT = 6603;
 
     /**
      * The focus policy is allowed to touch mpv only when this is on. Off by
@@ -191,6 +176,16 @@ public class CompanionService extends Service {
      */
     private final BargeIn bargeIn = new BargeIn();
     private SharedPreferences prefs;
+    /**
+     * Which agent-media this is a client of, read once at startup.
+     *
+     * Once, deliberately: the mpv connections, the focus claim and the silent
+     * track are all built from it, and a service that re-read it mid-life would
+     * have to tear all three down at an arbitrary moment. The settings screen
+     * restarts the service instead, which is the same work done where somebody
+     * is watching it happen.
+     */
+    private Server server = Server.defaults();
     private boolean focusActs = false;
     private volatile String liveMode = LIVE_HOLD;
     /** We paused Sam for the voice session and owe him a delivery. */
@@ -394,6 +389,7 @@ public class CompanionService extends Service {
         lastExits = LastExit.read(this);
         audio = getSystemService(AudioManager.class);
         prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        server = Settings.server(this);
         focusActs = prefs.getBoolean(KEY_FOCUS_ACTS, false);
         liveMode = prefs.getString(KEY_LIVE_MODE, LIVE_HOLD);
         focusControl = new FocusControl(this, main, this::onFocusChange);
@@ -415,7 +411,7 @@ public class CompanionService extends Service {
 
         pushSessionState();
 
-        ipc = new MpvIpc(MPV_HOST, MPV_PORT, listener);
+        ipc = new MpvIpc(server.host, server.music, listener);
         ipc.start();
 
         // Both side channels are optional, and the app says so by construction.
@@ -423,7 +419,7 @@ public class CompanionService extends Service {
         // app; a second and third card are worth having and worth nothing next
         // to those. A failure here used to be fatal, which on this device means
         // a dialog, a restart loop, and no way to read why.
-        speech = startChannel("speech", FrontChannel.SPEECH_TITLE, MPV_SPEECH_PORT,
+        speech = startChannel("speech", FrontChannel.SPEECH_TITLE, server.speech,
                               MpvIpc.OBSERVED_SPEECH, NOTIF_SPEECH, speechWatcher);
         if (speech != null) {
             speechState = speech.state();
@@ -434,7 +430,7 @@ public class CompanionService extends Service {
         // started on the days there is a book. An unreachable channel simply
         // never shows a card; MpvIpc reconnects with backoff forever, so one
         // appears the moment the bridge does.
-        book = startChannel("book", "Audiobook", MPV_BOOK_PORT,
+        book = startChannel("book", "Audiobook", server.book,
                             MpvIpc.OBSERVED, NOTIF_BOOK, bookWatcher);
 
         // Last, and never fatal: it is a probe, and the app worked without it
@@ -456,10 +452,18 @@ public class CompanionService extends Service {
         mic.start();
 
         main.postDelayed(positionPoll, POSITION_POLL_MS);
-        log("service started; music -> " + MPV_HOST + ":" + MPV_PORT
-                + ", speech -> " + MPV_HOST + ":" + MPV_SPEECH_PORT
-                + ", book -> " + MPV_HOST + ":" + MPV_BOOK_PORT);
+        log("service started; server " + server.describe()
+                + "; music -> " + server.host + ":" + server.music
+                + ", speech -> " + server.host + ":" + server.speech
+                + ", book -> " + server.host + ":" + server.book);
         log("focus: mode " + (focusActs ? "acting" : "probe (logs only)"));
+        if (!server.ownsThePhonesAudio()) {
+            // Said out loud because it silences the half of this app that has
+            // the most written about it, and a reader of the log a fortnight
+            // from now should not have to infer it from a missing line.
+            log("focus: not claimed — sound is at " + server.host
+                    + ", so there is nothing on this phone to duck");
+        }
         LastExit.log(lastExits);
     }
 
@@ -471,7 +475,8 @@ public class CompanionService extends Service {
                                      String[] observed, int notifId,
                                      SideChannel.Watcher watcher) {
         try {
-            SideChannel c = new SideChannel(this, main, name, label, port, observed,
+            SideChannel c = new SideChannel(this, main, name, label,
+                                            server.host, port, observed,
                                             notifId, CHANNEL, watcher);
             c.start();
             return c;
@@ -724,62 +729,74 @@ public class CompanionService extends Service {
         // making a noise, stop making one yourself — even a silent one. The cost
         // is the addressed-player slot for the length of the interruption, which
         // is time we are not the player anyway.
-        boolean listening = speechFocus.owesResume() && !state.loaded();
-        if ((state.loaded() || speechFront()) && !listening) startSilence();
-        else stopSilence();
+        // ...and none of it happens at all when the sound is not on this
+        // phone. Every line below is about an mpv we are co-resident with:
+        // holding focus on its behalf because it ignores it, and holding the
+        // addressed-player slot with a stream of zeros so the earbud reaches
+        // it. Point the app at red5 and it is a remote control — taking focus
+        // would stop the listener's own music to drive a stereo in another
+        // room, and the zeros would win a slot for a player that is not here.
+        if (!server.ownsThePhonesAudio()) {
+            stopSilence();
+            if (focusControl.held()) focusControl.abandon();
+        } else {
+            boolean listening = speechFocus.owesResume() && !state.loaded();
+            if ((state.loaded() || speechFront()) && !listening) startSilence();
+            else stopSilence();
 
-        // Focus follows a related predicate, for a related reason: abandoning it
-        // on our own pause would forfeit the GAIN that is supposed to tell us to
-        // resume. But it covers BOTH channels, which the first build did not —
-        // and that omission made the speech half unreachable. Focus was
-        // requested for `state.loaded()`, the music mpv alone, so a spoken reply
-        // with no music behind it left the app holding nothing: David played
-        // YouTube over Sam on 2026-08-15 08:10 and no callback arrived at all,
-        // because you cannot be told you lost what you never took. The whole
-        // point of the speech half is the interruption that lands mid-sentence,
-        // which is exactly the case where music is least likely to be playing.
-        //
-        // The third term keeps it while a speech pause of ours is outstanding:
-        // dropping focus there would forfeit the very GAIN that pays it, and the
-        // pause would stand until the deadline discarded the clip.
-        //
-        // Music wins the tie: while a track is open the claim is the permanent
-        // one, and a clip spoken over it must not downgrade the claim to a
-        // transient borrow — that would hand the output back to another app the
-        // moment Sam finished a sentence.
-        // speakingNow() is what holds the claim across the gaps *inside* one
-        // reply. The coordinator pauses the broker before each response and
-        // sink-speech goes briefly idle between clips, and without this term the
-        // app abandoned and re-took focus on every one of those — 08:55:14
-        // granted, 08:55:16 abandoned, mid-reply. Each cycle tells whatever we
-        // interrupted to resume and then to stop again.
-        // Asking for focus back is what we are actually playing, not what we
-        // are owed. After a permanent loss the paused clip and its outstanding
-        // resume are reasons to KEEP focus, never to take it: re-requesting
-        // there would stop the video David just started, one poll after we got
-        // out of its way.
-        if (state.playing() || speechState.playing()) focusLost = false;
+            // Focus follows a related predicate, for a related reason: abandoning it
+            // on our own pause would forfeit the GAIN that is supposed to tell us to
+            // resume. But it covers BOTH channels, which the first build did not —
+            // and that omission made the speech half unreachable. Focus was
+            // requested for `state.loaded()`, the music mpv alone, so a spoken reply
+            // with no music behind it left the app holding nothing: David played
+            // YouTube over Sam on 2026-08-15 08:10 and no callback arrived at all,
+            // because you cannot be told you lost what you never took. The whole
+            // point of the speech half is the interruption that lands mid-sentence,
+            // which is exactly the case where music is least likely to be playing.
+            //
+            // The third term keeps it while a speech pause of ours is outstanding:
+            // dropping focus there would forfeit the very GAIN that pays it, and the
+            // pause would stand until the deadline discarded the clip.
+            //
+            // Music wins the tie: while a track is open the claim is the permanent
+            // one, and a clip spoken over it must not downgrade the claim to a
+            // transient borrow — that would hand the output back to another app the
+            // moment Sam finished a sentence.
+            // speakingNow() is what holds the claim across the gaps *inside* one
+            // reply. The coordinator pauses the broker before each response and
+            // sink-speech goes briefly idle between clips, and without this term the
+            // app abandoned and re-took focus on every one of those — 08:55:14
+            // granted, 08:55:16 abandoned, mid-reply. Each cycle tells whatever we
+            // interrupted to resume and then to stop again.
+            // Asking for focus back is what we are actually playing, not what we
+            // are owed. After a permanent loss the paused clip and its outstanding
+            // resume are reasons to KEEP focus, never to take it: re-requesting
+            // there would stop the video David just started, one poll after we got
+            // out of its way.
+            if (state.playing() || speechState.playing()) focusLost = false;
 
-        int wantFocus = state.loaded() ? FocusControl.MUSIC
-                : (speechFront() || speakingNow() || speechFocus.owesResume())
-                        ? FocusControl.SPEECH
-                        : FocusControl.NONE;
-        // A voice session is the one case where taking the output is not
-        // obviously the right thing: Live pauses itself and wants a tap back.
-        // Music is left alone here — it is the phone's player, and a call or a
-        // Live session ducking it is exactly what the focus policy is for.
-        if (wantFocus == FocusControl.SPEECH && bargeIn.voiceSession()) {
-            if (LIVE_SHARE.equals(liveMode)) wantFocus = FocusControl.NONE;
-            else if (LIVE_DUCK.equals(liveMode)) wantFocus = FocusControl.SPEECH_DUCK;
-        }
-        if (wantFocus != FocusControl.NONE && !focusLost) {
-            if (focusControl.kind() != wantFocus && focusControl.request(wantFocus)) {
-                log("focus: granted (" + FocusControl.kindName(wantFocus) + ")");
+            int wantFocus = state.loaded() ? FocusControl.MUSIC
+                    : (speechFront() || speakingNow() || speechFocus.owesResume())
+                            ? FocusControl.SPEECH
+                            : FocusControl.NONE;
+            // A voice session is the one case where taking the output is not
+            // obviously the right thing: Live pauses itself and wants a tap back.
+            // Music is left alone here — it is the phone's player, and a call or a
+            // Live session ducking it is exactly what the focus policy is for.
+            if (wantFocus == FocusControl.SPEECH && bargeIn.voiceSession()) {
+                if (LIVE_SHARE.equals(liveMode)) wantFocus = FocusControl.NONE;
+                else if (LIVE_DUCK.equals(liveMode)) wantFocus = FocusControl.SPEECH_DUCK;
             }
-        } else if (focusControl.held()) {
-            focusControl.abandon();
-            focus.reset();
-            log("focus: abandoned (nothing open)");
+            if (wantFocus != FocusControl.NONE && !focusLost) {
+                if (focusControl.kind() != wantFocus && focusControl.request(wantFocus)) {
+                    log("focus: granted (" + FocusControl.kindName(wantFocus) + ")");
+                }
+            } else if (focusControl.held()) {
+                focusControl.abandon();
+                focus.reset();
+                log("focus: abandoned (nothing open)");
+            }
         }
 
         // A music card describing music, which it had not been since the
@@ -1103,7 +1120,7 @@ public class CompanionService extends Service {
         // An unreachable mpv is the exception: that one is not visible anywhere
         // else on this surface.
         String text = state.connected ? musicSubtitle()
-                : "mpv unreachable on " + MPV_HOST + ":" + MPV_PORT;
+                : "mpv unreachable on " + server.host + ":" + server.music;
 
         return new Notification.Builder(this, CHANNEL)
                 // Not gated on loaded() any more: MpvState#title falls back to
@@ -1295,7 +1312,17 @@ public class CompanionService extends Service {
             bk.put("card_failed", Boolean.valueOf(book != null && book.failed()));
             m.put("book", bk);
             m.put("last_button", lastButton);
-            m.put("focus_mode", focusActs ? "acting" : "probe");
+            // Which agent-media this phone is a client of, and where its sound
+        // comes out — the first two questions to ask of a readout that no
+        // longer describes one fixed arrangement. Never the token.
+        Map<String, Object> srv = new LinkedHashMap<String, Object>();
+        srv.put("host", server.host);
+        srv.put("control_port", server.control);
+        srv.put("playback", server.playback);
+        srv.put("local", server.local());
+        srv.put("token", !server.token.isEmpty());
+        m.put("server", srv);
+        m.put("focus_mode", focusActs ? "acting" : "probe");
             m.put("focus_held", Boolean.valueOf(focusControl != null && focusControl.held()));
             // True while another app owns the output and we are staying out of
             // its way. Nothing can reach us through the focus listener here.

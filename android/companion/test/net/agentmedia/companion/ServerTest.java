@@ -1,0 +1,182 @@
+package net.agentmedia.companion;
+
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+/**
+ * The client/server configuration: what it defaults to, what it refuses, and
+ * what it means for the audio on this phone.
+ *
+ * The defaults matter more than anything else here. An install that never opens
+ * the settings screen must behave exactly as the app did before there was one —
+ * Termux on this phone, the same four ports, no token — because that is every
+ * install that exists today, and a configuration layer that quietly changed
+ * their behaviour would be the worst possible way to find out it was added.
+ */
+public class ServerTest {
+
+    private static int passed = 0;
+    private static final java.util.List<String> failures =
+            new java.util.ArrayList<String>();
+
+    public static void main(String[] args) {
+        testDefaultsAreTodaysPhone();
+        testRoundTripsThroughStorage();
+        testStorageGapsFallBackFieldByField();
+        testARemoteServerNeedsAToken();
+        testBadPortsAreRefused();
+        testAUrlIsNotAHostName();
+        testOnlyThePhoneOwnsThePhonesAudio();
+        testBuiltinIsNamedButNotOffered();
+        testAnUnusableConfigurationReadsBackAsTheDefaults();
+        testDescribeNeverLeaksTheToken();
+
+        System.out.println();
+        if (failures.isEmpty()) {
+            System.out.println("ok — " + passed + " checks passed");
+            return;
+        }
+        System.out.println(failures.size() + " FAILED of " + (passed + failures.size()));
+        for (String f : failures) System.out.println("  " + f);
+        System.exit(1);
+    }
+
+    private static void testDefaultsAreTodaysPhone() {
+        Server d = Server.defaults();
+        check("default host is loopback", "127.0.0.1".equals(d.host));
+        check("default control port is media-share", d.control == 8771);
+        check("default music port is the music bridge", d.music == 6601);
+        check("default speech port is the speech bridge", d.speech == 6602);
+        check("default book port is the book bridge", d.book == 6603);
+        check("no token by default", d.token.isEmpty());
+        check("sound is on this phone by default", d.ownsThePhonesAudio());
+        check("the defaults are usable", d.problem() == null);
+        check("the defaults are local", d.local() && !d.remote());
+    }
+
+    private static void testRoundTripsThroughStorage() {
+        Server s = new Server("red5", 8771, 6601, 6602, 6603, "abc", Server.SERVER);
+        Server back = Server.from(s.toMap());
+        check("a configuration survives storage", s.equals(back));
+        check("and so does the playback location",
+                Server.SERVER.equals(back.playback));
+    }
+
+    private static void testStorageGapsFallBackFieldByField() {
+        // A half-written prefs file should cost the field it broke, not the app.
+        Map<String, String> m = new LinkedHashMap<String, String>();
+        m.put(Server.KEY_HOST, "red5");
+        Server s = Server.from(m);
+        check("the stored field is kept", "red5".equals(s.host));
+        check("a missing port falls back", s.control == 8771);
+        check("a missing playback location falls back",
+                Server.PHONE.equals(s.playback));
+        check("an unknown playback location falls back",
+                Server.PHONE.equals(Server.from(one(Server.KEY_PLAYBACK, "wat"))
+                        .playback));
+        check("null is the defaults", Server.from(null).equals(Server.defaults()));
+    }
+
+    private static void testARemoteServerNeedsAToken() {
+        // The rule the whole thing turns on: the control endpoint starts
+        // playback, so off loopback the secret is required rather than offered.
+        Server bare = new Server("red5", 8771, 6601, 6602, 6603, "", Server.SERVER);
+        check("a remote server with no token is refused", bare.problem() != null);
+        check("and says why", bare.problem().contains("token"));
+
+        Server withToken = new Server("red5", 8771, 6601, 6602, 6603, "s3cret",
+                                      Server.SERVER);
+        check("a remote server with a token is fine", withToken.problem() == null);
+
+        Server loopbackBare = Server.defaults();
+        check("loopback needs no token", loopbackBare.problem() == null);
+        check("localhost counts as loopback",
+                new Server("localhost", 8771, 6601, 6602, 6603, "", Server.PHONE)
+                        .local());
+    }
+
+    private static void testBadPortsAreRefused() {
+        check("port 0 is refused",
+                new Server("red5", 0, 6601, 6602, 6603, "t", Server.SERVER)
+                        .problem() != null);
+        check("a port past 65535 is refused",
+                new Server("red5", 70000, 6601, 6602, 6603, "t", Server.SERVER)
+                        .problem() != null);
+        check("an unparsable port is 0, not an exception",
+                Server.port("eight thousand", 8771) == 0);
+        check("empty typed text keeps the fallback", Server.port("", 8771) == 8771);
+        check("a bridge port is checked too",
+                new Server("red5", 8771, 6601, -1, 6603, "t", Server.SERVER)
+                        .problem().contains("Speech"));
+    }
+
+    private static void testAUrlIsNotAHostName() {
+        // The mistake a person makes once: pasting the address with a scheme.
+        Server s = new Server("http://red5:8771", 8771, 6601, 6602, 6603, "t",
+                              Server.SERVER);
+        check("a URL is refused", s.problem() != null);
+        check("and is named as such", s.problem().contains("host name"));
+        check("an empty address is refused",
+                new Server("", 8771, 6601, 6602, 6603, "", Server.PHONE)
+                        .problem() != null);
+    }
+
+    private static void testOnlyThePhoneOwnsThePhonesAudio() {
+        // Everything about audio focus and the silent track hangs off this one
+        // predicate: it is true only when the mpv making the noise is here.
+        check("phone playback owns the audio",
+                Server.defaults().ownsThePhonesAudio());
+        check("server playback does not",
+                !new Server("red5", 8771, 6601, 6602, 6603, "t", Server.SERVER)
+                        .ownsThePhonesAudio());
+        check("a loopback server can still be a remote control",
+                !new Server("127.0.0.1", 8771, 6601, 6602, 6603, "", Server.SERVER)
+                        .ownsThePhonesAudio());
+    }
+
+    private static void testBuiltinIsNamedButNotOffered() {
+        check("phone playback is available", Server.available(Server.PHONE));
+        check("server playback is available", Server.available(Server.SERVER));
+        check("in-app playback is not", !Server.available(Server.BUILTIN));
+        Server s = new Server("127.0.0.1", 8771, 6601, 6602, 6603, "",
+                              Server.BUILTIN);
+        check("and a stored one is refused", s.problem() != null);
+    }
+
+    private static void testAnUnusableConfigurationReadsBackAsTheDefaults() {
+        // A remote server whose token has been cleared: failing locally and
+        // visibly beats sending the secret-less request to the address anyway.
+        Server s = new Server("red5", 8771, 6601, 6602, 6603, "", Server.SERVER);
+        check("an unusable configuration falls back",
+                s.orDefaults().equals(Server.defaults()));
+        Server good = new Server("red5", 8771, 6601, 6602, 6603, "t", Server.SERVER);
+        check("a usable one is kept", good.orDefaults().equals(good));
+    }
+
+    private static void testDescribeNeverLeaksTheToken() {
+        // describe() goes into the event log and /state, both of which are read
+        // out loud and pasted into transcripts.
+        Server s = new Server("red5", 8771, 6601, 6602, 6603, "s3cret",
+                              Server.SERVER);
+        check("describe says there is a token", s.describe().contains("token"));
+        check("describe does not say what it is", !s.describe().contains("s3cret"));
+        check("nor does toString", !s.toString().contains("s3cret"));
+        check("describe names the server", s.describe().startsWith("red5:8771"));
+    }
+
+    private static Map<String, String> one(String key, String value) {
+        Map<String, String> m = new LinkedHashMap<String, String>();
+        m.put(key, value);
+        return m;
+    }
+
+    private static void check(String what, boolean ok) {
+        if (ok) {
+            passed++;
+            System.out.print(".");
+        } else {
+            failures.add(what);
+            System.out.print("F");
+        }
+    }
+}

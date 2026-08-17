@@ -75,10 +75,13 @@ final class SideChannel {
      */
     private boolean heldByUser = false;
     private boolean failed = false;
+    /** Where this channel's mpv bridge is. The server's host; see Server. */
+    private final String host;
 
     SideChannel(Service ctx, Handler main, String name, String label,
-                int port, String[] observed, int notifId, String notifChannel,
-                Watcher watcher) {
+                String host, int port, String[] observed, int notifId,
+                String notifChannel, Watcher watcher) {
+        this.host = host;
         this.ctx = ctx;
         this.main = main;
         this.nm = ctx.getSystemService(NotificationManager.class);
@@ -87,7 +90,7 @@ final class SideChannel {
         this.notifId = notifId;
         this.notifChannel = notifChannel;
         this.watcher = watcher;
-        this.ipc = new MpvIpc(CompanionService.MPV_HOST, port, listener, observed);
+        this.ipc = new MpvIpc(host, port, listener, observed);
     }
 
     MpvState state() { return state; }
@@ -103,7 +106,7 @@ final class SideChannel {
         // the phone's player, and that is music. These cards are driven by the
         // hand that can see them.
         ipc.start();
-        CompanionService.log(name + ": ipc -> " + CompanionService.MPV_HOST + ":" + ipc.port());
+        CompanionService.log(name + ": ipc -> " + host + ":" + ipc.port());
     }
 
     void stop() {

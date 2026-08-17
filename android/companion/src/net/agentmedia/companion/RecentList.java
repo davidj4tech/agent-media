@@ -188,13 +188,13 @@ final class RecentList {
     }
 
     /** Fetch the list. Returns empty when the listener cannot be reached. */
-    static List<Item> fetch(int port, int limit) {
-        return fetch(port, limit, "");
+    static List<Item> fetch(Server server, int limit) {
+        return fetch(server, limit, "");
     }
 
     /** The same, for one channel; "" (or "all") is every channel merged. */
-    static List<Item> fetch(int port, int limit, String channel) {
-        Loopback.Reply r = Loopback.get(port, path(limit, channel));
+    static List<Item> fetch(Server server, int limit, String channel) {
+        Loopback.Reply r = Loopback.get(server, path(limit, channel));
         return r.ok() ? parse(r.body) : Collections.<Item>emptyList();
     }
 
@@ -211,6 +211,7 @@ final class RecentList {
     static String emptyReason(Loopback.Reply r) {
         if (r == null) return "";
         if (!r.reached()) return r.failure;
+        if (r.refused()) return Loopback.REFUSED;
         if (!r.ok()) return "agent-media: the listener said " + r.status;
         return "nothing played yet";
     }
@@ -223,17 +224,18 @@ final class RecentList {
      * spoken turn is replayed from the history by id. One list, three verbs —
      * the alternative was a screen that could only offer two of its own rows.
      */
-    static String play(int port, Item item) {
+    static String play(Server server, Item item) {
         if (!item.playable()) {
             return "agent-media: that one cannot be replayed";
         }
         if ("speech".equals(item.channel)) {
-            String problem = Channels.control(port, "speech", "chapter",
+            String problem = Channels.control(server, "speech", "chapter",
                                               Long.toString(item.id));
             return problem.isEmpty() ? "replaying " + item.title() : problem;
         }
-        Loopback.Reply r = Loopback.post(port, "/play", playBody(item));
+        Loopback.Reply r = Loopback.post(server, "/play", playBody(item));
         if (!r.reached()) return r.failure;
+        if (r.refused()) return Loopback.REFUSED;
         String line = "";
         try {
             Map<String, Object> o = Json.parseObject(r.body);

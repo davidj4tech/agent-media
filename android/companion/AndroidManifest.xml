@@ -46,6 +46,14 @@
             android:noHistory="true"
             android:excludeFromRecents="true" />
 
+        <!-- Which agent-media this phone is a client of, and where its sound
+             comes out. Not exported: it holds the token, and a saved change
+             restarts the service. -->
+        <activity
+            android:name=".SettingsActivity"
+            android:exported="false"
+            android:label="@string/settings_label" />
+
         <!-- The event log and the focus switch. Not exported: it is reached
              from the home screen, and it is where the log went when the home
              screen stopped being a diagnostic. -->

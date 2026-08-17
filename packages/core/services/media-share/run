@@ -1,13 +1,26 @@
 #!/bin/sh
-# media-share — the loopback endpoint the companion app's share sheet posts to.
+# media-share — the endpoint the companion app talks to: share sheet, recent
+# list, channel state and transport.
 #
-# Bound to 127.0.0.1 inside the server itself (never a BIND here, and never a
-# wider one): the only client is an app on this same phone, and the payload
-# starts playback. Same reasoning as mpv-music-bridge-local beside it, one step
-# stronger — that one exposes state, this one exposes control.
+# Bound to 127.0.0.1 by default, and on a phone it should stay there: the only
+# client is an app on this same device, and the payload starts playback. Same
+# reasoning as mpv-music-bridge-local beside it, one step stronger — that one
+# exposes state, this one exposes control.
+#
+# A server the app talks to across the tailnet is the other case, and it needs
+# two settings, both from ~/.config/agent-media.env:
+#
+#   MEDIA_SHARE_BIND=100.x.y.z    the Tailscale address, never 0.0.0.0
+#   MEDIA_SHARE_TOKEN=…           a shared secret; the app sends it in a header
+#
+# The token is not optional there and the listener enforces it: binding off
+# loopback without one is a startup failure, because an open control port that
+# reports itself healthy is worse than a service that never came up.
 #
 # Port 8771, next door to the app's own readout on 8770. Override with
-# MEDIA_SHARE_PORT in ~/.config/agent-media.env.
+# MEDIA_SHARE_PORT.
 exec 2>&1
 [ -f "$HOME/.config/agent-media.env" ] && . "$HOME/.config/agent-media.env"
-exec media-share ${MEDIA_SHARE_PORT:+--port "$MEDIA_SHARE_PORT"}
+export MEDIA_SHARE_TOKEN
+exec media-share ${MEDIA_SHARE_PORT:+--port "$MEDIA_SHARE_PORT"} \
+                 ${MEDIA_SHARE_BIND:+--bind "$MEDIA_SHARE_BIND"}

@@ -161,7 +161,7 @@ final class Transport {
         new Thread(new Runnable() {
             @Override public void run() {
                 final String problem =
-                        Channels.control(Loopback.PORT, target, action, arg);
+                        Channels.control(Settings.server(ctx), target, action, arg);
                 main.post(new Runnable() {
                     @Override public void run() {
                         // Only failures are worth saying: a press that worked
@@ -227,7 +227,8 @@ final class Transport {
         new Thread(new Runnable() {
             @Override public void run() {
                 Loopback.Reply r = Loopback.get(
-                        Loopback.PORT, "/chapters?channel=" + host.channel());
+                        Settings.server(ctx),
+                        "/chapters?channel=" + host.channel());
                 final List<Chapters.Chapter> rows =
                         r.ok() ? Chapters.parse(r.body)
                                : java.util.Collections.<Chapters.Chapter>emptyList();

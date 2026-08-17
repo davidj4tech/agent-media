@@ -382,3 +382,108 @@ def test_chapters_endpoint(server, monkeypatch):
     # say gets — which is every caller written before the book had chapters.
     code, _ = _get(base, "/chapters?channel=book")
     assert code == 200 and seen == ["music", "book"]
+
+
+# ---- the token: what makes a server off this phone usable at all -----------
+#
+# The rule is one-way. Loopback needs nothing — the UID sandbox is the wall —
+# but this endpoint starts playback, so a listener anybody on the network can
+# reach must prove the caller knows a secret. Both halves are enforced here
+# rather than written down: the check on every request, and the refusal to
+# come up at all in the configuration where the check would be missing.
+
+
+def _get_with(base, path, token):
+    req = urllib.request.Request(base + path)
+    if token is not None:
+        req.add_header(share_listener.TOKEN_HEADER, token)
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return r.status, json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())
+
+
+def _post_with(base, path, body, token):
+    req = urllib.request.Request(base + path, data=body.encode(), method="POST")
+    if token is not None:
+        req.add_header(share_listener.TOKEN_HEADER, token)
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return r.status, json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())
+
+
+def test_no_token_configured_means_no_token_required(server):
+    # Every install that exists today. Adding the mechanism must not change it.
+    _, base = server
+    assert share_listener.TOKEN == ""
+    assert _get_with(base, "/", None)[0] == 200
+
+
+def test_a_configured_token_is_required_on_reads(server, monkeypatch):
+    _, base = server
+    monkeypatch.setattr(share_listener, "TOKEN", "s3cret")
+    code, body = _get_with(base, "/channels", None)
+    assert code == 401 and body["ok"] is False
+    assert _get_with(base, "/channels", "wrong")[0] == 401
+    assert _get_with(base, "/", "s3cret")[0] == 200
+
+
+def test_a_configured_token_is_required_on_writes(server, monkeypatch):
+    # The half that matters: /share, /play and /control all start playback.
+    _, base = server
+    monkeypatch.setattr(share_listener, "TOKEN", "s3cret")
+    code, body = _post_with(base, "/share", "https://youtu.be/x", None)
+    assert code == 401 and "token" in body["error"]
+    code, _ = _post_with(base, "/control",
+                         json.dumps({"channel": "music", "action": "toggle"}),
+                         "wrong")
+    assert code == 401
+
+
+def test_the_refusal_says_the_token_was_the_problem(server, monkeypatch):
+    # The app turns this into "check Settings", which is the one failure a
+    # person can fix on the phone. A bare 401 reads as "the server is down".
+    _, base = server
+    monkeypatch.setattr(share_listener, "TOKEN", "s3cret")
+    _, body = _get_with(base, "/recent", None)
+    assert "token" in body["error"]
+
+
+def test_binding_off_loopback_without_a_token_refuses_to_start(monkeypatch, capsys):
+    # Fail closed. A listener that came up anyway would be an open control port
+    # on the tailnet, reporting itself healthy.
+    monkeypatch.setattr("agent_media_core.intake._env.load_env_file",
+                        lambda label="hook": None)
+    monkeypatch.delenv("MEDIA_SHARE_TOKEN", raising=False)
+    monkeypatch.setattr(share_listener, "TOKEN", "")
+    assert share_listener.main(["--bind", "100.64.0.1"]) == 2
+    assert share_listener.TOKEN == ""
+
+
+def test_loopback_is_the_default_bind(monkeypatch):
+    # And the reason the change above is safe: nothing that does not ask for a
+    # wider bind gets one.
+    monkeypatch.setattr("agent_media_core.intake._env.load_env_file",
+                        lambda label="hook": None)
+    monkeypatch.delenv("MEDIA_SHARE_BIND", raising=False)
+    bound = {}
+
+    class _Fake:
+        def __init__(self, addr, handler):
+            bound["addr"] = addr
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def serve_forever(self):
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(share_listener, "_Server", _Fake)
+    assert share_listener.main([]) == 0
+    assert bound["addr"][0] == "127.0.0.1"

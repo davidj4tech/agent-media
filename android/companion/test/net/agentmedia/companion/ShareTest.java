@@ -29,6 +29,8 @@ public final class ShareTest {
         testSendPostsAndReadsTheVerdict();
         testSendReportsAnErrorStatus();
         testNoListenerIsAMessageNotACrash();
+        testTokenTravelsInAHeader();
+        testARefusalSaysSo();
 
         System.out.println();
         if (failures.isEmpty()) {
@@ -79,7 +81,7 @@ public final class ShareTest {
         FakeListener fake = new FakeListener(200,
                 "{\"ok\":true,\"line\":\"Rain → music (ambient): a live stream\"}");
         try {
-            ShareRequest.Result r = ShareRequest.send(fake.port(), "https://youtu.be/x");
+            ShareRequest.Result r = ShareRequest.send(Server.loopback(fake.port()), "https://youtu.be/x");
             check("send reports ok", r.ok);
             check("send returns the line", r.message.contains("ambient"));
             String req = fake.request();
@@ -94,7 +96,7 @@ public final class ShareTest {
         FakeListener fake = new FakeListener(422,
                 "{\"ok\":false,\"error\":\"no link in the shared text\"}");
         try {
-            ShareRequest.Result r = ShareRequest.send(fake.port(), "words");
+            ShareRequest.Result r = ShareRequest.send(Server.loopback(fake.port()), "words");
             check("a 422 is not ok", !r.ok);
             check("a 422 surfaces its reason", r.message.contains("no link"));
         } finally {
@@ -108,9 +110,42 @@ public final class ShareTest {
         ServerSocket probe = new ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"));
         int dead = probe.getLocalPort();
         probe.close();
-        ShareRequest.Result r = ShareRequest.send(dead, "https://youtu.be/x");
+        ShareRequest.Result r = ShareRequest.send(Server.loopback(dead), "https://youtu.be/x");
         check("a dead port is not ok", !r.ok);
         check("a dead port names the service", r.message.contains("media-share"));
+    }
+
+    private static void testTokenTravelsInAHeader() throws Exception {
+        // The header is what makes a server off this phone usable at all, and
+        // it is invisible from the app: a token that never leaves looks
+        // exactly like a token the server does not accept.
+        FakeListener fake = new FakeListener(200, "{\"ok\":true,\"line\":\"on\"}");
+        try {
+            Server s = new Server(Server.LOOPBACK, fake.port(), Server.MUSIC_PORT,
+                                  Server.SPEECH_PORT, Server.BOOK_PORT,
+                                  "sekrit", Server.SERVER);
+            ShareRequest.send(s, "https://youtu.be/x");
+            String req = fake.request();
+            check("the token is sent",
+                    req.toLowerCase().contains(
+                            Server.TOKEN_HEADER.toLowerCase() + ": sekrit"));
+        } finally {
+            fake.close();
+        }
+    }
+
+    private static void testARefusalSaysSo() throws Exception {
+        // A 401 is the one failure fixed on this phone in one field, so it must
+        // not read as "the server is down".
+        FakeListener fake = new FakeListener(401, "{\"ok\":false}");
+        try {
+            ShareRequest.Result r = ShareRequest.send(
+                    Server.loopback(fake.port()), "https://youtu.be/x");
+            check("a refusal is not ok", !r.ok);
+            check("a refusal names the token", r.message.contains("token"));
+        } finally {
+            fake.close();
+        }
     }
 
     // ---- a listener that answers once, and remembers what it was asked ----

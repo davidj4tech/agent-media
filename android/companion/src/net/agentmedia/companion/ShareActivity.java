@@ -38,7 +38,7 @@ public class ShareActivity extends Activity {
         new Thread(new Runnable() {
             @Override public void run() {
                 final ShareRequest.Result r =
-                        ShareRequest.send(ShareRequest.DEFAULT_PORT, text);
+                        ShareRequest.send(Settings.server(ShareActivity.this), text);
                 main.post(new Runnable() {
                     @Override public void run() { toast(r.message); }
                 });

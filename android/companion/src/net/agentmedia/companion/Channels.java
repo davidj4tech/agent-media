@@ -281,8 +281,8 @@ final class Channels {
     }
 
     /** Fetch the three channels. Empty map only if the reply was unusable. */
-    static Map<String, Channel> fetch(int port) {
-        Loopback.Reply r = Loopback.get(port, "/channels");
+    static Map<String, Channel> fetch(Server server) {
+        Loopback.Reply r = Loopback.get(server, "/channels");
         return r.ok() ? parse(r.body) : parse("");
     }
 
@@ -291,10 +291,11 @@ final class Channels {
      * not — a control that silently fails is the thing this screen exists to
      * avoid, since the listener is the only place that knows.
      */
-    static String control(int port, String channel, String action, String arg) {
-        Loopback.Reply r = Loopback.post(port, "/control",
+    static String control(Server server, String channel, String action, String arg) {
+        Loopback.Reply r = Loopback.post(server, "/control",
                                          controlBody(channel, action, arg));
         if (!r.reached()) return r.failure;
+        if (r.refused()) return Loopback.REFUSED;
         try {
             Map<String, Object> o = Json.parseObject(r.body);
             if (Json.asBool(o.get("ok"), false)) return "";
