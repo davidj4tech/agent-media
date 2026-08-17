@@ -287,6 +287,21 @@ def _speech() -> dict:
         log.debug("speech snapshot failed: %s", e)
         return out
     try:
+        # The level, which nothing here ever reported: the channel published a
+        # `volume` verb, the card had a place to show one, and the field was
+        # left at None — so the two buttons worked and said nothing, which
+        # reads exactly like two buttons that do not work. Music and book get
+        # theirs from their own status readers; speech has no reader but the
+        # player, so ask it.
+        from ..cli import _sock
+        from ..sinks import _mpv_ipc as ipc
+
+        level = ipc.get_property(_sock(), "volume")
+        if level is not None:
+            out["volume"] = int(round(float(level)))
+    except Exception as e:  # noqa: BLE001
+        log.debug("speech volume read failed: %s", e)
+    try:
         # The words come from wherever the conversation is. On the origin that
         # is this store; on a render host it is a hub away, and reading locally
         # is how the phone came to caption today's audio with July's sentence.
@@ -463,6 +478,36 @@ def _local_clips(n: int = _CLIPS_N) -> list:
         return []
 
 
+def _nothing_to_resume() -> bool:
+    """True when the speech player has no loaded clip left to un-pause.
+
+    Idle is the obvious case. The other one is not: sink-speech leaves a
+    finished clip loaded and un-paused, so "the reply ended" looks like "a clip
+    is open and running" to anything that asks whether it is idle. What it
+    actually is is parked at the end, which is position-meets-duration.
+    """
+    snap = _speech()
+    if snap.get("idle"):
+        return True
+    pos, dur = snap.get("pos_ms"), snap.get("dur_ms")
+    return pos is not None and bool(dur) and pos >= dur - 250
+
+
+def _belongs_to_origin(channel: str, action: str) -> bool:
+    """Whether this press is about the history rather than the local player.
+
+    `toggle` is both, and which one it is depends on the moment: with a reply
+    in flight it is the pause key and must stay here, instant and working even
+    with the hub asleep. With nothing loaded it means "play", and `media
+    toggle` answers that by replaying the last turn — a history action, which
+    on a render host was reaching into the only turns it ever rendered itself.
+    That is why pressing play after a clip finished played something from July.
+    """
+    if (channel, action) in ORIGIN_VERBS:
+        return True
+    return (channel, action) == ("speech", "toggle") and _nothing_to_resume()
+
+
 def control(channel: str, action: str, arg: str = "", runner=None) -> int:
     """Perform one whitelisted verb. Returns the command's exit code.
 
@@ -483,7 +528,7 @@ def control(channel: str, action: str, arg: str = "", runner=None) -> int:
             filled.append(arg)
         else:
             filled.append(part)
-    if (channel, action) in ORIGIN_VERBS and runner is None:
+    if _belongs_to_origin(channel, action) and runner is None:
         # Where the turn is remembered is where it can be played again: the
         # origin still has the clips, still knows this host is its speech
         # target, and pushes them back here exactly as it does for a live

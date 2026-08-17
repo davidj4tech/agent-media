@@ -362,6 +362,60 @@ def test_replaying_from_a_render_host_runs_where_the_clips_are(monkeypatch):
     assert ran == [["replay", "--id", "5506"], ["replay", "1"]]
 
 
+def test_play_after_a_clip_has_finished_is_a_history_press(monkeypatch):
+    # `media toggle` means pause with a reply in flight and "replay the last
+    # turn" with nothing loaded — and the second one was reaching into the only
+    # turns the phone ever rendered itself, so play-after-the-end played July.
+    monkeypatch.setattr(sc, "_origin_host", lambda: "red5")
+    ran = []
+    monkeypatch.setattr(sc, "_ask_origin", lambda argv, **kw: ran.append(argv) or "")
+
+    # Parked at the end: sink-speech leaves the finished clip loaded and
+    # un-paused, so "idle" is False and only position-meets-duration says so.
+    monkeypatch.setattr(sc, "_speech", lambda: {"idle": False, "pos_ms": 90360,
+                                                "dur_ms": 90360})
+    assert sc.control("speech", "toggle") == 0
+    assert ran == [["toggle"]]
+
+
+def test_pause_mid_reply_stays_on_this_host(monkeypatch):
+    # It must work with the hub asleep, and it must not cost a second.
+    monkeypatch.setattr(sc, "_origin_host", lambda: "red5")
+    monkeypatch.setattr(sc, "_ask_origin",
+                        lambda argv, **kw: pytest.fail("pause went over ssh"))
+    monkeypatch.setattr(sc, "_speech", lambda: {"idle": False, "pos_ms": 12000,
+                                                "dur_ms": 90360})
+    seen = []
+    sc.control("speech", "toggle", runner=lambda argv: seen.append(argv) or 0)
+    assert seen == [["toggle"]]
+    assert not sc._nothing_to_resume()
+
+
+def test_the_speech_card_knows_its_own_volume(monkeypatch):
+    # The channel published a `volume` verb and the card had a place to show
+    # one; the field was left None, so both buttons worked and said nothing —
+    # which reads exactly like two buttons that do not work.
+    monkeypatch.setattr(
+        "agent_media_core.cli._speech_display_state",
+        lambda **kw: (False, 12.0, 90.0, False, False, 1.0, True))
+    monkeypatch.setattr("agent_media_core.cli._sock", lambda: "/tmp/none.sock")
+    monkeypatch.setattr("agent_media_core.sinks._mpv_ipc.get_property",
+                        lambda sock, prop, **kw: 150.0 if prop == "volume" else None)
+    assert sc._speech()["volume"] == 150
+
+
+def test_a_player_that_cannot_be_asked_still_draws_the_card(monkeypatch):
+    monkeypatch.setattr(
+        "agent_media_core.cli._speech_display_state",
+        lambda **kw: (False, 12.0, 90.0, False, False, 1.0, True))
+
+    def boom(sock, prop, **kw):
+        raise OSError("no socket")
+
+    monkeypatch.setattr("agent_media_core.sinks._mpv_ipc.get_property", boom)
+    assert sc._speech()["volume"] is None
+
+
 def test_an_unreachable_hub_refuses_rather_than_replays_the_wrong_turn(monkeypatch):
     monkeypatch.setattr(sc, "_origin_host", lambda: "red5")
     monkeypatch.setattr(sc, "_ask_origin", lambda argv, **kw: None)
