@@ -317,13 +317,20 @@ def _anchor_session() -> Optional[str]:
         if _speech_history(1, session=sess, include_live=True):
             return sess
     # Idle: a bare pane id carries no Claude id, so resolve it from that pane's
-    # most recent clip (most-recent-first history).
+    # most recent clip — asked of the store directly, because the answer can be
+    # arbitrarily far back. Scanning the 50 newest clips globally looked
+    # equivalent and was not: this conversation went quiet for three days, 285
+    # clips landed on top of it, its pane fell out of the window, and every
+    # `--session` view silently widened to all conversations.
     pane = os.environ.get("TTS_POPUP_PANE", "")
     if pane:
-        for r in _speech_history(50):
-            rex = r.get("extras") or {}
-            if rex.get("source_pane") == pane and rex.get("source_session"):
-                return rex["source_session"]
+        sess = StateStore().session_for_pane(pane)
+        # Same guard as the now-playing branch above, and for the same reason:
+        # the store query sees rows the traversal filters out (a clip whose
+        # audio never rendered), and anchoring to a scope with nothing in it is
+        # what a dead keybinding is made of.
+        if sess and _speech_history(1, session=sess, include_live=True):
+            return sess
     return None
 
 

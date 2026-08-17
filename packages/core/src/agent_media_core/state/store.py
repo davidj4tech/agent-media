@@ -999,6 +999,35 @@ class StateStore:
             result.append(row)
         return result
 
+    def session_for_pane(self, pane: str) -> Optional[str]:
+        """The Claude session id that most recently spoke in `pane`, or None.
+
+        Answers the popup's "which conversation is this pane" question in one
+        query, instead of making the caller guess how far back to look. That
+        guess is what broke: the caller scanned the 50 most recent clips
+        globally, so a conversation that had been quiet for a while dropped out
+        of the window — 285 clips in the observed case — the anchor resolved to
+        nothing, and the clip list silently widened from this conversation to
+        every conversation.
+
+        Newest-first is the only honest answer this table can give. A pane
+        outlives the conversations that use it (tmux recycles pane ids, and one
+        observed pane had carried twelve), so "the last conversation to speak
+        here" is a heuristic, not an identity. Callers wanting certainty need a
+        pane→conversation mapping from something authoritative.
+        """
+        if not pane or "#{" in pane:
+            return None
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT json_extract(extras, '$.source_session') FROM history "
+                "WHERE sink = 'speech' "
+                "AND json_extract(extras, '$.source_pane') = ? "
+                "AND json_extract(extras, '$.source_session') IS NOT NULL "
+                "ORDER BY started_at DESC LIMIT 1", (pane,))
+            row = cur.fetchone()
+        return row[0] if row and row[0] else None
+
     # ---- errors -----------------------------------------------------------
 
     def recent_errors(self, *, component: Optional[str] = None,

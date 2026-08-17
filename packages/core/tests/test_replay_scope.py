@@ -61,3 +61,53 @@ def test_anchor_session_idle_resolves_caller_pane_conversation(env, monkeypatch)
     # Idle (no now_playing) + popup opened from %27 → conversation A.
     monkeypatch.setenv("TTS_POPUP_PANE", "%27")
     assert cli._anchor_session() == "aaa"
+
+
+def test_anchor_survives_a_conversation_going_quiet(env, monkeypatch):
+    """A pane's conversation must resolve however long ago it last spoke.
+
+    The regression: the idle branch scanned the 50 most recent clips globally,
+    so once enough other conversations spoke, the pane fell out of the window,
+    the anchor resolved to None and every `--session` view silently widened to
+    all conversations. Observed for real on 2026-08-17 — this session had been
+    quiet for three days with 285 clips on top of it, and its clip list showed
+    everybody's.
+    """
+    monkeypatch.setenv("TTS_POPUP_PANE", "%27")
+    for i in range(200):
+        env.add_history(sink="speech", uri=f"/noise{i}.mp3",
+                        started_at=100.0 + i, ended_at=100.0 + i,
+                        text=f"someone else {i}",
+                        extras={"source_pane": "%99", "source_tmux_session": "ts2",
+                                "source_session": "zzz",
+                                "clip_uris": [f"/noise{i}.mp3"]})
+    assert cli._anchor_session() == "aaa"
+
+
+def test_anchor_prefers_the_last_conversation_in_a_reused_pane(env, monkeypatch):
+    """tmux recycles pane ids, so a pane outlives its conversations.
+
+    One observed pane (%64) had carried twelve. The newest speaker is the only
+    answer this table can give, so assert that rather than pretending the pane
+    identifies a conversation.
+    """
+    monkeypatch.setenv("TTS_POPUP_PANE", "%27")
+    env.add_history(sink="speech", uri="/later.mp3", started_at=500.0,
+                    ended_at=500.0, text="a later conversation, same pane",
+                    extras={"source_pane": "%27", "source_tmux_session": "ts1",
+                            "source_session": "ccc", "clip_uris": ["/later.mp3"]})
+    assert cli._anchor_session() == "ccc"
+
+
+def test_anchor_ignores_clips_with_no_conversation(env, monkeypatch):
+    """Untagged clips in the pane must not shadow the tagged one below them."""
+    monkeypatch.setenv("TTS_POPUP_PANE", "%27")
+    env.add_history(sink="speech", uri="/untagged.mp3", started_at=400.0,
+                    ended_at=400.0, text="no source_session here",
+                    extras={"source_pane": "%27", "clip_uris": ["/untagged.mp3"]})
+    assert cli._anchor_session() == "aaa"
+
+
+def test_anchor_none_for_an_unexpanded_pane_literal(env, monkeypatch):
+    monkeypatch.setenv("TTS_POPUP_PANE", "#{pane_id}")
+    assert cli._anchor_session() is None
