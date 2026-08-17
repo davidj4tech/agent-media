@@ -103,7 +103,15 @@ def test_empty_question_is_not_announced(calls):
 
 @pytest.fixture
 def relay(monkeypatch, tmp_path):
-    """Pretend relay-msg is installed, and capture how it's called."""
+    """Pretend relay-msg is installed, and capture how it's called.
+
+    The box and sender are set here rather than inherited. They used to come
+    from whatever ~/.config/agent-media.env said, so these tests passed on a
+    machine configured for the relay and failed in CI, where post() found no
+    mailbox and returned before running anything.
+    """
+    monkeypatch.setenv("MEDIA_CONVERSE_MAILBOX", "cece")
+    monkeypatch.setenv("MEDIA_CONVERSE_MAILBOX_FROM", "sam")
     fake = tmp_path / "relay-msg"
     fake.write_text("#!/bin/sh\nexit 0\n")
     fake.chmod(0o755)

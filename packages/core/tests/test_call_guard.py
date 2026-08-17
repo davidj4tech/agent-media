@@ -828,6 +828,22 @@ class _MicServer:
         self.sock.close()
 
 
+def _wait_for(cond, tries=250):
+    """Wait for something to happen, without pinning how fast it happens.
+
+    The revive tests below used a flat sleep(0.3) against a 0.05s poll, which
+    is ample on this machine and was not on a loaded CI runner — the 3.11 job
+    failed while 3.12 passed on the same commit. A deadline keeps the assertion
+    ("it revived") and drops the accidental one ("within 300ms").
+    """
+    import time as _t
+    for _ in range(tries):
+        if cond():
+            return True
+        _t.sleep(0.02)
+    return cond()
+
+
 def _settle(source, want, tries=50):
     """Wait for the poller thread to catch up, without pinning a cadence."""
     import time as _t
@@ -989,8 +1005,8 @@ def test_revive_fires_once_down_long_enough(monkeypatch):
     source.start()
     try:
         assert _settle(source, False)
-        time.sleep(0.3)
-        assert calls, "endpoint down past the threshold should have revived"
+        assert _wait_for(lambda: bool(calls)), \
+            "endpoint down past the threshold should have revived"
         assert calls[0][:2] == ["am", "start"]
         # Rate limit: many failing polls, still one attempt.
         assert len(calls) == 1

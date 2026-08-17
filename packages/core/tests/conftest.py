@@ -41,6 +41,24 @@ def _no_remote_say(monkeypatch):
         monkeypatch.delenv(key, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _no_inherited_mailbox(monkeypatch):
+    """Same hazard as above, and it was live: the converse doorbell's mailbox.
+
+    `doorbell.post` reads MEDIA_CONVERSE_MAILBOX and does nothing when it is
+    unset, so two tests that asserted on the relay-msg argv passed here and
+    failed in CI — this developer's ~/.config/agent-media.env names the box
+    (`cece`) and the sender (`sam`), and something earlier in the suite loads
+    that file into os.environ for real. In isolation the same two tests failed
+    locally too, which is the tell: they were reading config, not fixtures.
+
+    Scrubbed by prefix like the remote-say keys, and deliberately not
+    MEDIA_CONVERSE_NOTIFY, which the notification tests set for themselves.
+    """
+    for key in [k for k in os.environ if k.startswith("MEDIA_CONVERSE_MAILBOX")]:
+        monkeypatch.delenv(key, raising=False)
+
+
 # Keep test transitions out of the production floor history.
 #
 # Same hazard as the fixtures in this file — real config, real side effect —
