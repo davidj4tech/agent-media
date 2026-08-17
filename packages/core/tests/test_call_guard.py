@@ -97,24 +97,41 @@ def test_sockets_overridable(monkeypatch):
     assert cfg.sockets == ["/a/x.sock", "/b/y.sock"]
 
 
+class _StubProc:
+    """Popen stand-in that returns canned output. Patch Popen, not run: the
+    query spawns its own process group so a timeout can kill the whole tree."""
+
+    def __init__(self, stdout="", returncode=0):
+        self.pid = 4242
+        self.returncode = returncode
+        self._stdout = stdout
+
+    def communicate(self, timeout=None):
+        return (self._stdout, "")
+
+    def kill(self):
+        pass
+
+
 def test_list_notifications_bad_json_returns_none(monkeypatch):
     cfg = call_guard.Config()
-
-    class _R:
-        returncode = 0
-        stdout = "not json{"
-    monkeypatch.setattr(call_guard.subprocess, "run", lambda *a, **k: _R())
+    monkeypatch.setattr(call_guard.subprocess, "Popen",
+                        lambda *a, **k: _StubProc("not json{"))
     assert call_guard.list_notifications(cfg) is None
 
 
 def test_list_notifications_empty_returns_empty_list(monkeypatch):
     cfg = call_guard.Config()
-
-    class _R:
-        returncode = 0
-        stdout = "   "
-    monkeypatch.setattr(call_guard.subprocess, "run", lambda *a, **k: _R())
+    monkeypatch.setattr(call_guard.subprocess, "Popen",
+                        lambda *a, **k: _StubProc("   "))
     assert call_guard.list_notifications(cfg) == []
+
+
+def test_list_notifications_nonzero_exit_returns_none(monkeypatch):
+    cfg = call_guard.Config()
+    monkeypatch.setattr(call_guard.subprocess, "Popen",
+                        lambda *a, **k: _StubProc("[]", returncode=1))
+    assert call_guard.list_notifications(cfg) is None
 
 
 def test_list_notifications_missing_binary_returns_none(monkeypatch):
@@ -122,7 +139,7 @@ def test_list_notifications_missing_binary_returns_none(monkeypatch):
 
     def _boom(*a, **k):
         raise FileNotFoundError("termux-notification-list")
-    monkeypatch.setattr(call_guard.subprocess, "run", _boom)
+    monkeypatch.setattr(call_guard.subprocess, "Popen", _boom)
     assert call_guard.list_notifications(cfg) is None
 
 
@@ -1175,3 +1192,70 @@ def test_idle_cadence_never_faster_than_the_busy_one(monkeypatch):
     monkeypatch.setenv("MEDIA_CALL_GUARD_POLL_S", "3")
     monkeypatch.setenv("MEDIA_CALL_GUARD_IDLE_POLL_S", "1")
     assert call_guard.Config().idle_poll_s == 3.0
+
+
+# --- notification query must not leak grandchildren -------------------------
+
+
+class _FakeProc:
+    """Popen stand-in whose communicate() times out the first time."""
+
+    def __init__(self, pid=4242, timeout_first=True):
+        self.pid = pid
+        self.returncode = 0
+        self._timeout_first = timeout_first
+        self.calls = 0
+        self.killed = False
+
+    def communicate(self, timeout=None):
+        self.calls += 1
+        if self._timeout_first and self.calls == 1:
+            raise call_guard.subprocess.TimeoutExpired("cmd", timeout)
+        return ("[]", "")
+
+    def kill(self):
+        self.killed = True
+
+
+def test_notification_timeout_kills_the_whole_process_group(monkeypatch):
+    # termux-notification-list is a shell wrapper -> termux-api -> app_process.
+    # Killing only the direct child orphans the grandchildren, which is how 18
+    # stale termux-api helpers accumulated on p8a in a single uptime.
+    cfg = call_guard.Config()
+    proc = _FakeProc()
+    groups = []
+    monkeypatch.setattr(call_guard.subprocess, "Popen",
+                        lambda *a, **k: proc)
+    monkeypatch.setattr(call_guard.os, "killpg",
+                        lambda pgid, sig: groups.append((pgid, sig)))
+    assert call_guard.list_notifications(cfg) is None
+    assert groups == [(proc.pid, call_guard.signal.SIGKILL)]
+    # And it reaps, so the killed child does not become a zombie instead.
+    assert proc.calls == 2
+
+
+def test_notification_query_runs_in_its_own_session(monkeypatch):
+    # start_new_session is what makes the pid usable as a process-group id;
+    # without it killpg would signal OUR group, i.e. the guard itself.
+    cfg = call_guard.Config()
+    seen = {}
+
+    def _popen(*_a, **kw):
+        seen.update(kw)
+        return _FakeProc(timeout_first=False)
+    monkeypatch.setattr(call_guard.subprocess, "Popen", _popen)
+    assert call_guard.list_notifications(cfg) == []
+    assert seen.get("start_new_session") is True
+
+
+def test_notification_kill_falls_back_when_killpg_denied(monkeypatch):
+    # A device that refuses killpg must still not leave the child running.
+    cfg = call_guard.Config()
+    proc = _FakeProc()
+    monkeypatch.setattr(call_guard.subprocess, "Popen", lambda *a, **k: proc)
+
+    def _denied(*_a):
+        raise PermissionError("nope")
+    monkeypatch.setattr(call_guard.os, "killpg", _denied)
+    assert call_guard.list_notifications(cfg) is None
+    assert proc.killed is True

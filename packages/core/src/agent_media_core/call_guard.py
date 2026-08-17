@@ -487,17 +487,43 @@ def list_notifications(cfg: Config) -> list[dict] | None:
     (Termux:API missing, notification access not granted, timeout, bad JSON) —
     the caller treats ``None`` as "unknown this cycle" and does nothing, so a
     transient hiccup never spuriously re-arms or double-pauses.
+
+    Runs in its own process group so a timeout can kill the whole tree.
+    ``termux-notification-list`` is a shell wrapper that spawns ``termux-api``,
+    which spawns ``app_process``; ``subprocess.run(timeout=...)`` kills only the
+    direct child, so on every timeout the grandchildren survived and reparented
+    to init. Measured on p8a 2026-08-17: **18 orphaned ``termux-api
+    NotificationList`` helpers**, the oldest 5h24m into a 6h24m uptime,
+    accumulating a few an hour and never exiting. They sit idle rather than
+    burning CPU, so this reads as memory and swap pressure, not load — and it
+    is why a snapshot of `ps` appears to catch a poll "always running" when the
+    poll itself is seconds apart.
     """
     try:
-        r = subprocess.run(
+        proc = subprocess.Popen(
             cfg.list_cmd.split(),
-            capture_output=True, text=True, timeout=10.0,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            start_new_session=True,
         )
+    except (OSError, ValueError):
+        return None
+    try:
+        stdout, _ = proc.communicate(timeout=10.0)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (OSError, PermissionError):
+            proc.kill()
+        try:
+            proc.communicate(timeout=5.0)   # reap, so it is not left a zombie
+        except (subprocess.SubprocessError, OSError):
+            pass
+        return None
     except (OSError, subprocess.SubprocessError):
         return None
-    if r.returncode != 0:
+    if proc.returncode != 0:
         return None
-    out = (r.stdout or "").strip()
+    out = (stdout or "").strip()
     if not out:
         return []
     try:
