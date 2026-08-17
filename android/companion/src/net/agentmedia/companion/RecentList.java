@@ -51,6 +51,15 @@ final class RecentList {
          * chapter}, the same one the clip picker taps.
          */
         final long id;
+        /**
+         * Which conversation said it, and what that conversation is called.
+         *
+         * Speech only, and empty everywhere else — a track has no conversation.
+         * The id is the grouping key because it survives a session being
+         * resumed into another window; the name is only what to write on it.
+         */
+        final String session;
+        final String window;
 
         Item(String label, String channel, String contentType, String uri, String ago) {
             this(label, channel, contentType, uri, ago, 0.0, 0L);
@@ -63,6 +72,13 @@ final class RecentList {
 
         Item(String label, String channel, String contentType, String uri,
              String ago, double startedAt, long id) {
+            this(label, channel, contentType, uri, ago, startedAt, id, "", "");
+        }
+
+        Item(String label, String channel, String contentType, String uri,
+             String ago, double startedAt, long id, String session, String window) {
+            this.session = session == null ? "" : session;
+            this.window = window == null ? "" : window;
             this.label = label;
             this.channel = channel;
             this.contentType = contentType;
@@ -132,7 +148,8 @@ final class RecentList {
                                  str(r.get("content_type")), str(r.get("uri")),
                                  str(r.get("ago")),
                                  Json.asDouble(r.get("started_at"), 0.0),
-                                 (long) Json.asDouble(r.get("id"), 0.0)));
+                                 (long) Json.asDouble(r.get("id"), 0.0),
+                                 str(r.get("session")), str(r.get("window"))));
             }
         } catch (RuntimeException e) {
             return Collections.emptyList();

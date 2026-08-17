@@ -28,6 +28,8 @@ public final class RecentRowsTest {
         testTitleRescuesQueryWreckage();
         testAnEmptyLabelFallsBackToTheUri();
         testUnplayableRowsSayWhy();
+        testSpeechGroupsByConversation();
+        testAConversationWithNoNameIsStillItsOwn();
 
         System.out.println();
         if (failures.isEmpty()) {
@@ -167,6 +169,63 @@ public final class RecentRowsTest {
         RecentList.Item playable = item("A Long Set", "music", at(17, 20, 0));
         check("a playable row keeps its own subtitle",
                 RecentRows.subtitle(playable).equals(playable.subtitle()));
+    }
+
+    private static RecentList.Item clip(String text, long ms, String session,
+                                        String window) {
+        return new RecentList.Item(text, "speech", "", "", "1h", ms / 1000.0,
+                                   1L, session, window);
+    }
+
+    private static void testSpeechGroupsByConversation() {
+        // Two conversations interleaved clip for clip — the case that decides
+        // this: broken at each change it would be six headings and no grouping.
+        List<RecentList.Item> items = Arrays.asList(
+                clip("newest", at(17, 21, 0), "aaa", "add C function"),
+                clip("theirs", at(17, 20, 0), "bbb", "call guard roles"),
+                clip("mine again", at(17, 19, 0), "aaa", "add C function"),
+                clip("theirs again", at(17, 18, 0), "bbb", "call guard roles"));
+        List<RecentRows.Entry> rows = RecentRows.byConversation(items);
+        check("one heading per conversation", countHeadings(rows) == 2);
+        check("the one heard last comes first",
+                rows.get(0).heading.startsWith("add C function"));
+        check("and it counts its clips",
+                rows.get(0).heading.endsWith("· 2 clips"));
+        check("its clips follow it, in order",
+                rows.get(1).item.label.equals("newest")
+                && rows.get(2).item.label.equals("mine again"));
+        check("then the other conversation",
+                rows.get(3).heading.startsWith("call guard roles"));
+        // The rows keep the clock they would have had under day headings: a
+        // conversation is a time bucket too, and you still scan down the times.
+        check("rows still carry a clock", rows.get(1).clock.equals("21:00"));
+    }
+
+    private static void testAConversationWithNoNameIsStillItsOwn() {
+        // Clips predating the window field: calling both "untagged" would merge
+        // on screen what the grouping just took the trouble to keep apart.
+        List<RecentList.Item> items = Arrays.asList(
+                clip("one", at(17, 21, 0), "abcd1234", ""),
+                clip("two", at(17, 20, 0), "wxyz9876", ""));
+        List<RecentRows.Entry> rows = RecentRows.byConversation(items);
+        check("still two groups", countHeadings(rows) == 2);
+        check("named by a stub of the session id",
+                rows.get(0).heading.startsWith("…1234")
+                && rows.get(2).heading.startsWith("…9876"));
+
+        // A spoken reminder from cron has no session at all, only the window it
+        // was spoken from — and two machines' reminders are not one conversation.
+        List<RecentRows.Entry> cron = RecentRows.byConversation(Arrays.asList(
+                clip("moon enters Libra", at(17, 21, 0), "", "red5"),
+                clip("describe digest", at(17, 20, 0), "", "agent-digest-pane")));
+        check("no session falls back to the window", countHeadings(cron) == 2);
+        check("each named for its own", cron.get(0).heading.startsWith("red5"));
+
+        List<RecentRows.Entry> none = RecentRows.byConversation(
+                Arrays.asList(clip("orphan", at(17, 21, 0), "", "")));
+        check("and an untagged clip says so",
+                none.get(0).heading.startsWith("untagged"));
+        check("one clip is not 1 clips", none.get(0).heading.endsWith("· 1 clip"));
     }
 
     private static int countHeadings(List<RecentRows.Entry> rows) {

@@ -135,6 +135,7 @@ public class RecentActivity extends Activity {
     }
 
     private void render(List<RecentList.Item> items, Loopback.Reply reply) {
+        boolean speech = "speech".equals(channel);
         rows.removeAllViews();
         if (items.isEmpty()) {
             // An empty tab is not a broken listener: say which of the two it is.
@@ -143,8 +144,14 @@ public class RecentActivity extends Activity {
                            : RecentList.emptyReason(reply));
             return;
         }
-        status.setText(items.size() + " items · tap to play again");
-        for (RecentRows.Entry e : RecentRows.group(items, System.currentTimeMillis())) {
+        status.setText(items.size() + (speech ? " clips · tap to hear again"
+                                             : " items · tap to play again"));
+        // Speech groups by conversation, everything else by day: the day is
+        // the bucket you remember playing something in, and the conversation
+        // is the one you remember it being said in.
+        for (RecentRows.Entry e : speech
+                ? RecentRows.byConversation(items)
+                : RecentRows.group(items, System.currentTimeMillis())) {
             rows.addView(e.isHeading() ? headingView(e.heading) : rowView(e));
         }
         // Something to stop the last row sitting against the bottom edge.

@@ -2,6 +2,7 @@ package net.agentmedia.companion;
 
 import java.util.ArrayList;
 import java.util.Calendar;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 
@@ -75,6 +76,84 @@ final class RecentRows {
             out.add(new Entry(null, item, at > 0 ? clock(at) : ""));
         }
         return out;
+    }
+
+    /**
+     * The same list, grouped by conversation instead of by day.
+     *
+     * For speech, and only for speech. A day is the right bucket for what you
+     * played — you remember Saturday, not which conversation a track came from
+     * — and a conversation is the right one for what was said. It is usually a
+     * time bucket too; it just has a name on it.
+     *
+     * Conversations are collected rather than broken at each change, because
+     * two of them running side by side interleave clip for clip, and a list
+     * that starts a new heading on every other row has grouped nothing. Order
+     * is first appearance, so the one you heard last is at the top — the same
+     * shape the popup's ^a view has had all along.
+     *
+     * Keyed by session id, not by name: a conversation resumed into another
+     * window is the same conversation, and two windows can share a name.
+     * Falling back to the window when there is no id keeps the sources that
+     * have never had one apart — the reminders a cron job speaks carry no
+     * session at all, and lumping every machine's into one group would be this
+     * screen inventing a conversation that never happened.
+     */
+    static List<Entry> byConversation(List<RecentList.Item> items) {
+        List<Entry> out = new ArrayList<Entry>();
+        if (items == null) return out;
+        LinkedHashMap<String, List<RecentList.Item>> groups =
+                new LinkedHashMap<String, List<RecentList.Item>>();
+        for (RecentList.Item item : items) {
+            String key = item.session == null ? "" : item.session;
+            if (key.isEmpty() && item.window != null && !item.window.isEmpty()) {
+                key = "window:" + item.window;
+            }
+            List<RecentList.Item> grp = groups.get(key);
+            if (grp == null) {
+                grp = new ArrayList<RecentList.Item>();
+                groups.put(key, grp);
+            }
+            grp.add(item);
+        }
+        for (java.util.Map.Entry<String, List<RecentList.Item>> e : groups.entrySet()) {
+            List<RecentList.Item> grp = e.getValue();
+            out.add(new Entry(conversation(e.getKey(), grp), null, null));
+            for (RecentList.Item item : grp) {
+                long at = item.startedAtMs();
+                out.add(new Entry(null, item, at > 0 ? clock(at) : ""));
+            }
+        }
+        return out;
+    }
+
+    /**
+     * What to write on a conversation: its window, else a stub of its id.
+     *
+     * Clips predating the window field still belong to distinct conversations,
+     * and calling all of them "untagged" would merge on screen what the
+     * grouping just took the trouble to keep apart.
+     */
+    private static String conversation(String session, List<RecentList.Item> grp) {
+        String name = "";
+        for (RecentList.Item item : grp) {
+            if (item.window != null && !item.window.isEmpty()) {
+                name = item.window;
+                break;
+            }
+        }
+        if (name.isEmpty()) {
+            name = session == null || session.isEmpty()
+                    || session.startsWith("window:")
+                   ? "untagged" : "…" + tail(session, 4);
+        }
+        if (name.length() > 28) name = name.substring(0, 28).trim() + "…";
+        int n = grp.size();
+        return name + " · " + n + (n == 1 ? " clip" : " clips");
+    }
+
+    private static String tail(String s, int n) {
+        return s.length() <= n ? s : s.substring(s.length() - n);
     }
 
     /** "Today", "Yesterday", or "Mon 11 Aug" for anything older. */

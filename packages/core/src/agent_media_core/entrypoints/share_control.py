@@ -451,17 +451,29 @@ def picker_rows(rows: list) -> list:
     `start_ms` is always None. It is an offset into one track and these are not
     one track; the clock time in the title is what tells two turns apart, and
     it is what the popup's browser shows too.
+
+    A list that spans conversations carries a ▪window label in each title, and
+    one that does not carries none — the same rule `media history --lines`
+    follows, and for the same reason: interleaved conversations have to stay
+    tellable apart, and a label repeated down a list that is all one
+    conversation is noise saying nothing. The conversation is on the row as
+    well (`session`, `window`), for a surface that can group by it instead.
     """
     out = []
+    spans = len({r.get("session") or "" for r in rows}) > 1
     for r in rows:
         text = (r.get("text") or "")[:110] or "(no text)"
+        window = str(r.get("window") or "")
+        label = f" ▪{window[:18]}" if spans and window else ""
         out.append({"number": r.get("number"),
-                    "title": f"{r.get('ts', '')}  {text}",
+                    "title": f"{r.get('ts', '')}{label}  {text}",
                     "at": float(r.get("at") or 0.0),
                     # The words alone, for the card's heading. The list already
                     # answers "what was said last"; a second reader for that
                     # one line is how the heading and the list disagreed.
                     "text": text,
+                    "session": r.get("session") or "",
+                    "window": window,
                     "start_ms": None,
                     "current": bool(r.get("current")),
                     "ref": str(r.get("id"))})

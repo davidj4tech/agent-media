@@ -177,6 +177,27 @@ dbg_flash() {
 tty_line() { stty echo icanon 2>/dev/null || true; }
 tty_raw()  { stty -echo -icanon min 1 time 0 2>/dev/null || true; }
 
+# Read one typed line from a prompt. Sets TYPED; returns 1 when cancelled.
+#
+# Esc is not a key at these prompts and cannot be: the line is read in
+# canonical mode, so the terminal hands it over only at Enter and everything
+# before that — Esc included — is a byte in the buffer. The `a` prompt said
+# "Esc cancels" and pressing it typed a character instead, which is the label
+# describing a keybinding nobody had written.
+#
+# It is written here, as far as canonical mode allows: nothing anyone types
+# into these prompts contains a raw escape, so a line carrying one is somebody
+# reaching for cancel, and Esc-then-Enter now does what the word says. Bare Esc
+# still waits for the Enter, which is why the prompts say "empty cancels" — the
+# part that is true of every key.
+read_typed() {
+    TYPED=""
+    local t=""
+    IFS= read -r t || return 1
+    case "$t" in *$'\033'*) return 1 ;; esac
+    TYPED="$t"
+}
+
 # Put the tty in raw, no-echo mode for the popup's whole lifetime. Without this
 # the terminal only suppresses echo *during* each `read -s`; mouse-report bytes
 # that arrive while we're elsewhere (e.g. mid-fetch, or the release event after
@@ -662,10 +683,13 @@ typed_seek() {
     printf '\033[H\033[2J\033[?25h'                 # clear + show cursor
     printf ' %s seek › H:MM:SS · +90 · -5:00\r\n ➜ ' "$CHANNEL"
     tty_line                                        # echo + line editing for the prompt
-    local t; IFS= read -r t
+    local t="" ok=0
+    read_typed || ok=1
+    t="$TYPED"
     tty_raw
     printf '\033[?25l'                              # re-hide cursor
     mouse_on
+    [ "$ok" -ne 0 ] && return                       # Esc cancels
     # `--` ends option parsing so a relative "-5:00" isn't taken as a flag
     # (argparse only treats a bare "-5" as a number, not "-5:00").
     [ -n "$t" ] && $MEDIA "$CHANNEL" seek -- "$t" >/dev/null 2>&1
@@ -693,10 +717,13 @@ typed_open() {
         printf ' %s open › paste/type a URL (Enter cancels)\r\n ➜ ' "$CHANNEL"
     fi
     tty_line                                        # echo + line editing for the prompt
-    IFS= read -r t
+    local ok=0
+    read_typed || ok=1
+    t="$TYPED"
     tty_raw
     printf '\033[?25l'                              # re-hide cursor
     mouse_on
+    [ "$ok" -ne 0 ] && return                       # Esc cancels, buffer and all
     [ -z "$t" ] && t="$url"                         # bare Enter accepts the buffer URL
     [ -n "$t" ] && $MEDIA "$CHANNEL" play "$t" >/dev/null 2>&1
 }
@@ -713,12 +740,15 @@ typed_ask() {
     local t=""
     mouse_off
     printf '\033[H\033[2J\033[?25h'                 # clear + show cursor
-    printf ' ask pi › %s\r\n [Enter] send · Esc cancels\r\n ➜ ' "$CHANNEL"
+    printf ' ask pi › %s\r\n [Enter] send · empty cancels\r\n ➜ ' "$CHANNEL"
     tty_line                                        # echo + line editing for the prompt
-    IFS= read -r t
+    local ok=0
+    read_typed || ok=1
+    t="$TYPED"
     tty_raw
     printf '\033[?25l'                              # re-hide cursor
     mouse_on
+    [ "$ok" -ne 0 ] && return                       # Esc cancels
     [ -z "$t" ] && return                           # empty question cancels
     # open-pi builds the context blurb server-side and opens a new window; land
     # on it so you're at the pi prompt.

@@ -281,6 +281,13 @@ def recent_rows(query: str = "") -> list:
                 "label": (r.get("text") or "").strip(),
                 "ago": _ago(now - at) if at else "",
                 "started_at": at,
+                # Which conversation said it. A list of spoken turns groups by
+                # that rather than by day: the day is the right bucket for what
+                # you played, and the conversation is the right one for what
+                # was said — and it is usually a time bucket anyway, with a
+                # name on it.
+                "session": r.get("session") or "",
+                "window": r.get("window") or "",
             })
     if not channel:
         rows.sort(key=lambda r: r["started_at"], reverse=True)
