@@ -119,7 +119,7 @@ public class MainActivity extends Activity {
         run.setText("running…");
         LOG.setLength(0);
         new Thread(() -> {
-            trials.runAll(url());
+            trials.runAll(url(), MainActivity::report);
             handler.post(() -> {
                 run.setEnabled(true);
                 run.setText("Run the five trials again");

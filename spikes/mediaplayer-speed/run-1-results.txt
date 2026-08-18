@@ -1,0 +1,32 @@
+# received 07:51:50
+clip: http://100.103.43.93:8780/audio/20260803T215131-3758518-b95094--claude-code--000.mp3
+cached 434880 bytes in clip.mp3 for the local-file trial
+
+--- 1  http 1.0x
+prepared in 8117ms, duration 72480ms
+player reports speed 0.0, pitch 1.0
+FAIL  1  http 1.0x  want 1.0  said 0.0  measured 0.904  (9.6% off, 7232ms in 8001ms)
+
+--- 2  http 1.6x from the start
+prepared in 8017ms, duration 72480ms
+player reports speed 1.6, pitch 1.0
+PASS  2  http 1.6x from the start  want 1.6  said 1.6  measured 1.602  (0.1% off, 12822ms in 8002ms)
+
+--- 3  http 1.0x -> 1.6x mid-play
+prepared in 7966ms, duration 72480ms
+changing speed mid-play, position 1722ms
+player reports speed 1.6, pitch 1.0
+PASS  3  http 1.0x -> 1.6x mid-play  want 1.6  said 1.6  measured 1.6  (0.0% off, 12802ms in 8003ms)
+
+--- 4  http 2.0x
+prepared in 11350ms, duration 72480ms
+player reports speed 2.0, pitch 1.0
+PASS  4  http 2.0x  want 2.0  said 2.0  measured 1.998  (0.1% off, 15983ms in 8001ms)
+
+--- 5  file 1.6x
+prepared in 52ms, duration 72480ms
+player reports speed 1.6, pitch 1.0
+PASS  5  file 1.6x  want 1.6  said 1.6  measured 1.599  (0.1% off, 12793ms in 8000ms)
+
+4/5 trials held the requested speed; 1  http 1.0x did not. Judge the ear test before concluding, then see the handover: this is the Media3 branch.
+Now use LISTEN at 1.6x and judge the pitch by ear — the rate being right is necessary, not sufficient.

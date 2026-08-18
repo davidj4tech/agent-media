@@ -63,6 +63,17 @@ final class SpeedTrials {
     /** How long trial 3 plays at 1.0 before the speed is changed underneath it. */
     private static final long BEFORE_CHANGE_MS = 3000;
 
+    /**
+     * Where a finished run is posted, so the numbers outlive the app.
+     *
+     * Learned the hard way on the first device run: the readout server lives in
+     * the process, and closing the app took the whole table with it. A minute
+     * of playing out loud is too expensive to lose to a swipe, so the run
+     * ships itself to red5 the moment it finishes and the loopback port becomes
+     * the live view rather than the only copy.
+     */
+    private static final String POST_TO = "http://100.103.43.93:8782/";
+
     interface Log {
         void line(String text);
     }
@@ -90,8 +101,12 @@ final class SpeedTrials {
         cancelled = true;
     }
 
-    /** Blocking; call on a worker thread. */
-    void runAll(String url) {
+    /**
+     * Blocking; call on a worker thread.
+     *
+     * @param report the whole on-screen log, read once at the end and posted
+     */
+    void runAll(String url, java.util.function.Supplier<String> reportText) {
         cancelled = false;
         results.clear();
         log.line("clip: " + url);
@@ -107,6 +122,13 @@ final class SpeedTrials {
         }
 
         trial("1  http 1.0x", url, 1.0f, 0);
+        if (local != null) {
+            // The control the first device run lacked. 1.0x over HTTP measured
+            // 0.904 there while every faster trial was exact, which is the
+            // signature of a rebuffer rather than a speed the player could not
+            // hold — but a spike should demonstrate that, not deduce it.
+            trial("1b file 1.0x", local.toURI().toString(), 1.0f, 0);
+        }
         trial("2  http 1.6x from the start", url, 1.6f, 0);
         trial("3  http 1.0x -> 1.6x mid-play", url, 1.6f, BEFORE_CHANGE_MS);
         trial("4  http 2.0x", url, 2.0f, 0);
@@ -118,6 +140,31 @@ final class SpeedTrials {
         log.line(Measure.verdict(results()));
         log.line("Now use LISTEN at 1.6x and judge the pitch by ear — the rate "
                 + "being right is necessary, not sufficient.");
+        post(reportText.get());
+    }
+
+    /** Hand the finished table to whoever is waiting on red5. Best effort. */
+    private void post(String report) {
+        HttpURLConnection c = null;
+        try {
+            c = (HttpURLConnection) URI.create(POST_TO).toURL().openConnection();
+            c.setConnectTimeout(5000);
+            c.setReadTimeout(10000);
+            c.setDoOutput(true);
+            c.setRequestMethod("POST");
+            c.setRequestProperty("Content-Type", "text/plain; charset=utf-8");
+            byte[] body = report.getBytes("UTF-8");
+            c.setFixedLengthStreamingMode(body.length);
+            try (OutputStream os = c.getOutputStream()) {
+                os.write(body);
+            }
+            log.line("posted to " + POST_TO + " -> " + c.getResponseCode());
+        } catch (Exception e) {
+            log.line("posting the results failed: " + describe(e)
+                    + " (they are still on 127.0.0.1:" + Readout.PORT + ")");
+        } finally {
+            if (c != null) c.disconnect();
+        }
     }
 
     /**
@@ -133,10 +180,20 @@ final class SpeedTrials {
         log.line("--- " + name);
         MediaPlayer mp = null;
         String error = null;
+        final int[] stalls = new int[1];
         double reported = -1;
         long posDelta = -1, wallDelta = 0;
         try {
             mp = fresh();
+            // The framework says when it stops for bytes, so the spike no
+            // longer has to infer it from a low rate.
+            mp.setOnInfoListener((player, what, extra) -> {
+                if (what == MediaPlayer.MEDIA_INFO_BUFFERING_START) {
+                    stalls[0]++;
+                    log.line("rebuffering at " + player.getCurrentPosition() + "ms");
+                }
+                return false;
+            });
             long t0 = SystemClock.elapsedRealtime();
             mp.setDataSource(source);
             mp.prepare();
@@ -185,7 +242,8 @@ final class SpeedTrials {
         } finally {
             release(mp);
         }
-        Measure m = new Measure(name, speed, reported, posDelta, wallDelta, error);
+        Measure m = new Measure(name, speed, reported, posDelta, wallDelta,
+                                error, stalls[0]);
         results.add(m);
         log.line(m.line());
     }

@@ -33,15 +33,27 @@ public class MeasureTest {
         failures += check("an unmeasurable rate is -1",
                 m(1.6, 1.6, 1600, 1000).rate() == -1);
 
+        Measure rebuffered = new Measure("t", 1.0, 0.0, 7232, 8001, null, 1);
+        failures += check("the device run's 1.0x control reads as a rebuffer",
+                rebuffered.stalledNotSlow() && !rebuffered.passed());
+        failures += check("a clean miss with no stall is still the player's fault",
+                !new Measure("t", 1.6, 1.6, 9440, 8000, null, 0).stalledNotSlow());
+        failures += check("a stall that still held the speed is just a pass",
+                new Measure("t", 1.6, 1.6, 12800, 8000, null, 2).passed());
+
         List<Measure> all = new ArrayList<Measure>();
         all.add(m(1.0, 1.0, 8000, 8000));
         all.add(m(1.6, 1.6, 12800, 8000));
         failures += check("all-pass reads as the no-Gradle branch",
                 Measure.verdict(all).contains("no-Gradle build survives"));
+        all.add(rebuffered);
+        failures += check("a rebuffered trial does not send us to Media3",
+                !Measure.verdict(all).contains("Media3")
+                        && Measure.verdict(all).contains("fetch the clip"));
         all.add(m(2.0, 2.0, 9440, 8000));
-        failures += check("one failure names it and points at Media3",
+        failures += check("a real miss still names it and points at Media3",
                 Measure.verdict(all).contains("Media3")
-                        && Measure.verdict(all).contains("2/3"));
+                        && Measure.verdict(all).contains("2/4"));
 
         System.out.println(failures == 0 ? "MeasureTest ok" : failures + " failed");
         if (failures != 0) System.exit(1);
