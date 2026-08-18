@@ -85,6 +85,7 @@ final class SpeedTrials {
 
     private volatile MediaPlayer listening;
     private volatile boolean cancelled;
+    private volatile boolean muted;
 
     SpeedTrials(File cacheDir, Log log) {
         this.cacheDir = cacheDir;
@@ -102,6 +103,23 @@ final class SpeedTrials {
     }
 
     /**
+     * Play at zero gain — a run that measures without filling the room.
+     *
+     * Safe for the numbers, and worth saying why rather than asserting it:
+     * speed is applied by the time-stretcher inside the playback pipeline and
+     * gain is applied at the track's output, so muting removes the sound after
+     * the clock has already been set. The measurement samples media position,
+     * which does not know what the volume is.
+     *
+     * What it does cost is the half of this spike an instrument cannot do:
+     * pitch and artefacts need an ear, and a muted run cannot be listened to.
+     * So mute the repeat runs, not the first one.
+     */
+    void setMuted(boolean on) {
+        muted = on;
+    }
+
+    /**
      * Blocking; call on a worker thread.
      *
      * @param report the whole on-screen log, read once at the end and posted
@@ -109,7 +127,7 @@ final class SpeedTrials {
     void runAll(String url, java.util.function.Supplier<String> reportText) {
         cancelled = false;
         results.clear();
-        log.line("clip: " + url);
+        log.line("clip: " + url + (muted ? "  (muted — measuring only)" : ""));
 
         File local = null;
         try {
@@ -272,6 +290,7 @@ final class SpeedTrials {
                 .setUsage(AudioAttributes.USAGE_MEDIA)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                 .build());
+        if (muted) mp.setVolume(0f, 0f);
         return mp;
     }
 

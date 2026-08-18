@@ -1,6 +1,7 @@
 package net.agentmedia.speedspike;
 
 import android.app.Activity;
+import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.os.Bundle;
@@ -38,11 +39,8 @@ public class MainActivity extends Activity {
             "http://100.103.43.93:8780/audio/"
             + "20260803T215131-3758518-b95094--claude-code--000.mp3";
 
-    private static final StringBuilder LOG = new StringBuilder();
-
     private final Handler handler = new Handler(Looper.getMainLooper());
     private SpeedTrials trials;
-    private Readout readout;
     private EditText urlField;
     private TextView logView;
     private Button run;
@@ -50,9 +48,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle saved) {
         super.onCreate(saved);
-        trials = new SpeedTrials(getCacheDir(), this::log);
-        readout = new Readout(() -> report());
-        readout.start();
+        trials = Spike.trials(this);
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -73,7 +69,7 @@ public class MainActivity extends Activity {
 
         run = new Button(this);
         run.setText("Run the five trials (~1 min, out loud)");
-        run.setOnClickListener(v -> start());
+        run.setOnClickListener(v -> start(false));
         root.addView(run);
 
         LinearLayout listen = new LinearLayout(this);
@@ -102,7 +98,7 @@ public class MainActivity extends Activity {
     }
 
     @Override
-    protected void onNewIntent(android.content.Intent intent) {
+    protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
         autorun(intent);
@@ -119,17 +115,19 @@ public class MainActivity extends Activity {
      *   ssh p8a am start -n net.agentmedia.speedspike/.MainActivity --ez run true
      * </pre>
      *
+     * {@code --ez mute true} runs it at zero gain, for the repeat runs that
+     * only want the numbers back.</pre>
+     *
      * which, with the results posting themselves to red5 when the run ends,
      * closes the loop entirely. Installing a new build still needs a human:
      * {@code pm install} from Termux dies on "Reverse mode only supported from
      * shell", and shell uid means adb.
      */
-    private void autorun(android.content.Intent intent) {
+    private void autorun(Intent intent) {
         if (intent == null || !intent.getBooleanExtra("run", false)) return;
         String url = intent.getStringExtra("url");
         if (url != null && !url.trim().isEmpty()) urlField.setText(url.trim());
-        log("started by intent");
-        start();
+        start(intent.getBooleanExtra("mute", false));
     }
 
     /** A listen button: play at this speed, or nudge what is already playing. */
@@ -146,17 +144,20 @@ public class MainActivity extends Activity {
         return b;
     }
 
-    private void start() {
-        run.setEnabled(false);
-        run.setText("running…");
-        LOG.setLength(0);
-        new Thread(() -> {
-            trials.runAll(url(), MainActivity::report);
-            handler.post(() -> {
-                run.setEnabled(true);
-                run.setText("Run the five trials again");
-            });
-        }, "speed-trials").start();
+    /**
+     * Hand the run to the foreground service rather than running it here.
+     *
+     * The activity is the wrong owner: background it and the process is frozen
+     * a minute later, mid-trial. See {@link Spike}.
+     */
+    private void start(boolean muted) {
+        run.setText("running… (see the notification)");
+        Intent i = new Intent(this, SpikeService.class)
+                .putExtra("run", true)
+                .putExtra("mute", muted)
+                .putExtra("url", url());
+        startForegroundService(i);
+        handler.postDelayed(() -> run.setText("Run the five trials again"), 3000);
     }
 
     private String url() {
@@ -164,21 +165,16 @@ public class MainActivity extends Activity {
         return s.isEmpty() ? DEFAULT_URL : s;
     }
 
-    private void log(String line) {
-        synchronized (LOG) {
-            LOG.append(line).append('\n');
+    /** The log lives in {@link Spike} now, so poll it rather than be told. */
+    private final Runnable tick = new Runnable() {
+        @Override public void run() {
+            logView.setText(Spike.report());
+            handler.postDelayed(this, 700);
         }
-        handler.post(this::redraw);
-    }
+    };
 
     private void redraw() {
-        logView.setText(report());
-    }
-
-    private static String report() {
-        synchronized (LOG) {
-            return LOG.length() == 0 ? "(no run yet)" : LOG.toString();
-        }
+        logView.setText(Spike.report());
     }
 
     private TextView text(String s, float size, int colour) {
@@ -190,11 +186,22 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    protected void onResume() {
+        super.onResume();
+        handler.post(tick);
+    }
+
+    @Override
+    protected void onPause() {
+        handler.removeCallbacks(tick);
+        super.onPause();
+    }
+
+    @Override
     protected void onDestroy() {
         // Deliberately not stopping playback on rotate/background: the ear test
         // wants to keep playing while the screen is off, which is also a small
         // free answer about what a real in-app player would need.
-        readout.stop();
         super.onDestroy();
     }
 }

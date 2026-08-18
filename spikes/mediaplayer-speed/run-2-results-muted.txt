@@ -1,0 +1,42 @@
+# received 08:32:47
+clip: http://100.103.43.93:8780/audio/20260803T215131-3758518-b95094--claude-code--000.mp3  (muted — measuring only)
+cached 434880 bytes in clip.mp3 for the local-file trial
+
+--- 1  http 1.0x
+prepared in 9687ms, duration 72480ms
+rebuffering at 18ms
+rebuffering at 4ms
+player reports speed 1.0, pitch 1.0
+PASS  1  http 1.0x  want 1.0  said 1.0  measured 1.0  (0.0% off, 8002ms in 8002ms)  [2 rebuffers]
+
+--- 1b file 1.0x
+prepared in 44ms, duration 72480ms
+player reports speed 1.0, pitch 1.0
+PASS  1b file 1.0x  want 1.0  said 1.0  measured 1.0  (0.0% off, 8001ms in 8002ms)
+
+--- 2  http 1.6x from the start
+prepared in 8675ms, duration 72480ms
+player reports speed 1.6, pitch 1.0
+PASS  2  http 1.6x from the start  want 1.6  said 1.6  measured 1.602  (0.1% off, 12819ms in 8001ms)
+
+--- 3  http 1.0x -> 1.6x mid-play
+prepared in 8474ms, duration 72480ms
+rebuffering at 6ms
+rebuffering at 15ms
+rebuffering at 7ms
+changing speed mid-play, position 1627ms
+player reports speed 1.6, pitch 1.0
+PASS  3  http 1.0x -> 1.6x mid-play  want 1.6  said 1.6  measured 1.6  (0.0% off, 12798ms in 8001ms)  [3 rebuffers]
+
+--- 4  http 2.0x
+prepared in 9820ms, duration 72480ms
+player reports speed 2.0, pitch 1.0
+PASS  4  http 2.0x  want 2.0  said 2.0  measured 1.998  (0.1% off, 15982ms in 8001ms)
+
+--- 5  file 1.6x
+prepared in 78ms, duration 72480ms
+player reports speed 1.6, pitch 1.0
+PASS  5  file 1.6x  want 1.6  said 1.6  measured 1.598  (0.2% off, 12782ms in 8001ms)
+
+MediaPlayer holds the requested speed on all 6 trials — the no-Gradle build survives.
+Now use LISTEN at 1.6x and judge the pitch by ear — the rate being right is necessary, not sufficient.
