@@ -397,6 +397,8 @@ def test_the_card_says_which_conversation_said_it(monkeypatch):
     monkeypatch.setattr(
         "agent_media_core.cli._speech_display_state",
         lambda **kw: (True, None, None, False, False, None, False))
+    monkeypatch.setattr("agent_media_core.sinks._mpv_ipc.get_properties",
+                        lambda sock, names, **kw: {})
     monkeypatch.setattr(sc, "_clips", lambda *a, **kw: [
         {"text": "a reply", "window": "add C function", "ref": "1"}])
     got = sc._speech()
@@ -410,6 +412,8 @@ def test_a_clip_with_no_conversation_says_none(monkeypatch):
     monkeypatch.setattr(
         "agent_media_core.cli._speech_display_state",
         lambda **kw: (True, None, None, False, False, None, False))
+    monkeypatch.setattr("agent_media_core.sinks._mpv_ipc.get_properties",
+                        lambda sock, names, **kw: {})
     monkeypatch.setattr(sc, "_clips", lambda *a, **kw: [
         {"text": "moon enters Libra", "window": "", "ref": "1"}])
     assert sc._speech()["conversation"] is None
@@ -421,17 +425,49 @@ def test_every_channel_has_the_field(monkeypatch):
     assert sc._blank("music")["conversation"] is None
 
 
-def test_the_speech_card_knows_its_own_volume(monkeypatch):
-    # The channel published a `volume` verb and the card had a place to show
-    # one; the field was left None, so both buttons worked and said nothing —
-    # which reads exactly like two buttons that do not work.
+def _player(monkeypatch, **props):
+    """The speech broker answering one batched read."""
     monkeypatch.setattr(
         "agent_media_core.cli._speech_display_state",
         lambda **kw: (False, 12.0, 90.0, False, False, 1.0, True))
     monkeypatch.setattr("agent_media_core.cli._sock", lambda: "/tmp/none.sock")
-    monkeypatch.setattr("agent_media_core.sinks._mpv_ipc.get_property",
-                        lambda sock, prop, **kw: 150.0 if prop == "volume" else None)
+    monkeypatch.setattr("agent_media_core.sinks._mpv_ipc.get_properties",
+                        lambda sock, names, **kw: dict(props))
+
+
+def test_the_speech_card_knows_its_own_volume(monkeypatch):
+    # The channel published a `volume` verb and the card had a place to show
+    # one; the field was left None, so both buttons worked and said nothing —
+    # which reads exactly like two buttons that do not work.
+    _player(monkeypatch, volume=150.0)
     assert sc._speech()["volume"] == 150
+
+
+def test_the_card_reads_the_player_before_the_history(monkeypatch):
+    # What makes it keep up: the clip list is the origin's, cached for twenty
+    # seconds and fetched over ssh, so a card fed from it showed the previous
+    # reply for most of a minute and could never follow the sentence being
+    # spoken. The broker has both, written as it speaks.
+    _player(monkeypatch, volume=150.0,
+            **{"user-data/agent-media/text": "the sentence being spoken",
+               "media-title": "add C function"})
+    monkeypatch.setattr(sc, "_clips",
+                        lambda *a, **kw: pytest.fail("history was asked first"))
+    got = sc._speech()
+    assert got["title"] == "the sentence being spoken"
+    assert got["conversation"] == "add C function"
+
+
+def test_a_player_with_nothing_to_say_falls_back_to_the_history(monkeypatch):
+    # A broker that restarted since the last reply, or a lane that never wrote
+    # these. The history survives the player, and on a render host it is asked
+    # of the origin — slower, older, still right.
+    _player(monkeypatch, volume=150.0)
+    monkeypatch.setattr(sc, "_clips", lambda *a, **kw: [
+        {"text": "what was said before", "window": "add C function", "ref": "1"}])
+    got = sc._speech()
+    assert got["title"] == "what was said before"
+    assert got["conversation"] == "add C function"
 
 
 def test_a_player_that_cannot_be_asked_still_draws_the_card(monkeypatch):
@@ -439,10 +475,11 @@ def test_a_player_that_cannot_be_asked_still_draws_the_card(monkeypatch):
         "agent_media_core.cli._speech_display_state",
         lambda **kw: (False, 12.0, 90.0, False, False, 1.0, True))
 
-    def boom(sock, prop, **kw):
+    def boom(sock, names, **kw):
         raise OSError("no socket")
 
-    monkeypatch.setattr("agent_media_core.sinks._mpv_ipc.get_property", boom)
+    monkeypatch.setattr("agent_media_core.sinks._mpv_ipc.get_properties", boom)
+    monkeypatch.setattr(sc, "_clips", lambda *a, **kw: [])
     assert sc._speech()["volume"] is None
 
 

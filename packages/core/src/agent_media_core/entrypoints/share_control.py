@@ -287,34 +287,52 @@ def _speech() -> dict:
         log.debug("speech snapshot failed: %s", e)
         return out
     try:
+        # Three answers in one round trip to the player.
+        #
         # The level, which nothing here ever reported: the channel published a
         # `volume` verb, the card had a place to show one, and the field was
         # left at None — so the two buttons worked and said nothing, which
         # reads exactly like two buttons that do not work. Music and book get
         # theirs from their own status readers; speech has no reader but the
         # player, so ask it.
+        #
+        # And the words and the conversation, which the coordinator writes onto
+        # the broker as it speaks (`sinks/speech.py`, TEXT_PROPERTY and
+        # TITLE_PROPERTY). Reading them here rather than out of the clip list
+        # is what makes the card keep up: the list is the origin's, cached for
+        # twenty seconds and fetched over ssh, so a card fed from it showed the
+        # previous reply for most of a minute — and it could never follow the
+        # sentence being spoken, which the shade's card has done since it
+        # started reading the same two properties.
         from ..cli import _sock
         from ..sinks import _mpv_ipc as ipc
+        from ..sinks.speech import TEXT_PROPERTY
 
-        level = ipc.get_property(_sock(), "volume")
+        live = ipc.get_properties(_sock(), ["volume", TEXT_PROPERTY,
+                                            "media-title"])
+        level = live.get("volume")
         if level is not None:
             out["volume"] = int(round(float(level)))
+        said = str(live.get(TEXT_PROPERTY) or "").strip()
+        if said:
+            out["title"] = said[:120]
+            out["conversation"] = str(live.get("media-title") or "").strip() or None
     except Exception as e:  # noqa: BLE001
-        log.debug("speech volume read failed: %s", e)
-    try:
-        # The words come from wherever the conversation is. On the origin that
-        # is this store; on a render host it is a hub away, and reading locally
-        # is how the phone came to caption today's audio with July's sentence.
-        rows = _clips()
-        if rows:
-            text = (rows[0].get("text") or "").strip()
-            out["title"] = text.splitlines()[0][:120] if text else None
-            # And which conversation said it. The words answer "what is this"
-            # and leave "who was that to" open; the card has a line for each,
-            # and until now the second one was spent on nothing.
-            out["conversation"] = (rows[0].get("window") or "").strip() or None
-    except Exception:  # noqa: BLE001
-        pass
+        log.debug("speech player read failed: %s", e)
+    if not out["title"]:
+        try:
+            # Nothing on the player to read — a broker that has restarted since
+            # the last reply, or a lane that never wrote these. The history is
+            # the older, slower answer and still the right one: it survives the
+            # player, and on a render host it is asked of the origin, which is
+            # where the words are.
+            rows = _clips()
+            if rows:
+                text = (rows[0].get("text") or "").strip()
+                out["title"] = text.splitlines()[0][:120] if text else None
+                out["conversation"] = (rows[0].get("window") or "").strip() or None
+        except Exception:  # noqa: BLE001
+            pass
     try:
         from ..state import StateStore
 
