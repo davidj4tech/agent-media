@@ -125,6 +125,7 @@ public class RecentActivity extends Activity {
                 status.setText("loading…");
                 rows.removeAllViews();
                 load();
+                restartBeat();   // a new tab restarts the clock, not doubles it
             }
         }, TABS);
         root.addView(tabs.build());
@@ -156,6 +157,41 @@ public class RecentActivity extends Activity {
         // phone — a share, a spoken reply, David asking Sam — may have played
         // since this was last open, and a stale list is worse than a slow one.
         load();
+        restartBeat();
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        main.removeCallbacks(beat);
+    }
+
+    /**
+     * Reload while the screen is open.
+     *
+     * Entry-only refresh was right for a list of things you played, and wrong
+     * for a list of things being said: the turn you are listening to is not in
+     * it — history is written when a turn ends — so the screen you opened to
+     * watch a conversation on froze on the clip before the one you could hear.
+     * A beat is a fetch like any other, so the newest conversation unfolds
+     * itself as it always has — and stays shut if that is where you left it,
+     * which is what `folded` is for. Nothing you opened or closed moves.
+     *
+     * The hub's own clip list is cached for twenty seconds, so asking much
+     * faster than this would mostly re-read that cache.
+     */
+    private static final long BEAT_MS = 15000;
+
+    private final Runnable beat = new Runnable() {
+        @Override public void run() {
+            load();
+            main.postDelayed(this, BEAT_MS);
+        }
+    };
+
+    private void restartBeat() {
+        main.removeCallbacks(beat);
+        main.postDelayed(beat, BEAT_MS);
     }
 
     private void load() {
