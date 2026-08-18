@@ -46,6 +46,20 @@ focus, the OWUI transparency + chat scrim land, and the `?eink=1` path is white
 with the canvas in DU4 e-ink mode. Results in `bg-results.json`; ports override
 via `MEDIA_BG_PORT` / `MEDIA_BG_PROXY_PORT`. Same `/input`+`/ctl` route-blocks.
 
+## band-harness.js — the subtitle band
+
+```sh
+node band-harness.js             # 8 checks, ~15s, screenshots band-*.png
+```
+
+Over a **fitted** image (a figure) the spoken sentence stops being a pill
+floating on the labels and becomes a bottom band the picture yields room for:
+`body.subband` + `--subband` / `--figres` (measured in JS from the band's own
+height and the docks stacked on it). Asserts no overlap at one line and at
+three, the band flush to the bottom edge, the reply dock above the band and
+clear of the picture, and cover art keeping the old pill. Port override
+`MEDIA_BAND_PORT`. This one aborts `/events` — see the file header.
+
 ## Gotchas
 
 - **`/input` is always route-intercepted in the browser.** With

@@ -1,4 +1,8 @@
 
+  /* --subband: height of the subtitle band. --figres: the whole bottom strip
+     the fitted picture yields — the band plus the docks stacked on top of it,
+     so a narrated figure is never written on by anything. Both in JS. */
+  :root { --subband: 0px; --figres: 0px; }
   html, body { margin:0; height:100%; background:#000; overflow:hidden; }
   .layer {
     position: fixed; inset: 0; width: 100vw; height: 100vh;
@@ -9,7 +13,14 @@
   /* Fit-within-screen: the whole image visible, letterboxed on black.
      Figures get this by default (their edge labels are content — cover
      crops them on small screens); the fit button forces it for everything. */
-  .layer.fit { object-fit: contain; background: #000; }
+  .layer.fit { object-fit: contain; background: #000;
+               transition: opacity 1.8s ease, height .35s ease; }
+  /* Subtitle band: while a FITTED image (a figure) is up and there are words
+     to show, the picture yields the bottom strip instead of being written on.
+     Shrink via `height`, not `bottom`: .layer pins height:100vh (which would
+     win over-constrained), and `height:auto` on an <img> means its intrinsic
+     height, not "whatever top/bottom leave". contain re-letterboxes to fit. */
+  body.subband .layer.fit { height: calc(100vh - var(--figres)); }
   /* A figure whose session ISN'T the one speaking dims to backdrop — it's
      still there, but no longer claims to illustrate the current voice. */
   .layer.stale { filter: brightness(.3) saturate(.5); }
@@ -73,6 +84,9 @@
     background: rgba(10,10,10,.55); backdrop-filter: blur(12px);
     opacity: 0; transition: opacity 1s ease; pointer-events: none;
   }
+  body.subband #cap {
+    bottom: calc(var(--subband) + max(2vh, env(safe-area-inset-bottom)) + 98px);
+  }
   #cap.on { opacity: 1; }
   #cap.hide { opacity: 0; }
   #dot {
@@ -92,6 +106,21 @@
     opacity: 0; transition: opacity .5s ease; pointer-events: none;
   }
   #sub.on { opacity: 1; }
+  /* ...but over a figure it stops being a floating pill and becomes the band
+     the image just made room for: full width, flat to the bottom edge, with a
+     hairline where the picture ends. --subband is measured in JS from this
+     element's own height, so a three-line sentence pushes the figure up
+     rather than spilling back over it. */
+  body.subband #sub {
+    left: 0; right: 0; bottom: 0; transform: none; max-width: none;
+    padding: .7em 5vw calc(.7em + env(safe-area-inset-bottom));
+    border-radius: 0; background: rgba(6,6,6,.86);
+    border-top: 1px solid rgba(255,233,168,.22);
+    transition: opacity .35s ease;
+  }
+  html.eink body.subband #sub {
+    background: #fff; border-top: 1.5px solid #000;
+  }
   /* Figure badge: this image says something — it isn't wallpaper. */
   #fig {
     position: fixed; top: max(12px, env(safe-area-inset-top)); left: 16px;
@@ -181,6 +210,10 @@
     transition: opacity .25s ease, background .2s ease, box-shadow .2s ease;
     opacity: .5;                               /* dim while resting (PASSIVE) */
   }
+  /* The reply dock and the caption ride up on top of the band — the band is
+     text, and nothing translucent should sit on text being read aloud. */
+  body.subband #inp { bottom: calc(var(--subband) + 14px); }
+  body.subband #agents { bottom: calc(var(--subband) + 6px); }
   #inp.on { opacity: 1; background: rgba(10,10,10,.74);
             box-shadow: 0 0 0 2px rgba(255,215,95,.75); }  /* INPUT focus ring */
   #inp.under { opacity: 0; pointer-events: none; }  /* CONTROL: controller takes the dock */

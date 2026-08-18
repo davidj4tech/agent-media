@@ -58,6 +58,53 @@
     if (fit) el.style.animation = 'none';
   }
 
+  // ---- subtitle band -------------------------------------------------------
+  // A figure's labels ARE the message, so the sentence stops floating over
+  // them: while a fitted image is on screen with subtitles up, the image box
+  // shrinks by exactly the band's own height and the words take the strip.
+  // Ambient (cover) art keeps the old floating pill — there's nothing to hide.
+  // Ask the DOM which image is actually up rather than trusting a flag: two
+  // shows can be in flight at once (a late /last replay racing a fresh push),
+  // and their onloads land in whatever order the images decode.
+  function bandOn() {
+    const el = document.querySelector('.layer.on');
+    return !!el && el.classList.contains('fit') && $('sub').classList.contains('on');
+  }
+  function updBand() {
+    const on = bandOn();
+    document.body.classList.toggle('subband', on);
+    // Measure AFTER the class lands: the band's padding/width differ from the
+    // pill's, so a pill-sized reading would under-reserve on a long sentence.
+    const css = document.documentElement.style;
+    const band = on ? $('sub').offsetHeight : 0;
+    css.setProperty('--subband', band + 'px');
+    // The docks ride up on the band, so they'd land back on the picture. While
+    // a figure is being narrated the reserve covers them too — for that minute
+    // the picture is smaller and completely unobscured, which is the trade the
+    // whole band exists to make.
+    let stack = band;
+    for (const [id, gap] of [['inp', 14], ['agents', 6]]) {
+      const el = $(id);
+      if (!on || !el.offsetHeight) continue;              // display:none → 0
+      if (getComputedStyle(el).opacity === '0') continue;  // faded out (CONTROL)
+      stack = Math.max(stack, band + gap + el.offsetHeight);
+    }
+    css.setProperty('--figres', stack + 'px');
+  }
+  // Re-reserve whenever anything in the bottom stack changes size (a sentence
+  // rewraps, the reply box grows a row, the agent tree expands) or is shown /
+  // hidden by a mode change (class flips on the same elements).
+  const stackEls = [$('sub'), $('inp'), $('agents')];
+  if (window.ResizeObserver) {
+    const ro = new ResizeObserver(() => { if (bandOn()) updBand(); });
+    for (const el of stackEls) ro.observe(el);
+  }
+  if (window.MutationObserver) {
+    const mo = new MutationObserver(() => { if (bandOn()) updBand(); });
+    for (const el of stackEls.slice(1))
+      mo.observe(el, { attributes: true, attributeFilter: ['class'] });
+  }
+
   function show(d) {
     const back = 1 - front;
     const el = layers[back];
@@ -73,6 +120,7 @@
       el.classList.add('on');
       layers[front].classList.remove('on');
       front = back;
+      updBand();
       if (d.caption) {
         $('cap').textContent = d.caption;
         $('cap').classList.add('on');
@@ -177,6 +225,7 @@
     const show = !!(text && subsOn());
     if (show) $('sub').textContent = text;
     $('sub').classList.toggle('on', show);
+    updBand();
     if (show) $('cap').classList.add('hide');
     else if (!visible) $('cap').classList.remove('hide');
   }
