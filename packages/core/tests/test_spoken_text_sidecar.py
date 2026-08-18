@@ -51,7 +51,8 @@ def test_sidecar_and_now_playing_lifecycle(state_env, monkeypatch):
         def pre_pause_remote(self):
             pass
 
-        def before_speech(self, title="", priority=""):
+        def before_speech(self, title="", priority="", defer_music=False,
+                          text=""):
             pass
 
         def after_speech(self):

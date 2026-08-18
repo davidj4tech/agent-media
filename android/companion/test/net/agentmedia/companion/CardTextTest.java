@@ -20,7 +20,8 @@ public final class CardTextTest {
         testMusicPrefersTheArtist();
         testMusicFallsBackToTheQueue();
         testMusicSaysNothingRatherThanUnknown();
-        testSpeechCountsWhatIsWaiting();
+        testSpeechNamesTheConversation();
+        testAParkedClipIsNotAQueue();
         testSpeechWhileSpeaking();
         testBookCountsDown();
         testBookWithoutADuration();
@@ -57,19 +58,47 @@ public final class CardTextTest {
                 CardText.music(null, -1, 0).isEmpty());
     }
 
-    private static void testSpeechCountsWhatIsWaiting() {
-        check("one waiting", "1 reply waiting".equals(CardText.speech(1, false)));
-        check("three waiting", "3 replies waiting".equals(CardText.speech(3, false)));
-        check("an empty broker says nothing", CardText.speech(0, false).isEmpty());
+    private static void testSpeechNamesTheConversation() {
+        // The title carries the words now, so the line under it answers the
+        // question the words leave open: who was that to.
+        check("the conversation leads",
+                "add C function".equals(
+                        CardText.speech(1, true, true, false, "add C function")));
+        check("with a pile behind it",
+                "add C function · 2 more waiting".equals(
+                        CardText.speech(3, true, true, false, "add C function")));
+        // Parked after the reply: the entry is still there, the pile is not.
+        check("and stands alone without one",
+                "add C function".equals(
+                        CardText.speech(1, false, true, false, "add C function")));
+        check("no conversation, just the pile",
+                "2 more waiting".equals(CardText.speech(2, false, true, true, "")));
+        check("and nothing at all is empty",
+                CardText.speech(0, false, false, false, "").isEmpty());
+    }
+
+    private static void testAParkedClipIsNotAQueue() {
+        // The bug this rewrite is for: mpv keeps the entry of a clip that has
+        // finished — it parks the last one open — so an idle player reports
+        // one, and the card said "1 reply waiting" for the rest of the day.
+        check("idle says nothing",
+                CardText.speech(1, false, false, false, "").isEmpty());
+        check("parked and running says nothing either",
+                CardText.speech(1, false, true, false, "").isEmpty());
+        // Paused with entries behind it is what a hold looks like, and that is
+        // a real pile.
+        check("a hold is a pile",
+                "1 more waiting".equals(CardText.speech(1, false, true, true, "")));
     }
 
     private static void testSpeechWhileSpeaking() {
         // The open clip is in the count, so "1" mid-reply means nothing behind it.
-        check("speaking, nothing behind", "speaking".equals(CardText.speech(1, true)));
+        check("speaking, nothing behind",
+                CardText.speech(1, true, true, false, "").isEmpty());
         check("speaking, one behind",
-                "speaking · 1 more waiting".equals(CardText.speech(2, true)));
+                "1 more waiting".equals(CardText.speech(2, true, true, false, "")));
         check("speaking, several behind",
-                "speaking · 3 more waiting".equals(CardText.speech(4, true)));
+                "3 more waiting".equals(CardText.speech(4, true, true, false, "")));
     }
 
     private static void testBookCountsDown() {

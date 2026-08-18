@@ -104,7 +104,8 @@ class _RecordingCoord:
     def pre_pause_remote(self):
         pass
 
-    def before_speech(self, title="", priority=""):
+    def before_speech(self, title="", priority="", defer_music=False,
+                          text=""):
         self.before += 1
 
     def after_speech(self):

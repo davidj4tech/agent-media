@@ -2584,7 +2584,7 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
         # music that opens before anything fills it.
         coordinator.before_speech(title=source_window,
                                   priority=event.priority.value,
-                                  defer_music=True)
+                                  defer_music=True, text=text)
         # ...and a renderer that announces nothing (Android TTS, a bare `say`)
         # would then never duck at all. So the wait is bounded: whichever comes
         # first, the announcement or this, applies it exactly once.
@@ -3017,7 +3017,7 @@ def submit_event(event: Event,
         _nav_flag_path(target).unlink(missing_ok=True)
         try:
             coordinator.before_speech(title=source_window,
-                                  priority=event.priority.value)
+                                  priority=event.priority.value, text=text)
             # Speech-started breadcrumb — the moment we commit to feeding the
             # broker. Its "end" twin is in the finally below, so every exit
             # (finished, superseded, yielded-then-done, error) closes the pair.
@@ -3548,7 +3548,7 @@ def submit_stream(sentences,
 
                 if not before_called:
                     coordinator.before_speech(title=source_window,
-                                  priority=event.priority.value)
+                                  priority=event.priority.value, text=text)
                     before_called = True
 
                 durations[i] = _clip_duration(clip_path)

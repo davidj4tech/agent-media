@@ -44,18 +44,44 @@ final class CardText {
         return "";
     }
 
-    /** The speech card's second line. */
-    static String speech(int queued, boolean speaking) {
-        // While a clip is playing the queue count includes it, so the honest
-        // reading of queued=1 mid-reply is "this one, nothing after".
-        if (speaking) {
-            int after = queued - 1;
-            if (after == 1) return "speaking · 1 more waiting";
-            if (after > 1) return "speaking · " + after + " more waiting";
-            return "speaking";
-        }
-        if (queued == 1) return "1 reply waiting";
-        if (queued > 1) return queued + " replies waiting";
+    /**
+     * The speech card's second line: which conversation, and what is stacked up.
+     *
+     * The conversation leads, because the title now carries the words and the
+     * question the words leave open is "who was that to". The pile follows only
+     * when there is one.
+     *
+     * <h4>What a pile is, and what it is not</h4>
+     *
+     * The count is mpv's {@code playlist-count}, and mpv keeps the entry of a
+     * clip that has finished — it parks the last one open rather than clearing
+     * it. So a player sitting idle after a reply reports one, and this card
+     * used to read that as "1 reply waiting" and say so for the rest of the
+     * day. Nothing was waiting; the reply had been given hours ago.
+     *
+     * A pile is therefore only claimed when the player is holding one: mid-
+     * reply with clips after this one, or paused with entries behind it, which
+     * is what a hold looks like. Loaded-and-running-and-not-speaking is the
+     * parked case, and it means nothing at all.
+     */
+    static String speech(int queued, boolean speaking, boolean loaded,
+                         boolean paused, String conversation) {
+        String pile = pile(queued, speaking, loaded, paused);
+        String who = conversation == null ? "" : conversation.trim();
+        if (who.isEmpty()) return pile;
+        if (pile.isEmpty()) return who;
+        return who + " · " + pile;
+    }
+
+    private static String pile(int queued, boolean speaking, boolean loaded,
+                               boolean paused) {
+        if (!loaded) return "";
+        // Mid-reply the count includes the clip being spoken, so the honest
+        // reading of one is "this one, nothing after".
+        int waiting = speaking ? queued - 1 : queued;
+        if (!speaking && !paused) return "";   // parked, not held
+        if (waiting == 1) return "1 more waiting";
+        if (waiting > 1) return waiting + " more waiting";
         return "";
     }
 

@@ -244,11 +244,25 @@ final class SideChannel {
      * the popup shows.
      */
     private String title() {
+        // The words themselves, where the coordinator sent them: a phone has
+        // room for what was said, and that is what its own list shows. The
+        // conversation is not lost — it moves to the second line.
+        if ("speech".equals(name)) {
+            String words = state.replyText;
+            if (words != null && !words.trim().isEmpty()) return words.trim();
+        }
         String t = state.mediaTitle;
         // Then the clip that just played: a card that outlives its clip is only
         // worth having if it still names it. See MpvState#lastTitle.
         if (t == null || t.trim().isEmpty()) t = state.lastTitle();
         return (t == null || t.trim().isEmpty()) ? label : t.trim();
+    }
+
+    /** Which conversation this reply belongs to — mpv's own title field. */
+    private String conversationName() {
+        String t = state.mediaTitle;
+        if (t == null || t.trim().isEmpty()) t = state.lastTitle();
+        return t == null ? "" : t.trim();
     }
 
     /** Has this channel played anything worth keeping on the card? */
@@ -301,7 +315,14 @@ final class SideChannel {
     private String subtitle() {
         if (note != null) return note;
         if ("speech".equals(name)) {
-            return CardText.speech(state.queued, state.speaking);
+            // The conversation, unless the title is already showing it — which
+            // it is whenever the words never arrived (an older coordinator, or
+            // a reply with nothing to say for itself).
+            String words = state.replyText;
+            String conversation = (words == null || words.trim().isEmpty())
+                                  ? "" : conversationName();
+            return CardText.speech(state.queued, state.speaking, state.loaded(),
+                                   state.paused, conversation);
         }
         if ("book".equals(name)) {
             return CardText.book(state.durationMs(), state.positionMs());

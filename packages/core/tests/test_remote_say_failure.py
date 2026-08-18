@@ -37,7 +37,8 @@ def _run(store, monkeypatch, cmd):
 
     class _Coord:
         def pre_pause_remote(self): pass
-        def before_speech(self, title="", priority="", defer_music=False): pass
+        def before_speech(self, title="", priority="", defer_music=False,
+                      text=""): pass
         # Deferred and applied when the far side says it is about to play.
         def duck_music_now(self): pass
         def after_speech(self): pass

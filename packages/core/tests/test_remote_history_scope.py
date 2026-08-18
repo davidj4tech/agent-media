@@ -31,7 +31,8 @@ def store(tmp_path, monkeypatch):
 
 class _Coord:
     def pre_pause_remote(self): pass
-    def before_speech(self, title="", priority="", defer_music=False): pass
+    def before_speech(self, title="", priority="", defer_music=False,
+                      text=""): pass
     # The lane defers its duck and applies it when the far side says it is
     # about to play; a double that cannot be asked would break the utterance.
     def duck_music_now(self): pass

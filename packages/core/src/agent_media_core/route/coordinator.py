@@ -183,6 +183,23 @@ class Coordinator:
         except RuntimeError:  # pragma: no cover — executor shut down
             pass
 
+    def _reply_text(self, text: str) -> None:
+        """Carry the reply's own words to the broker, beside its title.
+
+        The title is the conversation, which is what a display with one line
+        should show and what tells two replies apart. The words are what the
+        phone's own list shows. Neither is the other's substitute, so both are
+        sent and the surface picks.
+        """
+        if not (text or "").strip():
+            return
+        speech_target = Target(name=(
+            os.environ.get("MEDIA_SPEECH_DEFAULT_TARGET") or "local"))
+        try:
+            self._flag_writer.submit(_speech.set_reply_text, text, speech_target)
+        except RuntimeError:  # pragma: no cover — executor shut down
+            pass
+
     def _priority(self, priority: str) -> None:
         """Carry this reply's priority to the broker, for the phone to read.
 
@@ -322,7 +339,7 @@ class Coordinator:
         return self.music.now_playing_uri(self.music_target)
 
     def before_speech(self, title: str = "", priority: str = "",
-                      defer_music: bool = False) -> None:
+                      defer_music: bool = False, text: str = "") -> None:
         """Apply interruption for whatever sink-music is currently
         playing. Records baseline volume + position so after_speech can
         restore.
@@ -342,12 +359,17 @@ class Coordinator:
         because a caller with nothing to call the reply is not a caller with a
         problem: the display keeps its own fallback.
 
+        ``text`` is the reply itself, for a surface with room to show what was
+        said rather than which conversation said it. Both travel: see
+        `_reply_text`.
+
         ``priority`` says how much interruption this reply is worth, and the
         phone chooses between waiting for a gap, asking David with a card, and
         taking the room. Empty means normal, which is what an ordinary answer
         to a question is.
         """
         self._title(title)
+        self._reply_text(text)
         self._priority(priority)
         # Source-agnostic rooms duck, applied first and independent of the
         # Mopidy now-playing gate below: lower the Snapcast music stream so the

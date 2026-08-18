@@ -38,6 +38,8 @@ final class MpvState {
     volatile String priority = "normal";
     /** Clips on the broker's playlist, the open one included. See MpvIpc. */
     volatile int queued = 0;
+    /** The reply's own words, when the coordinator sent them. */
+    volatile String replyText = null;
     /** Who the open track is by, when its tags say. Null when they do not. */
     volatile String artist = null;
     /** Where the open track sits in the queue, zero-based; -1 for nothing. */
@@ -106,6 +108,13 @@ final class MpvState {
                 if (v == null || v.trim().isEmpty()) v = "normal";
                 if (v.equals(priority)) return false;
                 priority = v;
+                return true;
+            }
+            case MpvIpc.TEXT_PROPERTY: {
+                String v = Json.asString(value);
+                if (v != null && v.trim().isEmpty()) v = null;
+                if (eq(v, replyText)) return false;
+                replyText = v;
                 return true;
             }
             case MpvIpc.QUEUE_PROPERTY: {

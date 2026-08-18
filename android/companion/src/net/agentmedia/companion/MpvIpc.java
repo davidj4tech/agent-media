@@ -74,6 +74,17 @@ final class MpvIpc {
     static final String QUEUE_PROPERTY = "playlist-count";
 
     /**
+     * The reply's own words —
+     * `agent_media_core.sinks.speech.TEXT_PROPERTY`, first line, clipped.
+     *
+     * {@code media-title} names the conversation, which is the right answer for
+     * a display with one line and no other context — a car, a watch. It is not
+     * an answer to "what did he just say", and the phone has room for that. So
+     * both are sent and each surface takes the one it can use.
+     */
+    static final String TEXT_PROPERTY = "user-data/agent-media/text";
+
+    /**
      * What the music connection keeps a live subscription to.
      *
      * Below the constants it names rather than at the top of the class, which
@@ -102,7 +113,7 @@ final class MpvIpc {
      */
     static final String[] OBSERVED_SPEECH = {
         "idle-active", "pause", "path", "media-title", SPEAKING_PROPERTY,
-        PRIORITY_PROPERTY, QUEUE_PROPERTY,
+        PRIORITY_PROPERTY, QUEUE_PROPERTY, TEXT_PROPERTY,
     };
 
     /**

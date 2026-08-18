@@ -156,6 +156,24 @@ def set_priority(priority: str, target: Target = DEFAULT_TARGET) -> bool:
 #: car display both read `media-title`, and a rendered clip's is its filename.
 TITLE_PROPERTY = "force-media-title"
 
+#: mpv `user-data` key carrying the words of the reply itself.
+#:
+#: `media-title` names the *conversation* — that is what a car display has room
+#: for and what tells two replies from different windows apart. It does not say
+#: what was said, and the phone's own list does. Two surfaces, two answers to
+#: "what is this", and no way to have both from one field.
+#:
+#: So the words ride beside it. `user-data` because that is the channel the app
+#: already watches for the speaking flag and the priority: observable,
+#: arbitrary, no script and no new port. A display that knows nothing about it
+#: is unaffected — it keeps reading `media-title`, which still says what it
+#: always said.
+TEXT_PROPERTY = "user-data/agent-media/text"
+
+#: A card is two lines on a phone and one on some head units. Longer than this
+#: is not a title, it is the reply pretending to be one.
+TEXT_MAX = 120
+
 
 def set_media_title(title: str, target: Target = DEFAULT_TARGET) -> bool:
     """Name this reply on the speech broker, for anything that shows a title.
@@ -183,6 +201,28 @@ def set_media_title(title: str, target: Target = DEFAULT_TARGET) -> bool:
         return True
     except (ipc.MpvIpcError, OSError) as e:
         log.debug("sink-speech: media title failed: %s", e)
+        return False
+
+
+def set_reply_text(text: str, target: Target = DEFAULT_TARGET) -> bool:
+    """Put the reply's own words on the broker, for a display with room for them.
+
+    First line only, and clipped: what a card can show is a phrase, and a
+    paragraph arriving in a metadata field is a paragraph scrolling across
+    somebody's dashboard. Best-effort like the title beside it — worth having,
+    never worth delaying a sentence for.
+    """
+    line = (text or "").strip().splitlines()
+    first = line[0].strip() if line else ""
+    if not first:
+        return False
+    if len(first) > TEXT_MAX:
+        first = first[:TEXT_MAX - 1].rstrip() + "…"
+    try:
+        ipc.set_property(_socket_for(target), TEXT_PROPERTY, first)
+        return True
+    except (ipc.MpvIpcError, OSError) as e:
+        log.debug("sink-speech: reply text failed: %s", e)
         return False
 
 
