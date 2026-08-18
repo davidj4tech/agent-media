@@ -98,6 +98,38 @@ public class MainActivity extends Activity {
 
         setContentView(root);
         redraw();
+        autorun(getIntent());
+    }
+
+    @Override
+    protected void onNewIntent(android.content.Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        autorun(intent);
+    }
+
+    /**
+     * Start the trials from an intent, so a run costs no tap.
+     *
+     * {@code am start} is one of the few system commands still open to a
+     * non-shell uid from Termux, and this phone has no adb — so this extra is
+     * the difference between "David, open the app and press the button" and
+     *
+     * <pre>
+     *   ssh p8a am start -n net.agentmedia.speedspike/.MainActivity --ez run true
+     * </pre>
+     *
+     * which, with the results posting themselves to red5 when the run ends,
+     * closes the loop entirely. Installing a new build still needs a human:
+     * {@code pm install} from Termux dies on "Reverse mode only supported from
+     * shell", and shell uid means adb.
+     */
+    private void autorun(android.content.Intent intent) {
+        if (intent == null || !intent.getBooleanExtra("run", false)) return;
+        String url = intent.getStringExtra("url");
+        if (url != null && !url.trim().isEmpty()) urlField.setText(url.trim());
+        log("started by intent");
+        start();
     }
 
     /** A listen button: play at this speed, or nudge what is already playing. */
