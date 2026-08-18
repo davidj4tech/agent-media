@@ -20,6 +20,15 @@ final class Marquee {
     /** Columns a card title gets before Android ellipsises it. Measured, not derived. */
     static final int WIDTH = 30;
 
+    /**
+     * Columns the second line gets. Wider than the title, because it is set in
+     * a smaller face — but a guess, unlike WIDTH, and deliberately a
+     * conservative one: too narrow only means a shorter window crawling over
+     * the same text, while too wide means the tail is ellipsised where the
+     * scroll cannot reach it.
+     */
+    static final int SUB_WIDTH = 38;
+
     /** Columns per second. One is readable and is what the status line uses. */
     static final double CPS = 1.0;
 

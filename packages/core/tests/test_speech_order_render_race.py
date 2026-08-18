@@ -39,6 +39,7 @@ class _Coord:
                           text=""):
         pass
 
+    def speaking_line(self, text=""): pass
     def after_speech(self):
         pass
 

@@ -1086,7 +1086,7 @@ class _SentenceFollower:
 
     def __init__(self, state: StateStore, target_name: str, started_at: float,
                  sentences: list[str], *, pane: str, highlight: bool,
-                 delay_s: float):
+                 delay_s: float, on_sentence=None):
         self.state = state
         self.target_name = target_name
         self.started_at = started_at
@@ -1094,6 +1094,9 @@ class _SentenceFollower:
         self.pane = pane
         self.highlight = highlight
         self.delay_s = delay_s
+        # Told each time the sentence changes, so a display somewhere else can
+        # follow the reply rather than show its opening line for two minutes.
+        self.on_sentence = on_sentence
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
@@ -1176,6 +1179,11 @@ class _SentenceFollower:
                         pass
                     highlighter.show(self.sentences[idx], first=(idx == 0),
                                      force=False)
+                    if self.on_sentence is not None:
+                        try:
+                            self.on_sentence(self.sentences[idx])
+                        except Exception:  # noqa: BLE001 — never break the follow
+                            pass
                 self._stop.wait(0.1)
         except Exception:  # noqa: BLE001 — a highlight must never break speech
             pass
@@ -2568,7 +2576,8 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
     follower = _SentenceFollower(
         state, target_name, started_at, _split_sentences(text),
         pane=source_pane, highlight=_follow_highlight,
-        delay_s=_playout_delay_s(target_name))
+        delay_s=_playout_delay_s(target_name),
+        on_sentence=coordinator.speaking_line)
     # Start the remote pause before anything blocking, so its ssh overlaps the
     # lock wait and the render instead of being paid in series inside
     # before_speech(). Both local render paths have always done this; the phone
@@ -3067,6 +3076,9 @@ def submit_event(event: Event,
                 state.set_now_playing(
                     "speech", uri=str(clip_i), started_at=started_at,
                     target=target.name, extras=extras)
+                # And on the broker, where a card can read it: the sentence
+                # being spoken, as it is spoken.
+                coordinator.speaking_line(sentence_i)
 
             if _remote_playlist(target):
                 # Autonomous gapless playlist: load every clip and let the remote

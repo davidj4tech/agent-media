@@ -54,6 +54,44 @@ def coordinator(monkeypatch, tmp_path):
     return c, music
 
 
+def test_the_line_follows_the_reply(monkeypatch, coordinator):
+    # A card showing the first line of a two-minute answer is showing something
+    # that stopped being true after four seconds. Both lanes drive this from
+    # wherever they already move `current_sentence`.
+    c, _ = coordinator
+    written = []
+    monkeypatch.setattr(c, "_reply_text", lambda text: written.append(text))
+
+    c.speaking_line("First sentence.")
+    c.speaking_line("Second sentence.")
+    assert written == ["First sentence.", "Second sentence."]
+
+
+def test_a_repeated_sentence_is_not_written_twice(monkeypatch, coordinator):
+    # The write is a round trip on a link that drops packets, and "Right."
+    # twice in one answer is not news.
+    c, _ = coordinator
+    written = []
+    monkeypatch.setattr(c, "_reply_text", lambda text: written.append(text))
+
+    c.speaking_line("Right.")
+    c.speaking_line("Right.")
+    c.speaking_line("   ")
+    assert written == ["Right."]
+
+
+def test_the_next_reply_may_open_with_the_last_one_s_words(monkeypatch,
+                                                           coordinator):
+    c, _ = coordinator
+    written = []
+    monkeypatch.setattr(c, "_reply_text", lambda text: written.append(text))
+
+    c.speaking_line("Done.")
+    c.after_speech()
+    c.speaking_line("Done.")
+    assert written == ["Done.", "Done."]
+
+
 def test_deferring_decides_everything_but_the_moment(coordinator):
     c, music = coordinator
     c.before_speech(defer_music=True)

@@ -108,6 +108,7 @@ class _RecordingCoord:
                           text=""):
         self.before += 1
 
+    def speaking_line(self, text=""): pass
     def after_speech(self):
         self.after += 1
 

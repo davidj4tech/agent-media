@@ -20,7 +20,7 @@ public final class CardTextTest {
         testMusicPrefersTheArtist();
         testMusicFallsBackToTheQueue();
         testMusicSaysNothingRatherThanUnknown();
-        testSpeechNamesTheConversation();
+        testSpeechSaysWhatWasSaid();
         testAParkedClipIsNotAQueue();
         testSpeechWhileSpeaking();
         testBookCountsDown();
@@ -58,20 +58,18 @@ public final class CardTextTest {
                 CardText.music(null, -1, 0).isEmpty());
     }
 
-    private static void testSpeechNamesTheConversation() {
-        // The title carries the words now, so the line under it answers the
-        // question the words leave open: who was that to.
-        check("the conversation leads",
-                "add C function".equals(
-                        CardText.speech(1, true, true, false, "add C function")));
-        check("with a pile behind it",
-                "add C function · 2 more waiting".equals(
-                        CardText.speech(3, true, true, false, "add C function")));
+    private static void testSpeechSaysWhatWasSaid() {
+        // The title is the conversation — an identity, and short enough to sit
+        // still — so this line carries the words, which change every turn.
+        check("the words lead",
+                "a reply".equals(CardText.speech(1, true, true, false, "a reply")));
+        check("with a pile behind them",
+                "a reply · 2 more waiting".equals(
+                        CardText.speech(3, true, true, false, "a reply")));
         // Parked after the reply: the entry is still there, the pile is not.
-        check("and stands alone without one",
-                "add C function".equals(
-                        CardText.speech(1, false, true, false, "add C function")));
-        check("no conversation, just the pile",
+        check("and stand alone without one",
+                "a reply".equals(CardText.speech(1, false, true, false, "a reply")));
+        check("no words, just the pile",
                 "2 more waiting".equals(CardText.speech(2, false, true, true, "")));
         check("and nothing at all is empty",
                 CardText.speech(0, false, false, false, "").isEmpty());

@@ -182,7 +182,7 @@ final class SideChannel {
 
         session.setMetadata(new MediaMetadata.Builder()
                 .putString(MediaMetadata.METADATA_KEY_TITLE, cardTitle())
-                .putString(MediaMetadata.METADATA_KEY_ARTIST, subtitle())
+                .putString(MediaMetadata.METADATA_KEY_ARTIST, cardSubtitle())
                 .putLong(MediaMetadata.METADATA_KEY_DURATION, state.durationMs())
                 .putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, Artwork.art(name))
                 .build());
@@ -214,7 +214,7 @@ final class SideChannel {
         // The subtitle is in the signature because it is now information — a
         // book counting down and a queue growing behind Sam both change the
         // card without changing its title.
-        String sig = cardTitle() + " " + subtitle() + " " + playbackState
+        String sig = cardTitle() + " " + cardSubtitle() + " " + playbackState
                 + " " + state.paused + " " + state.loaded();
         if (sig.equals(lastCard)) return;
         lastCard = sig;
@@ -229,6 +229,8 @@ final class SideChannel {
     /** The title currently crawling, and when it started. See cardTitle(). */
     private String shownTitle = "";
     private long titleSince;
+    private String shownSubtitle = "";
+    private long subtitleSince;
 
     /** Paused from this card, and owed a resume by the hand that did it. */
     boolean heldByUser() { return heldByUser; }
@@ -244,18 +246,15 @@ final class SideChannel {
      * the popup shows.
      */
     private String title() {
-        // The words themselves, where the coordinator sent them: a phone has
-        // room for what was said, and that is what its own list shows. The
-        // conversation is not lost — it moves to the second line.
-        if ("speech".equals(name)) {
-            String words = state.replyText;
-            if (words != null && !words.trim().isEmpty()) return words.trim();
-        }
         String t = state.mediaTitle;
         // Then the clip that just played: a card that outlives its clip is only
         // worth having if it still names it. See MpvState#lastTitle.
         if (t == null || t.trim().isEmpty()) t = state.lastTitle();
         return (t == null || t.trim().isEmpty()) ? label : t.trim();
+    }
+
+    private static String trimmed(String s) {
+        return (s == null || s.trim().isEmpty()) ? "" : s.trim();
     }
 
     /** Which conversation this reply belongs to — mpv's own title field. */
@@ -286,9 +285,29 @@ final class SideChannel {
             shownTitle = full;
             titleSince = SystemClock.uptimeMillis();
         }
-        if (!scrolling()) return full;
+        if (!state.playing()) return full;
         return Marquee.window(full, Marquee.WIDTH,
                               SystemClock.uptimeMillis() - titleSince);
+    }
+
+    /**
+     * The second line as the card should show it this moment.
+     *
+     * It scrolls too, and it has to: since the words moved down here they are
+     * the long field, and a line that ellipsises at forty characters shows the
+     * first clause of every reply and never the rest. Same clock as the title
+     * (see {@link Marquee}), so the two lines crawl in step rather than at two
+     * offsets that read as a fault in whichever one you are watching.
+     */
+    private String cardSubtitle() {
+        String full = subtitle();
+        if (!full.equals(shownSubtitle)) {
+            shownSubtitle = full;
+            subtitleSince = SystemClock.uptimeMillis();
+        }
+        if (!state.playing()) return full;
+        return Marquee.window(full, Marquee.SUB_WIDTH,
+                              SystemClock.uptimeMillis() - subtitleSince);
     }
 
     /**
@@ -301,7 +320,9 @@ final class SideChannel {
      * list. A book can be parked in the shade for days.
      */
     boolean scrolling() {
-        return visible && state.playing() && Marquee.needed(title(), Marquee.WIDTH);
+        if (!visible || !state.playing()) return false;
+        return Marquee.needed(title(), Marquee.WIDTH)
+                || Marquee.needed(subtitle(), Marquee.SUB_WIDTH);
     }
 
     /**
@@ -315,14 +336,13 @@ final class SideChannel {
     private String subtitle() {
         if (note != null) return note;
         if ("speech".equals(name)) {
-            // The conversation, unless the title is already showing it — which
-            // it is whenever the words never arrived (an older coordinator, or
-            // a reply with nothing to say for itself).
+            // The words, unless the title is already showing them — which it is
+            // whenever no conversation was sent, and then this line is left to
+            // the pile alone.
             String words = state.replyText;
-            String conversation = (words == null || words.trim().isEmpty())
-                                  ? "" : conversationName();
+            String lead = conversationName().isEmpty() ? "" : trimmed(words);
             return CardText.speech(state.queued, state.speaking, state.loaded(),
-                                   state.paused, conversation);
+                                   state.paused, lead);
         }
         if ("book".equals(name)) {
             return CardText.book(state.durationMs(), state.positionMs());
@@ -336,7 +356,7 @@ final class SideChannel {
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
         return new Notification.Builder(ctx, notifChannel)
                 .setContentTitle(cardTitle())
-                .setContentText(subtitle())
+                .setContentText(cardSubtitle())
                 // The channel's own mark, in both places the shade shows one:
                 // a silhouette in the status bar and the tile on the card. Three
                 // cards with the stock play triangle and no art were three cards

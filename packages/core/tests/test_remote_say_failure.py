@@ -41,6 +41,7 @@ def _run(store, monkeypatch, cmd):
                       text=""): pass
         # Deferred and applied when the far side says it is about to play.
         def duck_music_now(self): pass
+        def speaking_line(self, text=""): pass
         def after_speech(self): pass
 
     return submit._submit_remote_say(

@@ -55,6 +55,8 @@ def test_sidecar_and_now_playing_lifecycle(state_env, monkeypatch):
                           text=""):
             pass
 
+        def speaking_line(self, text=""): pass
+
         def after_speech(self):
             pass
 

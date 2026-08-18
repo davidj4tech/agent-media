@@ -45,11 +45,15 @@ final class CardText {
     }
 
     /**
-     * The speech card's second line: which conversation, and what is stacked up.
+     * The speech card's second line: what was said, and what is stacked up.
      *
-     * The conversation leads, because the title now carries the words and the
-     * question the words leave open is "who was that to". The pile follows only
-     * when there is one.
+     * The words lead. They were the title for an afternoon and the conversation
+     * has taken that back, because a title is an identity — short, unchanged
+     * for the whole reply and the next one, and therefore still on a display
+     * you glance at rather than crawling across it. The words change every turn
+     * and are too long to read at a glance wherever they sit, so they sit here,
+     * where the line scrolls (see {@code SideChannel#cardSubtitle}). The pile
+     * follows only when there is one.
      *
      * <h4>What a pile is, and what it is not</h4>
      *
@@ -65,12 +69,12 @@ final class CardText {
      * parked case, and it means nothing at all.
      */
     static String speech(int queued, boolean speaking, boolean loaded,
-                         boolean paused, String conversation) {
+                         boolean paused, String words) {
         String pile = pile(queued, speaking, loaded, paused);
-        String who = conversation == null ? "" : conversation.trim();
-        if (who.isEmpty()) return pile;
-        if (pile.isEmpty()) return who;
-        return who + " · " + pile;
+        String said = words == null ? "" : words.trim();
+        if (said.isEmpty()) return pile;
+        if (pile.isEmpty()) return said;
+        return said + " · " + pile;
     }
 
     private static String pile(int queued, boolean speaking, boolean loaded,

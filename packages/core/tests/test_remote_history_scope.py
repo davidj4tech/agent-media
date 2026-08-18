@@ -36,6 +36,7 @@ class _Coord:
     # The lane defers its duck and applies it when the far side says it is
     # about to play; a double that cannot be asked would break the utterance.
     def duck_music_now(self): pass
+    def speaking_line(self, text=""): pass
     def after_speech(self): pass
 
 

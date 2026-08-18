@@ -140,6 +140,9 @@ class Coordinator:
         # exactly one may win.
         self._deferred_music: Optional[str] = None
         self._defer_lock = threading.Lock()
+        # The last line put on the broker, so a sentence repeated across the
+        # reply — "Right." twice in one answer — is not written twice.
+        self._last_line: str = ""
         # Serialises the speaking-flag writes so a clear can never overtake the
         # set it belongs to, and keeps both off the speech path's thread.
         self._flag_writer = ThreadPoolExecutor(
@@ -199,6 +202,26 @@ class Coordinator:
             self._flag_writer.submit(_speech.set_reply_text, text, speech_target)
         except RuntimeError:  # pragma: no cover — executor shut down
             pass
+
+    def speaking_line(self, text: str) -> None:
+        """Put the sentence being spoken *now* on the broker.
+
+        Called as the reply advances, not once at the start: a card that shows
+        the first line of a two-minute answer is showing something that stopped
+        being true after four seconds. Both lanes drive it from the same place
+        they move `current_sentence` — the clip loop here, the follower's clock
+        on the lane that plays elsewhere — so the display follows what is coming
+        out of the speaker rather than what was handed over.
+
+        Deduplicated, because the write is a round trip on a bridge that drops
+        packets and a repeated sentence is not news. Cleared by after_speech, so
+        the next reply may open with the same words as the last one closed with.
+        """
+        line = (text or "").strip()
+        if not line or line == self._last_line:
+            return
+        self._last_line = line
+        self._reply_text(line)
 
     def _priority(self, priority: str) -> None:
         """Carry this reply's priority to the broker, for the phone to read.
@@ -369,7 +392,7 @@ class Coordinator:
         to a question is.
         """
         self._title(title)
-        self._reply_text(text)
+        self.speaking_line(text)
         self._priority(priority)
         # Source-agnostic rooms duck, applied first and independent of the
         # Mopidy now-playing gate below: lower the Snapcast music stream so the
@@ -561,6 +584,7 @@ class Coordinator:
         # no speech behind it and nothing left to restore it.
         with self._defer_lock:
             self._deferred_music = None
+        self._last_line = ""
         # Restore the source-agnostic rooms (Snapcast) duck first — it's
         # independent of the Mopidy interruption marker handled below (which is
         # absent whenever this coordinator's Mopidy wasn't the one playing).
