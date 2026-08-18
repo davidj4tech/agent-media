@@ -2591,9 +2591,13 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
         # starts when the phone has finished rendering it, which was measured on
         # 2026-08-18 at ten seconds later. Ducking at hand-over is a hole in the
         # music that opens before anything fills it.
-        coordinator.before_speech(title=source_window,
-                                  priority=event.priority.value,
-                                  defer_music=True, text=text)
+        coordinator.before_speech(
+            title=source_window, priority=event.priority.value,
+            defer_music=True,
+            # The first sentence, not the reply: the follower will move this on
+            # as the far side speaks, and until it does the card should show
+            # what is about to be said rather than all of it at once.
+            text=follower.sentences[0] if follower.sentences else text)
         # ...and a renderer that announces nothing (Android TTS, a bare `say`)
         # would then never duck at all. So the wait is bounded: whichever comes
         # first, the announcement or this, applies it exactly once.
@@ -3025,8 +3029,10 @@ def submit_event(event: Event,
         # Drop any stale jump request left by a previous response.
         _nav_flag_path(target).unlink(missing_ok=True)
         try:
-            coordinator.before_speech(title=source_window,
-                                  priority=event.priority.value, text=text)
+            coordinator.before_speech(
+                title=source_window, priority=event.priority.value,
+                # The first sentence; the clip loop moves it on from there.
+                text=clip_data[0][0] if clip_data else text)
             # Speech-started breadcrumb — the moment we commit to feeding the
             # broker. Its "end" twin is in the finally below, so every exit
             # (finished, superseded, yielded-then-done, error) closes the pair.
