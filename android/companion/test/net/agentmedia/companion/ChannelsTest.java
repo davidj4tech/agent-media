@@ -37,6 +37,7 @@ public final class ChannelsTest {
         testDetailLine();
         testMissingChannelsAreIdle();
         testRubbishIsThreeIdleChannels();
+        testTheCardSaysWhichConversation();
         testChaptersOnlyForLiveMusic();
         testControlBody();
         testChapterLabels();
@@ -133,6 +134,36 @@ public final class ChannelsTest {
             Map<String, Channels.Channel> m = Channels.parse(junk);
             check("junk still draws three panels (" + junk + ")", m.size() == 3);
         }
+    }
+
+    private static void testTheCardSaysWhichConversation() {
+        // The shade's card has said this on its second line since the words
+        // moved to the title; the app's card showed the words alone, so the two
+        // surfaces had half the fact each.
+        String payload = "{\"channels\":{\"speech\":{\"idle\":false,"
+                + "\"title\":\"a reply\","
+                + "\"conversation\":\"add C function\"}}}";
+        Channels.Channel c = Channels.parse(payload).get("speech");
+        check("the conversation parses", "add C function".equals(c.conversation));
+        check("and leads the second line",
+                c.detail().startsWith("add C function"));
+
+        // Settings still follow it, in the order they were in.
+        String withMore = "{\"channels\":{\"speech\":{\"idle\":false,"
+                + "\"conversation\":\"add C function\",\"speed\":1.5,"
+                + "\"volume\":150}}}";
+        check("then the settings",
+                Channels.parse(withMore).get("speech").detail()
+                        .equals("add C function  ·  1.5×  ·  vol 150"));
+
+        // A channel that has none — every channel but speech, and speech
+        // before anything has been said — is unchanged.
+        check("no conversation, no line",
+                Channels.parse("{\"channels\":{\"music\":{\"idle\":false}}}")
+                        .get("music").detail().isEmpty());
+        check("and it is null rather than empty",
+                Channels.parse("{\"channels\":{\"music\":{}}}")
+                        .get("music").conversation == null);
     }
 
     private static void testChaptersOnlyForLiveMusic() {

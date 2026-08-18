@@ -391,6 +391,36 @@ def test_pause_mid_reply_stays_on_this_host(monkeypatch):
     assert not sc._nothing_to_resume()
 
 
+def test_the_card_says_which_conversation_said_it(monkeypatch):
+    # The words answer "what is this" and leave "who was that to" open. The
+    # shade's card answers it; the app's had nothing to answer it with.
+    monkeypatch.setattr(
+        "agent_media_core.cli._speech_display_state",
+        lambda **kw: (True, None, None, False, False, None, False))
+    monkeypatch.setattr(sc, "_clips", lambda *a, **kw: [
+        {"text": "a reply", "window": "add C function", "ref": "1"}])
+    got = sc._speech()
+    assert got["title"] == "a reply"
+    assert got["conversation"] == "add C function"
+
+
+def test_a_clip_with_no_conversation_says_none(monkeypatch):
+    # Cron speaks from a pane that belongs to no conversation, and "" is not a
+    # name — the card should draw nothing rather than an empty separator.
+    monkeypatch.setattr(
+        "agent_media_core.cli._speech_display_state",
+        lambda **kw: (True, None, None, False, False, None, False))
+    monkeypatch.setattr(sc, "_clips", lambda *a, **kw: [
+        {"text": "moon enters Libra", "window": "", "ref": "1"}])
+    assert sc._speech()["conversation"] is None
+
+
+def test_every_channel_has_the_field(monkeypatch):
+    # Nullable everywhere, like every other field here: a front end reads one
+    # shape whichever channel it is looking at.
+    assert sc._blank("music")["conversation"] is None
+
+
 def test_the_speech_card_knows_its_own_volume(monkeypatch):
     # The channel published a `volume` verb and the card had a place to show
     # one; the field was left None, so both buttons worked and said nothing —

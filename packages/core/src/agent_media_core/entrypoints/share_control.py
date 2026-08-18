@@ -269,7 +269,7 @@ def _blank(channel: str) -> dict:
     return {"channel": channel, "idle": True, "playing": False, "paused": None,
             "title": None, "chapter": None, "pos_ms": None, "dur_ms": None,
             "speed": None, "volume": None, "backend": None,
-            "verbs": verbs(channel)}
+            "conversation": None, "verbs": verbs(channel)}
 
 
 def _speech() -> dict:
@@ -309,6 +309,10 @@ def _speech() -> dict:
         if rows:
             text = (rows[0].get("text") or "").strip()
             out["title"] = text.splitlines()[0][:120] if text else None
+            # And which conversation said it. The words answer "what is this"
+            # and leave "who was that to" open; the card has a line for each,
+            # and until now the second one was spent on nothing.
+            out["conversation"] = (rows[0].get("window") or "").strip() or None
     except Exception:  # noqa: BLE001
         pass
     try:

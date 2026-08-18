@@ -61,19 +61,39 @@ final class Channels {
          * anybody asked.
          */
         final Set<String> verbs;
+        /**
+         * Which conversation said it — speech only, null everywhere else.
+         *
+         * The title carries the words, and the words leave "who was that to"
+         * open. The shade's card answers it on its second line and the app's
+         * did not, which meant the two surfaces showed different halves of the
+         * same fact and neither showed both.
+         */
+        final String conversation;
 
         Channel(String name, boolean idle, boolean playing, boolean paused,
                 String title, String chapter, Long posMs, Long durMs,
                 Double speed, Integer volume, boolean muted, int mutedElsewhere) {
             this(name, idle, playing, paused, title, chapter, posMs, durMs,
                  speed, volume, muted, mutedElsewhere,
-                 Collections.<String>emptySet());
+                 Collections.<String>emptySet(), null);
         }
 
         Channel(String name, boolean idle, boolean playing, boolean paused,
                 String title, String chapter, Long posMs, Long durMs,
                 Double speed, Integer volume, boolean muted, int mutedElsewhere,
                 Set<String> verbs) {
+            this(name, idle, playing, paused, title, chapter, posMs, durMs,
+                 speed, volume, muted, mutedElsewhere, verbs, null);
+        }
+
+        Channel(String name, boolean idle, boolean playing, boolean paused,
+                String title, String chapter, Long posMs, Long durMs,
+                Double speed, Integer volume, boolean muted, int mutedElsewhere,
+                Set<String> verbs, String conversation) {
+            this.conversation = (conversation == null
+                                 || conversation.trim().isEmpty())
+                                ? null : conversation.trim();
             this.name = name;
             this.idle = idle;
             this.playing = playing;
@@ -151,6 +171,9 @@ final class Channels {
         /** The line under the heading: chapter, speed, mutes — whatever applies. */
         String detail() {
             List<String> bits = new ArrayList<String>();
+            // First, because it is the one that says what the words are part
+            // of, and the rest of this line is settings.
+            if (conversation != null) bits.add(conversation);
             if (chapter != null && !chapter.isEmpty()) bits.add(chapter);
             String sp = speedLabel();
             if (!sp.isEmpty()) bits.add(sp);
@@ -264,7 +287,8 @@ final class Channels {
                         ? Integer.valueOf(((Number) r.get("volume")).intValue()) : null,
                 Json.asBool(r.get("muted"), false),
                 (int) Json.asDouble(r.get("muted_elsewhere"), 0),
-                verbs(r.get("verbs")));
+                verbs(r.get("verbs")),
+                Json.asString(r.get("conversation")));
     }
 
     private static Long num(Object v) {
