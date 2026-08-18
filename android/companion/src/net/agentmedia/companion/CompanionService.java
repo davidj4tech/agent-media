@@ -376,8 +376,20 @@ public class CompanionService extends Service {
         // the music, with our own onMediaButtonEvent never firing at all.
         // That is the whole point of the music session, so it comes first.
         session.setCallback(callback);
-        session.setMediaButtonBroadcastReceiver(
-                new ComponentName(this, MediaButtonReceiver.class));
+        // setMediaButtonBroadcastReceiver is API 31. The TV (ftv) is Android
+        // 11, where calling it throws NoSuchMethodError out of onCreate and
+        // the service never starts at all -- so the pre-31 path is the
+        // deprecated PendingIntent form, which routes button events to the
+        // same receiver. Phones (31+) keep the exact call they had.
+        ComponentName button = new ComponentName(this, MediaButtonReceiver.class);
+        if (android.os.Build.VERSION.SDK_INT >= 31) {
+            session.setMediaButtonBroadcastReceiver(button);
+        } else {
+            session.setMediaButtonReceiver(PendingIntent.getBroadcast(
+                    this, 0,
+                    new Intent(Intent.ACTION_MEDIA_BUTTON).setComponent(button),
+                    PendingIntent.FLAG_IMMUTABLE));
+        }
         session.setActive(true);
         startForeground(NOTIF_ID, buildNotification(),
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);

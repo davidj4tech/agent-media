@@ -38,7 +38,7 @@ git -C "$HERE" diff --quiet HEAD -- "$HERE" 2>/dev/null || STAMP="$STAMP+dirty"
     --manifest "$HERE/AndroidManifest.xml" \
     --java "$OUT/gen" \
     --version-name "$STAMP" --replace-version \
-    --min-sdk-version 31 --target-sdk-version 35 \
+    --min-sdk-version 30 --target-sdk-version 35 \
     "$OUT/res.zip"
 
 # 2. java -> classes
@@ -48,7 +48,7 @@ javac -source 17 -target 17 -nowarn -Xlint:-options \
     $(find "$HERE/src" "$OUT/gen" -name '*.java')
 
 # 3. classes -> dex
-"$BT/d8" --lib "$PLATFORM" --min-api 31 --output "$OUT" \
+"$BT/d8" --lib "$PLATFORM" --min-api 30 --output "$OUT" \
     $(find "$OUT/classes" -name '*.class')
 
 # 4. dex into the apk, align, sign
