@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="net.agentmedia.speedspike">
+
+    <!-- The clip comes from red5 over the tailnet, and the readout binds a
+         loopback port so the numbers can be curled rather than retyped. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- red5's clip server is plain HTTP on the tailnet, which is the transport
+         a real in-app speech player would use too: the tailnet is the
+         perimeter, and the alternative is a certificate story for a fleet of
+         one. -->
+    <application
+        android:label="@string/app_name"
+        android:usesCleartextTraffic="true"
+        android:allowBackup="false">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
