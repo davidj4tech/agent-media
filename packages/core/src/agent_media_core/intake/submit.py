@@ -2112,6 +2112,31 @@ def _tmux_window_for_pane(pane: str) -> str:
     return label
 
 
+def _source_place(metadata, pane: str) -> tuple[str, str]:
+    """Where a clip was said — ``(tmux session, window name)`` — preferring what
+    the caller already knew over what tmux can still be asked.
+
+    Both used to be resolved here, from the pane id, on the grounds that the
+    submitter runs while the pane is alive. It does not always. A reply is
+    rendered and queued before a word of it is spoken, and the turns that end a
+    conversation — the goodbyes — are followed by the window closing. Ask tmux
+    about a pane that has just gone and it answers, successfully, with nothing:
+    empty session, empty window, and a clip that files itself on the phone's
+    list under "no session" beside the cron reminders that never had one.
+
+    So the hook, which runs *in* the pane at the moment the turn ends, puts the
+    two names in the event metadata, and this prefers them. The live lookup
+    stays as the fallback for every caller that isn't the hook — `media say`
+    from a shell knows its pane and nothing else — and for a hook too old to
+    have sent them.
+    """
+    md = metadata or {}
+    tmux = str(md.get("tmux") or "").strip()
+    window = str(md.get("window") or "").strip()
+    return (tmux or _tmux_session_for_pane(pane),
+            window or _tmux_window_for_pane(pane))
+
+
 def _nav_flag_path(target: Target) -> Path:
     """File the popup writes to request a sentence/paragraph jump (`media skip`).
 
@@ -2552,8 +2577,7 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
     # whole lane's worth of speech, while the same clip replayed fine when
     # addressed by id.
     source_pane = (event.metadata or {}).get("pane") or os.environ.get("TMUX_PANE", "")
-    source_tmux_session = _tmux_session_for_pane(source_pane)
-    source_window = _tmux_window_for_pane(source_pane)
+    source_tmux_session, source_window = _source_place(event.metadata, source_pane)
     # The same identity goes on the LIVE row, not just history: the status bar
     # and popup name the speaker through now_playing.extras.source_pane, and a
     # row without it resolves to *the caller's* pane instead — so whichever
@@ -2796,15 +2820,12 @@ def submit_event(event: Event,
     playback_lock = _SpeechPlaybackLock()
     playback_lock.announce(event.priority, session=order_session,
                            seq=started_at)
-    # The tmux session that owns the source pane, captured now while the pane
-    # is guaranteed alive. Persisted so the popup's < / > can scope history
-    # traversal to "this tmux session's clips" without resolving a (possibly
-    # since-closed) pane id back to its session at browse time.
-    source_tmux_session = _tmux_session_for_pane(source_pane)
-    # The conversation title (window name) of the source pane, captured now so
-    # the popup / status bar can name the speaker even when source_pane can't be
-    # resolved at display time (renumbered by a restore, closed, or remote host).
-    source_window = _tmux_window_for_pane(source_pane)
+    # The tmux session that owns the source pane, and the conversation title
+    # (window name) of it. Persisted so the popup's < / > can scope history
+    # traversal to "this tmux session's clips", and the status bar can name the
+    # speaker, without resolving a (possibly since-closed, renumbered, or
+    # remote) pane id at browse time. See _source_place for who is asked.
+    source_tmux_session, source_window = _source_place(event.metadata, source_pane)
 
     # Durable per-pane / per-session mute (popup `M` / `media mute-pane`): a
     # muted pane still renders its clips and records a replayable history row,
@@ -3368,8 +3389,7 @@ def submit_stream(sentences,
     source_pane = (event.metadata or {}).get("pane") or os.environ.get("TMUX_PANE", "")
     source_session = (event.metadata or {}).get("session") or ""
     order_session = _order_session(source_pane, source_session)
-    source_tmux_session = _tmux_session_for_pane(source_pane)
-    source_window = _tmux_window_for_pane(source_pane)
+    source_tmux_session, source_window = _source_place(event.metadata, source_pane)
     # Durable per-pane / per-session mute: render the stream into clips for
     # popup replay/history, but never play it or duck music. See submit_event.
     muted = state.resolve_mute(source_pane, source_tmux_session)

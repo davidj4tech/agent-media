@@ -97,6 +97,36 @@ def _session_name() -> str:
     return _tmux(["display-message", "-p", "-t", pane, "#{session_name}"])
 
 
+def _source_place() -> dict:
+    """The pane this hook is running in, and the two tmux names for it.
+
+    Resolved *here* rather than in the submitter, which is the only place that
+    can be sure of the answer: the hook runs inside the pane at the moment the
+    turn ends, while the submitter runs after a reply has been rendered and has
+    waited its turn in the speech queue — long enough, on a conversation that
+    just said goodbye, for the window to have closed. tmux answers a question
+    about a pane that has gone with a successful empty string, so those clips
+    landed in history with no session and no window at all, and the phone's list
+    grouped every one of them under "no session".
+
+    Empty values are left out rather than sent as "": the submitter treats a
+    missing key as "ask tmux yourself", which is right for a hook that isn't in
+    tmux at all, and an empty string would tell it the answer is nothing.
+    """
+    pane = os.environ.get("TMUX_PANE") or ""
+    if not pane:
+        return {}
+    out = {"pane": pane}
+    info = _tmux(["display-message", "-p", "-t", pane,
+                  "#{session_name}\t#{window_name}"])
+    sess, _, window = info.partition("\t")
+    if sess.strip():
+        out["tmux"] = sess.strip()
+    if window.strip():
+        out["window"] = window.strip()
+    return out
+
+
 def _voice_for_session(sess: str) -> Optional[str]:
     """Pick a TTS voice for the given tmux session name.
 
@@ -589,7 +619,8 @@ def _emit_ask(ask: str, payload: dict, lead: str = "") -> int:
                        priority=priority,
                        voice=_voice_for_session(sess),
                        metadata={"kind": "notif", "ask": True,
-                                 "session": payload.get("session_id") or ""}),
+                                 "session": payload.get("session_id") or "",
+                                 **_source_place()}),
                  state=state)
     return 0
 
@@ -694,7 +725,8 @@ def _handle_notification(payload: dict) -> int:
                        priority=priority,
                        voice=_voice_for_session(sess),
                        metadata={"kind": "notif",
-                                 "session": payload.get("session_id") or ""}))
+                                 "session": payload.get("session_id") or "",
+                                 **_source_place()}))
     return 0
 
 
@@ -905,7 +937,8 @@ def _handle_stop(payload: dict) -> int:
     # backgrounded process and return immediately. Dedup, the stop stamp, and all
     # now_playing writes happen there on a fresh StateStore (see _play_now), so
     # the parent opens no DB connection to fork across.
-    metadata = {"kind": "stop", "session": payload.get("session_id") or ""}
+    metadata = {"kind": "stop", "session": payload.get("session_id") or "",
+                **_source_place()}
     # Opt-in LLM spoken-summary: carry the raw reply so the detached child can
     # rewrite it for speech (only worth it past a length threshold).
     # Opt-in visual accompaniment: carry the raw reply so the detached child

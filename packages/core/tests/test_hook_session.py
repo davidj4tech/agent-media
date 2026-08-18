@@ -109,3 +109,59 @@ def test_ask_read_once_across_pretooluse_and_notification(tmp_path, monkeypatch)
                             "message": "waiting", "session_id": "s1"})
 
     assert len(calls) == 1  # spoken once, not twice
+
+
+# ---- where it was said ----------------------------------------------------
+#
+# The pane's tmux session and window name go in the metadata too, resolved
+# here. The submitter used to ask tmux itself, and by then it can be too late:
+# a reply is rendered and queued before a word of it is spoken, and a
+# conversation that has just said goodbye closes its window in that gap. tmux
+# answers about a pane that has gone with a successful empty string, so the
+# last clip of a conversation was the one most likely to arrive with nowhere
+# recorded — and the phone's list filed all of them under "no session".
+
+def _tmux_says(monkeypatch, answer):
+    monkeypatch.setattr(H, "_tmux", lambda args, **k: answer)
+
+
+def test_the_pane_and_its_names_ride_along(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("TMUX_PANE", "%155")
+    seen = _capture_submit(monkeypatch)
+    monkeypatch.setattr(H, "_latest_assistant_text", lambda tp: "goodbye")
+    monkeypatch.setattr(H, "_dedup_seen", lambda *a, **k: False)
+    _tmux_says(monkeypatch, "work\tthe conversation")
+
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text("{}\n")
+    assert H._handle_stop({"transcript_path": str(transcript),
+                           "session_id": "s"}) == 0
+    md = seen["event"].metadata or {}
+    assert md["pane"] == "%155"
+    assert md["tmux"] == "work"
+    assert md["window"] == "the conversation"
+
+
+def test_outside_tmux_it_claims_nothing(tmp_path, monkeypatch):
+    # A missing key means "ask tmux yourself"; an empty string would mean "the
+    # answer is nothing", which is a different and wrong claim.
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    seen = _capture_submit(monkeypatch)
+    monkeypatch.setattr(H, "_latest_assistant_text", lambda tp: "hello")
+    monkeypatch.setattr(H, "_dedup_seen", lambda *a, **k: False)
+    monkeypatch.setattr(H, "_session_name", lambda: "")
+
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text("{}\n")
+    assert H._handle_stop({"transcript_path": str(transcript),
+                           "session_id": "s"}) == 0
+    md = seen["event"].metadata or {}
+    assert "pane" not in md and "tmux" not in md and "window" not in md
+
+
+def test_a_pane_with_no_window_name_sends_only_what_it_has(monkeypatch):
+    monkeypatch.setenv("TMUX_PANE", "%1")
+    _tmux_says(monkeypatch, "work\t")
+    assert H._source_place() == {"pane": "%1", "tmux": "work"}

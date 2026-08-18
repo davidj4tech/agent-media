@@ -290,6 +290,72 @@ def _adopt_pane_sessions(rows) -> None:
         r["extras"] = ex
 
 
+def _adopt_pane_places(rows) -> None:
+    """Give a clip with no tmux session the one its conversation was said in.
+
+    The sibling of `_adopt_pane_sessions`, for the other half of the identity: a
+    clip knows which conversation it belongs to but not where that conversation
+    was sitting. The write side loses this when a pane closes between the turn
+    ending and the reply being spoken — which is exactly what a goodbye does, so
+    the last clip of a conversation was the one most likely to arrive untagged,
+    and the phone's list filed all of them together under "no session".
+
+    That is now fixed at the source, but the rows already written are still
+    there, and a conversation's other clips know the answer for them: the same
+    Claude session is the strongest key (a conversation does not move between
+    tmux sessions mid-flight), the pane is the fallback for clips that never had
+    a session id. Nearest in time, for the same reason as the sibling — a pane
+    outlives the conversations in it.
+
+    Best-effort, and bounded by the window it was handed: a conversation whose
+    every other clip is older than the fetch keeps its blank, which is honest —
+    the answer is not in front of us — and rare, now that the blanks have
+    stopped being written.
+
+    Mutates the rows it was handed, extras copied rather than scribbled on.
+    """
+    marks: dict = {}
+    for r in rows:
+        ex = r.get("extras")
+        if not isinstance(ex, dict):
+            continue
+        tmux = str(ex.get("source_tmux_session") or "").strip()
+        if not tmux:
+            continue
+        mark = (float(r.get("started_at") or 0.0), tmux,
+                str(ex.get("source_window") or "").strip())
+        for key in (("session", ex.get("source_session")),
+                    ("pane", ex.get("source_pane"))):
+            if key[1]:
+                marks.setdefault(key, []).append(mark)
+    if not marks:
+        return
+    for r in rows:
+        ex = r.get("extras")
+        if not isinstance(ex, dict) or str(ex.get("source_tmux_session") or "").strip():
+            continue
+        own = marks.get(("session", ex.get("source_session")))
+        near = own or marks.get(("pane", ex.get("source_pane")))
+        if not near:
+            continue
+        at = float(r.get("started_at") or 0.0)
+        _, tmux, window = min(near, key=lambda m: abs(m[0] - at))
+        ex = dict(ex)
+        ex["source_tmux_session"] = tmux
+        # The window name travels only along the session key. A tmux session is
+        # a property of the pane and every clip from that pane shares it; a
+        # window *name* is a conversation's title, and the pane's other
+        # conversations have their own. Borrowing one across would file the
+        # reminders a cron job speaks under whatever was being worked on there.
+        # And never over a name of its own: that is the title as it stood when
+        # this clip spoke, which is a better answer than a later one.
+        if own and window and not str(ex.get("source_window") or "").strip():
+            ex["source_window"] = window
+        # Same claim, same caveat as the sibling: worked out, not stated.
+        ex["place_adopted"] = True
+        r["extras"] = ex
+
+
 def _speech_history(n: int = 20, session: Optional[str] = None,
                     include_live: bool = False):
     # `session`, when given, is a *Claude session id* (extras.source_session) —
@@ -310,6 +376,7 @@ def _speech_history(n: int = 20, session: Optional[str] = None,
     # Before anything is filtered, because the alerts about to be dropped are
     # some of the best evidence of which conversation a pane was holding.
     _adopt_pane_sessions(rows)
+    _adopt_pane_places(rows)
     rows = [r for r in rows
             if not (isinstance(r.get("extras"), dict)
                     and r["extras"].get("kind") == "notif")]
