@@ -157,7 +157,20 @@ public class CompanionService extends Service {
      * needing a null check at each of a dozen call sites — and "unreachable" is
      * already a case every one of them handles.
      */
-    private MpvState speechState = new MpvState();
+    /** Before the speech channel exists, and if it never does. */
+    private static final MpvState NO_SPEECH = new MpvState();
+
+    /**
+     * Whichever player the speech channel is currently about.
+     *
+     * Was a field, held from startup. That stopped being safe the moment
+     * speech could come from either the Termux mpv or this app's own player:
+     * a reference captured at startup is a reference to one of them forever,
+     * and the wrong one for half the day.
+     */
+    private MpvState speechState() {
+        return speech != null ? speech.state() : NO_SPEECH;
+    }
     private MpvIpc speechIpc;
     private final FocusPolicy focus = new FocusPolicy();
     /** The speech half of David's rule; drives speechIpc, never the music one. */
@@ -171,6 +184,8 @@ public class CompanionService extends Service {
     /** Speech played by this app, when a target is pointed at it. */
     private BuiltinSpeech builtinSpeech;
     private MpvServer speechServer;
+    /** What the in-app player is doing, in the shape every card reads. */
+    private final MpvState builtinSpeechState = new MpvState();
     /** The mic probe. See MicWatch; BargeIn decides what it means. */
     private MicWatch mic;
     /**
@@ -268,8 +283,8 @@ public class CompanionService extends Service {
 
     String status() {
         return state
-                + "\nspeech=" + (!speechState.connected ? "unreachable"
-                        : speechState.playing() ? "speaking" : "quiet")
+                + "\nspeech=" + (!speechState().connected ? "unreachable"
+                        : speechState().playing() ? "speaking" : "quiet")
                 + " book=" + (book == null || !book.state().connected ? "unreachable"
                         : book.state().playing() ? "playing" : "quiet")
                 + "\nfocus=" + (focusControl == null ? "none"
@@ -439,8 +454,13 @@ public class CompanionService extends Service {
         speech = startChannel("speech", FrontChannel.SPEECH_TITLE, server.speech,
                               MpvIpc.OBSERVED_SPEECH, NOTIF_SPEECH, speechWatcher);
         if (speech != null) {
-            speechState = speech.state();
             speechIpc = speech.ipc();
+            // Speech has two possible players now; the card follows the one
+            // with a clip open. Idle in-app means the mpv bridge is the truth,
+            // which is what makes switching back a setting and not a restart.
+            if (builtinSpeech != null) {
+                speech.mirror(builtinSpeechState, builtinSpeech::active);
+            }
         }
 
         // The book bridge may legitimately not be running — a book broker is
@@ -791,7 +811,7 @@ public class CompanionService extends Service {
             // resume are reasons to KEEP focus, never to take it: re-requesting
             // there would stop the video David just started, one poll after we got
             // out of its way.
-            if (state.playing() || speechState.playing()) focusLost = false;
+            if (state.playing() || speechState().playing()) focusLost = false;
 
             int wantFocus = state.loaded() ? FocusControl.MUSIC
                     : (speechFront() || speakingNow() || speechFocus.owesResume())
@@ -891,8 +911,8 @@ public class CompanionService extends Service {
         // for crossing a threshold; this is for wondering.
         if (speech != null) {
             speech.note(heldForSession
-                    ? (speechState.queued > 1
-                            ? speechState.queued + " waiting"
+                    ? (speechState().queued > 1
+                            ? speechState().queued + " waiting"
                             : "waiting for the conversation to finish")
                     : null);
         }
@@ -927,7 +947,7 @@ public class CompanionService extends Service {
         // Urgency picks the tier. The enum is the coordinator's own
         // (agent_media_core.types.Priority) and arrives on the broker with the
         // speaking flag, so this is decided before the first word is audible.
-        String prio = speechState.priority;
+        String prio = speechState().priority;
         if ("urgent".equals(prio)) {
             // Take the room. Nothing is held, and pushSessionState's ordinary
             // claim applies — which for a voice session means Live pauses and
@@ -944,16 +964,16 @@ public class CompanionService extends Service {
         }
         // Something to hold: a clip playing, or a reply the coordinator has
         // announced but not yet staged.
-        if (!(speechState.playing() || speakingNow() || speechFront())) return;
+        if (!(speechState().playing() || speakingNow() || speechFront())) return;
         performSpeech(SpeechPolicy.Action.PAUSE);
         // The pile grew past another threshold while David was not asking to be
         // told. Say so once, not once per reply.
         if (heldForSession && !"low".equals(prio)
-                && speechState.queued >= noticedQueue + QUEUE_NUDGE) {
-            noticedQueue = speechState.queued;
-            log("live: " + speechState.queued + " replies waiting — asking again");
+                && speechState().queued >= noticedQueue + QUEUE_NUDGE) {
+            noticedQueue = speechState().queued;
+            log("live: " + speechState().queued + " replies waiting — asking again");
             nm.notify(NOTIF_WAITING, waitingCard());
-            toast("Sam has " + speechState.queued
+            toast("Sam has " + speechState().queued
                     + " replies waiting — pull down to answer");
         }
         if (!heldForSession) {
@@ -962,7 +982,7 @@ public class CompanionService extends Service {
             // Low is the ambient tier: it waits, and it does not ask. Anything
             // else is worth a card, because a reply to something David said is
             // worth telling him about even when it can wait.
-            noticedQueue = speechState.queued;
+            noticedQueue = speechState().queued;
             if (!"low".equals(prio)) {
                 nm.notify(NOTIF_WAITING, waitingCard());
                 // And a toast beside it, because the banner did not arrive.
@@ -993,7 +1013,7 @@ public class CompanionService extends Service {
      */
     private void applyDictationHold() {
         boolean micOpen = mic != null && mic.active();
-        boolean audible = speechState.playing();
+        boolean audible = speechState().playing();
         boolean wasHolding = dictation.holding();
         boolean wasExpired = dictation.expired();
         DictationHold.Action action = dictation.onState(
@@ -1104,7 +1124,7 @@ public class CompanionService extends Service {
                 new Intent(this, CompanionService.class).setAction(ACTION_LATER),
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
         String what = speech == null ? null : speech.state().lastTitle();
-        int waiting = speechState.queued;
+        int waiting = speechState().queued;
         return new Notification.Builder(this, CHANNEL_ASK)
                 .setContentTitle(waiting > 1 ? "Sam has " + waiting
                                                + " replies waiting"
@@ -1263,12 +1283,12 @@ public class CompanionService extends Service {
      * now that each channel has a card of its own.
      */
     private boolean speechFront() {
-        return FrontChannel.speechInFront(speechState, speechHeldNow());
+        return FrontChannel.speechInFront(speechState(), speechHeldNow());
     }
 
     /** The coordinator says a response is in flight, and said so recently. */
     private boolean speakingNow() {
-        return speechState.speaking && sinceSpeaking() < FrontChannel.SPEAKING_FLAG_MAX_MS;
+        return speechState().speaking && sinceSpeaking() < FrontChannel.SPEAKING_FLAG_MAX_MS;
     }
 
     // ---- the outside readout ---------------------------------------------
@@ -1296,6 +1316,11 @@ public class CompanionService extends Service {
     private void startBuiltinSpeech() {
         try {
             builtinSpeech = new BuiltinSpeech(this, CompanionService::log);
+            // The card, the focus policy and the hold tiers read one state per
+            // channel. Give them this player's, and let SideChannel choose
+            // between it and the mpv bridge by which one is speaking.
+            builtinSpeech.mirrorInto(builtinSpeechState,
+                                     () -> main.post(this::pushSessionState));
             speechServer = new MpvServer(Server.tailnetAddress(),
                                          Server.BUILTIN_SPEECH_PORT,
                                          builtinSpeech,
@@ -1330,19 +1355,19 @@ public class CompanionService extends Service {
             m.put("cards", (speech != null && speech.visible() ? "music,speech" : "music")
                     + (book != null && book.visible() ? ",book" : ""));
             Map<String, Object> sp = new LinkedHashMap<String, Object>();
-            sp.put("connected", Boolean.valueOf(speechState.connected));
-            sp.put("idle", Boolean.valueOf(speechState.idleActive));
-            sp.put("paused", Boolean.valueOf(speechState.paused));
+            sp.put("connected", Boolean.valueOf(speechState().connected));
+            sp.put("idle", Boolean.valueOf(speechState().idleActive));
+            sp.put("paused", Boolean.valueOf(speechState().paused));
             long since = sinceSpeechStaged();
             long flag = sinceSpeaking();
             sp.put("staged_ms_ago", since == Long.MAX_VALUE ? null : Long.valueOf(since));
             // What the coordinator told us, and how long ago — the difference
             // between "we know" and "we guessed" when reading a duck decision.
-            sp.put("speaking", Boolean.valueOf(speechState.speaking));
+            sp.put("speaking", Boolean.valueOf(speechState().speaking));
             sp.put("speaking_ms_ago", flag == Long.MAX_VALUE ? null : Long.valueOf(flag));
             // The answer that decides whether a transient loss ducks at all.
             sp.put("owns_the_loss", Boolean.valueOf(
-                    FrontChannel.ourSpeech(speechState, since, flag)));
+                    FrontChannel.ourSpeech(speechState(), since, flag)));
             // Whether the speech broker is paused *by us* — the one pause on
             // this phone that nothing else will undo. See SpeechPolicy.
             sp.put("owes_resume", Boolean.valueOf(speechFocus.owesResume()));
@@ -1397,8 +1422,8 @@ public class CompanionService extends Service {
             m.put("mic_seen", mic == null ? "(no probe)" : mic.detail());
             m.put("mic_verdict", bargeIn.why(System.currentTimeMillis()));
             m.put("live_mode", liveMode);
-            m.put("speech_priority", speechState.priority);
-            m.put("speech_waiting", Integer.valueOf(speechState.queued));
+            m.put("speech_priority", speechState().priority);
+            m.put("speech_waiting", Integer.valueOf(speechState().queued));
             m.put("voice_session", Boolean.valueOf(bargeIn.voiceSession()));
             // The dictation half of the same question. `dictation_owes_resume`
             // is the one to check when Sam has gone quiet and nobody knows why.
@@ -1527,10 +1552,10 @@ public class CompanionService extends Service {
 
     private void applyFocus(int change) {
         boolean ourSpeech = FrontChannel.ourSpeech(
-                speechState, sinceSpeechStaged(), sinceSpeaking());
+                speechState(), sinceSpeechStaged(), sinceSpeaking());
         List<FocusPolicy.Action> actions = focus.onFocusChange(change, state, ourSpeech);
         List<SpeechPolicy.Action> speechActions =
-                speechFocus.onFocusChange(change, speechState, ourSpeech, System.currentTimeMillis());
+                speechFocus.onFocusChange(change, speechState(), ourSpeech, System.currentTimeMillis());
         if (ourSpeech && actions.isEmpty() && speechActions.isEmpty()) {
             log("focus: our own speech — the coordinator owns the volume");
             return;
@@ -1650,7 +1675,7 @@ public class CompanionService extends Service {
         if (++quietPolls < QUIET_POLLS_TO_RESUME) return;
         quietPolls = 0;
         List<SpeechPolicy.Action> actions = speechFocus.onFocusChange(
-                FocusPolicy.GAIN, speechState, false, System.currentTimeMillis());
+                FocusPolicy.GAIN, speechState(), false, System.currentTimeMillis());
         if (actions.isEmpty()) return;   // outside the window: David's to lift
         log("focus: nothing else is playing any more");
         for (SpeechPolicy.Action action : actions) performSpeech(action);

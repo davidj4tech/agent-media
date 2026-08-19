@@ -110,6 +110,16 @@ final class MpvServer {
     private volatile ServerSocket server;
     private volatile boolean running;
     private Thread thread;
+    /**
+     * Told after any property moves, whoever moved it.
+     *
+     * The card is the reason this exists. Metadata the server sets —
+     * {@code force-media-title}, the speaking flag, the priority — reaches this
+     * class and nowhere else, so a player mirroring only its own playback would
+     * show a reply with no name on it. One hook covers both halves: what
+     * playback did, and what the server said about it.
+     */
+    private volatile Runnable observer;
 
     interface Listener {
         void onLog(String line);
@@ -170,6 +180,13 @@ final class MpvServer {
      */
     void changed(String name) {
         for (Client c : clients) c.notifyChange(name);
+        Runnable r = observer;
+        if (r != null) r.run();
+    }
+
+    /** Watch every change, for a card that has to be redrawn when one lands. */
+    void onAnyChange(Runnable r) {
+        this.observer = r;
     }
 
     private void loop() {

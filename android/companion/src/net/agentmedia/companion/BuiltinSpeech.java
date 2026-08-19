@@ -2,8 +2,6 @@ package net.agentmedia.companion;
 
 import android.content.Context;
 import android.media.AudioAttributes;
-import android.media.AudioFocusRequest;
-import android.media.AudioManager;
 import android.media.MediaPlayer;
 import android.media.PlaybackParams;
 
@@ -15,6 +13,9 @@ import java.net.HttpURLConnection;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -59,9 +60,27 @@ final class BuiltinSpeech implements MpvServer.Player {
                 return t;
             });
 
+    /**
+     * Clip fetches in flight, so a clip is not downloaded twice.
+     *
+     * Two things race for the same file the moment a reply is queued: the
+     * whole-reply prefetch below and {@link #prepareNext()}. Both are
+     * idempotent, but on a link this slow the duplicate is a second copy of
+     * the same bytes competing with the one that is about to be played.
+     */
+    private final Set<String> fetching =
+            Collections.synchronizedSet(new HashSet<String>());
+
+    /** Two at a time: enough to stay ahead, few enough to not fight the clip
+     *  that is playing for a share of a slow tailnet link. */
+    private final ExecutorService fetcher = Executors.newFixedThreadPool(2, r -> {
+        Thread t = new Thread(r, "speech-fetch");
+        t.setDaemon(true);
+        return t;
+    });
+
     private final Context context;
     private final Log log;
-    private final AudioManager audio;
 
     private final List<String> playlist = new ArrayList<String>();
     private volatile int pos = -1;
@@ -77,9 +96,6 @@ final class BuiltinSpeech implements MpvServer.Player {
 
     /** Set once the server is listening, so changes can be volunteered. */
     private volatile MpvServer server;
-    private volatile AudioFocusRequest focus;
-    /** Paused by a focus loss rather than by the user, so it may resume. */
-    private volatile boolean pausedByFocus;
 
     interface Log {
         void line(String text);
@@ -88,11 +104,58 @@ final class BuiltinSpeech implements MpvServer.Player {
     BuiltinSpeech(Context context, Log log) {
         this.context = context.getApplicationContext();
         this.log = log;
-        this.audio = context.getSystemService(AudioManager.class);
     }
 
     void attach(MpvServer server) {
         this.server = server;
+        // Every change, from either side of the socket: playback moving, and
+        // the server naming the reply. Both belong on the card.
+        server.onAnyChange(this::mirror);
+    }
+
+    /**
+     * Publish this player's state where the card and the policies read it.
+     *
+     * The same {@link MpvState} shape the mpv bridge fills, because everything
+     * downstream — the shade card, the focus policy, the hold tiers, the
+     * marquee — was written against that and none of it should have to learn
+     * that speech has two players. What decides which one they see is
+     * {@link SideChannel#mirror}, not anything here.
+     */
+    void mirrorInto(MpvState out, Runnable onChange) {
+        this.mirror = out;
+        this.onMirrorChange = onChange;
+        mirror();
+    }
+
+    private volatile MpvState mirror;
+    private volatile Runnable onMirrorChange;
+
+    private void mirror() {
+        MpvState out = mirror;
+        if (out == null) return;
+        MpvServer s = server;
+        // connected means "this player can be asked", which is true whenever
+        // it exists — there is no socket to lose.
+        out.connected = true;
+        out.idleActive = idle();
+        out.paused = paused;
+        out.speed = speed;
+        out.volume = volume;
+        out.path = path();
+        out.position = timePos();
+        out.duration = duration();
+        if (s != null) {
+            String title = s.storedText("force-media-title");
+            out.mediaTitle = title.isEmpty() ? null : title;
+            out.speaking = s.storedFlag("user-data/agent-media/speaking");
+            String priority = s.storedText("user-data/agent-media/priority");
+            if (!priority.isEmpty()) out.priority = priority;
+            String text = s.storedText("user-data/agent-media/text");
+            out.replyText = text.isEmpty() ? null : text;
+        }
+        Runnable r = onMirrorChange;
+        if (r != null) r.run();
     }
 
     /**
@@ -110,7 +173,13 @@ final class BuiltinSpeech implements MpvServer.Player {
 
     private void volunteer(String property) {
         MpvServer s = server;
-        if (s != null) s.changed(property);
+        if (s != null) {
+            // changed() calls back into mirror() through onAnyChange, so the
+            // card and the socket learn the same thing at the same moment.
+            s.changed(property);
+        } else {
+            mirror();
+        }
     }
 
     // ---- the playlist -----------------------------------------------------
@@ -129,6 +198,13 @@ final class BuiltinSpeech implements MpvServer.Player {
                 // index 0, because a first clip that started early could end
                 // before the rest were queued.
                 playlist.add(uri);
+                // That same batch is the earliest this device can know the
+                // whole reply, so start fetching all of it now rather than one
+                // clip ahead. The old path pushed the clips to the phone while
+                // the sentences were still rendering; this is the nearest thing
+                // available from behind the socket, and it turns every sentence
+                // after the first into a local file.
+                warm(uri);
                 volunteer("playlist-count");
             }
         });
@@ -155,7 +231,6 @@ final class BuiltinSpeech implements MpvServer.Player {
             release();
             playlist.clear();
             pos = -1;
-            dropFocus();
             volunteer("playlist-pos");
             volunteer("idle-active");
         });
@@ -167,8 +242,7 @@ final class BuiltinSpeech implements MpvServer.Player {
             pos = index;
             if (index < 0 || index >= playlist.size()) {
                 release();
-                dropFocus();
-            } else {
+                } else {
                 startCurrent();
             }
             volunteer("playlist-pos");
@@ -199,7 +273,6 @@ final class BuiltinSpeech implements MpvServer.Player {
         } else {
             release();
             pos = playlist.isEmpty() ? -1 : playlist.size() - 1;
-            dropFocus();
             volunteer("idle-active");
         }
         if (announce) volunteer("playlist-pos");
@@ -231,7 +304,6 @@ final class BuiltinSpeech implements MpvServer.Player {
             });
             applyGain(mp);
             player = mp;
-            takeFocus();
             if (!paused) {
                 applySpeed(mp);
                 mp.start();
@@ -466,6 +538,22 @@ final class BuiltinSpeech implements MpvServer.Player {
         advance(true);
     }
 
+    /** Fetch in the background, once, and never complain: this is a warmup. */
+    private void warm(String uri) {
+        if (!uri.startsWith("http")) return;
+        if (!fetching.add(uri)) return;
+        fetcher.execute(() -> {
+            try {
+                fetch(uri);
+            } catch (Exception e) {
+                // Its turn will come, and the failure will be reported there,
+                // where there is a sentence waiting on it.
+            } finally {
+                fetching.remove(uri);
+            }
+        });
+    }
+
     private File fetch(String url) throws Exception {
         File dir = new File(context.getCacheDir(), "speech");
         dir.mkdirs();
@@ -490,59 +578,35 @@ final class BuiltinSpeech implements MpvServer.Player {
         return out;
     }
 
-    // ---- focus ------------------------------------------------------------
+    // ---- focus: deliberately none, see above -------------------------------
 
     /**
-     * Hold focus while a reply is in flight — for real, this time.
+     * Focus is NOT requested by this player, and that is the whole lesson of
+     * the first evening it was used in anger.
      *
-     * The distinction that matters: this is not the silent-AudioTrack trick.
-     * That exists to make Android believe an app is playing when the sound is
-     * really mpv's; here the sound is ours, so the request is honest and the
-     * duck applies to us the way it applies to anyone.
-     */
-    private void takeFocus() {
-        if (focus != null || audio == null) return;
-        AudioFocusRequest request = new AudioFocusRequest.Builder(
-                AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
-                .setAudioAttributes(new AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build())
-                .setOnAudioFocusChangeListener(this::onFocusChange)
-                .build();
-        audio.requestAudioFocus(request);
-        focus = request;
-    }
-
-    /**
-     * What a focus loss means when the sound really is ours.
+     * The reasoning that put a request here was sound in isolation: the sound
+     * is ours, so the request would be honest — unlike the silent AudioTrack,
+     * which exists to make Android believe an app is playing when the noise is
+     * really mpv's. What it missed is that this app <em>already has</em> a
+     * focus owner: {@link FocusControl}, driven by the channel state this
+     * player now feeds. Requesting focus from inside the same app made it
+     * compete with itself:
      *
-     * A duck we let Android handle — it lowers our stream, which is the
-     * correct answer for a sentence competing with a navigation prompt. A
-     * transient loss (a call) pauses us, and we resume afterwards, but only if
-     * it was the loss that paused us: resuming a reply David paused himself
-     * would be the app arguing with him.
+     * <pre>
+     *   focus: granted (speech) / silent track started
+     *   focus: abandoned (nothing open) / silent track stopped
+     *   focus: granted (speech)      ... about five times a second
+     * </pre>
+     *
+     * Each grant re-evaluated the state, each abandon reached this class as a
+     * change, and playback paused and resumed between them. David heard it as
+     * "very jittery", which is precisely what it was.
+     *
+     * One focus owner per app. What this player owes it is accurate state,
+     * which {@link #mirrorInto} provides — and the honesty argument survives:
+     * the focus FocusControl holds while this player plays is held for a stream
+     * the app really is producing.
      */
-    private void onFocusChange(int change) {
-        if (change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT
-                || change == AudioManager.AUDIOFOCUS_LOSS) {
-            if (!paused) {
-                pausedByFocus = true;
-                pause(true);
-            }
-        } else if (change == AudioManager.AUDIOFOCUS_GAIN && pausedByFocus) {
-            pausedByFocus = false;
-            pause(false);
-        }
-    }
-
-    private void dropFocus() {
-        AudioFocusRequest request = focus;
-        focus = null;
-        pausedByFocus = false;
-        if (request != null && audio != null) audio.abandonAudioFocusRequest(request);
-    }
-
     private void release() {
         MediaPlayer n = next;
         next = null;

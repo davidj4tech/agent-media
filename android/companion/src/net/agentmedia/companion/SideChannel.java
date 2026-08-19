@@ -60,7 +60,7 @@ final class SideChannel {
     private final String label;
     private final int notifId;
     private final String notifChannel;
-    private final MpvState state = new MpvState();
+    private final MpvState mpv = new MpvState();
     private final MpvIpc ipc;
     private final Watcher watcher;
 
@@ -93,7 +93,41 @@ final class SideChannel {
         this.ipc = new MpvIpc(host, port, listener, observed);
     }
 
-    MpvState state() { return state; }
+    /**
+     * The state this channel is currently <em>about</em>.
+     *
+     * Speech can come from two players on this phone now — the Termux mpv this
+     * class was written for, and the app's own, which answers on its own port
+     * and never touches {@link #ipc}. The card, the focus policy and the hold
+     * tiers all read this, and every one of them means "the thing that is
+     * speaking", not "the socket we happen to be connected to". While the
+     * in-app player has a clip open, that is what they get.
+     */
+    MpvState state() {
+        MpvState alt = alternate;
+        java.util.function.BooleanSupplier live = alternateActive;
+        if (alt != null && live != null && live.getAsBoolean()) return alt;
+        return mpv;
+    }
+
+    /** The mpv mirror itself, which only {@link #ipc} writes. */
+    MpvState mpvState() { return mpv; }
+
+    private volatile MpvState alternate;
+    private volatile java.util.function.BooleanSupplier alternateActive;
+
+    /**
+     * Offer a second source of truth for this channel, used while it is live.
+     *
+     * Deliberately not a replacement: the mpv bridge stays connected and stays
+     * authoritative whenever the other player is idle, so a channel that moves
+     * between the two shows the right thing in both states, and moving back is
+     * a setting rather than a restart.
+     */
+    void mirror(MpvState alt, java.util.function.BooleanSupplier live) {
+        this.alternate = alt;
+        this.alternateActive = live;
+    }
 
     MpvIpc ipc() { return ipc; }
 
@@ -183,14 +217,14 @@ final class SideChannel {
         session.setMetadata(new MediaMetadata.Builder()
                 .putString(MediaMetadata.METADATA_KEY_TITLE, cardTitle())
                 .putString(MediaMetadata.METADATA_KEY_ARTIST, cardSubtitle())
-                .putLong(MediaMetadata.METADATA_KEY_DURATION, state.durationMs())
+                .putLong(MediaMetadata.METADATA_KEY_DURATION, state().durationMs())
                 .putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, Artwork.art(name))
                 .build());
 
         int playbackState;
-        if (!state.connected) playbackState = PlaybackState.STATE_ERROR;
-        else if (!state.loaded()) playbackState = PlaybackState.STATE_STOPPED;
-        else if (state.paused) playbackState = PlaybackState.STATE_PAUSED;
+        if (!state().connected) playbackState = PlaybackState.STATE_ERROR;
+        else if (!state().loaded()) playbackState = PlaybackState.STATE_STOPPED;
+        else if (state().paused) playbackState = PlaybackState.STATE_PAUSED;
         else playbackState = PlaybackState.STATE_PLAYING;
 
         session.setPlaybackState(new PlaybackState.Builder()
@@ -198,8 +232,8 @@ final class SideChannel {
                         | PlaybackState.ACTION_PAUSE
                         | PlaybackState.ACTION_PLAY_PAUSE
                         | PlaybackState.ACTION_STOP)
-                .setState(playbackState, state.positionMs(),
-                          state.playing() ? (float) state.speed : 0f)
+                .setState(playbackState, state().positionMs(),
+                          state().playing() ? (float) state().speed : 0f)
                 .build());
 
         // Re-post only when the card would actually read differently.
@@ -215,7 +249,7 @@ final class SideChannel {
         // book counting down and a queue growing behind Sam both change the
         // card without changing its title.
         String sig = cardTitle() + " " + cardSubtitle() + " " + playbackState
-                + " " + state.paused + " " + state.loaded();
+                + " " + state().paused + " " + state().loaded();
         if (sig.equals(lastCard)) return;
         lastCard = sig;
         nm.notify(notifId, card());
@@ -246,10 +280,10 @@ final class SideChannel {
      * the popup shows.
      */
     private String title() {
-        String t = state.mediaTitle;
+        String t = state().mediaTitle;
         // Then the clip that just played: a card that outlives its clip is only
         // worth having if it still names it. See MpvState#lastTitle.
-        if (t == null || t.trim().isEmpty()) t = state.lastTitle();
+        if (t == null || t.trim().isEmpty()) t = state().lastTitle();
         return (t == null || t.trim().isEmpty()) ? label : t.trim();
     }
 
@@ -259,13 +293,13 @@ final class SideChannel {
 
     /** Which conversation this reply belongs to — mpv's own title field. */
     private String conversationName() {
-        String t = state.mediaTitle;
-        if (t == null || t.trim().isEmpty()) t = state.lastTitle();
+        String t = state().mediaTitle;
+        if (t == null || t.trim().isEmpty()) t = state().lastTitle();
         return t == null ? "" : t.trim();
     }
 
     /** Has this channel played anything worth keeping on the card? */
-    boolean remembers() { return state.lastTitle() != null; }
+    boolean remembers() { return state().lastTitle() != null; }
 
     /**
      * The title as the card should show it *this moment* — windowed if it is
@@ -285,7 +319,7 @@ final class SideChannel {
             shownTitle = full;
             titleSince = SystemClock.uptimeMillis();
         }
-        if (!state.playing()) return full;
+        if (!state().playing()) return full;
         return Marquee.window(full, Marquee.WIDTH,
                               SystemClock.uptimeMillis() - titleSince);
     }
@@ -305,7 +339,7 @@ final class SideChannel {
             shownSubtitle = full;
             subtitleSince = SystemClock.uptimeMillis();
         }
-        if (!state.playing()) return full;
+        if (!state().playing()) return full;
         return Marquee.window(full, Marquee.SUB_WIDTH,
                               SystemClock.uptimeMillis() - subtitleSince);
     }
@@ -320,7 +354,7 @@ final class SideChannel {
      * list. A book can be parked in the shade for days.
      */
     boolean scrolling() {
-        if (!visible || !state.playing()) return false;
+        if (!visible || !state().playing()) return false;
         return Marquee.needed(title(), Marquee.WIDTH)
                 || Marquee.needed(subtitle(), Marquee.SUB_WIDTH);
     }
@@ -339,13 +373,13 @@ final class SideChannel {
             // The words, unless the title is already showing them — which it is
             // whenever no conversation was sent, and then this line is left to
             // the pile alone.
-            String words = state.replyText;
+            String words = state().replyText;
             String lead = conversationName().isEmpty() ? "" : trimmed(words);
-            return CardText.speech(state.queued, state.speaking, state.loaded(),
-                                   state.paused, lead);
+            return CardText.speech(state().queued, state().speaking, state().loaded(),
+                                   state().paused, lead);
         }
         if ("book".equals(name)) {
-            return CardText.book(state.durationMs(), state.positionMs());
+            return CardText.book(state().durationMs(), state().positionMs());
         }
         return "";
     }
@@ -366,7 +400,7 @@ final class SideChannel {
                 .setStyle(new Notification.MediaStyle()
                         .setMediaSession(session.getSessionToken()))
                 .setContentIntent(open)
-                .setOngoing(state.playing())
+                .setOngoing(state().playing())
                 .build();
     }
 
@@ -375,13 +409,13 @@ final class SideChannel {
     private final MpvIpc.Listener listener = new MpvIpc.Listener() {
         @Override public void onProperty(final String property, final Object value) {
             main.post(() -> {
-                if (!state.apply(property, value)) return;
+                if (!mpv.apply(property, value)) return;
                 CompanionService.log(name + " " + property + " = " + value);
                 // Resumed by anyone at all — this card, the popup, the CLI, the
                 // coordinator starting the next reply — and the hold is over.
-                if ("pause".equals(property) && !state.paused) heldByUser = false;
-                if ("idle-active".equals(property) && state.idleActive) heldByUser = false;
-                if (watcher != null) watcher.onChanged(property, value, state);
+                if ("pause".equals(property) && !mpv.paused) heldByUser = false;
+                if ("idle-active".equals(property) && mpv.idleActive) heldByUser = false;
+                if (watcher != null) watcher.onChanged(property, value, mpv);
             });
         }
 
@@ -389,15 +423,15 @@ final class SideChannel {
 
         @Override public void onConnected() {
             main.post(() -> {
-                state.connected = true;
-                if (watcher != null) watcher.onChanged(null, null, state);
+                mpv.connected = true;
+                if (watcher != null) watcher.onChanged(null, null, mpv);
             });
         }
 
         @Override public void onDisconnected(String why) {
             main.post(() -> {
-                state.connected = false;
-                if (watcher != null) watcher.onChanged(null, null, state);
+                mpv.connected = false;
+                if (watcher != null) watcher.onChanged(null, null, mpv);
             });
         }
 
@@ -418,7 +452,7 @@ final class SideChannel {
     private final MediaSession.Callback callback = new MediaSession.Callback() {
         @Override public void onPlay() {
             CompanionService.log("transport: play -> " + name);
-            if (!state.loaded()) {
+            if (!state().loaded()) {
                 // Nothing to un-pause. Clearing `pause` on an mpv with no file
                 // open is a control that does nothing at all, and on speech
                 // that is most of the time — sink-speech is idle between
