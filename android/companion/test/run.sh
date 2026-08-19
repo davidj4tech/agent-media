@@ -28,6 +28,7 @@ javac -nowarn -d "$OUT" \
     "$APP/src/net/agentmedia/companion/BargeIn.java" \
     "$APP/src/net/agentmedia/companion/Server.java" \
     "$APP/src/net/agentmedia/companion/MpvServer.java" \
+    "$APP/src/net/agentmedia/companion/MicSteady.java" \
     "$APP/src/net/agentmedia/companion/Loopback.java" \
     "$APP/src/net/agentmedia/companion/ShareRequest.java" \
     "$APP/src/net/agentmedia/companion/RecentList.java" \
@@ -50,6 +51,7 @@ javac -nowarn -d "$OUT" \
     "$HERE/net/agentmedia/companion/BargeInTest.java" \
     "$HERE/net/agentmedia/companion/ServerTest.java" \
     "$HERE/net/agentmedia/companion/MpvServerTest.java" \
+    "$HERE/net/agentmedia/companion/MicSteadyTest.java" \
     "$HERE/net/agentmedia/companion/ShareTest.java" \
     "$HERE/net/agentmedia/companion/DictationTest.java" \
     "$HERE/net/agentmedia/companion/BookHoldTest.java" \
@@ -77,3 +79,4 @@ java -cp "$OUT" net.agentmedia.companion.RecentTest
 java -cp "$OUT" net.agentmedia.companion.RecentRowsTest
 java -cp "$OUT" net.agentmedia.companion.ChannelsTest
 java -cp "$OUT" net.agentmedia.companion.MpvServerTest
+java -cp "$OUT" net.agentmedia.companion.MicSteadyTest

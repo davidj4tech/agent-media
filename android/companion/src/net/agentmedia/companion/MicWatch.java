@@ -161,11 +161,26 @@ final class MicWatch {
         }
     }
 
+    private final MicSteady debounce = new MicSteady();
+    private Runnable settle;
+
     private void apply(List<AudioRecordingConfiguration> configs, String via) {
         int n = (configs == null) ? 0 : configs.size();
         String d = describe(configs);
         source = sourceOf(configs);
-        boolean nowActive = n > 0;
+        long now = SystemClock.uptimeMillis();
+        // What is open right now, and what the rest of the app should believe:
+        // not the same thing while something samples the mic several times a
+        // second. See MicSteady.
+        boolean nowActive = debounce.update(n, now);
+        if (settle != null) main.removeCallbacks(settle);
+        long again = debounce.pendingInMs(now);
+        if (again >= 0) {
+            // The events stop; a burst with no successor would leave the
+            // change pending forever.
+            settle = () -> poll();
+            main.postDelayed(settle, again + 20);
+        }
         if (nowActive == active && n == count && d.equals(detail)) return;
 
         active = nowActive;
