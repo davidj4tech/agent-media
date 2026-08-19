@@ -114,3 +114,69 @@ def test_disabled_when_env_unset_is_total_noop(fake_snap, state, monkeypatch):
     assert calls == []
     assert clients == {"hpo-music": 100, "p8ar-music": 80}
     assert state.get_rooms_duck() is None
+
+
+def test_one_failing_client_does_not_strand_the_others(enabled, fake_snap, state,
+                                                       monkeypatch):
+    """The restore used to run in one try block and clear the marker in a
+    `finally`: the first client that threw took the rest of the loop with it,
+    and the debt was erased anyway. That is how the fleet ended up with every
+    music room parked at the duck level and nothing recording it."""
+    clients, _ = fake_snap
+    c = _coord(state)
+    c._rooms_duck(15)
+
+    ok = coord_mod.snapcast.set_client_volume
+
+    def flaky(client_id, percent, muted=None, timeout=4.0):
+        if client_id == "hpo-music":
+            raise coord_mod.snapcast.SnapcastError("Client.SetVolume: timed out")
+        ok(client_id, percent, muted=muted, timeout=timeout)
+
+    monkeypatch.setattr(coord_mod.snapcast, "set_client_volume", flaky)
+    monkeypatch.setattr(coord_mod.snapcast, "client_exists", lambda cid, timeout=4.0: True)
+    c._rooms_unduck()
+
+    # The client behind the failure is restored, not skipped.
+    assert clients["p8ar-music"] == 80
+    # ... and the one that failed is still owed, so the next unduck retries it.
+    assert state.get_rooms_duck()["vols"] == {"hpo-music": 100}
+
+    monkeypatch.setattr(coord_mod.snapcast, "set_client_volume", ok)
+    c._rooms_unduck()
+    assert clients["hpo-music"] == 100
+    assert state.get_rooms_duck() is None
+
+
+def test_a_client_the_server_no_longer_knows_is_dropped(enabled, fake_snap, state,
+                                                        monkeypatch):
+    """A renamed or deleted client cannot be restored — holding its debt would
+    keep the marker alive for ever, which is its own kind of stuck."""
+    clients, _ = fake_snap
+    c = _coord(state)
+    c._rooms_duck(15)
+
+    def gone(client_id, percent, muted=None, timeout=4.0):
+        raise coord_mod.snapcast.SnapcastError("Client.SetVolume: Client not found")
+
+    monkeypatch.setattr(coord_mod.snapcast, "set_client_volume", gone)
+    monkeypatch.setattr(coord_mod.snapcast, "client_exists", lambda cid, timeout=4.0: False)
+    c._rooms_unduck()
+
+    assert state.get_rooms_duck() is None
+
+
+def test_a_capture_that_is_all_at_the_duck_level_is_reported(enabled, fake_snap,
+                                                             state):
+    """The strand is unfixable after the fact — the real baseline is gone — but
+    it must stop being silent."""
+    clients, _ = fake_snap
+    clients["hpo-music"] = 10
+    clients["p8ar-music"] = 10
+    c = _coord(state)
+
+    c._rooms_duck(10)
+
+    errs = [e for e in state.recent_errors(limit=5)
+            if "already at the duck level" in (e.get("message") or "")]
+    assert errs, "a fleet parked at the duck level should be logged"

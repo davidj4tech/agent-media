@@ -159,6 +159,19 @@ def clients_on_stream(stream_id: str, timeout: float = 4.0,
     return out
 
 
+def client_exists(client_id: str, timeout: float = 4.0) -> bool:
+    """True if the server still knows this client id.
+
+    Asked only on a failure path, to tell a client that has *gone* (renamed,
+    deleted — its volume is no longer anyone's to restore) from one that is
+    merely unreachable this second and will want restoring on the next try.
+    """
+    server = get_status(timeout=timeout)
+    return any(c.get("id") == client_id
+               for g in server.get("groups", [])
+               for c in g.get("clients", []))
+
+
 def set_group_stream(group_id: str, stream_id: str,
                      timeout: float = 4.0) -> None:
     """Point a group at a stream (``Group.SetStream``)."""

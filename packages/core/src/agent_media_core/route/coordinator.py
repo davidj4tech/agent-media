@@ -300,6 +300,18 @@ class Coordinator:
                         for c in snapcast.clients_on_stream(stream)}
             if not vols:
                 return
+            # A fresh capture where nothing is above the duck level is the
+            # fingerprint of a strand: the rooms are already sitting at the
+            # level, so this duck will lower nothing and its restore will put
+            # them back to where they are stuck. Silent for months on the
+            # fleet (found 2026-08-19, every music client at 10). It cannot be
+            # auto-corrected -- the real baseline is gone -- but it can stop
+            # being invisible.
+            if not marker and all(int(v) <= level for v in vols.values()):
+                self._log_err(
+                    "rooms: every client already at the duck level",
+                    f"level={level} vols={vols} — a previous restore never "
+                    "landed; the baseline volumes need setting by hand")
             self.state.set_rooms_duck({"level": int(level), "vols": vols})
             for cid, prior in vols.items():
                 if prior > level:
@@ -319,17 +331,37 @@ class Coordinator:
             marker = None
         if not marker:
             return
-        try:
-            for cid, prior in (marker.get("vols") or {}).items():
+        # Per client, and the debt outlives a failure. Restoring in one try
+        # block meant the first client that threw took every client after it
+        # down with it, and the `finally` cleared the marker anyway -- so one
+        # transient snapserver error, or one id the server no longer knows
+        # (a client renamed or deleted since the duck), left rooms sitting at
+        # the duck level with nothing recording that they were owed anything.
+        # Nothing ever restored them, because the next duck read those ducked
+        # volumes as the baseline and dutifully "restored" them to that.
+        owed: dict[str, int] = {}
+        failed: list[str] = []
+        for cid, prior in (marker.get("vols") or {}).items():
+            try:
                 snapcast.set_client_volume(str(cid), int(prior))
-        except Exception as e:  # noqa: BLE001
-            self._log_err("rooms: snapcast unduck failed", str(e))
-        finally:
-            if clear:
+            except Exception as e:  # noqa: BLE001
+                failed.append(f"{cid}: {e}")
+                # Keep owing a client that still exists; the next unduck
+                # retries it. A client that is gone cannot be restored, and
+                # holding its debt forever would keep the marker alive.
                 try:
-                    self.state.set_rooms_duck(None)
+                    if snapcast.client_exists(str(cid)):
+                        owed[str(cid)] = int(prior)
                 except Exception:  # noqa: BLE001
-                    pass
+                    owed[str(cid)] = int(prior)
+        if failed:
+            self._log_err("rooms: snapcast unduck failed", "; ".join(failed))
+        if clear:
+            try:
+                self.state.set_rooms_duck(
+                    {**marker, "vols": owed} if owed else None)
+            except Exception:  # noqa: BLE001
+                pass
 
     def _rooms_reduck(self) -> None:
         """Re-apply the rooms duck after a mid-response mute is lifted, reusing
