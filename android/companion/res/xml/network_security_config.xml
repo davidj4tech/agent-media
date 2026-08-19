@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Cleartext HTTP, deliberately.
+
+  Everything this app talks to is on the tailnet — the canvas on :8781, the
+  control endpoints Loopback posts to — and none of it speaks TLS. Since
+  targetSdk 28 Android blocks cleartext by default, so without this the
+  WebView shows a blank page and HttpURLConnection throws, both of which look
+  exactly like "the server is down".
+
+  This is base-config rather than a per-domain exception because the server is
+  a SETTING: the host lives in SharedPreferences and the user can point it at
+  red5, an IP, or a MagicDNS name. There is no list of domains to enumerate at
+  build time. A per-domain allowlist here would silently break the moment the
+  setting changed, which is worse than an honest blanket rule on a tailnet-only
+  app.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

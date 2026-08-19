@@ -223,6 +223,15 @@ public class MainActivity extends Activity {
                 startActivity(new Intent(MainActivity.this, RecentActivity.class));
             }
         }), weight());
+        // Phase 0's temporary door onto the canvas. The spike's entry point
+        // is a footer link because that is the least invasive place to put
+        // one; phase 1 moves it onto the speech card, where you already are
+        // when a figure lands. See docs/proposals/2026-08-18-canvas-in-the-app.md.
+        bar.addView(link("Canvas", new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                startActivity(new Intent(MainActivity.this, CanvasActivity.class));
+            }
+        }), weight());
         bar.addView(link("Settings", new View.OnClickListener() {
             @Override public void onClick(View v) {
                 startActivity(new Intent(MainActivity.this, SettingsActivity.class));

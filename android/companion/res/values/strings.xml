@@ -8,4 +8,7 @@
          lives under the channel card on the home screen now. -->
     <string name="diagnostics_label">Diagnostics</string>
     <string name="settings_label">Server</string>
+    <!-- The canvas activity's label. Its own name, not "Canvas (agent-media)":
+         it is a surface, and the app is already the thing you came from. -->
+    <string name="canvas_label">Canvas</string>
 </resources>
