@@ -331,6 +331,12 @@ public class MainActivity extends Activity {
             @Override public void run() {
                 final Map<String, Channels.Channel> got =
                         Channels.fetch(Settings.server(MainActivity.this));
+                // The server is authoritative for every channel except the one
+                // this app is playing itself: while speech comes from the
+                // in-app player, media-share is describing an idle mpv on 6602
+                // and this screen would show a reply that finished hours ago.
+                Channels.Channel ours = CompanionService.builtinSpeechNow();
+                if (ours != null && got != null) got.put("speech", ours);
                 main.post(new Runnable() {
                     @Override public void run() {
                         channels = got;

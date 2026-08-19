@@ -183,6 +183,18 @@ public class CompanionService extends Service {
     private StatusServer status;
     /** Speech played by this app, when a target is pointed at it. */
     private BuiltinSpeech builtinSpeech;
+    /**
+     * The same player, reachable without a binding.
+     *
+     * The home screen asks the <em>server</em> what is playing
+     * ({@code Channels.fetch} -> media-share), which is the right question
+     * everywhere except here: when speech plays in this app, the server's
+     * speech channel is the idle mpv on 6602 and the sound is ours. David saw
+     * that as a now-playing line that did not match what he could hear.
+     * Static because MainActivity does not bind to this service and binding it
+     * for one row would be a lifecycle for a label.
+     */
+    private static volatile BuiltinSpeech LIVE_SPEECH;
     private MpvServer speechServer;
     /** What the in-app player is doing, in the shape every card reads. */
     private final MpvState builtinSpeechState = new MpvState();
@@ -1316,6 +1328,7 @@ public class CompanionService extends Service {
     private void startBuiltinSpeech() {
         try {
             builtinSpeech = new BuiltinSpeech(this, CompanionService::log);
+            LIVE_SPEECH = builtinSpeech;
             // The card, the focus policy and the hold tiers read one state per
             // channel. Give them this player's, and let SideChannel choose
             // between it and the mpv bridge by which one is speaking.
@@ -1332,6 +1345,19 @@ public class CompanionService extends Service {
             // cannot bind the port keeps every other thing this service does.
             log("builtin speech unavailable: " + t);
         }
+    }
+
+    /**
+     * What the in-app player is playing, as a channel row, or null.
+     *
+     * Null means "not the one making the noise" — either there is no in-app
+     * player or it has nothing open — and the caller should believe the server
+     * as it always has.
+     */
+    static Channels.Channel builtinSpeechNow() {
+        BuiltinSpeech player = LIVE_SPEECH;
+        if (player == null || !player.active()) return null;
+        return player.asChannel();
     }
 
     private final StatusServer.Source statusSource = new StatusServer.Source() {

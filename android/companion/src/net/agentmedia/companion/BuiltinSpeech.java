@@ -171,6 +171,38 @@ final class BuiltinSpeech implements MpvServer.Player {
         return player != null;
     }
 
+    /**
+     * This player as a row the home screen understands.
+     *
+     * The same shape media-share returns for a channel, so the screen needs no
+     * special case beyond preferring this one — see
+     * {@link CompanionService#builtinSpeechNow()}. Title and conversation come
+     * from what the server set over the socket, because a clip's filename is
+     * {@code remote-20260814T190922-18480.mp3} and that is worse than nothing.
+     */
+    Channels.Channel asChannel() {
+        MpvServer s = server;
+        String title = s == null ? "" : s.storedText("force-media-title");
+        String text = s == null ? "" : s.storedText("user-data/agent-media/text");
+        double pos = timePos();
+        double dur = duration();
+        return new Channels.Channel(
+                "speech",
+                idle(),
+                !paused && player != null,
+                paused,
+                title.isEmpty() ? null : title,
+                null,
+                pos < 0 ? null : Long.valueOf((long) (pos * 1000)),
+                dur < 0 ? null : Long.valueOf((long) (dur * 1000)),
+                Double.valueOf(speed),
+                Integer.valueOf((int) Math.round(volume)),
+                muted,
+                0,
+                java.util.Collections.<String>emptySet(),
+                text.isEmpty() ? null : text);
+    }
+
     private void volunteer(String property) {
         MpvServer s = server;
         if (s != null) {
