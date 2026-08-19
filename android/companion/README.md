@@ -236,6 +236,32 @@ sideload.
 
 ## Phone side
 
+### The revive, and the one setting it needs
+
+`call_guard` watches `/mic` and knocks when it stops answering, because Android
+stops this app whenever it likes and the app is the only mic trigger there is.
+The knock is a **broadcast** to `WakeReceiver`: a broadcast makes no task, so
+nothing on screen moves for it. If that has not worked 20s later it falls back
+to `WakeActivity`, which does move things — its task goes above the launcher,
+and when it finishes the system resumes the topmost standard task rather than
+whatever was in front.
+
+The fallback exists because since Android 12 a background app may not start a
+foreground service unless an exemption applies. **The exemption this app relies
+on is battery optimisation being off for it**, and without it the broadcast is
+refused in exactly the case that matters — a fresh kill with no task left on
+Recents:
+
+```sh
+adb shell dumpsys deviceidle whitelist +net.agentmedia.companion   # or:
+# Settings → Apps → agent-media → App battery usage → Unrestricted
+```
+
+Measured on p8a (SDK 37) on 2026-08-19: without it, `ForegroundServiceStart
+NotAllowedException` in the app log and the visible fallback 30s later; with it,
+`wake: started by broadcast` and nothing on screen moves at all. A phone that
+loses this setting still revives — it just does it where David can see.
+
 Requires three socat listeners on loopback, one per mpv IPC socket: mpv's
 sockets live inside `com.termux`'s private UID sandbox and no other app can open
 them. A missing one costs exactly its own card — `MpvIpc` reconnects with
