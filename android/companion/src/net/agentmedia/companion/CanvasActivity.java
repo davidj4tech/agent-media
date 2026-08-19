@@ -87,6 +87,23 @@ public class CanvasActivity extends Activity {
      */
     static final String EXTRA_PATH = "net.agentmedia.companion.CANVAS_PATH";
 
+    /**
+     * How long away before coming back re-fetches the page.
+     *
+     * The WebView is paused rather than destroyed, so returning does not
+     * reconnect the stream or re-fetch a figure already on screen — but the
+     * cost of that is a page loaded once and kept forever. canvas.py serves
+     * the page from memory at startup, so a canvas restarted behind us serves
+     * something this screen will never see: on 2026-08-19 that looked exactly
+     * like the subtitle work having been lost, and it was not. A browser tab
+     * has pull-to-refresh for this; nothing here did.
+     *
+     * Ten minutes is chosen to be longer than glancing away and shorter than
+     * the gap across which a deploy is plausible.
+     */
+    private static final long STALE_MS = 10 * 60 * 1000L;
+
+    private long leftAt;
     private FrameLayout root;
     private WebView web;
     private BackChevron back;
@@ -196,6 +213,18 @@ public class CanvasActivity extends Activity {
         back.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { finish(); }
         });
+        // The manual reload. A long press because the canvas is a picture
+        // surface with one visible control, and adding a second button for
+        // something needed twice a month would cost the picture more than it
+        // is worth. Returning true stops it also being read as a back press.
+        back.setOnLongClickListener(new View.OnLongClickListener() {
+            @Override public boolean onLongClick(View v) {
+                v.performHapticFeedback(
+                        android.view.HapticFeedbackConstants.LONG_PRESS);
+                reload();
+                return true;
+            }
+        });
         int touch = dp(Style.TOUCH);
         FrameLayout.LayoutParams backParams =
                 new FrameLayout.LayoutParams(touch, touch, Gravity.TOP | Gravity.START);
@@ -260,6 +289,12 @@ public class CanvasActivity extends Activity {
         return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
     }
 
+    /** Fetch the page again — the deliberate version of what STALE_MS guesses. */
+    private void reload() {
+        say(null);
+        web.loadUrl(url());
+    }
+
     private void say(CharSequence problem) {
         if (problem == null) {
             trouble.setVisibility(View.GONE);
@@ -284,6 +319,7 @@ public class CanvasActivity extends Activity {
         hideBars();
         back.wake();
         web.onResume();
+        if (leftAt > 0 && System.currentTimeMillis() - leftAt > STALE_MS) reload();
     }
 
     @Override
@@ -298,6 +334,7 @@ public class CanvasActivity extends Activity {
     @Override
     protected void onPause() {
         super.onPause();
+        leftAt = System.currentTimeMillis();
         // Paused, not destroyed: coming back should not mean reconnecting the
         // stream and re-fetching the figure that is already on screen.
         web.onPause();
