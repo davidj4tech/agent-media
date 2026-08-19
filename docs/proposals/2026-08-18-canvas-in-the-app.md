@@ -57,6 +57,36 @@ of the below.
 
 ## Phase 1 — make it the app's canvas
 
+*Built 2026-08-19.* What landed, and the two things it decided differently
+from the sketch below:
+
+- **The canvas gets an address, not just a port.** The sketch said "a canvas
+  port on the host already configured". That is wrong for the arrangement this
+  fleet actually runs: media-share is in Termux on the phone (loopback) and the
+  canvas is on the machine producing the speech (red5). Neither derives from
+  the other — the app cannot infer a host it has never been told about. So
+  `Server` grew `canvasHost` (empty = the server's own host, which is the
+  common case) beside `canvas`. Same shape of argument as `mpvHost`, from the
+  other end.
+- **`canvasProblem()` is separate from `problem()`.** Folding it in would let
+  a mistyped canvas port fail `orDefaults()` and take the music, the transport
+  and the share sheet down with it. A canvas that cannot be reached should cost
+  the canvas. It also replaces phase 0's hardcoded `red5`: an unconfigured
+  install is now *told* the canvas is not on this phone, rather than being
+  quietly pointed at a hostname it never chose.
+- **The keyboard**, which the sketch did not mention and which is the whole
+  point of carrying the canvas onto the phone: `/input` types into the pane
+  that last spoke. This window hides the system bars and draws to every edge,
+  so it gets no automatic help when the IME arrives — the keyboard simply
+  covers `#inp`. The IME inset is now applied by hand as bottom padding on the
+  WebView (`adjustResize` + `setDecorFitsSystemWindows(false)`), which shrinks
+  the layout viewport so the page's `position: fixed` dock rides above it.
+
+**Not yet verified on a device.** p8a has no adb from red5, so the keyboard
+behaviour above is reasoned, not observed. It is the first thing to check on
+the next sideload.
+
+
 - `WebSettings`: JavaScript on, **DOM storage on** (the pairing token lives in
   `localStorage`; without this it is re-paired forever).
 - `FLAG_KEEP_SCREEN_ON` while the activity is visible. A canvas that sleeps

@@ -1,7 +1,10 @@
 package net.agentmedia.companion;
 
 import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.DialogInterface;
 import android.content.Intent;
+import android.net.Uri;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
@@ -44,6 +47,8 @@ public class SettingsActivity extends Activity {
     private EditText speech;
     private EditText book;
     private EditText token;
+    private EditText canvasHost;
+    private EditText canvasPort;
     private TextView verdict;
 
     private String playback = Server.PHONE;
@@ -105,6 +110,43 @@ public class SettingsActivity extends Activity {
         speech = portField("Speech", current.speech, root);
         book = portField("Book", current.book, root);
 
+        TextView canvasHeading = new TextView(this);
+        canvasHeading.setText("Canvas");
+        canvasHeading.setTextSize(Style.TITLE);
+        canvasHeading.setTextColor(Style.INK);
+        canvasHeading.setTypeface(Typeface.DEFAULT_BOLD);
+        canvasHeading.setPadding(0, dp(Style.gap(6)), 0, 0);
+        root.addView(canvasHeading);
+
+        root.addView(note("The figure surface, and the input box that types "
+                + "back into the conversation you are listening to. It runs "
+                + "where the speech is produced, which is not always where "
+                + "`media` is — leave the address empty to use the server "
+                + "above."));
+
+        root.addView(label("Address (empty = the server)"));
+        canvasHost = field(current.canvasHost, InputType.TYPE_TEXT_VARIATION_URI);
+        canvasHost.setHint(current.host);
+        root.addView(canvasHost);
+
+        root.addView(label("Canvas port"));
+        canvasPort = field(String.valueOf(current.canvas), InputType.TYPE_CLASS_NUMBER);
+        root.addView(canvasPort);
+
+        LinearLayout pairRow = new LinearLayout(this);
+        pairRow.setOrientation(LinearLayout.HORIZONTAL);
+        pairRow.setPadding(0, dp(Style.gap(3)), 0, 0);
+        pairRow.addView(button("Pair this phone", false, new View.OnClickListener() {
+            @Override public void onClick(View v) { pair(); }
+        }), weight());
+        root.addView(pairRow);
+        root.addView(note("The input box needs the canvas's own token before "
+                + "it will send — keystrokes into a live agent are not the "
+                + "same permission as pressing pause. Run "
+                + "`media-visual-canvas pair` on the canvas host and enter the "
+                + "code from its link here — it is good once, for half an "
+                + "hour. Nothing reachable over HTTP can mint one."));
+
         verdict = new TextView(this);
         verdict.setTextSize(Style.BODY);
         verdict.setTextColor(Style.MUTED);
@@ -142,7 +184,9 @@ public class SettingsActivity extends Activity {
                 Server.port(speech.getText().toString(), 0),
                 Server.port(book.getText().toString(), 0),
                 token.getText().toString(),
-                playback);
+                playback,
+                canvasHost.getText().toString(),
+                Server.port(canvasPort.getText().toString(), 0));
     }
 
     private void buildPlaybackList() {
@@ -208,9 +252,10 @@ public class SettingsActivity extends Activity {
                  + "holds no audio focus, and needs no Termux here.";
         }
         if (Server.BUILTIN.equals(option)) {
-            return "The server fetches and renders, the app plays it. Not "
-                 + "built yet — this is the one that needs no mpv on the "
-                 + "phone at all.";
+            return "The server fetches and renders, the app plays it. Speech "
+                 + "already arrives this way when the server sends it here — "
+                 + "that is the server's choice, not this switch. Music and "
+                 + "the book still need mpv, so this stays off.";
         }
         return "mpv in Termux on this phone. The app holds audio focus on its "
              + "behalf, because mpv ignores it.";
@@ -246,6 +291,59 @@ public class SettingsActivity extends Activity {
                 });
             }
         }, "settings-test").start();
+    }
+
+    /**
+     * Redeem a one-time pairing code, so this phone's input box can send.
+     *
+     * The canvas guards {@code /input} with amux's token and nothing else —
+     * looking costs no credential, typing into a live agent does. The token is
+     * forty characters and this is a phone, so it is not typed: {@code /pair}
+     * takes a short code, installs the token in localStorage and redirects to
+     * the canvas. Minting still needs shell on the canvas host, which is the
+     * property worth keeping — no HTTP path can create a code.
+     *
+     * The configuration is saved first. Pairing loads a URL built from these
+     * fields, and a code redeemed against the old address would be spent for
+     * nothing: the codes are one-time and deleted on use.
+     */
+    private void pair() {
+        final Server candidate = typed();
+        String problem = candidate.canvasProblem();
+        if (problem != null) {
+            say(problem, Style.WARN);
+            return;
+        }
+        final EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setHint("pairing code");
+        new AlertDialog.Builder(this)
+                .setTitle("Pair with " + candidate.canvasAddress())
+                .setMessage("Mint a code on that machine; it is good once, and"
+                        + " it expires.")
+                .setView(input)
+                .setPositiveButton("Pair", new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface d, int which) {
+                        String code = input.getText().toString().trim();
+                        if (code.isEmpty()) {
+                            say("no code, nothing to redeem", Style.WARN);
+                            return;
+                        }
+                        String stored = Settings.save(SettingsActivity.this,
+                                                      candidate);
+                        if (stored != null) {
+                            say(stored, Style.WARN);
+                            return;
+                        }
+                        Intent go = new Intent(SettingsActivity.this,
+                                               CanvasActivity.class);
+                        go.putExtra(CanvasActivity.EXTRA_PATH,
+                                    "/pair?c=" + Uri.encode(code));
+                        startActivity(go);
+                    }
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
     }
 
     private void save() {

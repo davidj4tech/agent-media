@@ -223,15 +223,6 @@ public class MainActivity extends Activity {
                 startActivity(new Intent(MainActivity.this, RecentActivity.class));
             }
         }), weight());
-        // Phase 0's temporary door onto the canvas. The spike's entry point
-        // is a footer link because that is the least invasive place to put
-        // one; phase 1 moves it onto the speech card, where you already are
-        // when a figure lands. See docs/proposals/2026-08-18-canvas-in-the-app.md.
-        bar.addView(link("Canvas", new View.OnClickListener() {
-            @Override public void onClick(View v) {
-                startActivity(new Intent(MainActivity.this, CanvasActivity.class));
-            }
-        }), weight());
         bar.addView(link("Settings", new View.OnClickListener() {
             @Override public void onClick(View v) {
                 startActivity(new Intent(MainActivity.this, SettingsActivity.class));
@@ -279,8 +270,46 @@ public class MainActivity extends Activity {
         driverSlot.addView(transport.build());
         transport.accent(driving);
 
+        // The canvas belongs to speech and to nothing else: it illustrates a
+        // reply, and its input box types back into the conversation that
+        // produced one. So the door onto it is here, on the channel you are
+        // already looking at when a figure lands — not a footer link on every
+        // screen (phase 0's placeholder) and not a fourth tab, which would
+        // promise a card the canvas is not. See the proposal.
+        if ("speech".equals(driving)) driverSlot.addView(canvasDoor());
+
         tabs.select(driving);
         applyChannels();
+    }
+
+    /** The way onto the canvas, drawn like a card so it belongs to the one above. */
+    private View canvasDoor() {
+        TextView t = new TextView(this);
+        t.setText("Canvas");
+        t.setTextSize(Style.HEAD);
+        t.setTextColor(Style.INK);
+        t.setGravity(Gravity.CENTER);
+        t.setMinimumHeight(dp(Style.TOUCH));
+        t.setClickable(true);
+        t.setFocusable(true);
+        t.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                startActivity(new Intent(MainActivity.this, CanvasActivity.class));
+            }
+        });
+
+        GradientDrawable d = new GradientDrawable();
+        d.setColor(Style.SURFACE);
+        d.setCornerRadius(dp(10));
+        d.setStroke(dp(1), ChannelCard.withAlpha(Style.accent(driving), 0x99));
+        t.setBackground(d);
+
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = dp(Style.gap(3));
+        t.setLayoutParams(lp);
+        return t;
     }
 
     /** Take the wheel. A deliberate choice, so stop guessing from now on. */

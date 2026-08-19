@@ -33,8 +33,15 @@ import java.util.Map;
  *
  * {@link #BUILTIN} is the third playback location and the one that finally
  * closes the loop — the server fetches and renders, the app plays the bytes
- * with Android's own player, and nothing GPL ships in the APK. It is named
- * here and not implemented; see {@link #available}.
+ * with Android's own player, and nothing GPL ships in the APK.
+ *
+ * It is named here and still refused by {@link #available}, which is now only
+ * half the truth and worth being exact about: <em>speech</em> already plays in
+ * the app. It gets there server-side, by pointing a speech target at
+ * {@link #BUILTIN_SPEECH_PORT} — a decision made where the audio is produced,
+ * not on this phone. This constant is about moving <em>every</em> channel, and
+ * music and the book still have no player here. So it stays unselectable; what
+ * it must not do is claim that nothing plays in the app.
  *
  * <h4>What each mode needs on the far side</h4>
  *
@@ -77,6 +84,15 @@ final class Server {
      */
     static final int BUILTIN_SPEECH_PORT = 6612;
 
+    /**
+     * The visual canvas: packages/visual, an SSE-fed figure surface with an
+     * input box that types into the pane that last spoke.
+     *
+     * It is the odd one out among these ports, because it is the only service
+     * here that does not belong to media-share. See {@link #canvasHost}.
+     */
+    static final int CANVAS_PORT = 8781;
+
     /** The three mpv IPC bridges, in channel order. */
     static final int MUSIC_PORT = 6601;
     static final int SPEECH_PORT = 6602;
@@ -88,7 +104,11 @@ final class Server {
     static final String SERVER = "server";
     /**
      * Sound comes out of a player inside this app, fed by the server over HTTP.
-     * Reserved: the settings screen shows it and will not let it be chosen.
+     *
+     * Reserved: the settings screen shows it and will not let it be chosen —
+     * not because nothing plays in the app (speech does, see
+     * {@link #BUILTIN_SPEECH_PORT}) but because this would move music and the
+     * book too, and those have no player here yet.
      */
     static final String BUILTIN = "builtin";
 
@@ -102,9 +122,33 @@ final class Server {
     final int book;
     final String token;
     final String playback;
+    /**
+     * Where the canvas is, when that is not {@link #host}. Empty means "the
+     * same machine as the server", which is the common case and the default.
+     *
+     * <b>The canvas lives where the speech is produced, not where media-share
+     * is.</b> Same shape of argument as {@link #mpvHost}, arrived at from the
+     * other end: the canvas illustrates a reply and its input box types into
+     * the pane that produced it, so it belongs to the machine running the
+     * agent. That is red5. Meanwhile media-share, on this phone today, is on
+     * loopback. The two genuinely differ, and no derivation can bridge them —
+     * the app cannot know a host it has never been told about.
+     *
+     * So it is a field rather than a rule, and it is allowed to be empty:
+     * point the app at red5 for everything and the canvas follows without a
+     * second address to keep in step.
+     */
+    final String canvasHost;
+    final int canvas;
 
     Server(String host, int control, int music, int speech, int book,
            String token, String playback) {
+        this(host, control, music, speech, book, token, playback,
+             "", CANVAS_PORT);
+    }
+
+    Server(String host, int control, int music, int speech, int book,
+           String token, String playback, String canvasHost, int canvas) {
         this.host = trim(host);
         this.control = control;
         this.music = music;
@@ -112,6 +156,8 @@ final class Server {
         this.book = book;
         this.token = trim(token);
         this.playback = normalise(playback);
+        this.canvasHost = trim(canvasHost);
+        this.canvas = canvas;
     }
 
     /** Termux on this phone, which is what every install starts as. */
@@ -173,6 +219,56 @@ final class Server {
         return SERVER.equals(playback) ? host : LOOPBACK;
     }
 
+    /** The machine serving the canvas: {@link #canvasHost}, else {@link #host}. */
+    String canvasAddress() {
+        return canvasHost.isEmpty() ? host : canvasHost;
+    }
+
+    /** The canvas page. */
+    String canvasUrl() {
+        return canvasUrl("/");
+    }
+
+    /**
+     * A path on the canvas — {@code "/"} for the page, {@code "/pair?c=…"} to
+     * install the token this device needs before its input box will send.
+     */
+    String canvasUrl(String path) {
+        String p = path == null || path.isEmpty() ? "/" : path;
+        if (p.charAt(0) != '/') p = "/" + p;
+        return "http://" + canvasAddress() + ":" + canvas + p;
+    }
+
+    /**
+     * Why the canvas cannot be shown, or null.
+     *
+     * Deliberately NOT part of {@link #problem}. That one gates the whole
+     * configuration and {@link #orDefaults} throws the configuration away when
+     * it fails — so folding the canvas into it would let a mistyped canvas port
+     * silently take the music, the transport and the share sheet down with it.
+     * A canvas that cannot be reached should cost the canvas.
+     */
+    String canvasProblem() {
+        String a = canvasAddress();
+        if (a.isEmpty()) return "Canvas address is empty.";
+        if (a.indexOf('/') >= 0 || a.indexOf(' ') >= 0) {
+            return "Canvas address is a host name, not a URL: " + a;
+        }
+        String p = portProblem("Canvas port", canvas);
+        if (p != null) return p;
+        // The failure this is really here for. Phase 0 shipped a hardcoded
+        // "red5" fallback precisely because an unconfigured install would
+        // otherwise spend its time failing to reach a canvas on loopback — and
+        // a canvas that never connected looks exactly like a quiet afternoon.
+        // Say which it is instead of guessing a hostname on the user's behalf.
+        if (LOOPBACK.equals(a) || "localhost".equals(a) || "::1".equals(a)) {
+            return "The canvas runs on the machine that produces the speech, "
+                    + "which is not this phone. Set a canvas address in "
+                    + "Settings.";
+        }
+        return null;
+    }
+
     /** {@code host:control} — how the control endpoint is named in a log. */
     String authority() {
         return host + ":" + control;
@@ -205,7 +301,10 @@ final class Server {
                     + "that can reach it can start playback.";
         }
         if (BUILTIN.equals(playback)) {
-            return "Playing in the app is not built yet.";
+            return "Playing everything in the app is not built yet. Speech "
+                    + "already does — the server sends it here by pointing a "
+                    + "target at " + BUILTIN_SPEECH_PORT + ", which this "
+                    + "switch has no part in.";
         }
         return null;
     }
@@ -215,7 +314,13 @@ final class Server {
                 : label + " must be between 1 and 65535.";
     }
 
-    /** Is this playback location one the app can actually deliver today? */
+    /**
+     * Is this playback location one the app can actually deliver today?
+     *
+     * Per-location, and {@link #BUILTIN} is false for the whole of it even
+     * though speech alone arrives that way — a switch that is true when one
+     * channel of three works would be a worse lie than one that is false.
+     */
     static boolean available(String playback) {
         return PHONE.equals(playback) || SERVER.equals(playback);
     }
@@ -291,6 +396,8 @@ final class Server {
     static final String KEY_BOOK = "server_book_port";
     static final String KEY_TOKEN = "server_token";
     static final String KEY_PLAYBACK = "server_playback";
+    static final String KEY_CANVAS_HOST = "server_canvas_host";
+    static final String KEY_CANVAS_PORT = "server_canvas_port";
 
     Map<String, String> toMap() {
         Map<String, String> m = new LinkedHashMap<String, String>();
@@ -301,6 +408,8 @@ final class Server {
         m.put(KEY_BOOK, String.valueOf(book));
         m.put(KEY_TOKEN, token);
         m.put(KEY_PLAYBACK, playback);
+        m.put(KEY_CANVAS_HOST, canvasHost);
+        m.put(KEY_CANVAS_PORT, String.valueOf(canvas));
         return m;
     }
 
@@ -321,7 +430,9 @@ final class Server {
                 port(m.get(KEY_SPEECH), SPEECH_PORT),
                 port(m.get(KEY_BOOK), BOOK_PORT),
                 text(m, KEY_TOKEN, ""),
-                text(m, KEY_PLAYBACK, PHONE));
+                text(m, KEY_PLAYBACK, PHONE),
+                text(m, KEY_CANVAS_HOST, ""),
+                port(m.get(KEY_CANVAS_PORT), CANVAS_PORT));
     }
 
     /**
@@ -367,7 +478,8 @@ final class Server {
         Server s = (Server) o;
         return host.equals(s.host) && control == s.control && music == s.music
                 && speech == s.speech && book == s.book
-                && token.equals(s.token) && playback.equals(s.playback);
+                && token.equals(s.token) && playback.equals(s.playback)
+                && canvasHost.equals(s.canvasHost) && canvas == s.canvas;
     }
 
     @Override

@@ -41,12 +41,34 @@ import android.widget.TextView;
  *       it drift.</li>
  * </ul>
  *
- * See docs/proposals/2026-08-18-canvas-in-the-app.md. This is phase 0 — the
- * spike that decides whether the rest is worth building. It is deliberately
- * thin: no config beyond the server host, no wake-on-arrival, no controls of
- * its own. What it is here to answer is whether the page works under WebView
- * at all, and whether its touch controls carry a surface that grew up with a
- * keyboard.
+ * See docs/proposals/2026-08-18-canvas-in-the-app.md. Phase 0 answered the
+ * questions that could sink this — the page renders, the touch ring carries,
+ * cleartext is one config away — so this is phase 1: the canvas is addressed
+ * from {@link Server} rather than a hardcoded hostname, and the input box is
+ * usable, which on a phone means the soft keyboard.
+ *
+ * <h4>The keyboard</h4>
+ *
+ * The canvas is not only a picture. {@code POST /input} types into the pane
+ * that last spoke, and the page's focus ring has an input mode for exactly
+ * that — which is the whole reason to carry the canvas onto the phone rather
+ * than only onto the wall. But this window hides the system bars and draws to
+ * every edge, and a window like that gets no automatic help when the IME
+ * arrives: the keyboard covers the bottom of the page, which is precisely
+ * where the input box is.
+ *
+ * So the IME inset is applied by hand — as a bottom MARGIN on the WebView,
+ * which is the part that matters. Padding was the first attempt and it does
+ * not work: it offsets what the WebView draws without shrinking the viewport
+ * the page lays out against, so every {@code 100vh} layer stays full height
+ * and a bottom-pinned dock sits behind the keyboard exactly as before. A
+ * margin makes the view itself shorter, the viewport follows, and the dock
+ * rides above the IME. Confirmed on p8a on 2026-08-19, against the padding
+ * version failing on the same screen — this is not a theory about viewports.
+ *
+ * {@code adjustResize} in the manifest is what makes the inset animate rather
+ * than jump; {@code setDecorFitsSystemWindows(false)} is what stops the
+ * framework consuming it before this listener is reached.
  *
  * <h4>Full-bleed, and no Edges</h4>
  *
@@ -59,21 +81,11 @@ import android.widget.TextView;
 public class CanvasActivity extends Activity {
 
     /**
-     * Where the canvas listens. Not a setting yet — phase 1 puts it beside the
-     * control/music/speech/book ports in {@link Server}, once the spike has
-     * said the rest is worth building.
+     * Open a path other than the page — {@code "/pair?c=<code>"}, the one-time
+     * exchange that puts the amux token in this device's localStorage and lets
+     * its input box send. Settings hands it over; nothing else sets it.
      */
-    private static final int CANVAS_PORT = 8781;
-
-    /**
-     * The host to fall back on when this phone has no server configured.
-     *
-     * The stored default is loopback, and the canvas is emphatically not on
-     * the phone, so an unconfigured install would spend the spike failing to
-     * connect for a reason that has nothing to do with what is being tested.
-     * MagicDNS resolves the bare name on the tailnet. Phase 1 deletes this.
-     */
-    private static final String SPIKE_HOST = "red5";
+    static final String EXTRA_PATH = "net.agentmedia.companion.CANVAS_PATH";
 
     private FrameLayout root;
     private WebView web;
@@ -123,6 +135,38 @@ public class CanvasActivity extends Activity {
             @Override
             public void onPageFinished(WebView v, String url) {
                 say(null);
+            }
+        });
+        // The keyboard. Nothing else in this window makes room for it: the
+        // system bars are hidden and the page is drawn to every edge, so an
+        // IME simply covers the bottom of the canvas — where the input box is.
+        //
+        // Padding was the first attempt, and it left the input box under the
+        // keyboard anyway (David, 2026-08-19). A WebView's padding offsets the
+        // content it draws; it does not necessarily shrink the viewport the
+        // page is laid out against, so `100vh` layers stay full height and a
+        // dock pinned to the bottom stays pinned to a bottom that is now
+        // behind the IME. Shortening the view itself is unambiguous: a smaller
+        // WebView is a smaller viewport, and the page's own safe-area CSS then
+        // measures the space that is actually visible.
+        web.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
+            @Override
+            public android.view.WindowInsets onApplyWindowInsets(
+                    View v, android.view.WindowInsets insets) {
+                int ime = insets.getInsets(
+                        android.view.WindowInsets.Type.ime()).bottom;
+                ViewGroup.LayoutParams lp = v.getLayoutParams();
+                if (lp instanceof FrameLayout.LayoutParams) {
+                    FrameLayout.LayoutParams f = (FrameLayout.LayoutParams) lp;
+                    if (f.bottomMargin != ime) {
+                        f.bottomMargin = ime;
+                        v.setLayoutParams(f);
+                    }
+                }
+                // Returned unconsumed: the back chevron reads the cutout out
+                // of the same pass, and consuming here would leave it under a
+                // punch-hole camera the moment a keyboard appeared.
+                return insets;
             }
         });
         root.addView(web, new FrameLayout.LayoutParams(
@@ -178,6 +222,12 @@ public class CanvasActivity extends Activity {
             }
         });
 
+        // Without this the framework fits the content to the system windows
+        // and consumes the IME inset on the way, so the listener above never
+        // sees a keyboard. It is also what lets the page draw under the
+        // cutout, which is the look this screen is for.
+        getWindow().setDecorFitsSystemWindows(false);
+
         setContentView(root);
         // After setContentView, never before: the window has no decor view
         // until the content is set, and PhoneWindow.getInsetsController()
@@ -186,14 +236,24 @@ public class CanvasActivity extends Activity {
         // Asking the view rather than the window is the same route Edges
         // takes, and that one returns null instead of throwing.
         hideBars();
-        web.loadUrl(url());
+
+        // A canvas that was never going to connect should say so, not sit
+        // there black. The commonest case by far is an install that has never
+        // opened Settings, still pointing at loopback, where no canvas listens
+        // and none ever will.
+        String problem = Settings.server(this).canvasProblem();
+        if (problem != null) {
+            say(problem);
+        } else {
+            web.loadUrl(url());
+        }
     }
 
     /** The canvas URL for the server this phone is a client of. */
     private String url() {
-        Server server = Settings.server(this);
-        String host = server.local() ? SPIKE_HOST : server.host;
-        return "http://" + host + ":" + CANVAS_PORT + "/";
+        String path = getIntent() == null ? null
+                : getIntent().getStringExtra(EXTRA_PATH);
+        return Settings.server(this).canvasUrl(path);
     }
 
     private int dp(int value) {

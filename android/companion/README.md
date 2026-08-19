@@ -117,6 +117,66 @@ It travels in `X-Agent-Media-Token`. A 401 is reported on the phone as "the
 server refused the token — check Settings", because it is the one failure fixed
 here in one field, and a bare 401 reads as "the server is down".
 
+## The canvas
+
+The visual canvas (`packages/visual`) is an SSE-fed figure surface — the wall
+page — and since 2026-08-19 it is also a screen in this app: **Canvas**, on the
+speech card. A `WebView`, not native views. `canvas.js` is a working, tested
+client with a headless harness behind it; redrawing it here would be weeks of
+work to arrive back where we started. The app supplies what a browser tab does
+badly — the screen stays awake, no Vimium, one configuration, and (phase 2) the
+screen can be *woken* when a figure arrives, which is why `[[reveal:]]` markers
+currently only land if you happen to be looking.
+
+**It has its own address**, beside the server's:
+
+| Setting | What it decides |
+|---|---|
+| Canvas address | Where the canvas is. Empty means "the same host as the server", which is the usual answer. |
+| Canvas port | 8781 unless told otherwise. |
+
+The address exists because the two genuinely differ here: media-share is in
+Termux on this phone (loopback), and the canvas belongs to the machine
+*producing the speech* (red5) — it illustrates a reply, and its input box types
+back into the pane that produced one. Same shape of argument as `mpvHost()`,
+from the other end, and no derivation can bridge it: the app cannot infer a
+host it has never been told about.
+
+`Server.canvasProblem()` is deliberately **not** part of `problem()`. That one
+gates the whole configuration and `orDefaults()` throws it away on failure, so
+a mistyped canvas port would otherwise take the music, the transport and the
+share sheet with it. A canvas that cannot be reached costs the canvas.
+
+### Pairing
+
+Looking at the canvas needs no credential. **Typing into it does** — `POST
+/input` sends keystrokes to a live agent, which is not the same permission as
+pressing pause, and it is guarded by amux's own token. The token is 40
+characters and this is a phone, so it is not typed:
+
+```sh
+media-visual-canvas pair        # on the canvas host — prints a link and a QR
+```
+
+Enter the code from that link under **Settings → Canvas → Pair this phone**.
+It is one-time, expires in half an hour, and the app redeems it by loading
+`/pair?c=<code>`, which installs the token in the WebView's `localStorage`.
+Minting needs shell on the canvas host — no HTTP path can create a code — and
+that is the property worth keeping.
+
+### The keyboard
+
+This screen hides the system bars and draws to every edge, and a window like
+that gets no automatic help when the IME arrives: the keyboard covers the
+bottom of the page, which is exactly where the input box is. `CanvasActivity`
+applies the IME inset by hand as a bottom **margin** on the `WebView`
+(`adjustResize` in the manifest, `setDecorFitsSystemWindows(false)` so the
+framework does not consume the inset first). Margin, not padding: padding
+offsets what the `WebView` draws without shrinking the viewport the page lays
+out against, so `100vh` layers stay full height and the dock stays behind the
+keyboard. A margin makes the view itself shorter and the viewport follows.
+Both versions were tried on the device; only this one works.
+
 ## Layout
 
 | File | What it is |

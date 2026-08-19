@@ -34,6 +34,12 @@ public class ServerTest {
 
         testThePlayerSocketOnlyGoesOnTheTailnet();
 
+        testTheCanvasDefaultsToTheServersOwnHost();
+        testTheCanvasCanLiveSomewhereElse();
+        testACanvasOnLoopbackIsRefusedWithAReason();
+        testABadCanvasDoesNotCostTheRestOfTheConfiguration();
+        testTheCanvasRoundTripsThroughStorage();
+
         System.out.println();
         if (failures.isEmpty()) {
             System.out.println("ok — " + passed + " checks passed");
@@ -53,6 +59,102 @@ public class ServerTest {
      * phone onto café Wi-Fi is a different security posture arrived at by
      * accident.
      */
+    // ---- the canvas -------------------------------------------------------
+
+    /**
+     * Empty canvas address means "wherever the server is".
+     *
+     * The setting exists because the two can differ, not because they usually
+     * do: point the app at red5 for everything and the canvas must follow
+     * without a second address to keep in step. A default that had to be typed
+     * would be a second thing to get wrong for no gain.
+     */
+    private static void testTheCanvasDefaultsToTheServersOwnHost() {
+        Server s = new Server("red5", 8771, 6601, 6602, 6603, "sekrit",
+                              Server.SERVER);
+        check("canvas port defaults to 8781", s.canvas == Server.CANVAS_PORT);
+        check("canvas host follows the server", "red5".equals(s.canvasAddress()));
+        check("and the URL is built from it",
+              "http://red5:8781/".equals(s.canvasUrl()));
+        check("a configured canvas has no problem", s.canvasProblem() == null);
+    }
+
+    /**
+     * The arrangement this fleet actually runs: media-share in Termux on this
+     * phone, the canvas on the machine producing the speech. Neither can be
+     * derived from the other.
+     */
+    private static void testTheCanvasCanLiveSomewhereElse() {
+        Server s = new Server(Server.LOOPBACK, 8771, 6601, 6602, 6603, "",
+                              Server.PHONE, "red5", 8781);
+        check("the server is still this phone", s.local());
+        check("the canvas is not", "red5".equals(s.canvasAddress()));
+        check("no problem with the split", s.canvasProblem() == null);
+        // Pairing is the one path that needs more than "/": the token lands in
+        // localStorage and the page redirects to itself.
+        check("a path can be asked for",
+              "http://red5:8781/pair?c=abc".equals(s.canvasUrl("/pair?c=abc")));
+        check("with or without the leading slash",
+              "http://red5:8781/pair?c=abc".equals(s.canvasUrl("pair?c=abc")));
+    }
+
+    /**
+     * The failure phase 0 papered over with a hardcoded hostname.
+     *
+     * An unconfigured install points at loopback, where no canvas listens —
+     * and a canvas that never connected is indistinguishable from a canvas
+     * with nothing on it. Both are black. So say which one it is.
+     */
+    private static void testACanvasOnLoopbackIsRefusedWithAReason() {
+        Server s = Server.defaults();
+        String why = s.canvasProblem();
+        check("loopback canvas is refused", why != null);
+        check("and the reason names the fix",
+              why != null && why.contains("Settings"));
+
+        Server url = new Server("red5", 8771, 6601, 6602, 6603, "x",
+                                Server.SERVER, "http://red5:8781", 8781);
+        check("a URL in the address field is caught",
+              url.canvasProblem() != null);
+
+        Server badPort = new Server("red5", 8771, 6601, 6602, 6603, "x",
+                                    Server.SERVER, "", 0);
+        check("a bad canvas port is caught", badPort.canvasProblem() != null);
+    }
+
+    /**
+     * A mistyped canvas port must not take the music with it.
+     *
+     * `orDefaults` throws the whole configuration away when `problem` bites,
+     * which is right for a token that would otherwise be sent to a remote
+     * host — and would be badly wrong for a canvas, whose only consequence is
+     * one screen. They are kept as two questions on purpose.
+     */
+    private static void testABadCanvasDoesNotCostTheRestOfTheConfiguration() {
+        Server s = new Server("red5", 8771, 6601, 6602, 6603, "sekrit",
+                              Server.SERVER, "", 0);
+        check("the canvas is broken", s.canvasProblem() != null);
+        check("the configuration is not", s.problem() == null);
+        check("so it is kept", s.equals(s.orDefaults()));
+    }
+
+    private static void testTheCanvasRoundTripsThroughStorage() {
+        Server s = new Server("red5", 8771, 6601, 6602, 6603, "sekrit",
+                              Server.SERVER, "pn", 9781);
+        Server back = Server.from(s.toMap());
+        check("canvas host survives storage", "pn".equals(back.canvasHost));
+        check("canvas port survives storage", back.canvas == 9781);
+        check("and the whole thing is equal", s.equals(back));
+
+        Map<String, String> old = s.toMap();
+        old.remove(Server.KEY_CANVAS_HOST);
+        old.remove(Server.KEY_CANVAS_PORT);
+        Server upgraded = Server.from(old);
+        check("prefs written before the canvas existed still read",
+              upgraded.canvasHost.isEmpty()
+                      && upgraded.canvas == Server.CANVAS_PORT);
+    }
+
     private static void testThePlayerSocketOnlyGoesOnTheTailnet() {
         check("a tailscale address is recognised", Server.isTailnet("100.94.14.59"));
         check("the bottom of the range is in", Server.isTailnet("100.64.0.1"));

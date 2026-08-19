@@ -75,7 +75,8 @@
             android:exported="false"
             android:launchMode="singleTop"
             android:label="@string/canvas_label"
-            android:configChanges="orientation|screenSize|keyboardHidden" />
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:windowSoftInputMode="adjustResize" />
 
         <!-- The event log and the focus switch. Not exported: it is reached
              from the home screen, and it is where the log went when the home
