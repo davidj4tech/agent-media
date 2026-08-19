@@ -21,7 +21,16 @@ import android.os.Bundle;
  * reach it three times in an hour.
  *
  * So: no window, no layout, no permission prompt. Start the service, finish
- * inside `onCreate`. An activity rather than a service target because Termux
+ * inside `onCreate`.
+ *
+ * <b>And its own task affinity, which took longer to learn.</b> No window of
+ * its own is not the same as not appearing: an activity started with NEW_TASK
+ * under the app's default affinity raises the app's existing task, so a knock
+ * brought whatever screen was last opened — usually the diagnostic one — to the
+ * front. Silent revives were therefore visible ones, up to one every five
+ * minutes, and David asked for it to stop on 2026-08-19. With {@code :wake}
+ * affinity and {@code singleInstance} the knock lands in a task of its own,
+ * finishes, and leaves the foreground alone. An activity rather than a service target because Termux
  * lives under a different uid and Android's background-start rules let it
  * launch an exported activity of ours and not much else.
  *
