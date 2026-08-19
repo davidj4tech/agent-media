@@ -312,12 +312,38 @@ _DEFAULT_MIC_MAX_S = 120.0
 # endpoint refuses the connection" the ordinary non-event it has always been on
 # every other host.
 #
-# WakeActivity, not MainActivity, since 2026-08-16: it draws nothing and
-# finishes in onCreate, where MainActivity inflates a diagnostic screen and then
-# re-renders it twice a second — on the same main thread the service has ten
-# seconds to reach startForeground on. Three of the deaths this revives from
-# that evening were that timeout, so the old door was helping to close itself.
-_DEFAULT_MIC_REVIVE_CMD = "am start -n net.agentmedia.companion/.WakeActivity"
+# A broadcast, not an activity, since 2026-08-19 — because an activity cannot
+# be started without touching the activity stack. WakeActivity draws nothing and
+# finishes in onCreate, and b9d6939 gave it its own task affinity so it stops
+# raising the app's own screen; what remained is that its task still goes above
+# the launcher, and when it finishes the system resumes the topmost standard
+# task rather than what was actually in front. Measured on p8a: launcher in
+# front, knock, Termux in front. A broadcast makes no task at all, and the
+# instrumented run shows no activity start of any kind.
+#
+# `am` is still the gate: it exists on Android and nowhere else.
+_DEFAULT_MIC_REVIVE_CMD = (
+    "am broadcast -a net.agentmedia.companion.WAKE"
+    " -n net.agentmedia.companion/.WakeReceiver --include-stopped-packages")
+# ...and the activity is still here, because since Android 12 a background app
+# may not start a foreground service unless an exemption applies (an activity in
+# a task on Recents, a battery-optimisation exemption — this app has neither
+# reliably), so the quiet knock can be refused. A refused revive is worse than a
+# visible one: barge-in stays dead and nothing says so. Verified on p8a's SDK 37
+# that the broadcast DOES revive a force-stopped app today; this is for the
+# device or the release where it does not.
+#
+# WakeActivity, not MainActivity, since 2026-08-16: MainActivity inflates a
+# diagnostic screen and then re-renders it twice a second — on the same main
+# thread the service has ten seconds to reach startForeground on. Three of the
+# deaths this revives from that evening were that timeout, so the old door was
+# helping to close itself.
+_DEFAULT_MIC_REVIVE_FALLBACK_CMD = (
+    "am start -n net.agentmedia.companion/.WakeActivity")
+# How long the quiet knock gets to work before the loud one follows. The next
+# failing poll after this is what fires it, and during a backoff those are
+# `_MIC_BACKOFF_S` apart — so anything below that simply means "the next one".
+_DEFAULT_MIC_REVIVE_FALLBACK_AFTER_S = 20.0
 # Long enough that an app restarting on its own wins the race and we stay out
 # of it; short enough that a kill is a gap, not an outage.
 #
@@ -445,6 +471,15 @@ class Config:
             "MEDIA_CALL_GUARD_MIC_REVIVE_AFTER_S", _DEFAULT_MIC_REVIVE_AFTER_S)
         self.mic_revive_every_s = _env_float(
             "MEDIA_CALL_GUARD_MIC_REVIVE_EVERY_S", _DEFAULT_MIC_REVIVE_EVERY_S)
+        # The loud door, for the device where the quiet one is refused. "" to
+        # turn it off, which is the setting for "never move what is on screen,
+        # even if that costs the revive".
+        self.mic_revive_fallback_cmd = os.environ.get(
+            "MEDIA_CALL_GUARD_MIC_REVIVE_FALLBACK_CMD",
+            _DEFAULT_MIC_REVIVE_FALLBACK_CMD).strip()
+        self.mic_revive_fallback_after_s = _env_float(
+            "MEDIA_CALL_GUARD_MIC_REVIVE_FALLBACK_AFTER_S",
+            _DEFAULT_MIC_REVIVE_FALLBACK_AFTER_S)
         # The input claim (see ClaimHeartbeat). Off unless a URL is set, which
         # is the whole gate: a host with nothing to tell simply configures
         # nothing, and every other guard behaviour is untouched either way.
@@ -1196,7 +1231,10 @@ class MicSource:
                  backoff_s: float = _MIC_BACKOFF_S,
                  revive_cmd: str = "",
                  revive_after_s: float = _DEFAULT_MIC_REVIVE_AFTER_S,
-                 revive_every_s: float = _DEFAULT_MIC_REVIVE_EVERY_S) -> None:
+                 revive_every_s: float = _DEFAULT_MIC_REVIVE_EVERY_S,
+                 revive_fallback_cmd: str = "",
+                 revive_fallback_after_s: float
+                 = _DEFAULT_MIC_REVIVE_FALLBACK_AFTER_S) -> None:
         self._url = url
         self._poll_s = max(0.1, poll_s)
         self._backoff_s = backoff_s
@@ -1220,10 +1258,17 @@ class MicSource:
         # race. Same family as the TTL bug in 07411e3, which compared a
         # monotonic clock against a file mtime.
         self._last_revive: float | None = None
+        self._revive_fallback_cmd = revive_fallback_cmd
+        self._revive_fallback_after_s = revive_fallback_after_s
+        # When the loud knock becomes due, or None when no quiet knock is
+        # outstanding. Cleared the moment the endpoint answers, which is the
+        # ordinary end of a revive: the quiet one worked and nobody saw it.
+        self._fallback_due: float | None = None
 
     def _answered(self) -> None:
         """A read came back: clear the misses, and the down state if it was set."""
         self._misses = 0
+        self._fallback_due = None
         if self._failing:
             down = _now() - (self._failing_since or _now())
             log.info("mic source: answering again (down %.0fs)", down)
@@ -1233,26 +1278,54 @@ class MicSource:
     def _maybe_revive(self) -> None:
         """Ask Android to start the companion app again. Best-effort.
 
-        Gated three ways, because the failure this fixes is rare and the cure
-        launches a UI activity: the endpoint must have been down for
-        `revive_after_s` (so an app restarting by itself is left alone), we must
-        not have tried within `revive_every_s`, and `am` must exist — which is
-        what stops every non-Android host from doing anything at all here.
+        Two doors, quiet first. `revive_cmd` is a broadcast, which makes no
+        task and moves nothing on screen; `revive_fallback_cmd` launches an
+        activity, which does, and only follows when the quiet knock has been
+        given `revive_fallback_after_s` to work and the endpoint is still gone.
+
+        Gated four ways, because the failure this fixes is rare and the cure is
+        eventually something the user can see: the endpoint must have been down
+        for `revive_after_s` (so an app restarting by itself is left alone), we
+        must not have tried within `revive_every_s`, `am` must exist — which is
+        what stops every non-Android host from doing anything at all here — and
+        a last confirming read must fail.
         """
-        if not self._revive_cmd or self._failing_since is None:
+        if self._failing_since is None:
             return
         now = _now()
+
+        # The loud door, when the quiet one has had its chance. Deliberately
+        # ahead of the rate limit: the pair is one attempt, and making the
+        # fallback wait out `revive_every_s` would leave barge-in dead for five
+        # minutes on the devices this fallback exists for.
+        if (self._fallback_due is not None
+                and now >= self._fallback_due
+                and self._revive_fallback_cmd):
+            self._fallback_due = None
+            self._fire(self._revive_fallback_cmd, now, "the quiet knock did "
+                       "not take, falling back to the activity")
+            return
+
+        if not self._revive_cmd:
+            return
         if now - self._failing_since < self._revive_after_s:
             return
         if (self._last_revive is not None
                 and now - self._last_revive < self._revive_every_s):
             return
-        if shutil.which(self._revive_cmd.split()[0]) is None:
-            return
+        self._last_revive = now
+        if self._fire(self._revive_cmd, now,
+                      "down %.0fs" % (now - self._failing_since)):
+            self._fallback_due = now + self._revive_fallback_after_s
+
+    def _fire(self, cmd: str, now: float, why: str) -> bool:
+        """Run one knock, if it is still the right thing to do. Did we knock?"""
+        if shutil.which(cmd.split()[0]) is None:
+            return False
         # Last chance to be wrong about this. Everything above is derived from
         # polls tuned for barge-in latency (1s), and the cost of a false
-        # positive is a screen in David's face; one patient read, with a
-        # timeout that outlasts a busy status server, settles it.
+        # positive is eventually a screen in David's face; one patient read,
+        # with a timeout that outlasts a busy status server, settles it.
         try:
             self._read(timeout=_MIC_CONFIRM_TIMEOUT_S)
         except Exception:  # noqa: BLE001 — down is down, whatever the reason
@@ -1260,18 +1333,17 @@ class MicSource:
         else:
             log.info("mic source: answered the confirming read — not reviving")
             self._answered()
-            return
-        self._last_revive = now
-        log.warning("mic source: down %.0fs — reviving with %r",
-                    now - self._failing_since, self._revive_cmd)
+            return False
+        log.warning("mic source: %s — reviving with %r", why, cmd)
         try:
-            subprocess.Popen(shlex.split(self._revive_cmd),
+            subprocess.Popen(shlex.split(cmd),
                              start_new_session=True,
                              stdin=subprocess.DEVNULL,
                              stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL)
         except (OSError, ValueError) as e:
             log.debug("mic source: revive failed: %s", e)
+        return True
 
     @property
     def active(self) -> bool:
@@ -1496,7 +1568,9 @@ def _run_loop(cfg: Config, dry_run: bool = False) -> None:
     mic = MicSource(cfg.mic_url, cfg.mic_poll_s,
                     revive_cmd=cfg.mic_revive_cmd,
                     revive_after_s=cfg.mic_revive_after_s,
-                    revive_every_s=cfg.mic_revive_every_s)
+                    revive_every_s=cfg.mic_revive_every_s,
+                    revive_fallback_cmd=cfg.mic_revive_fallback_cmd,
+                    revive_fallback_after_s=cfg.mic_revive_fallback_after_s)
     mic.start()
     claim = ClaimHeartbeat("" if dry_run else cfg.claim_url, cfg.claim_owner,
                            cfg.claim_ttl_s, cfg.claim_interval_s)

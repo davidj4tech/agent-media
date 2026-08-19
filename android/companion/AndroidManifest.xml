@@ -33,7 +33,12 @@
             </intent-filter>
         </activity>
 
-        <!-- The revive door call_guard knocks on when the app has been killed.
+        <!-- The SECOND-CHOICE revive door: WakeReceiver below is knocked on
+             first, because a broadcast makes no task and an activity cannot
+             avoid making one. This is what call_guard falls back to when the
+             broadcast did not take — Android 12+ may refuse a background app's
+             foreground-service start, and a refused revive is worse than a
+             visible one.
              Exported because the knock comes from Termux, which is another uid;
              NoDisplay + noHistory + excludeFromRecents because it draws nothing
              and finishes in onCreate. Deliberately not MainActivity: that one
@@ -118,6 +123,18 @@
             android:name=".CompanionService"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
+
+        <!-- The quiet revive door: a broadcast makes no task, so nothing is
+             raised and nothing is resumed behind it. Exported for the same
+             reason WakeActivity is — the knock comes from Termux. See
+             WakeReceiver for why the activity is still there as the fallback. -->
+        <receiver
+            android:name=".WakeReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="net.agentmedia.companion.WAKE" />
+            </intent-filter>
+        </receiver>
 
         <receiver
             android:name=".MediaButtonReceiver"

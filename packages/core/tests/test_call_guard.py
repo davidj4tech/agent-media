@@ -1103,6 +1103,79 @@ def test_no_revive_when_the_confirming_read_answers(monkeypatch):
         server.close()
 
 
+def test_the_quiet_door_is_knocked_first(monkeypatch):
+    """A broadcast makes no task, so nothing on screen moves for it.
+
+    The activity does: even with its own task affinity (b9d6939) its task goes
+    above the launcher, and when it finishes the system resumes the topmost
+    standard task rather than what was actually in front. Measured on p8a —
+    launcher in front, knock, Termux in front.
+    """
+    calls = _revive_probe(monkeypatch)
+    source = call_guard.MicSource(_dead_url(), poll_s=0.05, backoff_s=0.05,
+                                  revive_cmd="am broadcast -a X",
+                                  revive_after_s=0.0, revive_every_s=300.0,
+                                  revive_fallback_cmd="am start -n x/.Y",
+                                  revive_fallback_after_s=300.0)
+    source.start()
+    try:
+        assert _settle(source, False)
+        assert _wait_for(lambda: bool(calls)), "nothing knocked at all"
+        assert calls[0][:2] == ["am", "broadcast"], "the loud door went first"
+        time.sleep(0.2)
+        assert len(calls) == 1, "the fallback fired before its window"
+    finally:
+        source.stop()
+
+
+def test_the_loud_door_follows_when_the_quiet_one_does_not_take(monkeypatch):
+    """Since Android 12 a background app may not always start a foreground
+    service, so the broadcast can be refused — and a refused revive is worse
+    than a visible one, because barge-in stays dead and nothing says so."""
+    calls = _revive_probe(monkeypatch)
+    source = call_guard.MicSource(_dead_url(), poll_s=0.05, backoff_s=0.05,
+                                  revive_cmd="am broadcast -a X",
+                                  revive_after_s=0.0, revive_every_s=300.0,
+                                  revive_fallback_cmd="am start -n x/.Y",
+                                  revive_fallback_after_s=0.0)
+    source.start()
+    try:
+        assert _settle(source, False)
+        assert _wait_for(lambda: len(calls) >= 2), \
+            "the endpoint stayed down and nothing followed the broadcast"
+        assert calls[0][:2] == ["am", "broadcast"]
+        assert calls[1][:2] == ["am", "start"]
+        # And that is the end of it: the rate limit covers the pair.
+        time.sleep(0.2)
+        assert len(calls) == 2, "the doors kept being knocked on"
+    finally:
+        source.stop()
+
+
+def test_the_loud_door_stays_shut_when_the_quiet_one_worked(monkeypatch):
+    """The ordinary revive: the broadcast starts the service, the endpoint
+    answers, and nobody ever sees anything."""
+    calls = _revive_probe(monkeypatch)
+    server = _MicServer("0 n=0 -")
+    source = call_guard.MicSource(server.url, poll_s=0.05, backoff_s=0.05,
+                                  revive_cmd="am broadcast -a X",
+                                  revive_after_s=0.0, revive_every_s=300.0,
+                                  revive_fallback_cmd="am start -n x/.Y",
+                                  revive_fallback_after_s=0.0)
+    try:
+        # The state a knock leaves behind: quiet door tried, loud one pending.
+        source._failing = True
+        source._failing_since = call_guard._now() - 60.0
+        source._fallback_due = call_guard._now() - 1.0
+
+        source._maybe_revive()
+        assert calls == [], "revived an app that was answering"
+        assert source._fallback_due is None, "the fallback is still armed"
+        assert source._failing is False
+    finally:
+        server.close()
+
+
 def test_revive_never_fires_without_am(monkeypatch):
     """The platform gate. Every host that is not Android lands here, and a
     refused connection there is the ordinary state, not something to fix."""

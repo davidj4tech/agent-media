@@ -205,7 +205,8 @@ Both versions were tried on the device; only this one works.
 | `RecentRows.java` | Day breaks, clock times, and the titles that are not titles. `android.*`-free. |
 | `Health.java` | The home screen's verdicts: mic watch, bridges, deaths today. `android.*`-free. |
 | `CardText.java` | The second line of a card: artist, queue depth, time left. `android.*`-free. |
-| `WakeActivity.java` | The revive door `call_guard` knocks on after a kill. No window: starts the service and finishes. |
+| `WakeReceiver.java` | The revive door `call_guard` knocks on after a kill. A broadcast, so it makes no task and moves nothing on screen. |
+| `WakeActivity.java` | The same door as an activity, for the device where a background app may not start a foreground service. Knocked on only when the broadcast did not take. No window: starts the service and finishes. |
 | `MediaButtonReceiver.java` | Logs the broadcast path. Handles nothing; exists for diagnosis. |
 | `ShareActivity.java` | "Play with agent-media" in the share sheet. Draws nothing, finishes in `onCreate`, toasts the verdict. |
 | `ShareRequest.java` | The pipe that carries shared text to Termux, and the answer back into one line. `android.*`-free, so `test/run.sh` covers it. |

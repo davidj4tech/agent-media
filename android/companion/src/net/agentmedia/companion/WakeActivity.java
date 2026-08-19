@@ -7,7 +7,17 @@ import android.os.Bundle;
 /**
  * Start the service and get out of the way.
  *
- * The revive door. Android stops this app whenever it likes — LOW_MEMORY, a
+ * <b>The second-choice revive door since 2026-08-19.</b> {@link WakeReceiver}
+ * is knocked on first, because a broadcast makes no task and this cannot avoid
+ * making one: even with its own affinity the task goes above the launcher, and
+ * when it finishes the system resumes the topmost standard task rather than
+ * whatever was actually in front. Measured on p8a: launcher in front, knock,
+ * Termux in front. This one is still here because since Android 12 a background
+ * app may not start a foreground service unless an exemption applies, so the
+ * quiet knock can be refused — and a refused revive is worse than a visible
+ * one. call_guard falls back to this when the broadcast did not take.
+ *
+ * Android stops this app whenever it likes — LOW_MEMORY, a
  * package update, an ANR — and since Automate was retired the app is the *only*
  * mic trigger, so every death is a hole in barge-in: the book and Sam talk over
  * David until something starts it again. `call_guard` does the noticing and
