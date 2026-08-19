@@ -11,7 +11,7 @@ PipeWire sink → a Snapcast `am-music` stream. That path has three coupled prob
    Forbidden` on most YouTube CDN URLs. The rooms path papers over it by forcing a
    `tv`/`android_vr` yt-dlp client; that breaks every time YouTube changes formats.
 2. **The residential workaround is off-channel.** `play-music --phone` shells to
-   `ssh p8ar bin/play-local`, which downloads on the phone's residential IP and loads
+   `ssh p8a bin/play-local`, which downloads on the phone's residential IP and loads
    the file into a phone-local `mpv-music` over the **legacy `agent-audio-relay`
    socket**. agent-media has no idea that player exists.
 3. **Because it's off-channel, it doesn't duck and it isn't whole-house.** The
@@ -30,7 +30,7 @@ local file through mpv-over-IPC, ducked/paused by the coordinator — see
 Grounding against the live setup (2026-06-30):
 
 - **The snapservers are already distributed.** mel *and* red5 each run a snapserver.
-  red5 is already the live rooms hub — `hpo, sp4r, p8ar, tvr` are connected to red5's
+  red5 is already the live rooms hub — `hpo, sp4r, p8a, tvr` are connected to red5's
   `am`/`am-music` groups; mel's clients are all `/off`. The rooms-audio-hub migration
   has effectively happened.
 - **agent-media was designed for Snapcast targets but never wired them.** `types.py:58`

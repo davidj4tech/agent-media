@@ -37,20 +37,20 @@ def test_rooms_ssh_host_from_mpd_env(monkeypatch):
 def test_current_device_fetcher_wins_over_rooms_override(monkeypatch):
     monkeypatch.setenv("SSH_CONNECTION", "100.94.14.59 56040 100.103.43.93 22")
     monkeypatch.setenv("MEDIA_MUSIC_LOCAL_ENDPOINT", "tcp://100.94.14.59:6601")
-    monkeypatch.setenv("MEDIA_MUSIC_LOCAL_SSH", "p8ar")
+    monkeypatch.setenv("MEDIA_MUSIC_LOCAL_SSH", "p8a")
     monkeypatch.setenv("MEDIA_MUSIC_LOCAL_FETCH", "bin/play-local")
     monkeypatch.setenv("MEDIA_MUSIC_ROOMS_FETCH_SSH", "pn")
     monkeypatch.setenv("MEDIA_MUSIC_ROOMS_FETCH_CMD", "bin/fetch-track")
-    assert mf.fetch_ssh_host() == "p8ar"
+    assert mf.fetch_ssh_host() == "p8a"
     assert mf.fetch_helper() == "bin/play-local"
-    assert mf._fetchers()[:2] == [("p8ar", "bin/play-local"),
+    assert mf._fetchers()[:2] == [("p8a", "bin/play-local"),
                                   ("pn", "bin/fetch-track")]
 
 
 def test_rooms_override_wins_when_current_device_is_not_endpoint(monkeypatch):
     monkeypatch.setenv("SSH_CONNECTION", "100.1.2.3 56040 100.103.43.93 22")
     monkeypatch.setenv("MEDIA_MUSIC_LOCAL_ENDPOINT", "tcp://100.94.14.59:6601")
-    monkeypatch.setenv("MEDIA_MUSIC_LOCAL_SSH", "p8ar")
+    monkeypatch.setenv("MEDIA_MUSIC_LOCAL_SSH", "p8a")
     monkeypatch.setenv("MEDIA_MUSIC_LOCAL_FETCH", "bin/play-local")
     monkeypatch.setenv("MEDIA_MUSIC_ROOMS_FETCH_SSH", "pn")
     monkeypatch.setenv("MEDIA_MUSIC_ROOMS_FETCH_CMD", "bin/fetch-track")
@@ -62,7 +62,7 @@ def test_current_device_fetcher_can_be_disabled(monkeypatch):
     monkeypatch.setenv("MEDIA_MUSIC_CURRENT_DEVICE_FETCH", "0")
     monkeypatch.setenv("SSH_CONNECTION", "100.94.14.59 56040 100.103.43.93 22")
     monkeypatch.setenv("MEDIA_MUSIC_LOCAL_ENDPOINT", "tcp://100.94.14.59:6601")
-    monkeypatch.setenv("MEDIA_MUSIC_LOCAL_SSH", "p8ar")
+    monkeypatch.setenv("MEDIA_MUSIC_LOCAL_SSH", "p8a")
     monkeypatch.setenv("MEDIA_MUSIC_ROOMS_FETCH_SSH", "pn")
     monkeypatch.setenv("MEDIA_MUSIC_ROOMS_FETCH_CMD", "bin/fetch-track")
     assert mf.fetch_ssh_host() == "pn"

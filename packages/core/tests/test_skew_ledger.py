@@ -30,8 +30,8 @@ def test_current_verdict_is_shown(tmp_path, monkeypatch):
     _no_spawn(monkeypatch)
     monkeypatch.setattr(cli, "_local_head_sig", lambda: "agent-media=aaaaaaa")
 
-    _ledger(tmp_path).write_text("# judged agent-media=aaaaaaa\np8ar\n")
-    assert "fleet: p8ar" in cli._skew_alert_line()
+    _ledger(tmp_path).write_text("# judged agent-media=aaaaaaa\np8a\n")
+    assert "fleet: p8a" in cli._skew_alert_line()
 
 
 def test_verdict_judged_against_moved_code_is_discarded(tmp_path, monkeypatch):
@@ -42,7 +42,7 @@ def test_verdict_judged_against_moved_code_is_discarded(tmp_path, monkeypatch):
     calls = _no_spawn(monkeypatch)
     monkeypatch.setattr(cli, "_local_head_sig", lambda: "agent-media=bbbbbbb")
 
-    _ledger(tmp_path).write_text("# judged agent-media=aaaaaaa\np8ar\n")
+    _ledger(tmp_path).write_text("# judged agent-media=aaaaaaa\np8a\n")
     assert cli._skew_alert_line() == ""
     assert calls, "a discarded verdict must trigger an immediate re-check"
 
@@ -54,13 +54,13 @@ def test_unstamped_ledger_still_shows(tmp_path, monkeypatch):
     _no_spawn(monkeypatch)
     monkeypatch.setattr(cli, "_local_head_sig", lambda: "agent-media=bbbbbbb")
 
-    _ledger(tmp_path).write_text("red5!\np8ar\n")
-    assert "fleet: red5!, p8ar" in cli._skew_alert_line()
+    _ledger(tmp_path).write_text("red5!\np8a\n")
+    assert "fleet: red5!, p8a" in cli._skew_alert_line()
 
 
 def test_warning_rechecks_sooner_than_a_clean_fleet(tmp_path, monkeypatch):
     """A verdict goes stale the moment the host it names is fixed, and nothing
-    tells us that happened. Tonight's false `p8ar` was correct when written and
+    tells us that happened. Tonight's false `p8a` was correct when written and
     obsolete a minute later; two hours is far too long to carry it."""
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     monkeypatch.setattr(cli, "_local_head_sig", lambda: "agent-media=aaaaaaa")
@@ -71,7 +71,7 @@ def test_warning_rechecks_sooner_than_a_clean_fleet(tmp_path, monkeypatch):
     assert aged > time.time() - cli._SKEW_INTERVAL_CLEAN_S
 
     calls = _no_spawn(monkeypatch)
-    led.write_text("# judged agent-media=aaaaaaa\np8ar\n")
+    led.write_text("# judged agent-media=aaaaaaa\np8a\n")
     import os
     os.utime(led, (aged, aged))
     cli._skew_alert_line()

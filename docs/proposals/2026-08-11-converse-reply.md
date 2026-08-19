@@ -33,7 +33,7 @@ should travel as **text**, not as sound.
 - `d1-runner` runs as an **active systemd --user service on red5**, same user,
   `XDG_RUNTIME_DIR=/run/user/1000` — the same path `rendezvous.socket_path()`
   resolves. **No ssh hop is needed**; a relayed command reaches the socket
-  directly. (Contrast `play-video`, which does need `ssh p8ar`.)
+  directly. (Contrast `play-video`, which does need `ssh p8a`.)
 - Relay latency: `d1-runner.sh` polls every `RELAY_POLL_INTERVAL` (default 5s),
   so a reply lands ~5–10s after Cece sends it. `converse`'s default
   `timeout_s=90` absorbs that comfortably, but see "Timeouts" below.

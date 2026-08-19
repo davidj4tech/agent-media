@@ -44,7 +44,7 @@ override with `$AM_SNAP_CONFIG`):
   "servers": { "mel": "http://mel:1780/jsonrpc", "sp4r": "http://sp4r:1780/jsonrpc" },
   "streams": { "music": { "server": "mel", "stream": "am-music" },
                "voice": { "server": "mel", "stream": "am" } },
-  "rooms":   { "study": { "server": "mel", "client": "p8ar-music" } }
+  "rooms":   { "study": { "server": "mel", "client": "p8a-music" } }
 }
 ```
 

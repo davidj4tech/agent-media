@@ -32,7 +32,7 @@
 Resolved from `load-file-name' so a `git pull' is the entire update path
 and no path is hard-coded to a checkout.")
 
-(defvar am-control-site-phone-host "p8ar"
+(defvar am-control-site-phone-host "p8a"
   "Host where `call_guard' runs — the runit service `call-guard'.
 Hold is routed here.  See `am-control-site-configure'.")
 

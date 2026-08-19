@@ -27,24 +27,24 @@ def test_commands_overridable_via_env(monkeypatch):
 
 
 def test_pause_hosts_parsing(monkeypatch):
-    monkeypatch.setenv("MEDIA_ANDROID_PAUSE_HOSTS", "p8ar, phone2 ,")
-    assert _android.pause_hosts() == ["p8ar", "phone2"]
+    monkeypatch.setenv("MEDIA_ANDROID_PAUSE_HOSTS", "p8a, phone2 ,")
+    assert _android.pause_hosts() == ["p8a", "phone2"]
 
 
 def test_pause_and_resume_dispatch_expected_script(monkeypatch):
     sent = []
     monkeypatch.setattr(_android, "_ssh", lambda host, script: sent.append((host, script)))
-    _android.pause("p8ar")
-    _android.resume("p8ar")
-    assert sent[0] == ("p8ar", _android.pause_cmd())
-    assert sent[1] == ("p8ar", _android.resume_cmd())
+    _android.pause("p8a")
+    _android.resume("p8a")
+    assert sent[0] == ("p8a", _android.pause_cmd())
+    assert sent[1] == ("p8a", _android.resume_cmd())
 
 
 def test_resume_disabled_skips_dispatch(monkeypatch):
     monkeypatch.setenv("MEDIA_ANDROID_RESUME", "0")
     sent = []
     monkeypatch.setattr(_android, "_ssh", lambda host, script: sent.append(script))
-    _android.resume("p8ar")
+    _android.resume("p8a")
     assert sent == []
 
 
@@ -52,22 +52,22 @@ def test_resume_disabled_skips_dispatch(monkeypatch):
 
 def test_playback_state_playing(monkeypatch):
     monkeypatch.setattr(_android, "_ssh", lambda h, s: "  PlaybackState {state=3, ...}")
-    assert _android.playback_state("p8ar") == "playing"
+    assert _android.playback_state("p8a") == "playing"
 
 
 def test_playback_state_stopped(monkeypatch):
     monkeypatch.setattr(_android, "_ssh", lambda h, s: "  PlaybackState {state=1, ...}")
-    assert _android.playback_state("p8ar") == "stopped"
+    assert _android.playback_state("p8a") == "stopped"
 
 
 def test_playback_state_unknown_on_permission_denial(monkeypatch):
     monkeypatch.setattr(_android, "_ssh", lambda h, s: "Permission Denial: ...")
-    assert _android.playback_state("p8ar") == "unknown"
+    assert _android.playback_state("p8a") == "unknown"
 
 
 def test_playback_state_unknown_on_ssh_failure(monkeypatch):
     monkeypatch.setattr(_android, "_ssh", lambda h, s: None)
-    assert _android.playback_state("p8ar") == "unknown"
+    assert _android.playback_state("p8a") == "unknown"
 
 
 # --- pause_for_speech: resume only on confirmed playback ------------------
@@ -84,7 +84,7 @@ def test_pause_for_speech_uses_a_single_round_trip(monkeypatch):
     # The whole point of the fused script: one ssh, not read-then-pause.
     sent = []
     monkeypatch.setattr(_android, "_ssh", _fake_ssh("playing", sent))
-    _android.pause_for_speech("p8ar")
+    _android.pause_for_speech("p8a")
     assert len(sent) == 1
     assert "dumpsys media_session" in sent[0]
     assert _android.pause_cmd() in sent[0]
@@ -93,13 +93,13 @@ def test_pause_for_speech_uses_a_single_round_trip(monkeypatch):
 def test_pause_for_speech_playing_resumes(monkeypatch):
     sent = []
     monkeypatch.setattr(_android, "_ssh", _fake_ssh("playing", sent))
-    assert _android.pause_for_speech("p8ar") is True
+    assert _android.pause_for_speech("p8a") is True
 
 
 def test_pause_for_speech_stopped_does_not_resume(monkeypatch):
     sent = []
     monkeypatch.setattr(_android, "_ssh", _fake_ssh("stopped", sent))
-    assert _android.pause_for_speech("p8ar") is False
+    assert _android.pause_for_speech("p8a") is False
 
 
 def test_pause_for_speech_unknown_pauses_but_no_resume_by_default(monkeypatch):
@@ -107,21 +107,21 @@ def test_pause_for_speech_unknown_pauses_but_no_resume_by_default(monkeypatch):
     # `dispatch play` would start an idle session.
     sent = []
     monkeypatch.setattr(_android, "_ssh", _fake_ssh("unknown", sent))
-    assert _android.pause_for_speech("p8ar") is False
+    assert _android.pause_for_speech("p8a") is False
     assert _android.pause_cmd() in sent[0]
 
 
 def test_pause_for_speech_unknown_resumes_when_opted_in(monkeypatch):
     monkeypatch.setenv("MEDIA_ANDROID_RESUME_ON_UNKNOWN", "1")
     monkeypatch.setattr(_android, "_ssh", lambda h, s: None)
-    assert _android.pause_for_speech("p8ar") is True
+    assert _android.pause_for_speech("p8a") is True
 
 
 def test_pause_for_speech_unknown_skipped_when_detection_required(monkeypatch):
     monkeypatch.setenv("MEDIA_ANDROID_REQUIRE_PLAYING_DETECTION", "1")
     sent = []
     monkeypatch.setattr(_android, "_ssh", _fake_ssh("unknown", sent))
-    assert _android.pause_for_speech("p8ar") is False
+    assert _android.pause_for_speech("p8a") is False
 
 
 # --- the remote script actually runs under /bin/sh -------------------------
@@ -217,12 +217,12 @@ def test_script_falls_back_when_the_companion_is_not_running(monkeypatch):
 def test_pause_for_speech_reports_nothing_to_resume_for_companion(monkeypatch):
     sent = []
     monkeypatch.setattr(_android, "_ssh", _fake_ssh("companion", sent))
-    assert _android.pause_for_speech("p8ar") is False
+    assert _android.pause_for_speech("p8a") is False
 
 
 def test_unreachable_host_reads_as_unknown(monkeypatch):
     monkeypatch.setattr(_android, "_ssh", lambda h, s: None)
-    assert _android.pause_for_speech("p8ar") is False
+    assert _android.pause_for_speech("p8a") is False
 
 
 def test_slow_host_is_skipped_on_the_next_call(monkeypatch, tmp_path):
@@ -244,11 +244,11 @@ def test_slow_host_is_skipped_on_the_next_call(monkeypatch, tmp_path):
         return R()
 
     monkeypatch.setattr(_android.subprocess, "run", slow_run)
-    assert _android._ssh("p8ar", "x") == "playing"     # slow -> trips breaker
-    assert _android._ssh("p8ar", "x") is None          # skipped, no subprocess
+    assert _android._ssh("p8a", "x") == "playing"     # slow -> trips breaker
+    assert _android._ssh("p8a", "x") is None          # skipped, no subprocess
     assert len(calls) == 1
 
     # and it survives a fresh process: the deadline is on disk, not in memory
     monkeypatch.setattr(_android, "_slow_until", None)
-    assert _android._ssh("p8ar", "x") is None
+    assert _android._ssh("p8a", "x") is None
     assert len(calls) == 1

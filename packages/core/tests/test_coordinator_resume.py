@@ -62,11 +62,11 @@ def test_after_speech_settles_then_resumes_android(monkeypatch):
     monkeypatch.setattr(coord_mod, "_remote_resume_settle_s", lambda: 0.9)
 
     c = _coord()
-    c._android_paused = ["p8ar"]
+    c._android_paused = ["p8a"]
     c.after_speech()
 
     # Settle must come before the resume, and the host list is cleared.
-    assert calls == [("sleep", 0.9), ("resume", "p8ar")]
+    assert calls == [("sleep", 0.9), ("resume", "p8a")]
     assert c._android_paused == []
 
 

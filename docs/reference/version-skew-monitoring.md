@@ -1,6 +1,6 @@
 # Cross-Host Version Skew Monitoring
 
-When agent packages are distributed across a cluster (e.g., `mel` for the main brain, `p8ar` for phone-local tools, `red5` for rooms), edge nodes often get left behind when the main repo is updated.
+When agent packages are distributed across a cluster (e.g., `mel` for the main brain, `p8a` for phone-local tools, `red5` for rooms), edge nodes often get left behind when the main repo is updated.
 
 To prevent silent failures from stale code, we use a **cron-free, decentralized version skew monitor** built into the package's existing tmux status line.
 
@@ -65,7 +65,7 @@ def cmd_doctor(a) -> int:
     import subprocess, os
     from pathlib import Path
     
-    hosts = os.environ.get("MY_PACKAGE_HOSTS", "p8ar red5 sp4").split()
+    hosts = os.environ.get("MY_PACKAGE_HOSTS", "p8a red5 sp4").split()
     repos = ["my-agent-package", "dotfiles"]  # Check shared dependencies too
     skewed = []
     

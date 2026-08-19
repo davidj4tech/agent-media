@@ -6,7 +6,7 @@ here is built yet; it generalises the existing single-music-sink model in
 
 ## Problem
 
-Today there is one music sink (Mopidy/MPD on p8ar) with one queue. The
+Today there is one music sink (Mopidy/MPD on p8a) with one queue. The
 `content_type` flag on `music_play` already picks the right *interruption*
 behaviour — `music` ducks, `audiobook`/`podcast` pause-and-resume (see
 `route/policy.py`). What it does **not** give us is independent *state*:
@@ -238,8 +238,8 @@ The topology (from `~/.config/agent-media.env` + the live graph). **Updated
   the coordinator, so book + speech time-share `am` cleanly.
 - **Music now also rides a room stream**: Mopidy runs on **mel** (systemd
   `mopidy.service`, `MEDIA_MPD_HOST=127.0.0.1`) → the **`am-music`** sink →
-  am-music Snapcast stream. The room device (p8ar) runs a **second
-  snapclient** (`--hostID p8ar-music`) subscribed to `am-music`, alongside its
+  am-music Snapcast stream. The room device (p8a) runs a **second
+  snapclient** (`--hostID p8a-music`) subscribed to `am-music`, alongside its
   existing `am` snapclient.
 
 So "both at once" mixes **at the room device, across two snapclients** —
@@ -249,7 +249,7 @@ the endpoint, with each player's own volume giving the bed mix. The book's
 focus/bed ducking works because the coordinator sets mel's Mopidy MPD volume,
 and that Mopidy *is* the am-music source the rooms hear.
 
-(History: music used to be Mopidy **on p8ar**, phone-local, so an earlier
+(History: music used to be Mopidy **on p8a**, phone-local, so an earlier
 draft of this note said the book had to ride `am` because nothing played
 `am-music`. Now music is on mel's `am-music` and a room snapclient plays it —
 see the `project-agent-media-music-on-mel` memory.)

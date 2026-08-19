@@ -290,7 +290,7 @@ contract belongs, because it is where everything else already is.
 
 ### 6.1 Ground truth
 
-Verified on p8ar, 2026-08-06:
+Verified on p8a, 2026-08-06:
 
 - **Termux already has `emacs` and `emacsclient`**, in the same sandbox as
   the phone's `media` binary and the music mpv. The Android Emacs *app* is
@@ -530,7 +530,7 @@ Delivered, first pass. Uncommitted, pending review.
   unchanged when the flag is absent. `_phone_music_props` gained `volume` and
   `path` to the batch it already issues — same single round-trip, no new cost.
   `held` reads call-guard's flag file; it never writes it.
-- **The phone's missing music config** (§6.5) — **fixed.** `p8ar`'s
+- **The phone's missing music config** (§6.5) — **fixed.** `p8a`'s
   `~/.config/agent-media.env` now sets
   `MEDIA_MUSIC_LOCAL_ENDPOINT=…/.local/state/agent-media/mpv-music.sock`. Note
   this is the phone's own **Unix socket**, not the `tcp://…:6601` bridge red5
@@ -570,7 +570,7 @@ Deploying the phone daemon revealed the next bottleneck by measurement: with
 the tailnet hop gone, `media`'s ~650ms of Python startup *was* the latency.
 `lisp/am-control-mpv.el` removes it where it is safe.
 
-Measured on p8ar:
+Measured on p8a:
 
 | | via `media` | direct |
 |---|---|---|
@@ -593,7 +593,7 @@ sockets; a `tcp://` endpoint keeps the CLI path.
 
 ### Outstanding
 
-1. **Deploy to the phone** — `git pull` in `~/projects/agent-media` on p8ar,
+1. **Deploy to the phone** — `git pull` in `~/projects/agent-media` on p8a,
    since `status --json` is not in the phone's checkout yet. Until then, only
    red5 can serve the structured read.
 2. **empv search is unexercised** — `empv-invidious-instance` is nil and empv

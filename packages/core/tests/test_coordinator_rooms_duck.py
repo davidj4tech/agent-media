@@ -20,7 +20,7 @@ def fake_snap(monkeypatch):
     """Fake snapcast layer: a mutable client table + recorded SetVolume calls."""
     clients = {
         "hpo-music": 100,
-        "p8ar-music": 80,
+        "p8a-music": 80,
     }
     calls = []
 
@@ -61,15 +61,15 @@ def test_duck_lowers_audible_clients_and_restores(enabled, fake_snap, state):
 
     c._rooms_duck(15)
     # Both clients were above 15 → both ducked to 15.
-    assert clients == {"hpo-music": 15, "p8ar-music": 15}
-    assert sorted(calls) == [("hpo-music", 15), ("p8ar-music", 15)]
+    assert clients == {"hpo-music": 15, "p8a-music": 15}
+    assert sorted(calls) == [("hpo-music", 15), ("p8a-music", 15)]
     # Marker holds the *pre-duck* volumes for restore.
     marker = state.get_rooms_duck()
-    assert marker["vols"] == {"hpo-music": 100, "p8ar-music": 80}
+    assert marker["vols"] == {"hpo-music": 100, "p8a-music": 80}
 
     calls.clear()
     c._rooms_unduck()
-    assert clients == {"hpo-music": 100, "p8ar-music": 80}
+    assert clients == {"hpo-music": 100, "p8a-music": 80}
     assert state.get_rooms_duck() is None
 
 
@@ -82,10 +82,10 @@ def test_strand_recovery_keeps_original_baseline(enabled, fake_snap, state):
 
     c._rooms_duck(15)            # 100/80 -> 15/15, marker remembers 100/80
     c._rooms_duck(15)            # marker present: must NOT recapture 15/15
-    assert state.get_rooms_duck()["vols"] == {"hpo-music": 100, "p8ar-music": 80}
+    assert state.get_rooms_duck()["vols"] == {"hpo-music": 100, "p8a-music": 80}
 
     c._rooms_unduck()
-    assert clients == {"hpo-music": 100, "p8ar-music": 80}
+    assert clients == {"hpo-music": 100, "p8a-music": 80}
 
 
 def test_release_and_reapply_toggle_rooms_duck(enabled, fake_snap, state):
@@ -93,14 +93,14 @@ def test_release_and_reapply_toggle_rooms_duck(enabled, fake_snap, state):
     c = _coord(state)
 
     c._rooms_duck(10)
-    assert clients == {"hpo-music": 10, "p8ar-music": 10}
+    assert clients == {"hpo-music": 10, "p8a-music": 10}
 
     c.release_music_duck()       # mid-response mute → restore, keep marker
-    assert clients == {"hpo-music": 100, "p8ar-music": 80}
+    assert clients == {"hpo-music": 100, "p8a-music": 80}
     assert state.get_rooms_duck() is not None
 
     c.reapply_music_duck()       # unmute → re-duck from the marker
-    assert clients == {"hpo-music": 10, "p8ar-music": 10}
+    assert clients == {"hpo-music": 10, "p8a-music": 10}
 
 
 def test_disabled_when_env_unset_is_total_noop(fake_snap, state, monkeypatch):
@@ -112,7 +112,7 @@ def test_disabled_when_env_unset_is_total_noop(fake_snap, state, monkeypatch):
     c._rooms_unduck()
     c.reapply_music_duck()
     assert calls == []
-    assert clients == {"hpo-music": 100, "p8ar-music": 80}
+    assert clients == {"hpo-music": 100, "p8a-music": 80}
     assert state.get_rooms_duck() is None
 
 
@@ -138,7 +138,7 @@ def test_one_failing_client_does_not_strand_the_others(enabled, fake_snap, state
     c._rooms_unduck()
 
     # The client behind the failure is restored, not skipped.
-    assert clients["p8ar-music"] == 80
+    assert clients["p8a-music"] == 80
     # ... and the one that failed is still owed, so the next unduck retries it.
     assert state.get_rooms_duck()["vols"] == {"hpo-music": 100}
 
@@ -172,7 +172,7 @@ def test_a_capture_that_is_all_at_the_duck_level_is_reported(enabled, fake_snap,
     it must stop being silent."""
     clients, _ = fake_snap
     clients["hpo-music"] = 10
-    clients["p8ar-music"] = 10
+    clients["p8a-music"] = 10
     c = _coord(state)
 
     c._rooms_duck(10)
