@@ -162,6 +162,12 @@ here in one field, and a bare 401 reads as "the server is down".
 from Maven — red5 sits near 90% disk and this keeps the toolchain at a few
 hundred MB.
 
+The min-SDK floor is **30**, not 31: ftv is a Smart TV on Android 11 and an
+APK built for 31 will not even parse there. One APK serves both devices, so
+anything added here that landed after API 30 needs an `SDK_INT` guard — see
+`CompanionService.onCreate`, where `setMediaButtonBroadcastReceiver` (API 31)
+throws `NoSuchMethodError` on the TV and the service never starts at all.
+
 **Keep `debug.keystore`.** It is gitignored, and Android refuses to upgrade an
 installed app signed by a different key — losing it means uninstalling on the
 phone and re-granting permissions, which is a nuisance when every install is a
@@ -199,10 +205,19 @@ touched. Same port numbers are fine — different bind address. p8a wires the tw
 local ones up as whole-dir symlinks (`source: link` in
 `ansible/host_vars/p8a.yml`).
 
-Install: `scp` the APK to `~/storage/downloads/` on the phone, and David opens
-it from Files. That is the whole recipe — `termux-open --chooser` does not
-reliably raise the installer dialog on p8a, so do not offer it. adb cannot
-reach p8a from red5 either (adbd binds wlan0 only).
+Install: `./install.sh p8a` (or `ftv`). It builds first, so what lands is what
+the tree says — the 2026-08-15 round trip went on arguing with a fix that had
+never been installed.
+
+The two devices differ, and the script encodes it. The **phone** stays a
+sideload: the APK goes to `~/storage/downloads/` and David opens it from Files.
+`termux-open --chooser` does not reliably raise the installer dialog on p8a, so
+do not offer it, and adb cannot reach the phone from red5 (its adbd binds wlan0
+only). The **TV** does take adb, over the tailnet on tcp 5555 — so
+`adb install -r` upgrades it unattended, keeping data and granted permissions.
+If adb reports `unauthorized`, the RSA dialog is on the TV screen: accept it
+there with "always allow". If it reports no device, ADB debugging is off in
+Developer options.
 
 ## Reading what it is doing
 
