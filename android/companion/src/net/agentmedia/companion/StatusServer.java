@@ -133,17 +133,35 @@ final class StatusServer {
         }
 
         while (running) {
-            Socket c = null;
             try {
-                c = server.accept();
+                final Socket c = server.accept();
                 c.setSoTimeout(3000);
-                serve(c);
+                // A thread each, and it is not for throughput: it is because
+                // one of these readers polls /mic several times a second to
+                // decide whether Sam pauses, and the others are a human's `curl
+                // /log` over ssh. Served in turn, the slow one delays the fast
+                // one past its 1s timeout — call_guard reads that as the app
+                // being dead, and knocks on the revive door, which pulls a
+                // screen in front of David. Six of those on 2026-08-19 at an
+                // app that never died. Loopback-only and short-lived, so the
+                // usual objection to a thread per connection does not apply.
+                Thread worker = new Thread(new Runnable() {
+                    @Override public void run() {
+                        try {
+                            serve(c);
+                        } catch (IOException e) {
+                            if (running) {
+                                listener.onLog("status server: " + e.getMessage());
+                            }
+                        } finally {
+                            try { c.close(); } catch (IOException ignored) { }
+                        }
+                    }
+                }, "status-conn");
+                worker.setDaemon(true);
+                worker.start();
             } catch (IOException e) {
                 if (running) listener.onLog("status server: " + e.getMessage());
-            } finally {
-                if (c != null) {
-                    try { c.close(); } catch (IOException ignored) { }
-                }
             }
         }
     }

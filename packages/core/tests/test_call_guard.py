@@ -960,8 +960,9 @@ def test_a_pause_between_utterances_restarts_the_clock():
 
 # --- reviving the companion app ---------------------------------------------
 # Android killed it for LOW_MEMORY on 2026-08-16 and barge-in was gone for a
-# quarter of an hour before anyone noticed. These pin the three gates that stop
-# the cure being worse than the disease.
+# quarter of an hour before anyone noticed. These pin the gates that stop the
+# cure being worse than the disease — a knock launches an activity, and an
+# activity is the one thing here David can see.
 
 
 def _dead_url():
@@ -1041,6 +1042,65 @@ def test_revive_fires_on_a_freshly_booted_host(monkeypatch):
     # And the rate limit still holds once something HAS been tried.
     source._maybe_revive()
     assert len(calls) == 1
+
+
+def test_a_missed_poll_is_not_a_death(monkeypatch):
+    """One unlucky read must not start the revive clock.
+
+    The app's status server answers one connection at a time with a 3s socket
+    timeout, so a `/log` fetch over ssh outlasts this poll's 1s timeout while
+    the app is perfectly alive. That single miss used to go straight to the
+    backoff, and 30s later a second unlucky read knocked: six times on the
+    evening of 2026-08-19, every one of them at an app that never died.
+    """
+    calls = _revive_probe(monkeypatch)
+    server = _MicServer("1 n=1 src=6")
+    source = call_guard.MicSource(server.url, poll_s=0.02, backoff_s=0.02,
+                                  revive_cmd="am start -n x/.Y",
+                                  revive_after_s=0.0, revive_every_s=0.0)
+
+    misses = [call_guard._MIC_MISSES_BEFORE_DOWN - 1]
+    real = source._read
+
+    def flaky(timeout=1.0):
+        if misses[0] > 0:
+            misses[0] -= 1
+            raise OSError("timed out")
+        return real(timeout)
+
+    monkeypatch.setattr(source, "_read", flaky)
+    source.start()
+    try:
+        assert _settle(source, True), "it should have gone on reading"
+        assert calls == [], "a miss short of the threshold revived anyway"
+        assert source._failing is False
+    finally:
+        source.stop()
+        server.close()
+
+
+def test_no_revive_when_the_confirming_read_answers(monkeypatch):
+    """The last gate: an app that answers is not knocked on.
+
+    Everything upstream is derived from polls with a 1s timeout, chosen for
+    barge-in latency and not for being right about death. One patient read
+    before launching anything is what makes the knock mean something.
+    """
+    calls = _revive_probe(monkeypatch)
+    server = _MicServer("0 n=0 -")
+    source = call_guard.MicSource(server.url, poll_s=0.05, backoff_s=0.05,
+                                  revive_cmd="am start -n x/.Y",
+                                  revive_after_s=0.0, revive_every_s=0.0)
+    source._failing = True
+    source._failing_since = call_guard._now() - 60.0
+    source._misses = call_guard._MIC_MISSES_BEFORE_DOWN
+    try:
+        source._maybe_revive()
+        assert calls == [], "revived an app that was answering"
+        assert source._failing is False, "the down state should have been cleared"
+        assert source._misses == 0
+    finally:
+        server.close()
 
 
 def test_revive_never_fires_without_am(monkeypatch):

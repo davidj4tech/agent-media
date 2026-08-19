@@ -25,6 +25,7 @@ public final class StatusTest {
         testServesStateAndLog();
         testUnknownPathIs404();
         testSurvivesABadRequest();
+        testASlowReaderDoesNotBlockTheMic();
         testBindFailureIsNotFatal();
 
         System.out.println();
@@ -98,6 +99,52 @@ public final class StatusTest {
 
             // The server must still be answering afterwards.
             yes(get(port, "/state").contains("200 OK"), "still serving after a rude client");
+        } finally {
+            s.stop();
+        }
+    }
+
+    /**
+     * The readout has two kinds of client and they must not queue behind each
+     * other.
+     *
+     * call_guard polls {@code /mic} several times a second with a one-second
+     * timeout, and treats a timeout as the app being dead: after enough of them
+     * it launches the revive door, which puts a screen in front of whatever
+     * David is doing. The other kind of client is a human's {@code curl /log}
+     * over ssh, which can sit there for the socket's whole three seconds. While
+     * this server answered one connection at a time, the second stalled the
+     * first — six knocks on the evening of 2026-08-19 at an app that was alive
+     * and answering the entire time.
+     */
+    private static void testASlowReaderDoesNotBlockTheMic() throws Exception {
+        StatusServer s = server(0);
+        try {
+            s.start();
+            int port = awaitPort(s);
+
+            // Connects, says nothing, and holds the socket open — the shape of
+            // a client that has gone away mid-request. The server's own read
+            // timeout is 3s, so this occupies a worker for that long.
+            Socket slow = new Socket(InetAddress.getByName("127.0.0.1"), port);
+            slow.setSoTimeout(5000);
+
+            long began = System.currentTimeMillis();
+            String mic;
+            try {
+                mic = get(port, "/mic");
+            } catch (Exception e) {
+                // A serial server does not merely make this slow, it makes the
+                // poll time out outright — which is the whole failure. Reported
+                // rather than thrown, so the suite says which check went.
+                mic = "(never answered: " + e + ")";
+            }
+            long took = System.currentTimeMillis() - began;
+
+            yes(mic.contains("200 OK"), "/mic answers while a slow client holds on");
+            yes(took < 1000, "and answers inside call_guard's timeout (took "
+                    + took + "ms)");
+            slow.close();
         } finally {
             s.stop();
         }

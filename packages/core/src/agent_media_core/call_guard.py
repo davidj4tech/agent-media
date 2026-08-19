@@ -336,6 +336,22 @@ _DEFAULT_MIC_REVIVE_EVERY_S = 300.0
 # hosts running this guard have no companion app at all, so a refused connection
 # is the normal case and must cost nothing.
 _MIC_BACKOFF_S = 30.0
+# How many polls in a row must miss before the endpoint counts as down.
+#
+# One miss is not evidence of anything. The app's status server answers one
+# connection at a time with a 3s socket timeout, so a `/log` fetch over ssh —
+# or the app being busy for a moment — can outlast this poll's 1s timeout while
+# the app is perfectly alive. Before 2026-08-19 that single miss went straight
+# to `backoff_s`, and 30s later a second unlucky read fired a revive: the log
+# for that one evening shows six knocks at an app that never died, each of them
+# pulling a screen in front of David. Consecutive misses at the poll cadence
+# cost a few hundred milliseconds and mean it.
+_MIC_MISSES_BEFORE_DOWN = 3
+# The confirming read taken immediately before a revive, with a timeout long
+# enough to outlast a busy status server rather than one tuned for barge-in
+# latency. A knock launches an activity, which is the one thing here the user
+# can see; it must not rest on a probe that is allowed to be unlucky.
+_MIC_CONFIRM_TIMEOUT_S = 3.0
 
 _DEFAULT_HOLD_ENGAGE_S = 1.5
 _DEFAULT_HOLD_RELEASE_S = 2.0
@@ -1166,8 +1182,11 @@ class MicSource:
     Its own thread, and that is the point: most hosts running this guard have no
     companion app, so the endpoint refuses the connection every time, and an
     unreachable readout must never be something the pause loop waits on. The
-    loop only ever reads a boolean. A failing endpoint backs off to
-    ``backoff_s`` and says so once, not once per poll.
+    loop only ever reads a boolean. An endpoint that misses
+    ``_MIC_MISSES_BEFORE_DOWN`` polls in a row counts as down, backs off to
+    ``backoff_s`` and says so once, not once per poll — and one miss on its own
+    says nothing, because the thing at the other end is a single-threaded
+    status server that another reader can occupy for longer than this timeout.
 
     Off when ``url`` is empty. Unreachable is not an error: it is the ordinary
     state of every host that is not the phone.
@@ -1183,6 +1202,9 @@ class MicSource:
         self._backoff_s = backoff_s
         self._active = False
         self._failing = False
+        # Misses since the last answer. Only the third in a row is "down": see
+        # _MIC_MISSES_BEFORE_DOWN.
+        self._misses = 0
         self._stop_ev: threading.Event | None = None
         self._thread: threading.Thread | None = None
         self._revive_cmd = revive_cmd
@@ -1198,6 +1220,15 @@ class MicSource:
         # race. Same family as the TTL bug in 07411e3, which compared a
         # monotonic clock against a file mtime.
         self._last_revive: float | None = None
+
+    def _answered(self) -> None:
+        """A read came back: clear the misses, and the down state if it was set."""
+        self._misses = 0
+        if self._failing:
+            down = _now() - (self._failing_since or _now())
+            log.info("mic source: answering again (down %.0fs)", down)
+            self._failing = False
+            self._failing_since = None
 
     def _maybe_revive(self) -> None:
         """Ask Android to start the companion app again. Best-effort.
@@ -1217,6 +1248,18 @@ class MicSource:
                 and now - self._last_revive < self._revive_every_s):
             return
         if shutil.which(self._revive_cmd.split()[0]) is None:
+            return
+        # Last chance to be wrong about this. Everything above is derived from
+        # polls tuned for barge-in latency (1s), and the cost of a false
+        # positive is a screen in David's face; one patient read, with a
+        # timeout that outlasts a busy status server, settles it.
+        try:
+            self._read(timeout=_MIC_CONFIRM_TIMEOUT_S)
+        except Exception:  # noqa: BLE001 — down is down, whatever the reason
+            pass
+        else:
+            log.info("mic source: answered the confirming read — not reviving")
+            self._answered()
             return
         self._last_revive = now
         log.warning("mic source: down %.0fs — reviving with %r",
@@ -1254,27 +1297,35 @@ class MicSource:
             wait = self._poll_s
             try:
                 got = self._read()
-                if self._failing:
-                    down = _now() - (self._failing_since or _now())
-                    log.info("mic source: answering again (down %.0fs)", down)
-                    self._failing = False
-                    self._failing_since = None
+                self._answered()
                 self._active = got
             except Exception:  # noqa: BLE001 — every failure is the same failure
-                if not self._failing:
-                    # Debug, not warning: on red5 this is simply "no phone here".
-                    log.debug("mic source: %s not answering, backing off",
-                              self._url)
-                    self._failing = True
-                    self._failing_since = _now()
+                self._misses += 1
+                # A miss is not a death. Keep polling at the normal cadence
+                # until enough of them in a row say the endpoint is really
+                # gone; only then back off and start the revive clock.
+                if self._misses < _MIC_MISSES_BEFORE_DOWN:
+                    log.debug("mic source: %s missed (%d), polling again",
+                              self._url, self._misses)
+                    continue_polling = True
+                else:
+                    continue_polling = False
+                    if not self._failing:
+                        # Debug, not warning: on red5 this is simply "no phone
+                        # here".
+                        log.debug("mic source: %s not answering, backing off",
+                                  self._url)
+                        self._failing = True
+                        self._failing_since = _now()
                 self._active = False
-                wait = self._backoff_s
-                self._maybe_revive()
+                if not continue_polling:
+                    wait = self._backoff_s
+                    self._maybe_revive()
             self._stop_ev.wait(wait)
 
-    def _read(self) -> bool:
+    def _read(self, timeout: float = 1.0) -> bool:
         """One line, first field 1 or 0. Anything else is not an answer."""
-        with urllib.request.urlopen(self._url, timeout=1.0) as resp:
+        with urllib.request.urlopen(self._url, timeout=timeout) as resp:
             body = resp.read(64).decode("utf-8", "replace").strip()
         return body.split()[0] == "1" if body else False
 
