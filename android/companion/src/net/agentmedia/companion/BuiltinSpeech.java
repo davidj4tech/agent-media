@@ -95,6 +95,19 @@ final class BuiltinSpeech implements MpvServer.Player {
         this.server = server;
     }
 
+    /**
+     * Is this player the one making noise right now?
+     *
+     * Asked by the app's own policies — barge-in, the dictation hold, the
+     * focus rules — which were all written when the only speech on this phone
+     * came out of the Termux mpv and therefore all drive that socket. While
+     * both players exist, "pause speech" has to mean the one that is actually
+     * speaking, and the honest test is whether this one has a clip open.
+     */
+    boolean active() {
+        return player != null;
+    }
+
     private void volunteer(String property) {
         MpvServer s = server;
         if (s != null) s.changed(property);
@@ -390,7 +403,13 @@ final class BuiltinSpeech implements MpvServer.Player {
                 prepared.setDataSource(file.getAbsolutePath());
                 prepared.prepare();
                 applyGain(prepared);
-                applySpeed(prepared);
+                // Deliberately NOT applySpeed here. setPlaybackParams with a
+                // non-zero speed on a player that is not Started *starts it* —
+                // documented, and the reason the first real reply logged
+                // "gapless handoff refused": the next clip had begun playing
+                // under the current one, so setNextMediaPlayer refused a
+                // player that was no longer merely prepared. Speed is applied
+                // on adoption instead, costing a few milliseconds at 1.0.
             } catch (Exception e) {
                 log.line("builtin-speech: preparing " + uri + " failed: " + e);
                 if (prepared != null) {
@@ -434,6 +453,11 @@ final class BuiltinSpeech implements MpvServer.Player {
             nextIndex = -1;
             if (old != null) {
                 try { old.release(); } catch (Throwable ignored) { }
+            }
+            try {
+                applySpeed(player);
+            } catch (Throwable ignored) {
+                // Started by the framework at 1.0; not worth dropping a clip.
             }
             volunteer("playlist-pos");
             prepareNext();

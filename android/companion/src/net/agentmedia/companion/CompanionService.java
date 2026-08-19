@@ -1568,6 +1568,29 @@ public class CompanionService extends Service {
      * mpv is never paused for a sentence and the speech mpv is never ducked.
      */
     private void performSpeech(SpeechPolicy.Action action) {
+        // While the two players coexist, "pause speech" must mean whichever
+        // one is speaking. These policies were all written when speech could
+        // only be the Termux mpv, and the first reply played by this app went
+        // straight through a dictation hold that paused the wrong player.
+        BuiltinSpeech builtin = builtinSpeech;
+        if (builtin != null && builtin.active()) {
+            switch (action) {
+                case PAUSE:
+                    log("focus: pause speech (in-app player)");
+                    builtin.pause(true);
+                    return;
+                case RESUME:
+                    log("focus: resume speech (in-app player)");
+                    builtin.pause(false);
+                    return;
+                case DISCARD:
+                    log("focus: discard the stale clip (in-app player)");
+                    builtin.stop();
+                    return;
+                default:
+                    return;
+            }
+        }
         if (speechIpc == null) return;
         switch (action) {
             case PAUSE:
