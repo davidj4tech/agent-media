@@ -70,13 +70,38 @@
     const el = document.querySelector('.layer.on');
     return !!el && el.classList.contains('fit') && $('sub').classList.contains('on');
   }
+  // How tall the words' half is, when the reader has said. Null means "as
+  // tall as the sentence needs", which is the default and what the band did
+  // before there was a handle. Remembered per device: a reading split is a
+  // preference, not a per-reply decision.
+  function splitPx() {
+    const v = parseFloat(localStorage.getItem('split'));
+    return v > 0 ? v : null;
+  }
+  function setSplit(px) {
+    if (px == null) localStorage.removeItem('split');
+    else {
+      // Never let either half vanish: a divider dragged to an edge is a
+      // control that has eaten the thing it was dividing.
+      const min = 56, max = innerHeight * 0.8;
+      localStorage.setItem('split', String(Math.min(max, Math.max(min, px))));
+    }
+    updBand();
+  }
   function updBand() {
     const on = bandOn();
     document.body.classList.toggle('subband', on);
+    // The handle exists only while there are two halves to divide.
+    $('split').hidden = !on;
     // Measure AFTER the class lands: the band's padding/width differ from the
     // pill's, so a pill-sized reading would under-reserve on a long sentence.
     const css = document.documentElement.style;
-    const band = on ? $('sub').offsetHeight : 0;
+    // The reader's split wins over the measurement when there is one, but
+    // never shrinks below what the sentence actually needs — words clipped by
+    // a divider the reader forgot they dragged is a bug they cannot diagnose.
+    const measured = on ? $('sub').offsetHeight : 0;
+    const chosen = splitPx();
+    const band = on && chosen ? Math.max(measured, chosen) : measured;
     css.setProperty('--subband', band + 'px');
     // The docks ride up on the band, so they'd land back on the picture. While
     // a figure is being narrated the reserve covers them too — for that minute
@@ -225,10 +250,240 @@
     const show = !!(text && subsOn());
     if (show) $('sub').textContent = text;
     $('sub').classList.toggle('on', show);
+    // The door onto the transcript follows the subtitle: no words, no door.
+    document.body.classList.toggle('hassub', show);
     updBand();
     if (show) $('cap').classList.add('hide');
     else if (!visible) $('cap').classList.remove('hide');
   }
+  // ---- the whole reply -----------------------------------------------------
+  // The band carries the sentence being said; this carries the clip it came
+  // from. The lines arrive on the same state event (canvas.py puts the
+  // splitter's own clip_sentences on the wire), so the transcript is the
+  // server's account of the reply rather than an accumulation of whatever this
+  // page happened to be awake for — a screen that reloads mid-reply gets the
+  // same thing as one that watched it all.
+  let txLines = [], txIdx = -1, txFollow = true;
+  function setLines(lines, idx) {
+    const same = lines.length === txLines.length
+              && lines.every((t, i) => t === txLines[i]);
+    if (same && idx === txIdx) return;
+    txIdx = idx;
+    if (!same) { txLines = lines; renderTx(); }
+    else markTx();
+    if (txOpen()) followTx();
+  }
+  function renderTx() {
+    const box = $('txlines');
+    box.textContent = '';
+    for (const text of txLines) {
+      const p = document.createElement('p');
+      p.textContent = text;
+      box.appendChild(p);
+    }
+    markTx();
+  }
+  function markTx() {
+    const ps = $('txlines').children;
+    for (let i = 0; i < ps.length; i++) {
+      ps[i].classList.toggle('now', i === txIdx);
+      // Ahead only while a voice is actually working through the list. With
+      // the speech over, the whole clip is just text and hiding the end of it
+      // would be theatre.
+      ps[i].classList.toggle('ahead', speaking && txIdx >= 0 && i > txIdx);
+    }
+  }
+  function txOpen() { return !$('tx').hidden; }
+  // The /agents poll is the real caller; the browser harness has no amux to
+  // drive it with, so the indicator is reachable for a test without one.
+  window.__txprobe = (n) => setWorking(
+    Array.from({ length: n }, (_, i) => ({ name: 'agent-' + i, state: 'working' })));
+  // "Something is still being worked on" — named where there is one, counted
+  // where there are several. The voice stopping does not mean the work did,
+  // and the transcript is where that question gets asked.
+  function setWorking(list) {
+    const n = list.length;
+    $('txwork').hidden = !n;
+    if (!n) return;
+    $('txworkt').textContent = n === 1
+      ? (list[0].name || 'working').slice(0, 48)
+      : n + ' working';
+  }
+  // Bring the live line to a comfortable reading height — a third down, not
+  // centred: the eye wants what comes next to be visible under it.
+  function followTx() {
+    if (!txFollow) return;
+    const el = $('txlines').children[txIdx];
+    if (!el) return;
+    const to = el.offsetTop - $('tx').clientHeight * 0.34;
+    $('tx').scrollTo({ top: Math.max(0, to), behavior: 'smooth' });
+  }
+  function openTx(on) {
+    $('tx').hidden = !on;
+    document.body.classList.toggle('txopen', on);
+    if (!on) { setAhead(false); return; }
+    txFollow = true;
+    $('txlive').hidden = true;
+    renderTx();
+    // No smooth scroll on the way in — the panel should already be at the
+    // right place when it appears, not seen travelling there.
+    const el = $('txlines').children[txIdx];
+    if (el) $('tx').scrollTop = Math.max(0, el.offsetTop - $('tx').clientHeight * 0.34);
+  }
+  function setAhead(on) {
+    document.body.classList.toggle('txahead', on);
+  }
+  // Scrolling away from the live line stops the panel dragging the reader back,
+  // and scrolling PAST it is what uncovers the text the voice has not reached.
+  // Both are the same gesture, which is the point: reading on is something you
+  // do, never something that happens to you.
+  function txScrolled() {
+    if (!txOpen()) return;
+    const el = $('txlines').children[txIdx];
+    if (!el) return;
+    const view = $('tx').scrollTop + $('tx').clientHeight * 0.34;
+    const off = view - el.offsetTop;
+    txFollow = Math.abs(off) < 90;
+    $('txlive').hidden = txFollow;
+    // Reaching the bottom counts as scrolling past, and it is the only thing
+    // that can: a clip shorter than the panel has nowhere to scroll TO, so a
+    // pure distance test leaves the text ahead permanently unreachable.
+    const tx = $('tx');
+    const atEnd = tx.scrollTop + tx.clientHeight >= tx.scrollHeight - 4;
+    if (off > 60 || (atEnd && off > 0)) setAhead(true);
+    else if (txFollow) setAhead(false);
+  }
+
+  // ---- pinch ---------------------------------------------------------------
+  // One gesture, two jobs: pinching the words changes reading size, pinching
+  // anywhere else zooms the picture. Written once with Pointer Events rather
+  // than taken from the browser, because the browser's own page zoom would
+  // scale the controls and the band along with the figure — and on a canvas
+  // that is mostly one image, that is not what the fingers meant.
+  const PINCH = { pts: new Map(), d0: 0, base: 1, target: null };
+  function pinchTarget(el) {
+    return (el && el.closest && el.closest('#tx, #sub')) ? 'text' : 'image';
+  }
+  function txScale() {
+    const v = parseFloat(localStorage.getItem('txscale'));
+    return v >= 0.6 && v <= 2.6 ? v : 1;
+  }
+  function setTxScale(v) {
+    const clamped = Math.min(2.6, Math.max(0.6, v));
+    localStorage.setItem('txscale', String(clamped));
+    document.documentElement.style.setProperty('--txscale', clamped);
+    updBand();                      // a bigger sentence reserves a taller band
+    return clamped;
+  }
+  let imgZ = 1, imgX = 0, imgY = 0;
+  function setImgZoom(z, x, y) {
+    imgZ = Math.min(6, Math.max(1, z));
+    // At rest the picture is centred, always: a zoom that ends off-centre
+    // leaves the next figure arriving somewhere the eye is not.
+    if (imgZ === 1) { imgX = imgY = 0; }
+    else {
+      // Never pan past the edge — beyond it there is only black, and finding
+      // your way back from black is a puzzle nobody asked for.
+      const maxX = innerWidth * (imgZ - 1) / 2, maxY = innerHeight * (imgZ - 1) / 2;
+      imgX = Math.min(maxX, Math.max(-maxX, x));
+      imgY = Math.min(maxY, Math.max(-maxY, y));
+    }
+    const css = document.documentElement.style;
+    css.setProperty('--imgz', imgZ);
+    css.setProperty('--imgx', imgX + 'px');
+    css.setProperty('--imgy', imgY + 'px');
+    document.body.classList.toggle('imgzoom', imgZ > 1);
+  }
+  function pinchDist() {
+    const [a, b] = [...PINCH.pts.values()];
+    return Math.hypot(a.x - b.x, a.y - b.y);
+  }
+  addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse') return;
+    PINCH.pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (PINCH.pts.size === 2) {
+      PINCH.target = pinchTarget(e.target);
+      PINCH.d0 = pinchDist();
+      PINCH.base = PINCH.target === 'text' ? txScale() : imgZ;
+      document.body.classList.add('pinching');
+    }
+  }, { passive: true });
+  addEventListener('pointermove', (e) => {
+    if (!PINCH.pts.has(e.pointerId)) return;
+    PINCH.pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (PINCH.pts.size !== 2 || !PINCH.d0) return;
+    const ratio = pinchDist() / PINCH.d0;
+    if (PINCH.target === 'text') setTxScale(PINCH.base * ratio);
+    else setImgZoom(PINCH.base * ratio, imgX, imgY);
+  }, { passive: true });
+  function pinchEnd(e) {
+    PINCH.pts.delete(e.pointerId);
+    if (PINCH.pts.size < 2) {
+      PINCH.d0 = 0; PINCH.target = null;
+      document.body.classList.remove('pinching');
+    }
+  }
+  addEventListener('pointerup', pinchEnd, { passive: true });
+  addEventListener('pointercancel', pinchEnd, { passive: true });
+  // Panning a zoomed picture: one finger, and only once zoomed — otherwise
+  // this would swallow the tap that opens the controls.
+  let panFrom = null;
+  addEventListener('pointerdown', (e) => {
+    if (imgZ > 1 && PINCH.pts.size <= 1 && pinchTarget(e.target) === 'image') {
+      panFrom = { x: e.clientX, y: e.clientY, ix: imgX, iy: imgY };
+    }
+  }, { passive: true });
+  addEventListener('pointermove', (e) => {
+    if (!panFrom || PINCH.pts.size >= 2) return;
+    setImgZoom(imgZ, panFrom.ix + (e.clientX - panFrom.x),
+                     panFrom.iy + (e.clientY - panFrom.y));
+  }, { passive: true });
+  addEventListener('pointerup', () => { panFrom = null; }, { passive: true });
+  // A zoom you cannot undo with one gesture is a trap on a screen with no
+  // keyboard: double-tap the picture returns it whole.
+  let lastTap = 0;
+  addEventListener('pointerup', (e) => {
+    if (pinchTarget(e.target) !== 'image') return;
+    const now = Date.now();
+    if (now - lastTap < 320 && imgZ > 1) { setImgZoom(1, 0, 0); lastTap = 0; }
+    else lastTap = now;
+  }, { passive: true });
+
+  // ---- the divider ---------------------------------------------------------
+  // Drag the seam to give the words more of the screen, or the picture more.
+  // Pointer Events with capture, so a finger that leaves the 22px handle
+  // mid-drag keeps dragging — the alternative is a control that works only if
+  // you are accurate, on the device where you are least accurate.
+  let splitFrom = null;
+  $('split').addEventListener('pointerdown', (e) => {
+    e.stopPropagation();
+    splitFrom = { y: e.clientY, h: parseFloat(getComputedStyle(
+      document.documentElement).getPropertyValue('--subband')) || 0 };
+    $('split').setPointerCapture(e.pointerId);
+    document.body.classList.add('splitting');
+  });
+  $('split').addEventListener('pointermove', (e) => {
+    if (!splitFrom) return;
+    e.stopPropagation();
+    setSplit(splitFrom.h + (splitFrom.y - e.clientY));   // up = more words
+  });
+  function splitDone(e) {
+    if (!splitFrom) return;
+    splitFrom = null;
+    document.body.classList.remove('splitting');
+    try { $('split').releasePointerCapture(e.pointerId); } catch (_) {}
+  }
+  $('split').addEventListener('pointerup', splitDone);
+  $('split').addEventListener('pointercancel', splitDone);
+  // Double-tap the handle hands the decision back to the sentence.
+  let splitTap = 0;
+  $('split').addEventListener('pointerup', (e) => {
+    e.stopPropagation();
+    const now = Date.now();
+    if (now - splitTap < 320) { setSplit(null); splitTap = 0; }
+    else splitTap = now;
+  });
+
   function setSpeaking(on) {
     if (on === speaking) return;
     speaking = on;
@@ -241,7 +496,7 @@
                               : a.playbackRate = on ? 2.6 : 1);
     chime(on);
     vidVisible();                              // video yields while speaking
-    if (!on) { setSubtitle(null); figMsg = false; updFig(); }
+    if (!on) { setSubtitle(null); figMsg = false; updFig(); markTx(); }
     if (!on && seq) setBeat(seq.length - 1);   // speech over → the conclusion
   }
 
@@ -377,6 +632,7 @@
         setSpeaking(!!d.speaking);
         if (d.speaking) {
           setSubtitle(d.sentence || null);
+          if (d.lines) setLines(d.lines, typeof d.lidx === 'number' ? d.lidx : 0);
           figMsg = !!d.visual; updFig();
           applyStale(d.session || null);
         } else {
@@ -842,6 +1098,14 @@
       e.preventDefault(); setMode('agents'); return;
     }
     if (k === 'Tab') { e.preventDefault(); tabNext(); return; }  // walk / cycle
+    // The transcript is a layer over everything, so it takes Escape first —
+    // otherwise Escape drops the mode out from under a panel that is still up.
+    if (txOpen() && (k === 'Escape' || k === 'z')) {
+      e.preventDefault(); openTx(false); return;
+    }
+    if (k === 'z' && $('sub').classList.contains('on')) {
+      e.preventDefault(); openTx(true); return;
+    }
     if (k === 'Escape' || (k === 'q' && mode === 'control')) {
       e.preventDefault();
       if ($('help').classList.contains('on')) { toggleHelp(); return; }
@@ -911,6 +1175,25 @@
     resetHide();
   }
   $('sfx').onclick = (e) => { e.stopPropagation(); toggleSfx(); };
+  // ---- transcript handlers ---------------------------------------------
+  // Reading size is a per-device preference and it survives a reload.
+  document.documentElement.style.setProperty('--txscale', txScale());
+  $('zoom').onclick = (e) => { e.stopPropagation(); openTx(true); resetHide(); };
+  $('txclose').onclick = (e) => { e.stopPropagation(); openTx(false); };
+  $('txlive').onclick = (e) => {
+    e.stopPropagation();
+    txFollow = true; setAhead(false); $('txlive').hidden = true; followTx();
+  };
+  // Taps inside the panel are the panel's, not the canvas's — without this a
+  // tap to dismiss the reveal also reaches the tap-to-control layer beneath.
+  // Tapping the masked text is the other way to ask for it — and on a short
+  // clip, the only one. Same bargain as the scroll: deliberate, never
+  // something the eye does while listening.
+  $('tx').addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (e.target.closest && e.target.closest('#txlines p.ahead')) setAhead(true);
+  });
+  $('tx').addEventListener('scroll', txScrolled, { passive: true });
   function drawFit() {
     $('fit').classList.toggle('lit', fitMode() !== 'auto');
     $('fit').style.opacity = fitMode() === 'fill' ? 0.55 : 1;
@@ -980,6 +1263,11 @@
       if (!r.ok) { $('agents').classList.remove('on'); return; }
       list = (await r.json()).agents || [];
     } catch (_) { return; }
+    // The transcript's foot: who is still working. Same poll, no second
+    // request — the agent strip already asks this question once a beat, and a
+    // spinner with its own timer would drift out of step with the tree that
+    // explains it.
+    setWorking(list.filter((a) => a.state === 'working'));
     const box = $('agents');
     if (!list.length) { box.classList.remove('on'); box.innerHTML = ''; hidePeek(); return; }
     const groups = {};

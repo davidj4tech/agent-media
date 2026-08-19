@@ -4,6 +4,27 @@
      so a narrated figure is never written on by anything. Both in JS. */
   :root { --subband: 0px; --figres: 0px; }
   html, body { margin:0; height:100%; background:#000; overflow:hidden; }
+  /* Pinch-zoom lives here, on the stage, so Ken Burns keeps the images'
+     own transform to itself. Fixed children resolve against a transformed
+     ancestor, and the stage is exactly the viewport, so the layers position
+     as they always did. */
+  #stage {
+    position: fixed; inset: 0; transform-origin: 50% 50%;
+    transform: translate(var(--imgx, 0px), var(--imgy, 0px)) scale(var(--imgz, 1));
+    will-change: transform;
+  }
+  /* Only while a pinch is not in flight — a transition mid-gesture lags the
+     fingers, which reads as the picture being slow rather than smooth. */
+  body:not(.pinching) #stage { transition: transform .28s ease; }
+  /* Zoomed in, the picture is the thing being handled: the tap-to-control
+     layer must not eat a pan. */
+  body.imgzoom { cursor: grab; }
+
+  /* Reading size, pinched on the words themselves and remembered per device.
+     One scale for both — the band and the transcript are the same sentences,
+     and two knobs for one preference is a setting nobody can repeat. */
+  :root { --txscale: 1; }
+
   .layer {
     position: fixed; inset: 0; width: 100vw; height: 100vh;
     object-fit: cover; opacity: 0; transition: opacity 1.8s ease;
@@ -100,7 +121,7 @@
     position: fixed; left: 50%; bottom: max(4vh, env(safe-area-inset-bottom));
     transform: translateX(-50%); max-width: 86vw;
     padding: .5em 1.1em; border-radius: 14px;
-    font: 500 17px/1.5 system-ui, sans-serif; color: #ffe9a8;
+    font: 500 calc(17px * var(--txscale))/1.5 system-ui, sans-serif; color: #ffe9a8;
     text-align: center; text-wrap: balance;
     background: rgba(8,8,8,.68); backdrop-filter: blur(12px);
     opacity: 0; transition: opacity .5s ease; pointer-events: none;
@@ -121,6 +142,128 @@
   html.eink body.subband #sub {
     background: #fff; border-top: 1.5px solid #000;
   }
+  /* ---- the whole reply -----------------------------------------------
+     The band shows one sentence because that is what is being said. The rest
+     of the reply still exists, and on a phone there is no scrollback to find
+     it in — so #zoom opens the clip out into a scrollable transcript with the
+     live line lit. */
+  /* Top-right, and NOT down by the words it opens.
+     The obvious home was above the band, and it is wrong at phone width: the
+     reply dock is min(96vw, 620px) and centred, so on a 420px screen it spans
+     nearly the whole bottom — every bottom corner is already the dock's. The
+     transcript harness found it by being unable to click through the send
+     button. Top-right is free, and it is also where #txclose sits, so the same
+     corner opens the transcript and closes it. */
+  #zoom {
+    position: fixed; right: max(12px, env(safe-area-inset-right));
+    top: max(12px, env(safe-area-inset-top));
+    width: 40px; height: 40px; display: none; place-items: center;
+    border: 0; border-radius: 999px; padding: 0; cursor: pointer;
+    color: #ffe9a8; background: rgba(8,8,8,.62); backdrop-filter: blur(10px);
+    opacity: .5; transition: opacity .3s ease, bottom .3s ease;
+  }
+  /* Only while there are words to open. */
+  body.hassub #zoom { display: grid; }
+  #zoom:hover, #zoom:focus-visible { opacity: 1; }
+
+  body.txopen #zoom { display: none; }
+
+  /* The grab bar on the seam. Sized for a thumb but drawn as a hairline
+     handle: it is a control that must be findable without ever being the
+     thing you look at. */
+  #split {
+    position: fixed; left: 0; right: 0; z-index: 45;
+    bottom: calc(var(--subband) - 11px); height: 22px;
+    display: grid; place-items: center; cursor: ns-resize;
+    touch-action: none;                     /* the drag is ours, not the page's */
+  }
+  #split span {
+    width: 46px; height: 4px; border-radius: 999px;
+    background: rgba(255,233,168,.5); transition: background .2s ease;
+  }
+  #split:hover span, body.splitting #split span { background: #ffe9a8; }
+  html.eink #split span { background: #000; }
+
+  /* Open into the words' half, so the figure stays visible above what is
+     being read about it. Only when there IS a figure — with no picture to
+     keep, the transcript takes the screen. */
+  #tx {
+    position: fixed; inset: 0; z-index: 40;
+    background: rgba(6,7,9,.94); backdrop-filter: blur(18px);
+    overflow-y: auto; overscroll-behavior: contain;
+    padding: max(16vh, 96px) 7vw max(24vh, 140px);
+    font: 400 calc(20px * var(--txscale))/1.7 system-ui, sans-serif; color: #f2ead8;
+  }
+  #tx p {
+    margin: 0 0 .85em; text-wrap: pretty;
+    color: rgba(242,234,216,.42);            /* already said: present, done */
+    transition: color .3s ease, filter .45s ease, opacity .45s ease;
+  }
+  /* The live sentence. Lit, and the thing the panel scrolls to. */
+  #tx p.now { color: #ffe9a8; }
+  /* Not yet spoken. Masked rather than missing: the words hold their space so
+     the page does not reflow under the reader as the voice catches up, but
+     they cannot be read by accident — peripheral vision is enough to spoil a
+     [[reveal:]], and the voice arriving second is the whole point of one.
+     Scrolling past the live line is a deliberate act, and it clears them. */
+  #tx p.ahead {
+    color: transparent; filter: blur(7px); opacity: .5;
+    text-shadow: 0 0 14px rgba(242,234,216,.45);
+    user-select: none;
+  }
+  body.txahead #tx p.ahead {
+    color: rgba(242,234,216,.42); filter: none; opacity: 1;
+    text-shadow: none; user-select: auto;
+  }
+  /* Shown once the reader has scrolled away from the live line — the way back
+     without hunting for it. Also what un-reveals the text ahead. */
+  #txlive {
+    position: fixed; left: 50%; transform: translateX(-50%);
+    bottom: max(5vh, calc(env(safe-area-inset-bottom) + 16px));
+    padding: .55em 1.2em; border: 0; border-radius: 999px; cursor: pointer;
+    font: 600 14px/1.4 system-ui, sans-serif; color: #16130a;
+    background: #ffe9a8; box-shadow: 0 6px 22px rgba(0,0,0,.5);
+  }
+  body.subband #tx {
+    top: calc(100vh - var(--subband)); border-top: 1px solid rgba(255,233,168,.22);
+    padding-top: 3vh;
+  }
+  html.eink body.subband #tx { border-top: 1.5px solid #000; }
+
+  /* Pinned to the foot of the panel, not the end of the text: the answer to
+     "is it still going" must not be something you scroll to find. */
+  #txwork {
+    position: fixed; left: 50%; transform: translateX(-50%);
+    bottom: max(5vh, calc(env(safe-area-inset-bottom) + 16px));
+    display: flex; align-items: center; gap: .55em;
+    padding: .5em 1.1em; border-radius: 999px;
+    font: 500 13px/1.4 system-ui, sans-serif; color: #ffe9a8;
+    background: rgba(12,12,14,.86); backdrop-filter: blur(10px);
+  }
+  #txwork .spin { animation: spin 1.1s linear infinite; }
+  /* The catch-up button owns that spot when it is up — it is the more urgent
+     of the two, and two pills stacked at the same edge read as a mistake. */
+  #tx:has(#txlive:not([hidden])) #txwork { display: none; }
+  html.eink #txwork { background: #fff; color: #000; border: 1.5px solid #000; }
+  html.eink #txwork .spin { animation: none; }
+
+  #txclose {
+    position: fixed; top: max(12px, env(safe-area-inset-top));
+    right: max(12px, env(safe-area-inset-right));
+    width: 44px; height: 44px; display: grid; place-items: center;
+    border: 0; border-radius: 999px; padding: 0; cursor: pointer;
+    color: #f2ead8; background: rgba(20,20,24,.7); opacity: .75;
+  }
+  #txclose:hover, #txclose:focus-visible { opacity: 1; }
+  /* E-ink: no blur to hide behind (DU4 has four greys and no subtlety), so
+     ahead-of-the-voice is simply not drawn. Same promise, honest medium. */
+  html.eink #tx { background: #fff; color: #000; }
+  html.eink #tx p { color: #555; }
+  html.eink #tx p.now { color: #000; font-weight: 600; }
+  html.eink #tx p.ahead { visibility: hidden; filter: none; }
+  html.eink body.txahead #tx p.ahead { visibility: visible; color: #555; }
+  html.eink #txlive { background: #000; color: #fff; }
+
   /* Figure badge: this image says something — it isn't wallpaper. */
   #fig {
     position: fixed; top: max(12px, env(safe-area-inset-top)); left: 16px;

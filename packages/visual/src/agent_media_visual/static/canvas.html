@@ -36,12 +36,42 @@
   <symbol id="i-reply" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M9 6L4 11l5 5M4 11h11a5 5 0 015 5v2"/></symbol>
   <symbol id="i-spinner" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" d="M12 3a9 9 0 1 0 9 9"/></symbol>
 </svg>
-<img id="a" class="layer" alt="">
-<img id="b" class="layer" alt="">
+<!-- The two cross-fading layers live in a stage so pinch-zoom has something to
+     transform that is not the images themselves: Ken Burns already owns their
+     transform, and a zoom written there would fight the pan every frame. -->
+<div id="stage">
+  <img id="a" class="layer" alt="">
+  <img id="b" class="layer" alt="">
+</div>
 <div id="ytwrap"><div id="yt"></div></div>
 <div id="pulse"></div>
 <div id="cap"></div>
+<!-- The subtitle, and the way to open it out. #zoom only appears while there
+     are words to open — a button onto an empty transcript is a broken promise. -->
 <div id="sub"></div>
+<button id="zoom" type="button" title="Whole reply" aria-label="Whole reply">
+  <svg viewBox="0 0 24 24" width="20" height="20"><use href="#i-fit"/></svg>
+</button>
+<!-- The whole reply, scrollable, the live sentence lit. Ahead of the voice is
+     masked rather than absent: reading on is a deliberate scroll, never
+     something the eye does by accident while listening. -->
+<!-- The divider between the picture and the words. Only while both are on
+     screen — there is nothing to divide otherwise. -->
+<div id="split" hidden><span></span></div>
+<div id="tx" hidden>
+  <div id="txlines"></div>
+  <!-- What is still being worked on, at the foot of what has been said. The
+       transcript is where you look when the voice stops; this answers the
+       question that stopping raises. -->
+  <div id="txwork" hidden>
+    <svg class="ic spin" viewBox="0 0 24 24" width="16" height="16"><use href="#i-spinner"/></svg>
+    <span id="txworkt"></span>
+  </div>
+  <button id="txlive" type="button" hidden>Back to the voice</button>
+  <button id="txclose" type="button" aria-label="Close">
+    <svg viewBox="0 0 24 24" width="22" height="22"><use href="#i-close"/></svg>
+  </button>
+</div>
 <div id="fig">▣ figure</div>
 <div id="dot" title="disconnected"></div>
 <div id="offbar"><div class="msg">reconnecting…</div></div>
@@ -109,6 +139,8 @@
     <b>c · f</b><span>captions · sound fx</span>
     <b>Enter</b><span>reply input</span>
     <b>a</b><span>agent tree: j/k move · l reply/open · h close · g/G ends · p peek · q exit</span>
+    <b>z</b><span>whole reply — scroll past the voice to read ahead</span>
+    <b>pinch</b><span>on the words: reading size · anywhere else: zoom the picture (double-tap resets)</span>
     <b>?</b><span>this help</span>
   </div>
 </div>

@@ -761,6 +761,24 @@ def speech_state() -> dict:
         sentence = " ".join(str(ex.get("current_sentence") or "").split())
         if sentence:
             state["sentence"] = sentence[:220]
+        # The whole clip, not just the live line. The extras already carry it
+        # — clip_sentences is what the splitter produced and
+        # current_sentence_idx is where the voice is in that list — so the
+        # canvas can show a transcript without asking for anything new, and
+        # without accumulating what it happened to be awake for. A page
+        # reloaded mid-reply gets the same transcript as one that watched it
+        # arrive, which an accumulate-as-you-go model could never manage.
+        lines = [" ".join(str(t).split()) for t in (ex.get("clip_sentences") or [])]
+        lines = [t for t in lines if t]
+        if lines:
+            # Capped like `sentence` above, and for the same reason: this rides
+            # a 1 Hz SSE broadcast to every screen, and one pathological reply
+            # should not put a megabyte on the wire every second.
+            state["lines"] = [t[:220] for t in lines[:120]]
+            try:
+                state["lidx"] = int(ex.get("current_sentence_idx") or 0)
+            except (TypeError, ValueError):
+                state["lidx"] = 0
         if ex.get("visual"):
             state["visual"] = ex["visual"]
         if ex.get("source_session"):
