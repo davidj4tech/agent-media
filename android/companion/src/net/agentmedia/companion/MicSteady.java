@@ -124,6 +124,7 @@ final class MicSteady {
     boolean update(int count, long nowMs) {
         boolean open = count > 0;
         if (!open) {
+            if (anyOpen) closedAt = nowMs;     // the run just ended: see sawRunStart
             openedAt = nowMs;
         } else if (!anyOpen) {
             openedAt = nowMs;
@@ -253,8 +254,9 @@ final class MicSteady {
      * What a sampler does and a person cannot is repeat immediately: p8a's
      * recogniser leaves the microphone alone for 300–900ms between holds,
      * where a person leaves it alone for as long as it takes to read an
-     * answer. So the evidence is three runs inside {@link #BURST_MS}, and it
-     * is remembered for {@link #BASELINE_WINDOW_MS} afterwards — a phone that
+     * answer. So the evidence is {@link #BASELINE_RUNS} runs whose gaps are
+     * all under {@link #SAMPLER_GAP_MS} — see {@link #sawRunStart} — and it is
+     * remembered for {@link #BASELINE_WINDOW_MS} afterwards, so a phone that
      * stops sampling gets the duration rule back within the minute.
      */
     private boolean cycling(long nowMs) {
@@ -269,16 +271,27 @@ final class MicSteady {
         return nowMs - cycledAt <= BASELINE_WINDOW_MS;
     }
 
-    /** Called as each run opens: is this phone sampling its own microphone? */
+    /**
+     * Called as each run opens: is this phone sampling its own microphone?
+     *
+     * <b>The signature is the silence, not the tally.</b> Counting runs inside
+     * a window catches a person testing the mic button — David hit it on about
+     * the fifth press, three presses inside the window, and barge-in switched
+     * itself off again. What a sampler does and a person cannot is come
+     * straight back: p8a's recogniser lets the microphone go for 300–900ms
+     * between holds, and while our own audio plays it holds for two seconds
+     * and lets go for about one. A person has to stop talking, read an answer
+     * and reach for the button. So the evidence is {@link #BASELINE_RUNS} runs
+     * in a row whose gaps are all under {@link #SAMPLER_GAP_MS}, and one human
+     * pause anywhere in that streak resets it.
+     */
     private void sawRunStart(long nowMs) {
-        runStarts[runIndex] = nowMs;
-        runIndex = (runIndex + 1) % runStarts.length;
-        long oldest = Long.MAX_VALUE;
-        for (long start : runStarts) {
-            if (start <= 0) return;             // fewer than BASELINE_RUNS yet
-            if (start < oldest) oldest = start;
+        if (nowMs - closedAt <= SAMPLER_GAP_MS) {
+            quickRepeats++;
+        } else {
+            quickRepeats = 1;
         }
-        if (nowMs - oldest <= BURST_MS) {
+        if (quickRepeats >= BASELINE_RUNS) {
             cycledAt = nowMs;
             everCycled = true;
         }
@@ -286,22 +299,26 @@ final class MicSteady {
 
     /** How long a cycling verdict is remembered once the bursts stop. */
     static final long BASELINE_WINDOW_MS = 60000;
-    /** How many separate recordings make a burst. */
+    /** How many runs in immediate succession make a baseline. */
     static final int BASELINE_RUNS = 3;
     /**
-     * How close together those runs must be.
+     * The longest silence a sampler leaves between two of its own holds.
      *
-     * p8a's recogniser cycles about once a second, so three of its runs span
-     * five or six seconds. Three dictations span a conversation.
+     * Measured on p8a: 300–900ms idle, about a second while our audio plays.
+     * Well under the several seconds it takes a person to speak, stop, read
+     * and press again — which is the whole point of measuring the gap rather
+     * than counting the runs.
      */
-    static final long BURST_MS = 15000;
+    static final long SAMPLER_GAP_MS = 2500;
 
-    /** When a burst was last seen, and whether one ever was. */
+    /** When the last run ended, so the next one can measure the silence. */
+    private long closedAt = Long.MIN_VALUE / 2;
+    /** Runs so far in an unbroken streak of quick repeats. */
+    private int quickRepeats = 0;
+    /** When a streak was last seen, and whether one ever was. */
     private long cycledAt = Long.MIN_VALUE / 2;
     private boolean everCycled = false;
 
-    private final long[] runStarts = new long[BASELINE_RUNS];
-    private int runIndex = 0;
     /** When this watch started, for the "not yet known" case above. */
     private long watchingSince = Long.MIN_VALUE / 2;
 

@@ -166,14 +166,19 @@ public class MicSteadyTest {
         m.update(0, 0);
         m.update(0, 61000);
         long p = 62000;
-        for (int i = 0; i < 3; i++) {          // three dictations, 20s apart
+        boolean everMissed = false;
+        for (int i = 0; i < 6; i++) {
+            // Press, speak for a second, stop; press again four seconds later.
+            // Faster than a conversation, because this is David testing the
+            // button — which is how the fifth press found the last version.
             m.update(1, p);
-            m.update(1, p + 3000);
-            m.update(0, p + 3200);
-            p += 20000;
+            everMissed |= !m.update(1, p + 1000);
+            m.update(0, p + 1200);
+            m.update(0, p + 2000);
+            p += 5000;
         }
-        failures += check("three dictations a minute do not make it a sampler",
-                m.update(1, p) || m.update(1, p + 600));
+        failures += check("six dictations in a row are all still a person",
+                !everMissed);
 
         // The sampler itself: same three runs, seconds apart rather than tens.
         m = new MicSteady();
