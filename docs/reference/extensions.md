@@ -137,6 +137,31 @@ cached) — see `agent_media_visual/engines.py`.
 
 ---
 
+## 2b. A paid engine
+
+An engine may declare that it belongs to a paid tier:
+
+```python
+def render(text, outfile, *, voice=None):
+    ...
+
+render.agent_media_requires = "engine.studio"
+```
+
+Core hides it from an install whose licence does not grant that feature — it
+never appears in `all_engine_names()` and cannot be selected. This is the only
+entitlement gate in core, and it lives at the extension boundary on purpose:
+paid capability ships as a separate package, so the question is asked once,
+where core meets code it does not own.
+
+A skipped engine is not an error. Rendering falls through to `edge` and the
+host still speaks. An engine that declares nothing is unaffected, which is
+every engine that exists today.
+
+See [entitlements.md](./entitlements.md).
+
+---
+
 ## 3. Sinks (speech / music / book) — stable core, not an extension seam
 
 The three output channels are core identity: speech and book are mpv-over-IPC,

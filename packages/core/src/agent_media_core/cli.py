@@ -6425,6 +6425,7 @@ def _build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_music)
 
     _add_book_parser(sub)
+    _add_licence_parser(sub)
 
     f = sub.add_parser("focus", help="bring a channel to the front (book|music)")
     f.add_argument("channel", choices=("book", "music"))
@@ -6507,6 +6508,208 @@ def _build_parser() -> argparse.ArgumentParser:
     sh.set_defaults(func=cmd_share)
 
     return p
+
+
+def _licence_mod():
+    """Imported on use, not at module import.
+
+    `media` is a hot CLI — every hook invocation pays for whatever the top of
+    this file imports — and the licence path is touched by a handful of
+    commands. Nothing else in a `media say` should load a curve implementation.
+    """
+    from . import entitlements
+    return entitlements
+
+
+def cmd_licence_show(a) -> int:
+    ent = _licence_mod()
+    info = ent.status()
+    if getattr(a, "json", False):
+        print(json.dumps(info, indent=2, sort_keys=True))
+        return 0
+
+    print(f"tier      {info['tier']}")
+    if info["valid"]:
+        print(f"subject   {info['subject'] or '-'}")
+        print(f"features  {', '.join(info['features']) or '-'}")
+        print(f"key       {info['key_id']}")
+        if info["expires_at"]:
+            print("expires   " + time.strftime(
+                "%Y-%m-%d", time.localtime(info["expires_at"])))
+        else:
+            print("expires   never")
+    elif info["have_token"]:
+        # The token exists and did not verify. `entitlements` already logged
+        # why at warning level; say plainly here that it is not in effect,
+        # because "tier free" alone reads as "no licence installed".
+        print("licence   present but NOT valid — running as free tier")
+    else:
+        print("licence   none installed")
+    print(f"file      {info['path']}")
+    print(f"keys      {', '.join(info['trusted_keys']) or 'none trusted'}")
+    return 0
+
+
+def cmd_licence_add(a) -> int:
+    ent = _licence_mod()
+    token = a.token
+    if token == "-":
+        token = sys.stdin.read()
+    token = token.strip()
+
+    path = ent.licence_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(token + "\n")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+    ent.refresh()
+
+    # Verify what was just written rather than what was passed in, and do not
+    # refuse a token that fails: a licence for a key this core does not vendor
+    # yet is a real situation (an install lagging a release), and throwing the
+    # user's token away is worse than keeping an inert one on disk.
+    info = ent.status()
+    if info["valid"]:
+        print(f"licence installed: {info['tier']} — {path}")
+        return 0
+    print(f"licence written to {path}, but it does not verify here — "
+          "running as free tier (see `media licence show`)", file=sys.stderr)
+    return 1
+
+
+def cmd_licence_remove(a) -> int:
+    ent = _licence_mod()
+    path = ent.licence_path()
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        print("no licence installed")
+        return 0
+    ent.refresh()
+    print(f"removed {path}")
+    return 0
+
+
+def cmd_licence_check(a) -> int:
+    """Exit status only, so shell and hooks can gate on a feature."""
+    ent = _licence_mod()
+    ok = ent.feature_enabled(a.feature)
+    if not getattr(a, "quiet", False):
+        print("yes" if ok else "no")
+    return 0 if ok else 1
+
+
+def cmd_licence_keygen(a) -> int:
+    """Developer-side: a signing key pair, printed, stored nowhere.
+
+    There is no seller of record yet, so this exists to make the whole path
+    exercisable offline. Printing the seed rather than writing it is the point
+    — a private key that a CLI drops into the user's home is a private key
+    that ends up in a backup.
+    """
+    import os as _os
+
+    from ._ed25519 import public_key
+
+    seed = _os.urandom(32)
+    pub = public_key(seed)
+    print(f"seed (PRIVATE, keep off disk)  {seed.hex()}")
+    print(f"public key                     {pub.hex()}")
+    print()
+    print("Trust it on this host by adding to ~/.config/agent-media/config.toml:")
+    print()
+    print("    [licence.keys]")
+    print(f'    {a.kid} = "{pub.hex()}"')
+    return 0
+
+
+def cmd_licence_mint(a) -> int:
+    """Developer-side stub mint. The real one lives server-side and is not
+    open source; this signs the same token so everything downstream is real."""
+    import binascii
+
+    ent = _licence_mod()
+
+    raw = a.seed
+    if raw.startswith("@"):
+        from pathlib import Path
+
+        raw = Path(raw[1:]).expanduser().read_text().strip()
+    try:
+        seed = binascii.unhexlify(raw.strip())
+    except (binascii.Error, ValueError):
+        print("media licence mint: --seed must be 64 hex characters",
+              file=sys.stderr)
+        return 2
+    if len(seed) != 32:
+        print("media licence mint: --seed must be 32 bytes (64 hex chars)",
+              file=sys.stderr)
+        return 2
+
+    now = int(time.time())
+    payload = {
+        "kid": a.kid,
+        "sub": a.sub,
+        "tier": a.tier,
+        "feat": sorted({f.strip().lower() for f in a.feature if f.strip()}),
+        "iat": now,
+        "exp": now + int(a.days) * 86400 if a.days else 0,
+    }
+    print(ent.encode(payload, seed))
+    return 0
+
+
+def _add_licence_parser(sub) -> None:
+    """`media licence ...` — what this install has paid for.
+
+    Deliberately a flat, boring CRUD surface. The interesting design is in
+    `entitlements`; here the only judgement calls are that `add` keeps a token
+    it cannot verify (an install can lag the key that signed it) and that
+    `check` reports through its exit status (so a hook can gate without
+    parsing).
+    """
+    lic = sub.add_parser("licence", aliases=["license"],
+                         help="show or install the licence for paid features")
+    lic.set_defaults(func=cmd_licence_show, json=False)
+    ls = lic.add_subparsers(dest="licence_cmd")
+
+    lshow = ls.add_parser("show", help="tier, features, expiry")
+    lshow.add_argument("--json", action="store_true")
+    lshow.set_defaults(func=cmd_licence_show)
+
+    ladd = ls.add_parser("add", help="install a token ('-' reads stdin)")
+    ladd.add_argument("token")
+    ladd.set_defaults(func=cmd_licence_add)
+
+    lrm = ls.add_parser("remove", help="delete the installed licence")
+    lrm.set_defaults(func=cmd_licence_remove)
+
+    lchk = ls.add_parser("check", help="exit 0 if a feature is licensed")
+    lchk.add_argument("feature")
+    lchk.add_argument("--quiet", "-q", action="store_true",
+                      help="say nothing; report through the exit status")
+    lchk.set_defaults(func=cmd_licence_check)
+
+    lkg = ls.add_parser("keygen",
+                        help="dev: generate a signing key pair (no mint yet)")
+    lkg.add_argument("--kid", default="dev", help="key id (default dev)")
+    lkg.set_defaults(func=cmd_licence_keygen)
+
+    lmint = ls.add_parser("mint", help="dev: sign a token with a local seed")
+    lmint.add_argument("--seed", required=True,
+                       help="64 hex chars, or @path to a file holding them")
+    lmint.add_argument("--kid", default="dev")
+    lmint.add_argument("--sub", default="", help="who it is for")
+    lmint.add_argument("--tier", default="plus",
+                       help="free|plus|studio (a label; gate on features)")
+    lmint.add_argument("--feature", action="append", default=[],
+                       help="granted feature; repeatable. 'visual.*' grants a "
+                            "whole heading, '*' grants everything")
+    lmint.add_argument("--days", type=int, default=0,
+                       help="valid for N days (default 0 = perpetual)")
+    lmint.set_defaults(func=cmd_licence_mint)
 
 
 def _add_book_parser(sub) -> None:

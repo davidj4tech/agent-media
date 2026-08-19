@@ -35,10 +35,27 @@ from importlib.metadata import entry_points
 from pathlib import Path
 from typing import Callable, Dict, Protocol, runtime_checkable
 
+from . import entitlements
+
 log = logging.getLogger(__name__)
 
 # Entry-point group third-party render engines register under.
 RENDER_ENGINE_GROUP = "agent_media.render_engines"
+
+# An engine may declare that it is part of a paid tier by carrying this
+# attribute, e.g. `render.agent_media_requires = "engine.studio"`. Core then
+# hides it from an install whose licence does not grant that feature.
+#
+# This is the *only* gate in core, and it is here rather than in the render
+# path on purpose: paid capability ships as a separate package (see
+# docs/reference/extensions.md), so the entitlement question is asked once, at
+# the boundary where core meets code it does not own — not sprinkled through
+# code that has to keep working for everyone.
+#
+# An engine that declares nothing is unaffected, which is every engine that
+# exists today. Note also what a skipped engine does *not* do: rendering falls
+# through to `edge` and the host still speaks.
+REQUIRES_ATTR = "agent_media_requires"
 
 # Built-in engine names render_text handles directly. Only `edge` ships with
 # core now (openai/qwen/realtime moved to their own packages). A discovered
@@ -96,6 +113,11 @@ def discover_render_engines(refresh: bool = False) -> Dict[str, RenderEngine]:
             continue
         if not callable(fn):
             log.warning("render engine %r is not callable; skipping", ep.name)
+            continue
+        needs = getattr(fn, REQUIRES_ATTR, None)
+        if needs and not entitlements.feature_enabled(str(needs)):
+            log.info("render engine %r needs %r, which this licence does not "
+                     "grant; skipping", ep.name, needs)
             continue
         found[ep.name] = fn
 
