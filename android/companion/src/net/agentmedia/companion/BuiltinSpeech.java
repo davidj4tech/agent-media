@@ -168,8 +168,28 @@ final class BuiltinSpeech implements MpvServer.Player {
      * speaking, and the honest test is whether this one has a clip open.
      */
     boolean active() {
-        return player != null;
+        // NOT "a MediaPlayer exists". Between two sentences there is none for a
+        // moment — the last is released and the next has not been adopted — and
+        // a parked reply has none at all. Reading those as "not ours" handed
+        // the channel back to the idle mpv on 6602, so the card, the shade, the
+        // car display and /state showed a reply from hours ago while this
+        // player held the current one. Sampled on p8a: five of six probes
+        // during one reply said idle=true, paused=true.
+        //
+        // What it means instead is "this player is responsible for the speech
+        // channel": something is open, or a reply is loaded and recent.
+        if (player != null) return true;
+        if (pos < 0 || playlist.isEmpty()) return false;
+        // A parked reply is only interesting while it is recent. Without this
+        // bound, moving the target back to mpv would leave this player
+        // claiming a channel nobody will send it another command for.
+        return System.currentTimeMillis() - lastCommandAt < PARKED_MS;
     }
+
+    /** How long a finished reply still counts as this player's. */
+    private static final long PARKED_MS = 10 * 60 * 1000;
+
+    private volatile long lastCommandAt = 0;
 
     /**
      * This player as a row the home screen understands.
@@ -189,7 +209,7 @@ final class BuiltinSpeech implements MpvServer.Player {
         return new Channels.Channel(
                 "speech",
                 idle(),
-                !paused && player != null,
+                !paused && !idle(),
                 paused,
                 title.isEmpty() ? null : title,
                 null,
@@ -218,6 +238,7 @@ final class BuiltinSpeech implements MpvServer.Player {
 
     @Override
     public void load(String uri, String mode) {
+        lastCommandAt = System.currentTimeMillis();
         worker.execute(() -> {
             if ("replace".equals(mode)) {
                 playlist.clear();
@@ -270,6 +291,7 @@ final class BuiltinSpeech implements MpvServer.Player {
 
     @Override
     public void playlistPos(int index) {
+        lastCommandAt = System.currentTimeMillis();
         worker.execute(() -> {
             pos = index;
             if (index < 0 || index >= playlist.size()) {
@@ -371,6 +393,7 @@ final class BuiltinSpeech implements MpvServer.Player {
 
     @Override
     public void pause(boolean wanted) {
+        lastCommandAt = System.currentTimeMillis();
         worker.execute(() -> {
             paused = wanted;
             MediaPlayer mp = player;
