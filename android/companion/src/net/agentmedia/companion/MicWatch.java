@@ -164,8 +164,43 @@ final class MicWatch {
     private final MicSteady debounce = new MicSteady();
     private Runnable settle;
 
+    /**
+     * Recordings that are actually receiving audio.
+     *
+     * Android silences a recorder rather than refusing it when its microphone
+     * access is denied by app-ops — the session opens, the stream is zeros. On
+     * p8a that is what {@code com.google.android.as} now is, permanently, and
+     * counting it would leave the baseline exactly where it was:
+     *
+     * <pre>
+     *   rec update … src:VOICE_RECOGNITION silenced pack:com.google.android.as
+     * </pre>
+     *
+     * It is also the answer to the question this watch could not previously
+     * ask. A silenced recording is not somebody listening, whoever owns it, so
+     * this is worth doing on any phone rather than as a workaround for this
+     * one.
+     */
+    private static int hearing(List<AudioRecordingConfiguration> configs) {
+        if (configs == null) return 0;
+        int n = 0;
+        for (AudioRecordingConfiguration c : configs) {
+            boolean silenced;
+            try {
+                silenced = c.isClientSilenced();
+            } catch (Throwable e) {
+                // Never assume silence on a phone that will not say: a missed
+                // hold is worse than a spurious one, now that the spurious
+                // ones have somewhere else to be caught.
+                silenced = false;
+            }
+            if (!silenced) n++;
+        }
+        return n;
+    }
+
     private void apply(List<AudioRecordingConfiguration> configs, String via) {
-        int n = (configs == null) ? 0 : configs.size();
+        int n = hearing(configs);
         String d = describe(configs);
         source = sourceOf(configs);
         long now = SystemClock.uptimeMillis();
