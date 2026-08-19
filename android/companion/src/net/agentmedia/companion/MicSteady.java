@@ -103,6 +103,8 @@ final class MicSteady {
         }
         anyOpen = open;
         crowded = count >= CROWD;
+        if (crowded) lastCrowdAt = nowMs;
+        if (!open) lastZeroAt = nowMs;
 
         if (!primed) watchingSince = nowMs;
         boolean person = person(nowMs);
@@ -146,9 +148,38 @@ final class MicSteady {
      */
     private boolean person(long nowMs) {
         if (crowded) return true;
+        // Still them, even though the count just fell back to one.
+        //
+        // The count does not stay at two for as long as a person talks: the
+        // baseline recogniser cycles underneath the dictation, so what the
+        // watch sees is 2, 1, 2, 1 about once a second — and a hold that
+        // followed that literally engaged and released at the same rate.
+        // David's words: "when audio is paused for mic detection it keeps on
+        // cutting in and cutting out."
+        //
+        // What tells the two apart is the microphone actually closing.
+        // Dictation holds it open for as long as it runs; the baseline lets
+        // it go every cycle. So while the mic has not closed since we last
+        // saw company, the company is still there.
+        if (lastCrowdAt > Long.MIN_VALUE / 2) {
+            if (nowMs - lastCrowdAt <= CROWD_GRACE_MS) return true;
+            if (anyOpen && lastZeroAt < lastCrowdAt) return true;
+        }
         if (cycling(nowMs)) return false;
         return anyOpen && nowMs - openedAt >= ENGAGE_MS;
     }
+
+    /**
+     * How long a crowd is remembered after the count falls back.
+     *
+     * Covers the recogniser's own gap — about a second on p8a — so a hold
+     * survives the moment when the baseline half of the crowd lets go, without
+     * outliving a person by anything a listener would notice.
+     */
+    static final long CROWD_GRACE_MS = 1500;
+
+    private long lastCrowdAt = Long.MIN_VALUE / 2;
+    private long lastZeroAt = Long.MIN_VALUE / 2;
 
     /**
      * Does this phone have something sampling the microphone on its own?

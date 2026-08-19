@@ -99,8 +99,41 @@ public class MicSteadyTest {
         // Back to the baseline's cycling, which is how a crowd really ends.
         m.update(1, 3300);
         m.update(0, 3500);
-        failures += check("the baseline alone does not hold it for long",
-                !m.update(0, 4400));
+        // The tail is now the crowd grace plus the release window — a couple
+        // of seconds before Sam picks up again. Deliberate: resuming into the
+        // gap between two things somebody is saying is worse than waiting.
+        failures += check("the baseline alone still holds it briefly",
+                m.update(0, 4400));
+        failures += check("but lets go once grace and release have passed",
+                !m.update(0, 5600));
+
+        // Dictation with the recogniser cycling underneath it: the count
+        // alternates 2, 1, 2, 1 about once a second, and the microphone never
+        // closes, because dictation holds it. The hold must not follow the
+        // count down — that is the "cutting in and cutting out" David heard.
+        m = new MicSteady();
+        long d = 1000;
+        m.update(1, d);                       // baseline alone
+        m.update(2, d + 500);                 // dictation starts
+        boolean dropped = false;
+        for (int i = 0; i < 12; i++) {
+            d += 1000;
+            dropped |= !m.update(1, d);       // recogniser lets go, mic still open
+            d += 400;
+            dropped |= !m.update(2, d);       // and takes it again
+        }
+        failures += check("a hold does not flicker while the baseline cycles under it",
+                !dropped);
+
+        // Dictation stops: now the microphone really does close, in the gaps
+        // of the baseline's own cycling.
+        d += 1000;
+        m.update(1, d);
+        m.update(0, d + 200);                 // the mic closes -- nobody is holding it
+        failures += check("and it is not released the instant that happens",
+                m.update(0, d + 400));
+        failures += check("but is once the grace and the release window pass",
+                !m.update(0, d + 2600));
 
         // The watch is event-driven and events stop; a pending change has to
         // be able to say when to look again or it never lands.
