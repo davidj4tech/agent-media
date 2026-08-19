@@ -75,6 +75,35 @@ final class MicSteady {
      */
     static final int CROWD = 2;
 
+    /**
+     * How many recordings count, given what the phone says about each.
+     *
+     * A silenced recording is not somebody listening — Android opens the
+     * session and feeds it zeros — so on its own it counts for nothing. That
+     * is what lets an app-op-blocked sampler sit there permanently without
+     * reading as a person holding the microphone forever.
+     *
+     * <b>But it is still somebody else at the microphone, and that is exactly
+     * the signal {@link #CROWD} is waiting for.</b> Android silences whichever
+     * recorder loses priority, so when David presses Gboard's mic button the
+     * background sampler goes silent and the heard count never leaves one:
+     *
+     * <pre>
+     *   22:11:40.171 rec start  … not silenced pack:…inputmethod.latin
+     *   22:11:40.670 rec update … silenced     pack:…inputmethod.latin
+     *   22:11:40.693 rec update … not silenced pack:com.google.android.as
+     * </pre>
+     *
+     * On a cycling phone the duration rule is off and the crowd is the only
+     * way in, so that dictation was invisible and Sam talked straight through
+     * it — 2026-08-19, David: "you're meant to pause when I press the mic
+     * button on the gboard". Counted as company only alongside something
+     * heard, never on its own.
+     */
+    static int counting(int heard, int silenced) {
+        return heard == 0 ? 0 : heard + silenced;
+    }
+
     /** When the current unbroken run of "something is recording" began. */
     private long openedAt = 0;
     private boolean anyOpen = false;
@@ -98,8 +127,7 @@ final class MicSteady {
             openedAt = nowMs;
         } else if (!anyOpen) {
             openedAt = nowMs;
-            runStarts[runIndex] = nowMs;
-            runIndex = (runIndex + 1) % runStarts.length;
+            sawRunStart(nowMs);
         }
         anyOpen = open;
         crowded = count >= CROWD;
@@ -166,8 +194,32 @@ final class MicSteady {
             if (anyOpen && lastZeroAt < lastCrowdAt) return true;
         }
         if (cycling(nowMs)) return false;
-        return anyOpen && nowMs - openedAt >= ENGAGE_MS;
+        return anyOpen && nowMs - openedAt >= engageMs(nowMs);
     }
+
+    /**
+     * How long a lone recording must run before it is a person, here, now.
+     *
+     * {@link #ENGAGE_MS} is sized to clear a sampler's longest hold, and on a
+     * phone that has never shown one it is 1.5s of Sam talking into David's
+     * dictation for no reason — "it was also a bit slow to stop and got some
+     * of your texts in my dictation" (2026-08-19). With the sampler blocked
+     * there is nothing to out-wait, so the floor drops to the shortest run
+     * that is plainly deliberate.
+     */
+    private long engageMs(long nowMs) {
+        return everCycled ? ENGAGE_MS : QUIET_ENGAGE_MS;
+    }
+
+    /**
+     * The floor on a phone whose microphone nothing samples.
+     *
+     * Not zero: a recording that opens and shuts inside a couple of hundred
+     * milliseconds is an app checking, not a person speaking, and barge-in
+     * that fires on those would pause Sam at every notification-adjacent
+     * flicker.
+     */
+    static final long QUIET_ENGAGE_MS = 400;
 
     /**
      * How long a crowd is remembered after the count falls back.
@@ -187,9 +239,23 @@ final class MicSteady {
      * Measured rather than configured, because the answer differs per device
      * and per settings screen: Now Playing, hotword detection and whatever
      * else ships in the assistant all behave this way, and any of them can be
-     * turned off tomorrow. Three separate recordings inside a minute is not
-     * something a person does, and a phone that stops doing it gets the
-     * duration rule back within the minute.
+     * turned off tomorrow.
+     *
+     * <b>A burst, not a tally.</b> This used to be "three recordings inside a
+     * minute", and three recordings inside a minute is something DAVID does —
+     * dictate, read the reply, dictate again. On 2026-08-19, with the sampler
+     * blocked and nothing else at the microphone, his own third dictation
+     * taught this class that the phone cycles; the duration rule switched off,
+     * no company was ever coming, and barge-in stopped working for the rest of
+     * the evening: "pressing the mic paused your speech the first few times
+     * but failed to work after that."
+     *
+     * What a sampler does and a person cannot is repeat immediately: p8a's
+     * recogniser leaves the microphone alone for 300–900ms between holds,
+     * where a person leaves it alone for as long as it takes to read an
+     * answer. So the evidence is three runs inside {@link #BURST_MS}, and it
+     * is remembered for {@link #BASELINE_WINDOW_MS} afterwards — a phone that
+     * stops sampling gets the duration rule back within the minute.
      */
     private boolean cycling(long nowMs) {
         // Not yet known, which must not read as "no". A restart empties this
@@ -200,17 +266,39 @@ final class MicSteady {
         // time to show otherwise: a minute of barge-in waiting for a second
         // recording is a far smaller cost than a minute of speech in pieces.
         if (nowMs - watchingSince < BASELINE_WINDOW_MS) return true;
-        int recent = 0;
-        for (long start : runStarts) {
-            if (start > 0 && nowMs - start <= BASELINE_WINDOW_MS) recent++;
-        }
-        return recent >= BASELINE_RUNS;
+        return nowMs - cycledAt <= BASELINE_WINDOW_MS;
     }
 
-    /** How far back to look for a cycling baseline. */
+    /** Called as each run opens: is this phone sampling its own microphone? */
+    private void sawRunStart(long nowMs) {
+        runStarts[runIndex] = nowMs;
+        runIndex = (runIndex + 1) % runStarts.length;
+        long oldest = Long.MAX_VALUE;
+        for (long start : runStarts) {
+            if (start <= 0) return;             // fewer than BASELINE_RUNS yet
+            if (start < oldest) oldest = start;
+        }
+        if (nowMs - oldest <= BURST_MS) {
+            cycledAt = nowMs;
+            everCycled = true;
+        }
+    }
+
+    /** How long a cycling verdict is remembered once the bursts stop. */
     static final long BASELINE_WINDOW_MS = 60000;
-    /** How many separate recordings inside that window make it a baseline. */
+    /** How many separate recordings make a burst. */
     static final int BASELINE_RUNS = 3;
+    /**
+     * How close together those runs must be.
+     *
+     * p8a's recogniser cycles about once a second, so three of its runs span
+     * five or six seconds. Three dictations span a conversation.
+     */
+    static final long BURST_MS = 15000;
+
+    /** When a burst was last seen, and whether one ever was. */
+    private long cycledAt = Long.MIN_VALUE / 2;
+    private boolean everCycled = false;
 
     private final long[] runStarts = new long[BASELINE_RUNS];
     private int runIndex = 0;
@@ -237,7 +325,7 @@ final class MicSteady {
     long pendingInMs(long nowMs) {
         if (!primed) return -1;
         if (anyOpen && !crowded && !steady) {
-            long left = openedAt + ENGAGE_MS - nowMs;
+            long left = openedAt + engageMs(nowMs) - nowMs;
             return Math.max(0, left);
         }
         if (steady && !person(nowMs)) {

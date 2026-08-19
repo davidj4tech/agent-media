@@ -64,16 +64,19 @@ public class MicSteadyTest {
         failures += check("but company still is",
                 m.update(2, 21000));
 
-        // Dictation: one recording, held, on a phone quiet long enough to be
-        // believed.
+        // Dictation on a phone whose microphone nothing samples: there is no
+        // sampler's hold to out-wait, so the floor is the short one. 1.5s of
+        // Sam talking into David's dictation was the cost of the old floor
+        // here — "a bit slow to stop and got some of your texts in my
+        // dictation".
         m = new MicSteady();
         m.update(0, 0);
         m.update(0, 61000);
         m.update(1, 62000);
-        failures += check("a second of held mic is not yet a person",
-                !m.update(1, 63000));
-        failures += check("but 1.5s is",
-                m.update(1, 63600));
+        failures += check("a flicker of mic is not yet a person",
+                !m.update(1, 62200));
+        failures += check("but 400ms on a quiet phone is",
+                m.update(1, 62500));
         failures += check("and it stays while the recording is held",
                 m.update(1, 70000));
 
@@ -141,7 +144,7 @@ public class MicSteadyTest {
         m.update(0, 0);
         m.update(1, 100);
         failures += check("a pending engage says when to look again",
-                m.pendingInMs(200) == MicSteady.ENGAGE_MS - 100);
+                m.pendingInMs(200) == MicSteady.QUIET_ENGAGE_MS - 100);
         failures += check("a fresh watch has nothing pending",
                 new MicSteady().pendingInMs(0) == -1);
 
@@ -152,6 +155,59 @@ public class MicSteadyTest {
                 !fresh.update(1, 5000));
         failures += check("and needs company to become one inside the first minute",
                 fresh.update(2, 6600));
+
+        // Three dictations in a minute is not a sampler, it is David: dictate,
+        // read the reply, dictate again. While "three runs inside a minute"
+        // was the rule, his own third press taught this class that the phone
+        // cycles, the duration rule switched off, and with the sampler blocked
+        // no company was ever coming — "pressing the mic paused your speech
+        // the first few times but failed to work after that."
+        m = new MicSteady();
+        m.update(0, 0);
+        m.update(0, 61000);
+        long p = 62000;
+        for (int i = 0; i < 3; i++) {          // three dictations, 20s apart
+            m.update(1, p);
+            m.update(1, p + 3000);
+            m.update(0, p + 3200);
+            p += 20000;
+        }
+        failures += check("three dictations a minute do not make it a sampler",
+                m.update(1, p) || m.update(1, p + 600));
+
+        // The sampler itself: same three runs, seconds apart rather than tens.
+        m = new MicSteady();
+        m.update(0, 0);
+        m.update(0, 61000);
+        p = 62000;
+        for (int i = 0; i < 4; i++) {
+            m.update(1, p);
+            m.update(0, p + 700);
+            p += 1100;
+        }
+        failures += check("but a burst of them does",
+                !m.update(1, p) && !m.update(1, p + 2000));
+        failures += check("and company is still believed at once",
+                m.update(2, p + 2100));
+
+        // What the phone is willing to say about each recording, and what that
+        // is worth. The failure this pins: Android silences whichever recorder
+        // loses priority, so a Gboard dictation over a cycling baseline shows
+        // as one heard recording and one silenced — and while only the heard
+        // ones were counted, the crowd never arrived, the hold never engaged,
+        // and Sam talked straight through David pressing the mic button.
+        failures += check("a silenced recording alone is nobody",
+                MicSteady.counting(0, 1) == 0);
+        failures += check("and neither are two of them",
+                MicSteady.counting(0, 2) == 0);
+        failures += check("dictation on its own is one",
+                MicSteady.counting(1, 0) == 1);
+        failures += check("dictation that silenced the baseline is company",
+                MicSteady.counting(1, 1) == 2);
+        failures += check("and so it engages at once, cycling or not",
+                new MicSteady().update(MicSteady.counting(1, 1), 9000));
+        failures += check("an idle phone with a blocked sampler stays shut",
+                !new MicSteady().update(MicSteady.counting(0, 1), 9000));
 
         System.out.println(failures == 0 ? "MicSteadyTest ok" : failures + " failed");
         if (failures != 0) System.exit(1);

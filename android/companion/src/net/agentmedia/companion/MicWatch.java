@@ -180,10 +180,17 @@ final class MicWatch {
      * ask. A silenced recording is not somebody listening, whoever owns it, so
      * this is worth doing on any phone rather than as a workaround for this
      * one.
+     *
+     * A silenced one is still <i>company</i>, though, when something else is
+     * being heard — Android silences whichever recorder loses priority, and
+     * dropping those on the floor hid every Gboard dictation on a phone whose
+     * baseline cycles. {@link MicSteady#counting} owns that arithmetic, so it
+     * can be tested on the build host.
      */
     private static int hearing(List<AudioRecordingConfiguration> configs) {
         if (configs == null) return 0;
-        int n = 0;
+        int heard = 0;
+        int silent = 0;
         for (AudioRecordingConfiguration c : configs) {
             boolean silenced;
             try {
@@ -194,9 +201,9 @@ final class MicWatch {
                 // ones have somewhere else to be caught.
                 silenced = false;
             }
-            if (!silenced) n++;
+            if (silenced) silent++; else heard++;
         }
-        return n;
+        return MicSteady.counting(heard, silent);
     }
 
     private void apply(List<AudioRecordingConfiguration> configs, String via) {
