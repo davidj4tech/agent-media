@@ -30,6 +30,7 @@ from ._paths import state_dir
 from .sinks import _mpv_ipc as ipc
 from .sinks.music import SinkMusic
 from .sinks.music_router import SinkMusicRouter
+from .sinks import speech as _speech_sink
 from .sinks.speech import SinkSpeech, _broker_max_volume, _socket_for
 from .state import StateStore
 from .types import Event, Priority, Source, Target
@@ -2933,6 +2934,21 @@ def _replay_row(row: dict) -> int:
             ipc.set_property(_sock(), "mute", False, critical=True)
         except (ipc.MpvIpcError, OSError):
             pass
+    # Say what is playing, the way live speech says it. Every display that
+    # shows the spoken words reads the two properties the coordinator writes as
+    # it speaks (`sinks/speech.py`: TITLE_PROPERTY, TEXT_PROPERTY) — the phone's
+    # card, the shade's, `share_control._speech`. A replay pushed the audio and
+    # left them alone, so tapping a clip in the history changed what you heard
+    # and nothing on the card: the *previous* reply's words, under the previous
+    # reply's conversation, for the length of the clip. Best-effort and after
+    # the push, for the reason the coordinator keeps them off the critical path
+    # — a label is never worth delaying a sentence for. A row with no
+    # conversation to name leaves the last name standing rather than clearing
+    # the title, because an empty `force-media-title` puts the clip's *filename*
+    # on every display that reads `media-title`.
+    _speech_sink.set_media_title(str(ex.get("source_window") or ""),
+                                 SPEECH_TARGET)
+    _speech_sink.set_reply_text(replay_text, SPEECH_TARGET)
     clip_sentences: list[str] = ex.get("clip_sentences") or []
     have_durations = (
         len(clip_durations) == len(clip_uris) and len(clip_durations) > 0
