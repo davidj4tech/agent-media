@@ -1,5 +1,10 @@
 # Handover — start the player-on-the-phone work
 
+> **Superseded 2026-08-19 by `2026-08-19-speech-in-the-app.md`.** The spike
+> below was run and answered — MediaPlayer holds 1.6× exactly — and speech now
+> plays in the app behind mpv's own IPC. Kept for the reasoning that chose the
+> spike, which stands.
+
 Written 2026-08-18 by the session that built the app's client/server
 configuration. Read `docs/proposals/2026-08-18-player-on-the-phone.md` first;
 this file is only what to do on day one and what is already true.
