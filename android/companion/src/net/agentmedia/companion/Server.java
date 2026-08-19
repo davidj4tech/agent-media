@@ -64,6 +64,19 @@ final class Server {
     /** media-share: /channels, /control, /recent, /play, /chapters, /share. */
     static final int CONTROL_PORT = 8771;
 
+    /**
+     * Where this app's own speech player listens, beside mpv rather than
+     * instead of it.
+     *
+     * 6602 stays the Termux mpv's, reached through the socat bridge that has
+     * always been there. A target moves into the app by being pointed here —
+     * {@code MEDIA_SPEECH_SOCKET_<TARGET>=tcp://<phone>:6612} — and moves back
+     * by unsetting that. Two players on one channel is a diagnosis cost, and
+     * it buys the only thing worth that: the old path still runs, untouched,
+     * while the new one earns its trust.
+     */
+    static final int BUILTIN_SPEECH_PORT = 6612;
+
     /** The three mpv IPC bridges, in channel order. */
     static final int MUSIC_PORT = 6601;
     static final int SPEECH_PORT = 6602;
@@ -212,6 +225,57 @@ final class Server {
         if (SERVER.equals(playback)) return "The server";
         if (BUILTIN.equals(playback)) return "This phone (in the app)";
         return "This phone (Termux)";
+    }
+
+    /**
+     * The address to offer a service on: this device's tailnet address.
+     *
+     * red5 reaches the phone over Tailscale and nothing else does — the socat
+     * bridges bind exactly this, and binding {@code 0.0.0.0} instead would put
+     * a player's control socket on whatever café Wi-Fi the phone is on, with no
+     * authentication in front of it because mpv's IPC never had any.
+     *
+     * A tailnet address is one in {@code 100.64.0.0/10}, the shared-address
+     * space Tailscale allocates from. Falls back to loopback, which fails
+     * locally and visibly rather than quietly listening somewhere it should
+     * not.
+     */
+    static String tailnetAddress() {
+        try {
+            java.util.Enumeration<java.net.NetworkInterface> nics =
+                    java.net.NetworkInterface.getNetworkInterfaces();
+            while (nics != null && nics.hasMoreElements()) {
+                java.util.Enumeration<java.net.InetAddress> addrs =
+                        nics.nextElement().getInetAddresses();
+                while (addrs.hasMoreElements()) {
+                    String a = addrs.nextElement().getHostAddress();
+                    if (isTailnet(a)) return a;
+                }
+            }
+        } catch (Exception ignored) {
+            // No interfaces to read is the same answer as no tailnet.
+        }
+        return LOOPBACK;
+    }
+
+    /** Is this an IPv4 address in 100.64.0.0/10? Pure, so a test can say so. */
+    static boolean isTailnet(String address) {
+        if (address == null) return false;
+        int slash = address.indexOf('%');
+        String a = slash < 0 ? address : address.substring(0, slash);
+        String[] parts = a.split("\\.");
+        if (parts.length != 4) return false;
+        try {
+            int first = Integer.parseInt(parts[0]);
+            int second = Integer.parseInt(parts[1]);
+            for (int i = 2; i < 4; i++) {
+                int octet = Integer.parseInt(parts[i]);
+                if (octet < 0 || octet > 255) return false;
+            }
+            return first == 100 && second >= 64 && second <= 127;
+        } catch (NumberFormatException e) {
+            return false;
+        }
     }
 
     // ---- storage ----------------------------------------------------------

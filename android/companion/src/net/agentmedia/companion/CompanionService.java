@@ -168,6 +168,9 @@ public class CompanionService extends Service {
     private Silence silence;
     private FocusControl focusControl;
     private StatusServer status;
+    /** Speech played by this app, when a target is pointed at it. */
+    private BuiltinSpeech builtinSpeech;
+    private MpvServer speechServer;
     /** The mic probe. See MicWatch; BargeIn decides what it means. */
     private MicWatch mic;
     /**
@@ -420,6 +423,8 @@ public class CompanionService extends Service {
         status = new StatusServer(StatusServer.DEFAULT_PORT, statusSource,
                                   CompanionService::log);
         status.start();
+
+        startBuiltinSpeech();
 
         pushSessionState();
 
@@ -1274,6 +1279,36 @@ public class CompanionService extends Service {
      * does it hold focus, what focus changes has it actually seen, and does it
      * still owe mpv anything.
      */
+    /**
+     * Bring up the in-app speech player on a port of its own.
+     *
+     * <b>Beside mpv, not instead of it.</b> The phone's socat bridges keep
+     * 6602 and the Termux mpv keeps answering there; this listens on
+     * {@link Server#BUILTIN_SPEECH_PORT}, so a target is moved into the app by
+     * pointing one environment variable at the new port —
+     * {@code MEDIA_SPEECH_SOCKET_<TARGET>=tcp://<phone>:6612} — and moved back
+     * by unsetting it. Nothing switches implicitly, and the old path is never
+     * more than an env var away, which is the whole reason to run both.
+     *
+     * It binds the tailnet address where red5 will look for it, and loopback
+     * for anything on the phone, exactly as the socat bridges do.
+     */
+    private void startBuiltinSpeech() {
+        try {
+            builtinSpeech = new BuiltinSpeech(this, CompanionService::log);
+            speechServer = new MpvServer(Server.tailnetAddress(),
+                                         Server.BUILTIN_SPEECH_PORT,
+                                         builtinSpeech,
+                                         CompanionService::log);
+            builtinSpeech.attach(speechServer);
+            speechServer.start();
+        } catch (Throwable t) {
+            // Optional by construction, like the side channels: a phone that
+            // cannot bind the port keeps every other thing this service does.
+            log("builtin speech unavailable: " + t);
+        }
+    }
+
     private final StatusServer.Source statusSource = new StatusServer.Source() {
         @Override public String state() {
             Map<String, Object> m = new LinkedHashMap<String, Object>();

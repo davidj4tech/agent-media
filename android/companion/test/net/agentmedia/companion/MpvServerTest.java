@@ -116,6 +116,19 @@ public class MpvServerTest {
             failures += check("and an advance is volunteered",
                     change.contains("property-change")
                             && change.contains("\"data\":1"));
+
+            // A follower is entitled to treat every event as news. The first
+            // end-to-end reply sent playlist-pos twice per sentence, because
+            // the advance and the next clip's start both announced it.
+            s.changed("playlist-pos");
+            s.changed("playlist-pos");
+            // Nothing may have been sent for those two. The proof is that the
+            // next line off the socket is the next real change, not a repeat.
+            p.playlistPos(0);
+            s.changed("playlist-pos");
+            String afterRepeats = c.readOne();
+            failures += check("an unchanged value is not repeated",
+                    afterRepeats.contains("\"data\":0"));
         }
         s.stop();
         Thread.sleep(200);

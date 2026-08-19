@@ -210,6 +210,17 @@ final class MpvServer {
         /** Observed property name -> the client's own id for it. */
         private final Map<String, Long> observed =
                 java.util.Collections.synchronizedMap(new LinkedHashMap<String, Long>());
+        /**
+         * The last value sent for each observed property.
+         *
+         * mpv volunteers a change, not a heartbeat, and a follower is entitled
+         * to treat every event as news: the first end-to-end run against a real
+         * reply sent playlist-pos twice per sentence, because both the advance
+         * and the start of the next clip announced it. Harmless to a reader
+         * that re-reads state, and not harmless to one that acts on each event.
+         */
+        private final Map<String, String> lastSent =
+                java.util.Collections.synchronizedMap(new LinkedHashMap<String, String>());
 
         Client(Socket socket) {
             this.socket = socket;
@@ -315,7 +326,11 @@ final class MpvServer {
             if ("unobserve_property".equals(verb)) {
                 long observeId = (long) Json.asDouble(argv.get(1), 0);
                 synchronized (observed) {
-                    observed.values().removeIf(v -> v == observeId);
+                    observed.entrySet().removeIf(e -> {
+                        if (e.getValue() != observeId) return false;
+                        lastSent.remove(e.getKey());
+                        return true;
+                    });
                 }
                 return ok(id, null);
             }
@@ -336,6 +351,8 @@ final class MpvServer {
             Long observeId = observed.get(name);
             if (observeId == null) return;
             Object v = get(name);
+            String encoded = v == NOT_FOUND ? "" : Json.write(v);
+            if (encoded.equals(lastSent.put(name, encoded))) return;
             Map<String, Object> ev = new LinkedHashMap<String, Object>();
             ev.put("event", "property-change");
             ev.put("id", observeId);

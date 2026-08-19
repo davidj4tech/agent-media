@@ -32,6 +32,8 @@ public class ServerTest {
         testAnUnusableConfigurationReadsBackAsTheDefaults();
         testDescribeNeverLeaksTheToken();
 
+        testThePlayerSocketOnlyGoesOnTheTailnet();
+
         System.out.println();
         if (failures.isEmpty()) {
             System.out.println("ok — " + passed + " checks passed");
@@ -40,6 +42,36 @@ public class ServerTest {
         System.out.println(failures.size() + " FAILED of " + (passed + failures.size()));
         for (String f : failures) System.out.println("  " + f);
         System.exit(1);
+    }
+
+    /**
+     * Where the in-app speech player is allowed to listen.
+     *
+     * The mistake this guards against is binding 0.0.0.0 for convenience: mpv's
+     * IPC has no authentication, never had any, and the socat bridges have
+     * always bound one address on purpose. A control socket that follows the
+     * phone onto café Wi-Fi is a different security posture arrived at by
+     * accident.
+     */
+    private static void testThePlayerSocketOnlyGoesOnTheTailnet() {
+        check("a tailscale address is recognised", Server.isTailnet("100.94.14.59"));
+        check("the bottom of the range is in", Server.isTailnet("100.64.0.1"));
+        check("the top of the range is in", Server.isTailnet("100.127.255.254"));
+        check("100.128.x is public space, not tailnet",
+                !Server.isTailnet("100.128.0.1"));
+        check("and nor is 100.63.x", !Server.isTailnet("100.63.0.1"));
+        check("a LAN address is never offered the socket",
+                !Server.isTailnet("192.168.1.10"));
+        check("nor is loopback", !Server.isTailnet("127.0.0.1"));
+        check("nor an IPv6 link-local", !Server.isTailnet("fe80::1%wlan0"));
+        check("nor nonsense", !Server.isTailnet("100.64") && !Server.isTailnet(null));
+        String chosen = Server.tailnetAddress();
+        check("what it picks here is the tailnet or loopback, never a LAN",
+                Server.LOOPBACK.equals(chosen) || Server.isTailnet(chosen));
+        check("the builtin speech port is not one of mpv's",
+                Server.BUILTIN_SPEECH_PORT != Server.SPEECH_PORT
+                        && Server.BUILTIN_SPEECH_PORT != Server.MUSIC_PORT
+                        && Server.BUILTIN_SPEECH_PORT != Server.BOOK_PORT);
     }
 
     private static void testDefaultsAreTodaysPhone() {
