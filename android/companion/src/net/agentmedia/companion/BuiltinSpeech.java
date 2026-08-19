@@ -6,16 +6,8 @@ import android.media.MediaPlayer;
 import android.media.PlaybackParams;
 
 import java.io.File;
-import java.io.FileOutputStream;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.net.HttpURLConnection;
-import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Collections;
-import java.util.HashSet;
-import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -61,15 +53,14 @@ final class BuiltinSpeech implements MpvServer.Player {
             });
 
     /**
-     * Clip fetches in flight, so a clip is not downloaded twice.
+     * The clip files, fetched once each.
      *
-     * Two things race for the same file the moment a reply is queued: the
-     * whole-reply prefetch below and {@link #prepareNext()}. Both are
-     * idempotent, but on a link this slow the duplicate is a second copy of
-     * the same bytes competing with the one that is about to be played.
+     * The warmup below, {@link #startCurrent()} and {@link #prepareNext()} all
+     * ask for the same clip within moments of a reply arriving; the cache is
+     * what makes that one download instead of three writing over each other.
+     * See {@link ClipCache} for what that cost when they did.
      */
-    private final Set<String> fetching =
-            Collections.synchronizedSet(new HashSet<String>());
+    private final ClipCache clips;
 
     /** Two at a time: enough to stay ahead, few enough to not fight the clip
      *  that is playing for a share of a slow tailnet link. */
@@ -104,6 +95,7 @@ final class BuiltinSpeech implements MpvServer.Player {
     BuiltinSpeech(Context context, Log log) {
         this.context = context.getApplicationContext();
         this.log = log;
+        this.clips = new ClipCache(new File(this.context.getCacheDir(), "speech"));
     }
 
     void attach(MpvServer server) {
@@ -596,41 +588,18 @@ final class BuiltinSpeech implements MpvServer.Player {
     /** Fetch in the background, once, and never complain: this is a warmup. */
     private void warm(String uri) {
         if (!uri.startsWith("http")) return;
-        if (!fetching.add(uri)) return;
         fetcher.execute(() -> {
             try {
                 fetch(uri);
             } catch (Exception e) {
                 // Its turn will come, and the failure will be reported there,
                 // where there is a sentence waiting on it.
-            } finally {
-                fetching.remove(uri);
             }
         });
     }
 
     private File fetch(String url) throws Exception {
-        File dir = new File(context.getCacheDir(), "speech");
-        dir.mkdirs();
-        File out = new File(dir, Integer.toHexString(url.hashCode()) + ".clip");
-        if (out.length() > 0) return out;
-        File part = new File(out.getPath() + ".part");
-        HttpURLConnection c = (HttpURLConnection) URI.create(url).toURL()
-                .openConnection();
-        c.setConnectTimeout(5000);
-        c.setReadTimeout(20000);
-        try (InputStream in = c.getInputStream();
-             OutputStream os = new FileOutputStream(part)) {
-            byte[] buf = new byte[16384];
-            int n;
-            while ((n = in.read(buf)) > 0) os.write(buf, 0, n);
-        } finally {
-            c.disconnect();
-        }
-        // Rename last: a half-written file that is never renamed is retried,
-        // where a half-written file at the real name would be played.
-        if (!part.renameTo(out)) return part;
-        return out;
+        return clips.fetch(url);
     }
 
     // ---- focus: deliberately none, see above -------------------------------
