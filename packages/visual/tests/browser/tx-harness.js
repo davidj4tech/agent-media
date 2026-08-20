@@ -320,6 +320,23 @@ const SHORT = [
     ? pass('T22 double-tap returns the picture whole')
     : fail(`T22 ${JSON.stringify(reset)}`);
 
+  // The door has to outlive the voice. It was tied to the subtitle being on
+  // screen, so it vanished the moment the reply ended — leaving the transcript
+  // reachable only while you were already being read to, and gone by the time
+  // you thought "what did that say". Which is when you actually want it.
+  const door = await page.evaluate((lines) => {
+    const es = window.__es;
+    es.dispatchEvent(new MessageEvent('message', { data: JSON.stringify(
+      { kind: 'state', speaking: true, sentence: lines[0], lines, lidx: 0, session: 's1' }) }));
+    const whileSpeaking = getComputedStyle(document.getElementById('zoom')).display;
+    es.dispatchEvent(new MessageEvent('message', { data: JSON.stringify(
+      { kind: 'state', speaking: false }) }));
+    return { whileSpeaking, after: getComputedStyle(document.getElementById('zoom')).display };
+  }, LINES);
+  (door.whileSpeaking !== 'none' && door.after !== 'none')
+    ? pass('T28 the transcript is still reachable after the voice stops')
+    : fail(`T28 speaking=${door.whileSpeaking} after=${door.after}`);
+
   // Letting go of a pinch must not undo it. Two fingers lift a few
   // milliseconds apart, and every double-tap window is wider than that — so
   // the undo fired on the release of every single pinch and the zoom snapped

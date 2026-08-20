@@ -251,7 +251,7 @@
     if (show) $('sub').textContent = text;
     $('sub').classList.toggle('on', show);
     // The door onto the transcript follows the subtitle: no words, no door.
-    document.body.classList.toggle('hassub', show);
+    updDoor();
     updBand();
     if (show) $('cap').classList.add('hide');
     else if (!visible) $('cap').classList.remove('hide');
@@ -269,7 +269,7 @@
               && lines.every((t, i) => t === txLines[i]);
     if (same && idx === txIdx) return;
     txIdx = idx;
-    if (!same) { txLines = lines; renderTx(); }
+    if (!same) { txLines = lines; renderTx(); updDoor(); }
     else markTx();
     if (txOpen()) followTx();
   }
@@ -292,6 +292,17 @@
       // would be theatre.
       ps[i].classList.toggle('ahead', speaking && txIdx >= 0 && i > txIdx);
     }
+  }
+  // The way into the transcript, and it must outlive the voice.
+  //
+  // It was tied to the subtitle being on screen, which meant it vanished the
+  // instant the reply finished — so the transcript was reachable only while
+  // you were already being read to, and gone by the time you thought "what
+  // did that say". That is exactly backwards: the transcript is what you go
+  // to when the voice STOPS. It now stands as long as there are lines worth
+  // opening, which is until the next reply replaces them.
+  function updDoor() {
+    document.body.classList.toggle('hassub', txLines.length > 0);
   }
   function txOpen() { return !$('tx').hidden; }
   // The /agents poll is the real caller; the browser harness has no amux to
@@ -368,12 +379,22 @@
     const v = parseFloat(localStorage.getItem('txscale'));
     return v >= 0.6 && v <= 2.6 ? v : 1;
   }
-  function setTxScale(v) {
-    const clamped = Math.min(2.6, Math.max(0.6, v));
-    localStorage.setItem('txscale', String(clamped));
-    document.documentElement.style.setProperty('--txscale', clamped);
+  // Same treatment as the picture: batched to a frame, so a pinch is not
+  // paying for a style recalc and a band re-measure on every pointer event.
+  // updBand in particular reads offsetHeight, which forces layout — doing that
+  // at touch report rate is what made resizing text feel heavier than moving
+  // a whole image around.
+  let txScaleWant = null, txRaf = 0;
+  function drawTxScale() {
+    txRaf = 0;
+    document.documentElement.style.setProperty('--txscale', txScaleWant);
+    localStorage.setItem('txscale', String(txScaleWant));
     updBand();                      // a bigger sentence reserves a taller band
-    return clamped;
+  }
+  function setTxScale(v) {
+    txScaleWant = Math.min(3.2, Math.max(0.6, v));
+    if (!txRaf) txRaf = requestAnimationFrame(drawTxScale);
+    return txScaleWant;
   }
   // The picture's transform: scale, then offset, with the stage's origin at
   // its top-left corner. One rule governs the whole gesture —
@@ -450,7 +471,20 @@
     // gesture continuous and reversible — the same spread that reached 2.5x
     // now reaches about 5x, and pinching back retraces it exactly.
     const ratio = Math.pow(pinchDist() / PINCH.d0, 1.9);
-    if (PINCH.target === 'text') { setTxScale(PINCH.base * ratio); return; }
+    if (PINCH.target === 'text') {
+      // Gentler gain than the picture. Type has a narrow band where it is
+      // readable at all, and the picture's exponent walks straight past both
+      // ends of it — the same spread that usefully takes a figure to 5x turns
+      // a sentence into two words or a rumour.
+      setTxScale(PINCH.base * Math.pow(pinchDist() / PINCH.d0, 1.25));
+      // Two fingers drag the transcript as well as size it, which is the same
+      // bargain the picture makes and the reason it feels like one gesture
+      // rather than a mode.
+      const m = pinchMid();
+      if (txOpen()) $('tx').scrollTop -= m.y - PINCH.mid.y;
+      PINCH.mid = m;
+      return;
+    }
     // Two fingers move the picture as well as size it — the midpoint carries
     // the drag, the spread carries the zoom, and both land in one transform.
     const mid = pinchMid();
