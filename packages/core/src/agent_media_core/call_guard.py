@@ -115,6 +115,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -867,7 +868,7 @@ class ClaimHeartbeat:
     exists, and this daemon is already watching it: the same flag that drives
     the duck drives the claim.
 
-    ## Why a heartbeat and not an engage/release pair
+    ## A heartbeat, and a DELETE that is allowed to fail
 
     The obvious design is one POST on the rising edge and a DELETE on the
     falling one. That is the shape of the flag contract right above, and it is
@@ -875,11 +876,29 @@ class ClaimHeartbeat:
     because the *release* is the half that goes missing — this process is
     killed, the phone drops off the tailnet, Android reaps the app.
 
-    A claim has no such half. It carries its own expiry and is re-asserted
-    while it remains true, so stopping IS the release, and a holder that dies
-    frees the floor by falling silent. There is no state left behind to expire
-    and no deadlock to engineer around, which is worth more here than the
-    handful of requests it costs.
+    The claim itself has no such half: it carries its own expiry and is
+    re-asserted while it remains true, so falling silent frees the floor and a
+    holder that dies costs nothing. For a long time that was the whole design,
+    and stopping sent no DELETE at all.
+
+    What that missed is the second thing a claim now drives. Each POST sets a
+    speech hold on red5 for 1.5x the claim's TTL — deliberately past it, so a
+    re-assert arriving a beat late cannot open a gap for a clip — and *only* a
+    DELETE lifts that hold early. Falling silent is a release for the claim and
+    not for the hold, so a mic that went hot for four seconds silenced Sam for
+    the next sixty-seven:
+
+        10:07:34  input claim: holding for cece (ttl 45s, every 15s)
+        10:07:38  input claim: released (expires within 45s)
+        ...  speech held until 10:08:41, with nothing recording
+
+    On a phone whose recogniser opens the mic every couple of minutes, that is
+    most of the day, and it reads from the outside as speech being broken.
+
+    So stopping now also DELETEs — best-effort, on its own thread, every
+    failure logged and dropped. A DELETE that fails leaves exactly the old
+    behaviour (the hold expires on its own), which is why this one is safe to
+    send: it can only ever shorten the tail, never extend it or wedge it.
 
     The interval must stay well under the TTL — at the defaults, two posts can
     be lost before the floor frees. The ratio is the point, not the numbers.
@@ -907,6 +926,12 @@ class ClaimHeartbeat:
                                min(interval_s, ceiling))
         self._stop: threading.Event | None = None
         self._thread: threading.Thread | None = None
+        # Bumped by every start(). A release carries the generation it was
+        # asked for and skips itself if the mic went hot again meanwhile —
+        # otherwise a blip-then-talk would DELETE the claim the new
+        # conversation has just made.
+        self._gen = 0
+        self._lock = threading.Lock()
 
     @property
     def active(self) -> bool:
@@ -939,6 +964,8 @@ class ClaimHeartbeat:
     def start(self) -> None:
         if self.active or not self._url:
             return
+        with self._lock:
+            self._gen += 1
         self._stop = threading.Event()
         self._thread = threading.Thread(
             target=self._worker, args=(self._stop,),
@@ -946,6 +973,39 @@ class ClaimHeartbeat:
         self._thread.start()
         log.info("input claim: holding for %s (ttl %.0fs, every %.0fs)",
                  self._owner, self._ttl_s, self._interval_s)
+
+    def _stale(self, gen: int) -> bool:
+        """Has the mic gone hot again since the release was asked for?"""
+        with self._lock:
+            return gen != self._gen
+
+    def _release_once(self, gen: int) -> bool:
+        """DELETE the claim, unless the mic went hot again while we got here.
+
+        Checked on both sides of the request. Before, because a blip followed
+        straight away by a real conversation should not send the DELETE at
+        all; after, because a slow DELETE can be *in flight* while the new
+        conversation claims, and the server cannot tell the two apart — both
+        are cece. Losing that race un-claims a live session, so we put the
+        claim back rather than wait out the next beat.
+        """
+        if self._stale(gen):
+            return False
+        url = (self._url + "?owner="
+               + urllib.parse.quote(self._owner, safe=""))
+        req = urllib.request.Request(url, method="DELETE")
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                ok = 200 <= resp.status < 300
+        except Exception as e:  # noqa: BLE001 — see the class docstring
+            log.warning("input claim: release failed (%s); the hold expires "
+                        "on its own in %.0fs", e, self._ttl_s * 1.5)
+            return False
+        if self._stale(gen):
+            log.info("input claim: re-asserting — the mic went hot again "
+                     "while the release was in flight")
+            self._post_once()
+        return ok
 
     def stop(self) -> None:
         if not self.active:
@@ -956,9 +1016,15 @@ class ClaimHeartbeat:
             self._thread.join(timeout=2.0)
         self._thread = None
         self._stop = None
-        # Deliberately no DELETE. The claim expires on its own, and a release
-        # that can fail is worse than one that cannot — see the class docstring.
-        log.info("input claim: released (expires within %.0fs)", self._ttl_s)
+        # Off this thread: the guard's loop is a fast local tick and must never
+        # wait on a network round trip, which is the same reason the posting
+        # runs on its own thread. Nothing waits on the result — the expiry is
+        # still the backstop, and this only shortens the wait for it.
+        gen = self._gen
+        threading.Thread(target=self._release_once, args=(gen,),
+                         name="input-claim-release", daemon=True).start()
+        log.info("input claim: releasing for %s (expires within %.0fs "
+                 "if the release does not land)", self._owner, self._ttl_s)
 
 
 def _flag_ttl(path: str) -> float | None:

@@ -28,7 +28,7 @@ class _Recorder:
         self.calls.append({
             "url": req.full_url,
             "method": req.get_method(),
-            "body": json.loads(req.data.decode()),
+            "body": json.loads(req.data.decode()) if req.data else None,
             "ctype": req.get_header("Content-type"),
         })
         self.seen.set()
@@ -115,13 +115,78 @@ def test_stop_ends_the_posting(rec):
     assert len(rec.calls) == after, "still posting after stop()"
 
 
-def test_stop_sends_no_delete(rec):
-    """A release that can fail is worse than one that cannot."""
+def _wait_for(predicate, timeout=2.0):
+    """The release is deliberately off-thread; give it a moment to land."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
+
+
+def test_stop_deletes_the_claim(rec):
+    """Falling silent releases the claim but NOT the speech hold it set.
+
+    The hold rides 1.5x past the claim's TTL and only a DELETE lifts it early,
+    so without this a four-second mic blip silenced Sam for the next 67
+    seconds — which is what "TTS is broken" looked like from the outside.
+    """
     hb = _hb()
     hb.start()
-    rec.seen.wait(2.0)
+    assert rec.seen.wait(2.0)
     hb.stop()
-    assert all(c["method"] == "POST" for c in rec.calls)
+    assert _wait_for(lambda: any(c["method"] == "DELETE" for c in rec.calls)), \
+        "stop() sent no DELETE — the speech hold rides its full TTL"
+    delete = [c for c in rec.calls if c["method"] == "DELETE"][0]
+    assert delete["url"] == "http://red5:8675/input-claim?owner=cece", \
+        "the DELETE must name its owner, or it lifts nobody's hold"
+
+
+def test_a_release_that_fails_is_absorbed(monkeypatch):
+    """Exactly the old behaviour when it fails: the hold expires on its own.
+
+    A DELETE that can fail is only safe because failing costs nothing, so the
+    failure must not escape the thread it runs on or wedge the guard.
+    """
+    r = _Recorder(fail=True)
+    monkeypatch.setattr(cg.urllib.request, "urlopen", r)
+    hb = _hb()
+    hb.start()
+    assert r.seen.wait(2.0)
+    hb.stop()                      # must not raise
+    assert _wait_for(lambda: any(c["method"] == "DELETE" for c in r.calls))
+    hb.start()                     # and the heartbeat still works afterwards
+    hb.stop()
+
+
+def test_a_release_in_flight_cannot_strand_a_new_claim(monkeypatch):
+    """Blip, then a real conversation: the second claim must survive.
+
+    stop() releases off-thread, so a mic that goes hot again immediately can
+    have its fresh claim DELETEd by the previous cycle's release. The claim is
+    per-owner and both cycles are cece, so the server cannot tell them apart —
+    the check belongs here.
+    """
+    r = _Recorder()
+    gate = threading.Event()
+    original = r.__call__
+
+    def slow(req, timeout=None):
+        if req.get_method() == "DELETE":
+            gate.wait(2.0)
+        return original(req, timeout)
+
+    monkeypatch.setattr(cg.urllib.request, "urlopen", slow)
+    hb = _hb(interval_s=30.0)      # no beat will come along and paper over it
+    hb.start()
+    assert r.seen.wait(2.0)
+    hb.stop()                      # the release blocks in the gate
+    hb.start()                     # the mic is hot again, and claims
+    gate.set()                     # now the stale release lands
+    assert _wait_for(lambda: any(c["method"] == "DELETE" for c in r.calls))
+    assert _wait_for(lambda: r.calls[-1]["method"] == "POST"), \
+        "a stale release cleared the live claim and left it cleared"
 
 
 def test_an_interval_at_or_above_the_ttl_is_clamped():
