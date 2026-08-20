@@ -320,6 +320,45 @@ const SHORT = [
     ? pass('T22 double-tap returns the picture whole')
     : fail(`T22 ${JSON.stringify(reset)}`);
 
+  // Letting go of a pinch must not undo it. Two fingers lift a few
+  // milliseconds apart, and every double-tap window is wider than that — so
+  // the undo fired on the release of every single pinch and the zoom snapped
+  // back to 1 the moment the fingers left the glass. Driven as real pointer
+  // events, because the bug lives entirely in how they are counted.
+  const survives = await page.evaluate(() => new Promise((done) => {
+    const p = window.__imgprobe;
+    p.resetImg();
+    const ev = (type, id, x, y) => dispatchEvent(new PointerEvent(type,
+      { pointerId: id, pointerType: 'touch', clientX: x, clientY: y, bubbles: true }));
+    // A two-finger pinch: down, down, spread, then both up together.
+    ev('pointerdown', 1, 180, 380);
+    ev('pointerdown', 2, 240, 420);
+    ev('pointermove', 1, 120, 320);
+    ev('pointermove', 2, 300, 480);
+    const zoomed = p.at().z;
+    ev('pointerup', 1, 120, 320);
+    ev('pointerup', 2, 300, 480);
+    setTimeout(() => done({ zoomed, after: p.at().z }), 120);
+  }));
+  (survives.zoomed > 1.2 && Math.abs(survives.after - survives.zoomed) < 0.01)
+    ? pass('T26 letting go of a pinch keeps the zoom')
+    : fail(`T26 zoomed to ${survives.zoomed}, released to ${survives.after}`);
+
+  // ...but a genuine double-tap still undoes it.
+  const undone = await page.evaluate(() => new Promise((done) => {
+    const p = window.__imgprobe;
+    p.zoomAbout(3, 210, 390);
+    const ev = (type, x, y) => dispatchEvent(new PointerEvent(type,
+      { pointerId: 7, pointerType: 'touch', clientX: x, clientY: y, bubbles: true }));
+    ev('pointerdown', 200, 400); ev('pointerup', 200, 400);
+    setTimeout(() => {
+      ev('pointerdown', 200, 400); ev('pointerup', 200, 400);
+      setTimeout(() => done(p.at().z), 100);
+    }, 80);
+  }));
+  undone === 1 ? pass('T27 and a real double-tap still returns it whole')
+               : fail(`T27 still at ${undone}`);
+
   // The gesture handlers are useless if the browser is allowed to claim the
   // fingers first: with the default touch-action it takes any two-finger move
   // as its own scroll/zoom and pointercancels ours partway through, which is

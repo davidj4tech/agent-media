@@ -496,9 +496,30 @@
   addEventListener('pointerup', () => { panFrom = null; }, { passive: true });
   // A zoom you cannot undo with one gesture is a trap on a screen with no
   // keyboard: double-tap the picture returns it whole.
-  let lastTap = 0;
+  //
+  // The trap this walked into: letting go of a pinch raises TWO fingers a few
+  // milliseconds apart, so two pointerups arrive well inside any double-tap
+  // window and the zoom you just made snapped straight back to 1. It looked
+  // like the zoom refusing to stick, and it was the undo firing on the
+  // release of every single pinch.
+  //
+  // So a tap has to be a tap: one finger, never joined by a second, and put
+  // down and lifted in roughly the same place. Anything else is a gesture and
+  // gestures do not get counted.
+  let lastTap = 0, tapOk = false, tapAt = null;
+  addEventListener('pointerdown', (e) => {
+    if (PINCH.pts.size > 1) { tapOk = false; return; }   // a second finger: not a tap
+    tapOk = pinchTarget(e.target) === 'image';
+    tapAt = { x: e.clientX, y: e.clientY };
+  }, { passive: true });
+  addEventListener('pointermove', (e) => {
+    if (!tapOk || !tapAt) return;
+    if (Math.hypot(e.clientX - tapAt.x, e.clientY - tapAt.y) > 12) tapOk = false;
+  }, { passive: true });
   addEventListener('pointerup', (e) => {
-    if (pinchTarget(e.target) !== 'image') return;
+    if (PINCH.pts.size > 0) { tapOk = false; return; }   // a finger is still down
+    if (!tapOk) { tapOk = false; return; }
+    tapOk = false;
     const now = Date.now();
     if (now - lastTap < 320 && imgZ > 1) { resetImg(); lastTap = 0; }
     else lastTap = now;
