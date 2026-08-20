@@ -288,18 +288,22 @@
 
   /* Pinned to the foot of the panel, not the end of the text: the answer to
      "is it still going" must not be something you scroll to find. */
+  /* Top-left of the panel, NOT the bottom centre.
+     It sat exactly where "Back to the voice" sits, and the two swap: pressing
+     the button hides it and reveals this in the same spot. What that looks
+     like is a button you pressed turning into a spinner and doing nothing —
+     reported exactly that way. Two controls sharing a position is a bug even
+     when only one is ever visible. */
   #txwork {
     position: fixed; left: 50%; transform: translateX(-50%);
-    bottom: max(5vh, calc(env(safe-area-inset-bottom) + 16px));
+    top: max(12px, env(safe-area-inset-top));
     display: flex; align-items: center; gap: .55em;
     padding: .5em 1.1em; border-radius: 999px;
     font: 500 13px/1.4 system-ui, sans-serif; color: #ffe9a8;
     background: rgba(12,12,14,.86); backdrop-filter: blur(10px);
   }
   #txwork .spin { animation: spin 1.1s linear infinite; }
-  /* The catch-up button owns that spot when it is up — it is the more urgent
-     of the two, and two pills stacked at the same edge read as a mistake. */
-  #tx:has(#txlive:not([hidden])) #txwork { display: none; }
+
   html.eink #txwork { background: #fff; color: #000; border: 1.5px solid #000; }
   html.eink #txwork .spin { animation: none; }
 

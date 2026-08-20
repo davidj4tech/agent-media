@@ -1474,6 +1474,8 @@ class Handler(BaseHTTPRequestHandler):
         # drive media (CSRF). Read-only GET endpoints stay open by design.
         if path in ("/show", "/ctl", "/say", "/play"):
             if not _authorized(self):
+                print(f"ctl: 401 unauthorized for {path} "
+                      f"from {self.client_address[0]}", file=sys.stderr)
                 self._json(401, {"error": "unauthorized"})
                 return
         if path == "/show":
@@ -1600,9 +1602,15 @@ class Handler(BaseHTTPRequestHandler):
             arg = 1
         argv = ctl_argv(channel, action, arg, sarg)
         if argv is None:
+            print(f"ctl: unknown action {channel}/{action}", file=sys.stderr)
             self._json(400, {"ok": False, "err": "unknown action"})
             return
         out = _media(argv)
+        # Logged because a control that does nothing is indistinguishable from
+        # a control that was never asked to do anything, and telling those two
+        # apart has cost days. One line per action, with what `media` said.
+        print(f"ctl: {channel}/{action} {argv} -> {out.strip()[:120]!r}",
+              file=sys.stderr)
         self._json(200, {"ok": True, "out": out})
 
 
