@@ -259,6 +259,52 @@ const SHORT = [
   const closed = await page.evaluate(() => document.getElementById('tx').hidden);
   closed ? pass('T11 it closes') : fail('T11 still open');
 
+  // ---- the picture under the fingers ---------------------------------------
+  // "Not very smooth" was mostly this: the zoom scaled about the centre of the
+  // screen and ignored where the fingers were, so the picture slid out from
+  // under the gesture and had to be chased. The test is geometric, not
+  // perceptual — a point held under a focal spot must still be under it after
+  // the zoom.
+  const focal = await page.evaluate(() => {
+    const p = window.__imgprobe;
+    p.resetImg();
+    const sx = 300, sy = 500;
+    const at0 = p.at();
+    const pointBefore = { x: (sx - at0.x) / at0.z, y: (sy - at0.y) / at0.z };
+    p.zoomAbout(3, sx, sy);
+    const at1 = p.at();
+    // Where that same picture-point now lands on screen.
+    return { z: at1.z,
+             sx: pointBefore.x * at1.z + at1.x,
+             sy: pointBefore.y * at1.z + at1.y };
+  });
+  (Math.abs(focal.sx - 300) < 1 && Math.abs(focal.sy - 500) < 1 && focal.z === 3)
+    ? pass('T19 zoom holds the point under the fingers still')
+    : fail(`T19 focal drifted to ${focal.sx.toFixed(1)},${focal.sy.toFixed(1)}`);
+
+  const panned = await page.evaluate(() => {
+    const p = window.__imgprobe;
+    const before = p.at();
+    p.panImg(-40, -25);
+    const after = p.at();
+    p.panImg(-99999, -99999);              // shove it well past the edge
+    const clamped = p.at();
+    return { before, after, clamped, w: innerWidth, h: innerHeight };
+  });
+  (panned.after.x === panned.before.x - 40 && panned.after.y === panned.before.y - 25)
+    ? pass('T20 two-finger drag moves the picture')
+    : fail(`T20 ${JSON.stringify(panned.after)}`);
+  (panned.clamped.x >= -panned.w * (panned.clamped.z - 1) - 0.5 &&
+   panned.clamped.x <= 0.5)
+    ? pass('T21 and cannot be dragged off into the black')
+    : fail(`T21 x=${panned.clamped.x} z=${panned.clamped.z} w=${panned.w}`);
+
+  await page.evaluate(() => window.__imgprobe.resetImg());
+  const reset = await page.evaluate(() => window.__imgprobe.at());
+  (reset.z === 1 && reset.x === 0 && reset.y === 0)
+    ? pass('T22 double-tap returns the picture whole')
+    : fail(`T22 ${JSON.stringify(reset)}`);
+
   // ---- holding an old page --------------------------------------------------
   // The bug this is really here for: nothing in the client ever reloaded the
   // document, so a canvas restarted with new assets left every open screen on

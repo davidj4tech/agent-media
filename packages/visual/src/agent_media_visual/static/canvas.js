@@ -360,7 +360,7 @@
   // than taken from the browser, because the browser's own page zoom would
   // scale the controls and the band along with the figure — and on a canvas
   // that is mostly one image, that is not what the fingers meant.
-  const PINCH = { pts: new Map(), d0: 0, base: 1, target: null };
+  const PINCH = { pts: new Map(), d0: 0, base: 1, target: null, mid: null };
   function pinchTarget(el) {
     return (el && el.closest && el.closest('#tx, #sub')) ? 'text' : 'image';
   }
@@ -375,28 +375,57 @@
     updBand();                      // a bigger sentence reserves a taller band
     return clamped;
   }
-  let imgZ = 1, imgX = 0, imgY = 0;
-  function setImgZoom(z, x, y) {
-    imgZ = Math.min(6, Math.max(1, z));
-    // At rest the picture is centred, always: a zoom that ends off-centre
-    // leaves the next figure arriving somewhere the eye is not.
-    if (imgZ === 1) { imgX = imgY = 0; }
-    else {
-      // Never pan past the edge — beyond it there is only black, and finding
-      // your way back from black is a puzzle nobody asked for.
-      const maxX = innerWidth * (imgZ - 1) / 2, maxY = innerHeight * (imgZ - 1) / 2;
-      imgX = Math.min(maxX, Math.max(-maxX, x));
-      imgY = Math.min(maxY, Math.max(-maxY, y));
-    }
-    const css = document.documentElement.style;
-    css.setProperty('--imgz', imgZ);
-    css.setProperty('--imgx', imgX + 'px');
-    css.setProperty('--imgy', imgY + 'px');
+  // The picture's transform: scale, then offset, with the stage's origin at
+  // its top-left corner. One rule governs the whole gesture —
+  //
+  //     screen = point * scale + offset
+  //
+  // — where `point` is a spot on the picture. Keeping a spot under the fingers
+  // still is just solving that for offset, which is what makes a pinch feel
+  // attached to the hand rather than chased across the screen. Two-finger drag
+  // is the same equation with the scale unchanged, so panning and zooming are
+  // not two behaviours that have to agree; they are one.
+  let imgZ = 1, imgX = 0, imgY = 0, imgRaf = 0;
+  function clampImg() {
+    imgZ = Math.min(6, Math.max(1, imgZ));
+    if (imgZ === 1) { imgX = imgY = 0; return; }
+    // Never past the edge: beyond it there is only black, and finding the way
+    // back from black is a puzzle nobody asked for.
+    imgX = Math.min(0, Math.max(-innerWidth * (imgZ - 1), imgX));
+    imgY = Math.min(0, Math.max(-innerHeight * (imgZ - 1), imgY));
+  }
+  // Written once per frame, as one property. Three custom properties set on
+  // every pointermove is three style invalidations per event, and at touch
+  // report rates that is most of why this stuttered.
+  function drawImg() {
+    imgRaf = 0;
+    $('stage').style.transform =
+      'translate(' + imgX + 'px,' + imgY + 'px) scale(' + imgZ + ')';
     document.body.classList.toggle('imgzoom', imgZ > 1);
   }
+  function applyImg() {
+    clampImg();
+    if (!imgRaf) imgRaf = requestAnimationFrame(drawImg);
+  }
+  /** Zoom to `z` while holding the picture-point under `(sx, sy)` still. */
+  function zoomAbout(z, sx, sy) {
+    const from = imgZ;
+    const px = (sx - imgX) / from, py = (sy - imgY) / from;   // the spot held
+    imgZ = Math.min(6, Math.max(1, z));
+    imgX = sx - px * imgZ;
+    imgY = sy - py * imgZ;
+    applyImg();
+  }
+  function panImg(dx, dy) { imgX += dx; imgY += dy; applyImg(); }
+  function resetImg() { imgZ = 1; imgX = imgY = 0; applyImg(); }
+
   function pinchDist() {
     const [a, b] = [...PINCH.pts.values()];
     return Math.hypot(a.x - b.x, a.y - b.y);
+  }
+  function pinchMid() {
+    const [a, b] = [...PINCH.pts.values()];
+    return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
   }
   addEventListener('pointerdown', (e) => {
     if (e.pointerType === 'mouse') return;
@@ -404,6 +433,7 @@
     if (PINCH.pts.size === 2) {
       PINCH.target = pinchTarget(e.target);
       PINCH.d0 = pinchDist();
+      PINCH.mid = pinchMid();
       PINCH.base = PINCH.target === 'text' ? txScale() : imgZ;
       document.body.classList.add('pinching');
     }
@@ -413,8 +443,13 @@
     PINCH.pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (PINCH.pts.size !== 2 || !PINCH.d0) return;
     const ratio = pinchDist() / PINCH.d0;
-    if (PINCH.target === 'text') setTxScale(PINCH.base * ratio);
-    else setImgZoom(PINCH.base * ratio, imgX, imgY);
+    if (PINCH.target === 'text') { setTxScale(PINCH.base * ratio); return; }
+    // Two fingers move the picture as well as size it — the midpoint carries
+    // the drag, the spread carries the zoom, and both land in one transform.
+    const mid = pinchMid();
+    panImg(mid.x - PINCH.mid.x, mid.y - PINCH.mid.y);
+    PINCH.mid = mid;
+    zoomAbout(PINCH.base * ratio, mid.x, mid.y);
   }, { passive: true });
   function pinchEnd(e) {
     PINCH.pts.delete(e.pointerId);
@@ -422,21 +457,27 @@
       PINCH.d0 = 0; PINCH.target = null;
       document.body.classList.remove('pinching');
     }
+    // The finger that stays becomes the pan anchor, rather than the picture
+    // jumping when the second one lifts.
+    if (PINCH.pts.size === 1) {
+      const [only] = [...PINCH.pts.values()];
+      panFrom = { x: only.x, y: only.y };
+    }
   }
   addEventListener('pointerup', pinchEnd, { passive: true });
   addEventListener('pointercancel', pinchEnd, { passive: true });
-  // Panning a zoomed picture: one finger, and only once zoomed — otherwise
-  // this would swallow the tap that opens the controls.
+  // One finger pans too, but only once zoomed — otherwise this swallows the
+  // tap that opens the controls.
   let panFrom = null;
   addEventListener('pointerdown', (e) => {
     if (imgZ > 1 && PINCH.pts.size <= 1 && pinchTarget(e.target) === 'image') {
-      panFrom = { x: e.clientX, y: e.clientY, ix: imgX, iy: imgY };
+      panFrom = { x: e.clientX, y: e.clientY };
     }
   }, { passive: true });
   addEventListener('pointermove', (e) => {
     if (!panFrom || PINCH.pts.size >= 2) return;
-    setImgZoom(imgZ, panFrom.ix + (e.clientX - panFrom.x),
-                     panFrom.iy + (e.clientY - panFrom.y));
+    panImg(e.clientX - panFrom.x, e.clientY - panFrom.y);
+    panFrom = { x: e.clientX, y: e.clientY };
   }, { passive: true });
   addEventListener('pointerup', () => { panFrom = null; }, { passive: true });
   // A zoom you cannot undo with one gesture is a trap on a screen with no
@@ -445,9 +486,12 @@
   addEventListener('pointerup', (e) => {
     if (pinchTarget(e.target) !== 'image') return;
     const now = Date.now();
-    if (now - lastTap < 320 && imgZ > 1) { setImgZoom(1, 0, 0); lastTap = 0; }
+    if (now - lastTap < 320 && imgZ > 1) { resetImg(); lastTap = 0; }
     else lastTap = now;
   }, { passive: true });
+  // Reachable for the harness, which cannot pinch.
+  window.__imgprobe = { zoomAbout, panImg, resetImg,
+                        at: () => ({ z: imgZ, x: imgX, y: imgY }) };
 
   // ---- the divider ---------------------------------------------------------
   // Drag the seam to give the words more of the screen, or the picture more.

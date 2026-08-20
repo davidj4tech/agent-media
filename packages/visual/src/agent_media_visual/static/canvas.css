@@ -8,14 +8,28 @@
      own transform to itself. Fixed children resolve against a transformed
      ancestor, and the stage is exactly the viewport, so the layers position
      as they always did. */
+  /* transform-origin at the top-left corner, not the centre.
+     With the origin in the middle, "keep the point under the fingers still"
+     needs the viewport size folded into every sum, and the arithmetic that
+     falls out is what made the pinch feel like it was fighting back — the
+     picture slid out from under the gesture and had to be chased. From 0 0 the
+     mapping is just screen = point * scale + offset, which inverts in one line
+     and lets zoom and two-finger drag be the same calculation. */
   #stage {
-    position: fixed; inset: 0; transform-origin: 50% 50%;
+    position: fixed; inset: 0; transform-origin: 0 0;
     transform: translate(var(--imgx, 0px), var(--imgy, 0px)) scale(var(--imgz, 1));
-    will-change: transform;
   }
   /* Only while a pinch is not in flight — a transition mid-gesture lags the
-     fingers, which reads as the picture being slow rather than smooth. */
+     fingers, which reads as the picture being slow rather than smooth. The
+     double-tap reset still gets to animate, which is the one place a transform
+     transition is wanted here. */
   body:not(.pinching) #stage { transition: transform .28s ease; }
+  /* Lift the stage onto its own layer for the duration of a gesture, so a
+     drag repaints nothing: the images underneath run Ken Burns and a
+     full-viewport repaint per frame is the other half of why this stuttered.
+     Not permanent — an always-promoted layer costs memory on every screen for
+     a gesture that happens occasionally. */
+  body.pinching #stage, body.imgzoom #stage { will-change: transform; }
   /* Zoomed in, the picture is the thing being handled: the tap-to-control
      layer must not eat a pan. */
   body.imgzoom { cursor: grab; }
