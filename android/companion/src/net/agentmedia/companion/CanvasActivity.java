@@ -244,7 +244,17 @@ public class CanvasActivity extends Activity {
             @Override public boolean onLongClick(View v) {
                 v.performHapticFeedback(
                         android.view.HapticFeedbackConstants.LONG_PRESS);
-                reload();
+                // Reset, not merely reload. Every view preference — captions,
+                // fit, reading size, the split height — lives in localStorage,
+                // and this WebView is a different device from any browser tab,
+                // so the two drift apart and behave differently on the same
+                // page. ?reset=1 clears the view settings (keeping the pairing
+                // token) and redirects, which is the only way back on a screen
+                // with no browser chrome to clear them from.
+                CompanionService.log("canvas: reset + reload");
+                say(null);
+                web.loadUrl(Settings.server(CanvasActivity.this)
+                                .canvasUrl("/?reset=1"));
                 return true;
             }
         });

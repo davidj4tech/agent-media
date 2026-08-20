@@ -51,6 +51,12 @@
 <div id="cap"></div>
 <!-- The subtitle, and the way to open it out. #zoom only appears while there
      are words to open — a button onto an empty transcript is a broken promise. -->
+<!-- The bottom half's own tap surface, sitting behind the words and filling
+     the whole reserved strip. Without it a tap that lands in the band but
+     misses the text itself falls through to the canvas and walks the mode ring
+     — so the bottom split behaved exactly like the top, which is not what a
+     strip full of words should do. -->
+<div id="bandhit"></div>
 <div id="sub"></div>
 <button id="zoom" type="button" title="Whole reply" aria-label="Whole reply">
   <!-- Lines of text, not the four-corner "fit" brackets this used at first.

@@ -166,6 +166,16 @@
      recognised first. The corner button stays for the case where the band is
      not up. */
   body.subband #sub { pointer-events: auto; cursor: pointer; }
+  /* The strip is one target, not just the glyphs in it. #sub is only as tall
+     as its text, so on a phone a thumb that lands a few millimetres low was
+     hitting the canvas behind and cycling the mode — the bottom half doing the
+     top half's job. */
+  #bandhit { display: none; }
+  body.subband #bandhit {
+    display: block; position: fixed; left: 0; right: 0; bottom: 0;
+    height: var(--subband); z-index: 5; cursor: pointer;
+  }
+  body.txopen #bandhit { display: none; }
   /* ...but over a figure it stops being a floating pill and becomes the band
      the image just made room for: full width, flat to the bottom edge, with a
      hairline where the picture ends. --subband is measured in JS from this

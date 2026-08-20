@@ -87,6 +87,12 @@
   // there is one, yields the strip; when there is not, the strip is simply
   // there. Nothing about that needs an image to exist.
   function bandOn() {
+    // Captions off means no band at all — not a band with nothing in it. A
+    // reserved strip that stays empty is the shape of the bug that had the
+    // picture yielding half the screen to blank space, and it is also how the
+    // app came to look different from the browser: one of them had the toggle
+    // off, so one of them had words and the other had a hole.
+    if (!subsOn()) return false;
     return $('sub').classList.contains('on') || txLines.length > 0;
   }
   // How tall the words' half is, when the reader has said. Null means "as
@@ -1364,16 +1370,35 @@
   }
   $('sfx').onclick = (e) => { e.stopPropagation(); toggleSfx(); };
   // ---- transcript handlers ---------------------------------------------
+  // ?reset=1 — put this screen back to how a fresh one behaves.
+  //
+  // Every view preference lives in localStorage, per device: captions on or
+  // off, fit mode, e-ink, reading size, the split height. That is right for
+  // preferences and it is exactly why two screens on the SAME page can behave
+  // differently — the app's WebView and a browser tab are two devices, and one
+  // of them having captions off is enough to make the words vanish on one and
+  // not the other. This is the way back, and it deliberately keeps the pairing
+  // token: clearing that would silently cost the ability to control playback,
+  // which is not what anybody means by "reset the view".
+  if (/(^|[?&])reset=1(&|$)/.test(location.search)) {
+    for (const k of ['subs', 'fit', 'eink', 'txscale', 'split', 'sfx'])
+      localStorage.removeItem(k);
+    location.replace('/');
+  }
   // Reading size is a per-device preference and it survives a reload.
   document.documentElement.style.setProperty('--txscale', txScale());
   $('zoom').onclick = (e) => { e.stopPropagation(); openTx(true); resetHide(); };
-  // Tap the words to get all of them.
-  $('sub').addEventListener('click', (e) => {
+  // Tap the words — or anywhere in the strip that holds them — to get all of
+  // them. The bottom half's taps are its own; they never walk the mode ring
+  // that a tap on the picture does.
+  const openFromBand = (e) => {
     if (!txLines.length) return;
     e.stopPropagation();
     openTx(true);
     resetHide();
-  });
+  };
+  $('sub').addEventListener('click', openFromBand);
+  $('bandhit').addEventListener('click', openFromBand);
   $('txclose').onclick = (e) => { e.stopPropagation(); openTx(false); };
   $('txlive').onclick = (e) => {
     e.stopPropagation();

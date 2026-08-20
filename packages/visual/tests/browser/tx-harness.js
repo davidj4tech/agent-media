@@ -442,6 +442,45 @@ const SHORT = [
     ? pass('T37 an idle band shows the last thing said, not nothing')
     : fail(`T37 ${JSON.stringify(idleBand)}`);
 
+  // The bottom half owns its taps. A tap that lands in the band but misses the
+  // glyphs must open the transcript, NOT walk the mode ring the way a tap on
+  // the picture does — "in the app a click on the bottom split is the same as
+  // a click above".
+  await page.evaluate(() => {
+    const t = document.getElementById('tx');
+    if (!t.hidden) document.getElementById('txclose').click();
+  });
+  await page.waitForTimeout(200);
+  const strip = await page.evaluate(() => {
+    const hit = document.getElementById('bandhit');
+    const before = document.body.className;
+    const shown = getComputedStyle(hit).display !== 'none';
+    hit.click();                       // the strip, not the text
+    return { shown, opened: !document.getElementById('tx').hidden,
+             modeUnchanged: document.body.className.replace(' txopen', '') === before };
+  });
+  strip.shown ? pass('T38 the strip is a target, not just the glyphs')
+              : fail('T38 no band hit area');
+  strip.opened ? pass('T39 a tap beside the words still opens the transcript')
+               : fail('T39 the tap fell through to the canvas');
+  await page.evaluate(() => document.getElementById('txclose').click());
+  await page.waitForTimeout(200);
+
+  // Captions off means no band at all — never a reserved strip of nothing.
+  const ccOff = await page.evaluate((lines) => {
+    localStorage.setItem('subs', '0');
+    window.__es.dispatchEvent(new MessageEvent('message', { data: JSON.stringify(
+      { kind: 'state', speaking: true, sentence: lines[0], lines, lidx: 0 }) }));
+    const out = { band: document.body.classList.contains('subband'),
+                  reserve: getComputedStyle(document.documentElement)
+                             .getPropertyValue('--subband') };
+    localStorage.setItem('subs', '1');
+    return out;
+  }, LINES);
+  (!ccOff.band && parseFloat(ccOff.reserve) === 0)
+    ? pass('T40 captions off reserves nothing')
+    : fail(`T40 ${JSON.stringify(ccOff)}`);
+
   // The band itself opens the transcript. The corner icon was wearing the fit
   // toggle's own four-corner brackets, so the door onto the whole reply read
   // as "fullscreen" and went unpressed for days — the words are the obvious
