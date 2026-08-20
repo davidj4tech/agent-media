@@ -1022,6 +1022,12 @@ def ctl_argv(channel: str, action: str, arg: int,
             "speed-": ["speed", "down"],
             "speed+": ["speed", "up"],
             "speed0": ["speed", "reset"],
+            # Double-tap a line in the canvas transcript: play from there.
+            # The index rides in `sarg` rather than `arg` because arg is
+            # clamped to 1..999 for the repeat-count actions, and sentence
+            # zero is the first thing anybody will double-tap.
+            "goto-sentence": ["skip", "--unit", "sentence",
+                              "--to", sarg if sarg.isdigit() else "0"],
             # h/l/H/L — the popup's sentence/paragraph steps.
             "skip-": ["skip", "--unit", "sentence", "--dir", "-1",
                       "--seek-fallback", "-5"],

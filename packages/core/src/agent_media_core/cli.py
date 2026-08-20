@@ -2740,9 +2740,19 @@ def cmd_skip(a) -> int:
     if crumb is not None and 0 <= crumb < n:
         cur = crumb
 
-    target = _nav_target(cur, n, para_idx, a.unit, direction)
+    # An absolute jump — "play from this sentence" — reuses everything below
+    # unchanged. All three lanes (playlist, single-clip-with-offsets, live
+    # readout) already take a resolved target index; only the way of choosing
+    # it differed, and stepping was the only way offered. The canvas transcript
+    # asks for this when a line is double-tapped.
+    if getattr(a, "to", None) is not None:
+        target = int(a.to)
+    else:
+        target = _nav_target(cur, n, para_idx, a.unit, direction)
     if target < 0:
         target = 0
+    if target > n - 1:
+        target = n - 1
     _write_skip_cursor(min(target, n - 1))
 
     if playlist:
@@ -6334,6 +6344,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser(
         "skip", help="step the reader by a sentence/paragraph (popup h/l/H/L)")
+    s.add_argument("--to", type=int, default=None,
+                   help="absolute sentence index to play from (ignores --dir)")
     s.add_argument("--unit", choices=("sentence", "paragraph"),
                    default="sentence")
     s.add_argument("--dir", type=int, default=1, help="-1 back, 1 forward")

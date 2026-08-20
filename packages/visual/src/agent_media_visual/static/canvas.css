@@ -226,6 +226,9 @@
     color: rgba(242,234,216,.42);            /* already said: present, done */
     transition: color .3s ease, filter .45s ease, opacity .45s ease;
   }
+  /* A double-tap has landed and the voice is on its way there. Brief, and
+     only ever confirmation — the line becomes .now a moment later. */
+  #tx p.seeking { color: #ffe9a8; text-shadow: 0 0 18px rgba(255,233,168,.55); }
   /* The live sentence. Lit, and the thing the panel scrolls to. */
   #tx p.now { color: #ffe9a8; }
   /* Not yet spoken. Masked rather than missing: the words hold their space so

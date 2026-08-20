@@ -320,6 +320,44 @@ const SHORT = [
     ? pass('T22 double-tap returns the picture whole')
     : fail(`T22 ${JSON.stringify(reset)}`);
 
+  // Double-tap a line to play from there, the way read-aloud works. A single
+  // tap must NOT: the transcript is something you scroll and read, and a stray
+  // touch that restarts the voice three paragraphs back would make it hostile.
+  const seeks = [];
+  await page.route('**/ctl', async (r) => {
+    try { seeks.push(JSON.parse(r.request().postData() || '{}')); } catch (_) {}
+    await r.fulfill({ status: 200, contentType: 'application/json',
+                      body: JSON.stringify({ ok: true, out: '' }) });
+  });
+  await page.evaluate(() => document.getElementById('zoom').click());
+  await page.waitForTimeout(300);
+  await page.evaluate(() => {
+    document.body.classList.add('txahead');       // nothing masked, so taps seek
+    const p = document.querySelectorAll('#txlines p')[2];
+    p.click();                                     // one tap: must not seek
+  });
+  await page.waitForTimeout(500);
+  seeks.length === 0 ? pass('T29 a single tap does not move the voice')
+                     : fail(`T29 one tap issued ${JSON.stringify(seeks)}`);
+
+  await page.evaluate(() => {
+    const p = document.querySelectorAll('#txlines p')[2];
+    p.click(); p.click();                          // double: play from there
+  });
+  await page.waitForTimeout(600);
+  const seek = seeks[seeks.length - 1];
+  (seek && seek.action === 'goto-sentence' && seek.sarg === '2')
+    ? pass('T30 a double-tap plays from that sentence')
+    : fail(`T30 ${JSON.stringify(seeks)}`);
+
+  const moved = await page.evaluate(() =>
+    [...document.querySelectorAll('#txlines p')].findIndex(p => p.classList.contains('now')));
+  moved === 2 ? pass('T31 and the highlight moves without waiting for the server')
+              : fail(`T31 highlight at ${moved}`);
+  await page.unroute('**/ctl');
+  await page.evaluate(() => document.getElementById('txclose').click());
+  await page.waitForTimeout(200);
+
   // The door has to outlive the voice. It was tied to the subtitle being on
   // screen, so it vanished the moment the reply ended — leaving the transcript
   // reachable only while you were already being read to, and gone by the time

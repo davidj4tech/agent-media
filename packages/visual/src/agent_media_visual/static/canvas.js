@@ -1341,10 +1341,40 @@
   // Tapping the masked text is the other way to ask for it — and on a short
   // clip, the only one. Same bargain as the scroll: deliberate, never
   // something the eye does while listening.
+  //
+  // Double-tapping any line plays from there, the way read-aloud works. A
+  // single tap is deliberately not enough: the transcript is something you
+  // scroll and read, and a stray touch that restarts the voice three
+  // paragraphs back would make it hostile to handle.
+  let txTapAt = 0, txTapLine = -1;
   $('tx').addEventListener('click', (e) => {
     e.stopPropagation();
-    if (e.target.closest && e.target.closest('#txlines p.ahead')) setAhead(true);
+    const p = e.target.closest && e.target.closest('#txlines p');
+    if (!p) return;
+    if (p.classList.contains('ahead') && !document.body.classList.contains('txahead')) {
+      setAhead(true);
+      return;                       // uncovering is its own act; do not also seek
+    }
+    const i = [...$('txlines').children].indexOf(p);
+    const now = Date.now();
+    if (i === txTapLine && now - txTapAt < 400) {
+      txTapAt = 0; txTapLine = -1;
+      playFrom(i, p);
+    } else {
+      txTapAt = now; txTapLine = i;
+    }
   });
+  // Play from a sentence. The highlight is moved locally straight away rather
+  // than waiting for the next state frame — that is up to a second away, and a
+  // tap that appears to do nothing for a second gets tapped again.
+  async function playFrom(i, el) {
+    if (i < 0) return;
+    el.classList.add('seeking');
+    setTimeout(() => el.classList.remove('seeking'), 600);
+    txIdx = i;
+    markTx();
+    await act('goto-sentence', 1, String(i));
+  }
   $('tx').addEventListener('scroll', txScrolled, { passive: true });
   function drawFit() {
     $('fit').classList.toggle('lit', fitMode() !== 'auto');
