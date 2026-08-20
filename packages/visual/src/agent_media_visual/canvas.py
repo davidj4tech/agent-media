@@ -760,8 +760,37 @@ def _speech_extras() -> dict:
 # 1 Hz and this hop crosses to Falkenstein on a link that drops packets — a
 # stale sentence is much better than a canvas that stutters, and the transcript
 # is read after the fact anyway.
-# The last clip's sentences, kept because the store does not keep them.
+# The last clip's sentences, kept because the store does not keep them — and
+# kept ON DISK, because keeping them only in memory means every canvas restart
+# empties the transcript until something next speaks. Restarts are exactly when
+# somebody is told to reload and go and look, so an in-memory cache is empty
+# at the one moment it is asked for.
 _LAST_CLIP: dict = {"lines": [], "idx": 0}
+
+
+def _last_clip_path() -> Path:
+    return spool_dir() / "last-clip.json"
+
+
+def _last_clip_load() -> None:
+    try:
+        data = json.loads(_last_clip_path().read_text())
+        lines = [str(t) for t in (data.get("lines") or []) if str(t).strip()]
+    except (OSError, ValueError, AttributeError):
+        return
+    if lines:
+        _LAST_CLIP["lines"] = lines[:120]
+        try:
+            _LAST_CLIP["idx"] = int(data.get("idx") or 0)
+        except (TypeError, ValueError):
+            _LAST_CLIP["idx"] = 0
+
+
+def _last_clip_save() -> None:
+    try:
+        _last_clip_path().write_text(json.dumps(_LAST_CLIP))
+    except OSError:      # a transcript is garnish; never a fault
+        pass
 _ORIGIN_STATE: dict = {"t": 0.0, "data": None}
 _ORIGIN_TTL = 2.0
 
@@ -848,11 +877,16 @@ def speech_state() -> dict:
     lines = [" ".join(str(t).split()) for t in (ex.get("clip_sentences") or [])]
     lines = [t for t in lines if t]
     if lines:
+        changed = lines != _LAST_CLIP["lines"]
         _LAST_CLIP["lines"] = lines
         try:
-            _LAST_CLIP["idx"] = int(ex.get("current_sentence_idx") or 0)
+            idx = int(ex.get("current_sentence_idx") or 0)
         except (TypeError, ValueError):
-            _LAST_CLIP["idx"] = 0
+            idx = 0
+        changed = changed or idx != _LAST_CLIP["idx"]
+        _LAST_CLIP["idx"] = idx
+        if changed:
+            _last_clip_save()
     elif _LAST_CLIP["lines"]:
         # now_playing is CLEARED when the clip ends — the store holds what is
         # playing, not what was said. So once the voice stops there is nothing
@@ -1549,6 +1583,7 @@ def main() -> None:
                     default=int(os.environ.get("MEDIA_VISUAL_PORT") or DEFAULT_PORT))
     ap.add_argument("--bind", default=os.environ.get("MEDIA_VISUAL_BIND") or "0.0.0.0")
     args = ap.parse_args()
+    _last_clip_load()      # a restart should not empty the transcript
     srv = ThreadingHTTPServer((args.bind, args.port), Handler)
     srv.daemon_threads = True
     threading.Thread(target=_state_poller, daemon=True).start()

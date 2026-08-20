@@ -166,3 +166,21 @@ def test_transcript_survives_the_end_of_the_clip(monkeypatch):
     assert after["lines"] == ["First.", "Second."]
     assert after["lidx"] == 1
     assert "sentence" not in after      # idle still claims no live voice
+
+
+def test_last_clip_survives_a_restart(tmp_path, monkeypatch):
+    """The transcript is on disk, because restarts are when it is asked for.
+
+    An in-memory cache is empty at exactly the wrong moment: a canvas is
+    restarted to pick up a change, somebody is told to reload and go and look,
+    and what they find is a transcript that has forgotten everything.
+    """
+    monkeypatch.setattr(canvas, "spool_dir", lambda: tmp_path)
+    monkeypatch.setattr(canvas, "_LAST_CLIP", {"lines": ["Kept.", "Both."], "idx": 1})
+    canvas._last_clip_save()
+
+    # A fresh process: memory empty, disk not.
+    monkeypatch.setattr(canvas, "_LAST_CLIP", {"lines": [], "idx": 0})
+    canvas._last_clip_load()
+    assert canvas._LAST_CLIP["lines"] == ["Kept.", "Both."]
+    assert canvas._LAST_CLIP["idx"] == 1
