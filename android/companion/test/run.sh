@@ -36,6 +36,7 @@ javac -nowarn -d "$OUT" \
     "$APP/src/net/agentmedia/companion/Channels.java" \
     "$APP/src/net/agentmedia/companion/Chapters.java" \
     "$APP/src/net/agentmedia/companion/ClipCache.java" \
+    "$APP/src/net/agentmedia/companion/HoldRate.java" \
     "$APP/src/net/agentmedia/companion/DictationHold.java" \
     "$APP/src/net/agentmedia/companion/BookHold.java" \
     "$APP/src/net/agentmedia/companion/CardText.java" \
@@ -61,7 +62,8 @@ javac -nowarn -d "$OUT" \
     "$HERE/net/agentmedia/companion/RecentTest.java" \
     "$HERE/net/agentmedia/companion/RecentRowsTest.java" \
     "$HERE/net/agentmedia/companion/ChannelsTest.java" \
-    "$HERE/net/agentmedia/companion/ClipCacheTest.java"
+    "$HERE/net/agentmedia/companion/ClipCacheTest.java" \
+    "$HERE/net/agentmedia/companion/HoldRateTest.java"
 
 java -cp "$OUT" net.agentmedia.companion.IpcTest
 java -cp "$OUT" net.agentmedia.companion.FocusTest
@@ -81,5 +83,6 @@ java -cp "$OUT" net.agentmedia.companion.RecentTest
 java -cp "$OUT" net.agentmedia.companion.RecentRowsTest
 java -cp "$OUT" net.agentmedia.companion.ChannelsTest
 java -cp "$OUT" net.agentmedia.companion.ClipCacheTest
+java -cp "$OUT" net.agentmedia.companion.HoldRateTest
 java -cp "$OUT" net.agentmedia.companion.MpvServerTest
 java -cp "$OUT" net.agentmedia.companion.MicSteadyTest

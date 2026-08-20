@@ -222,6 +222,8 @@ public class CompanionService extends Service {
     private boolean heldForSession = false;
     /** The other half of the same question: Sam waits while David dictates. */
     private final DictationHold dictation = new DictationHold();
+    /** How often that hold engages — a rate no person produces is a fault. */
+    private final HoldRate dictationRate = new HoldRate();
     /** And the third: the book stops for a conversation, since nothing else stops it. */
     private final BookHold bookHold = new BookHold();
     /** David tapped "Speak now": the hold is off for the rest of this session. */
@@ -1032,6 +1034,7 @@ public class CompanionService extends Service {
                 micOpen, bargeIn.voiceSession(), audible, System.currentTimeMillis());
 
         if (dictation.holding() && !wasHolding) {
+            dictationRate.engaged(System.currentTimeMillis());
             log("dictation: mic open — Sam waits");
         } else if (!dictation.holding() && wasHolding) {
             log("dictation: mic shut — Sam carries on");
@@ -1447,6 +1450,13 @@ public class CompanionService extends Service {
             m.put("mic_count", Integer.valueOf(mic == null ? 0 : mic.count()));
             m.put("mic_seen", mic == null ? "(no probe)" : mic.detail());
             m.put("mic_verdict", bargeIn.why(System.currentTimeMillis()));
+            // The rate, always, and the complaint only when there is one: a
+            // health line that is present on a healthy phone gets skimmed past.
+            long nowMs = System.currentTimeMillis();
+            m.put("dictation_holds_1h",
+                  Integer.valueOf(dictationRate.recent(nowMs)));
+            String rateProblem = dictationRate.problem(nowMs);
+            if (!rateProblem.isEmpty()) m.put("dictation_rate", rateProblem);
             m.put("live_mode", liveMode);
             m.put("speech_priority", speechState().priority);
             m.put("speech_waiting", Integer.valueOf(speechState().queued));

@@ -5339,6 +5339,7 @@ def selfcheck_facts() -> "dict[str, str]":
     facts.update(_mic_detect_facts())
     facts.update(_hold_facts())
     facts.update(_media_volume_facts())
+    facts.update(_dictation_rate_facts())
     return facts
 
 
@@ -5403,6 +5404,49 @@ def _media_volume_facts() -> "dict[str, str]":
                 return {}
             return {"media_volume": f"{vol}/{mx}"}
     return {}
+
+
+def _dictation_rate_facts() -> "dict[str, str]":
+    """How often the companion's dictation hold is pausing speech.
+
+    The hold is right to exist — Sam must wait while David talks to his
+    keyboard — and it cannot tell a person from the phone's own recogniser by
+    anything it can see. On p8a that recogniser holds the microphone for ten
+    seconds at a time whenever `com.google.android.as` is not blocked from
+    RECORD_AUDIO, which pauses speech every half minute; the block reverts by
+    itself, hours later, saying nothing.
+
+    Both times it reverted the report that reached us was "TTS keeps pausing",
+    with every component healthy and behaving exactly as designed. The app
+    counts its own engagements over a rolling hour for precisely this, so ask
+    it: a rate no person produces is the one fact that turns that report into
+    an answer.
+
+    Silent unless the app is there and answering — this is a phone-only fact,
+    and a host without the companion has nothing to say rather than a zero.
+    """
+    import urllib.request
+
+    try:
+        port = int(os.environ.get("MEDIA_ANDROID_COMPANION_PORT", "8770"))
+    except ValueError:
+        port = 8770
+    try:
+        with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/state", timeout=5) as resp:
+            state = json.loads(resp.read().decode())
+    except Exception:  # noqa: BLE001 — no companion here, or it is busy
+        return {}
+    if not isinstance(state, dict):
+        return {}
+    facts = {}
+    holds = state.get("dictation_holds_1h")
+    if isinstance(holds, int):
+        facts["dictation_holds_1h"] = str(holds)
+    problem = state.get("dictation_rate")
+    if isinstance(problem, str) and problem:
+        facts["dictation_rate"] = problem
+    return facts
 
 
 def _mic_detect_facts() -> "dict[str, str]":
@@ -5510,6 +5554,9 @@ def health_problems(facts: "dict[str, str]") -> "list[str]":
                 f"external hold has stood for {held_s / 60:.0f}m ({who}) — "
                 "music is ducked and speech paused; a release probably never "
                 "arrived. `media-call-guard --release` lifts it")
+    rate = facts.get("dictation_rate")
+    if rate:
+        problems.append(rate)
     quiet = facts.get("mic_detect_quiet_s")
     if quiet:
         import os as _os
