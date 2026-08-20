@@ -265,10 +265,13 @@
   // Subtitles: the sentence being spoken, straight off the same per-clip
   // marker that drives the tmux copy-mode highlight.
   function subsOn() { return localStorage.getItem('subs') !== '0'; }
-  function setSubtitle(text) {
+  function setSubtitle(text, past) {
     const show = !!(text && subsOn());
     if (show) $('sub').textContent = text;
     $('sub').classList.toggle('on', show);
+    // Said, not being said. Same band, quieter ink — so a screen glanced at
+    // from across the room never reports a voice that stopped minutes ago.
+    $('sub').classList.toggle('past', show && !!past);
     // The door onto the transcript follows the subtitle: no words, no door.
     updDoor();
     updBand();
@@ -800,6 +803,13 @@
           figMsg = !!d.visual; updFig();
           applyStale(d.session || null);
         } else {
+          // The voice has stopped, and the band must not become a reserved
+          // strip of nothing: bandOn() is true whenever there is a transcript,
+          // so leaving the subtitle empty carved a hole out of the picture and
+          // put nothing in it. Show the last thing said, dimmed, which also
+          // keeps the door where the eye last saw it — the band is what you
+          // tap for the whole reply.
+          setSubtitle(txLines.length ? txLines[Math.max(0, txIdx)] : null, true);
           applyStale(null);            // no voice → nothing is misattributed
         }
         applySeq();

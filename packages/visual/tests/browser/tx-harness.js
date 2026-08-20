@@ -415,6 +415,23 @@ const SHORT = [
   await page.evaluate(() => document.getElementById('txclose').click());
   await page.waitForTimeout(200);
 
+  // The band must never be a reserved strip of nothing. bandOn() is true
+  // whenever there is a transcript, so an idle screen was carving a half out
+  // of the picture and putting no words in it — which is what "still no"
+  // looked like on the glass: a big empty space where a transcript should be.
+  const idleBand = await page.evaluate((lines) => {
+    window.__es.dispatchEvent(new MessageEvent('message', { data: JSON.stringify(
+      { kind: 'state', speaking: false, lines, lidx: 2 }) }));
+    const sub = document.getElementById('sub');
+    return { band: document.body.classList.contains('subband'),
+             subOn: sub.classList.contains('on'),
+             past: sub.classList.contains('past'),
+             text: sub.textContent };
+  }, LINES);
+  (idleBand.band && idleBand.subOn && idleBand.past && idleBand.text === LINES[2])
+    ? pass('T37 an idle band shows the last thing said, not nothing')
+    : fail(`T37 ${JSON.stringify(idleBand)}`);
+
   // The band itself opens the transcript. The corner icon was wearing the fit
   // toggle's own four-corner brackets, so the door onto the whole reply read
   // as "fullscreen" and went unpressed for days — the words are the obvious

@@ -155,6 +155,10 @@
     opacity: 0; transition: opacity .5s ease; pointer-events: none;
   }
   #sub.on { opacity: 1; }
+  /* The last thing said, once the voice has stopped. Still legible, plainly
+     not live. */
+  #sub.past { color: #cbbf9a; }
+  html.eink #sub.past { color: #333; }
   /* The band IS the door. A 40px icon in a corner is a poor way to offer the
      whole reply when the words themselves are sitting right there, full width
      and unmistakably about text — tapping what you are reading to get more of
