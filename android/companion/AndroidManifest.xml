@@ -71,6 +71,13 @@
             android:label="@string/settings_label" />
 
         <!-- The visual canvas: packages/visual's page in a WebView, full-bleed.
+             NoTitleBar is load-bearing: without it the platform theme draws an
+             action bar across the top of a screen whose whole point is being
+             full-bleed, and it ate the strip the back chevron and the
+             transcript door both live in. On the phone there was then no
+             visible way into the transcript at all, while the same page in a
+             browser had one — which is what "still nothing" meant, four times.
+             Screenshotting the phone was the only thing that showed it.
              Not exported — nothing outside the app has a reason to open it, and
              phase 2 will have the service start it on a figure arriving.
              singleTop so a wake that arrives while it is already up resumes the
@@ -80,6 +87,7 @@
             android:exported="false"
             android:launchMode="singleTop"
             android:label="@string/canvas_label"
+            android:theme="@android:style/Theme.Black.NoTitleBar"
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:windowSoftInputMode="adjustResize" />
 
