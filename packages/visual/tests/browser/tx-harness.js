@@ -259,6 +259,50 @@ const SHORT = [
   const closed = await page.evaluate(() => document.getElementById('tx').hidden);
   closed ? pass('T11 it closes') : fail('T11 still open');
 
+  // ---- holding an old page --------------------------------------------------
+  // The bug this is really here for: nothing in the client ever reloaded the
+  // document, so a canvas restarted with new assets left every open screen on
+  // the old page indefinitely — the wall, a phone tab, the app's WebView. The
+  // stream reconnects; the stream is not the page.
+  //
+  // Watched as a real navigation rather than by stubbing location.reload,
+  // which Chromium will not allow redefined. This also tests the thing that
+  // actually matters: whether the document is fetched again.
+  let navs = 0;
+  page.on('framenavigated', (f) => { if (f === page.mainFrame()) navs++; });
+  const hello = (id) => page.evaluate((p) => window.__es.dispatchEvent(
+    new MessageEvent('message', { data: JSON.stringify({ kind: 'hello', page: p }) })), id);
+  const settle = () => page.waitForTimeout(500);
+
+  // The first hello is the page we are running. A second saying the same
+  // thing must change nothing: canvases restart for reasons that have nothing
+  // to do with the page, and blanking every screen in the house for those is
+  // worse than the fault being fixed.
+  await hello('same-as-loaded');
+  await settle();
+  await hello('same-as-loaded');
+  await settle();
+  navs === 0 ? pass('T16 an unchanged page does not reload the house')
+             : fail(`T16 reloaded ${navs}x on an identical page id`);
+
+  // Now one that disagrees — but with the voice still going, which must hold
+  // it: a deploy should not blank the wall mid-sentence.
+  await page.evaluate((lines) => window.__es.dispatchEvent(new MessageEvent('message',
+    { data: JSON.stringify({ kind: 'state', speaking: true, sentence: lines[0],
+                             lines, lidx: 0, session: 's1' }) })), LINES);
+  await page.waitForTimeout(300);
+  await hello('a-newer-page');
+  await settle();
+  navs === 0 ? pass('T17 a reload waits for the sentence to finish')
+             : fail('T17 reloaded mid-reply');
+
+  // ...and lands the moment the reply ends.
+  await page.evaluate(() => window.__es.dispatchEvent(new MessageEvent('message',
+    { data: JSON.stringify({ kind: 'state', speaking: false }) })));
+  await page.waitForTimeout(1200);
+  navs >= 1 ? pass('T18 and reloads onto the new page as soon as it does')
+            : fail('T18 stayed on the old page');
+
   await browser.close();
   srv.kill();
   console.log(ok ? '\nALL PASS' : '\nFAILURES');

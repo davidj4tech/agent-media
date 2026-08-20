@@ -321,7 +321,7 @@
   function openTx(on) {
     $('tx').hidden = !on;
     document.body.classList.toggle('txopen', on);
-    if (!on) { setAhead(false); return; }
+    if (!on) { setAhead(false); maybeReload(); return; }
     txFollow = true;
     $('txlive').hidden = true;
     renderTx();
@@ -484,6 +484,25 @@
     else splitTap = now;
   });
 
+  // ---- reloading onto a new page -------------------------------------------
+  let pageId = null, reloadWanted = false;
+  // Never mid-sentence and never mid-typing. A deploy should not blank the
+  // wall in the middle of a reply, and it certainly should not eat a reply
+  // somebody is halfway through writing — the whole point of noticing the new
+  // page is that the screen ends up right, and a reload timed badly is its own
+  // kind of wrong.
+  function wantReload() {
+    reloadWanted = true;
+    maybeReload();
+  }
+  function maybeReload() {
+    if (!reloadWanted) return;
+    if (speaking) return;                       // let the reply finish
+    if (document.activeElement === $('text')) return;   // let the typing finish
+    if (!$('tx').hidden) return;                // let the reading finish
+    location.reload();
+  }
+
   function setSpeaking(on) {
     if (on === speaking) return;
     speaking = on;
@@ -496,7 +515,7 @@
                               : a.playbackRate = on ? 2.6 : 1);
     chime(on);
     vidVisible();                              // video yields while speaking
-    if (!on) { setSubtitle(null); figMsg = false; updFig(); markTx(); }
+    if (!on) { setSubtitle(null); figMsg = false; updFig(); markTx(); maybeReload(); }
     if (!on && seq) setBeat(seq.length - 1);   // speech over → the conclusion
   }
 
@@ -625,6 +644,16 @@
           ch = d.chan; histIdx = 1;
           if (visible) { $('title').textContent = '…'; poll(); }
         }
+      }
+      else if (d.kind === 'hello') {
+        // The first one is the page we are running: we loaded it from this
+        // server moments ago, so whatever it says is by definition ours. A
+        // later one that disagrees means the server's page changed under us —
+        // the canvas was restarted with new assets — and this document is now
+        // the old version. Nothing else in the client ever noticed that: the
+        // watchdog reconnects the STREAM, and the stream is not the page.
+        if (!pageId) pageId = d.page;
+        else if (d.page && d.page !== pageId) wantReload();
       }
       else if (d.kind === 'state') {
         if (d.speaking) stopSaySpin();     // audio started → the play button stops loading

@@ -32,6 +32,7 @@ A screen that is off just misses the show — nothing depends on it.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import queue
@@ -1088,6 +1089,24 @@ def _page() -> str:
 
 PAGE = _page()
 
+# What THIS page is, so a screen can tell it is holding an old one.
+#
+# The page is assembled once at import, which is the right trade for serving it
+# — but it means a canvas restarted behind a screen serves something that
+# screen will never ask for. Nothing in the client ever reloaded the document:
+# the SSE watchdog reconnects the stream, and the stream is not the page. So a
+# wall left open across a deploy, a phone browser tab, and the app's WebView
+# all keep whatever they loaded, for as long as they stay open. Reported, twice
+# and reasonably, as "the canvas keeps reverting to the old version" — it never
+# reverted, it never moved.
+#
+# A digest of the page rather than a boot id or a timestamp: canvases get
+# restarted for reasons that have nothing to do with the page (a bind address
+# changing, a crash, a machine rebooting), and blanking every screen in the
+# house for those would be a worse fault than the one being fixed. Same bytes,
+# same id, nobody reloads.
+PAGE_ID = hashlib.sha256(PAGE.encode()).hexdigest()[:12]
+
 
 # Cap request bodies: an unbounded Content-Length (e.g. 5 GB) would force a
 # multi-GB read/alloc — a trivial remote OOM on a RAM-tight host (#139).
@@ -1240,6 +1259,11 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         try:
             self.wfile.write(b"retry: 2000\n\n")
+            # First frame on every connection, including every reconnect: this
+            # is the page you should be running. A client holding another one
+            # reloads itself. Reconnects are exactly when a restart has
+            # happened, so this costs one small frame and needs no polling.
+            self._event({"kind": "hello", "page": PAGE_ID})
             if HUB.last is not None:
                 self._event(HUB.last)
             if HUB.last_state is not None:
