@@ -60,15 +60,25 @@
 
   // ---- subtitle band -------------------------------------------------------
   // A figure's labels ARE the message, so the sentence stops floating over
-  // them: while a fitted image is on screen with subtitles up, the image box
-  // shrinks by exactly the band's own height and the words take the strip.
-  // Ambient (cover) art keeps the old floating pill — there's nothing to hide.
+  // them: while an image is on screen with subtitles up, the image box shrinks
+  // by exactly the band's own height and the words take the strip.
+  //
+  // This used to require a FITTED image, on the reasoning that ambient (cover)
+  // art has no labels to protect and could keep the old floating pill. That
+  // reasoning was sound for what the band was then, and is wrong for what it
+  // became: the band is now the seam you drag and the way into the whole
+  // reply's transcript, and neither of those has anything to do with whether
+  // the picture happens to have writing on it. Gating them on the kind of
+  // image meant ordinary speech over ambient art got a pill and no way
+  // through — reported, exactly, as "the old version without the split
+  // screen", on a page that was completely current.
+  //
   // Ask the DOM which image is actually up rather than trusting a flag: two
   // shows can be in flight at once (a late /last replay racing a fresh push),
   // and their onloads land in whatever order the images decode.
   function bandOn() {
     const el = document.querySelector('.layer.on');
-    return !!el && el.classList.contains('fit') && $('sub').classList.contains('on');
+    return !!el && $('sub').classList.contains('on');
   }
   // How tall the words' half is, when the reader has said. Null means "as
   // tall as the sentence needs", which is the default and what the band did

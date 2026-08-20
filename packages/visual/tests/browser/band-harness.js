@@ -147,8 +147,19 @@ const FIG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300">
   });
   await page.waitForTimeout(1600);
   const g3 = await geom();
-  if (!g3.band && parseFloat(g3.subVar) === 0) pass('T7 ambient art keeps the floating pill');
-  else fail(`T7 band stuck on for cover art: ${g3.band} ${g3.subVar}`);
+  // DELIBERATELY INVERTED on 2026-08-20. This asserted the opposite — that
+  // ambient (cover) art kept the old floating pill, because it has no labels
+  // for the words to cover. That was right for what the band was: a way of
+  // keeping a sentence off a figure's own writing.
+  //
+  // It is wrong for what the band became. The band is now the seam you drag to
+  // split the screen and the way into the whole reply's transcript, and
+  // neither has anything to do with whether the picture has writing on it.
+  // Gating them on the kind of image meant ordinary speech over ambient art
+  // got a pill and no way through, which is what "the old version without the
+  // split screen" turned out to mean.
+  if (g3.band && parseFloat(g3.subVar) > 0) pass('T7 ambient art gets the band too');
+  else fail(`T7 no band for cover art: ${g3.band} ${g3.subVar}`);
   await page.screenshot({ path: path.join(SHOTS, 'band-ambient.png') });
 
   await browser.close();
