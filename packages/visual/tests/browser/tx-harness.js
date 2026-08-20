@@ -442,6 +442,27 @@ const SHORT = [
     ? pass('T37 an idle band shows the last thing said, not nothing')
     : fail(`T37 ${JSON.stringify(idleBand)}`);
 
+  // With captions off there is no band — and the transcript must still open as
+  // a HALF, not cover the screen. It keyed off the band alone, so no band meant
+  // inset:0, which reads as a pop-up and was reported as one.
+  const noBandSplit = await page.evaluate((lines) => {
+    localStorage.setItem('subs', '0');
+    localStorage.removeItem('split');
+    window.__es.dispatchEvent(new MessageEvent('message', { data: JSON.stringify(
+      { kind: 'state', speaking: false, lines, lidx: 0 }) }));
+    document.getElementById('zoom').click();
+    const t = document.getElementById('tx').getBoundingClientRect();
+    const out = { band: document.body.classList.contains('subband'),
+                  top: t.top, vh: innerHeight };
+    document.getElementById('txclose').click();
+    localStorage.setItem('subs', '1');
+    return out;
+  }, LINES);
+  (!noBandSplit.band && noBandSplit.top > noBandSplit.vh * 0.35
+                     && noBandSplit.top < noBandSplit.vh * 0.65)
+    ? pass('T41 with no band the transcript still opens as a half')
+    : fail(`T41 ${JSON.stringify(noBandSplit)}`);
+
   // The bottom half owns its taps. A tap that lands in the band but misses the
   // glyphs must open the transcript, NOT walk the mode ring the way a tap on
   // the picture does — "in the app a click on the bottom split is the same as

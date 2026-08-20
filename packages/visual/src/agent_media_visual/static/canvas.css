@@ -236,8 +236,14 @@
   /* Open into the words' half, so the figure stays visible above what is
      being read about it. Only when there IS a figure — with no picture to
      keep, the transcript takes the screen. */
+  /* The transcript is a HALF, not a modal. --txtop is where the seam is (see
+     txTop() in the JS): the band's own height when there is a band, the
+     dragged split when there is one, and half the screen otherwise. It used to
+     key off body.subband alone, so with captions switched off — no band — it
+     fell back to inset:0 and covered the screen, which reads as a pop-up
+     rather than a split, and was reported as exactly that. */
   #tx {
-    position: fixed; inset: 0;
+    position: fixed; inset: var(--txtop, 50vh) 0 0 0;
     /* ...except the transcript, which is the one thing on the page that does
        scroll. pan-y gives it vertical dragging and keeps the pinch (reading
        size) ours. */
@@ -280,11 +286,8 @@
     font: 600 14px/1.4 system-ui, sans-serif; color: #16130a;
     background: #ffe9a8; box-shadow: 0 6px 22px rgba(0,0,0,.5);
   }
-  body.subband #tx {
-    top: calc(100vh - var(--subband)); border-top: 1px solid rgba(255,233,168,.22);
-    padding-top: 3vh;
-  }
-  html.eink body.subband #tx { border-top: 1.5px solid #000; }
+  #tx { border-top: 1px solid rgba(255,233,168,.22); padding-top: 3vh; }
+  html.eink #tx { border-top: 1.5px solid #000; }
 
   /* Pinned to the foot of the panel, not the end of the text: the answer to
      "is it still going" must not be something you scroll to find. */

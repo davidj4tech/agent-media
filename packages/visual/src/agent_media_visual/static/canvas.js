@@ -104,6 +104,9 @@
     return v > 0 ? v : null;
   }
   function setSplit(px) {
+    if (txOpen())
+      requestAnimationFrame(() =>
+        document.documentElement.style.setProperty('--txtop', txTop() + 'px'));
     if (px == null) localStorage.removeItem('split');
     else {
       // Never let either half vanish: a divider dragged to an edge is a
@@ -357,7 +360,24 @@
     const to = el.offsetTop - $('tx').clientHeight * 0.34;
     $('tx').scrollTo({ top: Math.max(0, to), behavior: 'smooth' });
   }
+  // Where the transcript's top edge sits — the seam, in every case.
+  //
+  // The band's height when there is a band, so the words simply grow into the
+  // strip they were already in; the dragged split when the reader has set one;
+  // and half the screen when there is neither. Never the whole screen: a
+  // transcript that covers the picture is a pop-up, and this is meant to be
+  // the bottom of a split.
+  function txTop() {
+    const chosen = splitPx();
+    if (chosen) return Math.max(0, innerHeight - chosen);
+    const band = parseFloat(getComputedStyle(document.documentElement)
+                              .getPropertyValue('--subband')) || 0;
+    // A one-line band is too thin to read a reply in, so opening the
+    // transcript claims half the screen unless the reader has said otherwise.
+    return Math.max(0, innerHeight - Math.max(band, innerHeight * 0.5));
+  }
   function openTx(on) {
+    if (on) document.documentElement.style.setProperty('--txtop', txTop() + 'px');
     $('tx').hidden = !on;
     document.body.classList.toggle('txopen', on);
     if (!on) { setAhead(false); maybeReload(); return; }
