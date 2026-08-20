@@ -380,6 +380,21 @@ const SHORT = [
   idle.masked === 0 ? pass('T33 and nothing stays masked once nothing is coming')
                     : fail(`T33 ${idle.masked} lines still masked`);
 
+  // The band itself opens the transcript. The corner icon was wearing the fit
+  // toggle's own four-corner brackets, so the door onto the whole reply read
+  // as "fullscreen" and went unpressed for days — the words are the obvious
+  // target for asking to see more words.
+  await page.evaluate(() => document.getElementById('txclose').click());
+  await page.waitForTimeout(200);
+  const viaBand = await page.evaluate(() => {
+    document.getElementById('sub').click();
+    return !document.getElementById('tx').hidden;
+  });
+  viaBand ? pass('T34 tapping the band opens the whole reply')
+          : fail('T34 the band is not a door');
+  await page.evaluate(() => document.getElementById('txclose').click());
+  await page.waitForTimeout(200);
+
   // The door has to outlive the voice. It was tied to the subtitle being on
   // screen, so it vanished the moment the reply ended — leaving the transcript
   // reachable only while you were already being read to, and gone by the time

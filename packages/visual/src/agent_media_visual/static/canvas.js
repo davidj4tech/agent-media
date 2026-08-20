@@ -1334,6 +1334,13 @@
   // Reading size is a per-device preference and it survives a reload.
   document.documentElement.style.setProperty('--txscale', txScale());
   $('zoom').onclick = (e) => { e.stopPropagation(); openTx(true); resetHide(); };
+  // Tap the words to get all of them.
+  $('sub').addEventListener('click', (e) => {
+    if (!txLines.length) return;
+    e.stopPropagation();
+    openTx(true);
+    resetHide();
+  });
   $('txclose').onclick = (e) => { e.stopPropagation(); openTx(false); };
   $('txlive').onclick = (e) => {
     e.stopPropagation();
