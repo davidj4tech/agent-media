@@ -13,14 +13,22 @@ public class HoldRateTest {
         int failures = 0;
         long t = 1_000_000L;
 
-        // A person. Even a talkative one: fifteen dictations spread over the
-        // hour is more than David does and still says nothing.
+        // A person. Eight dictations spread over the hour is a talkative day
+        // at the keyboard and still says nothing.
         HoldRate r = new HoldRate();
-        for (int i = 0; i < 15; i++) r.engaged(t + i * 4L * 60_000L);
+        for (int i = 0; i < 8; i++) r.engaged(t + i * 7L * 60_000L);
         long end = t + 59L * 60_000L;
-        failures += check("fifteen dictations in an hour is a person",
+        failures += check("eight dictations in an hour is a person",
                 !r.suspicious(end));
         failures += check("and it says nothing", r.problem(end).isEmpty());
+
+        // The hour that went unreported: 13 engagements, every one of them the
+        // recogniser, while David was telling me speech kept stopping. The
+        // first threshold sat above this and said nothing.
+        r = new HoldRate();
+        for (int i = 0; i < 13; i++) r.engaged(t + i * 4L * 60_000L);
+        failures += check("the hour David complained through is reported",
+                r.suspicious(t + 55L * 60_000L));
 
         // The recogniser: mic open ~10s every ~40s, around the clock. It
         // crosses the line inside fifteen minutes.

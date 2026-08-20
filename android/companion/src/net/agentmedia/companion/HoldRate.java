@@ -51,11 +51,19 @@ final class HoldRate {
     /**
      * Engagements an hour past which this is not somebody talking.
      *
-     * David dictating all day would not reach it; the recogniser's every-40s
-     * cycle clears it in under fifteen minutes. Between the two is a wide gap
-     * and no reason to place the line finely.
+     * Set at 20 on the reasoning that the recogniser's every-40s cycle clears
+     * it in under fifteen minutes. It does — but the recogniser does not cycle
+     * evenly, and the hour David spent telling me speech was still stopping
+     * mid-sentence measured **13**, sat quietly under the line, and said
+     * nothing. A check that stays silent through the exact event it was
+     * written for is not a check.
+     *
+     * So: ten. Dictating ten times in one hour is a lot of talking to a
+     * keyboard and still leaves the line clear of an ordinary day, while the
+     * cost of being wrong is one line in `media doctor` — against another
+     * afternoon of "TTS is broken" for being wrong the other way.
      */
-    static final int TOO_MANY = 20;
+    static final int TOO_MANY = 10;
 
     private final Deque<Long> engagements = new ArrayDeque<Long>();
 

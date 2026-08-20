@@ -58,10 +58,14 @@ import time
 
 log = logging.getLogger(__name__)
 
-#: How often to look. The revert has never been observed inside an hour, so
-#: this is not a race — it bounds how long a reverted block can go unnoticed,
-#: and costs one cheap loopback command.
-DEFAULT_INTERVAL_S = 300.0
+#: How often to look.
+#:
+#: Not a race — the revert has never been observed inside two hours — so this
+#: is purely how long a reverted block goes unnoticed, and that window is not
+#: quiet time: at the recogniser's rate it is roughly one interrupted sentence
+#: every half minute until the next tick. Five minutes of that was still worth
+#: complaining about, and the check costs one loopback command.
+DEFAULT_INTERVAL_S = 120.0
 
 #: The mode we want. `ignore` makes Android open the recording and feed it
 #: zeros, which is what marks it `silenced` for everyone watching.
