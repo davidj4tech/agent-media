@@ -1135,6 +1135,14 @@ class Handler(BaseHTTPRequestHandler):
         path, _, query = self.path.partition("?")
         if path == "/":
             self._send(200, PAGE.encode(), "text/html; charset=utf-8")
+        elif path == "/pageid":
+            # Which page this canvas would serve, for a client that cannot ask
+            # the page itself. The SSE hello tells a RUNNING page it has gone
+            # stale, which is no use to a page loaded before that handler
+            # existed — and none at all to the app, whose WebView is a
+            # container the page's own JS cannot reload out from under. So the
+            # digest is also readable from outside, cheaply, with no stream.
+            self._send(200, (PAGE_ID + "\n").encode(), "text/plain")
         elif path == "/healthz":
             self._send(200, b"ok\n", "text/plain")
         elif path == "/seen":

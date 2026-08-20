@@ -103,6 +103,21 @@ public class CanvasActivity extends Activity {
      */
     private static final long STALE_MS = 10 * 60 * 1000L;
 
+    /**
+     * The page digest this WebView loaded, as reported by /pageid.
+     *
+     * Belt to the page's own braces, and the belt is the load-bearing one. The
+     * canvas announces a new page over SSE and a running page reloads itself —
+     * but only a page that already CONTAINS that handler, which is no use to
+     * the WebView that has been holding a document from before it existed. It
+     * would sit there forever, and did: "it's reverted back again" was this,
+     * after the SSE fix had already shipped and been verified.
+     *
+     * So the app asks directly, and its answer does not depend on the vintage
+     * of what it is currently showing.
+     */
+    private String pageId;
+
     private long leftAt;
     private FrameLayout root;
     private WebView web;
@@ -289,7 +304,50 @@ public class CanvasActivity extends Activity {
         return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
     }
 
-    /** Fetch the page again — the deliberate version of what STALE_MS guesses. */
+    /**
+     * Ask the canvas which page it is serving, and reload if it is not ours.
+     *
+     * Off the main thread and deliberately forgiving: an unreachable canvas,
+     * an older one with no /pageid, a timeout — every one of them means "no
+     * reason to reload", never an error on screen. The screen already says
+     * when it cannot reach the canvas at all.
+     */
+    private void checkPage() {
+        final String url = Settings.server(CanvasActivity.this).canvasUrl("/pageid");
+        new Thread(new Runnable() {
+            @Override public void run() {
+                final String got = fetch(url);
+                if (got == null || got.isEmpty()) return;
+                runOnUiThread(new Runnable() {
+                    @Override public void run() {
+                        if (pageId == null) { pageId = got; return; }
+                        if (!pageId.equals(got)) { pageId = got; reload(); }
+                    }
+                });
+            }
+        }).start();
+    }
+
+    private static String fetch(String url) {
+        java.net.HttpURLConnection c = null;
+        try {
+            c = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
+            c.setConnectTimeout(2500);
+            c.setReadTimeout(2500);
+            if (c.getResponseCode() != 200) return null;
+            java.io.BufferedReader r = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(c.getInputStream()));
+            String line = r.readLine();
+            r.close();
+            return line == null ? null : line.trim();
+        } catch (Exception e) {           // unreachable, no /pageid, timeout
+            return null;
+        } finally {
+            if (c != null) c.disconnect();
+        }
+    }
+
+    /** Fetch the page again — the deliberate version of what checkPage decides. */
     private void reload() {
         say(null);
         web.loadUrl(url());
@@ -319,7 +377,10 @@ public class CanvasActivity extends Activity {
         hideBars();
         back.wake();
         web.onResume();
-        if (leftAt > 0 && System.currentTimeMillis() - leftAt > STALE_MS) reload();
+        // Every resume, not only after a long absence: the check is one small
+        // request against a loopback-or-tailnet host, and STALE_MS was always
+        // a guess standing in for the question this actually asks.
+        checkPage();
     }
 
     @Override
