@@ -1,0 +1,3 @@
+# The mic being watched is this host's own, and appops needs a shell on it —
+# so this belongs where the microphone is, beside call-guard.
+requires: observe

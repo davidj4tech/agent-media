@@ -1,0 +1,20 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# Keep the phone's background recogniser blocked from the microphone.
+#
+# com.google.android.as holds the mic for tens of seconds at a time, which the
+# companion cannot tell from David dictating, so every one of them pauses the
+# reply he is listening to. Blocking it is the fix; the block reverting on its
+# own every few hours is why this is a service. See agent_media_core.mic_block.
+#
+# Does nothing unless MEDIA_MIC_BLOCK_PACKAGES names a package: silencing an
+# app's microphone is a decision, not a default.
+exec 2>&1
+export PATH="${PREFIX:-/data/data/com.termux/files/usr}/bin:$PATH"
+[ -f "$HOME/.config/agent-media.env" ] && . "$HOME/.config/agent-media.env"
+export MEDIA_MIC_BLOCK_PACKAGES MEDIA_MIC_BLOCK_INTERVAL_S
+here="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
+venv_py="$here/../../../../.venv/bin/python"
+if [ -x "$venv_py" ]; then
+  exec "$venv_py" -m agent_media_core.mic_block
+fi
+exec python3 -m agent_media_core.mic_block
