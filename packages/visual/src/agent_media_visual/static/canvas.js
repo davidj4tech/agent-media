@@ -73,12 +73,21 @@
   // through — reported, exactly, as "the old version without the split
   // screen", on a page that was completely current.
   //
-  // Ask the DOM which image is actually up rather than trusting a flag: two
-  // shows can be in flight at once (a late /last replay racing a fresh push),
-  // and their onloads land in whatever order the images decode.
+  // The band needs WORDS. It does not need a picture.
+  //
+  // This gate has been wrong twice, each time by being narrower than the thing
+  // it guards. First it demanded a fitted figure; loosening it to "any image"
+  // fixed ambient art and left the commonest case of all still broken —
+  // speech with nothing on the canvas, which is most speech. No image meant no
+  // band, so no seam, no bottom half, and no way into the transcript, on a
+  // screen that had plenty of room for all three.
+  //
+  // The band's job was never "keep words off a picture". It is where the words
+  // live, the seam you drag, and the door to the whole reply. A picture, when
+  // there is one, yields the strip; when there is not, the strip is simply
+  // there. Nothing about that needs an image to exist.
   function bandOn() {
-    const el = document.querySelector('.layer.on');
-    return !!el && $('sub').classList.contains('on');
+    return $('sub').classList.contains('on') || txLines.length > 0;
   }
   // How tall the words' half is, when the reader has said. Null means "as
   // tall as the sentence needs", which is the default and what the band did

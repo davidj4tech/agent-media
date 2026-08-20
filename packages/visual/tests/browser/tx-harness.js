@@ -161,9 +161,13 @@ const SHORT = [
   }, SHORT);
   await page.waitForTimeout(500);
   s = await state();
-  (s.n === 2 && s.sh <= s.ch + 4)
-    ? pass('T9b a short clip has nowhere to scroll')
-    : fail(`T9b unexpectedly scrollable: ${JSON.stringify(s)}`);
+  // This used to assert the panel had NOWHERE to scroll, which was true when
+  // the transcript covered the screen. It opens into the words' half now, so
+  // even two lines can overflow a short strip — the premise died with the
+  // split, not the guarantee. What matters is unchanged and tested below: the
+  // tap reveals what is ahead, whether or not scrolling is on offer.
+  (s.n === 2) ? pass('T9b a short clip renders both lines')
+              : fail(`T9b ${JSON.stringify(s)}`);
   await page.evaluate(() => {
     document.querySelector('#txlines p.ahead').click();
   });
@@ -379,6 +383,37 @@ const SHORT = [
     : fail(`T32 ${JSON.stringify(idle)}`);
   idle.masked === 0 ? pass('T33 and nothing stays masked once nothing is coming')
                     : fail(`T33 ${idle.masked} lines still masked`);
+
+  // The commonest case of all, and the one that stayed broken longest: words
+  // with NO picture on the canvas. The band's gate demanded an image, so most
+  // speech got a floating pill, no seam, no bottom half and no way into the
+  // transcript — on a screen with room for all of it.
+  const noPicture = await page.evaluate((lines) => {
+    // Take the pictures away entirely.
+    for (const el of document.querySelectorAll('.layer')) el.classList.remove('on');
+    window.__es.dispatchEvent(new MessageEvent('message', { data: JSON.stringify(
+      { kind: 'state', speaking: true, sentence: lines[1], lines, lidx: 1, session: 's1' }) }));
+    return new Promise((done) => setTimeout(() => done({
+      band: document.body.classList.contains('subband'),
+      seam: !document.getElementById('split').hidden,
+      subVar: getComputedStyle(document.documentElement).getPropertyValue('--subband'),
+    }), 400));
+  }, LINES);
+  (noPicture.band && noPicture.seam && parseFloat(noPicture.subVar) > 0)
+    ? pass('T35 words with no picture still get the band and the seam')
+    : fail(`T35 ${JSON.stringify(noPicture)}`);
+
+  // ...and the transcript opens into that bottom half, not over everything.
+  const half = await page.evaluate(() => {
+    document.getElementById('sub').click();
+    const t = document.getElementById('tx').getBoundingClientRect();
+    return { top: t.top, vh: innerHeight, open: !document.getElementById('tx').hidden };
+  });
+  (half.open && half.top > 0)
+    ? pass('T36 and the transcript opens into the bottom half')
+    : fail(`T36 ${JSON.stringify(half)}`);
+  await page.evaluate(() => document.getElementById('txclose').click());
+  await page.waitForTimeout(200);
 
   // The band itself opens the transcript. The corner icon was wearing the fit
   // toggle's own four-corner brackets, so the door onto the whole reply read

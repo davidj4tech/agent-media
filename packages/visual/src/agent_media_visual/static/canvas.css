@@ -64,7 +64,12 @@
      Shrink via `height`, not `bottom`: .layer pins height:100vh (which would
      win over-constrained), and `height:auto` on an <img> means its intrinsic
      height, not "whatever top/bottom leave". contain re-letterboxes to fit. */
-  body.subband .layer.fit { height: calc(100vh - var(--figres)); }
+  /* Any layer yields the strip, not only a fitted one. A cover image that
+     kept its full height simply had the band laid over its bottom edge, which
+     is the thing the band exists to stop — and it meant "split screen" was
+     true for figures and a polite fiction for everything else. Cover art
+     crops into the shorter box, which is what cover art is for. */
+  body.subband .layer { height: calc(100vh - var(--figres)); }
   /* A figure whose session ISN'T the one speaking dims to backdrop — it's
      still there, but no longer claims to illustrate the current voice. */
   .layer.stale { filter: brightness(.3) saturate(.5); }
