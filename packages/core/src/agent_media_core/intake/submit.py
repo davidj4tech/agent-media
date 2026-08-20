@@ -1430,11 +1430,24 @@ def speech_hold_until() -> float:
     return max(held.values()) if held else 0.0
 
 
-def _wait_speech_hold() -> None:
+def _wait_speech_hold(refresh: "Optional[Callable[[], None]]" = None,
+                      refresh_every_s: float = 30.0) -> None:
     """Block while a hold is active. Re-reads the marker each tick so an early
     `media speech-hold --release` lifts it immediately; the expiry stored in
-    the marker bounds the wait even if nobody ever releases it."""
+    the marker bounds the wait even if nobody ever releases it.
+
+    `refresh` is called on entry and every `refresh_every_s` while the wait
+    lasts. Callers waiting outside the playback token pass their
+    `announce()` so their place in their session's queue does not age out
+    (MEDIA_SPEECH_PENDING_TTL_S) — a wait longer than the pending TTL would
+    otherwise let a later sibling speak first the moment the hold lifts.
+    """
+    last = 0.0
     while speech_hold_until() > 0.0:
+        if refresh is not None and (last == 0.0
+                                    or time.monotonic() - last >= refresh_every_s):
+            refresh()
+            last = time.monotonic()
         time.sleep(0.2)
 
 
@@ -3007,21 +3020,50 @@ def submit_event(event: Event,
         # parallel). Acquired before before_speech() so other media isn't paused
         # while we're still queued behind another speaker. `seq=started_at` is
         # what keeps same-session order canonical — see announce() above.
-        playback_lock.acquire(
-            event.priority, session=order_session,
-            supersede=bool((event.metadata or {}).get("supersede")),
-            seq=started_at)
-        # Superseded before we started (a later URGENT in this session dropped
-        # us): hand the token straight back and skip playback entirely — no
-        # broker claim, no music duck, no history row.
-        if playback_lock.should_abort():
+        # An active hold (`media speech-hold N`) gates the START of playback,
+        # and it is waited out *before* the token is taken, not while holding
+        # it.
+        #
+        # Holding the token through the wait was the obvious reading of "we
+        # keep our place in the queue", and the expiry in the marker was
+        # supposed to bound it. What that missed is that a hold is not one
+        # timed event: call-guard re-asserts it every 15s for as long as the
+        # phone's mic looks hot, so the marker never expires and the wait has
+        # no bound in practice. One reply then sat on the token for as long as
+        # the mic kept opening, and since the token is global, *every* session's
+        # speech queued behind a reply that was not playing — until each waiter
+        # gave up after MEDIA_SPEECH_LOCK_TIMEOUT_S and played unserialized.
+        # Ten minutes, which is what David heard.
+        #
+        # Nothing is lost by waiting outside: a hold silences the whole channel,
+        # so no one else could have played during it either. What changes is
+        # that the token is free while nobody may speak, so the order things are
+        # said in when the hold lifts is decided by the queue rather than by who
+        # happened to be sitting on the lock. The wait keeps our announcement
+        # warm so a sibling cannot age us out of our own session's order.
+        def _keep_our_place() -> None:
+            playback_lock.announce(event.priority, session=order_session,
+                                   seq=started_at)
+
+        while True:
+            _wait_speech_hold(refresh=_keep_our_place)
+            playback_lock.acquire(
+                event.priority, session=order_session,
+                supersede=bool((event.metadata or {}).get("supersede")),
+                seq=started_at)
+            # Superseded before we started (a later URGENT in this session
+            # dropped us): hand the token straight back and skip playback
+            # entirely — no broker claim, no music duck, no history row.
+            if playback_lock.should_abort():
+                playback_lock.release()
+                return None
+            if speech_hold_until() <= 0.0:
+                break
+            # A hold landed in the gap between the wait and the take. Hand the
+            # token back rather than sitting on it: the invariant is that the
+            # broker is never fed under a hold, not that we own the lock while
+            # waiting for one.
             playback_lock.release()
-            return None
-        # An active hold (`media speech-hold N`) gates the START of playback:
-        # we keep the token but do not feed the broker until the hold lifts.
-        # The expiry lives in the marker itself, so this wait is bounded even
-        # if whoever asked for the hold has vanished.
-        _wait_speech_hold()
         # Flushed while queued, rendering, or held (`media speech-flush`):
         # cancel only the playback. The reply is still archived below, marked
         # flushed, so the history a human browses later holds the full text
