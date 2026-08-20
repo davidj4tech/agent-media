@@ -48,6 +48,7 @@ that has dropped its pairing is a thing to report, not to crash over.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -55,6 +56,9 @@ import shutil
 import subprocess
 import sys
 import time
+from pathlib import Path
+
+from ._paths import state_dir
 
 log = logging.getLogger(__name__)
 
@@ -164,6 +168,47 @@ def tick(package: str, last_applied: float | None,
     return "failed", last_applied
 
 
+def state_path() -> Path:
+    """Where this service leaves what it knows, for `media doctor` to read."""
+    return state_dir() / "mic-block.json"
+
+
+def publish(package: str, mode: str | None, reverted_at: float | None) -> None:
+    """Record the last thing we saw, so health checks need no shell of their own.
+
+    Written by the only process on the phone that can actually read the op.
+    `media doctor` otherwise has to infer the block's state from behaviour —
+    and behaviour cannot tell a reverted block from David doing Duolingo, which
+    holds the microphone every forty seconds for entirely good reasons.
+    """
+    path = state_path()
+    try:
+        blob = json.loads(path.read_text())
+        if not isinstance(blob, dict):
+            blob = {}
+    except (OSError, ValueError):
+        blob = {}
+    entry = blob.get(package)
+    if not isinstance(entry, dict):
+        entry = {}
+    entry["mode"] = mode or "unknown"
+    entry["checked_at"] = time.time()
+    if reverted_at is not None:
+        entry["last_revert_at"] = reverted_at
+        recent = [t for t in entry.get("reverts", []) if isinstance(t, (int, float))]
+        recent.append(reverted_at)
+        # A day's worth is all anyone reads, and it keeps the file small.
+        entry["reverts"] = [t for t in recent if reverted_at - t < 86400][-50:]
+    blob[package] = entry
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(blob))
+        tmp.replace(path)
+    except OSError as e:
+        log.warning("mic-block: could not write %s: %s", path, e)
+
+
 def main(argv: "list[str] | None" = None) -> int:
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -181,7 +226,9 @@ def main(argv: "list[str] | None" = None) -> int:
     applied: dict[str, float | None] = {n: None for n in names}
     while True:
         for name in names:
-            _, applied[name] = tick(name, applied[name])
+            outcome, applied[name] = tick(name, applied[name])
+            publish(name, read_mode(name),
+                    applied[name] if outcome == "reverted" else None)
         time.sleep(every)
 
 

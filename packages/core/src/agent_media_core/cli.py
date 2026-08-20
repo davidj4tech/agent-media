@@ -5381,6 +5381,7 @@ def selfcheck_facts() -> "dict[str, str]":
     facts.update(_hold_facts())
     facts.update(_media_volume_facts())
     facts.update(_dictation_rate_facts())
+    facts.update(_mic_block_facts())
     return facts
 
 
@@ -5445,6 +5446,39 @@ def _media_volume_facts() -> "dict[str, str]":
                 return {}
             return {"media_volume": f"{vol}/{mx}"}
     return {}
+
+
+def _mic_block_facts() -> "dict[str, str]":
+    """What the mic-block service last saw, if it runs here.
+
+    The one place on the phone that can actually read the app-op, so this is
+    the difference between "the block has come off again" and "David is doing
+    Duolingo" — two things that look identical from the hold rate, which is all
+    the companion can see.
+    """
+    from . import mic_block
+
+    try:
+        blob = json.loads(mic_block.state_path().read_text())
+    except (OSError, ValueError):
+        return {}                       # the service does not run on this host
+    if not isinstance(blob, dict) or not blob:
+        return {}
+    facts = {}
+    loose = []
+    reverts = 0
+    now = time.time()
+    for package, entry in blob.items():
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("mode") != mic_block.BLOCKED:
+            loose.append(f"{package}={entry.get('mode', 'unknown')}")
+        reverts += len([t for t in entry.get("reverts", [])
+                        if isinstance(t, (int, float)) and now - t < 86400])
+    facts["mic_block"] = "loose:" + ",".join(loose) if loose else "held"
+    if reverts:
+        facts["mic_block_reverts_24h"] = str(reverts)
+    return facts
 
 
 def _dictation_rate_facts() -> "dict[str, str]":
@@ -5595,8 +5629,18 @@ def health_problems(facts: "dict[str, str]") -> "list[str]":
                 f"external hold has stood for {held_s / 60:.0f}m ({who}) — "
                 "music is ducked and speech paused; a release probably never "
                 "arrived. `media-call-guard --release` lifts it")
+    block = facts.get("mic_block", "")
+    if block.startswith("loose:"):
+        problems.append(
+            f"the microphone block is not in force ({block[6:]}) — speech will "
+            "be paused every time the phone's recogniser opens the mic. The "
+            "mic-block service re-applies it; check that it is running")
     rate = facts.get("dictation_rate")
-    if rate:
+    # Only a complaint when the block is not known to be holding. A high rate
+    # with the block in force is a person using their microphone — dictating,
+    # or a language app that opens it every forty seconds — and Sam waiting for
+    # them is the feature working, not a fault to report.
+    if rate and not block == "held":
         problems.append(rate)
     quiet = facts.get("mic_detect_quiet_s")
     if quiet:

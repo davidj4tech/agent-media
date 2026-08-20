@@ -61,3 +61,29 @@ def test_a_companion_answering_rubbish_is_not_a_fact():
         assert cli._dictation_rate_facts() == {}
     with _state({"dictation_holds_1h": "lots"}):
         assert cli._dictation_rate_facts() == {}
+
+
+def test_a_busy_microphone_is_not_a_fault_while_the_block_holds():
+    """David doing Duolingo opens the mic every forty seconds, and Sam waiting
+    for him is the feature working. Only the app-op's real state can tell that
+    from a block that has come off, and only the service can read it."""
+    said = "the dictation hold engaged 12 times in the last hour — ..."
+    facts = {"dictation_holds_1h": "12", "dictation_rate": said,
+             "mic_block": "held"}
+    assert cli.health_problems(facts) == []
+
+
+def test_the_same_rate_is_a_fault_when_the_block_is_off():
+    said = "the dictation hold engaged 12 times in the last hour — ..."
+    facts = {"dictation_holds_1h": "12", "dictation_rate": said,
+             "mic_block": "loose:com.google.android.as=foreground"}
+    problems = cli.health_problems(facts)
+    assert said in problems
+    assert any("not in force" in p for p in problems)
+
+
+def test_a_host_without_the_service_still_reports_a_wild_rate():
+    """No mic_block fact at all is a host the service does not run on. The
+    companion's own complaint is then the only evidence there is."""
+    said = "the dictation hold engaged 47 times in the last hour — ..."
+    assert said in cli.health_problems({"dictation_rate": said})

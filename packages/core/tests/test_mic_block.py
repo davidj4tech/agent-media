@@ -112,3 +112,46 @@ def test_the_interval_has_a_floor(monkeypatch):
     assert mic_block.interval_s() >= 30.0
     monkeypatch.setenv("MEDIA_MIC_BLOCK_INTERVAL_S", "not a number")
     assert mic_block.interval_s() == mic_block.DEFAULT_INTERVAL_S
+
+
+def test_what_it_saw_is_published_for_doctor(tmp_path, monkeypatch):
+    """The service is the only thing on the phone that can read the app-op, so
+    it writes down what it saw. Without this, `media doctor` has to infer the
+    block's state from the hold rate — which cannot tell a reverted block from
+    a person using their microphone."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    import json as _json
+
+    mic_block.publish("com.google.android.as", "ignore", None)
+    blob = _json.loads(mic_block.state_path().read_text())
+    assert blob["com.google.android.as"]["mode"] == "ignore"
+    assert blob["com.google.android.as"]["checked_at"] > 0
+    assert "reverts" not in blob["com.google.android.as"]
+
+    mic_block.publish("com.google.android.as", "ignore", 1000.0)
+    mic_block.publish("com.google.android.as", "ignore", 2000.0)
+    blob = _json.loads(mic_block.state_path().read_text())
+    assert blob["com.google.android.as"]["reverts"] == [1000.0, 2000.0]
+    assert blob["com.google.android.as"]["last_revert_at"] == 2000.0
+
+
+def test_a_days_worth_of_reverts_is_kept_not_a_lifetime(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    import json as _json
+
+    mic_block.publish("p", "ignore", 1000.0)
+    mic_block.publish("p", "ignore", 1000.0 + 86400 * 2)
+    blob = _json.loads(mic_block.state_path().read_text())
+    assert blob["p"]["reverts"] == [1000.0 + 86400 * 2], "yesterday's still counted"
+
+
+def test_unreadable_state_is_no_state(tmp_path, monkeypatch):
+    """Corrupt or missing means the service does not run here — never a claim
+    that the block is off, which would be a fault report on every host."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    from agent_media_core import cli
+
+    assert cli._mic_block_facts() == {}
+    mic_block.state_path().parent.mkdir(parents=True, exist_ok=True)
+    mic_block.state_path().write_text("{ not json")
+    assert cli._mic_block_facts() == {}
