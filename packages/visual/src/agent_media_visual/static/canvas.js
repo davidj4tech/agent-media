@@ -1062,11 +1062,25 @@
     resetHide();
     let r = null;
     try {
-      r = await fetch('/ctl', {
+      // authed(), not a bare fetch: /ctl is a state-changing POST and needs
+      // the same token /input does. This called fetch directly, so every
+      // control action — every transport button, and tapping a sentence to
+      // play from there — came back 401 and was thrown away by the catch
+      // below without a word. It looked exactly like the actions doing
+      // nothing, which is what they were doing.
+      const res = await authed('/ctl', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ channel: ch, action: action, arg: arg, sarg: sarg }),
-      }).then(r => r.json());
+      });
+      if (!res.ok) {
+        // Say so. A silent failure here is indistinguishable from a control
+        // that does not work, and that ambiguity cost days.
+        toast(res.status === 401 ? 'not paired — cannot control playback'
+                                 : 'that did not work (' + res.status + ')');
+        return null;
+      }
+      r = await res.json();
       // Speech ⏮ semantics ride on replay-prev's echoed cursor (the popup
       // folds the same echo into hist_idx).
       if (action === 'prev' && ch === 'speech' && r.out && /^\d+$/.test(r.out))

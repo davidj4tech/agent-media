@@ -184,3 +184,50 @@ def test_last_clip_survives_a_restart(tmp_path, monkeypatch):
     canvas._last_clip_load()
     assert canvas._LAST_CLIP["lines"] == ["Kept.", "Both."]
     assert canvas._LAST_CLIP["idx"] == 1
+
+
+def test_a_reply_split_across_clips_becomes_one_transcript(monkeypatch):
+    """The intake splits a reply, so clip_sentences is only ever one clip.
+
+    The first sentence goes out alone so the voice starts sooner and the rest
+    follows. A transcript built straight from clip_sentences therefore shows a
+    single sentence for most of a reply and the whole thing only once the last
+    clip is playing — reported exactly as "on the app it doesn't show until the
+    end".
+    """
+    monkeypatch.setattr(canvas, "_origin_host", lambda: None)
+    monkeypatch.setattr(canvas, "_LAST_CLIP",
+                        {"lines": [], "idx": 0, "key": "", "t": 0.0})
+    monkeypatch.setattr(canvas, "_last_clip_save", lambda: None)
+    _fake_media(monkeypatch, "▶ 0:01 / 0:04")
+
+    monkeypatch.setattr(canvas, "_speech_extras",
+                        lambda: {"current_sentence": "The opener.",
+                                 "clip_sentences": ["The opener."],
+                                 "current_sentence_idx": 0,
+                                 "source_pane": "%12"})
+    first = canvas.speech_state()
+    assert first["lines"] == ["The opener."]
+
+    # The rest of the same reply, from the same pane, moments later.
+    monkeypatch.setattr(canvas, "_speech_extras",
+                        lambda: {"current_sentence": "Then this.",
+                                 "clip_sentences": ["Then this.", "And this."],
+                                 "current_sentence_idx": 0,
+                                 "source_pane": "%12"})
+    rest = canvas.speech_state()
+    assert rest["lines"] == ["The opener.", "Then this.", "And this."]
+    assert rest["lidx"] == 1        # the index is reply-wide, not clip-wide
+
+    # A replay of a clip already in the reply lands on itself, not a copy.
+    again = canvas.speech_state()
+    assert again["lines"] == ["The opener.", "Then this.", "And this."]
+
+    # A different pane is a different reply, and starts over.
+    monkeypatch.setattr(canvas, "_speech_extras",
+                        lambda: {"current_sentence": "Somebody else.",
+                                 "clip_sentences": ["Somebody else."],
+                                 "current_sentence_idx": 0,
+                                 "source_pane": "%99"})
+    other = canvas.speech_state()
+    assert other["lines"] == ["Somebody else."]

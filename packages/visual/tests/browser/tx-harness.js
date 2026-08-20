@@ -329,10 +329,14 @@ const SHORT = [
   // touch that restarts the voice three paragraphs back would make it hostile.
   const seeks = [];
   await page.route('**/ctl', async (r) => {
-    try { seeks.push(JSON.parse(r.request().postData() || '{}')); } catch (_) {}
+    try {
+      seeks.push({ body: JSON.parse(r.request().postData() || '{}'),
+                   token: r.request().headers()['x-auth-token'] });
+    } catch (_) {}
     await r.fulfill({ status: 200, contentType: 'application/json',
                       body: JSON.stringify({ ok: true, out: '' }) });
   });
+  await page.evaluate(() => localStorage.setItem('amux_token', 'test-token'));
   await page.evaluate(() => document.getElementById('zoom').click());
   await page.waitForTimeout(300);
   // A tap on a still-masked line uncovers it and must NOT also seek —
@@ -355,9 +359,15 @@ const SHORT = [
   });
   await page.waitForTimeout(600);
   const seek = seeks[seeks.length - 1];
-  (seek && seek.action === 'goto-sentence' && seek.sarg === '2')
+  (seek && seek.body.action === 'goto-sentence' && seek.body.sarg === '2')
     ? pass('T30 one tap plays from that sentence')
     : fail(`T30 ${JSON.stringify(seeks)}`);
+  // /ctl is a state-changing POST and needs the token. act() used a bare
+  // fetch, so every control action — every transport button, and this — came
+  // back 401 and was swallowed. It looked like the controls doing nothing.
+  (seek && seek.token === 'test-token')
+    ? pass('T30b and carries the auth token')
+    : fail(`T30b no token on the seek: ${JSON.stringify(seek)}`);
 
   const moved = await page.evaluate(() =>
     [...document.querySelectorAll('#txlines p')].findIndex(p => p.classList.contains('now')));

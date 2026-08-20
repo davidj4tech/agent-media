@@ -765,7 +765,26 @@ def _speech_extras() -> dict:
 # empties the transcript until something next speaks. Restarts are exactly when
 # somebody is told to reload and go and look, so an in-memory cache is empty
 # at the one moment it is asked for.
-_LAST_CLIP: dict = {"lines": [], "idx": 0}
+# Keyed by the pane that is speaking, with a timestamp, because a reply is not
+# one clip. The intake splits it — the first sentence goes out on its own so
+# the voice starts sooner, and the rest follows — so clip_sentences is only
+# ever the CURRENT clip. A transcript built from it shows one sentence for most
+# of a reply and the whole thing only once the last clip is playing, which is
+# exactly "on the app it doesn't show until the end".
+_LAST_CLIP: dict = {"lines": [], "idx": 0, "key": "", "t": 0.0}
+# A new clip from the same pane within this many seconds continues the same
+# reply rather than starting a new one.
+_REPLY_GAP_S = 180.0
+
+
+def _sublist_index(hay: list, needle: list) -> int:
+    """Where `needle` already sits inside `hay`, or -1. Empty needle: -1."""
+    if not needle or len(needle) > len(hay):
+        return -1
+    for i in range(len(hay) - len(needle) + 1):
+        if hay[i:i + len(needle)] == needle:
+            return i
+    return -1
 
 
 def _last_clip_path() -> Path:
@@ -784,6 +803,11 @@ def _last_clip_load() -> None:
             _LAST_CLIP["idx"] = int(data.get("idx") or 0)
         except (TypeError, ValueError):
             _LAST_CLIP["idx"] = 0
+        _LAST_CLIP["key"] = str(data.get("key") or "")
+        try:
+            _LAST_CLIP["t"] = float(data.get("t") or 0)
+        except (TypeError, ValueError):
+            _LAST_CLIP["t"] = 0.0
 
 
 def _last_clip_save() -> None:
@@ -877,39 +901,48 @@ def speech_state() -> dict:
     lines = [" ".join(str(t).split()) for t in (ex.get("clip_sentences") or [])]
     lines = [t for t in lines if t]
     if lines:
-        changed = lines != _LAST_CLIP["lines"]
-        _LAST_CLIP["lines"] = lines
+        # A reply is not one clip. The intake sends the first sentence on its
+        # own so the voice starts sooner and the rest follows, so
+        # clip_sentences is only ever the CURRENT clip — a transcript built
+        # straight from it shows one sentence for most of a reply and the whole
+        # thing only once the last clip plays. So clips from the same pane,
+        # close together, accumulate into one reply.
         try:
-            idx = int(ex.get("current_sentence_idx") or 0)
+            within = int(ex.get("current_sentence_idx") or 0)
         except (TypeError, ValueError):
-            idx = 0
-        changed = changed or idx != _LAST_CLIP["idx"]
-        _LAST_CLIP["idx"] = idx
+            within = 0
+        key = str(ex.get("source_pane") or ex.get("source_session") or "")
+        now = time.time()
+        same_reply = bool(key) and key == _LAST_CLIP.get("key") and (
+            now - float(_LAST_CLIP.get("t") or 0) < _REPLY_GAP_S)
+        kept = list(_LAST_CLIP["lines"]) if same_reply else []
+        # Where this clip sits in the reply. Matched on the sentences
+        # themselves because a clip carries no id — which also means a replay
+        # lands on itself instead of piling up a second copy.
+        at = _sublist_index(kept, lines)
+        if at < 0:
+            at = len(kept)
+            kept = kept + lines
+        changed = (kept != _LAST_CLIP["lines"] or key != _LAST_CLIP.get("key")
+                   or at + within != _LAST_CLIP["idx"])
+        _LAST_CLIP.update({"lines": kept[:120], "idx": min(at + within, 119),
+                           "key": key, "t": now})
         if changed:
             _last_clip_save()
-    elif _LAST_CLIP["lines"]:
-        # now_playing is CLEARED when the clip ends — the store holds what is
-        # playing, not what was said. So once the voice stops there is nothing
-        # left to read, and the transcript that is wanted precisely THEN would
-        # be empty. Reading the extras while idle (which is what the previous
-        # attempt did) fixed nothing: it looked right only because it was
-        # tested mid-sentence, when the row still existed.
-        #
-        # So the canvas remembers the last clip itself, and keeps serving it
-        # until a new one replaces it. The index stays where the voice left
-        # off, which is also where a reader picking it up again wants to start.
-        state["lines"] = list(_LAST_CLIP["lines"])
+
+    # Published from the remembered reply in BOTH cases — speaking or not.
+    #
+    # now_playing holds what is PLAYING and the row is cleared when the clip
+    # ends, so once the voice stops there is nothing left to read and the
+    # transcript, which is wanted precisely then, would be empty. And while a
+    # voice IS live, publishing the raw clip instead of the reply is what made
+    # the transcript arrive only at the end.
+    #
+    # Capped for the wire: this rides a 1 Hz broadcast to every screen, and one
+    # pathological reply should not put a megabyte on it every second.
+    if _LAST_CLIP["lines"]:
+        state["lines"] = [t[:220] for t in _LAST_CLIP["lines"]]
         state["lidx"] = _LAST_CLIP["idx"]
-        return state
-    if lines:
-        # Capped like `sentence` above, and for the same reason: this rides a
-        # 1 Hz SSE broadcast to every screen, and one pathological reply should
-        # not put a megabyte on the wire every second.
-        state["lines"] = [t[:220] for t in lines[:120]]
-        try:
-            state["lidx"] = int(ex.get("current_sentence_idx") or 0)
-        except (TypeError, ValueError):
-            state["lidx"] = 0
     return state
 
 
