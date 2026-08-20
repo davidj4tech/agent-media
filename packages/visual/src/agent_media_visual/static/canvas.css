@@ -3,7 +3,16 @@
      the fitted picture yields — the band plus the docks stacked on top of it,
      so a narrated figure is never written on by anything. Both in JS. */
   :root { --subband: 0px; --figres: 0px; }
-  html, body { margin:0; height:100%; background:#000; overflow:hidden; }
+  html, body { margin:0; height:100%; background:#000; overflow:hidden;
+    /* The gestures on this page are ours, and without saying so we do not get
+       them. With the default touch-action the browser claims any two-finger
+       move as its own scroll/zoom and fires pointercancel at us partway
+       through — which is precisely "one increment per pinch, and panning does
+       nothing": the gesture is repeatedly taken away and has to be re-acquired
+       from scratch, so nothing accumulates and a drag never survives long
+       enough to be a drag. Nothing here scrolls at the document level anyway,
+       which is what overflow:hidden above already says. */
+    touch-action: none; }
   /* Pinch-zoom lives here, on the stage, so Ken Burns keeps the images'
      own transform to itself. Fixed children resolve against a transformed
      ancestor, and the stage is exactly the viewport, so the layers position
@@ -202,7 +211,11 @@
      being read about it. Only when there IS a figure — with no picture to
      keep, the transcript takes the screen. */
   #tx {
-    position: fixed; inset: 0; z-index: 40;
+    position: fixed; inset: 0;
+    /* ...except the transcript, which is the one thing on the page that does
+       scroll. pan-y gives it vertical dragging and keeps the pinch (reading
+       size) ours. */
+    touch-action: pan-y; z-index: 40;
     background: rgba(6,7,9,.94); backdrop-filter: blur(18px);
     overflow-y: auto; overscroll-behavior: contain;
     padding: max(16vh, 96px) 7vw max(24vh, 140px);

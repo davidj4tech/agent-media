@@ -320,6 +320,23 @@ const SHORT = [
     ? pass('T22 double-tap returns the picture whole')
     : fail(`T22 ${JSON.stringify(reset)}`);
 
+  // The gesture handlers are useless if the browser is allowed to claim the
+  // fingers first: with the default touch-action it takes any two-finger move
+  // as its own scroll/zoom and pointercancels ours partway through, which is
+  // exactly "one increment per pinch and panning does nothing". Cheap to
+  // assert, and invisible to every other test here.
+  const touch = await page.evaluate(() => ({
+    body: getComputedStyle(document.body).touchAction,
+    tx: getComputedStyle(document.getElementById('tx')).touchAction,
+    split: getComputedStyle(document.getElementById('split')).touchAction,
+  }));
+  (touch.body === 'none' && touch.split === 'none')
+    ? pass('T24 the page claims the gestures')
+    : fail(`T24 ${JSON.stringify(touch)}`);
+  (touch.tx === 'pan-y')
+    ? pass('T25 except the transcript, which still scrolls')
+    : fail(`T25 transcript touch-action is ${touch.tx}`);
+
   // ---- holding an old page --------------------------------------------------
   // The bug this is really here for: nothing in the client ever reloaded the
   // document, so a canvas restarted with new assets left every open screen on

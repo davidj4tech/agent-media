@@ -2,7 +2,10 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- user-scalable=no is not about forbidding zoom — this page has its own,
+     with a focal point and a double-tap reset. It is about the browser not
+     running a SECOND zoom underneath ours off the same fingers. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>agent-media canvas</title>
 <style>/*__CANVAS_CSS__*/</style>
 </head>
