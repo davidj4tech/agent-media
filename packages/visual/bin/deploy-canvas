@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Roll the canvas onto every screen that serves one.
+#
+# The page is assembled at import and served from memory, so a commit changes
+# nothing anywhere until each canvas is restarted -- and there is more than one
+# canvas. red5 runs the wall's (systemd user unit); the phone runs its own
+# local control surface (runit, loopback-bound) out of its own checkout.
+#
+# This exists because doing it by hand is doing it from memory, and memory is
+# what failed: after a run of canvas fixes the phone's copy was left two
+# versions behind, so every report of "it's still not happening" was TRUE on
+# the screen being looked at and false on the one being tested. Six rounds of
+# that. A deploy that covers one host is worse than no deploy, because it
+# looks like it worked.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "$0")/../../.." && pwd)"
+PHONE="${MEDIA_CANVAS_PHONE:-p8a}"
+
+cd "$HERE"
+if [ -n "$(git status --porcelain -- packages/visual)" ]; then
+    echo "packages/visual has uncommitted changes -- commit before deploying." >&2
+    exit 1
+fi
+git push -q origin main 2>/dev/null || true
+
+echo "== red5 =="
+systemctl --user restart agent-media-visual-canvas
+sleep 2
+red5_id="$(curl -s -m 8 http://red5:8781/pageid || echo unreachable)"
+echo "  serving $red5_id"
+
+echo "== $PHONE =="
+# shellcheck disable=SC2029  # $PREFIX is meant to expand on the phone
+ssh "$PHONE" 'cd ~/projects/agent-media && git pull -q --ff-only
+SVDIR=$PREFIX/var/service sv restart canvas-local >/dev/null
+sleep 2
+printf "  serving "; curl -s -m 6 http://127.0.0.1:8781/pageid'
+
+phone_id="$(ssh "$PHONE" 'curl -s -m 6 http://127.0.0.1:8781/pageid' || echo unreachable)"
+if [ "$red5_id" != "$phone_id" ]; then
+    echo "MISMATCH: red5=$red5_id $PHONE=$phone_id" >&2
+    exit 1
+fi
+echo "both on $red5_id"
