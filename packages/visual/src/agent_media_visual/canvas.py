@@ -757,8 +757,15 @@ def speech_state() -> dict:
     state: dict = {"kind": "state", "speaking": line.startswith("▶")}
     if len(times) >= 2:
         state["pos"], state["dur"] = times[0], times[1]
+    # Read the extras whether or not a voice is live. The clip's sentences are
+    # the LAST reply's until a new one replaces them, and they are what the
+    # canvas transcript is made of — so a screen that connects after the voice
+    # has stopped can still show what was just said, and read back through it.
+    # Serving them only while speaking meant the transcript existed solely
+    # during the seconds you were being read to, and was empty every time
+    # anybody went looking for it afterwards, which is the entire complaint.
+    ex = _speech_extras()
     if state["speaking"]:
-        ex = _speech_extras()
         sentence = " ".join(str(ex.get("current_sentence") or "").split())
         if sentence:
             state["sentence"] = sentence[:220]
@@ -769,23 +776,23 @@ def speech_state() -> dict:
         # without accumulating what it happened to be awake for. A page
         # reloaded mid-reply gets the same transcript as one that watched it
         # arrive, which an accumulate-as-you-go model could never manage.
-        lines = [" ".join(str(t).split()) for t in (ex.get("clip_sentences") or [])]
-        lines = [t for t in lines if t]
-        if lines:
-            # Capped like `sentence` above, and for the same reason: this rides
-            # a 1 Hz SSE broadcast to every screen, and one pathological reply
-            # should not put a megabyte on the wire every second.
-            state["lines"] = [t[:220] for t in lines[:120]]
-            try:
-                state["lidx"] = int(ex.get("current_sentence_idx") or 0)
-            except (TypeError, ValueError):
-                state["lidx"] = 0
         if ex.get("visual"):
             state["visual"] = ex["visual"]
         if ex.get("source_session"):
             # Who's talking — the page uses this to dim a figure that belongs
             # to a different session than the current voice.
             state["session"] = str(ex["source_session"])[:80]
+    lines = [" ".join(str(t).split()) for t in (ex.get("clip_sentences") or [])]
+    lines = [t for t in lines if t]
+    if lines:
+        # Capped like `sentence` above, and for the same reason: this rides a
+        # 1 Hz SSE broadcast to every screen, and one pathological reply should
+        # not put a megabyte on the wire every second.
+        state["lines"] = [t[:220] for t in lines[:120]]
+        try:
+            state["lidx"] = int(ex.get("current_sentence_idx") or 0)
+        except (TypeError, ValueError):
+            state["lidx"] = 0
     return state
 
 

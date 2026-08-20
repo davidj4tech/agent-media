@@ -782,9 +782,12 @@
         if (d.speaking) stopSaySpin();     // audio started → the play button stops loading
         if (d.speaking) holdWake(45000);   // rolling hold while a voice is live
         setSpeaking(!!d.speaking);
+        // Outside the speaking branch: the transcript is the LAST reply's
+        // until a new one replaces it, and it is wanted most once the voice
+        // has stopped. Inside, it existed only while you were being read to.
+        if (d.lines) setLines(d.lines, typeof d.lidx === 'number' ? d.lidx : 0);
         if (d.speaking) {
           setSubtitle(d.sentence || null);
-          if (d.lines) setLines(d.lines, typeof d.lidx === 'number' ? d.lidx : 0);
           figMsg = !!d.visual; updFig();
           applyStale(d.session || null);
         } else {
@@ -1342,11 +1345,13 @@
   // clip, the only one. Same bargain as the scroll: deliberate, never
   // something the eye does while listening.
   //
-  // Double-tapping any line plays from there, the way read-aloud works. A
-  // single tap is deliberately not enough: the transcript is something you
-  // scroll and read, and a stray touch that restarts the voice three
-  // paragraphs back would make it hostile to handle.
-  let txTapAt = 0, txTapLine = -1;
+  // Tapping any line plays from there, the way read-aloud works.
+  //
+  // This was a double-tap first, on the worry that a stray touch while
+  // scrolling would restart the voice three paragraphs back. That worry does
+  // not survive contact with how touch actually works: a scroll is a drag, and
+  // a drag does not fire click. The only thing the second tap was protecting
+  // against was the first one working.
   $('tx').addEventListener('click', (e) => {
     e.stopPropagation();
     const p = e.target.closest && e.target.closest('#txlines p');
@@ -1355,14 +1360,7 @@
       setAhead(true);
       return;                       // uncovering is its own act; do not also seek
     }
-    const i = [...$('txlines').children].indexOf(p);
-    const now = Date.now();
-    if (i === txTapLine && now - txTapAt < 400) {
-      txTapAt = 0; txTapLine = -1;
-      playFrom(i, p);
-    } else {
-      txTapAt = now; txTapLine = i;
-    }
+    playFrom([...$('txlines').children].indexOf(p), p);
   });
   // Play from a sentence. The highlight is moved locally straight away rather
   // than waiting for the next state frame — that is up to a second away, and a

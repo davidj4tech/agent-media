@@ -56,9 +56,33 @@ def test_state_carries_sentence_and_visual_flag(monkeypatch):
     assert st["visual"] == "figure"
 
 
-def test_idle_state_skips_extras(monkeypatch):
+def test_idle_state_reads_extras_for_the_transcript(monkeypatch):
+    """An idle state carries the last clip's LINES, but not its live fields.
+
+    This asserted the opposite until 2026-08-20: that an idle poll never
+    touched the store at all. That was a fair guarantee when the only thing
+    extras were wanted for was the live sentence and the figure flag — neither
+    of which means anything with nothing playing, so the read was pure waste at
+    1 Hz.
+
+    The canvas transcript changed what extras are for. clip_sentences is the
+    LAST reply's until a new one replaces it, and a transcript is wanted
+    precisely when the voice has stopped — so refusing to read while idle meant
+    the transcript was empty every single time anybody went looking for it. The
+    read is a cheap WAL hit; an unreachable feature is not a saving.
+
+    What must still hold is that an idle frame does not claim a voice: no
+    `sentence`, no `visual`.
+    """
     _fake_media(monkeypatch, "○")
     monkeypatch.setattr(canvas, "_speech_extras",
-                        lambda: (_ for _ in ()).throw(AssertionError("no read")))
+                        lambda: {"current_sentence": "Said a moment ago.",
+                                 "visual": "figure",
+                                 "clip_sentences": ["Said a moment ago.",
+                                                    "And then this."],
+                                 "current_sentence_idx": 1})
     st = canvas.speech_state()
+    assert st["speaking"] is False
     assert "sentence" not in st and "visual" not in st
+    assert st["lines"] == ["Said a moment ago.", "And then this."]
+    assert st["lidx"] == 1

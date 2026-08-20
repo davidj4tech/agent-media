@@ -331,23 +331,28 @@ const SHORT = [
   });
   await page.evaluate(() => document.getElementById('zoom').click());
   await page.waitForTimeout(300);
+  // A tap on a still-masked line uncovers it and must NOT also seek —
+  // uncovering is its own act.
   await page.evaluate(() => {
-    document.body.classList.add('txahead');       // nothing masked, so taps seek
-    const p = document.querySelectorAll('#txlines p')[2];
-    p.click();                                     // one tap: must not seek
+    document.body.classList.remove('txahead');
+    const p = [...document.querySelectorAll('#txlines p')].find(
+      (x) => x.classList.contains('ahead'));
+    if (p) p.click();
   });
-  await page.waitForTimeout(500);
-  seeks.length === 0 ? pass('T29 a single tap does not move the voice')
-                     : fail(`T29 one tap issued ${JSON.stringify(seeks)}`);
+  await page.waitForTimeout(400);
+  seeks.length === 0 ? pass('T29 tapping masked text uncovers, and does not seek')
+                     : fail(`T29 issued ${JSON.stringify(seeks)}`);
 
+  // One tap on a readable line plays from there. A scroll is a drag and a drag
+  // does not fire click, which is why a single tap is safe here.
   await page.evaluate(() => {
-    const p = document.querySelectorAll('#txlines p')[2];
-    p.click(); p.click();                          // double: play from there
+    document.body.classList.add('txahead');
+    document.querySelectorAll('#txlines p')[2].click();
   });
   await page.waitForTimeout(600);
   const seek = seeks[seeks.length - 1];
   (seek && seek.action === 'goto-sentence' && seek.sarg === '2')
-    ? pass('T30 a double-tap plays from that sentence')
+    ? pass('T30 one tap plays from that sentence')
     : fail(`T30 ${JSON.stringify(seeks)}`);
 
   const moved = await page.evaluate(() =>
@@ -357,6 +362,23 @@ const SHORT = [
   await page.unroute('**/ctl');
   await page.evaluate(() => document.getElementById('txclose').click());
   await page.waitForTimeout(200);
+
+  // The transcript must arrive on a frame that is NOT speaking — that is the
+  // state a screen is in whenever anybody goes looking for what was just said,
+  // and serving the lines only while speaking meant it was empty every time.
+  const idle = await page.evaluate((lines) => {
+    window.__es.dispatchEvent(new MessageEvent('message', { data: JSON.stringify(
+      { kind: 'state', speaking: false, lines, lidx: 3 }) }));
+    return { n: document.querySelectorAll('#txlines p').length,
+             door: getComputedStyle(document.getElementById('zoom')).display,
+             masked: [...document.querySelectorAll('#txlines p')]
+                       .filter((p) => p.classList.contains('ahead')).length };
+  }, LINES);
+  (idle.n === LINES.length && idle.door !== 'none')
+    ? pass('T32 the transcript arrives with the voice stopped')
+    : fail(`T32 ${JSON.stringify(idle)}`);
+  idle.masked === 0 ? pass('T33 and nothing stays masked once nothing is coming')
+                    : fail(`T33 ${idle.masked} lines still masked`);
 
   // The door has to outlive the voice. It was tied to the subtitle being on
   // screen, so it vanished the moment the reply ended — leaving the transcript
