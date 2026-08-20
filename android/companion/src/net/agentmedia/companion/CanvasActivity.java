@@ -312,6 +312,31 @@ public class CanvasActivity extends Activity {
         return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
     }
 
+    /** Every half minute while this screen is up. */
+    private static final long POLL_MS = 30_000L;
+
+    private final android.os.Handler poller =
+            new android.os.Handler(android.os.Looper.getMainLooper());
+    private final Runnable tick = new Runnable() {
+        @Override public void run() {
+            checkPage();
+            poller.postDelayed(this, POLL_MS);
+        }
+    };
+
+    /**
+     * Keep checking while the screen stays open.
+     *
+     * The hole every previous fix shared: they all hung off coming BACK to
+     * this screen, and a canvas left open across a deploy is never come back
+     * to. Half a minute against a loopback-or-tailnet host costs nothing and
+     * closes it.
+     */
+    private void startPolling() {
+        poller.removeCallbacks(tick);
+        poller.postDelayed(tick, POLL_MS);
+    }
+
     /**
      * Ask the canvas which page it is serving, and reload if it is not ours.
      *
@@ -328,8 +353,17 @@ public class CanvasActivity extends Activity {
                 if (got == null || got.isEmpty()) return;
                 runOnUiThread(new Runnable() {
                     @Override public void run() {
-                        if (pageId == null) { pageId = got; return; }
-                        if (!pageId.equals(got)) { pageId = got; reload(); }
+                        if (pageId == null) {
+                            pageId = got;
+                            CompanionService.log("canvas: page " + got);
+                            return;
+                        }
+                        if (!pageId.equals(got)) {
+                            CompanionService.log("canvas: page " + pageId
+                                    + " -> " + got + ", reloading");
+                            pageId = got;
+                            reload();
+                        }
                     }
                 });
             }
@@ -358,6 +392,7 @@ public class CanvasActivity extends Activity {
     /** Fetch the page again — the deliberate version of what checkPage decides. */
     private void reload() {
         say(null);
+        CompanionService.log("canvas: loading " + url());
         web.loadUrl(url());
     }
 
@@ -385,10 +420,22 @@ public class CanvasActivity extends Activity {
         hideBars();
         back.wake();
         web.onResume();
-        // Every resume, not only after a long absence: the check is one small
-        // request against a loopback-or-tailnet host, and STALE_MS was always
-        // a guess standing in for the question this actually asks.
-        checkPage();
+        // Reload outright, rather than asking whether we should.
+        //
+        // Three attempts at "notice the page changed" each worked and each had
+        // a different hole: the SSE hello cannot reach a page too old to
+        // contain it; the digest recorded on first resume was recorded before
+        // the load finished; and neither fires at all while the screen simply
+        // stays open. Every one of those presented identically -- "it's
+        // reverted again" -- and each fix looked correct in isolation.
+        //
+        // So stop deciding. Returning to this screen is a deliberate act and
+        // the page is one local request; re-fetching it unconditionally cannot
+        // be stale by construction, and there is no baseline left to get
+        // wrong. The canvas re-renders the current figure from /last, so
+        // nothing on screen is lost by it.
+        reload();
+        startPolling();
     }
 
     @Override
@@ -404,6 +451,7 @@ public class CanvasActivity extends Activity {
     protected void onPause() {
         super.onPause();
         leftAt = System.currentTimeMillis();
+        poller.removeCallbacks(tick);
         // Paused, not destroyed: coming back should not mean reconnecting the
         // stream and re-fetching the figure that is already on screen.
         web.onPause();
