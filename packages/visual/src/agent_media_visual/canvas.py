@@ -760,6 +760,8 @@ def _speech_extras() -> dict:
 # 1 Hz and this hop crosses to Falkenstein on a link that drops packets — a
 # stale sentence is much better than a canvas that stutters, and the transcript
 # is read after the fact anyway.
+# The last clip's sentences, kept because the store does not keep them.
+_LAST_CLIP: dict = {"lines": [], "idx": 0}
 _ORIGIN_STATE: dict = {"t": 0.0, "data": None}
 _ORIGIN_TTL = 2.0
 
@@ -845,6 +847,26 @@ def speech_state() -> dict:
             state["session"] = str(ex["source_session"])[:80]
     lines = [" ".join(str(t).split()) for t in (ex.get("clip_sentences") or [])]
     lines = [t for t in lines if t]
+    if lines:
+        _LAST_CLIP["lines"] = lines
+        try:
+            _LAST_CLIP["idx"] = int(ex.get("current_sentence_idx") or 0)
+        except (TypeError, ValueError):
+            _LAST_CLIP["idx"] = 0
+    elif _LAST_CLIP["lines"]:
+        # now_playing is CLEARED when the clip ends — the store holds what is
+        # playing, not what was said. So once the voice stops there is nothing
+        # left to read, and the transcript that is wanted precisely THEN would
+        # be empty. Reading the extras while idle (which is what the previous
+        # attempt did) fixed nothing: it looked right only because it was
+        # tested mid-sentence, when the row still existed.
+        #
+        # So the canvas remembers the last clip itself, and keeps serving it
+        # until a new one replaces it. The index stays where the voice left
+        # off, which is also where a reader picking it up again wants to start.
+        state["lines"] = list(_LAST_CLIP["lines"])
+        state["lidx"] = _LAST_CLIP["idx"]
+        return state
     if lines:
         # Capped like `sentence` above, and for the same reason: this rides a
         # 1 Hz SSE broadcast to every screen, and one pathological reply should

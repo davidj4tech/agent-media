@@ -136,3 +136,33 @@ def test_origin_unreachable_keeps_the_last_words(monkeypatch):
 
     monkeypatch.setattr("urllib.request.urlopen", _boom)
     assert canvas.speech_state()["lines"] == ["Held."]
+
+
+def test_transcript_survives_the_end_of_the_clip(monkeypatch):
+    """The last clip's sentences outlive now_playing, which does not.
+
+    The store holds what is PLAYING. When the clip ends the row is cleared, so
+    reading extras while idle — the previous attempt at this — returns nothing.
+    It looked correct only because it was tested mid-sentence, while the row
+    still existed. The transcript is wanted exactly when the voice has stopped,
+    so the canvas keeps the last clip itself.
+    """
+    monkeypatch.setattr(canvas, "_origin_host", lambda: None)
+    monkeypatch.setattr(canvas, "_LAST_CLIP", {"lines": [], "idx": 0})
+
+    _fake_media(monkeypatch, "▶ 0:03 / 0:09")
+    monkeypatch.setattr(canvas, "_speech_extras",
+                        lambda: {"current_sentence": "Second.",
+                                 "clip_sentences": ["First.", "Second."],
+                                 "current_sentence_idx": 1})
+    live = canvas.speech_state()
+    assert live["lines"] == ["First.", "Second."] and live["lidx"] == 1
+
+    # The clip ends: now_playing is gone entirely.
+    _fake_media(monkeypatch, "○")
+    monkeypatch.setattr(canvas, "_speech_extras", dict)
+    after = canvas.speech_state()
+    assert after["speaking"] is False
+    assert after["lines"] == ["First.", "Second."]
+    assert after["lidx"] == 1
+    assert "sentence" not in after      # idle still claims no live voice
