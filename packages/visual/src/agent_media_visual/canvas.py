@@ -746,11 +746,72 @@ def _speech_extras() -> dict:
         return {}
 
 
+# --- the words live where they are produced ----------------------------------
+# A canvas on a render-only host (the phone's local control surface) has no
+# speech state to read: now_playing for speech is written where the reply is
+# PRODUCED, and this host only plays the audio. So its subtitle, its band, its
+# seam and its transcript were all empty, always — not broken, just asking a
+# store that was never going to have the answer. From the outside that is
+# indistinguishable from a canvas that has not been deployed, which cost six
+# rounds of looking at deploys.
+#
+# The origin's canvas has already computed exactly the snapshot we want, so ask
+# it rather than reaching into its store. Cached, because the poller runs at
+# 1 Hz and this hop crosses to Falkenstein on a link that drops packets — a
+# stale sentence is much better than a canvas that stutters, and the transcript
+# is read after the fact anyway.
+_ORIGIN_STATE: dict = {"t": 0.0, "data": None}
+_ORIGIN_TTL = 2.0
+
+
+def _origin_host() -> str | None:
+    """The host producing the speech, or None to answer locally."""
+    try:
+        from agent_media_core import config
+        roles = config.host_roles()
+        if roles is None or "origin" in roles:
+            return None
+        found = config.peer("origin")
+        return found.host if found else None
+    except Exception:  # noqa: BLE001 — a surface renders what it got
+        return None
+
+
+def _origin_speech() -> dict | None:
+    """The origin canvas's own speech snapshot, cached. None if unreachable."""
+    host = _origin_host()
+    if not host:
+        return None
+    now = time.time()
+    if _ORIGIN_STATE["data"] is not None and now - _ORIGIN_STATE["t"] < _ORIGIN_TTL:
+        return _ORIGIN_STATE["data"]
+    try:
+        import urllib.request
+        port = int(os.environ.get("MEDIA_VISUAL_PORT") or DEFAULT_PORT)
+        with urllib.request.urlopen(
+                f"http://{host}:{port}/speech", timeout=4) as r:
+            data = json.loads(r.read().decode())
+    except Exception:  # noqa: BLE001
+        # Keep serving the last good answer rather than blinking the band out
+        # of existence on one dropped packet.
+        return _ORIGIN_STATE["data"]
+    data.pop("events", None)
+    data.pop("local_audio", None)
+    _ORIGIN_STATE["t"] = now
+    _ORIGIN_STATE["data"] = data
+    return data
+
+
 def speech_state() -> dict:
     """One SSE-shaped speech-state snapshot off `media popup-status`, enriched
     with the current sentence (the same per-clip marker that drives the tmux
     copy-mode highlight — this is highlight mode for the canvas) and the
     figure flag for the ▣ badge."""
+    remote = _origin_speech()
+    if remote is not None:
+        # Whether a voice is audible is still a local fact — this host is the
+        # one playing it — but the WORDS are the origin's.
+        return remote
     line = (_media(["popup-status", "--no-bar", "--show-idle"], timeout=5)
             .splitlines() or [""])[0].strip()
     times = _parse_clock(line)

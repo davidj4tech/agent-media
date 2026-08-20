@@ -1,5 +1,6 @@
 """The canvas's speech-state snapshot (drives motion + sound cues)."""
 
+import json
 from agent_media_visual import canvas
 
 
@@ -86,3 +87,52 @@ def test_idle_state_reads_extras_for_the_transcript(monkeypatch):
     assert "sentence" not in st and "visual" not in st
     assert st["lines"] == ["Said a moment ago.", "And then this."]
     assert st["lidx"] == 1
+
+
+def test_render_only_host_asks_the_origin(monkeypatch):
+    """A host that only PLAYS the speech gets the words from the one producing it.
+
+    The phone's local canvas has no now_playing for speech — it is written
+    where the reply is produced, not where the audio comes out — so its
+    subtitle, band, seam and transcript were all permanently empty. Not broken:
+    asking a store that was never going to have the answer. From the outside
+    that is indistinguishable from a canvas nobody deployed, which is exactly
+    how it was read for six rounds.
+    """
+    monkeypatch.setattr(canvas, "_origin_host", lambda: "red5")
+    monkeypatch.setattr(canvas, "_ORIGIN_STATE", {"t": 0.0, "data": None})
+    monkeypatch.setattr(canvas, "_speech_extras",
+                        lambda: (_ for _ in ()).throw(AssertionError("local read")))
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return json.dumps({"kind": "state", "speaking": True,
+                               "sentence": "From the origin.",
+                               "lines": ["From the origin.", "And the rest."],
+                               "lidx": 0, "events": [1], "local_audio": True}).encode()
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: _Resp())
+    st = canvas.speech_state()
+    assert st["lines"] == ["From the origin.", "And the rest."]
+    assert st["sentence"] == "From the origin."
+    # The peek-only fields do not ride the 1 Hz broadcast to every screen.
+    assert "events" not in st and "local_audio" not in st
+
+
+def test_origin_unreachable_keeps_the_last_words(monkeypatch):
+    """One dropped packet must not blink the band out of existence."""
+    monkeypatch.setattr(canvas, "_origin_host", lambda: "red5")
+    good = {"kind": "state", "speaking": True, "lines": ["Held."], "lidx": 0}
+    monkeypatch.setattr(canvas, "_ORIGIN_STATE", {"t": 0.0, "data": good})
+
+    def _boom(*a, **k):
+        raise OSError("link dropped")
+
+    monkeypatch.setattr("urllib.request.urlopen", _boom)
+    assert canvas.speech_state()["lines"] == ["Held."]
