@@ -423,12 +423,38 @@ class SinkSpeech:
     def snapshot(self, target: Target = DEFAULT_TARGET) -> dict:
         """One-round-trip read of the state the playlist monitor needs each tick
         (playlist-pos / idle-active / pause / time-pos). Empty dict on failure —
-        far cheaper over a bridge than four separate get_property hops."""
+        far cheaper over a bridge than four separate get_property hops.
+
+        Judged by the same budget as `display_properties`, and for the same
+        reason: latency is not a fault here. The in-app player on p8a answers
+        this exact read in a steady 1.28s — 0.43s of tailnet connect and the
+        rest honest work — against a default slow line of 1200ms. Eighty
+        milliseconds over, every single time, so the breaker tripped on every
+        tick and then skipped the endpoint for twenty seconds:
+
+            1.29s  answered=[idle-active, mute, pause, playlist-pos, speed]
+            0.00s  FAILED: skipped, endpoint slow (19s left)
+            0.00s  FAILED: skipped, endpoint slow (19s left)
+
+        The breaker's state is shared on disk, so one process tripping it blinds
+        every other hook too. A follow loop that cannot read the player bails as
+        stalled and then holds the speech token for the reply's whole duration
+        on the blind-hold tail — which is how replies queued behind each other
+        for ten, twenty, fifty minutes while the phone itself was idle 80% of
+        the hour.
+
+        Failure still opens it, briefly: a genuinely dead phone must not make
+        every tick wait out the connect timeout. Being slow is not failing.
+        """
         try:
             return ipc.get_properties(
                 _socket_for(target),
                 ["playlist-pos", "idle-active", "pause", "time-pos", "mute",
-                 "speed"])
+                 "speed"],
+                # Above the 1.28s the app really takes, so a tick under load
+                # returns a whole snapshot rather than one missing the very
+                # field (idle-active) the loop ends on.
+                timeout=3.0, slow_s=0, breaker_s=5)
         except (ipc.MpvIpcError, OSError):
             return {}
 

@@ -236,6 +236,7 @@ final class BuiltinSpeech implements MpvServer.Player {
                 playlist.clear();
                 playlist.add(uri);
                 pos = 0;
+                ended = false;
                 startCurrent();
             } else {
                 // append does NOT auto-play, and the sink depends on that: it
@@ -276,6 +277,7 @@ final class BuiltinSpeech implements MpvServer.Player {
             release();
             playlist.clear();
             pos = -1;
+            ended = false;      // idle by the empty-playlist half of the test
             volunteer("playlist-pos");
             volunteer("idle-active");
         });
@@ -286,6 +288,7 @@ final class BuiltinSpeech implements MpvServer.Player {
         lastCommandAt = System.currentTimeMillis();
         worker.execute(() -> {
             pos = index;
+            ended = false;
             if (index < 0 || index >= playlist.size()) {
                 release();
                 } else {
@@ -319,6 +322,7 @@ final class BuiltinSpeech implements MpvServer.Player {
         } else {
             release();
             pos = playlist.isEmpty() ? -1 : playlist.size() - 1;
+            ended = true;
             volunteer("idle-active");
         }
         if (announce) volunteer("playlist-pos");
@@ -329,6 +333,7 @@ final class BuiltinSpeech implements MpvServer.Player {
     private void startCurrent() {
         String uri = current();
         if (uri == null) return;
+        ended = false;
         release();
         try {
             File file = local(uri);
@@ -467,9 +472,36 @@ final class BuiltinSpeech implements MpvServer.Player {
         }
     }
 
+    /**
+     * Set when the playlist ran off its end; cleared the moment a clip starts.
+     *
+     * The coordinator on red5 follows a reply by polling this player and ends
+     * its follow when the answer is "idle", exactly as it did against mpv. But
+     * {@link #advance} parks `pos` on the last clip when a reply finishes —
+     * deliberately, so `playlist-pos` still names where we got to — and `pos <
+     * 0` was the whole of the old idle test. A finished reply therefore
+     * reported "not idle" forever.
+     *
+     * What the coordinator did with that is not subtle: never seeing the end,
+     * it declared the playlist stalled, then held the global speech token for
+     * the reply's *entire duration* on the assumption that audio it could not
+     * see was still playing. Every other session's reply queued behind that,
+     * which is most of why replies were taking ten minutes to be spoken on a
+     * phone that was idle four fifths of the hour.
+     */
+    private volatile boolean ended = false;
+
+    /**
+     * Is this player idle — nothing playing and nothing left to play?
+     *
+     * Not simply "no MediaPlayer": between two sentences the old one has been
+     * released and the next has not been adopted, and calling that idle would
+     * end the follow-along in the middle of a reply — the same gap
+     * {@link #active} exists to see through.
+     */
     @Override
     public boolean idle() {
-        return player == null && pos < 0;
+        return ended || (player == null && pos < 0);
     }
 
     private String current() {
