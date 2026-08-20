@@ -299,6 +299,21 @@ const SHORT = [
     ? pass('T21 and cannot be dragged off into the black')
     : fail(`T21 x=${panned.clamped.x} z=${panned.clamped.z} w=${panned.w}`);
 
+  // A pinch that also drags must do both. This is the ordering bug that made
+  // two-finger panning look dead: panning clamps against the CURRENT scale,
+  // and at scale 1 there is no room, so a drag applied before the zoom was
+  // thrown away before the zoom could make room for it.
+  const both = await page.evaluate(() => {
+    const p = window.__imgprobe;
+    p.resetImg();                       // start at 1:1, where the bug lived
+    p.zoomAbout(2.5, 210, 390);         // open it up about the fingers...
+    p.panImg(-60, -45);                 // ...and drag in the same gesture
+    return p.at();
+  });
+  (both.z === 2.5 && both.x < 0 && both.y < 0)
+    ? pass('T23 zooming and dragging in one gesture keeps both')
+    : fail(`T23 ${JSON.stringify(both)}`);
+
   await page.evaluate(() => window.__imgprobe.resetImg());
   const reset = await page.evaluate(() => window.__imgprobe.at());
   (reset.z === 1 && reset.x === 0 && reset.y === 0)

@@ -386,8 +386,9 @@
   // is the same equation with the scale unchanged, so panning and zooming are
   // not two behaviours that have to agree; they are one.
   let imgZ = 1, imgX = 0, imgY = 0, imgRaf = 0;
+  const IMG_MAX = 10;
   function clampImg() {
-    imgZ = Math.min(6, Math.max(1, imgZ));
+    imgZ = Math.min(IMG_MAX, Math.max(1, imgZ));
     if (imgZ === 1) { imgX = imgY = 0; return; }
     // Never past the edge: beyond it there is only black, and finding the way
     // back from black is a puzzle nobody asked for.
@@ -411,7 +412,7 @@
   function zoomAbout(z, sx, sy) {
     const from = imgZ;
     const px = (sx - imgX) / from, py = (sy - imgY) / from;   // the spot held
-    imgZ = Math.min(6, Math.max(1, z));
+    imgZ = Math.min(IMG_MAX, Math.max(1, z));
     imgX = sx - px * imgZ;
     imgY = sy - py * imgZ;
     applyImg();
@@ -442,14 +443,27 @@
     if (!PINCH.pts.has(e.pointerId)) return;
     PINCH.pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (PINCH.pts.size !== 2 || !PINCH.d0) return;
-    const ratio = pinchDist() / PINCH.d0;
+    // Gain, because fingers do not travel far on a phone. A raw distance
+    // ratio caps out around 2.5x on a 420px screen even with a full spread
+    // from pinched-shut to wide, which meant zooming to anything useful was
+    // four or five separate gestures. Raising the ratio to a power keeps the
+    // gesture continuous and reversible — the same spread that reached 2.5x
+    // now reaches about 5x, and pinching back retraces it exactly.
+    const ratio = Math.pow(pinchDist() / PINCH.d0, 1.9);
     if (PINCH.target === 'text') { setTxScale(PINCH.base * ratio); return; }
     // Two fingers move the picture as well as size it — the midpoint carries
     // the drag, the spread carries the zoom, and both land in one transform.
     const mid = pinchMid();
-    panImg(mid.x - PINCH.mid.x, mid.y - PINCH.mid.y);
+    const dx = mid.x - PINCH.mid.x, dy = mid.y - PINCH.mid.y;
     PINCH.mid = mid;
+    // Zoom FIRST, then carry the drag. The other order loses the pan whenever
+    // the zoom is also clamping: panImg clamps against the OLD scale, and at
+    // scale 1 that clamp is "no room at all", so a two-finger drag that was
+    // also opening the picture up had its movement thrown away before the
+    // zoom could make room for it. That is why two-finger panning looked
+    // dead — it worked only if you were already zoomed in.
     zoomAbout(PINCH.base * ratio, mid.x, mid.y);
+    if (dx || dy) panImg(dx, dy);
   }, { passive: true });
   function pinchEnd(e) {
     PINCH.pts.delete(e.pointerId);

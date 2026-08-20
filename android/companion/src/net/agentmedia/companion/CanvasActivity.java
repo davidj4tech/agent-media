@@ -167,6 +167,14 @@ public class CanvasActivity extends Activity {
             @Override
             public void onPageFinished(WebView v, String url) {
                 say(null);
+                // Stamp what we just loaded, rather than whatever the first
+                // resume happens to see. The difference bit: pageId was being
+                // recorded on the first resume, which fires before the load
+                // finishes — so a canvas restarted in that window was adopted
+                // as "ours" and the screen sat on the old page believing it
+                // was current.
+                pageId = null;
+                checkPage();
             }
         });
         // The keyboard. Nothing else in this window makes room for it: the
