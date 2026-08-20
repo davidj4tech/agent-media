@@ -2717,6 +2717,37 @@ def cmd_skip(a) -> int:
     except ipc.MpvIpcError:
         count = 1
 
+    # "Play from this sentence" with nothing playing.
+    #
+    # Stepping assumes a reader to move; an absolute jump does not. The canvas
+    # transcript is READ AFTER the reply has finished — that is what it is for
+    # — so by the time a sentence is tapped the player is idle and
+    # now_playing has been cleared, leaving nothing to seek and no sentence
+    # list to seek within. Every tap ran, returned 0, and did nothing.
+    #
+    # So bring the reply back first, then jump into it. One retry only: if the
+    # replay produced no sentence list either, fall through rather than loop.
+    if getattr(a, "to", None) is not None and (idle or n <= 1)             and not getattr(a, "_replayed", False):
+        a._replayed = True
+        # WHICH reply, not just "the last one". The canvas transcript belongs
+        # to a particular pane, and the newest clip in the history is very
+        # often something else — an org reminder, another session's voice.
+        # Replaying that and jumping to sentence four of it is worse than doing
+        # nothing, which is what the first attempt did: something played, and
+        # it was not what had been tapped.
+        pane = getattr(a, "pane", None)
+        if pane:
+            os.environ["TTS_POPUP_PANE"] = pane
+            replayed = cmd_replay_at_cursor(argparse.Namespace()) == 0
+        else:
+            replayed = _do_replay(1, session=_anchor_session()) == 0
+        if replayed:
+            for _ in range(20):
+                time.sleep(0.15)
+                ex2 = ((StateStore().get_now_playing("speech") or {})
+                       .get("extras") or {})
+                if ex2.get("clip_sentences"):
+                    return cmd_skip(a)
     if n <= 1 or idle:
         return _time_seek()
     if len(para_idx) != n:

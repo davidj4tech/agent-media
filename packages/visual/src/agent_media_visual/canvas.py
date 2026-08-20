@@ -1183,8 +1183,13 @@ def ctl_argv(channel: str, action: str, arg: int,
             # The index rides in `sarg` rather than `arg` because arg is
             # clamped to 1..999 for the repeat-count actions, and sentence
             # zero is the first thing anybody will double-tap.
+            # The pane comes from the remembered reply rather than the
+            # caller: the transcript on screen belongs to whoever spoke it, and
+            # that is the reply a tap means — not whatever spoke most recently.
             "goto-sentence": ["skip", "--unit", "sentence",
-                              "--to", sarg if sarg.isdigit() else "0"],
+                              "--to", sarg if sarg.isdigit() else "0"]
+                             + (["--pane", _LAST_CLIP["key"]]
+                                if _LAST_CLIP.get("key") else []),
             # h/l/H/L — the popup's sentence/paragraph steps.
             "skip-": ["skip", "--unit", "sentence", "--dir", "-1",
                       "--seek-fallback", "-5"],
