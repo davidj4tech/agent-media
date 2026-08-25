@@ -18,6 +18,20 @@ from agent_media_core import share
 from agent_media_core.entrypoints import share_listener
 
 
+@pytest.fixture(autouse=True)
+def _no_token(monkeypatch):
+    """No token unless a test asks for one.
+
+    TOKEN is a module global that `main()` fills from the environment, and two
+    tests down the bottom call `main()` to check the bind rules. On a machine
+    where MEDIA_SHARE_TOKEN happens to be set, those left it set for whatever
+    ran next, so this file passed or 401'd depending on test order and on whose
+    box it was. Resetting it here is also the honest default: loopback with no
+    token is what the service actually runs as.
+    """
+    monkeypatch.setattr(share_listener, "TOKEN", "")
+
+
 @pytest.fixture()
 def server(monkeypatch):
     """A listener on an ephemeral port, with the probe and the dispatch faked.
@@ -487,3 +501,92 @@ def test_loopback_is_the_default_bind(monkeypatch):
     monkeypatch.setattr(share_listener, "_Server", _Fake)
     assert share_listener.main([]) == 0
     assert bound["addr"][0] == "127.0.0.1"
+
+
+# ---- /ask ------------------------------------------------------------------
+#
+# The one endpoint here whose answer does not arrive through it. A share's
+# result is the audio a moment later; an ask's result is a spoken reply minutes
+# later, so all this can report is whether the question was taken — and it must
+# report a refusal as an answer rather than as a fault, because "that
+# conversation has closed" is not something re-sending can fix.
+
+@pytest.fixture()
+def asked(monkeypatch):
+    calls = []
+
+    def fake(question, *, channel="speech", session="", via="media ask"):
+        calls.append({"question": question, "channel": channel,
+                      "session": session, "via": via})
+        return {"live": True, "asked": True, "reason": "deploy is listening",
+                "label": "deploy", "reachable": True}
+
+    monkeypatch.setattr(share_listener.control, "ask", fake)
+    return calls
+
+
+def test_ask_puts_the_question(server, asked):
+    _, base = server
+    status, got = _post(base, json.dumps({"question": "who wrote this?"}), "/ask")
+    assert status == 200 and got["ok"] is True
+    assert asked[0]["question"] == "who wrote this?"
+
+
+def test_ask_passes_the_channel_and_the_tag(server, asked):
+    _, base = server
+    _post(base, json.dumps({"question": "why?", "channel": "book",
+                            "via": "the phone"}), "/ask")
+    assert asked[0]["channel"] == "book" and asked[0]["via"] == "the phone"
+
+
+def test_an_empty_question_is_refused_before_anything_runs(server, asked):
+    _, base = server
+    status, got = _post(base, json.dumps({"question": "  "}), "/ask")
+    assert status == 422 and got["ok"] is False and asked == []
+
+
+def test_a_closed_conversation_is_an_answer_not_an_error(server, monkeypatch):
+    """200 with ok=false. A 5xx would tell the phone to retry something that
+    can never succeed."""
+    monkeypatch.setattr(share_listener.control, "ask", lambda q, **kw:
+                        {"live": False, "asked": False, "reachable": True,
+                         "reason": "deploy has closed"})
+    _, base = server
+    status, got = _post(base, json.dumps({"question": "why?"}), "/ask")
+    assert status == 200 and got["ok"] is False
+    assert got["reason"] == "deploy has closed"
+
+
+def test_an_ask_that_explodes_does_not_leak_a_traceback(server, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("ssh died")
+
+    monkeypatch.setattr(share_listener.control, "ask", boom)
+    _, base = server
+    status, got = _post(base, json.dumps({"question": "why?"}), "/ask")
+    assert status == 500 and got["ok"] is False
+
+
+def test_ask_ignores_a_body_that_is_not_an_object(server, asked):
+    _, base = server
+    status, _got = _post(base, json.dumps(["why?"]), "/ask")
+    assert status == 422
+
+
+def test_getting_ask_says_who_would_be_asked(server, monkeypatch):
+    monkeypatch.setattr(share_listener.control, "ask_status", lambda channel:
+                        {"live": True, "label": "deploy", "channel": channel})
+    _, base = server
+    with urllib.request.urlopen(base + "/ask?channel=book", timeout=5) as r:
+        got = json.loads(r.read())
+    assert got["ok"] is True and got["live"] is True and got["channel"] == "book"
+
+
+def test_ask_status_defaults_to_speech(server, monkeypatch):
+    seen = []
+    monkeypatch.setattr(share_listener.control, "ask_status",
+                        lambda channel: seen.append(channel) or {"live": False})
+    _, base = server
+    with urllib.request.urlopen(base + "/ask", timeout=5) as r:
+        r.read()
+    assert seen == ["speech"]

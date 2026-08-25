@@ -138,6 +138,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             channel = (parse_qs(query or "").get("channel") or ["music"])[0]
             self._send(200, {"ok": True, "rows": control.chapters(channel)})
             return
+        if path == "/ask":
+            from urllib.parse import parse_qs
+
+            channel = (parse_qs(query or "").get("channel") or ["speech"])[0]
+            self._send(200, {"ok": True, **control.ask_status(channel)})
+            return
         if path not in ("/", "/health"):
             self._send(404, {"ok": False, "error": "no such path"})
             return
@@ -153,6 +159,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         if path == "/control":
             self._control()
+            return
+        if path == "/ask":
+            self._ask()
             return
         if path != "/share":
             self._send(404, {"ok": False, "error": "no such path"})
@@ -219,6 +228,46 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send(500, {"ok": False, "error": str(e)})
             return
         self._send(200, {"ok": rc == 0, "rc": rc})
+
+    def _ask(self) -> None:
+        """Put a question to the live conversation. Synchronous, like a control.
+
+        Not backgrounded, and that is the difference between this and a share.
+        A share's answer is the audio that starts a moment later, so the
+        request can return the verdict and get out of the way. An ask's answer
+        arrives minutes later and somewhere else entirely — spoken — so the
+        only thing the caller can be told now is whether the question was
+        taken. Handing that to a thread would leave the phone with a dialog
+        that closes on nothing.
+        """
+        raw = self._read_body()
+        if raw is None:
+            return
+        try:
+            obj = json.loads(raw)
+        except ValueError:
+            obj = {}
+        if not isinstance(obj, dict):
+            obj = {}
+        question = str(obj.get("question") or "").strip()
+        if not question:
+            self._send(422, {"ok": False, "error": "nothing to ask"})
+            return
+        try:
+            got = control.ask(question,
+                              channel=str(obj.get("channel") or "speech"),
+                              session=str(obj.get("session") or ""),
+                              via=str(obj.get("via") or "the phone"))
+        except Exception as e:  # noqa: BLE001 — an ask must not 500 bare
+            log.warning("ask failed: %s", e)
+            self._send(500, {"ok": False, "error": str(e)})
+            return
+        log.info("ask: %s (%s)", "sent" if got.get("asked") else "refused",
+                 got.get("reason"))
+        # 200 either way. "That conversation has closed" is an answer, not a
+        # transport failure, and the surface needs to tell the two apart to
+        # know whether re-sending could ever help.
+        self._send(200, {"ok": bool(got.get("asked")), **got})
 
     def _replay(self) -> None:
         """Play something the caller already knows the channel for.

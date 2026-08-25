@@ -210,6 +210,7 @@ Both versions were tried on the device; only this one works.
 | `MediaButtonReceiver.java` | Logs the broadcast path. Handles nothing; exists for diagnosis. |
 | `ShareActivity.java` | "Play with agent-media" in the share sheet. Draws nothing, finishes in `onCreate`, toasts the verdict. |
 | `ShareRequest.java` | The pipe that carries shared text to Termux, and the answer back into one line. `android.*`-free, so `test/run.sh` covers it. |
+| `AskRequest.java` | The transport's `ask…`: who would be asked, then the question. Two round trips, so nothing is typed into the void. `android.*`-free. |
 
 ## Build and test
 

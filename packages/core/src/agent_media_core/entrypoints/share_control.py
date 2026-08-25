@@ -45,6 +45,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shlex
 import subprocess
 import time
 from typing import Optional
@@ -171,8 +172,13 @@ def _ask_origin(argv: list, timeout: float = 20.0) -> Optional[str]:
     host = _origin_host()
     if not host:
         return None
+    # Quoted, one string. `ssh host a b c` hands the remote shell `a b c`, so
+    # every argument is re-split and re-globbed there. It went unnoticed while
+    # the arguments were history ids and clock times; a free-text question is
+    # neither, and an unquoted one arrives as several arguments or not at all.
+    cmd = " ".join(shlex.quote(part) for part in ["media", *argv])
     try:
-        r = subprocess.run(["ssh", *_SSH_OPTS, host, "media", *argv],
+        r = subprocess.run(["ssh", *_SSH_OPTS, host, cmd],
                            capture_output=True, text=True, timeout=timeout,
                            check=False)
     except Exception as e:  # noqa: BLE001
@@ -580,3 +586,88 @@ def control(channel: str, action: str, arg: str = "", runner=None) -> int:
     if runner is None:
         from ..cli import main as runner
     return runner(filled)
+
+
+# ---- the ask ---------------------------------------------------------------
+#
+# The one control here that is not transport. Everything above changes what a
+# player is doing; this puts a question to the conversation that has been
+# talking to you, and gets its answer back the only way this surface has ever
+# received one — spoken.
+#
+# It belongs to the origin for the same reason `replay` does, and more so. A
+# conversation is a tmux pane on the hub and a transcript beside it; a render
+# host has neither, and the speech history it keeps locally stopped being
+# anything in July. So both halves are asked over the same ssh hop the clip
+# list uses, and `media ask` on the far side does the resolving. Nothing about
+# which conversation is live is decided here.
+
+
+def ask_status(channel: str = "speech") -> dict:
+    """Who would be asked, and whether they are still there.
+
+    A surface shows this *before* the question is typed. Asking the void is
+    the failure mode worth designing out: the question is gone, nothing says
+    so, and the answer that never comes reads as the feature not working.
+    """
+    argv = ["ask", "--status", "--json", "--channel", channel or "speech"]
+    if _origin_host() is not None:
+        out = _ask_origin(argv, timeout=15.0)
+        if out is None:
+            return {"live": False, "reason": "the hub is not answering",
+                    "reachable": False}
+        try:
+            got = json.loads(out)
+        except ValueError:
+            return {"live": False, "reason": "the hub answered with nonsense",
+                    "reachable": False}
+        return {**got, "reachable": True}
+    try:
+        from ..cli import _ask_snapshot
+
+        return {**_ask_snapshot("", channel or "speech"), "reachable": True}
+    except Exception as e:  # noqa: BLE001 — a surface renders what it got
+        log.debug("ask status failed: %s", e)
+        return {"live": False, "reason": "the history could not be read",
+                "reachable": True}
+
+
+def ask(question: str, *, channel: str = "speech", session: str = "",
+        via: str = "media ask", runner=None) -> dict:
+    """Put one question to the live conversation. Never raises.
+
+    The return is the same shape `ask_status` gives, plus `asked`. A refusal
+    is not an error here: "that conversation has closed" is information, and a
+    surface that gets it as an exception has to invent the sentence itself.
+    """
+    question = " ".join((question or "").split())
+    if not question:
+        return {"live": False, "asked": False, "reason": "nothing to ask",
+                "reachable": True}
+    argv = ["ask", "--json", "--channel", channel or "speech", "--via", via]
+    if session:
+        argv += ["--session", session]
+    argv.append(question)
+    if runner is None and _origin_host() is not None:
+        # 45s: `media ask` waits on the transcript to confirm the session took
+        # the line, and that wait is the whole value of the call.
+        out = _ask_origin(argv, timeout=45.0)
+        if out is None:
+            return {"live": False, "asked": False, "reachable": False,
+                    "reason": "the hub is not answering — try again"}
+        try:
+            got = json.loads(out)
+        except ValueError:
+            return {"live": False, "asked": False, "reachable": False,
+                    "reason": "the hub answered with nonsense"}
+        return {**got, "reachable": True}
+    if runner is None:
+        from ..cli import main as runner
+    # Local: the command prints its JSON to stdout, which is not ours to read
+    # here, so the outcome comes from the exit code. 3 is "no live
+    # conversation", 4 is "typed but not accepted" — see `cmd_ask`.
+    rc = runner([*argv])
+    reasons = {0: "asked", 3: "no conversation is listening",
+               4: "typed into the pane but the session did not take it"}
+    return {"live": rc in (0, 4), "asked": rc == 0, "reachable": True,
+            "reason": reasons.get(rc, "the ask failed")}

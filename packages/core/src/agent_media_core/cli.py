@@ -1710,6 +1710,99 @@ def cmd_open_pi(a) -> int:
     return 0
 
 
+def _ask_snapshot(session: str = "", channel: str = "speech") -> dict:
+    """What `media ask` would do, without doing it.
+
+    One shape for the terminal and the phone alike: which conversation is being
+    addressed, whether it is still going, and the context line the question
+    would be joined to. A surface that shows the answer before the question is
+    typed is a surface where nobody asks the void.
+    """
+    from . import conversation as conv_mod
+
+    conv = conv_mod.resolve(session)
+    live = conv_mod.liveness(conv)
+    reason = live.reason
+    if conv is None and session:
+        # Asked for by name and not found is not the same as "nobody has ever
+        # spoken here", and a surface that says the second when it means the
+        # first sends the user looking for a fault that is not there.
+        reason = "that conversation has not spoken here"
+    out = {"live": bool(live), "reason": reason,
+           "session": "", "label": "", "window": "", "pane": "",
+           "tmux": "", "age_s": None, "last": "",
+           "context": _ask_context(channel)}
+    if conv is not None:
+        out.update(session=conv.session, label=conv.label, window=conv.window,
+                   pane=conv.pane, tmux=conv.tmux, age_s=int(conv.age()),
+                   last=conv.text[:200])
+    return out
+
+
+def cmd_ask(a) -> int:
+    """Put a question to the conversation that has been talking to me.
+
+    The thread is the speech history — every turn it holds is tagged with the
+    session that spoke it — so this needs no state of its own. It resolves the
+    conversation, checks it is still going, and types the question into its
+    pane. The answer comes back the way every other reply does: spoken, tagged
+    with the same session, which is what makes the next ask find this one.
+
+    Exit 3, not 1, when there is no live conversation. It is not a failure —
+    it is an answer, and the caller (the phone, mostly) wants to tell the two
+    apart so it can say "that conversation has closed" rather than "error".
+    """
+    from . import conversation as conv_mod
+
+    session = (getattr(a, "session", "") or "").strip()
+    channel = getattr(a, "channel", "") or "speech"
+    snap = _ask_snapshot(session, channel)
+    if getattr(a, "status", False):
+        if getattr(a, "json", False):
+            print(json.dumps(snap))
+        else:
+            # The reason names the conversation itself, so the marker is all
+            # that is added here; printing the label as well said it twice.
+            print(f"{'▶' if snap['live'] else '○'} {snap['reason']}")
+            if snap["last"]:
+                print(f"  last said: {snap['last'][:110]}")
+        return 0 if snap["live"] else 3
+
+    question = " ".join((getattr(a, "question", "") or "").split())
+    if not question:
+        print("ask: nothing to ask", file=sys.stderr)
+        return 1
+    if not snap["live"]:
+        if getattr(a, "json", False):
+            print(json.dumps({**snap, "asked": False}))
+        else:
+            print(f"ask: {snap['reason']}", file=sys.stderr)
+        return 3
+
+    conv = conv_mod.resolve(snap["session"])
+    line = conv_mod.compose(question, snap["context"] if not
+                            getattr(a, "no_context", False) else "",
+                            via=(getattr(a, "via", "") or "media ask"))
+    if getattr(a, "dry_run", False):
+        print(line)
+        return 0
+    ok = conv_mod.deliver(conv, line, verify=not getattr(a, "no_verify", False))
+    if getattr(a, "json", False):
+        print(json.dumps({**snap, "asked": bool(ok),
+                          "reason": snap["reason"] if ok else
+                          "typed into the pane but the session did not take it"}))
+    elif ok:
+        print(f"asked {snap['label']}")
+    else:
+        # Typed and not accepted is its own outcome and must not read as sent.
+        # A still-initialising TUI swallows text and Enter without trace, and
+        # claiming delivery on the strength of send-keys is how tmux-relay's
+        # runner once reported work underway when there was none.
+        print("ask: typed into the pane but the session did not take it",
+              file=sys.stderr)
+    return 0 if ok else 4
+
+
 def _print_open_url(url: str) -> int:
     """Print a URL for client-side opening.
 
@@ -6279,6 +6372,27 @@ def _build_parser() -> argparse.ArgumentParser:
     p_op.add_argument("question", nargs="?", default="",
                       help="the question to ask (context is prepended)")
     p_op.set_defaults(func=cmd_open_pi)
+    p_ask = sub.add_parser("ask",
+                           help="put a question to the conversation that has "
+                                "been speaking here (see `ask --status`)")
+    p_ask.add_argument("question", nargs="?", default="",
+                       help="the question; the listening context is prepended")
+    p_ask.add_argument("--channel", default="speech", choices=POPUP_CHANNELS,
+                       help="which channel's context to prepend")
+    p_ask.add_argument("--session", default="",
+                       help="address this conversation instead of the newest")
+    p_ask.add_argument("--via", default="media ask",
+                       help="how the line is tagged in the pane")
+    p_ask.add_argument("--status", action="store_true",
+                       help="say which conversation would be asked, and stop")
+    p_ask.add_argument("--json", action="store_true", help="machine-readable")
+    p_ask.add_argument("--dry-run", action="store_true",
+                       help="print the line that would be typed")
+    p_ask.add_argument("--no-context", action="store_true",
+                       help="send the question alone")
+    p_ask.add_argument("--no-verify", action="store_true",
+                       help="do not wait for the transcript to confirm it")
+    p_ask.set_defaults(func=cmd_ask)
     sub.add_parser("speech-web",
                    help="print/open the visual canvas URL for speech"
                    ).set_defaults(func=cmd_speech_web)

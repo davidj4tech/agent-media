@@ -117,6 +117,15 @@ final class Transport {
         // within the clip being read, and neither of its arrows can go back
         // past the start of it — which is where "sorry, what?" usually lands.
         extras.addView(verb("replay", "replay", "1"), weight());
+        // The popup's `a`, and the only button here that is not transport: it
+        // asks the conversation that has been talking to you about what you
+        // are hearing. Present on every channel, because the question "what is
+        // this?" has an answer on all three and the popup's key is unified too.
+        TextView ask = button("ask…");
+        ask.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { askQuestion(); }
+        });
+        extras.addView(ask, weight());
         root.addView(extras);
 
         return root;
@@ -393,4 +402,65 @@ final class Transport {
         t.setGravity(Gravity.BOTTOM, 0, ChannelCard.dp(ctx, 48));
         t.show();
     }
+
+    /**
+     * Ask about what is playing — status first, then the question.
+     *
+     * Two round trips on purpose. The first says who would be asked, and its
+     * answer becomes the dialog's title, so the question is never typed into
+     * the void: an ask that goes nowhere, says nothing, and is answered by a
+     * reply that never arrives is indistinguishable from the feature being
+     * broken. When nobody is listening this stops at a toast carrying the
+     * reason — closed, recycled, or quiet too long — rather than opening a box
+     * whose send button could only fail.
+     */
+    private void askQuestion() {
+        final String channel = host.channel();
+        new Thread(new Runnable() {
+            @Override public void run() {
+                final AskRequest.Status st =
+                        AskRequest.status(Settings.server(ctx), channel);
+                main.post(new Runnable() {
+                    @Override public void run() {
+                        if (!st.live) { toast(st.title()); return; }
+                        askDialog(st, channel);
+                    }
+                });
+            }
+        }, "ask-status").start();
+    }
+
+    private void askDialog(AskRequest.Status st, final String channel) {
+        final EditText input = new EditText(ctx);
+        input.setInputType(InputType.TYPE_CLASS_TEXT
+                           | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+        // The last thing it said, so it is clear which conversation this is —
+        // a window name alone does not tell two of them apart at a glance.
+        input.setHint(st.last.isEmpty() ? "what would you like to ask?"
+                                        : "re: " + st.last);
+        input.setTextColor(Style.INK);
+        input.setHintTextColor(Style.FAINT);
+        show(dialog()
+                .setTitle(st.title())
+                .setView(input)
+                .setPositiveButton("ask", (d, w) -> {
+                    String t = input.getText().toString().trim();
+                    if (!t.isEmpty()) sendAsk(t, channel);
+                })
+                .setNegativeButton("cancel", null));
+    }
+
+    private void sendAsk(final String question, final String channel) {
+        toast("asking…");
+        new Thread(new Runnable() {
+            @Override public void run() {
+                final AskRequest.Result r =
+                        AskRequest.send(Settings.server(ctx), question, channel);
+                main.post(new Runnable() {
+                    @Override public void run() { toast(r.message); }
+                });
+            }
+        }, "ask-send").start();
+    }
+
 }

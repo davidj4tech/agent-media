@@ -299,6 +299,56 @@ the toast should not wait for it. `requires: observe`, so it installs on
 handheld hosts and not on speakers. See
 [`android/companion/README.md`](../../android/companion/README.md).
 
+### `media ask` (the conversation that has been talking to you)
+
+The popup's `a`, and the one control on the phone that is not transport. It
+puts a question to the conversation whose replies you have been listening to,
+and the answer arrives the way every reply does — spoken, minutes later.
+
+```sh
+media ask --status                        # who would be asked, and are they there
+media ask 'who wrote this?'               # ask, with the listening context
+media ask --channel book 'what chapter?'  # prepend a different channel's context
+media ask --dry-run 'why?'                # print the line that would be typed
+```
+
+**There is no conversation table, and nothing is created.** Every speech row
+already carries `source_session` and `source_pane` in its extras, and
+`StateStore.session_for_pane` already exists to answer "which conversation is
+this pane". Speech history *is* the thread. So this resolves the newest turn
+that belongs to a conversation — rows with no session are cron, not anybody's
+conversation — and types into the pane that turn came from.
+
+Liveness is three conditions, kept separate because "not live" covers three
+different situations and only one of them is worth retrying:
+
+| | |
+|---|---|
+| the pane is gone | the session ended |
+| the pane is someone else's now | tmux recycled it — one observed pane had carried twelve conversations |
+| nothing said for `LIVE_S` (30m) | calling it ongoing would be a fiction |
+
+The check runs **session → pane**, never pane → session. The second direction
+is a documented heuristic; the first is verified by asking `session_for_pane`
+and requiring the same answer back, so a recycled pane refuses rather than
+receiving somebody else's mail.
+
+Delivery is verified against the session's **own transcript**, because
+`tmux send-keys Enter` reports that the key reached the pane, not that Claude
+Code accepted it — a still-initialising TUI swallows text and Enter without
+trace. Transcripts are named `<session>.jsonl`, so knowing the session makes
+this a lookup rather than a search. Exit codes say which happened: `0` asked,
+`3` no live conversation, `4` typed but not accepted.
+
+The line is always **one line** (a literal newline submits) and always tagged
+`[media ask]`, so the session knows the question came from somewhere else and
+its answer has to be spoken rather than left on a screen.
+
+On the phone this is `GET /ask` (who would be asked) and `POST /ask` (the
+question) on `media-share`, and both are run **on the origin** over ssh: a
+conversation is a pane on the hub and a transcript beside it, and a render host
+has neither.
+
 ### Claude Code hook
 
 Wire in `~/.claude/settings.json`:

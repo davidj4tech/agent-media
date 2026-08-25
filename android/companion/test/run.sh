@@ -31,6 +31,7 @@ javac -nowarn -d "$OUT" \
     "$APP/src/net/agentmedia/companion/MicSteady.java" \
     "$APP/src/net/agentmedia/companion/Loopback.java" \
     "$APP/src/net/agentmedia/companion/ShareRequest.java" \
+    "$APP/src/net/agentmedia/companion/AskRequest.java" \
     "$APP/src/net/agentmedia/companion/RecentList.java" \
     "$APP/src/net/agentmedia/companion/RecentRows.java" \
     "$APP/src/net/agentmedia/companion/Channels.java" \
@@ -55,6 +56,7 @@ javac -nowarn -d "$OUT" \
     "$HERE/net/agentmedia/companion/MpvServerTest.java" \
     "$HERE/net/agentmedia/companion/MicSteadyTest.java" \
     "$HERE/net/agentmedia/companion/ShareTest.java" \
+    "$HERE/net/agentmedia/companion/AskTest.java" \
     "$HERE/net/agentmedia/companion/DictationTest.java" \
     "$HERE/net/agentmedia/companion/BookHoldTest.java" \
     "$HERE/net/agentmedia/companion/CardTextTest.java" \
@@ -75,6 +77,7 @@ java -cp "$OUT" net.agentmedia.companion.StateTest
 java -cp "$OUT" net.agentmedia.companion.BargeInTest
 java -cp "$OUT" net.agentmedia.companion.ServerTest
 java -cp "$OUT" net.agentmedia.companion.ShareTest
+java -cp "$OUT" net.agentmedia.companion.AskTest
 java -cp "$OUT" net.agentmedia.companion.DictationTest
 java -cp "$OUT" net.agentmedia.companion.BookHoldTest
 java -cp "$OUT" net.agentmedia.companion.CardTextTest
