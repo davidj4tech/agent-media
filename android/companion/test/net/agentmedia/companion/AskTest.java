@@ -41,6 +41,9 @@ public final class AskTest {
         testAClosedConversationIsNotACrash();
         testNoListenerIsAMessageNotACrash();
         testARefusalSaysSo();
+        testNobodyListeningIsNotADeadEnd();
+        testAnUnreachableHubIsADeadEnd();
+        testAStartedConversationIsNamed();
 
         System.out.println();
         if (failures.isEmpty()) {
@@ -99,23 +102,50 @@ public final class AskTest {
     }
 
     private static void testTitleNamesTheConversation() {
-        AskRequest.Status s = new AskRequest.Status(true, "deploy", "x", true, "");
+        AskRequest.Status s = new AskRequest.Status(true, "deploy", "x", true, "", "");
         check("the title names who is being asked", s.title().equals("ask deploy"));
-        AskRequest.Status anon = new AskRequest.Status(true, "", "x", true, "");
+        AskRequest.Status anon = new AskRequest.Status(true, "", "x", true, "", "");
         check("an unnamed conversation still has a title",
                 anon.title().equals("ask the conversation"));
     }
 
     private static void testTitleSaysWhyNotWhenNobodyIsListening() {
-        // The whole point of asking status first: the question is never typed
-        // into the void, and the sentence explaining why is the one the far
-        // side wrote, not one invented here.
+        // Nobody listening now names what would be started instead, and the
+        // reason moves to the line under it — it explains why the answer will
+        // come from somewhere that knows nothing about the last hour, which is
+        // worth knowing before the question is phrased.
         AskRequest.Status s =
-                new AskRequest.Status(false, "deploy", "deploy has closed", true, "");
-        check("a dead conversation's title is the reason",
-                s.title().equals("deploy has closed"));
-        AskRequest.Status blank = new AskRequest.Status(false, "", "", true, "");
+                new AskRequest.Status(false, "deploy", "deploy has closed", true, "", "Blue");
+        check("a dead conversation offers a new one", s.title().equals("ask about Blue"));
+        check("and says why it is new", s.note().contains("deploy has closed"));
+        AskRequest.Status blank = new AskRequest.Status(false, "", "", true, "", "");
         check("and there is always a title", blank.title().length() > 0);
+        check("and always a note", blank.note().length() > 0);
+        AskRequest.Status live = new AskRequest.Status(true, "deploy", "x", true, "", "");
+        check("a live conversation has no such note", live.note().isEmpty());
+    }
+
+    private static void testNobodyListeningIsNotADeadEnd() {
+        AskRequest.Status s =
+                new AskRequest.Status(false, "", "deploy has closed", true, "", "Blue");
+        check("a closed conversation can still be asked", s.canAsk());
+    }
+
+    private static void testAnUnreachableHubIsADeadEnd() {
+        // Nothing on this phone can answer anything, so the box would be a
+        // lie. This is the one case that still stops at a toast.
+        AskRequest.Status s =
+                new AskRequest.Status(false, "", "media-share is not running", false, "", "");
+        check("an unreachable hub cannot be asked", !s.canAsk());
+        check("and says so", s.title().contains("not running"));
+    }
+
+    private static void testAStartedConversationIsNamed() {
+        AskRequest.Result r = AskRequest.parse(200,
+                "{\"ok\":true,\"asked\":true,\"started\":\"ask Blue\"}");
+        check("a started conversation is ok", r.ok);
+        check("and is named by the window it opened",
+                r.message.equals("asked ask Blue"));
     }
 
     private static void testParseAsked() {

@@ -39,20 +39,52 @@ final class AskRequest {
         final boolean reachable;
         /** The last thing it said, for the dialog's second line. */
         final String last;
+        /** What is playing, as a name — what a fresh conversation is about. */
+        final String subject;
 
         Status(boolean live, String label, String reason, boolean reachable,
-               String last) {
+               String last, String subject) {
             this.live = live;
             this.label = label;
             this.reason = reason;
             this.reachable = reachable;
             this.last = last;
+            this.subject = subject;
         }
 
-        /** The dialog's title: who is being asked, or why nobody is. */
+        /**
+         * Whether there is any point opening the box.
+         *
+         * Nobody listening is no longer a dead end: the far side starts a
+         * conversation named for what is playing, and names it so that the
+         * next question lands in it. The one thing that is still a dead end is
+         * a hub that cannot be reached, because nothing on this phone can
+         * answer anything.
+         */
+        boolean canAsk() {
+            return live || reachable;
+        }
+
+        /** The dialog's title: who is being asked, or what is being asked about. */
         String title() {
             if (live) return "ask " + (label.isEmpty() ? "the conversation" : label);
-            return reason.isEmpty() ? "nobody is listening" : reason;
+            if (!reachable) return reason.isEmpty() ? "agent-media is not answering" : reason;
+            return subject.isEmpty() ? "ask about this"
+                                     : "ask about " + subject;
+        }
+
+        /**
+         * The line under the title, when this would start something.
+         *
+         * The reason belongs on screen and not swallowed: "deploy has closed"
+         * explains why the answer will come from somewhere that knows nothing
+         * about the last hour of conversation, which is worth knowing before
+         * the question is phrased.
+         */
+        String note() {
+            if (live || !reachable) return "";
+            return reason.isEmpty() ? "a new conversation"
+                                    : reason + " — this starts a new one";
         }
     }
 
@@ -88,9 +120,11 @@ final class AskRequest {
             boolean reachable = Json.asBool(o.get("reachable"), true);
             return new Status(Json.asBool(o.get("live"), false) && status == 200,
                               str(o.get("label")), str(o.get("reason")),
-                              reachable && status == 200, str(o.get("last")));
+                              reachable && status == 200, str(o.get("last")),
+                              str(o.get("subject")));
         } catch (RuntimeException e) {
-            return new Status(false, "", "agent-media is not answering", false, "");
+            return new Status(false, "", "agent-media is not answering", false,
+                              "", "");
         }
     }
 
@@ -110,7 +144,12 @@ final class AskRequest {
             line = str(o.get("error"));
             if (line.isEmpty()) line = str(o.get("reason"));
             if (ok) {
-                String label = str(o.get("label"));
+                // A started conversation reports the window it opened, which
+                // is a more useful thing to show than "asked": it is where the
+                // answer is being written, and what the next question will
+                // find.
+                String started = str(o.get("started"));
+                String label = started.isEmpty() ? str(o.get("label")) : started;
                 line = label.isEmpty() ? "asked" : "asked " + label;
             }
         } catch (RuntimeException e) {
@@ -127,8 +166,8 @@ final class AskRequest {
     static Status status(Server server, String channel) {
         String c = channel == null || channel.isEmpty() ? "speech" : channel;
         Loopback.Reply r = Loopback.get(server, "/ask?channel=" + c);
-        if (!r.reached()) return new Status(false, "", r.failure, false, "");
-        if (r.refused()) return new Status(false, "", Loopback.REFUSED, false, "");
+        if (!r.reached()) return new Status(false, "", r.failure, false, "", "");
+        if (r.refused()) return new Status(false, "", Loopback.REFUSED, false, "", "");
         return parseStatus(r.status, r.body);
     }
 

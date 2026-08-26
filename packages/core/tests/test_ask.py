@@ -33,6 +33,23 @@ def live(monkeypatch):
     return sent
 
 
+@pytest.fixture(autouse=True)
+def _no_windows(monkeypatch):
+    """Nothing in this file may open a tmux window.
+
+    Not a formality: before this fixture existed, two tests that predated the
+    cold-start path fell through it with `C.start` unpatched and left a real
+    `claude` running in a window called "ask speech" on the developer's box.
+    Same shape as the leak the share suite's `dispatched` fixture exists to
+    stop — the test names the outcome it wants, the code underneath goes and
+    does it for real.
+    """
+    started = []
+    monkeypatch.setattr(C, "start",
+                        lambda prompt, **kw: started.append(prompt) or "ask Blue")
+    return started
+
+
 @pytest.fixture()
 def closed(monkeypatch):
     monkeypatch.setattr(C, "resolve", lambda session="", **kw: None)
@@ -63,7 +80,7 @@ def test_context_can_be_left_off(live):
 def test_no_live_conversation_is_exit_3_not_1(closed, capsys):
     """It is an answer, not a failure: the caller wants to say 'that
     conversation has closed' rather than 'error'."""
-    assert main(["ask", "who wrote this?"]) == 3
+    assert main(["ask", "--no-new", "who wrote this?"]) == 3
     assert "deploy has closed" in capsys.readouterr().err
 
 
@@ -107,7 +124,7 @@ def test_a_named_conversation_that_never_spoke_says_so(live, capsys):
 
 
 def test_json_reports_a_refusal_without_a_traceback(closed, capsys):
-    assert main(["ask", "--json", "why?"]) == 3
+    assert main(["ask", "--json", "--no-new", "why?"]) == 3
     got = json.loads(capsys.readouterr().out)
     assert got["asked"] is False and got["live"] is False
 
@@ -208,3 +225,72 @@ def test_the_question_reaches_the_origin_intact(monkeypatch):
     monkeypatch.setattr(control.subprocess, "run", run)
     control._ask_origin(["ask", "what's this; rm -rf /"])
     assert seen["argv"][-1] == "media ask 'what'\"'\"'s this; rm -rf /'"
+
+
+# ---- when nothing is listening ---------------------------------------------
+
+@pytest.fixture()
+def started(monkeypatch, closed):
+    """Nobody listening, and a record of what would have been started."""
+    calls = []
+    monkeypatch.setattr(C, "start", lambda prompt, **kw:
+                        calls.append({"prompt": prompt, **kw}) or "ask Blue")
+    monkeypatch.setattr("agent_media_core.cli._ask_title", lambda ch: "Blue")
+    monkeypatch.setattr("agent_media_core.cli._ask_context",
+                        lambda ch: "I'm listening to music: Blue [2:00]")
+    return calls
+
+
+def test_a_cold_ask_starts_a_conversation(started, capsys):
+    assert main(["ask", "--channel", "music", "who wrote this?"]) == 0
+    assert started[0]["title"] == "Blue"
+    assert "who wrote this?" in started[0]["prompt"]
+    assert "started ask Blue" in capsys.readouterr().out
+
+
+def test_the_context_goes_in_too(started):
+    main(["ask", "--channel", "music", "who wrote this?"])
+    assert "listening to music: Blue" in started[0]["prompt"]
+
+
+def test_no_new_keeps_the_old_refusal(started, capsys):
+    """A caller that only wants to extend a conversation must be able to say
+    so, and get the reason rather than a window it did not ask for."""
+    assert main(["ask", "--no-new", "why?"]) == 3
+    assert started == []
+    assert "deploy has closed" in capsys.readouterr().err
+
+
+def test_dry_run_names_the_window_it_would_open(started, capsys):
+    assert main(["ask", "--dry-run", "--channel", "music", "why?"]) == 0
+    assert started == []
+    assert capsys.readouterr().out.startswith("ask Blue: [media ask]")
+
+
+def test_a_start_that_fails_is_exit_4(started, monkeypatch, capsys):
+    monkeypatch.setattr(C, "start", lambda prompt, **kw: None)
+    assert main(["ask", "--channel", "music", "why?"]) == 4
+    assert "could not start" in capsys.readouterr().err
+
+
+def test_json_says_what_was_started(started, capsys):
+    main(["ask", "--json", "--channel", "music", "why?"])
+    got = json.loads(capsys.readouterr().out)
+    assert got["started"] == "ask Blue" and got["asked"] is True
+
+
+def test_the_snapshot_carries_the_window_that_would_be_opened(started, capsys):
+    """So a surface can offer to start one BY NAME rather than only reporting
+    that nobody is in."""
+    main(["ask", "--status", "--json", "--channel", "music"])
+    got = json.loads(capsys.readouterr().out)
+    assert got["subject"] == "Blue" and got["new_window"] == "ask Blue"
+
+
+def test_the_new_window_goes_beside_the_conversation_that_went_quiet(
+        monkeypatch, started):
+    conv = C.Conversation(session="s1", window="deploy", pane="%1", tmux="work",
+                          at=1.0)
+    monkeypatch.setattr(C, "resolve", lambda session="", **kw: conv)
+    main(["ask", "--channel", "music", "why?"])
+    assert started[0]["session"] == "work"

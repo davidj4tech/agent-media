@@ -332,3 +332,150 @@ def test_an_unexpanded_format_is_not_a_pane(monkeypatch):
     monkeypatch.setattr(C.subprocess, "run",
                         lambda *a, **k: pytest.fail("should not have asked"))
     assert C.pane_alive("#{pane_id}") is False
+
+
+# ---- starting one ----------------------------------------------------------
+#
+# The window's NAME is the whole mechanism. tmux records it as `source_window`
+# when the new session speaks, `Conversation.label` reads it back, and that is
+# what makes a conversation started this way findable like any other — the one
+# thing `open-pi`'s fresh window never was.
+
+def test_the_window_is_named_for_the_subject():
+    assert C.window_name("music", "Kind of Blue") == "ask Kind of Blue"
+
+
+def test_no_subject_falls_back_to_the_channel():
+    assert C.window_name("book", "") == "ask book"
+    assert C.window_name("", "") == "ask speech"
+
+
+def test_tmux_target_separators_are_taken_out_of_the_name():
+    """`:` and `.` separate a tmux target, so a window named with one cannot be
+    addressed afterwards — which would defeat the point of naming it."""
+    name = C.window_name("music", "Vol. 2: Live")
+    assert ":" not in name and "." not in name and "Vol" in name
+
+
+def test_a_long_title_is_cut_not_wrapped():
+    assert len(C.window_name("music", "x" * 200)) <= 4 + 40
+
+
+def test_the_name_is_stable_for_the_same_subject():
+    """Two questions about the same album have to agree, or the second opens a
+    window beside the first instead of landing in it."""
+    assert C.window_name("music", " Kind  of Blue ") == C.window_name("music", "Kind of Blue")
+
+
+@pytest.fixture()
+def tmux_calls(monkeypatch):
+    calls = []
+    out = {"stdout": ""}
+
+    class R:
+        returncode = 0
+
+        @property
+        def stdout(self):
+            return out["stdout"]
+
+        stderr = ""
+
+    def run(argv, **kw):
+        calls.append(argv)
+        return R()
+
+    monkeypatch.setattr(C.subprocess, "run", run)
+    return calls, out
+
+
+def test_starting_opens_a_named_window_with_the_prompt(tmux_calls, monkeypatch):
+    calls, _ = tmux_calls
+    monkeypatch.setenv("MEDIA_ASK_CMD", "claude")
+    name = C.start("[media ask] why?", channel="music", title="Blue",
+                   session="work")
+    assert name == "ask Blue"
+    argv = calls[-1]
+    assert argv[:3] == ["tmux", "new-window", "-d"]
+    assert "-n" in argv and "ask Blue" in argv
+    assert argv[argv.index("-t") + 1] == "work"
+    # The prompt is an ARGUMENT, not typed — which is why this path needs no
+    # transcript check: there is no TUI to swallow it.
+    assert argv[-1] == "claude '[media ask] why?'"
+
+
+def test_the_launcher_is_claude_by_default(tmux_calls, monkeypatch):
+    """Not a preference. The conversation identity this all turns on is written
+    by the agent-media hook inside a Claude Code session; a launcher that does
+    not write it starts something that can answer once and never be found."""
+    calls, _ = tmux_calls
+    monkeypatch.delenv("MEDIA_ASK_CMD", raising=False)
+    C.start("why?", channel="music", title="Blue")
+    assert calls[-1][-1].startswith("claude ")
+
+
+def test_the_launcher_is_overridable(tmux_calls, monkeypatch):
+    calls, _ = tmux_calls
+    monkeypatch.setenv("MEDIA_ASK_CMD", "pi --continue")
+    C.start("why?", channel="music", title="Blue")
+    assert calls[-1][-1].startswith("pi --continue ")
+
+
+def test_a_question_with_a_quote_survives_the_shell(tmux_calls, monkeypatch):
+    calls, _ = tmux_calls
+    monkeypatch.setenv("MEDIA_ASK_CMD", "claude")
+    C.start("what's this; rm -rf /", channel="music", title="Blue")
+    assert calls[-1][-1] == "claude 'what'\"'\"'s this; rm -rf /'"
+
+
+def test_an_open_window_is_typed_into_rather_than_duplicated(tmux_calls,
+                                                             monkeypatch):
+    """Two questions a minute apart, before the first answer lands, would each
+    see nothing listening. The name lookup closes that gap."""
+    calls, out = tmux_calls
+    out["stdout"] = "other\t%1\nask Blue\t%9\n"
+    monkeypatch.setattr(C, "deliver", lambda conv, line, **kw: True)
+    assert C.start("why?", channel="music", title="Blue", session="work") == "ask Blue"
+    assert not any(a[1] == "new-window" for a in calls)
+
+
+def test_the_lookup_asks_for_the_whole_session(tmux_calls):
+    """`list-panes -t <session>` lists that session's current window only."""
+    calls, _ = tmux_calls
+    C.find_window("ask Blue", "work")
+    assert calls[-1][:5] == ["tmux", "list-panes", "-s", "-t", "work"]
+
+
+def test_the_lookup_spans_the_server_when_no_session_is_named(tmux_calls):
+    calls, _ = tmux_calls
+    C.find_window("ask Blue")
+    assert "-a" in calls[-1]
+
+
+def test_the_lookup_wants_the_name_exactly(tmux_calls):
+    _calls, out = tmux_calls
+    out["stdout"] = "ask Blue Notes\t%9\n"
+    assert C.find_window("ask Blue") is None
+
+
+def test_nothing_to_start():
+    assert C.start("   ", channel="music", title="Blue") is None
+
+
+def test_a_refused_window_is_not_a_start(monkeypatch):
+    class Bad:
+        returncode = 1
+        stdout = ""
+        stderr = "no server"
+
+    monkeypatch.setattr(C.subprocess, "run", lambda *a, **k: Bad())
+    assert C.start("why?", channel="music", title="Blue") is None
+
+
+def test_no_tmux_at_all_is_not_a_traceback(monkeypatch):
+    def boom(*a, **k):
+        raise FileNotFoundError("tmux")
+
+    monkeypatch.setattr(C.subprocess, "run", boom)
+    assert C.start("why?", channel="music", title="Blue") is None
+    assert C.find_window("ask Blue") is None

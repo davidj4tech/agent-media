@@ -1710,6 +1710,31 @@ def cmd_open_pi(a) -> int:
     return 0
 
 
+def _ask_title(channel: str) -> str:
+    """What is playing, as a name rather than a sentence.
+
+    `_ask_context` produces prose for the question; this produces the subject,
+    which is what a fresh conversation's window gets called. Speech has none —
+    a spoken reply is not a thing with a title — and the empty string is the
+    honest answer there rather than a made-up one.
+    """
+    ch = (channel or "speech").strip()
+    try:
+        if ch == "music":
+            m = SinkMusicRouter(SinkMusic())
+            _, label, _ = _music_now_status(m, 20, hide_idle=True, bar=False)
+            return " ".join((label or "").split())
+        if ch == "book":
+            np = _srv().book_now_playing(target="")
+            if np.get("idle"):
+                return ""
+            return " ".join(str(np.get("title") or np.get("media_title")
+                                or "").split())
+    except Exception:  # noqa: BLE001 — a name is not worth a traceback
+        return ""
+    return ""
+
+
 def _ask_snapshot(session: str = "", channel: str = "speech") -> dict:
     """What `media ask` would do, without doing it.
 
@@ -1731,7 +1756,11 @@ def _ask_snapshot(session: str = "", channel: str = "speech") -> dict:
     out = {"live": bool(live), "reason": reason,
            "session": "", "label": "", "window": "", "pane": "",
            "tmux": "", "age_s": None, "last": "",
-           "context": _ask_context(channel)}
+           "context": _ask_context(channel),
+           # What a fresh conversation would be called, so a surface can offer
+           # to start one by name instead of only reporting that nobody is in.
+           "subject": _ask_title(channel)}
+    out["new_window"] = conv_mod.window_name(channel, out["subject"])
     if conv is not None:
         out.update(session=conv.session, label=conv.label, window=conv.window,
                    pane=conv.pane, tmux=conv.tmux, age_s=int(conv.age()),
@@ -1772,17 +1801,43 @@ def cmd_ask(a) -> int:
     if not question:
         print("ask: nothing to ask", file=sys.stderr)
         return 1
+    line_for_new = conv_mod.compose(
+        question, "" if getattr(a, "no_context", False) else snap["context"],
+        via=(getattr(a, "via", "") or "media ask"))
     if not snap["live"]:
+        if getattr(a, "no_new", False):
+            if getattr(a, "json", False):
+                print(json.dumps({**snap, "asked": False, "started": ""}))
+            else:
+                print(f"ask: {snap['reason']}", file=sys.stderr)
+            return 3
+        # Nothing listening, so start something — and name the window for what
+        # is being asked about. tmux's window name is what the speech hook
+        # records as source_window, which is what a conversation's label is
+        # read back from, so the moment this one answers it becomes findable
+        # like any other and the next question lands in it rather than beside
+        # it. That is the whole difference from `open-pi`, which starts a
+        # window that nothing can ever address again.
+        if getattr(a, "dry_run", False):
+            print(f"{conv_mod.window_name(channel, snap['subject'])}: "
+                  f"{line_for_new}")
+            return 0
+        name = conv_mod.start(line_for_new, channel=channel,
+                              title=snap["subject"],
+                              session=(snap["tmux"] or ""))
         if getattr(a, "json", False):
-            print(json.dumps({**snap, "asked": False}))
+            print(json.dumps({**snap, "asked": bool(name),
+                              "started": name or "",
+                              "reason": (f"started {name}" if name else
+                                         "could not start a conversation")}))
+        elif name:
+            print(f"started {name}")
         else:
-            print(f"ask: {snap['reason']}", file=sys.stderr)
-        return 3
+            print("ask: could not start a conversation", file=sys.stderr)
+        return 0 if name else 4
 
     conv = conv_mod.resolve(snap["session"])
-    line = conv_mod.compose(question, snap["context"] if not
-                            getattr(a, "no_context", False) else "",
-                            via=(getattr(a, "via", "") or "media ask"))
+    line = line_for_new
     if getattr(a, "dry_run", False):
         print(line)
         return 0
@@ -6392,6 +6447,9 @@ def _build_parser() -> argparse.ArgumentParser:
                        help="send the question alone")
     p_ask.add_argument("--no-verify", action="store_true",
                        help="do not wait for the transcript to confirm it")
+    p_ask.add_argument("--no-new", action="store_true",
+                       help="refuse when nothing is listening instead of "
+                            "starting a conversation about it")
     p_ask.set_defaults(func=cmd_ask)
     sub.add_parser("speech-web",
                    help="print/open the visual canvas URL for speech"

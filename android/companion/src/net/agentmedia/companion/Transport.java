@@ -422,7 +422,11 @@ final class Transport {
                         AskRequest.status(Settings.server(ctx), channel);
                 main.post(new Runnable() {
                     @Override public void run() {
-                        if (!st.live) { toast(st.title()); return; }
+                        // Nobody listening is not a dead end any more: the
+                        // far side starts a conversation named for what is
+                        // playing. Only an unreachable hub stops here, because
+                        // nothing on this phone can answer anything.
+                        if (!st.canAsk()) { toast(st.title()); return; }
                         askDialog(st, channel);
                     }
                 });
@@ -436,8 +440,10 @@ final class Transport {
                            | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
         // The last thing it said, so it is clear which conversation this is —
         // a window name alone does not tell two of them apart at a glance.
-        input.setHint(st.last.isEmpty() ? "what would you like to ask?"
-                                        : "re: " + st.last);
+        String note = st.note();
+        input.setHint(!note.isEmpty() ? note
+                      : st.last.isEmpty() ? "what would you like to ask?"
+                                          : "re: " + st.last);
         input.setTextColor(Style.INK);
         input.setHintTextColor(Style.FAINT);
         show(dialog()

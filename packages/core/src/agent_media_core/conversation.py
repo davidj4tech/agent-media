@@ -296,3 +296,123 @@ def deliver(conv: Conversation, line: str, *,
     if not verify:
         return True
     return landed(conv.session, line, timeout=timeout)
+
+
+# ---- starting one ----------------------------------------------------------
+#
+# When nothing is listening, the honest options are to refuse or to start
+# something. `media open-pi` — the popup's `a` — already starts something: a
+# fresh window, seeded with the listening context and the question. What it
+# does not do is leave anything behind that a second question could find, and
+# that is the whole difference here.
+#
+# So the window is NAMED for what is being asked about. tmux's window name is
+# what the speech hook records as `source_window`, which is what
+# `Conversation.label` reads back — so the moment the new session speaks, it
+# becomes a conversation this module can resolve like any other, and the next
+# ask about the same album lands in the same window rather than opening a
+# second one. The name is the only new thing, and it is not a new concept: it
+# is the label that was already being read.
+
+#: What launches the answering session. Claude Code by default, and that is
+#: load-bearing rather than a preference: the conversation identity this whole
+#: module turns on — `source_session`, `source_pane` — is written by the
+#: agent-media hook inside a Claude Code session. A launcher that does not
+#: write those starts something that can answer once and never be found again.
+ASK_CMD = "claude"
+
+#: tmux takes `:` and `.` as target separators, so a window named with one in
+#: it cannot be addressed afterwards — which would defeat the point of naming.
+_NAME_BAD = ":."
+_NAME_N = 40
+
+
+def window_name(channel: str, title: str = "") -> str:
+    """What to call the window: what is being asked about, not who is asking.
+
+    Stable for the same subject, because that is what makes a second question
+    land in the first window instead of opening another one beside it.
+    """
+    subject = " ".join((title or "").split())
+    for ch in _NAME_BAD:
+        subject = subject.replace(ch, " ")
+    subject = " ".join(subject.split())[:_NAME_N].strip()
+    return f"ask {subject}" if subject else f"ask {channel or 'speech'}"
+
+
+def find_window(name: str, session: str = "") -> Optional[str]:
+    """The pane of a window by this name, if one is already open.
+
+    The one place the derived name earns its keep. A conversation becomes
+    findable through the speech history only once it has *spoken*, so two
+    questions asked a minute apart — before the first answer lands — would each
+    see nothing listening and each open a window. Looking the name up closes
+    that gap.
+    """
+    name = (name or "").strip()
+    if not name:
+        return None
+    # `-s`, not a bare `-t`. `list-panes -t <session>` lists the panes of that
+    # session's CURRENT window only, so without it the lookup found nothing and
+    # every question opened another window with the same name — which tmux
+    # allows, and which makes the name unaddressable afterwards.
+    target = ["-s", "-t", session] if session else ["-a"]
+    try:
+        r = subprocess.run(["tmux", "list-panes", *target, "-F",
+                            "#{window_name}\t#{pane_id}"],
+                           capture_output=True, text=True, timeout=5,
+                           check=False)
+    except Exception as e:  # noqa: BLE001
+        log.debug("window lookup failed: %s", e)
+        return None
+    if r.returncode != 0:
+        return None
+    for row in r.stdout.splitlines():
+        got, _, pane = row.partition("\t")
+        if got.strip() == name and pane.strip():
+            return pane.strip()
+    return None
+
+
+def start(prompt: str, *, channel: str = "speech", title: str = "",
+          session: str = "", cmd: str = "") -> Optional[str]:
+    """Open a window named for the subject, running the answerer on `prompt`.
+
+    The prompt goes in as an argument rather than being typed, and that is why
+    this path has no transcript check: there is no TUI to swallow it. A process
+    that is exec'd with its first message either starts or does not, and tmux
+    says which.
+
+    `session` is where to put the window — by default beside the conversation
+    that has gone quiet, which is where it belongs. Falling back to tmux's own
+    default matters when this is reached over ssh from the phone, where there
+    is no attached client to infer one from.
+    """
+    import shlex
+
+    prompt = " ".join((prompt or "").split())
+    if not prompt:
+        return None
+    name = window_name(channel, title)
+    existing = find_window(name, session)
+    if existing is not None:
+        # Already open and not yet spoken. Type into it rather than opening a
+        # second window with the same name, which tmux allows and nobody wants.
+        return name if deliver(Conversation(session="", pane=existing), prompt,
+                               verify=False) else None
+    launcher = (cmd or os.environ.get("MEDIA_ASK_CMD") or ASK_CMD).strip()
+    argv = ["tmux", "new-window", "-d", "-n", name]
+    if session:
+        argv += ["-t", session]
+    where = os.environ.get("MEDIA_ASK_DIR") or str(Path.home())
+    argv += ["-c", where, f"{launcher} {shlex.quote(prompt)}"]
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=10,
+                           check=False)
+    except Exception as e:  # noqa: BLE001
+        log.debug("could not start a conversation: %s", e)
+        return None
+    if r.returncode != 0:
+        log.debug("new-window refused: %s", (r.stderr or "").strip()[:200])
+        return None
+    return name

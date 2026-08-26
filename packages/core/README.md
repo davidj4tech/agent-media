@@ -344,6 +344,19 @@ The line is always **one line** (a literal newline submits) and always tagged
 `[media ask]`, so the session knows the question came from somewhere else and
 its answer has to be spoken rather than left on a screen.
 
+When nothing is listening it **starts one**, in a window named for what is
+playing — `ask Kind of Blue`. That name is the whole mechanism: tmux's window
+name is what the speech hook records as `source_window`, which is what a
+conversation's label is read back from, so the moment the new session answers
+it becomes findable like any other and the next question about the same album
+lands in it rather than beside it. `open-pi`'s fresh window never was. Before
+the first answer arrives there is nothing in the history to find, so the name
+is looked up in tmux too — otherwise two questions a minute apart would open
+two windows. `--no-new` keeps the old refusal for a caller that only wants to
+extend. The launcher is `MEDIA_ASK_CMD` (default `claude`, and that is
+load-bearing: the session tags this all turns on are written by the agent-media
+hook inside a Claude Code session).
+
 On the phone this is `GET /ask` (who would be asked) and `POST /ask` (the
 question) on `media-share`, and both are run **on the origin** over ssh: a
 conversation is a pane on the hub and a transcript beside it, and a render host
