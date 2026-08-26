@@ -8,3 +8,4 @@ build/
 packages/astrotunes/cache/
 twilio.env
 packages/core/uv.lock
+.venv/
