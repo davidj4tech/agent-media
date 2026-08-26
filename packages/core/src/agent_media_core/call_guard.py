@@ -101,7 +101,6 @@ dump raw notifications (to calibrate the match against your dialer), or
 from __future__ import annotations
 
 import argparse
-import fcntl
 import hashlib
 import json
 import logging
@@ -119,6 +118,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from . import _lock as fcntl
 from ._paths import state_dir
 from .sinks import _mpv_ipc as ipc
 

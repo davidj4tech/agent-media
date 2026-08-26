@@ -12,7 +12,6 @@ land here. The shape is intentionally narrow: take a populated
 from __future__ import annotations
 
 import concurrent.futures
-import fcntl
 import hashlib
 import json
 import logging
@@ -26,6 +25,7 @@ import uuid
 from pathlib import Path
 from typing import Callable, Optional
 
+from .. import _lock as fcntl
 from .._notify import notify
 from ..render import render_text
 from ..route import Coordinator
