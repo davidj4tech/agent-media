@@ -3890,6 +3890,12 @@ def cmd_say(a) -> int:
             pass
     urgent = getattr(a, "urgent", False) or getattr(a, "supersede", False)
     metadata = {}
+    if getattr(a, "alert", False):
+        # Nobody asked for this one — a timer, a watcher, mail arriving. It is
+        # the only class of speech a silenced phone withholds, and the mark is
+        # explicit because the producer is the only party that knows without
+        # flattering itself (see sinks.speech.set_priority).
+        metadata["alert"] = True
     if getattr(a, "supersede", False):
         # supersede implies urgent: barge in AND drop the same-session messages
         # this one interrupts/precedes, rather than letting them resume.
@@ -5530,6 +5536,7 @@ def selfcheck_facts() -> "dict[str, str]":
     facts.update(_media_volume_facts())
     facts.update(_dictation_rate_facts())
     facts.update(_mic_block_facts())
+    facts.update(_ringer_facts())
     return facts
 
 
@@ -5626,6 +5633,53 @@ def _mic_block_facts() -> "dict[str, str]":
     facts["mic_block"] = "loose:" + ",".join(loose) if loose else "held"
     if reverts:
         facts["mic_block_reverts_24h"] = str(reverts)
+    return facts
+
+
+def _ringer_facts() -> "dict[str, str]":
+    """What the ringer service last published, and what it cost.
+
+    Two halves, and the second is the important one. `ringer=` is the state;
+    `alerts_held_24h=` is the *consequence*, and without it a held alert leaves
+    no impression anywhere a person looks. "My morning digest went quiet" and
+    "TTS is broken" are otherwise the same report, and this stack has twice
+    been taken apart in full over a component behaving exactly as designed.
+
+    Silent on hosts that publish nothing, which is every host but the phone.
+    """
+    facts: dict[str, str] = {}
+    from . import ringer
+
+    try:
+        snap = json.loads(ringer.state_path().read_text())
+    except (OSError, ValueError):
+        snap = None
+    if isinstance(snap, dict) and snap:
+        age = int(max(0.0, time.time() - float(snap.get("checked_at") or 0)))
+        if not snap.get("answered"):
+            # The service is up and the app is not. Worth saying plainly: the
+            # gate is open, so alerts are speaking regardless of the ringer.
+            facts["ringer"] = f"unanswered age={age}s"
+        else:
+            facts["ringer"] = ("quiet" if snap.get("quiet") else "audible")
+            facts["ringer_mode"] = str(snap.get("mode", "unknown"))
+            if str(snap.get("dnd", "unknown")) not in ("unknown", ""):
+                facts["ringer_dnd"] = str(snap.get("dnd"))
+            facts["ringer_age_s"] = str(age)
+    # Counted where the *deciding* happened, which is the origin — so on a
+    # two-host fleet `ringer=` shows up on the phone and `alerts_held_24h=` on
+    # red5. That split is honest rather than awkward: each host reports the
+    # thing it actually knows, and neither has to ask the other.
+    try:
+        from .state import StateStore
+        held = [r for r in StateStore().recent_errors(
+                    component="intake", limit=500,
+                    since=time.time() - 86400)
+                if (r.get("extras") or {}).get("kind") == "alert-silenced"]
+    except Exception:  # noqa: BLE001 — a count, never a reason to fail a check
+        held = []
+    if held:
+        facts["alerts_held_24h"] = str(len(held))
     return facts
 
 
@@ -6659,6 +6713,10 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument("--supersede", action="store_true",
                    help="like --urgent, but DROP the same-session messages this "
                         "one interrupts/precedes instead of resuming them")
+    s.add_argument("--alert", action="store_true",
+                   help="unattended alert — nobody asked for it (a timer, a "
+                        "watcher). Held, not queued, while the target device's "
+                        "ringer is on silent; still written to history")
     s.set_defaults(func=cmd_say)
 
     s = sub.add_parser("bookmark", help="bookmark current media position")

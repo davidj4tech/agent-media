@@ -1,0 +1,4 @@
+# The ringer belongs to this device, and the companion answers about it on
+# loopback only — so this can only run where the phone is, beside call-guard
+# and mic-block. A render-only host has nothing to publish and no port to ask.
+requires: observe

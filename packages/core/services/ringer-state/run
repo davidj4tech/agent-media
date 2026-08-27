@@ -1,0 +1,20 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# Publish whether this phone wants to be quiet.
+#
+# The companion app answers /ringer on loopback; the host that decides whether
+# to speak an alert is somewhere else entirely and cannot reach that port. This
+# asks, and leaves the verdict on the speech broker where every host already
+# looks. See agent_media_core.ringer.
+#
+# Belongs beside call-guard: the ringer is this device's own, and the endpoint
+# is bound to 127.0.0.1.
+exec 2>&1
+export PATH="${PREFIX:-/data/data/com.termux/files/usr}/bin:$PATH"
+[ -f "$HOME/.config/agent-media.env" ] && . "$HOME/.config/agent-media.env"
+export MEDIA_RINGER_URL MEDIA_RINGER_INTERVAL_S MEDIA_SPEECH_SOCKET
+here="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
+venv_py="$here/../../../../.venv/bin/python"
+if [ -x "$venv_py" ]; then
+  exec "$venv_py" -m agent_media_core.ringer
+fi
+exec python3 -m agent_media_core.ringer

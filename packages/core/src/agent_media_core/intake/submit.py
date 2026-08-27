@@ -2520,6 +2520,96 @@ def _remote_say_cmd(target: Target) -> str:
     return os.environ.get("MEDIA_REMOTE_SAY_CMD", "")
 
 
+def _ringer_target() -> str:
+    """Which target the phone's ringer has anything to say about.
+
+    The phone being on silent is a fact about the phone. It is not a fact about
+    the lounge speakers, and a `--target local` reply must be unaffected by it —
+    otherwise "silence my phone" quietly becomes "silence the house", which
+    nobody asked for and which would take a while to attribute.
+    """
+    return os.environ.get("MEDIA_RINGER_TARGET", "phone").strip()
+
+
+def _ringer_hold(target: Target, event: Event) -> "dict | None":
+    """The verdict holding this event back, or None to speak it.
+
+    Three conditions, all required, and the order is the cheap ones first so
+    the ordinary reply never touches the broker:
+
+      1. the event is **alert-class** — something mechanical decided to speak,
+         nobody asked for it. Marked explicitly by its producer (`media say
+         --alert`), never inferred: a timer knows it is a timer, and an
+         assistant guessing at its own interruption-worthiness is judging a
+         case it has an interest in (see `sinks.speech.set_priority`).
+      2. it is aimed at the **device with the ringer**;
+      3. a **fresh** verdict from that device says quiet.
+
+    Anything unknown at step 3 — no publisher, a dead companion, a stale
+    snapshot, an unreachable bridge — is not quiet. The two errors are not
+    symmetric: a wrongly-spoken alert is one noise at the wrong moment, while a
+    wrongly-swallowed one is silent by construction and indistinguishable from
+    the TTS stack being broken. This codebase has spent whole afternoons on
+    that second shape (mic-block reverts, media volume at 0/25), so this fails
+    towards sound every time.
+    """
+    if not (event.metadata or {}).get("alert"):
+        return None
+    wanted = _ringer_target()
+    if not wanted or target.name != wanted:
+        return None
+    from ..sinks import speech as _speech
+
+    verdict = _speech.read_ringer(target)
+    if not verdict or not verdict.get("quiet"):
+        return None
+    log.info("intake: alert held — %s is quiet (mode=%s dnd=%s)",
+             target.name, verdict.get("mode"), verdict.get("dnd"))
+    return verdict
+
+
+def _record_silenced(state: StateStore, event: Event, target: Target,
+                     text: str, verdict: "dict | None" = None) -> Optional[int]:
+    """Write the alert down without speaking it, and leave a trail.
+
+    Not rendered. A muted pane renders because someone may unmute and replay
+    it; an alert held overnight has no such future — its moment is what made it
+    an alert, and by morning the words are all that is left worth keeping. The
+    remote-say lane already writes clipless rows, so `speech history` and the
+    clip browser handle this shape.
+
+    The `state.log_error` line is the point of the whole function. Without it,
+    "my morning digest stopped talking" and "TTS is broken" are the same
+    observation, and `media doctor` has nothing to say about a stack that is
+    behaving perfectly.
+    """
+    try:
+        state.log_error("intake", "alert held: device is on silent",
+                        extras={"kind": "alert-silenced",
+                                "target": target.name,
+                                "source": event.source.value,
+                                "mode": (verdict or {}).get("mode", "unknown"),
+                                "dnd": (verdict or {}).get("dnd", "unknown"),
+                                "text": text[:160]})
+    except Exception:  # noqa: BLE001 — a breadcrumb, never the caller's problem
+        pass
+    try:
+        return state.add_history(
+            sink="speech",
+            uri=f"silenced:{target.name}",
+            started_at=time.time(),
+            ended_at=time.time(),
+            target=target.name,
+            source=event.source.value,
+            text=text,
+            extras={"silenced": "ringer", "alert": True,
+                    **{k: v for k, v in (event.metadata or {}).items()
+                       if k in ("kind", "session", "pane")}},
+        )
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _duck_grace_s() -> float:
     """How long to wait for the far side to say it is about to play.
 
@@ -2789,6 +2879,14 @@ def submit_event(event: Event,
     sink = sink or SinkSpeech()
     target = event.target or Target(
         name=os.environ.get("MEDIA_SPEECH_DEFAULT_TARGET", "local"))
+
+    # The device asked for quiet, and this is an alert nobody asked for. Held
+    # before the render, not after: unlike a muted pane there is nothing to
+    # replay a clip *for* once the moment has gone, and the words survive in
+    # history either way. See `_ringer_silenced`.
+    held = _ringer_hold(target, event)
+    if held:
+        return _record_silenced(state, event, target, text, held)
 
     # Remote-say bridge: on a headless feeder host (e.g. red5) whose rooms now
     # listen to a remote low-latency Snapcast hub, render the
@@ -3402,6 +3500,18 @@ def submit_stream(sentences,
     sink = sink or SinkSpeech()
     target = event.target or Target(
         name=os.environ.get("MEDIA_SPEECH_DEFAULT_TARGET", "local"))
+
+    # The device asked for quiet, and this is an alert nobody asked for. Held
+    # before the render, not after: unlike a muted pane there is nothing to
+    # replay a clip *for* once the moment has gone, and the words survive in
+    # history either way. See `_ringer_silenced`.
+    held = _ringer_hold(target, event)
+    if held:
+        # `sentences` is consumed only on this branch — the streaming path's
+        # whole point is not to wait for the producer, and an alert being held
+        # is the one case where we need every word before deciding anything.
+        return _record_silenced(state, event, target,
+                                " ".join(sentences), held)
 
     # Remote-say bridge: on a headless feeder host (e.g. red5) whose rooms now
     # listen to a remote low-latency Snapcast hub, render the

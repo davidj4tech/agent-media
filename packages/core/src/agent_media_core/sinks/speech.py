@@ -152,6 +152,72 @@ def set_priority(priority: str, target: Target = DEFAULT_TARGET) -> bool:
         return False
 
 
+#: mpv `user-data` key carrying whether the *device* wants to be quiet.
+#:
+#: Written by the phone-side `ringer-state` service (see
+#: :mod:`agent_media_core.ringer`), read here by whichever host is about to
+#: speak. It travels on the broker for the same reason the owner claim does:
+#: it is a fact every host must agree on, and the broker is the one thing they
+#: all already talk to. The alternative — the origin asking the phone over ssh
+#: per alert — puts a network round-trip and a second failure mode into the say
+#: path for a question the phone could simply have left lying where everyone
+#: passes.
+RINGER_PROPERTY = "user-data/agent-media/ringer"
+
+#: How old a published verdict may be before it stops counting.
+#:
+#: The publisher polls far faster than this; anything approaching it means the
+#: service, the app, or the phone is gone. A verdict from a dead publisher is
+#: not evidence about a live phone, and the direction of the error matters:
+#: believing a stale "quiet" swallows alerts silently for as long as it takes
+#: someone to notice, while believing a stale "audible" costs one spoken alert.
+RINGER_MAX_AGE_S = 300.0
+
+
+def set_ringer(snapshot: dict, target: Target = DEFAULT_TARGET) -> bool:
+    """Publish the device's quiet/audible verdict on this broker.
+
+    Called on the phone against its own local socket. Best-effort like every
+    other flag here — a broker that is down leaves the property absent, and
+    absent means speak.
+    """
+    try:
+        ipc.set_property(_socket_for(target), RINGER_PROPERTY, dict(snapshot))
+        return True
+    except (ipc.MpvIpcError, OSError) as e:
+        log.debug("sink-speech: ringer flag failed: %s", e)
+        return False
+
+
+def read_ringer(target: Target = DEFAULT_TARGET,
+                max_age_s: float = RINGER_MAX_AGE_S,
+                timeout: float = 2.0) -> "dict | None":
+    """What the device last said about wanting to be quiet, or None.
+
+    None is the answer to every question that did not get one — no publisher,
+    an mpv too old for `user-data`, a broker that is down, a bridge that timed
+    out, a snapshot older than `max_age_s`, a payload that is not a snapshot.
+    Callers must treat all of them as "speak". There is exactly one way to be
+    silenced, and it is a fresh verdict that says so.
+    """
+    try:
+        raw = ipc.get_property(_socket_for(target), RINGER_PROPERTY,
+                               timeout=timeout)
+    except (ipc.MpvIpcError, OSError) as e:
+        log.debug("sink-speech: ringer read failed: %s", e)
+        return None
+    if not isinstance(raw, dict):
+        return None
+    checked = raw.get("checked_at")
+    if not isinstance(checked, (int, float)):
+        return None
+    age = time.time() - float(checked)
+    if age > max_age_s:
+        log.debug("sink-speech: ringer verdict is %.0fs old — ignoring", age)
+        return None
+    return raw
+
+
 #: mpv property that overrides `media-title`. The phone's speech card and the
 #: car display both read `media-title`, and a rendered clip's is its filename.
 TITLE_PROPERTY = "force-media-title"
