@@ -274,6 +274,23 @@ backoff forever, so the card appears when the bridge does.
 | `mpv-speech-bridge-local` | `127.0.0.1:6602` | `sink-speech.sock` | is a clip playing, the coordinator's speaking flag, the focus pause, and the speech card |
 | `mpv-book-bridge-local` | `127.0.0.1:6603` | `sink-book.sock` | the book card, and nothing else |
 
+**The socket names are not drift, and are not worth tidying.** Each socket is
+named after the runit service that owns the player, exactly: service `mpv-music`
+→ `mpv-music.sock`, service `sink-book` → `sink-book.sock`, service
+`sink-speech` → `sink-speech.sock`. The prefix therefore says which kind of
+thing owns the player, not what may be done to it: book and speech are
+agent-media's own broker processes (the `sinks/` package — see the "common
+contract for sink-speech and sink-music" in `types.py`), while music's player is
+the mpv underneath Mopidy and predates that abstraction.
+
+It is easy to read a different rule into it, because `sink-` currently also
+picks out exactly the two channels `call_guard` pauses. That correlation is
+twelve days old and accidental: `mpv-music.sock` was dropped from the pause list
+and `sink-book.sock` added to it on the same day, 2026-08-15 (`call_guard.py`,
+the comments above `_DEFAULT_SOCKET_NAMES`). Renaming `mpv-music.sock` for
+consistency, without also renaming the `mpv-music` service, would break the one
+rule the names do follow.
+
 A fourth service, `media-share`, is not a bridge: it is the doorway the share
 sheet knocks on.
 
