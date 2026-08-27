@@ -237,6 +237,28 @@ sideload.
 
 ## Phone side
 
+### The ringer, and the grant it wants
+
+`/ringer` answers one line — `silent dnd=priority granted=1` — read by the
+`ringer-state` service in agent-media, which republishes the verdict onto the
+speech broker so the host that renders alerts can see it without a port or an
+ssh. An alert marked `media say --alert` (a timer, a watcher) is then **held**
+on a quiet phone, not queued: recorded in history, never spoken. Speech you
+actually asked for is untouched.
+
+Two fields, because one is not enough. `AudioManager.getRingerMode()` is the
+ringer *switch*; on modern Android, Do Not Disturb does not move it, so a phone
+in DND reports `normal` while being, in every sense its owner means, on silent.
+`getCurrentInterruptionFilter()` answers that, and needs
+`ACCESS_NOTIFICATION_POLICY` — an ordinary user grant through a settings screen,
+**not** the notification-listener access Play Protect refuses to sideloads.
+
+The grant is optional and the app says which it has: ungranted, `/ringer`
+reports `granted=0`, the reader ignores the DND half, and the ringer switch
+still gates on its own. Grant it from **Diagnostics → Do Not Disturb**, which
+also shows the current state. Nothing is ever *withheld* on the strength of an
+unanswered question — every unknown, everywhere in this path, means speak.
+
 ### The revive, and the one setting it needs
 
 `call_guard` watches `/mic` and knocks when it stops answering, because Android
@@ -328,8 +350,10 @@ Developer options.
 
 ```sh
 ssh p8a curl -s 127.0.0.1:8770/state   # JSON: mpv state, focus mode, what is owed
+ssh p8a curl -s 127.0.0.1:8770/mic     # is anything recording (call_guard polls this)
+ssh p8a curl -s 127.0.0.1:8770/ringer  # does the phone want to be quiet
 ssh p8a curl -s 127.0.0.1:8770/log     # the event log, newest first
-ssh p8a curl -s 127.0.0.1:8770/        # both
+ssh p8a curl -s 127.0.0.1:8770/        # state and log
 ```
 
 Bound to loopback only, like `mpv-music-bridge-local` and for the same reason —

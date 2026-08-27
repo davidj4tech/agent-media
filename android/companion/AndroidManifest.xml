@@ -11,6 +11,15 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Read (never change) Do Not Disturb, so an alert is not spoken into a
+         phone whose owner has asked not to be disturbed. The ringer switch
+         alone does not answer that: on modern Android, DND leaves ringer mode
+         at `normal`. Unlike a NotificationListenerService this is an ordinary
+         user grant through ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS, so it
+         does not trip Play Protect on a sideload. Ungranted, /ringer reports
+         `granted=0` and the reader ignores the DND half. -->
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
+
     <!-- No NotificationListenerService, ever: Play Protect hard-blocks the
          install of a sideloaded app that declares one, so
          MediaSessionManager.getActiveSessions() is off the table. See

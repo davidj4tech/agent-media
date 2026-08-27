@@ -1490,6 +1490,18 @@ public class CompanionService extends Service {
                     + " " + bargeIn.why(now) + " " + mic.detail();
         }
 
+        @Override public String ringer() {
+            // Read live rather than cached: this is polled every few seconds by
+            // one service, both calls are cheap local lookups, and a cache here
+            // would mean an alert held after the ringer came back on — the one
+            // failure of this feature that looks exactly like a broken stack.
+            if (audio == null) return "unknown dnd=unknown granted=0";
+            boolean granted = nm != null && nm.isNotificationPolicyAccessGranted();
+            int filter = granted ? nm.getCurrentInterruptionFilter()
+                                 : RingerState.FILTER_UNKNOWN;
+            return RingerState.line(audio.getRingerMode(), filter, granted);
+        }
+
         @Override public String live(String set) {
             if (set != null && !set.isEmpty()) {
                 if (LIVE_YIELD.equals(set) || LIVE_DUCK.equals(set)

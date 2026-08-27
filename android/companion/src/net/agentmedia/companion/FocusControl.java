@@ -190,6 +190,32 @@ final class FocusControl {
         check(FocusPolicy.LOSS_TRANSIENT_CAN_DUCK,
               AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK, "LOSS_TRANSIENT_CAN_DUCK");
 
+        // RingerState duplicates AudioManager's ringer modes and
+        // NotificationManager's interruption filters, same reason. Worth the
+        // tripwire twice over here: a silently wrong constant does not crash,
+        // it withholds somebody's morning alerts.
+        check(RingerState.RINGER_SILENT, AudioManager.RINGER_MODE_SILENT,
+              "RINGER_SILENT");
+        check(RingerState.RINGER_VIBRATE, AudioManager.RINGER_MODE_VIBRATE,
+              "RINGER_VIBRATE");
+        check(RingerState.RINGER_NORMAL, AudioManager.RINGER_MODE_NORMAL,
+              "RINGER_NORMAL");
+        check(RingerState.FILTER_UNKNOWN,
+              android.app.NotificationManager.INTERRUPTION_FILTER_UNKNOWN,
+              "FILTER_UNKNOWN");
+        check(RingerState.FILTER_ALL,
+              android.app.NotificationManager.INTERRUPTION_FILTER_ALL,
+              "FILTER_ALL");
+        check(RingerState.FILTER_PRIORITY,
+              android.app.NotificationManager.INTERRUPTION_FILTER_PRIORITY,
+              "FILTER_PRIORITY");
+        check(RingerState.FILTER_NONE,
+              android.app.NotificationManager.INTERRUPTION_FILTER_NONE,
+              "FILTER_NONE");
+        check(RingerState.FILTER_ALARMS,
+              android.app.NotificationManager.INTERRUPTION_FILTER_ALARMS,
+              "FILTER_ALARMS");
+
         // ButtonPolicy duplicates KeyEvent's codes for the same reason.
         check(ButtonPolicy.KEYCODE_MEDIA_PLAY_PAUSE,
               android.view.KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, "KEYCODE_MEDIA_PLAY_PAUSE");

@@ -29,6 +29,7 @@ import java.nio.charset.StandardCharsets;
  *
  * <pre>
  *   GET /state  -> JSON, one object
+ *   GET /ringer -> text/plain, one line: "silent dnd=priority granted=1"
  *   GET /log    -> text/plain, newest line first
  *   GET /       -> both, for a human with curl
  * </pre>
@@ -59,6 +60,17 @@ final class StatusServer {
          * over ssh and is not parsed.
          */
         default String mic() { return "0 (no probe)"; }
+
+        /**
+         * Does this phone want to be quiet — one line, first field the ringer
+         * mode, then the DND filter and whether we are allowed to read it.
+         *
+         * Its own route rather than a field in /state for the same reason /mic
+         * has one: the reader is a service polling on a cadence, and making it
+         * pay for the whole JSON snapshot (three mpv mirrors, two histories)
+         * to learn one word would be a poor trade. See {@link RingerState}.
+         */
+        default String ringer() { return "unknown dnd=unknown granted=0"; }
 
         /**
          * Read (and optionally set) what we do about focus during a voice
@@ -184,6 +196,8 @@ final class StatusServer {
         } else if ("/live".equals(path)) {
             respond(c, 200, "text/plain; charset=utf-8",
                     source.live(paramOf(request, "set")));
+        } else if ("/ringer".equals(path)) {
+            respond(c, 200, "text/plain; charset=utf-8", source.ringer() + "\n");
         } else if ("/mic".equals(path)) {
             respond(c, 200, "text/plain; charset=utf-8", source.mic() + "\n");
         } else if ("/crash".equals(path)) {
@@ -193,7 +207,8 @@ final class StatusServer {
                     source.state() + "\n\n" + source.log());
         } else {
             respond(c, 404, "text/plain; charset=utf-8",
-                    "no such path: " + path + "\ntry /state, /mic, /live, /log, /crash or /\n");
+                    "no such path: " + path
+                            + "\ntry /state, /mic, /ringer, /live, /log, /crash or /\n");
         }
     }
 

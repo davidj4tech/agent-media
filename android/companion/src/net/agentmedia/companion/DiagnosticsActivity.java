@@ -44,6 +44,7 @@ public class DiagnosticsActivity extends Activity {
     private TextView exits;
     private TextView log;
     private TextView focusButton;
+    private TextView dndButton;
     private boolean ticking;
 
     private final ServiceConnection conn = new ServiceConnection() {
@@ -84,19 +85,7 @@ public class DiagnosticsActivity extends Activity {
         status.setPadding(0, dp(Style.gap(3)), 0, 0);
         root.addView(status);
 
-        focusButton = new TextView(this);
-        focusButton.setTextSize(Style.BODY);
-        focusButton.setTextColor(Style.INK);
-        focusButton.setGravity(Gravity.CENTER);
-        focusButton.setMinimumHeight(dp(Style.TOUCH));
-        GradientDrawable d = new GradientDrawable();
-        d.setColor(Style.SURFACE);
-        d.setCornerRadius(dp(8));
-        d.setStroke(dp(1), Style.RULE);
-        focusButton.setBackground(d);
-        focusButton.setClickable(true);
-        focusButton.setFocusable(true);
-        focusButton.setOnClickListener(new View.OnClickListener() {
+        focusButton = button(new View.OnClickListener() {
             @Override public void onClick(View v) {
                 if (service != null) service.setFocusActs(!service.focusActs());
                 render();
@@ -107,6 +96,33 @@ public class DiagnosticsActivity extends Activity {
                 ViewGroup.LayoutParams.WRAP_CONTENT);
         focusParams.topMargin = dp(Style.gap(3));
         root.addView(focusButton, focusParams);
+
+        // The Do Not Disturb grant. A button rather than a note in the README
+        // because the grant cannot be asked for in a dialog — it is a trip to
+        // a system settings screen most people have never opened — and because
+        // ungranted is a silent half-feature: alerts still speak through DND
+        // and nothing anywhere says why. This row is where that becomes
+        // visible on the phone itself.
+        dndButton = button(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                try {
+                    startActivity(new Intent(
+                            android.provider.Settings
+                                    .ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS));
+                } catch (RuntimeException e) {
+                    // Some builds have no such screen. Nothing to recover, and
+                    // an unhandled throw here takes the diagnostics screen down
+                    // with it — which is the one screen you need when something
+                    // is wrong.
+                    CompanionService.log("dnd settings unavailable: " + e);
+                }
+            }
+        });
+        LinearLayout.LayoutParams dndParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        dndParams.topMargin = dp(Style.gap(2));
+        root.addView(dndButton, dndParams);
 
         root.addView(label("How the process last ended"));
         exits = mono(Style.MUTED);
@@ -156,6 +172,13 @@ public class DiagnosticsActivity extends Activity {
         focusButton.setEnabled(service != null);
         focusButton.setAlpha(service != null ? 1f : 0.4f);
 
+        android.app.NotificationManager nm =
+                getSystemService(android.app.NotificationManager.class);
+        boolean granted = nm != null && nm.isNotificationPolicyAccessGranted();
+        dndButton.setText(granted
+                ? "Do Not Disturb: visible — alerts stay quiet in DND"
+                : "Do Not Disturb: not visible — tap to allow");
+
         if (service == null || service.exits().isEmpty()) {
             exits.setText("(Android has no record — first run, or a reboot since)");
         } else {
@@ -164,6 +187,24 @@ public class DiagnosticsActivity extends Activity {
             exits.setText(sb.toString().trim());
         }
         log.setText(CompanionService.dump());
+    }
+
+    /** The one button shape this screen uses: a full-width tappable card. */
+    private TextView button(View.OnClickListener onClick) {
+        TextView b = new TextView(this);
+        b.setTextSize(Style.BODY);
+        b.setTextColor(Style.INK);
+        b.setGravity(Gravity.CENTER);
+        b.setMinimumHeight(dp(Style.TOUCH));
+        GradientDrawable d = new GradientDrawable();
+        d.setColor(Style.SURFACE);
+        d.setCornerRadius(dp(8));
+        d.setStroke(dp(1), Style.RULE);
+        b.setBackground(d);
+        b.setClickable(true);
+        b.setFocusable(true);
+        b.setOnClickListener(onClick);
+        return b;
     }
 
     private TextView label(String text) {
