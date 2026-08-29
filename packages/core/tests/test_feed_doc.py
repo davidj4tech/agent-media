@@ -125,7 +125,15 @@ def test_the_feed_xml_is_written_when_a_base_url_is_configured(
 
 
 def test_no_base_url_still_publishes(monkeypatch, doc_root, rendered):
-    """The spool is the thing that matters; the XML is regenerable."""
+    """The spool is the thing that matters; the XML is regenerable.
+
+    The base URL is neutralised at the function rather than in the
+    environment: `media` layers ~/.config/agent-media.env over anything unset,
+    so on a host that has one configured (every deployed host) `delenv` is
+    undone the moment the CLI starts — a test that passes or fails by which
+    machine it runs on.
+    """
+    monkeypatch.setattr(cli, "_feed_base_url", lambda: "")
     assert _run(monkeypatch, ["doc", "play", "ringer", "--feed"]) == 0
     assert len(feed.episodes("docs")) == 1
     assert not (feed.feed_dir("docs") / "feed.xml").exists()

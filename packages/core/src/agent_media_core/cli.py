@@ -5761,12 +5761,25 @@ def _systemd_service_states() -> "list[tuple[str, str]]":
             capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.SubprocessError):
         return out
+    # A unit with a timer beside it is a job, not a daemon: between runs it is
+    # `inactive (dead)`, which is what a *healthy* scheduled task looks like.
+    # Reporting those as down would put a permanent ⚠ on the status bar for a
+    # feed pruner that runs at midnight and is behaving perfectly.
+    timed = {line.split()[0][:-len(".timer")]
+             for line in (r.stdout or "").splitlines()
+             if line.split() and line.split()[0].endswith(".timer")}
     for line in (r.stdout or "").splitlines():
         parts = line.split()
         if len(parts) < 4 or not parts[0].endswith(".service"):
             continue
         unit, active = parts[0], parts[2]
-        out.append((unit[:-len(".service")], "up" if active == "active" else active))
+        stem = unit[:-len(".service")]
+        if stem in timed and active != "failed":
+            # `failed` still counts: a job that errored has something to say,
+            # and its next window will not fix it.
+            out.append((stem, "timed"))
+            continue
+        out.append((stem, "up" if active == "active" else active))
     return out
 
 
@@ -5848,8 +5861,8 @@ def selfcheck_facts() -> "dict[str, str]":
             pass
 
     services = _runit_service_states(root) + _systemd_service_states()
-    down = [n for n, s in services if s not in ("up", "parked")]
-    parked = [n for n, s in services if s == "parked"]
+    down = [n for n, s in services if s not in ("up", "parked", "timed")]
+    parked = [n for n, s in services if s in ("parked", "timed")]
     facts["services"] = str(len(services))
     if down:
         facts["down"] = ",".join(down)

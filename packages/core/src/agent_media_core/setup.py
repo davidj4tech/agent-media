@@ -614,6 +614,34 @@ WantedBy=default.target
 """
 
 
+# A template that carries a `timer` file is periodic rather than long-running:
+# the same run script, started by a timer, exiting when it is done. `Restart`
+# would be wrong here — a oneshot that failed should wait for its next window,
+# not spin.
+SYSTEMD_ONESHOT_TEMPLATE = """\
+[Unit]
+Description=agent-media {name}
+
+[Service]
+Type=oneshot
+EnvironmentFile=-%h/.config/agent-media.env
+Environment=PATH={bindir}:/usr/local/bin:/usr/bin:/bin
+ExecStart=/bin/sh {runscript}
+"""
+
+SYSTEMD_TIMER_TEMPLATE = """\
+[Unit]
+Description=agent-media {name} schedule
+
+[Timer]
+{schedule}
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+"""
+
+
 def systemd_user_dir() -> Path:
     base = os.environ.get("XDG_CONFIG_HOME")
     root = Path(base) if base else Path.home() / ".config"
@@ -655,7 +683,12 @@ def _install_one_systemd(name: str, *, dry_run: bool, root: Path) -> str | None:
         return None
     unit = _systemd_unit_name(name)
     dest = root / unit
-    content = SYSTEMD_UNIT_TEMPLATE.format(
+    # `timer` holds the [Timer] body — OnCalendar=, OnUnitActiveSec=, whatever
+    # this job's cadence is. Its presence is what makes the service oneshot,
+    # so the two can never disagree about which kind of thing this is.
+    schedule = (src / "timer").read_text().strip() if (src / "timer").is_file() else ""
+    template = SYSTEMD_ONESHOT_TEMPLATE if schedule else SYSTEMD_UNIT_TEMPLATE
+    content = template.format(
         name=name, bindir=_entrypoint_bindir(), runscript=run)
     if dry_run:
         if dest.is_symlink():
@@ -663,6 +696,10 @@ def _install_one_systemd(name: str, *, dry_run: bool, root: Path) -> str | None:
                   f"with a generated unit")
         print(f"# would write {dest}:")
         print(content)
+        if schedule:
+            print(f"# would write {root / (unit.removesuffix('.service') + '.timer')}"
+                  f" ({schedule})")
+            return unit.removesuffix(".service") + ".timer"
         return unit
     # A stale symlink here is typically an older stow/dotfiles-deployed unit.
     # Unlink it first so we write a real file rather than following the link and
@@ -679,6 +716,16 @@ def _install_one_systemd(name: str, *, dry_run: bool, root: Path) -> str | None:
     root.mkdir(parents=True, exist_ok=True)
     dest.write_text(content)
     print(f"media-setup: wrote {dest}")
+    if schedule:
+        # The timer is what gets enabled; enabling the oneshot service itself
+        # would run it once at boot and never again, which looks like a
+        # working schedule for exactly one day.
+        tpath = root / (unit.removesuffix(".service") + ".timer")
+        tcontent = SYSTEMD_TIMER_TEMPLATE.format(name=name, schedule=schedule)
+        if not (tpath.exists() and tpath.read_text() == tcontent):
+            tpath.write_text(tcontent)
+            print(f"media-setup: wrote {tpath}")
+        return tpath.name
     return unit
 
 

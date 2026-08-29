@@ -1,0 +1,14 @@
+#!/bin/sh
+# media-feed-gc — apply each feed's retention policy, then refresh its XML.
+#
+# Nothing else deletes an episode. The spool is under state_dir precisely
+# because it is allowed to keep things the cache is not, which is the same
+# reason it will grow forever unless something prunes it: a 90-day talks feed
+# is a policy nobody applies by hand twice.
+#
+# Retention per feed comes from [feeds.<name>] in config.toml, defaulting to
+# keep-everything for docs, 90 days for talks and 7 for digest.
+exec 2>&1
+[ -f "$HOME/.config/agent-media.env" ] && . "$HOME/.config/agent-media.env"
+export MEDIA_FEED_TOKEN MEDIA_FEED_BASE_URL MEDIA_FEED_SPOOL
+exec media feed gc

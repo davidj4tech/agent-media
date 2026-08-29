@@ -164,3 +164,64 @@ def test_service_templates_are_found_inside_the_package_when_installed(tmp_path,
     monkeypatch.setattr(setup, "__file__", str(fake_pkg / "setup.py"))
     assert setup.service_templates_dir() == fake_pkg / "services"
     assert setup.service_template_names() == ["demo"]
+
+
+# --- periodic services ------------------------------------------------------
+# A template that carries a `timer` is a job, not a daemon. The distinction is
+# not cosmetic: enabling a oneshot service directly runs it once at boot and
+# never again, which looks like a working schedule for exactly one day.
+
+
+def _template(root, name, *, timer=""):
+    d = root / name
+    d.mkdir(parents=True)
+    (d / "run").write_text("#!/bin/sh\nexec true\n")
+    if timer:
+        (d / "timer").write_text(timer)
+    return d
+
+
+def test_a_template_with_a_timer_installs_a_oneshot_and_a_timer(tmp_path,
+                                                                monkeypatch):
+    templates = tmp_path / "services"
+    _template(templates, "media-feed-gc", timer="OnCalendar=daily\n")
+    monkeypatch.setattr(setup, "service_templates_dir", lambda: templates)
+    root = tmp_path / "user"
+
+    unit = setup._install_one_systemd("media-feed-gc", dry_run=False, root=root)
+
+    # The timer is what gets enabled, so it is what the installer returns.
+    assert unit == "agent-media-feed-gc.timer"
+    svc = (root / "agent-media-feed-gc.service").read_text()
+    assert "Type=oneshot" in svc
+    assert "Restart=" not in svc          # a failed job waits for its window
+    tmr = (root / "agent-media-feed-gc.timer").read_text()
+    assert "OnCalendar=daily" in tmr
+    assert "Persistent=true" in tmr       # a host that was off catches up
+    assert "WantedBy=timers.target" in tmr
+
+
+def test_a_template_without_a_timer_is_unchanged(tmp_path, monkeypatch):
+    templates = tmp_path / "services"
+    _template(templates, "media-feed")
+    monkeypatch.setattr(setup, "service_templates_dir", lambda: templates)
+    root = tmp_path / "user"
+
+    unit = setup._install_one_systemd("media-feed", dry_run=False, root=root)
+
+    assert unit == "agent-media-feed.service"
+    svc = (root / "agent-media-feed.service").read_text()
+    assert "Type=simple" in svc and "Restart=on-failure" in svc
+    assert not (root / "agent-media-feed.timer").exists()
+
+
+def test_reinstalling_a_periodic_service_rewrites_nothing(tmp_path, monkeypatch,
+                                                          capsys):
+    templates = tmp_path / "services"
+    _template(templates, "media-feed-gc", timer="OnCalendar=daily\n")
+    monkeypatch.setattr(setup, "service_templates_dir", lambda: templates)
+    root = tmp_path / "user"
+    setup._install_one_systemd("media-feed-gc", dry_run=False, root=root)
+    capsys.readouterr()
+    setup._install_one_systemd("media-feed-gc", dry_run=False, root=root)
+    assert "wrote" not in capsys.readouterr().out

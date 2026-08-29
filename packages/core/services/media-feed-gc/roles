@@ -1,0 +1,3 @@
+# Prunes the spool the feed server serves, so it belongs on the host that
+# holds it — the same `origin` that renders the speech being published.
+requires: origin
