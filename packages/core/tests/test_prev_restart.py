@@ -24,6 +24,13 @@ def spy(monkeypatch):
         return 0 if index <= fake_replay.max_idx else 1
     fake_replay.max_idx = 5
     monkeypatch.setattr(cli, "_do_replay", fake_replay)
+    # No playlist to seek: the *live* readout these tests describe, where each
+    # sentence is its own loadfile. Stubbed rather than left alone because the
+    # real one asks the speech player — the actual phone, from a unit test.
+    # That went unnoticed while the phone refused `seek` and the call failed
+    # into this same answer; the day the app learned to seek, two tests started
+    # exercising a live playlist on a device instead of the branch they name.
+    monkeypatch.setattr(cli, "_restart_current_playlist", lambda: 1)
 
     def set_state(idle, pos):
         # (idle, pos, dur, paused, muted, speed, playing)
@@ -192,3 +199,14 @@ def test_recorded_turn_still_replays_from_history(playing, monkeypatch, capsys):
                         lambda i, session=None: replays.append((i, session)) or 0)
     assert cli.cmd_replay_prev(argparse.Namespace(idx=1)) == 0
     assert replays == [(1, "bbb")]          # scoped to the conversation playing
+
+
+def test_a_queued_turn_is_restarted_in_place(spy, monkeypatch, capsys):
+    """The other branch: a replayed turn is one playlist, so `<` seeks it back
+    to its own start — no history row, and no re-push over the bridge."""
+    calls, set_state, _ = spy
+    set_state(idle=False, pos=30.0)
+    monkeypatch.setattr(cli, "_restart_current_playlist", lambda: 0)
+    assert _run(3, {}, monkeypatch) == 0
+    assert calls == [], "seeking the playlist back was enough; nothing to replay"
+    assert capsys.readouterr().out.strip() == "3", "the cursor must stay put"

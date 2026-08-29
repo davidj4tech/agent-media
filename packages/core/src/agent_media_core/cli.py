@@ -922,10 +922,14 @@ def _local_head_sig() -> str:
     return " ".join(f"{r}={_repo_head(r)[:7]}" for r in _skew_repo_names())
 
 
-def _skew_alert_line() -> str:
-    """Read the version skew ledger produced by `media doctor`. Flashing `⚠`
-    shown in the status bar if any host is running stale agent-media/dotfiles code.
-    Auto-triggers a background check in the background (see the intervals above).
+def _fleet_alert_entries() -> "list[str]":
+    """The unhappy hosts from the ledger `media doctor` writes, and the place
+    that decides when to go and look again.
+
+    Split out from the line it used to build because the same verdict is now
+    shown two ways — beside a reply that is playing, and on its own when none
+    is — and both must read one ledger and trigger at most one background
+    check between them.
     """
     try:
         from pathlib import Path
@@ -964,14 +968,25 @@ def _skew_alert_line() -> str:
                 start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
             )
 
-        if not entries:
-            return ""
-        glyph = "⚠" if int(time.time()) % 2 else " "
-        # "fleet", not "skew": the ledger now also carries hosts whose install
-        # is broken or whose services are down (marked with a trailing !).
-        return f"{glyph} fleet: {', '.join(entries)}"
+        return entries
     except OSError:
+        return []
+
+
+def _alert_glyph() -> str:
+    """Flashing, on the epoch second: the status bar redraws about once a
+    second, so alternating with a blank makes it blink."""
+    return "⚠" if int(time.time()) % 2 else " "
+
+
+def _skew_alert_line() -> str:
+    """The fleet verdict as a line of its own, for when there is no reply to
+    put it beside. "fleet", not "skew": the ledger also carries hosts whose
+    install is broken or whose services are down (a trailing !)."""
+    entries = _fleet_alert_entries()
+    if not entries:
         return ""
+    return f"{_alert_glyph()} fleet: {', '.join(entries)}"
 
 
 def _miss_alert_line() -> str:
@@ -993,10 +1008,21 @@ def _miss_alert_line() -> str:
 
 
 def cmd_status(a) -> int:
-    alert = _skew_alert_line() or _miss_alert_line()
-    if alert:
-        print(alert)
+    # A lost reply still takes the line outright. That alert is about the
+    # speech itself: a frozen `▶ 00:00` bar reads as playback, so a bar beside
+    # it would be actively misleading, which is the whole reason it replaces.
+    miss = _miss_alert_line()
+    if miss:
+        print(miss)
         return 0
+    # The fleet verdict is not about this reply — some other host is stale or
+    # unhappy, while the words being spoken here are fine. It used to replace
+    # the line all the same, so a complaint nobody could act on from where they
+    # were standing (a phone away from a trusted wifi, and no shell without
+    # one) blanked the bar speech is watched on, for days. So: a mark beside
+    # the reply while one is playing, and the whole line, with the hosts named,
+    # when there is nothing to sit beside.
+    fleet = _fleet_alert_entries()
     # Prefer the local timeline, but do NOT refuse the remote one: this is the
     # status bar, so cost matters, and on a remote-say target the far side is
     # the only thing that knows an utterance is running. MEDIA_STATUS_NO_REMOTE
@@ -1022,12 +1048,18 @@ def cmd_status(a) -> int:
         if prefix or body:
             line = _title_status_line(pos, dur, paused, muted, speed, prefix,
                                       body, _title_window(cw), key="status")
+            if fleet:
+                line = f"{line} {_alert_glyph()}"
             print(f"{line} {np_seg}" if np_seg else line)
             return 0
     speech = _with_visual_glyph(
         render_status(idle=idle, pos=pos, dur=dur, paused=paused, muted=muted,
                       width=a.width, hide_idle=not a.show_idle,
                       bar=not getattr(a, "no_bar", False), speed=speed))
+    if fleet:
+        # Nothing to sit beside: say which hosts, since the line is free.
+        speech = (f"{speech} {_alert_glyph()}" if speech
+                  else f"{_alert_glyph()} fleet: {', '.join(fleet)}")
     if np_seg:
         print(f"{speech} {np_seg}" if speech else np_seg)
     else:

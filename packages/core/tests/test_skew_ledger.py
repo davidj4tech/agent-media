@@ -99,3 +99,69 @@ def test_repo_head_matches_git(tmp_path):
 
 def test_missing_repo_is_empty_not_an_error(tmp_path):
     assert cli._repo_head("no-such-repo-here") == ""
+
+
+# --- where the verdict goes on the line ------------------------------------
+#
+# It used to replace the speech status outright. That is right for a lost
+# reply — a frozen bar reads as playback, so the fault has to take the line —
+# and wrong for the fleet, which is a claim about some other machine while the
+# words being spoken here are fine. A complaint nobody can act on from where
+# they are standing then blanks the bar speech is watched on, for days.
+
+import argparse
+import io
+from contextlib import redirect_stdout
+
+
+def _status(monkeypatch, playing, **kw):
+    args = argparse.Namespace(width=60, show_idle=False, no_bar=False,
+                              title=None, now_playing=False)
+    monkeypatch.setattr(cli, "_miss_alert_line", lambda: "")
+    monkeypatch.setattr(cli, "_speech_display_state",
+                        lambda **_kw: playing)
+    monkeypatch.setattr(cli, "_speech_visual_flag", lambda: False)
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        cli.cmd_status(args)
+    return buf.getvalue().strip()
+
+
+_PLAYING = (False, 3.0, 11.0, False, False, 1.0, True)
+_IDLE = (True, None, None, False, False, None, False)
+
+
+def test_the_reply_keeps_the_line_and_the_fleet_gets_a_mark(monkeypatch):
+    monkeypatch.setattr(cli, "_fleet_alert_entries", lambda: ["p8a!"])
+    monkeypatch.setattr(cli, "_alert_glyph", lambda: "⚠")
+    out = _status(monkeypatch, _PLAYING)
+    assert "00:03" in out and "00:11" in out, (
+        "a fleet warning blanked the progress of a reply that was playing")
+    assert out.endswith("⚠")
+
+
+def test_with_nothing_playing_the_hosts_are_named(monkeypatch):
+    monkeypatch.setattr(cli, "_fleet_alert_entries", lambda: ["p8a!", "red5"])
+    monkeypatch.setattr(cli, "_alert_glyph", lambda: "⚠")
+    out = _status(monkeypatch, _IDLE)
+    assert out == "⚠ fleet: p8a!, red5"
+
+
+def test_a_healthy_fleet_adds_nothing(monkeypatch):
+    monkeypatch.setattr(cli, "_fleet_alert_entries", lambda: [])
+    out = _status(monkeypatch, _PLAYING)
+    assert "⚠" not in out and "00:11" in out
+
+
+def test_a_lost_reply_still_takes_the_line(monkeypatch):
+    """The one alert that must keep replacing: a bar beside it would read as
+    playback for a reply that never arrived."""
+    monkeypatch.setattr(cli, "_fleet_alert_entries", lambda: ["p8a!"])
+    monkeypatch.setattr(cli, "_speech_display_state", lambda **_kw: _PLAYING)
+    monkeypatch.setattr(cli, "_miss_alert_line", lambda: "⚠ app unreachable (2 lost)")
+    args = argparse.Namespace(width=60, show_idle=False, no_bar=False,
+                              title=None, now_playing=False)
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        cli.cmd_status(args)
+    assert buf.getvalue().strip() == "⚠ app unreachable (2 lost)"
