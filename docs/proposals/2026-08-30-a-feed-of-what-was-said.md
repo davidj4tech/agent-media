@@ -1,6 +1,11 @@
 # A feed of what was said
 
-**Status:** proposal, 2026-08-30. Supersedes
+**Status:** implemented 2026-08-30, and running on red5 — `media-feed` on
+8782 (tailnet only, capability URL), `media doc play --feed`,
+`media feed session`. §7's four steps are all landed; retention (§5) is
+implemented as `media feed gc` but nothing calls it on a timer yet.
+
+Supersedes
 `2026-08-30-speech-epub-export.md`, which is not being built — that document's
 §1 (what a speech turn already records) and §2 (the cache is the only copy)
 are the ground this stands on, and its EPUB output is dropped.
