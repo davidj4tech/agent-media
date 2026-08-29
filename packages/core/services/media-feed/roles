@@ -1,0 +1,5 @@
+# The spool lives where the speech was rendered, so the server belongs on the
+# same host: `origin` is the one that produces what gets published. A render-
+# only speaker holds no episodes and would serve an empty feed on a port
+# nobody knocks on.
+requires: origin

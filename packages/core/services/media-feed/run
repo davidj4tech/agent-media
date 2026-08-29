@@ -1,0 +1,20 @@
+#!/bin/sh
+# media-feed — the podcast spool, served to whatever client subscribes.
+#
+# Loopback by default. Off loopback it needs both of these in
+# ~/.config/agent-media.env, and the server enforces the second:
+#
+#   MEDIA_FEED_BIND=100.x.y.z     the Tailscale address, never 0.0.0.0
+#   MEDIA_FEED_TOKEN=…            carried in the subscribe URL as ?k=…
+#
+# The token is not optional there, because this endpoint hands out recordings
+# of private conversations — an archive that reports itself healthy while
+# being readable by anything on the network is the failure worth refusing to
+# start over.
+#
+# Port 8782, next door to the canvas on 8781. Override with MEDIA_FEED_PORT.
+exec 2>&1
+[ -f "$HOME/.config/agent-media.env" ] && . "$HOME/.config/agent-media.env"
+export MEDIA_FEED_TOKEN MEDIA_FEED_BASE_URL MEDIA_FEED_SPOOL
+exec media-feed ${MEDIA_FEED_PORT:+--port "$MEDIA_FEED_PORT"} \
+                ${MEDIA_FEED_BIND:+--bind "$MEDIA_FEED_BIND"}

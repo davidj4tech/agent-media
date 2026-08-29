@@ -1,0 +1,7 @@
+#!/bin/sh
+# A subscriber's client is silent about failure: it shows an old episode list
+# and says nothing. This log is the only place a 401, a 404 or a refused bind
+# is visible at all.
+LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/sv-log/media-feed"
+mkdir -p "$LOG_DIR"
+exec svlogd -tt "$LOG_DIR"
