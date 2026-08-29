@@ -146,3 +146,84 @@ def test_a_repeated_report_is_not_a_second_pause(row):
     first = _extras(row)["paused_at"]
     submit.stamp_speech_pause(row, True)
     assert _extras(row)["paused_at"] == first
+
+
+# --- the stamp has to survive the writer that does not own it ---------------
+#
+# The clip lane rebuilds the whole now-playing row on every mark, because
+# everything on it belongs to the marking process. `paused_at` does not: the
+# toggle stamps it from another process between two marks, and the rebuild wiped
+# it about a second later — so the resume had no record of when the silence
+# began, and `stamp_speech_pause`'s correction never ran on that lane.
+
+from agent_media_core.intake.submit import (carry_pause_stamp,
+                                            stamp_speech_pause)
+
+
+def test_a_stamp_survives_a_rebuild_that_still_reads_paused():
+    prior = {"paused_at": 1000.0}
+    extras = {"live_pause": True}
+    carry_pause_stamp(prior, extras, live_seen=True)
+    assert extras["paused_at"] == 1000.0, (
+        "the rebuild dated the pause to now, losing the silence before it")
+
+
+def test_a_reading_that_says_playing_ends_the_pause():
+    """A reading is fresher than a stamp: if the player says it is playing,
+    the pause is over however recently it was stamped."""
+    prior = {"paused_at": 1000.0}
+    extras = {"live_pause": False}
+    carry_pause_stamp(prior, extras, live_seen=True)
+    assert "paused_at" not in extras
+
+
+def test_no_reading_cannot_contradict_a_stamp():
+    """A mark that did not poll the player knows nothing about the pause, so
+    it must leave the stamp where it is rather than clear it by omission."""
+    prior = {"paused_at": 1000.0}
+    extras = {}
+    carry_pause_stamp(prior, extras, live_seen=False)
+    assert extras["paused_at"] == 1000.0
+
+
+def test_a_pause_nobody_stamped_gets_dated_now():
+    """The app's own transport and call-guard pause the player without going
+    through the toggle. The row would otherwise say paused-since-never."""
+    extras = {"live_pause": True}
+    carry_pause_stamp({}, extras, live_seen=True)
+    assert extras["paused_at"] == pytest.approx(time.time(), abs=2)
+
+
+def test_the_resume_correction_works_again_end_to_end():
+    """The point of all of it: with the stamp carried, a resume takes the
+    silence off the clock instead of counting it as speech."""
+    # Ten seconds of speech, then four seconds of silence, still held.
+    now = time.time()
+    origin = now - 14.0
+    ex = {"play_started_at": origin, "paused_at": now - 4.0}
+
+    class _State:
+        def __init__(self, ex):
+            self.ex = ex
+
+        def get_now_playing(self, _sink):
+            return {"uri": "u", "started_at": origin, "target": "app",
+                    "extras": self.ex}
+
+        def set_now_playing(self, _sink, **kw):
+            self.ex = kw["extras"]
+
+    st = _State(ex)
+    held = elapsed_from_row(st.ex, 0)
+    assert held == pytest.approx(10.0, abs=0.1)
+
+    # ...a mark lands during the silence, rebuilding the row from scratch.
+    rebuilt = {"play_started_at": st.ex["play_started_at"], "live_pause": True}
+    carry_pause_stamp(st.ex, rebuilt, live_seen=True)
+    st.ex = rebuilt
+    assert elapsed_from_row(st.ex, 0) == pytest.approx(held, abs=0.1), \
+        "the mark restarted the clock mid-pause"
+
+    stamp_speech_pause(st, False)                   # resume, four seconds on
+    assert elapsed_from_row(st.ex, 0) == pytest.approx(held, abs=0.3), \
+        "the four seconds paused were counted as four seconds spoken"

@@ -1076,6 +1076,31 @@ def elapsed_from_row(extras: dict, origin: float) -> float:
     return max(0.0, now - base)
 
 
+def carry_pause_stamp(prior: dict, extras: dict, live_seen: bool) -> None:
+    """Keep `paused_at` across a rebuild of the now-playing row, in place.
+
+    The clip lane rebuilds the row from scratch on every mark, because
+    everything on it — the text, the clips, the offsets — belongs to the
+    process doing the marking. `paused_at` does not: it is stamped by whoever
+    pressed pause, in another process, between two marks. So the rebuild wiped
+    it about a second after it was written, and `stamp_speech_pause`'s resume
+    correction was quietly retired on that lane — with no record of when the
+    silence began, there was nothing to take off the clock when it ended.
+
+    `live_seen` says whether this pass actually read the player, because that
+    is what decides who wins: a reading is fresher than a stamp and may say the
+    pause is over, while no reading at all cannot contradict one.
+    """
+    held = prior.get("paused_at")
+    if extras.get("live_pause"):
+        # Paused, and no stamp to date it: the pause came from somewhere that
+        # does not stamp — the app's own transport, call-guard. Date it now
+        # rather than leave the row saying paused-since-never.
+        extras["paused_at"] = held or time.time()
+    elif not live_seen and held:
+        extras["paused_at"] = held
+
+
 class _SentenceFollower:
     """Keep `current_sentence` moving for a lane whose audio plays elsewhere.
 
@@ -3252,6 +3277,11 @@ def submit_event(event: Event,
                     extras["live_pause"] = bool(live.get("pause"))
                     extras["live_speed"] = live.get("speed") or 1.0
                     extras["live_mute"] = bool(live.get("mute"))
+                # One local read, so a pause stamped between marks is not
+                # thrown away by this one. See carry_pause_stamp.
+                carry_pause_stamp(
+                    (state.get_now_playing("speech") or {}).get("extras") or {},
+                    extras, live is not None)
                 state.set_now_playing(
                     "speech", uri=str(clip_i), started_at=started_at,
                     target=target.name, extras=extras)
