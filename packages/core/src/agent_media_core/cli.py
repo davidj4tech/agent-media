@@ -5179,6 +5179,107 @@ def cmd_doc(a) -> int:
     return 0
 
 
+def _feed_base_url() -> str:
+    """Where a subscriber reaches this host.
+
+    No default worth guessing: an enclosure URL is baked into every client's
+    database the moment it syncs, so a wrong one is not a mistake you correct,
+    it is a mistake you re-subscribe out of. Set MEDIA_FEED_BASE_URL.
+    """
+    return (os.environ.get("MEDIA_FEED_BASE_URL", "") or "").strip()
+
+
+def cmd_feed(a) -> int:
+    """The spool a podcast client subscribes to.
+
+    Publishing is a separate act from playing, deliberately: a document read
+    aloud at the desk and the same document waiting on the phone are different
+    requests, and the second one should not require the first.
+    """
+    from pathlib import Path
+    from . import feed as feedmod
+
+    fc = a.feed_cmd
+
+    if fc == "list":
+        names = [a.name] if getattr(a, "name", "") else feedmod.feeds()
+        if not names:
+            print("no feeds published", file=sys.stderr)
+            return 0
+        for name in names:
+            eps = feedmod.episodes(name)
+            pol = feedmod.policy(name)
+            keep = ", ".join(
+                [f"{pol.keep_days}d" if pol.keep_days else "",
+                 f"max {pol.keep_max}" if pol.keep_max else ""]).strip(", ")
+            n = len(eps)
+            print(f"{name}  ({n} episode{'' if n == 1 else 's'}"
+                  + (f", keep {keep}" if keep else "") + ")")
+            for ep in eps:
+                when = time.strftime("%Y-%m-%d %H:%M",
+                                     time.localtime(ep.published))
+                dur = feedmod.hms(ep.duration_s) if ep.duration_s else "-"
+                print(f"  {when}  {dur:>8}  {ep.title}")
+        return 0
+
+    if fc == "publish":
+        try:
+            ep = feedmod.publish(
+                a.name, Path(a.audio).expanduser(),
+                guid=a.guid or str(Path(a.audio).expanduser().resolve()),
+                title=a.title, description=a.description,
+                source=a.source)
+        except (ValueError, OSError) as e:
+            print(f"media feed: {e}", file=sys.stderr)
+            return 1
+        print(ep.guid)
+        return _feed_write(a.name) if _feed_base_url() else 0
+
+    if fc == "remove":
+        gone = feedmod.remove(a.name, a.guid)
+        if not gone:
+            print("media feed: no such episode", file=sys.stderr)
+            return 1
+        return _feed_write(a.name) if _feed_base_url() else 0
+
+    if fc == "gc":
+        for name in ([a.name] if getattr(a, "name", "") else feedmod.feeds()):
+            for guid in feedmod.gc(name):
+                print(f"{name}\t{guid}")
+            if _feed_base_url():
+                _feed_write(name)
+        return 0
+
+    if fc == "xml":
+        base = _feed_base_url() or "http://localhost"
+        sys.stdout.write(feedmod.feed_xml(
+            a.name, feedmod.episodes(a.name), base_url=base,
+            token=(os.environ.get("MEDIA_FEED_TOKEN", "") or "").strip()))
+        return 0
+
+    if fc == "write":
+        return _feed_write(a.name)
+
+    print(f"media feed: unknown subcommand {fc}", file=sys.stderr)
+    return 2
+
+
+def _feed_write(name: str) -> int:
+    """Regenerate one feed's XML, or say why it can't be."""
+    from . import feed as feedmod
+
+    base = _feed_base_url()
+    if not base:
+        print("media feed: set MEDIA_FEED_BASE_URL (an enclosure URL is baked "
+              "into every subscriber's database)", file=sys.stderr)
+        return 1
+    path = feedmod.write_feed(
+        name, base_url=base,
+        token=(os.environ.get("MEDIA_FEED_TOKEN", "") or "").strip())
+    print(path)
+    return 0
+
+
 def cmd_book(a) -> int:
     srv = _srv()
     bc = a.book_cmd
@@ -7250,6 +7351,37 @@ def _add_book_parser(sub) -> None:
     da = d.add_parser("agenda", help="today's agenda, spoken")
     da.add_argument("--text", action="store_true", help="print, don't play")
     da.add_argument("--target", default="", help="rooms|local|phone")
+
+    fd = sub.add_parser("feed", help="the podcast spool (docs, talks, digest)")
+    fd.set_defaults(func=cmd_feed)
+    f = fd.add_subparsers(dest="feed_cmd", required=True)
+
+    fl = f.add_parser("list", help="feeds and their episodes")
+    fl.add_argument("name", nargs="?", default="", help="one feed only")
+
+    fp = f.add_parser("publish", help="take custody of an audio file")
+    fp.add_argument("name", help="feed name (docs, talks, digest, ...)")
+    fp.add_argument("audio", help="the rendered file; it is copied, not moved")
+    fp.add_argument("--title", default="", help="episode title")
+    fp.add_argument("--guid", default="",
+                    help="stable id — republishing it replaces the episode "
+                         "(default: the audio's absolute path)")
+    fp.add_argument("--description", default="", help="shown in the client")
+    fp.add_argument("--source", default="",
+                    help="where it came from: a doc path, a session id")
+
+    fr = f.add_parser("remove", help="unpublish one episode")
+    fr.add_argument("name")
+    fr.add_argument("guid")
+
+    fg = f.add_parser("gc", help="apply the retention policy")
+    fg.add_argument("name", nargs="?", default="", help="one feed only")
+
+    fx = f.add_parser("xml", help="print the feed XML (does not write it)")
+    fx.add_argument("name")
+
+    fw = f.add_parser("write", help="regenerate <feed>/feed.xml from the spool")
+    fw.add_argument("name")
 
     book = sub.add_parser("book", help="longform / audiobook channel")
     book.set_defaults(func=cmd_book)
