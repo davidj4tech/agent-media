@@ -1037,9 +1037,16 @@ def stamp_speech_pause(state: StateStore, paused: Optional[bool] = None) -> None
         if now_paused:
             ex["paused_at"] = now
         else:
+            held = now - float(ex["paused_at"])
             started = float(ex.get("play_started_at") or 0)
             if started:
-                ex["play_started_at"] = started + (now - float(ex["paused_at"]))
+                ex["play_started_at"] = started + held
+            # Same correction for the other clock: a reading taken before the
+            # pause is still that reading, but the time since it was taken no
+            # longer all counts as playing.
+            read_at = float(ex.get("live_pos_at") or 0)
+            if read_at:
+                ex["live_pos_at"] = read_at + held
             ex.pop("paused_at", None)
         ex["live_pause"] = now_paused
         state.set_now_playing(
@@ -3237,6 +3244,11 @@ def submit_event(event: Event,
                     tp = live.get("time-pos")
                     extras["live_pos_s"] = (offsets[idx] + tp
                                             if tp is not None else offsets[idx])
+                    # When it was read. A position without one is only true at
+                    # the instant it was taken, and this lane takes one per
+                    # sentence — on the gapless playlist, where the player
+                    # advances itself, once for the whole reply.
+                    extras["live_pos_at"] = time.time()
                     extras["live_pause"] = bool(live.get("pause"))
                     extras["live_speed"] = live.get("speed") or 1.0
                     extras["live_mute"] = bool(live.get("mute"))

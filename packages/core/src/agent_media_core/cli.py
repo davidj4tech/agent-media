@@ -663,13 +663,26 @@ def _announced_timeline():
             return (True, None, None, False, False, None, False)
     ps = ex.get("play_started_at")
     lp = ex.get("live_pos_s")
+    total = float(ex["total_duration_s"])
+    speed = float(ex.get("live_speed") or 1.0)
     if lp is None and ps:
         # Clamped: an overrun means the utterance finished and cleanup has not
         # landed, and a bar past 100% reads as a fault.
-        pos = min(max(time.time() - float(ps), 0.0),
-                  float(ex["total_duration_s"]))
+        pos = min(max(time.time() - float(ps), 0.0), total)
+    elif lp is not None:
+        # A position is only true at the moment it was read, and on the phone
+        # lane the poll that reads it lands every one to three seconds. Taking
+        # the reading as current makes the bar stall for as long as the gap and
+        # then jump — measured against the player: 3.3s held for three seconds
+        # while the audio ran on to 6.1s. So carry the reading on with the
+        # clock, as the play_started_at branch above does, and let the next
+        # poll correct it; freeze it when the row says the player is paused.
+        at = ex.get("live_pos_at")
+        pos = float(lp)
+        if at and not ex.get("live_pause"):
+            pos = min(pos + max(time.time() - float(at), 0.0) * speed, total)
     else:
-        pos = lp if lp is not None else (ex.get("clip_offset_s") or 0.0)
+        pos = ex.get("clip_offset_s") or 0.0
     return (False, pos, ex.get("total_duration_s"),
             bool(ex.get("live_pause")), bool(ex.get("live_mute")),
             ex.get("live_speed") or 1.0, True)
@@ -3571,6 +3584,7 @@ def _mirror_clock(state, owns, sentences: list, offsets: list,
         if not owns(ex):
             return
         ex["live_pos_s"] = elapsed
+        ex["live_pos_at"] = time.time()
         ex["writer_pid"] = os.getpid()
         if idx < len(sentences):
             ex["current_sentence"] = sentences[idx]
@@ -3650,6 +3664,7 @@ def cmd_replay_track(a) -> int:
             base = clip_starts[clip] if clip < len(clip_starts) else 0.0
             elapsed = base + (snap.get("time-pos") or 0.0)
             ex["live_pos_s"] = elapsed
+            ex["live_pos_at"] = time.time()
             ex["live_pause"] = bool(snap.get("pause"))
             ex["live_speed"] = snap.get("speed") or 1.0
             ex["live_mute"] = bool(snap.get("mute"))
