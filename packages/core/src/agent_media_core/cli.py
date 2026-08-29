@@ -586,7 +586,7 @@ def _remote_snapshot():
     try:
         snap = ipc.display_properties(
             _sock(), ["idle-active", "pause", "time-pos", "duration",
-                      "mute", "speed"], timeout=2.0)
+                      "mute", "speed", "playlist-pos"], timeout=2.0)
     except (ipc.MpvIpcError, OSError):
         return None
     if not snap:
@@ -675,6 +675,36 @@ def _announced_timeline():
             ex.get("live_speed") or 1.0, True)
 
 
+def _as_response_timeline(pos, dur, playlist_pos):
+    """Lift a player's per-clip reading onto the whole response's timeline.
+
+    A reply is rendered one clip per sentence and queued as a playlist, so the
+    player's `duration` is whichever sentence it happens to be reading and its
+    `time-pos` starts again at every full stop. Neither is what a progress bar
+    or an end time is asking about: those are questions about the reply. The
+    clip lengths are on the now-playing row, so the offset is a sum rather
+    than a guess.
+
+    Returns `(pos, dur, False)` unchanged when there is no announced timeline
+    to lift onto — the remote-render lane records none, and an end time
+    invented there would be worse than the sentence's honest one.
+    """
+    np = _now_speaking()
+    if not np:
+        return pos, dur, False
+    ex = np.get("extras") or {}
+    total = ex.get("total_duration_s")
+    if not total:
+        return pos, dur, False
+    clip_durs = ex.get("clip_durations_s")
+    if clip_durs:
+        ppos = max(0, int(playlist_pos or 0))
+        offset = sum(clip_durs[:ppos])
+    else:
+        offset = ex.get("clip_offset_s") or 0.0
+    return offset + (pos or 0.0), total, True
+
+
 def _speech_display_state(allow_remote: bool = True,
                           prefer_local: bool = False):
     """`(idle, pos, dur, paused, muted, speed, playing)` for the speech channel.
@@ -717,7 +747,16 @@ def _speech_display_state(allow_remote: bool = True,
             # could never manage.
             if snap.get("idle-active"):
                 return (True, None, None, False, False, None, False)
-            return (False, snap.get("time-pos"), snap.get("duration"),
+            # The same lift the local lane does. Without it this lane answered
+            # "how far through are we" with the sentence being read: the bar
+            # restarted at every full stop and the end time was the sentence's,
+            # while the tmux bar beside it — which takes the announced timeline
+            # — said the reply's. Two surfaces disagreeing about where the end
+            # is, on the lane that plays every reply by default.
+            pos, dur, _lifted = _as_response_timeline(
+                snap.get("time-pos"), snap.get("duration"),
+                snap.get("playlist-pos"))
+            return (False, pos, dur,
                     bool(snap.get("pause")), bool(snap.get("mute")),
                     snap.get("speed") or 1.0, True)
 
@@ -738,21 +777,8 @@ def _speech_display_state(allow_remote: bool = True,
     dur = snap.get("duration")
     playing = False         # the response timeline (offset+pos / total) is known
     if not idle:
-        np = _now_speaking()
-        if np:
-            ex = np.get("extras") or {}
-            total = ex.get("total_duration_s")
-            if total:
-                clip_durs = ex.get("clip_durations_s")
-                if clip_durs:
-                    # Replay path: offset from playlist-pos (from the snapshot).
-                    ppos = max(0, int(snap.get("playlist-pos") or 0))
-                    offset = sum(clip_durs[:ppos])
-                else:
-                    offset = ex.get("clip_offset_s") or 0.0
-                pos = offset + (pos or 0.0)
-                dur = total
-                playing = True
+        pos, dur, playing = _as_response_timeline(
+            pos, dur, snap.get("playlist-pos"))
     return (idle, pos, dur, snap.get("pause"), snap.get("mute"),
             snap.get("speed"), playing)
 
