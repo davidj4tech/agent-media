@@ -33,11 +33,24 @@ rm -rf "$OUT"; mkdir -p "$OUT/gen" "$OUT/classes"
 STAMP="$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 git -C "$HERE" diff --quiet HEAD -- "$HERE" 2>/dev/null || STAMP="$STAMP+dirty"
 
+# The version *code* is what the package installer compares, and it was left at
+# the manifest's 1 for every build ever made. `adb install -r` does not care, so
+# nothing showed it -- until the tap path was the only one left (no adb without
+# Wireless debugging, and no Wireless debugging away from a wifi worth trusting)
+# and Files answered "this version is already installed" for an APK that was
+# nine commits newer. The whole fallback deploy route was closed.
+#
+# Minutes since the epoch: monotonic, so every build installs over the last one;
+# never colliding, so a rebuild of a dirty tree installs too, which is the loop
+# this is for. It is an install ordinal and nothing else -- the identity of a
+# build is the commit in the version NAME, which is what /state reports back.
+VERSION_CODE="$(( $(date +%s) / 60 ))"
+
 "$BT/aapt2" link -o "$OUT/base.apk" \
     -I "$PLATFORM" \
     --manifest "$HERE/AndroidManifest.xml" \
     --java "$OUT/gen" \
-    --version-name "$STAMP" --replace-version \
+    --version-name "$STAMP" --version-code "$VERSION_CODE" --replace-version \
     --min-sdk-version 30 --target-sdk-version 35 \
     "$OUT/res.zip"
 
@@ -69,4 +82,4 @@ fi
 "$BT/apksigner" sign --ks "$KEYSTORE" --ks-pass pass:android \
     --key-pass pass:android --out "$APK" "$OUT/aligned.apk"
 
-echo "built: $APK"
+echo "built: $APK ($STAMP, versionCode $VERSION_CODE)"
