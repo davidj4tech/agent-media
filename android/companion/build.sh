@@ -73,6 +73,18 @@ cp "$OUT/base.apk" "$OUT/unsigned.apk"
 # is signed by a different key, and the only way out on the phone is uninstall
 # (losing granted permissions) -- awkward when every install is a sideload.
 if [ ! -f "$KEYSTORE" ]; then
+    # Generating one is right for a first build and a trap for every other:
+    # the keystore is gitignored, so a build in a throwaway git worktree finds
+    # no key, makes a fresh one, and produces an APK that every phone with the
+    # app already on it refuses with "App not installed" -- hours later, in
+    # someone else's hands, saying nothing about signatures. Say it here, where
+    # the fix (COMPANION_KEYSTORE, or build in the main checkout) is one line.
+    echo "build.sh: no keystore at $KEYSTORE -- generating a NEW signing key." >&2
+    echo "  An APK signed with it CANNOT update an existing install: Android" >&2
+    echo "  refuses a new key, and the only way out on the phone is uninstall." >&2
+    echo "  Building in a git worktree? The keystore is gitignored, so it is" >&2
+    echo "  not here. Point COMPANION_KEYSTORE at the real one instead:" >&2
+    echo "    COMPANION_KEYSTORE=<main-checkout>/android/companion/debug.keystore" >&2
     keytool -genkeypair -keystore "$KEYSTORE" -alias companion \
         -storepass android -keypass android \
         -keyalg RSA -keysize 2048 -validity 10000 \
@@ -82,4 +94,9 @@ fi
 "$BT/apksigner" sign --ks "$KEYSTORE" --ks-pass pass:android \
     --key-pass pass:android --out "$APK" "$OUT/aligned.apk"
 
-echo "built: $APK ($STAMP, versionCode $VERSION_CODE)"
+# The signer, every time. Two APKs with the same name and the same DN can be
+# signed by different keys -- that is exactly the case this build hit, and the
+# digest is the only thing that tells them apart.
+SIGNER="$("$BT/apksigner" verify --print-certs "$APK" 2>/dev/null \
+    | sed -n 's/.*SHA-256 digest: //p' | head -1)"
+echo "built: $APK ($STAMP, versionCode $VERSION_CODE, signer ${SIGNER:0:12})"
