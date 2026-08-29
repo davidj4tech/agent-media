@@ -5674,16 +5674,32 @@ def _mic_block_facts() -> "dict[str, str]":
         return {}
     facts = {}
     loose = []
+    blind = []
     reverts = 0
     now = time.time()
     for package, entry in blob.items():
         if not isinstance(entry, dict):
             continue
-        if entry.get("mode") != mic_block.BLOCKED:
-            loose.append(f"{package}={entry.get('mode', 'unknown')}")
+        mode = entry.get("mode", "unknown")
+        if mode == "unknown":
+            # No shell to read the op with. The service is explicit that this
+            # is not evidence either way, so it must not be flattened in with
+            # a block we watched come off.
+            since = entry.get("last_known_at")
+            seen = entry.get("last_known_mode")
+            when = (f", last seen {seen} {(now - float(since)) / 3600:.0f}h ago"
+                    if since and seen else "")
+            blind.append(f"{package}{when}")
+        elif mode != mic_block.BLOCKED:
+            loose.append(f"{package}={mode}")
         reverts += len([t for t in entry.get("reverts", [])
                         if isinstance(t, (int, float)) and now - t < 86400])
-    facts["mic_block"] = "loose:" + ",".join(loose) if loose else "held"
+    if loose:
+        facts["mic_block"] = "loose:" + ",".join(loose)
+    elif blind:
+        facts["mic_block"] = "unknown:" + ",".join(blind)
+    else:
+        facts["mic_block"] = "held"
     if reverts:
         facts["mic_block_reverts_24h"] = str(reverts)
     return facts
@@ -5890,6 +5906,20 @@ def health_problems(facts: "dict[str, str]") -> "list[str]":
             f"the microphone block is not in force ({block[6:]}) — speech will "
             "be paused every time the phone's recogniser opens the mic. The "
             "mic-block service re-applies it; check that it is running")
+    elif block.startswith("unknown:"):
+        # Deliberately not a problem. `appops` needs a shell, the phone only
+        # has one while Wireless debugging is on, and a network David does not
+        # trust is a good reason for it to be off. Reported as a fact so the
+        # blindness is visible — but a health flag raised on "cannot see"
+        # stands for as long as the phone is away from a trusted wifi, and it
+        # costs the whole status line, which is where a person watches speech.
+        # The block reverting has a symptom that IS visible without a shell:
+        # the hold rate below, which the companion publishes and which the app
+        # only calls a problem at a rate no person produces.
+        # The fact itself is published (`mic_block=unknown:…`, carrying what
+        # was last seen and when), so the blindness is on the selfcheck for
+        # anyone reading it. It just is not a fault.
+        pass
     rate = facts.get("dictation_rate")
     # Only a complaint when the block is not known to be holding. A high rate
     # with the block in force is a person using their microphone — dictating,

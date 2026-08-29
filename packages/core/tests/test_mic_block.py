@@ -155,3 +155,50 @@ def test_unreadable_state_is_no_state(tmp_path, monkeypatch):
     mic_block.state_path().parent.mkdir(parents=True, exist_ok=True)
     mic_block.state_path().write_text("{ not json")
     assert cli._mic_block_facts() == {}
+
+
+def test_losing_the_shell_is_not_the_same_as_losing_the_block(
+        tmp_path, monkeypatch):
+    """`unknown` means "we cannot see", and `tick` is explicit that this is not
+    evidence either way. Flattening it in with a block we watched come off is
+    how "no adb here" was reported as "the block is not in force" — asserting
+    a consequence (speech paused every half minute) that nothing had observed.
+    """
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    from agent_media_core.cli import _mic_block_facts, health_problems
+
+    mic_block.publish("com.google.android.as", "ignore", None)
+    assert _mic_block_facts()["mic_block"] == "held"
+
+    mic_block.publish("com.google.android.as", None, None)
+    facts = _mic_block_facts()
+    assert facts["mic_block"].startswith("unknown:com.google.android.as")
+    assert "last seen ignore" in facts["mic_block"], (
+        "a reader has to be able to tell how stale the last real reading is")
+    assert health_problems(facts) == [], (
+        "a health flag raised on 'cannot see' stands for as long as the phone "
+        "is away from a trusted wifi, and it costs the whole status line")
+
+
+def test_a_block_we_watched_come_off_is_still_a_fault(tmp_path, monkeypatch):
+    """The other half: when the shell IS there and the answer is `allow`, that
+    is the reverted block, and it must still be reported."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    from agent_media_core.cli import _mic_block_facts, health_problems
+
+    mic_block.publish("com.google.android.as", "allow", None)
+    facts = _mic_block_facts()
+    assert facts["mic_block"] == "loose:com.google.android.as=allow"
+    assert any("not in force" in p for p in health_problems(facts))
+
+
+def test_the_rate_still_speaks_while_we_are_blind(tmp_path, monkeypatch):
+    """The symptom of a reverted block IS visible without a shell. Being unable
+    to read the op must not also silence the evidence that would show it."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    from agent_media_core.cli import _mic_block_facts, health_problems
+
+    mic_block.publish("com.google.android.as", None, None)
+    facts = _mic_block_facts()
+    facts["dictation_rate"] = "dictation held 96 times in the last hour"
+    assert any("96 times" in p for p in health_problems(facts))

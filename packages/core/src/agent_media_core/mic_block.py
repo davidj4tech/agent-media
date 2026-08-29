@@ -193,6 +193,13 @@ def publish(package: str, mode: str | None, reverted_at: float | None) -> None:
         entry = {}
     entry["mode"] = mode or "unknown"
     entry["checked_at"] = time.time()
+    if mode:
+        # What we last actually saw, and when. `unknown` means the shell is
+        # gone, which `tick` is careful to call "not evidence either way" —
+        # and a reader that cannot tell how long ago we could still see, or
+        # what we saw then, has no way to keep that care.
+        entry["last_known_mode"] = mode
+        entry["last_known_at"] = entry["checked_at"]
     if reverted_at is not None:
         entry["last_revert_at"] = reverted_at
         recent = [t for t in entry.get("reverts", []) if isinstance(t, (int, float))]
