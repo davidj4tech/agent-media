@@ -90,6 +90,30 @@ public class MpvServerTest {
                             + "\"user-data/agent-media/speaking\"],\"request_id\":33}")
                             .contains("\"data\":true"));
 
+            // ---- pausing, which is a person pressing a key ------------------
+            //
+            // Both spellings, because both reach this socket: the CLI writes
+            // the value it wants, and an older checkout elsewhere on the
+            // fleet still sends mpv's `cycle`. This server used to answer
+            // `cycle` with "invalid parameter" — and the CLI sent it
+            // fire-and-forget, so the refusal was never heard and the popup's
+            // Space key just did nothing while a reply was being spoken.
+            c.call("{\"command\":[\"set_property\",\"pause\",true],"
+                    + "\"request_id\":36}");
+            failures += check("set_property pause holds the clip", p.paused());
+            failures += check("cycle pause is answered, not refused",
+                    c.call("{\"command\":[\"cycle\",\"pause\"],"
+                            + "\"request_id\":37}").contains("\"error\":\"success\""));
+            failures += check("and it flipped the player", !p.paused());
+            failures += check("cycle flips back",
+                    c.call("{\"command\":[\"cycle\",\"pause\"],"
+                            + "\"request_id\":38}").contains("success") && p.paused());
+            c.call("{\"command\":[\"set_property\",\"pause\",false],"
+                    + "\"request_id\":39}");
+            failures += check("a property that cannot be cycled says so",
+                    c.call("{\"command\":[\"cycle\",\"volume\"],"
+                            + "\"request_id\":43}").contains("property not found"));
+
             // ---- an unknown property fails the way old mpv fails ------------
             failures += check("unknown property is 'property not found'",
                     c.call("{\"command\":[\"set_property\",\"sub-visibility\",false],"

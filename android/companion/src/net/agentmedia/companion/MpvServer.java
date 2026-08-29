@@ -351,6 +351,23 @@ final class MpvServer {
                 }
                 return ok(id, null);
             }
+            if ("cycle".equals(verb)) {
+                // mpv's own flip-this-flag verb. Nothing here sends it any
+                // more — a fire-and-forget `cycle` that this server refused
+                // was how the popup's Space key stopped pausing speech, so
+                // the CLI now writes the value it wants — but an older
+                // checkout on another host still does, and refusing a verb
+                // mpv answers is the app failing to be the thing it claims
+                // to be on this socket.
+                String name = Json.asString(argv.get(1));
+                Object v = get(name);
+                if (v == NOT_FOUND || !(v instanceof Boolean)) {
+                    return error(id, "property not found");
+                }
+                set(name, !((Boolean) v).booleanValue());
+                changed(name);
+                return ok(id, null);
+            }
             if ("client_name".equals(verb)) {
                 return ok(id, "agent-media-companion");
             }

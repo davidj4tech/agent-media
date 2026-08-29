@@ -621,6 +621,22 @@ def _speech_in_flight() -> bool:
     return True
 
 
+def _speech_paused_mirror() -> bool:
+    """Is the speech the far side is playing currently held paused?
+
+    Read from the now-playing row, not the player: `stamp_speech_pause` writes
+    every pause down here — ours, and the ones the report stream hears about —
+    because the remote lane's follow-along runs on a clock and has to know when
+    the clock stopped. That makes the row the one answer a control can get
+    without a round trip that might not come back.
+    """
+    np = _now_speaking()
+    if not np:
+        return False
+    ex = np.get("extras") or {}
+    return bool(ex.get("paused_at") or ex.get("live_pause"))
+
+
 def _announced_timeline():
     """Speech state extrapolated from what the submit process announced, or
     None when it announced no timeline to extrapolate from.
@@ -2254,13 +2270,24 @@ def cmd_toggle(a) -> int:
         # critical: a keypress is not policy chatter. Fire-and-forget, because
         # pausing suspends the phone's audio device (~0.6s) and the reply adds
         # nothing — the next redraw reads the player itself.
+        #
+        # The flip is written as a value rather than as `cycle pause`. `cycle`
+        # is mpv's verb, and the phone lane no longer always ends at mpv: the
+        # companion app answers the same socket with its own subset, which
+        # rejects `cycle` — and a fire-and-forget command never hears the
+        # refusal, so Space simply stopped pausing speech, silently, on the
+        # lane it is pressed on most. What `cycle` would have flipped is
+        # already written down here for the follow-along clock, so decide from
+        # the row and set the value: still one command, still no read.
+        want = not _speech_paused_mirror()
         try:
-            ipc.send_nowait(_sock(), "cycle", "pause", critical=True)
+            ipc.send_nowait(_sock(), "set_property", "pause", want,
+                            critical=True)
         except Exception:  # noqa: BLE001
-            ipc.command(_sock(), "cycle", "pause", critical=True)
+            ipc.set_property(_sock(), "pause", want, critical=True)
         # Same decision, recorded: the follow-along on this lane runs on a
         # clock and would otherwise read on through the silence.
-        _stamp_speech_pause()
+        _stamp_speech_pause(want)
         _SNAP_CACHE["value"] = None   # next redraw asks the player, not the cache
         return 0
     if _get("idle-active"):
