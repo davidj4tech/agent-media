@@ -1,6 +1,10 @@
 # A conversation, on the shelf: EPUB export for the speech channel
 
-**Status:** proposal, 2026-08-30. Nothing built.
+**Status:** not doing, 2026-08-30. Superseded by
+`2026-08-30-a-feed-of-what-was-said.md`, which reads the same rows and clips
+and lands them somewhere every phone can already play. Kept for §1 (what a
+speech turn already records) and §2 (the cache is the only copy), which the
+feed proposal builds on.
 
 ## Why not Calibre as *the* interface
 
