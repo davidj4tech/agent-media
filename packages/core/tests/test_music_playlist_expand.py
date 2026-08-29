@@ -95,6 +95,11 @@ def test_play_starts_first_track_and_defers_rest(monkeypatch):
 
 
 def test_play_single_track_unaffected(monkeypatch):
+    # A YouTube URI is localised before it plays, and the fetcher for that is
+    # a residential host reached over ssh — the phone, here. This test is
+    # about what lands in the MPD queue, so the errand it never asserts on is
+    # pure latency, and on a box that cannot reach the fetcher, pure waiting.
+    monkeypatch.setenv("MEDIA_MUSIC_ROOMS_FETCH", "0")
     # non-playlist → expansion returns None → single add via _to_music_uri
     monkeypatch.setattr(m, "_expand_youtube_playlist", lambda uri: None)
     cmds = []

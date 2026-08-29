@@ -16,6 +16,11 @@ def state_env(tmp_path, monkeypatch):
     monkeypatch.setenv("MEDIA_RENDER_ENGINE", "edge")
     monkeypatch.setenv("MEDIA_RENDER_VOICE", "en-US-AriaNeural")
     monkeypatch.delenv("MEDIA_SPEECH_DEFAULT_TARGET", raising=False)
+    # Speaking ducks the rooms stream, which asks snapcast over JSON-RPC for
+    # the clients on it. Named in the environment on a machine that has one,
+    # so this file's tests — about a text sidecar — were dimming the house.
+    monkeypatch.delenv("MEDIA_DUCK_ROOMS_STREAM", raising=False)
+    monkeypatch.delenv("MEDIA_ANDROID_PAUSE_HOSTS", raising=False)
     return tmp_path
 
 

@@ -45,6 +45,11 @@ def coordinator(monkeypatch, tmp_path):
     # runs before_speech thirty times should not be a test that pokes whatever
     # is playing in the house, and watching a suite raise and lower the
     # speaking flag once a second on a real phone is how this was noticed.
+    # Same reasoning, one layer out: ducking dispatches an ssh to whatever
+    # MEDIA_ANDROID_PAUSE_HOSTS names, and on this author's box that is the
+    # phone. A unit test about deferring a duck should not be pausing a player
+    # in someone's pocket, nor waiting on the network to find out it could.
+    monkeypatch.delenv("MEDIA_ANDROID_PAUSE_HOSTS", raising=False)
     monkeypatch.setattr(Coordinator, "_speaking", lambda self, on: None)
     monkeypatch.setattr(Coordinator, "_title", lambda self, t: None)
     monkeypatch.setattr(Coordinator, "_priority", lambda self, p: None)

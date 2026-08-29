@@ -58,6 +58,32 @@ def _post(base, body, path="/share"):
         return e.code, json.loads(e.read())
 
 
+
+@pytest.fixture(autouse=True)
+def _no_player_is_real(monkeypatch):
+    """Nor may one reach for the phone.
+
+    A snapshot reads all three channels, and these tests stub the backend they
+    are about — but `_speech` asks the player directly as well, for the card's
+    volume and the words being spoken, and that read is not gated by
+    `allow_remote`. On this author's box it went to the phone: about a
+    2s round trip, on tests that pass either way.
+
+    Passing either way is the problem. `test_prev_restart` did too, until the
+    day the app answered a verb differently and two tests began describing a
+    device instead of the code. Stubbed at the IPC seam rather than at each
+    caller, because the callers are what keep being added.
+
+    An unreachable player is also the premise this file states: every channel
+    still answers, idle, on a dev box with nothing running.
+    """
+    from agent_media_core.sinks import _mpv_ipc
+
+    monkeypatch.setattr(_mpv_ipc, "get_properties", lambda *a, **k: {})
+    monkeypatch.setattr(_mpv_ipc, "display_properties", lambda *a, **k: {})
+    monkeypatch.setattr(_mpv_ipc, "get_property", lambda *a, **k: None)
+
+
 def test_get_is_a_health_probe(server):
     _, base = server
     with urllib.request.urlopen(base + "/", timeout=5) as r:
