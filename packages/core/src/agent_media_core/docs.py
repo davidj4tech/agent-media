@@ -632,6 +632,39 @@ def speakable_text(md: str, fmt: str = "md") -> str:
     return "\n\n".join(p for p in parts if p.strip())
 
 
+# --- notes for a subscriber -------------------------------------------------
+
+def episode_notes(sections: list, intro_chars: int = 700) -> str:
+    """What a podcast client should show under the episode title.
+
+    A client offers one text field and no navigation, so the useful thing to
+    put in it is the shape of the document: enough opening prose to recognise
+    what this is, then the headings, which are also the chapter marks in the
+    audio. Someone deciding whether to listen now wants exactly those two.
+
+    Not the whole document. It would be honest, and it would also mean every
+    feed refresh carrying every word of everything ever published — the XML is
+    fetched far more often than any episode is played.
+    """
+    intro = ""
+    for sec in sections:
+        if sec.text and sec.text.strip():
+            intro = " ".join(sec.text.split())
+            break
+    if len(intro) > intro_chars:
+        cut = intro[:intro_chars]
+        # Break at a sentence if there is one to break at; a description that
+        # stops mid-word reads as a truncation bug rather than a summary.
+        stop = max(cut.rfind(". "), cut.rfind("? "), cut.rfind("! "))
+        intro = (cut[:stop + 1] if stop > intro_chars // 2 else cut.rstrip()) + " …"
+
+    heads = [s.heading.strip() for s in sections if s.heading and s.heading.strip()]
+    parts = [intro] if intro else []
+    if heads:
+        parts.append("Chapters: " + " · ".join(heads))
+    return "\n\n".join(parts)
+
+
 # --- rendering with chapters -----------------------------------------------
 
 def _cache_key(path: Path, engine: str, voice: str) -> str:

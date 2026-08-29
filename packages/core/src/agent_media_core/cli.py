@@ -5098,6 +5098,15 @@ def cmd_doc(a) -> int:
         if not clip:
             print("media doc: nothing on the agenda", file=sys.stderr)
             return 1
+        if getattr(a, "feed", ""):
+            # One episode per day, keyed on the date: re-running the digest
+            # replaces this morning's rather than stacking a second copy of
+            # the same day beside it. The `digest` feed's retention then
+            # clears the week behind you.
+            day = time.strftime("%Y-%m-%d")
+            return _publish_episode(
+                a.feed, clip, guid=f"agenda:{day}", title=f"Agenda {day}",
+                description=docmod.episode_notes(sections), source="agenda")
         srv = _srv()
         r = srv.book_play(str(clip), resume=False, start_ms=-1,
                           target=getattr(a, "target", "") or "", title="Agenda")
@@ -5130,6 +5139,12 @@ def cmd_doc(a) -> int:
         if not clip:
             print("media doc: could not render that text", file=sys.stderr)
             return 1
+        if getattr(a, "feed", ""):
+            # Keyed on the text, exactly as the render is: send the same
+            # region twice and it is one episode, edit it and it is a new one.
+            return _publish_episode(
+                a.feed, clip, guid=f"stdin:{key}", title=title,
+                description=docmod.episode_notes(sections), source="stdin")
         r = _srv().book_play(str(clip), resume=False, start_ms=-1,
                              target=getattr(a, "target", "") or "", title=title)
         if r.get("error"):
@@ -5168,6 +5183,20 @@ def cmd_doc(a) -> int:
             why = "rendering failed — check `media errors`"
         print(f"media doc: {doc.path}: {why}", file=sys.stderr)
         return 1
+    if getattr(a, "feed", ""):
+        # The document's own path is the guid: re-publishing after an edit
+        # replaces the episode instead of leaving two versions of one document
+        # in the client, which is the shape of confusion nobody unpicks.
+        #
+        # Published *now*, not on the document's own Date: — the header of a
+        # design doc written in June is not where a subscriber should have to
+        # go looking for something queued this morning.
+        return _publish_episode(
+            a.feed, clip, guid=str(doc.path.resolve()), title=doc.title,
+            description=docmod.episode_notes(
+                docmod.sections_for(doc.path.read_text(errors="replace"),
+                                    doc.fmt)),
+            source=str(doc.path))
     srv = _srv()
     r = srv.book_play(str(clip), resume=not getattr(a, "no_resume", False),
                       start_ms=-1, target=getattr(a, "target", "") or "",
@@ -5176,6 +5205,34 @@ def cmd_doc(a) -> int:
         print(f"media doc: {r['error']}", file=sys.stderr)
         return 1
     print(doc.title)
+    return 0
+
+
+def _publish_episode(name: str, clip, *, guid: str, title: str,
+                     description: str = "", source: str = "") -> int:
+    """Put a rendered file on a feed and refresh the XML. Prints what it did.
+
+    Publishing is *instead of* playing, not as well as. A document you queue
+    for the phone is one you are not listening to at the desk, and the render
+    is cached either way — so playing it afterwards is a second command that
+    costs nothing but says what it means.
+    """
+    from . import feed as feedmod
+
+    try:
+        ep = feedmod.publish(name, clip, guid=guid, title=title,
+                             description=description, source=source)
+    except (ValueError, OSError) as e:
+        print(f"media doc: could not publish: {e}", file=sys.stderr)
+        return 1
+    where = f"{name}"
+    if _feed_base_url():
+        feedmod.write_feed(
+            name, base_url=_feed_base_url(),
+            token=(os.environ.get("MEDIA_FEED_TOKEN", "") or "").strip())
+        where = f"{_feed_base_url().rstrip('/')}/feed/{name}.xml"
+    dur = feedmod.hms(ep.duration_s) if ep.duration_s else "?"
+    print(f"{ep.title}  ({dur})  → {where}")
     return 0
 
 
@@ -7344,6 +7401,10 @@ def _add_book_parser(sub) -> None:
     dp.add_argument("--no-resume", action="store_true")
     dp.add_argument("--force", action="store_true",
                     help="re-render even if the cached audio is current")
+    dp.add_argument("--feed", nargs="?", const="docs", default="",
+                    metavar="NAME",
+                    help="publish to a feed instead of playing (default "
+                         "feed: docs)")
 
     dt = d.add_parser("text", help="print the speakable projection (no audio)")
     dt.add_argument("name")
@@ -7351,6 +7412,10 @@ def _add_book_parser(sub) -> None:
     da = d.add_parser("agenda", help="today's agenda, spoken")
     da.add_argument("--text", action="store_true", help="print, don't play")
     da.add_argument("--target", default="", help="rooms|local|phone")
+    da.add_argument("--feed", nargs="?", const="digest", default="",
+                    metavar="NAME",
+                    help="publish to a feed instead of playing (default "
+                         "feed: digest)")
 
     fd = sub.add_parser("feed", help="the podcast spool (docs, talks, digest)")
     fd.set_defaults(func=cmd_feed)
