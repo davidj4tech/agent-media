@@ -71,6 +71,17 @@ final class MpvServer {
         void playlistNext();
         void playlistPrev();
 
+        /**
+         * Move the playhead to {@code seconds} into the current clip.
+         *
+         * Absolute and already in seconds: mpv's flags (relative, percent) are
+         * arithmetic on {@code timePos}/{@code duration}, which is protocol,
+         * so they are done here rather than by every player. Past the end
+         * finishes the clip the way running into it does — that is what the
+         * popup's `>` is asking for when it seeks to 100%.
+         */
+        void seek(double seconds);
+
         void pause(boolean paused);
         void mute(boolean muted);
         /** 0-100, mpv's scale, not Android's. */
@@ -351,6 +362,13 @@ final class MpvServer {
                 }
                 return ok(id, null);
             }
+            if ("seek".equals(verb)) {
+                Double target = seekTarget(argv);
+                if (target == null) return error(id, "invalid parameter");
+                player.seek(target.doubleValue());
+                changed("time-pos");
+                return ok(id, null);
+            }
             if ("cycle".equals(verb)) {
                 // mpv's own flip-this-flag verb. Nothing here sends it any
                 // more — a fire-and-forget `cycle` that this server refused
@@ -415,6 +433,37 @@ final class MpvServer {
     }
 
     // ---- properties -------------------------------------------------------
+
+    /**
+     * Where {@code seek <value> [flags]} wants the playhead, in seconds.
+     *
+     * mpv's four modes are all the same jump once you know where you are and
+     * how long the clip is, and the exactness modifiers ({@code +exact},
+     * {@code +keyframes}) describe how mpv gets there — nothing this player
+     * can do differently. @return null when the mode is one we do not know,
+     * which is answered as mpv answers a command it cannot make sense of.
+     */
+    private Double seekTarget(List<?> argv) {
+        if (argv.size() < 2) return null;
+        double value = Json.asDouble(argv.get(1), Double.NaN);
+        if (Double.isNaN(value)) return null;
+        String flags = argv.size() > 2 ? Json.asString(argv.get(2)) : "relative";
+        if (flags == null || flags.isEmpty()) flags = "relative";
+        String mode = flags.split("\\+")[0];
+        double pos = Math.max(0, player.timePos());
+        double dur = player.duration();
+        if ("relative".equals(mode)) return pos + value;
+        if ("absolute".equals(mode)) return value;
+        if (dur < 0) {
+            // A percentage of an unknown length is not a position. Seeking to
+            // an invented one would be worse than saying so: `>` would land
+            // mid-clip and look like the key had missed.
+            return null;
+        }
+        if ("absolute-percent".equals(mode)) return dur * value / 100.0;
+        if ("relative-percent".equals(mode)) return pos + dur * value / 100.0;
+        return null;
+    }
 
     /** Distinguishes "no such property" from a property whose value is null. */
     private static final Object NOT_FOUND = new Object();

@@ -389,6 +389,29 @@ final class BuiltinSpeech implements MpvServer.Player {
     }
 
     @Override
+    public void seek(double seconds) {
+        lastCommandAt = System.currentTimeMillis();
+        worker.execute(() -> {
+            MediaPlayer mp = player;
+            if (mp == null) return;
+            try {
+                double dur = mp.getDuration() / 1000.0;
+                if (dur >= 0 && seconds >= dur) {
+                    // Running into the end and being sent to it are the same
+                    // event: `>` seeks to 100% to make the response finish,
+                    // and a playhead parked at the end would finish nothing.
+                    advance(true);
+                    return;
+                }
+                mp.seekTo((int) Math.round(Math.max(0, seconds) * 1000));
+            } catch (IllegalStateException ignored) {
+                // A player torn down underneath us; the next clip rebuilds it.
+            }
+            volunteer("time-pos");
+        });
+    }
+
+    @Override
     public void pause(boolean wanted) {
         lastCommandAt = System.currentTimeMillis();
         worker.execute(() -> {

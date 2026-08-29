@@ -114,6 +114,36 @@ public class MpvServerTest {
                     c.call("{\"command\":[\"cycle\",\"volume\"],"
                             + "\"request_id\":43}").contains("property not found"));
 
+            // ---- seeking, which is `<`, `>` and the jump keys ---------------
+            //
+            // The player is handed one number in seconds. mpv's four modes are
+            // arithmetic on where we are (1.5s) and how long the clip is (4s),
+            // and doing that arithmetic here is what keeps a player from
+            // having to know the protocol. This server used to have no `seek`
+            // at all, so every one of these keys was a no-op on the app lane.
+            failures += check("a relative seek moves from where we are",
+                    c.call("{\"command\":[\"seek\",5,\"relative\"],"
+                            + "\"request_id\":44}").contains("success")
+                            && p.seeked == 6.5);
+            failures += check("an absolute seek is the number itself",
+                    c.call("{\"command\":[\"seek\",0,\"absolute\"],"
+                            + "\"request_id\":45}").contains("success")
+                            && p.seeked == 0.0);
+            failures += check("a percentage is of the clip's length",
+                    c.call("{\"command\":[\"seek\",100,\"absolute-percent\"],"
+                            + "\"request_id\":46}").contains("success")
+                            && p.seeked == 4.0);
+            failures += check("no flags means relative, as mpv defaults",
+                    c.call("{\"command\":[\"seek\",-1],\"request_id\":47}")
+                            .contains("success") && p.seeked == 0.5);
+            failures += check("the exactness modifier is not a different mode",
+                    c.call("{\"command\":[\"seek\",5,\"relative+exact\"],"
+                            + "\"request_id\":48}").contains("success")
+                            && p.seeked == 6.5);
+            failures += check("a mode we do not know is refused, not guessed",
+                    c.call("{\"command\":[\"seek\",5,\"chapter\"],"
+                            + "\"request_id\":49}").contains("invalid parameter"));
+
             // ---- an unknown property fails the way old mpv fails ------------
             failures += check("unknown property is 'property not found'",
                     c.call("{\"command\":[\"set_property\",\"sub-visibility\",false],"
@@ -170,11 +200,14 @@ public class MpvServerTest {
         private int pos = -1;
         private boolean paused, muted;
         private double volume = 100, speed = 1.0;
+        /** Where the last seek landed; NaN until one does. */
+        double seeked = Double.NaN;
 
         void reset() {
             loads.clear();
             playlist.clear();
             pos = -1;
+            seeked = Double.NaN;
         }
 
         void advance() {
@@ -207,6 +240,7 @@ public class MpvServerTest {
         @Override public void playlistPos(int index) { pos = index; }
         @Override public void playlistNext() { advance(); }
         @Override public void playlistPrev() { if (pos > 0) pos--; }
+        @Override public void seek(double seconds) { seeked = seconds; }
         @Override public void pause(boolean p) { paused = p; }
         @Override public void mute(boolean m) { muted = m; }
         @Override public void volume(double v) { volume = v; }
