@@ -5246,6 +5246,22 @@ def _feed_base_url() -> str:
     return (os.environ.get("MEDIA_FEED_BASE_URL", "") or "").strip()
 
 
+def _feed_session_here() -> str:
+    """The conversation this pane is holding, or "".
+
+    Ownership before last-speaker, the same order `_anchor_session` uses and
+    for the same reason: the registry knows who a pane belongs to even before
+    they have said anything, and it does not decay when tmux recycles a pane
+    id — whereas "who spoke here last" can name a conversation that ended days
+    ago.
+    """
+    pane = os.environ.get("TTS_POPUP_PANE") or os.environ.get("TMUX_PANE") or ""
+    if not pane:
+        return ""
+    return (_registered_session_for_pane(pane)
+            or StateStore().session_for_pane(pane) or "")
+
+
 def cmd_feed(a) -> int:
     """The spool a podcast client subscribes to.
 
@@ -5305,6 +5321,59 @@ def cmd_feed(a) -> int:
                 print(f"{name}\t{guid}")
             if _feed_base_url():
                 _feed_write(name)
+        return 0
+
+    if fc == "sessions":
+        # Which conversations are there to publish? Grouped here rather than
+        # in the store: it is a listing for a person choosing one, not a query
+        # anything else makes.
+        rows = StateStore().recent_history(sink="speech", limit=4000)
+        seen: dict = {}
+        for r in rows:
+            ex = r.get("extras")
+            if not isinstance(ex, dict):
+                continue
+            sess = ex.get("source_session")
+            if not sess or ex.get("kind") == "notif":
+                continue
+            at = float(r.get("started_at") or 0)
+            cur = seen.setdefault(sess, {"n": 0, "last": at, "first": at})
+            cur["n"] += 1
+            cur["last"] = max(cur["last"], at)
+            cur["first"] = min(cur["first"], at)
+        if not seen:
+            print("no conversations in speech history", file=sys.stderr)
+            return 1
+        order = sorted(seen.items(), key=lambda kv: -kv[1]["last"])[:a.limit]
+        for sess, info in order:
+            when = time.strftime("%Y-%m-%d %H:%M", time.localtime(info["last"]))
+            span = feedmod.hms(info["last"] - info["first"])
+            print(f"{sess}  {when}  {info['n']:>3} turns  over {span}")
+        return 0
+
+    if fc == "session":
+        from . import session_feed
+
+        sess = a.session or _feed_session_here()
+        if not sess:
+            print("media feed: no conversation here — name one "
+                  "(`media feed sessions` lists them)", file=sys.stderr)
+            return 1
+        ep = session_feed.publish(sess, name=a.name)
+        if ep is None:
+            # The usual cause is not "no such session" but a swept cache: the
+            # rows are there and their audio is not. Say so, because the two
+            # look identical from the outside and only one is fixable.
+            print(f"media feed: nothing to publish for {sess} — no turns with "
+                  "audio still on disk", file=sys.stderr)
+            return 1
+        where = a.name
+        if _feed_base_url():
+            feedmod.write_feed(
+                a.name, base_url=_feed_base_url(),
+                token=(os.environ.get("MEDIA_FEED_TOKEN", "") or "").strip())
+            where = f"{_feed_base_url().rstrip('/')}/feed/{a.name}.xml"
+        print(f"{ep.title}  ({feedmod.hms(ep.duration_s)})  → {where}")
         return 0
 
     if fc == "xml":
@@ -7441,6 +7510,16 @@ def _add_book_parser(sub) -> None:
 
     fg = f.add_parser("gc", help="apply the retention policy")
     fg.add_argument("name", nargs="?", default="", help="one feed only")
+
+    fs = f.add_parser("session",
+                      help="publish a conversation as one chaptered episode")
+    fs.add_argument("session", nargs="?", default="",
+                    help="Claude session id (default: this pane's)")
+    fs.add_argument("--feed", dest="name", default="talks",
+                    help="feed to publish to (default talks)")
+
+    fss = f.add_parser("sessions", help="conversations available to publish")
+    fss.add_argument("--limit", type=int, default=15)
 
     fx = f.add_parser("xml", help="print the feed XML (does not write it)")
     fx.add_argument("name")

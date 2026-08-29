@@ -1,0 +1,267 @@
+"""A conversation, as one episode.
+
+Nothing here synthesises anything: the clips, their durations and the turn
+boundaries are already in speech history. So the tests are about what gets
+left out (alerts, rows with no audio, clips the cache has swept), what the
+turn boundaries become (chapters), and the one thing a stream copy can get
+wrong (a join between two sample rates).
+"""
+
+import json
+import shutil
+import subprocess
+
+import pytest
+
+from agent_media_core import feed, session_feed
+from agent_media_core.session_feed import Turn
+
+SESSION = "1111-2222"
+
+
+class _Store:
+    """Just enough StateStore to answer the one question this asks."""
+
+    def __init__(self, rows):
+        self._rows = rows
+
+    def recent_history(self, *, sink=None, limit=0):
+        return list(self._rows)
+
+
+def _row(clips, *, at=100.0, text="Something was said.", session=SESSION,
+         durs=None, **extras):
+    return {"uri": str(clips[0]) if clips else "", "started_at": at,
+            "text": text,
+            "extras": {"source_session": session,
+                       "clip_uris": [str(c) for c in clips],
+                       "clip_durations_s": durs if durs is not None
+                       else [1.0] * len(clips),
+                       **extras}}
+
+
+@pytest.fixture
+def clip(tmp_path):
+    def _make(name):
+        p = tmp_path / name
+        p.write_bytes(b"ID3fake")
+        return p
+    return _make
+
+
+# --- which turns are in it -------------------------------------------------
+
+def test_turns_come_back_oldest_first_with_their_clips(clip):
+    a, b = clip("a.mp3"), clip("b.mp3")
+    store = _Store([_row([b], at=200.0, text="Second."),
+                    _row([a], at=100.0, text="First.")])
+    ts = session_feed.turns(SESSION, store=store)
+    assert [t.text for t in ts] == ["First.", "Second."]
+    assert ts[0].clips == [a]
+
+
+def test_another_conversation_is_not_in_this_episode(clip):
+    store = _Store([_row([clip("a.mp3")]),
+                    _row([clip("b.mp3")], session="other")])
+    assert len(session_feed.turns(SESSION, store=store)) == 1
+
+
+def test_alerts_are_not_part_of_the_conversation(clip):
+    """"Claude is waiting" is not something anyone wants back."""
+    store = _Store([_row([clip("a.mp3")]),
+                    _row([clip("b.mp3")], kind="notif")])
+    assert len(session_feed.turns(SESSION, store=store)) == 1
+
+
+def test_a_row_with_no_audio_is_skipped(clip):
+    """A silenced alert records that something was *not* said aloud."""
+    store = _Store([{"uri": "silenced:phone", "started_at": 1.0, "text": "x",
+                     "extras": {"source_session": SESSION}},
+                    _row([clip("a.mp3")])])
+    assert len(session_feed.turns(SESSION, store=store)) == 1
+
+
+def test_clips_the_cache_has_swept_are_dropped(clip, tmp_path):
+    """The row outliving its audio is the whole reason the feed exists."""
+    a = clip("a.mp3")
+    gone = tmp_path / "swept.mp3"
+    store = _Store([_row([a, gone], durs=[1.0, 2.0])])
+    ts = session_feed.turns(SESSION, store=store)
+    assert ts[0].clips == [a] and ts[0].durations == [1.0]
+
+
+def test_a_turn_with_no_surviving_audio_is_dropped_not_faked(tmp_path):
+    store = _Store([_row([tmp_path / "swept.mp3"])])
+    assert session_feed.turns(SESSION, store=store) == []
+
+
+def test_a_turn_nobody_heard_is_still_in_the_archive(clip):
+    """Muted or flushed: the words were written and rendered. Whether the room
+    was listening is not what the archive is about."""
+    store = _Store([_row([clip("a.mp3")], muted=True),
+                    _row([clip("b.mp3")], at=200.0, flushed=True)])
+    assert len(session_feed.turns(SESSION, store=store)) == 2
+
+
+# --- chapters and notes ----------------------------------------------------
+
+@pytest.mark.parametrize("text,want", [
+    ("Pushed — b93255d..5968656 on main. Then more.", "Pushed — b93255d..5968656 on main."),
+    ("Is that right? Yes.", "Is that right?"),
+    ("no punctuation at all here", "no punctuation at all here"),
+    ("x" * 200, "x" * 87 + "…"),
+])
+def test_a_chapter_is_named_by_the_turn_s_first_sentence(text, want):
+    assert Turn(at=0, text=text).title == want
+
+
+def test_notes_are_a_timestamped_table_of_contents():
+    ts = [Turn(at=1, text="First thing.", durations=[65.0]),
+          Turn(at=2, text="Second thing.", durations=[10.0, 5.0])]
+    assert session_feed.notes(ts) == ("0:00:00  First thing.\n"
+                                      "0:01:05  Second thing.")
+
+
+def test_a_long_conversation_s_notes_are_capped():
+    ts = [Turn(at=i, text=f"Turn {i}.", durations=[1.0]) for i in range(10)]
+    out = session_feed.notes(ts, limit=3)
+    assert out.count("\n") == 3
+    assert out.endswith("… and 7 more")
+
+
+# --- the title -------------------------------------------------------------
+
+def _transcript(tmp_path, monkeypatch, lines):
+    p = tmp_path / f"{SESSION}.jsonl"
+    p.write_text("\n".join(json.dumps(x) for x in lines) + "\n")
+    monkeypatch.setattr(session_feed, "turns", session_feed.turns)
+    monkeypatch.setattr("agent_media_core.conversation.transcript",
+                        lambda s: p)
+    return p
+
+
+def test_the_title_is_the_first_thing_the_person_asked(tmp_path, monkeypatch):
+    _transcript(tmp_path, monkeypatch, [
+        {"type": "mode", "mode": "normal"},
+        {"type": "user", "message": {"content": "I wonder how calibre would go"}},
+        {"type": "user", "message": {"content": "and then something else"}},
+    ])
+    assert session_feed.title_for(SESSION, []) == "I wonder how calibre would go"
+
+
+def test_injected_user_messages_are_not_the_title(tmp_path, monkeypatch):
+    """Tool results, hook injections and system reminders are user-role
+    messages too, and none of them is a question anybody asked."""
+    _transcript(tmp_path, monkeypatch, [
+        {"type": "user", "message": {"content": "<system-reminder>hi</system-reminder>"}},
+        {"type": "user", "message": {"content": "Caveat: the messages below"}},
+        {"type": "user", "message": {"content": "[media ask] what is playing"}},
+        {"type": "user", "message": {"content": "the real question"}},
+    ])
+    assert session_feed.title_for(SESSION, []) == "the real question"
+
+
+def test_a_block_shaped_message_still_yields_a_title(tmp_path, monkeypatch):
+    _transcript(tmp_path, monkeypatch, [
+        {"type": "user", "message": {"content": [
+            {"type": "image"}, {"type": "text", "text": "look at this"}]}},
+    ])
+    assert session_feed.title_for(SESSION, []) == "look at this"
+
+
+def test_no_transcript_falls_back_to_the_first_thing_said(monkeypatch):
+    monkeypatch.setattr("agent_media_core.conversation.transcript",
+                        lambda s: None)
+    assert session_feed.title_for(SESSION, [Turn(at=1, text="Right, so.")]) \
+        == "Right, so."
+    assert session_feed.title_for("abcdef123456", []) == "Conversation abcdef12"
+
+
+# --- building --------------------------------------------------------------
+
+def test_a_stream_copy_that_lies_about_its_length_is_re_encoded(
+        tmp_path, clip, monkeypatch):
+    """Two sample rates concatenate into a file that plays and mis-times every
+    chapter after the join. Measuring is the only way to tell."""
+    runs = []
+
+    def _fake_run(cmd, **kw):
+        runs.append(cmd)
+        out = tmp_path / "out.mp3"
+        out.write_bytes(b"joined")
+        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+    monkeypatch.setattr(session_feed.subprocess, "run", _fake_run)
+    monkeypatch.setattr(session_feed, "_ffprobe_duration", lambda p: 3.0)
+    ts = [Turn(at=1, text="One.", clips=[clip("a.mp3")], durations=[60.0])]
+    assert session_feed.build(ts, tmp_path / "out.mp3") is not None
+    assert len(runs) == 2
+    assert "copy" in runs[0] and "libmp3lame" in runs[1]
+
+
+def test_a_stream_copy_that_adds_up_is_left_alone(tmp_path, clip, monkeypatch):
+    runs = []
+    monkeypatch.setattr(session_feed.subprocess, "run",
+                        lambda cmd, **kw: (runs.append(cmd),
+                                           (tmp_path / "out.mp3").write_bytes(b"x"),
+                                           subprocess.CompletedProcess(cmd, 0))[-1])
+    monkeypatch.setattr(session_feed, "_ffprobe_duration", lambda p: 60.4)
+    ts = [Turn(at=1, text="One.", clips=[clip("a.mp3")], durations=[60.0])]
+    assert session_feed.build(ts, tmp_path / "out.mp3") is not None
+    assert len(runs) == 1
+
+
+def test_nothing_to_build_is_none(tmp_path):
+    assert session_feed.build([], tmp_path / "out.mp3") is None
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"),
+                    reason="needs ffmpeg")
+def test_the_turn_boundaries_really_become_chapters(tmp_path):
+    parts = []
+    for i, secs in enumerate((1.0, 2.0)):
+        p = tmp_path / f"{i}.mp3"
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi",
+                        "-i", f"anullsrc=r=24000:cl=mono", "-t", str(secs),
+                        str(p)], check=True, capture_output=True)
+        parts.append(p)
+    ts = [Turn(at=1, text="First turn.", clips=[parts[0]], durations=[1.0]),
+          Turn(at=2, text="Second turn.", clips=[parts[1]], durations=[2.0])]
+    out = session_feed.build(ts, tmp_path / "episode.mp3")
+    assert out is not None
+    chapters = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_chapters", "-of", "csv=p=0", str(out)],
+        capture_output=True, text=True).stdout
+    assert "First turn." in chapters and "Second turn." in chapters
+    assert len(chapters.strip().splitlines()) == 2
+
+
+# --- publishing ------------------------------------------------------------
+
+def test_publishing_uses_the_session_as_its_guid(tmp_path, clip, monkeypatch):
+    monkeypatch.setenv("MEDIA_FEED_SPOOL", str(tmp_path / "spool"))
+    monkeypatch.setenv("MEDIA_CONFIG", str(tmp_path / "nope.toml"))
+    monkeypatch.setattr("agent_media_core.conversation.transcript", lambda s: None)
+    monkeypatch.setattr(feed, "_probe_duration", lambda p: 3.0)
+
+    built = tmp_path / "episode.mp3"
+
+    def _fake_build(ts, out):
+        out.write_bytes(b"episode audio")
+        return out
+
+    monkeypatch.setattr(session_feed, "build", _fake_build)
+    store = _Store([_row([clip("a.mp3")], at=100.0, text="First."),
+                    _row([clip("b.mp3")], at=900.0, text="Last.")])
+    ep = session_feed.publish(SESSION, store=store)
+    assert ep is not None
+    assert ep.guid == f"session:{SESSION}"
+    # Dated when the conversation last spoke, not when it was archived.
+    assert ep.published == 900.0
+    assert ep.title == "First."
+    assert not built.exists()          # the working copy does not survive
+
+
+def test_publishing_a_session_with_nothing_left_is_none(tmp_path, monkeypatch):
+    monkeypatch.setenv("MEDIA_FEED_SPOOL", str(tmp_path / "spool"))
+    assert session_feed.publish(SESSION, store=_Store([])) is None
