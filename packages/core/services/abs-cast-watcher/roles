@@ -1,0 +1,3 @@
+# Same host as the book channel it casts onto, and same ABS requirement.
+requires: render
+requires-config: abs-bridge.env

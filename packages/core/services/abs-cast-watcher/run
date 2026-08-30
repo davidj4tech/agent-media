@@ -1,0 +1,10 @@
+#!/bin/sh
+# abs-cast-watcher — press play in the Audiobookshelf app and the rooms take
+# over: cast the session to the book channel, then close it so the client stops.
+#
+# Only a session whose position advances in real time twice running is cast, so
+# a tab left open for hours never seizes the speakers. CAST_DRY=1 to watch it
+# decide without touching anything.
+exec 2>&1
+[ -f "$HOME/.config/agent-media.env" ] && . "$HOME/.config/agent-media.env"
+exec media-abs-cast-watcher

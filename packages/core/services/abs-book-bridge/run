@@ -1,0 +1,11 @@
+#!/bin/sh
+# abs-book-bridge — one position, two players: push the rooms' book position
+# into Audiobookshelf, and (with ABS_PULL_ON_LOAD=1) start where the phone
+# left off.
+#
+# Config: ~/.config/agent-media/abs-bridge.env (ABS_URL, ABS_TOKEN). Without a
+# token the daemon says so and exits 0 rather than crash-looping — an
+# unconfigured optional integration is a state, not a failure.
+exec 2>&1
+[ -f "$HOME/.config/agent-media.env" ] && . "$HOME/.config/agent-media.env"
+exec media-abs-book-bridge

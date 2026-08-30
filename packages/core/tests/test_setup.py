@@ -225,3 +225,58 @@ def test_reinstalling_a_periodic_service_rewrites_nothing(tmp_path, monkeypatch,
     capsys.readouterr()
     setup._install_one_systemd("media-feed-gc", dry_run=False, root=root)
     assert "wrote" not in capsys.readouterr().out
+
+
+# --- optional integrations --------------------------------------------------
+# Roles say what a host *is*, in three words. "Has an Audiobookshelf" is not
+# that: it is something somebody configured, and a service that needs one is
+# unwanted — not merely idle — everywhere it was never set up.
+
+
+def test_a_service_needing_config_is_skipped_without_it(tmp_path, monkeypatch):
+    templates = tmp_path / "services"
+    d = templates / "abs-book-bridge"
+    d.mkdir(parents=True)
+    (d / "run").write_text("#!/bin/sh\nexec true\n")
+    (d / "roles").write_text("requires: render\nrequires-config: abs-bridge.env\n")
+    monkeypatch.setattr(setup, "service_templates_dir", lambda: templates)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(setup.Path, "home", lambda: tmp_path / "home")
+
+    wanted, why = setup.service_wanted("abs-book-bridge", {"render"})
+    assert wanted is False
+    assert "abs-bridge.env" in why          # the reason names the fix
+
+    cfg = tmp_path / "home" / ".config" / "agent-media"
+    cfg.mkdir(parents=True)
+    (cfg / "abs-bridge.env").write_text("ABS_URL=http://x\n")
+    assert setup.service_wanted("abs-book-bridge", {"render"}) == (True, "roles match")
+
+
+def test_the_config_gate_applies_to_a_host_with_no_roles_at_all(tmp_path,
+                                                                monkeypatch):
+    """Undeclared roles mean "install everything as before" — but a fresh host
+    is the one most likely to have no config, and least wanting a daemon that
+    logs "not configured" forever."""
+    templates = tmp_path / "services"
+    d = templates / "abs-cast-watcher"
+    d.mkdir(parents=True)
+    (d / "run").write_text("#!/bin/sh\nexec true\n")
+    (d / "roles").write_text("requires-config: abs-bridge.env\n")
+    monkeypatch.setattr(setup, "service_templates_dir", lambda: templates)
+    monkeypatch.setattr(setup.Path, "home", lambda: tmp_path / "home")
+
+    assert setup.service_wanted("abs-cast-watcher", None)[0] is False
+
+
+def test_a_service_without_the_gate_is_unaffected(tmp_path, monkeypatch):
+    templates = tmp_path / "services"
+    d = templates / "sink-speech"
+    d.mkdir(parents=True)
+    (d / "run").write_text("#!/bin/sh\nexec true\n")
+    (d / "roles").write_text("requires: render\n")
+    monkeypatch.setattr(setup, "service_templates_dir", lambda: templates)
+    monkeypatch.setattr(setup.Path, "home", lambda: tmp_path / "home")
+
+    assert setup.service_config_gate("sink-speech") == ""
+    assert setup.service_wanted("sink-speech", {"render"})[0] is True

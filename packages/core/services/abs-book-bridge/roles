@@ -1,0 +1,5 @@
+# Runs beside the book channel's mpv, so: a host that renders. It also needs
+# an Audiobookshelf to talk to, which no role can express — hence the config
+# gate, which keeps it off every render host that has never heard of ABS.
+requires: render
+requires-config: abs-bridge.env

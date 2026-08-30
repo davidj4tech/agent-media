@@ -395,6 +395,35 @@ def host_roles() -> set[str] | None:
     return _roles()
 
 
+def service_config_gate(name: str) -> str:
+    """The config file `services/<name>/roles` says this service needs, or "".
+
+    Roles say what a host *is* — a mic, some speakers, a place replies come
+    from — and that vocabulary is deliberately three words long. "Has an
+    Audiobookshelf to talk to" is not a property of the host in that sense; it
+    is a thing somebody configured. Expressing it as a fourth role would put a
+    machine's software inventory into a list that describes its hardware.
+
+    So an optional integration declares the file that proves it was set up:
+
+        requires-config: abs-bridge.env
+
+    resolved under ~/.config/agent-media/. Absent, the service is skipped with
+    a reason — never installed-and-idle, which is how a host ends up running a
+    daemon that logs "not configured" forever.
+    """
+    try:
+        text = (service_templates_dir() / name / "roles").read_text()
+    except OSError:
+        return ""
+    for line in text.splitlines():
+        line = line.split("#", 1)[0].strip()
+        key, _, rest = line.partition(":")
+        if key.strip().lower() == "requires-config" and rest.strip():
+            return rest.strip()
+    return ""
+
+
 def service_roles(name: str) -> tuple[set[str], set[str]]:
     """(requires, conflicts) declared by services/<name>/roles.
 
@@ -429,6 +458,12 @@ def service_wanted(name: str, roles: set[str] | None) -> tuple[bool, str]:
     mechanism exists to prevent was invisible, and "nothing happened" is what
     it looked like from the outside.
     """
+    # Checked before roles, and regardless of whether any are declared: an
+    # unconfigured integration is unwanted on a host that declares nothing at
+    # all, which is exactly the host most likely to be a fresh install.
+    gate = service_config_gate(name)
+    if gate and not (Path.home() / ".config" / "agent-media" / gate).exists():
+        return False, f"needs ~/.config/agent-media/{gate}"
     if roles is None:
         return True, "no host roles declared"
     requires, conflicts = service_roles(name)
