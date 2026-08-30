@@ -265,3 +265,71 @@ def test_publishing_uses_the_session_as_its_guid(tmp_path, clip, monkeypatch):
 def test_publishing_a_session_with_nothing_left_is_none(tmp_path, monkeypatch):
     monkeypatch.setenv("MEDIA_FEED_SPOOL", str(tmp_path / "spool"))
     assert session_feed.publish(SESSION, store=_Store([])) is None
+
+
+# --- publishing what has finished -------------------------------------------
+
+def _conv_rows(clipmaker, session, at, n=1):
+    return [_row([clipmaker(f"{session}-{i}.mp3")], at=at + i, session=session)
+            for i in range(n)]
+
+
+def test_only_conversations_that_have_gone_quiet_are_published(tmp_path, clip,
+                                                               monkeypatch):
+    monkeypatch.setenv("MEDIA_FEED_SPOOL", str(tmp_path / "spool"))
+    monkeypatch.setenv("MEDIA_CONFIG", str(tmp_path / "nope.toml"))
+    monkeypatch.setattr("agent_media_core.conversation.transcript", lambda s: None)
+    monkeypatch.setattr(feed, "_probe_duration", lambda p: 3.0)
+    monkeypatch.setattr(session_feed, "build",
+                        lambda ts, out: (out.write_bytes(b"x"), out)[1])
+    now = 1_000_000.0
+    store = _Store(_conv_rows(clip, "done", now - 7200)
+                   + _conv_rows(clip, "live", now - 60))
+
+    eps = session_feed.publish_quiet(now=now, store=store)
+    assert [e.guid for e in eps] == ["session:done"]
+
+
+def test_a_published_conversation_is_not_published_again(tmp_path, clip,
+                                                         monkeypatch):
+    monkeypatch.setenv("MEDIA_FEED_SPOOL", str(tmp_path / "spool"))
+    monkeypatch.setenv("MEDIA_CONFIG", str(tmp_path / "nope.toml"))
+    monkeypatch.setattr("agent_media_core.conversation.transcript", lambda s: None)
+    monkeypatch.setattr(feed, "_probe_duration", lambda p: 3.0)
+    monkeypatch.setattr(session_feed, "build",
+                        lambda ts, out: (out.write_bytes(b"x"), out)[1])
+    now = 1_000_000.0
+    rows = _conv_rows(clip, "done", now - 7200)
+    assert len(session_feed.publish_quiet(now=now, store=_Store(rows))) == 1
+    assert session_feed.publish_quiet(now=now, store=_Store(rows)) == []
+
+
+def test_a_conversation_that_grew_is_published_again(tmp_path, clip, monkeypatch):
+    """A session that revives and then goes quiet again would otherwise keep
+    the shorter episode forever — losing the tail, silently."""
+    monkeypatch.setenv("MEDIA_FEED_SPOOL", str(tmp_path / "spool"))
+    monkeypatch.setenv("MEDIA_CONFIG", str(tmp_path / "nope.toml"))
+    monkeypatch.setattr("agent_media_core.conversation.transcript", lambda s: None)
+    monkeypatch.setattr(feed, "_probe_duration", lambda p: 3.0)
+    monkeypatch.setattr(session_feed, "build",
+                        lambda ts, out: (out.write_bytes(b"x"), out)[1])
+    now = 1_000_000.0
+    rows = _conv_rows(clip, "done", now - 7200)
+    session_feed.publish_quiet(now=now, store=_Store(rows))
+    rows += _conv_rows(clip, "done", now - 5400, n=2)
+    eps = session_feed.publish_quiet(now=now, store=_Store(rows))
+    assert [e.guid for e in eps] == ["session:done"]
+    assert len(feed.episodes("talks")) == 1        # replaced, not duplicated
+
+
+def test_conversations_are_grouped_newest_last_turn_first(clip):
+    store = _Store(_conv_rows(clip, "old", 100.0, n=2)
+                   + _conv_rows(clip, "new", 900.0))
+    convs = session_feed.conversations(store=store)
+    assert [c["session"] for c in convs] == ["new", "old"]
+    assert convs[1]["turns"] == 2
+
+
+def test_an_alert_does_not_make_a_conversation(clip):
+    store = _Store([_row([clip("a.mp3")], session="alerts-only", kind="notif")])
+    assert session_feed.conversations(store=store) == []

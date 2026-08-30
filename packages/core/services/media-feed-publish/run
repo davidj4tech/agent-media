@@ -1,0 +1,19 @@
+#!/bin/sh
+# media-feed-publish — put finished conversations on the feed, hourly.
+#
+# There is no event for a conversation ending: the session id stays valid, the
+# pane stays open, and people come back to yesterday's. So the signal is
+# silence — an hour without a turn — and this is what makes the feed something
+# that fills itself rather than something you remember to run.
+#
+# Skipped where no feed is served. Publishing into a spool nothing can reach
+# is disk spent on an audience of nobody; the hub that serves the feed is the
+# hub that should be filling it.
+exec 2>&1
+[ -f "$HOME/.config/agent-media.env" ] && . "$HOME/.config/agent-media.env"
+if [ -z "${MEDIA_FEED_BASE_URL:-}" ]; then
+    echo "media-feed-publish: no MEDIA_FEED_BASE_URL — nothing serves a feed here."
+    exit 0
+fi
+export MEDIA_FEED_TOKEN MEDIA_FEED_BASE_URL MEDIA_FEED_SPOOL
+exec media feed publish-quiet ${MEDIA_FEED_QUIET_MIN:+--quiet-min "$MEDIA_FEED_QUIET_MIN"}

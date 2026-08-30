@@ -47,6 +47,7 @@ import json
 import logging
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -238,6 +239,69 @@ def build(ts: list[Turn], out: Path) -> Optional[Path]:
             log.info("episode: %s ≠ %s expected — re-encoding", got, expected)
             if not _run(["-c:a", "libmp3lame", "-q:a", "4"]):
                 return None
+    return out
+
+
+def conversations(store=None) -> list[dict]:
+    """Every conversation speech history knows about, newest last turn first.
+
+    One pass over the same rows `turns` reads, grouped — the listing and the
+    auto-publisher both want "what is there", and neither wants it per-session
+    (which would be one full scan per conversation).
+    """
+    from .state.store import StateStore
+
+    st = store or StateStore()
+    seen: dict = {}
+    for row in st.recent_history(sink="speech", limit=_FETCH):
+        ex = row.get("extras")
+        if not isinstance(ex, dict) or ex.get("kind") == "notif":
+            continue
+        sess = ex.get("source_session")
+        if not sess:
+            continue
+        at = float(row.get("started_at") or 0)
+        cur = seen.setdefault(sess, {"session": sess, "turns": 0,
+                                     "first": at, "last": at})
+        cur["turns"] += 1
+        cur["first"] = min(cur["first"], at)
+        cur["last"] = max(cur["last"], at)
+    return sorted(seen.values(), key=lambda c: -c["last"])
+
+
+def publish_quiet(*, name: str = "talks", quiet_s: float = 3600.0,
+                  now: Optional[float] = None, store=None,
+                  limit: int = 0) -> list[feedmod.Episode]:
+    """Publish every conversation that has finished and isn't on the feed yet.
+
+    "Finished" is silence: no turn for `quiet_s`. There is no event for a
+    conversation ending — a session id stays valid, a pane stays open, and
+    people come back to yesterday's — so quiet is the only signal, and an hour
+    of it is a long time in a conversation.
+
+    A session already published is republished only if it has *grown* since.
+    That keeps the spool honest about the conversation that actually happened;
+    subscribers that already downloaded the shorter episode keep it, because
+    every client matches on guid and none re-fetches. The alternative — never
+    republishing — loses the tail of any conversation that revives, which is
+    worse and silent.
+    """
+    now = time.time() if now is None else now
+    out: list[feedmod.Episode] = []
+    published = {e.guid: e for e in feedmod.episodes(name)}
+    for conv in conversations(store=store):
+        if now - conv["last"] < quiet_s:
+            continue                       # still going, or paused mid-thought
+        have = published.get(f"session:{conv['session']}")
+        if have is not None and have.published >= conv["last"]:
+            continue                       # already on the feed, unchanged
+        ep = publish(conv["session"], name=name, store=store)
+        if ep is None:
+            continue                       # no turns whose audio survives
+        log.info("published %s (%s)", ep.title, conv["session"])
+        out.append(ep)
+        if limit and len(out) >= limit:
+            break
     return out
 
 

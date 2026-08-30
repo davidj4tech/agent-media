@@ -1,0 +1,3 @@
+# The conversations are here: `origin` is the host replies are spoken from,
+# and its speech history is what an episode is assembled out of.
+requires: origin
