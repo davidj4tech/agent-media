@@ -5351,6 +5351,22 @@ def cmd_feed(a) -> int:
             print(f"{sess}  {when}  {info['n']:>3} turns  over {span}")
         return 0
 
+    if fc == "publish-quiet":
+        from . import session_feed
+
+        eps = session_feed.publish_quiet(name=a.name,
+                                         quiet_s=max(60.0, a.quiet_min * 60.0),
+                                         limit=max(0, a.limit))
+        if not eps:
+            return 0
+        for ep in eps:
+            print(f"{ep.title}  ({feedmod.hms(ep.duration_s)})")
+        if _feed_base_url():
+            feedmod.write_feed(
+                a.name, base_url=_feed_base_url(),
+                token=(os.environ.get("MEDIA_FEED_TOKEN", "") or "").strip())
+        return 0
+
     if fc == "session":
         from . import session_feed
 
@@ -5877,6 +5893,7 @@ def selfcheck_facts() -> "dict[str, str]":
     facts.update(_dictation_rate_facts())
     facts.update(_mic_block_facts())
     facts.update(_ringer_facts())
+    _cache_facts(facts)
     return facts
 
 
@@ -6152,6 +6169,69 @@ def _mic_detect_facts() -> "dict[str, str]":
     return facts
 
 
+#: Directories that grow on their own, as (fact name, path). Shallow on
+#: purpose — see `_dir_mb`.
+def _cache_dirs() -> "list[tuple[str, object]]":
+    from ._paths import cache_dir, state_dir
+
+    return [("cache_audio_mb", cache_dir() / "audio"),      # rendered speech
+            ("cache_books_mb", cache_dir() / "books"),      # fetched longform
+            ("cache_docs_mb", cache_dir() / "docs"),        # rendered documents
+            ("feed_spool_mb", state_dir() / "feed")]        # published episodes
+
+
+def _dir_mb(path, depth: int = 1) -> int:
+    """Megabytes in `path`, counting one level of subdirectory.
+
+    `du` would be exact and is a subprocess per directory per selfcheck, on
+    hosts where selfcheck is answered over ssh. These directories are flat by
+    construction — clips, books, one folder per feed — so a scandir gets the
+    same answer for the cost of a stat each.
+    """
+    total = 0
+    try:
+        with os.scandir(path) as it:
+            for e in it:
+                try:
+                    if e.is_file(follow_symlinks=False):
+                        total += e.stat(follow_symlinks=False).st_size
+                    elif e.is_dir(follow_symlinks=False) and depth > 0:
+                        total += _dir_mb(e.path, depth - 1) * 1048576
+                except OSError:
+                    continue
+    except OSError:
+        return 0
+    return total // 1048576
+
+
+#: When a growing directory is worth mentioning. Not a fault — nothing here is
+#: broken at 6GB — but 4.3GB of audiobooks sat on a phone for six weeks after
+#: being copied to the hub, and nothing in this report would have said so.
+#: The phone is the machine that matters: its disk is the one that cannot be
+#: made bigger.
+CACHE_WARN_MB = 4096
+
+
+def _cache_warn_mb() -> int:
+    """MEDIA_CACHE_WARN_MB overrides the threshold; 0 switches it off.
+
+    A hub with a terabyte and a phone with a full one want different answers,
+    and the fleet reports through the same code.
+    """
+    try:
+        v = int(os.environ.get("MEDIA_CACHE_WARN_MB", "") or CACHE_WARN_MB)
+    except ValueError:
+        return CACHE_WARN_MB
+    return v if v > 0 else 1 << 30
+
+
+def _cache_facts(facts: "dict[str, str]") -> None:
+    for name, path in _cache_dirs():
+        mb = _dir_mb(path)
+        if mb:
+            facts[name] = str(mb)
+
+
 def health_problems(facts: "dict[str, str]") -> "list[str]":
     """Human-readable problems implied by a selfcheck fact set (empty = well)."""
     problems = []
@@ -6161,6 +6241,16 @@ def health_problems(facts: "dict[str, str]") -> "list[str]":
         return []      # too old to selfcheck; skew reporting still applies
     if facts.get("install") == "copy":
         problems.append("install is a copy, not editable — git pull won't deploy")
+    for name, _ in _cache_dirs():
+        try:
+            mb = int(facts.get(name) or 0)
+        except ValueError:
+            continue
+        if mb >= _cache_warn_mb():
+            # Named, with the number, because "a cache is large" is not
+            # actionable and "books/ is 4300MB" is: that one turned out to be
+            # copies of files already on the hub.
+            problems.append(f"{name[:-3].replace('_', '/')} is {mb}MB")
     if facts.get("down"):
         problems.append(f"services down: {facts['down']}")
     if facts.get("crashloop"):
@@ -7530,6 +7620,15 @@ def _add_book_parser(sub) -> None:
                     help="Claude session id (default: this pane's)")
     fs.add_argument("--feed", dest="name", default="talks",
                     help="feed to publish to (default talks)")
+
+    fq = f.add_parser("publish-quiet",
+                      help="publish every conversation that has gone quiet")
+    fq.add_argument("--feed", dest="name", default="talks")
+    fq.add_argument("--quiet-min", type=float, default=60.0,
+                    help="minutes of silence before a conversation counts as "
+                         "finished (default 60)")
+    fq.add_argument("--limit", type=int, default=0,
+                    help="stop after this many (0 = no limit)")
 
     fss = f.add_parser("sessions", help="conversations available to publish")
     fss.add_argument("--limit", type=int, default=15)
