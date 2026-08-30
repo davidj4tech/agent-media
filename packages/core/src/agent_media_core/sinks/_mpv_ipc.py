@@ -13,11 +13,15 @@ is identical over either transport, so every helper below works unchanged.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import socket
+import threading
 import time
 from pathlib import Path
 from typing import Any, Iterator, Optional
+
+log = logging.getLogger(__name__)
 
 
 class MpvIpcError(RuntimeError):
@@ -284,20 +288,95 @@ def send_nowait(sock_path: str | Path, *args: Any, timeout: float = 3.0,
     flushed before the FIN, so socat still forwards the command to mpv even
     though we never read the reply. Transport errors raise (the caller can fall
     back to a waited `set_property`).
+
+    Not waited for, but read — on a thread, after this has returned.
+    Discarding the reply entirely made a *refusal* indistinguishable from
+    success: the player answered `{"error":"invalid parameter"}` to every
+    press of a key whose verb it did not implement, nothing was listening, and
+    the key silently did nothing. That was pause, for as long as the phone
+    lane ended at an app answering a subset of mpv's verbs; then seek, for as
+    long again. Both were found by accident. A refusal now lands in
+    `media errors`, which costs the presser nothing and turns a dead control
+    into a line someone can read.
     """
     _guard(sock_path, critical)
     t0 = time.monotonic()
     failed = True
     try:
         s = _open(sock_path, timeout)
+        sent = False
         try:
             s.sendall((json.dumps({"command": list(args)}) + "\n").encode())
             failed = False
+            sent = True
         finally:
-            s.close()
+            if sent:
+                threading.Thread(target=_read_refusal, args=(s, list(args)),
+                                 daemon=True).start()
+            else:
+                s.close()
     finally:
         _record(sock_path, time.monotonic() - t0, failed,
                 slow_s=0 if critical else None)
+
+
+#: How long the background reader waits for the answer to a fire-and-forget
+#: command. Long enough for a player that is going to refuse — it refuses
+#: immediately, without touching the audio device — and short enough that the
+#: thread cannot outlive the press it is reading about.
+REFUSAL_READ_S = 2.0
+
+
+def _read_refusal(sock: socket.socket, command: list) -> None:
+    """Read one reply; record it if the player refused. Never raises."""
+    try:
+        sock.settimeout(REFUSAL_READ_S)
+        buf = b""
+        while b"\n" not in buf:
+            chunk = sock.recv(4096)
+            if not chunk:
+                return
+            buf += chunk
+        for line in buf.split(b"\n"):
+            if not line.strip():
+                continue
+            try:
+                msg = json.loads(line)
+            except ValueError:
+                continue
+            # An mpv connection also carries async events; ours is the one
+            # that answers, and only a reply has `error`.
+            if not isinstance(msg, dict) or "error" not in msg:
+                continue
+            err = msg.get("error")
+            if err and err != "success":
+                verb = str(command[0]) if command else "?"
+                log.warning("mpv refused %s: %s", verb, err)
+                _log_refusal(verb, str(err), command)
+            return
+    except (OSError, ValueError):
+        return
+    finally:
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+
+def _log_refusal(verb: str, err: str, command: list) -> None:
+    """Put it where `media errors` will show it.
+
+    Best-effort by design: a control that worked must not fail because we
+    could not write down that it did.
+    """
+    try:
+        from ..state import StateStore
+
+        StateStore().log_error(
+            "mpv", f"player refused {verb!r}: {err}",
+            extras={"command": [str(c) for c in command]})
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def event_stream(sock_path: str | Path,
