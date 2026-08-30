@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+# audiobook-fetch — acquire long-form audio for the agent-media book channel.
+#
+# red5's datacenter IP is often blocked by YouTube; the connected device/phone
+# has a residential IP and downloads fine. So this:
+#   1. runs yt-dlp ON THE PHONE into its XDG agent-media book cache,
+#   2. rsyncs the result back to red5's Audiobookshelf-scanned library,
+#   3. triggers an Audiobookshelf scan,
+#   4. optionally plays the freshly-fetched file on the book channel.
+# The phone keeps its cached copy for a while (offline/mobile listening),
+# then prunes it once the hub has the same bytes — see AUDIOBOOK_PHONE_KEEP_DAYS.
+# Without that the staging cache is forever: it reached 4.3GB of books last
+# fetched in July, every one of them already sitting in the hub library.
+#
+# usage: audiobook-fetch [--play] [--target <name>] <url> [url ...]
+#   --play / -p       play the last fetched file on the book channel when done
+#   --target <name>   per-target book channel + ABS library; forwarded to the
+#                     `media book play` / `media abs-scan` calls. Empty = default.
+# env:
+#   AUDIOBOOK_PHONE_HOST   ssh host of the downloader phone   (default: p8a)
+#   AUDIOBOOK_PHONE_CACHE  phone cache dir relative to $HOME
+#                          (default: .cache/agent-media/books)
+#   AUDIOBOOK_LIB          ABS-scanned host library dir (default: ~/audiobooks)
+#   AUDIOBOOK_PHONE_KEEP_DAYS  how long a synced file stays on the phone
+#                          (default: 7; 0 keeps everything forever)
+set -euo pipefail
+
+PHONE="${AUDIOBOOK_PHONE_HOST:-p8a}"
+PHONE_DIR="${AUDIOBOOK_PHONE_CACHE:-.cache/agent-media/books}"
+LIB="${AUDIOBOOK_LIB:-${MEDIA_AUDIOBOOK_ABS_DIR:-$HOME/audiobooks}}"
+KEEP_DAYS="${AUDIOBOOK_PHONE_KEEP_DAYS:-7}"
+SSH=(ssh -o ConnectTimeout=12)
+
+play=0
+target=""
+urls=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --play|-p) play=1 ;;
+        --target) shift; target="${1:-}" ;;
+        --target=*) target="${1#--target=}" ;;
+        -h|--help) sed -n '2,24p' "$0" | sed 's/^# \?//'; exit 0 ;;
+        --) shift; while [ $# -gt 0 ]; do urls+=("$1"); shift; done; break ;;
+        -*) echo "audiobook-fetch: unknown option $1" >&2; exit 2 ;;
+        *) urls+=("$1") ;;
+    esac
+    shift
+done
+
+# Forward --target to the `media` calls only when set.
+target_args=()
+[ -n "$target" ] && target_args=(--target "$target")
+[ "${#urls[@]}" -gt 0 ] || { echo "usage: audiobook-fetch [--play] <url ...>" >&2; exit 2; }
+
+"${SSH[@]}" -o BatchMode=yes "$PHONE" true 2>/dev/null || {
+    echo "audiobook-fetch: phone '$PHONE' unreachable — is Tailscale up and the phone awake?" >&2
+    exit 1
+}
+
+last_base=""
+for u in "${urls[@]}"; do
+    case "$u" in *\'*) echo "audiobook-fetch: refusing URL with a quote: $u" >&2; exit 2 ;; esac
+    vid=$(printf '%s' "$u" | sed -nE \
+        's#.*(youtube\.com/(watch\?([^ ]*&)?v=|shorts/|live/)|youtu\.be/)([0-9A-Za-z_-]{11}).*#\4#p')
+    base=""
+    if [ -n "$vid" ]; then
+        # Reuse any existing phone book cache, legacy shared Audiobooks dir, or
+        # music-offline cache before running yt-dlp again.
+        base=$("${SSH[@]}" "$PHONE" "
+            set -e
+            mkdir -p '$PHONE_DIR'
+            existing=\$(ls \"$PHONE_DIR\"/*\"[$vid]\".* ~/storage/shared/Audiobooks/*\"[$vid]\".* 2>/dev/null | head -1 || true)
+            if [ -n \"\$existing\" ]; then
+                cp -n \"\$existing\" \"$PHONE_DIR/\$(basename \"\$existing\")\" 2>/dev/null || true
+                basename \"\$existing\"
+            else
+                c=\$HOME/.cache/music-offline/$vid.mka
+                if [ -f \"\$c\" ] && [ -f \"\${c%.mka}.title\" ]; then
+                    t=\$(tr -d '/\n' < \"\${c%.mka}.title\")
+                    cp \"\$c\" \"$PHONE_DIR/\$t [$vid].mka\" && printf '%s [$vid].mka\n' \"\$t\"
+                fi
+            fi" 2>/dev/null | tail -1) || base=""
+        [ -n "$base" ] && echo ">> [$PHONE] reusing cached copy: $base" >&2
+    fi
+    if [ -z "$base" ]; then
+        echo ">> [$PHONE] downloading: $u" >&2
+        base=$("${SSH[@]}" "$PHONE" "mkdir -p '$PHONE_DIR' && cd '$PHONE_DIR' && \
+            yt-dlp -f bestaudio --no-overwrites --no-part --no-progress \
+                --embed-metadata --embed-chapters --remux-video mka \
+                --print after_move:filename \
+                -o '%(title)s [%(id)s].%(ext)s' '$u'" 2>/dev/null | tail -1) || {
+            echo "audiobook-fetch: download failed for $u" >&2; exit 1; }
+    fi
+    [ -n "$base" ] && { echo "   -> $base" >&2; last_base="$base"; }
+done
+
+echo ">> syncing to $LIB" >&2
+mkdir -p "$LIB"
+if [ -n "$last_base" ]; then
+    rsync -a -s -e "ssh -o ConnectTimeout=12" \
+        "$PHONE:$PHONE_DIR/$last_base" "$LIB/" || true
+fi
+if [ -n "$last_base" ] && [ -f "$LIB/$last_base" ]; then
+    echo "fetched: $LIB/$last_base"
+    echo ">> asking Audiobookshelf to scan" >&2
+    media abs-scan "${target_args[@]}" >/dev/null 2>&1 || true
+    if [ "$play" = 1 ]; then
+        echo ">> playing on book channel" >&2
+        media book play "${target_args[@]}" "$LIB/$last_base"
+    fi
+elif [ "$play" = 1 ]; then
+    echo "audiobook-fetch: nothing to play (fetch failed?)" >&2
+fi
+
+# Bring the rest of the phone book cache across incrementally.
+rsync -a -e "ssh -o ConnectTimeout=12" --exclude '.*' "$PHONE:$PHONE_DIR/" "$LIB/" || true
+media abs-scan "${target_args[@]}" >/dev/null 2>&1 || true
+
+# The phone is where the download happens, not where it lives. A file that has
+# reached the hub intact and has been on the phone longer than KEEP_DAYS is a
+# staging copy nobody is using; without this the cache only grows, and a phone
+# is the one machine in the fleet whose disk is not expandable.
+#
+# "Intact" means the hub has the same name AND the same byte count. The phone's
+# copy is the only copy until the rsync lands, so a partial or interrupted
+# transfer must never read as a safe delete.
+prune_phone_cache() {
+    [ "$KEEP_DAYS" -gt 0 ] || return 0
+    local size name doomed=() freed=0
+    while IFS=$'\t' read -r -d '' size name; do
+        [ -n "$name" ] || continue
+        [ -f "$LIB/$name" ] || continue
+        [ "$(stat -c%s "$LIB/$name" 2>/dev/null)" = "$size" ] || continue
+        doomed+=("$name")
+        freed=$((freed + size))
+    done < <("${SSH[@]}" "$PHONE" "cd '$PHONE_DIR' 2>/dev/null && \
+        find . -maxdepth 1 -type f -mtime +$((KEEP_DAYS - 1)) -printf '%s\t%P\0'" \
+        2>/dev/null)
+    [ "${#doomed[@]}" -gt 0 ] || return 0
+    # Null-delimited: these are YouTube titles, full of spaces, brackets and
+    # the full-width characters yt-dlp substitutes for / and |.
+    printf '%s\0' "${doomed[@]}" |
+        "${SSH[@]}" "$PHONE" "cd '$PHONE_DIR' && xargs -0 rm -f --" || return 0
+    echo ">> [$PHONE] pruned ${#doomed[@]} synced file(s), $((freed / 1048576))MB" >&2
+}
+prune_phone_cache
+
+echo "library: $LIB"

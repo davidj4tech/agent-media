@@ -318,6 +318,17 @@ def _data_dir(name: str) -> Path:
     return Path(__file__).resolve().parent.parent.parent / name
 
 
+def shipped_bin(name: str) -> Path:
+    """A shell helper shipped with the package, by name.
+
+    Same two layouts as the service templates, and the same reason they are a
+    problem: beside the package in a checkout, inside it in a wheel. A console
+    script is the only thing that should ever look this up — the helper itself
+    is plain sh, so the entrypoint exists to put it on PATH, not to wrap it.
+    """
+    return _data_dir("bin") / name
+
+
 def service_templates_dir() -> Path:
     """Repo-shipped templates under packages/core/services/."""
     return _data_dir("services")
