@@ -22,6 +22,28 @@ def _sock(tmp_path, monkeypatch):
     monkeypatch.setenv("MEDIA_CONVERSE_SOCK", str(tmp_path / "converse.sock"))
 
 
+@pytest.fixture(autouse=True)
+def _nobody_owns_david(tmp_path, monkeypatch):
+    """And nobody else is talking to him.
+
+    Arming refuses while another assistant holds David's input — correctly: a
+    question spoken into the middle of someone else's conversation is worse
+    than a late one. But the claim is a file at a fixed path under $HOME, not
+    under XDG_STATE_HOME, so these tests read the live one. Whenever cece took
+    the phone mic while the suite ran, `_armed` got `Claimed`, the socket never
+    appeared, and fourteen tests failed as "rendezvous never armed within 10s"
+    — a flake that came and went with the claim's 45s TTL and looked like
+    timing, because everything about it was measured in seconds.
+
+    Verified by pointing PATH at a claim that never expires: 14 failures, the
+    same ones seen at random. This file has no opinion about claims; the ones
+    that do redirect PATH exactly like this.
+    """
+    from agent_media_core.capture import input_claim
+
+    monkeypatch.setattr(input_claim, "PATH", tmp_path / "input-claim.json")
+
+
 def _armed(timeout_s=5.0, question=None):
     """Run a Rendezvous in a thread; returns (thread, result-dict)."""
     out = {}
