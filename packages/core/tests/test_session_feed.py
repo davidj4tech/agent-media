@@ -279,7 +279,7 @@ def test_only_conversations_that_have_gone_quiet_are_published(tmp_path, clip,
     monkeypatch.setenv("MEDIA_FEED_SPOOL", str(tmp_path / "spool"))
     monkeypatch.setenv("MEDIA_CONFIG", str(tmp_path / "nope.toml"))
     monkeypatch.setattr("agent_media_core.conversation.transcript", lambda s: None)
-    monkeypatch.setattr(feed, "_probe_duration", lambda p: 3.0)
+    monkeypatch.setattr(feed, "_probe_duration", lambda p: 300.0)
     monkeypatch.setattr(session_feed, "build",
                         lambda ts, out: (out.write_bytes(b"x"), out)[1])
     now = 1_000_000.0
@@ -295,7 +295,7 @@ def test_a_published_conversation_is_not_published_again(tmp_path, clip,
     monkeypatch.setenv("MEDIA_FEED_SPOOL", str(tmp_path / "spool"))
     monkeypatch.setenv("MEDIA_CONFIG", str(tmp_path / "nope.toml"))
     monkeypatch.setattr("agent_media_core.conversation.transcript", lambda s: None)
-    monkeypatch.setattr(feed, "_probe_duration", lambda p: 3.0)
+    monkeypatch.setattr(feed, "_probe_duration", lambda p: 300.0)
     monkeypatch.setattr(session_feed, "build",
                         lambda ts, out: (out.write_bytes(b"x"), out)[1])
     now = 1_000_000.0
@@ -310,7 +310,7 @@ def test_a_conversation_that_grew_is_published_again(tmp_path, clip, monkeypatch
     monkeypatch.setenv("MEDIA_FEED_SPOOL", str(tmp_path / "spool"))
     monkeypatch.setenv("MEDIA_CONFIG", str(tmp_path / "nope.toml"))
     monkeypatch.setattr("agent_media_core.conversation.transcript", lambda s: None)
-    monkeypatch.setattr(feed, "_probe_duration", lambda p: 3.0)
+    monkeypatch.setattr(feed, "_probe_duration", lambda p: 300.0)
     monkeypatch.setattr(session_feed, "build",
                         lambda ts, out: (out.write_bytes(b"x"), out)[1])
     now = 1_000_000.0
@@ -401,3 +401,40 @@ def test_conversations_carry_their_workspace(clip):
     conv = session_feed.conversations(store=_Store(rows))[0]
     assert conv["workspace"] == "p-agent-media"
     assert conv["turns"] == 3
+
+
+def test_a_home_directory_is_not_a_workspace(monkeypatch, tmp_path):
+    """`home-ryer · ` on the front of every episode distinguishes nothing."""
+    d = tmp_path / "-home-ryer"
+    d.mkdir()
+    p = d / f"{SESSION}.jsonl"
+    p.write_text("")
+    monkeypatch.setattr("agent_media_core.conversation.transcript", lambda s: p)
+    assert session_feed.workspace_for(SESSION, []) == ""
+
+
+def test_a_two_second_conversation_is_not_an_episode(tmp_path, clip, monkeypatch):
+    monkeypatch.setenv("MEDIA_FEED_SPOOL", str(tmp_path / "spool"))
+    monkeypatch.setenv("MEDIA_CONFIG", str(tmp_path / "nope.toml"))
+    monkeypatch.setattr("agent_media_core.conversation.transcript", lambda s: None)
+    monkeypatch.setattr(session_feed, "build",
+                        lambda ts, out: (out.write_bytes(b"x"), out)[1])
+    monkeypatch.setattr(feed, "_probe_duration", lambda p: 2.0)
+    now = 1_000_000.0
+    rows = [_row([clip("a.mp3")], at=now - 7200, session="tiny")]
+
+    assert session_feed.publish_quiet(now=now, store=_Store(rows)) == []
+    # And nothing is left behind in the spool from the attempt.
+    assert feed.episodes("talks") == []
+
+
+def test_a_short_conversation_can_still_be_published_by_hand(tmp_path, clip,
+                                                             monkeypatch):
+    monkeypatch.setenv("MEDIA_FEED_SPOOL", str(tmp_path / "spool"))
+    monkeypatch.setenv("MEDIA_CONFIG", str(tmp_path / "nope.toml"))
+    monkeypatch.setattr("agent_media_core.conversation.transcript", lambda s: None)
+    monkeypatch.setattr(session_feed, "build",
+                        lambda ts, out: (out.write_bytes(b"x"), out)[1])
+    monkeypatch.setattr(feed, "_probe_duration", lambda p: 2.0)
+    rows = [_row([clip("a.mp3")], at=1.0, session="tiny")]
+    assert session_feed.publish("tiny", store=_Store(rows)) is not None

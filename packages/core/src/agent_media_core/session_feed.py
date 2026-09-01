@@ -173,7 +173,10 @@ def workspace_for(session: str, ts: list[Turn]) -> str:
     if not dirname.startswith("-"):
         return ""
     _, sep, tail = dirname.partition("projects-")
-    return (tail if sep and tail else dirname.lstrip("-")).strip()
+    # Only a project earns a label. Without that segment the encoded path is a
+    # home directory or a scratch cwd, and "home-ryer · " on the front of every
+    # episode is a prefix that distinguishes nothing.
+    return tail.strip() if sep and tail else ""
 
 
 def title_for(session: str, ts: list[Turn]) -> str:
@@ -352,9 +355,16 @@ def conversations(store=None) -> list[dict]:
     return sorted(out, key=lambda c: -c["last"])
 
 
+#: Below this, a conversation is not an episode. Two seconds of "reply with
+#: exactly: local backup works" in a client's list is noise around the things
+#: worth finding — and `media feed session <id>` still publishes one by hand.
+MIN_EPISODE_S = 30.0
+
+
 def publish_quiet(*, name: str = "talks", quiet_s: float = 3600.0,
                   now: Optional[float] = None, store=None,
-                  limit: int = 0) -> list[feedmod.Episode]:
+                  limit: int = 0, min_s: float = MIN_EPISODE_S
+                  ) -> list[feedmod.Episode]:
     """Publish every conversation that has finished and isn't on the feed yet.
 
     "Finished" is silence: no turn for `quiet_s`. There is no event for a
@@ -381,6 +391,10 @@ def publish_quiet(*, name: str = "talks", quiet_s: float = 3600.0,
         ep = publish(conv["session"], name=name, store=store)
         if ep is None:
             continue                       # no turns whose audio survives
+        if min_s and ep.duration_s and ep.duration_s < min_s:
+            feedmod.remove(name, ep.guid)
+            log.info("skipped %s (%.0fs)", ep.title, ep.duration_s)
+            continue
         log.info("published %s (%s)", ep.title, conv["session"])
         out.append(ep)
         if limit and len(out) >= limit:
