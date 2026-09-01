@@ -534,3 +534,44 @@ def test_a_dry_run_still_shows_a_usable_subscribe_url(tmp_path, monkeypatch,
     setup.cmd_feed(_feed_args(dry_run=True))
     out = capsys.readouterr().out
     assert "/feed/talks.xml?k=" in out
+
+
+# --- console scripts on a runit host ----------------------------------------
+
+
+def test_runit_install_links_the_console_scripts(tmp_path, monkeypatch, capsys):
+    """A runit `run` script inherits runsvdir's environment, which on Termux
+    does not include the venv — so `media-feed` installed, enabled, and
+    spawn-looped on "inaccessible or not found" with the binary sitting in the
+    venv the whole time. systemd units carry the PATH; runit has no equivalent,
+    so the link is the equivalent."""
+    bindir = tmp_path / "venv" / "bin"
+    bindir.mkdir(parents=True)
+    for name in ("media", "media-feed", "python3"):
+        f = bindir / name
+        f.write_text("#!/bin/sh\n")
+        f.chmod(0o755)
+    dest = tmp_path / "home" / ".local" / "bin"
+    monkeypatch.setattr(setup, "_entrypoint_bindir", lambda: bindir)
+    monkeypatch.setattr(setup, "entrypoint_link_dir", lambda: dest)
+
+    assert setup._link_entrypoints(dry_run=False) is True
+    assert (dest / "media-feed").resolve() == (bindir / "media-feed").resolve()
+    assert (dest / "media").is_symlink()
+    # Only what this project owns.
+    assert not (dest / "python3").exists()
+
+
+def test_on_termux_the_links_go_where_termux_looks(monkeypatch):
+    """~/.local/bin is not on Termux's default PATH; $PREFIX/bin is, and is
+    where the hand-made shims already lived."""
+    monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")
+    assert setup.entrypoint_link_dir() == \
+        setup.Path("/data/data/com.termux/files/usr/bin")
+    monkeypatch.setenv("PREFIX", "/usr")
+    assert setup.entrypoint_link_dir() == setup.local_bin()
+
+
+def test_linking_entrypoints_is_a_no_op_without_a_bindir(monkeypatch, tmp_path):
+    monkeypatch.setattr(setup, "_entrypoint_bindir", lambda: tmp_path / "nope")
+    assert setup._link_entrypoints(dry_run=False) is True

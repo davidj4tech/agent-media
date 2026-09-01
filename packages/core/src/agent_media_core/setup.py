@@ -907,7 +907,47 @@ def cmd_install_services(args: argparse.Namespace) -> int:
     ok = True
     for name in names:
         ok = _install_one_service(name, dry_run=args.dry_run, root=root) and ok
+    ok = _link_entrypoints(dry_run=args.dry_run) and ok
     return 0 if ok else 1
+
+
+def entrypoint_link_dir() -> Path:
+    """Where a console script has to appear to be on PATH.
+
+    Termux's own `bin` on Termux — that is what the existing hand-made shims
+    used, and `~/.local/bin` is not on the default PATH there. `~/.local/bin`
+    everywhere else.
+    """
+    prefix = os.environ.get("PREFIX", "")
+    if prefix.startswith("/data/data/com.termux"):
+        return Path(prefix) / "bin"
+    return local_bin()
+
+
+def _link_entrypoints(*, dry_run: bool) -> bool:
+    """Put this install's console scripts where a runit `run` script can find
+    them.
+
+    The systemd units carry `Environment=PATH=<venv bin>`, so an entrypoint
+    resolves whatever the user's login PATH is. runit has no equivalent: its
+    `run` scripts inherit runsvdir's environment, which on Termux does not
+    include the venv. Every console script therefore needed a hand-made
+    symlink, and nobody remembers that when adding one — `media-feed` was
+    installed, enabled, and spawn-looping on "media-feed: inaccessible or not
+    found" with the binary sitting in the venv the whole time.
+
+    So: link them, every install, idempotently. Only `media*` — the scripts
+    this project owns — and only into a directory already on PATH.
+    """
+    bindir = _entrypoint_bindir()
+    if not bindir.is_dir():
+        return True
+    dest_dir = entrypoint_link_dir()
+    ok = True
+    for src in sorted(bindir.glob("media*")):
+        if src.is_file() and os.access(src, os.X_OK):
+            ok = _symlink_into(src, dest_dir / src.name, dry_run=dry_run) and ok
+    return ok
 
 
 # --- Rooms audio hub (server role) -----------------------------------------
