@@ -118,17 +118,21 @@ def test_a_chapter_is_named_by_the_turn_s_first_sentence(text, want):
 def test_notes_are_a_timestamped_table_of_contents():
     ts = [Turn(at=1, text="First thing.", durations=[65.0]),
           Turn(at=2, text="Second thing.", durations=[10.0, 5.0])]
-    # One paragraph per chapter: a description is rendered as HTML, and a
-    # list joined by newlines arrives as one unbroken wall of text.
-    assert session_feed.notes(ts) == ("<p>0:00:00 — First thing.</p>\n"
-                                      "<p>0:01:05 — Second thing.</p>")
+    # One paragraph per chapter (a description is rendered as HTML, so a list
+    # joined by newlines arrives as one wall of text), newest first (a
+    # conversation is read forwards but scanned backwards).
+    assert session_feed.notes(ts) == ("<p>0:01:05 — Second thing.</p>\n"
+                                      "<p>0:00:00 — First thing.</p>")
 
 
 def test_a_long_conversation_s_notes_are_capped():
     ts = [Turn(at=i, text=f"Turn {i}.", durations=[1.0]) for i in range(10)]
     out = session_feed.notes(ts, limit=3)
     assert out.count("<p>") == 4
-    assert out.endswith("<p>… and 7 more</p>")
+    # The cap drops the OLDEST, and says so: the recent end of a long
+    # conversation is the half worth keeping.
+    assert out.startswith("<p>0:00:09 — Turn 9.</p>")
+    assert out.endswith("<p>… and 7 earlier</p>")
 
 
 # --- the title -------------------------------------------------------------

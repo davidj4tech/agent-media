@@ -62,9 +62,13 @@ log = logging.getLogger(__name__)
 #: a busy day interleaves hundreds of other clips between this session's.
 _FETCH = 4000
 
-#: Chapters listed in the episode description. A long conversation's whole
-#: table of contents in the XML would be re-fetched on every client poll.
-_NOTES_CHAPTERS = 40
+#: Chapters listed in the episode description. High enough that the cap is
+#: almost never reached: it was 40, and a long afternoon runs past that, so
+#: the line saying how many were dropped became a routine sight — and it is
+#: text, so there is nothing to click. A chapter line is ~60 bytes; two
+#: hundred of them is a feed 12KB larger, which is nothing against a client
+#: that polls hourly.
+_NOTES_CHAPTERS = 200
 
 
 @dataclass
@@ -264,12 +268,16 @@ def notes(ts: list[Turn], limit: int = _NOTES_CHAPTERS) -> str:
     from xml.sax.saxutils import escape
 
     lines, clock = [], 0.0
-    for i, t in enumerate(ts):
-        if i < limit:
-            lines.append(f"<p>{feedmod.hms(clock)} — {escape(t.title)}</p>")
+    for t in ts:
+        lines.append(f"<p>{feedmod.hms(clock)} — {escape(t.title)}</p>")
         clock += sum(t.durations)
-    if len(ts) > limit:
-        lines.append(f"<p>… and {len(ts) - limit} more</p>")
+    # Newest first. A conversation is read forwards but *scanned* backwards:
+    # what you are looking for in one you had this afternoon is near the end,
+    # and that is also the half a cap should never be the one to drop.
+    lines.reverse()
+    if len(lines) > limit:
+        dropped = len(lines) - limit
+        lines = lines[:limit] + [f"<p>… and {dropped} earlier</p>"]
     return "\n".join(lines)
 
 
