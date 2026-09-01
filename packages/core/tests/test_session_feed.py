@@ -118,15 +118,17 @@ def test_a_chapter_is_named_by_the_turn_s_first_sentence(text, want):
 def test_notes_are_a_timestamped_table_of_contents():
     ts = [Turn(at=1, text="First thing.", durations=[65.0]),
           Turn(at=2, text="Second thing.", durations=[10.0, 5.0])]
-    assert session_feed.notes(ts) == ("0:00:00  First thing.\n"
-                                      "0:01:05  Second thing.")
+    # One paragraph per chapter: a description is rendered as HTML, and a
+    # list joined by newlines arrives as one unbroken wall of text.
+    assert session_feed.notes(ts) == ("<p>0:00:00 — First thing.</p>\n"
+                                      "<p>0:01:05 — Second thing.</p>")
 
 
 def test_a_long_conversation_s_notes_are_capped():
     ts = [Turn(at=i, text=f"Turn {i}.", durations=[1.0]) for i in range(10)]
     out = session_feed.notes(ts, limit=3)
-    assert out.count("\n") == 3
-    assert out.endswith("… and 7 more")
+    assert out.count("<p>") == 4
+    assert out.endswith("<p>… and 7 more</p>")
 
 
 # --- the title -------------------------------------------------------------

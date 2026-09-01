@@ -132,14 +132,29 @@ so it would be a guess presented as a fact.
 
 ## Services
 
+Episode descriptions are HTML, one paragraph per chapter: a client renders
+them as HTML, so a list joined by newlines arrives as one unbroken wall of
+text with the timestamps buried in it.
+
 Installed by `media-setup feed`, or by role with
 `media-setup install-services … --now` once the feed is configured:
 
 | unit | what | when |
 |---|---|---|
 | `agent-media-feed` | serves the feed | always |
-| `agent-media-feed-publish` | publishes conversations quiet for an hour | hourly |
+| `agent-media-feed-publish` | publishes finished conversations, then syncs ABS | every 5 min |
+| `agent-media-abs-sync` | subscribes Audiobookshelf to every feed | hourly (safety net) |
 | `agent-media-feed-gc` | applies retention, rewrites the XML | daily |
+
+`MEDIA_FEED_QUIET_MIN` (default 60, set to 10 on red5) is how much silence
+marks a conversation finished. Short is the point — an episode that arrives an
+hour after you stop talking is a different thing from one waiting when you
+pick up the phone — but too short publishes a conversation you were only
+pausing, and no client ever re-fetches, so that half is the half you keep.
+
+The publisher chains straight into `media-abs-sync` rather than leaving it to
+the hourly timer: three hourly stages (publish, subscribe, download) meant a
+conversation could take most of an afternoon to reach the phone.
 
 The last two are timer-driven, so their units are *inactive between runs* —
 which `media doctor` reports as parked, not down.

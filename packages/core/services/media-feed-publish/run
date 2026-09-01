@@ -3,8 +3,14 @@
 #
 # There is no event for a conversation ending: the session id stays valid, the
 # pane stays open, and people come back to yesterday's. So the signal is
-# silence — an hour without a turn — and this is what makes the feed something
-# that fills itself rather than something you remember to run.
+# silence, and this is what makes the feed something that fills itself rather
+# than something you remember to run.
+#
+# MEDIA_FEED_QUIET_MIN is how long that silence has to be (default 60). Short
+# is the point: an episode that arrives an hour after you stop talking is a
+# different thing from one that is waiting when you pick up the phone. Too
+# short and a conversation you were only pausing gets published half-finished
+# — and no client will ever re-fetch it, so that half is what you keep.
 #
 # Skipped where no feed is served. Publishing into a spool nothing can reach
 # is disk spent on an audience of nobody; the hub that serves the feed is the
@@ -16,4 +22,10 @@ if [ -z "${MEDIA_FEED_BASE_URL:-}" ]; then
     exit 0
 fi
 export MEDIA_FEED_TOKEN MEDIA_FEED_BASE_URL MEDIA_FEED_SPOOL
-exec media feed publish-quiet ${MEDIA_FEED_QUIET_MIN:+--quiet-min "$MEDIA_FEED_QUIET_MIN"}
+# Publish, then hand what changed straight to Audiobookshelf rather than
+# waiting for its own hourly sweep. Three hourly stages in a row (publish,
+# subscribe, download) meant a conversation could take most of an afternoon to
+# reach the phone; chained, it is one tick.
+media feed publish-quiet ${MEDIA_FEED_QUIET_MIN:+--quiet-min "$MEDIA_FEED_QUIET_MIN"}
+command -v media-abs-sync >/dev/null 2>&1 && exec media-abs-sync
+exit 0

@@ -1,2 +1,2 @@
-OnCalendar=hourly
-RandomizedDelaySec=10m
+OnBootSec=3min
+OnUnitActiveSec=5min

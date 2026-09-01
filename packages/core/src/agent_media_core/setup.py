@@ -809,11 +809,15 @@ def _install_one_systemd(name: str, *, dry_run: bool, root: Path) -> str | None:
               f"(-> {os.readlink(dest)}) with a generated unit")
         dest.unlink()
     if dest.exists() and dest.read_text() == content:
+        # Not a return: a periodic service whose schedule changed has an
+        # identical unit file and a different timer, and returning here left
+        # the old schedule installed while reporting success. Found by
+        # shortening a cadence and watching it not change.
         print(f"media-setup: {unit} already up to date")
-        return unit
-    root.mkdir(parents=True, exist_ok=True)
-    dest.write_text(content)
-    print(f"media-setup: wrote {dest}")
+    else:
+        root.mkdir(parents=True, exist_ok=True)
+        dest.write_text(content)
+        print(f"media-setup: wrote {dest}")
     if schedule:
         # The timer is what gets enabled; enabling the oneshot service itself
         # would run it once at boot and never again, which looks like a

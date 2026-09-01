@@ -251,19 +251,25 @@ def _asked(session: str, ts: list[Turn]) -> str:
 
 
 def notes(ts: list[Turn], limit: int = _NOTES_CHAPTERS) -> str:
-    """The episode description: a timestamped table of contents.
+    """The episode description: a timestamped table of contents, in HTML.
 
     A client shows one text field, and the useful thing to put in it for a
     conversation is where in the hour each part is — the same information as
     the chapter marks, for the clients that don't read them.
+
+    One paragraph per chapter, because a description is rendered as HTML:
+    newlines collapse, and a list joined by them arrives in Audiobookshelf as
+    one unbroken wall of text with the timestamps buried inside it.
     """
+    from xml.sax.saxutils import escape
+
     lines, clock = [], 0.0
     for i, t in enumerate(ts):
         if i < limit:
-            lines.append(f"{feedmod.hms(clock)}  {t.title}")
+            lines.append(f"<p>{feedmod.hms(clock)} — {escape(t.title)}</p>")
         clock += sum(t.durations)
     if len(ts) > limit:
-        lines.append(f"… and {len(ts) - limit} more")
+        lines.append(f"<p>… and {len(ts) - limit} more</p>")
     return "\n".join(lines)
 
 

@@ -93,7 +93,7 @@ def test_the_subscriber_is_given_the_shape_of_the_document(monkeypatch,
     _run(monkeypatch, ["doc", "play", "ringer", "--feed"])
     desc = feed.episodes("docs")[0].description
     assert "08:45" in desc                       # the opening prose
-    assert "Chapters:" in desc and "The gate" in desc
+    assert "Chapters:" in desc and "<p>The gate</p>" in desc
 
 
 def test_without_the_flag_it_still_plays(monkeypatch, doc_root, rendered):
@@ -173,10 +173,12 @@ def test_episode_notes_break_at_a_sentence(monkeypatch):
     long = "One sentence here. " + "Another one follows. " * 40
     secs = [docs.Section("H", long), docs.Section("Later", "x")]
     notes = docs.episode_notes(secs, intro_chars=120)
-    assert notes.startswith("One sentence here.")
-    assert notes.split("\n\n")[0].endswith("…")
-    assert "Chapters: H · Later" in notes
+    assert notes.startswith("<p>One sentence here.")
+    intro = notes.splitlines()[0]
+    assert intro.endswith("…</p>")
+    assert "<p>Chapters:</p>" in notes
+    assert "<p>H</p>" in notes and "<p>Later</p>" in notes
 
 
 def test_episode_notes_of_a_headingless_note():
-    assert docs.episode_notes([docs.Section("", "Just prose.")]) == "Just prose."
+    assert docs.episode_notes([docs.Section("", "Just prose.")]) == "<p>Just prose.</p>"

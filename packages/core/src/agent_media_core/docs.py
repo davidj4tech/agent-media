@@ -658,11 +658,16 @@ def episode_notes(sections: list, intro_chars: int = 700) -> str:
         stop = max(cut.rfind(". "), cut.rfind("? "), cut.rfind("! "))
         intro = (cut[:stop + 1] if stop > intro_chars // 2 else cut.rstrip()) + " …"
 
+    from xml.sax.saxutils import escape
+
     heads = [s.heading.strip() for s in sections if s.heading and s.heading.strip()]
-    parts = [intro] if intro else []
+    # HTML, and a paragraph each: a client renders the description as HTML, so
+    # newlines collapse and the chapter list arrives glued to the prose.
+    parts = [f"<p>{escape(intro)}</p>"] if intro else []
     if heads:
-        parts.append("Chapters: " + " · ".join(heads))
-    return "\n\n".join(parts)
+        parts.append("<p>Chapters:</p>")
+        parts += [f"<p>{escape(h)}</p>" for h in heads]
+    return "\n".join(parts)
 
 
 # --- rendering with chapters -----------------------------------------------

@@ -575,3 +575,22 @@ def test_on_termux_the_links_go_where_termux_looks(monkeypatch):
 def test_linking_entrypoints_is_a_no_op_without_a_bindir(monkeypatch, tmp_path):
     monkeypatch.setattr(setup, "_entrypoint_bindir", lambda: tmp_path / "nope")
     assert setup._link_entrypoints(dry_run=False) is True
+
+
+def test_a_changed_schedule_lands_even_when_the_service_did_not_change(
+        tmp_path, monkeypatch):
+    """The unit file of a periodic service is identical whatever its cadence;
+    returning early on "already up to date" left the old schedule installed
+    and said it had succeeded."""
+    templates = tmp_path / "services"
+    d = _template(templates, "media-feed-publish", timer="OnCalendar=hourly\n")
+    monkeypatch.setattr(setup, "service_templates_dir", lambda: templates)
+    root = tmp_path / "user"
+    setup._install_one_systemd("media-feed-publish", dry_run=False, root=root)
+
+    (d / "timer").write_text("OnUnitActiveSec=5min\n")
+    setup._install_one_systemd("media-feed-publish", dry_run=False, root=root)
+
+    tmr = (root / "agent-media-feed-publish.timer").read_text()
+    assert "OnUnitActiveSec=5min" in tmr
+    assert "OnCalendar" not in tmr
