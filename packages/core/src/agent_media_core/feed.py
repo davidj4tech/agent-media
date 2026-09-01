@@ -399,7 +399,12 @@ def feed_xml(name: str, eps: list[Episode], *, base_url: str, token: str = "",
       usually drops the episode rather than complaining.
     """
     now = time.time() if now is None else now
-    ftitle = title or f"agent-media: {name}"
+    # The feed's own name, unprefixed. It used to read "agent-media: talks",
+    # which was informative when there was one feed and is noise now that there
+    # is one per workspace: a subscription list of "agent-media: p-agent-media,
+    # agent-media: scratch" spends its first fourteen characters saying the
+    # same thing every time.
+    ftitle = title or name
     fdesc = description or f"Rendered speech from the {name} channel."
     self_url = _url(base_url, f"feed/{name}.xml", token)
     out = ['<?xml version="1.0" encoding="UTF-8"?>',

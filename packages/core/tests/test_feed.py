@@ -248,3 +248,11 @@ def test_feed_xml_touches_no_disk(tmp_path, monkeypatch):
                       published=1.0, size=42)
     monkeypatch.setenv("MEDIA_FEED_SPOOL", "/nonexistent/nope")
     assert "abc.mp3" in feed.feed_xml("talks", [ep], base_url="http://x", now=1.0)
+
+
+def test_the_channel_is_named_for_the_feed_alone(tmp_path):
+    """One feed per workspace means a subscription list; a shared prefix on
+    every entry spends its first fourteen characters saying nothing."""
+    ep = _pub(tmp_path, feed_name="p-agent-media", guid="s-1")
+    xml = feed.feed_xml("p-agent-media", [ep], base_url="http://x")
+    assert _channel(xml).find("title").text == "p-agent-media"
