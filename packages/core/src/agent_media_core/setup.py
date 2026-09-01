@@ -1443,15 +1443,30 @@ def cmd_feed(args: argparse.Namespace) -> int:
         print(f"media-setup: {env_path} already configures the feed — "
               f"leaving it alone")
 
+    # Serving is one job and filling is another. Every host that switches the
+    # feed on gets the server; only a host that *has* conversations gets the
+    # publisher and the pruner that follows it, because `publish-quiet` reads
+    # speech history and a render-only host has none of its own. Naming all
+    # three everywhere would install two units to do nothing, with a
+    # role-override warning to explain it.
+    roles = host_roles()
+    wanted = ["media-feed"]
+    if roles is None or "origin" in roles:
+        wanted += ["media-feed-publish", "media-feed-gc"]
+    else:
+        print(f"media-setup: this host is [{', '.join(sorted(roles)) or 'none'}] "
+              f"— installing the server only; publishing needs `origin`.")
     if not args.no_services and not args.dry_run:
         rc = cmd_install_services(argparse.Namespace(
-            services=["media-feed", "media-feed-publish", "media-feed-gc"],
-            backend=getattr(args, "backend", None), now=True,
+            services=wanted, backend=getattr(args, "backend", None), now=True,
             dry_run=False, root=None))
         if rc != 0:
             return rc
 
-    token = _env_value("MEDIA_FEED_TOKEN")
+    # In a dry run nothing was written, so the token to show is the one that
+    # would have been. A subscribe URL without it is not the URL.
+    token = _env_value("MEDIA_FEED_TOKEN") or (
+        dict(defaults)["MEDIA_FEED_TOKEN"] if args.dry_run else "")
     base = _env_value("MEDIA_FEED_BASE_URL") or base
     print("\nsubscribe:")
     for name in ("talks", "docs"):

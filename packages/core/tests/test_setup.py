@@ -487,3 +487,50 @@ def test_a_host_off_the_tailnet_gets_no_address_rather_than_a_wrong_one(
 
     monkeypatch.setattr(socket, "socket", lambda *a, **k: _Sock())
     assert setup._tailnet_address() == ""
+
+
+def test_a_render_only_host_gets_the_server_but_not_the_publisher(tmp_path,
+                                                                  monkeypatch,
+                                                                  capsys):
+    """`publish-quiet` reads speech history; a host that renders someone
+    else's speech has none of its own to publish."""
+    env = tmp_path / "agent-media.env"
+    monkeypatch.setattr(setup, "_agent_media_env_path", lambda: env)
+    monkeypatch.setattr(setup, "host_roles", lambda: {"render", "observe"})
+    monkeypatch.setenv("MEDIA_FEED_SPOOL", str(tmp_path / "spool"))
+    for k in ("MEDIA_FEED_BASE_URL", "MEDIA_FEED_TOKEN"):
+        monkeypatch.delenv(k, raising=False)
+    installed = []
+    monkeypatch.setattr(setup, "cmd_install_services",
+                        lambda a: installed.extend(a.services) or 0)
+
+    assert setup.cmd_feed(_feed_args(no_services=False)) == 0
+    assert installed == ["media-feed"]
+    assert "publishing needs `origin`" in capsys.readouterr().out
+
+
+def test_an_origin_host_gets_all_three(tmp_path, monkeypatch):
+    env = tmp_path / "agent-media.env"
+    monkeypatch.setattr(setup, "_agent_media_env_path", lambda: env)
+    monkeypatch.setattr(setup, "host_roles", lambda: {"origin", "render"})
+    monkeypatch.setenv("MEDIA_FEED_SPOOL", str(tmp_path / "spool"))
+    for k in ("MEDIA_FEED_BASE_URL", "MEDIA_FEED_TOKEN"):
+        monkeypatch.delenv(k, raising=False)
+    installed = []
+    monkeypatch.setattr(setup, "cmd_install_services",
+                        lambda a: installed.extend(a.services) or 0)
+
+    setup.cmd_feed(_feed_args(no_services=False))
+    assert installed == ["media-feed", "media-feed-publish", "media-feed-gc"]
+
+
+def test_a_dry_run_still_shows_a_usable_subscribe_url(tmp_path, monkeypatch,
+                                                      capsys):
+    env = tmp_path / "agent-media.env"
+    monkeypatch.setattr(setup, "_agent_media_env_path", lambda: env)
+    monkeypatch.setenv("MEDIA_FEED_SPOOL", str(tmp_path / "spool"))
+    for k in ("MEDIA_FEED_BASE_URL", "MEDIA_FEED_TOKEN"):
+        monkeypatch.delenv(k, raising=False)
+    setup.cmd_feed(_feed_args(dry_run=True))
+    out = capsys.readouterr().out
+    assert "/feed/talks.xml?k=" in out
