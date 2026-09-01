@@ -302,3 +302,144 @@ def test_shipped_bin_follows_the_package_when_it_moves(tmp_path, monkeypatch):
     monkeypatch.setattr(setup, "_data_dir",
                         lambda name: tmp_path / "agent_media_core" / name)
     assert setup.shipped_bin("audiobook-fetch").parent == inside
+
+
+# --- switching the feed on --------------------------------------------------
+# The feed publishes recordings of private conversations, so onboarding is a
+# separate opt-in command rather than part of `init` — and until someone runs
+# it, the three services are skipped with a reason instead of installed idle.
+
+
+def _feed_template(root, name="media-feed"):
+    d = root / name
+    d.mkdir(parents=True)
+    (d / "run").write_text("#!/bin/sh\nexec true\n")
+    (d / "roles").write_text("requires: origin\n"
+                             "requires-env: MEDIA_FEED_BASE_URL\n")
+    return d
+
+
+def test_a_service_needing_an_env_var_is_skipped_without_it(tmp_path,
+                                                            monkeypatch):
+    templates = tmp_path / "services"
+    _feed_template(templates)
+    env = tmp_path / "agent-media.env"
+    monkeypatch.setattr(setup, "service_templates_dir", lambda: templates)
+    monkeypatch.setattr(setup, "_agent_media_env_path", lambda: env)
+    monkeypatch.delenv("MEDIA_FEED_BASE_URL", raising=False)
+
+    wanted, why = setup.service_wanted("media-feed", {"origin"})
+    assert wanted is False
+    assert "MEDIA_FEED_BASE_URL" in why
+
+    env.write_text("MEDIA_FEED_BASE_URL=http://100.0.0.1:8782\n")
+    assert setup.service_wanted("media-feed", {"origin"})[0] is True
+
+
+def test_the_env_gate_reads_the_file_not_just_the_process(tmp_path, monkeypatch):
+    """The installer runs from a login shell that has never sourced
+    agent-media.env, while every service it installs is handed it by
+    EnvironmentFile= — reading os.environ alone would skip the service on the
+    very host where it is configured."""
+    env = tmp_path / "agent-media.env"
+    env.write_text("# a comment\nMEDIA_FEED_BASE_URL=http://x\nEMPTY=\n")
+    monkeypatch.setattr(setup, "_agent_media_env_path", lambda: env)
+    monkeypatch.delenv("MEDIA_FEED_BASE_URL", raising=False)
+    assert setup._env_file_has("MEDIA_FEED_BASE_URL") is True
+    assert setup._env_file_has("EMPTY") is False
+    assert setup._env_file_has("NOT_THERE") is False
+
+
+def _feed_args(**kw):
+    base = dict(bind="100.64.0.9", port=0, base_url="", no_services=True,
+                backend=None, dry_run=False)
+    base.update(kw)
+    return argparse.Namespace(**base)
+
+
+def test_switching_the_feed_on_writes_a_token_and_an_address(tmp_path,
+                                                             monkeypatch, capsys):
+    env = tmp_path / "agent-media.env"
+    monkeypatch.setattr(setup, "_agent_media_env_path", lambda: env)
+    for k in ("MEDIA_FEED_BASE_URL", "MEDIA_FEED_TOKEN"):
+        monkeypatch.delenv(k, raising=False)
+    # A spool of its own: this host has a real one with episodes in it, and a
+    # test that reads it passes or fails by which machine it runs on.
+    monkeypatch.setenv("MEDIA_FEED_SPOOL", str(tmp_path / "spool"))
+
+    assert setup.cmd_feed(_feed_args()) == 0
+    text = env.read_text()
+    assert "MEDIA_FEED_BIND=100.64.0.9" in text
+    assert "MEDIA_FEED_BASE_URL=http://100.64.0.9:8782" in text
+    token = [ln.split("=", 1)[1] for ln in text.splitlines()
+             if ln.startswith("MEDIA_FEED_TOKEN=")][0]
+    assert len(token) > 20
+    # The subscribe URL is the point of the command: printing it is what saves
+    # someone reading a reference page to reach a first episode.
+    out = capsys.readouterr().out
+    assert f"/feed/talks.xml?k={token}" in out
+    assert "antennapod-subscribe://" in out
+    # An empty spool gets told how to fill it; a full one gets told what is in
+    # it. Either way the command ends with something true.
+    assert "nothing is published yet" in out
+
+
+def test_running_it_twice_never_rewrites_the_token(tmp_path, monkeypatch, capsys):
+    """A new token silently unsubscribes every client that already has one."""
+    env = tmp_path / "agent-media.env"
+    monkeypatch.setattr(setup, "_agent_media_env_path", lambda: env)
+    monkeypatch.delenv("MEDIA_FEED_TOKEN", raising=False)
+    monkeypatch.delenv("MEDIA_FEED_BASE_URL", raising=False)
+    setup.cmd_feed(_feed_args())
+    first = env.read_text()
+    setup.cmd_feed(_feed_args(bind="100.64.0.99"))
+    assert env.read_text() == first
+
+
+def test_a_wildcard_bind_is_refused_not_warned(tmp_path, monkeypatch):
+    """The whole security model is "only the tailnet can reach it"; a wildcard
+    bind deletes it silently."""
+    env = tmp_path / "agent-media.env"
+    monkeypatch.setattr(setup, "_agent_media_env_path", lambda: env)
+    assert setup.cmd_feed(_feed_args(bind="0.0.0.0")) == 2
+    assert not env.exists()
+
+
+def test_no_address_to_bind_is_an_error_that_says_what_to_pass(tmp_path,
+                                                               monkeypatch, capsys):
+    env = tmp_path / "agent-media.env"
+    monkeypatch.setattr(setup, "_agent_media_env_path", lambda: env)
+    monkeypatch.setattr(setup, "_tailnet_address", lambda: "")
+    assert setup.cmd_feed(_feed_args(bind="")) == 1
+    assert "--bind" in capsys.readouterr().err
+    assert not env.exists()
+
+
+def test_dry_run_installs_nothing_and_writes_nothing(tmp_path, monkeypatch):
+    env = tmp_path / "agent-media.env"
+    monkeypatch.setattr(setup, "_agent_media_env_path", lambda: env)
+    monkeypatch.setattr(setup, "cmd_install_services",
+                        lambda a: (_ for _ in ()).throw(AssertionError("installed")))
+    monkeypatch.delenv("MEDIA_FEED_BASE_URL", raising=False)
+    assert setup.cmd_feed(_feed_args(dry_run=True, no_services=False)) == 0
+    assert not env.exists()
+
+
+def test_status_says_the_feed_is_off_when_it_is(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(setup, "_agent_media_env_path", lambda: tmp_path / "none.env")
+    monkeypatch.delenv("MEDIA_FEED_BASE_URL", raising=False)
+    setup._print_feed_status()
+    assert "feed: off" in capsys.readouterr().out
+
+
+def test_status_warns_about_an_unguarded_feed(tmp_path, monkeypatch, capsys):
+    env = tmp_path / "agent-media.env"
+    env.write_text("MEDIA_FEED_BASE_URL=http://100.64.0.9:8782\n"
+                   "MEDIA_FEED_BIND=100.64.0.9\n")
+    monkeypatch.setattr(setup, "_agent_media_env_path", lambda: env)
+    for k in ("MEDIA_FEED_BASE_URL", "MEDIA_FEED_TOKEN", "MEDIA_FEED_BIND"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("MEDIA_FEED_SPOOL", str(tmp_path / "spool"))
+    setup._print_feed_status()
+    out = capsys.readouterr().out
+    assert "NO TOKEN" in out and "refuse to start" in out

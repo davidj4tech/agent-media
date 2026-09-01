@@ -1,3 +1,9 @@
 # Prunes the spool the feed server serves, so it belongs on the host that
 # holds it — the same `origin` that renders the speech being published.
 requires: origin
+
+# Serving or filling a feed is a decision, not a property of the machine:
+# the enclosures are recordings of private conversations. Until someone
+# switches it on (`media-setup feed`), this is skipped with a reason
+# rather than installed and idle.
+requires-env: MEDIA_FEED_BASE_URL

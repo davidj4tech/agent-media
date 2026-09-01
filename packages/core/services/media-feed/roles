@@ -3,3 +3,9 @@
 # only speaker holds no episodes and would serve an empty feed on a port
 # nobody knocks on.
 requires: origin
+
+# Serving or filling a feed is a decision, not a property of the machine:
+# the enclosures are recordings of private conversations. Until someone
+# switches it on (`media-setup feed`), this is skipped with a reason
+# rather than installed and idle.
+requires-env: MEDIA_FEED_BASE_URL

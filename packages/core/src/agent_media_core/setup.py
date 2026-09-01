@@ -32,6 +32,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 import sysconfig
 from pathlib import Path
 from typing import Iterable
@@ -435,6 +436,54 @@ def service_config_gate(name: str) -> str:
     return ""
 
 
+def service_env_gate(name: str) -> str:
+    """The environment variable `services/<name>/roles` says this needs, or "".
+
+    The sibling of `requires-config:`, for settings that live in
+    `agent-media.env` rather than in a file of their own:
+
+        requires-env: MEDIA_FEED_BASE_URL
+
+    Same reasoning — "is this switched on here" is not a property of the
+    hardware and does not belong in the role vocabulary — and the same
+    outcome: skipped with a reason, rather than installed and idle.
+    """
+    try:
+        text = (service_templates_dir() / name / "roles").read_text()
+    except OSError:
+        return ""
+    for line in text.splitlines():
+        line = line.split("#", 1)[0].strip()
+        key, _, rest = line.partition(":")
+        if key.strip().lower() == "requires-env" and rest.strip():
+            return rest.strip()
+    return ""
+
+
+def _env_file_has(key: str) -> bool:
+    """Is `key` set in agent-media.env, with a value?
+
+    The file, not just `os.environ`: the installer is run from a login shell
+    that has never sourced it, while every *service* it installs receives it
+    via `EnvironmentFile=`. Reading only the process environment would skip a
+    service on the very host where it is configured.
+    """
+    if (os.environ.get(key) or "").strip():
+        return True
+    try:
+        text = _agent_media_env_path().read_text()
+    except OSError:
+        return False
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        if k.strip() == key:
+            return bool(v.strip().strip('"').strip("'"))
+    return False
+
+
 def service_roles(name: str) -> tuple[set[str], set[str]]:
     """(requires, conflicts) declared by services/<name>/roles.
 
@@ -475,6 +524,9 @@ def service_wanted(name: str, roles: set[str] | None) -> tuple[bool, str]:
     gate = service_config_gate(name)
     if gate and not (Path.home() / ".config" / "agent-media" / gate).exists():
         return False, f"needs ~/.config/agent-media/{gate}"
+    env_gate = service_env_gate(name)
+    if env_gate and not _env_file_has(env_gate):
+        return False, f"needs {env_gate} in agent-media.env"
     if roles is None:
         return True, "no host roles declared"
     requires, conflicts = service_roles(name)
@@ -1136,7 +1188,41 @@ def cmd_status(_: argparse.Namespace) -> int:
                 ["systemctl", "--user", "is-active", unit],
                 capture_output=True, text=True).stdout.strip() or "unknown"
             print(f"service {unit}: installed ({active})")
+    _print_feed_status()
     return 0
+
+
+def _print_feed_status() -> None:
+    """Where the feed is, whether it is guarded, and what is on it.
+
+    Reported here because the feed is the one surface whose *absence* is
+    invisible: no error, no log line, just a URL nobody was ever told.
+    """
+    base = _env_value("MEDIA_FEED_BASE_URL")
+    if not base:
+        print("feed: off (`media-setup feed` to switch it on)")
+        return
+    guard = "token set" if _env_value("MEDIA_FEED_TOKEN") else "NO TOKEN"
+    print(f"feed: {base} ({guard})")
+    if guard == "NO TOKEN" and not _env_value("MEDIA_FEED_BIND").startswith("127."):
+        # The server refuses to start this way; say so here rather than let it
+        # be discovered as a unit that will not come up.
+        print("feed: WARNING — off-loopback with no MEDIA_FEED_TOKEN; "
+              "media-feed will refuse to start")
+    try:
+        from .feed import episodes, feeds
+    except Exception:                                    # pragma: no cover
+        return
+    names = feeds()
+    if not names:
+        print("feed: nothing published yet "
+              "(`media doc play <doc> --feed`, `media feed session`)")
+        return
+    for name in names:
+        eps = episodes(name)
+        newest = max((e.published for e in eps), default=0)
+        when = time.strftime("%Y-%m-%d", time.localtime(newest)) if newest else "-"
+        print(f"feed {name}: {len(eps)} episode(s), newest {when}")
 
 
 # --- CLI -------------------------------------------------------------------
@@ -1166,6 +1252,21 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="overwrite an existing config")
     sp.add_argument("--dry-run", action="store_true")
     sp.set_defaults(func=cmd_init)
+
+    sp = sub.add_parser("feed",
+                        help="switch on the podcast feed (token, services, "
+                             "subscribe URL)")
+    sp.add_argument("--bind", default="",
+                    help="address to listen on (default: this host's tailnet "
+                         "IPv4). Never 0.0.0.0 — the enclosures are private.")
+    sp.add_argument("--port", type=int, default=0)
+    sp.add_argument("--base-url", default="",
+                    help="what a subscriber types; default http://<bind>:<port>")
+    sp.add_argument("--no-services", action="store_true",
+                    help="write the config, install nothing")
+    sp.add_argument("--backend", choices=("runit", "systemd"))
+    sp.add_argument("--dry-run", action="store_true")
+    sp.set_defaults(func=cmd_feed)
 
     sp = sub.add_parser("install-services",
                         help="Install services (runit on Termux, systemd "
@@ -1260,6 +1361,122 @@ def _guess_roles() -> "list[str]":
     if prefix.startswith("/data/data/com.termux"):
         roles.insert(0, "observe")
     return roles
+
+
+FEED_PORT = 8782
+
+
+def _tailnet_address() -> str:
+    """This host's tailnet IPv4, or "".
+
+    The feed is tailnet-only by design, and the address is the one thing
+    onboarding cannot guess from anything else on the machine.
+    """
+    import subprocess
+
+    try:
+        out = subprocess.run(["tailscale", "ip", "-4"], capture_output=True,
+                             text=True, timeout=8).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    first = out.splitlines()[0].strip() if out else ""
+    return first if first.startswith("100.") else ""
+
+
+def cmd_feed(args: argparse.Namespace) -> int:
+    """Switch the podcast feed on: token, address, services, subscribe URL.
+
+    Opt-in, and a separate command rather than part of `init`, because this is
+    the one part of agent-media that publishes recordings of private
+    conversations to anything that can reach a URL. That should be a decision
+    somebody makes, never a thing that arrives with an install.
+
+    Everything here is idempotent and never overwrites: run it twice and the
+    second run tells you the subscribe URL again.
+    """
+    import secrets
+
+    env_path = _agent_media_env_path()
+    bind = (args.bind or _tailnet_address()).strip()
+    if not bind:
+        print("media-setup: no tailnet address found — pass --bind with the "
+              "address to listen on.\n"
+              "  A feed serves recordings of private conversations: bind the "
+              "tailnet, never 0.0.0.0.", file=sys.stderr)
+        return 1
+    if bind in ("0.0.0.0", "::"):
+        # Refused rather than warned. The whole security model is "only the
+        # tailnet can reach it"; a wildcard bind silently deletes it.
+        print("media-setup: refusing --bind 0.0.0.0 — the enclosures are "
+              "recordings of private conversations.", file=sys.stderr)
+        return 2
+
+    port = args.port or FEED_PORT
+    base = (args.base_url or f"http://{bind}:{port}").rstrip("/")
+    defaults = [("MEDIA_FEED_BIND", bind),
+                ("MEDIA_FEED_PORT", str(port)),
+                ("MEDIA_FEED_BASE_URL", base),
+                ("MEDIA_FEED_TOKEN", secrets.token_urlsafe(24))]
+    added = _merge_env_defaults(env_path, defaults, dry_run=args.dry_run)
+    if added:
+        print(f"media-setup: set {', '.join(added)} in {env_path}")
+    else:
+        print(f"media-setup: {env_path} already configures the feed — "
+              f"leaving it alone")
+
+    if not args.no_services and not args.dry_run:
+        rc = cmd_install_services(argparse.Namespace(
+            services=["media-feed", "media-feed-publish", "media-feed-gc"],
+            backend=getattr(args, "backend", None), now=True,
+            dry_run=False, root=None))
+        if rc != 0:
+            return rc
+
+    token = _env_value("MEDIA_FEED_TOKEN")
+    base = _env_value("MEDIA_FEED_BASE_URL") or base
+    print("\nsubscribe:")
+    for name in ("talks", "docs"):
+        print(f"  {base}/feed/{name}.xml" + (f"?k={token}" if token else ""))
+    print(f"  {base}/" + (f"?k={token}" if token else "")
+          + "   (all feeds, as a list)")
+    published = []
+    try:
+        from .feed import episodes, feeds
+        published = [(n, len(episodes(n))) for n in feeds()]
+    except Exception:  # noqa: BLE001 — a nudge, never the command's failure
+        pass
+    if published:
+        print("\non the feed already: "
+              + ", ".join(f"{n} ({c})" for n, c in published))
+    else:
+        print("\nnothing is published yet. Put something on a feed with:")
+        print("  media doc play <doc> --feed        # a document")
+        print("  media feed session                 # this conversation")
+        print("  (or wait — agent-media-feed-publish does finished ones hourly)")
+    if token:
+        print("\nOn an Android phone, AntennaPod takes the link directly:")
+        print(f"  am start -a android.intent.action.VIEW \\\n"
+              f"    -d 'antennapod-subscribe://"
+              f"{base.split('://', 1)[-1]}/feed/talks.xml?k={token}'")
+    return 0
+
+
+def _env_value(key: str) -> str:
+    """`key` from agent-media.env (or the environment), or ""."""
+    if (os.environ.get(key) or "").strip():
+        return os.environ[key].strip()
+    try:
+        text = _agent_media_env_path().read_text()
+    except OSError:
+        return ""
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        if k.strip() == key:
+            return v.strip().strip('"').strip("'")
+    return ""
 
 
 def cmd_init(args: argparse.Namespace) -> int:

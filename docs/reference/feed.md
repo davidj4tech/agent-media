@@ -58,6 +58,28 @@ media feed remove <feed> <guid>
 media feed gc [<feed>]          # apply retention
 ```
 
+## Switching it on
+
+```sh
+media-setup feed          # token, address, services, subscribe URL
+```
+
+Opt-in, and a command of its own rather than part of `media-setup init`,
+because this is the part of agent-media that publishes recordings of private
+conversations to anything that can reach a URL.
+
+It generates a token if there isn't one, takes the bind address from Tailscale
+(`--bind` to override; `0.0.0.0` is refused, not warned about), installs the
+three services, and prints the subscribe URLs — including an AntennaPod deep
+link, so nobody types a 32-character token on a phone keyboard. Idempotent: run
+it again and it tells you the URL again without touching the token, since a new
+token silently unsubscribes every client that has the old one.
+
+Until it is run, the three units are **skipped with a reason** rather than
+installed idle — their templates declare `requires-env: MEDIA_FEED_BASE_URL`.
+`media-setup status` reports the feed too: address, whether it is guarded, and
+how many episodes each feed holds.
+
 ## Serving
 
 `media-feed` (port 8782) serves `/feed/<name>.xml` and `/ep/<name>/<file>`,
@@ -105,8 +127,8 @@ so it would be a guess presented as a fact.
 
 ## Services
 
-Installed by role — `origin` for the two that need speech history, `render`
-never — with `media-setup install-services … --now`:
+Installed by `media-setup feed`, or by role with
+`media-setup install-services … --now` once the feed is configured:
 
 | unit | what | when |
 |---|---|---|
