@@ -333,3 +333,71 @@ def test_conversations_are_grouped_newest_last_turn_first(clip):
 def test_an_alert_does_not_make_a_conversation(clip):
     store = _Store([_row([clip("a.mp3")], session="alerts-only", kind="notif")])
     assert session_feed.conversations(store=store) == []
+
+
+# --- naming an episode so a client's list is scannable ----------------------
+# A day's conversations are not a flat list: they happen in tmux workspaces,
+# several at once. Twenty episodes titled only by their opening question means
+# reading all twenty to find the one from the project you were in.
+
+
+def test_the_title_names_the_workspace_then_the_question(monkeypatch, tmp_path):
+    p = tmp_path / f"{SESSION}.jsonl"
+    p.write_text(json.dumps(
+        {"type": "user", "message": {"content": "why is the ringer loud"}}) + "\n")
+    monkeypatch.setattr("agent_media_core.conversation.transcript", lambda s: p)
+    ts = [Turn(at=1, text="x", workspace="p-agent-media")]
+    assert session_feed.title_for(SESSION, ts) == \
+        "p-agent-media · why is the ringer loud"
+
+
+def test_no_workspace_leaves_the_question_alone(monkeypatch, tmp_path):
+    p = tmp_path / f"{SESSION}.jsonl"
+    p.write_text(json.dumps(
+        {"type": "user", "message": {"content": "why is the ringer loud"}}) + "\n")
+    monkeypatch.setattr("agent_media_core.conversation.transcript", lambda s: p)
+    assert session_feed.title_for(SESSION, []) == "why is the ringer loud"
+
+
+def test_the_commonest_workspace_wins_not_the_first():
+    """A conversation resumed in another pane carries the new session for its
+    later turns; the workspace it mostly lived in is the truer label."""
+    ts = [Turn(at=1, text="a", workspace="scratch"),
+          Turn(at=2, text="b", workspace="p-agent-media"),
+          Turn(at=3, text="c", workspace="p-agent-media")]
+    assert session_feed.workspace_for(SESSION, ts) == "p-agent-media"
+
+
+def test_a_history_with_no_tmux_name_falls_back_to_the_project(monkeypatch,
+                                                               tmp_path):
+    """Everything the phone rendered before 2026-07 recorded no tmux session.
+    The transcript's directory is the cwd — a different thing, the same idea."""
+    d = tmp_path / "-home-ryer-projects-agent-media"
+    d.mkdir()
+    p = d / f"{SESSION}.jsonl"
+    p.write_text("")
+    monkeypatch.setattr("agent_media_core.conversation.transcript", lambda s: p)
+    assert session_feed.workspace_for(SESSION, []) == "agent-media"
+
+
+def test_a_long_question_is_cut_at_a_word(monkeypatch, tmp_path):
+    p = tmp_path / f"{SESSION}.jsonl"
+    p.write_text(json.dumps({"type": "user", "message": {"content":
+        "I wonder how calibre would go as an interface for the speech channel "
+        "and several other things besides"}}) + "\n")
+    monkeypatch.setattr("agent_media_core.conversation.transcript", lambda s: p)
+    title = session_feed.title_for(SESSION, [Turn(at=1, text="x",
+                                                  workspace="p-agent-media")])
+    assert title.startswith("p-agent-media · I wonder how calibre")
+    assert title.endswith("…")
+    assert " " not in title[-3:-1]          # cut at a word, not mid-word
+    assert len(title) < 90
+
+
+def test_conversations_carry_their_workspace(clip):
+    rows = [_row([clip("a.mp3")], at=1.0, source_tmux_session="scratch"),
+            _row([clip("b.mp3")], at=2.0, source_tmux_session="p-agent-media"),
+            _row([clip("c.mp3")], at=3.0, source_tmux_session="p-agent-media")]
+    conv = session_feed.conversations(store=_Store(rows))[0]
+    assert conv["workspace"] == "p-agent-media"
+    assert conv["turns"] == 3

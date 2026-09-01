@@ -5345,10 +5345,14 @@ def cmd_feed(a) -> int:
             print("no conversations in speech history", file=sys.stderr)
             return 1
         order = sorted(seen.items(), key=lambda kv: -kv[1]["last"])[:a.limit]
+        from . import session_feed as _sf
+
+        ws = {c["session"]: c["workspace"] for c in _sf.conversations()}
         for sess, info in order:
             when = time.strftime("%Y-%m-%d %H:%M", time.localtime(info["last"]))
             span = feedmod.hms(info["last"] - info["first"])
-            print(f"{sess}  {when}  {info['n']:>3} turns  over {span}")
+            where = f"  [{ws[sess]}]" if ws.get(sess) else ""
+            print(f"{sess}  {when}  {info['n']:>3} turns  over {span}{where}")
         return 0
 
     if fc == "publish-quiet":

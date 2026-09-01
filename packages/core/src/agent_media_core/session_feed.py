@@ -73,6 +73,8 @@ class Turn:
     text: str
     clips: list = field(default_factory=list)        # list[Path]
     durations: list = field(default_factory=list)    # list[float]
+    #: The tmux session this turn was spoken from, when the row recorded one.
+    workspace: str = ""
 
     @property
     def title(self) -> str:
@@ -126,22 +128,86 @@ def turns(session: str, *, store=None) -> list[Turn]:
             continue
         out.append(Turn(at=float(row.get("started_at") or 0),
                         text=(row.get("text") or ""),
-                        clips=clips, durations=kept))
+                        clips=clips, durations=kept,
+                        workspace=(ex.get("source_tmux_session") or "").strip()))
     out.sort(key=lambda t: t.at)
     return out
 
 
-def title_for(session: str, ts: list[Turn]) -> str:
-    """What to call the episode.
+def workspace_for(session: str, ts: list[Turn]) -> str:
+    """Which tmux session this conversation belongs to, or "".
 
-    The first thing the person asked, which is what they will remember about
-    the conversation — the reply's opening sentence is a worse name for it, and
-    a session id is no name at all. Falls back through both.
+    A day's conversations are not a flat list: they happen in workspaces —
+    `p-agent-media`, `org-alert`, `scratch` — and several run at once. A client
+    showing twenty episodes titled only by their opening question makes you
+    read all twenty to find the one from the project you were in.
+
+    The commonest name across the turns, not the first: a conversation resumed
+    in another pane carries the new session for its later turns, and the
+    workspace it mostly lived in is the truer label.
+
+    Falls back to the transcript's project directory, which is the *cwd* rather
+    than the tmux session but is the same idea and survives rows that recorded
+    no tmux name at all (everything the phone rendered before 2026-07).
+    """
+    from collections import Counter
+
+    names = Counter(t.workspace for t in ts if t.workspace)
+    if names:
+        return names.most_common(1)[0][0]
+
+    from .conversation import transcript
+
+    path = transcript(session)
+    if path is None:
+        return ""
+    # `~/.claude/projects/-home-ryer-projects-agent-media/<id>.jsonl`: the cwd
+    # with every `/` turned into `-`, which cannot be decoded exactly (project
+    # names contain hyphens too). The tail after `projects-` is right far more
+    # often than it is wrong, and a wrong guess here costs a label, not a file.
+    #
+    # The leading `-` is what makes this recognisable as an encoded path rather
+    # than some other directory a transcript happens to sit in — without that
+    # check any parent directory becomes a workspace name.
+    dirname = path.parent.name
+    if not dirname.startswith("-"):
+        return ""
+    _, sep, tail = dirname.partition("projects-")
+    return (tail if sep and tail else dirname.lstrip("-")).strip()
+
+
+def title_for(session: str, ts: list[Turn]) -> str:
+    """What to call the episode: the workspace, then what was asked in it.
+
+    `p-agent-media · I wonder how calibre would go` — the tmux session someone
+    would recognise, then the Claude conversation inside it. Both, because
+    either alone is ambiguous in a client's episode list: the workspace repeats
+    across a dozen episodes, and the question does not say where it happened.
+
+    The question itself is the first thing the person asked, which is what they
+    will remember about the conversation — the reply's opening sentence is a
+    worse name, and a session id is no name at all.
 
     Read straight from the transcript rather than from any index: the file is
     named for the session, so there is one place to look and a hit in it is
     proof (`conversation.transcript`).
     """
+    from .conversation import transcript
+
+    return _joined(workspace_for(session, ts), _asked(session, ts))
+
+
+#: How much of the question survives into a title. Shorter than the old cap:
+#: the workspace now takes room, and a client's episode list is one line.
+_ASK_CHARS = 64
+
+
+def _joined(workspace: str, asked: str) -> str:
+    return f"{workspace} · {asked}" if workspace else asked
+
+
+def _asked(session: str, ts: list[Turn]) -> str:
+    """The first thing the person asked, trimmed to a label."""
     from .conversation import transcript
 
     path = transcript(session)
@@ -168,7 +234,12 @@ def title_for(session: str, ts: list[Turn]) -> str:
                     # anybody asked.
                     if not text or text.startswith(("<", "Caveat:", "[media ")):
                         continue
-                    return text[:87] + "…" if len(text) > 90 else text
+                    if len(text) > _ASK_CHARS + 3:
+                        # Break at a word: a title that stops mid-word reads as
+                        # a truncation bug rather than a summary.
+                        cut = text[:_ASK_CHARS].rsplit(" ", 1)[0] or text[:_ASK_CHARS]
+                        return cut.rstrip(" ,.;:") + "…"
+                    return text
         except OSError as e:
             log.debug("transcript unreadable for %s: %s", session, e)
     if ts:
@@ -249,6 +320,8 @@ def conversations(store=None) -> list[dict]:
     auto-publisher both want "what is there", and neither wants it per-session
     (which would be one full scan per conversation).
     """
+    from collections import Counter
+
     from .state.store import StateStore
 
     st = store or StateStore()
@@ -262,11 +335,21 @@ def conversations(store=None) -> list[dict]:
             continue
         at = float(row.get("started_at") or 0)
         cur = seen.setdefault(sess, {"session": sess, "turns": 0,
-                                     "first": at, "last": at})
+                                     "first": at, "last": at,
+                                     "workspaces": Counter()})
         cur["turns"] += 1
         cur["first"] = min(cur["first"], at)
         cur["last"] = max(cur["last"], at)
-    return sorted(seen.values(), key=lambda c: -c["last"])
+        ws = (ex.get("source_tmux_session") or "").strip()
+        if ws:
+            cur["workspaces"][ws] += 1
+    out = []
+    for c in seen.values():
+        c["workspace"] = (c["workspaces"].most_common(1)[0][0]
+                          if c["workspaces"] else "")
+        c.pop("workspaces")
+        out.append(c)
+    return sorted(out, key=lambda c: -c["last"])
 
 
 def publish_quiet(*, name: str = "talks", quiet_s: float = 3600.0,
