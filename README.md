@@ -90,6 +90,10 @@ The spine. Subdirs mirror the data flow:
 - **`render/`** — the `edge` TTS engine (zero-config default) plus a registry that dispatches any other engine to an installed plugin, with automatic fallback to edge
 - **`sinks/`** — speech (long-running mpv broker over IPC), music (Mopidy/MPD), and book (audiobook/podcast) channels
 - **`state/`** — SQLite: now-playing, history, errors
+- **`feed.py` / `entrypoints/feed_server.py`** — the podcast feed: rendered
+  speech kept somewhere the cache is not allowed to delete it, and served to
+  any podcast client. `media feed`, `media doc play --feed`. See
+  **[`docs/reference/feed.md`](./docs/reference/feed.md)**.
 
 Also exposes an MCP server (`media-mcp`) for tool-based control from Claude.
 
@@ -126,6 +130,13 @@ shipping a console-script daemon/hook:
 The snapcast/pipewire plumbing: `am-snap`, a terse CLI over Snapcast's JSON-RPC
 for whole-house routing (join a room to a channel, set volume, mute) across
 multiple snapservers. (`aar-snap` is kept as an alias.)
+
+### [`abs-bridge/`](./packages/abs-bridge/) — `agent-media-abs-bridge`
+
+Audiobookshelf beside the book channel, both ways: `media-abs-book-bridge`
+pushes the rooms' playback position into ABS (and optionally starts where the
+phone left off), and `media-abs-cast-watcher` casts a session you press play on
+in the ABS app onto the book channel. Optional; nothing depends on it.
 
 ### [`visual/`](./packages/visual/) — `agent-media-visual`
 
