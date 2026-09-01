@@ -6596,13 +6596,26 @@ for d in "$@"; do
     continue
   fi
   b=$(git -C "$d" rev-parse --short HEAD 2>/dev/null)
-  if out=$(git -C "$d" pull --ff-only 2>&1); then
+  # Bounded, because the interesting failure is not a refusal but a hang: a
+  # network that accepts the TCP connection and then drops the TLS handshake
+  # leaves git waiting, the ssh call burns its whole budget, and the host is
+  # reported "unreachable" when it is sitting right there — only its git
+  # remote is out of reach. `timeout` exits 124 for that, which is the one
+  # case worth naming.
+  if command -v timeout >/dev/null 2>&1; then
+    out=$(timeout 90 git -C "$d" pull --ff-only 2>&1); rc=$?
+  else
+    out=$(git -C "$d" pull --ff-only 2>&1); rc=$?
+  fi
+  if [ "$rc" = 0 ]; then
     a=$(git -C "$d" rev-parse --short HEAD 2>/dev/null)
     if [ "$b" = "$a" ]; then
       echo "fix=$n already at $a"
     else
       echo "fix=$n pulled $b -> $a"
     fi
+  elif [ "$rc" = 124 ]; then
+    echo "fix=$n FAILED: no route to its git remote (pull timed out at $b)"
   else
     echo "fix=$n FAILED: $(printf '%s' "$out" | tr '\n' ' ')"
   fi
@@ -6846,12 +6859,14 @@ def cmd_doctor(a) -> int:
             print("\nnothing to fix: no host is merely behind.")
         else:
             print(f"\nfixing {', '.join(targets)} ...")
+            failed_fix = []
             for host in targets:
                 ok, lines = _fix_host(host)
                 for ln in lines:
                     print(f"  {host}: {ln}")
                 if not ok:
                     print(f"  {host}: fix incomplete — needs a look")
+                    failed_fix.append(host)
             # Re-judge only what we touched; the other hosts' verdicts from the
             # scan above are still current, and a second full sweep would spend
             # four more ssh round trips to re-learn them.
@@ -6861,6 +6876,15 @@ def cmd_doctor(a) -> int:
             skewed = [h for h in skewed if h not in targets] + re_skewed
             unhealthy = [h for h in unhealthy if h not in targets] + re_unhealthy
             unreachable = [h for h in unreachable if h not in targets] + re_unreachable
+            # A host that is behind AND could not pull is not "merely behind"
+            # any more: the automatic path has been tried and did not work, so
+            # it wants a person — which is exactly what `!` means to the status
+            # bar, and what keeps the next --fix from silently retrying a pull
+            # that cannot succeed (a phone on a network that blocks its git
+            # remote will fail this way every hour, forever).
+            for host in failed_fix:
+                if host not in unhealthy:
+                    unhealthy.append(host)
 
     return _write_ledger(hosts, skewed, unhealthy, unreachable)
 
