@@ -1374,13 +1374,32 @@ def _tailnet_address() -> str:
     """
     import subprocess
 
+    import socket
+
     try:
         out = subprocess.run(["tailscale", "ip", "-4"], capture_output=True,
                              text=True, timeout=8).stdout.strip()
+        first = out.splitlines()[0].strip() if out else ""
+        if first.startswith("100."):
+            return first
     except (OSError, subprocess.SubprocessError):
+        pass
+
+    # No CLI: on Android, Tailscale is an app and there is no `tailscale`
+    # binary in Termux at all — which is the host where onboarding is hardest
+    # and guessing least welcome. Ask the routing table instead: the source
+    # address the kernel would use for a tailnet destination IS this host's
+    # tailnet address. No packet is sent; connect() on UDP only sets a route.
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("100.100.100.100", 53))     # Tailscale's own resolver
+            ip = s.getsockname()[0]
+        finally:
+            s.close()
+    except OSError:
         return ""
-    first = out.splitlines()[0].strip() if out else ""
-    return first if first.startswith("100.") else ""
+    return ip if ip.startswith("100.") else ""
 
 
 def cmd_feed(args: argparse.Namespace) -> int:

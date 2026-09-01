@@ -443,3 +443,47 @@ def test_status_warns_about_an_unguarded_feed(tmp_path, monkeypatch, capsys):
     setup._print_feed_status()
     out = capsys.readouterr().out
     assert "NO TOKEN" in out and "refuse to start" in out
+
+
+def test_the_tailnet_address_is_found_without_the_cli(monkeypatch):
+    """Termux has no `tailscale` binary — Tailscale is an Android app — and
+    the phone is the host where onboarding is hardest and guessing least
+    welcome. The routing table knows: the source address for a tailnet
+    destination is this host's tailnet address."""
+    import socket
+
+    monkeypatch.setattr(setup.shutil, "which", lambda n: None)
+    monkeypatch.setattr(
+        setup.subprocess, "run",
+        lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError("tailscale")))
+
+    class _Sock:
+        def connect(self, addr):
+            assert addr[0].startswith("100."), addr
+        def getsockname(self):
+            return ("100.94.14.59", 51234)
+        def close(self):
+            pass
+
+    monkeypatch.setattr(socket, "socket", lambda *a, **k: _Sock())
+    assert setup._tailnet_address() == "100.94.14.59"
+
+
+def test_a_host_off_the_tailnet_gets_no_address_rather_than_a_wrong_one(
+        monkeypatch):
+    import socket
+
+    monkeypatch.setattr(
+        setup.subprocess, "run",
+        lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError("tailscale")))
+
+    class _Sock:
+        def connect(self, addr):
+            pass
+        def getsockname(self):
+            return ("192.168.1.20", 51234)      # the LAN, not the tailnet
+        def close(self):
+            pass
+
+    monkeypatch.setattr(socket, "socket", lambda *a, **k: _Sock())
+    assert setup._tailnet_address() == ""
