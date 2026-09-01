@@ -9,3 +9,14 @@ packages/astrotunes/cache/
 twilio.env
 packages/core/uv.lock
 .venv/
+
+# runit's live state, written into the service directories it is handed.
+# p8a symlinks packages/*/services/<name> straight into its supervision tree,
+# so runit creates `supervise/` (containing named pipes) and `down` parking
+# markers inside the checkout. The practical effect was worse than untidy:
+# `git status --porcelain` was never empty there, so `media doctor --fix`
+# skipped the phone as "uncommitted changes" every single time — the one host
+# that most needs deploying, permanently excluded by its own supervisor.
+**/services/*/supervise/
+**/services/*/log/supervise/
+**/services/*/down
