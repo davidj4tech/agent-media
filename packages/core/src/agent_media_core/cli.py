@@ -5358,17 +5358,21 @@ def cmd_feed(a) -> int:
     if fc == "publish-quiet":
         from . import session_feed
 
-        eps = session_feed.publish_quiet(name=a.name,
+        eps = session_feed.publish_quiet(name=a.name or None,
                                          quiet_s=max(60.0, a.quiet_min * 60.0),
                                          limit=max(0, a.limit))
         if not eps:
             return 0
+        touched = set()
         for ep in eps:
-            print(f"{ep.title}  ({feedmod.hms(ep.duration_s)})")
+            landed = session_feed._feed_of(ep, a.name or None)
+            touched.add(landed)
+            print(f"[{landed}] {ep.title}  ({feedmod.hms(ep.duration_s)})")
         if _feed_base_url():
-            feedmod.write_feed(
-                a.name, base_url=_feed_base_url(),
-                token=(os.environ.get("MEDIA_FEED_TOKEN", "") or "").strip())
+            for landed in sorted(touched):
+                feedmod.write_feed(
+                    landed, base_url=_feed_base_url(),
+                    token=(os.environ.get("MEDIA_FEED_TOKEN", "") or "").strip())
         return 0
 
     if fc == "session":
@@ -5379,7 +5383,7 @@ def cmd_feed(a) -> int:
             print("media feed: no conversation here — name one "
                   "(`media feed sessions` lists them)", file=sys.stderr)
             return 1
-        ep = session_feed.publish(sess, name=a.name)
+        ep = session_feed.publish(sess, name=a.name or None)
         if ep is None:
             # The usual cause is not "no such session" but a swept cache: the
             # rows are there and their audio is not. Say so, because the two
@@ -5387,12 +5391,13 @@ def cmd_feed(a) -> int:
             print(f"media feed: nothing to publish for {sess} — no turns with "
                   "audio still on disk", file=sys.stderr)
             return 1
-        where = a.name
+        landed = session_feed._feed_of(ep, a.name or None)
+        where = landed
         if _feed_base_url():
             feedmod.write_feed(
-                a.name, base_url=_feed_base_url(),
+                landed, base_url=_feed_base_url(),
                 token=(os.environ.get("MEDIA_FEED_TOKEN", "") or "").strip())
-            where = f"{_feed_base_url().rstrip('/')}/feed/{a.name}.xml"
+            where = f"{_feed_base_url().rstrip('/')}/feed/{landed}.xml"
         print(f"{ep.title}  ({feedmod.hms(ep.duration_s)})  → {where}")
         return 0
 
@@ -7646,12 +7651,15 @@ def _add_book_parser(sub) -> None:
                       help="publish a conversation as one chaptered episode")
     fs.add_argument("session", nargs="?", default="",
                     help="Claude session id (default: this pane's)")
-    fs.add_argument("--feed", dest="name", default="talks",
-                    help="feed to publish to (default talks)")
+    fs.add_argument("--feed", dest="name", default="",
+                    help="feed to publish to (default: the conversation's "
+                         "tmux workspace, or talks)")
 
     fq = f.add_parser("publish-quiet",
                       help="publish every conversation that has gone quiet")
-    fq.add_argument("--feed", dest="name", default="talks")
+    fq.add_argument("--feed", dest="name", default="",
+                    help="publish everything to one feed instead of one per "
+                         "workspace")
     fq.add_argument("--quiet-min", type=float, default=60.0,
                     help="minutes of silence before a conversation counts as "
                          "finished (default 60)")

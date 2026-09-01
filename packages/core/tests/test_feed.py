@@ -147,7 +147,10 @@ def test_policy_comes_from_config_and_a_bad_value_keeps_the_default(tmp_path,
     monkeypatch.setenv("MEDIA_CONFIG", str(p))
     assert feed.policy("talks").keep_days == 7
     assert feed.policy("digest").keep_days == 7        # the default, not the string
-    assert feed.policy("unheard-of") == feed.Policy()
+    # An unconfigured feed is a conversation feed — one gets created the first
+    # time something is published from a new tmux workspace — so it inherits
+    # `talks` rather than keeping everything forever.
+    assert feed.policy("unheard-of") == feed.DEFAULT_POLICIES["talks"]
 
 
 # --- the XML ---------------------------------------------------------------

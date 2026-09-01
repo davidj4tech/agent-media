@@ -1,0 +1,14 @@
+#!/bin/sh
+# abs-sync — every feed on this host, subscribed in Audiobookshelf.
+#
+# Conversations publish into a feed per tmux workspace, so the set of feeds
+# grows on its own: start work in a new project and a new feed appears with it.
+# Without this, each one is a subscription somebody adds by hand — the chore
+# that gets done twice and then stops, after which a feed nobody subscribed to
+# is indistinguishable from a feed nobody made.
+#
+# A reconciliation, not a migration: safe to run on every tick.
+exec 2>&1
+[ -f "$HOME/.config/agent-media.env" ] && . "$HOME/.config/agent-media.env"
+export MEDIA_FEED_TOKEN MEDIA_FEED_BASE_URL MEDIA_FEED_SPOOL
+exec media-abs-sync

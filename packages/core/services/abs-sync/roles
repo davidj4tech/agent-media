@@ -1,0 +1,6 @@
+# Where the feeds are (origin publishes them) and where Audiobookshelf is
+# configured. Both gates, because either alone would install a job with
+# nothing to do: no feeds, or nowhere to put them.
+requires: origin
+requires-config: abs-bridge.env
+requires-env: MEDIA_FEED_BASE_URL

@@ -182,3 +182,146 @@ def test_the_environment_beats_the_config_file(tmp_path, monkeypatch):
 
 def test_a_missing_config_file_is_not_an_error(tmp_path):
     _abs.load_env(tmp_path / "nope.env")
+
+
+# --- keeping Audiobookshelf in step with the feeds --------------------------
+# Conversations publish into a feed per tmux workspace, so the set of feeds
+# grows on its own. Subscribing by hand is the chore that gets done twice and
+# then stops.
+
+from agent_media_abs import sync as syncmod
+
+
+def test_a_rotated_token_is_not_a_new_podcast():
+    """ABS matches feeds by URL and ours carry a capability token; comparing
+    the whole URL would subscribe the same feed twice after a rotation."""
+    a = "http://red5:8782/feed/talks.xml?k=old"
+    b = "http://red5:8782/feed/talks.xml?k=new-and-longer"
+    assert syncmod.feed_key(a) == syncmod.feed_key(b)
+    assert syncmod.feed_key(a) != syncmod.feed_key("http://red5:8782/feed/docs.xml")
+
+
+def test_episodes_are_matched_by_guid_then_by_enclosure():
+    have = [{"guid": "session:abc"}, {"enclosure": {"url": "http://h/ep/x.mp3?k=t"}}]
+    feed_eps = [{"guid": "session:abc"},                       # already there
+                {"enclosure": {"url": "http://h/ep/x.mp3?k=DIFFERENT"}},
+                {"guid": "session:new"}]
+    missing = syncmod.missing_episodes(feed_eps, have)
+    assert [e["guid"] for e in missing] == ["session:new"]
+
+
+class _AbsFake:
+    def __init__(self, libraries=(), items=(), episodes=None):
+        self.libraries = list(libraries)
+        self.items = list(items)
+        self.episodes = episodes or {}
+        self.calls = []
+
+    def req(self, method, path, body=None):
+        self.calls.append((method, path.split("?")[0], body))
+        if path.startswith("/api/libraries/"):
+            return {"results": self.items}
+        if path == "/api/libraries" and method == "GET":
+            return {"libraries": self.libraries}
+        if path == "/api/libraries" and method == "POST":
+            lib = {"id": "newlib", "mediaType": "podcast",
+                   "folders": [{"id": "f1", "fullPath": body["folders"][0]["fullPath"]}]}
+            self.libraries.append(lib)
+            return {"library": lib}
+        if path == "/api/podcasts/feed":
+            return {"podcast": {"metadata": {"title": "agent-media: talks"},
+                                "episodes": [{"guid": "session:a"},
+                                             {"guid": "session:b"}]}}
+        if path == "/api/podcasts":
+            return {"id": "item1"}
+        if path.startswith("/api/items/"):
+            return {"media": {"episodes": self.episodes.get("item1", []),
+                              "autoDownloadEpisodes": True}}
+        return {}
+
+
+LIB = [{"id": "lib1", "mediaType": "podcast",
+        "folders": [{"id": "f1", "fullPath": "/audiobooks/podcasts"}]}]
+FEEDS = [("talks", "http://red5:8782/feed/talks.xml?k=t")]
+
+
+def test_an_unknown_feed_is_subscribed_and_backfilled():
+    """ABS never backfills on its own: autoDownloadEpisodes only catches what
+    appears after subscribing."""
+    api = _AbsFake(libraries=LIB)
+    assert syncmod.sync(api, FEEDS, folder_path="/audiobooks/podcasts") > 0
+    posted = [c for c in api.calls if c[0] == "POST"]
+    assert any(c[1] == "/api/podcasts" for c in posted)
+    dl = next(c for c in posted if c[1].endswith("/download-episodes"))
+    assert [e["guid"] for e in dl[2]] == ["session:a", "session:b"]
+
+
+def test_a_feed_already_subscribed_and_current_changes_nothing():
+    api = _AbsFake(
+        libraries=LIB,
+        items=[{"id": "item1",
+                "media": {"metadata": {"feedUrl": "http://red5:8782/feed/talks.xml?k=OLD"}}}],
+        episodes={"item1": [{"guid": "session:a"}, {"guid": "session:b"}]})
+    assert syncmod.sync(api, FEEDS, folder_path="/audiobooks/podcasts") == 0
+    assert not [c for c in api.calls if c[1] == "/api/podcasts"]
+
+
+def test_a_subscribed_feed_that_has_grown_is_topped_up():
+    api = _AbsFake(
+        libraries=LIB,
+        items=[{"id": "item1",
+                "media": {"metadata": {"feedUrl": "http://red5:8782/feed/talks.xml?k=t"}}}],
+        episodes={"item1": [{"guid": "session:a"}]})
+    assert syncmod.sync(api, FEEDS, folder_path="/audiobooks/podcasts") == 1
+    dl = next(c for c in api.calls if c[1].endswith("/download-episodes"))
+    assert [e["guid"] for e in dl[2]] == ["session:b"]
+
+
+def test_a_dry_run_writes_nothing():
+    api = _AbsFake(libraries=LIB)
+    syncmod.sync(api, FEEDS, folder_path="/audiobooks/podcasts", dry_run=True)
+    assert not [c for c in api.calls if c[0] in ("POST", "PATCH")
+                and c[1] not in ("/api/podcasts/feed",)]
+
+
+def test_a_missing_podcast_library_is_created_once():
+    api = _AbsFake(libraries=[{"id": "bk", "mediaType": "book", "folders": []}])
+    syncmod.sync(api, FEEDS, folder_path="/audiobooks/podcasts")
+    made = [c for c in api.calls if c[0] == "POST" and c[1] == "/api/libraries"]
+    assert len(made) == 1
+    assert made[0][2]["mediaType"] == "podcast"
+
+
+def test_a_feed_name_that_is_not_a_directory_name():
+    assert syncmod.safe_dirname("agent-media: talks") == "agent-media_ talks"
+    assert syncmod.safe_dirname("../etc") == ".._etc"
+
+
+def test_an_empty_feed_is_not_subscribed_to():
+    """A workspace that has published nothing yet is a subscription to
+    nothing — and ABS refuses to parse the feed anyway."""
+    class _Empty(_AbsFake):
+        def req(self, method, path, body=None):
+            if path == "/api/podcasts/feed":
+                self.calls.append((method, path, body))
+                return {"podcast": {"metadata": {}, "episodes": []}}
+            return super().req(method, path, body)
+
+    api = _Empty(libraries=LIB)
+    assert syncmod.sync(api, FEEDS, folder_path="/audiobooks/podcasts") == 0
+    assert not [c for c in api.calls if c[1] == "/api/podcasts"]
+
+
+def test_one_unreadable_feed_does_not_end_the_run():
+    """This walks every workspace; the newest is the likeliest to be empty or
+    half-written, and it must not take the others down with it."""
+    class _Flaky(_AbsFake):
+        def req(self, method, path, body=None):
+            if path == "/api/podcasts/feed" and "bad" in (body or {}).get("rssFeed", ""):
+                raise OSError("404: Podcast RSS feed request failed")
+            return super().req(method, path, body)
+
+    api = _Flaky(libraries=LIB)
+    feeds = [("bad", "http://red5:8782/feed/bad.xml?k=t")] + FEEDS
+    assert syncmod.sync(api, feeds, folder_path="/audiobooks/podcasts") > 0
+    assert any(c[1] == "/api/podcasts" for c in api.calls)

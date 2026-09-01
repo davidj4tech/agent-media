@@ -123,6 +123,20 @@ DEFAULT_POLICIES = {
 #: guess presented as a fact.
 
 
+def default_policy(name: str) -> Policy:
+    """The built-in policy for a feed nobody has configured.
+
+    `docs` and `digest` are named above. Everything else is a conversation
+    feed — one per tmux workspace, created the first time something is
+    published from it — and inherits `talks`, because the alternative is a
+    directory per project that grows forever and is never pruned by anything.
+    """
+    n = (name or "").strip().lower()
+    if n in DEFAULT_POLICIES:
+        return DEFAULT_POLICIES[n]
+    return DEFAULT_POLICIES["talks"]
+
+
 def policy(name: str, path: Optional[Path] = None) -> Policy:
     """Retention for `name`, from `[feeds.<name>]` in config.toml.
 
@@ -133,7 +147,7 @@ def policy(name: str, path: Optional[Path] = None) -> Policy:
     is the recording you wanted.
     """
     table = (config.load(path).get("feeds") or {}).get(name.strip().lower())
-    base = DEFAULT_POLICIES.get(name.strip().lower(), Policy())
+    base = default_policy(name)
     if not isinstance(table, dict):
         return base
 

@@ -355,13 +355,31 @@ def conversations(store=None) -> list[dict]:
     return sorted(out, key=lambda c: -c["last"])
 
 
+#: The feed a conversation with no workspace goes to. Everything else gets a
+#: feed named for its tmux session, so a podcast client's subscription list is
+#: the project list — `p-agent-media`, `scratch` — rather than one long stream.
+DEFAULT_FEED = "talks"
+
+
+def feed_for(workspace: str) -> str:
+    """The feed name for a workspace.
+
+    Sanitised to what a feed directory and a URL path segment may contain, so a
+    tmux session someone named `~work/thing` cannot become a path.
+    """
+    safe = "".join(c if c in feedmod._SAFE_NAME else "-"
+                   for c in (workspace or "").strip().lower())
+    safe = "-".join(part for part in safe.split("-") if part)
+    return safe or DEFAULT_FEED
+
+
 #: Below this, a conversation is not an episode. Two seconds of "reply with
 #: exactly: local backup works" in a client's list is noise around the things
 #: worth finding — and `media feed session <id>` still publishes one by hand.
 MIN_EPISODE_S = 30.0
 
 
-def publish_quiet(*, name: str = "talks", quiet_s: float = 3600.0,
+def publish_quiet(*, name: Optional[str] = None, quiet_s: float = 3600.0,
                   now: Optional[float] = None, store=None,
                   limit: int = 0, min_s: float = MIN_EPISODE_S
                   ) -> list[feedmod.Episode]:
@@ -381,7 +399,10 @@ def publish_quiet(*, name: str = "talks", quiet_s: float = 3600.0,
     """
     now = time.time() if now is None else now
     out: list[feedmod.Episode] = []
-    published = {e.guid: e for e in feedmod.episodes(name)}
+    # Across every feed, not just one: an episode lives in its workspace's
+    # feed, so asking "have I published this" of a single feed would republish
+    # everything else on every run.
+    published = {e.guid: e for f in feedmod.feeds() for e in feedmod.episodes(f)}
     for conv in conversations(store=store):
         if now - conv["last"] < quiet_s:
             continue                       # still going, or paused mid-thought
@@ -392,7 +413,7 @@ def publish_quiet(*, name: str = "talks", quiet_s: float = 3600.0,
         if ep is None:
             continue                       # no turns whose audio survives
         if min_s and ep.duration_s and ep.duration_s < min_s:
-            feedmod.remove(name, ep.guid)
+            feedmod.remove(_feed_of(ep, name), ep.guid)
             log.info("skipped %s (%.0fs)", ep.title, ep.duration_s)
             continue
         log.info("published %s (%s)", ep.title, conv["session"])
@@ -402,7 +423,18 @@ def publish_quiet(*, name: str = "talks", quiet_s: float = 3600.0,
     return out
 
 
-def publish(session: str, *, name: str = "talks",
+def _feed_of(ep: feedmod.Episode, requested: Optional[str]) -> str:
+    """Which feed an episode actually landed in — not necessarily the one
+    asked for, now that the workspace chooses."""
+    if requested:
+        return requested
+    for f in feedmod.feeds():
+        if any(e.guid == ep.guid for e in feedmod.episodes(f)):
+            return f
+    return DEFAULT_FEED
+
+
+def publish(session: str, *, name: Optional[str] = None,
             store=None) -> Optional[feedmod.Episode]:
     """Build this conversation and put it on the feed. None if there is none.
 
@@ -413,6 +445,8 @@ def publish(session: str, *, name: str = "talks",
     ts = turns(session, store=store)
     if not ts:
         return None
+    workspace = workspace_for(session, ts)
+    name = name or feed_for(workspace)
     with tempfile.TemporaryDirectory(prefix="media-episode-") as tmp:
         built = build(ts, Path(tmp) / f"{session}.mp3")
         if built is None:

@@ -438,3 +438,90 @@ def test_a_short_conversation_can_still_be_published_by_hand(tmp_path, clip,
     monkeypatch.setattr(feed, "_probe_duration", lambda p: 2.0)
     rows = [_row([clip("a.mp3")], at=1.0, session="tiny")]
     assert session_feed.publish("tiny", store=_Store(rows)) is not None
+
+
+# --- one feed per workspace -------------------------------------------------
+# A podcast client's subscription list becomes the project list, rather than
+# one stream holding every conversation of every kind.
+
+
+@pytest.mark.parametrize("workspace,want", [
+    ("p-agent-media", "p-agent-media"),
+    ("scratch", "scratch"),
+    ("", "talks"),                       # no workspace: the catch-all
+    ("Org Alert", "org-alert"),
+    ("~work/thing", "work-thing"),       # a name is not a path
+    ("../etc", "etc"),
+])
+def test_the_feed_is_named_for_the_workspace(workspace, want):
+    assert session_feed.feed_for(workspace) == want
+    assert feed.valid_name(session_feed.feed_for(workspace))
+
+
+def _publishable(tmp_path, monkeypatch):
+    monkeypatch.setenv("MEDIA_FEED_SPOOL", str(tmp_path / "spool"))
+    monkeypatch.setenv("MEDIA_CONFIG", str(tmp_path / "nope.toml"))
+    monkeypatch.setattr("agent_media_core.conversation.transcript", lambda s: None)
+    monkeypatch.setattr(feed, "_probe_duration", lambda p: 300.0)
+    monkeypatch.setattr(session_feed, "build",
+                        lambda ts, out: (out.write_bytes(b"x"), out)[1])
+
+
+def test_a_conversation_lands_in_its_workspace_feed(tmp_path, clip, monkeypatch):
+    _publishable(tmp_path, monkeypatch)
+    rows = [_row([clip("a.mp3")], at=1.0, session="s1",
+                 source_tmux_session="p-agent-media")]
+    ep = session_feed.publish("s1", store=_Store(rows))
+    assert ep is not None
+    assert [e.guid for e in feed.episodes("p-agent-media")] == ["session:s1"]
+    assert feed.episodes("talks") == []
+
+
+def test_a_conversation_with_no_workspace_lands_in_talks(tmp_path, clip,
+                                                         monkeypatch):
+    _publishable(tmp_path, monkeypatch)
+    rows = [_row([clip("a.mp3")], at=1.0, session="s1")]
+    session_feed.publish("s1", store=_Store(rows))
+    assert [e.guid for e in feed.episodes("talks")] == ["session:s1"]
+
+
+def test_an_explicit_feed_still_wins(tmp_path, clip, monkeypatch):
+    _publishable(tmp_path, monkeypatch)
+    rows = [_row([clip("a.mp3")], at=1.0, session="s1",
+                 source_tmux_session="p-agent-media")]
+    session_feed.publish("s1", name="talks", store=_Store(rows))
+    assert [e.guid for e in feed.episodes("talks")] == ["session:s1"]
+    assert feed.feeds() == ["talks"]
+
+
+def test_publish_quiet_sorts_conversations_into_their_own_feeds(tmp_path, clip,
+                                                                monkeypatch):
+    _publishable(tmp_path, monkeypatch)
+    now = 1_000_000.0
+    rows = [_row([clip("a.mp3")], at=now - 7200, session="s1",
+                 source_tmux_session="p-agent-media"),
+            _row([clip("b.mp3")], at=now - 7200, session="s2",
+                 source_tmux_session="scratch"),
+            _row([clip("c.mp3")], at=now - 7200, session="s3")]
+    eps = session_feed.publish_quiet(now=now, store=_Store(rows))
+    assert len(eps) == 3
+    assert feed.feeds() == ["p-agent-media", "scratch", "talks"]
+
+
+def test_already_published_is_asked_of_every_feed(tmp_path, clip, monkeypatch):
+    """Asking only the feed being written to would republish every other
+    workspace's conversations on every run."""
+    _publishable(tmp_path, monkeypatch)
+    now = 1_000_000.0
+    rows = [_row([clip("a.mp3")], at=now - 7200, session="s1",
+                 source_tmux_session="p-agent-media"),
+            _row([clip("b.mp3")], at=now - 7200, session="s2",
+                 source_tmux_session="scratch")]
+    assert len(session_feed.publish_quiet(now=now, store=_Store(rows))) == 2
+    assert session_feed.publish_quiet(now=now, store=_Store(rows)) == []
+
+
+def test_a_project_feed_inherits_the_talks_retention():
+    """A directory per project that nothing ever prunes is the alternative."""
+    assert feed.default_policy("p-agent-media") == feed.DEFAULT_POLICIES["talks"]
+    assert feed.default_policy("docs") == feed.DEFAULT_POLICIES["docs"]

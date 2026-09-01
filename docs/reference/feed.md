@@ -17,11 +17,16 @@ of them, served as RSS. Three feeds exist by convention:
 | feed | one episode is | default retention |
 |---|---|---|
 | `docs` | a document read aloud | kept until removed |
-| `talks` | a whole conversation, one chapter per turn | 90 days |
+| `<tmux session>` | a conversation from that workspace | 90 days |
+| `talks` | a conversation from no workspace at all | 90 days |
 | `digest` | a day's agenda | 7 days |
 
-Nothing enforces those names; they are the defaults `media feed` and the
-retention table already know about.
+**A conversation goes to a feed named for its tmux session** —
+`p-agent-media`, `scratch` — so a podcast client's subscription list is your
+project list rather than one undifferentiated stream. `talks` is the catch-all
+for conversations with no workspace behind them. `--feed <name>` overrides,
+and any feed nobody has configured inherits the `talks` retention, because the
+alternative is a directory per project that nothing ever prunes.
 
 ## Publishing
 
@@ -157,7 +162,21 @@ ssh <phone> "am start -a android.intent.action.VIEW \
   -d 'antennapod-subscribe://host:8782/feed/talks.xml?k=<token>'"
 ```
 
-**Audiobookshelf** needs a `podcast`-type library, and refuses tailnet URLs
+**Audiobookshelf** can be kept in step automatically:
+
+```sh
+media-abs-sync            # subscribe every feed, fetch what is missing
+```
+
+Installed as `agent-media-abs-sync`, hourly, on a host that has both feeds and
+an `abs-bridge.env`. It reconciles rather than migrates, so it is safe to run
+repeatedly: feeds ABS does not have are subscribed, feeds that have grown are
+topped up, and an empty or unreadable one is skipped with a line rather than
+ending the run. Feed URLs are compared without their query string, so rotating
+the token does not subscribe everything twice.
+
+Doing it by hand the first time, **Audiobookshelf** needs a `podcast`-type
+library, and refuses tailnet URLs
 until the host is allow-listed — 100.64.0.0/10 is CGNAT space and its SSRF
 filter blocks it. The symptom is a bare 404 ("Podcast RSS feed request failed")
 with the real reason only in the container log. Add to its unit:
