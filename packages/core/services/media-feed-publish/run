@@ -6,6 +6,14 @@
 # silence, and this is what makes the feed something that fills itself rather
 # than something you remember to run.
 #
+# Mostly this is not what publishes anything: the end of every turn arms a
+# one-shot for the quiet window (feed_debounce), so a finished conversation is
+# built the moment the silence is long enough. This stays as the safety net for
+# turns that never got to arm one — a reboot mid-conversation, a host without
+# systemd — which is why it is half-hourly rather than every few minutes. An
+# idle timer that wakes 288 times a day to find nothing is the thing the
+# debounce exists to remove.
+#
 # MEDIA_FEED_QUIET_MIN is how long that silence has to be (default 60). Short
 # is the point: an episode that arrives an hour after you stop talking is a
 # different thing from one that is waiting when you pick up the phone. Too

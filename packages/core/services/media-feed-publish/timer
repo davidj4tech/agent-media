@@ -1,2 +1,2 @@
-OnBootSec=3min
-OnUnitActiveSec=5min
+OnBootSec=5min
+OnUnitActiveSec=30min

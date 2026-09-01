@@ -2642,6 +2642,15 @@ def _record_silenced(state: StateStore, event: Event, target: Target,
         return None
 
 
+def _arm_feed_debounce() -> None:
+    """Tell the feed a turn has landed, if this host publishes one at all."""
+    try:
+        from ..feed_debounce import arm
+        arm()
+    except Exception:  # noqa: BLE001 — the poll is the safety net
+        pass
+
+
 def _duck_grace_s() -> float:
     """How long to wait for the far side to say it is about to play.
 
@@ -3130,7 +3139,7 @@ def submit_event(event: Event,
         if flushed:
             extras["flushed"] = True   # playback cancelled by speech-flush;
             #                            rendered and archived, never heard
-        return state.add_history(
+        row = state.add_history(
             sink="speech",
             uri=str(first_clip),
             started_at=started_at,
@@ -3140,6 +3149,13 @@ def submit_event(event: Event,
             text=text,
             extras=extras,
         )
+        # The turn just ended, which is the only moment anything knows the
+        # conversation *might* be over. Push the publish deadline out; the last
+        # turn to do so is the one that gets to fire. Detached and never
+        # raising — an unpublished episode is a wait, a blocked reply is
+        # silence in the room.
+        _arm_feed_debounce()
+        return row
 
     # A muted pane skips playback entirely: the clips are already rendered
     # (above), so we fall straight through to the history write below — no

@@ -142,7 +142,7 @@ Installed by `media-setup feed`, or by role with
 | unit | what | when |
 |---|---|---|
 | `agent-media-feed` | serves the feed | always |
-| `agent-media-feed-publish` | publishes finished conversations, then syncs ABS | every 5 min |
+| `agent-media-feed-publish` | publishes finished conversations, then syncs ABS | on silence, + every 30 min |
 | `agent-media-abs-sync` | subscribes Audiobookshelf to every feed | hourly (safety net) |
 | `agent-media-feed-gc` | applies retention, rewrites the XML | daily |
 
@@ -155,6 +155,17 @@ pausing, and no client ever re-fetches, so that half is the half you keep.
 The publisher chains straight into `media-abs-sync` rather than leaving it to
 the hourly timer: three hourly stages (publish, subscribe, download) meant a
 conversation could take most of an afternoon to reach the phone.
+
+**It is triggered by silence, not by a clock.** The end of every turn arms a
+one-shot for the quiet window and cancels the one before it, so a finished
+conversation is built the moment the silence is long enough to mean something
+— and nothing wakes up at all while you are talking, or while you are not.
+The half-hourly timer is only the safety net for turns that could not arm one:
+a reboot mid-conversation, or a host without systemd.
+
+Per-turn publishing is not on offer, and cannot be: no client re-fetches a
+guid it already has, so an episode published mid-conversation is frozen at
+whatever version reached the client first.
 
 The last two are timer-driven, so their units are *inactive between runs* —
 which `media doctor` reports as parked, not down.
