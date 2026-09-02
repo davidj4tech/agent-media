@@ -245,6 +245,10 @@ def test_no_remote_opt_out_is_blind_but_cheap(monkeypatch):
 
 def test_remote_is_still_used_when_allowed(monkeypatch):
     monkeypatch.setattr(cli, "_remote_speech", lambda: True)
+    # No announced reply to lift the reading onto — without this the snapshot
+    # is measured against whatever this machine happens to be speaking, so the
+    # test passed only on an idle host and failed on a busy one.
+    monkeypatch.setattr(cli, "_now_speaking", lambda: None)
     monkeypatch.setattr(cli, "_remote_snapshot",
                         lambda: {"idle-active": False, "time-pos": 3.0,
                                  "duration": 9.0, "pause": False,
