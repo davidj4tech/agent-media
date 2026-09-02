@@ -162,6 +162,34 @@ def sync(abs_api: Abs, feeds: list, *, folder_path: str, dry_run: bool = False,
     return changed
 
 
+def prune_missing(abs_api: Abs, library_name: str, *, dry_run: bool = False) -> int:
+    """Drop items whose files are gone from a scanned library.
+
+    The book tree is a mirror: rename a conversation — which happens the
+    moment Claude Code settles on a better name for it — and the old folder
+    goes. Audiobookshelf keeps the item anyway, flagged missing, so the
+    library fills with ghosts of every title a conversation ever had. Six of
+    them, against three real ones, was what "the titles don't match" turned
+    out to mean.
+
+    Only a library we own by name, and only items ABS itself has marked
+    missing: this deletes, and it must never be pointed at the audiobooks.
+    """
+    libs = abs_api.req("GET", "/api/libraries").get("libraries", [])
+    lib = next((l for l in libs if l.get("name") == library_name), None)
+    if lib is None:
+        return 0
+    rows = abs_api.req("GET", f"/api/libraries/{lib['id']}/items?limit=500")
+    missing = [r for r in rows.get("results", []) if r.get("isMissing")]
+    if not missing or dry_run:
+        if missing:
+            log(f"{library_name}: would drop {len(missing)} missing item(s)")
+        return len(missing)
+    abs_api.req("DELETE", f"/api/libraries/{lib['id']}/issues")
+    log(f"{library_name}: dropped {len(missing)} item(s) whose files are gone")
+    return len(missing)
+
+
 def main(argv=None) -> int:
     load_env()
     ap = argparse.ArgumentParser(prog="media-abs-sync",
@@ -171,6 +199,10 @@ def main(argv=None) -> int:
     ap.add_argument("--folder", default=os.environ.get(
         "ABS_PODCAST_DIR", DEFAULT_ABS_PODCAST_DIR),
         help="podcast folder as ABS sees it (a container path)")
+    ap.add_argument("--book-library",
+                    default=os.environ.get("ABS_LIBRARY_CONVERSATIONS", "Conversations"),
+                    help="scanned library holding conversations as books; its "
+                         "missing items are pruned (they are renames)")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args(argv if argv is not None else sys.argv[1:])
 
@@ -196,6 +228,7 @@ def main(argv=None) -> int:
         return 0
     log(f"syncing {len(feeds)} feed(s): {', '.join(n for n, _ in feeds)}")
     changed = sync(abs_api, feeds, folder_path=a.folder, dry_run=a.dry_run)
+    changed += prune_missing(abs_api, a.book_library, dry_run=a.dry_run)
     log("nothing to do" if not changed else f"{changed} change(s)")
     return 0
 

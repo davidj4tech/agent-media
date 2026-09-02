@@ -325,3 +325,47 @@ def test_one_unreadable_feed_does_not_end_the_run():
     feeds = [("bad", "http://red5:8782/feed/bad.xml?k=t")] + FEEDS
     assert syncmod.sync(api, feeds, folder_path="/audiobooks/podcasts") > 0
     assert any(c[1] == "/api/podcasts" for c in api.calls)
+
+
+def test_missing_items_are_pruned_from_the_book_library():
+    """The book tree is a mirror: rename a conversation and the old folder
+    goes, but ABS keeps the item flagged missing — so the library fills with
+    ghosts of every title a conversation ever had."""
+    class _WithMissing(_AbsFake):
+        def req(self, method, path, body=None):
+            self.calls.append((method, path.split("?")[0], body))
+            if path == "/api/libraries" and method == "GET":
+                return {"libraries": [{"id": "conv", "name": "Conversations",
+                                       "mediaType": "book", "folders": []}]}
+            if path.startswith("/api/libraries/conv/items"):
+                return {"results": [{"id": "a", "isMissing": True},
+                                    {"id": "b", "isMissing": False}]}
+            return {}
+
+    api = _WithMissing()
+    assert syncmod.prune_missing(api, "Conversations") == 1
+    assert ("DELETE", "/api/libraries/conv/issues", None) in api.calls
+
+
+def test_pruning_only_touches_the_library_it_was_given():
+    """It deletes; it must never be pointed at the audiobooks."""
+    api = _AbsFake(libraries=[{"id": "bk", "name": "Audiobooks",
+                               "mediaType": "book", "folders": []}])
+    assert syncmod.prune_missing(api, "Conversations") == 0
+    assert not [c for c in api.calls if c[0] == "DELETE"]
+
+
+def test_a_dry_run_prunes_nothing():
+    class _WithMissing(_AbsFake):
+        def req(self, method, path, body=None):
+            self.calls.append((method, path.split("?")[0], body))
+            if path == "/api/libraries" and method == "GET":
+                return {"libraries": [{"id": "conv", "name": "Conversations",
+                                       "mediaType": "book", "folders": []}]}
+            if path.startswith("/api/libraries/conv/items"):
+                return {"results": [{"id": "a", "isMissing": True}]}
+            return {}
+
+    api = _WithMissing()
+    assert syncmod.prune_missing(api, "Conversations", dry_run=True) == 1
+    assert not [c for c in api.calls if c[0] == "DELETE"]
