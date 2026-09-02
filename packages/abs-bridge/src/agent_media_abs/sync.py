@@ -63,6 +63,76 @@ def missing_episodes(feed_eps: list, have: list) -> list:
     return [e for e in feed_eps if episode_key(e) not in known]
 
 
+def _size_of(ep: dict) -> int:
+    """The declared byte size of an episode, either side of the wire."""
+    enc = ep.get("enclosure") or {}
+    if enc.get("length"):
+        try:
+            return int(enc["length"])
+        except (TypeError, ValueError):
+            pass
+    af = ep.get("audioFile") or {}
+    return int((af.get("metadata") or {}).get("size") or af.get("size") or 0)
+
+
+def _duration_of(ep: dict) -> float:
+    """Seconds, from whichever side of the wire this dict came."""
+    for value in (ep.get("duration"), (ep.get("audioFile") or {}).get("duration")):
+        try:
+            if value:
+                return float(value)
+        except (TypeError, ValueError):
+            continue
+    return 0.0
+
+
+#: Durations are stated to the second in the feed and to the millisecond by
+#: ABS, so they never match exactly.
+_DURATION_TOLERANCE_S = 2.0
+
+#: Bytes only decide when nothing else can. ABS rewrites tags on download —
+#: adding its own ID3 and cover — so its file is reliably ~1-5KB larger than
+#: the feed declares. Comparing sizes exactly would call every episode stale
+#: on every run and re-download the library forever, taking the listener's
+#: position with it each time.
+_SIZE_TOLERANCE = 65536
+
+
+def stale_episodes(feed_eps: list, have: list) -> list:
+    """Episodes ABS has, whose audio is no longer what the feed offers.
+
+    A guid identifies a conversation, not a version of one, and no podcast
+    client re-fetches a guid it already has. So a conversation that grew after
+    somebody downloaded it leaves the client holding an hour of audio and — as
+    soon as anything refreshes the notes — a chapter list describing seventy
+    minutes. Clicking a chapter past the end of the file you have cannot seek,
+    so it starts from the beginning, which is exactly what a broken player
+    looks like.
+
+    Duration is the comparison, not byte size: ABS rewrites tags on download,
+    so its copy is reliably a few kilobytes larger than the feed declares, and
+    an exact size comparison would call every episode stale on every run —
+    re-downloading the whole library forever and discarding the listener's
+    position each time. Size is the fallback for a feed that states no
+    duration, and then only past a tolerance no tag rewrite could reach.
+    """
+    ours = {episode_key(e): e for e in feed_eps}
+    out = []
+    for ep in have:
+        theirs = ours.get(episode_key(ep))
+        if theirs is None:
+            continue
+        want_s, got_s = _duration_of(theirs), _duration_of(ep)
+        if want_s and got_s:
+            if abs(want_s - got_s) > _DURATION_TOLERANCE_S:
+                out.append(ep)
+            continue
+        want_b, got_b = _size_of(theirs), _size_of(ep)
+        if want_b and got_b and abs(want_b - got_b) > _SIZE_TOLERANCE:
+            out.append(ep)
+    return out
+
+
 def safe_dirname(title: str) -> str:
     return re.sub(r"[^\w .()-]", "_", title).strip() or "feed"
 
@@ -152,6 +222,19 @@ def sync(abs_api: Abs, feeds: list, *, folder_path: str, dry_run: bool = False,
                                 {"autoDownloadEpisodes": True})
                 log(f"{name}: turned on auto-download")
                 changed += 1
+
+        # A grown conversation is not a new episode and ABS will never
+        # re-fetch it on its own — so drop the copy it has and let the
+        # download below bring the current one.
+        stale = stale_episodes(feed_eps, have)
+        if stale:
+            log(f"{name}: replacing {len(stale)} episode(s) whose audio changed")
+            if not dry_run:
+                for ep in stale:
+                    abs_api.req("DELETE",
+                                f"/api/podcasts/{item_id}/episode/{ep['id']}?hard=1")
+                have = [e for e in have if e not in stale]
+            changed += 1
 
         want = missing_episodes(feed_eps, have)
         if want:

@@ -369,3 +369,83 @@ def test_a_dry_run_prunes_nothing():
     api = _WithMissing()
     assert syncmod.prune_missing(api, "Conversations", dry_run=True) == 1
     assert not [c for c in api.calls if c[0] == "DELETE"]
+
+
+# --- an episode whose audio changed -----------------------------------------
+# A guid identifies a conversation, not a version of one. A conversation that
+# grew after somebody downloaded it leaves the client holding an hour of audio
+# and a chapter list describing seventy minutes — and a chapter past the end of
+# the file cannot seek, so it starts from the beginning.
+
+
+def test_a_grown_episode_is_replaced_not_left_stale():
+    feed_eps = [{"guid": "session:a", "enclosure": {"length": "26943117"}}]
+    have = [{"id": "e1", "guid": "session:a",
+             "audioFile": {"metadata": {"size": 19533788}}}]
+    assert [e["id"] for e in syncmod.stale_episodes(feed_eps, have)] == ["e1"]
+
+
+def test_an_unchanged_episode_is_left_alone():
+    feed_eps = [{"guid": "session:a", "enclosure": {"length": "100"}}]
+    have = [{"id": "e1", "guid": "session:a", "audioFile": {"metadata": {"size": 100}}}]
+    assert syncmod.stale_episodes(feed_eps, have) == []
+
+
+def test_a_size_nobody_states_is_not_a_mismatch():
+    """Absent is not different: re-downloading on a missing number would
+    re-fetch the whole library every run."""
+    feed_eps = [{"guid": "session:a", "enclosure": {}}]
+    have = [{"id": "e1", "guid": "session:a", "audioFile": {}}]
+    assert syncmod.stale_episodes(feed_eps, have) == []
+
+
+def test_sync_deletes_then_re_downloads_the_changed_episode():
+    class _Grown(_AbsFake):
+        def req(self, method, path, body=None):
+            self.calls.append((method, path.split("?")[0], body))
+            if path == "/api/libraries" and method == "GET":
+                return {"libraries": LIB}
+            if path.startswith("/api/libraries/"):
+                return {"results": [{"id": "item1", "media": {"metadata": {
+                    "feedUrl": "http://red5:8782/feed/talks.xml?k=t"}}}]}
+            if path == "/api/podcasts/feed":
+                return {"podcast": {"metadata": {"title": "talks"}, "episodes": [
+                    {"guid": "session:a", "duration": 4489,
+                     "enclosure": {"length": "26943117"}}]}}
+            if path.startswith("/api/items/"):
+                return {"media": {"autoDownloadEpisodes": True, "episodes": [
+                    {"id": "e1", "guid": "session:a",
+                     "audioFile": {"duration": 3254.2,
+                                   "metadata": {"size": 19533788}}}]}}
+            return {}
+
+    api = _Grown()
+    syncmod.sync(api, FEEDS, folder_path="/audiobooks/podcasts")
+    deleted = [c for c in api.calls if c[0] == "DELETE"]
+    assert deleted and deleted[0][1] == "/api/podcasts/item1/episode/e1"
+    dl = next(c for c in api.calls if c[1].endswith("/download-episodes"))
+    assert [e["guid"] for e in dl[2]] == ["session:a"]
+
+
+def test_tag_rewriting_is_not_a_changed_episode():
+    """ABS adds its own ID3 and cover on download, so its file is reliably a
+    few KB larger. Comparing sizes exactly re-downloads the library forever
+    and throws away the listener's position each time."""
+    feed_eps = [{"guid": "session:a", "duration": 4489,
+                 "enclosure": {"length": "26943117"}}]
+    have = [{"id": "e1", "guid": "session:a",
+             "audioFile": {"duration": 4489.3, "metadata": {"size": 26948423}}}]
+    assert syncmod.stale_episodes(feed_eps, have) == []
+
+
+def test_a_real_growth_is_seen_through_the_tolerance():
+    feed_eps = [{"guid": "session:a", "duration": 4489, "enclosure": {"length": "26943117"}}]
+    have = [{"id": "e1", "guid": "session:a",
+             "audioFile": {"duration": 3254.2, "metadata": {"size": 19533788}}}]
+    assert [e["id"] for e in syncmod.stale_episodes(feed_eps, have)] == ["e1"]
+
+
+def test_without_durations_a_small_size_difference_is_ignored():
+    feed_eps = [{"guid": "session:a", "enclosure": {"length": "1000000"}}]
+    have = [{"id": "e1", "guid": "session:a", "audioFile": {"metadata": {"size": 1003000}}}]
+    assert syncmod.stale_episodes(feed_eps, have) == []
