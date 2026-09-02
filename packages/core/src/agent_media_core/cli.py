@@ -386,8 +386,25 @@ def _speech_history(n: int = 20, session: Optional[str] = None,
         # started_at is the same float the lane will hand add_history, so it
         # dedupes exactly — no window where the turn is listed twice as it
         # finishes.
-        if live is not None and not any(
-                r.get("started_at") == live["started_at"] for r in rows):
+        #
+        # A *replay* is a second start of something already in this list, and
+        # it starts when it starts: its own started_at matches nothing, so
+        # folding it in put the turn you were hearing in the list twice and
+        # shifted every index below it by one. `<` then stepped from the
+        # phantom onto the row it mirrored — the same turn, from the top —
+        # which is what "pressing < twice just replays the same clip" was.
+        # _replay_row stamps which row it is playing for exactly this reason:
+        # `history_id` for a record, and for a live turn restarted mid-flight
+        # (no record yet) the started_at it will be filed under.
+        if live is not None:
+            lex = live.get("extras") or {}
+            hid = lex.get("history_id")
+            starts = {live["started_at"], lex.get("replay_of_started_at")}
+            starts.discard(None)
+            if hid is not None or any(r.get("started_at") in starts
+                                      for r in rows):
+                live = None
+        if live is not None:
             rows.insert(0, live)
     if session:
         # Scope traversal to one conversation's clips. Rows that predate the
@@ -3254,6 +3271,13 @@ def _replay_row(row: dict) -> int:
     # spoken for the first time is not a record yet.
     if row.get("id") is not None:
         np_extras["history_id"] = row["id"]
+    elif row.get("started_at") is not None:
+        # A live turn restarted by `<` has no record yet — _live_history_row
+        # hands back the turn that is speaking, id None — so name it by the
+        # start it will be filed under when it ends. Both stamps answer the
+        # same question for _speech_history: which row of the list is this,
+        # so that the turn is not also listed as a new one on top of it.
+        np_extras["replay_of_started_at"] = row["started_at"]
     source_pane = ex.get("source_pane")
     if source_pane:
         np_extras["source_pane"] = source_pane
@@ -3378,6 +3402,62 @@ def cmd_replay(a) -> int:
     return _do_replay(a.index, session=_anchor_session())
 
 
+def _prev_double_window() -> float:
+    """Seconds after a `<` restart within which the next `<` means "previous".
+
+    The position rule alone cannot answer a double-press on the phone lane: a
+    press costs one to two seconds of round trips and the restart lands a
+    second after that, so by the time the second press reads a position the
+    turn is already ~3s in — past the grace window, so `<` restarts again, and
+    again. That is the "pressing < twice just replays the same clip" report:
+    the rule was being asked about a clock the pressing itself had advanced.
+
+    So a restart leaves a breadcrumb — the same trick rapid `h`/`l` presses use
+    (_SKIP_CHAIN_S) for the same reason — and a press that arrives while it is
+    fresh steps back whatever the position says. 0 disables the latch.
+    """
+    try:
+        return max(0.0, float(os.environ.get("MEDIA_POPUP_PREV_DOUBLE_S") or 5.0))
+    except (TypeError, ValueError):
+        return 5.0
+
+
+def _speech_prev_channel() -> str:
+    """The speech breadcrumb's key: per target, because the phone and the local
+    player are different walks with different positions."""
+    return f"speech-{SPEECH_TARGET.name}"
+
+
+def _prev_restart_path(channel: str) -> Path:
+    return state_dir() / f"prev-restart-{channel}"
+
+
+def _note_prev_restart(channel: str, idx: int = 0) -> None:
+    """Breadcrumb: `<` just restarted `channel`'s item (speech: cursor `idx`)."""
+    try:
+        p = _prev_restart_path(channel)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(str(idx))
+    except OSError:
+        pass
+
+
+def _prev_restart_is_fresh(channel: str, idx: int = 0) -> bool:
+    """Did `<` restart this same item within the double-press window?
+
+    Consumed either way, so holding `<` down walks back an item per press
+    rather than stepping once and then restarting whatever it landed on.
+    """
+    p = _prev_restart_path(channel)
+    try:
+        fresh = time.time() - p.stat().st_mtime < _prev_double_window()
+        marked = int(p.read_text().strip())
+        p.unlink()
+    except (OSError, ValueError):
+        return False
+    return fresh and marked == idx
+
+
 def _prev_restart_threshold() -> float:
     """Seconds into an item past which `<` restarts it instead of stepping back."""
     try:
@@ -3386,18 +3466,26 @@ def _prev_restart_threshold() -> float:
         return 3.0
 
 
-def _prev_with_restart(elapsed, restart, step_back) -> int:
+def _prev_with_restart(elapsed, restart, step_back, channel: str = "item") -> int:
     """⏮ shared by the music/book `<` key: restart the current item if we're
     more than the grace window into it, else step back to the previous one.
 
     `elapsed` returns seconds into the current item (None/0 when idle → step
     back); `restart` seeks it to 0; `step_back` moves to the previous item.
+    `channel` names the breadcrumb the double-press latch leaves, so a second
+    press means "previous" even where the position has already run past the
+    grace window (_prev_double_window) — a chapter on the phone answers a
+    position query no faster than a spoken turn does.
     """
     try:
         pos = float(elapsed() or 0.0)
     except (TypeError, ValueError):
         pos = 0.0
-    (restart if pos > _prev_restart_threshold() else step_back)()
+    if _prev_restart_is_fresh(channel) or pos <= _prev_restart_threshold():
+        step_back()
+    else:
+        restart()
+        _note_prev_restart(channel)
     return 0
 
 
@@ -3447,14 +3535,19 @@ def cmd_replay_prev(a) -> int:
     Like a music player's ⏮: if we're already more than
     MEDIA_POPUP_PREV_RESTART_S (default 3s) into the current turn, `<` rewinds
     to that turn's start rather than jumping to the older one. Only when we're
-    at/near the start (or nothing's playing) does it step back a turn. `--idx`
-    is the popup's current history cursor (1 = latest); the resolved cursor is
-    printed to stdout so the popup can update its own `hist_idx`.
+    at/near the start (or nothing's playing) does it step back a turn — or when
+    the press lands within MEDIA_POPUP_PREV_DOUBLE_S of our own last restart,
+    which is what makes a double-press mean "previous" on a link where the
+    presses cost more seconds than the grace window has (_prev_double_window).
+    `--idx` is the popup's current history cursor (1 = latest); the resolved
+    cursor is printed to stdout so the popup can update its own `hist_idx`.
     """
     idx = max(1, a.idx)
     idle, pos, _dur, *_ = _speech_display_state()
     session = _anchor_session()
-    if (not idle) and pos is not None and pos > _prev_restart_threshold():
+    double = _prev_restart_is_fresh(_speech_prev_channel(), idx)
+    if (not double and (not idle) and pos is not None
+            and pos > _prev_restart_threshold()):
         # Partway through the current turn → restart it, keep the cursor put.
         # In place first (fast, and history-free); a history re-push next; and
         # if there is no row to re-push — the remote-render lane writes none —
@@ -3465,9 +3558,11 @@ def cmd_replay_prev(a) -> int:
                 ipc.command(_sock(), "seek", 0, "absolute", critical=True)
             except (ipc.MpvIpcError, OSError):
                 pass
+        _note_prev_restart(_speech_prev_channel(), idx)
         new_idx = idx
     else:
-        # At the start (or idle) → step back a turn; stay put if there's none.
+        # At the start (or idle, or a second press hard on the heels of a
+        # restart) → step back a turn; stay put if there's none.
         new_idx = idx + 1
         if _do_replay(new_idx, session=session) != 0:
             new_idx = idx
@@ -4800,6 +4895,7 @@ def cmd_music(a) -> int:
             elapsed=elapsed,
             restart=lambda: b.seek_cur(position_ms=0),
             step_back=b.previous,
+            channel="music" if b is m else "book",
         )
     if a.action in ("resume", "toggle") and _music_idle(b):
         # Nothing is loaded, so there is nothing to un-pause: reopen the last
@@ -5520,6 +5616,7 @@ def cmd_book(a) -> int:
                 restart=lambda: srv.book_seek(position_secs=0,
                                               target=tgt),
                 step_back=lambda: srv.book_prev(target=tgt),
+                channel="book",
             )
         return _ok(srv.book_prev(target=tgt))
     if bc == "skip":

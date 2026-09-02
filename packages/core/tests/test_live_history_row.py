@@ -101,3 +101,51 @@ def test_step_back_lands_on_the_previous_turn(store, monkeypatch, capsys):
     assert cli.cmd_replay_prev(argparse.Namespace(idx=1)) == 0
     assert played == ["second"]
     assert capsys.readouterr().out.strip() == "2"
+
+
+# --- a replay is not a new turn ---------------------------------------------
+#
+# _replay_row refreshes now_playing so the cards and the bar follow the clip it
+# just started — with a started_at of its own, because that is when it started.
+# Folded in as a live row, the turn you were hearing appeared TWICE and every
+# index below it shifted by one: `<` stepped from the phantom onto the record
+# it mirrored — the same turn, from the top. That was half of "pressing < twice
+# just replays the same clip". The stamp that tells them apart is history_id:
+# the record the audible turn already occupies, absent on a first-time readout.
+
+def test_a_replay_is_not_a_second_row(store, monkeypatch):
+    _speaking(monkeypatch, started_at=300.0, extras={"history_id": 200})
+    rows = cli._speech_history(3, session="aaa", include_live=True)
+    assert [r["text"] for r in rows] == ["second", "first"]
+
+
+def test_step_back_during_a_replay_skips_the_turn_being_replayed(
+        store, monkeypatch, capsys):
+    """`<` while replaying "second" must reach "first", not "second" again."""
+    _speaking(monkeypatch, started_at=300.0, extras={"history_id": 200})
+    monkeypatch.setattr(cli, "_speech_display_state",
+                        lambda: (False, 0.5, None, False, False, 1.0, True))
+    monkeypatch.delenv("MEDIA_POPUP_PREV_RESTART_S", raising=False)
+    played = []
+    monkeypatch.setattr(cli, "_replay_row", lambda row: played.append(row["text"]) or 0)
+    assert cli.cmd_replay_prev(argparse.Namespace(idx=1)) == 0
+    assert played == ["first"]
+    assert capsys.readouterr().out.strip() == "2"
+
+
+def test_restarting_the_live_turn_does_not_double_it_when_it_lands(monkeypatch):
+    """`<` mid-reply restarts a turn that has no record yet, so the mirror it
+    leaves cannot name a history id. It names the start the turn will be filed
+    under instead — otherwise, the moment the turn ends and its row lands, the
+    list held both and `<` stepped onto the turn it was already playing."""
+    rows = [_row("aaa", 300.0, "the reply"), _row("aaa", 200.0, "second")]
+
+    class FakeStore:
+        def recent_history(self, *, sink=None, limit=20):
+            return list(rows)
+
+    monkeypatch.setattr(cli, "StateStore", FakeStore)
+    _speaking(monkeypatch, started_at=400.0,          # the restart's own start
+              extras={"replay_of_started_at": 300.0})
+    out = cli._speech_history(3, session="aaa", include_live=True)
+    assert [r["text"] for r in out] == ["the reply", "second"]

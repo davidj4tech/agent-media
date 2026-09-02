@@ -13,6 +13,14 @@ import pytest
 from agent_media_core import cli
 
 
+@pytest.fixture(autouse=True)
+def state_home(tmp_path, monkeypatch):
+    """Keep the double-press breadcrumb out of the real state dir — and out of
+    the next test, which would otherwise read this one's restart as its own."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.delenv("MEDIA_POPUP_PREV_DOUBLE_S", raising=False)
+
+
 @pytest.fixture
 def spy(monkeypatch):
     calls = []
@@ -210,3 +218,56 @@ def test_a_queued_turn_is_restarted_in_place(spy, monkeypatch, capsys):
     assert _run(3, {}, monkeypatch) == 0
     assert calls == [], "seeking the playlist back was enough; nothing to replay"
     assert capsys.readouterr().out.strip() == "3", "the cursor must stay put"
+
+
+# --- the double press -------------------------------------------------------
+#
+# The reported bug: `<` twice restarted the same clip both times. Two causes,
+# one symptom. This is the second — on the phone lane a press costs a second or
+# two of round trips, so the position the second press reads is already past
+# the grace window even though the listener pressed twice in a breath.
+
+def test_double_press_steps_back_despite_position(spy, monkeypatch, capsys):
+    calls, set_state, _ = spy
+    set_state(idle=False, pos=30.0)
+    assert _run(1, {}, monkeypatch) == 0
+    assert calls == [1]                        # first press: restart
+    _ = capsys.readouterr()
+    set_state(idle=False, pos=3.4)             # the restart, plus press latency
+    assert _run(1, {}, monkeypatch) == 0
+    assert calls == [1, 2]                     # second press: the older turn
+    assert capsys.readouterr().out.strip() == "2"
+
+
+def test_latch_is_consumed_by_one_press(spy, monkeypatch, capsys):
+    """Held down, `<` walks back a turn per press — it must not step once and
+    then restart whatever it landed on."""
+    calls, set_state, _ = spy
+    set_state(idle=False, pos=30.0)
+    _run(1, {}, monkeypatch)                   # restart, breadcrumb dropped
+    set_state(idle=False, pos=3.4)
+    _run(1, {}, monkeypatch)                   # steps to 2, breadcrumb eaten
+    set_state(idle=False, pos=30.0)            # a later press, well past a start
+    _run(2, {}, monkeypatch)
+    assert calls == [1, 2, 2]                  # restarted 2, did not walk on
+
+
+def test_latch_ignores_a_different_cursor(spy, monkeypatch, capsys):
+    """The breadcrumb answers for the turn it restarted, not for wherever the
+    walk has since moved."""
+    calls, set_state, _ = spy
+    set_state(idle=False, pos=30.0)
+    _run(1, {}, monkeypatch)                   # restarted cursor 1
+    set_state(idle=False, pos=30.0)
+    _run(4, {}, monkeypatch)                   # a different cursor → restart
+    assert calls == [1, 4]
+
+
+def test_latch_expires(spy, monkeypatch, capsys):
+    calls, set_state, _ = spy
+    set_state(idle=False, pos=30.0)
+    monkeypatch.setenv("MEDIA_POPUP_PREV_DOUBLE_S", "0")   # latch disabled
+    _run(1, {}, monkeypatch)
+    set_state(idle=False, pos=3.4)
+    _run(1, {}, monkeypatch)
+    assert calls == [1, 1]                     # position rule alone: restart
