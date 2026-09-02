@@ -116,6 +116,33 @@ overrides that (for a reverse proxy) and is also what the *publishing* commands
 use to regenerate `feed.xml` — a host without it still publishes; it just does
 not rewrite the served XML.
 
+## The same conversations, as books
+
+Audiobookshelf navigates chapters properly for **books** and badly for podcast
+episodes — on the Android app, a conversation's chapter list does not navigate
+at all. A conversation is nothing but chapters, so the same episodes are also
+laid out as a library ABS can scan:
+
+```
+~/conversations/<workspace>/<title>/<title>.mp3      # media feed books
+```
+
+Author is the workspace, title is the conversation — the grouping the feeds
+already use, in the only vocabulary a book library has. **Hardlinks, not
+copies**: one inode with two names, so the library and the spool cannot drift
+and deleting either never takes the audio with it. An episode that retention
+has pruned takes its folder with it, so the library is a mirror rather than a
+scrapbook.
+
+It needs a library of its own (`MEDIA_BOOK_EXPORT_ROOT`, default
+`~/conversations`, mounted into the container separately) because a subfolder
+of the audiobook root would be swept into that library as well. Point the scan
+at it with `ABS_LIBRARY_CONVERSATIONS=Conversations` and
+`media abs-scan --target conversations`; the publisher does both on every run.
+
+Feeds remain the delivery mechanism — they are what arrives on its own. The
+book library is for navigating what arrived.
+
 ## Retention
 
 Per feed, in `~/.config/agent-media/config.toml`:

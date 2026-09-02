@@ -5401,6 +5401,13 @@ def cmd_feed(a) -> int:
         print(f"{ep.title}  ({feedmod.hms(ep.duration_s)})  → {where}")
         return 0
 
+    if fc == "books":
+        from . import book_export
+
+        linked, removed = book_export.export()
+        print(f"{book_export.root()}: {linked} linked, {removed} removed")
+        return 0
+
     if fc == "xml":
         base = _feed_base_url() or "http://localhost"
         sys.stdout.write(feedmod.feed_xml(
@@ -7668,6 +7675,10 @@ def _add_book_parser(sub) -> None:
 
     fss = f.add_parser("sessions", help="conversations available to publish")
     fss.add_argument("--limit", type=int, default=15)
+
+    f.add_parser("books",
+                 help="mirror conversations into a book tree Audiobookshelf "
+                      "can scan (chapters navigate properly there)")
 
     fx = f.add_parser("xml", help="print the feed XML (does not write it)")
     fx.add_argument("name")

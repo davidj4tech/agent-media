@@ -35,5 +35,13 @@ export MEDIA_FEED_TOKEN MEDIA_FEED_BASE_URL MEDIA_FEED_SPOOL
 # subscribe, download) meant a conversation could take most of an afternoon to
 # reach the phone; chained, it is one tick.
 media feed publish-quiet ${MEDIA_FEED_QUIET_MIN:+--quiet-min "$MEDIA_FEED_QUIET_MIN"}
+
+# The same conversations, laid out as books. Audiobookshelf's chapter
+# navigation is first-class for books and second-class for podcast episodes —
+# on the Android app the chapter list of a conversation does not navigate at
+# all — and a conversation is nothing but chapters. Hardlinks, so this is a
+# second *name*, not a second copy.
+media feed books >/dev/null && media abs-scan --target conversations >/dev/null 2>&1
+
 command -v media-abs-sync >/dev/null 2>&1 && exec media-abs-sync
 exit 0
