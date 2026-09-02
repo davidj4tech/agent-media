@@ -213,15 +213,54 @@ def _joined(workspace: str, asked: str) -> str:
     return f"{workspace} · {asked}" if workspace else asked
 
 
+def _trim(text: str) -> str:
+    """A label, not a paragraph. Breaks at a word: a title that stops
+    mid-word reads as a truncation bug rather than a summary."""
+    text = " ".join((text or "").split())
+    if len(text) <= _ASK_CHARS + 3:
+        return text
+    cut = text[:_ASK_CHARS].rsplit(" ", 1)[0] or text[:_ASK_CHARS]
+    return cut.rstrip(" ,.;:") + "…"
+
+
 def _asked(session: str, ts: list[Turn]) -> str:
-    """The first thing the person asked, trimmed to a label."""
+    """What to call this conversation.
+
+    **Claude Code's own name for it, when it has one.** The transcript carries
+    `ai-title` records — the name shown in the resume list — and a conversation
+    called "Calibre speech channel interface" is the one you would look for. The
+    opening question is a poor substitute: it is whatever was typed before
+    anybody knew where the afternoon would go, and it is long.
+
+    The *last* `ai-title`, because the name is rewritten as the conversation
+    turns out to be about something else. Falling back to the first thing the
+    person asked, then to the first thing that was said.
+
+    One pass, and a substring check before parsing each line: these transcripts
+    run to tens of megabytes, most of it attachments this never looks at.
+    """
     from .conversation import transcript
 
     path = transcript(session)
+    title = prompt = ""
     if path is not None:
         try:
             with path.open(errors="replace") as fh:
                 for line in fh:
+                    if '"ai-title"' in line:
+                        try:
+                            d = json.loads(line)
+                        except ValueError:
+                            continue
+                        title = (d.get("aiTitle") or "").strip() or title
+                        continue
+                    # `"user"` rather than `"type":"user"`: the transcripts
+                    # this reads are written without spaces after the colons,
+                    # but nothing promises that, and a fast path that depends
+                    # on JSON formatting is a fast path that silently stops
+                    # finding anything.
+                    if prompt or '"user"' not in line:
+                        continue
                     try:
                         d = json.loads(line)
                     except ValueError:
@@ -241,16 +280,12 @@ def _asked(session: str, ts: list[Turn]) -> str:
                     # anybody asked.
                     if not text or text.startswith(("<", "Caveat:", "[media ")):
                         continue
-                    if len(text) > _ASK_CHARS + 3:
-                        # Break at a word: a title that stops mid-word reads as
-                        # a truncation bug rather than a summary.
-                        cut = text[:_ASK_CHARS].rsplit(" ", 1)[0] or text[:_ASK_CHARS]
-                        return cut.rstrip(" ,.;:") + "…"
-                    return text
+                    prompt = text
         except OSError as e:
             log.debug("transcript unreadable for %s: %s", session, e)
-    if ts:
-        return ts[0].title
+    for candidate in (title, prompt, ts[0].title if ts else ""):
+        if candidate:
+            return _trim(candidate)
     return f"Conversation {session[:8]}"
 
 

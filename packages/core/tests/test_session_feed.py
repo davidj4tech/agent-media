@@ -531,3 +531,60 @@ def test_a_project_feed_inherits_the_talks_retention():
     """A directory per project that nothing ever prunes is the alternative."""
     assert feed.default_policy("p-agent-media") == feed.DEFAULT_POLICIES["talks"]
     assert feed.default_policy("docs") == feed.DEFAULT_POLICIES["docs"]
+
+
+# --- the name Claude Code gives a conversation ------------------------------
+# The transcript carries `ai-title` records — the name in the resume list. A
+# conversation called "Calibre speech channel interface" is the one you would
+# look for; the opening question is whatever was typed before anybody knew
+# where the afternoon would go.
+
+
+def _jsonl(tmp_path, monkeypatch, records):
+    p = tmp_path / f"{SESSION}.jsonl"
+    p.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+    monkeypatch.setattr("agent_media_core.conversation.transcript", lambda s: p)
+    return p
+
+
+def test_the_session_name_beats_the_opening_question(tmp_path, monkeypatch):
+    _jsonl(tmp_path, monkeypatch, [
+        {"type": "user", "message": {"content": "I wonder how calibre would go"}},
+        {"type": "ai-title", "aiTitle": "Calibre speech channel interface"},
+    ])
+    assert session_feed.title_for(SESSION, []) == "Calibre speech channel interface"
+
+
+def test_the_latest_name_wins(tmp_path, monkeypatch):
+    """The name is rewritten as the conversation turns out to be about
+    something else."""
+    _jsonl(tmp_path, monkeypatch, [
+        {"type": "ai-title", "aiTitle": "First guess"},
+        {"type": "user", "message": {"content": "hello"}},
+        {"type": "ai-title", "aiTitle": "What it became"},
+    ])
+    assert session_feed.title_for(SESSION, []) == "What it became"
+
+
+def test_without_a_name_it_falls_back_to_the_question(tmp_path, monkeypatch):
+    _jsonl(tmp_path, monkeypatch, [
+        {"type": "user", "message": {"content": "why is the ringer loud"}},
+    ])
+    assert session_feed.title_for(SESSION, []) == "why is the ringer loud"
+
+
+def test_an_empty_name_does_not_win(tmp_path, monkeypatch):
+    _jsonl(tmp_path, monkeypatch, [
+        {"type": "ai-title", "aiTitle": "   "},
+        {"type": "user", "message": {"content": "the real question"}},
+    ])
+    assert session_feed.title_for(SESSION, []) == "the real question"
+
+
+def test_a_long_name_is_still_trimmed_at_a_word(tmp_path, monkeypatch):
+    _jsonl(tmp_path, monkeypatch, [
+        {"type": "ai-title", "aiTitle": "A name so long " + "and on " * 20},
+    ])
+    title = session_feed.title_for(SESSION, [])
+    assert title.startswith("A name so long") and title.endswith("…")
+    assert len(title) < 80

@@ -21,6 +21,13 @@ of them, served as RSS. Three feeds exist by convention:
 | `talks` | a conversation from no workspace at all | 90 days |
 | `digest` | a day's agenda | 7 days |
 
+An episode is titled `<tmux session> · <Claude Code's name for the session>`
+— the workspace you would recognise, then the name shown in the resume list,
+taken from the transcript's `ai-title` records (the last one: the name is
+rewritten as a conversation turns out to be about something else). It falls
+back to the opening question, which is what was typed before anybody knew
+where the afternoon would go.
+
 **A conversation goes to a feed named for its tmux session** —
 `p-agent-media`, `scratch` — so a podcast client's subscription list is your
 project list rather than one undifferentiated stream. `talks` is the catch-all
