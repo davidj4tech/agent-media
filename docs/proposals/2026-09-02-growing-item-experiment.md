@@ -86,13 +86,59 @@ That does not settle the app fork, which was always the more expensive half
 (GPL-3 against our Apache-2, Capacitor/Gradle against our javac build). It
 does mean the server side can stop being a reason for it.
 
+## Answered: the offline copy (2026-09-04)
+
+Read off `audiobookshelf-app` master rather than guessed. The answer differs by
+media type, and that is the whole finding.
+
+**A book does not update.** Three facts, each in the source:
+
+1. `pages/item/_id/index.vue` — `showDownload()` returns false when
+   `hasLocal`. Once a local copy exists the download button is *gone*. There is
+   no "update" or "re-sync" action beside it.
+2. `AbsDownloader.startLibraryItemDownload` enqueues one `DownloadItemPart` per
+   server track, unconditionally — nothing consults what is already on disk.
+3. `FolderScanner.scanParts` builds its track list from *this download's* parts
+   and finishes with `localItem.media.setAudioTracks(tracks)` — a replace, not
+   a merge, with indexes and offsets recomputed from scratch.
+
+So the only route to a grown book is: delete the local copy, download the whole
+thing again. Nothing is corrupted — the local item is keyed `local_<itemId>`
+and reused, so there are no duplicates — but "incremental" it is not. Note the
+download URL is already per file (`/api/items/<id>/file/<ino>/download`), so
+the *server* has always been able to serve exactly the missing track. It is the
+client that asks for everything.
+
+Meanwhile the item page still shows the *server* item's tracks with a LOCAL
+badge, and playback prefers the local copy: the new turn is visible in the UI
+and absent from the audio. That is the worst of the possible outcomes to
+debug, and worth knowing before anyone reports it as a bug.
+
+**A podcast does.** Downloads there are per episode, not per item:
+`EpisodeRow.vue` shows a download control for any episode with no
+`localEpisode`, and `FolderScanner` merges the result with
+`podcast.addEpisode(track, episode)`. A new episode on an already-downloaded
+podcast is one tap and one file. Genuinely incremental, today, unmodified.
+
+**What that does to the direction.** The two media types now trade places
+depending on which problem you weigh:
+
+| | book (clips as tracks) | podcast (clips as episodes) |
+| --- | --- | --- |
+| one item per conversation | yes | yes (a feed) |
+| appends on the server | yes (measured above) | yes |
+| **offline gets the new turn** | **no — delete and re-download** | **yes, per episode** |
+| resume across the whole conversation | one timeline | per episode |
+
+If offline listening matters for conversations, the podcast shape is the one
+whose story already works end to end. If the single-timeline book shape is
+worth keeping, the app change it needs is *small and specific* — skip parts
+whose file is already local, and show a "sync" action when the server item has
+tracks the local copy lacks. That is a patch of the shape upstream accepts, not
+a fork.
+
 ## Still unknown
 
-- **The Android app's offline copy.** Whether a downloaded item picks up an
-  appended track incrementally, re-downloads everything, or ignores it until
-  re-downloaded by hand. Stable inodes make the good outcome *possible*; they
-  do not make it true. This is the one remaining question that could still
-  justify touching the app, and it needs the app, not the API.
 - Whether the item's socket push updates an open player, or only the next load.
 - Whether a scan is needed at all, or the folder watcher suffices (the scans
   here were explicit).
