@@ -81,3 +81,30 @@ def test_a_failure_to_arm_is_never_the_caller_s_problem(monkeypatch):
 
     monkeypatch.setattr(dbn.subprocess, "Popen", _boom)
     assert dbn.arm(600) is False
+
+
+def test_the_delay_is_a_turn_landing_not_a_conversation_ending(monkeypatch):
+    """What the timer triggers appends now, so there is nothing to wait for
+    except a burst of turns arriving together."""
+    monkeypatch.delenv("MEDIA_FEED_DEBOUNCE_S", raising=False)
+    # Hermetic about both, because they are two different clocks now and a
+    # test that leaves one set would make this one read the other's value.
+    monkeypatch.delenv("MEDIA_FEED_QUIET_MIN", raising=False)
+    assert dbn.debounce_s() == dbn.DEFAULT_DEBOUNCE_S
+    monkeypatch.setenv("MEDIA_FEED_DEBOUNCE_S", "5")
+    assert dbn.debounce_s() == 15        # a floor: one scan per turn, at most
+    monkeypatch.setenv("MEDIA_FEED_DEBOUNCE_S", "300")
+    assert dbn.debounce_s() == 300
+    # And it is no longer the hour that "finished" means, which publish-quiet
+    # still follows when a conversation is archived as one file by hand.
+    assert dbn.quiet_s() == dbn.DEFAULT_QUIET_MIN * 60
+
+
+def test_arming_with_no_argument_uses_the_debounce(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(dbn, "enabled", lambda: True)
+    monkeypatch.setattr(dbn.subprocess, "Popen",
+                        lambda argv, **kw: seen.update(cmd=argv[-1]))
+    monkeypatch.setenv("MEDIA_FEED_DEBOUNCE_S", "90")
+    dbn.arm()
+    assert "--on-active=90" in seen["cmd"]

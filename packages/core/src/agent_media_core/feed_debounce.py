@@ -1,16 +1,21 @@
-"""Publish a conversation when it stops, not when a timer next looks.
+"""Put a turn on the shelf shortly after it is spoken, not when a timer looks.
 
-A feed cannot be updated per turn: no podcast client re-fetches a guid it
-already has, so an episode published mid-conversation is frozen at whatever
-version reached the client first. What *can* be immediate is the moment after
-the last turn — and the machine knows when that is, because every turn writes a
-history row.
+This used to wait for a conversation to *finish*, because what it triggered
+built one file out of the whole thing, and a feed cannot be updated per turn:
+no podcast client re-fetches a guid it already has, so an episode published
+mid-conversation is frozen at whatever version reached the client first. An
+hour of silence was the only available proxy for "it is over".
 
-So each turn arms a one-shot for `MEDIA_FEED_QUIET_MIN` minutes' time and
-cancels the one before it. Keep talking and the deadline keeps moving; stop,
-and the episode is built as soon as the silence is long enough to mean
-something. The five-minute poll stays installed as the safety net for turns
-that never got to arm anything.
+What it triggers now appends: the turn's clips are linked into the library item
+and the chapter list is rewritten (`media feed tracks`). Nothing is rebuilt and
+nothing already delivered changes, so there is nothing left to wait for — the
+delay exists only to let a burst of turns land together rather than scanning
+the library once per sentence. `MEDIA_FEED_DEBOUNCE_S` sets it; a minute by
+default.
+
+Each turn arms a one-shot and cancels the one before it, so a run of quick
+turns costs one scan. The poll stays installed as the safety net for turns that
+never got to arm anything.
 
 **Nothing here may delay a reply.** It runs on the speech path, so it is one
 detached `sh -c` and no wait, wrapped in a bare except: the worst outcome of a
@@ -39,10 +44,16 @@ UNIT = "agent-media-feed-debounce"
 #: exactly one place.
 TARGET_UNIT = "agent-media-feed-publish.service"
 
-#: Default silence before a conversation counts as finished, in minutes. The
-#: publisher reads the same variable, so the debounce and the thing it triggers
-#: can never disagree about what "finished" means.
+#: Default silence before a conversation counts as *finished*, in minutes.
+#: Still the rule `feed publish-quiet` follows when a conversation is published
+#: as one file by hand; no longer what this module waits for.
 DEFAULT_QUIET_MIN = 60.0
+
+#: How long to sit on a turn before appending it. Long enough that a burst of
+#: turns is one library scan, short enough that a turn is listenable while the
+#: conversation is still going — which is the whole point of an item that
+#: appends.
+DEFAULT_DEBOUNCE_S = 60.0
 
 
 def quiet_s() -> float:
@@ -51,6 +62,16 @@ def quiet_s() -> float:
     except ValueError:
         minutes = DEFAULT_QUIET_MIN
     return max(60.0, minutes * 60.0)
+
+
+def debounce_s() -> float:
+    try:
+        seconds = float(os.environ.get("MEDIA_FEED_DEBOUNCE_S") or DEFAULT_DEBOUNCE_S)
+    except ValueError:
+        seconds = DEFAULT_DEBOUNCE_S
+    # A floor, because the arming itself costs a systemd-run and the thing it
+    # starts asks Audiobookshelf to scan; once a turn is plenty.
+    return max(15.0, seconds)
 
 
 def enabled() -> bool:
@@ -77,7 +98,7 @@ def arm(seconds: float | None = None) -> bool:
     if not enabled():
         return False
     try:
-        subprocess.Popen(["sh", "-c", command(seconds or quiet_s())],
+        subprocess.Popen(["sh", "-c", command(seconds or debounce_s())],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          stdin=subprocess.DEVNULL, start_new_session=True)
         return True

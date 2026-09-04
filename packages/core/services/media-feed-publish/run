@@ -30,33 +30,22 @@ if [ -z "${MEDIA_FEED_BASE_URL:-}" ]; then
     exit 0
 fi
 export MEDIA_FEED_TOKEN MEDIA_FEED_BASE_URL MEDIA_FEED_SPOOL
-# Publish, then hand what changed straight to Audiobookshelf rather than
-# waiting for its own hourly sweep. Three hourly stages in a row (publish,
-# subscribe, download) meant a conversation could take most of an afternoon to
-# reach the phone; chained, it is one tick.
-media feed publish-quiet ${MEDIA_FEED_QUIET_MIN:+--quiet-min "$MEDIA_FEED_QUIET_MIN"}
-
-# The same conversations, laid out as books. Audiobookshelf's chapter
-# navigation is first-class for books and second-class for podcast episodes —
-# on the Android app the chapter list of a conversation does not navigate at
-# all — and a conversation is nothing but chapters. Hardlinks, so this is a
-# second *name*, not a second copy.
-media feed books >/dev/null && media abs-scan --target conversations >/dev/null 2>&1
-
-# The same conversations again, laid out as items that GROW: one track per
-# turn, appended as turns land, nothing ever rewritten. Opt-in
-# (MEDIA_BOOK_TRACKS=1) while the concatenated export above is still what gets
-# delivered — the two share the tree under different authors and neither
-# touches the other's files.
+# A turn has landed (or the poll came round): put it on the shelf.
 #
-# This one does not wait for a conversation to go quiet, which is the point: a
-# turn can be on the shelf minutes after it was spoken instead of an hour after
-# the conversation ends. It runs its own scan, because re-opening an item that
-# a listener had finished has to ask the server for a duration that already
-# includes the new track.
-if [ -n "${MEDIA_BOOK_TRACKS:-}" ]; then
-    media feed tracks ${MEDIA_BOOK_TRACKS_SINCE_H:+--since-hours "$MEDIA_BOOK_TRACKS_SINCE_H"} >/dev/null
-fi
-
-command -v media-abs-sync >/dev/null 2>&1 && exec media-abs-sync
-exit 0
+# What this used to do was wait for a conversation to go quiet for an hour,
+# concatenate every clip into one mp3, publish it as a podcast episode, and
+# hardlink that same file into a book tree — three representations of one
+# conversation, two of them reaching Audiobookshelf, and 91MB of duplicated
+# audio whose only justification was that an RSS enclosure has to be one file.
+# Nothing but Audiobookshelf ever read those feeds.
+#
+# So: the clips are the tracks, the turns are the chapters, and the library
+# holds the only copy it needs — the item's files are hardlinks, so they keep
+# the audio alive even when the render cache is swept. A conversation is
+# listenable while it is still being had, instead of an hour after it ends.
+#
+# Still here when it is wanted, by hand: `media feed session <id>` publishes a
+# conversation as one file the old way, which is what to reach for before its
+# clips age out of the cache. Documents keep their feeds — a document is
+# finished media, which is what a podcast episode is for.
+media feed tracks ${MEDIA_BOOK_TRACKS_SINCE_H:+--since-hours "$MEDIA_BOOK_TRACKS_SINCE_H"}
