@@ -12,7 +12,7 @@ import json
 
 import pytest
 
-from agent_media_core import book_export, book_tracks, session_feed
+from agent_media_core import book_tracks, session_feed
 
 
 @pytest.fixture(autouse=True)
@@ -71,9 +71,11 @@ def test_the_clips_are_the_tracks_named_by_what_they_say(conversation):
         assert track.stat().st_nlink == 2  # linked, never copied
 
 
-def test_the_author_says_these_are_the_growing_ones(conversation):
+def test_the_folder_is_workspace_over_title(conversation):
+    """What a book library reads off a path: the author is the workspace, the
+    title is the conversation."""
     folder, _ = book_tracks.export_session("sess-1")
-    assert folder.parent.name == "p-agent-media (live)"
+    assert folder.parent.name == "p-agent-media"
     assert folder.name == "How the growing item works"
 
 
@@ -154,59 +156,3 @@ def test_a_track_is_a_second_name_not_a_second_copy(tmp_path):
     out = tmp_path / "item" / "0001 - one.mp3"
     assert book_tracks.place_clip(str(src), out) == out
     assert out.stat().st_ino == src.stat().st_ino
-
-
-# --- the two trees share a shelf -------------------------------------------
-
-def test_the_prune_leaves_the_growing_items_alone(tmp_path, monkeypatch):
-    """`book_export` deletes any book folder the feeds do not account for, and
-    nothing here comes from a feed. Without the guard, every growing item is
-    swept on the next publish — mid-listen, for tidiness."""
-    monkeypatch.setattr(book_export, "root", lambda: tmp_path / "books")
-    monkeypatch.setattr(book_export.feedmod, "feeds", lambda: [])
-    live = tmp_path / "books" / f"p-agent-media{book_tracks.LIVE_SUFFIX}" / "Item"
-    live.mkdir(parents=True)
-    (live / "001 - turn.mp3").write_bytes(b"x")
-    finished = tmp_path / "books" / "p-agent-media" / "Old Episode"
-    finished.mkdir(parents=True)
-    (finished / "Old Episode.mp3").write_bytes(b"x")
-
-    linked, removed = book_export.export(where=tmp_path / "books")
-
-    assert live.exists() and (live / "001 - turn.mp3").exists()
-    assert not finished.exists()
-    assert removed == 1
-
-
-def test_both_modules_agree_on_the_suffix():
-    assert book_export.LIVE_SUFFIX == book_tracks.LIVE_SUFFIX
-
-
-# --- the chapter list ------------------------------------------------------
-
-def test_chapters_are_turns_over_tracks_that_are_sentences():
-    """The two units answer different questions: tracks are the clips that
-    already exist, chapters are what a listener moves around by."""
-    turns = [{"at": 1, "title": "First turn", "files": ["a", "b"]},
-             {"at": 2, "title": "Second turn", "files": ["c"]}]
-    tracks = [{"startOffset": 0, "duration": 5},
-              {"startOffset": 5, "duration": 7},
-              {"startOffset": 12, "duration": 3}]
-    assert book_tracks.chapters_from(turns, tracks) == [
-        {"id": 0, "start": 0.0, "end": 12.0, "title": "First turn"},
-        {"id": 1, "start": 12.0, "end": 15.0, "title": "Second turn"}]
-
-
-def test_chapters_stop_where_the_tracks_do():
-    """A scan that has not caught up yet describes fewer tracks than the
-    manifest wrote. Chapters past that point would be offsets invented here."""
-    turns = [{"at": 1, "title": "One", "files": ["a"]},
-             {"at": 2, "title": "Two", "files": ["b"]}]
-    tracks = [{"startOffset": 0, "duration": 4}]
-    assert [c["title"] for c in book_tracks.chapters_from(turns, tracks)] == ["One"]
-
-
-def test_a_manifest_without_titles_reads_them_off_the_filenames():
-    turns = [{"at": 1, "files": ["0001 - What it says here.mp3"]}]
-    tracks = [{"startOffset": 0, "duration": 4}]
-    assert book_tracks.chapters_from(turns, tracks)[0]["title"] == "What it says here"

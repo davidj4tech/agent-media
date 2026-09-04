@@ -1,20 +1,14 @@
-"""A conversation as a library item that grows: one track per turn.
+"""A conversation as a library item that grows: the clips, as they land.
 
-`book_export` lays a conversation out the way a podcast does — one file, one
-chapter per turn — and that file is rebuilt from scratch every time the
-conversation gains a turn. It is the shape a *finished* thing has, and it costs
-what finishing costs: nothing can be published until the conversation goes
-quiet, an 80-minute reply history is re-concatenated to add two minutes to it,
-and every client that already fetched the old file is holding something that
-has silently changed underneath it.
+What this replaced built one file per conversation — every clip concatenated,
+one chapter per turn — and rebuilt it from scratch each time another turn
+landed. Nothing could be published until the conversation had been quiet for an
+hour, an 80-minute history was re-concatenated to add two minutes to it, and
+anyone holding the old file was holding something that had changed underneath
+them. It also cost a second copy of every conversation: 91MB of spool beside
+the clips it was made from.
 
-This lays the same conversation out as what it actually is: an item that
-**appends**. Each turn is its own track, written once, never rewritten:
-
-    <root>/<workspace>/<title>/001 - <first sentence>.mp3
-                              /002 - <first sentence>.mp3
-
-Measured against Audiobookshelf 2.35.1 before it was written (see
+Measured against Audiobookshelf 2.35.1 before any of this was written (see
 `docs/proposals/2026-09-02-growing-item-experiment.md`): a scan of a folder
 that gained a file keeps the same item id, appends the track at the right
 offset, leaves the existing files' inode, index and mtime alone, and preserves
@@ -44,33 +38,38 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 from pathlib import Path
 from typing import Optional
 
 from . import session_feed
-from .book_export import root as book_export_root, safe_name
 from ._paths import state_dir
 
 log = logging.getLogger(__name__)
 
 
-#: Appended to the workspace, which is the author a book library reads off the
-#: folder. The growing items share the tree the concatenated ones live in —
-#: that tree is what the scanner is already pointed at, and a second one would
-#: mean a second mount and a second library for a trial. So they share the
-#: shelf and differ by author: "p-agent-media" holds the finished files,
-#: "p-agent-media (live)" holds the same conversations as items that append.
-#: `book_export.export` knows to leave these alone when it prunes; without
-#: that they would last until the next publish.
-LIVE_SUFFIX = " (live)"
+#: A folder name a scanner and three filesystems can all live with. Not the
+#: episode title verbatim: those carry `/`, `:` and the em dash that separates
+#: workspace from question.
+_UNSAFE = re.compile(r"[^\w .,()'’-]+")
+
+
+def safe_name(text: str, limit: int = 110) -> str:
+    name = _UNSAFE.sub(" ", (text or "").replace("·", "-")).strip()
+    name = re.sub(r"\s+", " ", name).strip(" .")
+    if len(name) > limit:
+        name = name[:limit].rsplit(" ", 1)[0].rstrip(" .,-")
+    return name or "conversation"
 
 
 def root() -> Path:
-    """Where the growing library lives. `MEDIA_BOOK_TRACKS_ROOT` overrides;
-    otherwise the book tree `book_export` already writes, one author over."""
-    raw = os.environ.get("MEDIA_BOOK_TRACKS_ROOT", "").strip()
-    return Path(raw).expanduser() if raw else book_export_root()
+    """Where the library lives. `MEDIA_BOOK_TRACKS_ROOT` overrides, and
+    `MEDIA_BOOK_EXPORT_ROOT` still does too — it named this tree first, and a
+    host that set it meant this tree."""
+    raw = (os.environ.get("MEDIA_BOOK_TRACKS_ROOT", "").strip()
+           or os.environ.get("MEDIA_BOOK_EXPORT_ROOT", "").strip())
+    return Path(raw).expanduser() if raw else Path.home() / "conversations"
 
 
 def _manifest_path(session: str) -> Path:
@@ -154,7 +153,7 @@ def folder_for(session: str, turns: list, manifest: dict) -> Optional[Path]:
         return None
     workspace = session_feed.workspace_for(session, turns)
     title = session_feed.title_for(session, turns)
-    return root() / (safe_name(workspace) + LIVE_SUFFIX) / safe_name(title)
+    return root() / safe_name(workspace) / safe_name(title)
 
 
 def export_session(session: str, *, store=None) -> tuple[Optional[Path], int]:
