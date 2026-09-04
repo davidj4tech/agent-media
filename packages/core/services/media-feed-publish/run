@@ -43,5 +43,20 @@ media feed publish-quiet ${MEDIA_FEED_QUIET_MIN:+--quiet-min "$MEDIA_FEED_QUIET_
 # second *name*, not a second copy.
 media feed books >/dev/null && media abs-scan --target conversations >/dev/null 2>&1
 
+# The same conversations again, laid out as items that GROW: one track per
+# turn, appended as turns land, nothing ever rewritten. Opt-in
+# (MEDIA_BOOK_TRACKS=1) while the concatenated export above is still what gets
+# delivered — the two share the tree under different authors and neither
+# touches the other's files.
+#
+# This one does not wait for a conversation to go quiet, which is the point: a
+# turn can be on the shelf minutes after it was spoken instead of an hour after
+# the conversation ends. It runs its own scan, because re-opening an item that
+# a listener had finished has to ask the server for a duration that already
+# includes the new track.
+if [ -n "${MEDIA_BOOK_TRACKS:-}" ]; then
+    media feed tracks ${MEDIA_BOOK_TRACKS_SINCE_H:+--since-hours "$MEDIA_BOOK_TRACKS_SINCE_H"} >/dev/null
+fi
+
 command -v media-abs-sync >/dev/null 2>&1 && exec media-abs-sync
 exit 0

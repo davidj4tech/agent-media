@@ -5504,6 +5504,44 @@ def cmd_feed(a) -> int:
         print(f"{book_export.root()}: {linked} linked, {removed} removed")
         return 0
 
+    if fc == "tracks":
+        # The growing layout: a conversation as an item that appends, one
+        # track per turn. Opt-in while the concatenated export is still the
+        # one being delivered — both write to the same tree, under different
+        # authors, so running this changes nothing about the other.
+        from . import book_tracks
+
+        sess = (getattr(a, "session", "") or "").strip()
+        rows = ([(sess, *book_tracks.export_session(sess))] if sess
+                else book_tracks.export_all(
+                    since_hours=float(getattr(a, "since_hours", 24.0))))
+        grew = [(folder, added) for _s, folder, added in rows
+                if folder is not None and added]
+        for folder, added in grew:
+            print(f"{folder}: +{added} track(s)")
+        if not grew:
+            print("no new turns")
+            return 0
+        if getattr(a, "no_reopen", False):
+            return 0
+
+        # Order matters, and it is the whole reason this is not two commands.
+        # Re-opening an item asks the server what its duration is now; ask
+        # before the scan and the answer is the length it was before the turn
+        # landed, which is the position a finished listener would be put back
+        # to. So: write the files, make the server look, then re-open.
+        from . import library
+
+        if not library.trigger_abs_scan("conversations"):
+            print("media feed tracks: no Audiobookshelf to scan — tracks are "
+                  "on disk, nothing was re-opened", file=sys.stderr)
+            return 0
+        time.sleep(float(os.environ.get("MEDIA_ABS_SCAN_WAIT_S") or 10.0))
+        for folder, _added in grew:
+            if book_tracks.reopen(folder):
+                print(f"{folder.name}: re-opened (it had been finished)")
+        return 0
+
     if fc == "xml":
         base = _feed_base_url() or "http://localhost"
         sys.stdout.write(feedmod.feed_xml(
@@ -7776,6 +7814,18 @@ def _add_book_parser(sub) -> None:
     f.add_parser("books",
                  help="mirror conversations into a book tree Audiobookshelf "
                       "can scan (chapters navigate properly there)")
+
+    ft = f.add_parser("tracks",
+                      help="write conversations as items that GROW — one "
+                           "track per turn, appended as turns land")
+    ft.add_argument("--session", default="",
+                    help="one conversation (Claude session id); default all "
+                         "that have spoken lately")
+    ft.add_argument("--since-hours", type=float, default=24.0,
+                    help="only conversations with a turn this recently "
+                         "(0 = every one there has ever been)")
+    ft.add_argument("--no-reopen", action="store_true",
+                    help="do not clear isFinished on an item that grew")
 
     fx = f.add_parser("xml", help="print the feed XML (does not write it)")
     fx.add_argument("name")

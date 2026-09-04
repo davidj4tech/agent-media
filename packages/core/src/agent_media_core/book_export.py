@@ -39,6 +39,11 @@ log = logging.getLogger(__name__)
 #: has no workspace and no turns, and it belongs in the feed it already has.
 SKIP_FEEDS = frozenset({"docs", "digest"})
 
+#: Authors this tree does not own. Defined here rather than imported from
+#: `book_tracks` so the prune cannot be made to depend on the module whose work
+#: it is protecting; the two must agree, and the test says so.
+LIVE_SUFFIX = " (live)"
+
 
 def root() -> Path:
     """Where the book tree lives. `MEDIA_BOOK_EXPORT_ROOT` overrides."""
@@ -110,6 +115,12 @@ def export(where: Optional[Path] = None) -> tuple[int, int]:
     removed = 0
     keep_dirs = {p.parent for p in wanted}
     for author in sorted(p for p in where.iterdir() if p.is_dir()):
+        # The growing items (book_tracks) share this shelf under their own
+        # author. They are not built from feed episodes, so nothing here can
+        # ever say it wants them, and the sweep below would take every one on
+        # its next run — a conversation deleted mid-listen for tidiness.
+        if author.name.endswith(LIVE_SUFFIX):
+            continue
         for book in sorted(p for p in author.iterdir() if p.is_dir()):
             if book in keep_dirs:
                 continue
