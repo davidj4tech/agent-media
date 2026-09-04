@@ -30,20 +30,24 @@ def _clip(tmp_path, name: str, body: bytes = b"audio") -> str:
     return str(p)
 
 
-def _turn(tmp_path, at: float, text: str, clips: int = 1):
+def _turn(tmp_path, at: float, text: str, clips: int = 1, said=None):
     return session_feed.Turn(
         at=at, text=text, workspace="p-agent-media",
         clips=[_clip(tmp_path, f"{at}-{i}.mp3", f"clip {at}.{i}".encode())
                for i in range(clips)],
-        durations=[3.0] * clips)
+        durations=[3.0] * clips,
+        sentences=list(said or []))
 
 
 @pytest.fixture
 def conversation(tmp_path, monkeypatch):
     """Three turns that can be added to, one clip each (no ffmpeg needed)."""
-    turns = [_turn(tmp_path, 100.0, "First thing said."),
-             _turn(tmp_path, 200.0, "Second thing said."),
-             _turn(tmp_path, 300.0, "Third thing said.")]
+    turns = [_turn(tmp_path, 100.0, "First thing said.", clips=2,
+                   said=["First thing said.", "And a second sentence."]),
+             _turn(tmp_path, 200.0, "Second thing said.", clips=1,
+                   said=["Second thing said."]),
+             _turn(tmp_path, 300.0, "Third thing said.", clips=1,
+                   said=["Third thing said."])]
     state = {"turns": turns[:2]}
     monkeypatch.setattr(session_feed, "turns",
                         lambda session, store=None: list(state["turns"]))
@@ -54,12 +58,17 @@ def conversation(tmp_path, monkeypatch):
     return state, turns
 
 
-def test_a_conversation_becomes_one_track_per_turn(conversation):
-    state, _ = conversation
+def test_the_clips_are_the_tracks_named_by_what_they_say(conversation):
+    """No audio is written: each track is a second name for the clip the
+    renderer already made, and it is named with the sentence it says."""
     folder, added = book_tracks.export_session("sess-1")
-    assert added == 2
+    assert added == 3                      # two clips in turn one, one in turn two
     assert sorted(p.name for p in folder.iterdir()) == [
-        "001 - First thing said.mp3", "002 - Second thing said.mp3"]
+        "0001 - First thing said.mp3",
+        "0002 - And a second sentence.mp3",
+        "0003 - Second thing said.mp3"]
+    for track in folder.iterdir():
+        assert track.stat().st_nlink == 2  # linked, never copied
 
 
 def test_the_author_says_these_are_the_growing_ones(conversation):
@@ -80,7 +89,7 @@ def test_a_new_turn_appends_and_touches_nothing_else(conversation):
     assert (folder2, added) == (folder, 1)
     after = {p.name: (p.stat().st_ino, p.stat().st_mtime_ns)
              for p in folder.iterdir()}
-    assert "003 - Third thing said.mp3" in after
+    assert "0004 - Third thing said.mp3" in after
     for name, was in before.items():
         assert after[name] == was, f"{name} was rewritten"
 
@@ -110,38 +119,40 @@ def test_a_lost_manifest_adopts_what_is_on_disk(conversation, tmp_path):
     book_tracks._manifest_path("sess-1").unlink()
 
     folder2, added = book_tracks.export_session("sess-1")
-    assert (folder2, added) == (folder, 0)
-    assert len(list(folder.iterdir())) == 2
+    assert (folder2, added) == (folder, 0)     # adopted, not re-linked
+    assert len(list(folder.iterdir())) == 3
     kept = json.loads(book_tracks._manifest_path("sess-1").read_text())
-    assert [t["file"] for t in kept["turns"]] == [
-        "001 - First thing said.mp3", "002 - Second thing said.mp3"]
+    assert [f for t in kept["turns"] for f in t["files"]] == [
+        "0001 - First thing said.mp3", "0002 - And a second sentence.mp3",
+        "0003 - Second thing said.mp3"]
 
 
-def test_a_turn_that_will_not_join_stops_the_run(conversation, monkeypatch):
-    """Turns are ordered, so skipping a failure would file the next turn's
-    audio under this one's number — a conversation quietly out of sequence."""
+def test_a_clip_that_will_not_go_stops_the_run(conversation, monkeypatch):
+    """The numbering is sequential, so carrying on past a failure would file
+    the next sentence under this one's number — a conversation out of order."""
     state, turns = conversation
     state["turns"] = turns
-    monkeypatch.setattr(book_tracks, "join_clips",
-                        lambda clips, out, expected=0.0: None)
+    monkeypatch.setattr(book_tracks, "place_clip", lambda src, out: None)
     folder, added = book_tracks.export_session("sess-1")
     assert added == 0
     assert not folder.exists() or not list(folder.iterdir())
 
 
 def test_track_numbers_are_padded_so_ten_follows_nine():
-    class T:
-        title = "A turn"
-    names = [book_tracks.track_name(i, T()) for i in (2, 10)]
-    assert names == ["002 - A turn.mp3", "010 - A turn.mp3"]
+    names = [book_tracks.track_name(i, "A sentence") for i in (2, 10, 1000)]
+    assert names[:2] == ["0002 - A sentence.mp3", "0010 - A sentence.mp3"]
     assert sorted(names) == names          # what a scanner will do with them
 
 
-def test_a_single_clip_turn_is_linked_not_copied(tmp_path):
+def test_a_clip_with_no_recorded_sentence_falls_back_to_the_turn():
+    assert book_tracks.track_name(1, "", "The turn") == "0001 - The turn.mp3"
+
+
+def test_a_track_is_a_second_name_not_a_second_copy(tmp_path):
     src = tmp_path / "one.mp3"
     src.write_bytes(b"the only copy")
-    out = tmp_path / "item" / "001 - one.mp3"
-    assert book_tracks.join_clips([str(src)], out) == out
+    out = tmp_path / "item" / "0001 - one.mp3"
+    assert book_tracks.place_clip(str(src), out) == out
     assert out.stat().st_ino == src.stat().st_ino
 
 
@@ -169,3 +180,33 @@ def test_the_prune_leaves_the_growing_items_alone(tmp_path, monkeypatch):
 
 def test_both_modules_agree_on_the_suffix():
     assert book_export.LIVE_SUFFIX == book_tracks.LIVE_SUFFIX
+
+
+# --- the chapter list ------------------------------------------------------
+
+def test_chapters_are_turns_over_tracks_that_are_sentences():
+    """The two units answer different questions: tracks are the clips that
+    already exist, chapters are what a listener moves around by."""
+    turns = [{"at": 1, "title": "First turn", "files": ["a", "b"]},
+             {"at": 2, "title": "Second turn", "files": ["c"]}]
+    tracks = [{"startOffset": 0, "duration": 5},
+              {"startOffset": 5, "duration": 7},
+              {"startOffset": 12, "duration": 3}]
+    assert book_tracks.chapters_from(turns, tracks) == [
+        {"id": 0, "start": 0.0, "end": 12.0, "title": "First turn"},
+        {"id": 1, "start": 12.0, "end": 15.0, "title": "Second turn"}]
+
+
+def test_chapters_stop_where_the_tracks_do():
+    """A scan that has not caught up yet describes fewer tracks than the
+    manifest wrote. Chapters past that point would be offsets invented here."""
+    turns = [{"at": 1, "title": "One", "files": ["a"]},
+             {"at": 2, "title": "Two", "files": ["b"]}]
+    tracks = [{"startOffset": 0, "duration": 4}]
+    assert [c["title"] for c in book_tracks.chapters_from(turns, tracks)] == ["One"]
+
+
+def test_a_manifest_without_titles_reads_them_off_the_filenames():
+    turns = [{"at": 1, "files": ["0001 - What it says here.mp3"]}]
+    tracks = [{"startOffset": 0, "duration": 4}]
+    assert book_tracks.chapters_from(turns, tracks)[0]["title"] == "What it says here"

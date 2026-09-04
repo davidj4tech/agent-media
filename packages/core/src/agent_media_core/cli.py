@@ -5515,13 +5515,20 @@ def cmd_feed(a) -> int:
         rows = ([(sess, *book_tracks.export_session(sess))] if sess
                 else book_tracks.export_all(
                     since_hours=float(getattr(a, "since_hours", 24.0))))
-        grew = [(folder, added) for _s, folder, added in rows
+        grew = [(session, folder, added) for session, folder, added in rows
                 if folder is not None and added]
-        for folder, added in grew:
+        for _session, folder, added in grew:
             print(f"{folder}: +{added} track(s)")
         if not grew:
             print("no new turns")
-            return 0
+            # Asked about one conversation by name, answer about it anyway:
+            # the tracks can be there while the item's chapters are not,
+            # because a manifest can be rebuilt from a tree that was already
+            # written. The sweep over every conversation stays quiet.
+            if not sess:
+                return 0
+            grew = [(session, folder, 0) for session, folder, _a in rows
+                    if folder is not None]
         if getattr(a, "no_reopen", False):
             return 0
 
@@ -5537,7 +5544,10 @@ def cmd_feed(a) -> int:
                   "on disk, nothing was re-opened", file=sys.stderr)
             return 0
         time.sleep(float(os.environ.get("MEDIA_ABS_SCAN_WAIT_S") or 10.0))
-        for folder, _added in grew:
+        for session, folder, _added in grew:
+            n = book_tracks.publish_chapters(session, folder)
+            if n:
+                print(f"{folder.name}: {n} chapter(s)")
             if book_tracks.reopen(folder):
                 print(f"{folder.name}: re-opened (it had been finished)")
         return 0

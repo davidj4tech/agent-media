@@ -79,6 +79,10 @@ class Turn:
     durations: list = field(default_factory=list)    # list[float]
     #: The tmux session this turn was spoken from, when the row recorded one.
     workspace: str = ""
+    #: One sentence per clip, when the row recorded the map and it still
+    #: lines up with the clips that survived. Empty otherwise — a caller that
+    #: wants to name a clip has to cope with not being told.
+    sentences: list = field(default_factory=list)
 
     @property
     def title(self) -> str:
@@ -121,18 +125,24 @@ def turns(session: str, *, store=None) -> list[Turn]:
             continue
         uris = ex.get("clip_uris") or ([row["uri"]] if row.get("uri") else [])
         durs = list(ex.get("clip_durations_s") or [])
-        clips, kept = [], []
+        said = list(ex.get("clip_sentences") or [])
+        clips, kept, lines = [], [], []
         for i, u in enumerate(uris):
             p = Path(str(u))
             if not p.is_file():
                 continue
             clips.append(p)
             kept.append(durs[i] if i < len(durs) else _ffprobe_duration(p))
+            # Carried per surviving clip, not per original: a clip the cache
+            # swept must take its sentence with it, or every later line names
+            # the wrong audio.
+            lines.append(said[i] if i < len(said) else "")
         if not clips:
             continue
         out.append(Turn(at=float(row.get("started_at") or 0),
                         text=(row.get("text") or ""),
                         clips=clips, durations=kept,
+                        sentences=(lines if any(lines) else []),
                         workspace=(ex.get("source_tmux_session") or "").strip()))
     out.sort(key=lambda t: t.at)
     return out

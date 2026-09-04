@@ -23,18 +23,20 @@ duration changing underneath it. The one thing it does not do by itself is
 re-open an item the listener had finished; `reopen` below is that, and it is
 two calls in an order the API does not advertise.
 
-**One track per turn, not per sentence.** The renderer splits a reply into a
-clip per sentence, so one conversation here is 686 clips across 80 minutes.
-As tracks that is a list no player wants to show and no person wants to scroll,
-and it would make Audiobookshelf keep 686 offsets for one item. A turn is the
-unit that actually lands atomically, it is what "something new arrived" means,
-and it makes the track list read like the conversation. A turn's own clips are
-joined once, when the turn is already over, and never touched again.
+**The clips are the tracks.** The renderer already splits a reply into a clip
+per sentence, and those files already exist — so this writes no audio at all.
+Each track is a *hardlink* to the clip the renderer made: one inode with two
+names, nothing to re-encode, nothing to keep in step, and a conversation costs
+the library zero bytes. Joining each turn into one file was tried first and
+undone: it wrote a second copy of every conversation, needed ffmpeg and a
+guard against concatenations that lie about their length, and bought only a
+shorter list.
 
-The join is a stream copy where it can be. A turn whose clips disagree about
-sample rate concatenates into a file that plays and lies about its length, so
-the result is measured and re-encoded when it does not match — the same guard
-`session_feed.build` carries, for the same reason.
+That list is the visible trade. Audiobookshelf makes a chapter of every track,
+so a conversation is chaptered by *sentence* — 336 of them for this one. Which
+is either a lot of rows, or a transcript you can jump around in; the sentence
+map the renderer recorded is what makes it the second, because each chapter is
+named with the words it is about to say.
 """
 
 from __future__ import annotations
@@ -43,8 +45,6 @@ import json
 import logging
 import os
 import shutil
-import subprocess
-import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -100,67 +100,41 @@ def _ffprobe(p: Path) -> float:
     return session_feed._ffprobe_duration(p)
 
 
-def join_clips(clips: list, out: Path, expected: float = 0.0) -> Optional[Path]:
-    """One turn's clips as one file. `out` on success, None on failure.
+def place_clip(src, out: Path) -> Optional[Path]:
+    """Give the clip a second name inside the item. `out`, or None.
 
-    A single clip is hardlinked rather than re-encoded: it is already exactly
-    the bytes this track should hold, the spool keeps the only durable copy,
-    and a link is one inode with two names. Cross-device falls back to a copy,
-    because a link that cannot be made is not a reason to have no track.
+    A hardlink, not a copy: the render cache holds the only durable copy of
+    this audio, and a byte-for-byte duplicate would double what a conversation
+    costs while being able to drift from it. Two names for one inode cannot
+    disagree, and deleting either never takes the audio with it. Cross-device
+    falls back to copying, because a link that cannot be made is not a reason
+    to have no track.
     """
     out.parent.mkdir(parents=True, exist_ok=True)
-    if len(clips) == 1:
-        src = Path(clips[0])
-        try:
-            os.link(src, out)
-        except OSError:
-            try:
-                shutil.copyfile(src, out)
-            except OSError as e:
-                log.warning("book-tracks: cannot place %s (%s)", src, e)
-                return None
+    src = Path(src)
+    try:
+        os.link(src, out)
+    except FileExistsError:
         return out
-
-    with tempfile.TemporaryDirectory(prefix="media-turn-") as tmp:
-        listing = Path(tmp) / "parts.txt"
-        listing.write_text("".join(f"file '{Path(c).as_posix()}'\n" for c in clips))
-
-        def _run(codec: list) -> bool:
-            try:
-                subprocess.run(
-                    ["ffmpeg", "-y", "-loglevel", "error",
-                     "-f", "concat", "-safe", "0", "-i", str(listing),
-                     *codec, str(out)],
-                    check=True, capture_output=True, timeout=600)
-            except (OSError, subprocess.SubprocessError) as e:
-                log.warning("book-tracks: ffmpeg failed (%s)", e)
-                return False
-            return out.exists() and out.stat().st_size > 0
-
-        if not _run(["-c", "copy"]):
+    except OSError:
+        try:
+            shutil.copyfile(src, out)
+        except OSError as e:
+            log.warning("book-tracks: cannot place %s (%s)", src, e)
             return None
-        # Same measurement session_feed.build makes, for the same reason: a
-        # concat of mixed sample rates plays and lies about its length, and a
-        # track whose duration is wrong puts every later offset in the item
-        # somewhere it is not.
-        got = _ffprobe(out)
-        if expected > 0 and abs(got - expected) > max(1.0, expected * 0.02):
-            log.info("book-tracks: %.1fs ≠ %.1fs expected — re-encoding",
-                     got, expected)
-            if not _run(["-c:a", "libmp3lame", "-q:a", "4"]):
-                return None
     return out
 
 
-def track_name(index: int, turn) -> str:
-    """`007 - First sentence of the turn.mp3`.
+def track_name(index: int, said: str, fallback: str = "") -> str:
+    """`007 - The sentence this clip says.mp3`.
 
     The index leads because a scanner orders an item's files by name, and it is
-    zero-padded because otherwise track 10 sorts before track 2 — which does
-    not corrupt anything, it just plays the conversation in the wrong order,
-    quietly.
+    zero-padded to four because otherwise track 10 sorts before track 2 — which
+    corrupts nothing, it just plays the conversation in the wrong order,
+    quietly. Four digits, because a long conversation is thousands of
+    sentences and the day that wraps is the day every later one is misfiled.
     """
-    return f"{index:03d} - {safe_name(turn.title, 90)}.mp3"
+    return f"{index:04d} - {safe_name(said or fallback, 90)}.mp3"
 
 
 def folder_for(session: str, turns: list, manifest: dict) -> Optional[Path]:
@@ -184,13 +158,18 @@ def folder_for(session: str, turns: list, manifest: dict) -> Optional[Path]:
 
 
 def export_session(session: str, *, store=None) -> tuple[Optional[Path], int]:
-    """Write any turns this conversation has gained. `(folder, added)`.
+    """Write any clips this conversation has gained. `(folder, added)`.
 
-    Idempotent and append-only: a turn already on disk is identified by the
-    `started_at` the history row carries, and is neither re-joined nor
-    re-named. Nothing that exists is ever rewritten, which is the whole
-    property that lets a client hold a downloaded copy while the conversation
-    goes on.
+    Idempotent and append-only. The turn is the unit that lands — a reply's
+    clips all exist by the time it is over — so a turn already exported is
+    identified by the `started_at` its history row carries and skipped whole.
+
+    The running number comes from the manifest, never from recounting the
+    turns. Speech history outlives the render cache, so a conversation can lose
+    an old turn's audio entirely (`session_feed.turns` drops what it cannot
+    find) — and a number derived by counting would then shift every track after
+    the gap, renaming files that are already on disk and already downloaded.
+    What has been written is what decides where the next one goes.
     """
     turns = session_feed.turns(session, store=store)
     manifest = _read_manifest(session)
@@ -198,30 +177,38 @@ def export_session(session: str, *, store=None) -> tuple[Optional[Path], int]:
     if folder is None:
         return None, 0
 
-    done = {float(t["at"]): t for t in manifest.get("turns", [])}
+    done = {float(t["at"]) for t in manifest.get("turns", [])}
     written = list(manifest.get("turns", []))
+    index = sum(len(t.get("files") or []) for t in written)
     added = 0
-    for i, turn in enumerate(turns, start=1):
+    for turn in turns:
         at = float(turn.at)
         if at in done:
             continue
-        expected = sum(turn.durations) or 0.0
-        dest = folder / track_name(i, turn)
-        if dest.exists():
-            # A file we did not record — a manifest lost while the tree
-            # survived. Adopt it rather than writing beside it under another
-            # name, which is how an item ends up playing a turn twice.
-            written.append({"at": at, "file": dest.name,
-                            "dur": _ffprobe(dest)})
-            continue
-        if join_clips(turn.clips, dest, expected) is None:
-            # Stop at the first failure: turns are ordered, and skipping one
-            # would put the next turn's audio at this one's index.
-            log.warning("book-tracks: %s stopped at turn %d", session, i)
+        files = []
+        for i, clip in enumerate(turn.clips):
+            said = turn.sentences[i] if i < len(turn.sentences) else ""
+            dest = folder / track_name(index + 1, said, turn.title)
+            if dest.exists():
+                # Ours already, from a run whose manifest was lost. Adopt it
+                # rather than counting it as new: "+12 tracks" for a run that
+                # wrote nothing is a report nobody can act on.
+                index += 1
+                files.append(dest.name)
+                continue
+            if place_clip(clip, dest) is not None:
+                index += 1
+                files.append(dest.name)
+                added += 1
+                continue
+            # Stop at the first clip that will not go: the numbering is
+            # sequential, so carrying on would file the next sentence under
+            # this one's number and leave the conversation out of order.
+            log.warning("book-tracks: %s stopped at track %d", session, index + 1)
             break
-        written.append({"at": at, "file": dest.name,
-                        "dur": expected or _ffprobe(dest)})
-        added += 1
+        if not files:
+            break
+        written.append({"at": at, "title": turn.title, "files": files})
 
     if added or not manifest:
         manifest.update({"session": session, "folder": str(folder),
@@ -271,6 +258,39 @@ def export_all(store=None, since_hours: float = 24.0) -> list:
 # because ABS reads un-finishing as starting over. So clear the flag, then put
 # the listener back — at the head of the turn they have not heard.
 
+def chapters_from(turns: list, tracks: list) -> list:
+    """One chapter per turn, over tracks that are one per sentence.
+
+    The two units are not in conflict, they answer different questions. The
+    *tracks* are the clips the renderer made, because those files already exist
+    and linking them costs nothing. The *chapters* are the turns, because that
+    is what a listener moves around by — 352 rows of one sentence each is a
+    transcript, not a table of contents.
+
+    Offsets come from the tracks as the server computed them, never from the
+    durations recorded here: the server is the thing that will play it, and if
+    the two ever disagree the one that is wrong is this one.
+    """
+    out, i = [], 0
+    for n, turn in enumerate(turns):
+        count = len(turn.get("files") or [])
+        if not count or i + count > len(tracks):
+            break
+        start = float(tracks[i].get("startOffset") or 0.0)
+        last = tracks[i + count - 1]
+        end = float(last.get("startOffset") or 0.0) + float(last.get("duration") or 0.0)
+        title = (turn.get("title") or "").strip()
+        if not title:
+            # A manifest written before titles were kept. The filename holds
+            # the sentence, which is the same words the title would have been.
+            name = (turn.get("files") or [""])[0]
+            title = name.rsplit(".", 1)[0].split(" - ", 1)[-1]
+        out.append({"id": n, "start": round(start, 3), "end": round(end, 3),
+                    "title": title[:120]})
+        i += count
+    return out
+
+
 def _abs_items(url: str, token: str, lib_id: str) -> list:
     import json as _json
     import urllib.request as _u
@@ -290,6 +310,96 @@ def _abs_patch(url: str, token: str, path: str, body: dict) -> None:
         return
 
 
+def _abs_ready(target=None):
+    """`(url, token, [libraries])` for the book libraries, or None when there is
+    no Audiobookshelf configured on this host — which is not a failure.
+
+    Every book library, not the configured one. A host with two of them —
+    "Audiobooks" and "Conversations" here — resolves an unset `ABS_LIBRARY` to
+    whichever came first, and looking for a conversation in the audiobooks is a
+    silent nothing: no item, no chapters, no complaint. The folder tail is
+    unique across libraries anyway, so searching them all cannot be wrong; the
+    configured one just goes first.
+    """
+    from . import library
+
+    url, token, want = library._abs_cfg(target)
+    if not url or not token:
+        return None
+    import json as _json
+    import urllib.request as _u
+    try:
+        req = _u.Request(f"{url}/api/libraries",
+                         headers={"Authorization": f"Bearer {token}"})
+        with _u.urlopen(req, timeout=15) as r:
+            libs = _json.loads(r.read()).get("libraries", [])
+    except Exception:  # noqa: BLE001
+        return None
+    books = [l for l in libs if l.get("mediaType") == "book"]
+    if want:
+        books.sort(key=lambda l: (l.get("id") != want and l.get("name") != want))
+    return (url, token, books) if books else None
+
+
+def _find_item(url: str, token: str, libs: list, folder: Path):
+    """The scanned item for this folder, or None.
+
+    Match on the tail of the path rather than the whole of it: the server sees
+    its mount ("/conversations/..."), this process sees the host's, and nothing
+    here is told how one maps onto the other. <author>/<title> is the part both
+    agree on.
+    """
+    tail = "/".join(folder.parts[-2:])
+    for lib in libs:
+        for i in _abs_items(url, token, lib["id"]):
+            if str(i.get("path", "")).replace("\\", "/").endswith(tail):
+                return i
+    return None
+
+
+def publish_chapters(session: str, folder: Path, *, target=None) -> int:
+    """Give the item a chapter per turn. Number written, or 0.
+
+    Audiobookshelf makes one chapter per audio file when it first scans a
+    multi-track item, which for clips-as-tracks means a chapter per sentence —
+    and on an item it later *updates*, it does not redo them at all: the item
+    grows to 352 tracks and keeps the 32 chapters it was born with, pointing at
+    moments that have moved. (That staleness is #525 upstream, and it is not
+    worth waiting for.) So the chapters are written here rather than inferred
+    there: the turn structure is in the manifest, the offsets are in the tracks
+    the server just scanned, and the API takes the list.
+    """
+    ready = _abs_ready(target)
+    if not ready:
+        return 0
+    url, token, libs = ready
+    item = _find_item(url, token, libs, folder)
+    if not item:
+        return 0
+    try:
+        import json as _json
+        import urllib.request as _u
+        req = _u.Request(f"{url}/api/items/{item['id']}?expanded=1",
+                         headers={"Authorization": f"Bearer {token}"})
+        with _u.urlopen(req, timeout=20) as r:
+            full = _json.loads(r.read())
+        chapters = chapters_from(_read_manifest(session).get("turns", []),
+                                 full.get("media", {}).get("tracks") or [])
+        if not chapters:
+            return 0
+        body = _json.dumps({"chapters": chapters}).encode()
+        req = _u.Request(f"{url}/api/items/{item['id']}/chapters", data=body,
+                         method="POST",
+                         headers={"Authorization": f"Bearer {token}",
+                                  "Content-Type": "application/json"})
+        with _u.urlopen(req, timeout=20):
+            pass
+        return len(chapters)
+    except Exception as e:  # noqa: BLE001
+        log.warning("book-tracks: chapters failed (%s)", e)
+        return 0
+
+
 def reopen(folder: Path, *, target=None) -> Optional[str]:
     """Bring a grown item back into Continue Listening. Item id, or None.
 
@@ -298,38 +408,29 @@ def reopen(folder: Path, *, target=None) -> Optional[str]:
     finished it — that last one needs nothing done, because a position mid-item
     already survives the append on its own.
     """
-    from . import library
+    import json as _json
+    import urllib.request as _u
 
-    url, token, want = library._abs_cfg(target)
-    if not url or not token:
+    ready = _abs_ready(target)
+    if not ready:
         return None
+    url, token, libs = ready
     try:
-        import json as _json
-        import urllib.request as _u
-        req = _u.Request(f"{url}/api/libraries",
-                         headers={"Authorization": f"Bearer {token}"})
-        with _u.urlopen(req, timeout=15) as r:
-            libs = _json.loads(r.read()).get("libraries", [])
-        lib = next((l for l in libs
-                    if l.get("id") == want or l.get("name") == want), None) if want else None
-        lib = lib or next((l for l in libs if l.get("mediaType") == "book"), None)
-        if not lib:
-            return None
-
-        # Match on the tail of the path rather than the whole of it: the
-        # server sees its mount ("/conversations/..."), this process sees the
-        # host's ("/home/ryer/conversations/..."), and nothing here is told how
-        # one maps onto the other. <author>/<title> is the part both agree on.
-        tail = "/".join(folder.parts[-2:])
-        item = next((i for i in _abs_items(url, token, lib["id"])
-                     if str(i.get("path", "")).replace("\\", "/").endswith(tail)), None)
+        item = _find_item(url, token, libs, folder)
         if not item:
             return None
 
         req = _u.Request(f"{url}/api/me/progress/{item['id']}",
                          headers={"Authorization": f"Bearer {token}"})
-        with _u.urlopen(req, timeout=15) as r:
-            prog = _json.loads(r.read() or b"{}")
+        try:
+            with _u.urlopen(req, timeout=15) as r:
+                prog = _json.loads(r.read() or b"{}")
+        except _u.HTTPError as e:
+            if e.code == 404:
+                # Nobody has played it. The commonest answer of all, and the
+                # one that used to be logged as a failure every half hour.
+                return None
+            raise
         if not prog.get("isFinished"):
             return None
 
@@ -342,7 +443,8 @@ def reopen(folder: Path, *, target=None) -> Optional[str]:
             body["duration"] = duration
             body["progress"] = min(1.0, at / duration) if duration else 0.0
         _abs_patch(url, token, f"/api/me/progress/{item['id']}", body)
-        log.info("book-tracks: reopened %s at %.0fs of %.0fs", tail, at, duration)
+        log.info("book-tracks: reopened %s at %.0fs of %.0fs",
+                 folder.name, at, duration)
         return item["id"]
     except Exception as e:  # noqa: BLE001 - a library that will not answer is not this job's problem
         log.warning("book-tracks: reopen failed (%s)", e)
