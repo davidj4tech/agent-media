@@ -79,6 +79,30 @@ inherit that, and three options present themselves:
 
 (1) is right; (2) is the honest shortcut for a first cut, and reversible.
 
+**"Do we need the token at all — you already log in to see the library?"**
+(David, 2026-09-05.) The login is a real gate, but on the wrong door: it
+authenticates a user to *Audiobookshelf*, while `/input` is on the canvas, a
+different service on red5:8781. The reply POST goes phone→canvas and never
+touches ABS, so an ABS session grants nothing there; anything on the tailnet can
+call it either way.
+
+The objection still lands, though, because the token is **not a login**. It is a
+shared secret the app can carry silently — set once in config, never typed,
+never shown. What is worth avoiding is a second credential *in the user's face*,
+and that is achievable without opening the endpoint.
+
+What the token is still worth is narrower than it looks. The canvas binds to the
+Tailscale IP (verified: `LISTEN 100.103.43.93:8781`), so the network is already
+a gate, and the token's stated job in canvas.py:308 is CSRF — a site your
+browser visits POSTing keystrokes into your agents. A Capacitor WebView showing
+the ABS app does not browse arbitrary sites, so that threat is close to absent
+*for the app*. But `MEDIA_VISUAL_TRUST_TAILNET` is global: dropping the token
+for Sasonica drops it for every browser on the tailnet too, which is exactly
+where the threat does live.
+
+So: keep the token, provision it silently. Identical friction to no auth, and it
+does not widen the browser path to get there.
+
 ## What it should not do
 
 Not a chat UI. The conversation's representation is audio — clips as tracks,
