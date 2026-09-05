@@ -329,3 +329,11 @@ def test_nothing_is_recorded_when_the_send_fails(monkeypatch, _allowed):
     monkeypatch.setattr(reply, "_record_turn", lambda s, t: recorded.append(s))
     ok, _ = reply.reply("item1", "hi", "tok")
     assert ok is False and recorded == []
+
+
+def test_a_multi_line_reply_is_flattened():
+    # send-keys types literally then presses Enter, so an embedded newline
+    # would submit half a message and strand the rest in the composer.
+    out = reply.compose("first line\nsecond line")
+    assert out == "first line second line"
+    assert reply.compose("a\nb", quote="q") == 'Re: "q" — a b'

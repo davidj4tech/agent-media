@@ -383,6 +383,11 @@ _QUOTE_LIMIT = 160
 
 
 def compose(text: str, quote: str = "") -> str:
+    # The reply is flattened too, not just the quote: the box grows to several
+    # rows now, and shift+enter puts a real newline in it. `send-keys` types
+    # literally and then presses Enter, so a newline mid-message would submit
+    # the first half and leave the rest sitting in the composer.
+    text = " ".join((text or "").split())
     quote = " ".join((quote or "").split())
     if not quote:
         return text
@@ -435,6 +440,7 @@ def reply(item: str, text: str, bearer: str, *, quote: str = "",
     session, err = session_for_item(item, bearer)
     if not session:
         return False, {"error": err, "status": 404}
+    text = " ".join(text.split())
     body = compose(text, quote)
 
     if mode == "branch":
