@@ -103,6 +103,11 @@ where the threat does live.
 So: keep the token, provision it silently. Identical friction to no auth, and it
 does not widen the browser path to get there.
 
+**Superseded** — see "The ABS login *can* be the credential" below. The phone
+sends its ABS bearer and the canvas verifies it with ABS, so no secret is
+provisioned to the phone at all. The token stays, unchanged, for the browser
+and the Open WebUI pipe.
+
 ## What it should not do
 
 Not a chat UI. The conversation's representation is audio — clips as tracks,
