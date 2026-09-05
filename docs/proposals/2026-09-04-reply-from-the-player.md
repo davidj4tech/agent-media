@@ -114,12 +114,59 @@ step, which is exactly what retiring the mirror was meant to end.
 
 ## Unknowns
 
-- **What happens when the session is dead.** Most conversations you listen to
-  are over. Refusing is honest and probably useless; starting a fresh session
-  seeded with the reply is what you would actually want, and is a much larger
-  feature. A first cut should refuse, visibly, and we should see how often it
-  bites.
+- ~~**What happens when the session is dead.**~~ Answered below.
 - **Whether the item id reaches the resolver cleanly.** The lookup is keyed on
   the folder path; whether the app can hand over something that maps to it
   without a fragile title match is unverified.
 - Whether the reply should pause playback while you type.
+
+## Dead sessions: resume them through tmux
+
+(David, 2026-09-05: "if a session doesn't exist anymore it should be resumed
+through tmux.") This is right, and it is much smaller than "start a fresh
+session seeded with the reply" made it sound — because resuming a Claude Code
+session in a tmux pane is already a solved, scripted thing here.
+
+`claude-resume --print` emits one row per resumable session with exactly the
+four fields the resolver needs: uuid, live flag, pane id, and cwd. Live
+detection is honest — it reads `--resume <uuid>` out of argv for resumed panes
+and the `SessionStart` hook registry at `~/.claude/tmux-sessions/<pane>` for
+fresh ones, driven off running processes, so stale registry rows do not lie.
+
+So the resolver's `session:<uuid>` target stops being pane-or-refuse and
+becomes pane-or-*revive*:
+
+1. Row is live (`●`) → type into that pane. Unchanged from the current plan.
+2. Row exists but is dead → open a window and resume it, then type into the new
+   pane.
+3. No row at all → refuse. That is a genuine miss, not a cold session.
+
+Case 2 has one hard constraint, learned the hard way and recorded in
+[[amux-start-needs-client]]: **Claude Code's TUI needs a tmux client attached at
+launch.** It cannot be spawned detached — the recipe that works is a
+`new-window` in the already-attached session:
+
+```
+tmux new-window -t projects-agent-media -c <cwd> \
+  "exec env -u ANTHROPIC_API_KEY claude --resume <uuid>"
+```
+
+`exec` so quitting claude closes the window rather than dropping to a shell.
+
+Two things then need care. **The startup race**: the reply cannot be typed until
+the TUI is up and taking input, so the resolver has to wait for readiness rather
+than sleep-and-hope — `send_input` already probes panes, and the same probe can
+be the gate. **Double-resume**: two instances on one session interleave writes
+into the same transcript, and the `SessionStart` resume guard already catches
+this — it switches focus to the rightful pane and warns both sides. Checking the
+live flag first means we never provoke it, but it is a floor under a race, which
+is reassuring.
+
+### What this changes about the token
+
+It sharpens the argument for keeping it. Until now a reply POST typed into a
+pane that already existed; now a phone tap can *spawn a process* on red5, with
+a cwd, at a session's own working directory. Still only `claude --resume` on a
+uuid we already have a manifest for — not arbitrary execution — but it is a
+real escalation of what the endpoint does, and the answer above holds: provision
+the token silently, do not open the endpoint.
