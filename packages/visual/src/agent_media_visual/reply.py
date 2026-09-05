@@ -68,40 +68,69 @@ def _abs_url() -> str:
     return url
 
 
-def _abs_get(url: str, bearer: str, path: str, method: str = "GET") -> dict | None:
+def _abs_get(url: str, bearer: str, path: str,
+             method: str = "GET") -> tuple[dict | None, int]:
+    """`(body, status)`. Status 0 means Audiobookshelf could not be reached.
+
+    The status matters: "your token is no good" and "the server did not
+    answer" look identical from here otherwise, and they need opposite
+    responses — one should send the app off to refresh its token, the other
+    must not, because a failed refresh logs the user out.
+    """
     req = urllib.request.Request(
         url + path, method=method,
         headers={"Authorization": f"Bearer {bearer}",
                  "Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=8) as r:
-            return json.loads(r.read())
+            return json.loads(r.read()), r.status
+    except urllib.error.HTTPError as e:
+        return None, e.code
     except (urllib.error.URLError, OSError, ValueError):
-        return None
+        return None, 0
 
 
-def abs_identity(bearer: str) -> dict | None:
-    """The ABS user this bearer belongs to, or None.
+def abs_identity(bearer: str) -> tuple[dict | None, int]:
+    """`(user, status)` for this bearer — who ABS says it belongs to.
 
-    Asks ABS the same question the app asks at startup. A wrong token, an
-    expired one, or an ABS that is down all land here as None — indistinguish-
-    able on purpose, since none of them may type.
+    Asks ABS the same question the app asks at startup. Only *successes* are
+    cached: caching a refusal meant one transient failure refused every reply
+    for the next minute, which is exactly how this first went wrong.
     """
     bearer = (bearer or "").strip()
     if not bearer:
-        return None
+        return None, 401
     now = time.monotonic()
     with _IDENT_LOCK:
         hit = _IDENT.get(bearer)
         if hit and now - hit[0] < _IDENT_TTL_S:
-            return hit[1]
+            return hit[1], 200
     url = _abs_url()
-    body = _abs_get(url, bearer, "/api/authorize", method="POST") if url else None
+    if not url:
+        return None, 0
+    body, status = _abs_get(url, bearer, "/api/authorize", method="POST")
     user = (body or {}).get("user") if isinstance(body, dict) else None
     user = user if isinstance(user, dict) and user.get("username") else None
-    with _IDENT_LOCK:
-        _IDENT[bearer] = (now, user)
-    return user
+    if user:
+        with _IDENT_LOCK:
+            _IDENT[bearer] = (now, user)
+    return user, status
+
+
+def _identity_error(status: int) -> dict:
+    """Turn "ABS would not tell us who this is" into an answer the app can act
+    on.
+
+    401 is the only status that should reach the app as 401, because the app
+    answers a 401 by refreshing its token and retrying — and if that refresh
+    fails it logs the user out. An Audiobookshelf that is merely down must
+    therefore never come back as 401: it would end the session over an outage.
+    """
+    if status == 401:
+        return {"error": "Audiobookshelf rejected that login", "status": 401}
+    if status in (0, 502, 503, 504):
+        return {"error": "Audiobookshelf did not answer", "status": 503}
+    return {"error": f"Audiobookshelf answered {status}", "status": 502}
 
 
 def may_reply(user: dict | None) -> tuple[bool, str]:
@@ -156,7 +185,7 @@ def session_for_item(item_id: str, bearer: str) -> tuple[str | None, str]:
     url = _abs_url()
     if not url:
         return None, "no Audiobookshelf configured on this host"
-    item = _abs_get(url, bearer, f"/api/items/{item_id}")
+    item, _status = _abs_get(url, bearer, f"/api/items/{item_id}")
     if not item:
         return None, "no such item"
     tail = _tail(item.get("path") or "")
@@ -376,13 +405,15 @@ def reply(item: str, text: str, bearer: str, *, quote: str = "",
     text = (text or "").strip()
     if not text:
         return False, {"error": "empty reply"}
-    user = abs_identity(bearer)
+    user, status = abs_identity(bearer)
+    if not user:
+        return False, _identity_error(status)
     ok, why = may_reply(user)
     if not ok:
-        return False, {"error": why}
+        return False, {"error": why, "status": 403}
     session, err = session_for_item(item, bearer)
     if not session:
-        return False, {"error": err}
+        return False, {"error": err, "status": 404}
     body = compose(text, quote)
 
     if mode == "branch":
@@ -421,12 +452,15 @@ def conversation(item: str, bearer: str) -> tuple[bool, dict]:
     the answer here is yes. Same two gates as `reply`, in the same order, so
     the box cannot appear where the send would be refused.
     """
-    ok, why = may_reply(abs_identity(bearer))
+    user, status = abs_identity(bearer)
+    if not user:
+        return False, _identity_error(status)
+    ok, why = may_reply(user)
     if not ok:
-        return False, {"error": why}
+        return False, {"error": why, "status": 403}
     session, err = session_for_item(item, bearer)
     if not session:
-        return False, {"error": err}
+        return False, {"error": err, "status": 404}
     pane = live_sessions().get(session, "")
     return True, {"session": session, "live": bool(pane), "pane": pane or None,
                   "resumable": session_exists(session)}

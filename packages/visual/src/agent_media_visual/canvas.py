@@ -1379,7 +1379,8 @@ class Handler(BaseHTTPRequestHandler):
             item = parse_qs(self.path.partition("?")[2]).get("item", [""])[0]
             bearer = (self.headers.get("Authorization") or "").removeprefix("Bearer").strip()
             ok, detail = _reply.conversation(item, bearer)
-            self._json(200 if ok else 404, {"ok": ok, **detail})
+            self._json(200 if ok else detail.pop("status", 404),
+                       {"ok": ok, **detail})
         elif path == "/speech":
             # One-shot speech-state peek for outside agents (a voice-mode
             # Claude asking "is the phone talking, and about what?" through
@@ -1540,16 +1541,17 @@ class Handler(BaseHTTPRequestHandler):
                 str(body.get("item") or ""), str(body.get("text") or ""), bearer,
                 quote=str(body.get("quote") or ""),
                 mode=str(body.get("mode") or "continue"))
+            status = detail.pop("status", 400)
             if not ok:
-                print(f"reply: refused ({detail.get('error')}) "
+                print(f"reply: refused {status} ({detail.get('error')}) "
                       f"from {self.client_address[0]}", file=sys.stderr)
-            self._json(200 if ok else 400, {"ok": ok, **detail})
+            self._json(200 if ok else status, {"ok": ok, **detail})
         elif path == "/focus":
             # The "opened in %23" link: pull the attached tmux client to a pane.
             from . import reply as _reply
             body = self._read_json() or {}
             bearer = (self.headers.get("Authorization") or "").removeprefix("Bearer").strip()
-            allowed = _authorized(self) or _reply.may_reply(_reply.abs_identity(bearer))[0]
+            allowed = _authorized(self) or _reply.may_reply(_reply.abs_identity(bearer)[0])[0]
             if not allowed:
                 self._json(401, {"error": "unauthorized"})
                 return

@@ -47,22 +47,41 @@ def test_identity_asks_abs_once_per_ttl(monkeypatch):
 
     def fake_get(url, bearer, path, method="GET"):
         calls.append((path, method, bearer))
-        return {"user": {"username": "david", "type": "root"}}
+        return {"user": {"username": "david", "type": "root"}}, 200
 
     monkeypatch.setattr(reply, "_abs_url", lambda: "http://abs")
     monkeypatch.setattr(reply, "_abs_get", fake_get)
     reply._IDENT.clear()
-    assert reply.abs_identity("tok")["username"] == "david"
-    assert reply.abs_identity("tok")["username"] == "david"
+    assert reply.abs_identity("tok")[0]["username"] == "david"
+    assert reply.abs_identity("tok")[0]["username"] == "david"
     assert calls == [("/api/authorize", "POST", "tok")]
 
 
 def test_identity_of_a_bad_token_is_none(monkeypatch):
     monkeypatch.setattr(reply, "_abs_url", lambda: "http://abs")
-    monkeypatch.setattr(reply, "_abs_get", lambda *a, **k: None)
+    monkeypatch.setattr(reply, "_abs_get", lambda *a, **k: (None, 401))
     reply._IDENT.clear()
-    assert reply.abs_identity("nope") is None
-    assert reply.abs_identity("") is None
+    assert reply.abs_identity("nope") == (None, 401)
+    assert reply.abs_identity("") == (None, 401)
+
+
+def test_a_refusal_is_never_cached(monkeypatch):
+    # One transient failure used to refuse every reply for the next minute.
+    answers = [(None, 0), ({"user": {"username": "d", "type": "root"}}, 200)]
+    monkeypatch.setattr(reply, "_abs_url", lambda: "http://abs")
+    monkeypatch.setattr(reply, "_abs_get", lambda *a, **k: answers.pop(0))
+    reply._IDENT.clear()
+    assert reply.abs_identity("tok") == (None, 0)
+    assert reply.abs_identity("tok")[0]["username"] == "d"
+
+
+def test_an_unreachable_abs_is_not_a_401(monkeypatch):
+    # A 401 sends the app off to refresh its token, and a failed refresh logs
+    # the user out — an outage must never do that.
+    assert reply._identity_error(0)["status"] == 503
+    assert reply._identity_error(503)["status"] == 503
+    assert reply._identity_error(401)["status"] == 401
+    assert reply._identity_error(500)["status"] == 502
 
 
 # --- item → session -----------------------------------------------------------
@@ -81,14 +100,14 @@ def test_item_resolves_to_its_session(tmp_path, monkeypatch):
     monkeypatch.setattr(reply, "_abs_url", lambda: "http://abs")
     # ABS reports its own mount; only the <author>/<title> tail is shared.
     monkeypatch.setattr(reply, "_abs_get",
-                        lambda *a, **k: {"path": "/conversations/scratch/scratch - Drones"})
+                        lambda *a, **k: ({"path": "/conversations/scratch/scratch - Drones"}, 200))
     assert reply.session_for_item("item1", "tok") == ("abc-1", "")
 
 
 def test_an_item_with_no_manifest_is_not_a_conversation(tmp_path, monkeypatch):
     _manifests(tmp_path, monkeypatch, [("abc-1", "/x/scratch/scratch - Drones")])
     monkeypatch.setattr(reply, "_abs_url", lambda: "http://abs")
-    monkeypatch.setattr(reply, "_abs_get", lambda *a, **k: {"path": "/books/Tolkien/Hobbit"})
+    monkeypatch.setattr(reply, "_abs_get", lambda *a, **k: ({"path": "/books/Tolkien/Hobbit"}, 200))
     sid, why = reply.session_for_item("item1", "tok")
     assert sid is None and "not a conversation" in why
 
@@ -97,7 +116,7 @@ def test_an_item_abs_will_not_show_us_is_refused(monkeypatch):
     # The caller's own bearer does the lookup, so ABS's library permissions
     # decide this for us: no item, no reply.
     monkeypatch.setattr(reply, "_abs_url", lambda: "http://abs")
-    monkeypatch.setattr(reply, "_abs_get", lambda *a, **k: None)
+    monkeypatch.setattr(reply, "_abs_get", lambda *a, **k: (None, 404))
     assert reply.session_for_item("item1", "tok") == (None, "no such item")
 
 
@@ -126,7 +145,7 @@ def test_reply_refuses_an_empty_message():
 
 
 def test_reply_refuses_a_user_who_may_not_type(monkeypatch):
-    monkeypatch.setattr(reply, "abs_identity", lambda b: {"username": "guest", "type": "user"})
+    monkeypatch.setattr(reply, "abs_identity", lambda b: ({"username": "guest", "type": "user"}, 200))
     monkeypatch.delenv("MEDIA_REPLY_USERS", raising=False)
     typed = []
     monkeypatch.setattr(reply, "session_for_item",
@@ -137,7 +156,7 @@ def test_reply_refuses_a_user_who_may_not_type(monkeypatch):
 
 
 def test_a_session_with_no_transcript_is_not_revived(monkeypatch):
-    monkeypatch.setattr(reply, "abs_identity", lambda b: {"username": "d", "type": "root"})
+    monkeypatch.setattr(reply, "abs_identity", lambda b: ({"username": "d", "type": "root"}, 200))
     monkeypatch.delenv("MEDIA_REPLY_ROOT", raising=False)
     monkeypatch.setattr(reply, "session_for_item", lambda *a, **k: ("gone-1", ""))
     monkeypatch.setattr(reply, "live_sessions", dict)
@@ -153,7 +172,7 @@ def test_a_session_with_no_transcript_is_not_revived(monkeypatch):
 
 @pytest.fixture
 def _allowed(monkeypatch):
-    monkeypatch.setattr(reply, "abs_identity", lambda b: {"username": "d", "type": "root"})
+    monkeypatch.setattr(reply, "abs_identity", lambda b: ({"username": "d", "type": "root"}, 200))
     monkeypatch.delenv("MEDIA_REPLY_ROOT", raising=False)
     monkeypatch.setattr(reply, "session_for_item", lambda *a, **k: ("sess-1", ""))
     monkeypatch.setattr(reply, "session_exists", lambda s: True)
@@ -246,7 +265,7 @@ def test_focus_walks_the_client_to_the_pane(monkeypatch):
 # --- "should the app draw a reply box here?" -----------------------------------
 
 def test_conversation_says_yes_for_a_live_one(monkeypatch):
-    monkeypatch.setattr(reply, "abs_identity", lambda b: {"username": "d", "type": "root"})
+    monkeypatch.setattr(reply, "abs_identity", lambda b: ({"username": "d", "type": "root"}, 200))
     monkeypatch.delenv("MEDIA_REPLY_ROOT", raising=False)
     monkeypatch.setattr(reply, "session_for_item", lambda *a, **k: ("sess-1", ""))
     monkeypatch.setattr(reply, "live_sessions", lambda: {"sess-1": "%7"})
@@ -258,15 +277,28 @@ def test_conversation_says_yes_for_a_live_one(monkeypatch):
 
 def test_conversation_says_no_to_someone_who_may_not_reply(monkeypatch):
     # The box must not appear where the send would be refused.
-    monkeypatch.setattr(reply, "abs_identity", lambda b: {"username": "guest", "type": "user"})
+    monkeypatch.setattr(reply, "abs_identity", lambda b: ({"username": "guest", "type": "user"}, 200))
     monkeypatch.delenv("MEDIA_REPLY_USERS", raising=False)
     ok, detail = reply.conversation("item1", "tok")
     assert ok is False and "not allowed" in detail["error"]
 
 
 def test_conversation_says_no_for_an_ordinary_audiobook(monkeypatch):
-    monkeypatch.setattr(reply, "abs_identity", lambda b: {"username": "d", "type": "root"})
+    monkeypatch.setattr(reply, "abs_identity", lambda b: ({"username": "d", "type": "root"}, 200))
     monkeypatch.delenv("MEDIA_REPLY_ROOT", raising=False)
     monkeypatch.setattr(reply, "session_for_item", lambda *a, **k: (None, "not a conversation"))
     ok, _ = reply.conversation("item1", "tok")
     assert ok is False
+
+
+def test_an_unreachable_abs_does_not_read_as_a_bad_login(monkeypatch):
+    monkeypatch.setattr(reply, "abs_identity", lambda b: (None, 0))
+    ok, detail = reply.reply("item1", "hi", "tok")
+    assert ok is False and detail["status"] == 503
+    assert "did not answer" in detail["error"]
+
+
+def test_a_rejected_token_reads_as_401(monkeypatch):
+    monkeypatch.setattr(reply, "abs_identity", lambda b: (None, 401))
+    ok, detail = reply.conversation("item1", "tok")
+    assert ok is False and detail["status"] == 401
