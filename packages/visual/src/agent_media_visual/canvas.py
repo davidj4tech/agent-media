@@ -12,6 +12,11 @@ Stdlib-only HTTP server. Endpoints:
                   the `media` CLI, same one-code-path as the tmux popup)
   POST /ctl       {"channel": ..., "action": ..., "arg": ...} → run a
                   whitelisted `media` transport command
+  POST /reply     {"item": "<abs item id>", "text": "...", "quote": "...",
+                   "mode": "continue"|"branch"} + an Audiobookshelf bearer →
+                  type into the session behind that conversation, reviving it
+                  in a background tmux window if it has ended
+  POST /focus     {"pane": "%23"} → bring the attached tmux client to a pane
   GET  /healthz   liveness
 
 Config (env):
@@ -1511,6 +1516,33 @@ class Handler(BaseHTTPRequestHandler):
             body = self._read_json() or {}
             ok, detail = send_input(str(body.get("text") or ""),
                                     str(body.get("target") or "speaker"))
+            self._json(200 if ok else 400, {"ok": ok, "detail": detail})
+        elif path == "/reply":
+            # Reply to a conversation from inside the Audiobookshelf player.
+            # Deliberately NOT gated by _authorized: the credential here is the
+            # caller's own ABS bearer, verified with ABS, so the phone carries
+            # no secret of ours. See reply.py and the proposal.
+            from . import reply as _reply
+            body = self._read_json() or {}
+            bearer = (self.headers.get("Authorization") or "").removeprefix("Bearer").strip()
+            ok, detail = _reply.reply(
+                str(body.get("item") or ""), str(body.get("text") or ""), bearer,
+                quote=str(body.get("quote") or ""),
+                mode=str(body.get("mode") or "continue"))
+            if not ok:
+                print(f"reply: refused ({detail.get('error')}) "
+                      f"from {self.client_address[0]}", file=sys.stderr)
+            self._json(200 if ok else 400, {"ok": ok, **detail})
+        elif path == "/focus":
+            # The "opened in %23" link: pull the attached tmux client to a pane.
+            from . import reply as _reply
+            body = self._read_json() or {}
+            bearer = (self.headers.get("Authorization") or "").removeprefix("Bearer").strip()
+            allowed = _authorized(self) or _reply.may_reply(_reply.abs_identity(bearer))[0]
+            if not allowed:
+                self._json(401, {"error": "unauthorized"})
+                return
+            ok, detail = _reply.focus(str(body.get("pane") or ""))
             self._json(200 if ok else 400, {"ok": ok, "detail": detail})
         elif path == "/play":
             # Replay a pane's last spoken clip — open like /agents (plays audio,
