@@ -1381,6 +1381,14 @@ class Handler(BaseHTTPRequestHandler):
             ok, detail = _reply.conversation(item, bearer)
             self._json(200 if ok else detail.pop("status", 404),
                        {"ok": ok, **detail})
+        elif path == "/conversation/log":
+            # The same conversation, read rather than heard.
+            from . import reply as _reply
+            item = parse_qs(self.path.partition("?")[2]).get("item", [""])[0]
+            bearer = (self.headers.get("Authorization") or "").removeprefix("Bearer").strip()
+            ok, detail = _reply.log_for_item(item, bearer)
+            self._json(200 if ok else detail.pop("status", 404),
+                       {"ok": ok, **detail})
         elif path == "/speech":
             # One-shot speech-state peek for outside agents (a voice-mode
             # Claude asking "is the phone talking, and about what?" through

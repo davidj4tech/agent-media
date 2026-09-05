@@ -546,6 +546,63 @@ def publish_chapters(session: str, folder: Path, *, target=None) -> int:
         return 0
 
 
+def conversation_log(session: str, folder: Path, *, target=None) -> list:
+    """The conversation as lines you can read. `[{start, end, who, text}]`.
+
+    A chapter title is one sentence, because a table of contents is for finding
+    your place. Reading what was actually said needs the whole turn, and the
+    whole turn is in speech history — the manifest keeps only what it needs to
+    name a file. So this joins the two: the manifest and the server's tracks
+    give each turn its position in the item, history gives it its words.
+
+    Read-only, and derived on demand. It is not a second copy of the
+    conversation to be kept in step with the audio; it is the same rows,
+    rendered.
+    """
+    turns = _read_manifest(session).get("turns", [])
+    if not turns:
+        return []
+
+    positions = []
+    ready = _abs_ready(target)
+    if ready:
+        url, token, libs = ready
+        item = _find_item(url, token, libs, folder)
+        if item:
+            try:
+                import json as _json
+                import urllib.request as _u
+                req = _u.Request(f"{url}/api/items/{item['id']}?expanded=1",
+                                 headers={"Authorization": f"Bearer {token}"})
+                with _u.urlopen(req, timeout=20) as r:
+                    full = _json.loads(r.read())
+                positions = chapters_from(
+                    turns, (full.get("media") or {}).get("tracks") or [])
+            except Exception as e:  # noqa: BLE001 — a log without times still reads
+                log.warning("book-tracks: no track offsets for the log (%s)", e)
+
+    # History keyed by the same `at` the manifest recorded, so a turn whose
+    # audio has been swept from the cache still has its words here.
+    said = {}
+    for t in session_feed.turns(session):
+        said[round(float(t.at), 3)] = t
+
+    out = []
+    for n, turn in enumerate(turns):
+        at = round(float(turn.get("at") or 0.0), 3)
+        spoken = said.get(at)
+        text = (spoken.text if spoken else turn.get("title") or "").strip()
+        who = "you" if (spoken and spoken.listener) else "agent"
+        if who == "you" and text.startswith("You: "):
+            # The label belongs to the chapter title, where there is no other
+            # way to tell the sides apart. Here the side is its own field.
+            text = text[len("You: "):]
+        pos = positions[n] if n < len(positions) else {}
+        out.append({"start": pos.get("start"), "end": pos.get("end"),
+                    "who": who, "text": text})
+    return out
+
+
 def reopen(folder: Path, *, target=None) -> Optional[str]:
     """Bring a grown item back into Continue Listening. Item id, or None.
 

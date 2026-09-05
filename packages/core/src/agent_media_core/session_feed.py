@@ -83,6 +83,9 @@ class Turn:
     #: lines up with the clips that survived. Empty otherwise — a caller that
     #: wants to name a clip has to cope with not being told.
     sentences: list = field(default_factory=list)
+    #: True when the listener typed this turn from the player rather than the
+    #: assistant speaking it. A conversation has two sides; this is which.
+    listener: bool = False
 
     @property
     def title(self) -> str:
@@ -143,6 +146,7 @@ def turns(session: str, *, store=None) -> list[Turn]:
                         text=(row.get("text") or ""),
                         clips=clips, durations=kept,
                         sentences=(lines if any(lines) else []),
+                        listener=bool(ex.get("listener")),
                         workspace=(ex.get("source_tmux_session") or "").strip()))
     out.sort(key=lambda t: t.at)
     return out

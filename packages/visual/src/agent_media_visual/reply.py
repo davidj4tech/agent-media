@@ -495,3 +495,38 @@ def conversation(item: str, bearer: str) -> tuple[bool, dict]:
     return True, {"session": session, "live": bool(pane), "pane": pane or None,
                   "resumable": session_exists(session)}
 
+
+def log_for_item(item: str, bearer: str) -> tuple[bool, dict]:
+    """The conversation behind `item`, as readable lines. Same gates as a reply.
+
+    Gated identically on purpose: the log is the words of the conversation, so
+    anyone who can read it could have read them by listening — but an account
+    that may not reply has no business being handed a transcript either.
+    """
+    user, status = abs_identity(bearer)
+    if not user:
+        return False, _identity_error(status)
+    ok, why = may_reply(user)
+    if not ok:
+        return False, {"error": why, "status": 403}
+    session, err = session_for_item(item, bearer)
+    if not session:
+        return False, {"error": err, "status": 404}
+    try:
+        from agent_media_core import book_tracks
+
+        for f in sorted(_manifest_dir().glob("*.json")):
+            try:
+                data = json.loads(f.read_text())
+            except (OSError, ValueError):
+                continue
+            if str(data.get("session") or f.stem) == session:
+                lines = book_tracks.conversation_log(
+                    session, Path(str(data.get("folder") or "")),
+                    target="conversations")
+                return True, {"session": session, "lines": lines}
+    except Exception as e:  # noqa: BLE001
+        return False, {"error": f"could not read the conversation ({e})",
+                       "status": 500}
+    return False, {"error": "no manifest for that conversation", "status": 404}
+
