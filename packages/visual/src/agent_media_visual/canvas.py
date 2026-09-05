@@ -12,6 +12,8 @@ Stdlib-only HTTP server. Endpoints:
                   the `media` CLI, same one-code-path as the tmux popup)
   POST /ctl       {"channel": ..., "action": ..., "arg": ...} → run a
                   whitelisted `media` transport command
+  GET  /conversation?item=<abs item id>   + an Audiobookshelf bearer →
+                  the session behind that item and whether it is still live
   POST /reply     {"item": "<abs item id>", "text": "...", "quote": "...",
                    "mode": "continue"|"branch"} + an Audiobookshelf bearer →
                   type into the session behind that conversation, reviving it
@@ -1369,6 +1371,15 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._send(403, b"invalid or expired pairing code\n",
                            "text/plain")
+        elif path == "/conversation":
+            # "Is this item a conversation I can reply to?" — what the app asks
+            # before it draws the reply box. Authed by the caller's own ABS
+            # bearer, like /reply.
+            from . import reply as _reply
+            item = parse_qs(self.path.partition("?")[2]).get("item", [""])[0]
+            bearer = (self.headers.get("Authorization") or "").removeprefix("Bearer").strip()
+            ok, detail = _reply.conversation(item, bearer)
+            self._json(200 if ok else 404, {"ok": ok, **detail})
         elif path == "/speech":
             # One-shot speech-state peek for outside agents (a voice-mode
             # Claude asking "is the phone talking, and about what?" through

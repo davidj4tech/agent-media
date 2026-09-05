@@ -411,3 +411,23 @@ def reply(item: str, text: str, bearer: str, *, quote: str = "",
     if send_err:
         return False, {"error": send_err, "session": session, "pane": pane}
     return True, {"session": session, "pane": pane, "opened": opened}
+
+
+def conversation(item: str, bearer: str) -> tuple[bool, dict]:
+    """Whether `item` is a conversation this caller may reply to.
+
+    The app asks this before drawing the reply box, so it never has to know
+    what a conversation is or which library holds them — it shows the box when
+    the answer here is yes. Same two gates as `reply`, in the same order, so
+    the box cannot appear where the send would be refused.
+    """
+    ok, why = may_reply(abs_identity(bearer))
+    if not ok:
+        return False, {"error": why}
+    session, err = session_for_item(item, bearer)
+    if not session:
+        return False, {"error": err}
+    pane = live_sessions().get(session, "")
+    return True, {"session": session, "live": bool(pane), "pane": pane or None,
+                  "resumable": session_exists(session)}
+

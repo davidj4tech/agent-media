@@ -241,3 +241,32 @@ def test_focus_walks_the_client_to_the_pane(monkeypatch):
     assert (ok, detail) == (True, "%7")
     assert ["switch-client", "-t", "work"] in calls
     assert ["select-pane", "-t", "%7"] in calls
+
+
+# --- "should the app draw a reply box here?" -----------------------------------
+
+def test_conversation_says_yes_for_a_live_one(monkeypatch):
+    monkeypatch.setattr(reply, "abs_identity", lambda b: {"username": "d", "type": "root"})
+    monkeypatch.delenv("MEDIA_REPLY_ROOT", raising=False)
+    monkeypatch.setattr(reply, "session_for_item", lambda *a, **k: ("sess-1", ""))
+    monkeypatch.setattr(reply, "live_sessions", lambda: {"sess-1": "%7"})
+    monkeypatch.setattr(reply, "session_exists", lambda s: True)
+    ok, detail = reply.conversation("item1", "tok")
+    assert ok is True
+    assert detail == {"session": "sess-1", "live": True, "pane": "%7", "resumable": True}
+
+
+def test_conversation_says_no_to_someone_who_may_not_reply(monkeypatch):
+    # The box must not appear where the send would be refused.
+    monkeypatch.setattr(reply, "abs_identity", lambda b: {"username": "guest", "type": "user"})
+    monkeypatch.delenv("MEDIA_REPLY_USERS", raising=False)
+    ok, detail = reply.conversation("item1", "tok")
+    assert ok is False and "not allowed" in detail["error"]
+
+
+def test_conversation_says_no_for_an_ordinary_audiobook(monkeypatch):
+    monkeypatch.setattr(reply, "abs_identity", lambda b: {"username": "d", "type": "root"})
+    monkeypatch.delenv("MEDIA_REPLY_ROOT", raising=False)
+    monkeypatch.setattr(reply, "session_for_item", lambda *a, **k: (None, "not a conversation"))
+    ok, _ = reply.conversation("item1", "tok")
+    assert ok is False
