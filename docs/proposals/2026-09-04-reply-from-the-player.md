@@ -1,7 +1,8 @@
 # Reply from the player
 
-Status: proposal, nothing built. 2026-09-04, out of the session that put
-Sasonica on the phone. The idea in one line: **while listening to a
+Status: **built**, 2026-09-05. Everything below is the design as argued out;
+what shipped, and the four places reality differed, are in "As built" at the
+end. Written 2026-09-04, out of the session that put Sasonica on the phone. The idea in one line: **while listening to a
 conversation in Sasonica, type a reply and have it land in the live session.**
 
 This would be the first change that exists only in the fork. Everything on the
@@ -315,4 +316,52 @@ which is exactly what you would have had to prune anyway.
 So: one reply box, two destinations — *continue* (revive, quoted, default) and
 *branch* (fresh session, seeded). Ship the first, add the second when the first
 has been used enough to know whether it is wanted.
+
+## As built (2026-09-05)
+
+Server, in agent-media: `packages/visual/.../reply.py` plus three endpoints on
+the canvas — `GET /conversation?item=` (is this a conversation I may reply
+to), `POST /reply`, `POST /focus`. 26 tests in
+`packages/visual/tests/test_reply.py`. App, on the `sasonica` branch:
+`components/item/ReplyBox.vue`, shown from the item page, with the canvas URL
+in settings (Preferences, not DeviceSettings — one string is not worth
+touching the Kotlin data class).
+
+Verified end to end against the real server: an ABS item resolved to its
+session, the session was found dead, revived in a background window, and the
+reply came back **"Received — reply box works."**
+
+Four things reality added:
+
+1. **Resuming prompts, and the prompt costs two minutes.** A long session opens
+   on "Resume from summary (recommended) / Resume full session as-is". A
+   revived window sits on that modal forever, so `pane_ready` answers it — the
+   one place we press Enter into a pane blind, mitigated by matching the
+   dialog's text first. Taking the recommended option then runs a compaction,
+   during which the reply waits in Claude Code's own queue. Hence `opened:
+   true` in the response and "it will pick this up shortly" in the app, rather
+   than "sent".
+2. **The window does not stay where we put it.** A SessionStart hook moves it
+   into the tmux session named for its project. The pane id survives, so this
+   is a nicer outcome than the one designed; do not "fix" the target.
+3. **`tmux new-window -t <name>` is a target *window*, not a session** — it
+   cheerfully lands the pane in some other session's window. `-t "<name>:"`.
+4. **No quote yet.** The app has no current-chapter to quote: the player keeps
+   its time in a component, not the store, and nothing commits a chapter. The
+   server takes and clips a `quote` (one line — `send-keys` presses Enter, so
+   an embedded newline would submit half a message), and the app will send one
+   as soon as the player exposes where you are. Quoting the *last* turn instead
+   would be worse than quoting nothing: it is confidently wrong when you are at
+   chapter three.
+
+`mode: "branch"` is implemented and tested server-side. No button for it yet,
+deliberately — continue first, as agreed.
+
+### Turning it on
+
+The canvas is tailnet-bound, so the setting takes red5's tailnet address
+(`http://100.103.43.93:8781`). Note the phone runs *its own* canvas on the same
+port; the sessions are on red5, so the address must be red5's. Root may reply
+with no configuration; anyone else needs `MEDIA_REPLY_USERS` on the canvas
+host.
 
