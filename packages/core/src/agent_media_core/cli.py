@@ -5536,8 +5536,13 @@ def cmd_feed(a) -> int:
             print("media feed tracks: no Audiobookshelf to scan — tracks are "
                   "on disk, nothing was re-opened", file=sys.stderr)
             return 0
-        time.sleep(float(os.environ.get("MEDIA_ABS_SCAN_WAIT_S") or 10.0))
         for session, folder, _added in grew:
+            # Wait for the scan to have actually happened, rather than for a
+            # fixed number of seconds — the difference between a reply landing
+            # in the app in five seconds and in fifteen.
+            book_tracks.wait_for_tracks(
+                folder, len(list(folder.glob("*.mp3"))),
+                timeout_s=float(os.environ.get("MEDIA_ABS_SCAN_WAIT_S") or 25.0))
             n = book_tracks.publish_chapters(session, folder)
             if n:
                 print(f"{folder.name}: {n} chapter(s)")

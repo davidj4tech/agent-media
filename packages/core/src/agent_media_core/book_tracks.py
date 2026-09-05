@@ -356,6 +356,66 @@ def _find_item(url: str, token: str, libs: list, folder: Path):
     return None
 
 
+def _abs_item(url: str, token: str, item_id: str) -> Optional[dict]:
+    import json as _json
+    import urllib.request as _u
+    req = _u.Request(f"{url}/api/items/{item_id}",
+                     headers={"Authorization": f"Bearer {token}"})
+    try:
+        with _u.urlopen(req, timeout=10) as r:
+            return _json.loads(r.read())
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _track_count(item: dict) -> int:
+    """How many audio files ABS holds for an item.
+
+    Two shapes: the library listing summarises (`media.numTracks`), while
+    `/api/items/<id>` expands (`media.audioFiles`) and carries no count at all.
+    Read whichever is there.
+    """
+    media = item.get("media") or {}
+    files = media.get("audioFiles")
+    if isinstance(files, list):
+        return len(files)
+    return int(media.get("numTracks") or 0)
+
+
+def wait_for_tracks(folder: Path, want: int, *, target=None,
+                    timeout_s: float = 25.0) -> bool:
+    """Block until Audiobookshelf's item for `folder` holds `want` tracks.
+
+    This replaces sleeping a fixed ten seconds after asking for a scan. The
+    sleep was a guess in both directions: too long when the scan finished in
+    two, and too short when it did not, in which case the chapters were written
+    against the durations the item had *before* the turn landed. Asking the
+    item how many tracks it has now is the actual question.
+
+    False on timeout, which is not fatal — the caller writes chapters anyway
+    and the next turn corrects them.
+    """
+    import time as _time
+
+    ready = _abs_ready(target)
+    if not ready:
+        return False
+    url, token, libs = ready
+    item = _find_item(url, token, libs, folder)
+    deadline = _time.monotonic() + timeout_s
+    while True:
+        if item:
+            fresh = _abs_item(url, token, item["id"]) or item
+            if _track_count(fresh) >= want:
+                return True
+        if _time.monotonic() >= deadline:
+            return False
+        _time.sleep(0.4)
+        if not item:
+            # The item did not exist yet at all — a conversation's first turn.
+            item = _find_item(url, token, libs, folder)
+
+
 def publish_chapters(session: str, folder: Path, *, target=None) -> int:
     """Give the item a chapter per turn. Number written, or 0.
 
