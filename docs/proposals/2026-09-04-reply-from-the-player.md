@@ -170,3 +170,67 @@ a cwd, at a session's own working directory. Still only `claude --resume` on a
 uuid we already have a manifest for — not arbitrary execution — but it is a
 real escalation of what the endpoint does, and the answer above holds: provision
 the token silently, do not open the endpoint.
+
+## The ABS login *can* be the credential — if the canvas verifies it
+
+(David, 2026-09-05: "the account login to sasonica is sufficient... maybe we
+can have different levels of access. the root account should have access to
+input by default.")
+
+I dismissed this above as "reusing an ABS credential would mean agent-media
+trusting ABS's session model". That was too quick, and the difference it missed
+is the whole design: **reusing a token blindly is not the same as verifying it
+with its issuer.**
+
+The app already holds an ABS bearer, and ABS already exposes the exact check
+the app itself does at startup — `POST /api/authorize` with that bearer, which
+returns the user object (`ServerConnectForm.vue:923`, `layouts/default.vue:166`,
+`ApiHandler.kt:727`). So the canvas can stop guessing:
+
+```
+phone --(ABS bearer)--> canvas /input
+                          canvas --(same bearer)--> ABS POST /api/authorize
+                          <-- {user: {username, type: root|admin|user|guest}}
+                          policy: may this user type into a session?
+```
+
+No ABS fork — this is stock ABS answering a question it already answers, which
+keeps [[abs-fork-direction]]'s finding ("the server needs no fork") intact. No
+second credential in the user's face: the login you already did *is* the
+authorization. And no amux token on the phone at all, which is strictly better
+than provisioning one silently — a secret that never leaves red5 cannot leak
+off it.
+
+The amux token stays accepted alongside, for the canvas page and the Open WebUI
+pipe. Two accepted credentials, one per caller class, rather than one stretched
+over both.
+
+### Levels
+
+`user.type` is `root` / `admin` / `user` / `guest` — the app already reads it
+(`store/user.js:20`). But ABS has no permission that means "may type into an
+agent", and bending an existing one (`permissions.update`, say) into that
+meaning would be a lie that outlives whoever wrote it. So the levels live in
+agent-media config, keyed on ABS username:
+
+- **root: allowed by default.** On a single-user server root is you, and making
+  the sole admin edit a config file to talk to their own agents is friction
+  with no security gained. Configurable off, for the day that stops being true.
+- **everyone else: denied by default**, allowed by explicit username. Not by
+  type — `admin` is a library-management role, and someone you trust to fix
+  metadata is not thereby someone you trust to type into a shell-adjacent
+  session.
+
+Denial should be visible in the app ("this account can't reply"), not a silent
+no-op.
+
+### What it costs
+
+- **The canvas now depends on ABS being reachable** to authorize a reply. Mild:
+  if ABS is down you were not listening to the conversation anyway.
+- **A round trip per POST.** Cache the `authorize` answer per token for a
+  minute or so; replies are typed by a human, so the rate is trivial.
+- **A bearer is not auto-attached by browsers**, so unlike a cookie this adds
+  no CSRF surface — the reason the amux token exists (canvas.py:308) is
+  untouched for the callers that still use it.
+
