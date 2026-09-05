@@ -27,18 +27,21 @@ phone and the living-room TV.
 
 ## What is left
 
-1. **The session payload still grows.** Fixed today by removing duplication
-   (1.7 MB → ~530 KB) — see below — but what remains is `audioTracks`, about
-   1.2 KB per track, growing with every turn. The failure returns eventually.
-   Two moves, in order of honesty:
-   - **One audio file per turn** instead of per sentence. This conversation
-     would be ~50 tracks rather than 421. Also the right structure: 421
-     chapters is not a table of contents. Buys ~8x; does not remove the class
-     of problem.
-   - **Find out whether `audioTracks` needs to cross the bridge at all.** The
-     native side is what plays; the web layer wants it for the scrub bar and
-     track mapping, and possibly little else. If it can be dropped or reduced,
-     the payload stops scaling with the conversation, which is a real fix.
+1. ~~**The session payload still grows.**~~ Answered, pending a sideload.
+   `sasonica` `55a477c2` takes `audioTracks` off the bridge entirely rather
+   than making it smaller: the question the previous session left open — does
+   it need to cross at all — measures as no. It is read in exactly one place
+   in the whole web layer, the browser-only fallback player in
+   `plugins/capacitor/AbsAudioPlayer.js`, which builds its own session from the
+   server and never receives the event. The scrub bar's duration and position
+   arrive on `onMetadata`; the chapter comes from the session's top-level
+   `chapters`. The local item's file and track lists went the same way (the
+   player reads only its id and cover), and `prepareLibraryItem`, which was
+   resolving the untrimmed session to two callers that discard it, now sends
+   the trimmed one. The payload no longer scales with the conversation, so one
+   file per turn is a structure argument now — 421 chapters is not a table of
+   contents — and not a payload one.
+
 2. **No quote from the app.** The server takes and clips a `quote`; the app
    sends none, because the player keeps its time in a component rather than the
    store and nothing exposes the current chapter. Quoting the *last* turn
