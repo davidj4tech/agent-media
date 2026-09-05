@@ -275,3 +275,44 @@ the ABS admin UI beats a config file on red5. Worth wanting, not worth a
 permanent divergence yet — and if it ever is, the capability list is what the
 checkbox would set anyway.
 
+## Settled behaviour (David, 2026-09-05)
+
+- **The reply goes to the end of the session, quoting the turn you were on.**
+  Not attached to that turn — quoting carries the context without needing a
+  resume-at-position mechanism that does not exist.
+- **The revived window opens in the background**, and the app shows where it
+  went — "opened in %23" as a tappable link. The link is a second small
+  endpoint doing what the resume-tmux skill already does for a live session:
+  `tmux switch-client` / `select-window` / `select-pane` on red5. So a tap on
+  the phone brings the desk screen to the pane. Single user, so focusing
+  someone else's screen is not a concern.
+- **The answer appends to the same item.** A finished conversation starts
+  growing again while you are inside it, which is the point.
+- **Pausing while you type is not our job.** Voice typing engages the mic, and
+  a mic engage already routes through call_guard, which holds the book. One
+  thing to verify rather than assume: [[book-misses-voice-sessions]] records
+  that the book never auto-resumes after a call — if that holds for a dictation
+  hold too, you get a pause and no resume, and the fix belongs in the hold
+  path, not in the reply box.
+
+### On branching
+
+Worth having, worth doing second, and worth doing the cheap way.
+
+Claude Code has no fork-at-turn: `--resume` takes a whole session. A true
+branch would mean copying the transcript jsonl truncated at the turn you were
+hearing and resuming *that* — possible, but it couples the fork to an
+undocumented internal format that changes without notice. Not a thing to build
+into a reply box.
+
+The honest version is **a new session seeded with the quoted turn** — same
+quote, same working directory, no history. That is nearly free once the reply
+path exists (it is the same POST with a different target), and it gets most of
+what branching is for: you want to take one thing somewhere else without
+disturbing a long conversation. What it loses is the context above the quote,
+which is exactly what you would have had to prune anyway.
+
+So: one reply box, two destinations — *continue* (revive, quoted, default) and
+*branch* (fresh session, seeded). Ship the first, add the second when the first
+has been used enough to know whether it is wanted.
+
