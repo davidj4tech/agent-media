@@ -302,3 +302,30 @@ def test_a_rejected_token_reads_as_401(monkeypatch):
     monkeypatch.setattr(reply, "abs_identity", lambda b: (None, 401))
     ok, detail = reply.conversation("item1", "tok")
     assert ok is False and detail["status"] == 401
+
+
+# --- the listener's own words go on the shelf too -------------------------------
+
+def test_a_sent_reply_is_recorded_as_a_turn(monkeypatch, _allowed):
+    from agent_media_visual import canvas
+    recorded = []
+    monkeypatch.setattr(reply, "live_sessions", lambda: {"sess-1": "%7"})
+    monkeypatch.setattr(canvas, "_pane_alive", lambda p: True)
+    monkeypatch.setattr(canvas, "_send_to_pane", lambda p, t: "")
+    monkeypatch.setattr(reply, "_record_turn", lambda s, t: recorded.append((s, t)))
+    ok, _ = reply.reply("item1", "try the second one", "tok", quote="a turn")
+    assert ok is True
+    # The words as typed, not the quoted line that went into the pane: the
+    # quote is context for the agent, not something the listener said.
+    assert recorded == [("sess-1", "try the second one")]
+
+
+def test_nothing_is_recorded_when_the_send_fails(monkeypatch, _allowed):
+    from agent_media_visual import canvas
+    recorded = []
+    monkeypatch.setattr(reply, "live_sessions", lambda: {"sess-1": "%7"})
+    monkeypatch.setattr(canvas, "_pane_alive", lambda p: True)
+    monkeypatch.setattr(canvas, "_send_to_pane", lambda p, t: "pane is gone")
+    monkeypatch.setattr(reply, "_record_turn", lambda s, t: recorded.append(s))
+    ok, _ = reply.reply("item1", "hi", "tok")
+    assert ok is False and recorded == []

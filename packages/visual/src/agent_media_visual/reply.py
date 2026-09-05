@@ -36,6 +36,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -390,6 +391,26 @@ def compose(text: str, quote: str = "") -> str:
     return f'Re: "{quote}" — {text}'
 
 
+def _record_turn(session: str, text: str) -> None:
+    """Put the listener's own words into the conversation, in the background.
+
+    Rendering takes a second or two and the reply has already been delivered,
+    so this must not sit in front of the response — the box would look stuck
+    for no reason the user could see. Failures are logged and dropped: the
+    words reached the session either way.
+    """
+    def run() -> None:
+        try:
+            from agent_media_core import book_tracks
+
+            book_tracks.record_listener_turn(session, text)
+        except Exception as e:  # noqa: BLE001 — the reply already landed
+            print(f"reply: could not shelve the listener's turn ({e})",
+                  file=sys.stderr)
+
+    threading.Thread(target=run, daemon=True).start()
+
+
 def reply(item: str, text: str, bearer: str, *, quote: str = "",
           mode: str = "continue") -> tuple[bool, dict]:
     """Put `text` into the session behind ABS item `item`.
@@ -421,6 +442,8 @@ def reply(item: str, text: str, bearer: str, *, quote: str = "",
         if err:
             return False, {"error": err, "pane": pane or None}
         send_err = canvas._send_to_pane(pane, body)
+        if not send_err:
+            _record_turn(session, text)
         return (not send_err), {"session": session, "pane": pane,
                                 "opened": True, "branched": True,
                                 **({"error": send_err} if send_err else {})}
@@ -441,6 +464,7 @@ def reply(item: str, text: str, bearer: str, *, quote: str = "",
     send_err = canvas._send_to_pane(pane, body)
     if send_err:
         return False, {"error": send_err, "session": session, "pane": pane}
+    _record_turn(session, text)
     return True, {"session": session, "pane": pane, "opened": opened}
 
 

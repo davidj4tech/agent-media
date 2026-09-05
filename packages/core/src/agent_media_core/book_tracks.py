@@ -156,6 +156,93 @@ def folder_for(session: str, turns: list, manifest: dict) -> Optional[Path]:
     return root() / safe_name(workspace) / safe_name(title)
 
 
+# --- the listener's own turns -------------------------------------------------
+#
+# A conversation you can reply to is a conversation with two people in it, and
+# only one of them was being recorded. The reply box put words into the session
+# and they vanished — the answer came back on the shelf, the question did not,
+# and a chapter list of answers to invisible questions is a worse record than
+# no record.
+#
+# So a typed reply is rendered to speech and written to speech history like any
+# other turn. It is not *played*: nobody wants their own message read at them
+# as they send it. The row is what matters — the exporter reads history, so the
+# turn lands in order, in the right item, with a chapter of its own, and the
+# audio is there for whoever plays the conversation back later.
+#
+# In a different voice, deliberately. The whole representation is audio, so the
+# only way to hear who is speaking is to hear it.
+
+#: Australian, and not the assistant's. Override with MEDIA_LISTENER_VOICE.
+LISTENER_VOICE = "en-AU-WilliamNeural"
+
+
+def record_listener_turn(session: str, text: str, *, store=None) -> bool:
+    """Render a reply the listener typed and add it to the conversation.
+
+    Returns whether the turn was recorded. A failed render is not fatal to the
+    reply itself — the words still reached the session, which is the point of
+    the feature; they just do not appear on the shelf.
+    """
+    import time as _time
+
+    text = " ".join((text or "").split())
+    if not text or not session:
+        return False
+    from ._paths import cache_dir
+    from .render.engines import render_text
+    from .state.store import StateStore
+
+    at = _time.time()
+    d = cache_dir() / "audio"
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        log.warning("book-tracks: no clip dir (%s)", e)
+        return False
+    stamp = _time.strftime("%Y%m%dT%H%M%S", _time.localtime(at))
+    out = d / f"{stamp}-listener-{safe_name(session, 8)}.mp3"
+
+    engine = os.environ.get("MEDIA_LISTENER_ENGINE") or "edge"
+    voice = os.environ.get("MEDIA_LISTENER_VOICE") or LISTENER_VOICE
+    ok, err = render_text(text, out, engine=engine, voice=voice,
+                          edge_voice=voice)
+    if not ok or not out.is_file():
+        log.warning("book-tracks: could not render a listener turn (%s)", err)
+        return False
+    dur = _ffprobe(out)
+
+    try:
+        st = store or StateStore()
+        st.add_history(
+            sink="speech", uri=str(out), started_at=at, ended_at=at + dur,
+            # Never played anywhere: the row exists to be archived, not routed.
+            target="none", source="listener", content_type="audio/mpeg",
+            # The chapter title comes from this text, so it carries the speaker
+            # label — a chapter list is read, not heard, and without it the
+            # questions and the answers look alike. The audio says only the
+            # reply; the label is not spoken.
+            text=f"You: {text}",
+            extras={"source_session": session, "listener": True,
+                    "engine": engine, "voice": voice,
+                    "clip_uris": [str(out)], "clip_sentences": [text],
+                    "clip_durations_s": [dur]})
+    except Exception as e:  # noqa: BLE001 — the reply already landed
+        log.warning("book-tracks: could not record a listener turn (%s)", e)
+        return False
+
+    # Put it on the shelf on the same schedule as a spoken turn, rather than
+    # waiting for the answer to arm one: a question that appears after its
+    # answer is worse than one that appears late.
+    try:
+        from . import feed_debounce
+
+        feed_debounce.arm()
+    except Exception:  # noqa: BLE001 — the poll will catch it
+        pass
+    return True
+
+
 def export_session(session: str, *, store=None) -> tuple[Optional[Path], int]:
     """Write any clips this conversation has gained. `(folder, added)`.
 
