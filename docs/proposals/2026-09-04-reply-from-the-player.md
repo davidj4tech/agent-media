@@ -234,3 +234,39 @@ no-op.
   no CSRF surface — the reason the amux token exists (canvas.py:308) is
   untouched for the callers that still use it.
 
+### Not a new user type
+
+(David, 2026-09-05: "should we make another user type? Or some kind of
+read-only option?")
+
+No to the type, and read-only already exists.
+
+**A new ABS user type is a server fork**, and a permanent one. Types are not a
+client-side label — they are validated on user creation, drive the server's own
+permission checks, and appear in the admin UI. Adding `agent` or `replier`
+means diverging the ABS user model, carrying a migration, and touching that
+divergence on every rebase, in exchange for what is fundamentally one boolean.
+The whole finding of [[abs-fork-direction]] is that stock ABS is enough; this
+would spend that for very little. (The app's own reading is coarser still —
+`store/user.js:21` only asks admin-or-up — so a custom type would read as a
+plain user in the client regardless.)
+
+**Read-only is the status quo.** Every ABS account today can only listen; the
+reply box adds exactly one verb on top. So the axis isn't read vs write, it's
+*may this account inject input* — a single capability, and one whose meaning
+lives entirely in agent-media, not in ABS. If you want a genuinely
+listen-only account — a guest, a lent-out phone — ABS already gives you that
+upstream via the `guest` type and per-library access, without us building
+anything.
+
+**So: a capability, not a role.** agent-media is the thing being typed into, so
+it owns who may; ABS only answers "who is this". That also scales the way this
+is going to grow — the app will plausibly want to pause an agent, or answer a
+prompt, later. Those are more verbs, and verbs go in a capability list. Adding a
+user type per verb does not survive the third one.
+
+The one honest argument for the fork is management in one place: a checkbox in
+the ABS admin UI beats a config file on red5. Worth wanting, not worth a
+permanent divergence yet — and if it ever is, the capability list is what the
+checkbox would set anyway.
+
