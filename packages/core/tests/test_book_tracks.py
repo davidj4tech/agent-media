@@ -158,3 +158,40 @@ def test_a_track_is_a_second_name_not_a_second_copy(tmp_path):
     out = tmp_path / "item" / "0001 - one.mp3"
     assert book_tracks.place_clip(str(src), out) == out
     assert out.stat().st_ino == src.stat().st_ino
+
+
+def test_a_workspace_numbers_its_conversations_by_date(tmp_path, monkeypatch):
+    """A series reads in the order things happened, and only counts its own
+    workspace."""
+    import json as _json
+
+    from agent_media_core import book_tracks as bt
+
+    d = tmp_path / "book-tracks"
+    d.mkdir()
+    rows = [("late", "/c/work/Third", 300.0),
+            ("early", "/c/work/First", 100.0),
+            ("mid", "/c/work/Second", 200.0),
+            ("elsewhere", "/c/other/Only", 50.0)]
+    for session, folder, at in rows:
+        (d / f"{session}.json").write_text(_json.dumps(
+            {"session": session, "folder": folder,
+             "turns": [{"at": at, "title": "t", "files": ["a.mp3"]}]}))
+    monkeypatch.setattr(bt, "state_dir", lambda: tmp_path)
+
+    from pathlib import Path
+    assert bt._series_position("early", Path("/c/work/First")) == "1"
+    assert bt._series_position("mid", Path("/c/work/Second")) == "2"
+    assert bt._series_position("late", Path("/c/work/Third")) == "3"
+    # A different workspace is a different series, numbered from one.
+    assert bt._series_position("elsewhere", Path("/c/other/Only")) == "1"
+
+
+def test_a_conversation_with_no_manifest_has_no_position(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from agent_media_core import book_tracks as bt
+
+    (tmp_path / "book-tracks").mkdir()
+    monkeypatch.setattr(bt, "state_dir", lambda: tmp_path)
+    assert bt._series_position("nobody", Path("/c/work/Whatever")) == ""

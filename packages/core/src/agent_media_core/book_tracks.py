@@ -605,19 +605,58 @@ def conversation_log(session: str, folder: Path, *, target=None) -> list:
     return out
 
 
-def set_title(session: str, folder: Path, *, target=None) -> str:
-    """Give the item the conversation's own name, without the workspace. "" if
-    unchanged.
+#: Who a conversation is by. The workspace used to end up here, because it is
+#: the folder above and that is where Audiobookshelf looks — which filled the
+#: Authors shelf with tmux session names. Override with MEDIA_CONVERSATION_AUTHOR.
+CONVERSATION_AUTHOR = "Claude"
 
-    Folders are never renamed — a renamed folder is a *new* item to
-    Audiobookshelf, with no progress and the old one left behind — so items
-    scanned before this stayed titled "<workspace> - <question>". The displayed
-    title is metadata, though, and metadata can be set: the folder keeps the
-    item's identity, and the shelf shows the question. The workspace is still
-    right there as the author, which is where it belongs.
 
-    Re-applied on every publish rather than once, so a rescan that reverts it
-    corrects itself on the next turn.
+def _series_position(session: str, folder: Path) -> str:
+    """Where this conversation comes in its workspace, by date. 1-based.
+
+    Recomputed rather than stored: a conversation exported out of order would
+    otherwise keep a number that no longer describes it, and renumbering costs
+    nothing because the number is only ever read as an ordering.
+    """
+    workspace = folder.parent.name
+    rows = []
+    for p in sorted((state_dir() / "book-tracks").glob("*.json")):
+        try:
+            data = json.loads(p.read_text())
+        except (OSError, ValueError):
+            continue
+        other = Path(str(data.get("folder") or ""))
+        if other.parent.name != workspace:
+            continue
+        turns = data.get("turns") or []
+        rows.append((float((turns[0].get("at") if turns else 0) or 0),
+                     str(data.get("session") or p.stem)))
+    rows.sort()
+    for n, (_at, sid) in enumerate(rows, 1):
+        if sid == session:
+            return str(n)
+    return ""
+
+
+def set_metadata(session: str, folder: Path, *, target=None) -> str:
+    """Describe the item the way a library should. "" if nothing changed.
+
+    Three fields, and the reason for each:
+
+    * **title** — the conversation, without the workspace. The workspace is the
+      folder above, which Audiobookshelf reads as the author, so a title of
+      "<workspace> - <question>" said it twice on every shelf.
+    * **series** — the workspace, numbered by date. A workspace is an ordered
+      set of related items, which is what a series *is*; a collection would
+      have to be maintained by hand and would not sort.
+    * **author** — Claude, rather than a tmux session name. Deriving the author
+      from the folder filled the Authors shelf with things that are not
+      authors, and left the field saying nothing true.
+
+    Folders are never renamed for this — a renamed folder is a new item, with
+    no progress and the old one stranded — so all of it is metadata, re-applied
+    on every publish, which means a rescan that reverts it corrects itself on
+    the next turn.
     """
     ready = _abs_ready(target)
     if not ready:
@@ -627,20 +666,34 @@ def set_title(session: str, folder: Path, *, target=None) -> str:
     if not item:
         return ""
     turns = session_feed.turns(session)
-    want = session_feed.asked_for(session, turns) if turns else ""
-    if not want:
+    title = session_feed.asked_for(session, turns) if turns else ""
+    if not title:
         return ""
-    full = _abs_item(url, token, item["id"]) or {}
-    have = ((full.get("media") or {}).get("metadata") or {}).get("title") or ""
-    if have == want:
+    workspace = folder.parent.name
+    sequence = _series_position(session, folder)
+    author = os.environ.get("MEDIA_CONVERSATION_AUTHOR") or CONVERSATION_AUTHOR
+
+    md = ((_abs_item(url, token, item["id"]) or {}).get("media") or {}).get("metadata") or {}
+    have_series = [(x.get("name"), str(x.get("sequence") or ""))
+                   for x in (md.get("series") or [])]
+    have_authors = [a.get("name") for a in (md.get("authors") or [])]
+    if (md.get("title") == title
+            and have_series == [(workspace, sequence)]
+            and have_authors == [author]):
         return ""
     try:
         _abs_patch(url, token, f"/api/items/{item['id']}/media",
-                   {"metadata": {"title": want}})
-    except Exception as e:  # noqa: BLE001 — a title is not worth a failure
-        log.warning("book-tracks: could not retitle %s (%s)", folder.name, e)
+                   {"metadata": {
+                       "title": title,
+                       # Arrays, not the seriesName/authorName fields: those are
+                       # the read side of the same thing and a write to them is
+                       # accepted and ignored.
+                       "series": [{"name": workspace, "sequence": sequence}],
+                       "authors": [{"name": author}]}})
+    except Exception as e:  # noqa: BLE001 — metadata is not worth a failure
+        log.warning("book-tracks: could not describe %s (%s)", folder.name, e)
         return ""
-    return want
+    return title
 
 
 def reopen(folder: Path, *, target=None) -> Optional[str]:
