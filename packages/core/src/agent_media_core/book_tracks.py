@@ -152,7 +152,9 @@ def folder_for(session: str, turns: list, manifest: dict) -> Optional[Path]:
     if not turns:
         return None
     workspace = session_feed.workspace_for(session, turns)
-    title = session_feed.title_for(session, turns)
+    # The workspace is the folder above, which Audiobookshelf reads as the
+    # author — so putting it in the title too says it twice on every shelf.
+    title = session_feed.asked_for(session, turns)
     return root() / safe_name(workspace) / safe_name(title)
 
 
@@ -601,6 +603,44 @@ def conversation_log(session: str, folder: Path, *, target=None) -> list:
         out.append({"start": pos.get("start"), "end": pos.get("end"),
                     "who": who, "text": text})
     return out
+
+
+def set_title(session: str, folder: Path, *, target=None) -> str:
+    """Give the item the conversation's own name, without the workspace. "" if
+    unchanged.
+
+    Folders are never renamed — a renamed folder is a *new* item to
+    Audiobookshelf, with no progress and the old one left behind — so items
+    scanned before this stayed titled "<workspace> - <question>". The displayed
+    title is metadata, though, and metadata can be set: the folder keeps the
+    item's identity, and the shelf shows the question. The workspace is still
+    right there as the author, which is where it belongs.
+
+    Re-applied on every publish rather than once, so a rescan that reverts it
+    corrects itself on the next turn.
+    """
+    ready = _abs_ready(target)
+    if not ready:
+        return ""
+    url, token, libs = ready
+    item = _find_item(url, token, libs, folder)
+    if not item:
+        return ""
+    turns = session_feed.turns(session)
+    want = session_feed.asked_for(session, turns) if turns else ""
+    if not want:
+        return ""
+    full = _abs_item(url, token, item["id"]) or {}
+    have = ((full.get("media") or {}).get("metadata") or {}).get("title") or ""
+    if have == want:
+        return ""
+    try:
+        _abs_patch(url, token, f"/api/items/{item['id']}/media",
+                   {"metadata": {"title": want}})
+    except Exception as e:  # noqa: BLE001 — a title is not worth a failure
+        log.warning("book-tracks: could not retitle %s (%s)", folder.name, e)
+        return ""
+    return want
 
 
 def reopen(folder: Path, *, target=None) -> Optional[str]:

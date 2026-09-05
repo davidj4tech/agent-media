@@ -5546,6 +5546,9 @@ def cmd_feed(a) -> int:
             n = book_tracks.publish_chapters(session, folder)
             if n:
                 print(f"{folder.name}: {n} chapter(s)")
+            renamed = book_tracks.set_title(session, folder)
+            if renamed:
+                print(f"{folder.name}: titled {renamed!r}")
             if book_tracks.reopen(folder):
                 print(f"{folder.name}: re-opened (it had been finished)")
         return 0

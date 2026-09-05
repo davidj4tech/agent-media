@@ -53,7 +53,9 @@ def conversation(tmp_path, monkeypatch):
                         lambda session, store=None: list(state["turns"]))
     monkeypatch.setattr(session_feed, "workspace_for",
                         lambda session, ts: "p-agent-media")
-    monkeypatch.setattr(session_feed, "title_for",
+    # asked_for, not title_for: the shelf files under the workspace already,
+    # so the folder is named for the conversation alone.
+    monkeypatch.setattr(session_feed, "asked_for",
                         lambda session, ts: "How the growing item works")
     return state, turns
 
@@ -107,7 +109,7 @@ def test_the_folder_survives_a_better_title(conversation, monkeypatch):
     goes. Renaming the folder would hand ABS a new item — new id, no progress,
     the old one left behind — so the first answer is the one that is kept."""
     folder, _ = book_tracks.export_session("sess-1")
-    monkeypatch.setattr(session_feed, "title_for",
+    monkeypatch.setattr(session_feed, "asked_for",
                         lambda session, ts: "A much better title")
     folder2, _ = book_tracks.export_session("sess-1")
     assert folder2 == folder

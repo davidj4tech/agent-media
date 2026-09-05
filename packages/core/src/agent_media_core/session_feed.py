@@ -237,6 +237,17 @@ def _trim(text: str) -> str:
     return cut.rstrip(" ,.;:") + "…"
 
 
+def asked_for(session: str, ts: list[Turn]) -> str:
+    """What this conversation is *about*, with no workspace attached.
+
+    `title_for` glues the workspace on because a podcast client shows one flat
+    list and the question alone does not say where it happened. A library that
+    files items under the workspace already answers that, and repeating it in
+    the title is just noise — so that shelf asks for this instead.
+    """
+    return _asked(session, ts)
+
+
 def _asked(session: str, ts: list[Turn]) -> str:
     """What to call this conversation.
 

@@ -172,6 +172,12 @@ def test_a_session_with_no_transcript_is_not_revived(monkeypatch):
 
 @pytest.fixture
 def _allowed(monkeypatch):
+    # Stub the shelving for EVERY test that gets as far as a successful send.
+    # Left real, it renders speech and writes a history row against whatever
+    # session id the test invented — on a background thread, so it outlives the
+    # tmp-dir monkeypatching — and "sess-1" duly appeared in the real library as
+    # a conversation called "You: hi". Tests that care about it override this.
+    monkeypatch.setattr(reply, "_record_turn", lambda s, t: None)
     monkeypatch.setattr(reply, "abs_identity", lambda b: ({"username": "d", "type": "root"}, 200))
     monkeypatch.delenv("MEDIA_REPLY_ROOT", raising=False)
     monkeypatch.setattr(reply, "session_for_item", lambda *a, **k: ("sess-1", ""))
@@ -337,3 +343,20 @@ def test_a_multi_line_reply_is_flattened():
     out = reply.compose("first line\nsecond line")
     assert out == "first line second line"
     assert reply.compose("a\nb", quote="q") == 'Re: "q" — a b'
+
+
+def test_recording_a_turn_never_touches_the_real_library(monkeypatch):
+    """The guard for the mistake above, stated as a test.
+
+    `_record_turn` spawns a thread, so a test that leaves it real escapes the
+    fixture teardown that redirected the state store and the clip cache. It
+    wrote four conversations' worth of "hi" into the actual shelf before anyone
+    noticed. Everything it needs is resolved *inside* the thread, so the only
+    safe rule is that no test calls it for real.
+    """
+    started = []
+    monkeypatch.setattr(reply.threading, "Thread",
+                        lambda **kw: started.append(kw) or type(
+                            "T", (), {"start": lambda self: None})())
+    reply._record_turn("s", "hi")
+    assert started and started[0]["daemon"] is True
