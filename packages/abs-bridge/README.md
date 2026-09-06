@@ -19,6 +19,10 @@ Optional, and nothing in agent-media depends on it. Configure in
 ABS_URL=http://127.0.0.1:13378
 ABS_TOKEN=…            # ABS → Settings → API Keys
 ABS_PULL_ON_LOAD=1     # optional
+ABS_URLS=…             # optional, comma-separated: OTHER servers the visual
+                       # canvas should also accept logins from. Read by
+                       # packages/visual, not by these daemons — it lives here
+                       # because this is where the ABS config already is.
 ```
 
 Without `ABS_TOKEN` both daemons log why and exit cleanly, and

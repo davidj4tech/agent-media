@@ -147,6 +147,34 @@ decoupled from this package.
 | `MEDIA_VISUAL_TIMEOUT` | `90` | image request timeout (s) |
 | `MEDIA_VISUAL_DEBUG` | off | `1` logs canvas requests |
 
+### Replying from the player (Audiobookshelf)
+
+The canvas also answers the Sasonica app: `/conversation`, `/conversation/log`,
+`/item` and `/reply`. Authorised by the caller's *own* Audiobookshelf bearer,
+which is handed straight back to ABS — nothing is provisioned to the phone.
+
+| var | default | |
+|---|---|---|
+| `MEDIA_REPLY_USERS` | — | comma-separated ABS usernames allowed to type into a session |
+| `MEDIA_REPLY_ROOT` | on | `0` = stop treating the ABS root account as allowed |
+| `MEDIA_REPLY_TMUX` | the attached client's | tmux session to open revived windows in |
+| `MEDIA_ABS_URLS` | — | extra Audiobookshelf servers to try, comma-separated (see below) |
+
+**More than one Audiobookshelf.** A bearer means nothing to the server that did
+not issue it, so if the app might be signed in to a second server — a trial of
+a new client, say — that server has to be on the list or its users are told
+their login was rejected. Set it in `MEDIA_ABS_URLS`, or beside the rest of the
+ABS config as `ABS_URLS` in `~/.config/agent-media/abs-bridge.env`:
+
+```
+ABS_URLS=http://100.103.43.93:13379
+```
+
+It is an allow-list and never built from anything the caller sends: their token
+is forwarded to whatever is on it. Use the address the *canvas host* can reach
+— a container published on a tailnet IP is not on loopback, and the symptom of
+getting that wrong is a canvas that still answers 401.
+
 ## TODO
 
 - Image-to-image continuity (the *composition* persists via the evolved
