@@ -105,7 +105,12 @@ def item_for_app(item_id: str, bearer: str) -> tuple[bool, dict]:
         return False, {"error": "no item id", "status": 400}
     if not (bearer or "").strip():
         return False, {"error": "no Audiobookshelf login", "status": 401}
-    url = reply._abs_url()
+    # Which server this login belongs to — the app may be signed in to a second
+    # one, and the item ids of one mean nothing to the other.
+    user, status = reply.abs_identity(bearer)
+    if not user:
+        return False, reply._identity_error(status)
+    url = reply.abs_home(bearer)
     if not url:
         return False, {"error": "no Audiobookshelf configured on this host",
                        "status": 503}

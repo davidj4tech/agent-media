@@ -360,3 +360,75 @@ def test_recording_a_turn_never_touches_the_real_library(monkeypatch):
                             "T", (), {"start": lambda self: None})())
     reply._record_turn("s", "hi")
     assert started and started[0]["daemon"] is True
+
+
+# --- more than one Audiobookshelf ---------------------------------------------
+
+def test_one_server_by_default(monkeypatch, tmp_path):
+    monkeypatch.delenv("MEDIA_ABS_URLS", raising=False)
+    monkeypatch.setattr(reply.Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(reply, "_abs_url", lambda: "http://one.example/")
+    assert reply.abs_urls() == ["http://one.example"]
+
+
+def test_extra_servers_come_from_the_environment(monkeypatch, tmp_path):
+    monkeypatch.setenv("MEDIA_ABS_URLS", " http://two.example , http://one.example/ ,, ")
+    monkeypatch.setattr(reply.Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(reply, "_abs_url", lambda: "http://one.example")
+    # Publishing server first, no duplicates, no empties.
+    assert reply.abs_urls() == ["http://one.example", "http://two.example"]
+
+
+def test_extra_servers_can_live_beside_the_abs_config(monkeypatch, tmp_path):
+    monkeypatch.delenv("MEDIA_ABS_URLS", raising=False)
+    cfg = tmp_path / ".config" / "agent-media"
+    cfg.mkdir(parents=True)
+    (cfg / "abs-bridge.env").write_text('ABS_URL=http://one.example\nABS_URLS="http://two.example"\n')
+    monkeypatch.setattr(reply.Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(reply, "_abs_url", lambda: "http://one.example")
+    assert reply.abs_urls() == ["http://one.example", "http://two.example"]
+
+
+def test_identity_tries_each_server_and_remembers_which(monkeypatch):
+    reply._IDENT.clear()
+    asked = []
+
+    def fake_get(url, bearer, path, method="GET"):
+        asked.append(url)
+        if url == "http://two.example":
+            return {"user": {"username": "david", "type": "root"}}, 200
+        return None, 401
+
+    monkeypatch.setattr(reply, "abs_urls",
+                        lambda: ["http://one.example", "http://two.example"])
+    monkeypatch.setattr(reply, "_abs_get", fake_get)
+    user, status = reply.abs_identity("tok")
+    assert (user["username"], status) == ("david", 200)
+    assert asked == ["http://one.example", "http://two.example"]
+    # And the item lookups that follow go to the server that knew them.
+    assert reply.abs_home("tok") == "http://two.example"
+
+
+def test_a_token_no_server_knows_is_a_401(monkeypatch):
+    reply._IDENT.clear()
+    monkeypatch.setattr(reply, "abs_urls",
+                        lambda: ["http://one.example", "http://two.example"])
+    monkeypatch.setattr(reply, "_abs_get", lambda *a, **k: (None, 401))
+    assert reply.abs_identity("tok") == (None, 401)
+
+
+def test_a_server_being_down_does_not_hide_a_refusal(monkeypatch):
+    # One unreachable, one refusing: the token is still the reason, and 401 is
+    # what the app must be told rather than "the server did not answer".
+    reply._IDENT.clear()
+    seq = iter([(None, 0), (None, 401)])
+    monkeypatch.setattr(reply, "abs_urls",
+                        lambda: ["http://down.example", "http://two.example"])
+    monkeypatch.setattr(reply, "_abs_get", lambda *a, **k: next(seq))
+    assert reply.abs_identity("tok") == (None, 401)
+
+
+def test_abs_home_falls_back_to_the_publishing_server(monkeypatch):
+    reply._IDENT.clear()
+    monkeypatch.setattr(reply, "_abs_url", lambda: "http://one.example")
+    assert reply.abs_home("never-seen") == "http://one.example"

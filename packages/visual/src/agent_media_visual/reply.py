@@ -69,6 +69,57 @@ def _abs_url() -> str:
     return url
 
 
+def abs_urls() -> list[str]:
+    """Every Audiobookshelf this canvas will speak to, likeliest first.
+
+    One host can run more than one server — a second one to try a new client
+    against, say — and the app sends the bearer of whichever it is signed in
+    to. A bearer means nothing to the server that did not issue it, so "who is
+    this?" has to be asked of each in turn rather than only of the one we
+    publish to.
+
+    This is an allow-list, and deliberately not built from anything the caller
+    says: the caller's own token is forwarded to whatever is on it, so a
+    caller-named address would be a way to have us post their login to a host
+    of their choosing.
+
+    Extra servers go in `ABS_URLS` in ~/.config/agent-media/abs-bridge.env
+    (comma-separated), beside the ABS config that is already there, or in
+    MEDIA_ABS_URLS for a one-off. With neither set this is exactly the single
+    configured server it always was.
+    """
+    extra = os.environ.get("MEDIA_ABS_URLS") or ""
+    try:
+        for line in (Path.home() / ".config" / "agent-media"
+                     / "abs-bridge.env").read_text().splitlines():
+            line = line.strip()
+            if line.startswith("ABS_URLS=") and not extra:
+                extra = line.split("=", 1)[1].strip().strip('"\'')
+    except OSError:
+        pass
+    out, seen = [], set()
+    for u in [_abs_url()] + extra.split(","):
+        u = (u or "").strip().rstrip("/")
+        if u and u not in seen:
+            seen.add(u)
+            out.append(u)
+    return out
+
+
+def abs_home(bearer: str) -> str:
+    """Which Audiobookshelf this bearer belongs to, if we have found out.
+
+    Only meaningful after `abs_identity`, which is what does the finding; on
+    its own it answers with the server we publish to, which is the right guess
+    and the only one worth making.
+    """
+    with _IDENT_LOCK:
+        hit = _IDENT.get((bearer or "").strip())
+    if hit and time.monotonic() - hit[0] < _IDENT_TTL_S and len(hit) > 2:
+        return hit[2]
+    return _abs_url()
+
+
 def _abs_get(url: str, bearer: str, path: str,
              method: str = "GET") -> tuple[dict | None, int]:
     """`(body, status)`. Status 0 means Audiobookshelf could not be reached.
@@ -106,16 +157,24 @@ def abs_identity(bearer: str) -> tuple[dict | None, int]:
         hit = _IDENT.get(bearer)
         if hit and now - hit[0] < _IDENT_TTL_S:
             return hit[1], 200
-    url = _abs_url()
-    if not url:
+    urls = abs_urls()
+    if not urls:
         return None, 0
-    body, status = _abs_get(url, bearer, "/api/authorize", method="POST")
-    user = (body or {}).get("user") if isinstance(body, dict) else None
-    user = user if isinstance(user, dict) and user.get("username") else None
-    if user:
-        with _IDENT_LOCK:
-            _IDENT[bearer] = (now, user)
-    return user, status
+    # Asked of each server until one recognises the token. A refusal from a
+    # server that did not issue it is not news, so a 401 is only the answer
+    # once every one of them has said it.
+    worst = 0
+    for url in urls:
+        body, status = _abs_get(url, bearer, "/api/authorize", method="POST")
+        user = (body or {}).get("user") if isinstance(body, dict) else None
+        user = user if isinstance(user, dict) and user.get("username") else None
+        if user:
+            with _IDENT_LOCK:
+                _IDENT[bearer] = (now, user, url)
+            return user, 200
+        if status:
+            worst = status if worst in (0, 401) or status == 401 else worst
+    return None, worst
 
 
 def _identity_error(status: int) -> dict:
@@ -183,7 +242,7 @@ def session_for_item(item_id: str, bearer: str) -> tuple[str | None, str]:
     item_id = (item_id or "").strip()
     if not item_id:
         return None, "no item id"
-    url = _abs_url()
+    url = abs_home(bearer)
     if not url:
         return None, "no Audiobookshelf configured on this host"
     item, _status = _abs_get(url, bearer, f"/api/items/{item_id}")

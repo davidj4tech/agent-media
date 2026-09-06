@@ -155,8 +155,12 @@ def test_an_item_is_fetched_as_the_caller(monkeypatch):
         return _Resp()
 
     monkeypatch.setattr(item_mod.urllib.request, "urlopen", fake_open)
-    monkeypatch.setattr("agent_media_visual.reply._abs_url",
-                        lambda: "http://abs.example")
+    # Identity is settled before the fetch: the caller may be signed in to a
+    # second Audiobookshelf, and the item is asked of that one.
+    monkeypatch.setattr("agent_media_visual.reply.abs_identity",
+                        lambda b: ({"username": "root", "type": "root"}, 200))
+    monkeypatch.setattr("agent_media_visual.reply.abs_home",
+                        lambda b: "http://abs.example")
 
     ok, out = item_mod.item_for_app("li_1", "tok-abc")
     assert ok is True
@@ -215,7 +219,9 @@ def test_an_answer_that_is_not_an_item_is_a_502(monkeypatch):
 
     monkeypatch.setattr(item_mod.urllib.request, "urlopen",
                         lambda req, timeout=0: _Resp())
-    monkeypatch.setattr("agent_media_visual.reply._abs_url",
-                        lambda: "http://abs.example")
+    monkeypatch.setattr("agent_media_visual.reply.abs_identity",
+                        lambda b: ({"username": "root", "type": "root"}, 200))
+    monkeypatch.setattr("agent_media_visual.reply.abs_home",
+                        lambda b: "http://abs.example")
     ok, err = item_mod.item_for_app("li_1", "tok")
     assert (ok, err["status"]) == (False, 502)

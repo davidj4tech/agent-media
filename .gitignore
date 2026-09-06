@@ -20,3 +20,7 @@ packages/core/uv.lock
 **/services/*/supervise/
 **/services/*/log/supervise/
 **/services/*/down
+
+# Local credentials (an API key was left here once — never commit one).
+abs.env
+*.env
