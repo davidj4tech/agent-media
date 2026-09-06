@@ -14,6 +14,9 @@ Stdlib-only HTTP server. Endpoints:
                   whitelisted `media` transport command
   GET  /conversation?item=<abs item id>   + an Audiobookshelf bearer →
                   the session behind that item and whether it is still live
+  GET  /item?id=<abs item id>   + an Audiobookshelf bearer →
+                  that library item carrying only what the app reads, gzipped
+                  (1267 KB → 25 KB on a long conversation); see item.py
   POST /reply     {"item": "<abs item id>", "text": "...", "quote": "...",
                    "mode": "continue"|"branch"} + an Audiobookshelf bearer →
                   type into the session behind that conversation, reviving it
@@ -1306,6 +1309,30 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, code: int, obj: dict) -> None:
         self._send(code, json.dumps(obj).encode(), "application/json")
 
+    def _json_z(self, code: int, obj: dict) -> None:
+        """JSON, compressed if the caller said it could take it.
+
+        Audiobookshelf itself does not compress — it ignores Accept-Encoding
+        and sends its item JSON whole, which on a conversation is 1.27 MB of
+        highly repetitive text. Ours is already a tenth of that; gzip takes it
+        to a fortieth. Only worth the CPU on a body big enough to matter.
+        """
+        body = json.dumps(obj).encode()
+        accepts = "gzip" in (self.headers.get("Accept-Encoding") or "").lower()
+        if accepts and len(body) > 4096:
+            import gzip as _gzip
+
+            packed = _gzip.compress(body, 6)
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Content-Length", str(len(packed)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(packed)
+            return
+        self._send(code, body, "application/json")
+
     def do_GET(self) -> None:  # noqa: N802
         path, _, query = self.path.partition("?")
         if path == "/":
@@ -1371,6 +1398,19 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._send(403, b"invalid or expired pairing code\n",
                            "text/plain")
+        elif path == "/item":
+            # The library item, carrying only what the app reads. Sasonica asks
+            # here first and falls back to Audiobookshelf, so this is a way of
+            # being quick rather than a thing to depend on. See item.py for the
+            # measurements and for what is left out.
+            from . import item as _item
+            item_id = parse_qs(self.path.partition("?")[2]).get("id", [""])[0]
+            bearer = (self.headers.get("Authorization") or "").removeprefix("Bearer").strip()
+            ok, detail = _item.item_for_app(item_id, bearer)
+            if ok:
+                self._json_z(200, detail)
+            else:
+                self._json(detail.pop("status", 404), {"ok": False, **detail})
         elif path == "/conversation":
             # "Is this item a conversation I can reply to?" — what the app asks
             # before it draws the reply box. Authed by the caller's own ABS
