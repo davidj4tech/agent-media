@@ -45,25 +45,35 @@ def _nobody_owns_david(tmp_path, monkeypatch):
 
 
 def _armed(timeout_s=5.0, question=None):
-    """Run a Rendezvous in a thread; returns (thread, result-dict)."""
+    """Run a Rendezvous in a thread; returns (thread, result-dict).
+
+    The thread says when it is armed, rather than this polling for the socket
+    to appear. Watching the filesystem meant guessing how long a thread takes
+    to start, and the guess was 10s — which is plenty on an idle box and not
+    always enough on one at load average 10, where every failure read as
+    "rendezvous never armed" and looked like a bug in the thing under test.
+    An Event has no deadline to get wrong; the generous timeout below is only
+    so a genuine hang fails with a sentence instead of hanging the suite.
+
+    Armed means past __enter__, so the socket is published and listening. The
+    server has not reached accept() yet, which does not matter: listen(1)
+    queues a connection that arrives first.
+    """
     out = {}
+    armed = threading.Event()
 
     def serve():
         with Rendezvous(timeout_s=timeout_s, question=question) as rv:
+            armed.set()
             out["reply"] = rv.wait()
 
     t = threading.Thread(target=serve)
     t.start()
-    # Wait for the bind, and *assert* it happened. A bounded wait that gives up
-    # silently turns "the thread was slow" into "the assertion under test did
-    # not hold" — which is how this read on a loaded machine: the concurrency
-    # test found nothing to collide with and reported a missing Busy.
-    deadline = time.monotonic() + 10.0
-    while time.monotonic() < deadline:
-        if socket_path().exists():
-            return t, out
-        time.sleep(0.02)
-    raise AssertionError("rendezvous never armed within 10s")
+    # If __enter__ raised — Claimed, Busy — the event never sets and the
+    # traceback is already on stderr, which is the useful half.
+    if not armed.wait(60.0):
+        raise AssertionError("rendezvous never armed within 60s")
+    return t, out
 
 
 def test_offer_with_nobody_waiting_falls_back_to_injection():

@@ -178,15 +178,41 @@ class Rendezvous:
         # rendezvous is armed and the question reads as absent.
         self._write_question()
         srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        # Bind somewhere else, then publish the name once it can be connected
+        # to. bind() creates the socket file and listen() is what makes it
+        # answer, so binding straight to `path` leaves a window in which the
+        # rendezvous LOOKS armed and refuses connections: an offer() landing
+        # there gets ECONNREFUSED, reads it as "nobody waiting", and types the
+        # transcript into the pane instead of handing it over. Rare, and it
+        # showed up as one test run in eight.
+        staging = path.with_name(f"{path.name}.arming.{os.getpid()}")
+        staging.unlink(missing_ok=True)
         try:
-            srv.bind(str(path))
+            srv.bind(str(staging))
+            srv.listen(1)
+            # link() rather than rename(): it fails if the name is taken, so a
+            # second arm racing this one is still refused as Busy instead of
+            # quietly displacing it. Same inode either way — a connect to the
+            # published name reaches this socket.
+            try:
+                os.link(staging, path)
+            except OSError as exc:
+                if exc.errno in (errno.EPERM, errno.EOPNOTSUPP, errno.EXDEV):
+                    # A filesystem that will not hard-link a socket. Still
+                    # atomic, but the loser of a race is displaced rather than
+                    # told; the pre-check above catches every slower case.
+                    os.replace(staging, path)
+                else:
+                    raise
         except OSError as exc:
             srv.close()
+            staging.unlink(missing_ok=True)
             question_path().unlink(missing_ok=True)
-            if exc.errno == errno.EADDRINUSE:
+            if exc.errno in (errno.EADDRINUSE, errno.EEXIST):
                 raise Busy(f"rendezvous {path} taken") from exc
             raise
-        srv.listen(1)
+        # The published name is the one that gets cleaned up in __exit__.
+        staging.unlink(missing_ok=True)
         srv.settimeout(self.timeout_s)
         self._srv = srv
         # The input channel's half of the floor mirror: an armed rendezvous is
