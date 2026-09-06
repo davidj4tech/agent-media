@@ -76,3 +76,29 @@ phone and the living-room TV.
   that redirected the state store: a test that left it live wrote a
   conversation called "You: hi" into the real library. It is stubbed in the
   fixture now, with a test that fails if that is undone.
+
+
+## What the night of 2026-09-06 added
+
+* **The item comes through the canvas.** `GET /item` serves an Audiobookshelf
+  library item carrying only what the app reads — 1267 KB becomes 138 KB, 29 KB
+  on the wire. Measured from the phone, that took the item page from **51–86
+  seconds to 2.4–5.5**, because the link to Falkenstein is 448 ms and the size
+  was the whole delay. A shortcut, never a dependency: the app falls back to
+  Audiobookshelf when the canvas does not answer.
+* **The canvas serves more than one Audiobookshelf.** Identity is asked of each
+  server in `ABS_URLS` until one recognises the bearer, and the server that did
+  is remembered with it. Before this, an app signed in to a second server was
+  told its login was rejected — and answered that the way it answers any 401,
+  by refreshing and eventually logging the user out.
+* **The transcript keeps up**: the reply box says when a reply is accepted, and
+  the log re-asks three times after that and every fifteen seconds while the
+  page is up, stopping when the app is backgrounded.
+* **No audio-file table.** Hundreds of rows of `sentence-042.opus`, built even
+  when collapsed, because the bar toggles `v-show`.
+* **`agent-media.env.example`** at the repo root, with a test that fails if it
+  names a key nothing reads.
+
+Still open from the list above: the quote (2), the branch button (3), and the
+auto-play mini player (4) — though `MEDIA_PLAY_FROM_SEARCH`, which upstream
+already implements, may make (4) far cheaper than it looked.
