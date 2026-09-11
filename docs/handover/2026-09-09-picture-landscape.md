@@ -24,10 +24,28 @@ every surface, then fold the automatic in-app rotation into the next APK.
 
 Tests: `packages/visual/tests/test_view.py` (8), browser harness T17a–e.
 
-## Left — the two things that need an APK
+## 2026-09-11: the app side, done and installed
 
-Both are in `~/projects/sasonica` (branch `sasonica`), and both want the CI
-`sasonica-apk` artifact + `adb install -r` (memory: [[sasonica-fork]]).
+Both APK items below are built and on p8a (`f9d9d69b`, installed 10:48). Item 1
+turned out to be two halves, not one:
+
+- **`allowfullscreen` on the frame** (073156d6) gives the canvas its button back.
+- **...and the button alone still would not turn the phone.** The page asks the
+  Screen Orientation API for landscape; inside a WebView there is nobody to ask,
+  because `lock()` is the embedder's decision and the embedder is the host
+  activity. So the page now announces its fullscreen state by postMessage
+  (agent-media fc1cb0e — cross-origin, so it is the only channel), and
+  `AbsSasonica.setOrientation({landscape})` turns the activity (f9d9d69b).
+  `UNSPECIFIED` on the way back, and `beforeDestroy` restores it — an activity
+  keeps a requested orientation until something takes it back, so leaving the
+  page while turned would strand the whole app sideways.
+
+Only item 2 is still open.
+
+## Left — what still needs doing
+
+In `~/projects/sasonica` (branch `sasonica`), wanting the CI `sasonica-apk`
+artifact + `adb install -r` (memory: [[sasonica-fork]]).
 
 1. **`CanvasPanel.vue`'s iframe** — DONE in the fork (073156d6,
    `allow="autoplay; fullscreen"` + `allowfullscreen`), **waiting on an APK**.
