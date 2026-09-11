@@ -701,6 +701,26 @@
   // page that must not move — no crossfades, no pan, no video, no fades on the
   // button itself — and rotating the entire screen is the largest movement
   // there is. The Pine Note is held the way it is held.
+  // Say it out loud, for the one embedder that cannot grant it.
+  //
+  // lockLandscape() asks the browser, and in a browser that is the whole story.
+  // Framed inside an app's WebView there is no browser to ask: the Screen
+  // Orientation API's lock is the embedder's decision and the embedder is the
+  // host activity, so the page fills the frame and stays resolutely upright —
+  // which is the half of this worth having on a picture drawn wide. Sasonica's
+  // canvas panel listens for this and turns its activity.
+  //
+  // The frame is cross-origin, so postMessage is the only channel there is, and
+  // '*' the only target we can name (we are not told who framed us). Nothing
+  // here is a secret: it says the page is fullscreen, which whoever framed it
+  // can see for themselves.
+  function tellParent(on) {
+    if (window.parent === window) return;
+    try {
+      parent.postMessage(
+        { source: 'agent-media-canvas', type: 'fullscreen', on: !!on }, '*');
+    } catch (_) {}
+  }
   function lockLandscape() {
     if (einkOn()) return;
     const o = screen.orientation;
@@ -725,6 +745,7 @@
     // back too. A screen left locked landscape by a keypress the page never
     // saw is a phone that has mysteriously stopped turning.
     on ? lockLandscape() : unlockOrientation();
+    tellParent(on);
     revealFull();                  // say so: the icon just changed under a thumb
   }
   async function toggleFull() {

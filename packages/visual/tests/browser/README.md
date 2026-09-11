@@ -3,7 +3,8 @@
 Headless Playwright verification of the canvas *client* JS — the parts pytest
 can't reach: SSE watchdog/self-heal (#137), the room-legible disconnect banner
 (#142), e-ink toast legibility (#146), the fullscreen button with its landscape lock
-(T17), and the picture viewer a chat thumbnail opens into (T18). 19 checks,
+(T17), the picture viewer a chat thumbnail opens into (T18), and what it tells
+an app that frames it (T19). 21 checks,
 ~4 minutes, screenshots for eyeballing.
 
 The page is a picture with a caption: the controls, the agent tree, the whole

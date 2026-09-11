@@ -407,6 +407,45 @@ function stall(on) {
     await view.close();
   }
 
+  // ---- T19: framed, the page says when it is fullscreen ---------------------
+  // Sasonica frames the canvas in a WebView, where a landscape lock is the host
+  // activity's call and not the page's. So the page announces the state and the
+  // app turns itself — this checks the announcement, which is the half that
+  // lives in this repo.
+  {
+    const host = await browser.newPage({ viewport: { width: 420, height: 780 } });
+    await host.goto(`http://127.0.0.1:${PROXY_PORT}/?subs=0`, { waitUntil: 'domcontentloaded' });
+    // A page on the canvas's own origin that frames it, so the panel's
+    // event.origin check is exercised rather than stepped around.
+    await host.setContent(`<body style="margin:0">
+      <div style="height:260px"><iframe id="f" src="/?subs=0"
+        style="width:100%;height:100%;border:0"
+        allow="autoplay; fullscreen" allowfullscreen></iframe></div>`);
+    await host.evaluate(() => {
+      window.__msgs = [];
+      addEventListener('message', (e) => {
+        if (e.origin === location.origin && e.data && e.data.source === 'agent-media-canvas')
+          window.__msgs.push(e.data);
+      });
+    });
+    await sleep(2500);
+    const f = host.frames().find(fr => fr !== host.mainFrame() && fr.url().includes(PROXY_PORT));
+    let sawIn = false, sawOut = false, framedBtn = false;
+    if (f) {
+      framedBtn = await f.evaluate(() => !!document.getElementById('full'));
+      await f.click('#full').catch(() => {});
+      await sleep(800);
+      sawIn = await host.evaluate(() => window.__msgs.some(m => m.type === 'fullscreen' && m.on === true));
+      await f.click('#full').catch(() => {});
+      await sleep(800);
+      sawOut = await host.evaluate(() => window.__msgs.some(m => m.type === 'fullscreen' && m.on === false));
+    }
+    rec('T19a a frame that delegates fullscreen keeps the button', framedBtn);
+    rec('T19b framed, it announces fullscreen in and out', sawIn && sawOut,
+      JSON.stringify(await host.evaluate(() => window.__msgs)));
+    await host.close();
+  }
+
   await browser.close();
   proxy.close();
   if (srv) srv.kill('SIGKILL');
