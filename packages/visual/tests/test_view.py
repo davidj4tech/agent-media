@@ -3,9 +3,18 @@
 Sasonica draws the picture under a message as an ``<img>`` and opens the very
 same URL in the browser when it is tapped. So ``/img/<name>`` has to return
 bytes to the chat and a viewer page to the tap, with neither end knowing which
-it is asking for — the browser's own ``Sec-Fetch-Dest`` is what tells them
-apart. Everything ambiguous falls to the bytes: the viewer is an improvement on
-a tap, never a condition of the picture loading.
+it is asking for. Everything ambiguous falls to the bytes: the viewer is an
+improvement on a tap, never a condition of the picture loading.
+
+The header strings below are **verbatim Chrome**, captured off the wire rather
+than written from memory, and that is the point of this file. The first version
+of this route read ``Sec-Fetch-Dest``, which is the header that means exactly
+this — and which browsers send only to potentially-trustworthy origins. The
+canvas is plain http on a tailnet host, so the real phone sent none of it and
+every tap got a bare image. The tests all passed: they set the header by hand,
+and the browser harness drives 127.0.0.1, which is trustworthy. So there is a
+case here for a navigation that carries no ``Sec-Fetch-*`` at all — that case
+is the deployment.
 """
 
 import http.client
@@ -44,8 +53,15 @@ def _get(addr, path, headers=None):
     return res, body
 
 
-IMG = {"Sec-Fetch-Dest": "image"}
-DOC = {"Sec-Fetch-Dest": "document"}
+# Verbatim Chrome, over plain http to a tailnet host: no Sec-Fetch-* at all.
+NAV = {"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,"
+                 "image/avif,image/webp,image/apng,*/*;q=0.8,"
+                 "application/signed-exchange;v=b3;q=0.7"}
+TAG = {"Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,"
+                 "*/*;q=0.8"}
+# The same two over https or localhost, where the browser adds the metadata.
+IMG = {**TAG, "Sec-Fetch-Dest": "image"}
+DOC = {**NAV, "Sec-Fetch-Dest": "document"}
 
 
 def test_an_img_tag_still_gets_the_picture(server):
@@ -80,12 +96,43 @@ def test_view_1_asks_for_the_viewer_without_a_header(server):
 
 
 def test_an_unmarked_client_gets_the_picture(server):
-    # curl, an older browser, the app's native HTTP plugin: no Sec-Fetch-Dest,
-    # so the answer is the behaviour this route has always had.
-    for headers in ({}, {"Sec-Fetch-Dest": ""}, {"Accept": "*/*"}):
+    # curl, the app's native HTTP plugin, anything that names no type it wants:
+    # the answer is the behaviour this route has always had. `*/*` is not a
+    # request for a page, and neither is an <img>'s `*/*;q=0.8` tail.
+    for headers in ({}, {"Sec-Fetch-Dest": ""}, {"Accept": "*/*"},
+                    {"Accept": ""}, TAG):
         res, body = _get(server, "/img/fig.png", headers)
         assert res.getheader("Content-Type") == "image/png", headers
         assert body.startswith(b"\x89PNG")
+
+
+def test_a_plain_http_navigation_gets_the_viewer(server):
+    # THE regression. Chrome attaches Sec-Fetch-* only to potentially
+    # trustworthy origins, and the canvas is plain http on a tailnet host — so
+    # a real tap on David's phone carries none of it. Accept is what survives.
+    assert "Sec-Fetch-Dest" not in NAV
+    res, body = _get(server, "/img/fig.png", NAV)
+    assert res.getheader("Content-Type").startswith("text/html")
+    assert b'id="full"' in body
+
+
+def test_an_img_tag_on_plain_http_still_gets_bytes(server):
+    # The other half of the same fix: the chat's thumbnails must not turn into
+    # HTML pages because the header they were being told apart by went away.
+    res, body = _get(server, "/img/fig.png", TAG)
+    assert res.getheader("Content-Type") == "image/png"
+    assert body.startswith(b"\x89PNG")
+
+
+def test_both_answers_say_what_they_turn_on(server):
+    # One address, two bodies, and a day of immutable caching on one of them:
+    # without Vary a cache that saw the <img> first may hand those bytes to the
+    # tap, and the viewer goes missing for as long as the entry lives.
+    res, _ = _get(server, "/img/fig.png", TAG)
+    assert "Accept" in res.getheader("Vary")
+    res, _ = _get(server, "/img/fig.png", NAV)
+    assert "Accept" in res.getheader("Vary")
+    assert res.getheader("Cache-Control") == "no-store"
 
 
 def test_a_missing_picture_is_404_before_any_viewer(server):

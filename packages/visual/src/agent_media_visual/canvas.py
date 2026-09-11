@@ -1577,12 +1577,24 @@ class Handler(BaseHTTPRequestHandler):
         must return a page to the tap, and neither end can be asked to know
         which is which.
 
-        ``Sec-Fetch-Dest`` is exactly that question, asked by the browser and
-        not forgeable by the page: ``document`` for a top-level navigation,
-        ``image`` for an ``<img>``. Where it is absent (curl, an old client, a
-        native HTTP plugin) the answer is bytes — the behaviour this route has
-        always had. A viewer is an improvement on a tap, never a condition of
-        the picture loading, so every ambiguous case falls to the raw file.
+        ``Accept`` is the one that survives contact with this house. A
+        navigation asks for ``text/html`` first; an ``<img>`` asks for image
+        types and never names ``text/html`` at all.
+
+        This was written against ``Sec-Fetch-Dest`` first, which is the header
+        that means precisely this and is not forgeable by the page. It was the
+        right header and the wrong deployment: browsers attach the
+        ``Sec-Fetch-*`` set only to *potentially trustworthy* origins — https,
+        or localhost. The canvas is plain http on a tailnet host, so Chrome
+        sends none of them, and every tap fell through the missing-header path
+        to the raw bytes. Nothing caught it because every test was localhost:
+        the unit tests set the header by hand and the browser harness drives
+        127.0.0.1, both of which are exactly the case that works.
+
+        So ``Accept`` leads and ``Sec-Fetch-Dest`` confirms, and a client that
+        says neither gets the bytes — the behaviour this route has always had.
+        A viewer is an improvement on a tap, never a condition of the picture
+        loading, so every ambiguous case still falls to the raw file.
 
         ``?raw=1`` declines the viewer outright (it is how the viewer page asks
         for its own picture) and ``?view=1`` asks for it, so a link can be
@@ -1593,7 +1605,14 @@ class Handler(BaseHTTPRequestHandler):
             return False
         if q.get("view"):
             return True
-        return self.headers.get("Sec-Fetch-Dest", "").lower() == "document"
+        if self.headers.get("Sec-Fetch-Dest", "").lower() == "document":
+            return True
+        # An explicit ask, never a wildcard: curl's `*/*` is not a request for
+        # a page, and an <img>'s `*/*;q=0.8` tail is the browser saying it will
+        # take what it is given rather than that it wants markup.
+        accept = self.headers.get("Accept", "")
+        wanted = {r.split(";", 1)[0].strip().lower() for r in accept.split(",")}
+        return bool(wanted & {"text/html", "application/xhtml+xml"})
 
     def _image(self, name: str, query: str = "") -> None:
         name = os.path.basename(name)  # no traversal
@@ -1604,7 +1623,16 @@ class Handler(BaseHTTPRequestHandler):
         if self._wants_viewer(query):
             # The viewer reads the picture off its own address, so there is
             # nothing to substitute into it and nothing to escape.
-            self._send(200, VIEW_PAGE.encode(), "text/html; charset=utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(VIEW_PAGE.encode())))
+            self.send_header("Vary", "Accept, Sec-Fetch-Dest")
+            # Never cached: the page is small, and a cached viewer at an
+            # address that also has to serve bytes is the same trap as above
+            # pointing the other way.
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(VIEW_PAGE.encode())
             return
         data = f.read_bytes()
         ctype = "image/webp" if name.endswith(".webp") else \
@@ -1613,7 +1641,12 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
-        # Spool names are unique per image, safe to cache hard.
+        # Spool names are unique per image, safe to cache hard — but this one
+        # address now has two answers, so say what they turn on. Without Vary a
+        # cache that saw the <img> first is entitled to hand those same bytes
+        # to the tap, and the viewer would go missing for exactly as long as
+        # the entry lived (a day, and `immutable` at that).
+        self.send_header("Vary", "Accept, Sec-Fetch-Dest")
         self.send_header("Cache-Control", "max-age=86400, immutable")
         self.end_headers()
         self.wfile.write(data)
