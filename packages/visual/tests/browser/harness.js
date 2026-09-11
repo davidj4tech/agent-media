@@ -25,6 +25,17 @@ const PY = path.join(REPO, '.venv', 'bin', 'python');
 const SRV_PORT = Number(process.env.MEDIA_HARNESS_PORT || 8791);
 const PROXY_PORT = Number(process.env.MEDIA_HARNESS_PROXY_PORT || 8792);
 const SHOTS = path.join(__dirname, 'shots');
+// The viewer (T18) serves a real file out of the spool, so put one there and
+// take it away again — never depend on what the house happens to have drawn.
+const { execFileSync } = require('child_process');
+const SPOOL = execFileSync(PY,
+  ['-c', 'from agent_media_visual.canvas import spool_dir; print(spool_dir())'],
+  { env: { ...process.env, PYTHONPATH: SRC } }).toString().trim();
+const PROBE = 'harness-probe.svg';
+fs.writeFileSync(path.join(SPOOL, PROBE),
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 500">'
+  + '<rect width="1200" height="500" fill="#123"/>'
+  + '<text x="40" y="90" fill="#eee" font-size="44">edge label</text></svg>');
 fs.mkdirSync(SHOTS, { recursive: true });
 
 const results = [];
@@ -325,9 +336,81 @@ function stall(on) {
       ink.eink && ink.fs && ink.locks === 0, JSON.stringify(ink));
   }
 
+  // ---- T18: the picture viewer ----------------------------------------------
+  // The page a tap on a chat thumbnail lands on. It cannot fullscreen itself on
+  // load — no gesture — so it asks, and the very next touch anywhere does it,
+  // landscape and all. Then the picture has to be readable: double-tap in and
+  // out, and a real two-finger pinch, because the browser's own pinch stops
+  // reaching a fullscreen element and this is what replaces it.
+  {
+    const view = await browser.newPage({ viewport: { width: 420, height: 780 }, hasTouch: true });
+    await view.addInitScript(() => {
+      window.__locks = [];
+      try { const o = screen.orientation, ol = o.lock.bind(o);
+            o.lock = (k) => { window.__locks.push(k); return ol(k); }; } catch (_) {}
+      // Two fingers, which Playwright's touchscreen cannot do.
+      window.__pinch = (from, to) => {
+        const send = (type, id, x, y) => dispatchEvent(new PointerEvent(type, {
+          pointerId: id, pointerType: 'touch', clientX: x, clientY: y, bubbles: true }));
+        const cx = 210, cy = 390;
+        send('pointerdown', 1, cx - from / 2, cy);
+        send('pointerdown', 2, cx + from / 2, cy);
+        for (let i = 1; i <= 8; i++) {
+          const d = from + (to - from) * (i / 8);
+          send('pointermove', 1, cx - d / 2, cy);
+          send('pointermove', 2, cx + d / 2, cy);
+        }
+        send('pointerup', 1, cx - to / 2, cy);
+        send('pointerup', 2, cx + to / 2, cy);
+      };
+    });
+    const st = () => view.evaluate(() => ({
+      fs: !!document.fullscreenElement,
+      hint: document.getElementById('hint').classList.contains('on'),
+      z: +(getComputedStyle(document.getElementById('stage')).transform
+            .match(/matrix\(([\d.]+)/)?.[1] ?? 1),
+      locks: window.__locks.slice(),
+    }));
+    await view.goto(`http://127.0.0.1:${PROXY_PORT}/img/${PROBE}`, { waitUntil: 'load' });
+    await sleep(1200);
+    const loaded = await view.evaluate(() => document.getElementById('pic').naturalWidth > 0);
+    const atLoad = await st();
+    rec('T18a a tap lands on the viewer, not the bytes', loaded && !!(await view.$('#pic')),
+      `picture rendered=${loaded}`);
+    // Refused on load is the expected case; it must say so rather than look broken.
+    rec('T18b refused on load -> it asks for the touch', atLoad.fs || atLoad.hint,
+      JSON.stringify(atLoad));
+
+    await view.touchscreen.tap(210, 400); await sleep(700);
+    const tapped = await st();
+    rec('T18c one touch anywhere -> fullscreen + landscape',
+      tapped.fs && !tapped.hint && tapped.locks.includes('landscape'), JSON.stringify(tapped));
+    await view.screenshot({ path: SHOTS + '/13-viewer-full.png' });
+
+    await view.touchscreen.tap(210, 400); await sleep(80);
+    await view.touchscreen.tap(210, 400); await sleep(700);
+    const zoomed = await st();
+    await view.touchscreen.tap(210, 400); await sleep(80);
+    await view.touchscreen.tap(210, 400); await sleep(700);
+    const back = await st();
+    rec('T18d double-tap zooms in, and all the way back out',
+      zoomed.z > 2 && back.z === 1, JSON.stringify({ zoomed: zoomed.z, back: back.z }));
+    await view.screenshot({ path: SHOTS + '/14-viewer-zoom.png' });
+
+    await view.evaluate(() => window.__pinch(80, 300)); await sleep(600);
+    const pinchedIn = await st();
+    await view.evaluate(() => window.__pinch(300, 80)); await sleep(600);
+    const pinchedOut = await st();
+    rec('T18e pinch scales the picture, and retraces on the way back',
+      pinchedIn.z > 1.5 && pinchedOut.z < pinchedIn.z,
+      JSON.stringify({ in: pinchedIn.z, out: pinchedOut.z }));
+    await view.close();
+  }
+
   await browser.close();
   proxy.close();
   if (srv) srv.kill('SIGKILL');
+  try { fs.unlinkSync(path.join(SPOOL, PROBE)); } catch (_) {}
   const fails = results.filter(r => !r.pass);
   fs.writeFileSync(path.join(__dirname, 'results.json'), JSON.stringify(results, null, 2));
   console.log(`\n==== ${results.length - fails.length}/${results.length} passed ====`);

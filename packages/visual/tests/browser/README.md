@@ -2,8 +2,9 @@
 
 Headless Playwright verification of the canvas *client* JS — the parts pytest
 can't reach: SSE watchdog/self-heal (#137), the room-legible disconnect banner
-(#142), e-ink toast legibility (#146), and the fullscreen button with its landscape
-lock (T17). 14 checks, ~4 minutes, screenshots for eyeballing.
+(#142), e-ink toast legibility (#146), the fullscreen button with its landscape lock
+(T17), and the picture viewer a chat thumbnail opens into (T18). 19 checks,
+~4 minutes, screenshots for eyeballing.
 
 The page is a picture with a caption: the controls, the agent tree, the whole
 reply and the reply box moved to Sasonica, and their checks (T3–T9, T13, T16)
@@ -62,3 +63,10 @@ via `MEDIA_BG_PORT` / `MEDIA_BG_PROXY_PORT`. Same `/input`+`/ctl` route-blocks.
 - The throwaway instance reads the live house speech state, so when anything
   is speaking the SSE stream carries real state frames and the 15s idle ping
   never fires — T2 accepts either (both stamp the watchdog).
+- T18 writes `harness-probe.svg` into the real spool dir and deletes it at the
+  end, rather than depending on whatever the house last drew. If a run is
+  killed mid-way, that one file is the litter to sweep.
+- **Test the viewer against a hostname, never only 127.0.0.1.** Which body
+  `/img/<name>` returns turns on request headers, and a browser treats
+  loopback as a secure context and a tailnet host as not — which is exactly
+  how the viewer shipped broken (see the handover, 2026-09-11).

@@ -2,16 +2,32 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<!-- Unlike the canvas, this page does NOT take the pinch off the browser. The
-     canvas has its own zoom because it is a live surface with a caption and a
-     figure badge that must not scale with the picture; a viewer is one picture
-     and nothing else, and the browser's own pinch is better than anything
-     worth writing here. -->
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- Our own zoom, so the browser must not run a second one underneath it off
+     the same fingers. This page used to leave the pinch to the browser, on the
+     reasoning that a viewer is one picture and the browser's pinch is better
+     than anything worth writing here. That was true right up to the moment the
+     page goes fullscreen — which is now the first thing it does — because a
+     fullscreen element is not the layout viewport and the browser's pinch stops
+     reaching it. Zoomable and fullscreen had to be the same page, so the zoom
+     is ours. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>agent-media picture</title>
 <style>
-  html, body { margin: 0; height: 100%; background: #000; }
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden;
+               touch-action: none; }
   html.eink, html.eink body { background: #fff; }
+  /* The picture's zoom lives on the stage rather than the image, and the origin
+     is the top-left corner, so the whole gesture is one equation:
+         screen = point * scale + offset
+     Keeping the spot under the fingers still is that, solved for offset. From
+     the centre it needs the viewport folded into every sum, and the arithmetic
+     that falls out is what makes a pinch feel chased rather than held. */
+  #stage {
+    position: fixed; inset: 0; transform-origin: 0 0;
+    will-change: transform;
+  }
+  body:not(.pinching) #stage { transition: transform .28s ease; }
+  body.zoomed { cursor: grab; }
   /* The whole picture, never cropped: a figure's labels are the content, and
      this page exists precisely because they were too small to read. */
   #pic {
@@ -44,10 +60,26 @@
     backdrop-filter: none; transition: none;
   }
   html.eink #full.on { opacity: 1; }
+  /* Said once, on the way in, and only while there is something to say: the
+     page cannot fullscreen itself without a gesture, so it has to ask for one
+     rather than sit there looking like it did not work. */
+  #hint {
+    position: fixed; left: 50%; transform: translateX(-50%);
+    bottom: max(18px, env(safe-area-inset-bottom)); z-index: 10;
+    padding: .5em 1em; border-radius: 999px;
+    background: rgba(20,20,22,.92); backdrop-filter: blur(12px); color: #eee;
+    font: 14px/1.4 system-ui, sans-serif; white-space: nowrap;
+    opacity: 0; pointer-events: none; transition: opacity .3s ease;
+  }
+  #hint.on { opacity: 1; }
+  html.eink #hint {
+    background: #fff; color: #000; border: 2px solid #000;
+    backdrop-filter: none; transition: none;
+  }
 </style>
 </head>
 <body>
-<img id="pic" alt="">
+<div id="stage"><img id="pic" alt=""></div>
 <button id="full" type="button" title="Fullscreen" aria-label="Fullscreen">
   <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"
        fill="none" stroke="currentColor" stroke-width="2"
@@ -56,46 +88,144 @@
     <path class="fs-out" d="M4 9h5V4M20 9h-5V4M4 15h5v5M20 15h-5v5"/>
   </svg>
 </button>
+<div id="hint">tap anywhere for full screen</div>
 <script>
+  const $ = (id) => document.getElementById(id);
   // The picture is the URL this page was served at. No substitution, no
   // escaping question: ?raw=1 is the same address with the viewer declined,
   // so the <img> gets the bytes and the navigation got the page.
-  const pic = document.getElementById('pic');
-  const src = location.pathname + '?raw=1';
-  pic.src = src;
+  const pic = $('pic');
+  pic.src = location.pathname + '?raw=1';
   pic.classList.toggle('inkable', /\.svg$/i.test(location.pathname));
   // Same origin as the canvas, so the e-ink preference set there — by ?eink=1
   // on the wall page — is already ours. A Pine Note that has said it is ink
   // should not be handed a black page by a different door.
   try { if (localStorage.getItem('eink') === '1')
           document.documentElement.classList.add('eink'); } catch (_) {}
+  const eink = () => document.documentElement.classList.contains('eink');
 
-  // ---- fullscreen, and landscape with it -----------------------------------
-  // The reason this page exists. A figure is drawn wide and a phone is held
-  // tall, so the picture that arrived here as a thumbnail under a message is
-  // still only a band across the middle. Fullscreen plus a landscape lock is
-  // the whole of the fix, and it is one tap because a browser will not give
-  // either without a gesture — a page cannot fullscreen itself on load, however
-  // much it would like to.
+  // ---- zoom ----------------------------------------------------------------
+  // Pinch to scale, two fingers to drag, one finger to drag once zoomed,
+  // double-tap to go in and out. The same equations the canvas uses, because
+  // they are the ones that feel attached to the hand.
+  let z = 1, ox = 0, oy = 0, raf = 0;
+  const MAX = 12;
+  function clamp() {
+    z = Math.min(MAX, Math.max(1, z));
+    if (z === 1) { ox = oy = 0; return; }
+    // Never past the edge: beyond it there is only background, and finding the
+    // way back from a blank screen is a puzzle nobody asked for.
+    ox = Math.min(0, Math.max(-innerWidth * (z - 1), ox));
+    oy = Math.min(0, Math.max(-innerHeight * (z - 1), oy));
+  }
+  function draw() {
+    raf = 0;
+    $('stage').style.transform =
+      'translate(' + ox + 'px,' + oy + 'px) scale(' + z + ')';
+    document.body.classList.toggle('zoomed', z > 1);
+  }
+  function apply() { clamp(); if (!raf) raf = requestAnimationFrame(draw); }
+  /** Zoom to `nz` while holding the picture-point under (sx, sy) still. */
+  function zoomAbout(nz, sx, sy) {
+    const px = (sx - ox) / z, py = (sy - oy) / z;
+    z = Math.min(MAX, Math.max(1, nz));
+    ox = sx - px * z; oy = sy - py * z;
+    apply();
+  }
+  function pan(dx, dy) { ox += dx; oy += dy; apply(); }
+  function reset() { z = 1; ox = oy = 0; apply(); }
+  // Fullscreen and rotation both change the box the picture is laid out in, so
+  // a pan that was inside the old one can be outside the new: re-clamp rather
+  // than leave the picture parked off the edge.
+  addEventListener('resize', () => { if (z > 1) apply(); });
+
+  const P = { pts: new Map(), d0: 0, base: 1, mid: null };
+  const dist = () => { const [a, b] = [...P.pts.values()];
+                       return Math.hypot(a.x - b.x, a.y - b.y); };
+  const mid = () => { const [a, b] = [...P.pts.values()];
+                      return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; };
+  const onPicture = (t) => !(t && t.closest && t.closest('#full'));
+
+  addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse') return;
+    P.pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (P.pts.size === 2) {
+      P.d0 = dist(); P.mid = mid(); P.base = z;
+      document.body.classList.add('pinching');
+    }
+  }, { passive: true });
+  addEventListener('pointermove', (e) => {
+    if (!P.pts.has(e.pointerId)) return;
+    P.pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (P.pts.size !== 2 || !P.d0) return;
+    // Gain, because fingers do not travel far on a phone: a raw distance ratio
+    // caps out around 2.5x on a 420px screen even with a full spread, which
+    // makes reading a figure's labels four separate gestures. The power keeps
+    // it continuous and reversible — pinching back retraces it exactly.
+    const ratio = Math.pow(dist() / P.d0, 1.9);
+    const m = mid();
+    const dx = m.x - P.mid.x, dy = m.y - P.mid.y;
+    P.mid = m;
+    // Zoom FIRST, then carry the drag: pan clamps against the OLD scale, and at
+    // scale 1 that clamp is "no room at all", so a two-finger drag that was
+    // also opening the picture up would have its movement thrown away before
+    // the zoom could make room for it.
+    zoomAbout(P.base * ratio, m.x, m.y);
+    if (dx || dy) pan(dx, dy);
+  }, { passive: true });
+  function pinchEnd(e) {
+    P.pts.delete(e.pointerId);
+    if (P.pts.size < 2) { P.d0 = 0; document.body.classList.remove('pinching'); }
+    if (P.pts.size === 1) {
+      const [only] = [...P.pts.values()];
+      panFrom = { x: only.x, y: only.y };
+    }
+  }
+  addEventListener('pointerup', pinchEnd, { passive: true });
+  addEventListener('pointercancel', pinchEnd, { passive: true });
+
+  let panFrom = null;
+  addEventListener('pointerdown', (e) => {
+    if (z > 1 && P.pts.size <= 1 && onPicture(e.target))
+      panFrom = { x: e.clientX, y: e.clientY };
+  }, { passive: true });
+  addEventListener('pointermove', (e) => {
+    if (!panFrom || P.pts.size >= 2) return;
+    pan(e.clientX - panFrom.x, e.clientY - panFrom.y);
+    panFrom = { x: e.clientX, y: e.clientY };
+  }, { passive: true });
+  addEventListener('pointerup', () => { panFrom = null; }, { passive: true });
+
+  // ---- fullscreen, landscape, and the tap that starts them -----------------
+  // "By default", as near as a browser permits. A page cannot fullscreen or
+  // rotate itself on load — both need a user gesture, and arriving at a URL is
+  // not one. It can try (a tab opened from a tap sometimes still carries the
+  // activation, and when it does this page opens already filling the screen),
+  // and when that is refused the very next touch anywhere on the picture does
+  // it. So it is never a button hunt: open, touch, it is landscape and full.
   const ROOT = document.documentElement;
   const req = ROOT.requestFullscreen || ROOT.webkitRequestFullscreen;
   const exit = document.exitFullscreen || document.webkitExitFullscreen;
-  const btn = document.getElementById('full');
+  const btn = $('full');
   const isFull = () =>
     !!(document.fullscreenElement || document.webkitFullscreenElement);
-  const eink = () => ROOT.classList.contains('eink');
-  if (!req || document.fullscreenEnabled === false) btn.remove();
+  const canFull = !!req && document.fullscreenEnabled !== false;
+  if (!canFull) btn.remove();
 
   let hideTimer = null;
   function reveal() {
     if (!btn.isConnected) return;
     btn.classList.add('on');
     clearTimeout(hideTimer);
-    // Longer than the canvas's four seconds: there, the button is an
-    // afterthought on a picture you are watching; here it is what you came for.
     hideTimer = setTimeout(() => btn.classList.remove('on'), 6000);
   }
-  function draw() {
+  let hintTimer = null;
+  function hint(on) {
+    $('hint').classList.toggle('on', on);
+    clearTimeout(hintTimer);
+    if (on) hintTimer = setTimeout(() => $('hint').classList.remove('on'), 4000);
+  }
+  function draw2() {
     if (!btn.isConnected) return;
     const on = isFull();
     document.body.classList.toggle('fullscreen', on);
@@ -105,6 +235,7 @@
     // touching it, and a phone left locked landscape by those has simply
     // stopped turning as far as its owner is concerned.
     if (on) {
+      hint(false);
       // Withheld on e-ink for the reason every other motion is: DU4 does not
       // move, and rotating the screen is the largest movement there is.
       if (!eink() && screen.orientation && screen.orientation.lock) {
@@ -118,21 +249,61 @@
     }
     reveal();
   }
-  if (btn.isConnected) {
-    btn.addEventListener('click', async () => {
-      const want = !isFull();
-      try {
-        if (want) await req.call(ROOT);
-        else if (exit) await exit.call(document);
-      } catch (_) {}
-      draw();
+  async function enter() {
+    if (!canFull || isFull()) return false;
+    try { await req.call(ROOT); } catch (_) {}
+    draw2();
+    return isFull();
+  }
+  async function leave() {
+    if (!isFull() || !exit) return;
+    try { await exit.call(document); } catch (_) {}
+    draw2();
+  }
+  if (canFull) {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      autoDone = true;                 // the button IS the deliberate choice
+      isFull() ? leave() : enter();
     });
     for (const ev of ['fullscreenchange', 'webkitfullscreenchange'])
-      document.addEventListener(ev, draw);
+      document.addEventListener(ev, draw2);
     for (const ev of ['pointerdown', 'mousemove', 'keydown'])
       document.addEventListener(ev, reveal, { passive: true });
     reveal();
+    // Ask on load. Usually refused — and then the first touch does it.
+    enter().then((ok) => { if (!ok) hint(true); });
   }
+
+  // A tap is a tap: one finger, never joined by a second, put down and lifted
+  // in roughly the same place. Letting go of a pinch raises two fingers a few
+  // milliseconds apart, and counting those as taps is what makes a zoom snap
+  // back the instant you finish making it.
+  let autoDone = false, lastTap = 0, tapOk = false, tapAt = null;
+  addEventListener('pointerdown', (e) => {
+    if (P.pts.size > 1) { tapOk = false; return; }
+    tapOk = onPicture(e.target);
+    tapAt = { x: e.clientX, y: e.clientY };
+  }, { passive: true });
+  addEventListener('pointermove', (e) => {
+    if (!tapOk || !tapAt) return;
+    if (Math.hypot(e.clientX - tapAt.x, e.clientY - tapAt.y) > 12) tapOk = false;
+  }, { passive: true });
+  addEventListener('pointerup', (e) => {
+    if (P.pts.size > 0) { tapOk = false; return; }   // a finger is still down
+    if (!tapOk) return;
+    tapOk = false;
+    const now = Date.now();
+    if (now - lastTap < 320) {
+      // Double-tap: in to the spot, or all the way back out.
+      lastTap = 0;
+      z > 1 ? reset() : zoomAbout(2.6, e.clientX, e.clientY);
+      return;
+    }
+    lastTap = now;
+    // The first single tap is the gesture the page was waiting for.
+    if (!autoDone) { autoDone = true; enter(); }
+  }, { passive: true });
 </script>
 </body>
 </html>
