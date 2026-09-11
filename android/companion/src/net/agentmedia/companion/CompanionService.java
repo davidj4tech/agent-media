@@ -127,6 +127,8 @@ public class CompanionService extends Service {
     private static final int NOTIF_WAITING = 4;
     /** How often to refresh position while playing. The session extrapolates between. */
     private static final long POSITION_POLL_MS = 5000;
+    /** How often the speech listener checks that its address still exists. */
+    private static final long SPEECH_REBIND_CHECK_MS = 30_000;
     /** One column per second, the rate the tmux status line has always used. */
     private static final long MARQUEE_TICK_MS = 1000;
     private static final int LOG_LINES = 200;
@@ -196,6 +198,10 @@ public class CompanionService extends Service {
      */
     private static volatile BuiltinSpeech LIVE_SPEECH;
     private MpvServer speechServer;
+    /** The address {@link #speechServer} is listening on, so a move is visible. */
+    private volatile String speechBind;
+    /** When {@link #followTailnetAddress()} last looked. */
+    private long speechBindCheckedAt;
     /** What the in-app player is doing, in the shape every card reads. */
     private final MpvState builtinSpeechState = new MpvState();
     /** The mic probe. See MicWatch; BargeIn decides what it means. */
@@ -755,6 +761,7 @@ public class CompanionService extends Service {
             // is playing, which is the case that needs it: a permanent loss
             // pauses speech and then nothing else happens at all.
             if (mic != null) mic.poll();
+            followTailnetAddress();
             pollForQuiet();
             expireSpeechPause();
             kickMarquee();
@@ -1337,16 +1344,68 @@ public class CompanionService extends Service {
             // between it and the mpv bridge by which one is speaking.
             builtinSpeech.mirrorInto(builtinSpeechState,
                                      () -> main.post(this::pushSessionState));
-            speechServer = new MpvServer(Server.tailnetAddress(),
-                                         Server.BUILTIN_SPEECH_PORT,
-                                         builtinSpeech,
-                                         CompanionService::log);
-            builtinSpeech.attach(speechServer);
-            speechServer.start();
+            bindBuiltinSpeech();
         } catch (Throwable t) {
             // Optional by construction, like the side channels: a phone that
             // cannot bind the port keeps every other thing this service does.
             log("builtin speech unavailable: " + t);
+        }
+    }
+
+    /**
+     * Put the speech listener on whatever address red5 can reach today.
+     *
+     * Separate from {@link #startBuiltinSpeech()} because the answer expires.
+     * {@link Server#tailnetAddress()} reads the interfaces *now*, and this
+     * service starts at boot, where it routinely wins the race against
+     * tailscaled: no 100.64/10 address exists yet, the lookup falls back to
+     * loopback, and the listener spends the rest of the phone's uptime bound
+     * somewhere red5 cannot reach. Nothing said so — the port was open, the
+     * app was on screen, and every reply died as ECONNREFUSED on the server
+     * with no fallback to 6602, so speech was simply silent. Seen 2026-09-11;
+     * the phone had been off the tailnet that afternoon.
+     */
+    private void bindBuiltinSpeech() {
+        String address = Server.tailnetAddress();
+        MpvServer old = speechServer;
+        if (old != null) old.stop();
+        speechServer = new MpvServer(address,
+                                     Server.BUILTIN_SPEECH_PORT,
+                                     builtinSpeech,
+                                     CompanionService::log);
+        builtinSpeech.attach(speechServer);
+        speechServer.start();
+        speechBind = address;
+    }
+
+    /**
+     * Rebind the speech listener when the tailnet address it holds is no
+     * longer the one this phone answers on — or when it holds none at all,
+     * which is a bind that failed and would otherwise never be retried.
+     *
+     * Cheap enough to ask from the position poll at a thirtieth of its rate:
+     * enumerating interfaces is a syscall, not a network round trip. Never
+     * while the player is mid-reply — a rebind drops the connections the
+     * coordinator is following {@code playlist-pos} on, and a reply that is
+     * already sounding is worth more than a few seconds' delay to a fix that
+     * has waited for the phone to come back anyway.
+     */
+    private void followTailnetAddress() {
+        if (builtinSpeech == null) return;
+        long now = android.os.SystemClock.elapsedRealtime();
+        if (now - speechBindCheckedAt < SPEECH_REBIND_CHECK_MS) return;
+        speechBindCheckedAt = now;
+        MpvServer s = speechServer;
+        boolean listening = s != null && s.boundPort() > 0;
+        String address = Server.tailnetAddress();
+        if (listening && address.equals(speechBind)) return;
+        if (builtinSpeech.active()) return;
+        log("speech listener moving to " + address
+            + " (was " + speechBind + (listening ? "" : ", not listening") + ")");
+        try {
+            bindBuiltinSpeech();
+        } catch (Throwable t) {
+            log("builtin speech rebind failed: " + t);
         }
     }
 
