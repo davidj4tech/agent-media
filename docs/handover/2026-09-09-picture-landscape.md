@@ -15,9 +15,9 @@ every surface, then fold the automatic in-app rotation into the next APK.
   movement there is.
 - `/img/<name>` now answers two questions at one address. An `<img>` gets the
   bytes; a top-level navigation gets a viewer page — the picture whole, with
-  that same fullscreen-plus-landscape button. `Sec-Fetch-Dest` tells them
-  apart; anything that does not say gets the bytes. `?raw=1` declines the
-  viewer, `?view=1` demands it.
+  that same fullscreen-plus-landscape button. **`Accept` tells them apart**;
+  anything that does not say gets the bytes. `?raw=1` declines the viewer,
+  `?view=1` demands it.
 - **Nothing in the app changed.** `ConversationLog.openPicture` already calls
   `Browser.open` on exactly this URL, so the viewer arrived with a canvas
   restart on red5 and p8a. Same for sasonica-web.
@@ -29,11 +29,12 @@ Tests: `packages/visual/tests/test_view.py` (8), browser harness T17a–e.
 Both are in `~/projects/sasonica` (branch `sasonica`), and both want the CI
 `sasonica-apk` artifact + `adb install -r` (memory: [[sasonica-fork]]).
 
-1. **`CanvasPanel.vue` frames the canvas with `allow="autoplay"`** and no
-   `allowfullscreen`, so `document.fullscreenEnabled` is false inside it and
-   the canvas's own button correctly takes itself off the page. Add
-   `allowfullscreen` (or `allow="autoplay; fullscreen"`) and the framed canvas
-   above a conversation can fill the screen too.
+1. **`CanvasPanel.vue`'s iframe** — DONE in the fork (073156d6,
+   `allow="autoplay; fullscreen"` + `allowfullscreen`), **waiting on an APK**.
+   Measured either side against the live canvas: `allow="autoplay"` gives
+   `fullscreenEnabled` false and no button; with `fullscreen` delegated, true
+   and the button. This is what David reported as "I don't see the full screen
+   features" on 2026-09-11.
 
 2. **An in-app picture viewer, so it is no taps rather than one.** The browser
    rule is the whole reason the shipped answer costs a tap: a page cannot
@@ -49,9 +50,24 @@ Both are in `~/projects/sasonica` (branch `sasonica`), and both want the CI
    a plain browser tab will ever have, and it is what `Browser.open` falls back
    to if the native viewer is ever skipped.
 
-## Watch for
+## 2026-09-11: the viewer never fired on a real phone
 
-`Sec-Fetch-Dest` is the hinge. Android's WebView has sent it since Chromium 80,
-and if a client ever does not, the failure is the old behaviour (a bare image),
-never a broken picture — that is deliberate and worth keeping if this route is
-touched.
+The route shipped reading `Sec-Fetch-Dest`, and every tap kept getting a bare
+image. `Sec-Fetch-*` is attached only to **potentially trustworthy** origins —
+https, or localhost. The canvas is plain http on a tailnet host, so Chrome sends
+none of it, the header was absent, and the absent case falls to the bytes by
+design. Measured: a navigation to `http://red5:8781` carries no `Sec-Fetch-*`
+at all; the same navigation to `http://127.0.0.1:8781` carries the lot.
+
+**Every test was the case that works** — the unit tests set the header by hand,
+the browser harness drives 127.0.0.1. Fixed in 954fcae: `Accept` leads (a
+navigation names `text/html`, an `<img>` never does, and `*/*` is not a request
+for a page), `Sec-Fetch-Dest` still confirms where it exists, and both answers
+carry `Vary: Accept, Sec-Fetch-Dest` with the viewer `no-store` — one address
+with two bodies and a day of `immutable` on one of them is a cache waiting to
+serve the wrong one.
+
+The lesson worth keeping: **this house is plain http over a tailnet, and a test
+on 127.0.0.1 is a different security context from every screen in it.** Anything
+that turns on a browser's own judgement of the origin has to be proved against a
+hostname, not loopback. See [[plain-http-hides-sec-fetch-headers]].
