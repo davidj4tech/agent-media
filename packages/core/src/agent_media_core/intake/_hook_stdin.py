@@ -23,8 +23,9 @@ def _load_env_file(label: str) -> None:
     load_env_file(label)
 
 
-def run(source: Source, env_prefix: str) -> int:
-    """Read stdin, strip markdown, submit as *source*.
+def run(source: Source, env_prefix: str, *, text: str | None = None,
+        metadata: dict | None = None) -> int:
+    """Read stdin (or supplied text), strip markdown, submit as *source*.
 
     *env_prefix* is the upper-case harness name (e.g. ``"CODEX"`` or
     ``"PI"``). The hook checks ``<PREFIX>_TTS_ENABLED``, and honours
@@ -39,7 +40,7 @@ def run(source: Source, env_prefix: str) -> int:
     _load_env_file(f"hook-{env_prefix.lower()}")
 
     try:
-        raw = sys.stdin.read()
+        raw = sys.stdin.read() if text is None else text
     except Exception:  # noqa: BLE001
         return 0
 
@@ -66,6 +67,6 @@ def run(source: Source, env_prefix: str) -> int:
         priority=Priority.NORMAL,
         engine=engine,
         voice=voice,
-        metadata={"kind": "stop"},
+        metadata={"kind": "stop", **(metadata or {})},
     ))
     return 0
