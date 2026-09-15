@@ -561,7 +561,16 @@ def hold_client(host: str, cwd: str = "") -> bool:
             argv = _holder_argv(host, cwd)
             spawned = False
             if shutil.which("systemd-run"):
-                # A stopped unit of that name may linger failed; clear it.
+                # A stopped unit of that name may linger failed; clear it. And
+                # a *live* one is no use either: its client has drifted. When
+                # the session it held is destroyed, `detach-on-destroy off`
+                # moves the client to some other session instead of ending it,
+                # so the unit stays "active" holding the wrong thing and a
+                # second holder under the same name is refused. Stop it; a
+                # fresh one is spawned below (seen 2026-09-16: six-day-old
+                # holder parked on p-agent-media, every phone ask refused).
+                subprocess.run(["systemctl", "--user", "stop", f"{unit}.service"],
+                               capture_output=True, check=False)
                 subprocess.run(["systemctl", "--user", "reset-failed", f"{unit}.service"],
                                capture_output=True, check=False)
                 r = subprocess.run(["systemd-run", "--user", "--collect", f"--unit={unit}",
