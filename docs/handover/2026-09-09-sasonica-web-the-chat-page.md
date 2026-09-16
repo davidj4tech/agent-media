@@ -42,15 +42,19 @@ error" in place of the server's own words. `tests/test_cors.py`, 4 tests.
 
 ## Where it runs
 
-red5's canvas is restarted, so CORS is live. The `audiobookshelf-react`
-container on :13379 was recreated with the built checkout mounted over the
-image's build output:
+red5's canvas is restarted, so CORS is live. The React client runs on :13379
+as a **Quadlet unit**, `~/.config/containers/systemd/audiobookshelf-react.container`,
+the same way the primary Audiobookshelf on :13378 does — so it comes back on
+its own after a reboot or a crash (`Restart=always`, `WantedBy=default.target`,
+and the user has lingering on). `systemctl --user restart audiobookshelf-react`.
+
+It mounts the built checkout over the image's own output:
 
 ```
--v ~/projects/sasonica-web/.next:/app/client-react/.next
--v ~/projects/sasonica-web/public:/app/client-react/public:ro
--v ~/projects/sasonica-web/next.config.ts:/app/client-react/next.config.ts:ro
--v ~/projects/sasonica-web/package.json:/app/client-react/package.json:ro
+Volume=%h/projects/sasonica-web/.next:/app/client-react/.next
+Volume=%h/projects/sasonica-web/public:/app/client-react/public:ro
+Volume=%h/projects/sasonica-web/next.config.ts:/app/client-react/next.config.ts:ro
+Volume=%h/projects/sasonica-web/package.json:/app/client-react/package.json:ro
 ```
 
 Not the whole checkout: the image is Alpine and our `node_modules` were
@@ -60,9 +64,13 @@ are the wrong libc and the server refuses to start. The image's own
 so mounting only the build output is enough. `podman logs` should end with
 "Using React client at /app/client-react" and "Listening on port :80".
 
-To go back to stock: `podman rm -f audiobookshelf-react` and
-`podman rename audiobookshelf-react-stock audiobookshelf-react` (the original
-container is stopped, not deleted), then start it.
+To go back to stock: comment those four Volume lines out and restart the unit.
+(`audiobookshelf-react-stock`, the pre-Quadlet container parked on 2026-09-09,
+is now redundant and can be removed — it holds no state, config and metadata
+are host mounts.)
+
+Neither quadlet file is under version control, the primary's included — they
+live only on red5's disk. Pre-existing, but worth a decision.
 
 **Redeploy after a change is `pnpm build` in the checkout and a container
 restart** — the mount is live, but Next reads `.next` at startup.
