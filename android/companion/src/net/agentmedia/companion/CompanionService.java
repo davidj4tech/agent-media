@@ -764,6 +764,7 @@ public class CompanionService extends Service {
             followTailnetAddress();
             pollForQuiet();
             expireSpeechPause();
+            expireVoiceSession();
             kickMarquee();
             main.postDelayed(this, POSITION_POLL_MS);
         }
@@ -1786,6 +1787,18 @@ public class CompanionService extends Service {
         if (actions.isEmpty()) return;   // outside the window: David's to lift
         log("focus: nothing else is playing any more");
         for (SpeechPolicy.Action action : actions) performSpeech(action);
+    }
+
+    /**
+     * End a conversation whose recording has not come back. The only clock
+     * BargeIn's grace has — the end of a voice session arrives as the absence
+     * of events, and pushSessionState is what acts on the answer, so the tick
+     * is followed by one.
+     */
+    private void expireVoiceSession() {
+        boolean was = bargeIn.voiceSession();
+        bargeIn.onTick(System.currentTimeMillis());
+        if (was && !bargeIn.voiceSession()) pushSessionState();
     }
 
     /**

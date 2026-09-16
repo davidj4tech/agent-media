@@ -22,6 +22,11 @@ public final class BargeInTest {
         f += aPauseForBreathDoesNotUndoIt();
         f += closingTheMicClearsTheLatch();
         f += focusWithTheMicShutDecidesNothing();
+        f += aBlinkingRecordingIsStillAConversation();
+        f += theBaselineCannotStealAConversationsGap();
+        f += aConversationEndsOnceItsRecordingStaysGone();
+        f += theOtherSideSpeakingExtendsTheGrace();
+        f += afterAConversationDictationIsJudgedFresh();
         if (f > 0) {
             System.out.println(f + " failure(s)");
             System.exit(1);
@@ -109,6 +114,84 @@ public final class BargeInTest {
         b.onFocus(FocusPolicy.LOSS, 1000);
         b.onFocus(FocusPolicy.GAIN, 20_000);
         return is(false, b.holding(20_000), "nothing to hold for");
+    }
+
+    /**
+     * The 2026-09-17 trace: Live's recording (one riid) went quiet and came
+     * back every two to five seconds, and every quiet used to end the session
+     * — which released the held reply into the conversation and paused Live.
+     */
+    private static int aBlinkingRecordingIsStillAConversation() {
+        BargeIn b = new BargeIn();
+        b.onMic(true, BargeIn.VOICE_COMMUNICATION, 1000);
+        int f = is(true, b.voiceSession(), "a conversation, at the first poll");
+        long t = 1000;
+        for (int i = 0; i < 12; i++) {
+            b.onMic(false, -1, t + 2000);      // the blink
+            b.onTick(t + 2500);
+            f += is(true, b.voiceSession(), "still a conversation while it blinks");
+            b.onMic(true, BargeIn.VOICE_COMMUNICATION, t + 3000);
+            t += 3000;
+        }
+        return f + is(true, b.voiceSession(), "and after a dozen of them");
+    }
+
+    /**
+     * com.google.android.as opens VOICE_RECOGNITION constantly on p8a, so it
+     * lands in the gaps between Live's recordings. Letting that reclassify the
+     * episode is the element-zero bug arriving by another door.
+     */
+    private static int theBaselineCannotStealAConversationsGap() {
+        BargeIn b = new BargeIn();
+        b.onMic(true, BargeIn.VOICE_COMMUNICATION, 1000);
+        b.onMic(false, -1, 3000);
+        b.onMic(true, DICTATION, 3500);        // the recogniser, mid-conversation
+        int f = is(true, b.voiceSession(), "the baseline does not end the session");
+        f += is(false, b.holding(3600), "and does not start a dictation hold");
+        b.onMic(false, -1, 4000);
+        b.onMic(true, BargeIn.VOICE_COMMUNICATION, 4200);
+        return f + is(true, b.voiceSession(), "Live comes back to the same episode");
+    }
+
+    /** It does have to end, or the hold outlives the conversation. */
+    private static int aConversationEndsOnceItsRecordingStaysGone() {
+        BargeIn b = new BargeIn();
+        b.onMic(true, BargeIn.VOICE_COMMUNICATION, 1000);
+        b.onMic(false, -1, 5000);
+        b.onTick(5000 + BargeIn.SESSION_GRACE_MS - 1);
+        int f = is(true, b.voiceSession(), "not a millisecond early");
+        b.onTick(5000 + BargeIn.SESSION_GRACE_MS);
+        return f + is(false, b.voiceSession(), "and over once the grace passes");
+    }
+
+    /**
+     * David's report: Sam "continued to speak over Cece". With the mic shut
+     * and another app audible, the conversation is at its clearest — that is
+     * the other side talking — so the grace restarts rather than running out.
+     */
+    private static int theOtherSideSpeakingExtendsTheGrace() {
+        BargeIn b = new BargeIn();
+        b.onMic(true, BargeIn.VOICE_COMMUNICATION, 1000);
+        b.onMic(false, -1, 2000);
+        b.onFocus(FocusPolicy.LOSS_TRANSIENT, 2500);       // Cece starts talking
+        b.onTick(2500 + BargeIn.SESSION_GRACE_MS * 2);
+        int f = is(true, b.voiceSession(), "a long turn of hers is not the end");
+        b.onFocus(FocusPolicy.GAIN, 2500 + BargeIn.SESSION_GRACE_MS * 2);
+        b.onTick(2500 + BargeIn.SESSION_GRACE_MS * 3);
+        return f + is(false, b.voiceSession(),
+                      "but the silence after it does run out");
+    }
+
+    /** And the grace must not leak into whatever holds the mic next. */
+    private static int afterAConversationDictationIsJudgedFresh() {
+        BargeIn b = new BargeIn();
+        b.onMic(true, BargeIn.VOICE_COMMUNICATION, 1000);
+        b.onMic(false, -1, 2000);
+        b.onTick(2000 + BargeIn.SESSION_GRACE_MS);
+        int f = is(false, b.voiceSession(), "the session is over");
+        b.onMic(true, DICTATION, 60_000);
+        return f + is(true, b.holding(60_000),
+                      "so a later dictation holds the audio down again");
     }
 
     private static int is(boolean want, boolean got, String what) {

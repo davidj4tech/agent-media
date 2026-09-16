@@ -100,6 +100,29 @@ final class BargeIn {
      */
     static final int VOICE_COMMUNICATION = 7;
 
+    /**
+     * How long a conversation survives its recording going away.
+     *
+     * A VOICE_COMMUNICATION recording is not held open for the length of the
+     * conversation, which is what the first version of this class assumed. On
+     * p8a on 2026-09-17 Claude Live's recording (one riid, 43073) went quiet
+     * and came back every two to five seconds — and sometimes the whole list
+     * emptied, which is Live releasing the mic while its own voice speaks.
+     * Clearing the latch on each of those ended the session a dozen times
+     * inside one conversation, and each time the ordinary focus claim came
+     * back and paused Live: "Paused while another app is using audio. Tap to
+     * resume", with Sam talking over both David and Cece. That is the whole
+     * bug the hold tier exists to prevent.
+     *
+     * So a conversation ends when its recording has been gone a while, not
+     * when it blinks. The cost of the wait is that a reply held for a session
+     * David has just left waits this long before it delivers itself; the cost
+     * of not waiting is talking into the conversation. Twenty seconds covers a
+     * turn of Cece's speaking — the longest ordinary gap — and is short enough
+     * not to feel like a hang.
+     */
+    static final long SESSION_GRACE_MS = 20000L;
+
     private boolean micOpen = false;
     /** Latched once the mic-open episode has heard another app speak. */
     private boolean conversation = false;
@@ -108,15 +131,35 @@ final class BargeIn {
     /** Foreign audio already banked in this mic-open episode. */
     private long foreignMs = 0L;
 
-    /** The mic opened or closed. Closing ends the episode and clears the latch. */
+    /**
+     * The mic opened or closed. Closing ends a dictation episode at once and a
+     * conversation only after {@link #SESSION_GRACE_MS} — see that constant,
+     * and {@link #onTick}, which is what actually ends it.
+     */
     void onMic(boolean active, int source, long now) {
         if (active == micOpen) return;
         micOpen = active;
         if (!active) {
+            if (voiceSession) {
+                // Not over: pending. The latch stands, so voiceSession() keeps
+                // answering yes and the hold keeps holding.
+                sessionClosedAt = now;
+                foreignSince = 0L;
+                foreignMs = 0L;
+                return;
+            }
             conversation = false;
             voiceSession = false;
             foreignSince = 0L;
             foreignMs = 0L;
+        } else if (voiceSession && source != VOICE_COMMUNICATION) {
+            // The recogniser's baseline opening in the gap between two of
+            // Live's recordings. It must not be allowed to reclassify the
+            // episode — that is the same bug as reading element zero of the
+            // list, arriving by a different door.
+            sessionClosedAt = 0L;
+            foreignMs = 0L;
+            if (foreignSince != 0L) foreignSince = now;
         } else {
             // A new episode banks nothing, but audio already playing when the
             // mic opened counts from the moment it opened: if David starts
@@ -126,6 +169,7 @@ final class BargeIn {
             if (foreignSince != 0L) foreignSince = now;
             voiceSession = source == VOICE_COMMUNICATION;
             if (voiceSession) {
+                sessionClosedAt = 0L;
                 conversation = true;
                 conversationWhy = "conversation (VOICE_COMMUNICATION)";
                 log.line("barge-in: recording opened as VOICE_COMMUNICATION — "
@@ -160,7 +204,14 @@ final class BargeIn {
 
     /** Why, for the readout — this is the line a human reads over ssh. */
     String why(long now) {
-        if (!micOpen) return "mic shut";
+        if (!micOpen) {
+            if (voiceSession && sessionClosedAt != 0L) {
+                return conversationWhy + ", mic quiet for "
+                        + (now - sessionClosedAt) + "ms of "
+                        + SESSION_GRACE_MS;
+            }
+            return "mic shut";
+        }
         if (conversation) return conversationWhy;
         long heard = audible(now);
         return heard > 0 ? "dictation (" + heard + "ms of other audio, under "
@@ -180,9 +231,40 @@ final class BargeIn {
 
     /** True while the open recording is a VOICE_COMMUNICATION one. */
     private boolean voiceSession = false;
+    /** When the conversation's recording went away; 0 while it is open. */
+    private long sessionClosedAt = 0L;
 
-    /** Is a two-way voice session holding the mic right now? */
-    boolean voiceSession() { return micOpen && voiceSession; }
+    /**
+     * Is a two-way voice session holding the mic right now?
+     *
+     * Deliberately not {@code micOpen && voiceSession} any more: between two
+     * of Live's recordings the mic is shut and the conversation is still going
+     * on. {@link #onTick} is what takes this back down.
+     */
+    boolean voiceSession() { return voiceSession; }
+
+    /**
+     * Expire a pending close. Called on the service's own poll, because the
+     * end of a conversation arrives as the *absence* of events — there is no
+     * callback for "that recording is not coming back".
+     *
+     * Foreign audio extends the grace: another app being audible with the mic
+     * shut is the other half of the conversation speaking, which is the one
+     * thing that most certainly means it is not over.
+     */
+    void onTick(long now) {
+        if (!voiceSession || sessionClosedAt == 0L) return;
+        if (foreignSince != 0L) {
+            sessionClosedAt = now;
+            return;
+        }
+        if (now - sessionClosedAt < SESSION_GRACE_MS) return;
+        voiceSession = false;
+        conversation = false;
+        sessionClosedAt = 0L;
+        log.line("barge-in: the conversation's recording has been gone for "
+                + SESSION_GRACE_MS + "ms — the session is over");
+    }
 
     /** Which evidence decided it, for the readout. */
     private String conversationWhy = "conversation";
