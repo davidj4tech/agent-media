@@ -42,6 +42,23 @@ error" in place of the server's own words. `tests/test_cors.py`, 4 tests.
 
 ## Where it runs
 
+**2026-09-17: the React client is what red5 serves.** The primary
+Audiobookshelf on :13378 — the real library, the one the phone and every
+agent-media service talk to — moved from advplyr's image (2.35.1, Vue client)
+to `audiobookshelf/audiobookshelf-react:latest` (2.36.0) and mounts the fork's
+build. The schema turned out to be current already ("No migrations to run")
+and the libraries came back unchanged (39 / 6 / 55 items); a cold copy of the
+2.35.1 database was taken first regardless, at
+`~/backups/audiobookshelf-pre-2.36-20260917-093044`, because ABS migrations
+are one way and that server had never had a backup. Auto-backup is still
+disabled there — worth turning on.
+
+:13379 is now a second server running the same client against its own
+database. It has no job left unless a client needs trying somewhere safe.
+
+Both units are committed at `deploy/quadlet/`, as copies rather than symlinks
+(see the README there).
+
 red5's canvas is restarted, so CORS is live. The React client runs on :13379
 as a **Quadlet unit**, `~/.config/containers/systemd/audiobookshelf-react.container`,
 the same way the primary Audiobookshelf on :13378 does — so it comes back on

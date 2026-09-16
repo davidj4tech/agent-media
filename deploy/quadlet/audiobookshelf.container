@@ -1,0 +1,64 @@
+[Unit]
+Description=Audiobookshelf
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+ContainerName=audiobookshelf
+# The React client build rather than advplyr's: upstream is replacing the Vue
+# client with it, and this image carries the server plus the React client in
+# one. Moved here 2026-09-17, from 2.35.1 — Audiobookshelf's migrations are
+# one way, so there is a cold copy of the 2.35.1 database in
+# ~/backups/audiobookshelf-pre-2.36-*.
+Image=ghcr.io/audiobookshelf/audiobookshelf-react:latest
+PublishPort=0.0.0.0:13378:80
+Volume=%h/.local/share/audiobookshelf/config:/config:Z
+Volume=%h/.local/share/audiobookshelf/metadata:/metadata:Z
+Volume=%h/audiobooks:/audiobooks:Z
+# Conversations, as books rather than podcast episodes: the Android app's
+# chapter navigation is first-class for books and second-class for podcast
+# episodes, and a conversation is nothing but chapters. Its own mount so it
+# is its own library — a subfolder of /audiobooks would be swept into the
+# audiobook one as well.
+Volume=%h/conversations:/conversations:Z
+Environment=TZ=Australia/Melbourne
+Environment=PORT=80
+Environment=METADATA_PATH=/metadata
+Environment=CONFIG_PATH=/config
+# agent-media's feed lives on red5's own tailnet address, and 100.64/10 is
+# CGNAT space that Audiobookshelf's SSRF filter blocks by default
+# ("Call to 100.103.43.93 is blocked"). Whitelist that one hostname rather
+# than setting DISABLE_SSRF_REQUEST_FILTER=1: every other feed URL is still
+# filtered. Covers both the feed fetch and the episode downloads.
+# The phone serves its own feed too (the clips it rendered are the only
+# copy). By IP, because that is what `media-setup feed` writes there and
+# therefore what the enclosure URLs carry — the match is on hostname,
+# exactly. If p8a's tailnet address ever changes, this needs a hand.
+Environment=SSRF_REQUEST_FILTER_WHITELIST=red5.eagle-dubhe.ts.net,100.94.14.59
+
+# --- the fork -----------------------------------------------------------------
+# sasonica-web (davidj4tech/sasonica-web, branch `sasonica`) is our fork of the
+# React client: the conversation page, the reply box and new chat. These mount
+# its build over the image's own.
+#
+# The BUILD OUTPUT only, never the whole checkout: this image is Alpine/musl
+# and red5's node_modules are built against glibc, so mounting the checkout
+# puts the wrong libc's @next/swc and @parcel/watcher in front of the server
+# and it refuses to start ("Error loading shared library ld-linux-x86-64.so.2").
+# The image's own node_modules are the right ones, and our package.json adds
+# no dependencies, so only these four need to cross.
+#
+# Redeploy = `pnpm build` in the checkout, then restart this unit: Next reads
+# .next at startup. To go back to the client the image ships, comment these
+# four out and restart; to go back to the Vue client, the image above.
+Volume=%h/projects/sasonica-web/.next:/app/client-react/.next
+Volume=%h/projects/sasonica-web/public:/app/client-react/public:ro
+Volume=%h/projects/sasonica-web/next.config.ts:/app/client-react/next.config.ts:ro
+Volume=%h/projects/sasonica-web/package.json:/app/client-react/package.json:ro
+
+[Service]
+Restart=always
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target
