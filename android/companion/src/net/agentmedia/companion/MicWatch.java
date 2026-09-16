@@ -69,7 +69,9 @@ final class MicWatch {
     /** The last thing we could say about what is recording, for the readout. */
     private volatile String detail = "(nothing seen yet)";
     /**
-     * The audio source of the first active recording, or -1 when nothing is.
+     * The audio source that decides how an open mic is treated, or -1 when
+     * nothing is recording. A conversation wins over everything else open; see
+     * {@link #sourceOf}.
      *
      * This turned out to be the whole answer. On 2026-08-15 a Gboard dictation
      * reported {@code src=6} (VOICE_RECOGNITION) and a Claude Live session
@@ -268,14 +270,33 @@ final class MicWatch {
         return sb.toString();
     }
 
-    /** The first active recording's source, or -1. See the field. */
+    /**
+     * The source that decides the episode: VOICE_COMMUNICATION if anything
+     * open is one, otherwise the first recording's. See the field.
+     *
+     * Reading configs.get(0) was the same mistake as reading the mic as a
+     * boolean. The mic is never idle on p8a — com.google.android.as cycles
+     * VOICE_RECOGNITION all day — so a Claude Live session opening *second*
+     * never got a look in: the list led with src=6, BargeIn called the episode
+     * dictation, the voice-session policy (live_mode) never engaged, and Sam
+     * talked into the conversation while the dictation hold chopped him up.
+     * Observed 2026-09-16. A conversation is the strongest claim on the mic
+     * anything can make, so it wins the list regardless of who opened first.
+     */
     private static int sourceOf(List<AudioRecordingConfiguration> configs) {
         if (configs == null || configs.isEmpty()) return -1;
-        try {
-            return configs.get(0).getClientAudioSource();
-        } catch (Throwable e) {
-            return -1;     // redacted or refused: no worse than not asking
+        int first = -1;
+        for (AudioRecordingConfiguration c : configs) {
+            int src;
+            try {
+                src = c.getClientAudioSource();
+            } catch (Throwable e) {
+                continue;  // redacted or refused: no worse than not asking
+            }
+            if (src == BargeIn.VOICE_COMMUNICATION) return src;
+            if (first == -1) first = src;
         }
+        return first;
     }
 
     /** Uptime, not wall clock: this is a log of intervals, not of times of day. */
