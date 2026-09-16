@@ -124,6 +124,8 @@ final class BargeIn {
     static final long SESSION_GRACE_MS = 20000L;
 
     private boolean micOpen = false;
+    /** The source of the recording open right now; -1 when none is. */
+    private int micSource = -1;
     /** Latched once the mic-open episode has heard another app speak. */
     private boolean conversation = false;
     /** When the current foreign-audio run began; 0 = nothing else is audible. */
@@ -139,6 +141,7 @@ final class BargeIn {
     void onMic(boolean active, int source, long now) {
         if (active == micOpen) return;
         micOpen = active;
+        micSource = active ? source : -1;
         if (!active) {
             if (voiceSession) {
                 // Not over: pending. The latch stands, so voiceSession() keeps
@@ -242,6 +245,22 @@ final class BargeIn {
      * on. {@link #onTick} is what takes this back down.
      */
     boolean voiceSession() { return voiceSession; }
+
+    /**
+     * Is the recording open <em>right now</em> the conversation's own?
+     *
+     * Not the same question as {@link #voiceSession()}, and the difference is
+     * David's 2026-09-17 report: a reply reached him mid-Gboard-dictation
+     * during a Live session. The grace was working as designed — the
+     * conversation was still on — but voiceSession() was also standing in for
+     * "nothing else is worth holding for", and the thing holding the mic was
+     * his voice typing. The latch says whether the conversation is still
+     * going; this says who has the microphone this second, which is what the
+     * dictation hold needs to know.
+     */
+    boolean conversationMic() {
+        return micOpen && micSource == VOICE_COMMUNICATION;
+    }
 
     /**
      * Expire a pending close. Called on the service's own poll, because the

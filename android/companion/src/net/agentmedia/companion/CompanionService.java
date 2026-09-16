@@ -846,6 +846,15 @@ public class CompanionService extends Service {
             if (wantFocus == FocusControl.SPEECH && bargeIn.voiceSession()) {
                 if (LIVE_SHARE.equals(liveMode)) wantFocus = FocusControl.NONE;
                 else if (LIVE_DUCK.equals(liveMode)) wantFocus = FocusControl.SPEECH_DUCK;
+                // Hold means hold: claim nothing, because nothing is going to
+                // play. Falling through to the ordinary SPEECH claim took the
+                // output for a clip we were about to pause one screenful below
+                // — so Live stopped with "Paused while another app is using
+                // audio. Tap to resume" *and* Sam said nothing, the worst of
+                // both. David saw it on 2026-09-17 and it is the cost the hold
+                // tier exists to avoid: a wait that ends on its own should ask
+                // nothing of him, not a tap.
+                else if (holdingForSession()) wantFocus = FocusControl.NONE;
             }
             if (wantFocus != FocusControl.NONE && !focusLost) {
                 if (focusControl.kind() != wantFocus && focusControl.request(wantFocus)) {
@@ -952,6 +961,19 @@ public class CompanionService extends Service {
      * would re-raise one David had swiped away, and this one is swipeable on
      * purpose.
      */
+    /**
+     * Is a reply being held back for a voice session right now? The focus
+     * claim's half of {@link #applyLiveHold}'s decision, asked before it runs
+     * — the two must agree, or we take the output for a clip we then pause.
+     *
+     * Urgency and a "speak now" both mean the hold does not apply, and both
+     * are read from the same places applyLiveHold reads them.
+     */
+    private boolean holdingForSession() {
+        return bargeIn.voiceSession() && LIVE_HOLD.equals(liveMode) && !speakNow
+                && !"urgent".equals(speechState().priority);
+    }
+
     private void applyLiveHold() {
         boolean session = bargeIn.voiceSession();
         if (!session) {
@@ -1039,7 +1061,8 @@ public class CompanionService extends Service {
         boolean wasHolding = dictation.holding();
         boolean wasExpired = dictation.expired();
         DictationHold.Action action = dictation.onState(
-                micOpen, bargeIn.voiceSession(), audible, System.currentTimeMillis());
+                micOpen, bargeIn.conversationMic(), audible,
+                System.currentTimeMillis());
 
         if (dictation.holding() && !wasHolding) {
             dictationRate.engaged(System.currentTimeMillis());

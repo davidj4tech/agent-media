@@ -27,6 +27,7 @@ public final class BargeInTest {
         f += aConversationEndsOnceItsRecordingStaysGone();
         f += theOtherSideSpeakingExtendsTheGrace();
         f += afterAConversationDictationIsJudgedFresh();
+        f += aDictationInsideASessionIsStillADictation();
         if (f > 0) {
             System.out.println(f + " failure(s)");
             System.exit(1);
@@ -192,6 +193,28 @@ public final class BargeInTest {
         b.onMic(true, DICTATION, 60_000);
         return f + is(true, b.holding(60_000),
                       "so a later dictation holds the audio down again");
+    }
+
+    /**
+     * David, 2026-09-17: a reply arrived while he was using Gboard voice
+     * typing during a Live session. The grace was right — the conversation was
+     * still on — but the microphone was his dictation's, and the dictation
+     * hold needs that answer, not the latch's.
+     */
+    private static int aDictationInsideASessionIsStillADictation() {
+        BargeIn b = new BargeIn();
+        b.onMic(true, BargeIn.VOICE_COMMUNICATION, 1000);
+        int f = is(true, b.conversationMic(), "Live has the mic");
+        b.onMic(false, -1, 2000);
+        f += is(false, b.conversationMic(), "nothing has it in the gap");
+        f += is(true, b.voiceSession(), "though the conversation is still on");
+        b.onMic(true, DICTATION, 2500);        // he starts voice typing
+        f += is(false, b.conversationMic(),
+                "voice typing in the gap is not the conversation's mic");
+        f += is(true, b.voiceSession(), "and still does not end the session");
+        b.onMic(false, -1, 6000);
+        b.onMic(true, BargeIn.VOICE_COMMUNICATION, 6200);
+        return f + is(true, b.conversationMic(), "Live takes it back");
     }
 
     private static int is(boolean want, boolean got, String what) {

@@ -81,14 +81,16 @@ final class DictationHold {
      * Decide, from everything the service knows right now.
      *
      * @param micOpen       something is recording
-     * @param voiceSession  ...and {@link BargeIn} says it is a conversation
+     * @param conversationMic ...and the recording open right now is the
+     *     conversation's own (BargeIn.conversationMic, NOT voiceSession: a
+     *     dictation inside a Live session's quiet gap is still a dictation)
      * @param speechAudible speech is loaded and not paused — i.e. it would be
      *                      talking over the dictation right now
      * @param now           milliseconds, monotonic enough for a two-minute cap
      */
-    Action onState(boolean micOpen, boolean voiceSession, boolean speechAudible,
+    Action onState(boolean micOpen, boolean conversationMic, boolean speechAudible,
                    long now) {
-        boolean dictating = micOpen && !voiceSession;
+        boolean dictating = micOpen && !conversationMic;
 
         if (!dictating) {
             // The mic closed, or the recording turned out to be a conversation
