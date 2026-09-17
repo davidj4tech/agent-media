@@ -135,14 +135,60 @@ you want to type in. It mirrors both of app.css's rules now; `h-full` cannot
 do it, the wrapper between it and the scroll container has no height of its
 own.
 
-## Next
+## Items 5 and 6, and CI — 2026-09-17
 
-Item 5 (live shelf and session controls), then 6
-(settings: the canvas address — `sasonica.canvasUrl` in `localStorage`, read
-by `canvasBaseUrl()`, nothing writes it yet — and the timing-readout toggle).
+**Live shelf.** agent-media tags an item `live` while its session is up, so
+the shelf is a plain Audiobookshelf filter (`tags.bGl2ZQ==`) and needs no
+canvas. First on the library home page, null when nothing is live, polled
+while the tab is visible. The same green dot rides on live cards, wrapped
+around upstream's badges rather than woven in — theirs come and go with hover,
+the dot should not. Session controls (go to terminal, close, resume) are in
+the chat page's title row, not the item page's menu, because a conversation
+replaces that page outright.
 
-Still owed from the parity note: a GitHub Actions workflow that builds the
-Next app and uploads `.next` as an artifact, so red5 can pull a build instead
-of making one. `pnpm lint` over the whole tree aborts on this host — it does
-on pristine upstream too, it wants more memory than red5 has — so CI is also
-where a full lint would actually run.
+**Settings** live on the account page and belong to the device, not the
+account: the canvas address (blank means this server on 8781, and the box
+shows what blank resolves to) and the follow-along timing readout — which had
+been wired through the conversation page since day one with nothing able to
+turn it on.
+
+**"Series" is "Projects"** on the conversations library — the nav, the shelf
+title, the filter menu, the search heading. Detection is the library's name,
+the same rule and spelling as the phone app's
+`getCurrentLibraryIsConversations`, so the two clients cannot disagree.
+Rename the library and `lib/sasonica/conversations.ts` is the one thing to
+change. The interface stays shared: this only chooses a word where the word is
+displayed, which is what upstream already does for podcast libraries.
+
+**CI.** `.github/workflows/sasonica-client.yml` in the fork builds on every
+push to `sasonica` and uploads `.next` + `public` as `sasonica-client`;
+`deploy/pull-client-build.sh` here fetches the newest successful one, replaces
+the checkout's build and restarts Audiobookshelf. red5 has not built the
+client since. Two things learnt the hard way, both now guarded:
+
+- `upload-artifact` skips dot-directories, so the first artifact was
+  `public/` alone with no build in it. `include-hidden-files: true`.
+- `.next/cache` is the build cache, not the build, and four fifths of the
+  size (346M → 71M). Dropped before upload.
+
+CI earned itself on its first run, catching two missing `isConversations`
+dependencies that would have left the filter menu with whichever word it was
+built with.
+
+## Where it stands
+
+The parity list is done — all six items. David has used the client on his
+phone and says it looks good, which closes the "nobody has looked at it" item
+that stood through most of this work; the "Series"/"Projects" wording was his
+finding, from using it.
+
+Upstream's only scars are hook-sized: the item page's branch to the chat page,
+a nav entry, four label swaps, one optional argument on
+`searchResultsToShelves`, one shelf id in `types/api.ts`, and the dependency
+arrays that go with them. The fork merged 59 upstream commits on 2026-09-17
+with no conflicts.
+
+Next, if it is wanted: nothing on the parity list. The ideas that surfaced and
+were not taken — the three `.mka` audiobooks whose files are gone from disk,
+`~/.local/share/audiobookshelf-react/` (22M) left behind by the retired test
+bed, and Audiobookshelf's auto-backup keeping only 2.
