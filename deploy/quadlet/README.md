@@ -15,7 +15,23 @@ mounted, never the checkout: the image is Alpine and red5's `node_modules`
 are glibc, so the native binaries are the wrong libc and the server will not
 start. The reasoning is written out in the unit file itself.
 
-Redeploy after a client change:
+Redeploy after a client change — pull the CI build, rather than making one:
+
+```
+deploy/pull-client-build.sh          # newest successful run on `sasonica`
+deploy/pull-client-build.sh <run-id> # or a particular one
+```
+
+GitHub Actions builds the client on every push to `sasonica` (workflow
+"Sasonica client" in the fork) and uploads `.next` + `public` as the
+`sasonica-client` artifact; the script fetches the newest successful one,
+replaces the checkout's build with it, and restarts Audiobookshelf. It prints
+the commit the build came from, and refuses to install an artifact with no
+`.next/BUILD_ID` in it — which is not hypothetical: the first version of the
+workflow shipped `public/` alone, because `upload-artifact` skips
+dot-directories unless told not to.
+
+Building on the host still works if you need it:
 
 ```
 cd ~/projects/sasonica-web && pnpm build
