@@ -48,6 +48,23 @@ present at boot. Not done for that reason.)
   came back unchanged (39 / 6 / 55 items, one user). Nightly auto-backups
   were turned on the same day (01:30, keeping 2, into `/metadata/backups`) —
   that server had never had one.
+- **2026-09-17** — the podcast route retired, one library for speech instead
+  of three. Spoken output had been shelved three ways: `Conversations`
+  (/conversations, 55 items, 9 series, growing daily), the `Spoken
+  (agent-media)` podcast library (/audiobooks/podcasts, 14 episodes, last new
+  one 2026-09-04, and Audiobookshelf never backfills a feed so its gaps were
+  permanent), and — because `/audiobooks/podcasts` sat INSIDE the Audiobooks
+  library's folder — six phantom "audiobooks" that were really the podcast
+  folders. The books route is the one everything is built on (the conversation
+  page, the reply box, `media book play`, the canvas endpoints), so it won.
+  The Spoken library was deleted, `podcasts/` moved to
+  `~/archive/spoken-podcasts` (96M, files intact), the six strays removed from
+  Audiobooks (39 → 33), and `agent-media-feed.service` stopped and disabled.
+  A backup was taken first: `metadata/backups/2026-09-17T1004.audiobookshelf`.
+
+  That scan also surfaced three genuinely missing audiobooks — `.mka` files
+  deleted from disk at some point, never rescanned, nothing to do with the
+  move. Left in place to decide on.
 - **2026-09-17** — `audiobookshelf-react.container` on :13379 removed. It was
   a second server with its own database, for trying a client against without
   touching the real one; now that the real one serves the same client it had
