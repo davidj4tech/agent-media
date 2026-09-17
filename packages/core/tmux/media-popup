@@ -1309,6 +1309,33 @@ do_refresh() {
     ticks=0
 }
 
+# --- the client can change shape under us ----------------------------------
+#
+# A tmux popup is positioned once, when it is created, and nothing can move
+# one afterwards. On the phone that shows: `prefix a` with the on-screen
+# keyboard up sees a client half as tall, so the popup is anchored to *that*
+# bottom row — put the keyboard away and it is stranded in mid-screen.
+#
+# So notice it instead. Once a second (with the snapshot refresh, so this adds
+# no wake-ups of its own) compare the client's shape with the one the wrapper
+# opened us for; if it moved, hand the wrapper the channel and quit, exactly
+# as `n` does. media-popup-open recomputes the bottom edge and reopens — one
+# redraw, same channel, and the popup looks like it dropped to the bottom.
+GEOM_WAS="${MEDIA_POPUP_GEOM:-}"
+geom_moved() {
+    [ -n "${MEDIA_POPUP_GEOM_FLAG:-}" ] || return 1
+    local now
+    now=$(tmux display-message -p ${MEDIA_POPUP_CLIENT:+-c "$MEDIA_POPUP_CLIENT"} \
+              '#{client_width}x#{client_height}' 2>/dev/null) || return 1
+    case "$now" in ''|*[!0-9x]*) return 1 ;; esac
+    if [ -z "$GEOM_WAS" ] || [ "$now" = "$GEOM_WAS" ]; then
+        GEOM_WAS="$now"; return 1
+    fi
+    GEOM_WAS="$now"
+    printf '%s' "$CHANNEL" > "$MEDIA_POPUP_GEOM_FLAG"
+    return 0
+}
+
 # Paint the frame immediately from the seeded defaults so the popup *appears*
 # at once, then pull real state (~0.12s) and repaint — rather than blocking on
 # the CLI before the first pixel, which read as "slow to come up".
@@ -1330,6 +1357,8 @@ while true; do
         if [ "$ticks" -ge "$FETCH_EVERY" ]; then
             if [ "$CHANNEL" = "speech" ]; then speech_probe_start; else fetch; fi
             ticks=0
+            # The keyboard came or went: reopen where the bottom is now.
+            geom_moved && break
         fi
         draw; continue
     fi

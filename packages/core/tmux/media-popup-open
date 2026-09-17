@@ -37,21 +37,45 @@ printf '%s' "$pane" > "$openmark" 2>/dev/null
 trap 'rm -f "$openmark"' EXIT
 
 MAX="${MEDIA_POPUP_MAX_W:-34}"; MIN=18
-w="$cw"; [ "$w" -gt "$MAX" ] && w="$MAX"; [ "$w" -lt "$MIN" ] && w="$MIN"
-# Help popup geometry — the keymap table is ~23 cols x ~26 rows.
-hw="$cw"; [ "$hw" -gt 30 ] && hw=30
-hh="$ch"; [ "$hh" -gt 5 ] && hh=$(( hh - 1 ))
+PH=4                       # the control popup is two rows plus its border
+# Every popup's size and position, recomputed on each (re)open from the
+# client's shape *now* — not from the shape it had when `prefix a` was pressed.
+# Termux's on-screen keyboard is why: it takes half the client's rows, and a
+# tmux popup is placed once, at creation, with nothing that can move one
+# afterwards. Opened with the keyboard up, the popup was left stranded in the
+# middle of the screen the moment the keyboard went away; the TUI notices the
+# client changing shape and asks for a reopen, and this puts it back on the
+# bottom row. The arguments `prefix a` passed remain the fallback, for a tmux
+# that will not answer.
+geometry() {
+    local g
+    g=$(tmux display-message -p ${client:+-c "$client"} \
+            '#{client_width} #{client_height}' 2>/dev/null)
+    case "$g" in
+        [0-9]*" "[0-9]*) cw="${g%% *}"; ch="${g##* }" ;;
+    esac
+    w="$cw"; [ "$w" -gt "$MAX" ] && w="$MAX"; [ "$w" -lt "$MIN" ] && w="$MIN"
+    # Help popup geometry — the keymap table is ~23 cols x ~26 rows.
+    hw="$cw"; [ "$hw" -gt 30 ] && hw=30
+    hh="$ch"; [ "$hh" -gt 5 ] && hh=$(( hh - 1 ))
+    # Link popup width: the FULL client width (uncapped, unlike the control
+    # popup), so a long web-UI URL fits on one line — Termux's long-press URL
+    # detection (no OSC 8) fails on a wrap. Bounded for sanity.
+    lw="$cw"; [ "$lw" -gt 64 ] && lw=64; [ "$lw" -lt "$MIN" ] && lw="$MIN"
+    # `-y` is the popup's BOTTOM edge (display corner semantics), so the
+    # client's last row puts it down with the input line.
+    PY=$(( ch - 1 )); [ "$PY" -lt "$PH" ] && PY=$PH
+    # What the TUI compares against to notice a resize.
+    GEOM="${cw}x${ch}"
+}
 
 flag="${TMPDIR:-/tmp}/media-popup-help.$$"
 linkflag="${TMPDIR:-/tmp}/media-popup-link.$$"
 searchflag="${TMPDIR:-/tmp}/media-popup-search.$$"
 chanflag="${TMPDIR:-/tmp}/media-popup-channel.$$"
 browseflag="${TMPDIR:-/tmp}/media-popup-browse.$$"
-rm -f "$flag" "$linkflag" "$searchflag" "$chanflag" "$browseflag"
-# Link popup width: the FULL client width (uncapped, unlike the control popup),
-# so a long web-UI URL fits on one line — Termux's long-press URL detection (no
-# OSC 8) fails on a wrap. Bounded for sanity.
-lw="$cw"; [ "$lw" -gt 64 ] && lw=64; [ "$lw" -lt "$MIN" ] && lw="$MIN"
+geomflag="${TMPDIR:-/tmp}/media-popup-geom.$$"
+rm -f "$flag" "$linkflag" "$searchflag" "$chanflag" "$browseflag" "$geomflag"
 # Open on the channel that's actually playing, else the last-viewed one, else
 # speech (`media popup-channel` resolves this). The help round-trip below
 # overrides `chan` from the flag file, so an explicit choice is preserved.
@@ -96,12 +120,18 @@ dbg=""; [ -n "${MEDIA_POPUP_DEBUG:-}" ] && dbg="MEDIA_POPUP_DEBUG=$MEDIA_POPUP_D
 # browser canvas's bottom dock, but out of the typing line's way). `-y` is the
 # popup's BOTTOM edge (display corner semantics), so place it near the
 # client's bottom row.
-PH=4
-PY=$(( ch - 1 )); [ "$PY" -lt "$PH" ] && PY=$PH
 while :; do
+    geometry
     title=$(popup_title)
     popup -w "$w" -h "$PH" -x R -y "$PY" -s 'bg=default' -T "$title" \
-        "${dbg}TTS_POPUP_PANE=$pane MEDIA_POPUP_HELP_FLAG=$flag MEDIA_POPUP_LINK_FLAG=$linkflag MEDIA_POPUP_SEARCH_FLAG=$searchflag MEDIA_POPUP_BROWSE_FLAG=$browseflag MEDIA_POPUP_CHANNEL_FLAG=$chanflag MEDIA_POPUP_CHANNEL=$chan media-popup"
+        "${dbg}TTS_POPUP_PANE=$pane MEDIA_POPUP_HELP_FLAG=$flag MEDIA_POPUP_LINK_FLAG=$linkflag MEDIA_POPUP_SEARCH_FLAG=$searchflag MEDIA_POPUP_BROWSE_FLAG=$browseflag MEDIA_POPUP_CHANNEL_FLAG=$chanflag MEDIA_POPUP_GEOM_FLAG=$geomflag MEDIA_POPUP_CLIENT=$client MEDIA_POPUP_GEOM=$GEOM MEDIA_POPUP_CHANNEL=$chan media-popup"
+    if [ -f "$geomflag" ]; then
+        # The client changed shape (the keyboard came or went). Same popup,
+        # same channel, new bottom edge — `geometry` above works it out.
+        chan=$(cat "$geomflag" 2>/dev/null); chan=${chan:-speech}
+        rm -f "$geomflag"
+        continue
+    fi
     if [ -f "$chanflag" ]; then
         chan=$(cat "$chanflag" 2>/dev/null); chan=${chan:-speech}
         rm -f "$chanflag"
@@ -154,6 +184,6 @@ while :; do
         break                          # normal close → done
     fi
 done
-rm -f "$flag" "$linkflag" "$searchflag" "$chanflag" "$browseflag"
+rm -f "$flag" "$linkflag" "$searchflag" "$chanflag" "$browseflag" "$geomflag"
 exit $?
 }
