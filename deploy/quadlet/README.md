@@ -65,6 +65,15 @@ present at boot. Not done for that reason.)
   That scan also surfaced three genuinely missing audiobooks — `.mka` files
   deleted from disk at some point, never rescanned, nothing to do with the
   move. Left in place to decide on.
+
+  The same route's last leftover went with it: seven loose `.mp3`s at the top
+  of `~/audiobooks`, each shelved as its own "audiobook". They were spoken
+  DOCUMENTS, not books — `media doc play` renders (`stdin-<hash>.mp3` is
+  minted in `cli.py`, keyed on the text so an edited buffer is a new clip),
+  plus a rendered org agenda and a denote-named note — dropped there so
+  Audiobookshelf would pick them up back when the feed was how speech reached
+  the phone. Moved to `~/archive/spoken-docs` (7.2M, files intact); Audiobooks
+  33 → 26, and now holds only books.
 - **2026-09-17** — `audiobookshelf-react.container` on :13379 removed. It was
   a second server with its own database, for trying a client against without
   touching the real one; now that the real one serves the same client it had
