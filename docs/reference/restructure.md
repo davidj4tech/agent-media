@@ -1,6 +1,11 @@
 # agent-media restructure plan
 
-Status: draft, pre-execution.
+> **Historical implementation plan.** This document records the restructure that
+> produced the current package architecture. Several phases below are complete or
+> superseded, so it is no longer the source of truth for current layout or setup.
+> Use the repository `README.md` and `docs/reference/` pages for current behaviour.
+
+Status: executed in stages; retained as design history and migration rationale.
 
 ## Why
 
