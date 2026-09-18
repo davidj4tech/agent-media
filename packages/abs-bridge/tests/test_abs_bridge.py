@@ -8,7 +8,7 @@ the cases below are the ones that were only ever verified by watching a log.
 import pytest
 
 from agent_media_abs import _abs, cast_watcher
-from agent_media_abs.book_bridge import should_push
+from agent_media_abs.book_bridge import item_position, pull_target, should_push
 
 
 # --- which library ----------------------------------------------------------
@@ -44,12 +44,84 @@ def test_files_are_matched_by_basename_across_the_container_boundary():
     """mpv sees /home/ryer/audiobooks/X; ABS, inside a container, sees
     /audiobooks/X. The filename is the only part both agree on."""
     m = _abs.basename_map(ITEMS)
-    assert m["Hounded.m4b"] == {"id": "i1", "duration": 3600.0}
+    assert m["Hounded.m4b"] == {"id": "i1", "duration": 3600.0,
+                                "offset": 0.0, "part": None}
 
 
 def test_an_item_with_no_audio_files_still_maps_by_its_relpath():
     m = _abs.basename_map([{"id": "i2", "relPath": "Deep/Scourged.m4b", "media": {}}])
     assert m["Scourged.m4b"]["id"] == "i2"
+
+
+# A book that is a folder. The library listing carries no filenames at all
+# (2.35.1 sends metadata and counts), so without going and asking for the
+# tracks there is nothing here an mpv path could ever match — which is how six
+# parts of "Slaving Away" stayed invisible to the bridge.
+FOLDER_ITEM = [{"id": "i3", "relPath": "Slaving Away", "isFile": False,
+                "media": {"duration": 10306.0, "numAudioFiles": 6}}]
+TRACKS = [{"startOffset": 0, "duration": 2005.4,
+           "metadata": {"path": "/audiobooks/Slaving Away/Ep_1.m4b"}},
+          {"startOffset": 2005.4, "duration": 1575.6,
+           "metadata": {"path": "/audiobooks/Slaving Away/Ep_2.m4b"}}]
+
+
+def test_a_book_in_parts_maps_every_part_with_its_offset():
+    m = _abs.basename_map(FOLDER_ITEM, expand=lambda item_id: TRACKS)
+    assert m["Ep_2.m4b"] == {"id": "i3", "duration": 10306.0,
+                             "offset": 2005.4, "part": 1575.6}
+    assert m["Ep_1.m4b"]["offset"] == 0.0
+
+
+def test_a_single_file_book_is_never_expanded():
+    """One request per map refresh per folder book is the budget; an ordinary
+    book must not cost one at all."""
+    asked = []
+    m = _abs.basename_map(ITEMS, expand=lambda item_id: asked.append(item_id) or [])
+    assert asked == [] and m["Hounded.m4b"]["offset"] == 0.0
+
+
+def test_a_book_we_cannot_expand_is_a_book_we_skip():
+    def boom(item_id):
+        raise RuntimeError("server said no")
+    m = _abs.basename_map(FOLDER_ITEM, expand=boom)
+    assert "Ep_1.m4b" not in m and m["Slaving Away"]["id"] == "i3"
+
+
+# --- where we are, in the item ----------------------------------------------
+
+def test_a_position_in_part_four_is_a_position_in_the_book():
+    entry = {"id": "i3", "duration": 10306.0, "offset": 5102.7, "part": 1580.1}
+    assert item_position(entry, 60.0) == (5162.7, 10306.0)
+
+
+def test_the_length_pushed_is_the_items_not_the_files():
+    # The bug: mpv's duration (this part) went out as the whole book's.
+    entry = {"id": "i3", "duration": 10306.0, "offset": 2005.4, "part": 1575.6}
+    assert item_position(entry, 10.0, 1575.6)[1] == 10306.0
+
+
+def test_a_single_file_book_falls_back_to_mpvs_duration():
+    entry = {"id": "i1", "duration": None, "offset": 0.0, "part": None}
+    assert item_position(entry, 30.0, 3600.0) == (30.0, 3600.0)
+
+
+def test_a_saved_position_inside_this_part_is_seeked_to():
+    entry = {"id": "i3", "offset": 2005.4, "part": 1575.6}
+    assert pull_target(entry, 2105.4) == pytest.approx(100.0)
+
+
+@pytest.mark.parametrize("ct", [100.0, 9000.0])
+def test_a_saved_position_in_another_part_is_left_alone(ct):
+    """Seeking part two to a position that is in part one or part six would
+    land somewhere arbitrary — worse than not seeking at all."""
+    entry = {"id": "i3", "offset": 2005.4, "part": 1575.6}
+    assert pull_target(entry, ct) is None
+
+
+def test_with_no_part_length_mpvs_own_duration_bounds_it():
+    entry = {"id": "i3", "offset": 2005.4, "part": None}
+    assert pull_target(entry, 2105.4, 1575.6) == pytest.approx(100.0)
+    assert pull_target(entry, 9000.0, 1575.6) is None
 
 
 def test_local_path_takes_only_the_basename(tmp_path):

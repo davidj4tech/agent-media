@@ -87,24 +87,50 @@ def pick_library(libs: list, want: str = "") -> Optional[str]:
     return libs[0].get("id")
 
 
-def basename_map(items: list) -> dict:
-    """basename(audio file) -> {id, duration} for a page of library items.
+def basename_map(items: list, *, expand=None) -> dict:
+    """basename(audio file) -> {id, duration, offset, part} for a page of items.
 
     Matching is by basename because the two sides disagree about the prefix and
     always will: mpv sees `/home/ryer/audiobooks/X.m4b`, ABS (in a container)
     records `/audiobooks/X.m4b`. The filename is the only part both agree on.
+
+    `duration` is the whole *item*; `offset` is where this file starts inside
+    it and `part` how long the file itself is. For the single-file book that is
+    0.0 and None, and every caller then behaves as it always did — but a book
+    in six files is six basenames with six offsets, which is what makes a
+    position in one of them mean anything to Audiobookshelf.
+
+    A library listing carries no `audioFiles` at all (measured on 2.35.1: the
+    media object is metadata, `numAudioFiles` and counts), so a book that is a
+    *folder* has no filename in it to match — its `relPath` is the folder's.
+    Those were silently invisible to the bridge: nothing pushed, nothing
+    pulled. `expand(item_id) -> [track]` is how the caller offers to go and
+    ask; it is called only for a folder item, which is one request per
+    multi-part book per map refresh.
     """
     out: dict = {}
     for it in items:
         media = it.get("media") or {}
-        entry = {"id": it.get("id"), "duration": media.get("duration")}
-        for af in media.get("audioFiles") or []:
+        total = media.get("duration")
+
+        def _entry(offset=0.0, part=None):
+            return {"id": it.get("id"), "duration": total,
+                    "offset": float(offset or 0.0), "part": part}
+
+        files = media.get("audioFiles") or []
+        if not files and expand is not None and not it.get("isFile", True):
+            try:
+                files = expand(it.get("id")) or []
+            except Exception:  # noqa: BLE001 — a book we cannot expand is a book we skip
+                files = []
+        for af in files:
             p = (af.get("metadata") or {}).get("path") or af.get("path") or ""
             if p:
-                out[os.path.basename(p)] = entry
+                out[os.path.basename(p)] = _entry(af.get("startOffset"),
+                                                  af.get("duration"))
         rel = (it.get("relPath") or "").strip("/")
         if rel:
-            out.setdefault(os.path.basename(rel), entry)
+            out.setdefault(os.path.basename(rel), _entry())
     return out
 
 

@@ -7,7 +7,9 @@ restarts somewhere wrong every time you swap. This daemon is the join:
 
   **push** (always)      while the rooms are playing, POST the position to ABS,
                          so the app shows the right resume point and "continue
-                         listening" is true.
+                         listening" is true. The position and the length are
+                         the *item's*: a book in six files is one item with one
+                         progress row, and part four starts at its own offset.
 
   **pull** (`ABS_PULL_ON_LOAD=1`)
                          when a *new* file is loaded into the book channel and
@@ -89,6 +91,48 @@ def should_push(prev, pos: float, poll_s: float) -> bool:
     return abs(pos - prev) >= max(poll_s - 1, 3)
 
 
+def tracks_of(abs_api: Abs, item_id: str) -> list:
+    """The item's tracks — path, startOffset and duration each — or [].
+
+    Only asked for a book that is a folder: the library listing has no
+    filenames in it, so a multi-part book cannot be matched without this.
+    """
+    item = abs_api.req("GET", f"/api/items/{item_id}?expanded=1")
+    return ((item.get("media") or {}).get("tracks")
+            or (item.get("media") or {}).get("audioFiles") or [])
+
+
+def item_position(entry: dict, pos: float, file_dur=None):
+    """(position in the item, the item's length) from a position in one file.
+
+    The unit of progress in Audiobookshelf is the item, and a book can be six
+    files: part four's position is its offset plus the position in it, and the
+    length is the whole book's. Sending the file's own numbers told ABS that a
+    six-part book was 33 minutes long and the listener two thirds through it.
+    `file_dur` (mpv's answer) is the fallback for an item ABS gave no duration
+    for — which is every ordinary single-file book, unchanged.
+    """
+    at = pos + float(entry.get("offset") or 0.0)
+    dur = entry.get("duration") or file_dur
+    return at, (float(dur) if dur else None)
+
+
+def pull_target(entry: dict, ct: float, file_dur=None):
+    """Where to seek *this file* so the item sits at `ct` — or None.
+
+    None when the saved position is in another part of the book: the rooms
+    have the wrong file loaded and no seek can fix that, so say so and leave
+    them alone rather than landing in the middle of part one.
+    """
+    off = float(entry.get("offset") or 0.0)
+    part = entry.get("part") or file_dur
+    if ct < off:
+        return None
+    if part and ct >= off + float(part):
+        return None
+    return ct - off
+
+
 def build_map(abs_api: Abs, want_library: str = ""):
     """(library id, basename→item) for the whole book library, paged."""
     lib_id = pick_library(abs_api.req("GET", "/api/libraries").get("libraries", []),
@@ -103,7 +147,7 @@ def build_map(abs_api: Abs, want_library: str = ""):
         items = resp.get("results", resp.get("libraryItems", []))
         if not items:
             break
-        out.update(basename_map(items))
+        out.update(basename_map(items, expand=lambda i: tracks_of(abs_api, i)))
         if len(items) < limit:
             break
         page += 1
@@ -173,27 +217,39 @@ def main(argv=None) -> int:
                     # genuinely ahead: seeking a book someone is already
                     # listening to is worse than not seeking at all.
                     if ct > 5 and pos < 5:
-                        mpv_set(sock, "time-pos", ct)
-                        log(f"pulled ABS position {ct:.0f}s for {base}")
+                        # ABS counts from the start of the *item*; this file
+                        # may be part four of six. Seek inside it only when
+                        # the saved position is in fact in here — if the
+                        # listener left off in another part, the rooms are
+                        # playing the wrong file and a seek cannot fix that.
+                        seek = pull_target(entry, ct, mpv_get(sock, "duration"))
+                        if seek is None:
+                            log(f"ABS is at {ct:.0f}s, outside this part of "
+                                f"{base} — left the rooms where they were")
+                        else:
+                            mpv_set(sock, "time-pos", seek)
+                            log(f"pulled ABS position {ct:.0f}s for {base}"
+                                + (f" ({seek:.0f}s into this part)"
+                                   if seek != ct else ""))
 
             if not entry:
                 time.sleep(poll_s)
                 continue
 
             pos = mpv_get(sock, "time-pos")
-            dur = mpv_get(sock, "duration") or entry.get("duration")
             if pos is None:
                 time.sleep(poll_s)
                 continue
+            at, dur = item_position(entry, pos, mpv_get(sock, "duration"))
 
-            if should_push(last_pushed.get(entry["id"]), pos, poll_s):
-                finished = bool(dur) and pos >= dur * finish_frac
-                body = {"currentTime": round(pos, 3), "isFinished": finished}
+            if should_push(last_pushed.get(entry["id"]), at, poll_s):
+                finished = bool(dur) and at >= dur * finish_frac
+                body = {"currentTime": round(at, 3), "isFinished": finished}
                 if dur:
                     body["duration"] = round(dur, 3)
                 abs_api.req("PATCH", f"/api/me/progress/{entry['id']}", body)
-                last_pushed[entry["id"]] = pos
-                log(f"-> ABS {base} @ {pos:.0f}s/{(dur or 0):.0f}s"
+                last_pushed[entry["id"]] = at
+                log(f"-> ABS {base} @ {at:.0f}s/{(dur or 0):.0f}s"
                     + (" [finished]" if finished else ""))
 
         except urllib.error.HTTPError as e:
