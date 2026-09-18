@@ -363,3 +363,66 @@ def test_live_turn_carries_the_playout_delay_for_its_target(monkeypatch):
     monkeypatch.setenv("MEDIA_SPEECH_PLAYOUT_MS_PHONE", "1200")
     turn = b._live_turn("s1")
     assert turn["delay"] == 1.2 and turn["offsets"] == [0.0, 1.5] and 0.9 < turn["elapsed"] < 1.3
+
+
+# --- progress, once the item has grown --------------------------------------
+
+def _progress_fixture(monkeypatch, prog, item_duration):
+    """book_tracks wired to one server holding one item, returning `prog`.
+
+    Yields the PATCH bodies the call made, in order.
+    """
+    from agent_media_core import book_tracks as b
+    item = {"id": "i1", "path": "/conversations/p-x/A talk",
+            "media": {"duration": item_duration}}
+    monkeypatch.setattr(b, "_abs_ready", lambda target=None: ("http://abs", "tok", [{"id": "lib"}]))
+    monkeypatch.setattr(b, "_abs_items", lambda url, token, lib: [item])
+    monkeypatch.setattr(b, "_abs_progress", lambda url, token, item_id: prog)
+    patched = []
+    monkeypatch.setattr(b, "_abs_patch", lambda url, token, path, body: patched.append((path, body)))
+    return patched
+
+
+def test_progress_is_rebased_on_the_length_the_item_is_now(monkeypatch, tmp_path):
+    # The bug this exists for: ABS records the duration at the moment the
+    # position was written and never revises it, so a conversation paused two
+    # sentences in stays two sentences long.
+    from agent_media_core import book_tracks as b
+    patched = _progress_fixture(
+        monkeypatch, {"currentTime": 101.1, "duration": 174.3, "isFinished": False}, 5118.5)
+    msg = b.sync_progress(tmp_path / "p-x" / "A talk")
+    assert msg and "174s -> 5118s" in msg
+    assert patched == [("/api/me/progress/i1",
+                        {"currentTime": 101.1, "duration": 5118.5,
+                         "progress": 101.1 / 5118.5})]
+
+
+def test_a_progress_already_in_step_is_left_alone(monkeypatch, tmp_path):
+    # Every write bumps the item to the top of Continue Listening, so a turn
+    # landing on a conversation nobody has moved in must write nothing.
+    from agent_media_core import book_tracks as b
+    patched = _progress_fixture(
+        monkeypatch, {"currentTime": 203.0, "duration": 412.4, "isFinished": False}, 412.4)
+    assert b.sync_progress(tmp_path / "p-x" / "A talk") is None
+    assert patched == []
+
+
+def test_a_finished_item_is_unfinished_before_it_is_positioned(monkeypatch, tmp_path):
+    # Order is the whole point: clearing isFinished in the same body as a
+    # position resets currentTime to zero.
+    from agent_media_core import book_tracks as b
+    patched = _progress_fixture(
+        monkeypatch, {"currentTime": 207.9, "duration": 207.9, "isFinished": True}, 412.4)
+    msg = b.sync_progress(tmp_path / "p-x" / "A talk")
+    assert msg and "re-opened" in msg
+    assert [p[1] for p in patched] == [
+        {"isFinished": False},
+        {"currentTime": 207.9, "duration": 412.4, "progress": 207.9 / 412.4},
+    ]
+
+
+def test_nobody_has_played_it_so_nothing_is_written(monkeypatch, tmp_path):
+    from agent_media_core import book_tracks as b
+    patched = _progress_fixture(monkeypatch, None, 412.4)
+    assert b.sync_progress(tmp_path / "p-x" / "A talk") is None
+    assert patched == []

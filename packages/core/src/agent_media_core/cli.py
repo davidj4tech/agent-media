@@ -5533,10 +5533,11 @@ def cmd_feed(a) -> int:
             return 0
 
         # Order matters, and it is the whole reason this is not two commands.
-        # Re-opening an item asks the server what its duration is now; ask
-        # before the scan and the answer is the length it was before the turn
-        # landed, which is the position a finished listener would be put back
-        # to. So: write the files, make the server look, then re-open.
+        # Syncing progress asks the server what the item's duration is now;
+        # ask before the scan and the answer is the length it was before the
+        # turn landed — the position a finished listener would be put back to,
+        # and the total everyone else would be shown. So: write the files,
+        # make the server look, then sync.
         from . import library
 
         if not library.trigger_abs_scan("conversations"):
@@ -5556,8 +5557,9 @@ def cmd_feed(a) -> int:
             described = book_tracks.set_metadata(session, folder)
             if described:
                 print(f"{folder.name}: described as {described!r}")
-            if book_tracks.reopen(folder):
-                print(f"{folder.name}: re-opened (it had been finished)")
+            synced = book_tracks.sync_progress(folder)
+            if synced:
+                print(f"{folder.name}: {synced}")
         return 0
 
     if fc == "xml":

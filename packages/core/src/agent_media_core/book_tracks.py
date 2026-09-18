@@ -14,8 +14,9 @@ that gained a file keeps the same item id, appends the track at the right
 offset, leaves the existing files' inode, index and mtime alone, and preserves
 the listener's position — which ABS stores in seconds, so it survives the
 duration changing underneath it. The one thing it does not do by itself is
-re-open an item the listener had finished; `reopen` below is that, and it is
-two calls in an order the API does not advertise.
+re-open an item the listener had finished — nor to revise the duration it
+recorded in that listener's progress. `sync_progress` below is both, and the
+re-open half is two calls in an order the API does not advertise.
 
 **The clips are the tracks.** The renderer already splits a reply into a clip
 per sentence, and those files already exist — so this writes no audio at all.
@@ -416,6 +417,11 @@ def export_all(store=None, since_hours: float = 24.0) -> list:
 # `isFinished` in the same body as a position RESETS `currentTime` to zero,
 # because ABS reads un-finishing as starting over. So clear the flag, then put
 # the listener back — at the head of the turn they have not heard.
+#
+# The `duration` ABS wrote into that progress row survives the growth too, and
+# wrongly — it is never revised, so a conversation paused two sentences in
+# reads as two sentences long from then on. Re-baselining it is the same call,
+# made for the listener who finished nothing.
 
 def chapters_from(turns: list, tracks: list) -> list:
     """One chapter per turn, over tracks that are one per sentence.
@@ -545,6 +551,25 @@ def _find_item(url: str, token: str, libs: list, folder: Path):
             if str(i.get("path", "")).replace("\\", "/").endswith(tail):
                 return i
     return None
+
+
+def _abs_progress(url: str, token: str, item_id: str) -> Optional[dict]:
+    """This listener's saved progress for an item, or None if they have none.
+
+    None for a 404, which is the commonest answer of all — "nobody has played
+    it" — and the one that used to be logged as a failure every half hour.
+    """
+    import json as _json
+    import urllib.request as _u
+    req = _u.Request(f"{url}/api/me/progress/{item_id}",
+                     headers={"Authorization": f"Bearer {token}"})
+    try:
+        with _u.urlopen(req, timeout=15) as r:
+            return _json.loads(r.read() or b"{}")
+    except _u.HTTPError as e:
+        if e.code == 404:
+            return None
+        raise
 
 
 def _abs_item(url: str, token: str, item_id: str) -> Optional[dict]:
@@ -1053,17 +1078,33 @@ def set_metadata(session: str, folder: Path, *, target=None) -> str:
     return title if described else ""
 
 
-def reopen(folder: Path, *, target=None) -> Optional[str]:
-    """Bring a grown item back into Continue Listening. Item id, or None.
+def sync_progress(folder: Path, *, target=None) -> Optional[str]:
+    """Put a listener's saved progress back in step with the grown item.
 
-    None covers every ordinary case as well as failure: no Audiobookshelf
-    configured, no item scanned for this folder yet, or a listener who had not
-    finished it — that last one needs nothing done, because a position mid-item
-    already survives the append on its own.
+    Returns a line worth printing, or None — and None covers every ordinary
+    call as well as every failure: no Audiobookshelf configured, no item
+    scanned for this folder yet, nobody who has played it, nothing adrift.
+
+    Two things drift when a conversation grows under a listener, and neither
+    is something Audiobookshelf fixes on the next scan.
+
+    `isFinished` sticks. Reach the end of what exists, let a turn land, and
+    the item stays finished: the new turn is on the server, correctly placed,
+    and out of Continue Listening — which is the one place anyone would look
+    for it. Clearing it is two calls and the order is not decoration, because
+    clearing the flag in the same body as a position RESETS `currentTime` to
+    zero: ABS reads un-finishing as starting over.
+
+    The saved `duration` sticks too, and that one shows to a listener who
+    finished nothing. ABS records the length the item had when the position
+    was written and never revises it, so a conversation paused two sentences
+    in reads as two sentences long ever after — a total of 174s against an
+    item of 5119s, and a progress bar at 58% of something 2% played (measured
+    2026-09-18, "Reply box in Sasonica"). It healed only when the listener
+    played it again and a fresh session counted the tracks. So re-baseline it
+    here, where we have just made the server look at the new files: same
+    position, the length the item is now.
     """
-    import json as _json
-    import urllib.request as _u
-
     ready = _abs_ready(target)
     if not ready:
         return None
@@ -1072,33 +1113,36 @@ def reopen(folder: Path, *, target=None) -> Optional[str]:
         item = _find_item(url, token, libs, folder)
         if not item:
             return None
-
-        req = _u.Request(f"{url}/api/me/progress/{item['id']}",
-                         headers={"Authorization": f"Bearer {token}"})
-        try:
-            with _u.urlopen(req, timeout=15) as r:
-                prog = _json.loads(r.read() or b"{}")
-        except _u.HTTPError as e:
-            if e.code == 404:
-                # Nobody has played it. The commonest answer of all, and the
-                # one that used to be logged as a failure every half hour.
-                return None
-            raise
-        if not prog.get("isFinished"):
+        prog = _abs_progress(url, token, item["id"])
+        if prog is None:
             return None
 
         at = float(prog.get("currentTime") or 0.0)
+        was = float(prog.get("duration") or 0.0)
         duration = float(item.get("media", {}).get("duration") or 0.0)
-        _abs_patch(url, token, f"/api/me/progress/{item['id']}",
-                   {"isFinished": False})
+        finished = bool(prog.get("isFinished"))
+        # A second is the noise floor of a duration ABS computed itself; only
+        # a real append is worth a write, because every write to progress
+        # bumps the item to the top of Continue Listening.
+        adrift = duration > 0 and abs(duration - was) > 1.0
+        if not finished and not adrift:
+            return None
+
+        if finished:
+            _abs_patch(url, token, f"/api/me/progress/{item['id']}",
+                       {"isFinished": False})
         body = {"currentTime": at}
         if duration > 0:
             body["duration"] = duration
-            body["progress"] = min(1.0, at / duration) if duration else 0.0
+            body["progress"] = min(1.0, at / duration)
         _abs_patch(url, token, f"/api/me/progress/{item['id']}", body)
-        log.info("book-tracks: reopened %s at %.0fs of %.0fs",
-                 folder.name, at, duration)
-        return item["id"]
+        if finished:
+            log.info("book-tracks: reopened %s at %.0fs of %.0fs",
+                     folder.name, at, duration)
+            return f"re-opened (it had been finished), at {at:.0f}s of {duration:.0f}s"
+        log.info("book-tracks: re-based %s at %.0fs: %.0fs -> %.0fs",
+                 folder.name, at, was, duration)
+        return f"progress re-based at {at:.0f}s: {was:.0f}s -> {duration:.0f}s"
     except Exception as e:  # noqa: BLE001 - a library that will not answer is not this job's problem
-        log.warning("book-tracks: reopen failed (%s)", e)
+        log.warning("book-tracks: progress sync failed (%s)", e)
         return None
