@@ -97,13 +97,13 @@ def test_empty_question_is_not_announced(calls):
     assert calls == []
 
 
-# --- the drop to Cece (relay-drop; was the relay mailbox) --------------------
+# --- the drop to Cece (agent-mail-deliver; was the relay mailbox) --------------------
 # The one path that survives the answerer not being active, so unlike the
 # notification it is one-way: nothing retracts it, the text expires itself.
 
 @pytest.fixture
 def relay(monkeypatch, tmp_path):
-    """Pretend relay-drop is installed, and capture how it's called.
+    """Pretend agent-mail-deliver is installed, and capture how it's called.
 
     The box and sender are set here rather than inherited. They used to come
     from whatever ~/.config/agent-media.env said, so these tests passed on a
@@ -112,11 +112,11 @@ def relay(monkeypatch, tmp_path):
     """
     monkeypatch.setenv("MEDIA_CONVERSE_MAILBOX", "cece")
     monkeypatch.setenv("MEDIA_CONVERSE_MAILBOX_FROM", "sam")
-    fake = tmp_path / "relay-drop"
+    fake = tmp_path / "agent-mail-deliver"
     fake.write_text("#!/bin/sh\nexit 0\n")
     fake.chmod(0o755)
     monkeypatch.setattr(doorbell.shutil, "which",
-                        lambda n: str(fake) if n == "relay-drop" else None)
+                        lambda n: str(fake) if n == "agent-mail-deliver" else None)
     return str(fake)
 
 
@@ -125,7 +125,7 @@ def test_post_addresses_the_answerers_box(calls, relay):
     argv, _ = _settle(calls)[0]
     assert argv[0] == relay
     assert argv[argv.index("--to") + 1] == "cece"
-    # Stated, not inferred: relay-drop has no default sender, by design.
+    # Stated, not inferred: agent-mail-deliver has no default sender, by design.
     assert argv[argv.index("--from") + 1] == "sam"
     # ring() already put it in the notification shade; no second one.
     assert "--no-notify" in argv

@@ -19,7 +19,7 @@ doorbell that fails must never cost the conversation it was announcing.
 The second announcement goes to Cece, and it is hers by request: the
 notification needs David to be near his phone and the spoken question needs
 him in the room. It used to be a row in tmux-relay's mailbox; since the relay
-was retired (2026-09-18) it is `relay-drop --to cece`, which types it into the
+was retired (2026-09-18) it is `agent-mail-deliver --to cece`, which types it into the
 Claude app when the app is in front and otherwise does nothing (--no-notify:
 the notification above already carries it). It is one-way, so unlike the
 notification there is nothing to take back down; instead the message states
@@ -45,7 +45,7 @@ log = logging.getLogger(__name__)
 
 NOTIFY_ID = "converse-question"
 _TIMEOUT_S = 20
-_DROP_TIMEOUT_S = 90   # relay-drop --to cece is an adb round trip or two
+_DROP_TIMEOUT_S = 90   # agent-mail-deliver --to cece is an adb round trip or two
 
 
 def _enabled() -> bool:
@@ -65,25 +65,25 @@ def _ssh(remote_argv: list[str], timeout_s: float = _TIMEOUT_S) -> bool:
         return False
 
 
-def _relay_drop_cmd() -> list[str] | None:
-    """How to invoke relay-drop, or None if it isn't installed here.
+def _mail_deliver_cmd() -> list[str] | None:
+    """How to invoke agent-mail-deliver, or None if it isn't installed here.
 
-    PATH first (`~/.local/bin/relay-drop` on red5), then the checkout, because
+    PATH first (`~/.local/bin/agent-mail-deliver` on red5), then the checkout, because
     converse can run from a systemd unit whose PATH is minimal — the failure
     mode this avoids is a doorbell that works interactively and silently does
     nothing as a service.
     """
-    found = shutil.which("relay-drop")
+    found = shutil.which("agent-mail-deliver")
     if found:
         return [found]
-    fallback = Path.home() / "projects" / "tmux-relay" / "relay-drop.sh"
+    fallback = Path.home() / "projects" / "agent-mail" / "bin" / "agent-mail-deliver"
     return [str(fallback)] if fallback.is_file() else None
 
 
 def post(question: str, timeout_s: float) -> None:
-    """Put the question in front of the answerer (relay-drop). Fire and forget.
+    """Put the question in front of the answerer (agent-mail-deliver). Fire and forget.
 
-    `--from` is required by relay-drop, which has no default sender: a default
+    `--from` is required by agent-mail-deliver, which has no default sender: a default
     is how one assistant's messages came to be labelled as another's. So with
     no MEDIA_CONVERSE_MAILBOX_FROM this does nothing rather than guess.
     """
@@ -96,9 +96,9 @@ def post(question: str, timeout_s: float) -> None:
     if not sender:
         log.info("converse doorbell: MEDIA_CONVERSE_MAILBOX_FROM unset — no drop")
         return
-    cmd = _relay_drop_cmd()
+    cmd = _mail_deliver_cmd()
     if cmd is None:
-        log.info("converse doorbell: relay-drop not installed — no drop")
+        log.info("converse doorbell: agent-mail-deliver not installed — no drop")
         return
     body = (
         f"Sam is waiting on an answer, asked just now:\n\n"
