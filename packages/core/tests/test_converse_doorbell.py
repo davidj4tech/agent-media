@@ -97,13 +97,13 @@ def test_empty_question_is_not_announced(calls):
     assert calls == []
 
 
-# --- the mailbox drop ------------------------------------------------------
+# --- the drop to Cece (relay-drop; was the relay mailbox) --------------------
 # The one path that survives the answerer not being active, so unlike the
 # notification it is one-way: nothing retracts it, the text expires itself.
 
 @pytest.fixture
 def relay(monkeypatch, tmp_path):
-    """Pretend relay-msg is installed, and capture how it's called.
+    """Pretend relay-drop is installed, and capture how it's called.
 
     The box and sender are set here rather than inherited. They used to come
     from whatever ~/.config/agent-media.env said, so these tests passed on a
@@ -112,11 +112,11 @@ def relay(monkeypatch, tmp_path):
     """
     monkeypatch.setenv("MEDIA_CONVERSE_MAILBOX", "cece")
     monkeypatch.setenv("MEDIA_CONVERSE_MAILBOX_FROM", "sam")
-    fake = tmp_path / "relay-msg"
+    fake = tmp_path / "relay-drop"
     fake.write_text("#!/bin/sh\nexit 0\n")
     fake.chmod(0o755)
     monkeypatch.setattr(doorbell.shutil, "which",
-                        lambda n: str(fake) if n == "relay-msg" else None)
+                        lambda n: str(fake) if n == "relay-drop" else None)
     return str(fake)
 
 
@@ -125,9 +125,10 @@ def test_post_addresses_the_answerers_box(calls, relay):
     argv, _ = _settle(calls)[0]
     assert argv[0] == relay
     assert argv[argv.index("--to") + 1] == "cece"
-    # Stated, not inferred: relay-msg would otherwise label it from whichever
-    # box the HOST is configured as, which breaks the reply's threading.
+    # Stated, not inferred: relay-drop has no default sender, by design.
     assert argv[argv.index("--from") + 1] == "sam"
+    # ring() already put it in the notification shade; no second one.
+    assert "--no-notify" in argv
     assert "ship it or hold?" in argv[-1]
 
 
@@ -152,7 +153,14 @@ def test_post_is_configurable_and_disableable(calls, relay, monkeypatch):
     assert calls == []
 
 
-def test_post_without_relay_msg_installed_is_a_no_op(calls, monkeypatch):
+def test_post_without_a_sender_is_a_no_op(calls, relay, monkeypatch):
+    monkeypatch.setenv("MEDIA_CONVERSE_MAILBOX_FROM", "")
+    doorbell.post("q?", 30)
+    time.sleep(0.2)
+    assert calls == []
+
+
+def test_post_without_relay_drop_installed_is_a_no_op(calls, monkeypatch):
     monkeypatch.setattr(doorbell.shutil, "which", lambda n: None)
     monkeypatch.setattr(doorbell.Path, "home", staticmethod(lambda: Path("/nonexistent")))
     doorbell.post("q?", 30)

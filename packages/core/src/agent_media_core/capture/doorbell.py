@@ -16,15 +16,16 @@ on red5), so this ssh's the way `_miss_notify` does, and inherits its host
 resolution — one source of truth for "the phone". Best-effort throughout: a
 doorbell that fails must never cost the conversation it was announcing.
 
-The second announcement goes to Cece's relay mailbox, and it is hers by
-request: the notification needs David to be near his phone and the spoken
-question needs him in the room, but the mailbox is the one path that survives
-her not being active — she finds it on her next check whether or not anyone
-mentioned it. It is one-way, so unlike the notification there is nothing to
-take back down; instead the message states its own deadline, which makes it
-self-invalidating rather than needing a second row to retract it.
+The second announcement goes to Cece, and it is hers by request: the
+notification needs David to be near his phone and the spoken question needs
+him in the room. It used to be a row in tmux-relay's mailbox; since the relay
+was retired (2026-09-18) it is `relay-drop --to cece`, which types it into the
+Claude app when the app is in front and otherwise does nothing (--no-notify:
+the notification above already carries it). It is one-way, so unlike the
+notification there is nothing to take back down; instead the message states
+its own deadline, which makes it self-invalidating.
 
-Off with MEDIA_CONVERSE_NOTIFY=0 (phone) and MEDIA_CONVERSE_MAILBOX="" (relay).
+Off with MEDIA_CONVERSE_NOTIFY=0 (phone) and MEDIA_CONVERSE_MAILBOX="" (Cece).
 """
 
 from __future__ import annotations
@@ -44,6 +45,7 @@ log = logging.getLogger(__name__)
 
 NOTIFY_ID = "converse-question"
 _TIMEOUT_S = 20
+_DROP_TIMEOUT_S = 90   # relay-drop --to cece is an adb round trip or two
 
 
 def _enabled() -> bool:
@@ -63,36 +65,40 @@ def _ssh(remote_argv: list[str], timeout_s: float = _TIMEOUT_S) -> bool:
         return False
 
 
-def _relay_msg_cmd() -> list[str] | None:
-    """How to invoke relay-msg, or None if it isn't installed here.
+def _relay_drop_cmd() -> list[str] | None:
+    """How to invoke relay-drop, or None if it isn't installed here.
 
-    PATH first (`~/.local/bin/relay-msg` on red5), then the checkout, because
+    PATH first (`~/.local/bin/relay-drop` on red5), then the checkout, because
     converse can run from a systemd unit whose PATH is minimal — the failure
     mode this avoids is a doorbell that works interactively and silently does
     nothing as a service.
     """
-    found = shutil.which("relay-msg")
+    found = shutil.which("relay-drop")
     if found:
         return [found]
-    fallback = Path.home() / "projects" / "tmux-relay" / "relay-msg.sh"
+    fallback = Path.home() / "projects" / "tmux-relay" / "relay-drop.sh"
     return [str(fallback)] if fallback.is_file() else None
 
 
 def post(question: str, timeout_s: float) -> None:
-    """Drop the question in the answerer's relay mailbox. Fire and forget.
+    """Put the question in front of the answerer (relay-drop). Fire and forget.
 
-    `--from` is passed explicitly. relay-msg otherwise takes the sender from
-    the box configured on the host, which is us either way — but stating it
-    keeps the reply threading to the right box when the answer comes back.
+    `--from` is required by relay-drop, which has no default sender: a default
+    is how one assistant's messages came to be labelled as another's. So with
+    no MEDIA_CONVERSE_MAILBOX_FROM this does nothing rather than guess.
     """
     # Unset means "nobody to ring", which the guard below already handles.
     # A default box name here would be one household's assistant.
     box = os.environ.get("MEDIA_CONVERSE_MAILBOX", "").strip()
     if not box or not question.strip():
         return
-    cmd = _relay_msg_cmd()
+    sender = os.environ.get("MEDIA_CONVERSE_MAILBOX_FROM", "").strip()
+    if not sender:
+        log.info("converse doorbell: MEDIA_CONVERSE_MAILBOX_FROM unset — no drop")
+        return
+    cmd = _relay_drop_cmd()
     if cmd is None:
-        log.info("converse doorbell: relay-msg not installed — no mailbox drop")
+        log.info("converse doorbell: relay-drop not installed — no drop")
         return
     body = (
         f"Sam is waiting on an answer, asked just now:\n\n"
@@ -102,25 +108,23 @@ def post(question: str, timeout_s: float) -> None:
         f"the rendezvous is gone and converse-reply will exit 3. Check with "
         f"media converse-reply --pending before answering a stale one."
     )
-    sender = os.environ.get("MEDIA_CONVERSE_MAILBOX_FROM", "").strip()
-    # Without a configured sender, let relay-msg use the host's own box
-    # rather than asserting a name we made up.
-    argv = [*cmd, *(["--from", sender] if sender else []),
-            "--to", box, body]
+    argv = [*cmd, "--no-notify", "--from", sender, "--to", box, body]
+    # An adb push takes tens of seconds; the thread keeps it off converse.
     threading.Thread(
-        target=lambda: _run(argv), daemon=True).start()
+        target=lambda: _run(argv, timeout_s=_DROP_TIMEOUT_S), daemon=True).start()
 
 
-def _run(argv: list[str]) -> bool:
+def _run(argv: list[str], timeout_s: float = _TIMEOUT_S) -> bool:
     try:
-        r = subprocess.run(argv, capture_output=True, timeout=_TIMEOUT_S,
+        r = subprocess.run(argv, capture_output=True, timeout=timeout_s,
                            check=False)
         if r.returncode != 0:
-            log.warning("converse doorbell: relay-msg exit %d: %s",
-                        r.returncode, r.stderr.decode(errors="replace")[:200])
+            log.warning("converse doorbell: %s exit %d: %s",
+                        Path(argv[0]).name, r.returncode,
+                        r.stderr.decode(errors="replace")[:200])
         return r.returncode == 0
     except (OSError, subprocess.SubprocessError) as e:
-        log.warning("converse doorbell: relay-msg failed: %s", e)
+        log.warning("converse doorbell: %s failed: %s", Path(argv[0]).name, e)
         return False
 
 
