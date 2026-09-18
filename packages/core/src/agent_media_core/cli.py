@@ -4143,9 +4143,18 @@ def _music_now_label(m: "SinkMusic") -> str:
     return f"{artist} — {title}" if artist and title else title
 
 
-def _phone_music_props() -> Optional[dict]:
+def _phone_music_props(patient: bool = False) -> Optional[dict]:
     """One batched snapshot of the phone's music mpv, or None when the phone
     backend isn't configured, isn't reachable, or has nothing loaded.
+
+    `patient` retries the round-trip, for a call a person just made and is
+    waiting on. A dozing phone eats the first few reads while its radio wakes,
+    and one lost probe reads as "the phone isn't playing" — which is how
+    `music bookmark` answered "no music loaded" about an audible track, and how
+    `status --json` came back all nulls. The chapter picker has carried the
+    same retry for the same reason. The popup and the status line stay
+    impatient on purpose: they redraw every second, and five retries against an
+    unreachable phone would stall the frame instead of skipping it.
 
     `music play --where auto` routes playout to the phone when it's the only
     listener, so the status/label/transport paths below must follow it there —
@@ -4157,13 +4166,15 @@ def _phone_music_props() -> Optional[dict]:
     from .sinks import _mpv_ipc as ipc
     if not music_local.configured():
         return None
+    ep = music_local.endpoint()
+    attempts = 5 if (patient and str(ep).startswith("tcp://")) else 1
     try:
         props = ipc.display_properties(
-            music_local.endpoint(),
+            ep,
             ["idle-active", "pause", "time-pos", "duration", "speed",
              "media-title", "chapter-metadata/by-key/title", "volume",
              "path"],
-            timeout=1.5)
+            timeout=1.5, attempts=attempts)
     except (ipc.MpvIpcError, OSError):
         return None
     if props.get("idle-active") is not False:
@@ -4246,7 +4257,84 @@ def _ms(v) -> Optional[int]:
     return int(v * 1000) if isinstance(v, (int, float)) else None
 
 
-def _music_status_json(m: "SinkMusic") -> dict:
+_YT_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
+
+
+def _music_media_id(live: str) -> str:
+    """The stable id for whatever `live` names: a YouTube id when one is
+    visible, else the URI or path itself.
+
+    The phone plays from its own cache, so mpv's `path` is
+    `.cache/music-offline/<id>.<ext>` — the id is right there in the filename,
+    and it is the same id the URI that was asked for carries.
+    """
+    if not live:
+        return ""
+    from .sinks.music_fetch import watch_id
+    vid = watch_id(live)
+    if vid:
+        return vid
+    stem = os.path.basename(live).split(".", 1)[0]
+    return stem if _YT_ID.match(stem) else live
+
+
+def _music_asked(media_id: str, live: str) -> tuple:
+    """(the URI the listener named for `media_id`, the name it was given).
+
+    A cache path is no use to anyone later: it names a file on a phone, not a
+    mix anybody can put on again. The intent key holds what was last asked
+    for and the history rows hold what was asked for before that — and the
+    history row also carries the title the cache learned once mpv had opened
+    the file, which beats the bare `<id>.<ext>` filename an unembedded
+    download reports as its media-title.
+    """
+    if not media_id or media_id == live:
+        return live, ""
+    try:
+        st = StateStore()
+        rows: list = []
+        intent = st.get_music_intent()
+        if intent and intent.get("uri"):
+            rows.append(intent)
+        rows.extend(st.recent_history(sink="music", limit=25))
+    except Exception:  # noqa: BLE001 — a like is worth more than its prettiest uri
+        return live, ""
+    # The intent row is the most recent word on *which URI*, and carries no
+    # title; the history rows carry the title but an older URI. So take the
+    # first matching URI and the first matching name, which need not be the
+    # same row.
+    uri_out, name_out = "", ""
+    for row in rows:
+        uri = (row or {}).get("uri") or ""
+        if not uri or _music_media_id(uri) != media_id:
+            continue
+        uri_out = uri_out or uri
+        name_out = name_out or str(row.get("text") or "").strip()
+        if uri_out and name_out:
+            break
+    return (uri_out or live), name_out
+
+
+def _music_named_backend(where: str) -> str:
+    """'phone', 'rooms', or '' when the caller named no backend.
+
+    Deliberately not `_resolve_music_where`: that turns "" and "default" into
+    a concrete backend from the host's configuration, and a read must not be
+    pinned to the phone just because the phone is where playback would *go*.
+    Only a caller who typed `--where phone` gets the deterministic answer —
+    the same distinction `SinkMusicRouter._backend_for` makes, for the same
+    reason.
+    """
+    w = (where or "").strip().lower()
+    if w == "phone":
+        return "phone"
+    if w in ("rooms", "local"):
+        return "rooms"
+    return ""
+
+
+def _music_status_json(m: "SinkMusic", patient: bool = False,
+                       where: str = "") -> dict:
     """Structured music-channel snapshot for a control surface.
 
     Same live-backend rule as `_music_now_status` — the phone's mpv when it
@@ -4258,25 +4346,46 @@ def _music_status_json(m: "SinkMusic") -> dict:
     writer, which is what lets a front-end be removed without leaving state
     behind.
     """
-    out: dict = {"backend": None, "uri": None, "title": None, "chapter": None,
+    out: dict = {"backend": None, "uri": None, "media_id": None, "path": None,
+                 "title": None, "chapter": None,
                  "pos_ms": None, "dur_ms": None, "paused": None, "speed": None,
                  "volume": None, "held": _music_hold_active()}
 
-    props = _phone_music_props()
+    props = None if where == "rooms" else _phone_music_props(patient=patient)
     if props is not None:
         chap = str(props.get("chapter-metadata/by-key/title") or "").strip()
         vol = props.get("volume")
+        path = str(props.get("path") or "")
+        media_id = _music_media_id(path)
+        asked, named = _music_asked(media_id, path)
+        label = _mpv_music_label(props)
+        # A download with no embedded title reports `<id>.<ext>`, which
+        # `_mpv_music_label` trims to the bare id — the one thing a listener
+        # cannot read. The name the cache learned is on the history row.
+        if named and (not label or label == media_id):
+            label = named
+        elif named and label.endswith(media_id):
+            label = label[:-len(media_id)] + named
         out.update(
             backend="phone",
-            title=_mpv_music_label(props) or None,
+            title=label or None,
             chapter=chap or None,
             pos_ms=_ms(props.get("time-pos")),
             dur_ms=_ms(props.get("duration")),
             paused=bool(props.get("pause")),
             speed=props.get("speed"),
             volume=int(vol) if isinstance(vol, (int, float)) else None,
-            uri=str(props.get("path") or "") or None,
+            uri=asked or None,
+            path=path or None,
+            media_id=media_id or None,
         )
+        return out
+    if where == "phone":
+        # The caller named the phone. Saying "Mopidy, idle" about it would be
+        # an answer to a question nobody asked — the same fall-through that
+        # made phone-targeted reads intermittent before the router stopped
+        # observing an explicit target.
+        out["backend"] = "phone"
         return out
 
     out["backend"] = "mopidy"
@@ -4306,6 +4415,25 @@ def _music_status_json(m: "SinkMusic") -> dict:
         out["uri"] = m.now_playing_uri()
     except OSError:
         pass
+    # A rooms track routed through the mpv renderer: MPD reports no duration
+    # and filename-only tags, so the numbers above are empty or wrong while
+    # the renderer knows all of them. `_music_now_status` has always read the
+    # renderer for the popup; this is the same read, for the surface that gets
+    # the structured form.
+    if (out.get("uri") or "").startswith("mpv:"):
+        from .sinks.music import mpv_now_props
+        mprops = mpv_now_props() or {}
+        if mprops:
+            chap = str(mprops.get("chapter-metadata/by-key/title") or "").strip()
+            out.update(renderer="mpv",
+                       title=_mpv_music_label(mprops) or out.get("title"),
+                       chapter=chap or None,
+                       pos_ms=_ms(mprops.get("time-pos")) or out.get("pos_ms"),
+                       dur_ms=_ms(mprops.get("duration")) or out.get("dur_ms"),
+                       paused=bool(mprops.get("pause")),
+                       speed=mprops.get("speed"))
+    live = out.get("uri") or ""
+    out["media_id"] = _music_media_id(live) or None
     return out
 
 
@@ -4611,37 +4739,91 @@ def _book_bookmark(note: str = "", target: str = "", range_end: bool = False,
 
 
 def _music_bookmark(m: "SinkMusic", note: str = "", range_end: bool = False,
-                    slot: str = "") -> int:
-    b = _music_live_backend(m)
-    uri = b.now_playing_uri() or ""
-    if not uri and b is m:
-        uri = (m.current_song() or {}).get("file") or ""
-    if not uri:
+                    slot: str = "", where: str = "") -> int:
+    """Bookmark the music channel wherever it is actually playing.
+
+    This used to assemble its own answer out of four reads — the live
+    backend's URI, MPD's current song, the phone's props, the renderer's props
+    — each of which could come back empty on its own. One impatient probe to a
+    dozing phone was enough to make it print "no music loaded" about a track
+    playing out loud, and `--where phone` did not help because nothing here
+    looked at it. `_music_snapshot` is the one read now, patient and
+    target-aware, and it is the same one `like` and `status --json` use.
+    """
+    snap = _music_snapshot(m, where=where)
+    if not snap:
         print("media bookmark: no music loaded", file=sys.stderr)
         return 1
-    pos = b.position()
-    if pos is None and b is m:
-        try:
-            pos = int(float((m.status_dict() or {}).get("elapsed") or 0) * 1000)
-        except (TypeError, ValueError):
-            pos = 0
-    props = _phone_music_props()
-    if props is None and b is m:
-        from .sinks.music import mpv_now_props
-        props = mpv_now_props() or {}
-    dur = None
-    try:
-        if props and props.get("duration") is not None:
-            dur = int(float(props.get("duration")) * 1000)
-    except (TypeError, ValueError):
-        dur = None
-    _, label, _ = _music_now_status(m, width=0, hide_idle=True, bar=False)
-    media_id = _bookmark_media_id(uri)
     return _save_bookmark(
-        "music", media_id, uri, pos or 0, title=label or "",
-        duration_ms=dur, note=note,
-        extras={"backend": "phone" if b is not m else "rooms"},
+        "music", snap["media_id"], snap["uri"], snap.get("pos_ms") or 0,
+        title=snap.get("title") or "", duration_ms=snap.get("dur_ms"),
+        note=note,
+        extras={"backend": snap.get("backend"), "chapter": snap.get("chapter"),
+                "path": snap.get("path")},
         range_end=range_end, slot=slot)
+
+
+def _music_snapshot(m: "SinkMusic", where: str = "") -> Optional[dict]:
+    """What the music channel is playing, or None when it is playing nothing.
+
+    A patient read (a person is waiting on it), and one that keeps the URI the
+    listener named rather than the file the phone happens to be reading.
+    """
+    snap = _music_status_json(m, patient=True,
+                              where=_music_named_backend(where))
+    uri = snap.get("uri") or ""
+    media_id = snap.get("media_id") or _music_media_id(uri)
+    if not media_id and snap.get("pos_ms") is None and not snap.get("title"):
+        return None
+    if not media_id:
+        return None
+    snap["uri"] = uri or media_id
+    snap["media_id"] = media_id
+    return snap
+
+
+def _music_like(m: "SinkMusic", note: str = "", where: str = "") -> int:
+    """Keep what is playing, because it was good.
+
+    Not a bookmark: a bookmark is a place to come back to in one item, keyed
+    by that item, and the second one on the same mix replaces the first. A
+    like is a list that only grows, and what makes it useful later is the
+    chapter — on a two-hour mix, "ch.10 of Spiritual Morning Mix" is the name
+    of the thing you liked, and the mix is only where it was.
+    """
+    snap = _music_snapshot(m, where=where)
+    if not snap:
+        print("media music like: no music loaded", file=sys.stderr)
+        return 1
+    n = StateStore().add_like(
+        "music", snap["media_id"], uri=snap.get("uri") or "",
+        title=snap.get("title") or "", chapter=snap.get("chapter") or "",
+        pos_ms=snap.get("pos_ms"), dur_ms=snap.get("dur_ms"),
+        backend=snap.get("backend") or "", note=note,
+        extras={"path": snap.get("path")} if snap.get("path") else None)
+    where_at = fmt_time((snap.get("pos_ms") or 0) / 1000.0)
+    label = snap.get("title") or snap.get("uri") or snap["media_id"]
+    print(f"♥ {label} @ {where_at}" + (f" — {note}" if note else "")
+          + (f"  (#{n})" if n else ""))
+    return 0
+
+
+def _cmd_likes(limit_s: str = "", channel: Optional[str] = None,
+               json_out: bool = False) -> int:
+    try:
+        limit = int(limit_s or 20)
+    except ValueError:
+        limit = 20
+    rows = StateStore().list_likes(limit, channel=channel)
+    if json_out:
+        print(json.dumps(rows, ensure_ascii=False))
+        return 0
+    for like in rows:
+        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(like.get("at") or 0))
+        title = like.get("title") or like.get("uri") or like.get("media_id")
+        note = f" — {like.get('note')}" if like.get("note") else ""
+        print(f"{when}  {fmt_time((like.get('pos_ms') or 0) / 1000.0)}  {title}{note}")
+    return 0
 
 
 def _cmd_bookmarks(limit_s: str = "", channel: Optional[str] = None,
@@ -4777,7 +4959,9 @@ def cmd_music(a) -> int:
         # branch so the human status line is byte-for-byte unchanged when the
         # flag is absent.
         try:
-            print(json.dumps(_music_status_json(m)))
+            print(json.dumps(_music_status_json(
+                m, patient=True,
+                where=_music_named_backend(getattr(a, "where", "")))))
         except Exception as e:  # noqa: BLE001 — a poller must never see a traceback
             print(json.dumps({"backend": None, "error": str(e)}))
         return 0
@@ -4805,9 +4989,17 @@ def cmd_music(a) -> int:
     if a.action in ("chapters", "chapter"):
         return _cmd_music_chapters(a)
     if a.action == "bookmark":
-        return _music_bookmark(m, a.uri or "", range_end=bool(getattr(a, "range_end", False)), slot=getattr(a, "slot", "") or "")
+        return _music_bookmark(m, a.uri or "",
+                               range_end=bool(getattr(a, "range_end", False)),
+                               slot=getattr(a, "slot", "") or "",
+                               where=getattr(a, "where", "") or "")
     if a.action == "bookmarks":
         return _cmd_bookmarks(a.uri or "", channel="music")
+    if a.action == "like":
+        return _music_like(m, a.uri or "", where=getattr(a, "where", "") or "")
+    if a.action == "likes":
+        return _cmd_likes(a.uri or "", channel="music",
+                          json_out=bool(getattr(a, "json", False)))
     if a.action == "play":
         if not a.uri:
             print("media music play: a URI is required", file=sys.stderr)
@@ -7396,7 +7588,8 @@ def _build_parser() -> argparse.ArgumentParser:
                    choices=("play", "pause", "resume", "stop", "toggle",
                             "next", "prev", "status", "now", "now-status",
                             "seek", "volume", "speed", "bookmark",
-                            "bookmarks", "chapters", "chapter"))
+                            "bookmarks", "like", "likes",
+                            "chapters", "chapter"))
     s.add_argument("uri", nargs="?",
                    help="for 'play': Mopidy URI (e.g. yt:https://...); "
                         "for 'seek': time H:MM:SS (absolute) or +90/-5:00 "
@@ -7404,7 +7597,8 @@ def _build_parser() -> argparse.ArgumentParser:
                         "rate 0.25–4 (absolute), ±delta, 'up'/'down' "
                         "(ladder), 'reset', or empty to show the current "
                         "rate; for 'bookmark': optional note; for "
-                        "'bookmarks': optional limit; for 'chapter': "
+                        "'bookmarks': optional limit; for 'like': optional "
+                        "note; for 'likes': optional limit; for 'chapter': "
                         "1-based chapter number (see 'chapters')")
     s.add_argument("--lines", action="store_true",
                    help="for 'chapters': print display<TAB>number rows "

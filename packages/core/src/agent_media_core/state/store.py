@@ -94,6 +94,27 @@ CREATE TABLE IF NOT EXISTS bookmarks (
 CREATE INDEX IF NOT EXISTS bookmarks_updated_idx ON bookmarks (updated_at);
 CREATE INDEX IF NOT EXISTS bookmarks_channel_updated_idx ON bookmarks (channel, updated_at);
 
+-- Things the listener said they liked, and what was playing when they said
+-- it. Append-only, unlike `bookmarks`: liking the same mix twice at two
+-- different chapters is two facts, not one row overwritten. A like is not a
+-- resume point, so nothing reads it back into a player — it is a list kept so
+-- that what moved you at the time can be found again later.
+CREATE TABLE IF NOT EXISTS likes (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    at       REAL NOT NULL,
+    channel  TEXT NOT NULL,
+    media_id TEXT NOT NULL,
+    uri      TEXT,
+    title    TEXT,
+    chapter  TEXT,
+    pos_ms   INTEGER,
+    dur_ms   INTEGER,
+    backend  TEXT,
+    note     TEXT,
+    extras   TEXT
+);
+CREATE INDEX IF NOT EXISTS likes_at_idx ON likes (at);
+
 -- Book channel playlists: an ordered list of part URIs plus a remembered
 -- cursor (which part). Per-part within-offset resume reuses resume_pos
 -- above (keyed by URI), so a playlist only needs to remember which part;
@@ -506,6 +527,56 @@ class StateStore:
             "note": note, "transcript": transcript, "updated_at": updated_at,
             "extras": json.loads(extras) if extras else None,
         }
+
+    # ---- likes ------------------------------------------------------------
+
+    def add_like(self, channel: str, media_id: str, *, uri: str = "",
+                 title: str = "", chapter: str = "",
+                 pos_ms: Optional[int] = None, dur_ms: Optional[int] = None,
+                 backend: str = "", note: str = "",
+                 extras: Optional[dict] = None,
+                 at: Optional[float] = None) -> int:
+        """Record a like and return its id. Appends; never replaces.
+
+        `at` is for backfilling something liked before there was anywhere to
+        put it; left alone it is now.
+        """
+        if not channel or not media_id:
+            return 0
+        with self._cursor() as cur:
+            cur.execute(
+                "INSERT INTO likes "
+                "(at, channel, media_id, uri, title, chapter, pos_ms, dur_ms, "
+                " backend, note, extras) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (float(at if at is not None else time.time()), channel, media_id,
+                 uri or None, title or None, chapter or None,
+                 None if pos_ms is None else max(0, int(pos_ms)),
+                 None if dur_ms is None else max(0, int(dur_ms)),
+                 backend or None, note or None,
+                 json.dumps(extras) if extras else None),
+            )
+            return int(cur.lastrowid or 0)
+
+    def list_likes(self, limit: int = 20,
+                   channel: Optional[str] = None) -> list[dict]:
+        cols = ("id", "at", "channel", "media_id", "uri", "title", "chapter",
+                "pos_ms", "dur_ms", "backend", "note", "extras")
+        sql = f"SELECT {', '.join(cols)} FROM likes"
+        args: tuple = ()
+        if channel:
+            sql += " WHERE channel = ?"
+            args = (channel,)
+        sql += " ORDER BY at DESC, id DESC LIMIT ?"
+        with self._cursor() as cur:
+            cur.execute(sql, (*args, max(1, int(limit))))
+            rows = cur.fetchall()
+        out = []
+        for row in rows:
+            d = dict(zip(cols, row))
+            d["extras"] = json.loads(d["extras"]) if d["extras"] else None
+            out.append(d)
+        return out
 
     _BOOKMARK_PENDING_PREFIX = "bookmark_pending:"
 

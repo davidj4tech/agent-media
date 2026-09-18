@@ -485,7 +485,7 @@ def get_properties(sock_path: str | Path, names: list,
 
 
 def display_properties(sock_path: str | Path, names: list,
-                       timeout: float = 2.0) -> dict:
+                       timeout: float = 2.0, attempts: int = 2) -> dict:
     """A snapshot whose only purpose is to be shown to someone.
 
     The breaker's defaults are sized for policy chatter — "is anything playing,
@@ -506,8 +506,13 @@ def display_properties(sock_path: str | Path, names: list,
 
     Failure still opens the breaker, briefly, so a dead endpoint doesn't make
     every redraw wait out the connect timeout.
+
+    `attempts` is for the caller that is not a redraw: a person who just typed
+    something and is waiting for the answer can afford more rounds than a
+    frame can.
     """
-    return get_properties(sock_path, names, timeout=timeout, attempts=2,
+    return get_properties(sock_path, names, timeout=timeout,
+                          attempts=max(1, int(attempts)),
                           slow_s=0, breaker_s=5)
 
 

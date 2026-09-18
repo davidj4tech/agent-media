@@ -29,10 +29,6 @@ def test_bookmark_store_roundtrip(tmp_path):
 def test_music_bookmark_command_saves_live_position(monkeypatch):
     from agent_media_core import cli
 
-    class FakeBackend:
-        def now_playing_uri(self): return "https://youtu.be/a82hE1aupo8"
-        def position(self): return 123000
-
     saved = {}
 
     class FakeStore:
@@ -40,18 +36,32 @@ def test_music_bookmark_command_saves_live_position(monkeypatch):
         def set_bookmark(self, **kwargs): saved.update(kwargs)
         def set_bookmark_pending(self, channel, data, slot=""): pass
 
-    monkeypatch.setattr(cli, "_music_live_backend", lambda m: FakeBackend())
-    monkeypatch.setattr(cli, "_music_now_status",
-                        lambda m, width, hide_idle, bar: ("", "Cool Mix", ""))
-    monkeypatch.setattr(cli, "_phone_music_props", lambda: {"duration": 600})
+    # The whole snapshot now comes from one read of the live backend.
+    monkeypatch.setattr(cli, "_phone_music_props", lambda patient=False: {
+        "idle-active": False, "pause": False, "time-pos": 123.0,
+        "duration": 600.0, "media-title": "Cool Mix", "volume": 100,
+        "path": "/home/ryer/.cache/music-offline/a82hE1aupo8.m4a"})
+    monkeypatch.setattr(cli, "_music_asked",
+                        lambda media_id, live: ("yt:https://youtu.be/a82hE1aupo8", ""))
     monkeypatch.setattr(cli, "StateStore", lambda: FakeStore())
     assert cli._music_bookmark(object(), "note") == 0
     assert saved["channel"] == "music"
     assert saved["media_id"] == "a82hE1aupo8@123000"
     assert saved["extras"]["item_id"] == "a82hE1aupo8"
+    assert saved["uri"] == "yt:https://youtu.be/a82hE1aupo8"
     assert saved["pos_ms"] == 123000
     assert saved["title"] == "Cool Mix"
     assert saved["note"] == "note"
+
+
+def test_music_bookmark_says_nothing_is_loaded_only_when_nothing_is(monkeypatch, capsys):
+    """The report this replaced: "no music loaded" about an audible track,
+    because one impatient probe to the phone had come back empty."""
+    from agent_media_core import cli
+
+    monkeypatch.setattr(cli, "_music_snapshot", lambda m, where="": None)
+    assert cli._music_bookmark(object(), "") == 1
+    assert "no music loaded" in capsys.readouterr().err
 
 
 # ---- resume-on-select --------------------------------------------------------
