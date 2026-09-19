@@ -73,6 +73,19 @@ def test_the_bar_gets_only_listener_verbs():
     assert "goto" not in canvas._APP_SPEECH_ACTIONS
 
 
+def test_the_player_gets_the_popups_listening_keys():
+    for action in ("para-", "para+", "prev", "replay", "speed+", "speed0", "vol-", "mute"):
+        assert action in canvas._APP_SPEECH_ACTIONS
+    assert canvas.ctl_argv("speech", "prev", 3) == ["replay-prev", "--idx", "3"]
+    assert canvas.ctl_argv("speech", "replay", 2) == ["replay", "2"]
+
+
+def test_speed_and_mute_ride_along(monkeypatch):
+    _as(monkeypatch)
+    ok, out = reply.speech_now("tok", {"speaking": True, "speed": 1.6, "muted": True})
+    assert ok and out["speed"] == 1.6 and out["muted"] is True
+
+
 def test_session_states_name_the_pane_class(monkeypatch, tmp_path):
     _as(monkeypatch)
     (tmp_path / f"{SID}.json").write_text(

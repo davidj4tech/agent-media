@@ -926,6 +926,15 @@ def speech_state() -> dict:
         # arrive, which an accumulate-as-you-go model could never manage.
         if ex.get("visual"):
             state["visual"] = ex["visual"]
+    if state["speaking"] or state.get("paused"):
+        # For the app's player: what [ ] and m would change.
+        if ex.get("live_speed") is not None:
+            try:
+                state["speed"] = round(float(ex["live_speed"]), 2)
+            except (TypeError, ValueError):
+                pass
+        if "live_mute" in ex:
+            state["muted"] = bool(ex["live_mute"])
     if (state["speaking"] or state.get("paused")) and ex.get("source_session"):
         # Who's talking — the page uses this to dim a figure that belongs
         # to a different session than the current voice, and the app to name
@@ -1339,10 +1348,14 @@ _CORS_PATHS = frozenset({
     "/speech/now", "/speech/ctl", "/sessions/state",
 })
 
-#: What the app's speech bar may do. A short list on purpose: the bearer is a
-#: listener's, and a listener pauses, skips and stops — the popup's other keys
-#: (mute a pane, focus tmux, open URLs) are the desk's.
-_APP_SPEECH_ACTIONS = frozenset({"toggle", "skip-", "skip+", "jump-end"})
+#: What the app's speech player may do: the popup's listening keys — pause,
+#: the sentence and paragraph steps, older/newer turn and replay, speed,
+#: volume and a momentary mute. The bearer is a listener's; the popup's other
+#: keys (keep a pane muted, focus tmux, open URLs) are the desk's.
+_APP_SPEECH_ACTIONS = frozenset({
+    "toggle", "skip-", "skip+", "para-", "para+", "jump-end",
+    "prev", "replay", "speed-", "speed+", "speed0", "vol-", "vol+", "mute",
+})
 _SPEECH_NOW_SEEN: set[str] = set()
 
 # Long enough that a chat page's polling is not preceded by a preflight every
@@ -1795,11 +1808,18 @@ class Handler(BaseHTTPRequestHandler):
             if not ok:
                 self._json(detail.pop("status", 403), {"ok": False, **detail})
                 return
-            action = str((self._read_json() or {}).get("action") or "")
+            body = self._read_json() or {}
+            action = str(body.get("action") or "")
             if action not in _APP_SPEECH_ACTIONS:
                 self._json(400, {"ok": False, "error": "unknown action"})
                 return
-            out = _media(ctl_argv("speech", action, 1))
+            # `arg` is the turn index for prev/replay, kept by the app the way
+            # the popup keeps hist_idx: 1 is the latest reply.
+            try:
+                arg = max(1, min(999, int(body.get("arg") or 1)))
+            except (TypeError, ValueError):
+                arg = 1
+            out = _media(ctl_argv("speech", action, arg))
             print(f"speech/ctl: {action} -> {out.strip()[:120]!r}", file=sys.stderr)
             self._json(200, {"ok": True, "out": out})
         elif path == "/reply":

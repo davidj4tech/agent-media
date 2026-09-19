@@ -975,7 +975,8 @@ def speech_now(bearer: str, state: dict) -> tuple[bool, dict]:
     out = {"live": speaking or paused, "speaking": speaking, "paused": paused,
            "sentence": state.get("sentence") or "", "session": None,
            "title": "", "item": None,
-           "pos": state.get("pos"), "dur": state.get("dur")}
+           "pos": state.get("pos"), "dur": state.get("dur"),
+           "speed": state.get("speed"), "muted": bool(state.get("muted"))}
     session = str(state.get("session") or "")
     if out["live"] and _UUID.fullmatch(session):
         now = time.time()
