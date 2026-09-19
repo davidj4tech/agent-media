@@ -1,6 +1,10 @@
 # The companion app, folded into Sasonica
 
-Status: proposal, nothing built. 2026-09-19. Written the day music moved to
+Status: step 1 built 2026-09-19 (sasonica 60e78920): the listener answers on
+p8a:6613 and a `media say` through it played. red5 still points at the
+companion's 6612; switch with `MEDIA_SPEECH_SOCKET_APP=tcp://p8a:6613`. The
+classes live in `com.audiobookshelf.app.speech` (a `com.sasonica` package was
+invisible to the Kotlin compile). Proposal written 2026-09-19. Written the day music moved to
 Sasonica's player (agent-media 9b4b13e, sasonica ced15c0c). That left the phone
 with three apps between it and the rooms: Termux's mpv, the companion (which
 speaks) and Sasonica (which plays books and music). This is the plan for
