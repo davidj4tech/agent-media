@@ -1104,3 +1104,13 @@ def test_a_reply_into_a_live_pane_checks_its_enter_landed(monkeypatch, _allowed)
     monkeypatch.setattr(reply, "_ensure_submitted", lambda p, t, timeout=3.0: checked.append((p, t)))
     ok, _ = reply.reply("item1", "a long message that the TUI is still taking when Enter arrives", "tok")
     assert ok and checked == [("%7", "a long message that the TUI is still taking when Enter arrives")]
+
+
+def test_a_running_session_is_never_opened_twice(monkeypatch):
+    from agent_media_core import claude_sessions
+
+    sid = "fa0c34cf-bab6-44f4-bf00-f254a45b81fe"
+    monkeypatch.setattr(claude_sessions, "running", lambda: [(42, sid, "")])
+    monkeypatch.setattr(reply, "_tmux", lambda *a, **k: pytest.fail("opened a window"))
+    pane, err = reply.open_window(sid, "/tmp", resume=True, host="p-agent-media")
+    assert pane == "" and "already running outside tmux" in err

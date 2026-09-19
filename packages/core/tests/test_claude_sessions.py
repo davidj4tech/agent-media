@@ -26,3 +26,11 @@ def test_a_live_claude_is_found_by_pane(tmp_path, monkeypatch):
 
 def test_only_a_claude_process_counts():
     assert not claude_sessions._is_claude(os.getpid())   # pytest is python
+
+
+def test_running_includes_a_claude_outside_tmux(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLAUDE_SESSIONS_DIR", str(tmp_path))
+    monkeypatch.setattr(claude_sessions, "_is_claude", lambda pid: True)
+    _write(tmp_path, 42, sessionId=SID, tmux="p:@1.%5")
+    _write(tmp_path, 43, sessionId="other")
+    assert sorted(claude_sessions.running()) == [(42, SID, "%5"), (43, "other", "")]

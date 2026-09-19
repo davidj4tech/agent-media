@@ -43,9 +43,9 @@ def session_for_pid(pid: int) -> Optional[str]:
     return str(sid) if sid else None
 
 
-def by_pane() -> dict[str, str]:
-    """`{pane id ("%518"): session id}` for every live claude in a tmux pane."""
-    out: dict[str, str] = {}
+def running() -> list[tuple[int, str, str]]:
+    """`[(pid, session id, pane or "")]` for every live claude, in tmux or not."""
+    out = []
     for path in glob.glob(os.path.join(_root(), "*.json")):
         try:
             with open(path, encoding="utf-8") as fh:
@@ -56,6 +56,11 @@ def by_pane() -> dict[str, str]:
         tmux = str(data.get("tmux") or "")
         sid = str(data.get("sessionId") or "")
         pane = tmux.rsplit(".", 1)[-1] if "." in tmux else ""
-        if sid and pane.startswith("%") and _is_claude(pid):
-            out[pane] = sid
+        if sid and _is_claude(pid):
+            out.append((pid, sid, pane if pane.startswith("%") else ""))
     return out
+
+
+def by_pane() -> dict[str, str]:
+    """`{pane id ("%518"): session id}` for every live claude in a tmux pane."""
+    return {pane: sid for _pid, sid, pane in running() if pane}

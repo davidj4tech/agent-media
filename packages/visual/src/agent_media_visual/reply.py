@@ -653,6 +653,17 @@ def open_window(session: str, cwd: str, *, resume: bool, host: str = "",
       own queue for a minute or two before it is read. That is why the caller
       is told `opened: true` — "opening" is a truer thing to show than "sent".
     """
+    if resume:
+        # Never a second copy of a running session: two writers interleave
+        # their turns into one transcript. Live detection has missed a running
+        # session before (a lost registry entry), and a reply from the phone
+        # then opened a duplicate beside it; Claude's own record is the check.
+        from agent_media_core import claude_sessions
+
+        for pid, sid, where in claude_sessions.running():
+            if sid == session:
+                return where, (f"session {session[:8]} is already running"
+                               + (f" in {where}" if where else f" outside tmux (pid {pid})"))
     cwd = cwd or os.path.expanduser("~")
     if host:
         if not ensure_host(host, cwd):
