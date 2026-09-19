@@ -81,6 +81,24 @@ def test_the_folder_is_workspace_over_title(conversation):
     assert folder.name == "How the growing item works"
 
 
+@pytest.mark.parametrize("workspace", [
+    "tmp-claude-1000--home-ryer-projects-runlet-027c24b1-a031-44a8-97e4-"
+    "f890c45494d4-scratchpad-handoff-test",
+    "home-ryer-x-scratchpad-probe"])
+def test_a_throwaway_session_is_not_shelved(conversation, monkeypatch, workspace):
+    """A session started in a temp dir to test something is not a project."""
+    monkeypatch.setattr(session_feed, "workspace_for",
+                        lambda session, ts: workspace)
+    assert book_tracks.export_session("sess-1") == (None, 0)
+
+
+def test_the_scratch_workspace_is_still_shelved(conversation, monkeypatch):
+    monkeypatch.setattr(session_feed, "workspace_for",
+                        lambda session, ts: "scratch")
+    folder, _ = book_tracks.export_session("sess-1")
+    assert folder.parent.name == "scratch"
+
+
 def test_a_new_turn_appends_and_touches_nothing_else(conversation):
     state, turns = conversation
     folder, _ = book_tracks.export_session("sess-1")

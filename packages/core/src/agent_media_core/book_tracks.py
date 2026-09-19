@@ -139,6 +139,18 @@ def track_name(index: int, said: str, fallback: str = "") -> str:
     return f"{index:04d} - {safe_name(said or fallback, 90)}.mp3"
 
 
+def throwaway_workspace(workspace: str) -> bool:
+    """A session run from a temp dir, which no library should shelve.
+
+    A session that tests something by starting another Claude in its scratch
+    folder leaves a tmux session named after that path
+    (`tmp-claude-1000--home-…-scratchpad-handoff-test`), and every one became a
+    project of its own on the Projects shelf. `scratch` is not one of these:
+    that is a workspace David keeps on purpose.
+    """
+    return workspace.startswith("tmp-") or "-scratchpad" in workspace
+
+
 def folder_for(session: str, turns: list, manifest: dict) -> Optional[Path]:
     """The item folder for this conversation, decided once and then kept.
 
@@ -155,6 +167,8 @@ def folder_for(session: str, turns: list, manifest: dict) -> Optional[Path]:
     if not turns:
         return None
     workspace = session_feed.workspace_for(session, turns)
+    if throwaway_workspace(workspace):
+        return None
     # The workspace is the folder above, which Audiobookshelf reads as the
     # author — so putting it in the title too says it twice on every shelf.
     title = session_feed.asked_for(session, turns)
