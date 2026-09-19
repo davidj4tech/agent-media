@@ -895,6 +895,10 @@ def speech_state() -> dict:
             .splitlines() or [""])[0].strip()
     times = _parse_clock(line)
     state: dict = {"kind": "state", "speaking": line.startswith("▶")}
+    if line.startswith("⏸"):
+        # Paused mid-reply: not speaking, but not over either. The app keeps
+        # its speech bar up for it, so it needs to know which is which.
+        state["paused"] = True
     if len(times) >= 2:
         state["pos"], state["dur"] = times[0], times[1]
     # Read the extras whether or not a voice is live. The clip's sentences are
@@ -918,10 +922,11 @@ def speech_state() -> dict:
         # arrive, which an accumulate-as-you-go model could never manage.
         if ex.get("visual"):
             state["visual"] = ex["visual"]
-        if ex.get("source_session"):
-            # Who's talking — the page uses this to dim a figure that belongs
-            # to a different session than the current voice.
-            state["session"] = str(ex["source_session"])[:80]
+    if (state["speaking"] or state.get("paused")) and ex.get("source_session"):
+        # Who's talking — the page uses this to dim a figure that belongs
+        # to a different session than the current voice, and the app to name
+        # the conversation on its speech bar (paused too).
+        state["session"] = str(ex["source_session"])[:80]
     lines = [" ".join(str(t).split()) for t in (ex.get("clip_sentences") or [])]
     lines = [t for t in lines if t]
     if lines:
@@ -1327,7 +1332,13 @@ PAGE_ID = hashlib.sha256(PAGE.encode()).hexdigest()[:12]
 _CORS_PATHS = frozenset({
     "/conversation", "/conversation/log", "/conversations", "/item",
     "/reply", "/ask", "/focus", "/session/resume", "/session/close",
+    "/speech/now", "/speech/ctl",
 })
+
+#: What the app's speech bar may do. A short list on purpose: the bearer is a
+#: listener's, and a listener pauses, skips and stops — the popup's other keys
+#: (mute a pane, focus tmux, open URLs) are the desk's.
+_APP_SPEECH_ACTIONS = frozenset({"toggle", "skip-", "skip+", "jump-end"})
 
 # Long enough that a chat page's polling is not preceded by a preflight every
 # time; short enough that a change here is picked up the same day.
@@ -1535,6 +1546,13 @@ class Handler(BaseHTTPRequestHandler):
             st["events"] = _speech_events(20)
             st["local_audio"] = _local_audio_playing()
             self._json(200, st)
+        elif path == "/speech/now":
+            # The app's speech bar: /speech's live bit, named — the session's
+            # title and library item — and gated by the caller's ABS bearer.
+            from . import reply as _reply
+            bearer = (self.headers.get("Authorization") or "").removeprefix("Bearer").strip()
+            ok, detail = _reply.speech_now(bearer, speech_state())
+            self._json(200 if ok else detail.pop("status", 403), {"ok": ok, **detail})
         elif path == "/status":
             channel = (parse_qs(query).get("channel") or [""])[0]
             if channel not in ("music", "book"):
@@ -1739,6 +1757,22 @@ class Handler(BaseHTTPRequestHandler):
             ok, detail = send_input(str(body.get("text") or ""),
                                     str(body.get("target") or "speaker"))
             self._json(200 if ok else 400, {"ok": ok, "detail": detail})
+        elif path == "/speech/ctl":
+            # The app's speech bar buttons. The caller's ABS bearer, like
+            # /reply, and only the listener's verbs (_APP_SPEECH_ACTIONS).
+            from . import reply as _reply
+            bearer = (self.headers.get("Authorization") or "").removeprefix("Bearer").strip()
+            ok, detail = _reply.may_control_speech(bearer)
+            if not ok:
+                self._json(detail.pop("status", 403), {"ok": False, **detail})
+                return
+            action = str((self._read_json() or {}).get("action") or "")
+            if action not in _APP_SPEECH_ACTIONS:
+                self._json(400, {"ok": False, "error": "unknown action"})
+                return
+            out = _media(ctl_argv("speech", action, 1))
+            print(f"speech/ctl: {action} -> {out.strip()[:120]!r}", file=sys.stderr)
+            self._json(200, {"ok": True, "out": out})
         elif path == "/reply":
             # Reply to a conversation from inside the Audiobookshelf player.
             # Deliberately NOT gated by _authorized: the credential here is the

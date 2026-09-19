@@ -904,6 +904,65 @@ def conversation_for_session(session: str, bearer: str) -> tuple[bool, dict]:
                   "resumable": session_exists(session)}
 
 
+
+# --- what is being said, for the app's mini player ------------------------------
+
+#: `{session: (title, item, at)}` — a reply is polled every couple of seconds
+#: for as long as it plays, and its title and library item do not change while
+#: it does, so asking tmux and ABS once a minute is plenty.
+_NOW_CACHE: dict[str, tuple[str, str | None, float]] = {}
+_NOW_TTL_S = 60.0
+
+
+def _session_title(session: str) -> str:
+    for row in sessions_index():
+        if row.get("session") == session:
+            return str(row.get("title") or "")
+    return ""
+
+
+def speech_now(bearer: str, state: dict) -> tuple[bool, dict]:
+    """`/speech/now`: what is being said right now, named for a person.
+
+    The canvas's speech snapshot (`state`) says whether a voice is live and
+    which session it belongs to; this adds what the app needs to show it
+    anywhere — the conversation's title and its library item on the caller's
+    own server, so a tap can open it. Gated like `/conversation`: titles and
+    sentences are the conversation's, and the ABS bearer is the credential.
+    """
+    user, status = abs_identity(bearer)
+    if not user:
+        return False, _identity_error(status)
+    ok, why = may_reply(user)
+    if not ok:
+        return False, {"error": why, "status": 403}
+    speaking = bool(state.get("speaking"))
+    paused = bool(state.get("paused"))
+    out = {"live": speaking or paused, "speaking": speaking, "paused": paused,
+           "sentence": state.get("sentence") or "", "session": None,
+           "title": "", "item": None,
+           "pos": state.get("pos"), "dur": state.get("dur")}
+    session = str(state.get("session") or "")
+    if out["live"] and _UUID.fullmatch(session):
+        now = time.time()
+        hit = _NOW_CACHE.get(session)
+        if not hit or now - hit[2] > _NOW_TTL_S:
+            item, ready = item_for_session(session, bearer)
+            hit = (_session_title(session), item if ready else None, now)
+            _NOW_CACHE[session] = hit
+        out.update(session=session, title=hit[0], item=hit[1])
+    return True, out
+
+
+def may_control_speech(bearer: str) -> tuple[bool, dict]:
+    """The gate for `/speech/ctl`: the same person who may reply may pause."""
+    user, status = abs_identity(bearer)
+    if not user:
+        return False, _identity_error(status)
+    ok, why = may_reply(user)
+    return (True, {}) if ok else (False, {"error": why, "status": 403})
+
+
 # --- which conversation the phone means -----------------------------------------
 
 _SPINNER = re.compile(r"^[\s\u2700-\u27bf\u2600-\u26ff\u25d0-\u25d3\u2b50*·]+")
