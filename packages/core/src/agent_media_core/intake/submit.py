@@ -3249,6 +3249,48 @@ def submit_event(event: Event,
                           pane=source_pane, source=event.source.value,
                           target=target.name)
             mute_watcher = _MuteDuckWatcher(sink, target, coordinator)
+            # When each sentence started, on the reply's own clock — see
+            # _stamp_start. `origin` is `play_started_at`; `last` the sentence
+            # the previous mark was for, so a re-mark (a pause reflected, a
+            # stall poll) does not move a start that has already happened.
+            mark_clock: dict = {"origin": None, "starts": [], "last": None}
+
+            def _stamp_start(idx: int, live: Optional[dict], prior: dict,
+                             extras: dict) -> None:
+                """`play_started_at` and `clip_starts_s` for a reader's timeline.
+
+                A reader following `started_at` plus summed clip lengths ran
+                ahead of the voice: `started_at` is stamped at submit, before
+                rendering and before the reply waited its turn, and the sum
+                leaves out every gap between clips. With no `play_started_at`
+                on the row, a resume also never took the pause off the clock.
+                Sasonica's bold read that way (2026-09-19).
+                """
+                if prior.get("writer_pid") != os.getpid():
+                    prior = {}          # another reply's row: not our clock
+                now = time.time()
+                if mark_clock["origin"] is None:
+                    mark_clock["origin"] = now
+                else:
+                    # A pause since the last mark moved the origin on the row.
+                    mark_clock["origin"] = float(prior.get("play_started_at")
+                                                 or mark_clock["origin"])
+                starts = mark_clock["starts"]
+                if idx != mark_clock["last"]:
+                    at = elapsed_from_row(prior, mark_clock["origin"]) if starts else 0.0
+                    tp = (live or {}).get("time-pos")
+                    if starts and tp is not None:
+                        # The player says how far into this clip it already is:
+                        # the sentence began that long ago, not at this poll.
+                        # Never before the sentence ahead of it started.
+                        floor = starts[min(idx, len(starts)) - 1] if idx > 0 else 0.0
+                        at = max(floor, at - float(tp))
+                    del starts[idx:]
+                    starts.extend([at] * (idx + 1 - len(starts)))
+                    mark_clock["last"] = idx
+                extras["play_started_at"] = mark_clock["origin"]
+                extras["clip_starts_s"] = list(starts)
+
             # Shared per-clip marker — drives the popup (status bar, current
             # sentence, skip map). Identical for both playback paths below.
             def _mark(idx: int, live: Optional[dict] = None) -> None:
@@ -3300,9 +3342,9 @@ def submit_event(event: Event,
                     extras["live_mute"] = bool(live.get("mute"))
                 # One local read, so a pause stamped between marks is not
                 # thrown away by this one. See carry_pause_stamp.
-                carry_pause_stamp(
-                    (state.get_now_playing("speech") or {}).get("extras") or {},
-                    extras, live is not None)
+                prior = (state.get_now_playing("speech") or {}).get("extras") or {}
+                _stamp_start(idx, live, prior, extras)
+                carry_pause_stamp(prior, extras, live is not None)
                 state.set_now_playing(
                     "speech", uri=str(clip_i), started_at=started_at,
                     target=target.name, extras=extras)
