@@ -350,10 +350,65 @@ def test_sync_live_tags_patches_only_what_changed(tmp_path, monkeypatch):
     monkeypatch.setattr(b, "_abs_items", lambda url, token, lib: items)
     patched = []
     monkeypatch.setattr(b, "_abs_patch", lambda url, token, path, body: patched.append((path, body)))
-    n = b.sync_live_tags(live={"s-live", "s-same"})
+    n = b.sync_tags(live={"s-live", "s-same"}, now=0)
     assert n == 2
     assert patched == [("/api/items/i1/media", {"tags": ["live"]}),
                        ("/api/items/i2/media", {"tags": ["other"]})]   # i3 right already, i4 not a conversation
+
+
+# --- the archived tag -------------------------------------------------------------
+
+DAY = 86400.0
+
+
+def _arch(have, manifest, live=(), now=10 * DAY):
+    from agent_media_core import book_tracks as b
+    return b._archived("s1", list(have), manifest, set(live), now)
+
+
+def test_a_closed_conversation_quiet_for_a_week_is_archived():
+    m = {"turns": [{"at": 1 * DAY}, {"at": 2 * DAY}]}
+    assert _arch([], m) == (["archived"], 2 * DAY)
+
+
+def test_a_recent_or_live_conversation_is_not_archived():
+    m = {"turns": [{"at": 5 * DAY}]}
+    assert _arch([], m) == ([], None)                        # six days quiet
+    assert _arch(["live"], {"turns": [{"at": DAY}]}, live={"s1"}) == (["live"], None)
+
+
+def test_unarchived_by_hand_stays_unarchived():
+    m = {"turns": [{"at": DAY}], "archived_through": DAY}
+    assert _arch([], m) == ([], DAY)
+
+
+def test_a_new_turn_brings_it_back():
+    m = {"turns": [{"at": DAY}, {"at": 9 * DAY}], "archived_through": DAY}
+    assert _arch(["archived"], m) == ([], None)
+
+
+def test_archived_by_hand_is_adopted_at_its_last_turn():
+    m = {"turns": [{"at": 9 * DAY}]}
+    assert _arch(["archived"], m, live={"s1"}) == (["archived"], 9 * DAY)
+
+
+def test_every_server_gets_the_archive(tmp_path, monkeypatch):
+    import json
+    from agent_media_core import book_tracks as b
+    monkeypatch.setattr(b, "state_dir", lambda: tmp_path)
+    d = tmp_path / "book-tracks"
+    d.mkdir()
+    (d / "s1.json").write_text(json.dumps(
+        {"session": "s1", "folder": "/c/p-x/Old one", "turns": [{"at": DAY}]}))
+    item = {"id": "i1", "path": "/conversations/p-x/Old one", "media": {"tags": []}}
+    monkeypatch.setattr(b, "_abs_ready_all", lambda target=None: [
+        ("http://a", "t", [{"id": "lib"}]), ("http://b", "t", [{"id": "lib"}])])
+    monkeypatch.setattr(b, "_abs_items", lambda url, token, lib: [dict(item)])
+    patched = []
+    monkeypatch.setattr(b, "_abs_patch", lambda url, token, path, body: patched.append((url, body)))
+    assert b.sync_tags(live=set(), now=10 * DAY) == 2
+    assert patched == [("http://a", {"tags": ["archived"]}), ("http://b", {"tags": ["archived"]})]
+    assert json.loads((d / "s1.json").read_text())["archived_through"] == DAY
 
 
 def test_live_session_ids_reads_the_registry_for_real(tmp_path, monkeypatch):

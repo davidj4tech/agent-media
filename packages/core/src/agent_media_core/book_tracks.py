@@ -1037,19 +1037,63 @@ def _tags_for(session: str, have: list, live: Optional[set] = None) -> list:
     return tags + [LIVE_TAG] if session in live else tags
 
 
-def sync_live_tags(*, target=None, live: Optional[set] = None) -> int:
+ARCHIVED_TAG = "archived"
+
+
+def _archive_after_s() -> float:
+    try:
+        days = float(os.environ.get("MEDIA_ARCHIVE_AFTER_DAYS") or 7)
+    except ValueError:
+        days = 7.0
+    return days * 86400
+
+
+def _archived(session: str, have: list, manifest: dict, live: set,
+              now: float) -> tuple[list, Optional[float]]:
+    """`have` with the archived tag as it should be, and the manifest's new
+    `archived_through`.
+
+    `archived_through` is the last turn the conversation had when it was
+    archived, and it is what lets the sweep act on edges only, so that it never
+    fights a hand in the app:
+
+    * not live, quiet for a week, and not already archived at this turn →
+      archive it. Unarchive it by hand and it stays that way, because this
+      turn has been archived once.
+    * a turn newer than `archived_through` → it came back, so unarchive it.
+    * archived by hand (tag, no record) → adopt it at its last turn, so a
+      new turn brings it back like any other.
+    """
+    last = max((float(t.get("at") or 0) for t in manifest.get("turns") or []),
+               default=0.0)
+    through = manifest.get("archived_through")
+    tags = [t for t in (have or []) if t != ARCHIVED_TAG]
+    if through is not None and last > float(through):
+        return tags, None
+    if ARCHIVED_TAG in (have or []):
+        return tags + [ARCHIVED_TAG], (last if through is None else through)
+    if (through is None and last and session not in live
+            and now - last >= _archive_after_s()):
+        return tags + [ARCHIVED_TAG], last
+    return tags, through
+
+
+def sync_tags(*, target=None, live: Optional[set] = None,
+              now: Optional[float] = None) -> int:
     """Put the live tag on every conversation with a pane and take it off the
-    rest, on every server. How many items changed.
+    rest, and archive what has been closed and quiet for a week, on every
+    server. How many items changed.
 
     A closed session is not moved out of its series — the series says which
     project it belonged to, which stays true — it just stops being live. The
-    app's Live shelf reads this tag.
+    app's Live shelf reads the live tag, and hides the archived one.
     """
     servers = _abs_ready_all(target)
     if not servers:
         return 0
     live = live_session_ids() if live is None else live
-    by_tail: dict[str, str] = {}
+    now = time.time() if now is None else now
+    by_tail: dict[str, tuple[str, dict]] = {}
     for p in (state_dir() / "book-tracks").glob("*.json"):
         try:
             data = json.loads(p.read_text())
@@ -1057,17 +1101,27 @@ def sync_live_tags(*, target=None, live: Optional[set] = None) -> int:
             continue
         folder = Path(str(data.get("folder") or ""))
         if folder.name:
-            by_tail["/".join(folder.parts[-2:])] = str(data.get("session") or p.stem)
+            by_tail["/".join(folder.parts[-2:])] = (str(data.get("session") or p.stem), data)
+    # Every server decides from the record as the sweep found it: the first
+    # one's write must not make the second see an archive it has not had.
+    before = {tail: dict(m) for tail, (_s, m) in by_tail.items()}
     changed = 0
     for url, token, libs in servers:
         for lib in libs:
             for item in _abs_items(url, token, lib["id"]):
                 tail = "/".join(str(item.get("path", "")).replace("\\", "/").split("/")[-2:])
-                session = by_tail.get(tail)
-                if not session:
+                if tail not in by_tail:
                     continue
+                session, manifest = by_tail[tail]
                 have = list(((item.get("media") or {}).get("tags")) or [])
                 want = _tags_for(session, have, live)
+                want, through = _archived(session, want, before[tail], live, now)
+                if through != manifest.get("archived_through"):
+                    if through is None:
+                        manifest.pop("archived_through", None)
+                    else:
+                        manifest["archived_through"] = through
+                    _write_manifest(session, manifest)
                 if sorted(want) == sorted(have):
                     continue
                 try:

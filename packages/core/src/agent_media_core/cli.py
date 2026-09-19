@@ -5739,9 +5739,9 @@ def cmd_feed(a) -> int:
             # The sweep is also when a session that has ended stops being
             # live: the tag is reconciled for every conversation, whether or
             # not anything grew — a session usually ends without a new turn.
-            n = book_tracks.sync_live_tags()
+            n = book_tracks.sync_tags()
             if n:
-                print(f"live tag: {n} item(s) changed")
+                print(f"live/archived tags: {n} item(s) changed")
         if not grew:
             print("no new turns")
             # Asked about one conversation by name, answer about it anyway:

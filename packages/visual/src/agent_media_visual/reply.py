@@ -1225,7 +1225,7 @@ def _retag(session: str) -> None:
     try:
         from agent_media_core import book_tracks
 
-        threading.Thread(target=book_tracks.sync_live_tags, daemon=True).start()
+        threading.Thread(target=book_tracks.sync_tags, daemon=True).start()
     except Exception:  # noqa: BLE001 — the sweep will get it
         pass
 
