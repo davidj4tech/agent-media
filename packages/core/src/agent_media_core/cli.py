@@ -459,7 +459,11 @@ def _registered_session_for_pane(pane: str) -> Optional[str]:
         with open(path, encoding="utf-8") as fh:
             fields = fh.read().strip().split()
     except OSError:
-        return None
+        # The registry can lose an entry; Claude's own record of the pane
+        # (~/.claude/sessions) cannot be stale the same way.
+        from . import claude_sessions
+
+        return claude_sessions.by_pane().get("%" + pane.lstrip("%"))
     if not fields:
         return None
     sess = fields[0]

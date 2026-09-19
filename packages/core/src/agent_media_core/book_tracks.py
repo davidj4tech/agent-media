@@ -1027,6 +1027,10 @@ def live_session_ids() -> set[str]:
         if len(fields) >= 2 and fields[1].isdigit() and not _pid_alive(int(fields[1])):
             continue
         out.add(fields[0])
+    # Claude's own record, for a pane whose registry entry went missing.
+    from . import claude_sessions
+
+    out.update(sid for pane, sid in claude_sessions.by_pane().items() if pane in panes)
     return out
 
 

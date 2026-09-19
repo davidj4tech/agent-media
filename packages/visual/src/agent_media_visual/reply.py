@@ -295,9 +295,10 @@ def session_for_path(path: str) -> tuple[str | None, str]:
 def live_sessions() -> dict[str, str]:
     """`{session uuid: pane}` for every Claude Code process in a tmux pane.
 
-    Same detection as `claude-resume`, and for the same reason: a session's
-    uuid is in argv when it was resumed, and only in the SessionStart registry
-    when it was started fresh. Driven off live processes either way, so a stale
+    Claude Code's `~/.claude/sessions/<pid>.json` names the session; failing
+    that, the same detection as `claude-resume`: a session's uuid is in argv
+    when it was resumed, and only in the SessionStart registry when it was
+    started fresh. Driven off live processes either way, so a stale
     registry entry cannot resurrect a dead session on a recycled pane.
     """
     reg = Path.home() / ".claude" / "tmux-sessions"
@@ -314,8 +315,14 @@ def live_sessions() -> dict[str, str]:
                      for e in env if e.startswith(b"TMUX_PANE=")), "")
         if not pane:
             continue
-        m = _UUID.search(b" ".join(cmd).decode(errors="replace"))
-        sid = m.group(0) if m else ""
+        # Claude's own record first: it follows /resume and /clear, and it is
+        # there when our pane registry lost the entry (claude_sessions).
+        from agent_media_core import claude_sessions
+
+        sid = claude_sessions.session_for_pid(int(os.path.basename(d))) or ""
+        if not sid:
+            m = _UUID.search(b" ".join(cmd).decode(errors="replace"))
+            sid = m.group(0) if m else ""
         if not sid:
             try:
                 parts = (reg / pane.lstrip("%")).read_text().split()
