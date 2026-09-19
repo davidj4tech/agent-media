@@ -62,11 +62,68 @@ def _command_gist(command: str) -> str:
     setup segments and show the first that does something.
     """
     first = command.strip().splitlines()[0] if command.strip() else ""
+    # A `$(…)` is one word of its segment, not a place to split it: `f=$(ls |
+    # head -1)` split on the pipe left "head -1)" to name the step.
+    while True:
+        folded = re.sub(r"\$\([^()]*\)", "$…", first)
+        if folded == first:
+            break
+        first = folded
     parts = [p.strip() for p in re.split(r"&&|;|\|", first) if p.strip()]
     for part in parts:
         if not _SETUP.match(part):
             return part
     return parts[-1] if parts else ""
+
+
+_READERS = {"cat", "head", "tail", "less", "sed", "awk", "jq", "wc"}
+_SEARCHERS = {"grep", "rg", "ag"}
+_LISTERS = {"ls", "find", "fd", "tree"}
+_SCRIPTS = {"python": "Python", "python3": "Python", "node": "Node", "bash": "shell",
+            "sh": "shell"}
+
+
+def _plain(gist: str) -> str:
+    """The gist of a command in English, when it is a common one, else ''.
+
+    Only a fallback: a Bash call with a description never gets here. But a
+    session that writes none shows its whole step list as `Run sed -n 40,75p
+    mixins/…`, and most of those steps are reading, searching and listing.
+    """
+    import shlex
+
+    try:
+        words = shlex.split(gist)
+    except ValueError:
+        words = gist.split()
+    if not words:
+        return ""
+    prog = os.path.basename(words[0])
+    args = [w for w in words[1:] if not w.startswith("-") and not w.startswith("<")]
+    if prog == "git" and args:
+        sub, rest = args[0], args[1:]
+        if sub == "grep":
+            prog, args = "grep", rest
+        elif sub in ("log", "show", "diff", "status", "blame"):
+            return f"Check git {sub}"
+        else:
+            return ""
+    if prog in _SEARCHERS:
+        return f"Search for {args[0]}" if args else "Search the code"
+    if prog in _READERS:
+        # `sed -n 40,75p file`, `jq .x file`: the file is the last argument.
+        files = [a for a in args if "/" in a or "." in a.lstrip(".")]
+        return f"Read {os.path.basename(files[-1].rstrip('/'))}" if files else ""
+    if prog in _LISTERS:
+        where = os.path.basename(args[0].rstrip("/")) if args else ""
+        return f"List {where}" if where and where not in (".", "~") else "List files"
+    if prog in _SCRIPTS:
+        if args and args[0].endswith((".py", ".js", ".sh")):
+            return f"Run {os.path.basename(args[0])}"
+        return f"Run a {_SCRIPTS[prog]} script"
+    if prog == "pytest":
+        return "Run the tests"
+    return ""
 
 
 def describe(tool: str, args: dict) -> str:
@@ -92,7 +149,8 @@ def describe(tool: str, args: dict) -> str:
     if tool == "Glob":
         return _short(f"Find {args.get('pattern', '')}")
     if tool == "Bash":
-        return _short(f"Run {_command_gist(str(args.get('command') or ''))}", 70)
+        gist = _command_gist(str(args.get("command") or ""))
+        return _short(_plain(gist) or f"Run {gist}", 70)
     if tool == "WebFetch":
         m = re.match(r"https?://([^/]+)", str(args.get("url") or ""))
         return f"Read {m.group(1) if m else 'a web page'}"

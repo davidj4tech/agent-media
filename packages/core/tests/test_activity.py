@@ -20,9 +20,16 @@ def _ev(name, at, **kw):
 
 @pytest.mark.parametrize("tool,args,want", [
     ("Bash", {"command": "ls -la", "description": "List files"}, "List files"),
-    ("Bash", {"command": "ls -la"}, "Run ls -la"),
+    ("Bash", {"command": "ls -la"}, "List files"),
+    ("Bash", {"command": "ls -t ~/.local/state/agent-media/activity"}, "List activity"),
     ("Bash", {"command": "cd ~/x && tok=$(cat f) && git push -q"}, "Run git push -q"),
-    ("Bash", {"command": "cd ~/x; set -a; pytest -q tests | tail -3"}, "Run pytest -q tests"),
+    ("Bash", {"command": "cd ~/x; set -a; pytest -q tests | tail -3"}, "Run the tests"),
+    ("Bash", {"command": "f=$(ls -t | head -1); tail -15 \"$f\""}, "Run tail -15 \"$f\""),
+    ("Bash", {"command": "sed -n 40,75p mixins/bookshelfCards.js"}, "Read bookshelfCards.js"),
+    ("Bash", {"command": "git grep -n \"def _clip_rows\" pkg/cli.py"}, "Search for def _clip_rows"),
+    ("Bash", {"command": "git log --oneline -5 -- a.py"}, "Check git log"),
+    ("Bash", {"command": "python3 - <<'EOF'\nprint(1)\nEOF"}, "Run a Python script"),
+    ("Bash", {"command": "make deploy"}, "Run make deploy"),
     ("Read", {"file_path": "/a/b/canvas.py"}, "Read canvas.py"),
     ("Edit", {"file_path": "/a/SpeechBar.vue"}, "Edit SpeechBar.vue"),
     ("Grep", {"pattern": "speech/now"}, "Search for speech/now"),
