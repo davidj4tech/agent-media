@@ -566,6 +566,17 @@ def test_the_latest_name_wins(tmp_path, monkeypatch):
     assert session_feed.title_for(SESSION, []) == "What it became"
 
 
+def test_a_rename_beats_claudes_own_name(tmp_path, monkeypatch):
+    """/rename writes a `custom-title` record; Claude keeps writing its own
+    `ai-title` afterwards, and the name the person chose still wins."""
+    _jsonl(tmp_path, monkeypatch, [
+        {"type": "user", "message": {"content": "hello"}},
+        {"type": "custom-title", "customTitle": "Collapse series menu item"},
+        {"type": "ai-title", "aiTitle": "Something Claude guessed"},
+    ])
+    assert session_feed.title_for(SESSION, []) == "Collapse series menu item"
+
+
 def test_without_a_name_it_falls_back_to_the_question(tmp_path, monkeypatch):
     _jsonl(tmp_path, monkeypatch, [
         {"type": "user", "message": {"content": "why is the ringer loud"}},

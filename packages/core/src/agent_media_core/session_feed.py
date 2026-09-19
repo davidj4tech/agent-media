@@ -279,6 +279,7 @@ def asked_for(session: str, ts: list[Turn]) -> str:
 def _asked(session: str, ts: list[Turn]) -> str:
     """What to call this conversation.
 
+    **The name it was given with /rename** (a `custom-title` record), else
     **Claude Code's own name for it, when it has one.** The transcript carries
     `ai-title` records — the name shown in the resume list — and a conversation
     called "Calibre speech channel interface" is the one you would look for. The
@@ -295,11 +296,19 @@ def _asked(session: str, ts: list[Turn]) -> str:
     from .conversation import transcript
 
     path = transcript(session)
-    title = prompt = ""
+    title = custom = prompt = ""
     if path is not None:
         try:
             with path.open(errors="replace") as fh:
                 for line in fh:
+                    # A name given with /rename, which beats Claude's own.
+                    if '"custom-title"' in line:
+                        try:
+                            d = json.loads(line)
+                        except ValueError:
+                            continue
+                        custom = (d.get("customTitle") or "").strip() or custom
+                        continue
                     if '"ai-title"' in line:
                         try:
                             d = json.loads(line)
@@ -336,7 +345,7 @@ def _asked(session: str, ts: list[Turn]) -> str:
                     prompt = text
         except OSError as e:
             log.debug("transcript unreadable for %s: %s", session, e)
-    for candidate in (title, prompt, ts[0].title if ts else ""):
+    for candidate in (custom, title, prompt, ts[0].title if ts else ""):
         if candidate:
             return _trim(candidate)
     return f"Conversation {session[:8]}"
