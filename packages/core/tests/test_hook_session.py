@@ -189,7 +189,7 @@ def test_a_typed_prompt_is_recorded_as_a_listener_turn(monkeypatch):
     seen = _capture_record(monkeypatch)
     assert H._handle_user_prompt(
         {"prompt": "  this chat  doesn't\nshow up ", "session_id": "s-1"}) == 0
-    assert seen == [("s-1", "this chat doesn't show up")]
+    assert seen == [("s-1", "this chat doesn't\nshow up")]
 
 
 def test_empties_are_not_conversation(monkeypatch):

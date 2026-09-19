@@ -221,7 +221,8 @@ def _claim_listener_turn(session: str, text: str, now: float,
                     p.unlink()
             except OSError:
                 pass
-        key = hashlib.sha1(f"{session}\n{text}".encode()).hexdigest()[:24]
+        flat = " ".join(text.split())
+        key = hashlib.sha1(f"{session}\n{flat}".encode()).hexdigest()[:24]
         fd = os.open(str(d / key), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
         os.close(fd)
         return True
@@ -246,18 +247,22 @@ def _claim_listener_turn(session: str, text: str, now: float,
         return True
 
 
+def _flat(text) -> str:
+    return " ".join(str(text or "").split())
+
+
 def _session_spoke_since(store, session: str, text: str, since: float) -> bool:
     """Whether anything but `text` was said in this session after `since`."""
     try:
         rows = store.recent_history(sink="speech", limit=50)
     except Exception:  # noqa: BLE001 — no answer, so no evidence of a new turn
         return False
-    label = f"You: {text}"
+    label = _flat(f"You: {text}")
     for row in rows:
         ex = row.get("extras")
         if not isinstance(ex, dict) or ex.get("source_session") != session:
             continue
-        if row.get("text") != label and float(row.get("started_at") or 0) > since:
+        if _flat(row.get("text")) != label and float(row.get("started_at") or 0) > since:
             return True
     return False
 
@@ -274,12 +279,12 @@ def _listener_turn_recently(store, session: str, text: str, now: float) -> bool:
         rows = store.recent_history(sink="speech", limit=50)
     except Exception:  # noqa: BLE001 — a store that cannot answer cannot dedupe
         return False
-    label = f"You: {text}"
+    label = _flat(f"You: {text}")
     for row in rows:  # newest first
         ex = row.get("extras")
         if not isinstance(ex, dict) or ex.get("source_session") != session:
             continue
-        if not ex.get("listener") or row.get("text") != label:
+        if not ex.get("listener") or _flat(row.get("text")) != label:
             return False
         return now - float(row.get("started_at") or 0) <= LISTENER_REPEAT_S
     return False
@@ -295,7 +300,13 @@ def record_listener_turn(session: str, text: str, *, store=None,
     """
     import time as _time
 
-    text = " ".join((text or "").split())
+    # Line breaks kept: a message typed over several lines reads that way in
+    # the transcript. The repeat checks compare flattened copies, because the
+    # canvas types a reply into the terminal on one line and the prompt hook
+    # then sees it without the breaks the reply box recorded.
+    from .intake._text import tidy_lines
+
+    text = tidy_lines(text)
     if not text or not session:
         return False
     from ._paths import cache_dir

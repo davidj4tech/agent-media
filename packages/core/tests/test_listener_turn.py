@@ -124,3 +124,35 @@ def test_another_sessions_reply_does_not_break_a_repeat(tmp_path, monkeypatch):
     now = time.time()
     store = _Store([_reply("s2", "Elsewhere.", now - 1), _row("s1", "y", now - 2)])
     assert book_tracks.record_listener_turn("s1", "y", store=store) is True
+
+
+def test_line_breaks_survive_into_the_turn(tmp_path, monkeypatch):
+    """A reply typed over several lines reads that way in the transcript."""
+    import agent_media_core.render.engines as eng
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+
+    def fake(text, out, **k):
+        Path(out).write_bytes(b"x")
+        return True, ""
+
+    monkeypatch.setattr(eng, "render_text", fake)
+    monkeypatch.setattr(book_tracks, "_ffprobe", lambda p: 1.0)
+    store = _Store([])
+    assert book_tracks.record_listener_turn("s1", "first  line\n\n\n\nsecond\n", store=store)
+    assert store.added[0]["text"] == "You: first line\n\nsecond"
+
+
+def test_a_flattened_copy_is_still_the_same_turn(tmp_path, monkeypatch):
+    """The canvas records the reply box's line breaks; the prompt hook then
+    sees the same words typed on one line. One turn, not two."""
+    import time
+    import agent_media_core.render.engines as eng
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(eng, "render_text", lambda *a, **k: (False, "no"))
+    store = _Store([_row("s1", "one\ntwo", time.time() - 1)])
+    assert book_tracks.record_listener_turn("s1", "one two", store=store) is True
+    now = time.time()
+    assert book_tracks._claim_listener_turn("s2", "a\nb", now) is True
+    assert book_tracks._claim_listener_turn("s2", "a b", now) is False

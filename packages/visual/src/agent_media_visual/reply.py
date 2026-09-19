@@ -1435,7 +1435,8 @@ def reply(item: str, text: str, bearer: str, *, quote: str = "",
     session, err = session_for_item(item, bearer)
     if not session:
         return False, {"error": err, "status": 404}
-    text = " ".join(text.split())
+    # `body` is typed on one line (compose flattens it); `text` is recorded
+    # with the breaks the reply box had, so the transcript keeps them.
     body = compose(text, quote)
 
     if mode == "branch":

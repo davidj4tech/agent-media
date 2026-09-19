@@ -19,6 +19,18 @@ _SYSTEM_BANNER = re.compile(
     re.DOTALL | re.IGNORECASE)
 
 
+def tidy_lines(text: str) -> str:
+    """`text` with its line breaks kept and everything else tidied.
+
+    What someone typed over several lines should read that way in the
+    transcript: spaces collapse within a line, the ends are trimmed, and a run
+    of blank lines becomes one. Comparing two copies of a message is a job
+    for `" ".join(text.split())`, not for this.
+    """
+    lines = [" ".join(ln.split()) for ln in (text or "").splitlines()]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip("\n")
+
+
 def strip_system_blocks(text: str) -> str:
     """The listener's own words, with the harness's asides removed.
 
@@ -32,7 +44,7 @@ def strip_system_blocks(text: str) -> str:
     # opening tag and everything after it; there is no listener text in that.
     out = re.split(r"<(?:task-notification|system-reminder|local-command-caveat)\b",
                    out, maxsplit=1)[0]
-    return " ".join(out.split())
+    return tidy_lines(out)
 
 
 _FENCE_RE = re.compile(r"```[a-zA-Z0-9_-]*")
