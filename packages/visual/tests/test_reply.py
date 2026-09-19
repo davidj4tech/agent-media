@@ -1090,6 +1090,37 @@ def test_close_of_a_session_that_is_not_live_is_a_no_op(monkeypatch, _manager):
     assert ok and d["closed"] is False and d["live"] is False
 
 
+def test_a_draft_survives_the_conversation_being_left(tmp_path, monkeypatch, _manager):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    assert reply.draft_read(SID, "tok")[1]["text"] == ""
+    ok, d = reply.draft_write(SID, "half a thought", 1700.0, "tok")
+    assert ok and d["at"] == 1700.0
+    assert reply.draft_read(SID, "tok")[1] == {"session": SID, "text": "half a thought", "at": 1700.0}
+
+
+def test_sending_drops_the_draft_rather_than_holding_an_empty_one(tmp_path, monkeypatch, _manager):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    reply.draft_write(SID, "half a thought", 1700.0, "tok")
+    reply.draft_write(SID, "", 1800.0, "tok")
+    assert reply.draft_read(SID, "tok")[1]["text"] == ""
+    assert not (tmp_path / "agent-media" / "drafts" / f"{SID}.json").exists()
+
+
+def test_a_draft_keeps_the_writer_clock_and_is_capped(tmp_path, monkeypatch, _manager):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    # Not the server's: the app compares this against its own local copy.
+    ok, d = reply.draft_write(SID, "x" * 9000, "nonsense", "tok")
+    assert ok and len(d["text"]) == reply._DRAFT_LIMIT and d["at"] > 0
+
+
+def test_a_draft_is_gated_like_a_reply(monkeypatch):
+    assert reply.draft_read("../x", "tok")[1]["status"] == 400
+    assert reply.draft_write("../x", "hi", 0, "tok")[1]["status"] == 400
+    monkeypatch.setattr(reply, "abs_identity", lambda b: ({"username": "guest", "type": "user"}, 200))
+    assert reply.draft_read(SID, "tok")[1]["status"] == 403
+    assert reply.draft_write(SID, "hi", 0, "tok")[1]["status"] == 403
+
+
 def test_manage_needs_a_session_id_and_a_permitted_user(monkeypatch):
     assert reply.session_close("../x", "tok")[1]["status"] == 400
     monkeypatch.setattr(reply, "abs_identity", lambda b: ({"username": "guest", "type": "user"}, 200))

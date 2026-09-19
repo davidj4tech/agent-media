@@ -39,6 +39,10 @@ Stdlib-only HTTP server. Endpoints:
   POST /session/resume {"session"} → bring that session back in a tmux
                   window (a reply's revive, without the reply)
   POST /session/close  {"session"} → close the pane it runs in
+  GET  /draft?session=<uuid>   + an Audiobookshelf bearer → what was left
+                  half-typed in that conversation's reply box
+  POST /draft     {"session", "text", "at"?} + an Audiobookshelf bearer →
+                  hold it (empty text drops it)
   POST /focus     {"pane": "%23"} → bring the attached tmux client to a pane
   GET  /healthz   liveness
 
@@ -1384,7 +1388,7 @@ PAGE_ID = hashlib.sha256(PAGE.encode()).hexdigest()[:12]
 # needed it — a native HTTP client is not subject to the same-origin policy.
 _CORS_PATHS = frozenset({
     "/conversation", "/conversation/log", "/conversations", "/item",
-    "/reply", "/ask", "/focus", "/session/resume", "/session/close",
+    "/reply", "/ask", "/focus", "/session/resume", "/session/close", "/draft",
     "/speech/now", "/speech/ctl", "/sessions/state",
 })
 
@@ -1612,6 +1616,12 @@ class Handler(BaseHTTPRequestHandler):
             bearer = (self.headers.get("Authorization") or "").removeprefix("Bearer").strip()
             ok, detail = _reply.session_states(bearer)
             self._json(200 if ok else detail.pop("status", 403), {"ok": ok, **detail})
+        elif path == "/draft":
+            # What the app's reply box was left holding for this session.
+            from . import reply as _reply
+            bearer = (self.headers.get("Authorization") or "").removeprefix("Bearer").strip()
+            ok, detail = _reply.draft_read((parse_qs(query).get("session") or [""])[0], bearer)
+            self._json(200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
         elif path == "/speech":
             # One-shot speech-state peek for outside agents (a voice-mode
             # Claude asking "is the phone talking, and about what?" through
@@ -1916,6 +1926,16 @@ class Handler(BaseHTTPRequestHandler):
             bearer = (self.headers.get("Authorization") or "").removeprefix("Bearer").strip()
             fn = _reply.session_resume if path.endswith("resume") else _reply.session_close
             ok, detail = fn(str(body.get("session") or ""), bearer)
+            self._json(200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+        elif path == "/draft":
+            # Half a reply, held for next time the conversation is opened.
+            # Gated like /reply: it is the same box, before the send.
+            from . import reply as _reply
+            body = self._read_json() or {}
+            bearer = (self.headers.get("Authorization") or "").removeprefix("Bearer").strip()
+            ok, detail = _reply.draft_write(
+                str(body.get("session") or ""), str(body.get("text") or ""),
+                body.get("at"), bearer)
             self._json(200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
         elif path == "/focus":
             # The "opened in %23" link: pull the attached tmux client to a pane.
