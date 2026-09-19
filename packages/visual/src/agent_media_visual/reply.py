@@ -761,6 +761,35 @@ def ask_target() -> tuple[str, str, list[str]]:
     return host, cwd, argv
 
 
+def project_target(project: str) -> tuple[str, str]:
+    """`(tmux session, cwd)` for a fresh session in `project`, or `("", "")`.
+
+    A project is what the library calls a conversation's series: the folder
+    above it, named for the tmux session it ran in (`p-agent-media`). The
+    directory is the cwd of the newest conversation filed there that still
+    has one — a project has no registration of its own, only its history.
+    The window opens in the tmux session of that name; the SessionStart hook
+    would move it there from the cwd anyway.
+    """
+    project = (project or "").strip()
+    if not project:
+        return "", ""
+    rows = []
+    for f in _manifest_dir().glob("*.json"):
+        try:
+            data = json.loads(f.read_text())
+            at = f.stat().st_mtime
+        except (OSError, ValueError):
+            continue
+        if Path(str(data.get("folder") or "")).parent.name == project:
+            rows.append((at, str(data.get("session") or f.stem)))
+    for _at, sid in sorted(rows, reverse=True):
+        cwd = transcript_cwd(sid)
+        if cwd and os.path.isdir(cwd):
+            return project, cwd
+    return "", ""
+
+
 def _settle(pane: str, timeout: float = 5.0) -> None:
     """Wait until the screen in `pane` stops changing (or `timeout` passes).
 
@@ -802,7 +831,7 @@ def _ensure_submitted(pane: str, text: str, timeout: float = 3.0) -> None:
     _tmux(["send-keys", "-t", pane, "Enter"])
 
 
-def ask(text: str, bearer: str, *, quote: str = "") -> tuple[bool, dict]:
+def ask(text: str, bearer: str, *, quote: str = "", project: str = "") -> tuple[bool, dict]:
     """Start a fresh Claude Code session with `text` as its first message.
 
     What the phone's assistant button does. Nothing to resume and no item yet:
@@ -810,6 +839,7 @@ def ask(text: str, bearer: str, *, quote: str = "") -> tuple[bool, dict]:
     listener's turn is shelved against the new session's uuid so the
     conversation appears in the library once its first reply is spoken. The
     app is told the uuid and polls `/conversation?session=` for the item.
+    `project` (a series name) opens it in that project's directory instead.
     """
     from . import canvas
 
@@ -823,6 +853,10 @@ def ask(text: str, bearer: str, *, quote: str = "") -> tuple[bool, dict]:
     if not ok:
         return False, {"error": why, "status": 403}
     host, cwd, flags = ask_target()
+    if project:
+        host, cwd = project_target(project)
+        if not cwd:
+            return False, {"error": f"no directory known for project {project!r}", "status": 404}
     pane, err = open_window("", cwd, resume=False, host=host, flags=flags)
     if err:
         return False, {"error": err, "pane": pane or None}
@@ -1101,7 +1135,8 @@ def _title_of(session: str, index: list[dict] | None = None) -> str:
 
 
 def ask_routed(text: str, bearer: str, *, target: str = "", player_item: str = "",
-               sticky: str = "", parse: bool = True, dry: bool = False) -> tuple[bool, dict]:
+               sticky: str = "", parse: bool = True, dry: bool = False,
+               project: str = "") -> tuple[bool, dict]:
     """The assistant button's words, sent where they belong.
 
     In order: a target the app names outright (`target`, a session uuid from
@@ -1113,6 +1148,7 @@ def ask_routed(text: str, bearer: str, *, target: str = "", player_item: str = "
     for the app to ask. `dry` answers where the words WOULD go and sends
     nothing: the app confirms a guess (a spoken name, the player, the last
     thread) with the listener before committing with an explicit `target`.
+    A fresh session opens in `project` when one is named (see `ask`).
     """
     text = " ".join((text or "").split())
     if not text:
@@ -1159,7 +1195,7 @@ def ask_routed(text: str, bearer: str, *, target: str = "", player_item: str = "
                       "session": session or None, "title": _title_of(session, index) if session else "",
                       "item": item if ready else None, "text": text, "dry": True}
     if not session:
-        ok, detail = ask(text, bearer)
+        ok, detail = ask(text, bearer, project=project)
         if ok:
             detail.update({"mode": "new", "how": how or "default", "title": "", "text": text})
         return ok, detail

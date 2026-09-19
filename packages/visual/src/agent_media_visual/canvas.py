@@ -24,12 +24,14 @@ Stdlib-only HTTP server. Endpoints:
   GET  /conversation?session=<uuid>   + an Audiobookshelf bearer →
                   a session the phone started: its item id once the library
                   has one, and whether it is live
-  POST /ask       {"text", "target"?, "player_item"?, "sticky"?, "parse"?}
+  POST /ask       {"text", "target"?, "player_item"?, "sticky"?, "parse"?, "project"?}
                   + an Audiobookshelf bearer → the assistant button's words,
                   routed: a picked session, a session named in the words
                   ("reply to drones, …"), the player's conversation, the one
                   last spoken to, else a FRESH session in the scratch tmux
-                  session. 300 + candidates when a spoken name is ambiguous.
+                  session — or in `project` (a series name), in the directory
+                  its conversations ran in, 404 if none is known. 300 +
+                  candidates when a spoken name is ambiguous.
   GET  /conversations  + an Audiobookshelf bearer → live sessions and
                   recent conversations, by title (the picker)
   POST /session/resume {"session"} → bring that session back in a tmux
@@ -1827,7 +1829,8 @@ class Handler(BaseHTTPRequestHandler):
                 player_item=str(body.get("player_item") or ""),
                 sticky=str(body.get("sticky") or ""),
                 parse=body.get("parse", True) is not False,
-                dry=body.get("dry") is True)
+                dry=body.get("dry") is True,
+                project=str(body.get("project") or ""))
             status = detail.pop("status", 400)
             if not ok:
                 print(f"ask: refused {status} ({detail.get('error')}) "

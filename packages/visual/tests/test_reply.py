@@ -739,6 +739,46 @@ def test_ask_reports_a_window_that_never_came_up(monkeypatch, _asker):
     assert ok is False and "did not come up" in detail["error"]
 
 
+def test_project_target_is_the_newest_conversation_cwd_still_on_disk(tmp_path, monkeypatch):
+    import os
+    _manifests(tmp_path, monkeypatch, [
+        ("old", "/c/p-agent-media/Old thing"),
+        ("new", "/c/p-agent-media/New thing"),
+        ("gone", "/c/p-agent-media/Moved away"),
+        ("other", "/c/scratch/Elsewhere")])
+    d = tmp_path / "book-tracks"
+    for i, sid in enumerate(("old", "new", "gone", "other")):
+        os.utime(d / f"{sid}.json", (i, i))
+    here = tmp_path / "agent-media"
+    here.mkdir()
+    cwds = {"old": "/nope", "new": str(here), "gone": str(tmp_path / "deleted"), "other": str(tmp_path)}
+    monkeypatch.setattr(reply, "transcript_cwd", lambda s: cwds[s])
+    # "gone" is newest but its directory is not there any more; "new" is next.
+    assert reply.project_target("p-agent-media") == ("p-agent-media", str(here))
+    assert reply.project_target("p-nowhere") == ("", "")
+    assert reply.project_target("  ") == ("", "")
+
+
+def test_ask_in_a_project_opens_there_with_the_ask_flags(monkeypatch, _asker):
+    from agent_media_visual import canvas
+    opened = []
+    monkeypatch.setattr(reply, "project_target", lambda p: ("p-x", "/home/ryer/projects/x") if p == "p-x" else ("", ""))
+    monkeypatch.setattr(reply, "open_window",
+                        lambda s, cwd, *, resume, host="", flags=(): opened.append((cwd, host, list(flags))) or ("%9", ""))
+    monkeypatch.setattr(reply, "session_of_pane", lambda p, timeout=10.0: "")
+    monkeypatch.setattr(canvas, "_send_to_pane", lambda p, t: "")
+    ok, detail = reply.ask("hi", "tok", project="p-x")
+    assert ok and detail["tmux"] == "p-x"
+    assert opened == [("/home/ryer/projects/x", "p-x", ["--yolo"])]
+
+
+def test_ask_in_an_unknown_project_opens_nothing(monkeypatch, _asker):
+    monkeypatch.setattr(reply, "project_target", lambda p: ("", ""))
+    monkeypatch.setattr(reply, "open_window", lambda *a, **k: pytest.fail("opened"))
+    ok, detail = reply.ask("hi", "tok", project="p-gone")
+    assert ok is False and detail["status"] == 404 and "p-gone" in detail["error"]
+
+
 def test_conversation_for_session_waits_for_the_item_and_its_tracks(tmp_path, monkeypatch):
     sid = "11111111-2222-3333-4444-555555555555"
     monkeypatch.setattr(reply, "abs_identity", lambda b: ({"username": "d", "type": "root"}, 200))
@@ -966,6 +1006,13 @@ def test_routed_ask_sends_nothing_when_the_name_is_ambiguous(_router):
 def test_routed_ask_target_new_forces_a_fresh_session(_router):
     ok, d = reply.ask_routed("reply to digital assistant, hi", "tok", target="new", sticky="cccccccc-1111-2222-3333-444444444444")
     assert d["mode"] == "new" and d["how"] == "asked" and _router == {"fresh": "reply to digital assistant, hi"}
+
+
+def test_routed_ask_passes_the_project_to_a_fresh_session(_router, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(reply, "ask", lambda text, bearer, **k: seen.update(k) or (True, {"session": "new-1"}))
+    ok, d = reply.ask_routed("hi", "tok", target="new", project="p-x")
+    assert ok and d["mode"] == "new" and seen == {"project": "p-x"}
 
 
 def test_routed_ask_a_bare_name_switches_and_sends_nothing(_router):
