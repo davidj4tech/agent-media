@@ -458,12 +458,15 @@ def suggestion_for(session: str, pane: str, last_key: str | None = None) -> str:
     ghost = ghost_prompt(pane) if pane else ""
     if ghost and not ghost.endswith("…"):
         return ghost
+    # A cut ghost is never offered: tapping it put the "…" line in the box.
+    # The follow-up is written a few seconds after the reply lands, and the
+    # app polls, so an empty moment is followed by the whole line.
     fu = _followup(session)
     if not fu:
-        return ghost
+        return ""
     if last_key is not None and (fu.get("key") or "") != (last_key or ""):
-        return ghost
-    return str(fu.get("text") or "") or ghost
+        return ""
+    return str(fu.get("text") or "")
 
 
 # --- reviving a session that has ended -----------------------------------------

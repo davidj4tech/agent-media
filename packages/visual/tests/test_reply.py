@@ -861,8 +861,12 @@ def test_a_truncated_ghost_gives_way_to_the_followup(monkeypatch):
     monkeypatch.setattr(reply, "ghost_prompt", lambda pane: "enable the working event …")
     monkeypatch.setattr(reply, "_followup", lambda s: {"text": "enable the working event hook", "key": "k1"})
     assert reply.suggestion_for("sess-1", "%1", "k1") == "enable the working event hook"
-    # ...but not one written for an earlier reply
-    assert reply.suggestion_for("sess-1", "%1", "k2") == "enable the working event …"
+    # ...but not one written for an earlier reply, and never the cut ghost:
+    # the right follow-up lands a few seconds later
+    assert reply.suggestion_for("sess-1", "%1", "k2") == ""
+    monkeypatch.setattr(reply, "_followup", lambda s: None)
+    assert reply.suggestion_for("sess-1", "%1", "k1") == ""
+    monkeypatch.setattr(reply, "_followup", lambda s: {"text": "enable the working event hook", "key": "k1"})
     # ...and the /conversation route, with no log in hand, takes it anyway
     assert reply.suggestion_for("sess-1", "%1") == "enable the working event hook"
 
