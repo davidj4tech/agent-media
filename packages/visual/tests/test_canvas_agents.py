@@ -54,3 +54,24 @@ def test_codex_hook_review_is_not_a_composer():
 › 1. Review hooks
 """
     assert canvas._classify_agent(cap, "codex") == "approval"
+
+
+# A phone-width tmux window truncates Claude Code's footer.
+NARROW_WORKING = """✽ Gitifying… (thought for 7s)
+  ⎿  Tip: Run /install-github-app
+──────────────────────────────────
+❯
+──────────────────────────────────
+  ⏵⏵ bypass permissions on  · e…
+"""
+NARROW_IDLE = """  ⎿  Tip: Run /install-github-app
+──────────────────────────────────
+❯
+──────────────────────────────────
+  ⏵⏵ bypass permissions on
+"""
+
+
+def test_a_narrow_pane_still_reads_as_working():
+    assert canvas._classify_agent(NARROW_WORKING, "claude") == "working"
+    assert canvas._classify_agent(NARROW_IDLE, "claude") == "input"

@@ -479,7 +479,11 @@ def _classify_cc(pane: str) -> "str | None":
         return None
     if re.search(r"❯ *[0-9]+\.|Do you want to |Yes, (and|allow|proceed)", pane):
         return "approval"
-    if re.search(r"· [↑↓] [0-9.]+k? tokens|esc to interrupt|esc…", pane):
+    # A phone-width pane cuts the footer's "esc to interrupt" down to "· e…",
+    # and a session hard at work then read as one waiting on you — green on
+    # the phone's shelf. The spinner line ("✽ Gitifying… (thought for 7s)")
+    # says the same thing and survives any width.
+    if re.search(r"· [↑↓] [0-9.]+k? tokens|esc to interrupt|·\s*es?c?…|\(thought for ", pane):
         return "working"
     return "input"
 
