@@ -731,6 +731,11 @@ def _live_turn(session: str) -> Optional[dict]:
     # the way the sentence loop reads it (intake.submit.elapsed_from_row):
     # from `play_started_at`, frozen at `paused_at` while paused.
     offsets = [float(x) for x in (ex.get("clip_offsets_s") or [])]
+    if not offsets and ex.get("clip_starts_s"):
+        # The streaming lane: when each sentence was actually sent, which only
+        # runs as far as the one playing. Truer than summed durations, which
+        # count from submit and leave out the gaps between clips.
+        offsets = [float(x) for x in ex["clip_starts_s"]]
     if not offsets and ex.get("clip_durations_s"):
         acc = 0.0
         for d in ex.get("clip_durations_s") or []:

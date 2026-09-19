@@ -3759,6 +3759,15 @@ def submit_stream(sentences,
             seq=started_at)
         i = 0
         nav_jump = False
+        # When each sentence was sent to the player, on the reply's own clock
+        # (`play_started_at`, which a pause pushes forward). A reader follows
+        # the voice with these rather than with `started_at` plus summed clip
+        # lengths: `started_at` is stamped at submit, before the first clip is
+        # even rendered or has waited its turn, and the sum leaves out the gap
+        # between one clip ending and the next being sent. Both put Sasonica's
+        # bold ahead of the voice (2026-09-19).
+        play_origin: Optional[float] = None
+        clip_starts: list[float] = []
         try:
             while True:
                 # Superseded by a later URGENT in this session — drop the rest
@@ -3818,6 +3827,28 @@ def submit_stream(sentences,
 
                 offset = sum(durations.get(k, 0.0) for k in range(i))
                 total = sum(durations.values())  # grows as more clips render
+                prior = (state.get_now_playing("speech") or {}).get("extras") or {}
+                if prior.get("writer_pid") != os.getpid():
+                    # Another reply's row (the one before, or one that took
+                    # the voice while this one yielded): its origin and pause
+                    # stamp are not this reply's.
+                    prior = {}
+                now = time.time()
+                if play_origin is None:
+                    play_origin = now
+                else:
+                    # A pause since the last clip moved the origin on the row;
+                    # that moved origin is the one that is true now.
+                    play_origin = float(prior.get("play_started_at") or play_origin)
+                heard_at = elapsed_from_row(prior, play_origin) if clip_starts else 0.0
+                # Sentence i starts now. A jump back forgets the starts after
+                # it; a jump forward gives the skipped ones this same start, so
+                # the list stays in sentence order and never runs backwards.
+                del clip_starts[i:]
+                clip_starts.extend([heard_at] * (i + 1 - len(clip_starts)))
+                stream_extras = {"play_started_at": play_origin,
+                                 "clip_starts_s": list(clip_starts)}
+                carry_pause_stamp(prior, stream_extras, False)
                 state.set_now_playing(
                     "speech", uri=str(clip_path), started_at=started_at,
                     target=target.name,
@@ -3843,6 +3874,7 @@ def submit_stream(sentences,
                             "clip_durations_s": [durations.get(k, 0.0)
                                                  for k in range(len(paths))],
                             "streaming": True,
+                            **stream_extras,
                             "writer_pid": os.getpid()})
                 try:
                     sink.play(str(clip_path), target, reset_state=(i == 0))
