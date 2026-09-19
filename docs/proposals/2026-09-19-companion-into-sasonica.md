@@ -140,6 +140,16 @@ gets the audio.
   already blocked one on p8a). Also, don't use the Audiobookshelf name
   anywhere in store listings; the rename was the right call.
 
+## Decided: how Sasonica earns
+
+2026-09-19. **One app. Free, with an optional supporter purchase or
+donations, and the money from a hosted server tier.** No ads: people listen
+with the screen off, audio ads would interrupt the book, an ad tracker next to
+assistant conversations and mic detection is a trust problem, and the ad SDK
+is proprietary code in a GPL app that anyone can strip out. A paid Play
+listing works too (Conversations, OsmAnd+), but the value is on the server,
+which GPL-3.0 doesn't reach.
+
 ## Open questions
 
 - Is keeping the companion's features closed-able worth an extra app?
