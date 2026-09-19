@@ -186,7 +186,8 @@ LISTENER_VOICE = "en-AU-WilliamNeural"
 LISTENER_REPEAT_S = 120.0
 
 
-def _claim_listener_turn(session: str, text: str, now: float) -> bool:
+def _claim_listener_turn(session: str, text: str, now: float,
+                         store=None) -> bool:
     """Claim `text` for this session; False if someone already has.
 
     The history check below is not enough on its own: the two recorders start
@@ -211,6 +212,19 @@ def _claim_listener_turn(session: str, text: str, now: float) -> bool:
         os.close(fd)
         return True
     except FileExistsError:
+        # Held — but a claim from before the session last spoke belongs to the
+        # earlier turn. "y", a reply, "y" again is two answers, not a repeat.
+        claim = d / key
+        try:
+            since = claim.stat().st_mtime
+        except OSError:
+            return False
+        if store is not None and _session_spoke_since(store, session, text, since):
+            try:
+                os.utime(claim, (now, now))
+            except OSError:
+                pass
+            return True
         return False
     except OSError:
         # A state dir that cannot take a file cannot dedupe; the history check
@@ -218,21 +232,42 @@ def _claim_listener_turn(session: str, text: str, now: float) -> bool:
         return True
 
 
+def _session_spoke_since(store, session: str, text: str, since: float) -> bool:
+    """Whether anything but `text` was said in this session after `since`."""
+    try:
+        rows = store.recent_history(sink="speech", limit=50)
+    except Exception:  # noqa: BLE001 — no answer, so no evidence of a new turn
+        return False
+    label = f"You: {text}"
+    for row in rows:
+        ex = row.get("extras")
+        if not isinstance(ex, dict) or ex.get("source_session") != session:
+            continue
+        if row.get("text") != label and float(row.get("started_at") or 0) > since:
+            return True
+    return False
+
+
 def _listener_turn_recently(store, session: str, text: str, now: float) -> bool:
-    """Whether `text` was already recorded as this session's listener turn."""
+    """Whether `text` was already recorded as this session's listener turn.
+
+    Only the latest thing said in the session counts. The repeat this catches
+    — the canvas and the prompt hook recording one reply — arrives with
+    nothing in between; the same short answer given twice ("y", then "y" to
+    the next question) has the assistant's reply between, and is a new turn.
+    """
     try:
         rows = store.recent_history(sink="speech", limit=50)
     except Exception:  # noqa: BLE001 — a store that cannot answer cannot dedupe
         return False
     label = f"You: {text}"
-    for row in rows:
+    for row in rows:  # newest first
         ex = row.get("extras")
-        if not isinstance(ex, dict) or not ex.get("listener"):
+        if not isinstance(ex, dict) or ex.get("source_session") != session:
             continue
-        if ex.get("source_session") != session or row.get("text") != label:
-            continue
-        if now - float(row.get("started_at") or 0) <= LISTENER_REPEAT_S:
-            return True
+        if not ex.get("listener") or row.get("text") != label:
+            return False
+        return now - float(row.get("started_at") or 0) <= LISTENER_REPEAT_S
     return False
 
 
@@ -263,7 +298,7 @@ def record_listener_turn(session: str, text: str, *, store=None,
     # minutes: already a turn, and reported as one.
     if _listener_turn_recently(st, session, text, at):
         return True
-    if not _claim_listener_turn(session, text, at):
+    if not _claim_listener_turn(session, text, at, st):
         return True
     d = cache_dir() / "audio"
     try:

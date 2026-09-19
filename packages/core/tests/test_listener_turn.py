@@ -1,5 +1,6 @@
 """The listener's typed reply becomes a turn in the conversation."""
 import json
+import os
 from pathlib import Path
 
 from agent_media_core import book_tracks
@@ -7,6 +8,9 @@ from agent_media_core import book_tracks
 
 def test_render_failure_records_nothing(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    # Or the claim lands in the real state dir, and a rerun inside
+    # LISTENER_REPEAT_S finds it and calls "hello" a repeat.
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setattr(book_tracks, "render_text", None, raising=False)
     import agent_media_core.render.engines as eng
     monkeypatch.setattr(eng, "render_text", lambda *a, **k: (False, "no engine"))
@@ -86,3 +90,37 @@ def test_a_stale_claim_is_swept(tmp_path, monkeypatch):
     for p in d.iterdir():
         os.utime(p, (now - 400, now - 400))
     assert book_tracks._claim_listener_turn("s1", "hello", now) is True
+
+
+def _reply(session, text, at):
+    return {"text": text, "started_at": at,
+            "extras": {"source_session": session}}
+
+
+def test_the_same_answer_after_a_reply_is_a_new_turn(tmp_path, monkeypatch):
+    """"y", the assistant answers, "y" again: two turns, however quick."""
+    import time
+    import agent_media_core.render.engines as eng
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(eng, "render_text", lambda *a, **k: (False, "no"))
+    now = time.time()
+    # The first "y" claimed and recorded; then the reply was spoken.
+    assert book_tracks._claim_listener_turn("s1", "y", now - 60) is True
+    d = tmp_path / "state" / "agent-media" / "listener-claims"
+    for p in d.iterdir():
+        os.utime(p, (now - 60, now - 60))
+    store = _Store([_reply("s1", "Done, and pushed.", now - 30),
+                    _row("s1", "y", now - 60)])
+    # Not a repeat, so it goes on to render — and the failed render says False.
+    assert book_tracks.record_listener_turn("s1", "y", store=store) is False
+
+
+def test_another_sessions_reply_does_not_break_a_repeat(tmp_path, monkeypatch):
+    import time
+    import agent_media_core.render.engines as eng
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    monkeypatch.setattr(eng, "render_text", lambda *a, **k: (False, "no"))
+    now = time.time()
+    store = _Store([_reply("s2", "Elsewhere.", now - 1), _row("s1", "y", now - 2)])
+    assert book_tracks.record_listener_turn("s1", "y", store=store) is True
