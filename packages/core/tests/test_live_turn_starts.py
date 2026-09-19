@@ -39,3 +39,13 @@ def test_starts_are_the_timeline_when_present(monkeypatch):
 def test_durations_still_serve_without_starts(monkeypatch):
     _row(monkeypatch, {"clip_durations_s": [2.0, 3.0]}, started_at=time.time())
     assert book_tracks._live_turn(SID)["offsets"] == [0.0, 2.0]
+
+
+def test_sentences_still_to_come_are_predicted(monkeypatch):
+    now = time.time()
+    _row(monkeypatch, {"clip_sentences": ["One.", "Two.", "Three.", "Four."],
+                       "clip_durations_s": [2.0, 3.0, 4.0, 1.0],
+                       "clip_starts_s": [0.0, 2.5],
+                       "play_started_at": now - 3.0}, started_at=now - 9.0)
+    # Measured for the two begun; the rest follow on from the last one.
+    assert book_tracks._live_turn(SID)["offsets"] == [0.0, 2.5, 5.5, 9.5]

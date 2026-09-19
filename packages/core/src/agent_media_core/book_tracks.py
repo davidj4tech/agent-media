@@ -732,10 +732,18 @@ def _live_turn(session: str) -> Optional[dict]:
     # from `play_started_at`, frozen at `paused_at` while paused.
     offsets = [float(x) for x in (ex.get("clip_offsets_s") or [])]
     if not offsets and ex.get("clip_starts_s"):
-        # The streaming lane: when each sentence was actually sent, which only
-        # runs as far as the one playing. Truer than summed durations, which
-        # count from submit and leave out the gaps between clips.
+        # When each sentence actually started, measured as the reply plays —
+        # truer than summed durations, which count from submit and leave out
+        # the gaps between clips. But measured starts only run as far as the
+        # sentence playing, and a reader that waits to be told the next one
+        # has begun moves a beat behind the voice at every boundary. So the
+        # ones still to come are predicted from the last measured start plus
+        # the clip lengths in between, and each new measurement corrects them.
         offsets = [float(x) for x in ex["clip_starts_s"]]
+        durations = [float(d or 0) for d in (ex.get("clip_durations_s") or [])]
+        n = len(ex.get("clip_sentences") or [])
+        while offsets and len(offsets) < n and len(offsets) <= len(durations):
+            offsets.append(offsets[-1] + durations[len(offsets) - 1])
     if not offsets and ex.get("clip_durations_s"):
         acc = 0.0
         for d in ex.get("clip_durations_s") or []:
