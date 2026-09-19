@@ -1339,6 +1339,7 @@ _CORS_PATHS = frozenset({
 #: listener's, and a listener pauses, skips and stops — the popup's other keys
 #: (mute a pane, focus tmux, open URLs) are the desk's.
 _APP_SPEECH_ACTIONS = frozenset({"toggle", "skip-", "skip+", "jump-end"})
+_SPEECH_NOW_SEEN: set[str] = set()
 
 # Long enough that a chat page's polling is not preceded by a preflight every
 # time; short enough that a change here is picked up the same day.
@@ -1552,6 +1553,13 @@ class Handler(BaseHTTPRequestHandler):
             from . import reply as _reply
             bearer = (self.headers.get("Authorization") or "").removeprefix("Bearer").strip()
             ok, detail = _reply.speech_now(bearer, speech_state())
+            # Polled every few seconds, so not every request: a refusal, and
+            # the first answer each device gets, are what tell "the bar is
+            # asking and being turned away" from "the bar never asked".
+            who = self.client_address[0]
+            if not ok or who not in _SPEECH_NOW_SEEN:
+                _SPEECH_NOW_SEEN.add(who)
+                print(f"speech/now: {who} -> {'ok' if ok else detail}", file=sys.stderr)
             self._json(200 if ok else detail.pop("status", 403), {"ok": ok, **detail})
         elif path == "/status":
             channel = (parse_qs(query).get("channel") or [""])[0]
