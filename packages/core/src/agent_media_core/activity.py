@@ -34,7 +34,11 @@ KEEP_LINES = 2000
 MAX_STEPS = 80
 _UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 #: Tools that are bookkeeping, not work anyone would want listed.
-_QUIET = {"TodoWrite", "ToolSearch", "TaskOutput", "BashOutput"}
+_QUIET = {"TodoWrite", "ToolSearch", "TaskOutput", "BashOutput", "update_plan"}
+#: Codex's and pi's names for the same tools.
+_ALIASES = {"bash": "Bash", "shell": "Bash", "exec_command": "Bash", "local_shell": "Bash",
+            "read": "Read", "edit": "Edit", "write": "Write", "grep": "Grep",
+            "find": "Glob", "ls": "LS", "web_search": "WebSearch"}
 
 
 def activity_dir() -> Path:
@@ -131,6 +135,19 @@ def describe(tool: str, args: dict) -> str:
     if tool in _QUIET:
         return ""
     args = args if isinstance(args, dict) else {}
+    # pi's tools are lower-case, Codex's shell goes by several names and may
+    # hand its command over as argv (`["bash", "-lc", "…"]`).
+    tool = _ALIASES.get(tool, tool)
+    if tool == "Bash" and isinstance(args.get("command"), list):
+        args = {**args, "command": str((args["command"] or [""])[-1])}
+    if tool == "Read" and not args.get("file_path") and args.get("path"):
+        args = {**args, "file_path": args["path"]}
+    if tool in ("Edit", "Write") and not args.get("file_path") and args.get("path"):
+        args = {**args, "file_path": args["path"]}
+    if tool == "apply_patch":
+        files = re.findall(r"^\*\*\* (?:Update|Add|Delete) File: (.+)$",
+                           str(args.get("input") or args.get("patch") or args.get("command") or ""), re.M)
+        return f"Edit {os.path.basename(files[0])}" if len(files) == 1 else "Edit files"
     # Whatever the caller already wrote for a person wins: Bash and Agent
     # calls carry a description written to be read in exactly this place.
     if args.get("description"):
@@ -146,6 +163,9 @@ def describe(tool: str, args: dict) -> str:
         return f"Edit {name('notebook_path')}"
     if tool == "Grep":
         return _short(f"Search for {args.get('pattern', '')}")
+    if tool == "LS":
+        where = os.path.basename(str(args.get("path") or "").rstrip("/"))
+        return f"List {where}" if where and where not in (".", "~") else "List files"
     if tool == "Glob":
         return _short(f"Find {args.get('pattern', '')}")
     if tool == "Bash":

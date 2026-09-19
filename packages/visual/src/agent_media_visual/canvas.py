@@ -24,7 +24,7 @@ Stdlib-only HTTP server. Endpoints:
   GET  /conversation?session=<uuid>   + an Audiobookshelf bearer →
                   a session the phone started: its item id once the library
                   has one, and whether it is live
-  POST /ask       {"text", "target"?, "player_item"?, "sticky"?, "parse"?, "project"?}
+  POST /ask       {"text", "target"?, "player_item"?, "sticky"?, "parse"?, "project"?, "agent"?}
                   + an Audiobookshelf bearer → the assistant button's words,
                   routed: a picked session, a session named in the words
                   ("reply to drones, …"), the player's conversation, the one
@@ -484,6 +484,39 @@ def _classify_cc(pane: str) -> "str | None":
     return "input"
 
 
+#: What each coding agent's pane reports as its command. Codex and pi hold
+#: conversations the phone can reach too (see agent_media_core.harnesses).
+AGENT_COMMANDS = ("claude", "codex", "pi")
+
+
+def _classify_agent(pane: str, agent: str = "claude") -> "str | None":
+    """`_classify_cc` for any agent: working / input / approval, or None when
+    the capture does not look like that agent's TUI (not painted yet).
+
+    Codex marks a turn with "esc to interrupt" as Claude does, its composer
+    with `›`, and asks before a command with "Yes, proceed"; pi has a
+    "Working..." spinner, an editor boxed by two rules, and no approvals.
+    """
+    if agent == "codex":
+        # Changed hooks.json holds the whole TUI on a trust prompt until
+        # someone at the desk answers it.
+        if re.search(r"Would you like to (?:run|make|apply) |Yes, proceed|Hooks need review", pane):
+            return "approval"
+        if re.search(r"esc to interrupt|esc…|Working \(", pane):
+            return "working"
+        if re.search(r"^\s*› ", pane, re.M):
+            return "input"
+        return None
+    if agent == "pi":
+        # The editor is a box of two full-width rules near the bottom; the
+        # footer under it is cut short on a narrow pane, so it is no marker.
+        tail = pane.rstrip("\n").splitlines()[-14:]
+        if sum(1 for ln in tail if re.fullmatch(r"\s*─{8,}\s*", ln)) < 2:
+            return None
+        return "working" if re.search(r"Working\.\.\.", pane) else "input"
+    return _classify_cc(pane)
+
+
 def _tmux_cc_panes() -> list[dict]:
     """Auto-discover Claude Code across ALL tmux panes (not just each session's
     active one — a session can hold several agents in different windows),
@@ -501,7 +534,7 @@ def _tmux_cc_panes() -> list[dict]:
         pane_id, cmd, sess, win, cwd = f[:5]
         # Claude Code panes report `claude` as their command — a cheap, exact
         # filter (no need to capture shells/editors). Skip amux-managed ones.
-        if not pane_id or cmd != "claude" or sess.startswith("amux-"):
+        if not pane_id or cmd not in AGENT_COMMANDS or sess.startswith("amux-"):
             continue
         cap = _strip_ansi(_run(["tmux", "capture-pane", "-t", pane_id,
                                 "-p", "-S", "-40"]))
@@ -509,7 +542,8 @@ def _tmux_cc_panes() -> list[dict]:
                         if ln.strip()), "")
         agents.append({"name": (win if win and win != sess else sess),
                        "session": sess,
-                       "state": _classify_cc(cap) or "input",  # cmd=claude ⇒ CC
+                       "state": _classify_agent(cap, cmd) or "input",
+                       "agent": cmd,
                        "dir": cwd, "preview": preview,
                        "source": "tmux", "pane": pane_id})
     return agents
@@ -728,7 +762,7 @@ def send_input(text: str, target: str) -> tuple[bool, str]:
         # directly, same literal-then-Enter path as `amux send`. The target is
         # a pane id; only genuine `claude` panes are valid — typing text+Enter
         # into a bare shell pane would be host command execution, so validate
-        # against _tmux_cc_panes() (which already filters cmd=="claude").
+        # against _tmux_cc_panes() (which already filters to agent panes).
         pane = target[len("tmux:"):]
         if pane not in {p["pane"] for p in _tmux_cc_panes()}:
             return False, f"not a live claude pane: {pane!r}"
@@ -1862,6 +1896,7 @@ class Handler(BaseHTTPRequestHandler):
                 sticky=str(body.get("sticky") or ""),
                 parse=body.get("parse", True) is not False,
                 dry=body.get("dry") is True,
+                agent=str(body.get("agent") or ""),
                 project=str(body.get("project") or ""))
             status = detail.pop("status", 400)
             if not ok:

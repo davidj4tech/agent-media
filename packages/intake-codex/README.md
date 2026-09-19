@@ -24,4 +24,28 @@ error without speaking its contents. With no arguments, plain-text stdin is
 still supported. Both paths use the shared speech pipeline and `CODEX_TTS_*`
 settings.
 
+A reply that is a bare JSON object is not spoken: Codex names each thread
+with a hidden turn that answers `{"title": "…"}`.
+
+## Prompts and steps (hooks)
+
+For the phone's transcript to show what you typed, and its step list what
+Codex is doing, add these to `~/.codex/hooks.json` (the same events Claude
+Code's hooks send):
+
+```json
+{"hooks": {
+  "UserPromptSubmit": [{"hooks": [{"type": "command", "timeout": 10,
+    "command": "/path/to/.venv/bin/media-hook-codex event"}]}],
+  "PreToolUse": [{"hooks": [{"type": "command", "timeout": 5,
+    "command": "python3 -I /path/to/agent_media_core/activity.py"}]}],
+  "Stop": [{"hooks": [{"type": "command", "timeout": 5,
+    "command": "python3 -I /path/to/agent_media_core/activity.py"}]}]
+}}
+```
+
+Codex asks once, at the desk, to trust new or changed hooks ("Hooks need
+review"). Until someone answers, a session the phone opens waits on that
+prompt and nothing is typed into it.
+
 See the core repo's `docs/reference/extensions.md` (§2 Intake adapters).

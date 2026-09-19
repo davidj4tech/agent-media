@@ -199,7 +199,7 @@ def _allowed(monkeypatch):
     # tmp-dir monkeypatching — and "sess-1" duly appeared in the real library as
     # a conversation called "You: hi". Tests that care about it override this.
     monkeypatch.setattr(reply, "_record_turn", lambda s, t, p="": None)
-    monkeypatch.setattr(reply, "_ensure_submitted", lambda p, t, timeout=3.0: None)
+    monkeypatch.setattr(reply, "_ensure_submitted", lambda p, t, timeout=3.0, agent="claude": None)
     monkeypatch.setattr(reply, "abs_identity", lambda b: ({"username": "d", "type": "root"}, 200))
     monkeypatch.delenv("MEDIA_REPLY_ROOT", raising=False)
     monkeypatch.setattr(reply, "session_for_item", lambda *a, **k: ("sess-1", ""))
@@ -224,7 +224,7 @@ def test_a_dead_session_is_revived_in_a_window(monkeypatch, _allowed):
     from agent_media_visual import canvas
     opened, sent = [], []
 
-    def fake_open(session, cwd, *, resume):
+    def fake_open(session, cwd, *, resume, agent="claude"):
         opened.append((session, cwd, resume))
         return "%9", ""
 
@@ -260,7 +260,7 @@ def test_branch_never_resumes_and_seeds_a_fresh_session(monkeypatch, _allowed):
     opened, sent = [], []
     monkeypatch.setattr(reply, "live_sessions", lambda: {"sess-1": "%7"})
     monkeypatch.setattr(reply, "open_window",
-                        lambda s, cwd, *, resume: opened.append(resume) or ("%9", ""))
+                        lambda s, cwd, *, resume, agent="claude": opened.append(resume) or ("%9", ""))
     monkeypatch.setattr(canvas, "_send_to_pane", lambda p, t: sent.append(t) or "")
     ok, detail = reply.reply("item1", "go deeper", "tok", quote="a turn", mode="branch")
     assert ok is True and detail["branched"] is True
@@ -274,7 +274,7 @@ def test_focus_refuses_a_pane_that_is_not_claude(monkeypatch):
     from agent_media_visual import canvas
     monkeypatch.setattr(canvas, "_tmux_cc_panes", lambda: [{"pane": "%7"}])
     ok, why = reply.focus("%3")
-    assert ok is False and "not a live claude pane" in why
+    assert ok is False and "not a live agent pane" in why
 
 
 def test_focus_walks_the_client_to_the_pane(monkeypatch):
@@ -614,15 +614,16 @@ def test_open_window_targets_the_host_and_passes_flags(monkeypatch):
 
     monkeypatch.setattr(reply, "_tmux", fake_tmux)
     monkeypatch.setattr(reply, "ensure_host", lambda h, c: True)
-    monkeypatch.setattr(reply, "pane_ready", lambda p: True)
-    monkeypatch.setattr(reply, "_claude_bin", lambda: "/home/ryer/.local/bin/claude")
+    monkeypatch.setattr(reply, "pane_ready", lambda p, agent="claude": True)
+    monkeypatch.setattr(reply, "_claude_bin", lambda name="claude": "/home/ryer/.local/bin/claude")
     monkeypatch.setattr(reply, "attached_session", lambda: pytest.fail("host was given"))
     pane, err = reply.open_window("", "/home/ryer/scratch", resume=False,
                                   host="amux-scratch", flags=["--dangerously-skip-permissions"])
     assert (pane, err) == ("%4", "")
     nw = next(c for c in calls if c[0] == "new-window")
     assert nw[nw.index("-t") + 1] == "amux-scratch:"
-    assert nw[-1] == "exec env -u ANTHROPIC_API_KEY /home/ryer/.local/bin/claude --dangerously-skip-permissions"
+    assert nw[-1] == ('exec env -u ANTHROPIC_API_KEY PATH=/home/ryer/.local/bin:"$PATH" '
+                      "/home/ryer/.local/bin/claude --dangerously-skip-permissions")
 
 
 def test_open_window_refuses_a_host_it_cannot_hold(monkeypatch):
@@ -686,7 +687,7 @@ def test_hold_client_falls_back_to_an_in_process_holder(monkeypatch):
 def _asker(monkeypatch, tmp_path):
     monkeypatch.setattr(reply, "_record_turn", lambda s, t, p="": None)
     monkeypatch.setattr(reply, "_settle", lambda p, timeout=5.0: None)
-    monkeypatch.setattr(reply, "_ensure_submitted", lambda p, t, timeout=3.0: None)
+    monkeypatch.setattr(reply, "_ensure_submitted", lambda p, t, timeout=3.0, agent="claude": None)
     monkeypatch.setattr(reply, "abs_identity", lambda b: ({"username": "d", "type": "root"}, 200))
     monkeypatch.delenv("MEDIA_REPLY_ROOT", raising=False)
     _amux(tmp_path, monkeypatch, 'CC_DIR="/home/ryer/scratch"\nCC_FLAGS="--yolo"\n')
@@ -696,14 +697,14 @@ def test_ask_opens_a_fresh_window_and_types_the_first_message(monkeypatch, _aske
     from agent_media_visual import canvas
     opened, sent, shelved = [], [], []
     monkeypatch.setattr(reply, "open_window",
-                        lambda s, cwd, *, resume, host="", flags=(): opened.append((s, cwd, resume, host, list(flags))) or ("%9", ""))
-    monkeypatch.setattr(reply, "session_of_pane", lambda p, timeout=10.0: "11111111-2222-3333-4444-555555555555")
+                        lambda s, cwd, *, resume, host="", flags=(), agent="claude": opened.append((s, cwd, resume, host, list(flags))) or ("%9", ""))
+    monkeypatch.setattr(reply, "session_of_pane", lambda p, timeout=10.0, agent="claude": "11111111-2222-3333-4444-555555555555")
     monkeypatch.setattr(canvas, "_send_to_pane", lambda p, t: sent.append((p, t)) or "")
     monkeypatch.setattr(reply, "_record_turn", lambda s, t, p="": shelved.append((s, t)))
     ok, detail = reply.ask("what is the time", "tok", quote="a turn")
     assert ok is True
     assert detail == {"session": "11111111-2222-3333-4444-555555555555", "pane": "%9",
-                      "opened": True, "fresh": True, "tmux": "amux-scratch"}
+                      "opened": True, "fresh": True, "tmux": "amux-scratch", "agent": "claude"}
     assert opened == [("", "/home/ryer/scratch", False, "amux-scratch", ["--yolo"])]
     assert sent == [("%9", 'Re: "a turn" — what is the time')]
     assert shelved == [("11111111-2222-3333-4444-555555555555", "what is the time")]
@@ -713,7 +714,7 @@ def test_ask_without_a_uuid_still_delivers_but_shelves_nothing(monkeypatch, _ask
     from agent_media_visual import canvas
     shelved = []
     monkeypatch.setattr(reply, "open_window", lambda *a, **k: ("%9", ""))
-    monkeypatch.setattr(reply, "session_of_pane", lambda p, timeout=10.0: "")
+    monkeypatch.setattr(reply, "session_of_pane", lambda p, timeout=10.0, agent="claude": "")
     monkeypatch.setattr(canvas, "_send_to_pane", lambda p, t: "")
     monkeypatch.setattr(reply, "_record_turn", lambda s, t, p="": shelved.append(1))
     ok, detail = reply.ask("hi", "tok")
@@ -764,8 +765,8 @@ def test_ask_in_a_project_opens_there_with_the_ask_flags(monkeypatch, _asker):
     opened = []
     monkeypatch.setattr(reply, "project_target", lambda p: ("p-x", "/home/ryer/projects/x") if p == "p-x" else ("", ""))
     monkeypatch.setattr(reply, "open_window",
-                        lambda s, cwd, *, resume, host="", flags=(): opened.append((cwd, host, list(flags))) or ("%9", ""))
-    monkeypatch.setattr(reply, "session_of_pane", lambda p, timeout=10.0: "")
+                        lambda s, cwd, *, resume, host="", flags=(), agent="claude": opened.append((cwd, host, list(flags))) or ("%9", ""))
+    monkeypatch.setattr(reply, "session_of_pane", lambda p, timeout=10.0, agent="claude": "")
     monkeypatch.setattr(canvas, "_send_to_pane", lambda p, t: "")
     ok, detail = reply.ask("hi", "tok", project="p-x")
     assert ok and detail["tmux"] == "p-x"
@@ -1016,7 +1017,7 @@ def test_routed_ask_passes_the_project_to_a_fresh_session(_router, monkeypatch):
     seen = {}
     monkeypatch.setattr(reply, "ask", lambda text, bearer, **k: seen.update(k) or (True, {"session": "new-1"}))
     ok, d = reply.ask_routed("hi", "tok", target="new", project="p-x")
-    assert ok and d["mode"] == "new" and seen == {"project": "p-x"}
+    assert ok and d["mode"] == "new" and seen == {"project": "p-x", "agent": ""}
 
 
 def test_routed_ask_a_bare_name_switches_and_sends_nothing(_router):
@@ -1101,7 +1102,7 @@ def test_a_reply_into_a_live_pane_checks_its_enter_landed(monkeypatch, _allowed)
     monkeypatch.setattr(reply, "live_sessions", lambda: {"sess-1": "%7"})
     monkeypatch.setattr(canvas, "_pane_alive", lambda p: True)
     monkeypatch.setattr(canvas, "_send_to_pane", lambda p, t: "")
-    monkeypatch.setattr(reply, "_ensure_submitted", lambda p, t, timeout=3.0: checked.append((p, t)))
+    monkeypatch.setattr(reply, "_ensure_submitted", lambda p, t, timeout=3.0, agent="claude": checked.append((p, t)))
     ok, _ = reply.reply("item1", "a long message that the TUI is still taking when Enter arrives", "tok")
     assert ok and checked == [("%7", "a long message that the TUI is still taking when Enter arrives")]
 
@@ -1114,3 +1115,65 @@ def test_a_running_session_is_never_opened_twice(monkeypatch):
     monkeypatch.setattr(reply, "_tmux", lambda *a, **k: pytest.fail("opened a window"))
     pane, err = reply.open_window(sid, "/tmp", resume=True, host="p-agent-media")
     assert pane == "" and "already running outside tmux" in err
+
+
+# --- Codex and pi ----------------------------------------------------------------
+
+def test_new_codex_chat_names_the_agent():
+    kind, hit, rest = reply.resolve_target("new codex chat, check the logs", [])
+    assert (kind, hit, rest) == ("new", {"agent": "codex"}, "check the logs")
+    assert reply.resolve_target("new chat, hi", [])[:2] == ("new", None)
+
+
+def test_a_fresh_pi_is_told_its_id_up_front(monkeypatch, _asker):
+    from agent_media_visual import canvas
+    opened, shelved = [], []
+    monkeypatch.setattr(reply, "open_window",
+                        lambda s, cwd, *, resume, host="", flags=(), agent="claude":
+                        opened.append((s, agent, list(flags))) or ("%9", ""))
+    monkeypatch.setattr(reply, "session_of_pane", lambda *a, **k: pytest.fail("pi's id is known"))
+    monkeypatch.setattr(canvas, "_send_to_pane", lambda p, t: "")
+    monkeypatch.setattr(reply, "_record_turn", lambda s, t, p="": shelved.append(s))
+    ok, detail = reply.ask("hi", "tok", agent="pi")
+    assert ok and detail["agent"] == "pi"
+    sid, agent, flags = opened[0]
+    assert agent == "pi" and flags == [] and reply._UUID.fullmatch(sid)
+    assert detail["session"] == sid and shelved == [sid]
+
+
+def test_a_fresh_codex_is_asked_its_session_after_the_send(monkeypatch, _asker):
+    from agent_media_visual import canvas
+    order = []
+    monkeypatch.setattr(reply, "open_window",
+                        lambda s, cwd, *, resume, host="", flags=(), agent="claude": ("%9", ""))
+    monkeypatch.setattr(canvas, "_send_to_pane", lambda p, t: order.append("send") or "")
+    monkeypatch.setattr(reply, "session_of_pane",
+                        lambda p, timeout=10.0, agent="claude": order.append(agent) or "01a0bb92-2fe2-7252-aa57-b8e7c84394a1")
+    monkeypatch.setattr(reply, "_record_turn", lambda s, t, p="": None)
+    ok, detail = reply.ask("hi", "tok", agent="codex")
+    assert ok and order == ["send", "codex"]
+    assert detail["session"] == "01a0bb92-2fe2-7252-aa57-b8e7c84394a1"
+
+
+def test_an_unknown_agent_is_refused(_asker):
+    ok, detail = reply.ask("hi", "tok", agent="gemini")
+    assert ok is False and detail["status"] == 400
+
+
+def test_open_window_runs_the_agents_own_resume(monkeypatch):
+    calls = []
+    monkeypatch.setattr(reply, "_tmux", lambda argv, timeout=10: calls.append(argv) or "%4")
+    monkeypatch.setattr(reply, "pane_ready", lambda p, agent="claude": True)
+    monkeypatch.setattr(reply, "_claude_bin", lambda name="claude": f"/bin/{name}")
+    monkeypatch.setattr(reply, "attached_session", lambda: "main")
+    from agent_media_core import claude_sessions, harnesses
+    monkeypatch.setattr(claude_sessions, "running", list)
+    monkeypatch.setattr(harnesses, "running", list)
+    sid = "01a0bb92-2fe2-7252-aa57-b8e7c84394a1"
+    reply.open_window(sid, "/tmp", resume=True, agent="codex")
+    reply.open_window(sid, "/tmp", resume=True, agent="pi")
+    reply.open_window(sid, "/tmp", resume=False, agent="pi")
+    cmds = [c[-1] for c in calls if c[0] == "new-window"]
+    assert cmds[0].endswith(f"/bin/codex resume {sid}")
+    assert cmds[1].endswith(f"/bin/pi --session {sid}")
+    assert cmds[2].endswith(f"/bin/pi --session-id {sid}")

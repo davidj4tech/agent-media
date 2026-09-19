@@ -1022,7 +1022,7 @@ LIVE_TAG = "live"
 
 
 def live_session_ids() -> set[str]:
-    """The Claude Code sessions with a pane right now, by uuid.
+    """The sessions with a pane right now, by uuid — any agent.
 
     The pane registry (`~/.claude/tmux-sessions/<pane>`: uuid, pid, cwd) says
     which session each pane hosts, and is believed only while the pid it
@@ -1053,9 +1053,11 @@ def live_session_ids() -> set[str]:
             continue
         out.add(fields[0])
     # Claude's own record, for a pane whose registry entry went missing.
-    from . import claude_sessions
+    from . import claude_sessions, harnesses
 
     out.update(sid for pane, sid in claude_sessions.by_pane().items() if pane in panes)
+    # Codex and pi, each found its own way.
+    out.update(r.session for r in harnesses.running() if r.pane in panes)
     return out
 
 

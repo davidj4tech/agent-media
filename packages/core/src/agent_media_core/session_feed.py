@@ -349,6 +349,14 @@ def _asked(session: str, ts: list[Turn]) -> str:
                     prompt = text
         except OSError as e:
             log.debug("transcript unreadable for %s: %s", session, e)
+    else:
+        # Not Claude's: Codex and pi name their conversations too, and keep
+        # the question — without this a Codex thread was called after its
+        # first spoken sentence ("ok").
+        from . import harnesses
+
+        title = harnesses.title_of(session)
+        prompt = harnesses.first_prompt(session)
     for candidate in (custom, title, prompt, ts[0].title if ts else ""):
         if candidate:
             return _trim(candidate)

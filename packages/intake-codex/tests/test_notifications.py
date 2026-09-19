@@ -62,3 +62,21 @@ def test_disabled(events, monkeypatch):
         "type": "agent-turn-complete", "last-assistant-message": "Silent",
     })]) == 0
     assert events == []
+
+
+def test_a_title_naming_turn_is_not_spoken(events):
+    """Codex names a thread with a hidden turn that answers in JSON."""
+    assert codex.main([json.dumps({
+        "type": "agent-turn-complete", "last-assistant-message": '{"title":"Run sleep command"}',
+        "thread-id": "01a0bb92-834d-7db3-97be-62da468f2f0a",
+    })]) == 0
+    assert events == []
+
+
+def test_event_mode_hands_stdin_to_the_shared_handler(monkeypatch):
+    seen = []
+    import agent_media_core.intake.agent_events as ev
+    monkeypatch.setattr(ev, "handle", lambda payload, harness: seen.append((payload, harness)) or 0)
+    monkeypatch.setattr("sys.stdin", io.StringIO('{"hook_event_name": "UserPromptSubmit", "session_id": "s"}'))
+    assert codex.main(["event"]) == 0
+    assert seen == [({"hook_event_name": "UserPromptSubmit", "session_id": "s"}, "codex")]

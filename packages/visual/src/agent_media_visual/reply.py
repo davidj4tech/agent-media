@@ -49,6 +49,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 
 log = logging.getLogger("agent-media.visual.reply")
@@ -334,11 +335,36 @@ def live_sessions() -> dict[str, str]:
                 sid = parts[0]
         if sid:
             live[sid] = pane
+    # Codex and pi, each found its own way (see agent_media_core.harnesses).
+    from agent_media_core import harnesses
+
+    for run in harnesses.running():
+        if run.pane and run.session not in live:
+            live[run.session] = run.pane
     return live
+
+
+def agent_of(session: str) -> str:
+    """Which agent holds `session`: "claude", "codex" or "pi" ("claude" when
+    nothing says otherwise — every conversation before these was one)."""
+    from agent_media_core import harnesses
+
+    return harnesses.harness_of(session) or harnesses.CLAUDE
+
+
+def _agent_of_pane(pane: str) -> str:
+    cmd = _tmux(["display", "-pt", pane, "#{pane_current_command}"])
+    from . import canvas
+
+    return cmd if cmd in canvas.AGENT_COMMANDS else "claude"
 
 
 def transcript_cwd(session: str) -> str:
     """The working directory a session ran in, from its own transcript."""
+    from agent_media_core import harnesses
+
+    if harnesses.harness_of(session) in (harnesses.CODEX, harnesses.PI):
+        return harnesses.cwd_of(session)
     for f in glob.glob(os.path.expanduser(f"~/.claude/projects/*/{session}.jsonl")):
         try:
             with open(f) as fh:
@@ -354,7 +380,9 @@ def transcript_cwd(session: str) -> str:
 
 
 def session_exists(session: str) -> bool:
-    return bool(glob.glob(os.path.expanduser(f"~/.claude/projects/*/{session}.jsonl")))
+    from agent_media_core import harnesses
+
+    return harnesses.transcript(session) is not None
 
 
 # --- the ghost prompt -----------------------------------------------------------
@@ -510,8 +538,8 @@ def attached_session() -> str:
 _RESUME_PROMPT = re.compile(r"Resume from summary|Resume full session")
 
 
-def pane_ready(pane: str) -> bool:
-    """Whether a Claude Code TUI in `pane` is painted and taking input.
+def pane_ready(pane: str, agent: str = "claude") -> bool:
+    """Whether the agent's TUI in `pane` is painted and taking input.
 
     Answers the resume-choice modal if it is up. Pressing Enter into a pane is
     exactly what `send_input` refuses to do blind — the difference is that this
@@ -520,9 +548,14 @@ def pane_ready(pane: str) -> bool:
     from . import canvas
 
     cap = canvas._strip_ansi(canvas._run(["tmux", "capture-pane", "-t", pane, "-p", "-S", "-40"]))
-    if canvas._classify_cc(cap) is not None:
+    state = canvas._classify_agent(cap, agent)
+    # Claude's resume modal is answered below; Codex's startup prompts (hooks
+    # to trust, a directory to trust) are the person's to answer, and text
+    # typed into one is lost — so for the others only a waiting composer is
+    # ready.
+    if state is not None and (agent == "claude" or state == "input"):
         return True
-    if _RESUME_PROMPT.search(cap):
+    if agent == "claude" and _RESUME_PROMPT.search(cap):
         _tmux(["send-keys", "-t", pane, "Enter"])
     return False
 
@@ -612,8 +645,8 @@ def ensure_host(host: str, cwd: str) -> bool:
     return hold_client(host, cwd)
 
 
-def _claude_bin() -> str:
-    """Where `claude` is, by absolute path.
+def _claude_bin(name: str = "claude") -> str:
+    """Where `claude` (or `codex`, `pi`) is, by absolute path.
 
     A window's command runs with whatever PATH the tmux session was born
     with, and a session the canvas made from under systemd has the user
@@ -627,12 +660,16 @@ def _claude_bin() -> str:
              # under /run; its `default` alias is the stable name for it.
              home / ".local" / "share" / "fnm" / "aliases" / "default" / "bin"]
     path = os.pathsep.join([os.environ.get("PATH") or "", *map(str, extra)])
-    return shutil.which("claude", path=path) or "claude"
+    return shutil.which(name, path=path) or name
 
 
 def open_window(session: str, cwd: str, *, resume: bool, host: str = "",
-                flags: tuple[str, ...] | list[str] = ()) -> tuple[str, str]:
-    """Open a background tmux window running Claude Code. `(pane, error)`.
+                flags: tuple[str, ...] | list[str] = (),
+                agent: str = "claude") -> tuple[str, str]:
+    """Open a background tmux window running an agent. `(pane, error)`.
+
+    `agent` is "claude", "codex" or "pi". A fresh pi is started with
+    `session` as its id when one is given; the others choose their own.
 
     `host` names the tmux session to open it in; by default the one someone is
     attached to. `flags` go to `claude` (a fresh session may want
@@ -658,9 +695,10 @@ def open_window(session: str, cwd: str, *, resume: bool, host: str = "",
         # their turns into one transcript. Live detection has missed a running
         # session before (a lost registry entry), and a reply from the phone
         # then opened a duplicate beside it; Claude's own record is the check.
-        from agent_media_core import claude_sessions
+        from agent_media_core import claude_sessions, harnesses
 
-        for pid, sid, where in claude_sessions.running():
+        others = [(r.pid, r.session, r.pane) for r in harnesses.running()]
+        for pid, sid, where in [*claude_sessions.running(), *others]:
             if sid == session:
                 return where, (f"session {session[:8]} is already running"
                                + (f" in {where}" if where else f" outside tmux (pid {pid})"))
@@ -672,9 +710,20 @@ def open_window(session: str, cwd: str, *, resume: bool, host: str = "",
         host = attached_session()
         if not host:
             return "", "no attached tmux session to open a window in"
-    cmd = f"exec env -u ANTHROPIC_API_KEY {shlex.quote(_claude_bin())}"
-    if resume:
-        cmd += f" --resume {session}"
+    from agent_media_core import harnesses
+
+    # The agent's own directory goes first on PATH: pi is a node script, and
+    # a window born under systemd has no node on its PATH (fnm keeps node
+    # next to the agents it installed).
+    exe = _claude_bin(agent)
+    cmd = "exec env -u ANTHROPIC_API_KEY"
+    if os.path.isabs(exe):
+        cmd += f" PATH={shlex.quote(os.path.dirname(exe))}:\"$PATH\""
+    cmd += f" {shlex.quote(exe)}"
+    args = (harnesses.resume_argv(agent, session) if resume
+            else harnesses.fresh_argv(agent, session))
+    if args:
+        cmd += " " + shlex.join(args)
     if flags:
         cmd += " " + shlex.join(list(flags))
     # "host:" not "host": a bare name is a target *window*, and tmux happily
@@ -686,7 +735,7 @@ def open_window(session: str, cwd: str, *, resume: bool, host: str = "",
     deadline = time.monotonic() + READY_TIMEOUT_S
     while time.monotonic() < deadline:
         time.sleep(READY_POLL_S)
-        if pane_ready(pane):
+        if pane_ready(pane, agent):
             return pane, ""
     return pane, f"{pane} did not come up within {READY_TIMEOUT_S:.0f}s"
 
@@ -701,7 +750,7 @@ def focus(pane: str) -> tuple[bool, str]:
     from . import canvas
 
     if pane not in {p["pane"] for p in canvas._tmux_cc_panes()}:
-        return False, f"not a live claude pane: {pane!r}"
+        return False, f"not a live agent pane: {pane!r}"
     sess = _tmux(["display", "-pt", pane, "#{session_name}"])
     win = _tmux(["display", "-pt", pane, "#{window_id}"])
     if not sess or not win:
@@ -717,14 +766,28 @@ def _registry_dir() -> Path:
                                    or "~/.claude/tmux-sessions"))
 
 
-def session_of_pane(pane: str, timeout: float = 10.0) -> str:
-    """The uuid of the Claude Code session running in `pane`, or "".
+def session_of_pane(pane: str, timeout: float = 10.0, agent: str = "claude") -> str:
+    """The uuid of the session running in `pane`, or "".
+
+    Codex and pi are asked of harnesses.running(): a codex has a session
+    once its first message is in, a pi once its extension has said so.
 
     A fresh session's uuid is in nobody's argv; the SessionStart hook writes it
     to the pane registry a moment after the TUI is up, so this waits for the
     row and believes it only when the pid it names is a live `claude` — a
     recycled pane id can otherwise hand back the previous tenant.
     """
+    if agent != "claude":
+        from agent_media_core import harnesses
+
+        deadline = time.monotonic() + timeout
+        while True:
+            for run in harnesses.running():
+                if run.pane == pane and run.harness == agent:
+                    return run.session
+            if time.monotonic() >= deadline:
+                return ""
+            time.sleep(0.25)
     row = _registry_dir() / pane.lstrip("%")
     deadline = time.monotonic() + timeout
     while True:
@@ -829,7 +892,12 @@ def _settle(pane: str, timeout: float = 5.0) -> None:
         last = now
 
 
-def _ensure_submitted(pane: str, text: str, timeout: float = 3.0) -> None:
+#: Where each agent's composer starts: the text after it is what is typed.
+_COMPOSER = {"claude": _PROMPT_GLYPH, "codex": "\u203a"}   # ❯, ›
+
+
+def _ensure_submitted(pane: str, text: str, timeout: float = 3.0,
+                      agent: str = "claude") -> None:
     """Press Enter again if `text` is still sitting in the input box.
 
     Looked at rather than assumed: the composer shows what it holds, so
@@ -843,17 +911,25 @@ def _ensure_submitted(pane: str, text: str, timeout: float = 3.0) -> None:
     while time.monotonic() < deadline:
         time.sleep(0.5)
         cap = canvas._strip_ansi(_capture_pane(pane))
-        if canvas._classify_cc(cap) == "working":
+        if canvas._classify_agent(cap, agent) == "working":
             return
+        if agent == "pi":
+            # pi's composer is the box between the last two rules.
+            rules = [i for i, ln in enumerate(cap.splitlines()) if re.fullmatch(r"\s*─{8,}\s*", ln)]
+            box = cap.splitlines()[rules[-2] + 1:rules[-1]] if len(rules) >= 2 else []
+            if head not in " ".join(" ".join(box).split()):
+                return
+            continue
         flat = " ".join(cap.split())
-        i = flat.rfind(_PROMPT_GLYPH)
+        i = flat.rfind(_COMPOSER.get(agent, _PROMPT_GLYPH))
         if i < 0 or head not in flat[i:]:
             return
     _tmux(["send-keys", "-t", pane, "Enter"])
 
 
-def ask(text: str, bearer: str, *, quote: str = "", project: str = "") -> tuple[bool, dict]:
-    """Start a fresh Claude Code session with `text` as its first message.
+def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
+        agent: str = "") -> tuple[bool, dict]:
+    """Start a fresh session with `text` as its first message.
 
     What the phone's assistant button does. Nothing to resume and no item yet:
     the window opens in the scratch session, the words are typed in, and the
@@ -861,6 +937,7 @@ def ask(text: str, bearer: str, *, quote: str = "", project: str = "") -> tuple[
     conversation appears in the library once its first reply is spoken. The
     app is told the uuid and polls `/conversation?session=` for the item.
     `project` (a series name) opens it in that project's directory instead.
+    `agent` picks Claude Code (the default, or MEDIA_ASK_AGENT), Codex or pi.
     """
     from . import canvas
 
@@ -873,25 +950,36 @@ def ask(text: str, bearer: str, *, quote: str = "", project: str = "") -> tuple[
     ok, why = may_reply(user)
     if not ok:
         return False, {"error": why, "status": 403}
+    agent = (agent or os.environ.get("MEDIA_ASK_AGENT") or "claude").strip().lower()
+    if agent not in canvas.AGENT_COMMANDS:
+        return False, {"error": f"unknown agent {agent!r}", "status": 400}
     host, cwd, flags = ask_target()
+    if agent != "claude":
+        flags = []          # amux's flags are claude's (--dangerously-skip-permissions)
     if project:
         host, cwd = project_target(project)
         if not cwd:
             return False, {"error": f"no directory known for project {project!r}", "status": 404}
-    pane, err = open_window("", cwd, resume=False, host=host, flags=flags)
+    # pi takes its id up front; the others are asked for theirs.
+    fixed = str(uuid.uuid4()) if agent == "pi" else ""
+    pane, err = open_window(fixed, cwd, resume=False, host=host, flags=flags, agent=agent)
     if err:
         return False, {"error": err, "pane": pane or None}
-    session = session_of_pane(pane)
+    # A codex has no session until its first message is in, so it is asked
+    # after the send.
+    session = fixed or (session_of_pane(pane) if agent == "claude" else "")
     _settle(pane)
     body = compose(text, quote)
     send_err = canvas._send_to_pane(pane, body)
     if send_err:
         return False, {"error": send_err, "session": session or None, "pane": pane}
-    _ensure_submitted(pane, body)
+    _ensure_submitted(pane, body, agent=agent)
+    if not session:
+        session = session_of_pane(pane, agent=agent)
     if session:
         _record_turn(session, text, pane)
     return True, {"session": session or None, "pane": pane, "opened": True,
-                  "fresh": True, "tmux": host}
+                  "fresh": True, "tmux": host, "agent": agent}
 
 
 def _folder_for_session(session: str) -> str:
@@ -1034,7 +1122,8 @@ def _live_states() -> list[dict]:
         tails[str(data.get("session") or f.stem)] = _tail(data.get("folder") or "")
     out = []
     for sid, pane in live_sessions().items():
-        cls = canvas._classify_cc(canvas._strip_ansi(_capture_pane(pane))) or "input"
+        cls = canvas._classify_agent(canvas._strip_ansi(_capture_pane(pane)),
+                                     _agent_of_pane(pane)) or "input"
         out.append({"session": sid, "tail": tails.get(sid, ""),
                     "state": _STATE_NAMES.get(cls, "waiting")})
     return out
@@ -1074,7 +1163,11 @@ _SPINNER = re.compile(r"^[\s\u2700-\u27bf\u2600-\u26ff\u25d0-\u25d3\u2b50*·]+")
 
 
 def _pane_titles() -> dict[str, str]:
-    """`{pane: title}` for every Claude Code pane — the session's own title."""
+    """`{pane: title}` for every Claude Code pane — the session's own title.
+
+    Only Claude's: Codex and pi leave the terminal title as the host name,
+    so theirs come from their own session files (`_live_title`).
+    """
     out = _tmux(["list-panes", "-a", "-F", "#{pane_id}\t#{pane_current_command}\t#{pane_title}"])
     titles = {}
     for line in out.splitlines():
@@ -1082,6 +1175,14 @@ def _pane_titles() -> dict[str, str]:
         if len(f) >= 3 and f[1] == "claude":
             titles[f[0]] = _SPINNER.sub("", f[2]).strip()
     return titles
+
+
+def _live_title(session: str) -> str:
+    """A live Codex or pi session's name, or the first thing asked of it."""
+    from agent_media_core import harnesses
+
+    title = harnesses.title_of(session) or harnesses.first_prompt(session)
+    return title if len(title) <= 60 else title[:59] + "…"
 
 
 def _recent_conversations(limit: int = 40) -> list[tuple[str, str, float]]:
@@ -1112,7 +1213,7 @@ def sessions_index() -> list[dict]:
     seen: set[str] = set()
     out = []
     for sid, pane in live.items():
-        title = titles.get(pane) or ""
+        title = titles.get(pane) or ("" if pane in titles else _live_title(sid))
         if not title:
             continue
         seen.add(sid)
@@ -1125,7 +1226,7 @@ def sessions_index() -> list[dict]:
     return out
 
 
-_NEW = re.compile(r"^\s*(?:(?:start|open)\s+a\s+)?(?:new|fresh)\s+(?:chat|conversation|session|thread)\b[\s,.:;!-]*(.*)$",
+_NEW = re.compile(r"^\s*(?:(?:start|open)\s+a\s+)?(?:new|fresh)\s+(?:(claude|codex|pi)\s+)?(?:chat|conversation|session|thread)\b[\s,.:;!-]*(.*)$",
                   re.I | re.S)
 # Dictation carries no punctuation, so the name is not delimited: it is
 # however many words after the verb best fit a title, and the message is
@@ -1155,7 +1256,8 @@ def _score(name: str, title: str) -> float:
 def resolve_target(text: str, index: list[dict]) -> tuple[str, dict | list | None, str]:
     """What the spoken words say about where they go. `(kind, hit, rest)`.
 
-    `kind` is "new" ("new chat …" — the rest goes to a fresh session),
+    `kind` is "new" ("new chat …" — the rest goes to a fresh session; "new
+    codex chat …" names the agent, and `hit` is then `{"agent": "codex"}`),
     "session" (`hit` is the index row named; `rest` is the message, and an
     empty one means "just take me there"), "ambiguous" (`hit` is the rows it
     could be, and nothing should be sent), or "" (no target spoken; `rest` is
@@ -1163,7 +1265,7 @@ def resolve_target(text: str, index: list[dict]) -> tuple[str, dict | list | Non
     """
     m = _NEW.match(text or "")
     if m:
-        return "new", None, m.group(1).strip()
+        return "new", ({"agent": m.group(1).lower()} if m.group(1) else None), m.group(2).strip()
     m = _VERB.match(text or "")
     if not m:
         return "", None, (text or "").strip()
@@ -1207,7 +1309,7 @@ def _title_of(session: str, index: list[dict] | None = None) -> str:
 
 def ask_routed(text: str, bearer: str, *, target: str = "", player_item: str = "",
                sticky: str = "", parse: bool = True, dry: bool = False,
-               project: str = "") -> tuple[bool, dict]:
+               project: str = "", agent: str = "") -> tuple[bool, dict]:
     """The assistant button's words, sent where they belong.
 
     In order: a target the app names outright (`target`, a session uuid from
@@ -1219,7 +1321,8 @@ def ask_routed(text: str, bearer: str, *, target: str = "", player_item: str = "
     for the app to ask. `dry` answers where the words WOULD go and sends
     nothing: the app confirms a guess (a spoken name, the player, the last
     thread) with the listener before committing with an explicit `target`.
-    A fresh session opens in `project` when one is named (see `ask`).
+    A fresh session opens in `project` when one is named, and runs `agent`
+    (claude, codex, pi) when one is named or spoken (see `ask`).
     """
     text = " ".join((text or "").split())
     if not text:
@@ -1241,6 +1344,7 @@ def ask_routed(text: str, bearer: str, *, target: str = "", player_item: str = "
         kind, hit, rest = resolve_target(text, index)
         if kind == "new":
             text, how = rest or text, "spoken"
+            agent = (hit or {}).get("agent") or agent
         elif kind == "session":
             session, text, how = hit["session"], rest, "spoken"
             if not text:
@@ -1263,10 +1367,11 @@ def ask_routed(text: str, bearer: str, *, target: str = "", player_item: str = "
     if dry:
         item, ready = item_for_session(session, bearer) if session else (None, False)
         return True, {"mode": "continued" if session else "new", "how": how or "default",
+                      **({} if session else {"agent": agent or os.environ.get("MEDIA_ASK_AGENT") or "claude"}),
                       "session": session or None, "title": _title_of(session, index) if session else "",
                       "item": item if ready else None, "text": text, "dry": True}
     if not session:
-        ok, detail = ask(text, bearer, project=project)
+        ok, detail = ask(text, bearer, project=project, agent=agent)
         if ok:
             detail.update({"mode": "new", "how": how or "default", "title": "", "text": text})
         return ok, detail
@@ -1320,7 +1425,8 @@ def session_resume(session: str, bearer: str) -> tuple[bool, dict]:
         return True, {"session": session, "pane": pane, "live": True, "opened": False}
     if not session_exists(session):
         return False, {"error": f"session {session[:8]} has no transcript to resume", "status": 404}
-    pane, err = open_window(session, transcript_cwd(session), resume=True)
+    pane, err = open_window(session, transcript_cwd(session), resume=True,
+                            agent=agent_of(session))
     if err:
         return False, {"error": err, "pane": pane or None}
     _retag(session)
@@ -1440,12 +1546,13 @@ def reply(item: str, text: str, bearer: str, *, quote: str = "",
     body = compose(text, quote)
 
     if mode == "branch":
-        pane, err = open_window(session, transcript_cwd(session), resume=False)
+        agent = agent_of(session)
+        pane, err = open_window("", transcript_cwd(session), resume=False, agent=agent)
         if err:
             return False, {"error": err, "pane": pane or None}
         send_err = canvas._send_to_pane(pane, body)
         if not send_err:
-            _ensure_submitted(pane, body)
+            _ensure_submitted(pane, body, agent=agent)
             _record_turn(session, text, pane)
         return (not send_err), {"session": session, "pane": pane,
                                 "opened": True, "branched": True,
@@ -1465,6 +1572,7 @@ def deliver(session: str, body: str, text: str) -> tuple[bool, dict]:
 
     pane = live_sessions().get(session, "")
     opened = False
+    agent = agent_of(session)
     if pane and canvas._pane_alive(pane):
         pass
     elif not session_exists(session):
@@ -1472,7 +1580,7 @@ def deliver(session: str, body: str, text: str) -> tuple[bool, dict]:
         # would silently answer as someone else.
         return False, {"error": f"session {session[:8]} has no transcript to resume"}
     else:
-        pane, err = open_window(session, transcript_cwd(session), resume=True)
+        pane, err = open_window(session, transcript_cwd(session), resume=True, agent=agent)
         if err:
             return False, {"error": err, "pane": pane or None}
         opened = True
@@ -1482,7 +1590,7 @@ def deliver(session: str, body: str, text: str) -> tuple[bool, dict]:
     # A long reply's Enter can arrive while the TUI is still taking the text
     # and be lost — the words sat in the box of a live session, unsent, until
     # someone pressed Enter by hand. Look, and press it once if so.
-    _ensure_submitted(pane, body)
+    _ensure_submitted(pane, body, agent=agent)
     _record_turn(session, text, pane)
     return True, {"session": session, "pane": pane, "opened": opened}
 
