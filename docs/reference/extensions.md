@@ -16,7 +16,8 @@ A render engine turns text into an audio file. Core ships exactly one built-in
 — `edge`, which is zero-config (no API key) and the universal default.
 Everything else is an installable plugin, including the ones maintained in this
 repo: `openai` (`agent-media-engine-openai`), `qwen`
-(`agent-media-engine-qwen`), and `realtime` (`agent-media-engine-realtime`).
+(`agent-media-engine-qwen`), `realtime` (`agent-media-engine-realtime`),
+`kokoro` (`agent-media-engine-kokoro`), and `piper` (`agent-media-engine-piper`).
 Anyone can add more the same way.
 
 **The contract** is one callable:

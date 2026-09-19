@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agent-media-engine-piper"
+version = "0.1.0"
+description = "Offline Piper TTS render engine for agent-media (HTTP to a piper http_server)."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+# Uses only the stdlib (urllib) to call a Piper HTTP server. Piper itself
+# (GPL-3.0) runs as its own process and is never imported — keep it that way.
+
+[project.entry-points."agent_media.render_engines"]
+piper = "agent_media_engine_piper:render"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent_media_engine_piper"]

@@ -108,6 +108,7 @@ entry-point group and selected with `MEDIA_RENDER_ENGINE=<name>`:
 | package | engine | notes |
 |---|---|---|
 | [`engine-openai/`](./packages/engine-openai/) | `openai` | OpenAI TTS; shells out to a Python with the `openai` lib |
+| [`engine-piper/`](./packages/engine-piper/) | `piper` | Piper over HTTP to its own server (GPL, kept out of process); offline |
 | [`engine-qwen/`](./packages/engine-qwen/) | `qwen` | Qwen / DashScope; stdlib-only |
 | [`engine-realtime/`](./packages/engine-realtime/) | `realtime` | OpenAI Realtime over WebSocket |
 
