@@ -1474,6 +1474,13 @@ def log_for_item(item: str, bearer: str) -> tuple[bool, dict]:
                 # waiting out a whole idle poll with nothing on screen.
                 pending = bool(lines) and lines[-1].get("who") == "you"
                 attach_pictures(lines)
+                # What the session did for each reply ("Worked for 3m · 14
+                # steps"), and what it is doing now, in place of the dots.
+                # A turn typed at the desk counts too: the phone shows it
+                # working even before that message reaches the transcript.
+                from agent_media_core import activity as _activity
+                working = _activity.attach(session, lines)
+                pending = pending or bool(working)
                 # The ghost prompt rides along with every poll: it appears a
                 # few seconds after the turn it follows, so a one-off read at
                 # page-open would mostly find it not there yet.
@@ -1482,7 +1489,8 @@ def log_for_item(item: str, bearer: str) -> tuple[bool, dict]:
                 suggestion = ("" if pending else
                               suggestion_for(session, pane, last.get("key") or ""))
                 return True, {"session": session, "lines": lines,
-                              "pending": pending, "suggestion": suggestion}
+                              "pending": pending, "working": working,
+                              "suggestion": suggestion}
     except Exception as e:  # noqa: BLE001
         # Say so in the journal as well as to the caller: the app folds every
         # failed fetch into an empty transcript, so this line is the only
