@@ -763,6 +763,11 @@ def _live_turn(session: str) -> Optional[dict]:
         delay = _playout_delay_s(str(np.get("target") or ""))
     except Exception:  # noqa: BLE001 — a beat off beats no highlight
         delay = 0.0
+    if ex.get("clip_starts_s") and not ex.get("clip_offsets_s"):
+        # Measured starts are when the player itself reached each sentence, so
+        # the hop to the player is already in them. Taking the playout delay
+        # off as well put the bold a beat behind at every boundary.
+        delay = 0.0
     return {"at": round(float(at), 3), "text": text,
             "listener": bool(ex.get("listener")),
             "sentences": [str(x) for x in (ex.get("clip_sentences") or [])],

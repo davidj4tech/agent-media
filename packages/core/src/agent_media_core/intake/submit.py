@@ -3278,6 +3278,9 @@ def submit_event(event: Event,
                 starts = mark_clock["starts"]
                 if idx != mark_clock["last"]:
                     at = elapsed_from_row(prior, mark_clock["origin"]) if starts else 0.0
+                    read_at = (live or {}).get("_read_at")
+                    if starts and read_at:
+                        at -= max(0.0, now - float(read_at))
                     tp = (live or {}).get("time-pos")
                     if starts and tp is not None:
                         # The player says how far into this clip it already is:
@@ -3443,7 +3446,15 @@ def submit_event(event: Event,
                     # One batched snapshot per tick (pos/idle/pause/time) instead
                     # of four separate ~600ms bridge hops — keeps the follow-along
                     # tight rather than lagging the audio by seconds.
+                    asked = time.time()
                     snap = sink.snapshot(target)
+                    if snap:
+                        # When the player was read: somewhere inside a round
+                        # trip that takes ~1.3s to p8a, not when the answer
+                        # came back. The middle is the fair guess, and a
+                        # sentence start stamped at the end was half a second
+                        # late (_stamp_start).
+                        snap["_read_at"] = (asked + time.time()) / 2
                     if not snap:
                         misses += 1
                         if misses > 50:        # ~5s fully unreadable → bail

@@ -49,3 +49,12 @@ def test_sentences_still_to_come_are_predicted(monkeypatch):
                        "play_started_at": now - 3.0}, started_at=now - 9.0)
     # Measured for the two begun; the rest follow on from the last one.
     assert book_tracks._live_turn(SID)["offsets"] == [0.0, 2.5, 5.5, 9.5]
+
+
+def test_measured_starts_take_no_playout_delay(monkeypatch):
+    monkeypatch.setattr("agent_media_core.intake.submit._playout_delay_s", lambda t: 0.4)
+    now = time.time()
+    _row(monkeypatch, {"clip_starts_s": [0.0], "play_started_at": now}, started_at=now)
+    assert book_tracks._live_turn(SID)["delay"] == 0.0
+    _row(monkeypatch, {"clip_durations_s": [2.0]}, started_at=now)
+    assert book_tracks._live_turn(SID)["delay"] == 0.4
