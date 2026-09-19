@@ -830,7 +830,10 @@ def _live_turn(session: str) -> Optional[dict]:
             "measured": bool(ex.get("sentence_marks")),
             "target": str(np.get("target") or ""),
             "server_time": round(time.time(), 3),
-            "paused": bool(paused_at)}
+            "paused": bool(paused_at),
+            # Set on a replay: which history row is audible again, so the
+            # transcript can light up that line rather than add a new one.
+            "history_id": int(ex.get("history_id") or 0)}
 
 
 def conversation_log(session: str, folder: Path, *, target=None) -> list:
@@ -879,7 +882,7 @@ def conversation_log(session: str, folder: Path, *, target=None) -> list:
             except Exception as e:  # noqa: BLE001 — a log without times still reads
                 log.warning("book-tracks: no track offsets for the log (%s)", e)
 
-    def _line(who_listener, text, pos, at=None, key="", ask=None, command=None):
+    def _line(who_listener, text, pos, at=None, key="", ask=None, command=None, rid=0):
         text = (text or "").strip()
         who = "you" if who_listener else "agent"
         if who == "you" and text.startswith("You: "):
@@ -892,6 +895,10 @@ def conversation_log(session: str, folder: Path, *, target=None) -> list:
                 "who": who, "text": text, "at": at, "key": key or ""}
         if command:
             line["command"] = command
+        if rid:
+            # The history row, for `/speech/ctl` replay-id: a tap plays the
+            # turn through the speech player rather than the book's.
+            line["id"] = rid
         if ask:
             # The spoken sentence is "host / pane: Question. Option 1: …" —
             # right for a voice, wrong for a bubble. Hand over the structure
@@ -928,7 +935,8 @@ def conversation_log(session: str, folder: Path, *, target=None) -> list:
                          spoken.text if spoken else turn.get("title"), pos,
                          at, spoken.key if spoken else "",
                          ask=(spoken.ask if spoken else None),
-                         command=(spoken.command if spoken else None)))
+                         command=(spoken.command if spoken else None),
+                         rid=(getattr(spoken, "id", 0) if spoken else 0)))
 
     # The live tail: turns in speech history the manifest has not caught up to
     # yet. Shown at once, with no position — the audio item does not place them
@@ -939,16 +947,21 @@ def conversation_log(session: str, folder: Path, *, target=None) -> list:
         seen.add(at)
         out.append(_line(said[at].listener, said[at].text, {}, at,
                          said[at].key, ask=said[at].ask,
-                         command=said[at].command))
+                         command=said[at].command, rid=getattr(said[at], "id", 0)))
 
     # The turn speaking right now, if it has not already landed as an ended
     # row above. This is what puts a reply on screen *while* it is being
     # spoken, not after — keyed by the same `at` it will keep, so it becomes
     # the ended row in place rather than a duplicate.
-    if live and live["at"] not in seen:
-        line = _line(live["listener"], live["text"], {}, live["at"])
+    replayed = None
+    if live and live.get("history_id"):
+        replayed = next((l for l in out if l.get("id") == live["history_id"]), None)
+    if live and (replayed is not None or live["at"] not in seen):
+        line = replayed if replayed is not None else _line(
+            live["listener"], live["text"], {}, live["at"])
         # Marked live, with the sentence being spoken, so the transcript can
         # follow the voice sentence by sentence rather than just show the turn.
+        # A replay marks the turn it replays, in its place.
         line.update({"live": True, "sentences": live["sentences"],
                      "sentence": live["sentence"], "offsets": live["offsets"],
                      "elapsed": live["elapsed"], "paused": live["paused"],
@@ -956,7 +969,8 @@ def conversation_log(session: str, folder: Path, *, target=None) -> list:
                      # moment the answer leaves (canvas), and the offset the
                      # reader takes off the clock.
                      "server_time": live["server_time"], "delay": live["delay"]})
-        out.append(line)
+        if replayed is None:
+            out.append(line)
     return [line for line in out if _said_by_anyone(line)]
 
 

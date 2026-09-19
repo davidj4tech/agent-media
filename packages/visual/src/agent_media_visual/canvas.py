@@ -1204,6 +1204,8 @@ def ctl_argv(channel: str, action: str, arg: int,
             "toggle": ["toggle"],
             "prev": ["replay-prev", "--idx", str(arg)],
             "replay": ["replay", str(arg)],
+            # A transcript line's own turn, by its history id (never clamped).
+            "replay-id": ["replay", "--id", str(arg)],
             "jump-end": ["jump", "end"],
             "vol-": ["volume", "-5"],
             "vol+": ["volume", "5"],
@@ -1354,7 +1356,7 @@ _CORS_PATHS = frozenset({
 #: keys (keep a pane muted, focus tmux, open URLs) are the desk's.
 _APP_SPEECH_ACTIONS = frozenset({
     "toggle", "skip-", "skip+", "para-", "para+", "jump-end",
-    "prev", "replay", "speed-", "speed+", "speed0", "vol-", "vol+", "mute",
+    "prev", "replay", "replay-id", "speed-", "speed+", "speed0", "vol-", "vol+", "mute",
 })
 _SPEECH_NOW_SEEN: set[str] = set()
 
@@ -1815,10 +1817,13 @@ class Handler(BaseHTTPRequestHandler):
                 return
             # `arg` is the turn index for prev/replay, kept by the app the way
             # the popup keeps hist_idx: 1 is the latest reply.
+            # `replay-id` carries a history row id instead, which is not an
+            # index and is not clamped.
             try:
-                arg = max(1, min(999, int(body.get("arg") or 1)))
+                arg = int(body.get("arg") or 1)
             except (TypeError, ValueError):
                 arg = 1
+            arg = max(1, arg) if action == "replay-id" else max(1, min(999, arg))
             out = _media(ctl_argv("speech", action, arg))
             print(f"speech/ctl: {action} -> {out.strip()[:120]!r}", file=sys.stderr)
             self._json(200, {"ok": True, "out": out})

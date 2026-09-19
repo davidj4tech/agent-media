@@ -248,6 +248,47 @@ def test_conversation_log_includes_the_live_tail(tmp_path, monkeypatch):
     ]
 
 
+def test_conversation_log_lines_carry_their_history_id(tmp_path, monkeypatch):
+    """A tap on a line replays that turn by id through the speech player."""
+    from agent_media_core import book_tracks as bt, session_feed
+    folder = tmp_path / "p-agent-media" / "A talk"
+    monkeypatch.setattr(bt, "_read_manifest",
+                        lambda s: {"turns": [{"at": 100.0, "title": "First answer"}]})
+    monkeypatch.setattr(bt, "_abs_ready", lambda target=None: None)
+    hist = [
+        session_feed.Turn(at=100.0, text="First answer", id=41),
+        session_feed.Turn(at=300.0, text="The fresh reply", id=42),
+    ]
+    monkeypatch.setattr(session_feed, "turns", lambda s, store=None: list(hist))
+    monkeypatch.setattr(bt, "_live_turn", lambda s: None)
+
+    lines = bt.conversation_log("sess-1", folder)
+    assert [l.get("id") for l in lines] == [41, 42]
+
+
+def test_a_replay_lights_up_its_own_line(tmp_path, monkeypatch):
+    """Replaying a turn marks that line live where it is, not a new line at
+    the bottom with the replay's own start time."""
+    from agent_media_core import book_tracks as bt, session_feed
+    folder = tmp_path / "p-agent-media" / "A talk"
+    monkeypatch.setattr(bt, "_read_manifest", lambda s: {"turns": []})
+    monkeypatch.setattr(bt, "_abs_ready", lambda target=None: None)
+    hist = [
+        session_feed.Turn(at=100.0, text="First answer", id=41),
+        session_feed.Turn(at=300.0, text="Second answer", id=42),
+    ]
+    monkeypatch.setattr(session_feed, "turns", lambda s, store=None: list(hist))
+    monkeypatch.setattr(bt, "_live_turn", lambda s: {
+        "at": 900.0, "text": "First answer", "listener": False,
+        "sentences": ["First answer"], "sentence": 0, "offsets": [0.0],
+        "elapsed": 0.4, "paused": False, "server_time": 900.4, "delay": 0.0,
+        "history_id": 41})
+
+    lines = bt.conversation_log("sess-1", folder)
+    assert [(l["text"], bool(l.get("live"))) for l in lines] == [
+        ("First answer", True), ("Second answer", False)]
+
+
 def test_conversation_log_shows_the_turn_being_spoken_now(tmp_path, monkeypatch):
     """The in-flight turn (in now_playing, not yet in history or the manifest)
     shows at once, so a reply appears while it is being spoken."""

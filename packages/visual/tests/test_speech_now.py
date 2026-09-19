@@ -78,6 +78,8 @@ def test_the_player_gets_the_popups_listening_keys():
         assert action in canvas._APP_SPEECH_ACTIONS
     assert canvas.ctl_argv("speech", "prev", 3) == ["replay-prev", "--idx", "3"]
     assert canvas.ctl_argv("speech", "replay", 2) == ["replay", "2"]
+    # A transcript line's own turn, by history id — not an index, not clamped.
+    assert canvas.ctl_argv("speech", "replay-id", 48213) == ["replay", "--id", "48213"]
 
 
 def test_speed_and_mute_ride_along(monkeypatch):
