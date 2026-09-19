@@ -34,6 +34,8 @@ Stdlib-only HTTP server. Endpoints:
                   candidates when a spoken name is ambiguous.
   GET  /conversations  + an Audiobookshelf bearer → live sessions and
                   recent conversations, by title (the picker)
+  GET  /sessions/state  + an Audiobookshelf bearer → every live session's
+                  working / waiting / approval, by uuid and item folder tail
   POST /session/resume {"session"} → bring that session back in a tmux
                   window (a reply's revive, without the reply)
   POST /session/close  {"session"} → close the pane it runs in
@@ -1334,7 +1336,7 @@ PAGE_ID = hashlib.sha256(PAGE.encode()).hexdigest()[:12]
 _CORS_PATHS = frozenset({
     "/conversation", "/conversation/log", "/conversations", "/item",
     "/reply", "/ask", "/focus", "/session/resume", "/session/close",
-    "/speech/now", "/speech/ctl",
+    "/speech/now", "/speech/ctl", "/sessions/state",
 })
 
 #: What the app's speech bar may do. A short list on purpose: the bearer is a
@@ -1552,6 +1554,11 @@ class Handler(BaseHTTPRequestHandler):
                            {"ok": False, "error": "not allowed"})
             else:
                 self._json(200, {"ok": True, "sessions": _reply.sessions_index()})
+        elif path == "/sessions/state":
+            from . import reply as _reply
+            bearer = (self.headers.get("Authorization") or "").removeprefix("Bearer").strip()
+            ok, detail = _reply.session_states(bearer)
+            self._json(200 if ok else detail.pop("status", 403), {"ok": ok, **detail})
         elif path == "/speech":
             # One-shot speech-state peek for outside agents (a voice-mode
             # Claude asking "is the phone talking, and about what?" through

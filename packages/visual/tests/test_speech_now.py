@@ -71,3 +71,32 @@ def test_the_bar_gets_only_listener_verbs():
         assert canvas.ctl_argv("speech", action, 1) is not None
     assert "mute-keep" not in canvas._APP_SPEECH_ACTIONS
     assert "goto" not in canvas._APP_SPEECH_ACTIONS
+
+
+def test_session_states_name_the_pane_class(monkeypatch, tmp_path):
+    _as(monkeypatch)
+    (tmp_path / f"{SID}.json").write_text(
+        '{"session": "%s", "folder": "/srv/Conversations/agent-media/Filters"}' % SID)
+    monkeypatch.setattr(reply, "_manifest_dir", lambda: tmp_path)
+    monkeypatch.setattr(reply, "live_sessions", lambda: {SID: "%3"})
+    monkeypatch.setattr(reply, "_capture_pane", lambda pane: "✻ Thinking… (esc to interrupt)")
+    monkeypatch.setattr(reply, "_STATES_CACHE", (0.0, []))
+    ok, out = reply.session_states("tok")
+    assert ok
+    assert out["sessions"] == [{"session": SID, "tail": "agent-media/Filters", "state": "working"}]
+
+
+def test_session_states_are_swept_once_per_ttl(monkeypatch):
+    _as(monkeypatch)
+    sweeps = []
+    monkeypatch.setattr(reply, "_live_states", lambda: sweeps.append(1) or [])
+    monkeypatch.setattr(reply, "_STATES_CACHE", (0.0, []))
+    for _ in range(3):
+        reply.session_states("tok")
+    assert len(sweeps) == 1
+
+
+def test_session_states_refuse_a_stranger(monkeypatch):
+    _as(monkeypatch, user=None, status=401)
+    ok, _ = reply.session_states("")
+    assert not ok

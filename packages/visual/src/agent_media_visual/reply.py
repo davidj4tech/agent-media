@@ -988,6 +988,55 @@ def speech_now(bearer: str, state: dict) -> tuple[bool, dict]:
     return True, out
 
 
+# --- what each live session is doing, for the app's shelf filters --------------
+
+#: The canvas's pane classes, named for a listener: `input` is a session that
+#: has answered and is waiting on you.
+_STATE_NAMES = {"working": "working", "input": "waiting", "approval": "approval"}
+#: Every open library polls this, and each poll is a /proc sweep plus a
+#: capture-pane per live session; a few seconds collapses them to one.
+_STATES_TTL_S = 3.0
+_STATES_CACHE: tuple[float, list[dict]] = (0.0, [])
+_STATES_LOCK = threading.Lock()
+
+
+def _live_states() -> list[dict]:
+    from . import canvas
+
+    tails = {}
+    for f in _manifest_dir().glob("*.json"):
+        try:
+            data = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        tails[str(data.get("session") or f.stem)] = _tail(data.get("folder") or "")
+    out = []
+    for sid, pane in live_sessions().items():
+        cls = canvas._classify_cc(canvas._strip_ansi(_capture_pane(pane))) or "input"
+        out.append({"session": sid, "tail": tails.get(sid, ""),
+                    "state": _STATE_NAMES.get(cls, "waiting")})
+    return out
+
+
+def session_states(bearer: str) -> tuple[bool, dict]:
+    """`/sessions/state`: working / waiting / approval for every live session.
+
+    Keyed by the item folder's `<author>/<title>` tail as well as the uuid, so
+    the app can match its shelf without asking for each item. A session not
+    listed is not live. Gated like `/conversations`.
+    """
+    global _STATES_CACHE
+    ok, detail = may_control_speech(bearer)
+    if not ok:
+        return False, detail
+    with _STATES_LOCK:
+        at, rows = _STATES_CACHE
+        if time.monotonic() - at > _STATES_TTL_S:
+            rows = _live_states()
+            _STATES_CACHE = (time.monotonic(), rows)
+    return True, {"sessions": rows}
+
+
 def may_control_speech(bearer: str) -> tuple[bool, dict]:
     """The gate for `/speech/ctl`: the same person who may reply may pause."""
     user, status = abs_identity(bearer)
