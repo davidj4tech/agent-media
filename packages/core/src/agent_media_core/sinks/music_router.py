@@ -4,6 +4,8 @@ The music channel now has two playout backends:
 
   - `SinkMusic`        — Mopidy/MPD (whole-house via Snapcast, or local out)
   - `SinkMusicLocal`   — the phone's local mpv (residential download, offline)
+  - `SinkMusicApp`     — Sasonica's ExoPlayer on the phone (the `app` target),
+                         falling back to the phone's mpv when it does not take it
 
 The speech coordinator holds a single `self.music` and, before each clip, calls
 `now_playing_uri()` then `duck()`/`pause()` on it. If music is on the phone but
@@ -29,6 +31,7 @@ from typing import Optional
 
 from ..types import Target
 from .music import SinkMusic
+from .music_app import SinkMusicApp, configured as _app_configured
 from .music_local import SinkMusicLocal, configured as _local_configured
 
 
@@ -37,6 +40,9 @@ log = logging.getLogger(__name__)
 # Target names that mean "play on the phone-local backend". Everything else
 # (local, rooms, snapcast-*) is Mopidy's job.
 _PHONE_TARGETS = {"phone", "local-phone", "phone-local"}
+# The phone too, but played by an app (Sasonica) rather than Termux's mpv. The
+# speech lane's `app` is the companion; music's is Sasonica. See music_app.
+_APP_TARGETS = {"app"}
 
 
 def default_target() -> Target:
@@ -56,9 +62,11 @@ class SinkMusicRouter:
     """A `Sink` that forwards to the live music backend (Mopidy or phone-local)."""
 
     def __init__(self, mopidy: Optional[SinkMusic] = None,
-                 local: Optional[SinkMusicLocal] = None) -> None:
+                 local: Optional[SinkMusicLocal] = None,
+                 app: Optional[SinkMusicApp] = None) -> None:
         self.mopidy = mopidy or SinkMusic()
         self.local = local or SinkMusicLocal()
+        self.app = app or SinkMusicApp()
         # Which backend the in-force duck was sent to. See duck()/unduck().
         self._ducked_backend = None
 
@@ -73,8 +81,20 @@ class SinkMusicRouter:
         except Exception:  # noqa: BLE001 — bridge down ⇒ treat as not live
             return False
 
+    def _app_live(self) -> bool:
+        """True when Sasonica is configured AND holding a music session."""
+        if not _app_configured():
+            return False
+        try:
+            return self.app.loaded()
+        except Exception:  # noqa: BLE001 — app unreachable ⇒ not live
+            return False
+
     def _observe_backend(self):
-        """Backend the coordinator should observe/duck: phone if live, else Mopidy."""
+        """Backend the coordinator should observe/duck: the app, then the
+        phone's mpv, whichever is live, else Mopidy."""
+        if self._app_live():
+            return self.app
         return self.local if self._local_live() else self.mopidy
 
     def _backend_for(self, target: Target):
@@ -100,6 +120,9 @@ class SinkMusicRouter:
         # Only a caller that NAMED a phone target gets deterministic routing.
         if target.name in _PHONE_TARGETS:
             return self.local
+        if target.name in _APP_TARGETS:
+            # The app when it holds music, else the mpv it fell back to.
+            return self.app if self._app_live() else self.local
         return self._observe_backend()
 
     # ---- play routes by target ------------------------------------------
@@ -107,7 +130,12 @@ class SinkMusicRouter:
     def play(self, uri: str, target: Target = Target(name="local"),
              replace: bool = True, **opts) -> None:
         target = _resolve_target(target)
-        if target.name in _PHONE_TARGETS:
+        if target.name in _APP_TARGETS:
+            if self.app.play(uri, target, replace=replace, **opts):
+                return
+            log.info("sink-music-router: the app did not take %s; phone mpv instead", uri)
+            self.local.play(uri, target, replace=replace, **opts)
+        elif target.name in _PHONE_TARGETS:
             self.local.play(uri, target, replace=replace, **opts)
         else:
             self.mopidy.play(uri, target, replace=replace, **opts)
@@ -184,7 +212,7 @@ class SinkMusicRouter:
         during __init__ cannot recurse through _observe_backend before those
         attributes are bound.
         """
-        if name.startswith("_") or name in ("mopidy", "local"):
+        if name.startswith("_") or name in ("mopidy", "local", "app"):
             raise AttributeError(name)
         backend = self._observe_backend()
         attr = getattr(backend, name, None)
