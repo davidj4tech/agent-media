@@ -254,6 +254,9 @@ def test_conversation_log_shows_the_turn_being_spoken_now(tmp_path, monkeypatch)
                    "clip_durations_s": [2.0, 3.0],
                    "play_started_at": 1000.0, "paused_at": 1004.5}})
     lines = bt.conversation_log("sess-1", folder)
+    # When the reading was taken, and the offset the reader takes off it.
+    assert lines[-1].pop("server_time") > 0
+    assert lines[-1].pop("delay") >= 0
     assert lines[-1] == {"start": None, "end": None, "at": 300.0, "key": "",
                          "who": "agent", "text": "Speaking this now",
                          # Live, which sentence the voice is on, and the

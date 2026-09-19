@@ -902,7 +902,11 @@ def conversation_log(session: str, folder: Path, *, target=None) -> list:
         # follow the voice sentence by sentence rather than just show the turn.
         line.update({"live": True, "sentences": live["sentences"],
                      "sentence": live["sentence"], "offsets": live["offsets"],
-                     "elapsed": live["elapsed"], "paused": live["paused"]})
+                     "elapsed": live["elapsed"], "paused": live["paused"],
+                     # When `elapsed` was read, so it can be brought up to the
+                     # moment the answer leaves (canvas), and the offset the
+                     # reader takes off the clock.
+                     "server_time": live["server_time"], "delay": live["delay"]})
         out.append(line)
     return [line for line in out if _said_by_anyone(line)]
 

@@ -1523,8 +1523,21 @@ class Handler(BaseHTTPRequestHandler):
             item = parse_qs(self.path.partition("?")[2]).get("item", [""])[0]
             bearer = (self.headers.get("Authorization") or "").removeprefix("Bearer").strip()
             ok, detail = _reply.log_for_item(item, bearer)
-            self._json(200 if ok else detail.pop("status", 404),
-                       {"ok": ok, **detail})
+            if ok:
+                # The live reply's position was read early in building this
+                # answer; bring it up to the moment it is sent. The phone is
+                # 2s away over the tailnet, and every stale moment here was a
+                # moment the follow-along bold spent behind the voice.
+                now = time.time()
+                for line in detail.get("lines") or []:
+                    if line.get("live") and line.get("elapsed") is not None \
+                            and not line.get("paused") and line.get("server_time"):
+                        line["elapsed"] = round(line["elapsed"] + now - line["server_time"], 3)
+                        line["server_time"] = round(now, 3)
+                # Compressed: 38 KB of transcript took ~0.9s to cross the link.
+                self._json_z(200, {"ok": ok, **detail})
+            else:
+                self._json(detail.pop("status", 404), {"ok": ok, **detail})
         elif path == "/conversations":
             # What the assistant button can be pointed at: live sessions and
             # recent conversations, by title. Gated like /conversation.
