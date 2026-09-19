@@ -51,6 +51,24 @@ def _short(text: str, n: int = 90) -> str:
     return text if len(text) <= n else text[: n - 1] + "…"
 
 
+_SETUP = re.compile(r"^(cd|set|export|source|\.|sleep|true|:)\b|^[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def _command_gist(command: str) -> str:
+    """The part of a shell command that says what it does.
+
+    A command with no description reads as its first line, which is usually
+    `cd ~/projects/…` or `tok=$(grep …)` — setup, not the work. Skip leading
+    setup segments and show the first that does something.
+    """
+    first = command.strip().splitlines()[0] if command.strip() else ""
+    parts = [p.strip() for p in re.split(r"&&|;|\|", first) if p.strip()]
+    for part in parts:
+        if not _SETUP.match(part):
+            return part
+    return parts[-1] if parts else ""
+
+
 def describe(tool: str, args: dict) -> str:
     """One line of plain English for a tool call, or '' to leave it out."""
     if tool in _QUIET:
@@ -74,7 +92,7 @@ def describe(tool: str, args: dict) -> str:
     if tool == "Glob":
         return _short(f"Find {args.get('pattern', '')}")
     if tool == "Bash":
-        return _short(f"Run {args.get('command', '')}", 70)
+        return _short(f"Run {_command_gist(str(args.get('command') or ''))}", 70)
     if tool == "WebFetch":
         m = re.match(r"https?://([^/]+)", str(args.get("url") or ""))
         return f"Read {m.group(1) if m else 'a web page'}"
@@ -186,13 +204,18 @@ def attach(session: str, lines: list[dict]) -> Optional[dict]:
     now = last["steps"][-1] if last["steps"] else None
     return {"since": last["start"], "count": len(last["steps"]),
             "current": now["text"] if now else "", "current_at": now["at"] if now else None,
+            # The list so far, newest last, as the terminal shows it.
+            "steps": [s["text"] for s in last["steps"][-MAX_STEPS:]],
             "server_time": round(time.time(), 3)}
 
 
 def hook_main() -> None:
     """The hook: one JSON event on stdin, one line appended. Always exits 0."""
     try:
-        record(json.load(sys.stdin))
+        event = json.load(sys.stdin)
+        if os.environ.get("AGENT_MEDIA_ACTIVITY_DEBUG") or (activity_dir() / ".debug").exists():
+            (activity_dir() / ".last-event.json").write_text(json.dumps(event)[:4000])
+        record(event)
     except Exception:  # noqa: BLE001
         pass
 

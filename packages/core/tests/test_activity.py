@@ -21,6 +21,8 @@ def _ev(name, at, **kw):
 @pytest.mark.parametrize("tool,args,want", [
     ("Bash", {"command": "ls -la", "description": "List files"}, "List files"),
     ("Bash", {"command": "ls -la"}, "Run ls -la"),
+    ("Bash", {"command": "cd ~/x && tok=$(cat f) && git push -q"}, "Run git push -q"),
+    ("Bash", {"command": "cd ~/x; set -a; pytest -q tests | tail -3"}, "Run pytest -q tests"),
     ("Read", {"file_path": "/a/b/canvas.py"}, "Read canvas.py"),
     ("Edit", {"file_path": "/a/SpeechBar.vue"}, "Edit SpeechBar.vue"),
     ("Grep", {"pattern": "speech/now"}, "Search for speech/now"),
@@ -50,6 +52,7 @@ def test_a_running_turn_says_what_it_is_doing():
     working = activity.attach(SID, [{"who": "you", "at": 99.5}])
     assert working["since"] == 100 and working["count"] == 1
     assert working["current"] == "Search for foo"
+    assert working["steps"] == ["Search for foo"]
 
 
 def test_each_turn_goes_to_one_reply():

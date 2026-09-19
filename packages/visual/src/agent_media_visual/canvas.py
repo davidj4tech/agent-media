@@ -1534,8 +1534,7 @@ class Handler(BaseHTTPRequestHandler):
                             and not line.get("paused") and line.get("server_time"):
                         line["elapsed"] = round(line["elapsed"] + now - line["server_time"], 3)
                         line["server_time"] = round(now, 3)
-                # Compressed: 38 KB of transcript took ~0.9s to cross the link.
-                self._json_z(200, {"ok": ok, **detail})
+                self._json(200, {"ok": ok, **detail})
             else:
                 self._json(detail.pop("status", 404), {"ok": ok, **detail})
         elif path == "/conversations":
