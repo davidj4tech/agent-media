@@ -1692,6 +1692,34 @@ def conversation(item: str, bearer: str) -> tuple[bool, dict]:
                   "suggestion": suggestion_for(session, pane)}
 
 
+def commands_for(item: str, session: str, project: str, bearer: str) -> tuple[bool, dict]:
+    """The slash menu for a conversation, or for a project about to start one.
+
+    The menu belongs to a directory, not to a conversation: a project's own
+    skills and commands are what make the list worth having, and two sessions
+    in the same tree get the same answer. Gated like `/conversation` — the
+    menu names this machine's skills, so a caller who may not reply may not
+    read it either.
+    """
+    from agent_media_core import slash_menu
+
+    user, status = abs_identity(bearer)
+    if not user:
+        return False, _identity_error(status)
+    ok, why = may_reply(user)
+    if not ok:
+        return False, {"error": why, "status": 403}
+    if item and not session:
+        session, err = session_for_item(item, bearer)
+        if not session:
+            return False, {"error": err, "status": 404}
+    cwd = transcript_cwd(session) if session else ""
+    if not cwd and project:
+        _name, cwd = project_target(project)
+    cwd = cwd or os.path.expanduser("~")
+    return True, {"cwd": cwd, "commands": slash_menu.menu(cwd)}
+
+
 def attach_pictures(lines: list) -> None:
     """Give each log line the picture(s) the canvas drew for that reply.
 

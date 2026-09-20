@@ -1389,7 +1389,7 @@ PAGE_ID = hashlib.sha256(PAGE.encode()).hexdigest()[:12]
 _CORS_PATHS = frozenset({
     "/conversation", "/conversation/log", "/conversations", "/item",
     "/reply", "/ask", "/focus", "/session/resume", "/session/close", "/draft",
-    "/speech/now", "/speech/ctl", "/sessions/state",
+    "/speech/now", "/speech/ctl", "/sessions/state", "/commands",
 })
 
 #: What the app's speech player may do: the popup's listening keys — pause,
@@ -1578,6 +1578,16 @@ class Handler(BaseHTTPRequestHandler):
                 ok, detail = _reply.conversation(item, bearer)
             self._json(200 if ok else detail.pop("status", 404),
                        {"ok": ok, **detail})
+        elif path == "/commands":
+            # The slash menu for the reply box: what this session's terminal
+            # would offer. `?item=`, `?session=` or `?project=` (a new chat).
+            from . import reply as _reply
+            qs = parse_qs(self.path.partition("?")[2])
+            bearer = (self.headers.get("Authorization") or "").removeprefix("Bearer").strip()
+            ok, detail = _reply.commands_for(qs.get("item", [""])[0],
+                                             qs.get("session", [""])[0],
+                                             qs.get("project", [""])[0], bearer)
+            self._json(200 if ok else detail.pop("status", 404), {"ok": ok, **detail})
         elif path == "/conversation/log":
             # The same conversation, read rather than heard.
             from . import reply as _reply
