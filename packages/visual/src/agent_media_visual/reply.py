@@ -514,13 +514,15 @@ def parse_dialog(cap: str) -> dict | None:
     for ln in lines[first:]:
         m = _OPTION.match(ln)
         if m:
-            options.append([int(m.group(1)), m.group(2).strip()])
+            options.append([int(m.group(1)), m.group(2).strip(), ""])
             indent = len(ln) - len(ln.lstrip())
         elif (options and ln.strip() and not _RULE.match(ln)
               and len(ln) - len(ln.lstrip()) > indent):
-            # A label the pane's width wrapped, which is indented under it —
-            # the footer below the list ("Press enter to confirm") is not.
-            options[-1][1] += " " + ln.strip()
+            # Indented under an option: the rest of a label the pane's width
+            # wrapped, or the description a question gives each answer
+            # ("Red" / "Warm, bold, high-energy."). The footer below the list
+            # ("Press enter to confirm") is not indented, so it is neither.
+            options[-1][2] = (options[-1][2] + " " + ln.strip()).strip()
     question: list[str] = []
     for ln in reversed(lines[max(0, first - _QUESTION_LINES):first]):
         if _RULE.match(ln):
@@ -532,10 +534,16 @@ def parse_dialog(cap: str) -> dict | None:
     # first option that is visible. Say so rather than show a fragment of
     # option 2 as the question: the numbers still answer it, and the phone
     # can offer the desk for the rest.
-    partial = bool(options) and options[0][0] != 1
-    return {"question": "" if partial else " ".join(reversed(question)),
+    # Numbered from 1 with nothing missing, or part of the list is off the
+    # screen: Claude's own questions run to four or five answers and a pane
+    # this tall shows three of them.
+    numbers = [n for n, _label, _detail in options]
+    partial = bool(options) and numbers != list(range(1, len(numbers) + 1))
+    top_gone = bool(options) and options[0][0] != 1
+    return {"question": "" if top_gone else " ".join(reversed(question)),
             "partial": partial,
-            "options": [{"n": n, "label": label} for n, label in options]}
+            "options": [{"n": n, "label": label, "detail": detail}
+                        for n, label, detail in options]}
 
 
 def approval_for(pane: str, agent: str = "claude") -> dict | None:
@@ -555,7 +563,8 @@ def approval_for(pane: str, agent: str = "claude") -> dict | None:
     dialog = parse_dialog(cap)
     if not dialog or not dialog["options"]:
         return None
-    seed = dialog["question"] + "|" + "|".join(f"{o['n']}.{o['label']}" for o in dialog["options"])
+    seed = dialog["question"] + "|" + "|".join(
+        f"{o['n']}.{o['label']}/{o['detail']}" for o in dialog["options"])
     # A scrolled dialog is answered by number all the same; the key still
     # follows what was on screen when it was read.
     dialog["key"] = hashlib.sha1(seed.encode()).hexdigest()[:12]

@@ -31,12 +31,14 @@ def test_the_dialog_is_read_off_the_screen():
     d = reply.parse_dialog(CLAUDE)
     assert d["question"] == ("Claude has written up a plan and is ready to execute. "
                              "Would you like to proceed?")
-    assert d["options"] == [{"n": 1, "label": "Yes, and use auto mode"},
-                            {"n": 2, "label": "Yes, manually approve edits"},
-                            {"n": 3, "label": "Tell Claude what to change"}]
+    assert d["options"] == [
+        {"n": 1, "label": "Yes, and use auto mode", "detail": ""},
+        {"n": 2, "label": "Yes, manually approve", "detail": "edits"},
+        {"n": 3, "label": "Tell Claude what to", "detail": "change"}]
     d = reply.parse_dialog(CODEX)
     assert d["question"] == "Hooks need review 3 hooks are new or changed."
-    assert d["options"][2] == {"n": 3, "label": "Continue without trusting (hooks won't run)"}
+    assert d["options"][2] == {"n": 3, "label": "Continue without trusting",
+                               "detail": "(hooks won't run)"}
 
 
 def test_a_screen_with_no_question_has_none():
@@ -155,7 +157,8 @@ def test_the_marked_list_is_the_dialog():
     assert canvas._classify_agent(REPLY_THEN_DIALOG, "claude") == "approval"
     d = reply.parse_dialog(REPLY_THEN_DIALOG)
     assert d["question"] == "Do you want to proceed?"
-    assert d["options"] == [{"n": 1, "label": "Yes"}, {"n": 2, "label": "No, keep planning"}]
+    assert d["options"] == [{"n": 1, "label": "Yes", "detail": ""},
+                            {"n": 2, "label": "No, keep planning", "detail": ""}]
 
 
 def test_a_session_in_plan_mode_is_still_claude_code():
@@ -187,3 +190,27 @@ def test_a_scrolled_dialog_says_it_is_partial():
 
 def test_a_whole_dialog_is_not_partial():
     assert reply.parse_dialog(CLAUDE)["partial"] is False
+
+
+# Claude Code's own question to you, which is the same dialog: answers with a
+# line of description each, and a list too long for the pane.
+ASK = """Which colour do you prefer?
+❯ 1. Red
+     Warm, bold, high-energy.
+  2. Green
+     Natural, calm, balanced.
+↓ 3. Blue
+     Cool, steady, classic.
+  ──────────────────────────────
+  5. Chat about this
+Enter to select · ↑/↓ to navigate
+"""
+
+
+def test_a_question_keeps_each_answer_s_description():
+    d = reply.parse_dialog(ASK)
+    assert d["question"] == "Which colour do you prefer?"
+    assert d["options"][0] == {"n": 1, "label": "Red", "detail": "Warm, bold, high-energy."}
+    # 4 is off the screen, so the list is not all of it — said, not guessed.
+    assert [o["n"] for o in d["options"]] == [1, 2, 3, 5]
+    assert d["partial"] is True
