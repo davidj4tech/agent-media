@@ -430,53 +430,14 @@ def _tmux_session_for_pane(pane: str) -> str:
 
 
 def _registered_session_for_pane(pane: str) -> Optional[str]:
-    """Which conversation *currently owns* `pane`, or None.
+    """Which conversation currently owns `pane`, or None.
 
-    Read from the registry `claude-tmux-session-register` (agent-config's
-    SessionStart/SessionEnd hook) already maintains at
-    ~/.claude/tmux-sessions/<pane-number>, so nothing new has to be written to
-    answer this. Format: ``<sessionId> <claudePid> <cwd>``, with a legacy bare
-    ``<sessionId>``; keyed by pane, newest start wins.
-
-    Why prefer it over the clip history: history can only answer "who spoke here
-    last", and that degrades every time tmux recycles a pane id — one observed
-    pane had carried twelve conversations plus fifteen untagged clips, so the
-    honest answer from clips can be a conversation that ended days ago. The
-    registry knows the live occupant even before it has said anything.
-
-    The pid is what makes a stale entry *detectable* rather than merely old: a
-    dead one means the registry is describing a session that has exited, which
-    owns nothing. Fall back in that case rather than trust it.
-
-    MEDIA_PANE_REGISTRY_DIR overrides the location (tests, and any host that
-    keeps its Claude state elsewhere).
+    Lives in `conversation` now: `start` needs the same answer, to know whose
+    transcript to check when it types into a window that is already open.
     """
-    if not pane or "#{" in pane:
-        return None
-    root = os.environ.get("MEDIA_PANE_REGISTRY_DIR") or "~/.claude/tmux-sessions"
-    path = os.path.join(os.path.expanduser(root), pane.lstrip("%"))
-    try:
-        with open(path, encoding="utf-8") as fh:
-            fields = fh.read().strip().split()
-    except OSError:
-        # The registry can lose an entry; Claude's own record of the pane
-        # (~/.claude/sessions) cannot be stale the same way.
-        from . import claude_sessions
+    from . import conversation
 
-        return claude_sessions.by_pane().get("%" + pane.lstrip("%"))
-    if not fields:
-        return None
-    sess = fields[0]
-    if len(fields) >= 2 and fields[1].isdigit():
-        # Shared with the now_playing orphan guard rather than reimplemented:
-        # "is this pid still here" has the same conservative-on-error behaviour
-        # in both places, which is the behaviour that matters.
-        from .state.store import _pid_alive
-
-        # The pane's owner has exited; whatever is there now is not this session.
-        if not _pid_alive(int(fields[1])):
-            return None
-    return sess or None
+    return conversation.session_for_pane(pane)
 
 
 def _anchor_session() -> Optional[str]:

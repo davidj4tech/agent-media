@@ -232,6 +232,56 @@ def needle(text: str) -> str:
     return " ".join((text or "").split())[:_NEEDLE_N]
 
 
+def session_for_pane(pane: str) -> Optional[str]:
+    """Which conversation *currently owns* `pane`, or None.
+
+    Read from the registry `claude-tmux-session-register` (agent-config's
+    SessionStart/SessionEnd hook) already maintains at
+    ~/.claude/tmux-sessions/<pane-number>, so nothing new has to be written to
+    answer this. Format: ``<sessionId> <claudePid> <cwd>``, with a legacy bare
+    ``<sessionId>``; keyed by pane, newest start wins.
+
+    Why prefer it over the clip history: history can only answer "who spoke here
+    last", and that degrades every time tmux recycles a pane id — one observed
+    pane had carried twelve conversations plus fifteen untagged clips, so the
+    honest answer from clips can be a conversation that ended days ago. The
+    registry knows the live occupant even before it has said anything.
+
+    The pid is what makes a stale entry *detectable* rather than merely old: a
+    dead one means the registry is describing a session that has exited, which
+    owns nothing. Fall back in that case rather than trust it.
+
+    MEDIA_PANE_REGISTRY_DIR overrides the location (tests, and any host that
+    keeps its Claude state elsewhere).
+    """
+    if not pane or "#{" in pane:
+        return None
+    root = os.environ.get("MEDIA_PANE_REGISTRY_DIR") or "~/.claude/tmux-sessions"
+    path = os.path.join(os.path.expanduser(root), pane.lstrip("%"))
+    try:
+        with open(path, encoding="utf-8") as fh:
+            fields = fh.read().strip().split()
+    except OSError:
+        # The registry can lose an entry; Claude's own record of the pane
+        # (~/.claude/sessions) cannot be stale the same way.
+        from . import claude_sessions
+
+        return claude_sessions.by_pane().get("%" + pane.lstrip("%"))
+    if not fields:
+        return None
+    sess = fields[0]
+    if len(fields) >= 2 and fields[1].isdigit():
+        # Shared with the now_playing orphan guard rather than reimplemented:
+        # "is this pid still here" has the same conservative-on-error behaviour
+        # in both places, which is the behaviour that matters.
+        from .state.store import _pid_alive
+
+        # The pane's owner has exited; whatever is there now is not this session.
+        if not _pid_alive(int(fields[1])):
+            return None
+    return sess or None
+
+
 def landed(session: str, mark: str, *, timeout: float = LANDED_S) -> bool:
     """Whether the typed line reached the session, per its own transcript.
 
@@ -454,8 +504,17 @@ def start(prompt: str, *, channel: str = "speech", title: str = "",
     if existing is not None:
         # Already open and not yet spoken. Type into it rather than opening a
         # second window with the same name, which tmux allows and nobody wants.
-        return name if deliver(Conversation(session="", pane=existing), prompt,
-                               verify=False) else None
+        #
+        # Not yet spoken is exactly why this used to go in unverified: with no
+        # turn in the history there was no session to name, so there was no
+        # transcript to check and no way to notice a swallowed Enter — in the
+        # one window most likely to swallow one, having just been opened. The
+        # registry knows a pane's occupant from the moment it starts, which is
+        # earlier than the history can, so ask it. Still unverified when it
+        # cannot say: typed is all we would know.
+        owner = session_for_pane(existing) or ""
+        return name if deliver(Conversation(session=owner, pane=existing), prompt,
+                               verify=bool(owner)) else None
     launcher = (cmd or os.environ.get("MEDIA_ASK_CMD") or ASK_CMD).strip()
     argv = ["tmux", "new-window", "-d", "-n", name]
     if session:

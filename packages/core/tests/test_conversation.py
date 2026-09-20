@@ -474,6 +474,42 @@ def test_an_open_window_is_typed_into_rather_than_duplicated(tmux_calls,
     assert not any(a[1] == "new-window" for a in calls)
 
 
+def test_an_open_window_is_verified_against_whoever_owns_it(tmux_calls,
+                                                            monkeypatch, tmp_path):
+    """The window is open but has not spoken, so history cannot name it — and
+    a window this new is the one most likely to swallow an Enter. The registry
+    knows its occupant from the moment it started."""
+    _calls, out = tmux_calls
+    out["stdout"] = "ask Blue\t%9\n"
+    (tmp_path / "9").write_text("sess-9 1 /home/ryer")
+    monkeypatch.setenv("MEDIA_PANE_REGISTRY_DIR", str(tmp_path))
+    monkeypatch.setattr("agent_media_core.state.store._pid_alive", lambda pid: True)
+    seen = []
+    monkeypatch.setattr(C, "deliver",
+                        lambda conv, line, **kw: seen.append((conv, kw)) or True)
+    assert C.start("why?", channel="music", title="Blue") == "ask Blue"
+    conv, kw = seen[0]
+    assert conv.session == "sess-9" and conv.pane == "%9"
+    assert kw["verify"] is True
+
+
+def test_an_open_window_with_no_owner_on_record_is_still_typed_into(tmux_calls,
+                                                                   monkeypatch,
+                                                                   tmp_path):
+    """Unverified is the honest answer when nothing can say whose pane it is —
+    not a refusal to deliver."""
+    _calls, out = tmux_calls
+    out["stdout"] = "ask Blue\t%9\n"
+    monkeypatch.setenv("MEDIA_PANE_REGISTRY_DIR", str(tmp_path))
+    monkeypatch.setenv("CLAUDE_SESSIONS_DIR", str(tmp_path / "none"))
+    seen = []
+    monkeypatch.setattr(C, "deliver",
+                        lambda conv, line, **kw: seen.append((conv, kw)) or True)
+    assert C.start("why?", channel="music", title="Blue") == "ask Blue"
+    conv, kw = seen[0]
+    assert conv.session == "" and kw["verify"] is False
+
+
 def test_the_lookup_asks_for_the_whole_session(tmux_calls):
     """`list-panes -t <session>` lists that session's current window only."""
     calls, _ = tmux_calls
