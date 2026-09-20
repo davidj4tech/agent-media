@@ -40,6 +40,7 @@ def test_the_menu_is_what_claude_code_says_plus_the_terminal_only_ones(monkeypat
                         lambda cwd, timeout=60.0: (["model", "speak", "__secret",
                                                     "mcp__x__y", "resume"], "2.1.1"))
     monkeypatch.setattr(slash_menu, "descriptions", lambda cwd=None: {"speak": "Out loud"})
+    monkeypatch.setattr(slash_menu, "bundle_commands", lambda names: {})
     menu = slash_menu.build("/proj")
     names = [c["name"] for c in menu]
     assert "__secret" not in names and "mcp__x__y" not in names   # internal
@@ -91,3 +92,35 @@ def test_the_startup_event_is_read_and_the_run_stopped(monkeypatch):
     monkeypatch.setattr(slash_menu.subprocess, "Popen", lambda *a, **k: _Proc())
     assert slash_menu.ask_claude("/proj") == (["model"], "2.1.9")
     assert stopped == [True]                       # never gets as far as a reply
+
+
+def test_the_bundles_own_words_and_aliases_beat_the_kept_ones(monkeypatch):
+    monkeypatch.setattr(slash_menu, "ask_claude", lambda cwd, timeout=60.0: (["model"], "2.1.1"))
+    monkeypatch.setattr(slash_menu, "descriptions", lambda cwd=None: {})
+    monkeypatch.setattr(slash_menu, "bundle_commands", lambda names: {
+        "model": {"description": "Set the AI model for Claude Code", "aliases": []},
+        "exit": {"description": "", "aliases": ["quit"]}})
+    by_name = {c["name"]: c for c in slash_menu.build("/proj")}
+    assert by_name["model"]["description"] == "Set the AI model for Claude Code"
+    # /exit builds its description at runtime, so the kept line still shows —
+    # but the alias is real and comes through.
+    assert by_name["exit"]["aliases"] == ["quit"]
+    assert by_name["exit"]["description"] == dict(slash_menu.TERMINAL_ONLY)["exit"]
+
+
+def test_a_command_record_is_read_whichever_way_round_it_is(tmp_path, monkeypatch):
+    bundle = tmp_path / "claude.exe"
+    bundle.write_bytes(
+        b'x={type:"local",name:"config",aliases:["settings"],description:"Open settings"};'
+        b'y={aliases:["quit"],name:"exit",immediate:!0};'
+        b'z={name:"OCaml",aliases:["ml"]};')
+    monkeypatch.setattr(slash_menu, "_bundle_path", lambda: bundle)
+    found = slash_menu.bundle_commands({"config", "exit"})
+    assert found["config"] == {"description": "Open settings", "aliases": ["settings"]}
+    assert found["exit"]["aliases"] == ["quit"]
+    assert "OCaml" not in found          # only names the init event vouched for
+
+
+def test_no_bundle_is_no_trouble(monkeypatch):
+    monkeypatch.setattr(slash_menu, "_bundle_path", lambda: None)
+    assert slash_menu.bundle_commands({"exit"}) == {}

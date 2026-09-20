@@ -59,9 +59,10 @@ TERMINAL_ONLY: tuple[tuple[str, str], ...] = (
     ("exit", "End the session"),
 )
 
-#: Claude Code's own commands come as bare names — it has no description to
-#: give for them — so the commonest ones get a line here. A command with no
-#: line shows its name alone, which is no worse than the terminal's own menu.
+#: A last resort only: Claude Code's bundle has the real sentence for nearly
+#: every built-in (see `bundle_commands`), and these are what is shown when a
+#: command's description is built at runtime and so is not in there to read —
+#: `/exit` is one. A command with neither shows its name alone.
 BUILTIN_DESCRIPTIONS = {
     "clear": "Start again with an empty conversation",
     "compact": "Summarise the conversation so far to free room",
@@ -77,6 +78,70 @@ BUILTIN_DESCRIPTIONS = {
     "rename": "Rename this conversation",
     "recap": "What this session has done so far",
 }
+
+#: A command record in Claude Code's own bundle:
+#: `name:"exit",aliases:["quit"],...description:"..."`. The bundle is minified
+#: and this is not an interface, so everything here is best-effort: a name we
+#: already have from the init event, looked up for its own words.
+_RECORD = re.compile(
+    rb'name:"(?P<name>[a-z][a-z0-9:-]{1,40})"(?P<rest>.{0,400}?)(?=name:"|$)',
+    re.DOTALL)
+_ALIASES = re.compile(rb'aliases:\[(?P<list>[^\]]{0,120})\]')
+_ALIAS = re.compile(rb'"([a-z][a-z0-9:+#-]{0,30})"')
+_BUNDLE_DESC = re.compile(rb'description:"(?P<text>[^"\\]{4,300})"')
+
+
+def _bundle_path() -> Optional[Path]:
+    """Claude Code's own executable, or None."""
+    import shutil
+
+    found = shutil.which("claude")
+    if not found:
+        return None
+    real = Path(found).resolve()
+    return real if real.is_file() else None
+
+
+def bundle_commands(names: set) -> dict:
+    """`{name: {description, aliases}}` read out of Claude Code's bundle.
+
+    The init event gives names alone, but the bundle each name came from has
+    the sentence the terminal shows and the aliases it answers to — `/exit
+    (quit)`, `/resume (continue)` — and there is nowhere else to get them. It
+    is minified and unpromised, so only names the init event already vouched
+    for are looked up, and anything unreadable simply is not found: the menu
+    then shows what it showed before.
+    """
+    path = _bundle_path()
+    if not path or not names:
+        return {}
+    try:
+        blob = path.read_bytes()
+    except OSError as e:  # noqa: BLE001
+        log.debug("slash-menu: cannot read %s (%s)", path, e)
+        return {}
+    wanted = {n.encode() for n in names}
+    out: dict = {}
+    for record in _RECORD.finditer(blob):
+        name = record.group("name")
+        if name not in wanted:
+            continue
+        # A record is written either way round — `name:"config",aliases:[…]`
+        # or `{aliases:[…],…name:"config"` — so the look is both sides of it.
+        rest = blob[record.start("rest"):record.end("rest")]
+        # Only as far back as this record's own opening brace: the previous
+        # command's aliases are 80 bytes away and would be read as this one's.
+        before = blob[max(0, record.start() - 160):record.start()].rpartition(b"{")[2]
+        entry = out.setdefault(name.decode(), {"description": "", "aliases": []})
+        aliases = _ALIASES.search(rest) or _ALIASES.search(before)
+        if aliases and not entry["aliases"]:
+            found = [a.decode() for a in _ALIAS.findall(aliases.group("list"))]
+            entry["aliases"] = [a for a in found if a != name.decode()]
+        described = _BUNDLE_DESC.search(rest) or _BUNDLE_DESC.search(before)
+        if described and not entry["description"]:
+            entry["description"] = described.group("text").decode(errors="replace").strip()
+    return out
+
 
 _FRONT = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 _DESC = re.compile(r"^description:\s*(.+?)\s*$", re.MULTILINE)
@@ -173,20 +238,24 @@ def build(cwd: str) -> list:
     """The menu for a session in `cwd`: `[{name, description, terminal}]`."""
     names, version = ask_claude(cwd)
     described = descriptions(Path(cwd) if cwd else None)
-    seen = set()
-    menu = []
-    for name in names:
-        if name.startswith("__") or name.startswith("mcp__"):
-            continue          # internal; the TUI does not offer these either
-        seen.add(name)
-        menu.append({"name": name,
-                     "description": (described.get(name.rpartition(":")[2])
-                                     or BUILTIN_DESCRIPTIONS.get(name, "")),
-                     "terminal": False})
-    for name, description in TERMINAL_ONLY:
-        if name in seen:
-            continue
-        menu.append({"name": name, "description": description, "terminal": True})
+    offered = [n for n in names if not n.startswith(("__", "mcp__"))]
+    # A skill's own file first — it is the one written to be read — then
+    # Claude Code's bundle, then the lines kept here.
+    bundle = bundle_commands(set(offered) | {n for n, _d in TERMINAL_ONLY})
+
+    def _entry(name: str, fallback: str, terminal: bool) -> dict:
+        from_bundle = bundle.get(name) or {}
+        return {"name": name,
+                "description": (described.get(name.rpartition(":")[2])
+                                or from_bundle.get("description")
+                                or fallback),
+                "aliases": from_bundle.get("aliases") or [],
+                "terminal": terminal}
+
+    seen = set(offered)
+    menu = [_entry(name, BUILTIN_DESCRIPTIONS.get(name, ""), False) for name in offered]
+    menu += [_entry(name, description, True)
+             for name, description in TERMINAL_ONLY if name not in seen]
     menu.sort(key=lambda c: c["name"])
     return menu
 
