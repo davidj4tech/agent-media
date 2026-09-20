@@ -12,8 +12,19 @@ def _no_live_phone_backend(monkeypatch):
     ~/.config/agent-media.env at import) and the phone's mpv has a track
     loaded — so on a dev box with music playing, an un-scrubbed test run
     would seek/pause the user's actual playback.
+
+    Since the `app` target (music in Sasonica) the router prefers an even
+    nearer backend, chosen by MEDIA_PHONE_PLAYER_URL — and it is tried
+    FIRST, so scrubbing only the mpv endpoint stopped covering this. It
+    was not hypothetical: `media music seek` in the suite reached the
+    phone's player for real, and the two music-seek tests failed here
+    while passing in CI, which is what an inherited-config hazard looks
+    like from the outside. Scrubbed by prefix so a per-target key
+    (..._URL_APP) goes too; a test that wants a player sets its own.
     """
     monkeypatch.delenv("MEDIA_MUSIC_LOCAL_ENDPOINT", raising=False)
+    for key in [k for k in os.environ if k.startswith("MEDIA_PHONE_PLAYER_URL")]:
+        monkeypatch.delenv(key, raising=False)
 
 
 @pytest.fixture(autouse=True)
