@@ -1,0 +1,3 @@
+# Every host with a state DB has one to prune — the phone writes its own
+# history, and its disk is the smaller one. No env gate: the policy applies
+# wherever the DB exists, and on a host that never speaks it finds nothing.

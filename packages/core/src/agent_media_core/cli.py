@@ -6915,6 +6915,20 @@ def cmd_share(a) -> int:
     return rc
 
 
+def cmd_state_gc(a) -> int:
+    """Apply the state DB's retention policy. See StateStore.gc for the rules."""
+    res = StateStore().gc(errors_days=a.errors_days, other_days=a.days,
+                          clip_days=a.clip_days, dry_run=a.dry_run)
+    if getattr(a, "json", False):
+        print(json.dumps(res))
+        return 0
+    verb = "would free" if a.dry_run else "freed"
+    print(f"errors: {res['errors']}  play rows: {res['history']}  "
+          f"clip lists stripped: {res['clips']}  "
+          f"{verb} {res['bytes'] / 1e6:.1f}MB of extras")
+    return 0
+
+
 def cmd_selfcheck(a) -> int:
     """Report this host's install health as key=value lines."""
     print(SELFCHECK_SENTINEL)
@@ -7713,6 +7727,22 @@ def _build_parser() -> argparse.ArgumentParser:
     rs.add_argument("--dry-run", action="store_true",
                     help="name what would be restarted, touch nothing")
     rs.set_defaults(func=cmd_restart_services)
+
+    sg = sub.add_parser("state-gc",
+                        help="apply the state DB's retention policy "
+                             "(old errors and play rows, dead clip lists)")
+    sg.add_argument("--days", type=float, default=90.0,
+                    help="delete non-speech play rows older than this "
+                         "(default 90); speech rows are never deleted")
+    sg.add_argument("--errors-days", type=float, default=30.0,
+                    help="delete errors older than this (default 30)")
+    sg.add_argument("--clip-days", type=float, default=30.0,
+                    help="strip clip lists from speech rows older than this "
+                         "whose audio has left the cache (default 30)")
+    sg.add_argument("--dry-run", action="store_true",
+                    help="count what would go, change nothing")
+    sg.add_argument("--json", action="store_true")
+    sg.set_defaults(func=cmd_state_gc)
 
     sc = sub.add_parser("selfcheck",
                         help="report this host's install health (key=value lines)")

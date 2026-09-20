@@ -1,0 +1,13 @@
+#!/bin/sh
+# state-gc — apply the state DB's retention policy once a day.
+#
+# The DB is append-only by design: every spoken clip, every play, every
+# recovered error. Nothing ever deleted a row, so after a year it was 26MB of
+# which two thirds were clip lists pointing at audio the cache had swept —
+# unplayable, and carried along by every query that reads `extras`.
+#
+# The words are never deleted; see StateStore.gc for why the three rules
+# differ. Defaults live there too, so changing the policy is one edit.
+exec 2>&1
+[ -f "$HOME/.config/agent-media.env" ] && . "$HOME/.config/agent-media.env"
+exec media state-gc

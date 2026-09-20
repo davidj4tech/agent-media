@@ -1084,6 +1084,80 @@ class StateStore:
             result.append(row)
         return result
 
+    # ---- retention -------------------------------------------------------
+
+    def gc(self, *, errors_days: float = 30.0, other_days: float = 90.0,
+           clip_days: float = 30.0, dry_run: bool = False) -> dict:
+        """Apply the retention policy; return what was (or would be) freed.
+
+        Three rules, deliberately unequal:
+
+        * `errors` older than `errors_days` go. Nothing reads an old one; the
+          table exists so `media errors` can show what just broke.
+        * history rows for every sink EXCEPT speech go after `other_days`.
+          They are play records for music and books — a row nothing can
+          replay and nothing displays once it has scrolled out of `recent`.
+        * speech rows are never deleted. They are the transcript: Sasonica
+          shows a conversation by reading them back, and a conversation in
+          the library outlives any window we would pick here. What does go
+          is their clip arrays (`clip_uris` and friends) once the rendered
+          audio they point at is gone from the cache — those keys are two
+          thirds of this table's bytes and, without the files, replay is
+          already impossible. The words stay.
+
+        A dry run counts the same rows and touches nothing.
+        """
+        now = time.time()
+        out = {"errors": 0, "history": 0, "clips": 0, "bytes": 0}
+        with self._cursor() as cur:
+            cur.execute("SELECT count(*) FROM errors WHERE at < ?",
+                        (now - errors_days * 86400,))
+            out["errors"] = cur.fetchone()[0]
+            cur.execute("SELECT count(*) FROM history"
+                        " WHERE sink != 'speech' AND started_at < ?",
+                        (now - other_days * 86400,))
+            out["history"] = cur.fetchone()[0]
+
+            # Speech rows whose clips have left the cache: strip the arrays,
+            # keep the row. Checked file by file because a partly-swept row
+            # can still replay the clips it has.
+            cur.execute("SELECT id, extras FROM history"
+                        " WHERE sink = 'speech' AND extras IS NOT NULL"
+                        " AND started_at < ?", (now - clip_days * 86400,))
+            stripped = []
+            for row_id, raw in cur.fetchall():
+                try:
+                    extras = json.loads(raw)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if not isinstance(extras, dict):
+                    continue
+                uris = extras.get("clip_uris") or []
+                if not isinstance(uris, list) or not uris:
+                    continue
+                if any(isinstance(u, str)
+                       and os.path.exists(u[7:] if u.startswith("file://") else u)
+                       for u in uris):
+                    continue                 # audio still there — still replayable
+                for key in ("clip_uris", "clip_sentences", "clip_durations_s",
+                            "clip_offsets_s", "clip_starts_s", "sentence_marks"):
+                    extras.pop(key, None)
+                after = json.dumps(extras)
+                out["clips"] += 1
+                out["bytes"] += max(0, len(raw) - len(after))
+                stripped.append((after, row_id))
+
+            if dry_run:
+                return out
+            cur.execute("DELETE FROM errors WHERE at < ?",
+                        (now - errors_days * 86400,))
+            cur.execute("DELETE FROM history"
+                        " WHERE sink != 'speech' AND started_at < ?",
+                        (now - other_days * 86400,))
+            cur.executemany("UPDATE history SET extras = ? WHERE id = ?",
+                            stripped)
+        return out
+
     def session_for_pane(self, pane: str) -> Optional[str]:
         """The Claude session id that most recently spoke in `pane`, or None.
 
