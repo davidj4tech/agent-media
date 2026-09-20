@@ -55,6 +55,10 @@ CREATE TABLE IF NOT EXISTS history (
     extras       TEXT
 );
 CREATE INDEX IF NOT EXISTS history_started_idx ON history (started_at);
+-- Almost every reader wants one sink's newest rows (`recent_history`, and the
+-- feed's 4000-row sweeps). On started_at alone that walks every other sink's
+-- rows too, dragging the wide `text` column with it.
+CREATE INDEX IF NOT EXISTS history_sink_started_idx ON history (sink, started_at);
 
 CREATE TABLE IF NOT EXISTS errors (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -205,6 +209,16 @@ class StateStore:
                 cur.execute("ALTER TABLE bookmarks ADD COLUMN end_pos_ms INTEGER")
             if "transcript" not in cols:
                 cur.execute("ALTER TABLE bookmarks ADD COLUMN transcript TEXT")
+            # Superseded by `bookmarks` with channel='music' long ago; the
+            # table stayed behind in existing DBs with nothing reading it.
+            # Only dropped when empty: nothing can read those rows, but a host
+            # whose copy is not empty deserves a look before they go.
+            cur.execute("SELECT name FROM sqlite_master"
+                        " WHERE type='table' AND name='music_bookmarks'")
+            if cur.fetchone():
+                cur.execute("SELECT count(*) FROM music_bookmarks")
+                if not cur.fetchone()[0]:
+                    cur.execute("DROP TABLE music_bookmarks")
             cur.execute("INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
                         ("schema_version", str(SCHEMA_VERSION)))
 

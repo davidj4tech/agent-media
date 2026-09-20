@@ -54,13 +54,19 @@ def store(namespace: str, state: dict[str, float]) -> None:
     now = time.time()
     keep = {k: v for k, v in state.items() if v > now}
     path = _path(namespace)
+    tmp = path.with_suffix(f".{os.getpid()}.tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(f".{os.getpid()}.tmp")
         tmp.write_text(json.dumps(keep))
         tmp.replace(path)                    # atomic: readers never see a partial file
     except OSError:
-        pass
+        # A write that fails part-way (a full disk did this 4,446 times on
+        # 2026-09-10) leaves the scratch file behind; nothing else ever
+        # collects it, because the name carries a pid that will not return.
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def clear(namespace: str) -> None:
