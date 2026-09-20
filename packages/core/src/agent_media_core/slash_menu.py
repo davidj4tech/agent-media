@@ -91,11 +91,39 @@ _ALIAS = re.compile(rb'"([a-z][a-z0-9:+#-]{0,30})"')
 _BUNDLE_DESC = re.compile(rb'description:"(?P<text>[^"\\]{4,300})"')
 
 
-def _bundle_path() -> Optional[Path]:
-    """Claude Code's own executable, or None."""
+#: Where Claude Code is, when PATH does not say. A systemd service has none
+#: of the shell's PATH — the canvas asked `claude` and got nothing, and the
+#: menu quietly fell back to the few commands kept here. `MEDIA_CLAUDE_BIN`
+#: overrides; otherwise these are looked at in order.
+_CLAUDE_GUESSES = (
+    "~/.local/share/fnm/aliases/default/bin/claude",
+    "~/.local/bin/claude",
+    "~/.claude/local/claude",
+    "/usr/local/bin/claude",
+    "/usr/bin/claude",
+)
+
+
+def claude_bin() -> str:
+    """The `claude` to run, or "" — PATH first, then the usual places."""
     import shutil
 
+    override = (os.environ.get("MEDIA_CLAUDE_BIN") or "").strip()
+    if override:
+        return override if os.path.exists(os.path.expanduser(override)) else ""
     found = shutil.which("claude")
+    if found:
+        return found
+    for guess in _CLAUDE_GUESSES:
+        path = os.path.expanduser(guess)
+        if os.path.exists(path):
+            return path
+    return ""
+
+
+def _bundle_path() -> Optional[Path]:
+    """Claude Code's own executable, or None."""
+    found = claude_bin()
     if not found:
         return None
     real = Path(found).resolve()
@@ -187,7 +215,7 @@ def _cache_path(cwd: str) -> Path:
 def claude_version() -> str:
     """The installed Claude Code's version, or "" — the cache's stamp."""
     try:
-        r = subprocess.run(["claude", "--version"], capture_output=True,
+        r = subprocess.run([claude_bin() or "claude", "--version"], capture_output=True,
                            text=True, timeout=30)
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -202,7 +230,7 @@ def ask_claude(cwd: str, timeout: float = 60.0) -> tuple[list, str]:
     """
     try:
         proc = subprocess.Popen(
-            ["claude", "-p", "ok", "--output-format", "stream-json",
+            [claude_bin() or "claude", "-p", "ok", "--output-format", "stream-json",
              "--verbose", "--model", "haiku"],
             cwd=cwd or None, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)

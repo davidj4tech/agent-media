@@ -124,3 +124,20 @@ def test_a_command_record_is_read_whichever_way_round_it_is(tmp_path, monkeypatc
 def test_no_bundle_is_no_trouble(monkeypatch):
     monkeypatch.setattr(slash_menu, "_bundle_path", lambda: None)
     assert slash_menu.bundle_commands({"exit"}) == {}
+
+
+def test_claude_is_found_where_a_service_has_no_path(tmp_path, monkeypatch):
+    monkeypatch.delenv("MEDIA_CLAUDE_BIN", raising=False)
+    import shutil
+
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    guess = tmp_path / "bin" / "claude"
+    guess.parent.mkdir(parents=True)
+    guess.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(slash_menu, "_CLAUDE_GUESSES", (str(guess),))
+    assert slash_menu.claude_bin() == str(guess)
+
+
+def test_a_named_claude_that_is_not_there_is_not_used(tmp_path, monkeypatch):
+    monkeypatch.setenv("MEDIA_CLAUDE_BIN", str(tmp_path / "nope"))
+    assert slash_menu.claude_bin() == ""
