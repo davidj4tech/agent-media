@@ -1,8 +1,10 @@
-"""Visual engines: venice (built-in) + third-party via entry points.
+"""Visual engines: the built-ins + third-party via entry points.
 
 Mirrors core's render-engine seam (agent_media_core/extensions.py): this
-package ships two built-ins — `venice` (raster, the default) and `svg`
-(animated clip-art straight from the gateway LLM, no image API). Any other
+package ships three built-ins — `pattern` (generative SVG composed in
+process; **the default**, because it is the only one that costs nothing and
+needs nothing configured), `venice` (raster, an image API key) and `svg`
+(animated clip-art straight from the gateway LLM). Any other
 engine is an installable plugin registered under the
 ``agent_media.visual_engines`` entry-point group and discovered at runtime —
 this package imports none of them.
@@ -22,10 +24,11 @@ Register it:
     [project.entry-points."agent_media.visual_engines"]
     myengine = "my_package.module:generate"
 
-Select it with ``MEDIA_VISUAL_ENGINE=myengine``. A non-venice failure —
-including an engine that isn't installed — falls back to
-``MEDIA_VISUAL_FALLBACK_ENGINE`` (default venice) so a reply is never
-silently unillustrated while either backend is up.
+Select it with ``MEDIA_VISUAL_ENGINE=myengine``. Any failure — including an
+engine that isn't installed — falls back to
+``MEDIA_VISUAL_FALLBACK_ENGINE`` (default `pattern`) so a reply is never
+silently unillustrated: the fallback needs no key and no network, so the
+last resort cannot itself fail for want of credit.
 
 Rules (same as core's registry): an extension may not shadow a built-in name
 (the collision is logged and the built-in wins); a broken extension is logged
@@ -43,7 +46,11 @@ from typing import Callable, Dict
 log = logging.getLogger(__name__)
 
 VISUAL_ENGINE_GROUP = "agent_media.visual_engines"
-BUILTIN_ENGINE_NAMES = ("venice", "svg")
+BUILTIN_ENGINE_NAMES = ("pattern", "venice", "svg")
+# Engines that compose from the reply text directly. They need no LLM
+# prompt-shaping pass, and the CLI skips it (a saved call, and a saved
+# wait) when every engine a render will use is in here.
+NO_SHAPE_ENGINES = ("pattern",)
 
 VisualEngine = Callable[[str], "tuple[bytes | None, str]"]
 
@@ -91,8 +98,22 @@ def all_engine_names() -> tuple[str, ...]:
     return BUILTIN_ENGINE_NAMES + tuple(discover_visual_engines())
 
 
+def needs_shaping(engine: str | None) -> bool:
+    """False when `engine` reads the reply text directly (see NO_SHAPE_ENGINES)."""
+    return (engine or default_engine()) not in NO_SHAPE_ENGINES
+
+
+def default_engine() -> str:
+    """The engine when nothing says otherwise: MEDIA_VISUAL_ENGINE, else the
+    free built-in. A fresh install illustrates replies out of the box."""
+    return os.environ.get("MEDIA_VISUAL_ENGINE") or "pattern"
+
+
 def _generate_one(prompt: str, engine: str) -> tuple[bytes | None, str]:
     """Generate via a single engine, no fallback."""
+    if engine == "pattern":
+        from .pattern import generate as generate_pattern
+        return generate_pattern(prompt)
     if engine == "venice":
         from .generate import generate_venice
         return generate_venice(prompt)
@@ -111,16 +132,16 @@ def _generate_one(prompt: str, engine: str) -> tuple[bytes | None, str]:
 def generate_image(prompt: str, *, engine: str | None = None) -> tuple[bytes | None, str]:
     """Generate one image via the selected engine, with fallback.
 
-    Engine: the argument, else ``MEDIA_VISUAL_ENGINE``, else venice. On a
+    Engine: the argument, else ``MEDIA_VISUAL_ENGINE``, else `pattern`. On a
     primary failure the render falls back to ``MEDIA_VISUAL_FALLBACK_ENGINE``
-    (default venice); a fallback equal to the primary is a no-op. Returns
+    (default `pattern`); a fallback equal to the primary is a no-op. Returns
     (bytes, "") or (None, "<primary err> | fallback <name>: <err>").
     """
-    primary = engine or os.environ.get("MEDIA_VISUAL_ENGINE") or "venice"
+    primary = engine or default_engine()
     img, err = _generate_one(prompt, primary)
     if img is not None:
         return img, ""
-    fallback = os.environ.get("MEDIA_VISUAL_FALLBACK_ENGINE") or "venice"
+    fallback = os.environ.get("MEDIA_VISUAL_FALLBACK_ENGINE") or "pattern"
     if fallback == primary:
         return None, err
     log.warning("visual engine %r failed (%s); falling back to %r",

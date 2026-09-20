@@ -1,6 +1,18 @@
-"""The visual_engines registry: discovery, shadow rule, dispatch, fallback."""
+"""The visual_engines registry: discovery, shadow rule, dispatch, fallback.
+
+The default and last-resort engine is `pattern` (free, offline). These tests
+pin venice as the fallback where they are exercising the *chain*, so that
+what they assert is the fallback mechanism and not today's default.
+"""
+
+import pytest
 
 from agent_media_visual import engines
+
+
+@pytest.fixture
+def venice_fallback(monkeypatch):
+    monkeypatch.setenv("MEDIA_VISUAL_FALLBACK_ENGINE", "venice")
 
 
 class _EP:
@@ -32,7 +44,7 @@ def test_discovery_skips_shadow_broken_and_duplicates(monkeypatch):
     ])
     found = engines.discover_visual_engines(refresh=True)
     assert set(found) == {"mine"}
-    assert engines.all_engine_names() == ("venice", "svg", "mine")
+    assert engines.all_engine_names() == ("pattern", "venice", "svg", "mine")
 
 
 def test_dispatch_to_plugin(monkeypatch):
@@ -41,7 +53,7 @@ def test_dispatch_to_plugin(monkeypatch):
     assert img == b"plugin-bytes" and err == ""
 
 
-def test_unknown_engine_falls_back_to_venice(monkeypatch):
+def test_unknown_engine_falls_back(monkeypatch, venice_fallback):
     _install(monkeypatch, [])
     calls = {}
 
@@ -55,7 +67,7 @@ def test_unknown_engine_falls_back_to_venice(monkeypatch):
     assert img == b"venice-bytes" and calls["prompt"] == "a scene"
 
 
-def test_plugin_failure_falls_back(monkeypatch):
+def test_plugin_failure_falls_back(monkeypatch, venice_fallback):
     _install(monkeypatch, [_EP("mine", lambda p: (None, "quota"))])
     from agent_media_visual import generate as g
     monkeypatch.setattr(g, "generate_venice", lambda p: (b"vb", ""))
@@ -63,7 +75,7 @@ def test_plugin_failure_falls_back(monkeypatch):
     assert img == b"vb"
 
 
-def test_plugin_raise_is_isolated(monkeypatch):
+def test_plugin_raise_is_isolated(monkeypatch, venice_fallback):
     def boom(prompt):
         raise RuntimeError("kaput")
 
@@ -74,7 +86,7 @@ def test_plugin_raise_is_isolated(monkeypatch):
     assert img == b"vb"
 
 
-def test_both_engines_failing_reports_chain(monkeypatch):
+def test_both_engines_failing_reports_chain(monkeypatch, venice_fallback):
     _install(monkeypatch, [_EP("mine", lambda p: (None, "quota"))])
     from agent_media_visual import generate as g
     monkeypatch.setattr(g, "generate_venice", lambda p: (None, "no key"))
@@ -83,13 +95,14 @@ def test_both_engines_failing_reports_chain(monkeypatch):
     assert "quota" in err and "venice" in err and "no key" in err
 
 
-def test_venice_failing_does_not_fall_back_to_itself(monkeypatch):
+def test_engine_failing_does_not_fall_back_to_itself(monkeypatch, venice_fallback):
     _install(monkeypatch, [])
+    monkeypatch.setenv("MEDIA_VISUAL_ENGINE", "venice")
     from agent_media_visual import generate as g
     calls = []
     monkeypatch.setattr(g, "generate_venice",
                         lambda p: (calls.append(1), (None, "down"))[1])
-    img, err = engines.generate_image("x")   # default engine = venice
+    img, err = engines.generate_image("x")
     assert img is None and err == "down" and len(calls) == 1
 
 

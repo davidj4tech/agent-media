@@ -68,12 +68,15 @@ Design premises (from the discussion that spawned this):
   fresh scene. Disable with `MEDIA_VISUAL_CONTINUITY=0`.
 - **Pluggable engines** — image backends register under the
   `agent_media.visual_engines` entry-point group (mirrors core's render
-  engines; see [`docs/reference/extensions.md`](../../docs/reference/extensions.md)). Two
-  built-ins: `venice` (raster, the default) and `svg` — animated clip-art
+  engines; see [`docs/reference/extensions.md`](../../docs/reference/extensions.md)). Three
+  built-ins: `pattern` (the default — generative SVG composed in process from
+  the reply text: no key, no network, no model, so a fresh install illustrates
+  replies out of the box), `venice` (raster, needs an image API key) and
+  `svg` — animated clip-art
   emitted directly by the gateway LLM (SMIL loops play inside `<img>`;
   validated: well-formed, no scripts/external refs). Select with
   `MEDIA_VISUAL_ENGINE`; failures fall back to
-  `MEDIA_VISUAL_FALLBACK_ENGINE` (default venice).
+  `MEDIA_VISUAL_FALLBACK_ENGINE` (default `pattern` — the last resort has no key to run out of).
 - **Purposeful visuals & the reveal** — a picture that *says* something
   instead of decorating. The reply's author writes an inline marker:
   `[[visual: description]]` makes the description the image spec (a figure,
@@ -129,19 +132,23 @@ decoupled from this package.
 | `MEDIA_VISUAL_MIN_CHARS` | `320` | only illustrate replies at least this long |
 | `MEDIA_VISUAL_PORT` / `MEDIA_VISUAL_BIND` | `8781` / `0.0.0.0` | canvas listen (the service passes `--bind <tailscale-ip>`) |
 | `MEDIA_VISUAL_URL` | `http://127.0.0.1:8781` | canvas(es) to push to — space/comma-separated for several; with multiple, images are referenced via the FIRST target's absolute `/img/` URL, so make it the tailnet URL, reachable from every screen |
-| `MEDIA_VISUAL_ENGINE` | `venice` | image backend (entry-point group `agent_media.visual_engines`) |
-| `MEDIA_VISUAL_FALLBACK_ENGINE` | `venice` | tried when the primary engine fails |
+| `MEDIA_VISUAL_ENGINE` | `pattern` | image backend (entry-point group `agent_media.visual_engines`) |
+| `MEDIA_VISUAL_FALLBACK_ENGINE` | `pattern` | tried when the primary engine fails |
 | `MEDIA_VISUAL_CONTINUITY` | on | `0` = every reply is a fresh scene |
 | `MEDIA_VISUAL_CONTINUITY_TTL` | `7200` | seconds a session's scene stays alive |
 | `MEDIA_VISUAL_SPOOL_KEEP` | `200` | newest images kept by the post-push GC |
 | `MEDIA_VISUAL_SHAPE_MODEL` / `_SHAPE_TIMEOUT` | summary model / timeout | prompt-shaping overrides — a fast model (e.g. haiku) matters: prompts must beat the speech they illustrate |
 | `MEDIA_VISUAL_BEATS` / `_BEATS_MAX` | on / `4` | `0` disables the synced sequence; max parts per reply |
-| `MEDIA_VISUAL_BEATS_ENGINE` | the normal engine | engine for beat images only — pair a slow single-image engine (svg) with a fast one (venice) so sequences stay synced |
+| `MEDIA_VISUAL_BEATS_ENGINE` | the normal engine | engine for beat images only — pair a slow single-image engine (svg) with a fast one (`pattern` is instant) so sequences stay synced |
 | `MEDIA_VISUAL_CHARS_PER_SEC` | `14` | spoken-duration estimate driving beat pacing |
 | `MEDIA_VISUAL_SVG_MODEL` / `_SVG_TIMEOUT` | shape model / image timeout | svg engine model (haiku draws far better than a small local model) |
 | `MEDIA_VISUAL_REVEAL_TIMEOUT` | `75` | max seconds speech holds at a `[[reveal:]]` before continuing without the picture |
 | `MEDIA_VISUAL_MODEL_VENICE` | `z-image-turbo` | venice image model (fast > pretty; `MEDIA_VISUAL_MODEL` also honoured) |
 | `MEDIA_VISUAL_STYLE` | cinematic digital painting… | style suffix, one visual voice |
+| `MEDIA_VISUAL_PATTERN_SEED` | — | pattern engine: scene key (the CLI passes the session id), so one session keeps one palette |
+| `MEDIA_VISUAL_PATTERN_SUBJECT` | — | pattern engine: the whole reply when the prompt is one beat of it, so every beat draws the same subject |
+| `MEDIA_VISUAL_BEAT` | — | pattern engine: `i/n`, this beat's place in the sequence |
+| `MEDIA_VISUAL_MONO` | off | pattern engine: four flat greys, no gradients or partial opacity — what a DU4 e-ink panel can show |
 | `MEDIA_VISUAL_DARK` | **on** | dark mode: every engine is prompted toward deep dark backgrounds with luminous accents — the canvas is black and usually watched in a dim room; `0` disables |
 | `MEDIA_VISUAL_SIZE` | `1024x1024` | canvas cover-crops, square splits the difference |
 | `MEDIA_VISUAL_TIMEOUT` | `90` | image request timeout (s) |

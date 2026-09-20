@@ -45,7 +45,7 @@ from concurrent.futures import ThreadPoolExecutor
 from agent_media_core.intake._env import load_env_file
 
 from .canvas import DEFAULT_PORT, _amux_token
-from .engines import generate_image
+from .engines import generate_image, needs_shaping
 from .generate import shape_prompt, shape_story
 from .state import gc_spool, save_push, spool_dir
 from .state import save_scene as state_save_scene
@@ -191,7 +191,7 @@ def main() -> None:
     ap.add_argument("--session", default="",
                     help="scene-continuity key (e.g. the Claude session id)")
     ap.add_argument("--engine", help="visual engine override (default: "
-                    "MEDIA_VISUAL_ENGINE, else venice)")
+                    "MEDIA_VISUAL_ENGINE, else pattern)")
     ap.add_argument("--model", help="image model override for the engine")
     ap.add_argument("--no-shape", action="store_true",
                     help="skip LLM prompt shaping, use the text directly")
@@ -229,7 +229,14 @@ def main() -> None:
     # fallback has no scene to storyboard. An author-supplied --hint
     # short-circuits everything: it IS the scene (saved to the continuity
     # memory so later replies evolve from it), single decisive image.
-    beats_on = (not args.no_beats and not args.no_shape and not args.hint
+    # An engine that composes from the reply text directly (the `pattern`
+    # built-in) needs no shaping call — and beats stay available, because
+    # their prompts are simply the parts themselves. This is what makes the
+    # default build free: one reply costs zero requests, not N + 1.
+    shape_free = (not needs_shaping(args.engine)
+                  and not needs_shaping(_beats_engine(args.engine)))
+    beats_on = (not args.no_beats and not args.hint
+                and (shape_free or not args.no_shape)
                 and (os.environ.get("MEDIA_VISUAL_BEATS", "1") or "1") != "0")
     parts = split_beats(text, _beats_max()) if beats_on else None
     t0 = time.perf_counter()
@@ -239,6 +246,15 @@ def main() -> None:
         # Purposeful mode for engines that can honour it (the svg engine
         # switches to its labeled-figure prompt).
         os.environ["MEDIA_VISUAL_FIGURE"] = "1"
+        state_save_scene(args.session, scene)
+    elif shape_free:
+        # The engine reads the reply; the scene is the reply. Continuity and
+        # subject identity travel to it in the environment (see pattern.py).
+        scene, used_llm = text[:300], False
+        os.environ.setdefault("MEDIA_VISUAL_PATTERN_SEED", args.session or "")
+        os.environ["MEDIA_VISUAL_PATTERN_SUBJECT"] = text[:4000]
+        if parts:
+            prompts = [p for _, p in parts]
         state_save_scene(args.session, scene)
     elif args.no_shape:
         scene, used_llm = text[:300], False
@@ -254,9 +270,18 @@ def main() -> None:
     # single-image path below.
     if prompts:
         beat_engine = _beats_engine(args.engine)
-        with ThreadPoolExecutor(max_workers=len(prompts)) as pool:
-            results = list(pool.map(
-                lambda p: generate_image(p, engine=beat_engine), prompts))
+        if shape_free:
+            # Milliseconds per beat, and the beat index travels in the
+            # environment — which a thread pool would race on. Sequential.
+            results = []
+            for i, prompt in enumerate(prompts, 1):
+                os.environ["MEDIA_VISUAL_BEAT"] = f"{i}/{len(prompts)}"
+                results.append(generate_image(prompt, engine=beat_engine))
+            os.environ.pop("MEDIA_VISUAL_BEAT", None)
+        else:
+            with ThreadPoolExecutor(max_workers=len(prompts)) as pool:
+                results = list(pool.map(
+                    lambda p: generate_image(p, engine=beat_engine), prompts))
         beats = [(frac, img) for (frac, _), (img, _err)
                  in zip(parts, results) if img is not None]
         if len(beats) >= 2:
@@ -276,8 +301,9 @@ def main() -> None:
             if any(not e for e in errors):
                 save_push(args.key, payload)
             kib = sum((spool_dir() / n).stat().st_size for n, _ in named) // 1024
+            how = "local" if shape_free else f"llm, {t_shape:.1f}s"
             print(f"shown: {len(named)} beats  ({kib} KiB)\n"
-                  f"scene (llm, {t_shape:.1f}s): {scene}\n"
+                  f"scene ({how}): {scene}\n"
                   f"beats: {gen_secs - t_shape:.1f}s")
             return
 

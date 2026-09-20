@@ -67,6 +67,7 @@ def test_svg_is_a_builtin_engine(monkeypatch):
 
 
 def test_bad_svg_falls_back_to_venice(monkeypatch):
+    monkeypatch.setenv("MEDIA_VISUAL_FALLBACK_ENGINE", "venice")
     monkeypatch.setattr(engines, "entry_points", lambda group: [])
     engines.discover_visual_engines(refresh=True)
     _fake_chat(monkeypatch, "not markup")
