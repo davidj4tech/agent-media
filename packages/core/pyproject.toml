@@ -20,6 +20,11 @@ dependencies = [
 dev = [
     "pytest>=8",
 ]
+# Library covers: the canvas draws SVG, Audiobookshelf stores raster. Optional
+# on purpose — without it a conversation simply keeps the default cover.
+covers = [
+    "cairosvg>=2.7",
+]
 
 [project.scripts]
 media                  = "agent_media_core.cli:main"

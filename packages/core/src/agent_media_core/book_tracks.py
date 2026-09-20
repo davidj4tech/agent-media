@@ -1234,6 +1234,154 @@ def set_metadata(session: str, folder: Path, *, target=None) -> str:
     return title if described else ""
 
 
+# --- the cover: the conversation's own picture -------------------------------
+
+#: Ordered preference for what a conversation's cover should be. A marked
+#: [[visual:]] figure was drawn on purpose to mean something, so it beats the
+#: ambient artwork of a later turn; within a kind, the newest wins, because a
+#: cover that tracks where the conversation got to is more use on a shelf than
+#: one frozen at its first sentence.
+def _pushed_pictures(session: str) -> list:
+    """Every picture the canvas pushed for `session`, oldest first.
+
+    Reads the visual channel's own memory (`pushes.json`) rather than the
+    speech rows: it is the side that knows what was drawn, it already keys by
+    reply, and the import is optional — a host with no visual package simply
+    has no covers.
+    """
+    try:
+        from agent_media_visual.state import pushes_path, spool_dir
+    except ImportError:
+        return []
+    try:
+        data = json.loads(pushes_path().read_text())
+    except (OSError, ValueError):
+        return []
+    spool = spool_dir()
+    out = []
+    for rec in sorted(data.values(), key=lambda r: r.get("t", 0)):
+        payload = rec.get("payload") or {}
+        if (payload.get("session") or "") != session:
+            continue
+        names = ([payload.get("image")] if payload.get("image")
+                 else [b.get("image") for b in payload.get("sequence") or []])
+        # A sequence's last beat is the scene fully developed — the frame the
+        # canvas parks on when the voice stops, and the one worth keeping.
+        for name in reversed([str(n or "").strip() for n in names]):
+            if not name or "/" in name:      # another host's spool: no file here
+                continue
+            path = spool / name
+            if path.is_file():
+                out.append((path, payload.get("purpose") == "figure"))
+                break
+    return out
+
+
+def _cover_choice(session: str):
+    """The picture to use, or None. Latest figure, else latest artwork."""
+    pictures = _pushed_pictures(session)
+    if not pictures:
+        return None
+    figures = [p for p, is_fig in pictures if is_fig]
+    return figures[-1] if figures else pictures[-1][0]
+
+
+def _as_raster(path: Path) -> Optional[tuple[bytes, str, str]]:
+    """(bytes, filename, content type) for a cover upload.
+
+    Audiobookshelf stores covers as image files and will not take SVG, which
+    is what the free engine draws, so vector art is rasterised on the way.
+    cairosvg is optional: without it a conversation whose pictures are all
+    vector simply keeps the default cover.
+    """
+    data = path.read_bytes()
+    suffix = path.suffix.lower().lstrip(".")
+    if suffix in ("png", "jpg", "jpeg", "webp"):
+        kind = "jpeg" if suffix in ("jpg", "jpeg") else suffix
+        return data, path.name, f"image/{kind}"
+    if suffix != "svg":
+        return None
+    try:
+        import cairosvg
+    except ImportError:
+        log.debug("book-tracks: no cairosvg, so no cover from %s", path.name)
+        return None
+    try:
+        png = cairosvg.svg2png(bytestring=data, output_width=1600,
+                               output_height=900)
+    except Exception as e:  # noqa: BLE001 — a cover is never worth a failure
+        log.warning("book-tracks: could not rasterise %s (%s)", path.name, e)
+        return None
+    return png, path.stem + ".png", "image/png"
+
+
+def _multipart(field: str, filename: str, content_type: str,
+               data: bytes) -> tuple[bytes, str]:
+    """One file as multipart/form-data. Hand-rolled because the package has no
+    HTTP dependency and is not about to take one for a single upload."""
+    import uuid
+    boundary = "----agent-media-" + uuid.uuid4().hex
+    body = b"".join([
+        f"--{boundary}\r\n".encode(),
+        f'Content-Disposition: form-data; name="{field}"; '
+        f'filename="{filename}"\r\n'.encode(),
+        f"Content-Type: {content_type}\r\n\r\n".encode(),
+        data,
+        f"\r\n--{boundary}--\r\n".encode(),
+    ])
+    return body, f"multipart/form-data; boundary={boundary}"
+
+
+def set_cover(session: str, folder: Path, *, target=None) -> str:
+    """Give the conversation's item the canvas picture that best represents
+    it. Returns the filename used, or "".
+
+    The choice is re-made on every publish, so the cover follows the
+    conversation, but it is only uploaded when it has actually changed — the
+    chosen name is remembered in the session manifest. An upload failure is
+    logged and dropped: a library item with a default cover is a working
+    library item.
+    """
+    if (os.environ.get("MEDIA_ABS_COVERS") or "1").strip() == "0":
+        return ""
+    picture = _cover_choice(session)
+    if not picture:
+        return ""
+    manifest = _read_manifest(session)
+    if manifest.get("cover") == picture.name:
+        return ""
+    servers = _abs_ready_all(target)
+    if not servers:
+        return ""
+    raster = _as_raster(picture)
+    if not raster:
+        return ""
+    data, filename, content_type = raster
+    import urllib.request as _u
+    body, ctype = _multipart("cover", filename, content_type, data)
+    uploaded = False
+    for url, token, libs in servers:
+        item = _find_item(url, token, libs, folder)
+        if not item:
+            continue
+        req = _u.Request(f"{url}/api/items/{item['id']}/cover", data=body,
+                         method="POST",
+                         headers={"Authorization": f"Bearer {token}",
+                                  "Content-Type": ctype})
+        try:
+            with _u.urlopen(req, timeout=20) as resp:
+                resp.read()
+            uploaded = True
+        except Exception as e:  # noqa: BLE001 — see the docstring
+            log.warning("book-tracks: could not set the cover for %s on %s (%s)",
+                        folder.name, url, e)
+    if not uploaded:
+        return ""
+    manifest["cover"] = picture.name
+    _write_manifest(session, manifest)
+    return picture.name
+
+
 def sync_progress(folder: Path, *, target=None) -> Optional[str]:
     """Put a listener's saved progress back in step with the grown item.
 

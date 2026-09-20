@@ -5745,6 +5745,9 @@ def cmd_feed(a) -> int:
             described = book_tracks.set_metadata(session, folder)
             if described:
                 print(f"{folder.name}: described as {described!r}")
+            cover = book_tracks.set_cover(session, folder)
+            if cover:
+                print(f"{folder.name}: cover {cover}")
             synced = book_tracks.sync_progress(folder)
             if synced:
                 print(f"{folder.name}: {synced}")
