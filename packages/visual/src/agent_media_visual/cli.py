@@ -20,6 +20,10 @@ with the voice and parks on the final beat when speech ends. Any failure
 along the way falls back to the single-image path.
 
 Config (env):
+  MEDIA_VISUAL_FIGURE_ENGINE
+                     engine for an author-hinted figure only (a [[visual:]]
+                     marker), so ambient replies can be drawn locally while
+                     the picture that was asked for gets a model.
   MEDIA_VISUAL_URL   canvas base URL(s) to push to — space- or comma-
                      separated for multiple canvases (default
                      http://127.0.0.1:8781). With multiple targets the
@@ -105,6 +109,14 @@ def _beats_engine(cli_engine: str | None) -> str | None:
     sequence) as the single-image engine with venice (~6s) for beats keeps
     the sequences actually synced to the voice."""
     return cli_engine or os.environ.get("MEDIA_VISUAL_BEATS_ENGINE") or None
+
+
+def _figure_engine(cli_engine: str | None) -> str | None:
+    """The engine for an author-hinted figure: an explicit --engine wins, then
+    MEDIA_VISUAL_FIGURE_ENGINE, then the normal resolution (None). A marked
+    [[visual:]] is the one picture that was asked for on purpose, so it can be
+    worth a model even where ambient replies are drawn locally for free."""
+    return cli_engine or os.environ.get("MEDIA_VISUAL_FIGURE_ENGINE") or None
 
 
 def _beats_max() -> int:
@@ -233,7 +245,8 @@ def main() -> None:
     # built-in) needs no shaping call — and beats stay available, because
     # their prompts are simply the parts themselves. This is what makes the
     # default build free: one reply costs zero requests, not N + 1.
-    shape_free = (not needs_shaping(args.engine)
+    shape_free = (not needs_shaping(_figure_engine(args.engine) if args.hint
+                                    else args.engine)
                   and not needs_shaping(_beats_engine(args.engine)))
     beats_on = (not args.no_beats and not args.hint
                 and (shape_free or not args.no_shape)
@@ -308,7 +321,8 @@ def main() -> None:
             return
 
     t0 = time.perf_counter()
-    img, err = generate_image(scene, engine=args.engine)
+    single_engine = _figure_engine(args.engine) if args.hint else args.engine
+    img, err = generate_image(scene, engine=single_engine)
     t_gen = time.perf_counter() - t0
     if img is None:
         print(f"image generation failed: {err}", file=sys.stderr)

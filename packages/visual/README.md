@@ -69,9 +69,12 @@ Design premises (from the discussion that spawned this):
 - **Pluggable engines** — image backends register under the
   `agent_media.visual_engines` entry-point group (mirrors core's render
   engines; see [`docs/reference/extensions.md`](../../docs/reference/extensions.md)). Three
-  built-ins: `pattern` (the default — generative SVG composed in process from
-  the reply text: no key, no network, no model, so a fresh install illustrates
-  replies out of the box), `venice` (raster, needs an image API key) and
+  built-ins: `pattern` (the default — SVG composed in process from the reply
+  text: no key, no network, no model, so a fresh install illustrates replies
+  out of the box; it draws a **reply card** by default — the words being
+  spoken set large, with the reply's figures and filenames along the bottom
+  and the generated art dimmed behind them), `venice` (raster, needs an image
+  API key) and
   `svg` — animated clip-art
   emitted directly by the gateway LLM (SMIL loops play inside `<img>`;
   validated: well-formed, no scripts/external refs). Select with
@@ -145,6 +148,8 @@ decoupled from this package.
 | `MEDIA_VISUAL_REVEAL_TIMEOUT` | `75` | max seconds speech holds at a `[[reveal:]]` before continuing without the picture |
 | `MEDIA_VISUAL_MODEL_VENICE` | `z-image-turbo` | venice image model (fast > pretty; `MEDIA_VISUAL_MODEL` also honoured) |
 | `MEDIA_VISUAL_STYLE` | cinematic digital painting… | style suffix, one visual voice |
+| `MEDIA_VISUAL_PATTERN_STYLE` | `card` | pattern engine: `card` sets the reply's own words, figures and filenames over the art; `art` draws the motif alone |
+| `MEDIA_VISUAL_FIGURE_ENGINE` | the normal engine | engine for an author-hinted `[[visual:]]` figure only — draw ambient replies locally, spend a model on the one that was asked for |
 | `MEDIA_VISUAL_PATTERN_SEED` | — | pattern engine: scene key (the CLI passes the session id), so one session keeps one palette |
 | `MEDIA_VISUAL_PATTERN_SUBJECT` | — | pattern engine: the whole reply when the prompt is one beat of it, so every beat draws the same subject |
 | `MEDIA_VISUAL_BEAT` | — | pattern engine: `i/n`, this beat's place in the sequence |

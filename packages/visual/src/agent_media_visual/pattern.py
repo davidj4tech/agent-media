@@ -42,6 +42,10 @@ Other config:
 
   MEDIA_VISUAL_DARK     dark palettes, default ON (shared with the other
                         engines — see generate.dark_mode)
+  MEDIA_VISUAL_PATTERN_STYLE
+                        `card` (default) sets the reply's own words, figures
+                        and filenames over the art; `art` draws the motif
+                        alone.
   MEDIA_VISUAL_MONO     1 = four flat greys, no gradients, no partial
                         opacity: what a DU4 e-ink panel can actually show
   MEDIA_VISUAL_FIGURE   1 = purposeful mode: label the subject with the
@@ -109,6 +113,14 @@ LIGHT_PALETTES = [
 MONO_PALETTE = Palette("mono", ("#ffffff", "#ffffff"), "#555555",
                        ["#000000", "#555555", "#aaaaaa", "#000000"],
                        flat=True, glow=False)
+
+
+def card_style() -> bool:
+    """Card (the default) or ambient art. A metaphor a second is decoration;
+    the card puts the reply's own words, numbers and filenames on the wall.
+    MEDIA_VISUAL_PATTERN_STYLE=art goes back to the motif alone."""
+    return (os.environ.get("MEDIA_VISUAL_PATTERN_STYLE") or "card").strip().lower() \
+        != "art"
 
 
 def mono_mode() -> bool:
@@ -507,6 +519,167 @@ MOTIFS: Dict[str, Callable[[random.Random, Palette, float], List[str]]] = {
 }
 
 
+# --- the card: the reply itself, set to be read ------------------------------
+# The default style. Ambient metaphor is pleasant and says nothing; a wall
+# screen earns its place by carrying what was actually said. Everything here
+# is extracted with regexes and a stopword list — no model, so the card costs
+# what the rest of the engine costs, which is nothing.
+
+# Rough advance width of the card's sans-serif, as a fraction of the font
+# size. Only used to break lines: SVG has no text wrapping, and a webfont the
+# viewer may not have makes exactness a fiction anyway. Measured against the
+# fallback the wall actually renders with, at the semibold the card uses,
+# and rounded UP — a line that overflows the viewBox is cut off mid-word,
+# which is worse than a line that breaks early.
+_CHAR_W = 0.62
+
+PAD = 96
+CARD_W = W - PAD * 2
+
+_SENT_END = re.compile(r"(?<=[.!?])\s+")
+# A path or filename: at least one dot, a known-ish extension, no spaces.
+_FILEISH = re.compile(
+    r"\b[\w./~-]*[\w-]+\.(?:py|js|mjs|ts|tsx|vue|java|kt|go|rs|rb|sh|zsh|"
+    r"md|json|ya?ml|toml|ini|env|css|html|svg|sql|txt|log)\b")
+# A figure and the words that give it meaning: "364 images/day", "8 GB of RAM",
+# "3 built-ins". The trailing words stop at anything that is not a plain word.
+_FIGURE = re.compile(
+    r"\b(\d[\d,]*(?:\.\d+)?\s*(?:%|x|k|m|gb|mb|kb|ms|s|kib|mib)?)\s+"
+    r"([a-zA-Z][\w/-]*(?:\s+[a-zA-Z][\w/-]*){0,2})")
+
+
+def _esc_text(s: str) -> str:
+    return _esc(s).replace('"', "&quot;")
+
+
+def _wrap(text: str, size: float, width: float, limit: int) -> List[str]:
+    """`text` broken into at most `limit` lines that fit `width` at `size`.
+    The last line is elided rather than dropped, so a card never ends
+    mid-thought with no sign that it did."""
+    per_line = max(8, int(width / (size * _CHAR_W)))
+    words, lines, cur = text.split(), [], ""
+    for w in words:
+        nxt = f"{cur} {w}".strip()
+        if len(nxt) <= per_line:
+            cur = nxt
+            continue
+        if cur:
+            lines.append(cur)
+        cur = w
+        if len(lines) == limit:
+            break
+    if cur and len(lines) < limit:
+        lines.append(cur)
+    if not lines:
+        return []
+    used = sum(len(ln) + 1 for ln in lines)
+    if used < len(text) - 1:
+        lines[-1] = lines[-1][:max(1, per_line - 1)].rstrip(" ,;:") + "…"
+    return lines
+
+
+def headline(text: str) -> str:
+    """The reply's opening sentence, which is where a reply says what it is."""
+    clean = _FENCE.sub(" ", text).strip()
+    first = _SENT_END.split(clean)[0] if clean else ""
+    return " ".join(first.split())
+
+
+def figures(text: str, limit: int = 3) -> List[Tuple[str, str]]:
+    """(number, what it counts) pairs, in the order the reply gives them."""
+    clean = _FENCE.sub(" ", text)
+    out, seen = [], set()
+    for value, label in _FIGURE.findall(clean):
+        value = " ".join(value.split())
+        label = " ".join(w for w in label.split() if w.lower() not in STOPWORDS)
+        if not label or value in seen:
+            continue
+        seen.add(value)
+        out.append((value, label))
+        if len(out) == limit:
+            break
+    return out
+
+
+def files(text: str, limit: int = 5) -> List[str]:
+    """Filenames the reply names — the part of a spoken reply hardest to
+    catch by ear, and the part most worth having on a wall."""
+    out, seen = [], set()
+    for hit in _FILEISH.findall(_FENCE.sub(" ", text)):
+        name = hit.rsplit("/", 1)[-1]
+        if name in seen:
+            continue
+        seen.add(name)
+        out.append(name)
+        if len(out) == limit:
+            break
+    return out
+
+
+def _text_el(x: float, y: float, s: str, size: float, fill: str,
+             pal: Palette, *, weight: int = 600, opacity: float = 1.0) -> str:
+    return (f'<text x="{x:.0f}" y="{y:.0f}" font-family="Inter, Helvetica '
+            f'Neue, Helvetica, Arial, sans-serif" font-size="{size:.0f}" '
+            f'font-weight="{weight}" fill="{fill}" '
+            f'opacity="{_op(pal, opacity)}" '
+            f'letter-spacing="{-size * 0.01:.1f}">{_esc_text(s)}</text>')
+
+
+def _card(text: str, subject: str, pal: Palette, prog: float) -> List[str]:
+    """The card's own layer, drawn over whatever texture is behind it."""
+    out: List[str] = []
+    body_text = " ".join(text.split())
+    over = headline(subject) if subject and subject != text else ""
+    y = 190.0
+
+    if over:
+        for line in _wrap(over.upper(), 30, CARD_W, 1):
+            out.append(_text_el(PAD, y, line, 30, pal.ink, pal,
+                                weight=700, opacity=0.8))
+        y += 34
+        out.append(f'<rect x="{PAD}" y="{y:.0f}" width="210" height="4" '
+                   f'fill="{pal.accent(0)}" opacity="{_op(pal, 0.9)}"/>')
+        y += 74
+
+    # The body: what is being said right now, as large as it can be and still
+    # fit. Fewer lines means bigger type — a two-line card reads from further
+    # away than a four-line one, and most beats are short.
+    for size in (88, 76, 64, 54):
+        lines = _wrap(body_text, size, CARD_W, 4)
+        if len(lines) <= 3 or size == 54:
+            break
+    for line in lines:
+        y += size * 1.12
+        out.append(_text_el(PAD, y, line, size, pal.accent(0) if pal.flat
+                            else "#ffffff" if dark_mode() else "#101010", pal))
+
+    # The facts, along the bottom: figures first, then the filenames.
+    stats = figures(subject or text)
+    names = files(subject or text)
+    base = H - 70.0
+    if names:
+        out.append(_text_el(PAD, base, " · ".join(names), 34, pal.ink, pal,
+                            weight=500, opacity=0.85))
+        base -= 92   # clears the figure's label, which hangs below its value
+    if stats:
+        x = float(PAD)
+        for i, (value, label) in enumerate(stats):
+            out.append(_text_el(x, base, value, 56, pal.accent(i + 1), pal,
+                                weight=700))
+            out.append(_text_el(x, base + 34, label, 26, pal.ink, pal,
+                                weight=500, opacity=0.8))
+            x += max(len(value) * 56 * _CHAR_W, len(label) * 26 * _CHAR_W) + 70
+            if x > W - PAD - 120:
+                break
+    # A progress rule: how far through the reply the voice is. On a wall this
+    # is the difference between "it is still talking" and "it has stopped".
+    out.append(f'<rect x="{PAD}" y="{H - 34}" width="{CARD_W}" height="3" '
+               f'fill="{pal.ink}" opacity="{_op(pal, 0.25)}"/>')
+    out.append(f'<rect x="{PAD}" y="{H - 34}" width="{CARD_W * prog:.0f}" '
+               f'height="3" fill="{pal.accent(0)}" opacity="{_op(pal, 0.95)}"/>')
+    return out
+
+
 # --- composition --------------------------------------------------------------
 
 def _backdrop(pal: Palette) -> List[str]:
@@ -578,9 +751,27 @@ def compose(text: str, *, scene: str = "", subject: str = "",
 
     parts = _backdrop(pal)
     parts += _grain(detail_rnd, pal)
-    parts += MOTIFS[motif](detail_rnd, pal, prog)
-    if figure:
-        parts += _labels(keywords(text, 3), pal)
+    art = MOTIFS[motif](detail_rnd, pal, prog)
+    if card_style():
+        # The art stays, dimmed to a texture: it keeps the scene's continuity
+        # and gives the type something to sit on, without competing with it.
+        # Blurred, not just faint: sharp shapes at low opacity read as
+        # content that failed to load. Out of focus, they read as texture.
+        if not pal.flat:
+            parts.append('<defs><filter id="soft" x="-10%" y="-10%" '
+                         'width="120%" height="120%">'
+                         '<feGaussianBlur stdDeviation="14"/></filter></defs>')
+            # Faint enough that a viewer which ignores SVG filters still
+            # reads it as a tint rather than as blocks that failed to render.
+            parts.append(f'<g filter="url(#soft)" opacity="{_op(pal, 0.14)}">'
+                         + "".join(art) + "</g>")
+        # E-ink has no faint: every tone it can show is a tone that competes
+        # with the words. The mono card is type alone.
+        parts += _card(text, subject, pal, prog)
+    else:
+        parts += art
+        if figure:
+            parts += _labels(keywords(text, 3), pal)
 
     return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" '
             f'width="{W}" height="{H}">' + "".join(parts) + "</svg>")
