@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import difflib
 import glob
+import hashlib
 import json
 import logging
 import os
@@ -472,6 +473,138 @@ def ghost_prompt(pane: str) -> str:
             break                # the box's bottom rule, or a bare line
         words.append(dim)
     return " ".join(" ".join(words).split())
+
+
+# --- the question a session is waiting on ----------------------------------------
+
+#: An option in an agent's dialog: "❯ 1. Yes, and use auto mode". All three
+#: agents draw the same shape — a question, then a numbered list, wrapped
+#: onto continuation lines when the pane is phone-width.
+_OPTION = re.compile(r"^\s*[\u276f\u203a>\u2193\u2191]?\s*(\d+)\.\s+(.*)$")
+_SELECTED = re.compile(r"^\s*[\u276f\u203a>]\s*\d+\.\s+\S")
+_RULE = re.compile(r"^\s*[\u2500\u2501\u2594\u2581_=]{6,}\s*$")
+#: How far above the first option to read the question. A dialog is boxed by
+#: a rule, but a cap keeps a missing rule from swallowing the transcript.
+_QUESTION_LINES = 8
+
+
+def parse_dialog(cap: str) -> dict | None:
+    """`{"question": ..., "options": [{"n": 1, "label": ...}]}` from a capture.
+
+    Read off the screen because that is where it exists: the harnesses do not
+    write their dialogs anywhere a hook can see, and Claude Code's permission
+    prompt, Codex's command approval and its hooks-review prompt are all the
+    same numbered list.
+    """
+    lines = [ln.rstrip() for ln in cap.splitlines()]
+    numbered = [i for i, ln in enumerate(lines) if _OPTION.match(ln)]
+    if not numbered:
+        return None
+    # The list the selection marker is in, not the first list on screen: a
+    # reply above the dialog may itself be a numbered list, and the question
+    # belongs to the one the arrow keys are on.
+    marked = [i for i in numbered if _SELECTED.match(lines[i])]
+    first = numbered[0]
+    if marked:
+        first = marked[-1]
+        while first - 1 in numbered:
+            first -= 1
+    options: list[list] = []
+    indent = 0
+    for ln in lines[first:]:
+        m = _OPTION.match(ln)
+        if m:
+            options.append([int(m.group(1)), m.group(2).strip()])
+            indent = len(ln) - len(ln.lstrip())
+        elif (options and ln.strip() and not _RULE.match(ln)
+              and len(ln) - len(ln.lstrip()) > indent):
+            # A label the pane's width wrapped, which is indented under it —
+            # the footer below the list ("Press enter to confirm") is not.
+            options[-1][1] += " " + ln.strip()
+    question: list[str] = []
+    for ln in reversed(lines[max(0, first - _QUESTION_LINES):first]):
+        if _RULE.match(ln):
+            break
+        if ln.strip():
+            question.append(ln.strip())
+    # A list longer than the pane scrolls, and then the screen holds only
+    # part of it — the top of the dialog, question and all, may be above the
+    # first option that is visible. Say so rather than show a fragment of
+    # option 2 as the question: the numbers still answer it, and the phone
+    # can offer the desk for the rest.
+    partial = bool(options) and options[0][0] != 1
+    return {"question": "" if partial else " ".join(reversed(question)),
+            "partial": partial,
+            "options": [{"n": n, "label": label} for n, label in options]}
+
+
+def approval_for(pane: str, agent: str = "claude") -> dict | None:
+    """What `pane` is waiting to be told, or None if it is not waiting.
+
+    `key` fingerprints the dialog: an answer carries it back, so a tap that
+    arrives after the screen has moved on answers nothing (the question a
+    listener read is the question they answered).
+    """
+    from . import canvas
+
+    if not pane:
+        return None
+    cap = canvas._strip_ansi(_capture_pane(pane))
+    if canvas._classify_agent(cap, agent) != "approval":
+        return None
+    dialog = parse_dialog(cap)
+    if not dialog or not dialog["options"]:
+        return None
+    seed = dialog["question"] + "|" + "|".join(f"{o['n']}.{o['label']}" for o in dialog["options"])
+    # A scrolled dialog is answered by number all the same; the key still
+    # follows what was on screen when it was read.
+    dialog["key"] = hashlib.sha1(seed.encode()).hexdigest()[:12]
+    dialog["agent"] = agent
+    return dialog
+
+
+def answer(session: str, choice: int, key: str, bearer: str) -> tuple[bool, dict]:
+    """Answer the dialog a session is holding. `(ok, detail)`.
+
+    A number and Enter, never text: the digit moves the selection and Enter
+    takes it (measured on all three). Refused unless that very dialog is
+    still up — same options, same words — so this cannot be turned into a
+    way of pressing keys into whatever a pane has moved on to.
+    """
+    from . import canvas
+
+    session = (session or "").strip()
+    if not _UUID.fullmatch(session):
+        return False, {"error": "not a session id", "status": 400}
+    if not _gate(bearer)[0]:
+        return False, _gate(bearer)[1]
+    pane = live_sessions().get(session, "")
+    if not pane or not canvas._pane_alive(pane):
+        return False, {"error": f"session {session[:8]} is not live", "status": 404}
+    agent = _agent_of_pane(pane)
+    dialog = approval_for(pane, agent)
+    if not dialog:
+        return False, {"error": "that session is not waiting on a question", "status": 409}
+    if key and key != dialog["key"]:
+        return False, {"error": "the question has changed", "status": 409,
+                       "approval": dialog}
+    if choice not in {o["n"] for o in dialog["options"]}:
+        return False, {"error": f"no option {choice}", "status": 400, "approval": dialog}
+    _tmux(["send-keys", "-t", pane, str(choice)])
+    time.sleep(0.15)
+    _tmux(["send-keys", "-t", pane, "Enter"])
+    # Say whether it took: the answer is worth reporting honestly, and a
+    # dialog still up after it means the keys went nowhere.
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline:
+        time.sleep(0.4)
+        now = approval_for(pane, agent)
+        if not now or now["key"] != dialog["key"]:
+            return True, {"session": session, "pane": pane, "answered": choice,
+                          "label": next(o["label"] for o in dialog["options"] if o["n"] == choice),
+                          "waiting": bool(now), "approval": now}
+    return False, {"error": "the question is still on screen", "status": 504,
+                   "session": session, "pane": pane, "approval": dialog}
 
 
 def _followup(session: str) -> dict | None:
@@ -1854,8 +1987,13 @@ def log_for_item(item: str, bearer: str) -> tuple[bool, dict]:
                 last = lines[-1] if lines else {}
                 suggestion = ("" if pending else
                               suggestion_for(session, pane, last.get("key") or ""))
+                # A session waiting on a permission dialog is not working and
+                # not finished: it is stopped until somebody answers, and the
+                # phone is often the only place anybody is looking.
+                approval = approval_for(pane, _agent_of_pane(pane)) if pane else None
                 return True, {"session": session, "lines": lines,
                               "pending": pending, "working": working,
+                              "approval": approval,
                               "suggestion": suggestion}
     except Exception as e:  # noqa: BLE001
         # Say so in the journal as well as to the caller: the app folds every

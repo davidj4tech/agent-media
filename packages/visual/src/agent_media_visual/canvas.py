@@ -39,6 +39,10 @@ Stdlib-only HTTP server. Endpoints:
   POST /session/resume {"session"} → bring that session back in a tmux
                   window (a reply's revive, without the reply)
   POST /session/close  {"session"} → close the pane it runs in
+  POST /session/answer {"session", "choice", "key"} + an Audiobookshelf
+                  bearer → answer the dialog that session is stopped on (a
+                  permission prompt); refused unless that same question,
+                  fingerprinted by `key`, is still on its screen
   GET  /draft?session=<uuid>   + an Audiobookshelf bearer → what was left
                   half-typed in that conversation's reply box
   POST /draft     {"session", "text", "at"?} + an Audiobookshelf bearer →
@@ -527,16 +531,37 @@ def _amux_sessions() -> list[dict]:
     return [s for s in data if isinstance(s, dict) and s.get("name")]
 
 
+#: An option line in any agent's dialog: "❯ 1. Yes", "  2. No", "› 3. …".
+_NUMBERED = re.compile(r"^\s*[\u276f\u203a>\u2193\u2191]?\s*\d+\.\s+\S", re.M)
+#: The one that is selected. A reply full of numbered points is not a dialog;
+#: a dialog shows which option the arrow keys are on — unless the list is
+#: long enough to scroll, and the marked one is off the top.
+_SELECTED = re.compile(r"^\s*[\u276f\u203a>]\s*\d+\.\s+\S", re.M)
+#: So the other tell is the dialog's own instructions, which every one of
+#: them prints under the list.
+_KEYS = re.compile(r"Enter to select|\u2191/\u2193 to navigate|Press enter to confirm"
+                   r"|Esc to cancel|esc to cancel")
+
+
 def _classify_cc(pane: str) -> "str | None":
     """Classify an ANSI-stripped capture of a Claude Code TUI → working / input
     / approval, or None if it doesn't look like Claude Code (so plain shells,
     vim, etc. are ignored). Mirrors amux's detector: require CC chrome, check a
     permission dialog BEFORE the working signal (CC shows "esc to interrupt"
     even while a dialog blocks), and match the width-truncated "esc…" too."""
+    # A dialog is checked before the chrome, because it covers the chrome: an
+    # open permission prompt hides the footer this would otherwise recognise,
+    # so a session stopped on one did not look like Claude Code at all. Two
+    # numbered options at least — one line the person typed themselves ("❯ 1.
+    # do the thing") is not a dialog anybody may answer.
+    if len(_NUMBERED.findall(pane)) >= 2 and (_SELECTED.search(pane) or _KEYS.search(pane)):
+        return "approval"
+    # The footer names the permission mode, and on a phone-width pane that is
+    # often all of it that fits: "⏸ plan mode on (shift+tab to…".
     if not re.search(r"\? for shortcuts|bypass permissions|esc to interrupt|"
-                     r"esc…|⏵⏵", pane):
+                     r"esc…|⏵⏵|[⏸⏵] \w+ mode on|\(shift\+tab", pane):
         return None
-    if re.search(r"❯ *[0-9]+\.|Do you want to |Yes, (and|allow|proceed)", pane):
+    if re.search(r"Do you want to |Yes, (and|allow|proceed)", pane):
         return "approval"
     # A phone-width pane cuts the footer's "esc to interrupt" down to "· e…",
     # and a session hard at work then read as one waiting on you — green on
@@ -563,7 +588,8 @@ def _classify_agent(pane: str, agent: str = "claude") -> "str | None":
     if agent == "codex":
         # Changed hooks.json holds the whole TUI on a trust prompt until
         # someone at the desk answers it.
-        if re.search(r"Would you like to (?:run|make|apply) |Yes, proceed|Hooks need review", pane):
+        if ((len(_NUMBERED.findall(pane)) >= 2 and (_SELECTED.search(pane) or _KEYS.search(pane)))
+                or re.search(r"Would you like to (?:run|make|apply) |Yes, proceed|Hooks need review", pane)):
             return "approval"
         if re.search(r"esc to interrupt|esc…|Working \(", pane):
             return "working"
@@ -1444,6 +1470,7 @@ PAGE_ID = hashlib.sha256(PAGE.encode()).hexdigest()[:12]
 _CORS_PATHS = frozenset({
     "/conversation", "/conversation/log", "/conversations", "/item",
     "/reply", "/ask", "/focus", "/session/resume", "/session/close", "/draft",
+    "/session/answer",
     "/speech/now", "/speech/ctl", "/sessions/state", "/commands",
 })
 
@@ -1991,6 +2018,23 @@ class Handler(BaseHTTPRequestHandler):
             bearer = (self.headers.get("Authorization") or "").removeprefix("Bearer").strip()
             fn = _reply.session_resume if path.endswith("resume") else _reply.session_close
             ok, detail = fn(str(body.get("session") or ""), bearer)
+            self._json(200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+        elif path == "/session/answer":
+            # Answering the dialog a session is stopped on — a permission
+            # prompt, Codex's hooks review. A number, never text, and only
+            # while that very question is still up (see reply.answer).
+            from . import reply as _reply
+            body = self._read_json() or {}
+            bearer = (self.headers.get("Authorization") or "").removeprefix("Bearer").strip()
+            try:
+                choice = int(body.get("choice"))
+            except (TypeError, ValueError):
+                choice = 0
+            ok, detail = _reply.answer(str(body.get("session") or ""), choice,
+                                       str(body.get("key") or ""), bearer)
+            if not ok:
+                print(f"answer: refused ({detail.get('error')}) for "
+                      f"{str(body.get('session'))[:8]}", file=sys.stderr, flush=True)
             self._json(200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
         elif path == "/draft":
             # Half a reply, held for next time the conversation is opened.
