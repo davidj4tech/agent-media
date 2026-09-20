@@ -199,7 +199,7 @@ def _allowed(monkeypatch):
     # tmp-dir monkeypatching — and "sess-1" duly appeared in the real library as
     # a conversation called "You: hi". Tests that care about it override this.
     monkeypatch.setattr(reply, "_record_turn", lambda s, t, p="": None)
-    monkeypatch.setattr(reply, "_ensure_submitted", lambda p, t, timeout=3.0, agent="claude": None)
+    monkeypatch.setattr(reply, "_ensure_submitted", lambda p, t, timeout=3.0, agent="claude": True)
     monkeypatch.setattr(reply, "abs_identity", lambda b: ({"username": "d", "type": "root"}, 200))
     monkeypatch.delenv("MEDIA_REPLY_ROOT", raising=False)
     monkeypatch.setattr(reply, "session_for_item", lambda *a, **k: ("sess-1", ""))
@@ -216,7 +216,8 @@ def test_a_live_session_is_typed_into_directly(monkeypatch, _allowed):
     monkeypatch.setattr(reply, "open_window", lambda *a, **k: pytest.fail("should not revive"))
     ok, detail = reply.reply("item1", "hi", "tok", quote="a turn")
     assert ok is True
-    assert detail == {"session": "sess-1", "pane": "%7", "opened": False}
+    assert detail == {"session": "sess-1", "pane": "%7", "opened": False,
+                      "submitted": True}
     assert sent == [("%7", 'Re: "a turn" — hi')]
 
 
@@ -687,7 +688,7 @@ def test_hold_client_falls_back_to_an_in_process_holder(monkeypatch):
 def _asker(monkeypatch, tmp_path):
     monkeypatch.setattr(reply, "_record_turn", lambda s, t, p="": None)
     monkeypatch.setattr(reply, "_settle", lambda p, timeout=5.0: None)
-    monkeypatch.setattr(reply, "_ensure_submitted", lambda p, t, timeout=3.0, agent="claude": None)
+    monkeypatch.setattr(reply, "_ensure_submitted", lambda p, t, timeout=3.0, agent="claude": True)
     monkeypatch.setattr(reply, "abs_identity", lambda b: ({"username": "d", "type": "root"}, 200))
     monkeypatch.delenv("MEDIA_REPLY_ROOT", raising=False)
     _amux(tmp_path, monkeypatch, 'CC_DIR="/home/ryer/scratch"\nCC_FLAGS="--yolo"\n')
@@ -704,7 +705,8 @@ def test_ask_opens_a_fresh_window_and_types_the_first_message(monkeypatch, _aske
     ok, detail = reply.ask("what is the time", "tok", quote="a turn")
     assert ok is True
     assert detail == {"session": "11111111-2222-3333-4444-555555555555", "pane": "%9",
-                      "opened": True, "fresh": True, "tmux": "amux-scratch", "agent": "claude"}
+                      "opened": True, "fresh": True, "tmux": "amux-scratch",
+                      "agent": "claude", "submitted": True}
     assert opened == [("", "/home/ryer/scratch", False, "amux-scratch", ["--yolo"])]
     assert sent == [("%9", 'Re: "a turn" — what is the time')]
     assert shelved == [("11111111-2222-3333-4444-555555555555", "what is the time")]
@@ -827,14 +829,43 @@ def test_settle_returns_once_the_screen_stops_changing(monkeypatch):
     assert next(frames) == "d"        # stopped at the first repeat, not the end
 
 
+_BOX = "─────\n❯ what is the time today\n─────\n  ⏵⏵ bypass permissions on"
+_EMPTY = "❯ \n  ⏵⏵ bypass permissions on"
+
+
 def test_ensure_submitted_presses_enter_when_the_text_is_still_in_the_box(monkeypatch):
+    # One press, and the box lets go. The press is believed only once it has
+    # been seen to work, so the capture answers what the pane would: the box
+    # holds the line until an Enter actually arrives.
     sent = []
-    monkeypatch.setattr(reply, "_capture_pane",
-                        lambda p: "─────\n❯ what is the time today\n─────\n  ⏵⏵ bypass permissions on")
+    monkeypatch.setattr(reply, "_capture_pane", lambda p: _EMPTY if sent else _BOX)
     monkeypatch.setattr(reply, "_tmux", lambda argv, timeout=10: sent.append(argv) or "")
     monkeypatch.setattr(reply.time, "sleep", lambda s: None)
-    reply._ensure_submitted("%1", "what is the time today", timeout=0.01)
+    assert reply._ensure_submitted("%1", "what is the time today", timeout=0.01) is True
     assert sent == [["send-keys", "-t", "%1", "Enter"]]
+
+
+def test_ensure_submitted_keeps_pressing_while_the_pane_eats_the_key(monkeypatch):
+    # The 2026-09-21 case: a TUI still painting swallows Enter after Enter.
+    # The old one-press-and-return left the question typed and unsent with
+    # nothing to say so.
+    sent = []
+    monkeypatch.setattr(reply, "_capture_pane", lambda p: _BOX)
+    monkeypatch.setattr(reply, "_tmux", lambda argv, timeout=10: sent.append(argv) or "")
+    monkeypatch.setattr(reply.time, "sleep", lambda s: None)
+    assert reply._ensure_submitted("%1", "what is the time today", timeout=0.01) is False
+    assert sent == [["send-keys", "-t", "%1", "Enter"]] * reply._SUBMIT_PRESSES
+
+
+def test_ensure_submitted_counts_the_last_press_that_lands(monkeypatch):
+    # Taken on the final press: still a send, not a refusal.
+    sent = []
+    monkeypatch.setattr(reply, "_capture_pane",
+                        lambda p: _EMPTY if len(sent) >= reply._SUBMIT_PRESSES else _BOX)
+    monkeypatch.setattr(reply, "_tmux", lambda argv, timeout=10: sent.append(argv) or "")
+    monkeypatch.setattr(reply.time, "sleep", lambda s: None)
+    assert reply._ensure_submitted("%1", "what is the time today", timeout=0.01) is True
+    assert len(sent) == reply._SUBMIT_PRESSES
 
 
 def test_ensure_submitted_leaves_a_working_session_alone(monkeypatch):
@@ -842,14 +873,45 @@ def test_ensure_submitted_leaves_a_working_session_alone(monkeypatch):
                         lambda p: "· ↑ 1.2k tokens · esc to interrupt\n❯ \n  ⏵⏵ bypass permissions on")
     monkeypatch.setattr(reply, "_tmux", lambda argv, timeout=10: pytest.fail("pressed Enter"))
     monkeypatch.setattr(reply.time, "sleep", lambda s: None)
-    reply._ensure_submitted("%1", "what is the time today", timeout=0.01)
+    assert reply._ensure_submitted("%1", "what is the time today", timeout=0.01) is True
 
 
 def test_ensure_submitted_trusts_an_empty_box(monkeypatch):
-    monkeypatch.setattr(reply, "_capture_pane", lambda p: "❯ \n  ⏵⏵ bypass permissions on")
+    monkeypatch.setattr(reply, "_capture_pane", lambda p: _EMPTY)
     monkeypatch.setattr(reply, "_tmux", lambda argv, timeout=10: pytest.fail("pressed Enter"))
     monkeypatch.setattr(reply.time, "sleep", lambda s: None)
-    reply._ensure_submitted("%1", "what is the time today", timeout=0.01)
+    assert reply._ensure_submitted("%1", "what is the time today", timeout=0.01) is True
+
+
+def test_a_reply_that_never_left_the_box_is_a_refusal(monkeypatch, _allowed):
+    # Not shelved: a turn recorded here is a question the conversation shows
+    # with an answer that is never coming.
+    from agent_media_visual import canvas
+    shelved = []
+    monkeypatch.setattr(reply, "live_sessions", lambda: {"sess-1": "%7"})
+    monkeypatch.setattr(canvas, "_pane_alive", lambda p: True)
+    monkeypatch.setattr(canvas, "_send_to_pane", lambda p, t: "")
+    monkeypatch.setattr(reply, "_ensure_submitted", lambda p, t, timeout=3.0, agent="claude": False)
+    monkeypatch.setattr(reply, "_record_turn", lambda s, t, p="": shelved.append(1))
+    ok, detail = reply.reply("item1", "hi", "tok")
+    assert ok is False and shelved == []
+    assert detail["submitted"] is False and detail["status"] == 502
+    assert "did not take it" in detail["error"] and "%7" in detail["error"]
+
+
+def test_an_ask_that_never_left_the_box_is_a_refusal(monkeypatch, _asker):
+    from agent_media_visual import canvas
+    shelved = []
+    monkeypatch.setattr(reply, "open_window",
+                        lambda s, cwd, *, resume, host="", flags=(), agent="claude": ("%9", ""))
+    monkeypatch.setattr(reply, "session_of_pane", lambda p, timeout=10.0, agent="claude": "sess-9")
+    monkeypatch.setattr(canvas, "_send_to_pane", lambda p, t: "")
+    monkeypatch.setattr(reply, "_ensure_submitted", lambda p, t, timeout=3.0, agent="claude": False)
+    monkeypatch.setattr(reply, "_record_turn", lambda s, t, p="": shelved.append(1))
+    ok, detail = reply.ask("what is the time", "tok")
+    assert ok is False and shelved == []
+    # The pane is named so the app can offer the one thing that fixes it.
+    assert detail["pane"] == "%9" and detail["session"] == "sess-9"
 
 
 def test_a_ghost_that_fits_is_the_suggestion(monkeypatch):
@@ -1133,7 +1195,8 @@ def test_a_reply_into_a_live_pane_checks_its_enter_landed(monkeypatch, _allowed)
     monkeypatch.setattr(reply, "live_sessions", lambda: {"sess-1": "%7"})
     monkeypatch.setattr(canvas, "_pane_alive", lambda p: True)
     monkeypatch.setattr(canvas, "_send_to_pane", lambda p, t: "")
-    monkeypatch.setattr(reply, "_ensure_submitted", lambda p, t, timeout=3.0, agent="claude": checked.append((p, t)))
+    monkeypatch.setattr(reply, "_ensure_submitted",
+                        lambda p, t, timeout=3.0, agent="claude": checked.append((p, t)) or True)
     ok, _ = reply.reply("item1", "a long message that the TUI is still taking when Enter arrives", "tok")
     assert ok and checked == [("%7", "a long message that the TUI is still taking when Enter arrives")]
 

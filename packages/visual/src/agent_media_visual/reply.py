@@ -895,36 +895,89 @@ def _settle(pane: str, timeout: float = 5.0) -> None:
 #: Where each agent's composer starts: the text after it is what is typed.
 _COMPOSER = {"claude": _PROMPT_GLYPH, "codex": "\u203a"}   # ❯, ›
 
+#: How many times `_ensure_submitted` will press Enter before giving up, and
+#: how long it watches after each press. Three is not superstition: a TUI that
+#: is still painting eats the keys it is sent, and the presses have to outlast
+#: the painting. An Enter into a composer that has already let go is a no-op
+#: in every agent here, so an extra press costs nothing and a missing one
+#: costs the whole turn.
+_SUBMIT_PRESSES = 3
+_SUBMIT_SETTLE_S = 1.5
 
-def _ensure_submitted(pane: str, text: str, timeout: float = 3.0,
-                      agent: str = "claude") -> None:
-    """Press Enter again if `text` is still sitting in the input box.
 
-    Looked at rather than assumed: the composer shows what it holds, so
-    "still in the box" is the first words of the message after the prompt
-    glyph with no sign of a turn in progress.
+def _unsent(pane: str, head: str, agent: str, window: float) -> bool:
+    """Whether `head` is still sitting in `pane`'s composer for all of `window`.
+
+    False the moment the box lets go of it — that is the line being taken, and
+    it is the signal worth trusting: `_classify_agent` needs the footer, which
+    a narrow pane truncates away, while an empty composer is an empty composer
+    at any width.
+
+    Fails open. A capture that comes back empty reads as taken, because the
+    alternative is hammering Enter at a pane we cannot see.
     """
     from . import canvas
 
-    head = " ".join(text.split())[:24]
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+    deadline = time.monotonic() + window
+    while True:
         time.sleep(0.5)
         cap = canvas._strip_ansi(_capture_pane(pane))
         if canvas._classify_agent(cap, agent) == "working":
-            return
+            return False
         if agent == "pi":
             # pi's composer is the box between the last two rules.
             rules = [i for i, ln in enumerate(cap.splitlines()) if re.fullmatch(r"\s*─{8,}\s*", ln)]
             box = cap.splitlines()[rules[-2] + 1:rules[-1]] if len(rules) >= 2 else []
             if head not in " ".join(" ".join(box).split()):
-                return
-            continue
-        flat = " ".join(cap.split())
-        i = flat.rfind(_COMPOSER.get(agent, _PROMPT_GLYPH))
-        if i < 0 or head not in flat[i:]:
-            return
-    _tmux(["send-keys", "-t", pane, "Enter"])
+                return False
+        else:
+            flat = " ".join(cap.split())
+            i = flat.rfind(_COMPOSER.get(agent, _PROMPT_GLYPH))
+            if i < 0 or head not in flat[i:]:
+                return False
+        if time.monotonic() >= deadline:
+            return True
+
+
+def _ensure_submitted(pane: str, text: str, timeout: float = 3.0,
+                      agent: str = "claude") -> bool:
+    """Press Enter until `text` leaves the input box. True if it did.
+
+    Looked at rather than assumed: the composer shows what it holds, so
+    "still in the box" is the first words of the message after the prompt
+    glyph with no sign of a turn in progress.
+
+    The press is checked, which is the whole point. This used to wait out
+    `timeout`, press Enter once and return — and a pane that ate that one too
+    sat with the question typed and unsent, while the phone showed the three
+    dots of an answer being written. That is not a hypothetical: it happened
+    to a "new chat" on 2026-09-21 and nothing noticed for half an hour,
+    because a fire-and-forget Enter has no failure to report.
+    """
+    head = " ".join(text.split())[:24]
+    if not _unsent(pane, head, agent, timeout):
+        return True
+    for _ in range(_SUBMIT_PRESSES):
+        _tmux(["send-keys", "-t", pane, "Enter"])
+        if not _unsent(pane, head, agent, _SUBMIT_SETTLE_S):
+            return True
+    return False
+
+
+def _unsent_error(pane: str, session: str = "") -> dict:
+    """What to say when the words are in the box and the agent never took them.
+
+    Neither a transport failure nor a send: the words are in the composer and
+    one Enter would still deliver them. What must not happen is the turn being
+    shelved anyway — a conversation that grows a question with no answer
+    coming is exactly the three-dots-forever the phone showed. So the callers
+    return this instead of recording, and the surface gets a sentence it can
+    put on screen in place of a typing indicator.
+    """
+    return {"error": f"typed into {pane} but the session did not take it — "
+                     "press Enter in that pane to send it",
+            "pane": pane, "submitted": False,
+            "session": session or None, "status": 502}
 
 
 def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
@@ -973,13 +1026,15 @@ def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
     send_err = canvas._send_to_pane(pane, body)
     if send_err:
         return False, {"error": send_err, "session": session or None, "pane": pane}
-    _ensure_submitted(pane, body, agent=agent)
+    took = _ensure_submitted(pane, body, agent=agent)
     if not session:
         session = session_of_pane(pane, agent=agent)
+    if not took:
+        return False, _unsent_error(pane, session)
     if session:
         _record_turn(session, text, pane)
     return True, {"session": session or None, "pane": pane, "opened": True,
-                  "fresh": True, "tmux": host, "agent": agent}
+                  "fresh": True, "tmux": host, "agent": agent, "submitted": True}
 
 
 def _folder_for_session(session: str) -> str:
@@ -1625,12 +1680,14 @@ def reply(item: str, text: str, bearer: str, *, quote: str = "",
         if err:
             return False, {"error": err, "pane": pane or None}
         send_err = canvas._send_to_pane(pane, body)
-        if not send_err:
-            _ensure_submitted(pane, body, agent=agent)
-            _record_turn(session, text, pane)
-        return (not send_err), {"session": session, "pane": pane,
-                                "opened": True, "branched": True,
-                                **({"error": send_err} if send_err else {})}
+        if send_err:
+            return False, {"session": session, "pane": pane, "opened": True,
+                           "branched": True, "error": send_err}
+        if not _ensure_submitted(pane, body, agent=agent):
+            return False, {**_unsent_error(pane, session), "branched": True}
+        _record_turn(session, text, pane)
+        return True, {"session": session, "pane": pane, "opened": True,
+                      "branched": True, "submitted": True}
 
     return deliver(session, body, text)
 
@@ -1663,10 +1720,12 @@ def deliver(session: str, body: str, text: str) -> tuple[bool, dict]:
         return False, {"error": send_err, "session": session, "pane": pane}
     # A long reply's Enter can arrive while the TUI is still taking the text
     # and be lost — the words sat in the box of a live session, unsent, until
-    # someone pressed Enter by hand. Look, and press it once if so.
-    _ensure_submitted(pane, body, agent=agent)
+    # someone pressed Enter by hand. Look, press, and look again.
+    if not _ensure_submitted(pane, body, agent=agent):
+        return False, {**_unsent_error(pane, session), "opened": opened}
     _record_turn(session, text, pane)
-    return True, {"session": session, "pane": pane, "opened": opened}
+    return True, {"session": session, "pane": pane, "opened": opened,
+                  "submitted": True}
 
 
 def conversation(item: str, bearer: str) -> tuple[bool, dict]:
