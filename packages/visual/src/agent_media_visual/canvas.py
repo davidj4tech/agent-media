@@ -77,6 +77,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Optional
 from urllib.parse import parse_qs
 
 from .state import spool_dir
@@ -296,6 +297,52 @@ def _book_title() -> str:
     return ""
 
 
+#: The phone's player, remembered for a moment: the popup redraws often and
+#: every miss would be a tailnet round trip to a phone that may be asleep.
+_PHONE_BOOK: dict = {"at": 0.0, "state": None}
+_PHONE_BOOK_TTL_S = 3.0
+
+
+def _phone_book() -> Optional[dict]:
+    """What Sasonica's own player is playing, or None.
+
+    Since 2026-09-09 the phone is the book channel's first choice and mpv the
+    fallback, so a book started in the app — or sent to it from here — is
+    invisible on the socket this popup used to read. Asked of the app itself,
+    with the same target the transport commands use, so the row and the keys
+    are talking about one player.
+    """
+    now = time.time()
+    if now - float(_PHONE_BOOK["at"]) < _PHONE_BOOK_TTL_S:
+        return _PHONE_BOOK["state"]
+    state = None
+    try:
+        from agent_media_core import phone_player
+        from agent_media_core.mcp_server import _book_target
+
+        state = phone_player.state(_book_target())
+    except Exception as e:  # noqa: BLE001 — an unreachable phone is "not playing"
+        log.debug("popup: phone player unreachable (%s)", e)
+    if state and not state.get("closed") and state.get("item"):
+        _PHONE_BOOK.update(at=now, state=state)
+    else:
+        _PHONE_BOOK.update(at=now, state=None)
+    return _PHONE_BOOK["state"]
+
+
+def _clock(seconds) -> str:
+    """`11:56`, or `3:58:33` once it is worth an hour column."""
+    try:
+        total = int(float(seconds))
+    except (TypeError, ValueError):
+        return "--:--"
+    if total < 0:
+        return "--:--"
+    hours, rest = divmod(total, 3600)
+    minutes, secs = divmod(rest, 60)
+    return f"{hours}:{minutes:02d}:{secs:02d}" if hours else f"{minutes:02d}:{secs:02d}"
+
+
 def channel_status(channel: str) -> dict:
     """Controller snapshot for one channel: marquee label + progress line +
     indicator flags. Mirrors the popup's fetch()."""
@@ -304,8 +351,16 @@ def channel_status(channel: str) -> dict:
         status = _media(["music", "status", "--show-idle", "--no-bar"])
         label = " ".join(_media(["music", "now"]).split()) or "(no music)"
     elif channel == "book":
-        status = _media(["book", "status", "--show-idle", "--no-bar"])
-        label = _book_title() or "(audiobook)"
+        # The phone first, as `media book` itself does; mpv is the fallback
+        # here exactly as it is there.
+        phone = _phone_book()
+        if phone:
+            status = (f"{'❙❙' if phone.get('paused') else '▶'} "
+                      f"{_clock(phone.get('t'))} / {_clock(phone.get('dur'))}")
+            label = " ".join(str(phone.get("title") or "").split()) or "(audiobook)"
+        else:
+            status = _media(["book", "status", "--show-idle", "--no-bar"])
+            label = _book_title() or "(audiobook)"
     else:
         out = _media(["popup-status", "--show-idle", "--no-bar"])
         lines = (out.splitlines() + ["", "", ""])[:3]
