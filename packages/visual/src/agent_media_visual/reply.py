@@ -895,13 +895,9 @@ def _settle(pane: str, timeout: float = 5.0) -> None:
 #: Where each agent's composer starts: the text after it is what is typed.
 _COMPOSER = {"claude": _PROMPT_GLYPH, "codex": "\u203a"}   # ❯, ›
 
-#: How many times `_ensure_submitted` will press Enter before giving up, and
-#: how long it watches after each press. Three is not superstition: a TUI that
-#: is still painting eats the keys it is sent, and the presses have to outlast
-#: the painting. An Enter into a composer that has already let go is a no-op
-#: in every agent here, so an extra press costs nothing and a missing one
-#: costs the whole turn.
-_SUBMIT_PRESSES = 3
+#: How long to watch the composer for the line to go, after each press. The
+#: evidence here is a screen capture rather than a transcript, so the window
+#: is much shorter than the one `conversation.submit` defaults to.
 _SUBMIT_SETTLE_S = 1.5
 
 
@@ -943,25 +939,18 @@ def _ensure_submitted(pane: str, text: str, timeout: float = 3.0,
                       agent: str = "claude") -> bool:
     """Press Enter until `text` leaves the input box. True if it did.
 
-    Looked at rather than assumed: the composer shows what it holds, so
-    "still in the box" is the first words of the message after the prompt
-    glyph with no sign of a turn in progress.
-
-    The press is checked, which is the whole point. This used to wait out
-    `timeout`, press Enter once and return — and a pane that ate that one too
-    sat with the question typed and unsent, while the phone showed the three
-    dots of an answer being written. That is not a hypothetical: it happened
-    to a "new chat" on 2026-09-21 and nothing noticed for half an hour,
-    because a fire-and-forget Enter has no failure to report.
+    The loop and the giving up belong to `conversation.submit`, which `media
+    ask` needs for the same reason. What is local to a surface is the
+    evidence: it has a pane to look at rather than a session whose transcript
+    it could read, so "still in the box" — the first words of the message
+    after the prompt glyph, with no sign of a turn in progress — is what it
+    reports.
     """
+    from agent_media_core import conversation as conv
+
     head = " ".join(text.split())[:24]
-    if not _unsent(pane, head, agent, timeout):
-        return True
-    for _ in range(_SUBMIT_PRESSES):
-        _tmux(["send-keys", "-t", pane, "Enter"])
-        if not _unsent(pane, head, agent, _SUBMIT_SETTLE_S):
-            return True
-    return False
+    return conv.submit(pane, lambda window: not _unsent(pane, head, agent, window),
+                       first=timeout, settle=_SUBMIT_SETTLE_S)
 
 
 def _unsent_error(pane: str, session: str = "") -> dict:

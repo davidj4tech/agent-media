@@ -833,53 +833,62 @@ _BOX = "─────\n❯ what is the time today\n─────\n  ⏵⏵ b
 _EMPTY = "❯ \n  ⏵⏵ bypass permissions on"
 
 
+def _presses(monkeypatch):
+    """Capture the Enters. They are pressed by the shared loop in core now."""
+    from agent_media_core import conversation as conv
+    sent = []
+    monkeypatch.setattr(conv, "_press_enter", lambda pane: sent.append(pane) or True)
+    monkeypatch.setattr(reply.time, "sleep", lambda s: None)
+    return sent
+
+
+def _no_press(monkeypatch):
+    from agent_media_core import conversation as conv
+    monkeypatch.setattr(conv, "_press_enter", lambda pane: pytest.fail("pressed Enter"))
+    monkeypatch.setattr(reply.time, "sleep", lambda s: None)
+
+
 def test_ensure_submitted_presses_enter_when_the_text_is_still_in_the_box(monkeypatch):
     # One press, and the box lets go. The press is believed only once it has
     # been seen to work, so the capture answers what the pane would: the box
     # holds the line until an Enter actually arrives.
-    sent = []
+    sent = _presses(monkeypatch)
     monkeypatch.setattr(reply, "_capture_pane", lambda p: _EMPTY if sent else _BOX)
-    monkeypatch.setattr(reply, "_tmux", lambda argv, timeout=10: sent.append(argv) or "")
-    monkeypatch.setattr(reply.time, "sleep", lambda s: None)
     assert reply._ensure_submitted("%1", "what is the time today", timeout=0.01) is True
-    assert sent == [["send-keys", "-t", "%1", "Enter"]]
+    assert sent == ["%1"]
 
 
 def test_ensure_submitted_keeps_pressing_while_the_pane_eats_the_key(monkeypatch):
     # The 2026-09-21 case: a TUI still painting swallows Enter after Enter.
     # The old one-press-and-return left the question typed and unsent with
     # nothing to say so.
-    sent = []
+    from agent_media_core import conversation as conv
+    sent = _presses(monkeypatch)
     monkeypatch.setattr(reply, "_capture_pane", lambda p: _BOX)
-    monkeypatch.setattr(reply, "_tmux", lambda argv, timeout=10: sent.append(argv) or "")
-    monkeypatch.setattr(reply.time, "sleep", lambda s: None)
     assert reply._ensure_submitted("%1", "what is the time today", timeout=0.01) is False
-    assert sent == [["send-keys", "-t", "%1", "Enter"]] * reply._SUBMIT_PRESSES
+    assert sent == ["%1"] * conv.SUBMIT_PRESSES
 
 
 def test_ensure_submitted_counts_the_last_press_that_lands(monkeypatch):
     # Taken on the final press: still a send, not a refusal.
-    sent = []
+    from agent_media_core import conversation as conv
+    sent = _presses(monkeypatch)
     monkeypatch.setattr(reply, "_capture_pane",
-                        lambda p: _EMPTY if len(sent) >= reply._SUBMIT_PRESSES else _BOX)
-    monkeypatch.setattr(reply, "_tmux", lambda argv, timeout=10: sent.append(argv) or "")
-    monkeypatch.setattr(reply.time, "sleep", lambda s: None)
+                        lambda p: _EMPTY if len(sent) >= conv.SUBMIT_PRESSES else _BOX)
     assert reply._ensure_submitted("%1", "what is the time today", timeout=0.01) is True
-    assert len(sent) == reply._SUBMIT_PRESSES
+    assert len(sent) == conv.SUBMIT_PRESSES
 
 
 def test_ensure_submitted_leaves_a_working_session_alone(monkeypatch):
+    _no_press(monkeypatch)
     monkeypatch.setattr(reply, "_capture_pane",
                         lambda p: "· ↑ 1.2k tokens · esc to interrupt\n❯ \n  ⏵⏵ bypass permissions on")
-    monkeypatch.setattr(reply, "_tmux", lambda argv, timeout=10: pytest.fail("pressed Enter"))
-    monkeypatch.setattr(reply.time, "sleep", lambda s: None)
     assert reply._ensure_submitted("%1", "what is the time today", timeout=0.01) is True
 
 
 def test_ensure_submitted_trusts_an_empty_box(monkeypatch):
+    _no_press(monkeypatch)
     monkeypatch.setattr(reply, "_capture_pane", lambda p: _EMPTY)
-    monkeypatch.setattr(reply, "_tmux", lambda argv, timeout=10: pytest.fail("pressed Enter"))
-    monkeypatch.setattr(reply.time, "sleep", lambda s: None)
     assert reply._ensure_submitted("%1", "what is the time today", timeout=0.01) is True
 
 

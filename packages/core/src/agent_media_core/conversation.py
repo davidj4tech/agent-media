@@ -54,6 +54,14 @@ LIVE_S = 1800.0
 LANDED_S = 12.0
 _LANDED_POLL_S = 0.4
 
+#: How many times `submit` will press Enter before giving up, and how long it
+#: waits for the evidence after each press. Three is not superstition: a TUI
+#: that is still painting eats the keys it is sent, and the presses have to
+#: outlast the painting. An Enter into a composer that has already let go is a
+#: no-op, so a spare press costs nothing and a missing one costs the turn.
+SUBMIT_PRESSES = 3
+_RETRY_LANDED_S = 3.0
+
 #: A short question is a fine needle; a long one is not worth carrying around.
 _NEEDLE_N = 60
 
@@ -271,12 +279,60 @@ def compose(question: str, context: str = "", via: str = "media ask") -> str:
     return f"[{via}] " + " — ".join(parts)
 
 
+def _press_enter(pane: str) -> bool:
+    """One Enter into `pane`. False if tmux would not take it."""
+    try:
+        r = subprocess.run(["tmux", "send-keys", "-t", pane, "Enter"],
+                           capture_output=True, timeout=5, check=False)
+        return r.returncode == 0
+    except Exception as e:  # noqa: BLE001
+        log.debug("Enter failed: %s", e)
+        return False
+
+
+def submit(pane: str, taken, *, first: float, settle: float = _RETRY_LANDED_S,
+           presses: int = SUBMIT_PRESSES) -> bool:
+    """Press Enter into `pane` until the line goes in. True if it did.
+
+    `taken(window)` is the caller's evidence, and it is the only thing that
+    differs between the two places this is needed: here it is the session's
+    own transcript (`landed`), and for a surface watching a pane it is the
+    composer letting go of the text. Either way it answers, within `window`
+    seconds, whether the line is in.
+
+    An Enter has already been sent by the time this is called — the type and
+    the submit are one gesture — so the first thing done is waiting `first`
+    for *that* one to show. Only then does this start pressing.
+
+    Pressing again is the whole point. A fire-and-forget Enter has no failure
+    to report, and a TUI still painting swallows it: a question typed into a
+    fresh window on 2026-09-21 sat unsent for half an hour while the phone
+    drew a typing indicator over it. The presses outlast the painting, and
+    what comes back says whether they worked, so a caller can tell the
+    listener the truth instead of shelving a question nobody will answer.
+    """
+    if taken(first):
+        return True
+    for _ in range(max(0, presses)):
+        if not _press_enter(pane):
+            return False
+        if taken(settle):
+            return True
+    return False
+
+
 def deliver(conv: Conversation, line: str, *,
             verify: bool = True, timeout: float = LANDED_S) -> bool:
     """Type one line into the conversation's pane and submit it.
 
     Two calls, not one: the text goes in literally (`-l`, so a question
     containing tmux key names is text and not keys), then Enter separately.
+
+    That Enter is not trusted. `verify` hands the outcome to `submit`, which
+    presses again if the transcript does not show the line — see there for
+    why one press is not enough. `verify=False` has no evidence to wait on
+    and so cannot retry either; it still means "typed, and that is all we
+    know".
     """
     line = " ".join((line or "").split())
     if not line or not conv.pane:
@@ -286,16 +342,16 @@ def deliver(conv: Conversation, line: str, *,
                                capture_output=True, timeout=5, check=False)
         if typed.returncode != 0:
             return False
-        sent = subprocess.run(["tmux", "send-keys", "-t", conv.pane, "Enter"],
-                              capture_output=True, timeout=5, check=False)
-        if sent.returncode != 0:
-            return False
     except Exception as e:  # noqa: BLE001
         log.debug("delivery failed: %s", e)
         return False
+    if not _press_enter(conv.pane):
+        return False
     if not verify:
         return True
-    return landed(conv.session, line, timeout=timeout)
+    return submit(conv.pane,
+                  lambda window: landed(conv.session, line, timeout=window),
+                  first=timeout)
 
 
 # ---- starting one ----------------------------------------------------------

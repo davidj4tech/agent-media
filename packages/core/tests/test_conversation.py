@@ -284,6 +284,41 @@ def test_typed_but_not_accepted_is_not_delivered(tmux, monkeypatch):
     assert C.deliver(C.Conversation(session="s1", pane="%1"), "why?") is False
 
 
+def test_a_swallowed_enter_is_pressed_again(tmux, monkeypatch):
+    """The one the phone hit: the first Enter is eaten, a later one lands."""
+    seen = []
+
+    def landed(session, line, *, timeout=0.0):
+        seen.append(timeout)
+        return len(seen) > 2          # not on the original, nor the first retry
+
+    monkeypatch.setattr(C, "landed", landed)
+    assert C.deliver(C.Conversation(session="s1", pane="%1"), "why?") is True
+    # Typed once; submitted once with the text, then pressed twice more.
+    assert [c[-1] for c in tmux] == ["why?", "Enter", "Enter", "Enter"]
+    # The first wait is the long one — that Enter may simply be slow.
+    assert seen[0] == C.LANDED_S and seen[1] < C.LANDED_S
+
+
+def test_a_pane_that_eats_every_enter_is_not_delivery(tmux, monkeypatch):
+    monkeypatch.setattr(C, "landed", lambda *a, **k: False)
+    assert C.deliver(C.Conversation(session="s1", pane="%1"), "why?") is False
+    assert sum(1 for c in tmux if c[-1] == "Enter") == 1 + C.SUBMIT_PRESSES
+
+
+def test_submit_does_not_press_a_line_that_already_went(monkeypatch):
+    monkeypatch.setattr(C, "_press_enter", lambda pane: pytest.fail("pressed Enter"))
+    assert C.submit("%1", lambda window: True, first=0.0) is True
+
+
+def test_submit_gives_up_when_tmux_will_not_take_the_key(monkeypatch):
+    """A dead pane is not a slow one: stop, rather than press it three times."""
+    presses = []
+    monkeypatch.setattr(C, "_press_enter", lambda pane: presses.append(pane) or False)
+    assert C.submit("%1", lambda window: False, first=0.0) is False
+    assert presses == ["%1"]
+
+
 def test_verification_can_be_waived(tmux, monkeypatch):
     def boom(*a, **k):
         raise AssertionError("should not have looked")
