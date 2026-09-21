@@ -645,6 +645,26 @@ _STATES_CACHE: tuple[float, object] = (0.0, [])
 _STATES_LOCK = threading.Lock()
 
 
+def activity_of(session: str, pane: str, *, with_draft: bool = False) -> dict:
+    """What a live session is doing: `{"state": "working" | "waiting" |
+    "approval" | None}`, and with `with_draft` also `"draft": bool` — text
+    half-typed on its input line (`pane_draft`).
+
+    The one place "is this session busy" is answered — `/sessions/state` and
+    the idle reaper both ask here — so the source can change underneath (a
+    harness's own session list instead of its screen) without either caller
+    changing. Today it is read off the pane: `None` means the screen does not
+    look like the agent at all (not painted yet, or not an agent), which the
+    reaper treats as a reason to leave it alone.
+    """
+    cls = panes.classify(panes.strip_ansi(_capture_pane(pane)), _agent_of_pane(pane)) \
+        if pane else None
+    out: dict = {"state": _STATE_NAMES.get(cls, "waiting") if cls else None}
+    if with_draft:
+        out["draft"] = bool(pane) and pane_draft(pane)
+    return out
+
+
 def _live_states() -> list[dict]:
     tails = {}
     for f in _manifest_dir().glob("*.json"):
@@ -660,11 +680,10 @@ def _live_states() -> list[dict]:
     pids = _PIDS
     mem = procmem.tree_mem_mb({sid: pids.get(sid) for sid in live})
     for sid, pane in live.items():
-        cls = panes.classify(panes.strip_ansi(_capture_pane(pane)),
-                                     _agent_of_pane(pane)) or "input"
+        # An unrecognised screen has always been listed as waiting here.
+        state = activity_of(sid, pane)["state"] or "waiting"
         out.append({"session": sid, "tail": tails.get(sid, ""),
-                    "state": _STATE_NAMES.get(cls, "waiting"),
-                    "mem_mb": mem.get(sid)})
+                    "state": state, "mem_mb": mem.get(sid)})
     return out
 
 
@@ -760,20 +779,28 @@ def sessions_index() -> list[dict]:
     folder name. One row per session; a live one that is also on the shelf
     is listed once, live.
 
-    Every row carries `recap`: Claude Code's latest "while you were away"
-    summary for that session, `{"text", "at"}`, or None (none written yet, or
-    not a Claude session). The app uses it as the row's preview line. Cached
+    Every row carries `recap`: the latest "where this thread was" summary,
+    `{"text", "at", "source"}`, or None — Claude Code's own "while you were
+    away" paragraph (`source: "claude"`), or the one the idle reaper wrote
+    before resting the session (`"agent-media"`), whichever is newer
+    (`recaps.recap_for`). The app uses it as the row's preview line. Cached
     per transcript in `recaps`, so once warm a list of ~44 costs a stat each.
 
     And `archived`: whether the thread has been archived (`archive`). Archived
     rows stay in the list — the app files them under "Archived" itself, and
     un-archiving from there needs the row.
+
+    And `rested` — `{"at", "reason"}` when the idle reaper closed it, None
+    otherwise and always None while live (`rest`) — and `pinned`, whether it
+    is kept open against the reaper (`pins`).
     """
-    from . import archive
+    from . import archive, pins, rest
 
     live = live_sessions()
     titles = _pane_titles()
     flags = archive.archived()
+    pinned = pins.pinned()
+    marks = rest.rested()
     seen: set[str] = set()
     out = []
     for sid, pane in live.items():
@@ -782,11 +809,13 @@ def sessions_index() -> list[dict]:
             continue
         seen.add(sid)
         out.append({"session": sid, "title": title, "live": True, "pane": pane,
-                    "recap": recaps.latest_recap(sid), "archived": sid in flags})
+                    "recap": recaps.recap_for(sid), "archived": sid in flags,
+                    "rested": None, "pinned": sid in pinned})
     for sid, title, at in _recent_conversations():
         if sid in seen:
             continue
         seen.add(sid)
         out.append({"session": sid, "title": title, "live": False, "pane": None, "at": at,
-                    "recap": recaps.latest_recap(sid), "archived": sid in flags})
+                    "recap": recaps.recap_for(sid), "archived": sid in flags,
+                    "rested": rest.row_mark(sid, False, marks), "pinned": sid in pinned})
     return out

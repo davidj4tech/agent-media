@@ -231,7 +231,8 @@ def test_targets_rows_carry_the_recap(server, shelf, signed_in):
     _transcript(SID, [_recap("shelved one" + HINT)])
     _, obj = call(server, "GET", "/targets", headers=AUTH)
     by = {r["session"]: r for r in obj["sessions"]}
-    assert by[SID]["recap"] == {"text": "shelved one", "at": 1789974112.291}
+    assert by[SID]["recap"] == {"text": "shelved one", "at": 1789974112.291,
+                                "source": "claude"}
     assert by[SID2]["recap"] is None
     _, conv = call(server, "GET", "/conversations", headers=AUTH)
     assert {r["session"]: r["recap"] for r in conv["sessions"]} == \
@@ -248,5 +249,6 @@ def test_the_log_carries_the_recap_but_never_as_a_line(server, shelf, signed_in,
     for path in ("/conversation/log?item=li_1", f"/conversation/log?session={SID}"):
         res, obj = call(server, "GET", path, headers=AUTH)
         assert res.status == 200, obj
-        assert obj["recap"] == {"text": "where we are", "at": 1789974112.291}
+        assert obj["recap"] == {"text": "where we are", "at": 1789974112.291,
+                                "source": "claude"}
         assert [line["text"] for line in obj["lines"]] == ["One?"]

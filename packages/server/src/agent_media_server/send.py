@@ -605,16 +605,39 @@ def session_resume(session: str, bearer: str) -> tuple[bool, dict]:
     if err:
         return False, {"error": err, "pane": pane or None}
     _retag(session)
+    from . import rest
+
+    rest.clear_quietly(session)          # resumed: no longer resting
     return True, {"session": session, "pane": pane, "live": True, "opened": True}
+
+
+def close_pane(session: str, pane: str = "") -> tuple[bool, dict]:
+    """Close the pane `session` runs in. No gate: the callers are the route
+    below, which has checked the bearer, and the idle reaper, which runs as
+    the host's own user.
+
+    Only a pane that hosts this very session is touched — never a shell, and
+    never a pane that has since been recycled for something else. `pane` is
+    what the caller already found; it is used only if a fresh sweep still
+    finds the session there.
+    """
+    live = sessions.live_sessions().get(session, "")
+    if not live or (pane and live != pane):
+        return True, {"session": session, "live": False, "closed": False}
+    pane = live
+    if not panes._tmux(["kill-pane", "-t", pane]) and panes._tmux(["display", "-pt", pane, "#{pane_id}"]):
+        return False, {"error": f"could not close {pane}", "pane": pane}
+    _retag(session)
+    return True, {"session": session, "pane": pane, "live": False, "closed": True}
 
 
 def session_close(session: str, bearer: str) -> tuple[bool, dict]:
     """End a conversation's session: close the pane it runs in.
 
-    Only a pane that hosts this very session is touched — never a shell, and
-    never a pane that has since been recycled for something else. Claude Code
-    ends the session cleanly on the pane closing (SessionEnd fires), and the
-    transcript stays, so this is undone by `session_resume`.
+    Claude Code ends the session cleanly on the pane closing (SessionEnd
+    fires), and the transcript stays, so this is undone by `session_resume`.
+    Ended by a person, so never marked rested (rest.py); a mark left from an
+    earlier reaper close is dropped, since the person has now decided.
     """
     session = (session or "").strip()
     if not sessions._SESSION.fullmatch(session):
@@ -622,13 +645,12 @@ def session_close(session: str, bearer: str) -> tuple[bool, dict]:
     user, err = auth.gate(bearer)
     if not user:
         return False, err
-    pane = sessions.live_sessions().get(session, "")
-    if not pane:
-        return True, {"session": session, "live": False, "closed": False}
-    if not panes._tmux(["kill-pane", "-t", pane]) and panes._tmux(["display", "-pt", pane, "#{pane_id}"]):
-        return False, {"error": f"could not close {pane}", "pane": pane}
-    _retag(session)
-    return True, {"session": session, "pane": pane, "live": False, "closed": True}
+    ok, detail = close_pane(session)
+    if ok and detail.get("closed"):
+        from . import rest
+
+        rest.clear_quietly(session)
+    return ok, detail
 
 
 # --- the whole move -----------------------------------------------------------
@@ -785,8 +807,10 @@ def deliver(session: str, body: str, text: str) -> tuple[bool, dict]:
     # A thread you are talking to is not archived. Here rather than in
     # `reply`, so a routed `/ask` that lands in an archived thread clears it
     # too; only once the words are in, so a send that failed leaves it be.
-    from . import archive
+    # Nor resting: a thread the reaper closed is in use again (rest.py).
+    from . import archive, rest
 
     archive.unarchive_quietly(session)
+    rest.clear_quietly(session)
     return True, {"session": session, "pane": pane, "opened": opened,
                   "submitted": True}

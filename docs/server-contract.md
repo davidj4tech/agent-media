@@ -224,11 +224,11 @@ Everything a message can be pointed at.
 {"ok": true,
  "sessions": [
    {"session": "0f1e…", "title": "Sasonica web", "live": true, "pane": "%42", "recap": null,
-    "archived": false},
+    "archived": false, "rested": null, "pinned": true},
    {"session": "6c73…", "title": "Sasonica music", "live": false, "pane": null, "at": 1790000000.1,
     "recap": {"text": "We're making the conversation page show what Claude is doing. Next: try it on the phone.",
-              "at": 1789807216.618},
-    "archived": true}],
+              "at": 1789807216.618, "source": "agent-media"},
+    "archived": true, "rested": {"at": 1790001000.2, "reason": "idle-tight"}, "pinned": false}],
  "places": [{"name": "agent-media", "path": "/home/ryer/projects/agent-media", "at": 1790000000.1}]}
 ```
 
@@ -239,14 +239,26 @@ Everything a message can be pointed at.
   first, titled by their folder name, with `at` = the manifest's mtime.
   **`at` is only on shelved rows.** A session appears once, live if it
   is live.
-- `recap` (every row, 22 Sep 2026): Claude Code's latest "while you were
-  away" summary for that session, `{"text", "at"}`, or `null`. See
-  [Recaps](#recaps) below. The app uses it as the row's preview line.
+- `recap` (every row, 22 Sep 2026): the latest "where this thread was"
+  summary for that session, `{"text", "at", "source"}`, or `null` — Claude
+  Code's own "while you were away" paragraph (`"source": "claude"`), or the
+  one agent-media wrote before the idle reaper rested the session
+  (`"source": "agent-media"`), whichever is newer. See [Recaps](#recaps)
+  below. The app uses it as the row's preview line.
 - `archived` (every row, 22 Sep 2026): whether the thread is archived — a
   flag this server keeps per session (`archive.py`, `<state_dir>/archived.json`),
   set with `POST /session/archive` (§6.4). **Archived rows stay in the list**;
   the app files them under an "Archived" section itself. Talking to a thread
   (a reply, or an `/ask` routed into it) clears the flag.
+- `rested` (every row, 22 Sep 2026): `{"at", "reason"}` when the idle reaper
+  closed the session (`reap.py`, [Resting](#resting) below), else `null`.
+  `reason` is `"idle"` (past `MEDIA_REAP_IDLE_H`, 12 h) or `"idle-tight"`
+  (past the shorter `MEDIA_REAP_TIGHT_IDLE_H`, 6 h, because the host was
+  short of memory). **Always `null` on a live row**, whatever the file says:
+  a running session is not resting. A session you ended with
+  `/session/close` is never rested.
+- `pinned` (every row, 22 Sep 2026): kept open against the idle reaper, set
+  with `POST /session/pin` (§6.4). A pin affects the reaper only.
 - `places`: up to 6 directories sessions have run in, newest first
   (running sessions count as "now"). These are the only directories a new
   chat may be opened in — `/ask` checks against this list (with no limit).
@@ -263,16 +275,25 @@ reads it (`agent_media_server/recaps.py`, read-only) and hands it on as
 
 ```json
 {"text": "Runlet is now Sasonica Shell, running on red5. Next: add the connector.",
- "at": 1789974112.291}
+ "at": 1789974112.291, "source": "claude"}
 ```
 
 - `text`: the paragraph, with Claude Code's trailing hint stripped (a
   trailing parenthetical that mentions recaps; any other trailing "(…)" is
   kept).
 - `at`: epoch seconds, 3 dp, from the line's timestamp.
-- `null` when the session has no recap yet, and **always** for Codex, pi and
-  Hermes, which write nothing like it. (Later, one could be generated for
-  them through the follow-up gateway call, `intake/_followup.py`.)
+- `source` (22 Sep 2026): `"claude"` for Claude Code's own, or
+  `"agent-media"` for one the idle reaper wrote before resting the session:
+  when a session it is about to close has no recap newer than its last
+  message, it asks the follow-up gateway (Haiku, `MEDIA_FOLLOWUP_MODEL`, the
+  `intake/_followup.py` call style; `MEDIA_REAP_RECAP_MODEL` /
+  `_TIMEOUT` override, 20 s) for one to three sentences from the end of the
+  conversation, and keeps it in `<state_dir>/generated-recaps.json`. A failed
+  call never blocks the close. `recaps.recap_for` answers the newer of the
+  two; that is what `/targets`, `/conversations` and `/conversation/log`
+  carry.
+- `null` when the session has neither. Codex, pi and Hermes never have a
+  `claude` one, so theirs is `null` until the reaper has rested them once.
 - It is **not a message** and never becomes a line: nobody said it, and it is
   not part of what the agent sees. The app draws it as a "While you were
   away" card in the thread (§14) and as the thread list's preview line.
@@ -293,6 +314,28 @@ the first read of files that are not in the page cache at all (0.5–0.72 s
 seen; red5 runs with ~1.5 GB free, so the cache does get evicted). That is
 paid once per canvas process: after it, the in-process cache means an
 unchanged file is only stat'ed and a growing one only read at its end.
+
+##### Resting
+
+The idle reaper (`agent_media_server/reap.py`, `media session-reap`, a
+systemd user timer every 15 min — see `notes/2026-09-22-session-reaper.md`)
+closes agent sessions nobody has spoken in for 12 h, or 6 h when the host is
+short of memory (`MemAvailable` under 20 % of `MemTotal` or under 1500 MB).
+**Idle** is time since the last message in either direction — the last
+user/assistant record in the transcript, or the last speech of it — not pane
+quietness. It never closes a session that is pinned, is the one running the
+reaper, is the source of live (speaking or paused) speech, is working, is
+stopped on a dialog or question, has text half-typed in its composer, or has
+a non-empty `/draft` written in the last 6 h; and it only ever considers
+agent panes `live_sessions` finds, never a shell. Its default mode is a dry
+run (`MEDIA_REAP_MODE=dry-run`) that only logs.
+
+A session it closes goes through the same `send.close_pane` as
+`/session/close`, and is recorded in `<state_dir>/rested.json` as
+`{"<session>": {"at", "idle_h", "reason"}}`; rows show `{"at", "reason"}`.
+The mark is dropped when the session is used again — a reply or a routed
+`/ask` into it, `/session/resume`, a later reaper run that finds it live —
+and by a `/session/close` from the person (who has now decided).
 
 #### `GET /conversations` — gated
 
@@ -410,9 +453,10 @@ both are given; it never asks ABS, so `start`/`end` are always `null` on it.
   `steps` holds the latest few (`MAX_STEPS`), newest last.
 - `approval`: `null`, or the dialog the session is stopped on (see below).
 - `suggestion`: §6.2.1, `""` while pending.
-- `recap` (22 Sep 2026, both forms): the session's latest Claude Code
-  recap, `{"text", "at"}`, or `null` — the same object as on the session's
-  `/targets` row ([Recaps](#recaps)). **Not a line**, and never inserted
+- `recap` (22 Sep 2026, both forms): the session's latest recap,
+  `{"text", "at", "source"}`, or `null` — the same object as on the
+  session's `/targets` row ([Recaps](#recaps)); `source` is `"claude"` or
+  `"agent-media"` (written before the idle reaper rested the session). **Not a line**, and never inserted
   among them. Only the latest, not every recap since the first line: the
   app shows one card, and listing them all would add a list to every poll
   for no reader. Its `at` says where it falls among the lines if the app
@@ -683,6 +727,11 @@ Clients: S (`ReplyBox.vue`).
 - close, closed: `{"ok": true, "session", "pane", "live": false, "closed": true}`.
   Only the pane hosting that very session is killed; the transcript stays,
   so close is undone by resume.
+- (22 Sep 2026) Both go through `send.close_pane`, the path the idle reaper
+  also uses — but a close from here is the person's decision, so it is never
+  marked rested, and drops a `rested` mark left from an earlier reaper close.
+  A resume that opens the session drops the mark too
+  ([Resting](#resting)).
 
 Clients: S (`ReplyBox.vue`), W (`useConversationSession.ts`).
 
@@ -707,6 +756,32 @@ Clients: S (`ReplyBox.vue`), W (`useConversationSession.ts`).
 - In `CORS_PATHS`.
 
 Pinned by `packages/server/tests/test_archive_and_memory.py`.
+
+Old archive marks — the `archived` tag on the conversation's ABS item, which
+is what archiving was before this flag — are carried over once by `media
+session-archive-import` (dry run; `--apply` to set the flags). It maps each
+tagged item to its session by the folder's `<project>/<title>` tail against
+the book-tracks manifests, and only reads from ABS.
+
+#### `POST /session/pin` — gated (22 Sep 2026)
+
+`{"session", "pinned": true | false}` → `{"ok": true, "session", "pinned"}`.
+
+- Keep a session open against the idle reaper ([Resting](#resting)): a
+  pinned session is never closed by it. The pin does nothing else — you can
+  still close the session yourself — and outlives the session (pin, close,
+  resume next week: still pinned).
+- Kept here, per session, in `<state_dir>/pinned.json` (`{"<session>":
+  <pinned at>}`, the same atomic write-and-lock as the archive flag).
+- `pinned` defaults to `true`; anything but a JSON boolean is 400 `"pinned
+  must be true or false"`. Setting what is already set is a 200 that writes
+  nothing.
+- Rows carry it as `pinned` on `/targets` and `/conversations`.
+- 400 `"not a session id"`; 404 `"no such session <first 8>"`, as for
+  `/session/archive`.
+- In `CORS_PATHS`.
+
+Pinned by `packages/server/tests/test_reap.py`.
 
 #### `POST /session/answer` — gated
 
@@ -1484,6 +1559,12 @@ That is a later decision, not part of this contract.
   the rows, un-archive on send, and `mem_mb` / `host` on `/sessions/state`
   against a fake `/proc` tree. The conftest points `procmem.PROC` at an empty
   throwaway dir, so no test reads the machine's real processes for memory.
+- `test_reap.py` pins the idle reaper, resting, recap `source` and the
+  fallback, `POST /session/pin`, and the archive import: the thresholds
+  (tight memory included), every never-reap rule, dry run against apply, the
+  rested mark and each way it is cleared, and the tag → session mapping. The
+  live sweep, the panes, speech, the gateway and ABS are all fakes; closing
+  is a recorder.
 - Run all three packages' tests together (`packages/server/tests
   packages/visual/tests packages/core/tests` in one pytest run): basename
   collisions and cross-suite isolation faults only show up that way.

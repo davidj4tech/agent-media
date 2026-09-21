@@ -1187,6 +1187,23 @@ class StateStore:
             row = cur.fetchone()
         return row[0] if row and row[0] else None
 
+    def last_spoken(self) -> dict[str, float]:
+        """`{session: when it last spoke (epoch)}` from the speech history.
+
+        Speech rows carry the session they came from in `extras`. The idle
+        reaper reads this beside each transcript, so a conversation whose
+        latest turn reached the listener only as speech still counts as
+        recent. One pass over the table for every session at once.
+        """
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT json_extract(extras, '$.source_session'), MAX(started_at) "
+                "FROM history WHERE sink = 'speech' "
+                "AND json_extract(extras, '$.source_session') IS NOT NULL "
+                "GROUP BY 1")
+            rows = cur.fetchall()
+        return {str(s): float(t) for s, t in rows if s and t}
+
     # ---- errors -----------------------------------------------------------
 
     def recent_errors(self, *, component: Optional[str] = None,

@@ -246,8 +246,9 @@ def _envelope(session: str, lines: list) -> dict:
     # of the thread. Deliberately not a line: nobody said it, and it is not
     # part of the conversation the agent sees. The latest only, not every one
     # since the first line — the app shows one card, and a history of them is
-    # `recaps.recaps()` when something wants it.
-    recap = recaps.latest_recap(session)
+    # `recaps.recaps()` when something wants it. Falls back to the recap the
+    # idle reaper wrote before resting the session, when that is newer.
+    recap = recaps.recap_for(session)
     return {"session": session, "lines": lines, "pending": pending,
             "working": working, "approval": approval, "suggestion": suggestion,
             "recap": recap}

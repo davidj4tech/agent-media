@@ -6993,6 +6993,37 @@ def cmd_state_gc(a) -> int:
     return 0
 
 
+def _server_module(name: str):
+    """`agent_media_server.<name>`, or None with a line saying why: the idle
+    reaper and the archive import live in the server package, which a
+    phone-only install does not have."""
+    import importlib
+
+    try:
+        return importlib.import_module(f"agent_media_server.{name}")
+    except ImportError as e:
+        print(f"media: needs the server package (pip install -e packages/server): {e}",
+              file=sys.stderr)
+        return None
+
+
+def cmd_session_reap(a) -> int:
+    """Close agent sessions idle past the threshold (agent_media_server.reap)."""
+    reap = _server_module("reap")
+    if reap is None:
+        return 1
+    mode = "apply" if a.apply else ("dry-run" if a.dry_run else None)
+    return reap.run(mode, as_json=a.json, write_log=not a.no_log)
+
+
+def cmd_session_archive_import(a) -> int:
+    """Carry ABS `archived` tags over to the server's archive flag."""
+    imp = _server_module("archive_import")
+    if imp is None:
+        return 1
+    return imp.run(apply=a.apply, as_json=a.json)
+
+
 def cmd_selfcheck(a) -> int:
     """Report this host's install health as key=value lines."""
     print(SELFCHECK_SENTINEL)
@@ -7818,6 +7849,28 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="count what would go, change nothing")
     sg.add_argument("--json", action="store_true")
     sg.set_defaults(func=cmd_state_gc)
+
+    sr = sub.add_parser("session-reap",
+                        help="close agent sessions idle for hours (12, or 6 when "
+                             "memory is tight); dry run unless --apply or "
+                             "MEDIA_REAP_MODE=apply")
+    srm = sr.add_mutually_exclusive_group()
+    srm.add_argument("--dry-run", action="store_true",
+                     help="decide and log, close nothing (overrides MEDIA_REAP_MODE)")
+    srm.add_argument("--apply", action="store_true",
+                     help="close what is idle, recap it first, mark it rested")
+    sr.add_argument("--json", action="store_true", help="the decisions as one JSON object")
+    sr.add_argument("--no-log", action="store_true",
+                    help="print only; do not append to <state_dir>/session-reap.log")
+    sr.set_defaults(func=cmd_session_reap)
+
+    sai = sub.add_parser("session-archive-import",
+                         help="set the archive flag for conversations tagged "
+                              "`archived` in Audiobookshelf (dry run unless --apply; "
+                              "never writes to ABS)")
+    sai.add_argument("--apply", action="store_true", help="set the flags")
+    sai.add_argument("--json", action="store_true")
+    sai.set_defaults(func=cmd_session_archive_import)
 
     sc = sub.add_parser("selfcheck",
                         help="report this host's install health (key=value lines)")

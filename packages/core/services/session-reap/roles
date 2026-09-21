@@ -1,0 +1,3 @@
+# The agent sessions live where replies are produced — the desk's tmux panes.
+# A phone or a render-only host has none to close.
+requires: origin

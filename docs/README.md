@@ -47,6 +47,7 @@ than maintained by hand.
 
 ## Notes
 
+- [2026-09-22 session-reaper](notes/2026-09-22-session-reaper.md) — installing the idle-session reaper's timer, switching it to apply, importing old archive marks
 - [2026-08-05 speech-controls](notes/2026-08-05-speech-controls.md) — breadcrumb + control channel, OpenWebUI STT
 
 ## Handover

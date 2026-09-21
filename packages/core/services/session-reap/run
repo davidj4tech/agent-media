@@ -1,0 +1,15 @@
+#!/bin/sh
+# session-reap — close agent sessions nobody has spoken in for hours.
+#
+# Idle is time since the last message in the conversation (12 h; 6 h when the
+# host is short of memory). Pinned, working, asking, speaking and half-typed
+# sessions are never closed. See agent_media_server/reap.py for every rule.
+#
+# DRY RUN unless MEDIA_REAP_MODE=apply is set (in ~/.config/agent-media.env):
+# each run appends one line per live session to
+# ~/.local/state/agent-media/session-reap.log, and prints them to the journal.
+exec 2>&1
+[ -f "$HOME/.config/agent-media.env" ] && . "$HOME/.config/agent-media.env"
+export MEDIA_REAP_MODE MEDIA_REAP_IDLE_H MEDIA_REAP_TIGHT_IDLE_H \
+       MEDIA_REAP_TIGHT_PCT MEDIA_REAP_TIGHT_MB MEDIA_REAP_DRAFT_H
+exec media session-reap

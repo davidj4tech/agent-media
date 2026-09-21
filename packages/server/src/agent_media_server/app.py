@@ -61,6 +61,8 @@ device gets its token):
   POST /session/archive {"session", "archived": true|false} → file the
                   thread under Archived, or take it back out (a flag this
                   server keeps; see archive.py). Ends nothing
+  POST /session/pin {"session", "pinned": true|false} → keep that session
+                  open against the idle reaper (pins.py, reap.py)
   POST /session/answer {"session", "choice", "key"} → answer the dialog that
                   session is stopped on (a permission prompt); refused unless
                   that same question, fingerprinted by `key`, is still on its
@@ -88,8 +90,8 @@ from http.server import BaseHTTPRequestHandler
 from typing import Callable
 from urllib.parse import parse_qs
 
-from . import (abs_item, archive, auth, devices, drafts, harnesses, routing, send, sessions,
-               share, speech, threads)
+from . import (abs_item, archive, auth, devices, drafts, harnesses, pins, routing, send,
+               sessions, share, speech, threads)
 from . import audio
 
 # The endpoints a browser on another origin may reach. Everything here
@@ -108,7 +110,7 @@ from . import audio
 CORS_PATHS = frozenset({
     "/conversation", "/conversation/log", "/conversations", "/targets", "/item",
     "/reply", "/ask", "/focus", "/session/resume", "/session/close", "/draft",
-    "/session/answer", "/session/archive",
+    "/session/answer", "/session/archive", "/session/pin",
     "/speech/now", "/speech/ctl", "/sessions/state", "/commands", "/rename",
     "/harnesses", "/harnesses/run", "/harnesses/screen",
     "/harnesses/keys", "/harnesses/close", "/share",
@@ -527,6 +529,13 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         body = _read_json(h) or {}
         ok, detail = archive.session_archive(str(body.get("session") or ""),
                                              body.get("archived"), _bearer(h))
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    elif path == "/session/pin":
+        # Keep a session open against the idle reaper (reap.py). A flag kept
+        # here, by session, like the archive one; gated like it.
+        body = _read_json(h) or {}
+        ok, detail = pins.session_pin(str(body.get("session") or ""),
+                                      body.get("pinned"), _bearer(h))
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path == "/session/answer":
         # Answering the dialog a session is stopped on — a permission

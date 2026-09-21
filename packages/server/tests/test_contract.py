@@ -176,11 +176,17 @@ def test_targets_shape(server, shelf, signed_in):
     # `recap` and `archived` joined on 22 Sep 2026, deliberately: Claude
     # Code's latest "while you were away" summary, the list's preview line,
     # and the server-kept archive flag (§6.1). Null / false here: the rig has
-    # no transcripts and nothing archived.
-    assert keys(live) == {"session", "title", "live", "pane", "recap", "archived"}
+    # no transcripts and nothing archived. `rested` and `pinned` joined the
+    # same day, deliberately: the idle reaper's mark on a session it closed
+    # ({"at", "reason"} | null, always null while live) and the keep-open pin
+    # (§6.1, §6.4 /session/pin).
+    assert keys(live) == {"session", "title", "live", "pane", "recap", "archived",
+                          "rested", "pinned"}
     assert live == {"session": SID2, "title": "Sasonica web", "live": True, "pane": "%42",
-                    "recap": None, "archived": False}
-    assert keys(shelved) == {"session", "title", "live", "pane", "at", "recap", "archived"}
+                    "recap": None, "archived": False, "rested": None, "pinned": False}
+    assert keys(shelved) == {"session", "title", "live", "pane", "at", "recap", "archived",
+                             "rested", "pinned"}
+    assert shelved["rested"] is None and shelved["pinned"] is False
     assert shelved["live"] is False and shelved["pane"] is None
     assert [keys(p) for p in obj["places"]] == [{"name", "path", "at"}]
 

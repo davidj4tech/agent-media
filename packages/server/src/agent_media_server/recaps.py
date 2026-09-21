@@ -13,8 +13,10 @@ the latest one as a card at the top of the thread and as the list's preview
 line (server-contract.md §6.1, §6.2, §14).
 
 Only Claude Code writes these. Codex, pi and Hermes have nothing like it, so
-their sessions answer None (a later step could generate one through the
-follow-up gateway call, `intake/_followup.py`).
+their sessions answer None here. The idle reaper writes a recap of its own
+through the follow-up gateway call before it rests a session (`rest.py`), and
+`recap_for` — what the routes use — picks the newer of the two and says whose
+it is (`"source": "claude" | "agent-media"`).
 
 Read-only: this never writes to a transcript.
 
@@ -323,3 +325,23 @@ def recaps(session: str, since: float | None = None) -> list[dict]:
     if since is not None:
         rows = [r for r in rows if r["at"] > since]
     return [dict(r) for r in rows]
+
+
+def recap_for(session: str) -> dict | None:
+    """The recap a row or a log shows: `{"text", "at", "source"}`, or None.
+
+    `source` is "claude" for Claude Code's own away_summary and "agent-media"
+    for the one the reaper wrote before resting the session (`rest.py`). The
+    newer of the two wins, so Claude's own is shown whenever it is at least as
+    recent — and a Codex, pi or Hermes session, which has no Claude recap at
+    all, shows the generated one when there is one.
+    """
+    from . import rest
+
+    own = latest_recap(session)
+    ours = rest.generated_recap(session)
+    if ours and (not own or ours["at"] > own["at"]):
+        return {**ours, "source": "agent-media"}
+    if own:
+        return {**own, "source": "claude"}
+    return None
