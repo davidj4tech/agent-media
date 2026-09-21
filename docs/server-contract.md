@@ -7,13 +7,16 @@ of against `canvas.py`. Step 1 of `simplification-plan.md`.
 The document has two halves:
 
 - **v0 — what runs today.** Every route the app calls, as the code answers
-  it on 21 Sep 2026. Pinned by `packages/visual/tests/test_contract.py`; if a
+  it on 21 Sep 2026. Pinned by `packages/server/tests/test_contract.py`; if a
   shape here and the code disagree, the test is the arbiter and this file is
   the bug.
 - **v1 — what the rebuild needs.** Four changes decided with David on
-  21 Sep 2026, specified here but **not built**: device tokens instead of the
-  Audiobookshelf login, threads keyed by session instead of by library item,
-  a per-thread event stream, and stop.
+  21 Sep 2026: device tokens instead of the Audiobookshelf login, threads
+  keyed by session instead of by library item, a per-thread event stream,
+  and stop. **Device tokens (§9) and threads keyed by session (§10) are
+  BUILT (22 Sep 2026)** — those sections now give the shapes as
+  implemented, and the deviations from the first draft. The stream (§11),
+  stop (§12) and error codes (§13) are still specified only.
 
 Then the binding to assistant-ui's `ExternalStoreRuntime`, the gaps, and an
 appendix of everything that is *not* part of the app contract.
@@ -119,12 +122,24 @@ The app routes: `/conversation`, `/conversation/log`, `/conversations`,
 `/sessions/state`, `/commands`, `/rename`, `/harnesses`, `/harnesses/run`,
 `/harnesses/screen`, `/harnesses/keys`, `/harnesses/close`, `/share`.
 
+`/pair` (22 Sep 2026, §9) is open cross-origin for **POST and its preflight
+only** (`app.CORS_POST_PATHS`; the preflight's `Allow-Methods` is `POST,
+OPTIONS`). `GET /pair` is the canvas's amux-token page, and an
+`Access-Control-Allow-Origin` on it would let any page's script read the
+amux token out of the answer — so it never carries one.
+
 ---
 
 ## 4. Auth (v0)
 
 Three credentials, and which one a route takes is the route's, not the
 caller's, choice.
+
+**Since 22 Sep 2026 every app route takes a fourth, first:** a paired
+device token (§9) in the same `Authorization: Bearer` header. It is checked
+locally before anything below, in one place (`agent_media_server/auth.py`),
+and only a bearer that is not a known device token reaches §4.1. What §4.1
+says about ABS is therefore the fallback, unchanged.
 
 ### 4.1 The caller's ABS bearer — every app route
 
@@ -276,9 +291,10 @@ and whether the library has an item for it yet.
 
 ```json
 {"ok": true, "session": "0f1e…", "item": null, "scanning": false,
- "live": true, "pane": "%42", "resumable": true}
+ "live": true, "pane": "%42", "resumable": true, "suggestion": ""}
 ```
 
+- `suggestion` (§6.2.1) since 22 Sep 2026 (§10), as `?item=` has it.
 - `ok` from the first poll (the session is real). `item` fills in once ABS
   has the item **and has built its tracks**. `scanning: true` means the item
   exists but ABS has no tracks for it yet — don't navigate to it.
@@ -297,9 +313,11 @@ hook wrote for that same reply (`intake/_followup.py`). A follow-up is only
 offered for the reply it was written for. `""` when there is neither, or
 while a turn is pending.
 
-#### `GET /conversation/log?item=<item>` — gated
+#### `GET /conversation/log?item=<item>` · `?session=<session>` — gated
 
-The conversation as lines — the chat itself.
+The conversation as lines — the chat itself. The `?session=` form (22 Sep
+2026, §10) answers the same envelope with the same line shapes and wins when
+both are given; it never asks ABS, so `start`/`end` are always `null` on it.
 
 ```json
 {"ok": true, "session": "6c73…",
@@ -383,6 +401,9 @@ out.
 
 **Errors:** as `/conversation?item=`, plus 404 `"no manifest for that
 conversation"` and 500 `"could not read the conversation (…)"` (logged).
+The `?session=` form: 400 `"not a session id"`, and 404 `"no conversation
+for that session yet"` only for a session with no manifest, nothing said, no
+pane and no transcript (§10).
 
 Clients: S (`ConversationLog.vue`), W (`useConversationLog.ts`). **Adaptive
 poll, by `setTimeout`:** 1 s while a line is live or just after, 2 s while
@@ -450,7 +471,11 @@ Clients: S (`ReplyBox.vue`), POST debounced 800 ms.
 
 Type into the session behind a conversation, reviving it if it has ended.
 
-Request: `{"item": "<item>", "text": "…", "quote"?: "…", "mode"?: "continue" | "branch"}`
+Request: `{"session": "<session>" | "item": "<item>", "text": "…", "quote"?: "…", "mode"?: "continue" | "branch"}`
+
+- `session` (22 Sep 2026, §10) wins when both are given. 400 `"not a
+  session id"`; 404 `"no such session <8 chars>"` when it has no pane and
+  no transcript. `branch` works from either form.
 
 - The text is flattened to one line before it is typed (a newline would
   submit half the message). The quote rides in front as `Re: "<quote, ≤160
@@ -495,6 +520,7 @@ Request:
 | --- | --- |
 | `text` | required |
 | `target` | a session id the picker chose, or `"new"` to force a fresh session |
+| `player_session` | the thread in the player, by session id (22 Sep 2026, §10). Wins over `player_item`; 400 if it is not a session id; a session that is gone (no pane, no transcript) is skipped, not an error |
 | `player_item` | the ABS item in the player — **ABS-specific** |
 | `sticky` | the session this device last spoke to (S keeps it in `sasonica.askLast`) |
 | `parse` | default `true`: read a target from the words ("reply to drones, …", "new codex chat, …") |
@@ -506,7 +532,7 @@ Request:
 Routing, first match wins:
 1. `target`: a session id (`how: "picked"`), or `"new"` (`how: "asked"`).
 2. A target spoken at the start of the words (`how: "spoken"`).
-3. The player's item (`how: "player"`).
+3. The player's thread — `player_session`, else `player_item` (`how: "player"`).
 4. `sticky`, if it still exists (`how: "sticky"`).
 5. A fresh session (`how: "default"`), in `cwd`, `project`, or the scratch
    amux registration (`MEDIA_ASK_SESSION`).
@@ -702,91 +728,196 @@ per-thread stream copies its conventions.
 
 ## 8. What v1 changes, in one table
 
-| | v0 | v1 |
-| --- | --- | --- |
-| Credential | the caller's ABS bearer, checked with ABS | a device token, checked locally (§9) |
-| Thread id | ABS item id on half the routes | session id everywhere (§10) |
-| Live updates | poll `/conversation/log` 1–15 s | `GET /threads/{session}/events` (§11) |
-| Stop | none | `POST /session/stop` (§12) |
-| Errors | `ok` + `error`, status as §3 | the same, plus a machine `code`; every error has `ok` (§13) |
+| | v0 | v1 | Status |
+| --- | --- | --- | --- |
+| Credential | the caller's ABS bearer, checked with ABS | a device token, checked locally (§9) | **built 22 Sep 2026** |
+| Thread id | ABS item id on half the routes | session id everywhere (§10) | **built 22 Sep 2026** |
+| Live updates | poll `/conversation/log` 1–15 s | `GET /threads/{session}/events` (§11) | specified |
+| Stop | none | `POST /session/stop` (§12) | specified |
+| Errors | `ok` + `error`, status as §3 | the same, plus a machine `code`; every error has `ok` (§13) | specified (`/pair` already answers with `code`) |
 
 The v0 routes keep working through the migration. v1 adds; it removes
 nothing until the ABS exit (plan step 2).
 
 ---
 
-## 9. v1: device tokens
+## 9. v1: device tokens — BUILT 22 Sep 2026
+
+Code: `packages/server/src/agent_media_server/devices.py` (the store, the
+codes, the CLI's listing), `auth.py` (the gate), `app.py` (`POST /pair`).
+Pinned by `packages/server/tests/test_devices.py`.
 
 ### Pairing
 
-1. At the desk: `media-visual-canvas pair --device "Pixel 8a"` (today's
-   command, gaining `--device`). It mints a one-time 8-hex code, valid for
-   `PAIR_TTL_S` (30 min), and prints a link and a QR:
-   `sasonica://pair?server=<base url>&code=<code>` (the app scheme), with the
-   `http://…/pair?c=` form alongside for a browser.
+1. At the desk: `media-visual-canvas pair --device "Pixel 8a"` (the existing
+   command, gaining `--device`; without it, the amux link is unchanged). It
+   mints a one-time 8-hex code, valid for `MEDIA_DEVICE_PAIR_TTL` seconds
+   (default: `MEDIA_VISUAL_PAIR_TTL`, else 1800 — the same 30 min as
+   `PAIR_TTL_S`), and prints a QR of the app link plus both links:
+   - `sasonica://pair?server=<base url, percent-encoded>&code=<code>` — what
+     the app reads;
+   - `http://<host>:<port>/pair?c=<code>&device=1` — for the person at the
+     terminal only. Opened in a browser it is **refused** (it reaches
+     `GET /pair`, the amux page, which does not know device codes).
+
+   `--host` and `--port` set the base (default: this machine's hostname and
+   `MEDIA_VISUAL_PORT`/8781), as they do for the amux link.
 2. The app redeems it:
 
-   `POST /pair {"code": "…", "device": "Pixel 8a"}` — no auth, rate-limited
-   per source IP.
+   `POST /pair {"code": "…", "device": "Pixel 8a"}` — no auth.
 
    ```json
-   {"ok": true, "token": "<43 chars, urlsafe base64 of 32 random bytes>",
-    "device_id": "d_7f3a…", "server": {"name": "red5", "base": "http://red5:8781"}}
+   {"ok": true, "token": "<43 chars: secrets.token_urlsafe(32)>",
+    "device_id": "d_7f3a09c1b2e4", "server": {"name": "red5", "base": "http://red5:8781"}}
    ```
 
-   403 `{"ok": false, "code": "bad_pairing_code", "error": "invalid or expired pairing code"}`.
-   The code is deleted on first use, whether the redemption succeeds or not.
+   - `server.name` is the host's `gethostname()`. `server.base` is the
+     address the request came in on: `Host` as the client sent it, and
+     `https` when a TLS-terminating proxy in front says so in
+     `X-Forwarded-Proto` (the Cloudflare link), else `http`.
+   - 403 `{"ok": false, "code": "bad_pairing_code", "error": "invalid or
+     expired pairing code"}` for a wrong, used or expired code — the same
+     answer for all three.
+   - 429 `{"ok": false, "code": "rate_limited", "error": "too many pairing
+     attempts; try again in a few minutes"}` after 10 failures from one
+     source address in 10 minutes. It is answered before the code is looked
+     at, so a good code sent while limited is not burned.
+   - **A code dies on its first *successful* use, or at the end of its
+     window — never on a failure.** Failures are what the rate limit is
+     for. (The first draft burned the code on any attempt; that would let
+     anyone on the tailnet cancel a pairing by guessing badly.)
+   - The name stored is the one given at the desk. The body's `device` is
+     used only when the desk gave none — the person with the shell decides
+     what a device is called, not the device.
 3. The app stores the token in the Android keystore (not WebView
    localStorage), and the base URL from the pairing link becomes its server
    address — replacing the "ABS host on 8781" guess.
 
 `POST /pair` hands out a *device token*. It never returns the amux token.
-Today's `GET /pair` page, which installs the amux token into a browser, stays
-for the canvas page only and is not part of the app contract.
+The device codes live in their own store (`device-pair-codes.json` in the
+state dir); the canvas's `GET /pair` code is the spool's `pair-code`. Neither
+route reads the other's, so a device code never opens the amux page and the
+amux code never redeems a device token (both pinned). `GET /pair` stays for
+the canvas page only, is not part of the app contract, and carries no CORS
+headers (§3.1).
 
 ### Use
 
 `Authorization: Bearer <device token>` on every app route, exactly where
-the ABS bearer goes today. The server looks the token up locally — no
-network call, so there is no "ABS did not answer" and **auth never produces
-a 503**.
+the ABS bearer goes today. The server looks the token up locally — a sha256
+and a constant-time compare against each stored hash — with no network
+call, so there is no "ABS did not answer" and **auth never produces a 503**
+for a device.
+
+The single choke point is `agent_media_server/auth.py`:
+`gate(bearer)`, `may_control_speech(bearer)`, `identity(bearer)` and
+`may_reply(user)`. Every route that asked `auth_abs` directly now asks
+these. Each tries the device store first and falls through to `auth_abs`
+unchanged. A device stands for the owner, `{"username": "device:<name>",
+"type": "root", "device": "<id>"}`. `may_reply` admits it whatever
+`MEDIA_REPLY_ROOT` says: that switch is about who ABS's root is.
+
+**A device token is never sent to ABS.** Item lookups made for a device
+caller (`?item=`, the `item` field of `/conversation?session=`, `/ask` and
+`/speech/now`, and `GET /item`) go out under the host's own ABS login
+(`auth.abs_bearer`), since a device is the owner. With no ABS configured
+they find nothing, and the item fields stay `null`.
 
 ### Storage and revocation
 
-- `~/.local/state/agent-media/devices.json`:
-  `[{"id", "name", "sha256", "created", "last_seen", "last_ip"}]`. Only the
-  hash is stored. `last_seen` is updated at most once a minute.
-- `media-visual-canvas devices` lists them; `--revoke <id>` removes one.
-  A revoked token answers 401 `code: "bad_token"` on its next request.
-- A device token carries the rights `may_reply` grants today: the owner's.
-  There is a single scope in v1. Scopes arrive with the hosted tier, if it
-  needs them.
+- `<state dir>/devices.json` (`~/.local/state/agent-media/` on red5), mode
+  600, written atomically (a temp file created 600, then renamed):
+  `[{"id": "d_<12 hex>", "name", "sha256", "created", "last_seen",
+  "last_ip"}]`. Only the hash is stored. `last_seen` and `last_ip` are
+  updated at most once a minute. The pairing codes file is mode 600 too.
+- `media-visual-canvas devices` lists them (id, name, when paired, last
+  seen, from where); `devices --revoke <id>` removes one.
+- **A revoked token is simply unknown**, so it falls through to the ABS
+  check like any other bearer, and ABS refuses it: 401 `{"ok": false,
+  "error": "Audiobookshelf rejected that login"}`, as in §4.1. It does
+  **not** carry `code: "bad_token"` yet. That arrives with §13's codes,
+  which this pass did not add to the shared envelope, and `test_contract`'s
+  key sets are unchanged. It is also not a 503 unless ABS is down, in which
+  case the §4.1 mapping applies to it as to any unknown bearer.
+- A device token carries the rights `may_reply` grants the owner. There is
+  a single scope in v1. Scopes arrive with the hosted tier, if it needs
+  them.
 
 ### Migration
 
-The gate becomes "a known device token, **or** an ABS bearer that passes
-§4.1". The device token is checked first, since it is local and cheap. The
-ABS branch is deleted at the ABS exit. Both clients keep working
-throughout.
+The gate is "a known device token, **or** an ABS bearer that passes §4.1".
+The device token is checked first, since it is local and cheap. The ABS
+branch (the fallback lines in `auth.py`, and `auth_abs.py`) is deleted at
+the ABS exit. Both clients keep working throughout.
 
 Over the Cloudflare link, device tokens must travel over https only. The
 tunnel terminates TLS; the canvas itself stays plain http on the tailnet.
 
+### Deviations from the 21 Sep draft
+
+- A failed redemption does not burn the code (above). Failures are
+  rate-limited instead: 10 per source address per 10 minutes, then 429
+  `rate_limited`.
+- A revoked or unknown device token answers the ABS fallback's 401, with no
+  `code: "bad_token"` (above).
+- The pairing window has its own knob, `MEDIA_DEVICE_PAIR_TTL`, which
+  defaults to the canvas's.
+- The browser link carries `&device=1` and is for reference only. There is
+  no browser flow for device pairing.
+- The desk's name wins over the device's own `device` field.
+- Device callers' ABS item lookups use the host's ABS login rather than
+  failing, so the `item` fields keep filling until the ABS exit.
+
 ---
 
-## 10. v1: threads keyed by session
+## 10. v1: threads keyed by session — BUILT 22 Sep 2026
 
-Every route that takes `item` gains a `session` form, and the session form
-is the contract:
+Every route that takes `item` has a `session` form, and the session form
+is the contract. Pinned by `packages/server/tests/test_session_keys.py`
+(and `test_contract.py`'s `/conversation?session=` key set, which gained
+`suggestion` on purpose).
 
-| v0 | v1 |
-| --- | --- |
-| `GET /conversation?item=` | `GET /conversation?session=` (exists) — gains `suggestion` |
-| `GET /conversation/log?item=` | `GET /conversation/log?session=` |
-| `POST /reply {item, …}` | `POST /reply {session, …}` |
-| `GET /commands?item=` | `GET /commands?session=` (exists) |
-| `POST /rename {item}` | `POST /rename {session}` (exists) |
-| `POST /ask {player_item}` | `POST /ask {player_session}` |
+| v0 | v1 | As built |
+| --- | --- | --- |
+| `GET /conversation?item=` | `GET /conversation?session=` — gains `suggestion` | built: `suggestion` as in §6.2.1. `session` is still read only when `item` is absent (the v0 rule, kept: the two forms answer different shapes) |
+| `GET /conversation/log?item=` | `GET /conversation/log?session=` | built: same envelope and line keys; `session` wins when both are given |
+| `POST /reply {item, …}` | `POST /reply {session, …}` | built: `session` wins; `branch` works from it |
+| `GET /commands?item=` | `GET /commands?session=` | already there (`test_commands_shape`) |
+| `POST /rename {item}` | `POST /rename {session}` | already there (`test_rename_shape`) |
+| `POST /ask {player_item}` | `POST /ask {player_session}` | built: routes as `how: "player"`, wins over `player_item` |
+
+Every session-taking form rejects a malformed id with 400 `"not a session
+id"` (the `_SESSION` pattern, §5).
+
+**`/conversation/log?session=` never asks ABS.** It finds the manifest by
+session in the book-tracks dir and calls `book_tracks.conversation_log(…,
+positions=False)`. `positions=False` is new: it skips `_abs_ready` entirely,
+so `start`/`end` are `null` on every line of this form, even while ABS is
+up. They are ABS-shaped and go at the exit anyway, and the point of this
+form is to answer when ABS is slow or gone. (The item form still asks for
+positions, as before.)
+
+**No manifest yet is not, by itself, a 404.** A session gets its manifest on
+its first publish, which is debounced, so a session the phone started
+seconds ago has none. But `conversation_log` reads the manifest *by
+session* and needs the folder only for positions. The listener's turn is
+already in speech history, and the live line comes from the player. So it
+is asked regardless, and:
+- lines, or a live pane, or a transcript → 200 (possibly `"lines": []` for
+  a real session that has said nothing yet — so a client polling a thread
+  it just opened sees an empty chat, not an error);
+- no manifest **and** no lines **and** no pane **and** no transcript → 404
+  `"no conversation for that session yet"`.
+
+**`POST /reply {session}`** checks the session before typing: 404 `"no such
+session <first 8>"` when it has no pane and no transcript. `deliver` would
+refuse it too, but `branch` would otherwise open a fresh session in no
+particular directory.
+
+**`POST /ask {player_session}`** only counts when the session is real (live
+or has a transcript). One that is gone is skipped, and routing falls
+through to `sticky`, then a fresh session, as a `player_item` with no
+session behind it does.
 
 The ABS-shaped fields go with the ABS exit:
 - `start`/`end` on lines;
@@ -796,9 +927,15 @@ The ABS-shaped fields go with the ABS exit:
 
 Until then they stay, and are `null` or `""` where nothing fills them.
 
-`/conversation/log?session=` needs the manifest lookup by session
-(`_folder_for_session` already does it), and `conversation_log` needs to run
-without ABS track positions, which it already can — positions are optional.
+### Deviations from the 21 Sep draft
+
+- `start`/`end` are always `null` on `/conversation/log?session=`, not
+  only "where nothing fills them": this form never asks ABS for positions.
+- A session with no manifest answers from history (200) rather than 404,
+  and the 404's words are `"no conversation for that session yet"`.
+- When both are sent, `session` wins over `item` on `/conversation/log`
+  and `/reply`, and `player_session` over `player_item` on `/ask`.
+  `/conversation` keeps its v0 rule (`session` only when `item` is absent).
 
 ---
 
@@ -980,9 +1117,9 @@ thread's in-progress indicator, where today's clients show the dots.
 
 | Runtime | v0 | v1 |
 | --- | --- | --- |
-| `messages` | `/conversation/log` poll | `snapshot` + `line` events |
+| `messages` | `/conversation/log` poll (`?session=` since 22 Sep 2026) | `snapshot` + `line` events |
 | `isRunning` | `pending` | `state == "working"` or `pending`. Note that assistant-ui disables the composer while running, but a Claude Code session takes messages mid-turn (they queue), so the app passes sends through while running |
-| `onNew` in a thread | `POST /reply {item, text}`; a thread not on the shelf yet has no item, so it goes through `POST /ask {text, target: session}` | `POST /reply {session, text}` |
+| `onNew` in a thread | `POST /reply {item, text}`; a thread not on the shelf yet has no item, so it goes through `POST /ask {text, target: session}` | `POST /reply {session, text}` — **available since 22 Sep 2026**, for every thread, shelved or not |
 | `onNew` in a new thread | `POST /ask {text, target: "new", cwd?, agent?}` | same; the returned `session` becomes the thread id |
 | `onCancel` | — (gap) | `POST /session/stop`; a second cancel within 5 s sends `speech: "silence"` |
 | `onEdit` | not supported — a transcript cannot be truncated. Nearest: `POST /reply {mode: "branch", quote}` as a "branch from here" action | same |
@@ -1058,8 +1195,8 @@ that is the v0 behaviour, and a gap (§16).
 
 | Need | Status |
 | --- | --- |
-| Device auth | specified (§9), not built |
-| Session-keyed log and reply | specified (§10), not built |
+| Device auth | **built 22 Sep 2026** (§9). Left: `code: "bad_token"` on a revoked token's 401 (with §13), and the app side (scan, keystore, send the token) |
+| Session-keyed log and reply | **built 22 Sep 2026** (§10) |
 | Live thread updates | specified (§11), not built |
 | Stop | specified (§12), not built; needs a per-session speech marker in core (`after` / `all`) |
 | Machine-readable error codes | specified (§13), not built |
@@ -1097,7 +1234,7 @@ that is the v0 behaviour, and a gap (§16).
 | `GET /peek?pane=` | none | a pane's session as turns | completions-shim |
 | `POST /input` | amux token | type into a pane (`{text, target}`) | completions-shim, OWUI pipe |
 | `GET /sessions` | none | amux session names + last speaker | **none** |
-| `GET /pair?c=` | one-time code | HTML page that installs the amux token into the browser | companion Settings |
+| `GET /pair?c=` | one-time code (the spool's `pair-code`, never a device code) | HTML page that installs the amux token into the browser; no CORS headers | companion Settings |
 | `GET /speech` | none | speech state + recent events + local audio | tmux-relay fast lane (`d1-runner.sh`) |
 | `POST /play` | amux token | replay a pane's last clip | **none** (the `/play` in `phone_player.py` is Sasonica's own control server) |
 | `POST /say` | amux token | speak text | **none** (`deploy/phone/say-http.py` is a separate server) |
@@ -1138,10 +1275,17 @@ That is a later decision, not part of this contract.
 
 ## Appendix B — keeping this true
 
-- `packages/visual/tests/test_contract.py` pins every v0 app-route shape in
+- `packages/server/tests/test_contract.py` pins every v0 app-route shape in
   §6 over real HTTP. It covers key sets exactly, the auth failure mapping
   across every gated GET, the SSE opening frames, and that the token routes
   refuse without a token. No test can reach a pane: every typing path is a
   recorder.
+- `test_devices.py` (§9) and `test_session_keys.py` (§10) pin the built v1
+  parts with the same rig, imported from `test_contract`. Among other things,
+  every gated GET passes on a device token without ABS being asked, and the
+  device token never reaches ABS.
+- Run all three packages' tests together (`packages/server/tests
+  packages/visual/tests packages/core/tests` in one pytest run): basename
+  collisions and cross-suite isolation faults only show up that way.
 - When a shape changes, change this file and the test in the same commit.
 - When a v1 section is built, move it into §6 and pin it the same way.
