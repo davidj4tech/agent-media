@@ -134,7 +134,7 @@ def keys(obj) -> set:
 GATED_GETS = ["/targets", "/sessions/state", "/conversations",
               f"/conversation?item=li_1", f"/conversation?session={SID}",
               "/conversation/log?item=li_1", f"/draft?session={SID}",
-              "/speech/now", f"/commands?session={SID}"]
+              "/speech/now", f"/commands?session={SID}", "/audio/targets"]
 
 
 @pytest.mark.parametrize("path", GATED_GETS)
@@ -401,7 +401,7 @@ def test_speech_now_quiet_shape(server, shelf, signed_in, monkeypatch):
     res, obj = call(server, "GET", "/speech/now", headers=AUTH)
     assert res.status == 200
     assert keys(obj) == {"ok", "live", "speaking", "paused", "sentence", "session",
-                         "title", "item", "pos", "dur", "speed", "muted"}
+                         "title", "item", "pos", "dur", "speed", "muted", "target"}
     assert obj["live"] is False and obj["session"] is None
 
 
@@ -411,6 +411,131 @@ def test_speech_ctl_takes_only_listener_verbs(server, shelf, signed_in, typed):
     res, obj = call(server, "POST", "/speech/ctl", {"action": "toggle"}, AUTH)
     assert res.status == 200 and obj == {"ok": True, "out": "ok\n"}
     assert [n for n, _ in typed] == ["_media"]
+
+
+# --- where the audio goes (§6.9) --------------------------------------------------
+
+@pytest.fixture()
+def audio_host(monkeypatch):
+    """A host with the four speech targets configured from scratch, and
+    none of the real env's per-target keys. Nothing is reached: a bridge is
+    never probed, and the choice files are under the test's state dir."""
+    import os
+
+    from agent_media_server import audio
+
+    for k in list(os.environ):
+        if k.startswith(("MEDIA_SPEECH_SOCKET_", "MEDIA_SPEECH_DEVICE_",
+                         "MEDIA_REMOTE_SAY_CMD")):
+            monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("MEDIA_SPEECH_DEFAULT_TARGET", "app")
+    monkeypatch.setenv("MEDIA_SPEECH_SOCKET_APP", "tcp://127.0.0.1:1")
+    monkeypatch.setenv("MEDIA_SPEECH_DEVICE_APP", "")
+    audio._reset_cache()
+    yield
+    audio._reset_cache()
+
+
+OPTION_KEYS = {"name", "label", "available", "why"}
+
+
+def test_audio_targets_shape(server, signed_in, audio_host):
+    res, obj = call(server, "GET", "/audio/targets", headers=AUTH)
+    assert res.status == 200, obj
+    assert keys(obj) == {"ok", "channels"}
+    assert keys(obj["channels"]) == {"speech", "music"}
+    sp, mu = obj["channels"]["speech"], obj["channels"]["music"]
+    assert keys(sp) == {"current", "default", "overridden", "options"}
+    assert (sp["current"], sp["default"], sp["overridden"]) == ("app", "app", False)
+    assert [o["name"] for o in sp["options"]] == ["app", "rooms", "local"]
+    assert all(keys(o) == OPTION_KEYS for o in sp["options"])
+    assert sp["options"][0]["label"] == "Phone (Sasonica)"
+    assert keys(mu) == {"current", "next", "overridden", "options"}
+    assert all(keys(o) == OPTION_KEYS for o in mu["options"])
+    assert res.getheader("Access-Control-Allow-Origin") == "*"
+
+
+def test_audio_target_sets_and_clears_speech(server, signed_in, audio_host):
+    res, obj = call(server, "POST", "/audio/target",
+                    {"channel": "speech", "target": "rooms"}, AUTH)
+    assert res.status == 200, obj
+    assert keys(obj) == {"ok", "channel", "current", "default", "overridden", "options"}
+    assert (obj["channel"], obj["current"], obj["overridden"]) == ("speech", "rooms", True)
+    from agent_media_core import audio_targets
+    assert audio_targets.speech_default() == "rooms"
+    _, got = call(server, "GET", "/audio/targets", headers=AUTH)
+    assert got["channels"]["speech"]["current"] == "rooms"   # the cache was dropped
+    res, obj = call(server, "POST", "/audio/target",
+                    {"channel": "speech", "target": None}, AUTH)
+    assert res.status == 200 and obj["current"] == "app" and obj["overridden"] is False
+    assert audio_targets.speech_default() == "app"
+
+
+@pytest.mark.parametrize("body", [
+    {"channel": "speech", "target": "banana"},
+    {"channel": "speech", "target": "phone"},      # known, but not configured here
+    {"channel": "speech", "target": 3},
+    {"channel": "lights", "target": "rooms"},
+    {"channel": "music", "target": "attic"},
+])
+def test_audio_target_refuses_what_it_cannot_do(server, signed_in, audio_host, body):
+    res, obj = call(server, "POST", "/audio/target", body, AUTH)
+    assert res.status == 400, obj
+    assert obj["ok"] is False and isinstance(obj["error"], str)
+    from agent_media_core import audio_targets
+    assert audio_targets.speech_override() is None and audio_targets.music_pref() is None
+
+
+def test_audio_target_sets_the_next_music_play(server, signed_in, audio_host):
+    res, obj = call(server, "POST", "/audio/target",
+                    {"channel": "music", "target": "rooms"}, AUTH)
+    assert res.status == 200, obj
+    assert (obj["channel"], obj["next"], obj["overridden"]) == ("music", "rooms", True)
+
+
+@pytest.mark.parametrize("who,status", [((None, 401), 401), ((None, 0), 503),
+                                        (({"username": "guest", "type": "user"}, 200), 403)])
+def test_audio_target_is_gated(server, monkeypatch, audio_host, who, status):
+    monkeypatch.setattr(auth_abs, "abs_identity", lambda bearer: who)
+    res, obj = call(server, "POST", "/audio/target",
+                    {"channel": "speech", "target": "rooms"}, AUTH)
+    assert res.status == status, obj
+    assert obj["ok"] is False
+    from agent_media_core import audio_targets
+    assert audio_targets.speech_override() is None
+
+
+def test_a_paired_device_may_choose(server, audio_host):
+    from agent_media_server import devices
+    code, _ = devices.mint_code("pixel")
+    got = devices.redeem(code, "pixel", "127.0.0.1")
+    res, obj = call(server, "POST", "/audio/target", {"channel": "speech", "target": "local"},
+                    {"Authorization": f"Bearer {got['token']}"})
+    assert res.status == 200 and obj["current"] == "local"
+
+
+def test_speech_now_names_where_it_plays(server, shelf, signed_in, audio_host, monkeypatch):
+    monkeypatch.setattr(canvas, "speech_state", lambda: {"kind": "state", "speaking": False})
+    _, obj = call(server, "GET", "/speech/now", headers=AUTH)
+    assert obj["target"] == "app"                     # quiet: where the next one goes
+    from agent_media_core import audio_targets
+    audio_targets.set_speech_override("rooms")
+    _, obj = call(server, "GET", "/speech/now", headers=AUTH)
+    assert obj["target"] == "rooms"
+
+
+def test_speech_now_while_live_names_the_reply_s_own_target(server, shelf, signed_in,
+                                                            audio_host, monkeypatch):
+    """Moved mid-reply: the bar says where THIS reply is, not the next."""
+    from agent_media_core import audio_targets
+    from agent_media_core.state import StateStore
+    StateStore().set_now_playing("speech", uri="/tmp/x.mp3", started_at=1.0,
+                                 target="app", extras={})
+    audio_targets.set_speech_override("rooms")
+    monkeypatch.setattr(canvas, "speech_state",
+                        lambda: {"kind": "state", "speaking": True, "session": SID})
+    _, obj = call(server, "GET", "/speech/now", headers=AUTH)
+    assert obj["live"] is True and obj["target"] == "app"
 
 
 # --- the stream ---------------------------------------------------------------------

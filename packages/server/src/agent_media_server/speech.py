@@ -12,7 +12,7 @@ from __future__ import annotations
 import time
 from typing import Callable
 
-from . import auth, sessions, threads
+from . import audio, auth, sessions, threads
 
 #: What the app's speech player may do: the popup's listening keys — pause,
 #: the sentence and paragraph steps, older/newer turn and replay, speed,
@@ -83,6 +83,9 @@ def speech_now(bearer: str, state: dict) -> tuple[bool, dict]:
            "title": "", "item": None,
            "pos": state.get("pos"), "dur": state.get("dur"),
            "speed": state.get("speed"), "muted": bool(state.get("muted"))}
+    # Where that voice is (or the next one will be): the bar shows it, and
+    # the picker behind it is /audio/targets.
+    out["target"] = state.get("target") or audio.speech_target_now(out["live"])
     session = str(state.get("session") or "")
     if out["live"] and sessions._SESSION.fullmatch(session):
         now = time.time()

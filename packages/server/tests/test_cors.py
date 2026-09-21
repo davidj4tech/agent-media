@@ -61,6 +61,13 @@ def test_answer_carries_the_header_even_when_it_refuses(server):
     assert res.getheader("Access-Control-Allow-Origin") == "*"
 
 
+def test_preflight_allows_the_audio_picker(server):
+    for path in ("/audio/targets", "/audio/target"):
+        res = _request(server, "OPTIONS", path, {"Origin": "http://red5:13379"})
+        assert res.status == 204, path
+        assert res.getheader("Access-Control-Allow-Origin") == "*", path
+
+
 def test_other_routes_stay_same_origin(server):
     res = _request(server, "GET", "/healthz")
     assert res.getheader("Access-Control-Allow-Origin") is None

@@ -74,6 +74,9 @@ device gets its token):
   POST /speech/ctl   {"action", "arg"?} → a listener's speech verb
   POST /focus     {"pane": "%23"} → bring the attached tmux client to a pane
                   (the canvas's own token also admits this one)
+  GET  /audio/targets  → where speech and music play, and where they could
+  POST /audio/target   {"channel", "target"} → choose (null = the default);
+                  see audio.py
 """
 
 from __future__ import annotations
@@ -87,6 +90,7 @@ from urllib.parse import parse_qs
 
 from . import (abs_item, archive, auth, devices, drafts, harnesses, routing, send, sessions,
                share, speech, threads)
+from . import audio
 
 # The endpoints a browser on another origin may reach. Everything here
 # carries its own credential — a paired device's token, or the caller's
@@ -109,6 +113,11 @@ CORS_PATHS = frozenset({
     "/harnesses", "/harnesses/run", "/harnesses/screen",
     "/harnesses/keys", "/harnesses/close", "/share",
 })
+
+# Where the audio goes (audio.py). Its own set, joined here, so the block
+# below stays self-contained.
+AUDIO_PATHS = frozenset({"/audio/targets", "/audio/target"})
+CORS_PATHS = CORS_PATHS | AUDIO_PATHS
 
 # Paths opened to other origins for POST (and its preflight) ONLY. `/pair` is
 # the one: `POST /pair` is how the chat bundle, served from another origin,
@@ -233,6 +242,8 @@ def dispatch(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
     # Who is on the other end, for a paired device's `last_ip` (auth.py
     # reads it when the bearer turns out to be a device token).
     auth.set_client_ip(h.client_address[0] if h.client_address else "")
+    if path in AUDIO_PATHS and method in ("GET", "POST"):
+        return _audio(h, method, path)
     if method == "GET":
         return _get(h, path)
     if method == "POST":
@@ -573,6 +584,24 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         _json(h, 200 if ok else 400, {"ok": ok, "detail": detail})
     else:
         return False
+    return True
+
+
+# --- where the audio goes ---------------------------------------------------------
+
+def _audio(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
+    """`GET /audio/targets` and `POST /audio/target` (§6.9). The wrong method
+    on either is not ours, and falls through to the caller's 404."""
+    if method == "GET" and path == "/audio/targets":
+        ok, detail = audio.targets(_bearer(h))
+    elif method == "POST" and path == "/audio/target":
+        ok, detail = audio.set_target(_read_json(h) or {}, _bearer(h))
+        if not ok:
+            print(f"audio/target: refused ({detail.get('error')}) "
+                  f"from {h.client_address[0]}", file=sys.stderr)
+    else:
+        return False
+    _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     return True
 
 

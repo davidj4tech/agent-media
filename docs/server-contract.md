@@ -743,10 +743,14 @@ The speech bar.
 ```json
 {"ok": true, "live": true, "speaking": true, "paused": false,
  "sentence": "…", "session": "6c73…" | null, "title": "…", "item": "li_…" | null,
- "pos": 12.0, "dur": 40.0, "speed": 1.6, "muted": false}
+ "pos": 12.0, "dur": 40.0, "speed": 1.6, "muted": false, "target": "app" | null}
 ```
 
 - `live` = speaking or paused.
+- `target` is where the voice is: while live, the reply's own target (from
+  its now-playing row — a reply moved mid-way by §6.9 still names where it
+  started); when quiet, where the next reply will play. `null` only if the
+  host could not say. Names are §6.9's.
 - `session`, `title` and `item` are filled only while live and only for a
   valid session id. Title and item are cached per session for 60 s.
 - `pos`, `dur` and `speed` may be `null`.
@@ -799,6 +803,76 @@ Clients: S (`SasonicaShareActivity.kt`, the share sheet).
 `GET /item?id=` — the ABS library item trimmed to what Sasonica's item
 page reads, gzipped (1267 KB → 25 KB). It exists to get the payload across
 the WebView bridge. W does not use it. It leaves with ABS.
+
+### 6.9 Audio destinations — gated (built 22 Sep 2026)
+
+Where speech and music play, chosen from the app. The choice is kept in
+core (`agent_media_core/audio_targets.py`) and is the same one
+`media speech-target [NAME | --clear]` shows and sets at the desk.
+
+#### `GET /audio/targets` — gated (`auth.gate`)
+
+```json
+{"ok": true, "channels": {
+  "speech": {"current": "app", "default": "app", "overridden": false,
+             "options": [{"name": "app",   "label": "Phone (Sasonica)",      "available": true,  "why": null},
+                         {"name": "phone", "label": "Phone (Termux player)", "available": true,  "why": "was slow or unreachable a moment ago"},
+                         {"name": "rooms", "label": "House speakers",        "available": true,  "why": null},
+                         {"name": "local", "label": "red5",                  "available": false, "why": "no speech player running on red5"}]},
+  "music":  {"current": "phone" | null, "next": "default", "overridden": false,
+             "options": [{"name": "auto",  "label": "Automatic", …},
+                         {"name": "rooms", "label": "House speakers", …},
+                         {"name": "phone", "label": "Phone (Termux player)", …},
+                         {"name": "app",   "label": "Phone (Sasonica)", …}]}}}
+```
+
+Speech:
+- `current` is where the **next** reply plays: the listener's choice if one
+  is set and still playable, else `default` (`MEDIA_SPEECH_DEFAULT_TARGET`,
+  which `media-lane` may be switching). `overridden` says which. While a
+  choice is set, `media-lane`'s switching no longer moves speech; clearing
+  it hands speech back to the lane. A choice that stops being playable (its
+  config removed) is ignored, never followed.
+- `options` lists the targets this host is configured for: `app`, `phone`,
+  `rooms`, `local`, plus any name the env configures per target
+  (`MEDIA_SPEECH_SOCKET_<T>`, `MEDIA_SPEECH_DEVICE_<T>`,
+  `MEDIA_REMOTE_SAY_CMD_<T>`). A target is configured when a reply sent there
+  has a route — a remote-say lane, or a device the speech sink can bind.
+  The env default and the current choice are always listed.
+- `available` / `why` come from local checks only, never a connection: a
+  local broker's socket must exist; a tcp bridge is `available` but carries a
+  `why` while the mpv breaker has it marked slow. Cached 5 s.
+
+Music:
+- `current` is where music is playing **if the host knows it without asking
+  a player**: the track the channel is playing is the one `media music play`
+  last routed. Anything else (the MCP tool, a play started elsewhere) is
+  `null`. `next` is the stored `--where` for the next untargeted play, or
+  `"default"`.
+
+#### `POST /audio/target` — gated (`auth.may_control_speech`, like `/speech/ctl`)
+
+`{"channel": "speech" | "music", "target": "<name>" | null}` → `{"ok": true,
+"channel", …that channel's block…}`. `null` (or `""`) clears the choice.
+400 for an unknown channel, a name that is not a string, or a target this
+host cannot play (`error` says which); nothing is stored on a 400.
+
+**When it takes effect.** Speech: from the next reply. A reply resolves its
+target once, when it starts, and keeps it — pause, skip and replay follow
+its now-playing row to the end — so a reply already speaking finishes where
+it is. There is no "move it now": nothing in core can hand a playing reply to
+another player cleanly, and restarting it elsewhere is a replay the listener
+can already ask for. Replays (`/speech/ctl replay`) play on the new choice;
+a reply the phone rendered itself (`clips_remote`) has no audio on this host
+to send anywhere else. Music: the next `media music play` given no
+`--where` (and shares, which call it). Music that is playing is not moved,
+and the MCP `music_play` tool keeps its own default.
+
+The choice is per host, in that host's state dir (`speech-target`,
+`music-where`). It matters on the host that starts replies (`origin`); set
+on a host that never originates speech, it changes nothing audible.
+
+Clients: S (planned — the speech bar's picker, §14).
 
 ---
 
@@ -1235,6 +1309,14 @@ the thread list's preview line.
 | `adapters.attachments` | — (gap) | — (gap) |
 | `adapters.speech` | not used — speech is agent-media's, rendered by a custom speech bar on `/speech/now` and `/speech/ctl` | same |
 
+**The speech bar's destination picker.** The bar shows `/speech/now.target`
+by its §6.9 label ("Phone (Sasonica)", "House speakers"); tapping it opens a
+sheet from `GET /audio/targets` — speech options, with unavailable rows
+greyed and their `why` beneath — and a pick is `POST /audio/target`. While a
+reply is live the sheet should say the change applies from the next reply.
+This picker chooses among agent-media's players; it is not the phone's own
+output route (see §16).
+
 ### Human tool UI (asks and permissions)
 
 Two things look alike and are answered the same way:
@@ -1317,6 +1399,8 @@ that is the v0 behaviour, and a gap (§16).
 | Offline reading and downloads | none. ABS provided them for audio; the new app needs its own cache of the log (and of speech clips, if listening offline matters) |
 | Thread search | none. ABS search did it. `/targets` covers the latest 40 only |
 | Push notifications (a session waiting on you) | none. Matrix or FCM; out of scope here |
+| Choose where agent-media plays (phone / house speakers / host) | **built 22 Sep 2026** (§6.9). Left: the app's picker (§14), and moving music that is already playing |
+| The phone's own output (earbuds / speaker / Cast) | none here, and not the server's: that is Android's route for whatever the app plays, so it is an app-side feature for the Capacitor build (an output switcher / `MediaRouter`), separate from §6.9 |
 
 ---
 
