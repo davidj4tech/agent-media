@@ -788,6 +788,55 @@ def _live_title(session: str) -> str:
     return title if len(title) <= 60 else title[:59] + "…"
 
 
+#: What Claude Code calls a session it has not named yet. A chat started from
+#: the phone sits under this for its first turns, and in a list of threads it
+#: reads as nothing at all — David started one and could not find it.
+_GENERIC_TITLES = {"claude code"}
+_FIRST_PROMPT: dict[str, str] = {}
+
+
+def _claude_first_prompt(session: str) -> str:
+    """The first thing asked of a Claude session, from its transcript. ""
+    if there is none yet. Remembered once found: it never changes."""
+    if session in _FIRST_PROMPT:
+        return _FIRST_PROMPT[session]
+    for f in glob.glob(os.path.expanduser(f"~/.claude/projects/*/{session}.jsonl")):
+        try:
+            with open(f) as fh:
+                for n, line in enumerate(fh):
+                    if n > 400:
+                        break
+                    if '"type":"user"' not in line.replace(" ", ""):
+                        continue
+                    rec = json.loads(line)
+                    if rec.get("isMeta") or rec.get("isSidechain"):
+                        continue
+                    content = (rec.get("message") or {}).get("content")
+                    if isinstance(content, list):
+                        content = " ".join(c.get("text", "") for c in content
+                                           if isinstance(c, dict) and c.get("type") == "text")
+                    text = " ".join(str(content or "").split())
+                    # Command wrappers, hook output and tool results are not
+                    # the person talking.
+                    if not text or text.startswith("<"):
+                        continue
+                    _FIRST_PROMPT[session] = text
+                    return text
+        except (OSError, ValueError):
+            continue
+    return ""
+
+
+def _display_title(session: str, pane_title: str) -> str:
+    """The pane's title, unless it is the generic one; then the first message."""
+    if pane_title.strip().lower() not in _GENERIC_TITLES:
+        return pane_title
+    first = _claude_first_prompt(session)
+    if not first:
+        return pane_title
+    return first if len(first) <= 60 else first[:59] + "…"
+
+
 def _recent_conversations(limit: int = 40) -> list[tuple[str, str, float]]:
     """`[(session, title, last modified)]` from the shelf, newest first."""
     rows = []
@@ -839,6 +888,7 @@ def sessions_index() -> list[dict]:
         title = titles.get(pane) or ("" if pane in titles else _live_title(sid))
         if not title:
             continue
+        title = _display_title(sid, title)
         seen.add(sid)
         out.append({"session": sid, "title": title, "live": True, "pane": pane,
                     "recap": recaps.recap_for(sid), "archived": sid in flags,

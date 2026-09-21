@@ -431,8 +431,15 @@ _COMPOSER = {"claude": sessions._PROMPT_GLYPH, "codex": "\u203a"}   # ❯, ›
 _SUBMIT_SETTLE_S = 1.5
 
 
-def _unsent(pane: str, head: str, agent: str, window: float) -> bool:
-    """Whether `head` is still sitting in `pane`'s composer for all of `window`.
+def _unsent(pane: str, head: str | tuple[str, ...], agent: str, window: float) -> bool:
+    """Whether the message is still sitting in `pane`'s composer for all of `window`.
+
+    `head` is one mark or several (the message's first and last words): the
+    message counts as still there if ANY of them is. One mark was not enough —
+    a long message in a phone-width pane wraps, the composer scrolls to its
+    end, the first words leave the screen, and "the head is gone" read as
+    "sent" while the whole message sat in the box (2026-09-22, a new chat
+    from the app that never went out).
 
     False the moment the box lets go of it — that is the line being taken, and
     it is the signal worth trusting: `_classify_agent` needs the footer, which
@@ -442,6 +449,7 @@ def _unsent(pane: str, head: str, agent: str, window: float) -> bool:
     Fails open. A capture that comes back empty reads as taken, because the
     alternative is hammering Enter at a pane we cannot see.
     """
+    marks = (head,) if isinstance(head, str) else tuple(m for m in head if m)
     deadline = time.monotonic() + window
     while True:
         time.sleep(0.5)
@@ -452,12 +460,12 @@ def _unsent(pane: str, head: str, agent: str, window: float) -> bool:
             # pi's composer is the box between the last two rules.
             rules = [i for i, ln in enumerate(cap.splitlines()) if re.fullmatch(r"\s*─{8,}\s*", ln)]
             box = cap.splitlines()[rules[-2] + 1:rules[-1]] if len(rules) >= 2 else []
-            if head not in " ".join(" ".join(box).split()):
+            if not any(m in " ".join(" ".join(box).split()) for m in marks):
                 return False
         else:
             flat = " ".join(cap.split())
             i = flat.rfind(_COMPOSER.get(agent, sessions._PROMPT_GLYPH))
-            if i < 0 or head not in flat[i:]:
+            if i < 0 or not any(m in flat[i:] for m in marks):
                 return False
         if time.monotonic() >= deadline:
             return True
@@ -476,8 +484,10 @@ def _ensure_submitted(pane: str, text: str, timeout: float = 3.0,
     """
     from agent_media_core import conversation as conv
 
-    head = " ".join(text.split())[:24]
-    return conv.submit(pane, lambda window: not _unsent(pane, head, agent, window),
+    flat = " ".join(text.split())
+    # First and last words: whichever end of a wrapped message is on screen.
+    marks = (flat[:24], flat[-24:]) if len(flat) > 24 else (flat,)
+    return conv.submit(pane, lambda window: not _unsent(pane, marks, agent, window),
                        first=timeout, settle=_SUBMIT_SETTLE_S)
 
 
