@@ -35,6 +35,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import subprocess
 import time
 from dataclasses import dataclass
@@ -103,6 +104,52 @@ class Liveness:
 def _claude_dir() -> Path:
     return Path(os.environ.get("CLAUDE_CONFIG_DIR")
                 or (Path.home() / ".claude")).expanduser()
+
+
+def name_path(session: str) -> Optional[Path]:
+    """Where Claude Code keeps this session's name, or None."""
+    session = (session or "").strip()
+    if not session or "/" in session or session.startswith("."):
+        return None
+    return _claude_dir() / "session-autoname" / session
+
+
+def session_name(session: str) -> str:
+    """The name Claude Code has for this session, as a title, or "".
+
+    Claude Code names a session itself and `/rename` replaces that name; both
+    land in `~/.claude/session-autoname/<uuid>` as a slug
+    (`fix-memory-sync-datetime-frontmatter`). It is the one place a name given
+    at the terminal can be read, so it is what a shelf should call the
+    conversation — ahead of the question it opened with, which is a guess at
+    the same thing.
+    """
+    path = name_path(session)
+    if path is None:
+        return ""
+    try:
+        raw = path.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return ""
+    words = " ".join(raw.replace("_", "-").split("-")).strip()
+    return (words[:1].upper() + words[1:]) if words else ""
+
+
+def set_session_name(session: str, title: str) -> bool:
+    """Give Claude Code the name too, so the terminal agrees. False if not."""
+    path = name_path(session)
+    if path is None or not title.strip():
+        return False
+    slug = re.sub(r"[^a-z0-9]+", "-", title.strip().lower()).strip("-")[:80]
+    if not slug:
+        return False
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(slug, encoding="utf-8")
+    except OSError as e:  # noqa: BLE001 — ours is the copy that matters
+        log.debug("cannot write session name %s (%s)", path, e)
+        return False
+    return True
 
 
 def transcript(session: str) -> Optional[Path]:

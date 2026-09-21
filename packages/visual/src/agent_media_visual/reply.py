@@ -56,6 +56,11 @@ from pathlib import Path
 log = logging.getLogger("agent-media.visual.reply")
 
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+#: What counts as a session id from outside — a uuid (claude, codex, pi) or
+#: Hermes's clock-stamped `20260921_102508_f74b02`. The gates below take this;
+#: `_UUID` stays where the shape itself is the point (claude's argv).
+_SESSION = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+                      r"|[0-9]{8}_[0-9]{6}_[0-9a-f]{4,}")
 
 # How long to wait for a revived pane's TUI to accept input, and how often to
 # look. Claude Code takes a few seconds to paint; typing before it is up drops
@@ -360,6 +365,13 @@ def agent_of(session: str) -> str:
 def _agent_of_pane(pane: str) -> str:
     from . import canvas, panes
 
+    if not panes.is_herdr(pane):
+        # Hermes runs as the venv's python, so the pane's command name is no
+        # answer; its own process says so.
+        by_argv = canvas._agent_by_argv(
+            _tmux(["display", "-pt", pane, "#{pane_pid}"]))
+        if by_argv:
+            return by_argv
     if panes.is_herdr(pane):
         # herdr reports the process running in a pane rather than tmux's
         # "current command"; the field is the same answer by another name.
@@ -594,7 +606,7 @@ def answer(session: str, choice: int, key: str, bearer: str) -> tuple[bool, dict
     from . import canvas
 
     session = (session or "").strip()
-    if not _UUID.fullmatch(session):
+    if not _SESSION.fullmatch(session):
         return False, {"error": "not a session id", "status": 400}
     if not _gate(bearer)[0]:
         return False, _gate(bearer)[1]
@@ -1310,7 +1322,7 @@ def conversation_for_session(session: str, bearer: str) -> tuple[bool, dict]:
     the session is real — and `item` fills in when the library has it.
     """
     session = (session or "").strip()
-    if not _UUID.fullmatch(session):
+    if not _SESSION.fullmatch(session):
         return False, {"error": "not a session id", "status": 400}
     user, status = abs_identity(bearer)
     if not user:
@@ -1366,7 +1378,7 @@ def speech_now(bearer: str, state: dict) -> tuple[bool, dict]:
            "pos": state.get("pos"), "dur": state.get("dur"),
            "speed": state.get("speed"), "muted": bool(state.get("muted"))}
     session = str(state.get("session") or "")
-    if out["live"] and _UUID.fullmatch(session):
+    if out["live"] and _SESSION.fullmatch(session):
         now = time.time()
         hit = _NOW_CACHE.get(session)
         if not hit or now - hit[2] > _NOW_TTL_S:
@@ -1653,7 +1665,7 @@ def ask_routed(text: str, bearer: str, *, target: str = "", player_item: str = "
             sid, _why = session_for_item(player_item, bearer)
             if sid:
                 session, how = sid, "player"
-        if not session and sticky and _UUID.fullmatch(sticky) and session_exists(sticky):
+        if not session and sticky and _SESSION.fullmatch(sticky) and session_exists(sticky):
             session, how = sticky, "sticky"
 
     if dry:
@@ -1706,7 +1718,7 @@ def session_resume(session: str, bearer: str) -> tuple[bool, dict]:
     before speaking into it. Already live: says where it is.
     """
     session = (session or "").strip()
-    if not _UUID.fullmatch(session):
+    if not _SESSION.fullmatch(session):
         return False, {"error": "not a session id", "status": 400}
     if not _gate(bearer)[0]:
         return False, _gate(bearer)[1]
@@ -1734,7 +1746,7 @@ def session_close(session: str, bearer: str) -> tuple[bool, dict]:
     transcript stays, so this is undone by `session_resume`.
     """
     session = (session or "").strip()
-    if not _UUID.fullmatch(session):
+    if not _SESSION.fullmatch(session):
         return False, {"error": "not a session id", "status": 400}
     if not _gate(bearer)[0]:
         return False, _gate(bearer)[1]
@@ -1777,7 +1789,7 @@ def _draft_path(session: str) -> Path:
 def draft_read(session: str, bearer: str) -> tuple[bool, dict]:
     """The draft held for a session — `{"text": "", "at": 0}` when there is none."""
     session = (session or "").strip()
-    if not _UUID.fullmatch(session):
+    if not _SESSION.fullmatch(session):
         return False, {"error": "not a session id", "status": 400}
     if not _gate(bearer)[0]:
         return False, _gate(bearer)[1]
@@ -1799,7 +1811,7 @@ def draft_write(session: str, text: str, at, bearer: str) -> tuple[bool, dict]:
     that comparison would win or lose for the wrong reason.
     """
     session = (session or "").strip()
-    if not _UUID.fullmatch(session):
+    if not _SESSION.fullmatch(session):
         return False, {"error": "not a session id", "status": 400}
     if not _gate(bearer)[0]:
         return False, _gate(bearer)[1]
@@ -1992,7 +2004,8 @@ def conversation(item: str, bearer: str) -> tuple[bool, dict]:
                   "suggestion": suggestion_for(session, pane)}
 
 
-def commands_for(item: str, session: str, project: str, bearer: str) -> tuple[bool, dict]:
+def commands_for(item: str, session: str, project: str, bearer: str,
+                 cwd: str = "") -> tuple[bool, dict]:
     """The slash menu for a conversation, or for a project about to start one.
 
     The menu belongs to a directory, not to a conversation: a project's own
@@ -2013,11 +2026,43 @@ def commands_for(item: str, session: str, project: str, bearer: str) -> tuple[bo
         session, err = session_for_item(item, bearer)
         if not session:
             return False, {"error": err, "status": 404}
+    where = cwd
     cwd = transcript_cwd(session) if session else ""
     if not cwd and project:
         _name, cwd = project_target(project)
+    # A place from `/targets` names its directory outright — trusted only as
+    # far as the list that published it, same as `/ask`.
+    if not cwd and where and where in {p["path"] for p in places(limit=0)}:
+        cwd = where
     cwd = cwd or os.path.expanduser("~")
     return True, {"cwd": cwd, "commands": slash_menu.menu(cwd)}
+
+
+def rename_conversation(item: str, session: str, title: str, bearer: str) -> tuple[bool, dict]:
+    """Rename a conversation from the app. Gated like `/reply`.
+
+    The name is kept by agent-media and given to Claude Code as well, so the
+    terminal and the shelf call it the same thing.
+    """
+    from agent_media_core import book_tracks
+
+    user, status = abs_identity(bearer)
+    if not user:
+        return False, _identity_error(status)
+    ok, why = may_reply(user)
+    if not ok:
+        return False, {"error": why, "status": 403}
+    if item and not session:
+        session, err = session_for_item(item, bearer)
+        if not session:
+            return False, {"error": err, "status": 404}
+    title = " ".join((title or "").split())
+    if not title:
+        return False, {"error": "no title", "status": 400}
+    named = book_tracks.rename(session, title)
+    if not named:
+        return False, {"error": "could not rename", "status": 500}
+    return True, {"session": session, "title": named}
 
 
 def attach_pictures(lines: list) -> None:

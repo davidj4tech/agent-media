@@ -9,6 +9,7 @@ module was written against.
 """
 
 import json
+import pathlib
 
 import pytest
 
@@ -543,3 +544,47 @@ def test_nobody_has_played_it_so_nothing_is_written(monkeypatch, tmp_path):
     patched = _progress_fixture(monkeypatch, None, 412.4)
     assert b.sync_progress(tmp_path / "p-x" / "A talk") is None
     assert patched == []
+
+
+# --- what a conversation is called ------------------------------------------------
+
+def test_the_title_prefers_a_name_given_here(tmp_path, monkeypatch):
+    """Then Claude Code's own name for the session, then the opening question."""
+    from agent_media_core import book_tracks as b
+    from agent_media_core import conversation
+
+    monkeypatch.setattr(b, "_read_manifest", lambda session: {"title": "What we called it"})
+    monkeypatch.setattr(conversation, "session_name", lambda session: "A session name")
+    monkeypatch.setattr(session_feed, "asked_for", lambda session, ts: "The first question")
+    assert b.conversation_title("s1", []) == "What we called it"
+
+    monkeypatch.setattr(b, "_read_manifest", lambda session: {})
+    assert b.conversation_title("s1", []) == "A session name"
+
+    monkeypatch.setattr(conversation, "session_name", lambda session: "")
+    assert b.conversation_title("s1", [_turn(tmp_path, 1.0, "hi")]) == "The first question"
+
+
+def test_a_rename_is_kept_told_and_applied(tmp_path, monkeypatch):
+    from agent_media_core import book_tracks as b
+    from agent_media_core import conversation
+
+    monkeypatch.setattr(b, "state_dir", lambda: tmp_path)
+    b._write_manifest("s1", {"session": "s1", "folder": "/c/p-x/Old name"})
+    told, applied = [], []
+    monkeypatch.setattr(conversation, "set_session_name",
+                        lambda session, title: told.append((session, title)) or True)
+    monkeypatch.setattr(b, "set_metadata",
+                        lambda session, folder, target=None: applied.append(folder) or "ok")
+
+    assert b.rename("s1", "  A better   name  ") == "A better name"
+    assert b._read_manifest("s1")["title"] == "A better name"
+    assert told == [("s1", "A better name")]
+    assert applied == [pathlib.Path("/c/p-x/Old name")]   # the shelf now, not next turn
+
+
+def test_a_rename_with_no_name_is_not_one(tmp_path, monkeypatch):
+    from agent_media_core import book_tracks as b
+
+    monkeypatch.setattr(b, "state_dir", lambda: tmp_path)
+    assert b.rename("s1", "   ") == ""

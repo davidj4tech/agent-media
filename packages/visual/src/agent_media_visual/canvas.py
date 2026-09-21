@@ -578,7 +578,7 @@ def _classify_cc(pane: str) -> "str | None":
 
 #: What each coding agent's pane reports as its command. Codex and pi hold
 #: conversations the phone can reach too (see agent_media_core.harnesses).
-AGENT_COMMANDS = ("claude", "codex", "pi")
+AGENT_COMMANDS = ("claude", "codex", "pi", "hermes")
 
 
 def _classify_agent(pane: str, agent: str = "claude") -> "str | None":
@@ -600,6 +600,15 @@ def _classify_agent(pane: str, agent: str = "claude") -> "str | None":
         if re.search(r"^\s*› ", pane, re.M):
             return "input"
         return None
+    if agent == "hermes":
+        # Its status line is the whole tell: "─ ready │ <model>" between turns,
+        # a spinner and "formulating…" (or another verb) while it answers, and
+        # the composer's placeholder says which of the two it is.
+        if re.search(r"Ctrl\+C to interrupt|formulating…|thinking…|\bworking…", pane):
+            return "working"
+        if re.search(r"─ ready\s*│|❯ Ask me anything", pane):
+            return "input"
+        return None
     if agent == "pi":
         # The editor is a box of two full-width rules near the bottom; the
         # footer under it is cut short on a narrow pane, so it is no marker.
@@ -610,6 +619,20 @@ def _classify_agent(pane: str, agent: str = "claude") -> "str | None":
     return _classify_cc(pane)
 
 
+def _agent_by_argv(pid: str) -> str:
+    """The agent a pane is running when its command name does not say so.
+
+    Hermes is the case: the process is the venv's python with the `hermes`
+    script as its first argument, so `pane_current_command` is `python3`.
+    """
+    if not pid:
+        return ""
+    from agent_media_core import harnesses
+
+    argv = harnesses._argv(pid)
+    return harnesses.HERMES if harnesses._hermes_pid(argv) else ""
+
+
 def _tmux_cc_panes() -> list[dict]:
     """Auto-discover Claude Code across ALL tmux panes (not just each session's
     active one — a session can hold several agents in different windows),
@@ -618,7 +641,9 @@ def _tmux_cc_panes() -> list[dict]:
     window appended when a session holds more than one CC pane."""
     out = _run(["tmux", "list-panes", "-a", "-F",
                       "#{pane_id}\t#{pane_current_command}\t#{session_name}\t"
-                      "#{window_name}\t#{pane_current_path}"])
+                      "#{window_name}\t#{pane_current_path}\t#{pane_pid}"])
+    panes_pids = {ln.split("\t")[0]: ln.split("\t")[5]
+                  for ln in out.splitlines() if len(ln.split("\t")) >= 6}
     agents: list[dict] = []
     for line in out.splitlines():
         f = line.split("\t")
@@ -627,8 +652,14 @@ def _tmux_cc_panes() -> list[dict]:
         pane_id, cmd, sess, win, cwd = f[:5]
         # Claude Code panes report `claude` as their command — a cheap, exact
         # filter (no need to capture shells/editors). Skip amux-managed ones.
-        if not pane_id or cmd not in AGENT_COMMANDS or sess.startswith("amux-"):
+        # Hermes is a console script, so its pane says `python3`: only those
+        # are looked at more closely, by the argv of the pane's own process.
+        if not pane_id or sess.startswith("amux-"):
             continue
+        if cmd not in AGENT_COMMANDS:
+            cmd = _agent_by_argv(panes_pids.get(pane_id, ""))
+            if not cmd:
+                continue
         cap = _strip_ansi(_run(["tmux", "capture-pane", "-t", pane_id,
                                 "-p", "-S", "-40"]))
         preview = next((ln.strip()[:60] for ln in reversed(cap.splitlines())
@@ -1492,7 +1523,7 @@ _CORS_PATHS = frozenset({
     "/conversation", "/conversation/log", "/conversations", "/targets", "/item",
     "/reply", "/ask", "/focus", "/session/resume", "/session/close", "/draft",
     "/session/answer",
-    "/speech/now", "/speech/ctl", "/sessions/state", "/commands",
+    "/speech/now", "/speech/ctl", "/sessions/state", "/commands", "/rename",
 })
 
 #: What the app's speech player may do: the popup's listening keys — pause,
@@ -1683,13 +1714,15 @@ class Handler(BaseHTTPRequestHandler):
                        {"ok": ok, **detail})
         elif path == "/commands":
             # The slash menu for the reply box: what this session's terminal
-            # would offer. `?item=`, `?session=` or `?project=` (a new chat).
+            # would offer. `?item=`, `?session=`, `?project=` or `?cwd=` (a
+            # new chat, in a place `/targets` published).
             from . import reply as _reply
             qs = parse_qs(self.path.partition("?")[2])
             bearer = (self.headers.get("Authorization") or "").removeprefix("Bearer").strip()
             ok, detail = _reply.commands_for(qs.get("item", [""])[0],
                                              qs.get("session", [""])[0],
-                                             qs.get("project", [""])[0], bearer)
+                                             qs.get("project", [""])[0], bearer,
+                                             cwd=qs.get("cwd", [""])[0])
             # One line per ask: this is a new route and the app is the only
             # caller, so "did the box even ask?" is the first question every
             # time it does not appear.
@@ -2001,6 +2034,16 @@ class Handler(BaseHTTPRequestHandler):
             out = _media(ctl_argv("speech", action, arg))
             print(f"speech/ctl: {action} -> {out.strip()[:120]!r}", file=sys.stderr)
             self._json(200, {"ok": True, "out": out})
+        elif path == "/rename":
+            # ⋮ → Rename, from the app. The name outlives the next turn and
+            # reaches the terminal too (see book_tracks.rename).
+            from . import reply as _reply
+            body = self._read_json() or {}
+            bearer = (self.headers.get("Authorization") or "").removeprefix("Bearer").strip()
+            ok, detail = _reply.rename_conversation(
+                str(body.get("item") or ""), str(body.get("session") or ""),
+                str(body.get("title") or ""), bearer)
+            self._json(200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
         elif path == "/reply":
             # Reply to a conversation from inside the Audiobookshelf player.
             # Deliberately NOT gated by _authorized: the credential here is the

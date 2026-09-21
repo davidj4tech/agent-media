@@ -1163,6 +1163,52 @@ def sync_tags(*, target=None, live: Optional[set] = None,
     return changed
 
 
+def conversation_title(session: str, turns: list) -> str:
+    """What to call this conversation on the shelf.
+
+    In order: a name given here (the app's rename, kept in the manifest),
+    then the name Claude Code has for the session — its own or one from
+    `/rename` — and last the question it opened with, which is what we had
+    before either of the other two existed.
+
+    A name given at the terminal used to reach nothing: this title was
+    rewritten from the opening question after every turn, so renaming the
+    item in Audiobookshelf was undone within the minute.
+    """
+    from . import conversation
+
+    kept = str(_read_manifest(session).get("title") or "").strip()
+    if kept:
+        return kept
+    named = conversation.session_name(session)
+    if named:
+        return named
+    return session_feed.asked_for(session, turns) if turns else ""
+
+
+def rename(session: str, title: str, *, target=None) -> str:
+    """Call this conversation `title` from now on. "" if it could not be.
+
+    Kept in the manifest, which `conversation_title` reads first, so the
+    next turn does not undo it; Claude Code is told as well, so the terminal
+    and the shelf agree; and the item is patched now rather than at the next
+    turn, because a rename you cannot see has not happened.
+    """
+    from . import conversation
+
+    title = " ".join((title or "").split())[:200]
+    if not session or not title:
+        return ""
+    manifest = _read_manifest(session)
+    folder = manifest.get("folder")
+    manifest["title"] = title
+    _write_manifest(session, manifest)
+    conversation.set_session_name(session, title)
+    if folder:
+        set_metadata(session, Path(folder), target=target)
+    return title
+
+
 def set_metadata(session: str, folder: Path, *, target=None) -> str:
     """Describe the item the way a library should. "" if nothing changed.
 
@@ -1187,7 +1233,7 @@ def set_metadata(session: str, folder: Path, *, target=None) -> str:
     if not servers:
         return ""
     turns = session_feed.turns(session)
-    title = session_feed.asked_for(session, turns) if turns else ""
+    title = conversation_title(session, turns)
     if not title:
         return ""
     workspace = folder.parent.name
