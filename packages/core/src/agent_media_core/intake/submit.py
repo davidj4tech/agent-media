@@ -2298,6 +2298,52 @@ class _MuteDuckWatcher:
             self._coord.reapply_music_duck()
 
 
+def _render_workers(n_sentences: int) -> int:
+    """How many sentence renders may be in flight at once.
+
+    Unbounded — one worker per sentence, which is what this used to do — is
+    self-defeating. Measured on red5, 21 Sep, 32 sentences through edge: the
+    FIRST clip took 5.1s with 32 workers against 0.7s with four, while the last
+    clip landed at the same time either way, because the endpoint caps total
+    throughput regardless. So the only thing the extra concurrency bought was a
+    much later first clip — and a burst of 32 simultaneous handshakes is also a
+    plausible source of the clustered 503/403s _EDGE_RETRIES exists to paper
+    over. Submitting in order into a small pool lands the early sentences
+    first, which is what the streaming path below starts playing on.
+
+    MEDIA_RENDER_WORKERS=0 restores the old one-worker-per-sentence behaviour.
+    """
+    try:
+        want = int(os.environ.get("MEDIA_RENDER_WORKERS", "4"))
+    except ValueError:
+        want = 4
+    if want <= 0:
+        return max(1, n_sentences)
+    return max(1, min(want, n_sentences or 1))
+
+
+def _stream_clips(target: Target) -> bool:
+    """Start a reply on the sentences that have rendered, not on all of them.
+
+    Off by default. Phase 1 otherwise waits for every render before any audio
+    plays, so time-to-first-audio is the SLOWEST sentence — ~5s on a long reply
+    — when the first one was ready in well under a second.
+
+    Remote-playlist targets only (the phone, which is where replies go). The
+    per-sentence local path would have to be taught to wait mid-loop for a clip
+    that has not rendered yet; the playlist path just appends, and the player
+    advances into the new items by itself.
+
+    The cost, and the reason for the flag: `clip_durations_s` and the offsets
+    behind `play_started_at + clip_starts_s` stop being known up front and
+    arrive as each sentence lands. That is the follow-along clock, fixed on
+    19 Sep — MEDIA_STREAM_CLIPS=0 is the way back to a whole-reply plan.
+    """
+    if os.environ.get("MEDIA_STREAM_CLIPS", "0").strip() in ("", "0", "no"):
+        return False
+    return _remote_playlist(target)
+
+
 def _remote_playlist(target: Target) -> bool:
     """Use the autonomous gapless-playlist path for a *remote* speech target.
 
@@ -3030,13 +3076,16 @@ def submit_event(event: Event,
 
     sentences, sent_para = _split_sentences_with_paragraphs(text)
 
-    # Submit all sentence renders in parallel. Sentence 0 starts playing as
-    # soon as its render finishes (~0.5s); the rest are done by then.
+    # Submit the sentence renders in order into a BOUNDED pool: the early
+    # sentences land first, and crowding the engine only delays them (see
+    # _render_workers). Without MEDIA_STREAM_CLIPS nothing plays until every
+    # one of them is done, so the order matters only for the streaming path.
     outfiles = [
         audio_dir / f"{stamp}--{event.source.value}--{i:03d}.{ext}"
         for i in range(len(sentences))
     ]
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=len(sentences) or 1)
+    executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=_render_workers(len(sentences)))
     futures = [
         executor.submit(render_text, sentence, outfile,
                         engine=engine, voice=voice, on_fallback=_on_fallback)
@@ -3061,24 +3110,36 @@ def submit_event(event: Event,
     # typed*, which is every reply.
     ensure_follow_view(pane=source_pane)
 
-    # Phase 1: resolve all render futures and collect clip durations.
-    # Parallel renders are mostly done by now; future.result() is instant
-    # for finished ones and waits briefly for the last stragglers.
+    # Phase 1: turn finished renders into the reply's clips.
+    #
+    # Without streaming this resolves every future before anything plays, so
+    # the reply waits on its SLOWEST sentence. With MEDIA_STREAM_CLIPS it waits
+    # only for a lead of contiguous audio and the rest arrive during playback.
+    stream = _stream_clips(target) and not muted
     clip_data: list[tuple[str, Path]] = []  # (sentence, clip_path)
     clip_para: list[int] = []               # paragraph index per surviving clip
-    for sentence, pi, outfile, future in zip(sentences, sent_para,
-                                             outfiles, futures):
+    durations: list[float] = []
+    offsets: list[float] = []               # cumulative start on the reply timeline
+    _clip_sentences: list[str] = []
+    # Held for the multi-list update only: the follow loop reads these lists
+    # while the streaming thread appends to them, and a reader must never see
+    # a clip that has no duration yet.
+    _clip_lock = threading.Lock()
+    _rest_done = threading.Event()
+
+    def _adopt(i: int) -> bool:
+        """Resolve render `i` and add its clip to the reply. False if it failed."""
         try:
-            ok, err = future.result()
+            ok, err = futures[i].result()
         except Exception as exc:  # noqa: BLE001
             log.warning("intake: render future raised: %s", exc)
-            continue
+            return False
         if not ok:
             log.warning("intake: render failed for sentence (%s): %s", engine, err)
             state.log_error("intake", f"render failed ({engine})",
                             extras={"err": err, "source": event.source.value})
-            continue
-        clip_path = outfile
+            return False
+        clip_path = outfiles[i]
         with _fallback_lock:
             has_fallback = bool(fallback_info)
         if has_fallback and clip_path.suffix == ".wav":
@@ -3088,32 +3149,127 @@ def submit_event(event: Event,
                 clip_path = renamed
             except OSError:
                 pass
-        clip_data.append((sentence, clip_path))
-        clip_para.append(pi)
+        dur = _clip_duration(clip_path)
+        with _clip_lock:
+            # This clip starts where the previous one ended, so the offset is
+            # taken before its own duration joins the list.
+            offsets.append((offsets[-1] + durations[-1]) if durations else 0.0)
+            clip_data.append((sentences[i], clip_path))
+            clip_para.append(sent_para[i])
+            durations.append(dur)
+            _clip_sentences.append(sentences[i])
+        return True
+
+    if stream:
+        # Wait for enough contiguous audio that the player is unlikely to run
+        # dry before the next clip is appended. Renders finish far faster than
+        # they play, so the lead only has to cover the gap at the very start.
+        try:
+            lead_s = float(os.environ.get("MEDIA_STREAM_LEAD_S", "6"))
+        except ValueError:
+            lead_s = 6.0
+        lead_n = 0
+        while lead_n < len(sentences):
+            _adopt(lead_n)
+            lead_n += 1
+            if sum(durations) >= lead_s:
+                break
+    else:
+        lead_n = len(sentences)
+        _rest_done.set()
+        for sentence, pi, outfile, future in zip(sentences, sent_para,
+                                                 outfiles, futures):
+            try:
+                ok, err = future.result()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("intake: render future raised: %s", exc)
+                continue
+            if not ok:
+                log.warning("intake: render failed for sentence (%s): %s", engine, err)
+                state.log_error("intake", f"render failed ({engine})",
+                                extras={"err": err, "source": event.source.value})
+                continue
+            clip_path = outfile
+            with _fallback_lock:
+                has_fallback = bool(fallback_info)
+            if has_fallback and clip_path.suffix == ".wav":
+                renamed = clip_path.with_suffix(".mp3")
+                try:
+                    clip_path.rename(renamed)
+                    clip_path = renamed
+                except OSError:
+                    pass
+            clip_data.append((sentence, clip_path))
+            clip_para.append(pi)
+
+        # Compute per-clip offsets for a single spanning progress bar. ffprobe is a
+        # subprocess per clip; probe them in parallel so a multi-sentence reply
+        # doesn't add ~0.2s × N to time-to-first-audio. (The streaming path
+        # probes one at a time, as each clip lands, where it costs nothing.)
+        if clip_data:
+            with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=min(8, len(clip_data))) as _dpool:
+                durations.extend(_dpool.map(_clip_duration,
+                                            [p for _, p in clip_data]))
+            _acc = 0.0
+            for d in durations:
+                offsets.append(_acc)
+                _acc += d
+            _clip_sentences.extend(s for s, _ in clip_data)
+
+    if not clip_data and stream and lead_n < len(sentences):
+        # Every sentence in the lead failed to render; the ones behind it may
+        # still be fine, so the reply is not lost yet.
+        for i in range(lead_n, len(sentences)):
+            _adopt(i)
+        lead_n = len(sentences)
+        _rest_done.set()
 
     if not clip_data:
         playback_lock.release()   # nothing to say; stop holding our queue slot
         return None
 
-    # Compute per-clip offsets for a single spanning progress bar. ffprobe is a
-    # subprocess per clip; probe them in parallel so a multi-sentence reply
-    # doesn't add ~0.2s × N to time-to-first-audio.
-    with concurrent.futures.ThreadPoolExecutor(
-            max_workers=min(8, len(clip_data))) as _dpool:
-        durations = list(_dpool.map(_clip_duration, [p for _, p in clip_data]))
     total_duration_s = sum(durations)
+
+    def _settle_rest(player=None) -> None:
+        """Resolve the sentences the reply did not wait for.
+
+        With a `player`, each clip is handed over as it lands, so the playlist
+        grows under a reply that is already being spoken.
+        """
+        try:
+            for i in range(lead_n, len(sentences)):
+                if not _adopt(i) or player is None:
+                    continue
+                with _clip_lock:
+                    newest = clip_data[-1][1]
+                try:
+                    # Push it to the player's own dir first, for the same
+                    # reason the lead is prefetched: append should be a local
+                    # loadfile, not a network fetch the player stalls on.
+                    getattr(player, "prefetch", lambda *a, **k: None)(
+                        [newest], target)
+                    player.append_clips([newest], target)
+                except Exception as e:  # noqa: BLE001 — rendered and archived
+                    log.warning("intake: append_clips failed: %s", e)
+        finally:
+            _rest_done.set()
+
+    _rest_thread: Optional[threading.Thread] = None
+
+    def _settle_rest_now() -> None:
+        """Make sure every sentence has been resolved before the reply is
+        recorded — a reply whose audio ended early is still archived whole."""
+        if _rest_done.is_set():
+            return
+        if _rest_thread is not None:
+            _rest_thread.join(timeout=120)
+        else:
+            _settle_rest()
 
     # Delay the highlight so it fires when the audio is actually *heard*, not
     # when mpv reports idle.
     _highlight_delay_s = _playout_delay_s(target.name)
-
-    # Cumulative start offset of each clip on the response-wide timeline.
-    offsets: list[float] = []
-    _acc = 0.0
-    for d in durations:
-        offsets.append(_acc)
-        _acc += d
-    _clip_sentences = [s for s, _ in clip_data]
 
     def _archive(*, flushed: bool = False) -> Optional[int]:
         """The one history write, shared by every path that records this reply
@@ -3121,6 +3277,9 @@ def submit_event(event: Event,
         The archive is sacrosanct: a reply that rendered gets its row whether
         or not its audio was ever heard, and nothing downstream (flush
         included) may alter or remove it."""
+        # Streaming: the sentences still in flight belong to this reply even if
+        # nobody heard them, so they are resolved before the row is written.
+        _settle_rest_now()
         extras = {"engine": engine, "voice": voice,
                   "priority": event.priority.value,
                   "source_pane": source_pane,
@@ -3369,6 +3528,14 @@ def submit_event(event: Event,
                     state.log_error("intake", "play_playlist failed",
                                     extras={"detail": str(e),
                                             "source": event.source.value})
+                # The reply started on its lead; the rest of the sentences are
+                # appended to the playlist as they render, and the player
+                # advances into them on its own.
+                if played_any and not _rest_done.is_set():
+                    _rest_thread = threading.Thread(
+                        target=_settle_rest, kwargs={"player": sink},
+                        name="speech-stream", daemon=True)
+                    _rest_thread.start()
                 # Seed now_playing immediately so a status read (popup) shows the
                 # response as playing right away, before the first bridge snapshot
                 # lands (~0.6s) to fill in the live position.
@@ -3390,9 +3557,16 @@ def submit_event(event: Event,
                 # blind-hold tail after this loop). `finished` is set only when we
                 # positively observe the end (idle, or a skip past the last clip).
                 finished = False
-                hard_deadline = time.monotonic() + (total_duration_s or 0.0) + 5.0
+                _pl_started = time.monotonic()
+                hard_deadline = _pl_started + (total_duration_s or 0.0) + 5.0
                 last_broker_refresh = time.monotonic()
                 while played_any:
+                    # Streaming appends clips under us, so the reply's length
+                    # and its last index are read fresh each tick rather than
+                    # captured before it started.
+                    n = len(clip_data)
+                    total_duration_s = sum(durations)
+                    hard_deadline = _pl_started + total_duration_s + 5.0
                     # Superseded by a later URGENT in this session — drop the
                     # rest of the playlist instead of yielding-and-resuming.
                     if playback_lock.should_abort():
@@ -3480,6 +3654,13 @@ def submit_event(event: Event,
                         time.sleep(0.1)
                         continue
                     if snap.get("idle-active"):
+                        if not _rest_done.is_set():
+                            # Streaming: the player drank the lead faster than
+                            # the tail rendered. More clips are coming, so this
+                            # is a gap in the audio, not the end of the reply —
+                            # the append restarts it.
+                            time.sleep(0.1)
+                            continue
                         finished = True
                         break  # playlist finished
                     pos = snap.get("playlist-pos")

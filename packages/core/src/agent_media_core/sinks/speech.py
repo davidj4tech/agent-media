@@ -486,6 +486,34 @@ class SinkSpeech:
             except Exception:  # noqa: BLE001 — alerting must not break playback
                 pass
 
+    def append_clips(self, uris: "list", target: Target = DEFAULT_TARGET) -> bool:
+        """Append clips to a playlist that is already playing. True if sent.
+
+        The streaming path (MEDIA_STREAM_CLIPS) starts a reply on the sentences
+        that have rendered and hands the rest over as they land. `append` does
+        not disturb what is playing and does not auto-play, so the player keeps
+        advancing gaplessly into clips it did not have when it started.
+
+        `play_playlist` deliberately builds the whole list before starting, for
+        the reason its comment gives: a first clip can END before the rest are
+        appended, leaving mpv idle with unplayed items. Streaming accepts that
+        race and bounds it instead — the caller starts on a lead of several
+        seconds of audio, and renders complete far faster than they play.
+        """
+        if not uris:
+            return True
+        prefer_url = self._prefer_url(target)
+        cmds = [["loadfile", _clip_uri_for(str(uri), target, prefer_url), "append"]
+                for uri in uris]
+        try:
+            ipc.command_batch(_socket_for(target), cmds, critical=True)
+        except (ipc.MpvIpcError, OSError) as e:
+            # Not fatal on its own: the clips are rendered and archived, and
+            # the caller's follow loop sees the playlist end early.
+            log.warning("sink-speech: append_clips failed: %s", e)
+            return False
+        return True
+
     def snapshot(self, target: Target = DEFAULT_TARGET) -> dict:
         """One-round-trip read of the state the playlist monitor needs each tick
         (playlist-pos / idle-active / pause / time-pos). Empty dict on failure —
