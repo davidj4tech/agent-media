@@ -9,8 +9,12 @@ Step 2 (sasonica 70b79368): a reply ducks music / pauses a book in process
 (`SasonicaSpeechHold`), and the speech bar takes the mini player's slot.
 Step 3 (sasonica ce7b7cc3, 2026-09-21): the mic classes came across and
 `SasonicaHolds` pauses speech for dictation and holds it for a voice session;
-`/state` has a `holds` line. Not yet: the companion's cards, RingerState,
-HoldRate, and call_guard still reads the companion's /mic. Proposal written 2026-09-19. Written the day music moved to
+`/state` has a `holds` line. Step 4 (sasonica 2e587c73, agent-media 5100bf3,
+2026-09-21): calls hold speech by audio mode; `/mic`, `/ringer` and the hold
+rate are served on Sasonica's :8772 and call_guard, ringer.py and doctor read
+them there (deployed on p8a, call_guard logs `mic source: …:8772/mic`); the
+waiting card and the share sheet moved; the mic revive knocks on Sasonica.
+Left: step 5, uninstalling the companion and its Termux bridges. Proposal written 2026-09-19. Written the day music moved to
 Sasonica's player (agent-media 9b4b13e, sasonica ced15c0c). That left the phone
 with three apps between it and the rooms: Termux's mpv, the companion (which
 speaks) and Sasonica (which plays books and music). This is the plan for
