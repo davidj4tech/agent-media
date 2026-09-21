@@ -1,5 +1,6 @@
 """The popup's book row: the phone's player first, mpv as the fallback."""
 
+import agent_media_core
 import pytest
 
 from agent_media_visual import canvas
@@ -50,6 +51,9 @@ def test_the_phone_is_asked_once_and_remembered(monkeypatch):
             return {"item": "i1", "closed": False, "title": "A book"}
 
     monkeypatch.setitem(__import__("sys").modules, "agent_media_core.phone_player", _Player)
+    # And on the package: once anything has imported the real module,
+    # `from agent_media_core import phone_player` finds the attribute first.
+    monkeypatch.setattr(agent_media_core, "phone_player", _Player, raising=False)
     monkeypatch.setattr(canvas, "_PHONE_BOOK_TTL_S", 60.0)
     assert canvas._phone_book()["title"] == "A book"
     assert canvas._phone_book()["title"] == "A book"
@@ -63,4 +67,7 @@ def test_a_phone_with_nothing_loaded_is_not_the_book_row(monkeypatch):
             return {"item": None, "closed": True}
 
     monkeypatch.setitem(__import__("sys").modules, "agent_media_core.phone_player", _Player)
+    # And on the package: once anything has imported the real module,
+    # `from agent_media_core import phone_player` finds the attribute first.
+    monkeypatch.setattr(agent_media_core, "phone_player", _Player, raising=False)
     assert canvas._phone_book() is None

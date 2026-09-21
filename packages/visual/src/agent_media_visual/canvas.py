@@ -39,6 +39,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import os
 import queue
 import re
@@ -59,6 +60,10 @@ from agent_media_server import speech as _speech
 
 from . import state as _state
 from .state import spool_dir
+
+# `_phone_book` logged through this before it existed, so an unreachable
+# phone raised NameError out of the handler instead of reading as idle.
+log = logging.getLogger("agent-media.visual.canvas")
 
 DEFAULT_PORT = 8781
 MAX_SSE_CLIENTS = 64        # held-open /events streams before we shed load (#137)
