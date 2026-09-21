@@ -18,8 +18,9 @@ device gets its token):
                   whether it is still live
   GET  /conversation?session=<uuid>   → a session the phone started: its item
                   id once the library has one, and whether it is live
-  GET  /conversation/log?item=<abs item id>|session=<uuid>   → the
-                  conversation, read
+  GET  /conversation/log?item=<abs item id>|session=<uuid>[&limit=&before=]
+                  → the conversation, read: its messages from the transcript
+                  (transcript.py) and its spoken lines
   GET  /item?id=<abs item id>   → that library item carrying only what the
                   app reads, gzipped (1267 KB → 25 KB on a long
                   conversation); see abs_item.py
@@ -85,7 +86,6 @@ from __future__ import annotations
 
 import json
 import sys
-import time
 from http.server import BaseHTTPRequestHandler
 from typing import Callable
 from urllib.parse import parse_qs
@@ -322,25 +322,24 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
     elif path == "/conversation/log":
         # The same conversation, read rather than heard. `?session=` is the
         # v1 form (server-contract.md §10) and wins when both are given; it
-        # never asks ABS, so it answers when ABS does not.
+        # never asks ABS, so it answers when ABS does not. `messages` is the
+        # thread as its transcript has it (transcript.py): the newest
+        # `limit`, or those before `before` (a message id).
         qs = parse_qs(query)
         session = qs.get("session", [""])[0]
+        page = {"limit": qs.get("limit", [None])[0], "before": qs.get("before", [""])[0]}
         if session:
-            ok, detail = threads.log_for_session(session, _bearer(h))
+            ok, detail = threads.log_for_session(session, _bearer(h), **page)
         else:
-            ok, detail = threads.log_for_item(qs.get("item", [""])[0], _bearer(h))
+            ok, detail = threads.log_for_item(qs.get("item", [""])[0], _bearer(h), **page)
         if ok:
             # The live reply's position was read early in building this
-            # answer; bring it up to the moment it is sent. The phone is
-            # 2s away over the tailnet, and every stale moment here was a
-            # moment the follow-along bold spent behind the voice.
-            now = time.time()
-            for line in detail.get("lines") or []:
-                if line.get("live") and line.get("elapsed") is not None \
-                        and not line.get("paused") and line.get("server_time"):
-                    line["elapsed"] = round(line["elapsed"] + now - line["server_time"], 3)
-                    line["server_time"] = round(now, 3)
-            _json(h, 200, {"ok": ok, **detail})
+            # answer; bring it up to the moment it is sent.
+            threads.age_live(detail)
+            # Compressed when the caller can take it: a thread's messages
+            # run to tens of KB, gzip takes them to about a quarter, and
+            # this is polled.
+            _json_z(h, 200, {"ok": ok, **detail})
         else:
             _json(h, detail.pop("status", 404), {"ok": ok, **detail})
     elif path == "/targets":

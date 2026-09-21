@@ -256,11 +256,17 @@ def test_conversation_log_shape(server, shelf, signed_in, monkeypatch):
     res, obj = call(server, "GET", "/conversation/log?item=li_1", headers=AUTH)
     assert res.status == 200, obj
     # `recap` joined on 22 Sep 2026, deliberately (§6.2): the thread's "while
-    # you were away" card, never a line.
-    assert keys(obj) == {"ok", "session", "lines", "pending", "working",
-                         "approval", "suggestion", "recap"}
+    # you were away" card, never a line. `messages` and `older` joined on
+    # 22 Sep 2026, deliberately (§6.2.2): the thread as its transcript has
+    # it, the newest first page of it, and whether there is more before.
+    assert keys(obj) == {"ok", "session", "lines", "messages", "older", "pending",
+                         "working", "approval", "suggestion", "recap"}
     assert obj["pending"] is False and obj["working"] is None and obj["approval"] is None
     assert obj["recap"] is None
+    # No transcript in the rig, so the messages are the lines, reshaped.
+    assert [m["role"] for m in obj["messages"]] == ["user", "assistant"]
+    assert keys(obj["messages"][0]) == {"id", "role", "at", "parts", "spoken", "turn"}
+    assert obj["older"] is False
     you, agent = obj["lines"]
     assert keys(you) == {"start", "end", "who", "text", "at", "key"}
     # The live line's clock is brought up to the moment the answer leaves.

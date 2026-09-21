@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 from typing import Callable
 
-from . import auth, auth_abs, recaps, send, sessions
+from . import auth, auth_abs, recaps, send, sessions, transcript
 
 log = logging.getLogger("agent-media.server.threads")
 
@@ -215,9 +215,48 @@ def _manifest_for(session: str) -> dict | None:
     return None
 
 
-def _envelope(session: str, lines: list) -> dict:
-    """The `/conversation/log` answer around `lines`: pending, working,
-    approval and the suggestion, the same whichever way the thread was named."""
+#: Messages a log carries unless asked for more: the newest this many. A long
+#: thread is hundreds of messages and ~400 KB of them (tool summaries are
+#: most of it); the phone shows the end first and asks for the rest with
+#: `?before=<the first message's id>`.
+MESSAGES_LIMIT = 60
+#: The most a caller may ask for at once.
+MESSAGES_MAX = 500
+
+
+def messages_for(session: str, lines: list, *, working: bool, live: bool,
+                 limit: int = MESSAGES_LIMIT, before: str = "") -> tuple[list, bool]:
+    """`(messages, older)`: the thread as its transcript has it, with speech
+    joined on (transcript.py). `older` is whether messages exist before the
+    first one returned.
+
+    Claude Code sessions are read from their transcript. Every other harness
+    — or a Claude session whose transcript cannot be found — gets messages
+    made from its spoken lines, text only, until it has a parser of its own.
+    """
+    got = transcript.messages(session, limit=limit, before=before)
+    if got is None:
+        msgs = transcript.messages_from_lines(lines, working=working)
+        if before:
+            idx = next((i for i, m in enumerate(msgs) if m["id"] == before), None)
+            msgs = msgs[:idx] if idx is not None else []
+        older = bool(limit) and len(msgs) > limit
+        return (msgs[-limit:] if older else msgs), older
+    msgs, older = got
+    transcript.join_speech(msgs, lines)
+    if not live:
+        # A turn in a session nobody is running is not running, whatever its
+        # last record says (it was killed mid-turn).
+        for m in msgs:
+            m["turn"]["running"] = False
+    return msgs, older
+
+
+def _envelope(session: str, lines: list, *, limit: int = MESSAGES_LIMIT,
+              before: str = "") -> dict:
+    """The `/conversation/log` answer around `lines`: the messages, pending,
+    working, approval and the suggestion, the same whichever way the thread
+    was named."""
     # `pending` is true while the last thing said was the listener's: a reply
     # is in, no answer has landed yet. The app shows a "thinking" line and
     # polls faster until it clears, rather than waiting out a whole idle poll
@@ -236,6 +275,13 @@ def _envelope(session: str, lines: list) -> dict:
     # find it not there yet.
     pane = sessions.live_sessions().get(session, "")
     last = lines[-1] if lines else {}
+    # The thread as the terminal has it (transcript.py). A prompt is in the
+    # transcript the moment it is typed, well before any speech of it, so a
+    # live session whose last message is the listener's is pending too.
+    messages, older = messages_for(session, lines, working=bool(working), live=bool(pane),
+                                   limit=limit, before=before)
+    if pane and not before and messages and messages[-1]["role"] == "user":
+        pending = True
     suggestion = ("" if pending else
                   sessions.suggestion_for(session, pane, last.get("key") or ""))
     # A session waiting on a permission dialog is not working and not
@@ -249,12 +295,38 @@ def _envelope(session: str, lines: list) -> dict:
     # `recaps.recaps()` when something wants it. Falls back to the recap the
     # idle reaper wrote before resting the session, when that is newer.
     recap = recaps.recap_for(session)
-    return {"session": session, "lines": lines, "pending": pending,
-            "working": working, "approval": approval, "suggestion": suggestion,
-            "recap": recap}
+    return {"session": session, "lines": lines, "messages": messages, "older": older,
+            "pending": pending, "working": working, "approval": approval,
+            "suggestion": suggestion, "recap": recap}
 
 
-def log_for_item(item: str, bearer: str) -> tuple[bool, dict]:
+def age_live(detail: dict) -> None:
+    """Bring the live reply's clock up to now, in place — on its line and on
+    its message. The position was read early in building the answer; the
+    phone is 2 s away over the tailnet, and every stale moment here was a
+    moment the follow-along bold spent behind the voice."""
+    import time
+
+    now = time.time()
+    lives = [l for l in detail.get("lines") or [] if l.get("live")]
+    lives += [(m.get("spoken") or {}).get("live") for m in detail.get("messages") or []
+              if (m.get("spoken") or {}).get("live")]
+    for live in lives:
+        if live.get("elapsed") is not None and not live.get("paused") \
+                and live.get("server_time"):
+            live["elapsed"] = round(live["elapsed"] + now - live["server_time"], 3)
+            live["server_time"] = round(now, 3)
+
+
+def _limit(raw) -> int:
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return MESSAGES_LIMIT
+    return max(1, min(MESSAGES_MAX, n))
+
+
+def log_for_item(item: str, bearer: str, *, limit=None, before: str = "") -> tuple[bool, dict]:
     """The conversation behind `item`, as readable lines. Same gates as a reply.
 
     Gated identically on purpose: the log is the words of the conversation, so
@@ -275,7 +347,7 @@ def log_for_item(item: str, bearer: str) -> tuple[bool, dict]:
             lines = book_tracks.conversation_log(
                 session, Path(str(data.get("folder") or "")),
                 target="conversations")
-            return True, _envelope(session, lines)
+            return True, _envelope(session, lines, limit=_limit(limit), before=before)
     except Exception as e:  # noqa: BLE001
         # Say so in the journal as well as to the caller: the app folds every
         # failed fetch into an empty transcript, so this line is the only
@@ -287,7 +359,8 @@ def log_for_item(item: str, bearer: str) -> tuple[bool, dict]:
     return False, {"error": "no manifest for that conversation", "status": 404}
 
 
-def log_for_session(session: str, bearer: str) -> tuple[bool, dict]:
+def log_for_session(session: str, bearer: str, *, limit=None,
+                    before: str = "") -> tuple[bool, dict]:
     """`/conversation/log?session=`: the same lines, named by the thread's own
     id (server-contract.md §10). Same envelope, same line shapes, same gate.
 
@@ -314,6 +387,14 @@ def log_for_session(session: str, bearer: str) -> tuple[bool, dict]:
     user, err = auth.gate(bearer)
     if not user:
         return False, err
+    return session_log(session, limit=limit, before=before)
+
+
+def session_log(session: str, *, limit=None, before: str = "") -> tuple[bool, dict]:
+    """The session form's answer without its gate: what `/conversation/log
+    ?session=` answers once the caller is let in, and what the per-thread
+    stream sends as its snapshot (thread_events.py). `session` must already
+    be a valid id."""
     try:
         from agent_media_core import book_tracks
 
@@ -325,7 +406,7 @@ def log_for_session(session: str, bearer: str) -> tuple[bool, dict]:
                 and not sessions.live_sessions().get(session) \
                 and not sessions.session_exists(session):
             return False, {"error": "no conversation for that session yet", "status": 404}
-        return True, _envelope(session, lines)
+        return True, _envelope(session, lines, limit=_limit(limit), before=before)
     except Exception as e:  # noqa: BLE001
         log.exception("conversation log for session %s failed: %s", session, e)
         return False, {"error": f"could not read the conversation ({e})",
