@@ -18,16 +18,18 @@ device gets its token):
                   whether it is still live
   GET  /conversation?session=<uuid>   → a session the phone started: its item
                   id once the library has one, and whether it is live
-  GET  /conversation/log?item=<abs item id>   → the conversation, read
+  GET  /conversation/log?item=<abs item id>|session=<uuid>   → the
+                  conversation, read
   GET  /item?id=<abs item id>   → that library item carrying only what the
                   app reads, gzipped (1267 KB → 25 KB on a long
                   conversation); see abs_item.py
   GET  /commands?item=|session=|project=|cwd=   → the slash menu
-  POST /reply     {"item": "<abs item id>", "text": "...", "quote": "...",
-                   "mode": "continue"|"branch"} → type into the session behind
-                  that conversation, reviving it in a background tmux window
-                  if it has ended
-  POST /ask       {"text", "target"?, "player_item"?, "sticky"?, "parse"?, "project"?, "agent"?}
+  POST /reply     {"session"|"item", "text": "...", "quote": "...",
+                   "mode": "continue"|"branch"} → type into that session (or
+                  the one behind that item), reviving it in a background tmux
+                  window if it has ended
+  POST /ask       {"text", "target"?, "player_session"?|"player_item"?, "sticky"?,
+                   "parse"?, "project"?, "agent"?}
                   → the assistant button's words, routed: a picked session, a
                   session named in the words ("reply to drones, …"), the
                   player's conversation, the one last spoken to, else a FRESH
@@ -85,9 +87,10 @@ from . import (abs_item, auth, devices, drafts, harnesses, routing, send, sessio
 
 # The endpoints a browser on another origin may reach. Everything here
 # carries its own credential — a paired device's token, or the caller's
-# Audiobookshelf bearer handed back to ABS to ask who they are — and none of it is reachable with the ambient
-# authority a browser attaches by itself, so opening them to any origin gives
-# a drive-by page nothing it did not already have. The canvas's token-guarded
+# Audiobookshelf bearer handed back to ABS to ask who they are — and none of
+# it is reachable with the ambient authority a browser attaches by itself, so
+# opening them to any origin gives a drive-by page nothing it did not already
+# have. The canvas's token-guarded
 # routes (/input, /show, /ctl, /say, /play) are deliberately NOT here: their
 # credential is the host's, not the caller's, and CORS is what keeps a page
 # you happen to be visiting from spending it.
@@ -294,9 +297,15 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
               f"{len(detail.get('commands') or []) if ok else detail}", file=sys.stderr)
         _json(h, 200 if ok else detail.pop("status", 404), {"ok": ok, **detail})
     elif path == "/conversation/log":
-        # The same conversation, read rather than heard.
-        item = parse_qs(query).get("item", [""])[0]
-        ok, detail = threads.log_for_item(item, _bearer(h))
+        # The same conversation, read rather than heard. `?session=` is the
+        # v1 form (server-contract.md §10) and wins when both are given; it
+        # never asks ABS, so it answers when ABS does not.
+        qs = parse_qs(query)
+        session = qs.get("session", [""])[0]
+        if session:
+            ok, detail = threads.log_for_session(session, _bearer(h))
+        else:
+            ok, detail = threads.log_for_item(qs.get("item", [""])[0], _bearer(h))
         if ok:
             # The live reply's position was read early in building this
             # answer; bring it up to the moment it is sent. The phone is
@@ -450,19 +459,23 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         # Deliberately NOT gated by the host's token: the credential here is
         # the caller's own ABS bearer, verified with ABS, so the phone carries
         # no secret of ours. See send.py and the proposal.
+        # `session` is the v1 form (server-contract.md §10); `item` stays
+        # until the ABS exit, and `session` wins when both are sent.
         body = _read_json(h) or {}
         ok, detail = send.reply(
             str(body.get("item") or ""), str(body.get("text") or ""), _bearer(h),
             quote=str(body.get("quote") or ""),
-            mode=str(body.get("mode") or "continue"))
+            mode=str(body.get("mode") or "continue"),
+            session=str(body.get("session") or ""))
         status = detail.pop("status", 400)
         if not ok:
-            # The item id too: a refusal that names only the reason
+            # Which thread too: a refusal that names only the reason
             # cannot be told apart from the next one, and "no such item"
             # is a question about WHICH item was asked for.
+            named = (f"session {str(body.get('session'))[:8]}" if body.get("session")
+                     else f"item {str(body.get('item') or '')!r}")
             print(f"reply: refused {status} ({detail.get('error')}) "
-                  f"for item {str(body.get('item') or '')!r} "
-                  f"from {h.client_address[0]}", file=sys.stderr)
+                  f"for {named} from {h.client_address[0]}", file=sys.stderr)
         _json(h, 200 if ok else status, {"ok": ok, **detail})
     elif path == "/ask":
         # A fresh session from the phone: the assistant button, or "new
@@ -473,6 +486,7 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
             str(body.get("text") or ""), _bearer(h),
             target=str(body.get("target") or ""),
             player_item=str(body.get("player_item") or ""),
+            player_session=str(body.get("player_session") or ""),
             sticky=str(body.get("sticky") or ""),
             parse=body.get("parse", True) is not False,
             dry=body.get("dry") is True,

@@ -847,7 +847,8 @@ def _live_turn(session: str) -> Optional[dict]:
             "history_id": int(ex.get("history_id") or 0)}
 
 
-def conversation_log(session: str, folder: Path, *, target=None) -> list:
+def conversation_log(session: str, folder: Path, *, target=None,
+                     positions: bool = True) -> list:
     """The conversation as lines you can read. `[{start, end, who, text}]`.
 
     A chapter title is one sentence, because a table of contents is for finding
@@ -859,7 +860,13 @@ def conversation_log(session: str, folder: Path, *, target=None) -> list:
     Read-only, and derived on demand. It is not a second copy of the
     conversation to be kept in step with the audio; it is the same rows,
     rendered.
+
+    `positions=False` leaves every `start`/`end` null and never asks
+    Audiobookshelf: the session-keyed log (server-contract.md §10) has to
+    answer when ABS is slow or absent, and the positions are ABS's to give.
+    `folder` is then unused — it only ever served to find the ABS item.
     """
+    positions_wanted = positions   # the name is reused below for the list
     turns = _read_manifest(session).get("turns", [])
 
     # History keyed by the same `at` the manifest recorded, so a turn whose
@@ -876,7 +883,7 @@ def conversation_log(session: str, folder: Path, *, target=None) -> list:
         return []
 
     positions = []
-    ready = _abs_ready(target)
+    ready = _abs_ready(target) if positions_wanted else None
     if ready and turns:
         url, token, libs = ready
         item = _find_item(url, token, libs, folder)

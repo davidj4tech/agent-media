@@ -696,8 +696,13 @@ def _record_turn(session: str, text: str, pane: str = "") -> None:
 
 
 def reply(item: str, text: str, bearer: str, *, quote: str = "",
-          mode: str = "continue") -> tuple[bool, dict]:
-    """Put `text` into the session behind ABS item `item`.
+          mode: str = "continue", session: str = "") -> tuple[bool, dict]:
+    """Put `text` into `session`, or into the session behind ABS item `item`.
+
+    `session` is the v1 form (server-contract.md §10) and wins when both are
+    given: it is the thread's own id, and asking ABS which session an item
+    means is a network call that can only agree with it or be wrong. `item`
+    stays until the ABS exit.
 
     `continue` types into the live pane, reviving the session in a background
     window if it has ended. `branch` always opens a fresh session in the same
@@ -708,12 +713,23 @@ def reply(item: str, text: str, bearer: str, *, quote: str = "",
     text = (text or "").strip()
     if not text:
         return False, {"error": "empty reply"}
+    session = (session or "").strip()
+    if session and not sessions._SESSION.fullmatch(session):
+        return False, {"error": "not a session id", "status": 400}
     user, err = auth.gate(bearer)
     if not user:
         return False, err
-    session, err = sessions.session_for_item(item, bearer)
-    if not session:
-        return False, {"error": err, "status": 404}
+    if session:
+        # A session id nothing knows — not running, no transcript — is the
+        # same answer an item with no session behind it gets: not there.
+        # Checked here rather than left to `deliver`, because `branch` would
+        # otherwise open a fresh session in no particular directory.
+        if not sessions.live_sessions().get(session) and not sessions.session_exists(session):
+            return False, {"error": f"no such session {session[:8]}", "status": 404}
+    else:
+        session, err = sessions.session_for_item(item, bearer)
+        if not session:
+            return False, {"error": err, "status": 404}
     # `body` is typed on one line (compose flattens it); `text` is recorded
     # with the breaks the reply box had, so the transcript keeps them.
     body = compose(text, quote)

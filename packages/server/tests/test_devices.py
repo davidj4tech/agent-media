@@ -250,6 +250,18 @@ def test_a_device_is_the_owner_even_with_root_switched_off(
     assert res.status == 200, obj
 
 
+def test_a_device_token_can_reply(server, shelf, abs_spy, device, typed, monkeypatch):
+    from agent_media_server import sessions
+
+    monkeypatch.setattr(sessions, "live_sessions", lambda: {SID: "%42"})
+    token, _id = device
+    res, obj = call(server, "POST", "/reply", {"session": SID, "text": "yes"},
+                    {"Authorization": f"Bearer {token}"})
+    assert res.status == 200, obj
+    assert ("_send_to_pane", ("%42", "yes")) in typed
+    assert abs_spy["identity"] == [] and abs_spy["get"] == []
+
+
 def test_a_revoked_token_falls_back_to_abs_and_is_401(server, shelf, abs_spy, device,
                                                        monkeypatch):
     token, device_id = device

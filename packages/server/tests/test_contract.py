@@ -207,7 +207,10 @@ def test_conversation_by_item_shape(server, shelf, signed_in):
 def test_conversation_by_session_shape(server, shelf, signed_in):
     res, obj = call(server, "GET", f"/conversation?session={SID2}", headers=AUTH)
     assert res.status == 200, obj
-    assert keys(obj) == {"ok", "session", "item", "scanning", "live", "pane", "resumable"}
+    # `suggestion` joined on 22 Sep 2026 (§10: the session form gains what the
+    # item form has), deliberately.
+    assert keys(obj) == {"ok", "session", "item", "scanning", "live", "pane", "resumable",
+                         "suggestion"}
     assert obj["live"] is True and obj["pane"] == "%42" and obj["item"] is None
 
 

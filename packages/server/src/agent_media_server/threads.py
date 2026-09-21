@@ -75,7 +75,10 @@ def conversation_for_session(session: str, bearer: str) -> tuple[bool, dict]:
     return True, {"session": session, "item": item if ready else None,
                   "scanning": bool(item) and not ready,
                   "live": bool(pane), "pane": pane or None,
-                  "resumable": sessions.session_exists(session)}
+                  "resumable": sessions.session_exists(session),
+                  # The same ghost prompt `?item=` offers (§6.2.1), so a
+                  # client that only knows sessions draws the same box.
+                  "suggestion": sessions.suggestion_for(session, pane)}
 
 
 def conversation(item: str, bearer: str) -> tuple[bool, dict]:
@@ -194,6 +197,55 @@ def attach_pictures(lines: list) -> None:
             line["figure"] = figure
 
 
+def _manifest_for(session: str) -> dict | None:
+    """The book-tracks manifest for `session`, or None when it has none yet.
+
+    A session gets a manifest on its first publish — its first spoken reply,
+    debounced — so a session the phone started a moment ago has none. That is
+    not the same as "no such conversation", which is why this says None rather
+    than an empty dict.
+    """
+    for f in sorted(sessions._manifest_dir().glob("*.json")):
+        try:
+            data = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        if str(data.get("session") or f.stem) == session:
+            return data
+    return None
+
+
+def _envelope(session: str, lines: list) -> dict:
+    """The `/conversation/log` answer around `lines`: pending, working,
+    approval and the suggestion, the same whichever way the thread was named."""
+    # `pending` is true while the last thing said was the listener's: a reply
+    # is in, no answer has landed yet. The app shows a "thinking" line and
+    # polls faster until it clears, rather than waiting out a whole idle poll
+    # with nothing on screen.
+    pending = bool(lines) and lines[-1].get("who") == "you"
+    attach_pictures(lines)
+    # What the session did for each reply ("Worked for 3m · 14 steps"), and
+    # what it is doing now, in place of the dots. A turn typed at the desk
+    # counts too: the phone shows it working even before that message reaches
+    # the transcript.
+    from agent_media_core import activity as _activity
+    working = _activity.attach(session, lines)
+    pending = pending or bool(working)
+    # The ghost prompt rides along with every poll: it appears a few seconds
+    # after the turn it follows, so a one-off read at page-open would mostly
+    # find it not there yet.
+    pane = sessions.live_sessions().get(session, "")
+    last = lines[-1] if lines else {}
+    suggestion = ("" if pending else
+                  sessions.suggestion_for(session, pane, last.get("key") or ""))
+    # A session waiting on a permission dialog is not working and not
+    # finished: it is stopped until somebody answers, and the phone is often
+    # the only place anybody is looking.
+    approval = sessions.approval_for(pane, sessions._agent_of_pane(pane)) if pane else None
+    return {"session": session, "lines": lines, "pending": pending,
+            "working": working, "approval": approval, "suggestion": suggestion}
+
+
 def log_for_item(item: str, bearer: str) -> tuple[bool, dict]:
     """The conversation behind `item`, as readable lines. Same gates as a reply.
 
@@ -210,43 +262,12 @@ def log_for_item(item: str, bearer: str) -> tuple[bool, dict]:
     try:
         from agent_media_core import book_tracks
 
-        for f in sorted(sessions._manifest_dir().glob("*.json")):
-            try:
-                data = json.loads(f.read_text())
-            except (OSError, ValueError):
-                continue
-            if str(data.get("session") or f.stem) == session:
-                lines = book_tracks.conversation_log(
-                    session, Path(str(data.get("folder") or "")),
-                    target="conversations")
-                # `pending` is true while the last thing said was the listener's:
-                # a reply is in, no answer has landed yet. The app shows a
-                # "thinking" line and polls faster until it clears, rather than
-                # waiting out a whole idle poll with nothing on screen.
-                pending = bool(lines) and lines[-1].get("who") == "you"
-                attach_pictures(lines)
-                # What the session did for each reply ("Worked for 3m · 14
-                # steps"), and what it is doing now, in place of the dots.
-                # A turn typed at the desk counts too: the phone shows it
-                # working even before that message reaches the transcript.
-                from agent_media_core import activity as _activity
-                working = _activity.attach(session, lines)
-                pending = pending or bool(working)
-                # The ghost prompt rides along with every poll: it appears a
-                # few seconds after the turn it follows, so a one-off read at
-                # page-open would mostly find it not there yet.
-                pane = sessions.live_sessions().get(session, "")
-                last = lines[-1] if lines else {}
-                suggestion = ("" if pending else
-                              sessions.suggestion_for(session, pane, last.get("key") or ""))
-                # A session waiting on a permission dialog is not working and
-                # not finished: it is stopped until somebody answers, and the
-                # phone is often the only place anybody is looking.
-                approval = sessions.approval_for(pane, sessions._agent_of_pane(pane)) if pane else None
-                return True, {"session": session, "lines": lines,
-                              "pending": pending, "working": working,
-                              "approval": approval,
-                              "suggestion": suggestion}
+        data = _manifest_for(session)
+        if data is not None:
+            lines = book_tracks.conversation_log(
+                session, Path(str(data.get("folder") or "")),
+                target="conversations")
+            return True, _envelope(session, lines)
     except Exception as e:  # noqa: BLE001
         # Say so in the journal as well as to the caller: the app folds every
         # failed fetch into an empty transcript, so this line is the only
@@ -256,3 +277,48 @@ def log_for_item(item: str, bearer: str) -> tuple[bool, dict]:
         return False, {"error": f"could not read the conversation ({e})",
                        "status": 500}
     return False, {"error": "no manifest for that conversation", "status": 404}
+
+
+def log_for_session(session: str, bearer: str) -> tuple[bool, dict]:
+    """`/conversation/log?session=`: the same lines, named by the thread's own
+    id (server-contract.md §10). Same envelope, same line shapes, same gate.
+
+    Two differences from the item form, both because nothing here asks ABS:
+
+    * **No positions.** `start`/`end` are always null: placing a line in the
+      audio item means reading the item's tracks from ABS, and this form is
+      the one that has to keep working when ABS is slow, down or gone. They
+      are ABS-shaped fields that go at the ABS exit anyway.
+    * **No manifest is not a 404 by itself.** A session gets its manifest on
+      its first publish, so one the phone started seconds ago has none — but
+      speech history already has the listener's turn, and the live tail and
+      the live line come from history and the player, not the manifest.
+      `conversation_log` reads the manifest by session and needs a folder only
+      for positions, so it is asked regardless. Only a session with no
+      manifest, nothing said, no pane and no transcript is 404 "no
+      conversation for that session yet"; a real session with nothing said
+      yet answers 200 with no lines, so a client polling a thread it just
+      opened does not see an error.
+    """
+    session = (session or "").strip()
+    if not sessions._SESSION.fullmatch(session):
+        return False, {"error": "not a session id", "status": 400}
+    user, err = auth.gate(bearer)
+    if not user:
+        return False, err
+    try:
+        from agent_media_core import book_tracks
+
+        data = _manifest_for(session)
+        folder = Path(str((data or {}).get("folder") or ""))
+        lines = book_tracks.conversation_log(session, folder, target="conversations",
+                                             positions=False)
+        if data is None and not lines \
+                and not sessions.live_sessions().get(session) \
+                and not sessions.session_exists(session):
+            return False, {"error": "no conversation for that session yet", "status": 404}
+        return True, _envelope(session, lines)
+    except Exception as e:  # noqa: BLE001
+        log.exception("conversation log for session %s failed: %s", session, e)
+        return False, {"error": f"could not read the conversation ({e})",
+                       "status": 500}

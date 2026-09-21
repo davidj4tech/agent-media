@@ -97,13 +97,15 @@ def _title_of(session: str, index: list[dict] | None = None) -> str:
 
 def ask_routed(text: str, bearer: str, *, target: str = "", player_item: str = "",
                sticky: str = "", parse: bool = True, dry: bool = False,
-               project: str = "", agent: str = "", cwd: str = "") -> tuple[bool, dict]:
+               project: str = "", agent: str = "", cwd: str = "",
+               player_session: str = "") -> tuple[bool, dict]:
     """The assistant button's words, sent where they belong.
 
     In order: a target the app names outright (`target`, a session uuid from
     its picker — "new" forces a fresh one); a target spoken at the start of
     the words ("reply to drones, …", "new chat, …"); the conversation loaded
-    in the player (`player_item`, an ABS item id); the session the button
+    in the player (`player_session`, or `player_item`, an ABS item id); the
+    session the button
     last spoke to (`sticky`); else a fresh session. A spoken name that fits
     more than one conversation is not sent anywhere — the candidates go back
     for the app to ask. `dry` answers where the words WOULD go and sends
@@ -115,6 +117,9 @@ def ask_routed(text: str, bearer: str, *, target: str = "", player_item: str = "
     text = " ".join((text or "").split())
     if not text:
         return False, {"error": "empty message"}
+    player_session = (player_session or "").strip()
+    if player_session and not sessions._SESSION.fullmatch(player_session):
+        return False, {"error": "not a session id", "status": 400}
     user, err = auth.gate(bearer)
     if not user:
         return False, err
@@ -142,7 +147,13 @@ def ask_routed(text: str, bearer: str, *, target: str = "", player_item: str = "
             return False, {"error": "which conversation?", "status": 300,
                            "ambiguous": hit, "text": rest}
     if not session and how != "spoken" and how != "asked":
-        if player_item:
+        # The thread open in the player. `player_session` is its own id (v1,
+        # server-contract.md §10) and wins over `player_item`, which has to
+        # be asked of ABS; either way it only counts if the session is real.
+        if player_session and (sessions.live_sessions().get(player_session)
+                               or sessions.session_exists(player_session)):
+            session, how = player_session, "player"
+        if not session and player_item:
             sid, _why = sessions.session_for_item(player_item, bearer)
             if sid:
                 session, how = sid, "player"
