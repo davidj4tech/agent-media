@@ -35,21 +35,27 @@ def test_the_project_wins_a_name_the_user_also_has(tmp_path, monkeypatch):
     assert slash_menu.descriptions(tmp_path / "proj")["run"] == "The project's run"
 
 
-def test_the_menu_is_what_claude_code_says_plus_the_terminal_only_ones(monkeypatch):
+def test_only_skills_and_our_own_commands_are_offered(monkeypatch):
+    monkeypatch.setattr(slash_menu, "ask_claude", lambda cwd, timeout=60.0: (
+        ["model", "resume", "speak", "deploy", "__secret", "mcp__x__y", "anthropic-skills:pdf"],
+        ["speak", "anthropic-skills:pdf"], "2.1.1"))
+    monkeypatch.setattr(slash_menu, "descriptions", lambda cwd=None: {"deploy": "Ship it"})
+    monkeypatch.setattr(slash_menu, "bundle_commands", lambda names: {})
+    names = [c["name"] for c in slash_menu.build("/proj")]
+    # A skill, a plugin's skill, and a command of this project's own.
+    assert names == ["anthropic-skills:pdf", "deploy", "speak"]
+    # Claude Code's own: nothing the phone cannot see or cannot drive.
+    assert "model" not in names and "resume" not in names
+    assert "__secret" not in names and "mcp__x__y" not in names
+
+
+def test_a_skills_own_description_is_what_it_shows(monkeypatch):
     monkeypatch.setattr(slash_menu, "ask_claude",
-                        lambda cwd, timeout=60.0: (["model", "speak", "__secret",
-                                                    "mcp__x__y", "resume"], "2.1.1"))
+                        lambda cwd, timeout=60.0: (["speak"], ["speak"], "2.1.1"))
     monkeypatch.setattr(slash_menu, "descriptions", lambda cwd=None: {"speak": "Out loud"})
     monkeypatch.setattr(slash_menu, "bundle_commands", lambda names: {})
-    menu = slash_menu.build("/proj")
-    names = [c["name"] for c in menu]
-    assert "__secret" not in names and "mcp__x__y" not in names   # internal
-    assert names == sorted(names)
-    by_name = {c["name"]: c for c in menu}
-    assert by_name["speak"]["description"] == "Out loud"
-    assert by_name["model"]["description"] == slash_menu.BUILTIN_DESCRIPTIONS["model"]
-    assert by_name["resume"]["terminal"] is False   # claude named it, so not ours
-    assert by_name["help"]["terminal"] is True      # only the terminal has it
+    assert slash_menu.build("/proj") == [
+        {"name": "speak", "description": "Out loud", "aliases": []}]
 
 
 def test_the_menu_is_cached_until_the_version_changes(monkeypatch):
@@ -75,7 +81,7 @@ def test_the_startup_event_is_read_and_the_run_stopped(monkeypatch):
     events = [json.dumps({"type": "hook", "subtype": "hook_started"}),
               "not json\n",
               json.dumps({"subtype": "init", "slash_commands": ["model"],
-                          "claude_code_version": "2.1.9"}),
+                          "skills": ["speak"], "claude_code_version": "2.1.9"}),
               json.dumps({"type": "assistant"})]
     stopped = []
 
@@ -90,22 +96,18 @@ def test_the_startup_event_is_read_and_the_run_stopped(monkeypatch):
 
     iter_lines = iter(e if e.endswith("\n") else e + "\n" for e in events)
     monkeypatch.setattr(slash_menu.subprocess, "Popen", lambda *a, **k: _Proc())
-    assert slash_menu.ask_claude("/proj") == (["model"], "2.1.9")
+    assert slash_menu.ask_claude("/proj") == (["model"], ["speak"], "2.1.9")
     assert stopped == [True]                       # never gets as far as a reply
 
 
-def test_the_bundles_own_words_and_aliases_beat_the_kept_ones(monkeypatch):
-    monkeypatch.setattr(slash_menu, "ask_claude", lambda cwd, timeout=60.0: (["model"], "2.1.1"))
+def test_a_plugin_skill_takes_its_words_from_the_bundle(monkeypatch):
+    """A plugin's skill has no file on disk here, but the bundle describes it."""
+    monkeypatch.setattr(slash_menu, "ask_claude", lambda cwd, timeout=60.0: (
+        ["anthropic-skills:pdf"], ["anthropic-skills:pdf"], "2.1.1"))
     monkeypatch.setattr(slash_menu, "descriptions", lambda cwd=None: {})
     monkeypatch.setattr(slash_menu, "bundle_commands", lambda names: {
-        "model": {"description": "Set the AI model for Claude Code", "aliases": []},
-        "exit": {"description": "", "aliases": ["quit"]}})
-    by_name = {c["name"]: c for c in slash_menu.build("/proj")}
-    assert by_name["model"]["description"] == "Set the AI model for Claude Code"
-    # /exit builds its description at runtime, so the kept line still shows —
-    # but the alias is real and comes through.
-    assert by_name["exit"]["aliases"] == ["quit"]
-    assert by_name["exit"]["description"] == dict(slash_menu.TERMINAL_ONLY)["exit"]
+        "anthropic-skills:pdf": {"description": "Work with PDF files", "aliases": []}})
+    assert slash_menu.build("/proj")[0]["description"] == "Work with PDF files"
 
 
 def test_a_command_record_is_read_whichever_way_round_it_is(tmp_path, monkeypatch):

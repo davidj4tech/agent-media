@@ -14,10 +14,11 @@ Two things the event leaves out, and how they are filled:
   sentence that says what it is for, so the ones on disk are read and matched
   by name; a command with no file keeps its name alone, which is what the
   terminal menu shows for those too.
-* **The terminal-only commands.** `/resume`, `/help`, `/memory` and their kind
-  never appear, because headless cannot run them — and from the phone they
-  work, because the phone types into the TUI. Those few are listed here, and
-  this is the only hand-kept part of the menu.
+* **What is left out.** Claude Code's own built-ins are not offered at all:
+  from the phone, `/status` and `/context` draw a screen nobody sees, and
+  `/resume` or `/config` open a picker the phone cannot drive, leaving the
+  pane to swallow the next reply. The menu is skills and the user's or
+  project's own commands — the half that does work and answers.
 
 The list is cached per project directory and thrown away when Claude Code's
 version changes, so an upgrade that adds a command is picked up by itself.
@@ -41,43 +42,6 @@ log = logging.getLogger(__name__)
 #: How long a cached menu is trusted. The version check below is what really
 #: keeps it fresh; this is for a skill added to a project mid-day.
 CACHE_TTL_S = 6 * 3600
-
-#: Commands the TUI has and headless does not, so they are never in the init
-#: event. The phone types into the TUI, so they work from the reply box.
-#: This is the only list here that is kept by hand.
-TERMINAL_ONLY: tuple[tuple[str, str], ...] = (
-    ("resume", "Pick an earlier conversation to carry on"),
-    ("help", "What the commands are"),
-    ("memory", "Edit the memory files"),
-    ("status", "Version, account, model and connection"),
-    ("permissions", "What Claude may do without asking"),
-    ("cost", "What this session has cost"),
-    ("export", "Send the conversation out to a file"),
-    ("hooks", "The hooks this project runs"),
-    ("login", "Sign in to a different account"),
-    ("logout", "Sign out"),
-    ("exit", "End the session"),
-)
-
-#: A last resort only: Claude Code's bundle has the real sentence for nearly
-#: every built-in (see `bundle_commands`), and these are what is shown when a
-#: command's description is built at runtime and so is not in there to read —
-#: `/exit` is one. A command with neither shows its name alone.
-BUILTIN_DESCRIPTIONS = {
-    "clear": "Start again with an empty conversation",
-    "compact": "Summarise the conversation so far to free room",
-    "config": "Settings for this session",
-    "context": "What is taking up the context window",
-    "model": "Change the model",
-    "effort": "How hard the model thinks",
-    "fast": "Faster output from the same model",
-    "init": "Write a CLAUDE.md for this project",
-    "mcp": "The MCP servers and their connections",
-    "agents": "The subagents this project has",
-    "usage": "How much of the plan's allowance is left",
-    "rename": "Rename this conversation",
-    "recap": "What this session has done so far",
-}
 
 #: A command record in Claude Code's own bundle:
 #: `name:"exit",aliases:["quit"],...description:"..."`. The bundle is minified
@@ -222,8 +186,8 @@ def claude_version() -> str:
     return (r.stdout or "").strip().split()[0] if r.returncode == 0 else ""
 
 
-def ask_claude(cwd: str, timeout: float = 60.0) -> tuple[list, str]:
-    """`(command names, version)` from Claude Code's own startup event.
+def ask_claude(cwd: str, timeout: float = 60.0) -> tuple[list, list, str]:
+    """`(command names, skill names, version)` from Claude Code's startup event.
 
     Started headless in `cwd` and stopped as soon as the event arrives, which
     is before the prompt reaches a model: the run is a listing, not a turn.
@@ -236,9 +200,10 @@ def ask_claude(cwd: str, timeout: float = 60.0) -> tuple[list, str]:
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
     except OSError as e:  # noqa: BLE001 — no claude here; the caller copes
         log.warning("slash-menu: cannot run claude (%s)", e)
-        return [], ""
+        return [], [], ""
     deadline = time.time() + timeout
     names: list = []
+    skills: list = []
     version = ""
     try:
         while time.time() < deadline:
@@ -251,6 +216,7 @@ def ask_claude(cwd: str, timeout: float = 60.0) -> tuple[list, str]:
                 continue
             if event.get("subtype") == "init":
                 names = [str(n) for n in (event.get("slash_commands") or [])]
+                skills = [str(n) for n in (event.get("skills") or [])]
                 version = str(event.get("claude_code_version") or "")
                 break
     finally:
@@ -259,31 +225,30 @@ def ask_claude(cwd: str, timeout: float = 60.0) -> tuple[list, str]:
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:  # noqa: PERF203
             proc.kill()
-    return names, version
+    return names, skills, version
 
 
 def build(cwd: str) -> list:
-    """The menu for a session in `cwd`: `[{name, description, terminal}]`."""
-    names, version = ask_claude(cwd)
+    """The menu for a session in `cwd`: `[{name, description, aliases}]`.
+
+    Skills and the user's or project's own commands, and nothing else.
+    Claude Code's built-ins are left out on purpose: typed from the phone,
+    the useful ones draw a screen nobody here can see, and `/resume`,
+    `/config` and their kind open a picker in the terminal that the phone
+    cannot drive — a pane left sitting in one swallows the next reply. What
+    remains is the half worth a menu: the things that do work and answer.
+    """
+    names, skills, _version = ask_claude(cwd)
     described = descriptions(Path(cwd) if cwd else None)
-    offered = [n for n in names if not n.startswith(("__", "mcp__"))]
-    # A skill's own file first — it is the one written to be read — then
-    # Claude Code's bundle, then the lines kept here.
-    bundle = bundle_commands(set(offered) | {n for n, _d in TERMINAL_ONLY})
-
-    def _entry(name: str, fallback: str, terminal: bool) -> dict:
-        from_bundle = bundle.get(name) or {}
-        return {"name": name,
-                "description": (described.get(name.rpartition(":")[2])
-                                or from_bundle.get("description")
-                                or fallback),
-                "aliases": from_bundle.get("aliases") or [],
-                "terminal": terminal}
-
-    seen = set(offered)
-    menu = [_entry(name, BUILTIN_DESCRIPTIONS.get(name, ""), False) for name in offered]
-    menu += [_entry(name, description, True)
-             for name, description in TERMINAL_ONLY if name not in seen]
+    offered = [n for n in names
+               if not n.startswith(("__", "mcp__"))
+               and (n in set(skills) or n.rpartition(":")[2] in described)]
+    bundle = bundle_commands(set(offered))
+    menu = [{"name": name,
+             "description": (described.get(name.rpartition(":")[2])
+                             or (bundle.get(name) or {}).get("description", "")),
+             "aliases": (bundle.get(name) or {}).get("aliases") or []}
+            for name in offered]
     menu.sort(key=lambda c: c["name"])
     return menu
 
