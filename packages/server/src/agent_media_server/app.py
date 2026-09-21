@@ -92,7 +92,7 @@ from urllib.parse import parse_qs
 
 from . import (abs_item, archive, auth, devices, drafts, harnesses, pins, routing, send,
                sessions, share, speech, threads)
-from . import audio, notes
+from . import audio, notes, notes_setup
 
 # The endpoints a browser on another origin may reach. Everything here
 # carries its own credential — a paired device's token, or the caller's
@@ -123,7 +123,7 @@ CORS_PATHS = CORS_PATHS | AUDIO_PATHS
 
 # Browsing and capturing notes (notes.py). The same arrangement.
 NOTES_PATHS = frozenset({"/notes", "/notes/view", "/notes/read", "/notes/search",
-                         "/notes/capture"})
+                         "/notes/capture", "/notes/setup"})
 CORS_PATHS = CORS_PATHS | NOTES_PATHS
 
 # Paths opened to other origins for POST (and its preflight) ONLY. `/pair` is
@@ -650,6 +650,16 @@ def _notes(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
     elif method == "GET" and path == "/notes/search":
         ok, detail = notes.search(arg("q"), bearer, everything=arg("all") == "1",
                                   memory=arg("memory") != "0")
+    elif method == "GET" and path == "/notes/setup":
+        ok, detail = notes_setup.status(bearer)
+    elif method == "POST" and path == "/notes/setup":
+        # A long action answers with a pane, watched through /harnesses/screen.
+        body = _read_json(h) or {}
+        ok, detail = notes_setup.run(str(body.get("component") or ""),
+                                     str(body.get("action") or ""), bearer)
+        if not ok:
+            print(f"notes/setup: refused ({detail.get('error')}) "
+                  f"from {h.client_address[0]}", file=sys.stderr)
     elif method == "POST" and path == "/notes/capture":
         body = _read_json(h) or {}
         ok, detail = notes.capture(str(body.get("text") or ""),

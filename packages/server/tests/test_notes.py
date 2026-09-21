@@ -7,6 +7,7 @@ from __future__ import annotations
 import datetime as dt
 import http.client
 import json
+import subprocess
 import threading
 from http.server import ThreadingHTTPServer
 
@@ -176,3 +177,113 @@ def test_capture_a_note_without_memory(tree, server):
     threading.Event().wait(0.1)
     assert REMEMBERED == []
     assert _call(server, "POST", "/notes/capture", {"text": "  "})[0] == 400
+
+
+# --- search without ripgrep -------------------------------------------------------
+
+def test_the_built_in_search_finds_what_ripgrep_does(tree, monkeypatch):
+    rg = notes._rg("telly", everything=False, limit=30)
+    monkeypatch.setattr(notes.shutil, "which", lambda name: None)
+    scan = notes._rg("telly", everything=False, limit=30)
+    assert {(h["path"], h["line"]) for h in scan} == {(h["path"], h["line"]) for h in rg}
+    every = notes._rg("telly", everything=True, limit=30)
+    assert "roam/sessions/inbox/s1.org" in {h["path"] for h in every}
+
+
+# --- setting it up -----------------------------------------------------------------
+
+from agent_media_server import harnesses as setup_windows, notes_setup  # noqa: E402
+
+
+@pytest.fixture()
+def fresh(tmp_path, monkeypatch):
+    """A host with no notes yet, and a caller allowed to set them up."""
+    root = tmp_path / "org"
+    monkeypatch.setenv("MEDIA_NOTES_DIR", str(root))
+    monkeypatch.setenv("MEDIA_PARAGTD_DIR", str(tmp_path / "paragtd"))
+    monkeypatch.delenv("MEDIA_NOTES_REPO", raising=False)
+    monkeypatch.setattr(auth, "may_control_speech", lambda bearer: (
+        (True, {}) if bearer == "good" else (False, {"error": "no", "status": 403})))
+    monkeypatch.setattr(notes, "_memory_call", lambda *a, **k: None)
+    calls: list[tuple] = []
+    monkeypatch.setattr(notes_setup, "_systemctl", lambda *a: (
+        calls.append(a) or ((0, "") if a[0] == "enable" else (1, "disabled"))))
+    windows: list[list[str]] = []
+    monkeypatch.setattr(setup_windows, "_window",
+                        lambda argv, title: (windows.append(argv) or "%99", ""))
+    monkeypatch.setattr(setup_windows, "_remember", lambda *a: None)
+    return root, calls, windows
+
+
+def _states(addr):
+    status, got = _call(addr, "GET", "/notes/setup")
+    assert status == 200
+    return {c["name"]: c for c in got["components"]}
+
+
+def test_setup_is_gated(fresh, server):
+    assert _call(server, "GET", "/notes/setup", bearer="bad")[0] == 403
+    assert _call(server, "POST", "/notes/setup", {"component": "org", "action": "create"},
+                 bearer="bad")[0] == 403
+    assert not fresh[0].exists()
+
+
+def test_a_fresh_host_can_start_a_set_of_notes(fresh, server, monkeypatch):
+    root, _, _ = fresh
+    rows = _states(server)
+    assert rows["org"]["state"] == "missing" and rows["org"]["actions"] == ["create"]
+    assert rows["sync"]["state"] == "off"
+    assert rows["memory"]["state"] == "down" and rows["memory"]["optional"]
+    status, got = _call(server, "POST", "/notes/setup", {"component": "org", "action": "create"})
+    assert status == 200 and got["done"] and "inbox.org" in got["created"]
+    assert (root / "tickler.org").read_text().endswith("* Tickler\n")
+    assert (root / "roam" / "projects").is_dir()
+    assert _states(server)["org"]["state"] == "ok"
+    # And the notes routes work on it straight away.
+    monkeypatch.setattr(auth, "gate", lambda bearer: ({"username": "david"}, {}))
+    assert _call(server, "POST", "/notes/capture", {"text": "first"})[0] == 200
+    assert "* TODO first" in (root / "inbox.org").read_text()
+
+
+def test_create_never_overwrites(fresh, server):
+    root, _, _ = fresh
+    root.mkdir()
+    (root / "inbox.org").write_text("* mine\n")
+    rows = _states(server)
+    assert rows["org"]["state"] == "ok" and "create" in rows["org"]["actions"]
+    _call(server, "POST", "/notes/setup", {"component": "org", "action": "create"})
+    assert (root / "inbox.org").read_text() == "* mine\n"
+    assert (root / "someday.org").is_file()
+
+
+def test_clone_needs_a_repo_and_runs_in_a_window(fresh, server, monkeypatch):
+    root, _, windows = fresh
+    assert _call(server, "POST", "/notes/setup",
+                 {"component": "org", "action": "clone"})[0] == 409
+    monkeypatch.setenv("MEDIA_NOTES_REPO", "git@example:me/org.git")
+    assert _states(server)["org"]["actions"] == ["clone", "create"]
+    status, got = _call(server, "POST", "/notes/setup", {"component": "org", "action": "clone"})
+    assert status == 200 and got["pane"] == "%99"
+    assert windows == [["git", "clone", "git@example:me/org.git", str(root)]]
+
+
+def test_sync_enables_the_timer_on_a_repo_with_a_remote(fresh, server):
+    root, calls, _ = fresh
+    _call(server, "POST", "/notes/setup", {"component": "org", "action": "create"})
+    assert "no remote" in _states(server)["sync"]["why"]
+    subprocess.run(["git", "-C", str(root), "remote", "add", "origin", "x:y"], check=True)
+    row = _states(server)["sync"]
+    assert row["state"] == "off" and row["actions"] == ["enable"]
+    status, got = _call(server, "POST", "/notes/setup", {"component": "sync", "action": "enable"})
+    assert status == 200 and ("enable", "--now", "org-autosync.timer") in calls
+
+
+def test_paragtd_installs_in_a_window(fresh, server, tmp_path):
+    _, _, windows = fresh
+    assert _states(server)["paragtd"]["actions"] == ["install"]
+    status, got = _call(server, "POST", "/notes/setup",
+                        {"component": "paragtd", "action": "install"})
+    assert status == 200 and got["pane"] == "%99"
+    assert "bin/bootstrap" in windows[0][-1] and str(tmp_path / "paragtd") in windows[0][-1]
+    assert _call(server, "POST", "/notes/setup",
+                 {"component": "memory", "action": "install"})[0] == 400

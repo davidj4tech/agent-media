@@ -14,6 +14,8 @@ capture only has to land in `inbox.org`.
                                  (&all=1 takes in session notes; &memory=0 skips memory)
   POST /notes/capture {"text", "kind": "todo"|"note", "memory": bool}
 
+Setting all this up on a host is notes_setup.py (/notes/setup).
+
 The file list and the capture template mirror paragtd's (paragtd-paths.el,
 paragtd-capture.el) by hand for now; that copy is what a paragtd JSON export
 would replace.
@@ -30,6 +32,7 @@ import fcntl
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -287,7 +290,42 @@ def read(rel: str, at: int, bearer: str) -> tuple[bool, dict]:
                   "links": links}
 
 
+def _scan(q: str, *, everything: bool, limit: int) -> list[dict]:
+    """Search without ripgrep: the same rules, in Python. Slower on a big
+    tree, and only used where `rg` is not installed."""
+    import fnmatch
+
+    needle = q.lower()
+    hits: list[dict] = []
+    for p in sorted(root().rglob("*")):
+        rel = _rel(p)
+        if (p.suffix not in NOTE_SUFFIXES or not p.is_file()
+                or any(part.startswith(".") for part in Path(rel).parts)):
+            continue
+        if not everything and any(fnmatch.fnmatch(rel, x.replace("/**", "/*"))
+                                  for x in SEARCH_EXCLUDES):
+            continue
+        try:
+            if p.stat().st_size > 2 * 1024 * 1024:
+                continue
+            lines = p.read_text(errors="replace").splitlines()
+        except OSError:
+            continue
+        n = 0
+        for i, line in enumerate(lines):
+            if needle in line.lower():
+                hits.append({"path": rel, "line": i + 1, "text": line.strip()[:300]})
+                n += 1
+                if len(hits) >= limit:
+                    return hits
+                if n >= 3:
+                    break
+    return hits
+
+
 def _rg(q: str, *, everything: bool, limit: int) -> list[dict]:
+    if not shutil.which("rg"):
+        return _scan(q, everything=everything, limit=limit)
     cmd = ["rg", "--json", "-i", "-F", "--max-count", "3", "--max-filesize", "2M"]
     for s in NOTE_SUFFIXES:
         cmd += ["-g", f"*{s}"]

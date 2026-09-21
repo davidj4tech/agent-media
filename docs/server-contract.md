@@ -1044,6 +1044,34 @@ text}]}`.
   the background, as best effort.
 - 400 when the text is empty, 413 when it is over 8 KB.
 
+#### `GET /notes/setup` · `POST /notes/setup` — `auth.may_control_speech`, like `/harnesses`
+
+This is the Notes tab's checklist for a host that has no notes yet
+(`notes_setup.py`). GET returns `{"ok", "components": [{name, label, state:
+"ok"|"missing"|"off"|"down", detail, why, actions, optional}], "search":
+"ripgrep"|"built-in"}`. It lists these components:
+
+| name | what it checks | actions |
+|---|---|---|
+| `org` | the tree, with paragtd's files | `clone` (only when `MEDIA_NOTES_REPO` is set and the folder is empty); `create` (writes any missing paragtd files and roam folders, never overwrites, runs `git init` if the folder is not a repo) |
+| `sync` | that `org-autosync.timer` is enabled; needs a git repo with a remote | `enable` |
+| `memory` | that the store answers `/health` | none. It runs on the hub and is optional. |
+| `paragtd` | the Emacs package and astro generator (`MEDIA_PARAGTD_DIR`, default `~/projects/paragtd`) | `install` (clone plus `bin/bootstrap`), `update`; optional |
+
+POST `{"component", "action"}` runs one action.
+- A quick action (`create`, `enable`) is done in place and answers `{"done":
+  true, …}`.
+- A long one (`clone`, `install`, `update`) opens a background tmux window
+  and answers `{"pane", "cmd"}`. The window is registered with the harness
+  installs, so the app watches it with the same `/harnesses/screen`,
+  `/harnesses/keys` and `/harnesses/close`.
+- 400 for an unknown component.
+- 409 for an action the checklist does not currently offer; `error` carries
+  the reason.
+
+Search works without ripgrep: `search: "built-in"` means a slower Python
+scan that follows the same rules.
+
 Clients: none yet (a Notes tab in S is next).
 
 ---
