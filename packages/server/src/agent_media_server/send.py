@@ -42,7 +42,7 @@ import time
 import uuid
 from pathlib import Path
 
-from . import auth_abs, panes, sessions
+from . import auth, panes, sessions
 
 log = logging.getLogger("agent-media.server.send")
 
@@ -88,8 +88,9 @@ def answer(session: str, choice: int, key: str, bearer: str) -> tuple[bool, dict
     session = (session or "").strip()
     if not sessions._SESSION.fullmatch(session):
         return False, {"error": "not a session id", "status": 400}
-    if not auth_abs._gate(bearer)[0]:
-        return False, auth_abs._gate(bearer)[1]
+    user, err = auth.gate(bearer)
+    if not user:
+        return False, err
     pane = sessions.live_sessions().get(session, "")
     if not pane or not panes.alive(pane):
         return False, {"error": f"session {session[:8]} is not live", "status": 404}
@@ -524,12 +525,9 @@ def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
     text = " ".join((text or "").split())
     if not text:
         return False, {"error": "empty message"}
-    user, status = auth_abs.abs_identity(bearer)
+    user, err = auth.gate(bearer)
     if not user:
-        return False, auth_abs._identity_error(status)
-    ok, why = auth_abs.may_reply(user)
-    if not ok:
-        return False, {"error": why, "status": 403}
+        return False, err
     agent = (agent or os.environ.get("MEDIA_ASK_AGENT") or "claude").strip().lower()
     if agent not in panes.AGENT_COMMANDS:
         return False, {"error": f"unknown agent {agent!r}", "status": 400}
@@ -594,8 +592,9 @@ def session_resume(session: str, bearer: str) -> tuple[bool, dict]:
     session = (session or "").strip()
     if not sessions._SESSION.fullmatch(session):
         return False, {"error": "not a session id", "status": 400}
-    if not auth_abs._gate(bearer)[0]:
-        return False, auth_abs._gate(bearer)[1]
+    user, err = auth.gate(bearer)
+    if not user:
+        return False, err
     pane = sessions.live_sessions().get(session, "")
     if pane and panes.alive(pane):
         return True, {"session": session, "pane": pane, "live": True, "opened": False}
@@ -620,8 +619,9 @@ def session_close(session: str, bearer: str) -> tuple[bool, dict]:
     session = (session or "").strip()
     if not sessions._SESSION.fullmatch(session):
         return False, {"error": "not a session id", "status": 400}
-    if not auth_abs._gate(bearer)[0]:
-        return False, auth_abs._gate(bearer)[1]
+    user, err = auth.gate(bearer)
+    if not user:
+        return False, err
     pane = sessions.live_sessions().get(session, "")
     if not pane:
         return True, {"session": session, "live": False, "closed": False}
@@ -708,12 +708,9 @@ def reply(item: str, text: str, bearer: str, *, quote: str = "",
     text = (text or "").strip()
     if not text:
         return False, {"error": "empty reply"}
-    user, status = auth_abs.abs_identity(bearer)
+    user, err = auth.gate(bearer)
     if not user:
-        return False, auth_abs._identity_error(status)
-    ok, why = auth_abs.may_reply(user)
-    if not ok:
-        return False, {"error": why, "status": 403}
+        return False, err
     session, err = sessions.session_for_item(item, bearer)
     if not session:
         return False, {"error": err, "status": 404}

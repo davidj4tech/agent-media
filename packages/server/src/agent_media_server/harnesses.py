@@ -23,7 +23,7 @@ ask questions:
 Only panes this module opened can be read or typed into, which is what keeps
 `keys()` from being a way to go rummaging through the desk's other windows.
 The gate on every call is the same ABS bearer the rest of the app carries
-(`auth_abs.may_control_speech`) — installing an agent is no more authority than
+(`auth.may_control_speech`) — installing an agent is no more authority than
 `/ask` already hands out, which opens a session with permissions skipped.
 """
 
@@ -38,7 +38,7 @@ from pathlib import Path
 
 from agent_media_core import harnesses
 
-from . import auth_abs, panes, send, sessions
+from . import auth, panes, send, sessions
 
 #: Named keys the phone may press. Text is typed literally; anything that is
 #: not a plain line of text has to be one of these, so a request cannot ask
@@ -108,7 +108,7 @@ def agents(bearer: str) -> tuple[bool, dict]:
     pi and Hermes, neither of which will say without a terminal. `actions`
     are the buttons worth showing: what this host actually has a recipe for.
     """
-    ok, detail = auth_abs.may_control_speech(bearer)
+    ok, detail = auth.may_control_speech(bearer)
     if not ok:
         return False, detail
     rows = []
@@ -165,7 +165,7 @@ def run(agent: str, action: str, bearer: str) -> tuple[bool, dict]:
     Answers with the pane it opened and the command it is running; the phone
     then polls `screen()` for the same window the desk can see.
     """
-    ok, detail = auth_abs.may_control_speech(bearer)
+    ok, detail = auth.may_control_speech(bearer)
     if not ok:
         return False, detail
     agent = (agent or "").strip()
@@ -196,7 +196,7 @@ def screen(pane: str, bearer: str, lines: int = 60) -> tuple[bool, dict]:
     being gone: the pane deliberately stays alive afterwards so the last
     screen can still be read.
     """
-    ok, detail = auth_abs.may_control_speech(bearer)
+    ok, detail = auth.may_control_speech(bearer)
     if not ok:
         return False, detail
     row = _row(pane)
@@ -223,7 +223,7 @@ def keys(pane: str, text: str, key: str, bearer: str) -> tuple[bool, dict]:
     Text goes in literally and is sent as typed; `key` presses one of `KEYS`
     instead. Both refuse any pane this module did not open.
     """
-    ok, detail = auth_abs.may_control_speech(bearer)
+    ok, detail = auth.may_control_speech(bearer)
     if not ok:
         return False, detail
     if not _row(pane):
@@ -248,7 +248,7 @@ def keys(pane: str, text: str, key: str, bearer: str) -> tuple[bool, dict]:
 
 def close(pane: str, bearer: str) -> tuple[bool, dict]:
     """`/agents/close`: end that window. Ours only, and forgotten afterwards."""
-    ok, detail = auth_abs.may_control_speech(bearer)
+    ok, detail = auth.may_control_speech(bearer)
     if not ok:
         return False, detail
     if not _row(pane):

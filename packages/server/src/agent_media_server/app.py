@@ -6,8 +6,14 @@ port, in its own process — its handler answers its own routes (the page,
 because clients know one address and changing it is a migration nobody needs.
 `Handler` below serves only these routes, for a server with no canvas in it.
 
-Endpoints (all gated by the caller's Audiobookshelf bearer, see `auth_abs`):
+Endpoints (all gated by `auth.gate`: a paired device's token, else the
+caller's Audiobookshelf bearer — see auth.py; except /pair, which is how a
+device gets its token):
 
+  POST /pair      {"code", "device"} → trade a one-time pairing code (minted
+                  by `media-visual-canvas pair --device NAME`) for a device
+                  token. No auth; failures rate-limited per source address.
+                  (GET /pair is the canvas's own amux page, not this.)
   GET  /conversation?item=<abs item id>   → the session behind that item and
                   whether it is still live
   GET  /conversation?session=<uuid>   → a session the phone started: its item
@@ -74,12 +80,12 @@ from http.server import BaseHTTPRequestHandler
 from typing import Callable
 from urllib.parse import parse_qs
 
-from . import (abs_item, auth_abs, drafts, harnesses, routing, send, sessions, share,
+from . import (abs_item, auth, devices, drafts, harnesses, routing, send, sessions, share,
                speech, threads)
 
 # The endpoints a browser on another origin may reach. Everything here
-# carries its own credential — the caller's Audiobookshelf bearer, handed back
-# to ABS to ask who they are — and none of it is reachable with the ambient
+# carries its own credential — a paired device's token, or the caller's
+# Audiobookshelf bearer handed back to ABS to ask who they are — and none of it is reachable with the ambient
 # authority a browser attaches by itself, so opening them to any origin gives
 # a drive-by page nothing it did not already have. The canvas's token-guarded
 # routes (/input, /show, /ctl, /say, /play) are deliberately NOT here: their
@@ -97,6 +103,17 @@ CORS_PATHS = frozenset({
     "/harnesses", "/harnesses/run", "/harnesses/screen",
     "/harnesses/keys", "/harnesses/close", "/share",
 })
+
+# Paths opened to other origins for POST (and its preflight) ONLY. `/pair` is
+# the one: `POST /pair` is how the chat bundle, served from another origin,
+# trades a pairing code for a device token, and it needs no credential. But
+# `GET /pair` on the same path is the canvas's page that hands a browser the
+# host's amux token for a (different) one-time code. An
+# Access-Control-Allow-Origin on that answer would let a script on any page
+# read the amux token out of it, so the GET must stay same-origin — which is
+# why this is a separate set, keyed on the method, and NOT in `CORS_PATHS`
+# (the canvas's own `_cors` reads that set for every answer it sends).
+CORS_POST_PATHS = frozenset({"/pair"})
 
 # Long enough that a chat page's polling is not preceded by a preflight every
 # time; short enough that a change here is picked up the same day.
@@ -137,7 +154,9 @@ def _cors(h: BaseHTTPRequestHandler) -> None:
     credential is the Authorization header the client sets by hand, so the
     browser never attaches anything of its own to these.
     """
-    if h.path.split("?", 1)[0] not in CORS_PATHS:
+    path = h.path.split("?", 1)[0]
+    if path not in CORS_PATHS and not (path in CORS_POST_PATHS
+                                       and h.command in ("POST", "OPTIONS")):
         return
     h.send_header("Access-Control-Allow-Origin", "*")
     h.send_header("Access-Control-Expose-Headers", "Content-Encoding")
@@ -205,6 +224,9 @@ def dispatch(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
 
     `path` is the path without its query; the query is read off `h.path`.
     """
+    # Who is on the other end, for a paired device's `last_ip` (auth.py
+    # reads it when the bearer turns out to be a device token).
+    auth.set_client_ip(h.client_address[0] if h.client_address else "")
     if method == "GET":
         return _get(h, path)
     if method == "POST":
@@ -216,11 +238,12 @@ def dispatch(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
 
 def _options(h: BaseHTTPRequestHandler, path: str) -> bool:
     """CORS preflight. Anything not on the list is not ours to allow."""
-    if path not in CORS_PATHS:
+    if path not in CORS_PATHS and path not in CORS_POST_PATHS:
         return False
     h.send_response(204)
     h.send_header("Access-Control-Allow-Origin", "*")
-    h.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+    h.send_header("Access-Control-Allow-Methods",
+                  "POST, OPTIONS" if path in CORS_POST_PATHS else "GET, POST, OPTIONS")
     h.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
     h.send_header("Access-Control-Max-Age", CORS_MAX_AGE)
     h.send_header("Content-Length", "0")
@@ -307,11 +330,9 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
         # What the assistant button can be pointed at: live sessions and
         # recent conversations, by title. Gated like /conversation.
         # (/sessions is taken: the amux list the popup reads.)
-        user, status = auth_abs.abs_identity(_bearer(h))
-        allowed = bool(user) and auth_abs.may_reply(user)[0]
-        if not allowed:
-            _json(h, 403 if user else auth_abs._identity_error(status).get("status", 401),
-                  {"ok": False, "error": "not allowed"})
+        user, err = auth.gate(_bearer(h))
+        if not user:
+            _json(h, err.get("status", 401), {"ok": False, "error": "not allowed"})
         else:
             _json(h, 200, {"ok": True, "sessions": sessions.sessions_index()})
     elif path == "/sessions/state":
@@ -338,8 +359,54 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
     return True
 
 
+def _base_url(h: BaseHTTPRequestHandler) -> str:
+    """The address this request came in on, as the device should use it from
+    now on: `Host` as the client sent it (so a tailnet name stays a name), and
+    https when a TLS-terminating proxy in front says so (the Cloudflare link)
+    — a device token must travel over https there (§9)."""
+    proto = (h.headers.get("X-Forwarded-Proto") or "").split(",")[0].strip().lower()
+    proto = proto if proto in ("http", "https") else "http"
+    host = (h.headers.get("Host") or "").strip()
+    if not host:
+        addr = h.server.server_address if getattr(h, "server", None) else ("", 0)
+        host = f"{addr[0]}:{addr[1]}"
+    return f"{proto}://{host}"
+
+
+def _pair(h: BaseHTTPRequestHandler) -> None:
+    """`POST /pair {"code", "device"}` — a pairing code for a device token (§9).
+
+    No credential: the code is the credential, minted at the desk by someone
+    with a shell. Wrong, used and expired codes all get the same 403, so the
+    answer does not say which. Each failure counts against the source address,
+    and past `devices.MAX_FAILURES` in `devices.FAIL_WINDOW_S` the answer is
+    429 before the code is even looked at. A failure never burns the code —
+    see devices.py for why.
+    """
+    import socket
+
+    ip = h.client_address[0] if h.client_address else ""
+    if devices.rate_limited(ip):
+        print(f"pair: rate-limited {ip}", file=sys.stderr)
+        _json(h, 429, {"ok": False, "code": "rate_limited",
+                       "error": "too many pairing attempts; try again in a few minutes"})
+        return
+    body = _read_json(h) or {}
+    got = devices.redeem(str(body.get("code") or ""), str(body.get("device") or ""), ip)
+    if not got:
+        print(f"pair: refused a code from {ip}", file=sys.stderr)
+        _json(h, 403, {"ok": False, "code": "bad_pairing_code",
+                       "error": "invalid or expired pairing code"})
+        return
+    print(f"pair: paired {got['device_id']} ({got['name']!r}) from {ip}", file=sys.stderr)
+    _json(h, 200, {"ok": True, "token": got["token"], "device_id": got["device_id"],
+                   "server": {"name": socket.gethostname(), "base": _base_url(h)}})
+
+
 def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
-    if path == "/share":
+    if path == "/pair":
+        _pair(h)
+    elif path == "/share":
         # "Play with agent-media" from the app's share sheet: media-share's
         # /share, with the caller's ABS bearer instead of a token of its own.
         body = _read_json(h) or {}
@@ -349,7 +416,7 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
     elif path == "/speech/ctl":
         # The app's speech bar buttons. The caller's ABS bearer, like
         # /reply, and only the listener's verbs (_APP_SPEECH_ACTIONS).
-        ok, detail = auth_abs.may_control_speech(_bearer(h))
+        ok, detail = auth.may_control_speech(_bearer(h))
         if not ok:
             _json(h, detail.pop("status", 403), {"ok": False, **detail})
             return True
@@ -473,7 +540,7 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         body = _read_json(h) or {}
         bearer = _bearer(h)
         allowed = ((_TOKEN_OK is not None and _TOKEN_OK(h))
-                   or auth_abs.may_reply(auth_abs.abs_identity(bearer)[0])[0])
+                   or auth.may_reply(auth.identity(bearer)[0])[0])
         if not allowed:
             _json(h, 401, {"error": "unauthorized"})
             return True

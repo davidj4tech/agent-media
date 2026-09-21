@@ -22,3 +22,10 @@ def _clean_media_env(monkeypatch, tmp_path):
         if k.startswith("MEDIA_"):
             monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    # Paired devices live under that state dir too (devices.json, the pairing
+    # codes); the in-process bits — the parsed-file cache and the per-address
+    # pairing-failure counts — are reset so one test's refusals cannot
+    # rate-limit the next.
+    from agent_media_server import devices
+
+    devices._reset_for_tests()

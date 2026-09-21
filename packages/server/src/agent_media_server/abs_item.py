@@ -98,7 +98,7 @@ def item_for_app(item_id: str, bearer: str) -> tuple[bool, dict]:
     because the app answers a 401 by refreshing and can log the user out if
     that fails.
     """
-    from . import auth_abs, sessions
+    from . import auth, auth_abs, sessions
 
     item_id = (item_id or "").strip()
     if not item_id:
@@ -107,10 +107,13 @@ def item_for_app(item_id: str, bearer: str) -> tuple[bool, dict]:
         return False, {"error": "no Audiobookshelf login", "status": 401}
     # Which server this login belongs to — the app may be signed in to a second
     # one, and the item ids of one mean nothing to the other.
-    user, status = auth_abs.abs_identity(bearer)
+    user, status = auth.identity(bearer)
     if not user:
         return False, auth_abs._identity_error(status)
-    url = auth_abs.abs_home(bearer)
+    # A paired device fetches under the host's own ABS login: its token is
+    # ours and never goes to ABS (see auth.abs_bearer).
+    bearer = auth.abs_bearer(bearer)
+    url = auth_abs.abs_home(bearer) if bearer else ""
     if not url:
         return False, {"error": "no Audiobookshelf configured on this host",
                        "status": 503}
@@ -134,7 +137,7 @@ def item_for_app(item_id: str, bearer: str) -> tuple[bool, dict]:
     # rearranging it once the reply box has asked. Same two gates, so a page
     # that opens as a chat always gets its reply box.
     session = None
-    if auth_abs.may_reply(user)[0]:
+    if auth.may_reply(user)[0]:
         session, _why = sessions.session_for_path(item.get("path") or "")
     out["conversation"] = bool(session)
     return True, out

@@ -465,7 +465,14 @@ def _cmd_pair(argv: list[str]) -> int:
                     help="host used in the URL (default: this machine's hostname)")
     ap.add_argument("--port", type=int,
                     default=int(os.environ.get("MEDIA_VISUAL_PORT") or DEFAULT_PORT))
+    ap.add_argument("--device", metavar="NAME",
+                    help="pair the Sasonica app instead: mint a device pairing code "
+                         "for a device called NAME (server-contract.md §9). Without "
+                         "this, the link installs the amux token into a browser")
     args = ap.parse_args(argv)
+
+    if args.device is not None:
+        return _cmd_pair_device(args.device, args.host, args.port)
 
     if not _amux_token():
         print("no amux token on this host (~/.amux/auth_token) — nothing to pair.",
@@ -481,6 +488,29 @@ def _cmd_pair(argv: list[str]) -> int:
     print(f"\n  Scan to pair this device (valid {PAIR_TTL_S // 60} min, one-time):\n")
     print(_qr(url))
     print(f"\n  {url}\n")
+    return 0
+
+
+def _cmd_pair_device(name: str, host: str, port: int) -> int:
+    """`pair --device NAME`: a code the app trades for a device token at
+    `POST /pair`. The code lives in the server package's own store
+    (agent_media_server.devices), NOT the spool's `pair-code` above — the two
+    must never unlock each other, so `GET /pair` refuses this code and
+    `POST /pair` refuses that one."""
+    from agent_media_server import devices as _devices
+
+    name = " ".join((name or "").split())
+    if not name:
+        print("--device needs a name, e.g. --device \"Pixel 8a\"", file=sys.stderr)
+        return 2
+    code, _expires = _devices.mint_code(name)
+    app_link, web_link = _devices.links(code, host, port)
+    print(f"\n  Scan with Sasonica to pair {name!r} "
+          f"(valid {_devices.pair_ttl() // 60} min, one-time):\n")
+    print(_qr(app_link))
+    # The http form is for the person at the terminal (the host and code, in
+    # a shape they recognise); opened in a browser it is refused, on purpose.
+    print(f"\n  {app_link}\n  {web_link}   (reference: code {code})\n")
     return 0
 
 
@@ -1773,7 +1803,10 @@ def main() -> None:
     load_env_file("visual-canvas")
     if sys.argv[1:2] == ["pair"]:            # `media-visual-canvas pair`
         raise SystemExit(_cmd_pair(sys.argv[2:]))
-    ap = argparse.ArgumentParser(description="agent-media visual canvas")
+    if sys.argv[1:2] == ["devices"]:         # `media-visual-canvas devices [--revoke ID]`
+        from agent_media_server import devices as _devices
+        raise SystemExit(_devices.cli_devices(sys.argv[2:]))
+    ap =argparse.ArgumentParser(description="agent-media visual canvas")
     ap.add_argument("--port", type=int,
                     default=int(os.environ.get("MEDIA_VISUAL_PORT") or DEFAULT_PORT))
     ap.add_argument("--bind", default=os.environ.get("MEDIA_VISUAL_BIND") or "0.0.0.0")

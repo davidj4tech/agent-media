@@ -12,7 +12,7 @@ from __future__ import annotations
 import time
 from typing import Callable
 
-from . import auth_abs, sessions, threads
+from . import auth, sessions, threads
 
 #: What the app's speech player may do: the popup's listening keys — pause,
 #: the sentence and paragraph steps, older/newer turn and replay, speed,
@@ -73,12 +73,9 @@ def speech_now(bearer: str, state: dict) -> tuple[bool, dict]:
     own server, so a tap can open it. Gated like `/conversation`: titles and
     sentences are the conversation's, and the ABS bearer is the credential.
     """
-    user, status = auth_abs.abs_identity(bearer)
+    user, err = auth.gate(bearer)
     if not user:
-        return False, auth_abs._identity_error(status)
-    ok, why = auth_abs.may_reply(user)
-    if not ok:
-        return False, {"error": why, "status": 403}
+        return False, err
     speaking = bool(state.get("speaking"))
     paused = bool(state.get("paused"))
     out = {"live": speaking or paused, "speaking": speaking, "paused": paused,

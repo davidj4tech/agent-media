@@ -20,7 +20,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import auth_abs, panes
+from . import auth, auth_abs, panes
 
 
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
@@ -60,6 +60,9 @@ def session_for_item(item_id: str, bearer: str) -> tuple[str | None, str]:
     item_id = (item_id or "").strip()
     if not item_id:
         return None, "no item id"
+    # A device token is never shown to ABS; a device looks items up under the
+    # host's own ABS login (see auth.abs_bearer).
+    bearer = auth.abs_bearer(bearer)
     url = auth_abs.abs_home(bearer)
     if not url:
         return None, "no Audiobookshelf configured on this host"
@@ -598,7 +601,7 @@ def targets(bearer: str) -> tuple[bool, dict]:
     list); `places` are the directories a fresh session can be opened in.
     Gated like `/conversations`.
     """
-    ok, detail = auth_abs.may_control_speech(bearer)
+    ok, detail = auth.may_control_speech(bearer)
     if not ok:
         return False, detail
     return True, {"sessions": sessions_index(), "places": places()}
@@ -652,7 +655,7 @@ def session_states(bearer: str) -> tuple[bool, dict]:
     listed is not live. Gated like `/conversations`.
     """
     global _STATES_CACHE
-    ok, detail = auth_abs.may_control_speech(bearer)
+    ok, detail = auth.may_control_speech(bearer)
     if not ok:
         return False, detail
     with _STATES_LOCK:

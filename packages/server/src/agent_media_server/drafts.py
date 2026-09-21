@@ -10,7 +10,7 @@ import os
 import time
 from pathlib import Path
 
-from . import auth_abs, sessions
+from . import auth, sessions
 
 
 # --- drafts -------------------------------------------------------------------
@@ -44,8 +44,9 @@ def draft_read(session: str, bearer: str) -> tuple[bool, dict]:
     session = (session or "").strip()
     if not sessions._SESSION.fullmatch(session):
         return False, {"error": "not a session id", "status": 400}
-    if not auth_abs._gate(bearer)[0]:
-        return False, auth_abs._gate(bearer)[1]
+    user, err = auth.gate(bearer)
+    if not user:
+        return False, err
     try:
         data = json.loads(_draft_path(session).read_text())
     except (OSError, ValueError):
@@ -66,8 +67,9 @@ def draft_write(session: str, text: str, at, bearer: str) -> tuple[bool, dict]:
     session = (session or "").strip()
     if not sessions._SESSION.fullmatch(session):
         return False, {"error": "not a session id", "status": 400}
-    if not auth_abs._gate(bearer)[0]:
-        return False, auth_abs._gate(bearer)[1]
+    user, err = auth.gate(bearer)
+    if not user:
+        return False, err
     text = (text or "")[:_DRAFT_LIMIT]
     try:
         at = float(at or 0) or time.time()

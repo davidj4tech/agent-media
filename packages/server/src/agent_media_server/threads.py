@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 from typing import Callable
 
-from . import auth_abs, send, sessions
+from . import auth, auth_abs, send, sessions
 
 log = logging.getLogger("agent-media.server.threads")
 
@@ -35,6 +35,11 @@ def item_for_session(session: str, bearer: str) -> tuple[str | None, bool]:
     """
     folder = sessions._folder_for_session(session)
     if not folder:
+        return None, False
+    # A device token is never shown to ABS; a device asks under the host's
+    # own ABS login (see auth.abs_bearer).
+    bearer = auth.abs_bearer(bearer)
+    if not bearer:
         return None, False
     url = auth_abs.abs_home(bearer)
     if not url:
@@ -62,12 +67,9 @@ def conversation_for_session(session: str, bearer: str) -> tuple[bool, dict]:
     session = (session or "").strip()
     if not sessions._SESSION.fullmatch(session):
         return False, {"error": "not a session id", "status": 400}
-    user, status = auth_abs.abs_identity(bearer)
+    user, err = auth.gate(bearer)
     if not user:
-        return False, auth_abs._identity_error(status)
-    ok, why = auth_abs.may_reply(user)
-    if not ok:
-        return False, {"error": why, "status": 403}
+        return False, err
     pane = sessions.live_sessions().get(session, "")
     item, ready = item_for_session(session, bearer)
     return True, {"session": session, "item": item if ready else None,
@@ -84,12 +86,9 @@ def conversation(item: str, bearer: str) -> tuple[bool, dict]:
     the answer here is yes. Same two gates as `reply`, in the same order, so
     the box cannot appear where the send would be refused.
     """
-    user, status = auth_abs.abs_identity(bearer)
+    user, err = auth.gate(bearer)
     if not user:
-        return False, auth_abs._identity_error(status)
-    ok, why = auth_abs.may_reply(user)
-    if not ok:
-        return False, {"error": why, "status": 403}
+        return False, err
     session, err = sessions.session_for_item(item, bearer)
     if not session:
         return False, {"error": err, "status": 404}
@@ -111,12 +110,9 @@ def commands_for(item: str, session: str, project: str, bearer: str,
     """
     from agent_media_core import slash_menu
 
-    user, status = auth_abs.abs_identity(bearer)
+    user, err = auth.gate(bearer)
     if not user:
-        return False, auth_abs._identity_error(status)
-    ok, why = auth_abs.may_reply(user)
-    if not ok:
-        return False, {"error": why, "status": 403}
+        return False, err
     if item and not session:
         session, err = sessions.session_for_item(item, bearer)
         if not session:
@@ -141,12 +137,9 @@ def rename_conversation(item: str, session: str, title: str, bearer: str) -> tup
     """
     from agent_media_core import book_tracks
 
-    user, status = auth_abs.abs_identity(bearer)
+    user, err = auth.gate(bearer)
     if not user:
-        return False, auth_abs._identity_error(status)
-    ok, why = auth_abs.may_reply(user)
-    if not ok:
-        return False, {"error": why, "status": 403}
+        return False, err
     if item and not session:
         session, err = sessions.session_for_item(item, bearer)
         if not session:
@@ -208,12 +201,9 @@ def log_for_item(item: str, bearer: str) -> tuple[bool, dict]:
     anyone who can read it could have read them by listening — but an account
     that may not reply has no business being handed a transcript either.
     """
-    user, status = auth_abs.abs_identity(bearer)
+    user, err = auth.gate(bearer)
     if not user:
-        return False, auth_abs._identity_error(status)
-    ok, why = auth_abs.may_reply(user)
-    if not ok:
-        return False, {"error": why, "status": 403}
+        return False, err
     session, err = sessions.session_for_item(item, bearer)
     if not session:
         return False, {"error": err, "status": 404}

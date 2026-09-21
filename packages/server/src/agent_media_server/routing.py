@@ -11,7 +11,7 @@ import difflib
 import os
 import re
 
-from . import auth_abs, send, sessions, threads
+from . import auth, send, sessions, threads
 
 
 _NEW = re.compile(r"^\s*(?:(?:start|open)\s+a\s+)?(?:new|fresh)\s+(?:(claude|codex|pi|hermes)\s+)?(?:chat|conversation|session|thread)\b[\s,.:;!-]*(.*)$",
@@ -115,12 +115,9 @@ def ask_routed(text: str, bearer: str, *, target: str = "", player_item: str = "
     text = " ".join((text or "").split())
     if not text:
         return False, {"error": "empty message"}
-    user, status = auth_abs.abs_identity(bearer)
+    user, err = auth.gate(bearer)
     if not user:
-        return False, auth_abs._identity_error(status)
-    ok, why = auth_abs.may_reply(user)
-    if not ok:
-        return False, {"error": why, "status": 403}
+        return False, err
 
     index = sessions.sessions_index()
     session, how = "", ""
