@@ -10,8 +10,42 @@ a whitelisted speech transport verb. This package never imports `visual`.
 from __future__ import annotations
 
 import time
+from typing import Callable
 
 from . import auth_abs, sessions, threads
+
+#: What the app's speech player may do: the popup's listening keys — pause,
+#: the sentence and paragraph steps, older/newer turn and replay, speed,
+#: volume and a momentary mute. The bearer is a listener's; the popup's other
+#: keys (keep a pane muted, focus tmux, open URLs) are the desk's.
+_APP_SPEECH_ACTIONS = frozenset({
+    "toggle", "skip-", "skip+", "para-", "para+", "jump-end",
+    "prev", "replay", "replay-id", "speed-", "speed+", "speed0", "vol-", "vol+", "mute",
+})
+
+#: The canvas's speech snapshot (`canvas.speech_state`), and its runner for one
+#: whitelisted speech verb (`action, arg -> what media said`). Handed in by
+#: the canvas at import (`set_speech`); a server with no canvas has a speech
+#: bar that is always quiet and controls that do nothing.
+_STATE: Callable[[], dict] | None = None
+_CTL: Callable[[str, int], str] | None = None
+
+
+def set_speech(state: Callable[[], dict] | None = None,
+               ctl: Callable[[str, int], str] | None = None) -> None:
+    """Hand in the canvas's speech snapshot and its transport runner."""
+    global _STATE, _CTL
+    _STATE, _CTL = state, ctl
+
+
+def current_state() -> dict:
+    """The live speech snapshot, as the canvas's SSE `state` frame has it."""
+    return _STATE() if _STATE is not None else {"kind": "state", "speaking": False}
+
+
+def run_ctl(action: str, arg: int) -> str:
+    """Run one speech verb already checked against `_APP_SPEECH_ACTIONS`."""
+    return _CTL(action, arg) if _CTL is not None else ""
 
 
 # --- what is being said, for the app's mini player ------------------------------

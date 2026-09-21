@@ -37,10 +37,10 @@ jobs:
         run: pytest -q
 
   server:
-    # The app's API, split out of the canvas. Its tests run without `visual`
-    # installed on purpose: visual depends on server, never the reverse, and
-    # a server test that needed the canvas would be the first sign of that
-    # dependency creeping back.
+    # The app's API, split out of the canvas. `visual` is installed too: the
+    # contract and CORS tests drive the canvas's handler, because that is what
+    # clients reach on 8781. That visual never becomes a dependency of server
+    # is its own test (test_app.py imports the server in a clean process).
     name: pytest (server)
     runs-on: ubuntu-latest
     steps:
@@ -51,10 +51,10 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Install core + server + pytest
+      - name: Install core + server + visual + pytest
         run: |
           python -m pip install --upgrade pip
-          pip install -e packages/core -e packages/server
+          pip install -e packages/core -e packages/server -e packages/visual
           pip install pytest
 
       - name: Run tests
