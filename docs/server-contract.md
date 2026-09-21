@@ -182,7 +182,7 @@ media-share refuses to start otherwise.
 | --- | --- | --- |
 | **session** | a uuid (Claude Code, Codex, pi), or Hermes's `YYYYMMDD_HHMMSS_hex` | `reply._SESSION`. The thread id. Every session-taking route rejects anything else with 400 `"not a session id"` |
 | **pane** | tmux `%23`, or herdr `herdr:<id>` | where a live session runs. Display and `/focus` only — never a key; panes are recycled |
-| **item** | an ABS library item id (`li_…`) | **ABS-specific; goes in v1** (§10). Resolved to a session through the item's folder tail and the book-tracks manifest |
+| **item** | an ABS library item id — a plain uuid on red5's server (the `li_…` in examples here is illustrative) | **ABS-specific; goes in v1** (§10). Resolved to a session through the item's folder tail and the book-tracks manifest |
 | **key** (line) | a reply's dedup key | joins a line to its pictures. `""` on listener lines |
 | **key** (approval) | 12 hex chars, sha1 of the dialog text | fingerprints a question so an answer can only land on the question that was read |
 | **id** (line) | an integer speech-history row id | only on lines that were spoken; used for `replay-id` |
@@ -332,7 +332,7 @@ The conversation as lines — the chat itself.
 | `start`, `end` | yes | seconds into the ABS audio item, or `null` until the next publish places it — **ABS-specific** |
 | `id` | spoken lines | speech-history row id, for `replay-id` |
 | `ask` | asks | `[{"question", "options": [{"label", "description"}], "multiSelect"}]` — an AskUserQuestion, as asked |
-| `command` | slash commands | the chip for a slash command typed from the box (`agent_media_core/slash.py`) |
+| `command` | slash commands | `{"name": "review", "args": "123", "text": "/review 123"}` — the chip for a slash command typed from the box (`agent_media_core/slash.py`); `text` on the line is `command.text`. Settings commands (`/model`, …) never become lines |
 | `images` | when drawn | `["/img/…", …]` — the pictures the canvas drew for this reply, still in the spool |
 | `figure` | with `images` | `true` for a `[[visual:]]` figure, `false` for ambient art |
 | `work` | agent lines | `{"seconds", "count", "steps": [...]}` — what the turn did before this reply |
@@ -355,9 +355,24 @@ replayed one, marked in its place — also carries:
 `history_id`, but they stay on the server — the line only takes the fields
 above.)
 
-**Follow-along:** bold the sentence whose offset is the last one ≤
-`elapsed + (now − server_time) − delay`, advancing on a local clock between
-polls, and not advancing while `paused`.
+**Follow-along:** bold the sentence whose offset is the last one ≤ the
+reply's current position, advancing on a local clock between polls and not
+advancing while `paused`. Compute the position **from the phone's own clock
+only**:
+
+```
+position = elapsed + (now − received_at) + rtt / 2 + lead − delay
+```
+
+- `received_at` is when the phone got the answer and `rtt` is that request's
+  round trip, both measured on the phone.
+- `lead` is ~0.3 s, so the bold arrives with the voice rather than after it.
+  This is what the Nuxt app does.
+
+Do **not** use `now − server_time`. That mixes the phone's clock with the
+server's, and any skew between them moves the bold by exactly that much.
+`server_time` is there so the *server* can age `elapsed` up to the moment
+it sends the answer, which it already does.
 
 **Line order and identity.** Shelved turns (in manifest order), then the
 live tail (turns spoken but not yet published, by `at`), then the live
@@ -947,9 +962,16 @@ and calls back.
 | `id` | `` `${session}:${line.at}` `` — stable across live → finished |
 | `role` | `who == "you"` → `"user"`, else `"assistant"` |
 | `createdAt` | `new Date(line.at * 1000)` |
-| `content` | a `text` part with `line.text`; one `image` part per `line.images` entry (resolved against the base URL); for an `ask` line, a `tool-call` part `{toolName: "AskUserQuestion", args: {questions: line.ask}}` |
+| `content` | a `text` part with `line.text`; the pictures (below); for an `ask` line, a `tool-call` part `{toolName: "AskUserQuestion", args: {questions: line.ask}}` |
 | `status` (assistant) | `{type: "complete"}`; `{type: "running"}` for the live line while it is speaking |
 | `metadata.custom` | `{work, command, id, figure, live: {sentences, offsets, …}}` for the follow-along, work summary and slash-command chip components |
+
+**Pictures are not `image` parts, yet.** assistant-ui silently drops an
+image part whose URL is not https, `blob:` or `data:`, and the canvas serves
+plain http on the tailnet. Until the app reaches the server over the
+Sasonica link (https), pictures ride as a custom part rendered by the app's
+own component. The prototype does this. Once every URL is https they can
+become ordinary image parts.
 
 `working` (the running turn's steps) is not a message. It renders as the
 thread's in-progress indicator, where today's clients show the dots.
@@ -959,8 +981,8 @@ thread's in-progress indicator, where today's clients show the dots.
 | Runtime | v0 | v1 |
 | --- | --- | --- |
 | `messages` | `/conversation/log` poll | `snapshot` + `line` events |
-| `isRunning` | `pending` | `state == "working"` or `pending` |
-| `onNew` in a thread | `POST /reply {item, text}` | `POST /reply {session, text}` |
+| `isRunning` | `pending` | `state == "working"` or `pending`. Note that assistant-ui disables the composer while running, but a Claude Code session takes messages mid-turn (they queue), so the app passes sends through while running |
+| `onNew` in a thread | `POST /reply {item, text}`; a thread not on the shelf yet has no item, so it goes through `POST /ask {text, target: session}` | `POST /reply {session, text}` |
 | `onNew` in a new thread | `POST /ask {text, target: "new", cwd?, agent?}` | same; the returned `session` becomes the thread id |
 | `onCancel` | — (gap) | `POST /session/stop`; a second cancel within 5 s sends `speech: "silence"` |
 | `onEdit` | not supported — a transcript cannot be truncated. Nearest: `POST /reply {mode: "branch", quote}` as a "branch from here" action | same |
