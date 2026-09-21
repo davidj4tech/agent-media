@@ -588,3 +588,31 @@ def test_a_rename_with_no_name_is_not_one(tmp_path, monkeypatch):
 
     monkeypatch.setattr(b, "state_dir", lambda: tmp_path)
     assert b.rename("s1", "   ") == ""
+
+
+def test_a_rename_renames_the_tmux_window_too(tmp_path, monkeypatch):
+    """Claude Code names the window from the name it holds in memory and does
+    not read the file again, so the window said the old thing."""
+    from agent_media_core import book_tracks as b
+    from agent_media_core import conversation
+
+    monkeypatch.setattr(b, "state_dir", lambda: tmp_path)
+    b._write_manifest("s1", {"session": "s1"})
+    monkeypatch.setattr(conversation, "set_session_name", lambda session, title: True)
+    renamed = []
+    monkeypatch.setattr(conversation, "rename_window",
+                        lambda session, title: renamed.append((session, title)) or True)
+    b.rename("s1", "A better name")
+    assert renamed == [("s1", "A better name")]
+
+
+def test_the_window_is_this_sessions_pane_and_a_live_one(tmp_path, monkeypatch):
+    import os
+    from agent_media_core import conversation
+
+    monkeypatch.setenv("MEDIA_PANE_REGISTRY_DIR", str(tmp_path))
+    (tmp_path / "7").write_text(f"s-live {os.getpid()} /home/ryer")
+    (tmp_path / "8").write_text("s-dead 999999999 /home/ryer")
+    assert conversation.pane_of("s-live") == "%7"
+    assert conversation.pane_of("s-dead") == ""      # its pid is gone
+    assert conversation.pane_of("s-never") == ""

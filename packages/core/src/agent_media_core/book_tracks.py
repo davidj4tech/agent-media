@@ -1212,6 +1212,7 @@ def rename(session: str, title: str, *, target=None) -> str:
         harnesses.set_name(session, title)
     else:
         conversation.set_session_name(session, title)
+    conversation.rename_window(session, title)
     if folder:
         set_metadata(session, Path(folder), target=target)
     return title

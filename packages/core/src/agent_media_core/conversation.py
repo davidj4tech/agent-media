@@ -152,6 +152,53 @@ def set_session_name(session: str, title: str) -> bool:
     return True
 
 
+def pane_of(session: str) -> str:
+    """The tmux pane this session is running in, or "".
+
+    The SessionStart hook writes `<uuid> <pid> <cwd>` to
+    `~/.claude/tmux-sessions/<pane>`, and a row is believed only while its pid
+    is alive — a recycled pane id would otherwise name the wrong window.
+    """
+    import glob as _glob
+
+    from .state.store import _pid_alive
+
+    root = os.path.expanduser(os.environ.get("MEDIA_PANE_REGISTRY_DIR")
+                              or "~/.claude/tmux-sessions")
+    for path in _glob.glob(os.path.join(root, "*")):
+        try:
+            fields = open(path, encoding="utf-8").read().split()
+        except OSError:
+            continue
+        if not fields or fields[0] != session:
+            continue
+        if len(fields) >= 2 and fields[1].isdigit() and not _pid_alive(int(fields[1])):
+            continue
+        return "%" + os.path.basename(path)
+    return ""
+
+
+def rename_window(session: str, title: str) -> bool:
+    """Call this session's tmux window `title` too. False if there is none.
+
+    Claude Code names the window itself, from the name it is holding in
+    memory, and it does not read the name file again while it runs — so a
+    rename from the app left the window saying the old thing. Renaming it
+    here also turns tmux's automatic renaming off for that window, which is
+    what makes the new name stay.
+    """
+    pane = pane_of(session)
+    if not pane or not title.strip():
+        return False
+    try:
+        done = subprocess.run(["tmux", "rename-window", "-t", pane, title.strip()],
+                              capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError) as e:  # noqa: BLE001
+        log.debug("cannot rename window for %s (%s)", session, e)
+        return False
+    return done.returncode == 0
+
+
 def transcript(session: str) -> Optional[Path]:
     """The session's transcript file, or None.
 
