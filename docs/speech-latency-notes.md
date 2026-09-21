@@ -111,10 +111,10 @@ the two instead of both.
 
 Not done, in order of value:
 
-1. Reuse one connection per endpoint within a reply — saves a connect
-   (~0.44s here) on every call after the first, the follow loop's snapshot
-   included. A shared-layer change (mpv broadcasts events to every client, so
-   a reused socket has to skip lines that are not its reply).
+1. ~~Reuse one connection per endpoint within a reply~~ — DONE `46e3d52`.
+   Live, five reads to the app: 4.37s fresh, 2.62s shared (first 0.87s,
+   then 0.43s each). Scoped to one reply; replies matched by unique
+   request_id; a dead pooled socket is retried fresh, not breakered.
 2. Drop the redundant owner read in `claim_broker` (4 calls -> 3).
 
 Side finding: at this link speed the music endpoint's calls exceed the 1.2s
