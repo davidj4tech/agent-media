@@ -57,7 +57,8 @@ def test_log_by_session_is_the_item_shape(server, shelf, signed_in, log_lines):
     res, by_session = call(server, "GET", f"/conversation/log?session={SID}", headers=AUTH)
     assert res.status == 200, by_session
     assert keys(by_session) == keys(by_item) == {"ok", "session", "lines", "pending",
-                                                  "working", "approval", "suggestion"}
+                                                  "working", "approval", "suggestion",
+                                                  "recap"}
     assert [keys(l) for l in by_session["lines"]] == [keys(l) for l in by_item["lines"]]
     assert by_session["session"] == by_item["session"] == SID
     # The item form asks for positions; the session form never does.

@@ -223,8 +223,10 @@ Everything a message can be pointed at.
 ```json
 {"ok": true,
  "sessions": [
-   {"session": "0f1e…", "title": "Sasonica web", "live": true, "pane": "%42"},
-   {"session": "6c73…", "title": "Sasonica music", "live": false, "pane": null, "at": 1790000000.1}],
+   {"session": "0f1e…", "title": "Sasonica web", "live": true, "pane": "%42", "recap": null},
+   {"session": "6c73…", "title": "Sasonica music", "live": false, "pane": null, "at": 1790000000.1,
+    "recap": {"text": "We're making the conversation page show what Claude is doing. Next: try it on the phone.",
+              "at": 1789807216.618}}],
  "places": [{"name": "agent-media", "path": "/home/ryer/projects/agent-media", "at": 1790000000.1}]}
 ```
 
@@ -235,11 +237,53 @@ Everything a message can be pointed at.
   first, titled by their folder name, with `at` = the manifest's mtime.
   **`at` is only on shelved rows.** A session appears once, live if it
   is live.
+- `recap` (every row, 22 Sep 2026): Claude Code's latest "while you were
+  away" summary for that session, `{"text", "at"}`, or `null`. See
+  [Recaps](#recaps) below. The app uses it as the row's preview line.
 - `places`: up to 6 directories sessions have run in, newest first
   (running sessions count as "now"). These are the only directories a new
   chat may be opened in — `/ask` checks against this list (with no limit).
 
 Clients: S (`utils/sasonicaTargets.js`, drawer and ask page), on open.
+
+##### Recaps
+
+When you come back to a Claude Code session after being away, Claude Code
+writes a short paragraph of where things stand into the session's
+transcript: a `{"type": "system", "subtype": "away_summary", "content":
+"… (disable recaps in /config)", "timestamp": "<ISO>"}` line. The server
+reads it (`agent_media_server/recaps.py`, read-only) and hands it on as
+
+```json
+{"text": "Runlet is now Sasonica Shell, running on red5. Next: add the connector.",
+ "at": 1789974112.291}
+```
+
+- `text`: the paragraph, with Claude Code's trailing hint stripped (a
+  trailing parenthetical that mentions recaps; any other trailing "(…)" is
+  kept).
+- `at`: epoch seconds, 3 dp, from the line's timestamp.
+- `null` when the session has no recap yet, and **always** for Codex, pi and
+  Hermes, which write nothing like it. (Later, one could be generated for
+  them through the follow-up gateway call, `intake/_followup.py`.)
+- It is **not a message** and never becomes a line: nobody said it, and it is
+  not part of what the agent sees. The app draws it as a "While you were
+  away" card in the thread (§14) and as the thread list's preview line.
+- Only the latest is on any route. `recaps.recaps(session, since)` lists
+  every one, and is there for when something wants a history of them.
+
+**Cost.** It is on `/targets`, which covers ~44 transcripts of 1–15 MB each.
+The latest recap is found by reading each file **backwards** in 256 KB
+chunks, parsing only lines that contain `away_summary`. The answer is cached
+per file by (inode, size, mtime) along with the offset it was read to, and
+transcripts are append-only, so a live session's growing file costs only its
+new bytes. A file that shrank, was replaced or was rewritten in place is read
+again from scratch. Measured on red5's 44 real transcripts (107 MB, 22 Sep
+2026): the body of `/targets` took 0.16–0.24 s on a fresh process's first
+call and ~0.13 s warm, both before and after; `latest_recap` over all 44
+took 0.058 s cold (page cache warm) and 0.3 ms warm. The one real cost is
+the first read of files that are not in the page cache at all: 0.72 s once,
+after which it is gone.
 
 #### `GET /conversations` — gated
 
@@ -325,7 +369,8 @@ both are given; it never asks ABS, so `start`/`end` are always `null` on it.
  "pending": false,
  "working": null,
  "approval": null,
- "suggestion": ""}
+ "suggestion": "",
+ "recap": null}
 ```
 
 **Envelope**
@@ -338,6 +383,13 @@ both are given; it never asks ABS, so `start`/`end` are always `null` on it.
   `steps` holds the latest few (`MAX_STEPS`), newest last.
 - `approval`: `null`, or the dialog the session is stopped on (see below).
 - `suggestion`: §6.2.1, `""` while pending.
+- `recap` (22 Sep 2026, both forms): the session's latest Claude Code
+  recap, `{"text", "at"}`, or `null` — the same object as on the session's
+  `/targets` row ([Recaps](#recaps)). **Not a line**, and never inserted
+  among them. Only the latest, not every recap since the first line: the
+  app shows one card, and listing them all would add a list to every poll
+  for no reader. Its `at` says where it falls among the lines if the app
+  wants to place the card rather than pin it to the top.
 
 **A line**
 
@@ -1113,6 +1165,12 @@ become ordinary image parts.
 `working` (the running turn's steps) is not a message. It renders as the
 thread's in-progress indicator, where today's clients show the dots.
 
+`recap` (the envelope's, §6.2) is not a message either — not a `system`
+message, not a part. It renders as a "While you were away" card above the
+composer or at the top of the thread, outside `messages`, and disappears
+when `recap` is `null`. The same object on the thread's `/targets` row is
+the thread list's preview line.
+
 ### Runtime callbacks
 
 | Runtime | v0 | v1 |
@@ -1150,7 +1208,7 @@ that is the v0 behaviour, and a gap (§16).
 
 | Adapter | Source |
 | --- | --- |
-| `threads` | `/targets.sessions`, with `status: "regular"`, `title`, and `live` / `/sessions/state` for badges |
+| `threads` | `/targets.sessions`, with `status: "regular"`, `title`, and `live` / `/sessions/state` for badges; `recap.text` as the preview line under the title |
 | `archivedThreads` | — (gap: archive is an ABS tag today) |
 | `threadId` | the session id |
 | `onSwitchToThread(id)` | open `/threads/{id}/events`; draft from `GET /draft` |
@@ -1284,6 +1342,10 @@ That is a later decision, not part of this contract.
   parts with the same rig, imported from `test_contract`. Among other things,
   every gated GET passes on a device token without ABS being asked, and the
   device token never reaches ABS.
+- `test_recaps.py` pins recaps ([Recaps](#recaps)): parsing, the backwards
+  read, the cache, and the `recap` field on both routes. The server conftest
+  points `CLAUDE_CONFIG_DIR` at a throwaway dir, so no test reads a real
+  transcript.
 - Run all three packages' tests together (`packages/server/tests
   packages/visual/tests packages/core/tests` in one pytest run): basename
   collisions and cross-suite isolation faults only show up that way.

@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 from typing import Callable
 
-from . import auth, auth_abs, send, sessions
+from . import auth, auth_abs, recaps, send, sessions
 
 log = logging.getLogger("agent-media.server.threads")
 
@@ -242,8 +242,15 @@ def _envelope(session: str, lines: list) -> dict:
     # finished: it is stopped until somebody answers, and the phone is often
     # the only place anybody is looking.
     approval = sessions.approval_for(pane, sessions._agent_of_pane(pane)) if pane else None
+    # Claude Code's own "while you were away" summary, for the card at the top
+    # of the thread. Deliberately not a line: nobody said it, and it is not
+    # part of the conversation the agent sees. The latest only, not every one
+    # since the first line — the app shows one card, and a history of them is
+    # `recaps.recaps()` when something wants it.
+    recap = recaps.latest_recap(session)
     return {"session": session, "lines": lines, "pending": pending,
-            "working": working, "approval": approval, "suggestion": suggestion}
+            "working": working, "approval": approval, "suggestion": suggestion,
+            "recap": recap}
 
 
 def log_for_item(item: str, bearer: str) -> tuple[bool, dict]:

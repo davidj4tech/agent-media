@@ -20,7 +20,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import auth, auth_abs, panes
+from . import auth, auth_abs, panes, recaps
 
 
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
@@ -727,6 +727,11 @@ def sessions_index() -> list[dict]:
     the title on their pane, then recently shelved conversations by their
     folder name. One row per session; a live one that is also on the shelf
     is listed once, live.
+
+    Every row carries `recap`: Claude Code's latest "while you were away"
+    summary for that session, `{"text", "at"}`, or None (none written yet, or
+    not a Claude session). The app uses it as the row's preview line. Cached
+    per transcript in `recaps`, so once warm a list of ~44 costs a stat each.
     """
     live = live_sessions()
     titles = _pane_titles()
@@ -737,10 +742,12 @@ def sessions_index() -> list[dict]:
         if not title:
             continue
         seen.add(sid)
-        out.append({"session": sid, "title": title, "live": True, "pane": pane})
+        out.append({"session": sid, "title": title, "live": True, "pane": pane,
+                    "recap": recaps.latest_recap(sid)})
     for sid, title, at in _recent_conversations():
         if sid in seen:
             continue
         seen.add(sid)
-        out.append({"session": sid, "title": title, "live": False, "pane": None, "at": at})
+        out.append({"session": sid, "title": title, "live": False, "pane": None, "at": at,
+                    "recap": recaps.latest_recap(sid)})
     return out

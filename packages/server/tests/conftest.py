@@ -29,3 +29,10 @@ def _clean_media_env(monkeypatch, tmp_path):
     from agent_media_server import devices
 
     devices._reset_for_tests()
+    # Recaps are read out of Claude Code's transcripts: point that at an empty
+    # throwaway dir, so a test never reads David's real ones, and forget what
+    # the last test's files held (the cache is keyed by path and inode).
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    from agent_media_server import recaps
+
+    recaps._reset_for_tests()

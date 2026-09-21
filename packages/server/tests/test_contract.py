@@ -173,9 +173,13 @@ def test_targets_shape(server, shelf, signed_in):
     assert res.status == 200
     assert keys(obj) == {"ok", "sessions", "places"}
     live, shelved = obj["sessions"]
-    assert keys(live) == {"session", "title", "live", "pane"}
-    assert live == {"session": SID2, "title": "Sasonica web", "live": True, "pane": "%42"}
-    assert keys(shelved) == {"session", "title", "live", "pane", "at"}
+    # `recap` joined on 22 Sep 2026, deliberately: Claude Code's latest "while
+    # you were away" summary, the list's preview line (§6.1). Null here: the
+    # rig has no transcripts.
+    assert keys(live) == {"session", "title", "live", "pane", "recap"}
+    assert live == {"session": SID2, "title": "Sasonica web", "live": True, "pane": "%42",
+                    "recap": None}
+    assert keys(shelved) == {"session", "title", "live", "pane", "at", "recap"}
     assert shelved["live"] is False and shelved["pane"] is None
     assert [keys(p) for p in obj["places"]] == [{"name", "path", "at"}]
 
@@ -238,9 +242,12 @@ def test_conversation_log_shape(server, shelf, signed_in, monkeypatch):
     monkeypatch.setattr(activity, "attach", lambda s, lines: None)
     res, obj = call(server, "GET", "/conversation/log?item=li_1", headers=AUTH)
     assert res.status == 200, obj
+    # `recap` joined on 22 Sep 2026, deliberately (§6.2): the thread's "while
+    # you were away" card, never a line.
     assert keys(obj) == {"ok", "session", "lines", "pending", "working",
-                         "approval", "suggestion"}
+                         "approval", "suggestion", "recap"}
     assert obj["pending"] is False and obj["working"] is None and obj["approval"] is None
+    assert obj["recap"] is None
     you, agent = obj["lines"]
     assert keys(you) == {"start", "end", "who", "text", "at", "key"}
     # The live line's clock is brought up to the moment the answer leaves.
