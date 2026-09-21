@@ -2957,6 +2957,23 @@ def submit_event(event: Event,
     Blocks until all clips finish. Callers that need fire-and-forget
     should run this in a thread.
     """
+    # One reply makes dozens of calls to the same few players — the broker
+    # claim, the music and book probes, a snapshot every tick of the follow
+    # loop — and over the phone's link each fresh connect is a whole round
+    # trip. They share connections for as long as this reply lasts, and no
+    # longer (see _mpv_ipc.reuse_connections).
+    from ..sinks import _mpv_ipc
+    with _mpv_ipc.reuse_connections():
+        return _submit_event(event, state=state, coordinator=coordinator,
+                             sink=sink)
+
+
+def _submit_event(event: Event,
+                  *,
+                  state: Optional[StateStore] = None,
+                  coordinator: Optional[Coordinator] = None,
+                  sink: Optional[SinkSpeech] = None) -> Optional[int]:
+    """The body of `submit_event`, run with connection reuse on."""
     text = event.text.strip()
     if not text:
         return None

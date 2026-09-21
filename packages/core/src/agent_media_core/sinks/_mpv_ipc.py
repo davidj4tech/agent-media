@@ -12,12 +12,14 @@ is identical over either transport, so every helper below works unchanged.
 
 from __future__ import annotations
 
+import itertools
 import json
 import logging
 import os
 import socket
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
@@ -219,6 +221,150 @@ def _open(endpoint: str | Path, timeout: float) -> socket.socket:
     return s
 
 
+# --- connection reuse, scoped to one reply ----------------------------------
+#
+# Every call used to open its own connection, and over the phone's link a
+# connect is a whole round trip: 0.44s of every 0.87s property read on 21 Sep.
+# One reply makes dozens of calls to the same two or three players — the broker
+# claim alone is four — so within a reply they now share connections.
+#
+# Scoped, not global. A pooled socket nobody is using still receives every
+# event the player broadcasts, and in a long-lived daemon it would sit there
+# filling its buffer until the far side's writer stalled. So reuse is on only
+# inside `reuse_connections()` (one reply), and everything pooled is closed
+# when the last such scope ends.
+#
+# Replies are matched by request_id: a reused socket carries events, and late
+# replies to an earlier call, ahead of this call's answer. Ids are unique per
+# process for the same reason — numbering each call's requests from 1 would
+# let a late reply to the last call answer this one.
+_reuse_depth = 0
+_pool: dict[str, list[tuple[socket.socket, float]]] = {}
+_pool_lock = threading.Lock()
+# Endpoints whose replies carry no request_id: nothing to match on, so their
+# connections are never reused.
+_no_ids: set[str] = set()
+_ids = itertools.count(1)
+# Only a connection used this recently is reused. A phone that dozed, or a NAT
+# that dropped the flow, leaves a half-open socket that fails by TIMEOUT — far
+# dearer than the connect it saves — and the calls within a reply are seconds
+# apart.
+_POOL_IDLE_S = 10.0
+_POOL_MAX = 4
+
+
+@contextmanager
+def reuse_connections() -> Iterator[None]:
+    """Share connections to remote players for the life of this scope."""
+    global _reuse_depth
+    with _pool_lock:
+        _reuse_depth += 1
+    try:
+        yield
+    finally:
+        with _pool_lock:
+            _reuse_depth -= 1
+            done = _reuse_depth == 0
+            conns = [c for cs in _pool.values() for c, _ in cs] if done else []
+            if done:
+                _pool.clear()
+        for c in conns:
+            _close(c)
+
+
+def _close(s: socket.socket) -> None:
+    try:
+        s.close()
+    except OSError:
+        pass
+
+
+def _peer_closed(s: socket.socket) -> bool:
+    """Has the far side closed this idle socket? A peek, never a wait: EOF
+    means closed; buffered bytes (events) or nothing at all mean open."""
+    try:
+        s.setblocking(False)
+        try:
+            return s.recv(1, socket.MSG_PEEK) == b""
+        finally:
+            s.setblocking(True)
+    except BlockingIOError:
+        return False
+    except OSError:
+        return True
+
+
+def _take(endpoint: str | Path, timeout: float) -> tuple[socket.socket, bool]:
+    """A live pooled connection to `endpoint`, else a fresh one. `(sock, reused)`."""
+    ep = str(endpoint)
+    if _is_remote(ep):
+        stale: list = []
+        got = None
+        with _pool_lock:
+            if _reuse_depth > 0 and ep not in _no_ids:
+                conns = _pool.get(ep) or []
+                now = time.monotonic()
+                while conns and got is None:
+                    c, used = conns.pop()
+                    if now - used <= _POOL_IDLE_S and not _peer_closed(c):
+                        got = c
+                    else:
+                        stale.append(c)
+        for c in stale:
+            _close(c)
+        if got is not None:
+            got.settimeout(timeout)
+            return got, True
+    return _open(endpoint, timeout), False
+
+
+def _give_back(endpoint: str | Path, s: socket.socket, keep: bool) -> None:
+    """Pool `s` if this scope reuses and the call left it clean; else close it."""
+    ep = str(endpoint)
+    if keep and _is_remote(ep):
+        with _pool_lock:
+            if _reuse_depth > 0 and ep not in _no_ids:
+                conns = _pool.setdefault(ep, [])
+                if len(conns) < _POOL_MAX:
+                    conns.append((s, time.monotonic()))
+                    return
+    _close(s)
+
+
+def _drop_pool(endpoint: str | Path) -> None:
+    """One pooled connection died under us; the rest are as old as it was."""
+    with _pool_lock:
+        conns = _pool.pop(str(endpoint), [])
+    for c, _ in conns:
+        _close(c)
+
+
+def _on_connection(endpoint: str | Path, timeout: float, fn):
+    """Run `fn(sock) -> (result, keep)` on a pooled connection if one is live,
+    else a fresh one. A pooled connection that fails is retried once on a
+    fresh one — a reused socket dying is not the endpoint failing, and must not
+    reach the breaker as if it were."""
+    s, reused = _take(endpoint, timeout)
+    try:
+        result, keep = fn(s)
+    except (OSError, MpvIpcError, ValueError):
+        _close(s)
+        if not reused:
+            raise
+        _drop_pool(endpoint)
+        s = _open(endpoint, timeout)
+        try:
+            result, keep = fn(s)
+        except BaseException:
+            _close(s)
+            raise
+    except BaseException:
+        _close(s)
+        raise
+    _give_back(endpoint, s, keep)
+    return result
+
+
 def _send(sock_path: str | Path, command: list[Any], timeout: float = 5.0,
           critical: bool = False) -> dict:
     _guard(sock_path, critical)
@@ -234,21 +380,44 @@ def _send(sock_path: str | Path, command: list[Any], timeout: float = 5.0,
 
 
 def _send_inner(sock_path: str | Path, command: list[Any], timeout: float = 5.0) -> dict:
-    s = _open(sock_path, timeout)
-    try:
-        s.sendall((json.dumps({"command": command}) + "\n").encode())
+    rid = next(_ids)
+    payload = (json.dumps({"command": command, "request_id": rid}) + "\n").encode()
+
+    def exchange(s: socket.socket):
+        s.sendall(payload)
         buf = b""
-        while b"\n" not in buf:
-            chunk = s.recv(4096)
-            if not chunk:
-                break
-            buf += chunk
-        line = buf.split(b"\n", 1)[0]
-        if not line:
-            raise MpvIpcError("empty reply")
-        return json.loads(line.decode())
-    finally:
-        s.close()
+        while True:
+            while b"\n" not in buf:
+                chunk = s.recv(4096)
+                if not chunk:
+                    if not buf.strip():
+                        raise MpvIpcError("empty reply")
+                    buf += b"\n"
+                    break
+                buf += chunk
+            line, buf = buf.split(b"\n", 1)
+            if not line.strip():
+                continue
+            try:
+                msg = json.loads(line.decode())
+            except ValueError:
+                continue            # the tail of a line an earlier call cut off
+            if not isinstance(msg, dict) or "event" in msg:
+                continue            # broadcast to every client, not our answer
+            got = msg.get("request_id")
+            if got == rid:
+                # Anything already read past our reply belongs to nobody; a
+                # socket with bytes of its own in flight is not clean to lend.
+                return msg, not buf
+            if got is None:
+                # A server that does not echo ids: this is our reply (it is a
+                # fresh connection — such endpoints are never pooled), but
+                # there will be nothing to match a reused one on.
+                _no_ids.add(str(sock_path))
+                return msg, False
+            # A late reply to an earlier call on this connection: skip it.
+
+    return _on_connection(sock_path, timeout, exchange)
 
 
 def command(sock_path: str | Path, *args: Any, timeout: float = 5.0,
@@ -564,47 +733,59 @@ def display_properties(sock_path: str | Path, names: list,
 def _get_properties_once(sock_path: str | Path, names: list,
                          timeout: float) -> tuple[dict, int]:
     """One transport round of `get_properties`: ({answered-ok}, #answered)."""
-    idx = {i + 1: n for i, n in enumerate(names)}
-    s = _open(sock_path, timeout)
-    try:
-        payload = b"".join(
-            (json.dumps({"command": ["get_property", n], "request_id": i + 1})
-             + "\n").encode()
-            for i, n in enumerate(names))
-        s.sendall(payload)
-        out: dict = {}
-        answered: set = set()
-        s.settimeout(timeout)
-        buf = b""
-        deadline = time.time() + timeout
-        # Stop as soon as every request has been *answered* — success OR error.
-        # An idle mpv replies "property unavailable" for time-pos/duration, which
-        # never land in `out`; keying the exit on len(out) would then spin until
-        # the timeout on every idle snapshot (2s per popup/status-bar redraw).
-        while len(answered) < len(names) and time.time() < deadline:
+    # Ids unique to this process, not 1..N: on a reused connection a late
+    # reply to the previous call would otherwise answer this one.
+    idx = {next(_ids): n for n in names}
+
+    def exchange(s: socket.socket):
+        answered_n, out = _read_properties(s, idx, timeout)
+        # Pool it only if every request was answered — an unanswered one is
+        # still in flight, and would arrive in the next borrower's read.
+        return (out, answered_n), answered_n == len(idx)
+
+    return _on_connection(sock_path, timeout, exchange)
+
+
+def _read_properties(s: socket.socket, idx: dict, timeout: float) -> tuple[int, dict]:
+    """Send one get_property per id in `idx` and gather the answers."""
+    payload = b"".join(
+        (json.dumps({"command": ["get_property", n], "request_id": rid})
+         + "\n").encode()
+        for rid, n in idx.items())
+    s.sendall(payload)
+    out: dict = {}
+    answered: set = set()
+    s.settimeout(timeout)
+    buf = b""
+    deadline = time.time() + timeout
+    # Stop as soon as every request has been *answered* — success OR error.
+    # An idle mpv replies "property unavailable" for time-pos/duration, which
+    # never land in `out`; keying the exit on len(out) would then spin until
+    # the timeout on every idle snapshot (2s per popup/status-bar redraw).
+    while len(answered) < len(idx) and time.time() < deadline:
+        try:
+            chunk = s.recv(4096)
+        except socket.timeout:
+            break
+        if not chunk:
+            break
+        buf += chunk
+        while b"\n" in buf:
+            line, buf = buf.split(b"\n", 1)
+            if not line.strip():
+                continue
             try:
-                chunk = s.recv(4096)
-            except socket.timeout:
-                break
-            if not chunk:
-                break
-            buf += chunk
-            while b"\n" in buf:
-                line, buf = buf.split(b"\n", 1)
-                if not line.strip():
-                    continue
-                try:
-                    msg = json.loads(line.decode())
-                except ValueError:
-                    continue
-                rid = msg.get("request_id")
-                if rid in idx and "error" in msg:  # a command reply, not an event
-                    answered.add(rid)
-                    if msg.get("error") == "success":
-                        out[idx[rid]] = msg.get("data")
-        return out, len(answered)
-    finally:
-        s.close()
+                msg = json.loads(line.decode())
+            except ValueError:
+                continue
+            if not isinstance(msg, dict):
+                continue
+            rid = msg.get("request_id")
+            if rid in idx and "error" in msg:  # a command reply, not an event
+                answered.add(rid)
+                if msg.get("error") == "success":
+                    out[idx[rid]] = msg.get("data")
+    return len(answered), out
 
 
 def set_property(sock_path: str | Path, name: str, value: Any,
