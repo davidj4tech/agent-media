@@ -121,3 +121,7 @@ Side finding: at this link speed the music endpoint's calls exceed the 1.2s
 slow line and trip its 20s breaker (it was open when first probed). While it
 is open, non-critical music calls are skipped — including the probe that
 decides whether to duck music under speech.
+
+FIXED `86763f0`: the budget for a policy call is now four round trips on its
+link (fastest recent connect, capped at 3s), not a flat 1.2s. Live: reads of
+0.89-1.32s against a 2.5s budget left the music breaker shut.
