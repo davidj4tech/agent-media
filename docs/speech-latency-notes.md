@@ -61,3 +61,30 @@ Tests: `packages/core/tests/test_stream_clips.py`. The idle guard is the
 load-bearing one — with it removed, that test fails.
 
 Not measured on the phone yet.
+
+## On the phone (21 Sep, app target) — rendering was never the long pole
+
+Streaming works end to end: a 7-sentence reply started holding 2 clips, the
+list grew to 4, 6, 7 during playback, and it played to the end.
+
+But submit-to-first-audio was still **8.3s**, and a stage-timed run (scratchpad
+`time_stages.py`) shows why. Past the queue for the global speech token:
+
+| stage | took |
+| --- | --- |
+| render + probe, 2 sentences | 1.0s |
+| `_wait_and_claim_broker` | 5.8s |
+| `coord.before_speech` | 12.8s |
+| — its book / music probes (parallel) | 0.9s / 4.1s |
+| `sink.play_playlist` | 0.7s |
+
+`before_speech` pauses the book and pauses or ducks the music over the phone
+bridge, 1–4s a round trip, partly in series. Neither it nor the broker claim
+overlaps rendering: Phase 1 finishes before the token is even taken. So
+streaming trims render time off a path that is mostly bridge round trips.
+
+Remote-pause hosts (MPRIS/Android) are empty on red5, so the ~4.8s SSH
+cold-connect that `pre_pause_remote` exists to hide is not in play here.
+
+The next win is the pre-speech path, not the renderer: the broker claim and
+the pause/duck round trips, or overlapping them with the render.
