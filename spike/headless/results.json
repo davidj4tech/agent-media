@@ -1,0 +1,825 @@
+{
+ "basic:haiku": {
+  "session": "5d44d6a7-9616-47cc-92ab-c3fcfeb3c15d",
+  "log": "basic-3.jsonl",
+  "spawn_to_initialize_response_s": 2.181,
+  "system_init_before_user_message": false,
+  "user_sent_at": 10.187,
+  "system_init_at": 10.384,
+  "first_stream_event_at": 11.234,
+  "first_assistant_at": 13.597,
+  "result_at": 14.029,
+  "prompt_suggestion_at": null,
+  "prompt_suggestion": null,
+  "result_cost_usd": 0.0299791,
+  "idle_rss_mb_10s": 219.3,
+  "idle_rss_mb_30s": 213.1,
+  "rss_tree": {
+   "3622371:claude": 210704,
+   "3622371:claude:swap": 7512
+  }
+ },
+ "queue:haiku": {
+  "session": "5751a7c1-bd97-4c75-888c-440aad61bfd2",
+  "log": "queue-2.jsonl",
+  "B_sent_mid_turn_at": 7.638,
+  "results": [
+   {
+    "t": 20.336,
+    "num_turns": 2,
+    "result": "A done\nbanana"
+   },
+   null,
+   {
+    "t": 82.944,
+    "num_turns": 1,
+    "result": "cherry"
+   }
+  ],
+  "C_sent_at": 80.351
+ },
+ "suggest:haiku": {
+  "session": "cc0e7efc-9b11-4142-a490-b97ad26f3250",
+  "log": "suggest-2.jsonl",
+  "turns": [
+   {
+    "result_at": 4.415,
+    "suggestion_at": null,
+    "suggestion": null
+   },
+   {
+    "result_at": 31.349,
+    "suggestion_at": null,
+    "suggestion": null
+   },
+   {
+    "result_at": 58.05,
+    "suggestion_at": null,
+    "suggestion": null
+   }
+  ]
+ },
+ "suggest:sonnet": {
+  "session": "7785bb1e-e0fd-45e8-bbe4-8d1c8e08617c",
+  "log": "suggest-3.jsonl",
+  "turns": [
+   {
+    "result_at": 3.798,
+    "suggestion_at": null,
+    "suggestion": null
+   },
+   {
+    "result_at": 29.874,
+    "suggestion_at": null,
+    "suggestion": null
+   },
+   {
+    "result_at": 56.422,
+    "suggestion_at": null,
+    "suggestion": null
+   }
+  ]
+ },
+ "interrupt:haiku": {
+  "session": "af6b31a4-775f-4027-b2f5-a72691c26711",
+  "log": "interrupt-1.jsonl",
+  "interrupt_sent_at": 8.355,
+  "receipt": {
+   "t": 8.36,
+   "type": "control_response",
+   "response": {
+    "subtype": "success",
+    "request_id": "req_dd97c1027808",
+    "response": {
+     "still_queued": []
+    }
+   }
+  },
+  "results": [
+   {
+    "t": 8.415,
+    "subtype": "error_during_execution",
+    "is_error": true,
+    "result": null,
+    "stop_reason": "tool_use",
+    "num_turns": 4
+   },
+   null,
+   {
+    "t": 41.564,
+    "subtype": "success",
+    "is_error": false,
+    "result": "slept",
+    "stop_reason": "end_turn",
+    "num_turns": 1
+   }
+  ],
+  "next_sent_at": 38.439
+ },
+ "interrupt:haiku:cancel=False": {
+  "session": "dccc982a-89a2-48c2-acdb-06e5d905dd8a",
+  "log": "interrupt-4.jsonl",
+  "queued_sent_at": 8.488,
+  "interrupt_sent_at": 10.488,
+  "receipt": {
+   "t": 10.498,
+   "type": "control_response",
+   "response": {
+    "subtype": "success",
+    "request_id": "req_5e2ceb172fb5",
+    "response": {
+     "still_queued": [
+      "35e09916-7d64-4f41-898e-5970b41d5ca5"
+     ]
+    }
+   }
+  },
+  "results": [
+   {
+    "t": 10.545,
+    "subtype": "error_during_execution",
+    "is_error": true,
+    "result": null,
+    "stop_reason": "tool_use",
+    "terminal_reason": "aborted_tools",
+    "num_turns": 3
+   },
+   {
+    "t": 11.704,
+    "subtype": "success",
+    "is_error": false,
+    "result": "plum",
+    "stop_reason": "end_turn",
+    "terminal_reason": "completed",
+    "num_turns": 1
+   },
+   {
+    "t": 12.537,
+    "subtype": "success",
+    "is_error": false,
+    "result": "mango",
+    "stop_reason": "end_turn",
+    "terminal_reason": "completed",
+    "num_turns": 1
+   }
+  ],
+  "next_sent_at": 11.705
+ },
+ "interrupt:haiku:cancel=True": {
+  "session": "79d3364b-93c2-43bd-95b7-e89d88ef0348",
+  "log": "interrupt-3.jsonl",
+  "queued_sent_at": 7.746,
+  "interrupt_sent_at": 9.746,
+  "receipt": {
+   "t": 9.759,
+   "type": "control_response",
+   "response": {
+    "subtype": "success",
+    "request_id": "req_a641246957a2",
+    "response": {
+     "still_queued": [],
+     "cancelled": [
+      "1944b01b-a96a-4baa-9721-f93f526cd3e7"
+     ]
+    }
+   }
+  },
+  "results": [
+   {
+    "t": 9.812,
+    "subtype": "error_during_execution",
+    "is_error": true,
+    "result": null,
+    "stop_reason": "tool_use",
+    "terminal_reason": "aborted_tools",
+    "num_turns": 3
+   },
+   null,
+   {
+    "t": 43.41,
+    "subtype": "success",
+    "is_error": false,
+    "result": "mango",
+    "stop_reason": "end_turn",
+    "terminal_reason": "completed",
+    "num_turns": 1
+   }
+  ],
+  "next_sent_at": 39.883
+ },
+ "perms:haiku": {
+  "session": "ce7c158d-7eb3-47fe-b208-5bfe59d39b70",
+  "log": "perms-1.jsonl",
+  "requests": [
+   {
+    "subtype": "can_use_tool",
+    "tool_name": "Write",
+    "display_name": "Write",
+    "input": {
+     "file_path": "/home/ryer/projects/agent-media/.claude/worktrees/agent-a5b43898be9e83566/spike/headless/work/allowed.txt",
+     "content": "yes"
+    },
+    "description": "allowed.txt",
+    "permission_suggestions": [
+     {
+      "type": "setMode",
+      "mode": "acceptEdits",
+      "destination": "session"
+     }
+    ],
+    "tool_use_id": "toolu_01QZ7KJFURZG1GqikT7cdVHc"
+   },
+   {
+    "subtype": "can_use_tool",
+    "tool_name": "Write",
+    "display_name": "Write",
+    "input": {
+     "file_path": "/home/ryer/projects/agent-media/.claude/worktrees/agent-a5b43898be9e83566/spike/headless/work/denied.txt",
+     "content": "no"
+    },
+    "description": "denied.txt",
+    "permission_suggestions": [
+     {
+      "type": "setMode",
+      "mode": "acceptEdits",
+      "destination": "session"
+     }
+    ],
+    "tool_use_id": "toolu_01Agzd1nFH7kPrkLQgzqT6GY"
+   },
+   {
+    "subtype": "can_use_tool",
+    "tool_name": "AskUserQuestion",
+    "display_name": "AskUserQuestion",
+    "input": {
+     "questions": [
+      {
+       "question": "Which fruits do you like?",
+       "header": "Fruit",
+       "options": [
+        {
+         "label": "apple",
+         "description": "A crisp red or green fruit"
+        },
+        {
+         "label": "pear",
+         "description": "A sweet juicy fruit"
+        },
+        {
+         "label": "fig",
+         "description": "A sweet dried fruit"
+        }
+       ],
+       "multiSelect": true
+      },
+      {
+       "question": "What should I call you?",
+       "header": "Name",
+       "options": [
+        {
+         "label": "Dave",
+         "description": "Short form"
+        },
+        {
+         "label": "David",
+         "description": "Full name"
+        }
+       ],
+       "multiSelect": false
+      }
+     ]
+    },
+    "tool_use_id": "toolu_01K4YbTzVSh3V6tx4r7HEbp9",
+    "requires_user_interaction": true
+   }
+  ],
+  "files": [
+   "allowed.txt"
+  ],
+  "results": [
+   "allowed.txt exists; denied.txt was blocked.",
+   "You like apple and pear, and want to be called something else entirely."
+  ]
+ },
+ "bash:haiku": {
+  "session": "6447dd2b-c435-4708-80c4-0ac559e1882d",
+  "log": "bash-1.jsonl",
+  "request1": {
+   "t": 4.431,
+   "request": {
+    "subtype": "can_use_tool",
+    "tool_name": "Bash",
+    "display_name": "Bash",
+    "input": {
+     "command": "touch bash-ok.txt",
+     "description": "Create bash-ok.txt file"
+    },
+    "description": "Create bash-ok.txt file",
+    "permission_suggestions": [
+     {
+      "type": "addRules",
+      "rules": [
+       {
+        "toolName": "Bash",
+        "ruleContent": "touch bash-ok.txt"
+       }
+      ],
+      "behavior": "allow",
+      "destination": "localSettings"
+     },
+     {
+      "type": "addDirectories",
+      "directories": [
+       "/home/ryer/projects/agent-media/.claude/worktrees/agent-a5b43898be9e83566/spike/headless/work"
+      ],
+      "destination": "session"
+     },
+     {
+      "type": "setMode",
+      "mode": "acceptEdits",
+      "destination": "session"
+     }
+    ],
+    "blocked_path": "/home/ryer/projects/agent-media/.claude/worktrees/agent-a5b43898be9e83566/spike/headless/work/bash-ok.txt",
+    "tool_use_id": "toolu_01HGTxJZPoE8Thf8up7FZn1J"
+   }
+  },
+  "request2": {
+   "t": 51.3,
+   "request": {
+    "subtype": "can_use_tool",
+    "tool_name": "Bash",
+    "display_name": "Bash",
+    "input": {
+     "command": "touch bash-no.txt",
+     "description": "Create bash-no.txt file"
+    },
+    "description": "Create bash-no.txt file",
+    "permission_suggestions": [
+     {
+      "type": "addRules",
+      "rules": [
+       {
+        "toolName": "Bash",
+        "ruleContent": "touch bash-no.txt"
+       }
+      ],
+      "behavior": "allow",
+      "destination": "localSettings"
+     },
+     {
+      "type": "addDirectories",
+      "directories": [
+       "/home/ryer/projects/agent-media/.claude/worktrees/agent-a5b43898be9e83566/spike/headless/work"
+      ],
+      "destination": "session"
+     },
+     {
+      "type": "setMode",
+      "mode": "acceptEdits",
+      "destination": "session"
+     }
+    ],
+    "blocked_path": "/home/ryer/projects/agent-media/.claude/worktrees/agent-a5b43898be9e83566/spike/headless/work/bash-no.txt",
+    "tool_use_id": "toolu_01RqnbJrkqNFy8wstPRH2Rx3"
+   }
+  },
+  "reinitialize_response_keys": [
+   "account",
+   "agents",
+   "analytics_disabled",
+   "available_output_styles",
+   "commands",
+   "current_permission_mode",
+   "fast_mode_disabled_reason",
+   "fast_mode_state",
+   "ide_rc_auto_enable_gate",
+   "models",
+   "output_style",
+   "pid",
+   "remote_control_auto_connect_default",
+   "remote_control_auto_enable",
+   "remote_control_auto_on_by_default",
+   "remote_control_available",
+   "session_state",
+   "user_output_styles_dir"
+  ],
+  "reinitialize_pending": null,
+  "result": {
+   "t": 53.712,
+   "result": "`bash-ok.txt` ran.",
+   "permission_denials": [
+    {
+     "tool_name": "Bash",
+     "tool_use_id": "toolu_01RqnbJrkqNFy8wstPRH2Rx3",
+     "tool_input": {
+      "command": "touch bash-no.txt",
+      "description": "Create bash-no.txt file"
+     }
+    }
+   ]
+  },
+  "files": [
+   "allowed.txt",
+   "bash-ok.txt"
+  ]
+ },
+ "bash:haiku:init_first=True": {
+  "session": "a8098985-d3a5-4529-87b0-d610f0adf85b",
+  "log": "bash-2.jsonl",
+  "request1": {
+   "t": 4.14,
+   "request": {
+    "subtype": "can_use_tool",
+    "tool_name": "Bash",
+    "display_name": "Bash",
+    "input": {
+     "command": "touch bash-ok.txt",
+     "description": "Create bash-ok.txt file"
+    },
+    "description": "Create bash-ok.txt file",
+    "permission_suggestions": [
+     {
+      "type": "addRules",
+      "rules": [
+       {
+        "toolName": "Bash",
+        "ruleContent": "touch bash-ok.txt"
+       }
+      ],
+      "behavior": "allow",
+      "destination": "localSettings"
+     },
+     {
+      "type": "addDirectories",
+      "directories": [
+       "/home/ryer/projects/agent-media/.claude/worktrees/agent-a5b43898be9e83566/spike/headless/work"
+      ],
+      "destination": "session"
+     },
+     {
+      "type": "setMode",
+      "mode": "acceptEdits",
+      "destination": "session"
+     }
+    ],
+    "blocked_path": "/home/ryer/projects/agent-media/.claude/worktrees/agent-a5b43898be9e83566/spike/headless/work/bash-ok.txt",
+    "tool_use_id": "toolu_0156i568LcxwVuV6Z5gnSpoo"
+   }
+  },
+  "request2": {
+   "t": 16.586,
+   "request": {
+    "subtype": "can_use_tool",
+    "tool_name": "Bash",
+    "display_name": "Bash",
+    "input": {
+     "command": "touch bash-no.txt",
+     "description": "Create bash-no.txt file"
+    },
+    "description": "Create bash-no.txt file",
+    "permission_suggestions": [
+     {
+      "type": "addRules",
+      "rules": [
+       {
+        "toolName": "Bash",
+        "ruleContent": "touch bash-no.txt"
+       }
+      ],
+      "behavior": "allow",
+      "destination": "localSettings"
+     },
+     {
+      "type": "addDirectories",
+      "directories": [
+       "/home/ryer/projects/agent-media/.claude/worktrees/agent-a5b43898be9e83566/spike/headless/work"
+      ],
+      "destination": "session"
+     },
+     {
+      "type": "setMode",
+      "mode": "acceptEdits",
+      "destination": "session"
+     }
+    ],
+    "blocked_path": "/home/ryer/projects/agent-media/.claude/worktrees/agent-a5b43898be9e83566/spike/headless/work/bash-no.txt",
+    "tool_use_id": "toolu_01QhWjMv3ChfGKdi7Vyq8pSA"
+   }
+  },
+  "reinitialize_response_keys": [
+   "account",
+   "agents",
+   "analytics_disabled",
+   "available_output_styles",
+   "commands",
+   "current_permission_mode",
+   "fast_mode_disabled_reason",
+   "fast_mode_state",
+   "ide_rc_auto_enable_gate",
+   "models",
+   "output_style",
+   "pid",
+   "remote_control_auto_connect_default",
+   "remote_control_auto_enable",
+   "remote_control_auto_on_by_default",
+   "remote_control_available",
+   "session_state",
+   "user_output_styles_dir"
+  ],
+  "reinitialize_pending": null,
+  "result": {
+   "t": 19.721,
+   "result": "bash-ok.txt ran; bash-no.txt was blocked by a hook.",
+   "permission_denials": [
+    {
+     "tool_name": "Bash",
+     "tool_use_id": "toolu_01QhWjMv3ChfGKdi7Vyq8pSA",
+     "tool_input": {
+      "command": "touch bash-no.txt",
+      "description": "Create bash-no.txt file"
+     }
+    }
+   ]
+  },
+  "files": [
+   "allowed.txt",
+   "bash-ok.txt"
+  ]
+ },
+ "resume:haiku": {
+  "session": "4a8631c8-c3ae-4c60-9757-ad61fe5c8f5b",
+  "resumed": "4a8631c8-c3ae-4c60-9757-ad61fe5c8f5b",
+  "log": "resume-1.jsonl",
+  "system_init_at": 2.64,
+  "user_sent_at": 0.003,
+  "first_stream_event_at": 3.294,
+  "result_at": 3.816,
+  "result": "pineapple",
+  "usage": {
+   "input_tokens": 10,
+   "cache_creation_input_tokens": 776,
+   "cache_read_input_tokens": 32062,
+   "output_tokens": 93,
+   "output_tokens_details": {
+    "thinking_tokens": 84
+   },
+   "server_tool_use": {
+    "web_search_requests": 0,
+    "web_fetch_requests": 0
+   },
+   "service_tier": "standard",
+   "cache_creation": {
+    "ephemeral_1h_input_tokens": 776,
+    "ephemeral_5m_input_tokens": 0
+   },
+   "inference_geo": "not_available",
+   "iterations": [
+    {
+     "input_tokens": 10,
+     "output_tokens": 93,
+     "cache_read_input_tokens": 32062,
+     "cache_creation_input_tokens": 776,
+     "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 776
+     },
+     "type": "message"
+    }
+   ],
+   "speed": "standard"
+  },
+  "summary_like_events": []
+ },
+ "kill:TERM:haiku": {
+  "session": "4af33595-ef4a-4351-8c43-6e01aaf16d33",
+  "logs": [
+   "kill-1.jsonl",
+   "kill-resume-1.jsonl"
+  ],
+  "rc": 143,
+  "last_events_before_kill": [
+   "stream_event/",
+   "stream_event/",
+   "rate_limit_event/",
+   "user/",
+   "system/status"
+  ],
+  "resume_first_events": [
+   "command_lifecycle/",
+   "command_lifecycle/",
+   "system/init",
+   "system/status",
+   "stream_event/",
+   "stream_event/"
+  ],
+  "resume_result": "The process was killed (exit code 137 = SIGKILL), likely by the harness timeout before the 40 seconds completed."
+ },
+ "kill:KILL:haiku": {
+  "session": "038d777e-db61-4ff8-8a73-a9ebb7f51e96",
+  "logs": [
+   "kill-2.jsonl",
+   "kill-resume-2.jsonl"
+  ],
+  "rc": -9,
+  "last_events_before_kill": [
+   "assistant/",
+   "stream_event/",
+   "stream_event/",
+   "stream_event/",
+   "rate_limit_event/"
+  ],
+  "resume_first_events": [
+   "command_lifecycle/",
+   "command_lifecycle/",
+   "system/init",
+   "system/status",
+   "stream_event/",
+   "stream_event/"
+  ],
+  "resume_result": "The command was interrupted by you before the 40-second sleep completed."
+ },
+ "tui-fork": {
+  "resumed": "09b971aa-d042-4716-adde-d2af01b0f205",
+  "session": "7a66e9a8-dfe0-4e52-b5c9-5eecd9a19f01",
+  "log": "tui-fork-1.jsonl",
+  "system_init_at": 2.389,
+  "result": {
+   "subtype": "success",
+   "is_error": false,
+   "result": "forked"
+  }
+ },
+ "hooked": {
+  "session": "018ab9c1-2717-415c-a154-f11f8ba52249",
+  "log": "hooked-1.jsonl",
+  "result": "Headless spike, hooks check.",
+  "hook_events": [
+   [
+    "hook_started",
+    "SessionStart",
+    null
+   ],
+   [
+    "hook_started",
+    "SessionStart",
+    null
+   ],
+   [
+    "hook_started",
+    "SessionStart",
+    null
+   ],
+   [
+    "hook_started",
+    "SessionStart",
+    null
+   ],
+   [
+    "hook_started",
+    "SessionStart",
+    null
+   ],
+   [
+    "hook_started",
+    "SessionStart",
+    null
+   ],
+   [
+    "hook_started",
+    "SessionStart",
+    null
+   ],
+   [
+    "hook_response",
+    "SessionStart",
+    0
+   ],
+   [
+    "hook_response",
+    "SessionStart",
+    0
+   ],
+   [
+    "hook_response",
+    "SessionStart",
+    0
+   ],
+   [
+    "hook_response",
+    "SessionStart",
+    0
+   ],
+   [
+    "hook_response",
+    "SessionStart",
+    0
+   ],
+   [
+    "hook_response",
+    "SessionStart",
+    0
+   ],
+   [
+    "hook_response",
+    "SessionStart",
+    0
+   ],
+   [
+    "hook_started",
+    "UserPromptSubmit",
+    null
+   ],
+   [
+    "hook_started",
+    "UserPromptSubmit",
+    null
+   ],
+   [
+    "hook_response",
+    "UserPromptSubmit",
+    0
+   ],
+   [
+    "hook_started",
+    "Stop",
+    null
+   ],
+   [
+    "hook_started",
+    "Stop",
+    null
+   ],
+   [
+    "hook_started",
+    "Stop",
+    null
+   ],
+   [
+    "hook_started",
+    "Stop",
+    null
+   ],
+   [
+    "hook_started",
+    "Stop",
+    null
+   ],
+   [
+    "hook_response",
+    "Stop",
+    0
+   ],
+   [
+    "hook_response",
+    "UserPromptSubmit",
+    0
+   ],
+   [
+    "hook_response",
+    "Stop",
+    0
+   ],
+   [
+    "hook_response",
+    "Stop",
+    0
+   ],
+   [
+    "hook_response",
+    "Stop",
+    0
+   ],
+   [
+    "hook_response",
+    "Stop",
+    0
+   ]
+  ],
+  "activity_file": "/home/ryer/.local/state/agent-media/activity/018ab9c1-2717-415c-a154-f11f8ba52249.jsonl",
+  "activity_exists": true,
+  "activity_lines": [
+   "{\"at\": 1790032565.612, \"kind\": \"turn\"}",
+   "{\"at\": 1790032567.408, \"kind\": \"stop\"}"
+  ]
+ },
+ "basic:opus": {
+  "session": "ba28e7d0-f49b-4452-b1e8-574a3344f909",
+  "log": "basic-2.jsonl",
+  "spawn_to_initialize_response_s": 1.784,
+  "system_init_before_user_message": false,
+  "user_sent_at": 9.802,
+  "system_init_at": 10.059,
+  "first_stream_event_at": 14.113,
+  "first_assistant_at": 14.208,
+  "result_at": 14.298,
+  "prompt_suggestion_at": null,
+  "prompt_suggestion": null,
+  "result_cost_usd": 0.20658899999999997,
+  "idle_rss_mb_10s": 100.8,
+  "idle_rss_mb_30s": 109.6,
+  "rss_tree": {
+   "3617303:claude": 112280
+  }
+ }
+}
