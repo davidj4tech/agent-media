@@ -1115,7 +1115,8 @@ Pinned by `packages/server/tests/test_devices.py`.
 
    ```json
    {"ok": true, "token": "<43 chars: secrets.token_urlsafe(32)>",
-    "device_id": "d_7f3a09c1b2e4", "server": {"name": "red5", "base": "http://red5:8781"}}
+    "device_id": "d_7f3a09c1b2e4", "name": "Pixel 8a",
+    "server": {"name": "red5", "base": "http://red5:8781"}}
    ```
 
    - `server.name` is the host's `gethostname()`. `server.base` is the

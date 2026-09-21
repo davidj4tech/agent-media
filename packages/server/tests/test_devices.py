@@ -80,7 +80,7 @@ def test_pairing_hands_out_a_token_and_the_server(server):
     code, _ = devices.mint_code("Pixel 8a")
     res, obj = _pair(server, code)
     assert res.status == 200, obj
-    assert keys(obj) == {"ok", "token", "device_id", "server"}
+    assert keys(obj) == {"ok", "token", "device_id", "name", "server"}
     assert obj["ok"] is True
     assert len(obj["token"]) == 43                   # token_urlsafe(32)
     assert obj["device_id"].startswith("d_")

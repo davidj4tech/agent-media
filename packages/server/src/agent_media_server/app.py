@@ -431,7 +431,10 @@ def _pair(h: BaseHTTPRequestHandler) -> None:
                        "error": "invalid or expired pairing code"})
         return
     print(f"pair: paired {got['device_id']} ({got['name']!r}) from {ip}", file=sys.stderr)
+    # `name` is the one the device will be known by — the name given at the
+    # desk wins over the one the phone sent — so the app can say "paired as".
     _json(h, 200, {"ok": True, "token": got["token"], "device_id": got["device_id"],
+                   "name": got["name"],
                    "server": {"name": socket.gethostname(), "base": _base_url(h)}})
 
 
