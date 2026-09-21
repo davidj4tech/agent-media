@@ -295,7 +295,10 @@ def session_for_path(path: str) -> tuple[str | None, str]:
 
 
 def live_sessions() -> dict[str, str]:
-    """`{session uuid: pane}` for every Claude Code process in a tmux pane.
+    """`{session uuid: pane}` for every Claude Code process in a pane.
+
+    A pane is tmux's or herdr's, addressed as `panes` writes it — both hand
+    their pane id down to the agent they start, so both are found the same way.
 
     Claude Code's `~/.claude/sessions/<pid>.json` names the session; failing
     that, the same detection as `claude-resume`: a session's uuid is in argv
@@ -313,8 +316,9 @@ def live_sessions() -> dict[str, str]:
             env = Path(d, "environ").read_bytes().split(b"\0")
         except OSError:
             continue
-        pane = next((e[len(b"TMUX_PANE="):].decode(errors="replace")
-                     for e in env if e.startswith(b"TMUX_PANE=")), "")
+        from . import panes as _panes
+
+        pane = _panes.addr_of_env(dict(e.split(b"=", 1) for e in env if b"=" in e))
         if not pane:
             continue
         # Claude's own record first: it follows /resume and /clear, and it is
@@ -325,7 +329,7 @@ def live_sessions() -> dict[str, str]:
         if not sid:
             m = _UUID.search(b" ".join(cmd).decode(errors="replace"))
             sid = m.group(0) if m else ""
-        if not sid:
+        if not sid and not pane.startswith("herdr:"):
             try:
                 parts = (reg / pane.lstrip("%")).read_text().split()
             except OSError:
@@ -354,9 +358,14 @@ def agent_of(session: str) -> str:
 
 
 def _agent_of_pane(pane: str) -> str:
-    cmd = _tmux(["display", "-pt", pane, "#{pane_current_command}"])
-    from . import canvas
+    from . import canvas, panes
 
+    if panes.is_herdr(pane):
+        # herdr reports the process running in a pane rather than tmux's
+        # "current command"; the field is the same answer by another name.
+        cmd = panes.process_name(pane)
+    else:
+        cmd = _tmux(["display", "-pt", pane, "#{pane_current_command}"])
     return cmd if cmd in canvas.AGENT_COMMANDS else "claude"
 
 
@@ -394,7 +403,9 @@ _SGR = re.compile(r"\x1b\[([0-9;]*)m")
 
 def _capture_pane(pane: str) -> str:
     """The bottom of `pane` with its colours, which is where the ghost lives."""
-    return _tmux(["capture-pane", "-t", pane, "-p", "-e", "-S", "-40"])
+    from . import panes
+
+    return panes.capture(pane, lines=40, ansi=True)
 
 
 def _dim_runs(line: str) -> list[tuple[str, bool]]:
@@ -599,9 +610,16 @@ def answer(session: str, choice: int, key: str, bearer: str) -> tuple[bool, dict
                        "approval": dialog}
     if choice not in {o["n"] for o in dialog["options"]}:
         return False, {"error": f"no option {choice}", "status": 400, "approval": dialog}
-    _tmux(["send-keys", "-t", pane, str(choice)])
-    time.sleep(0.15)
-    _tmux(["send-keys", "-t", pane, "Enter"])
+    from . import panes
+
+    if panes.is_herdr(pane):
+        panes._run(["herdr", "pane", "send-keys", panes.herdr_pane(pane), str(choice)])
+        time.sleep(0.15)
+        panes._run(["herdr", "pane", "send-keys", panes.herdr_pane(pane), "enter"])
+    else:
+        _tmux(["send-keys", "-t", pane, str(choice)])
+        time.sleep(0.15)
+        _tmux(["send-keys", "-t", pane, "Enter"])
     # Say whether it took: the answer is worth reporting honestly, and a
     # dialog still up after it means the keys went nowhere.
     deadline = time.monotonic() + 3.0
@@ -689,7 +707,9 @@ def pane_ready(pane: str, agent: str = "claude") -> bool:
     """
     from . import canvas
 
-    cap = canvas._strip_ansi(canvas._run(["tmux", "capture-pane", "-t", pane, "-p", "-S", "-40"]))
+    from . import panes
+
+    cap = canvas._strip_ansi(panes.capture(pane, lines=40, ansi=False))
     state = canvas._classify_agent(cap, agent)
     # Claude's resume modal is answered below; Codex's startup prompts (hooks
     # to trust, a directory to trust) are the person's to answer, and text
@@ -698,7 +718,10 @@ def pane_ready(pane: str, agent: str = "claude") -> bool:
     if state is not None and (agent == "claude" or state == "input"):
         return True
     if agent == "claude" and _RESUME_PROMPT.search(cap):
-        _tmux(["send-keys", "-t", pane, "Enter"])
+        if panes.is_herdr(pane):
+            panes._run(["herdr", "pane", "send-keys", panes.herdr_pane(pane), "enter"])
+        else:
+            _tmux(["send-keys", "-t", pane, "Enter"])
     return False
 
 
@@ -889,10 +912,13 @@ def focus(pane: str) -> tuple[bool, str]:
     feature. Only panes hosting Claude Code are eligible, so this cannot be
     used to go rummaging through someone's shells.
     """
-    from . import canvas
+    from . import canvas, panes
 
-    if pane not in {p["pane"] for p in canvas._tmux_cc_panes()}:
+    if pane not in {p["pane"] for p in canvas._tmux_cc_panes() + canvas._herdr_cc_panes()}:
         return False, f"not a live agent pane: {pane!r}"
+    if panes.is_herdr(pane):
+        # herdr focuses a pane by id, workspace and tab included.
+        return (True, pane) if panes.focus(pane) else (False, f"pane {pane} is gone")
     sess = _tmux(["display", "-pt", pane, "#{session_name}"])
     win = _tmux(["display", "-pt", pane, "#{window_id}"])
     if not sess or not win:
@@ -1360,7 +1386,20 @@ def _pane_titles() -> dict[str, str]:
         f = line.split("\t")
         if len(f) >= 3 and f[1] == "claude":
             titles[f[0]] = _SPINNER.sub("", f[2]).strip()
+    # herdr keeps the same string as the pane's label, one call per pane —
+    # there is no list form that carries it, and there are few of them.
+    from . import panes
+
+    for addr in _live_herdr_panes():
+        title = _SPINNER.sub("", panes.label(addr)).strip()
+        if title:
+            titles[addr] = title
     return titles
+
+
+def _live_herdr_panes() -> list[str]:
+    """The herdr-held addresses of the sessions running now."""
+    return [addr for addr in live_sessions().values() if addr.startswith("herdr:")]
 
 
 def _live_title(session: str) -> str:
@@ -1748,11 +1787,15 @@ def _record_turn(session: str, text: str, pane: str = "") -> None:
     conversation is filed under is read off its turns, and a fresh session's
     first export may hold only this turn.
     """
+    from . import panes
+
     where = {}
     if pane:
-        sess = _tmux(["display", "-pt", pane, "#{session_name}"])
-        if sess:
-            where = {"source_tmux_session": sess, "source_pane": pane}
+        at = panes.where(pane)
+        if at.get("session"):
+            where = {"source_tmux_session": at["session"], "source_pane": pane}
+            if at.get("source") != "tmux":
+                where["source_kind"] = at["source"]
 
     def run() -> None:
         try:

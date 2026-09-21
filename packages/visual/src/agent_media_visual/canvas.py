@@ -660,9 +660,34 @@ def _agents_payload() -> list[dict]:
         return data
 
 
+def _herdr_cc_panes() -> list[dict]:
+    """The same rows as `_tmux_cc_panes`, for agents hosted by herdr.
+
+    Discovery is the live-process walk `reply.live_sessions` already does —
+    herdr's own pane list says which panes exist, not which of them is an
+    agent we may type into.
+    """
+    from . import panes, reply as _reply
+
+    agents = []
+    for addr in {a for a in _reply.live_sessions().values() if panes.is_herdr(a)}:
+        cap = _strip_ansi(panes.capture(addr, lines=40, ansi=False))
+        agent = _reply._agent_of_pane(addr) or "claude"
+        preview = next((ln.strip()[:60] for ln in reversed(cap.splitlines())
+                        if ln.strip()), "")
+        agents.append({"name": panes.label(addr) or panes.herdr_pane(addr),
+                       "session": panes.where(addr).get("session", ""),
+                       "state": _classify_agent(cap, agent) or "input",
+                       "agent": agent,
+                       "dir": panes.cwd(addr), "preview": preview,
+                       "source": "herdr", "pane": addr})
+    return agents
+
+
 def _pane_alive(pane: str) -> bool:
-    return bool(_run(["tmux", "display-message", "-pt", pane,
-                            "#{pane_id}"]))
+    from . import panes
+
+    return panes.alive(pane)
 
 
 def _last_speaker() -> dict | None:
@@ -818,20 +843,12 @@ def _play_pane(pane: str) -> bool:
 
 
 def _send_to_pane(pane: str, text: str) -> str:
-    """Type `text` + Enter into a tmux pane (amux's literal-then-Enter timing,
-    which Claude Code's input buffering needs). Returns "" or an error."""
-    probe = _run(["tmux", "display-message", "-pt", pane, "#{pane_id}"])
-    if not probe:
-        return f"pane {pane} is gone"
-    try:
-        subprocess.run(["tmux", "send-keys", "-t", pane, "-l", text],
-                       timeout=5, check=True)
-        time.sleep(0.05)
-        subprocess.run(["tmux", "send-keys", "-t", pane, "Enter"],
-                       timeout=5, check=True)
-        return ""
-    except (OSError, subprocess.SubprocessError) as e:
-        return f"send-keys: {e}"
+    """Type `text` + Enter into a pane, tmux's or herdr's (amux's
+    literal-then-Enter timing, which Claude Code's input buffering needs).
+    Returns "" or an error."""
+    from . import panes
+
+    return panes.send(pane, text)
 
 
 def send_input(text: str, target: str) -> tuple[bool, str]:
@@ -853,7 +870,7 @@ def send_input(text: str, target: str) -> tuple[bool, str]:
         # into a bare shell pane would be host command execution, so validate
         # against _tmux_cc_panes() (which already filters to agent panes).
         pane = target[len("tmux:"):]
-        if pane not in {p["pane"] for p in _tmux_cc_panes()}:
+        if pane not in {p["pane"] for p in _tmux_cc_panes() + _herdr_cc_panes()}:
             return False, f"not a live claude pane: {pane!r}"
         err = _send_to_pane(pane, text)
         return (False, err) if err else (True, f"tmux:{pane}")
@@ -1669,6 +1686,11 @@ class Handler(BaseHTTPRequestHandler):
             ok, detail = _reply.commands_for(qs.get("item", [""])[0],
                                              qs.get("session", [""])[0],
                                              qs.get("project", [""])[0], bearer)
+            # One line per ask: this is a new route and the app is the only
+            # caller, so "did the box even ask?" is the first question every
+            # time it does not appear.
+            print(f"commands: {self.client_address[0]} {self.path.partition('?')[2]} -> "
+                  f"{len(detail.get('commands') or []) if ok else detail}", file=sys.stderr)
             self._json(200 if ok else detail.pop("status", 404), {"ok": ok, **detail})
         elif path == "/conversation/log":
             # The same conversation, read rather than heard.
