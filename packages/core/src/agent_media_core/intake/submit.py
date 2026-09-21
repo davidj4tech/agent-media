@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from .. import _lock as fcntl
+from .. import audio_targets
 from .._notify import notify
 from ..render import render_text
 from ..route import Coordinator
@@ -1052,8 +1053,7 @@ def stamp_speech_pause(state: StateStore, paused: Optional[bool] = None) -> None
         state.set_now_playing(
             "speech", uri=np.get("uri") or "",
             started_at=np.get("started_at") or now,
-            target=np.get("target") or os.environ.get(
-                "MEDIA_SPEECH_DEFAULT_TARGET", "local"),
+            target=np.get("target") or audio_targets.speech_default(),
             extras=ex)
     except Exception:  # noqa: BLE001 — a pause must still reach the player
         pass
@@ -2761,7 +2761,7 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
     # name sends pause/resume to the idle local mpv while the audio plays on the
     # phone. The control appears to do nothing.
     target_name = (event.target.name if event.target
-                   else os.environ.get("MEDIA_SPEECH_DEFAULT_TARGET", "local"))
+                   else audio_targets.speech_default())
     # Tag the row exactly as the local path does. These are not decoration:
     # `media replay` and the popup's < / > scope traversal to one conversation
     # by extras.source_session, and rows carrying no tag are *excluded* rather
@@ -2985,8 +2985,9 @@ def _submit_event(event: Event,
     state = state or StateStore()
     coordinator = coordinator or Coordinator(state=state)
     sink = sink or SinkSpeech()
-    target = event.target or Target(
-        name=os.environ.get("MEDIA_SPEECH_DEFAULT_TARGET", "local"))
+    # The listener's pick (`media speech-target`) when there is one, else the
+    # env default. Resolved once, here: the reply keeps it to the end.
+    target = event.target or Target(name=audio_targets.speech_default())
 
     # The device asked for quiet, and this is an alert nobody asked for. Held
     # before the render, not after: unlike a muted pane there is nothing to
@@ -3981,8 +3982,9 @@ def submit_stream(sentences,
     state = state or StateStore()
     coordinator = coordinator or Coordinator(state=state)
     sink = sink or SinkSpeech()
-    target = event.target or Target(
-        name=os.environ.get("MEDIA_SPEECH_DEFAULT_TARGET", "local"))
+    # The listener's pick (`media speech-target`) when there is one, else the
+    # env default. Resolved once, here: the reply keeps it to the end.
+    target = event.target or Target(name=audio_targets.speech_default())
 
     # The device asked for quiet, and this is an alert nobody asked for. Held
     # before the render, not after: unlike a muted pane there is nothing to

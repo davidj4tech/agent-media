@@ -48,11 +48,19 @@ try:
 except Exception:  # noqa: BLE001 — config is best-effort; CLI must still run
     pass
 
-# The speech target the control surface reads/drives. For a remote target (the
-# phone over a tcp:// bridge) media status/now/pause/skip/replay all talk to
-# *that* mpv, so the popup follows phone-local playback (Grade B). Falls back to
-# the local broker when unset.
-SPEECH_TARGET = Target(os.environ.get("MEDIA_SPEECH_DEFAULT_TARGET", "local"))
+def _speech_target() -> Target:
+    """The speech target the control surface reads/drives while idle, and
+    where a replay plays. For a remote target (the phone over a tcp:// bridge)
+    media status/now/pause/skip/replay all talk to *that* mpv, so the popup
+    follows phone-local playback (Grade B). Falls back to the local broker
+    when unset.
+
+    Asked each time rather than fixed at import: the listener can move speech
+    at runtime (`media speech-target`, the app's picker), and long-lived
+    importers of this module (media-share's control listener) must follow."""
+    from . import audio_targets
+
+    return Target(audio_targets.speech_default())
 
 
 # --- pure helpers (unit-tested) -------------------------------------------
@@ -137,10 +145,10 @@ def _active_speech_target() -> Target:
     so would default to `local`. Reading the wrong player makes the status show
     `○` and pause act on an empty local mpv. Follow the live player instead —
     the same precedence the nav/skip path already uses (now-playing target, then
-    SPEECH_TARGET). When idle there's no row, so this is just SPEECH_TARGET.
+    _speech_target). When idle there's no row, so this is just _speech_target.
     """
     name = (StateStore().get_now_playing("speech") or {}).get("target")
-    return Target(name=name) if name else SPEECH_TARGET
+    return Target(name=name) if name else _speech_target()
 
 
 def _sock():
@@ -2808,7 +2816,7 @@ def cmd_jump(a) -> int:
     playlist = isinstance(count, int) and count > 1
     if len(sentences) > 1 and not playlist:
         _write_nav_request(len(sentences),
-                           (np or {}).get("target") or SPEECH_TARGET.name)
+                           (np or {}).get("target") or _speech_target().name)
     return _seek_to_end(sock)
 
 
@@ -2883,7 +2891,7 @@ _SKIP_CHAIN_S = 3.0
 
 
 def _skip_cursor_path() -> Path:
-    return state_dir() / f"skip-cursor-{SPEECH_TARGET.name}"
+    return state_dir() / f"skip-cursor-{_speech_target().name}"
 
 
 def _read_skip_cursor() -> Optional[int]:
@@ -3057,7 +3065,7 @@ def cmd_skip(a) -> int:
             StateStore().set_now_playing(
                 "speech", uri=(np or {}).get("uri") or "",
                 started_at=(np or {}).get("started_at") or time.time(),
-                target=(np or {}).get("target") or SPEECH_TARGET.name,
+                target=(np or {}).get("target") or _speech_target().name,
                 extras=ex)
         except Exception:  # noqa: BLE001 — the seek already happened
             pass
@@ -3068,7 +3076,7 @@ def cmd_skip(a) -> int:
     # back to the CLI's resolved speech target — NOT "local", which orphans
     # the flag whenever now_playing lacks a target (the reader polls the
     # actual playout target's flag).
-    _write_nav_request(target, (np or {}).get("target") or SPEECH_TARGET.name)
+    _write_nav_request(target, (np or {}).get("target") or _speech_target().name)
     return 0
 
 
@@ -3164,6 +3172,9 @@ def _replay_row(row: dict) -> int:
         # follow-along on every phone-lane replay.
         clip_durations = [float(ex["total_duration_s"])]
     replay_text: str = row.get("text") or ""
+    # Where speech goes now — `media speech-target`, else the env default —
+    # asked once, so every push below lands on the same player.
+    speech_target = _speech_target()
 
     # Re-show the reply's visual concurrently with the (slow, bridge-bound)
     # playback push below; the thread outlives neither — the process waits.
@@ -3182,7 +3193,7 @@ def _replay_row(row: dict) -> int:
     # here, fail, and drop the whole replay to the HTTP fallback for files that
     # were already sitting next to the player.
     if not ex.get("clips_remote"):
-        getattr(sink, "prefetch", lambda *a, **k: True)(clip_uris, SPEECH_TARGET)
+        getattr(sink, "prefetch", lambda *a, **k: True)(clip_uris, speech_target)
     # Push the whole turn in ONE batched round-trip (stop/clear/append-all/
     # unpause/jump-to-0) rather than 1 play + N queues + 2 state-sets — each a
     # ~600ms hop over the phone bridge. Traversing (< / >) or replaying a long
@@ -3192,12 +3203,12 @@ def _replay_row(row: dict) -> int:
     # intake path (play_playlist), which also clears any lingering pause/mute so
     # a "replay" ("I want to hear this now") is audible past a stale pause/mute.
     if len(clip_uris) > 1:
-        sink.play_playlist(clip_uris, SPEECH_TARGET)
+        sink.play_playlist(clip_uris, speech_target)
     else:
         # Single clip: one loadfile + explicit state reset. OSError too — a
         # missing/refused socket (mpv not up yet) must be a no-op, not a
         # traceback (_open raises raw FileNotFoundError/ConnectionRefused).
-        sink.play(clip_uris[0], SPEECH_TARGET)
+        sink.play(clip_uris[0], speech_target)
         try:
             ipc.set_property(_sock(), "pause", False, critical=True)
             ipc.set_property(_sock(), "mute", False, critical=True)
@@ -3216,8 +3227,8 @@ def _replay_row(row: dict) -> int:
     # the title, because an empty `force-media-title` puts the clip's *filename*
     # on every display that reads `media-title`.
     _speech_sink.set_media_title(str(ex.get("source_window") or ""),
-                                 SPEECH_TARGET)
-    _speech_sink.set_reply_text(replay_text, SPEECH_TARGET)
+                                 speech_target)
+    _speech_sink.set_reply_text(replay_text, speech_target)
     clip_sentences: list[str] = ex.get("clip_sentences") or []
     have_durations = (
         len(clip_durations) == len(clip_uris) and len(clip_durations) > 0
@@ -3349,7 +3360,7 @@ def _replay_row(row: dict) -> int:
         np_extras["writer_pid"] = _trk.pid
     StateStore().set_now_playing(
         "speech", uri=clip_uris[0], started_at=time.time(),
-        target=SPEECH_TARGET.name, extras=np_extras)
+        target=speech_target.name, extras=np_extras)
     return 0
 
 
@@ -3390,7 +3401,7 @@ def _prev_double_window() -> float:
 def _speech_prev_channel() -> str:
     """The speech breadcrumb's key: per target, because the phone and the local
     player are different walks with different positions."""
-    return f"speech-{SPEECH_TARGET.name}"
+    return f"speech-{_speech_target().name}"
 
 
 def _prev_restart_path(channel: str) -> Path:
@@ -3684,7 +3695,7 @@ def _mirror_clock(state, owns, sentences: list, offsets: list,
         state.set_now_playing(
             "speech", uri=np.get("uri") or "",
             started_at=np.get("started_at") or time.time(),
-            target=np.get("target") or SPEECH_TARGET.name, extras=ex)
+            target=np.get("target") or _speech_target().name, extras=ex)
     except Exception:  # noqa: BLE001
         pass
 
@@ -3717,7 +3728,7 @@ def cmd_replay_track(a) -> int:
     # rows over to it. A replay of a reply scrolled out of view is exactly the
     # case that needs them, and going around it meant the rows never appeared.
     highlighter = _HighlightScheduler(
-        _playout_delay_s(SPEECH_TARGET.name) if not offsets else 0.0,
+        _playout_delay_s(_speech_target().name) if not offsets else 0.0,
         highlight, pane)
     # Cumulative start offset of each CLIP on the turn-wide timeline. (Distinct
     # from the per-sentence `offsets` above, which exist only when one clip
@@ -3779,7 +3790,7 @@ def cmd_replay_track(a) -> int:
             state.set_now_playing(
                 "speech", uri=np.get("uri") or "",
                 started_at=np.get("started_at") or time.time(),
-                target=np.get("target") or SPEECH_TARGET.name,
+                target=np.get("target") or _speech_target().name,
                 extras=ex)
         except Exception:  # noqa: BLE001
             pass
@@ -4579,6 +4590,61 @@ def _cmd_book_chapters(a) -> int:
     return 0
 
 
+def _note_music_where(where: str, uri: str) -> None:
+    """Remember where this play went, so the app can be told without anyone
+    asking a player (`audio_targets.music_now`). Never fails the play."""
+    try:
+        from . import audio_targets
+        audio_targets.note_music_played(where, uri)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def cmd_speech_target(a) -> int:
+    """`media speech-target [NAME | --clear] [--json]` — where replies play.
+
+    With no argument, shows the current choice and every target this host
+    can use. A NAME sets the override; `--clear` goes back to the env default
+    (MEDIA_SPEECH_DEFAULT_TARGET, which media-lane may be switching).
+
+    Takes effect from the next reply. A reply already speaking finishes where
+    it started, and pause/skip/replay keep following it there — its target
+    was fixed when it began and rides on its now-playing row.
+    """
+    from . import audio_targets
+
+    if a.clear and a.name:
+        print("media speech-target: give a target or --clear, not both",
+              file=sys.stderr)
+        return 2
+    if a.clear or a.name:
+        try:
+            audio_targets.set_speech_override(None if a.clear else a.name)
+        except ValueError as e:
+            names = ", ".join(o["name"] for o in audio_targets.speech_options())
+            print(f"media speech-target: {a.name!r} refused — {e} "
+                  f"(this host has: {names})", file=sys.stderr)
+            return 2
+        except OSError as e:
+            print(f"media speech-target: could not save: {e}", file=sys.stderr)
+            return 1
+    block = audio_targets.speech_block()
+    if a.json:
+        print(json.dumps(block))
+        return 0
+    how = (f"chosen; env default {block['default']}" if block["overridden"]
+           else "env default")
+    print(f"speech → {block['current']} ({how})")
+    for o in block["options"]:
+        mark = "▸" if o["name"] == block["current"] else " "
+        state = "" if o["available"] else "  [unavailable]"
+        why = f" — {o['why']}" if o["why"] else ""
+        print(f" {mark} {o['name']:<8} {o['label']}{state}{why}")
+    if a.name or a.clear:
+        print("(from the next reply; one already speaking finishes where it is)")
+    return 0
+
+
 def _resolve_music_where(where: str) -> str:
     """Resolve a `--where` value to a concrete backend: 'app', 'phone' or 'rooms'.
 
@@ -4586,7 +4652,15 @@ def _resolve_music_where(where: str) -> str:
     device. Explicit ``auto`` keeps the old listener-aware routing. ``app`` is
     the phone played by Sasonica, and needs its remote-control URL; without
     one it means the phone's mpv, as it would if the app refused the track.
+
+    A listener's stored choice (`audio_targets.music_pref`, set from the app's
+    picker) stands in for ``default`` before any of that. It follows the env's
+    MEDIA_SPEECH_DEFAULT_TARGET, never the speech override: moving the voice
+    to the house speakers is not a request to move the music.
     """
+    if where in ("", "default"):
+        from . import audio_targets
+        where = audio_targets.music_pref() or where
     if where in ("local", "rooms"):
         return "rooms"
     if where == "phone":
@@ -5000,6 +5074,7 @@ def cmd_music(a) -> int:
                 return 1
             StateStore().set_music_intent(a.uri, ct.value,
                                           getattr(a, "title", "") or None)
+            _note_music_where("app", a.uri)
             print(f"playing on phone ({ct.value}): {a.uri}")
             return 0
         if where == "phone":
@@ -5015,11 +5090,13 @@ def cmd_music(a) -> int:
                 return 1
             StateStore().set_music_intent(a.uri, ct.value,
                                           getattr(a, "title", "") or None)
+            _note_music_where("phone", a.uri)
             print(f"playing on phone ({ct.value}): {a.uri}")
             return 0
         m.play(a.uri, replace=not a.add)
         StateStore().set_music_intent(a.uri, ct.value,
                                       getattr(a, "title", "") or None)
+        _note_music_where("rooms", a.uri)
         print(f"playing ({ct.value}): {a.uri}")
         return 0
     # Everything below is transport — route to the live backend so the keys
@@ -5988,7 +6065,7 @@ def _channel_is_playing(name: str) -> bool:
             # must read as "not playing" (not as `not None` → truthy).
             return _get("idle-active") is False and _get("pause") is False
         if name == "music":
-            return SinkMusic().status_dict(SPEECH_TARGET).get("state") == "play"
+            return SinkMusic().status_dict(_speech_target()).get("state") == "play"
         if name == "book":
             # Probe the book sink directly rather than via mcp_server: importing
             # mcp_server pulls in the whole fastmcp framework (~0.47s), and this
@@ -7680,6 +7757,17 @@ def _build_parser() -> argparse.ArgumentParser:
     f.add_argument("channel", choices=("book", "music"))
     f.add_argument("--target", default="", help="book target; empty follows book/speech default")
     f.set_defaults(func=cmd_focus)
+
+    st = sub.add_parser(
+        "speech-target",
+        help="show or choose where replies play (overrides "
+             "MEDIA_SPEECH_DEFAULT_TARGET from the next reply)")
+    st.add_argument("name", nargs="?", default="",
+                    help="a target this host can use (see the list with no argument)")
+    st.add_argument("--clear", action="store_true",
+                    help="drop the choice; back to MEDIA_SPEECH_DEFAULT_TARGET")
+    st.add_argument("--json", action="store_true", help="machine-readable")
+    st.set_defaults(func=cmd_speech_target)
 
     search = sub.add_parser("search", help="unified search (music/book library)")
     search.add_argument("--lines", action="store_true",

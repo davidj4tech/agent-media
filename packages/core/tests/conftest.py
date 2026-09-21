@@ -111,6 +111,24 @@ def _no_follow_pane(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_listener_audio_choice(monkeypatch, tmp_path):
+    """Keep the listener's own speech/music choice out of the suite.
+
+    `media speech-target` (and the app's picker) writes a file in the real
+    state dir that wins over MEDIA_SPEECH_DEFAULT_TARGET for every new reply.
+    This suite does not isolate the state dir as a whole, so without this a
+    developer who had moved speech to the rooms would see every test that
+    asserts on the env default's target fail — or, worse, pass for the wrong
+    reason. The files go to a per-test directory instead; a test that wants
+    a choice writes it there through audio_targets.
+    """
+    from agent_media_core import audio_targets
+
+    d = tmp_path / "audio-choice"
+    monkeypatch.setattr(audio_targets, "_path", lambda name: d / name)
+
+
+@pytest.fixture(autouse=True)
 def _no_followup_calls(monkeypatch):
     """The Stop hook's follow-up is a gateway call on a thread; a hook test
     that runs the detached path would otherwise make it for real (and file

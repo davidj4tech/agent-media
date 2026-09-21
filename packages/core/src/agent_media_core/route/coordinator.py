@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from typing import Optional
 
-from .. import snapcast
+from .. import audio_targets, snapcast
 from ..sinks.book import SinkBook
 from ..sinks.music import SinkMusic
 from ..sinks.music_router import SinkMusicRouter
@@ -162,8 +162,7 @@ class Coordinator:
         Fire-and-forget on a single worker: the write is a round trip over the
         phone bridge, and speech must never wait on a diagnostic.
         """
-        speech_target = Target(name=(
-            os.environ.get("MEDIA_SPEECH_DEFAULT_TARGET") or "local"))
+        speech_target = Target(name=audio_targets.speech_default())
         try:
             self._flag_writer.submit(_speech.set_speaking, on, speech_target)
         except RuntimeError:  # pragma: no cover — executor shut down
@@ -180,8 +179,7 @@ class Coordinator:
         """
         if not (text or "").strip():
             return
-        speech_target = Target(name=(
-            os.environ.get("MEDIA_SPEECH_DEFAULT_TARGET") or "local"))
+        speech_target = Target(name=audio_targets.speech_default())
         try:
             self._flag_writer.submit(_speech.set_media_title, text, speech_target)
         except RuntimeError:  # pragma: no cover — executor shut down
@@ -197,8 +195,7 @@ class Coordinator:
         """
         if not (text or "").strip():
             return
-        speech_target = Target(name=(
-            os.environ.get("MEDIA_SPEECH_DEFAULT_TARGET") or "local"))
+        speech_target = Target(name=audio_targets.speech_default())
         try:
             self._flag_writer.submit(_speech.set_reply_text, text, speech_target)
         except RuntimeError:  # pragma: no cover — executor shut down
@@ -232,8 +229,7 @@ class Coordinator:
         feeds — hold this reply, ask about it, or interrupt with it — has to be
         made before the first word is audible.
         """
-        speech_target = Target(name=(
-            os.environ.get("MEDIA_SPEECH_DEFAULT_TARGET") or "local"))
+        speech_target = Target(name=audio_targets.speech_default())
         try:
             self._flag_writer.submit(_speech.set_priority, priority, speech_target)
         except RuntimeError:  # pragma: no cover — executor shut down

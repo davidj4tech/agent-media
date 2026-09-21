@@ -258,7 +258,8 @@ def converse(text: str,
 
     Args:
         text: The question to speak.
-        target: Sink target. Empty = MEDIA_SPEECH_DEFAULT_TARGET.
+        target: Sink target. Empty = `media speech-target`, else
+            MEDIA_SPEECH_DEFAULT_TARGET.
         timeout_s: How long to wait for a reply before giving up.
         voice: Override the render voice. Empty = default.
         engine: Override engine (edge / openai / qwen / realtime).
@@ -270,8 +271,9 @@ def converse(text: str,
     from .capture.rendezvous import Busy, Rendezvous
     from .intake.submit import submit_event
 
-    tgt = _target(target or os.environ.get(
-        "MEDIA_SPEECH_DEFAULT_TARGET", "local"))
+    from . import audio_targets
+
+    tgt = _target(target or audio_targets.speech_default())
 
     # kind=converse keeps the question out of speech_history's response list
     # (same treatment as notif clips) — it's a prompt, not a reply.
