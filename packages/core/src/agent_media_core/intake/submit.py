@@ -3403,15 +3403,29 @@ def submit_event(event: Event,
         # Cross-host: also claim the shared remote broker so another machine's
         # reply can't stop+clear our still-playing playlist. Waits out a healthy
         # remote holder, takes over an expired one. No-op for local/rooms.
-        _wait_and_claim_broker(sink, target)
+        #
         # Grade B: push all clips to the remote player's local dir up front
         # (no-op for local/rooms), so each play below is a local loadfile —
         # no per-sentence network fetch to stall a long reply.
         # Defensive getattr: prefetch is a newer Sink method; a minimal sink
         # (or test double) without it just skips the pre-fetch (no-op anyway for
         # non-remote targets).
-        getattr(sink, "prefetch", lambda *a, **k: None)(
-            [p for _, p in clip_data], target)
+        #
+        # Both run BESIDE before_speech rather than ahead of it. They talk to
+        # the speech player; before_speech talks to the music and book players;
+        # and every one of them is a string of round trips to the phone. Over
+        # a 430ms link (21 Sep) the claim alone was 5.8s and before_speech
+        # 12.8s, back to back. The claim still lands before anything is fed
+        # to the broker: it is joined before the first play, and again on the
+        # way out so a late claim can never outlive our release of it.
+        def _claim_and_prefetch() -> None:
+            _wait_and_claim_broker(sink, target)
+            getattr(sink, "prefetch", lambda *a, **k: None)(
+                [p for _, p in clip_data], target)
+
+        _claim = threading.Thread(target=_claim_and_prefetch,
+                                  name="speech-claim", daemon=True)
+        _claim.start()
         played_any = False
         n = len(clip_data)
         highlighter = _HighlightScheduler(_highlight_delay_s, do_highlight,
@@ -3423,6 +3437,7 @@ def submit_event(event: Event,
                 title=source_window, priority=event.priority.value,
                 # The first sentence; the clip loop moves it on from there.
                 text=clip_data[0][0] if clip_data else text)
+            _claim.join()
             # Speech-started breadcrumb — the moment we commit to feeding the
             # broker. Its "end" twin is in the finally below, so every exit
             # (finished, superseded, yielded-then-done, error) closes the pair.
@@ -3846,6 +3861,10 @@ def submit_event(event: Event,
                           pane=source_pane, source=event.source.value,
                           target=target.name, played=bool(played_any))
             state.clear_now_playing("speech")
+            # A claim still in flight (before_speech raised) must finish
+            # before it is released, or it would land after and hold the
+            # broker for its whole TTL.
+            _claim.join()
             # Drop the cross-host broker claim before the flock so the next host
             # (and the next local waiter) can take over immediately. No-op local.
             getattr(sink, "release_broker", lambda *a, **k: None)(target)
