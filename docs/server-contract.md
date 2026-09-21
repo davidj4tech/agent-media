@@ -978,6 +978,74 @@ on a host that never originates speech, it changes nothing audible.
 
 Clients: S (planned — the speech bar's picker, §14).
 
+### 6.10 Notes — gated (built 22 Sep 2026)
+
+The Org tree (`~/org`, `MEDIA_NOTES_DIR` to move it), browsed, searched and
+captured into with no Emacs involved (`notes.py`). The layout is paragtd's:
+the GTD files at the top, org-roam notes under `roam/`. The file list and the
+capture template are copied from paragtd by hand for now. Commits are not
+the server's job: `org-autosync` commits and pushes the tree from every host.
+All five routes use `auth.gate`. GETs are gzipped when the client accepts it.
+
+#### `GET /notes`
+
+`{"ok", "root", "views": [{"name", "label", "kind": "agenda"|"file"|"folder",
+"path"?, "count"?}]}`. `agenda` comes first. There is one `file` view per
+paragtd core file that exists (`count` = open TODO-like headings), and one
+`folder` view per roam folder (`count` = notes). `roam-sessions` holds the
+agents' own notes, close to a thousand of them.
+
+#### `GET /notes/view?name=<view>[&done=1]`
+
+`{"ok", "view", "items": [...]}`.
+- A file view returns its headings as `{path, at, level, state, priority,
+  title, tags, scheduled?, deadline?}`. `at` is the 1-based line of the
+  heading. DONE/CANCELLED headings are left out unless `done=1`.
+- `agenda` returns the headings scheduled or due within 7 days, plus
+  overdue ones, each with `date` and `overdue`. An astro alert more than 2
+  days past is dropped, matching `paragtd-astro-skip-stale`. Repeaters are
+  not expanded, so a routine not yet marked done shows as overdue from its
+  first date.
+- A folder view returns `{path, title, modified}`, newest first, at most 300.
+- An unknown view is a 404.
+
+#### `GET /notes/read?path=<rel>[&at=<line>]`
+
+`{"ok", "path", "at", "title", "text", "links": [{label, path}]}`. `text` is
+raw Org, capped at 256 KB. With `at`, only the subtree under that heading is
+returned. `links` resolves the text's `[[id:…]]` links to paths.
+- 404 for anything outside the tree, in a dot-dir, a directory, or a file that
+  is not `.org`/`.md`/`.txt`.
+- 409 when the line at `at` is no longer a heading, meaning the file changed
+  under the client. Refetch the view.
+
+#### `GET /notes/search?q=<text>[&all=1][&memory=0]`
+
+`{"ok", "q", "notes": [{path, line, text}], "memories": [{id, user, score,
+text}]}`.
+- `notes` is a case-insensitive fixed-string ripgrep: at most 3 hits per file
+  and 30 in total. It skips `roam/sessions/`, `astro.org` and backups unless
+  `all=1`.
+- `memories` comes from the memory store (Hippocampus, the `ryer` and `sam`
+  namespaces, as `agent-memory-search` uses), searched in parallel. When the
+  store is down, the list comes back empty and the notes half still answers.
+  `memory=0` skips the store.
+
+#### `POST /notes/capture`
+
+`{"text", "kind": "todo"|"note", "memory": bool}` → `{"ok", "path":
+"inbox.org", "at", "kind", "remembered"}`.
+- The capture is appended to `inbox.org` under an flock, using paragtd's "t"
+  template: `* TODO <first line>`, a `:CREATED:` drawer, then the remaining
+  lines as the body. `note` writes a plain heading instead of a TODO.
+- A body line starting with `*` is indented one space, so one capture is
+  always one entry.
+- Unless `memory` is false, the text is also written to the memory store in
+  the background, as best effort.
+- 400 when the text is empty, 413 when it is over 8 KB.
+
+Clients: none yet (a Notes tab in S is next).
+
 ---
 
 ## 7. `/events` (v0) — canvas-wide, not the app's stream

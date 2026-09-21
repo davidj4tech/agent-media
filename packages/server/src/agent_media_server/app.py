@@ -92,7 +92,7 @@ from urllib.parse import parse_qs
 
 from . import (abs_item, archive, auth, devices, drafts, harnesses, pins, routing, send,
                sessions, share, speech, threads)
-from . import audio
+from . import audio, notes
 
 # The endpoints a browser on another origin may reach. Everything here
 # carries its own credential — a paired device's token, or the caller's
@@ -120,6 +120,11 @@ CORS_PATHS = frozenset({
 # below stays self-contained.
 AUDIO_PATHS = frozenset({"/audio/targets", "/audio/target"})
 CORS_PATHS = CORS_PATHS | AUDIO_PATHS
+
+# Browsing and capturing notes (notes.py). The same arrangement.
+NOTES_PATHS = frozenset({"/notes", "/notes/view", "/notes/read", "/notes/search",
+                         "/notes/capture"})
+CORS_PATHS = CORS_PATHS | NOTES_PATHS
 
 # Paths opened to other origins for POST (and its preflight) ONLY. `/pair` is
 # the one: `POST /pair` is how the chat bundle, served from another origin,
@@ -246,6 +251,8 @@ def dispatch(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
     auth.set_client_ip(h.client_address[0] if h.client_address else "")
     if path in AUDIO_PATHS and method in ("GET", "POST"):
         return _audio(h, method, path)
+    if path in NOTES_PATHS and method in ("GET", "POST"):
+        return _notes(h, method, path)
     if method == "GET":
         return _get(h, path)
     if method == "POST":
@@ -616,6 +623,41 @@ def _audio(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
     else:
         return False
     _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    return True
+
+
+# --- notes -----------------------------------------------------------------------
+
+def _notes(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
+    """The Org tree, browsed and captured into without Emacs (notes.py).
+    GETs for reading, one POST for capture; the wrong method falls through."""
+    qs = parse_qs(h.path.partition("?")[2])
+    arg = lambda k: (qs.get(k) or [""])[0]  # noqa: E731
+    bearer = _bearer(h)
+    if method == "GET" and path == "/notes":
+        ok, detail = notes.views(bearer)
+    elif method == "GET" and path == "/notes/view":
+        ok, detail = notes.view(arg("name"), bearer, done=arg("done") == "1")
+    elif method == "GET" and path == "/notes/read":
+        try:
+            at = max(0, int(arg("at") or 0))
+        except ValueError:
+            at = 0
+        ok, detail = notes.read(arg("path"), at, bearer)
+    elif method == "GET" and path == "/notes/search":
+        ok, detail = notes.search(arg("q"), bearer, everything=arg("all") == "1",
+                                  memory=arg("memory") != "0")
+    elif method == "POST" and path == "/notes/capture":
+        body = _read_json(h) or {}
+        ok, detail = notes.capture(str(body.get("text") or ""),
+                                   str(body.get("kind") or "todo"), bearer,
+                                   remember=body.get("memory", True) is not False)
+    else:
+        return False
+    if ok and method == "GET":
+        _json_z(h, 200, {"ok": True, **detail})
+    else:
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     return True
 
 
