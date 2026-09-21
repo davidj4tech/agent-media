@@ -351,6 +351,13 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
             ok, detail = threads.log_for_session(session, _bearer(h), **page)
         else:
             ok, detail = threads.log_for_item(qs.get("item", [""])[0], _bearer(h), **page)
+        if ok and qs.get("messages", [""])[0] not in ("1", "true", "yes"):
+            # Messages are opt-in on this route. A client that polls it — the
+            # app before it moved to the thread stream — would otherwise carry
+            # 30–90 KB of tool summaries on every poll, 1–15 s apart, over a
+            # 430 ms link. The stream always sends them; ask with
+            # `?messages=1` here. The keys stay, empty, so the shape is one.
+            detail["messages"], detail["older"] = [], False
         if ok:
             # The live reply's position was read early in building this
             # answer; bring it up to the moment it is sent.

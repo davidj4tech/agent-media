@@ -524,13 +524,13 @@ from test_contract import AUTH, call, server, shelf, signed_in, typed  # noqa: E
 
 
 def test_log_by_session_reads_the_transcript(server, shelf, signed_in, rigged):
-    res, obj = call(server, "GET", f"/conversation/log?session={SID}&limit=4", headers=AUTH)
+    res, obj = call(server, "GET", f"/conversation/log?session={SID}&messages=1&limit=4", headers=AUTH)
     assert res.status == 200, obj
     assert [texts(m) for m in obj["messages"]] == [["Question 28"], ["Answer 28."],
                                                    ["Question 29"], ["Answer 29."]]
     assert obj["older"] is True and obj["lines"] == []
     first = obj["messages"][0]["id"]
-    res, page = call(server, "GET", f"/conversation/log?session={SID}&limit=2&before={first}",
+    res, page = call(server, "GET", f"/conversation/log?session={SID}&messages=1&limit=2&before={first}",
                      headers=AUTH)
     assert [texts(m) for m in page["messages"]] == [["Question 27"], ["Answer 27."]]
     # SID is not live in the rig: nothing is running.
@@ -541,10 +541,18 @@ def test_log_is_gzipped_when_asked(server, shelf, signed_in, rigged):
     import http.client
 
     conn = http.client.HTTPConnection(*server, timeout=10)
-    conn.request("GET", f"/conversation/log?session={SID}&limit=60",
+    conn.request("GET", f"/conversation/log?session={SID}&messages=1&limit=60",
                  headers={**AUTH, "Accept-Encoding": "gzip"})
     res = conn.getresponse()
     raw = res.read()
     conn.close()
     assert res.status == 200 and res.getheader("Content-Encoding") == "gzip"
     assert len(json.loads(gzip.decompress(raw))["messages"]) == 60
+
+
+def test_messages_are_opt_in_on_the_polled_log(server, monkeypatch):
+    """A poller without `messages=1` gets the keys, empty — not 30–90 KB of
+    tool summaries every few seconds."""
+    res, obj = call(server, "GET", f"/conversation/log?session={SID}", headers=AUTH)
+    if res.status == 200:
+        assert obj["messages"] == [] and obj["older"] is False

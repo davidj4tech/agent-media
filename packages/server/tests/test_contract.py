@@ -253,7 +253,7 @@ def test_conversation_log_shape(server, shelf, signed_in, monkeypatch):
         {"start": 0.0, "end": 4.0, "who": "you", "text": "One?", "at": 10.0, "key": ""},
         live_line])
     monkeypatch.setattr(activity, "attach", lambda s, lines: None)
-    res, obj = call(server, "GET", "/conversation/log?item=li_1", headers=AUTH)
+    res, obj = call(server, "GET", "/conversation/log?item=li_1&messages=1", headers=AUTH)
     assert res.status == 200, obj
     # `recap` joined on 22 Sep 2026, deliberately (§6.2): the thread's "while
     # you were away" card, never a line. `messages` and `older` joined on
