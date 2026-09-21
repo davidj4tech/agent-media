@@ -4,7 +4,7 @@ import pytest
 
 from agent_media_core import harnesses
 from agent_media_server import auth_abs, panes, send, sessions
-from agent_media_visual import agents
+from agent_media_server import harnesses as agents
 
 
 @pytest.fixture(autouse=True)

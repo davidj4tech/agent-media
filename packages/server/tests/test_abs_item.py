@@ -5,7 +5,7 @@ import urllib.error
 
 import pytest
 
-from agent_media_visual import item as item_mod
+from agent_media_server import abs_item as item_mod
 
 
 def _track(index=1, **over):
