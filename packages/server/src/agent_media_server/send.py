@@ -124,6 +124,9 @@ def answer(session: str, choice: int, key: str, bearer: str) -> tuple[bool, dict
                    "session": session, "pane": pane, "approval": dialog}
 
 
+# --- reviving a session that has ended -----------------------------------------
+
+
 def attached_session() -> str:
     """A tmux session with a client attached to it, or "".
 
