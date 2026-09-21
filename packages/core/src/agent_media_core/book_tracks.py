@@ -1193,6 +1193,12 @@ def rename(session: str, title: str, *, target=None) -> str:
     next turn does not undo it; Claude Code is told as well, so the terminal
     and the shelf agree; and the item is patched now rather than at the next
     turn, because a rename you cannot see has not happened.
+
+    The name file is for a session that is not running — a live Claude Code
+    does not read it again. A live one is renamed by typing `/rename` into it
+    (`reply.send_rename`), which is what makes the window follow too: this
+    host builds window names from the pane, and renaming the window here
+    turned its automatic-rename off, which lost every name after the first.
     """
     from . import conversation
 
@@ -1212,7 +1218,6 @@ def rename(session: str, title: str, *, target=None) -> str:
         harnesses.set_name(session, title)
     else:
         conversation.set_session_name(session, title)
-    conversation.rename_window(session, title)
     if folder:
         set_metadata(session, Path(folder), target=target)
     return title

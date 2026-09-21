@@ -590,20 +590,23 @@ def test_a_rename_with_no_name_is_not_one(tmp_path, monkeypatch):
     assert b.rename("s1", "   ") == ""
 
 
-def test_a_rename_renames_the_tmux_window_too(tmp_path, monkeypatch):
-    """Claude Code names the window from the name it holds in memory and does
-    not read the file again, so the window said the old thing."""
+def test_a_rename_leaves_the_tmux_window_alone(tmp_path, monkeypatch):
+    """The window name is the pane's business on this host (tmux builds it
+    from the pane's label), and renaming it here turned its automatic-rename
+    off — so every later name was lost. A live session is renamed by typing
+    `/rename` into it instead (reply.send_rename)."""
     from agent_media_core import book_tracks as b
     from agent_media_core import conversation
 
     monkeypatch.setattr(b, "state_dir", lambda: tmp_path)
     b._write_manifest("s1", {"session": "s1"})
-    monkeypatch.setattr(conversation, "set_session_name", lambda session, title: True)
-    renamed = []
-    monkeypatch.setattr(conversation, "rename_window",
-                        lambda session, title: renamed.append((session, title)) or True)
-    b.rename("s1", "A better name")
-    assert renamed == [("s1", "A better name")]
+    named = []
+    monkeypatch.setattr(conversation, "set_session_name",
+                        lambda session, title: named.append(title) or True)
+    monkeypatch.setattr(conversation, "pane_of",
+                        lambda session: pytest.fail("touched tmux"))
+    assert b.rename("s1", "A better name") == "A better name"
+    assert named == ["A better name"]
 
 
 def test_the_window_is_this_sessions_pane_and_a_live_one(tmp_path, monkeypatch):

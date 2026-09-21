@@ -924,6 +924,55 @@ def test_an_ask_that_never_left_the_box_is_a_refusal(monkeypatch, _asker):
     assert detail["pane"] == "%9" and detail["session"] == "sess-9"
 
 
+DIM = "\x1b[2m"
+OFF = "\x1b[0m"
+
+
+def _pane_is(monkeypatch, capture):
+    monkeypatch.setattr(reply, "_capture_pane", lambda pane: capture)
+
+
+def test_a_half_typed_line_is_a_draft(monkeypatch):
+    _pane_is(monkeypatch, "❯ what about the")
+    assert reply.pane_draft("%1")
+
+
+def test_an_empty_box_and_a_ghost_are_not_drafts(monkeypatch):
+    _pane_is(monkeypatch, "❯ ")
+    assert not reply.pane_draft("%1")
+    _pane_is(monkeypatch, f"❯ {DIM}try the other one{OFF}")
+    assert not reply.pane_draft("%1")
+
+
+def test_rename_is_typed_into_the_session(monkeypatch):
+    from agent_media_visual import panes
+
+    monkeypatch.setattr(reply, "conversation_pane", lambda s: "%1")
+    monkeypatch.setattr(reply, "pane_draft", lambda pane: False)
+    sent = []
+    monkeypatch.setattr(panes, "send", lambda pane, text: sent.append((pane, text)) or "")
+    tmuxed = []
+    monkeypatch.setattr(reply, "_tmux", lambda argv, timeout=10: tmuxed.append(argv) or "")
+    assert reply.send_rename("s1", "A better name") == ""
+    assert sent == [("%1", "/rename A better name")]
+    # The window follows the pane again: renaming it by hand had turned that off.
+    assert tmuxed == [["set-window-option", "-t", "%1", "automatic-rename", "on"]]
+
+
+def test_rename_waits_rather_than_joining_a_draft(monkeypatch):
+    from agent_media_visual import panes
+
+    monkeypatch.setattr(reply, "conversation_pane", lambda s: "%1")
+    monkeypatch.setattr(reply, "pane_draft", lambda pane: True)
+    monkeypatch.setattr(panes, "send", lambda pane, text: pytest.fail("typed over a draft"))
+    assert reply.send_rename("s1", "A name") == "something is being typed there"
+
+
+def test_rename_of_an_ended_session_is_not_typed_anywhere(monkeypatch):
+    monkeypatch.setattr(reply, "conversation_pane", lambda s: "")
+    assert reply.send_rename("s1", "A name").startswith("no pane")
+
+
 def test_a_ghost_that_fits_is_the_suggestion(monkeypatch):
     monkeypatch.setattr(reply, "ghost_prompt", lambda pane: "sp4 is up now too")
     monkeypatch.setattr(reply, "_followup", lambda s: {"text": "ours", "key": "k1"})

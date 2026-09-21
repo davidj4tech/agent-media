@@ -513,6 +513,67 @@ def ghost_prompt(pane: str) -> str:
     return " ".join(" ".join(words).split())
 
 
+def pane_draft(pane: str) -> bool:
+    """Is there text half-typed on that session's input line?
+
+    Typing into a pane appends to whatever is already there, so anything this
+    sends while a line is being written would join it and be submitted as one
+    message. Dim text is the harness's own suggestion, not the listener's, and
+    does not count (`ghost_prompt`).
+    """
+    cap = _capture_pane(pane)
+    if not cap:
+        return False
+    lines = cap.split("\n")
+    start = next((i for i in range(len(lines) - 1, -1, -1)
+                  if _SGR.sub("", lines[i]).lstrip().startswith(_PROMPT_GLYPH)), None)
+    if start is None:
+        return False
+    runs = _dim_runs(lines[start])
+    text = "".join(t for t, _ in runs)
+    cut = text.index(_PROMPT_GLYPH) + 1
+    seen, typed = 0, []
+    for t, dim in runs:
+        if seen + len(t) <= cut:
+            seen += len(t)
+            continue
+        if not dim:
+            typed.append(t[max(0, cut - seen):])
+        seen += len(t)
+    return bool("".join(typed).strip("\u00a0 "))
+
+
+def send_rename(session: str, title: str) -> str:
+    """Have Claude Code rename its own session. "" when it did, else why not.
+
+    `/rename <title>` rather than `tmux rename-window`: the name then belongs
+    to the session — the prompt bar, `/resume`, and this host's window names,
+    which tmux builds from the pane's label rather than from a name set by
+    hand. Renaming the window directly also turned that window's
+    automatic-rename off, so every later name it should have picked up was
+    lost; this turns it back on.
+    """
+    from . import panes
+
+    pane = conversation_pane(session)
+    if not pane:
+        return "no pane: the session is not running"
+    if pane_draft(pane):
+        # Ours would be appended to what is being typed and sent as one line.
+        return "something is being typed there"
+    err = panes.send(pane, f"/rename {title}")
+    if err:
+        return err
+    _tmux(["set-window-option", "-t", pane, "automatic-rename", "on"])
+    return ""
+
+
+def conversation_pane(session: str) -> str:
+    from agent_media_core import conversation
+
+    return conversation.pane_of(session)
+
+
 # --- the question a session is waiting on ----------------------------------------
 
 #: An option in an agent's dialog: "❯ 1. Yes, and use auto mode". All three
@@ -2073,7 +2134,13 @@ def rename_conversation(item: str, session: str, title: str, bearer: str) -> tup
     named = book_tracks.rename(session, title)
     if not named:
         return False, {"error": "could not rename", "status": 500}
-    return True, {"session": session, "title": named}
+    # A running Claude Code never re-reads its name file, so it is told the
+    # way a person would: `/rename` typed into its pane. Not being able to
+    # (ended, or mid-sentence in the box) is not a failed rename — the shelf
+    # and the name file have it, and the next session starts with it.
+    why = send_rename(session, named)
+    return True, {"session": session, "title": named,
+                  "terminal": not why, "why": why or None}
 
 
 def attach_pictures(lines: list) -> None:

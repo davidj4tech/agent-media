@@ -178,27 +178,6 @@ def pane_of(session: str) -> str:
     return ""
 
 
-def rename_window(session: str, title: str) -> bool:
-    """Call this session's tmux window `title` too. False if there is none.
-
-    Claude Code names the window itself, from the name it is holding in
-    memory, and it does not read the name file again while it runs — so a
-    rename from the app left the window saying the old thing. Renaming it
-    here also turns tmux's automatic renaming off for that window, which is
-    what makes the new name stay.
-    """
-    pane = pane_of(session)
-    if not pane or not title.strip():
-        return False
-    try:
-        done = subprocess.run(["tmux", "rename-window", "-t", pane, title.strip()],
-                              capture_output=True, text=True, timeout=10)
-    except (OSError, subprocess.SubprocessError) as e:  # noqa: BLE001
-        log.debug("cannot rename window for %s (%s)", session, e)
-        return False
-    return done.returncode == 0
-
-
 def transcript(session: str) -> Optional[Path]:
     """The session's transcript file, or None.
 

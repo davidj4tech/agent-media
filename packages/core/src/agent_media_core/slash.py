@@ -41,7 +41,8 @@ SETTINGS = frozenset({
     "context", "cost", "doctor", "exit", "export", "fast", "feedback", "help",
     "hooks", "ide", "install-github-app", "keybindings", "login", "logout",
     "mcp", "memory", "model", "output-style", "permissions", "plugin",
-    "privacy-settings", "quit", "release-notes", "resume", "rewind", "sandbox",
+    "privacy-settings", "quit", "release-notes", "rename", "resume", "rewind",
+    "sandbox",
     "statusline", "status", "terminal-setup", "theme", "todos", "upgrade",
     "usage", "vim",
 })
