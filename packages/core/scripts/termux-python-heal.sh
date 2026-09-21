@@ -225,6 +225,15 @@ else
                 ln -sfn "$f" "$BIN/$(basename "$f")" && n=$((n + 1))
             done
             say "relinked $n entrypoint(s) into $BIN"
+            # Core alone is not the install: the canvas needs visual and the
+            # server beside it, and a rebuilt venv has neither. --no-deps:
+            # core brought what they need.
+            for _pkg in server visual; do
+                [ -d "$CHECKOUT/packages/$_pkg" ] || continue
+                uv pip install --no-deps -e "$CHECKOUT/packages/$_pkg" \
+                    --python "$VENV/bin/python" >/dev/null 2>&1 \
+                    || say "uv pip install packages/$_pkg failed"
+            done
             if "$VENV/bin/python" -c 'import agent_media_core' 2>/dev/null; then
                 say "repaired"
                 if command -v termux-notification >/dev/null 2>&1; then

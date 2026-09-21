@@ -24,7 +24,21 @@ if [ -n "$(git status --porcelain -- packages/visual packages/server)" ]; then
 fi
 git push -q origin main 2>/dev/null || true
 
+# The canvas imports packages that live beside it (packages/server since the
+# split of 21 Sep 2026). A pull that adds one leaves an editable install that
+# cannot import it, and a restart then takes the canvas down. So: install
+# what is missing, then prove the canvas imports BEFORE stopping the one
+# that is running — a failed deploy should leave the old canvas up.
+PKGS="server visual"
+
 echo "== red5 =="
+for pkg in $PKGS; do
+    mod="agent_media_$pkg"
+    .venv/bin/python -c "import $mod" 2>/dev/null \
+        || { echo "  installing packages/$pkg"; .venv/bin/pip install -q -e "packages/$pkg"; }
+done
+.venv/bin/python -c 'import agent_media_visual.canvas' \
+    || { echo "red5: the canvas does not import -- not restarting it" >&2; exit 1; }
 systemctl --user restart agent-media-visual-canvas
 sleep 2
 red5_id="$(curl -s -m 8 http://red5:8781/pageid || echo unreachable)"
@@ -32,8 +46,17 @@ echo "  serving $red5_id"
 
 echo "== $PHONE =="
 # shellcheck disable=SC2029  # $PREFIX is meant to expand on the phone
-ssh "$PHONE" 'cd ~/projects/agent-media && git pull -q --ff-only
-SVDIR=$PREFIX/var/service sv restart canvas-local >/dev/null
+# The phone's venv was built by uv and has no pip; --no-deps so nothing
+# native is rebuilt there (see termux-python-heal.sh).
+ssh "$PHONE" "cd ~/projects/agent-media && git pull -q --ff-only
+for pkg in $PKGS; do
+    .venv/bin/python -c \"import agent_media_\$pkg\" 2>/dev/null || {
+        echo \"  installing packages/\$pkg\"
+        uv pip install -q --no-deps --python .venv/bin/python -e packages/\$pkg; }
+done
+.venv/bin/python -c 'import agent_media_visual.canvas' \\
+    || { echo '$PHONE: the canvas does not import -- not restarting it' >&2; exit 1; }"
+ssh "$PHONE" 'SVDIR=$PREFIX/var/service sv restart canvas-local >/dev/null
 sleep 2
 printf "  serving "; curl -s -m 6 http://127.0.0.1:8781/pageid'
 
