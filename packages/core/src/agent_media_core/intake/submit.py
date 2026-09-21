@@ -3181,23 +3181,44 @@ def _submit_event(event: Event,
             _clip_sentences.append(sentences[i])
         return True
 
-    if stream:
-        # Wait for enough contiguous audio that the player is unlikely to run
-        # dry before the next clip is appended. Renders finish far faster than
-        # they play, so the lead only has to cover the gap at the very start.
+    # Set once the reply's first clips are in hand — the claim thread's
+    # prefetch waits on it (see _claim_and_prefetch).
+    _lead_ready = threading.Event()
+
+    def _wait_lead() -> None:
+        """Adopt the lead: contiguous clips until MEDIA_STREAM_LEAD_S of audio,
+        so the player is unlikely to run dry before the next clip is appended.
+        Renders finish far faster than they play, so the lead only has to cover
+        the gap at the very start. If every sentence of the lead failed, the
+        ones behind it may still be fine, so the reply is not lost yet."""
+        nonlocal lead_n
         try:
             lead_s = float(os.environ.get("MEDIA_STREAM_LEAD_S", "6"))
         except ValueError:
             lead_s = 6.0
-        lead_n = 0
         while lead_n < len(sentences):
             _adopt(lead_n)
             lead_n += 1
             if sum(durations) >= lead_s:
                 break
+        if not clip_data:
+            for i in range(lead_n, len(sentences)):
+                _adopt(i)
+            lead_n = len(sentences)
+        if lead_n >= len(sentences):
+            _rest_done.set()        # the lead was the whole reply
+        _lead_ready.set()
+
+    if stream:
+        # Not waited for here. The renders are already running; the lead is
+        # collected after the token, the broker claim and before_speech, which
+        # are round trips to the phone the render can hide behind — instead of
+        # a whole first sentence (1.3s, 21 Sep) in series ahead of them.
+        lead_n = 0
     else:
         lead_n = len(sentences)
         _rest_done.set()
+        _lead_ready.set()
         for sentence, pi, outfile, future in zip(sentences, sent_para,
                                                  outfiles, futures):
             try:
@@ -3238,15 +3259,7 @@ def _submit_event(event: Event,
                 _acc += d
             _clip_sentences.extend(s for s, _ in clip_data)
 
-    if not clip_data and stream and lead_n < len(sentences):
-        # Every sentence in the lead failed to render; the ones behind it may
-        # still be fine, so the reply is not lost yet.
-        for i in range(lead_n, len(sentences)):
-            _adopt(i)
-        lead_n = len(sentences)
-        _rest_done.set()
-
-    if not clip_data:
+    if not clip_data and not stream:
         playback_lock.release()   # nothing to say; stop holding our queue slot
         return None
 
@@ -3441,6 +3454,9 @@ def _submit_event(event: Event,
         # way out so a late claim can never outlive our release of it.
         def _claim_and_prefetch() -> None:
             _wait_and_claim_broker(sink, target)
+            # The lead, once it is in hand. Every way out sets this before
+            # joining the thread, so the wait cannot outlive the reply.
+            _lead_ready.wait()
             getattr(sink, "prefetch", lambda *a, **k: None)(
                 [p for _, p in clip_data], target)
 
@@ -3457,7 +3473,18 @@ def _submit_event(event: Event,
             coordinator.before_speech(
                 title=source_window, priority=event.priority.value,
                 # The first sentence; the clip loop moves it on from there.
-                text=clip_data[0][0] if clip_data else text)
+                text=(clip_data[0][0] if clip_data
+                      else sentences[0] if sentences else text))
+            if stream:
+                _wait_lead()
+                total_duration_s = sum(durations)
+                if not clip_data:
+                    # Nothing rendered at all. Unlike the path that waits
+                    # before the token, this finds out holding it, so the way
+                    # out is the finally: music restored, broker and token
+                    # released. Its "end" breadcrumb has no "start" twin, and
+                    # says played=False.
+                    return None
             _claim.join()
             # Speech-started breadcrumb — the moment we commit to feeding the
             # broker. Its "end" twin is in the finally below, so every exit
@@ -3884,7 +3911,9 @@ def _submit_event(event: Event,
             state.clear_now_playing("speech")
             # A claim still in flight (before_speech raised) must finish
             # before it is released, or it would land after and hold the
-            # broker for its whole TTL.
+            # broker for its whole TTL. It may be waiting for a lead that is
+            # never coming; let it go first.
+            _lead_ready.set()
             _claim.join()
             # Drop the cross-host broker claim before the flock so the next host
             # (and the next local waiter) can take over immediately. No-op local.

@@ -142,3 +142,80 @@ def test_a_claim_in_flight_is_never_released_before_it_lands():
 
     assert "played" not in sink.events
     assert sink.events.index("claimed") < sink.events.index("released")
+
+
+# --- streaming: the render hides behind the pre-speech round trips --------
+
+
+class _CoordAfter(_Coord):
+    def __init__(self, started, fail=False):
+        super().__init__(started, fail)
+        self.after = 0
+
+    def after_speech(self):
+        self.after += 1
+
+
+def _streaming(monkeypatch):
+    monkeypatch.setenv("MEDIA_STREAM_CLIPS", "1")
+    monkeypatch.setenv("MEDIA_STREAM_LEAD_S", "2")
+
+
+def test_the_lead_renders_behind_before_speech_not_ahead_of_it(monkeypatch):
+    """The first sentence used to be waited for before the token was even
+    taken — 1.3s in series. Its render now only has to be done by the time
+    before_speech is: this render cannot finish until before_speech begins."""
+    _streaming(monkeypatch)
+    started = threading.Event()
+    seen = {}
+
+    def render(text, outfile, **_):
+        seen["before_speech_had_begun"] = started.wait(timeout=5)
+        return _render(text, outfile)
+
+    monkeypatch.setattr(S, "render_text", render)
+    sink = _Sink(started)
+    _say(sink, _Coord(started))
+
+    assert seen["before_speech_had_begun"], (
+        "the reply waited for its lead before before_speech could start")
+    assert "played" in sink.events
+
+
+def test_a_reply_that_renders_nothing_lets_go_of_everything(monkeypatch):
+    """Found out while holding the token now, so it leaves by the same door
+    as any other reply: music restored, broker and token released."""
+    _streaming(monkeypatch)
+    monkeypatch.setattr(S, "render_text", lambda *a, **k: (False, "engine down"))
+    started = threading.Event()
+    sink, coord = _Sink(started), _CoordAfter(started)
+
+    assert _say(sink, coord) is None
+    assert "played" not in sink.events
+    assert coord.after == 1
+    assert sink.events.index("claimed") < sink.events.index("released")
+
+
+def test_before_speech_failing_cannot_strand_the_claim_thread(monkeypatch):
+    """The claim thread's prefetch waits for the lead. If before_speech raises,
+    nobody collects it — the way out must release that wait, not join a
+    thread that will never finish."""
+    _streaming(monkeypatch)
+    started = threading.Event()
+    sink = _Sink(started)
+    raised = []
+
+    def run():
+        try:
+            _say(sink, _Coord(started, fail=True))
+        except RuntimeError as e:
+            raised.append(e)
+
+    # Run it aside, so the bug this guards against fails the test instead of
+    # hanging the whole run.
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(timeout=10)
+    assert not t.is_alive(), "the reply deadlocked joining the claim thread"
+    assert raised
+    assert sink.events.index("claimed") < sink.events.index("released")
