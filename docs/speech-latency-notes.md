@@ -147,11 +147,21 @@ cuts; not re-measured after them.
 
 Left, in rough order of value:
 
-1. **Unmeasured: the phone's own part** — from play_playlist to audible.
-   Sasonica fetches each clip over HTTP from red5; the MediaPlayer spike
-   measured an HTTP prepare at 8.5s against 44ms for a local file. If the app
-   player prepares from HTTP, this may be the largest piece left. Measure by
-   polling snapshots after play_playlist until time-pos advances.
+1. **The phone's own part — MEASURED, 2.45s** (scratchpad
+   `measure_audible.py`: each snapshot's read time minus its time-pos gives
+   when the clip began; three reads agreed to 10ms). Submit -> audible ~6.8s
+   end to end, no hold, no queue: 4.3s on red5, 2.45s on the phone, of which
+   ~0.4s is the command in transit and the rest is most likely the app
+   fetching clip 0 over HTTP from red5 plus decoder start. Clip 1's start
+   estimates wandered by ~0.5s — probably a buffering stall while it was
+   still downloading (inferred, not confirmed).
+
+   Lever: Sasonica starts fetching a clip the moment it is appended, even to
+   an idle player (BuiltinSpeech.warm). So the playlist could be LOADED right
+   after the broker claim — the claim is what makes the player ours — and
+   only STARTED (playlist-pos 0) once before_speech is done. With music on,
+   before_speech outlasts the claim by ~2s, which would hide the whole fetch.
+   Without music, it gains little. Termux mpv does not fetch on append.
 2. The music probe (3.2s) resolves app and phone liveness one after the
    other; they are independent and could be asked together (~0.9s).
 3. Nagle on the phone: batched reads cost two round trips because the
