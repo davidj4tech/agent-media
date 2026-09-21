@@ -2,6 +2,7 @@
 
 import pytest
 
+from agent_media_server import auth_abs, panes
 from agent_media_visual import canvas, reply
 
 # Claude Code's plan dialog, as a 34-column pane draws it (labels wrap).
@@ -47,7 +48,7 @@ def test_a_screen_with_no_question_has_none():
 
 def test_the_key_follows_the_words(monkeypatch):
     monkeypatch.setattr(reply, "_capture_pane", lambda p: CLAUDE)
-    monkeypatch.setattr(canvas, "_classify_agent", lambda cap, agent="claude": "approval")
+    monkeypatch.setattr(panes, "classify", lambda cap, agent="claude": "approval")
     first = reply.approval_for("%7")
     assert first["key"] and first["agent"] == "claude"
     monkeypatch.setattr(reply, "_capture_pane", lambda p: CLAUDE.replace("auto mode", "AUTO MODE"))
@@ -56,23 +57,23 @@ def test_the_key_follows_the_words(monkeypatch):
 
 def test_nothing_to_answer_when_the_pane_is_not_waiting(monkeypatch):
     monkeypatch.setattr(reply, "_capture_pane", lambda p: CLAUDE)
-    monkeypatch.setattr(canvas, "_classify_agent", lambda cap, agent="claude": "working")
+    monkeypatch.setattr(panes, "classify", lambda cap, agent="claude": "working")
     assert reply.approval_for("%7") is None
 
 
 @pytest.fixture
 def _allowed(monkeypatch):
-    monkeypatch.setattr(reply, "abs_identity", lambda b: ({"username": "d", "type": "root"}, 200))
-    monkeypatch.setattr(reply, "may_reply", lambda u: (True, ""))
+    monkeypatch.setattr(auth_abs, "abs_identity", lambda b: ({"username": "d", "type": "root"}, 200))
+    monkeypatch.setattr(auth_abs, "may_reply", lambda u: (True, ""))
 
 
 @pytest.fixture
 def _live(monkeypatch, _allowed):
     monkeypatch.setattr(reply, "live_sessions", lambda: {SID: "%7"})
-    monkeypatch.setattr(canvas, "_pane_alive", lambda p: True)
+    monkeypatch.setattr(panes, "alive", lambda p: True)
     monkeypatch.setattr(reply, "_agent_of_pane", lambda p: "claude")
     monkeypatch.setattr(reply, "_capture_pane", lambda p: CLAUDE)
-    monkeypatch.setattr(canvas, "_classify_agent", lambda cap, agent="claude": "approval")
+    monkeypatch.setattr(panes, "classify", lambda cap, agent="claude": "approval")
     keys = []
     monkeypatch.setattr(reply, "_tmux", lambda argv, timeout=10: keys.append(argv[-1]) or "")
     return keys
@@ -110,7 +111,7 @@ def test_an_option_that_is_not_offered_is_refused(_live):
 
 
 def test_a_session_with_no_question_is_refused(monkeypatch, _live):
-    monkeypatch.setattr(canvas, "_classify_agent", lambda cap, agent="claude": "input")
+    monkeypatch.setattr(panes, "classify", lambda cap, agent="claude": "input")
     ok, detail = reply.answer(SID, 1, "", "tok")
     assert ok is False and detail["status"] == 409 and "not waiting" in detail["error"]
     assert _live == []
@@ -149,12 +150,12 @@ CODEX_NUMBERED_REPLY = """• Here is the plan:
 
 
 def test_a_numbered_reply_is_not_a_question():
-    assert canvas._classify_agent(NUMBERED_REPLY, "claude") == "input"
-    assert canvas._classify_agent(CODEX_NUMBERED_REPLY, "codex") == "input"
+    assert panes.classify(NUMBERED_REPLY, "claude") == "input"
+    assert panes.classify(CODEX_NUMBERED_REPLY, "codex") == "input"
 
 
 def test_the_marked_list_is_the_dialog():
-    assert canvas._classify_agent(REPLY_THEN_DIALOG, "claude") == "approval"
+    assert panes.classify(REPLY_THEN_DIALOG, "claude") == "approval"
     d = reply.parse_dialog(REPLY_THEN_DIALOG)
     assert d["question"] == "Do you want to proceed?"
     assert d["options"] == [{"n": 1, "label": "Yes", "detail": ""},
@@ -163,7 +164,7 @@ def test_the_marked_list_is_the_dialog():
 
 def test_a_session_in_plan_mode_is_still_claude_code():
     # The dialog covers the footer, so the mode line is all there is.
-    assert canvas._classify_agent("  ⏸ plan mode on (shift+tab to", "claude") == "input"
+    assert panes.classify("  ⏸ plan mode on (shift+tab to", "claude") == "input"
 
 
 # The list can be longer than the pane, and then it scrolls: the top of the
@@ -182,7 +183,7 @@ Enter to select · ↑/↓ to navigate
 
 
 def test_a_scrolled_dialog_says_it_is_partial():
-    assert canvas._classify_agent(SCROLLED, "claude") == "approval"
+    assert panes.classify(SCROLLED, "claude") == "approval"
     d = reply.parse_dialog(SCROLLED)
     assert d["partial"] is True and d["question"] == ""
     assert [o["n"] for o in d["options"]] == [3, 5]

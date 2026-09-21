@@ -27,7 +27,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_media_visual import canvas, panes, reply
+from agent_media_server import auth_abs, panes
+from agent_media_visual import canvas, reply
 
 SID = "6c73498c-02c1-4846-8350-a82006973571"
 SID2 = "0f1e2d3c-4b5a-4968-8776-a5b4c3d2e1f0"
@@ -49,7 +50,7 @@ def typed(monkeypatch):
         return f
 
     monkeypatch.setattr(canvas, "send_input", rec("send_input", (False, "stubbed")))
-    monkeypatch.setattr(canvas, "_send_to_pane", rec("_send_to_pane", ""))
+    monkeypatch.setattr(reply, "_send_to_pane", rec("_send_to_pane", ""))
     monkeypatch.setattr(panes, "send", rec("panes.send", "stubbed"))
     monkeypatch.setattr(reply, "_tmux", rec("_tmux", ""))
     monkeypatch.setattr(reply, "open_window", rec("open_window", ("", "stubbed")))
@@ -74,8 +75,8 @@ def shelf(monkeypatch, tmp_path):
     monkeypatch.setattr(reply, "_capture_pane", lambda p: "")
     monkeypatch.setattr(reply, "_agent_of_pane", lambda p: "claude")
     monkeypatch.setattr(reply, "_followup", lambda s: None)
-    monkeypatch.setattr(canvas, "_classify_agent", lambda cap, agent="claude": "working")
-    monkeypatch.setattr(canvas, "_pane_alive", lambda p: True)
+    monkeypatch.setattr(panes, "classify", lambda cap, agent="claude": "working")
+    monkeypatch.setattr(panes, "alive", lambda p: True)
     monkeypatch.setattr(reply, "_STATES_CACHE", (0.0, []))
     reply._NOW_CACHE.clear()
     return tmp_path
@@ -83,15 +84,15 @@ def shelf(monkeypatch, tmp_path):
 
 @pytest.fixture()
 def signed_in(monkeypatch):
-    monkeypatch.setattr(reply, "abs_identity", lambda bearer: (ROOT, 200))
-    monkeypatch.setattr(reply, "_abs_url", lambda: "http://abs")
+    monkeypatch.setattr(auth_abs, "abs_identity", lambda bearer: (ROOT, 200))
+    monkeypatch.setattr(auth_abs, "_abs_url", lambda: "http://abs")
     # An item lookup answers with the shelved conversation's folder; anything
     # else (the library listing item_for_session walks) answers with nothing.
     def get(url, bearer, path, method="GET"):
         if path.startswith("/api/items/"):
             return {"id": "li_1", "path": "/audiobooks/p-agent-media/Sasonica music"}, 200
         return None, 404
-    monkeypatch.setattr(reply, "_abs_get", get)
+    monkeypatch.setattr(auth_abs, "_abs_get", get)
 
 
 @pytest.fixture()
@@ -138,8 +139,8 @@ GATED_GETS = ["/targets", "/sessions/state", "/conversations",
 
 @pytest.mark.parametrize("path", GATED_GETS)
 def test_no_bearer_is_401_with_an_error(server, monkeypatch, path):
-    monkeypatch.setattr(reply, "abs_urls", lambda: ["http://abs"])
-    monkeypatch.setattr(reply, "_abs_get", lambda *a, **k: (None, 401))
+    monkeypatch.setattr(auth_abs, "abs_urls", lambda: ["http://abs"])
+    monkeypatch.setattr(auth_abs, "_abs_get", lambda *a, **k: (None, 401))
     res, obj = call(server, "GET", path)
     assert res.status == 401, obj
     assert obj["ok"] is False and isinstance(obj["error"], str)
@@ -150,7 +151,7 @@ def test_no_bearer_is_401_with_an_error(server, monkeypatch, path):
 def test_abs_down_is_503_never_401(server, monkeypatch, path):
     # A 401 makes the client refresh its token and, failing that, log out.
     # An outage must not end the session.
-    monkeypatch.setattr(reply, "abs_identity", lambda bearer: (None, 0))
+    monkeypatch.setattr(auth_abs, "abs_identity", lambda bearer: (None, 0))
     res, obj = call(server, "GET", path, headers=AUTH)
     assert res.status == 503, obj
     assert obj["ok"] is False
@@ -158,7 +159,7 @@ def test_abs_down_is_503_never_401(server, monkeypatch, path):
 
 @pytest.mark.parametrize("path", GATED_GETS)
 def test_a_user_not_allowed_to_reply_is_403(server, monkeypatch, path):
-    monkeypatch.setattr(reply, "abs_identity",
+    monkeypatch.setattr(auth_abs, "abs_identity",
                         lambda bearer: ({"username": "guest", "type": "user"}, 200))
     res, obj = call(server, "GET", path, headers=AUTH)
     assert res.status == 403, obj
@@ -216,7 +217,7 @@ def test_conversation_by_session_rejects_a_non_id(server, shelf, signed_in):
 
 
 def test_conversation_for_an_unknown_item_is_404(server, shelf, signed_in, monkeypatch):
-    monkeypatch.setattr(reply, "_abs_get", lambda *a, **k: (None, 404))
+    monkeypatch.setattr(auth_abs, "_abs_get", lambda *a, **k: (None, 404))
     res, obj = call(server, "GET", "/conversation?item=li_x", headers=AUTH)
     assert res.status == 404 and obj == {"ok": False, "error": "no such item"}
 

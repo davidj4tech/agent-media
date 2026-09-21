@@ -6255,8 +6255,28 @@ def selfcheck_facts() -> "dict[str, str]":
     facts.update(_dictation_rate_facts())
     facts.update(_mic_block_facts())
     facts.update(_ringer_facts())
+    facts.update(_package_facts())
     _cache_facts(facts)
     return facts
+
+
+def _package_facts() -> "dict[str, str]":
+    """The canvas installed without the server package it now imports.
+
+    The app's API moved out of `packages/visual` into `packages/server`
+    (docs/proposals/2026-09-21-server-package.md), and the canvas imports it
+    at startup. A host that pulled the split but never ran `pip install -e
+    packages/server` has a current checkout and a canvas that dies at import —
+    the same dead-install shape this check exists for, one package over.
+    """
+    import importlib.util
+
+    try:
+        visual = importlib.util.find_spec("agent_media_visual") is not None
+        server = importlib.util.find_spec("agent_media_server") is not None
+    except (ImportError, ValueError):
+        return {}
+    return {"missing": "agent_media_server"} if visual and not server else {}
 
 
 def _hold_facts() -> "dict[str, str]":
@@ -6615,6 +6635,9 @@ def health_problems(facts: "dict[str, str]") -> "list[str]":
             problems.append(f"{name[:-3].replace('_', '/')} is {mb}MB")
     if facts.get("down"):
         problems.append(f"services down: {facts['down']}")
+    if facts.get("missing"):
+        problems.append(f"not installed: {facts['missing']} — the canvas will not "
+                        "start (pip install -e packages/server)")
     if facts.get("crashloop"):
         problems.append(f"crash-looping: {facts['crashloop']}")
     vol = facts.get("media_volume")

@@ -1,0 +1,16 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agent-media-server"
+version = "0.0.1"
+description = "The app's API: sessions, replies, threads and the auth in front of them."
+license = { text = "MIT" }
+requires-python = ">=3.11"
+# Stdlib HTTP only, like the canvas it was split out of. `visual` depends on
+# this package, never the other way round (docs/proposals/2026-09-21-server-package.md).
+dependencies = ["agent-media-core"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent_media_server"]

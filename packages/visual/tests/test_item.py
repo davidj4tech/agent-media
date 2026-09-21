@@ -157,9 +157,9 @@ def test_an_item_is_fetched_as_the_caller(monkeypatch):
     monkeypatch.setattr(item_mod.urllib.request, "urlopen", fake_open)
     # Identity is settled before the fetch: the caller may be signed in to a
     # second Audiobookshelf, and the item is asked of that one.
-    monkeypatch.setattr("agent_media_visual.reply.abs_identity",
+    monkeypatch.setattr("agent_media_server.auth_abs.abs_identity",
                         lambda b: ({"username": "root", "type": "root"}, 200))
-    monkeypatch.setattr("agent_media_visual.reply.abs_home",
+    monkeypatch.setattr("agent_media_server.auth_abs.abs_home",
                         lambda b: "http://abs.example")
 
     ok, out = item_mod.item_for_app("li_1", "tok-abc")
@@ -171,7 +171,7 @@ def test_an_item_is_fetched_as_the_caller(monkeypatch):
 
 
 def test_no_bearer_is_a_401_before_abs_is_troubled(monkeypatch):
-    monkeypatch.setattr("agent_media_visual.reply._abs_url",
+    monkeypatch.setattr("agent_media_server.auth_abs._abs_url",
                         lambda: "http://abs.example")
     ok, err = item_mod.item_for_app("li_1", "  ")
     assert (ok, err["status"]) == (False, 401)
@@ -187,7 +187,7 @@ def test_abs_rejecting_the_token_stays_a_401(monkeypatch):
         raise urllib.error.HTTPError(req.full_url, 401, "no", {}, None)
 
     monkeypatch.setattr(item_mod.urllib.request, "urlopen", fake_open)
-    monkeypatch.setattr("agent_media_visual.reply._abs_url",
+    monkeypatch.setattr("agent_media_server.auth_abs._abs_url",
                         lambda: "http://abs.example")
     ok, err = item_mod.item_for_app("li_1", "tok")
     assert (ok, err["status"]) == (False, 401)
@@ -200,7 +200,7 @@ def test_abs_being_down_is_never_a_401(monkeypatch):
         raise urllib.error.URLError("connection refused")
 
     monkeypatch.setattr(item_mod.urllib.request, "urlopen", fake_open)
-    monkeypatch.setattr("agent_media_visual.reply._abs_url",
+    monkeypatch.setattr("agent_media_server.auth_abs._abs_url",
                         lambda: "http://abs.example")
     ok, err = item_mod.item_for_app("li_1", "tok")
     assert (ok, err["status"]) == (False, 503)
@@ -219,9 +219,9 @@ def test_an_answer_that_is_not_an_item_is_a_502(monkeypatch):
 
     monkeypatch.setattr(item_mod.urllib.request, "urlopen",
                         lambda req, timeout=0: _Resp())
-    monkeypatch.setattr("agent_media_visual.reply.abs_identity",
+    monkeypatch.setattr("agent_media_server.auth_abs.abs_identity",
                         lambda b: ({"username": "root", "type": "root"}, 200))
-    monkeypatch.setattr("agent_media_visual.reply.abs_home",
+    monkeypatch.setattr("agent_media_server.auth_abs.abs_home",
                         lambda b: "http://abs.example")
     ok, err = item_mod.item_for_app("li_1", "tok")
     assert (ok, err["status"]) == (False, 502)
@@ -244,9 +244,9 @@ def _serve(monkeypatch, item):
 
     monkeypatch.setattr(item_mod.urllib.request, "urlopen",
                         lambda req, timeout=0: _Resp())
-    monkeypatch.setattr("agent_media_visual.reply.abs_identity",
+    monkeypatch.setattr("agent_media_server.auth_abs.abs_identity",
                         lambda b: ({"username": "root", "type": "root"}, 200))
-    monkeypatch.setattr("agent_media_visual.reply.abs_home",
+    monkeypatch.setattr("agent_media_server.auth_abs.abs_home",
                         lambda b: "http://abs.example")
 
 
@@ -278,7 +278,7 @@ def test_a_conversation_the_caller_may_not_reply_to_is_a_book_to_them(tmp_path, 
     # always get its reply box, so the gate that decides the box decides this.
     _manifests(tmp_path, monkeypatch, [("abc-1", "/x/scratch/scratch - Drones")])
     _serve(monkeypatch, {**_item(), "path": "/conversations/scratch/scratch - Drones"})
-    monkeypatch.setattr("agent_media_visual.reply.may_reply",
+    monkeypatch.setattr("agent_media_server.auth_abs.may_reply",
                         lambda user: (False, "no"))
     ok, out = item_mod.item_for_app("li_1", "tok")
     assert ok and out["conversation"] is False

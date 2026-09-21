@@ -47,6 +47,26 @@ def test_health_problems_reports_down_and_looping_services():
     assert "37" in joined
 
 
+def test_health_problems_flags_the_canvas_without_its_server():
+    """The canvas imports packages/server; a host that pulled the split and
+    never installed it has a canvas that dies at import."""
+    problems = cli.health_problems(
+        {"selfcheck": "1", "install": "editable", "missing": "agent_media_server"})
+    assert any("agent_media_server" in p for p in problems)
+
+
+def test_package_facts_name_the_missing_server(monkeypatch):
+    import importlib.util
+
+    real = importlib.util.find_spec
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name, *a: (
+        None if name == "agent_media_server" else object() if name == "agent_media_visual"
+        else real(name, *a)))
+    assert cli._package_facts() == {"missing": "agent_media_server"}
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name, *a: None)
+    assert cli._package_facts() == {}
+
+
 def test_health_problems_silent_on_a_healthy_host():
     assert cli.health_problems(
         {"selfcheck": "1", "install": "editable", "services": "5"}) == []

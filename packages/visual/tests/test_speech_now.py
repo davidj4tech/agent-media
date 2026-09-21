@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from agent_media_server import auth_abs
 from agent_media_visual import canvas, reply
 
 SID = "6c73498c-02c1-4846-8350-a82006973571"
@@ -9,7 +10,7 @@ ROOT = {"username": "david", "type": "root"}
 
 
 def _as(monkeypatch, user=ROOT, status=200):
-    monkeypatch.setattr(reply, "abs_identity", lambda bearer: (user, status))
+    monkeypatch.setattr(auth_abs, "abs_identity", lambda bearer: (user, status))
     reply._NOW_CACHE.clear()
 
 

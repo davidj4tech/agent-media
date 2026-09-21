@@ -1,6 +1,6 @@
-"""Reading Codex's and pi's screens, as the canvas does Claude Code's."""
+"""Reading Codex's and pi's screens, as the canvas does Claude Code's (panes.classify)."""
 
-from agent_media_visual import canvas
+from agent_media_server import panes
 
 CODEX_IDLE = """  Tip: You can resume a previous conversation
 › Ask Codex to do anything
@@ -31,20 +31,20 @@ PI_WORKING = """ $ sleep 5; echo done
 
 
 def test_codex_states():
-    assert canvas._classify_agent(CODEX_IDLE, "codex") == "input"
-    assert canvas._classify_agent(CODEX_WORKING, "codex") == "working"
-    assert canvas._classify_agent(CODEX_APPROVAL, "codex") == "approval"
-    assert canvas._classify_agent("Loading...", "codex") is None
+    assert panes.classify(CODEX_IDLE, "codex") == "input"
+    assert panes.classify(CODEX_WORKING, "codex") == "working"
+    assert panes.classify(CODEX_APPROVAL, "codex") == "approval"
+    assert panes.classify("Loading...", "codex") is None
 
 
 def test_pi_states():
-    assert canvas._classify_agent(PI_IDLE, "pi") == "input"
-    assert canvas._classify_agent(PI_WORKING, "pi") == "working"
-    assert canvas._classify_agent("npm warn deprecated …", "pi") is None
+    assert panes.classify(PI_IDLE, "pi") == "input"
+    assert panes.classify(PI_WORKING, "pi") == "working"
+    assert panes.classify("npm warn deprecated …", "pi") is None
 
 
 def test_claude_is_unchanged():
-    assert canvas._classify_agent("? for shortcuts", "claude") == "input"
+    assert panes.classify("? for shortcuts", "claude") == "input"
 
 
 def test_codex_hook_review_is_not_a_composer():
@@ -53,7 +53,7 @@ def test_codex_hook_review_is_not_a_composer():
   3 hooks are new or changed.
 › 1. Review hooks
 """
-    assert canvas._classify_agent(cap, "codex") == "approval"
+    assert panes.classify(cap, "codex") == "approval"
 
 
 # A phone-width tmux window truncates Claude Code's footer.
@@ -73,5 +73,5 @@ NARROW_IDLE = """  ⎿  Tip: Run /install-github-app
 
 
 def test_a_narrow_pane_still_reads_as_working():
-    assert canvas._classify_agent(NARROW_WORKING, "claude") == "working"
-    assert canvas._classify_agent(NARROW_IDLE, "claude") == "input"
+    assert panes.classify(NARROW_WORKING, "claude") == "working"
+    assert panes.classify(NARROW_IDLE, "claude") == "input"

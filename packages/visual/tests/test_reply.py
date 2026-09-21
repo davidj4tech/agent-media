@@ -5,6 +5,7 @@ import os
 
 import pytest
 
+from agent_media_server import auth_abs, panes
 from agent_media_visual import reply
 
 
@@ -13,32 +14,32 @@ from agent_media_visual import reply
 def test_root_may_reply_without_configuration(monkeypatch):
     monkeypatch.delenv("MEDIA_REPLY_USERS", raising=False)
     monkeypatch.delenv("MEDIA_REPLY_ROOT", raising=False)
-    ok, who = reply.may_reply({"username": "david", "type": "root"})
+    ok, who = auth_abs.may_reply({"username": "david", "type": "root"})
     assert (ok, who) == (True, "david")
 
 
 def test_root_can_be_switched_off(monkeypatch):
     monkeypatch.setenv("MEDIA_REPLY_ROOT", "0")
     monkeypatch.delenv("MEDIA_REPLY_USERS", raising=False)
-    ok, _ = reply.may_reply({"username": "david", "type": "root"})
+    ok, _ = auth_abs.may_reply({"username": "david", "type": "root"})
     assert ok is False
 
 
 def test_admin_is_not_enough(monkeypatch):
     # A library-management role is not a keyboard: admins are named or nothing.
     monkeypatch.delenv("MEDIA_REPLY_USERS", raising=False)
-    ok, why = reply.may_reply({"username": "sam", "type": "admin"})
+    ok, why = auth_abs.may_reply({"username": "sam", "type": "admin"})
     assert ok is False and "not allowed" in why
 
 
 def test_named_user_may_reply(monkeypatch):
     monkeypatch.setenv("MEDIA_REPLY_USERS", " sam , cece ")
-    assert reply.may_reply({"username": "cece", "type": "user"})[0] is True
-    assert reply.may_reply({"username": "guest", "type": "user"})[0] is False
+    assert auth_abs.may_reply({"username": "cece", "type": "user"})[0] is True
+    assert auth_abs.may_reply({"username": "guest", "type": "user"})[0] is False
 
 
 def test_no_identity_is_a_refusal():
-    assert reply.may_reply(None)[0] is False
+    assert auth_abs.may_reply(None)[0] is False
 
 
 # --- identity comes from ABS, and is cached -----------------------------------
@@ -50,43 +51,43 @@ def test_identity_asks_abs_once_per_ttl(monkeypatch):
         calls.append((path, method, bearer))
         return {"user": {"username": "david", "type": "root"}}, 200
 
-    monkeypatch.setattr(reply, "_abs_url", lambda: "http://abs")
-    monkeypatch.setattr(reply, "_abs_get", fake_get)
-    reply._IDENT.clear()
-    assert reply.abs_identity("tok")[0]["username"] == "david"
-    assert reply.abs_identity("tok")[0]["username"] == "david"
+    monkeypatch.setattr(auth_abs, "_abs_url", lambda: "http://abs")
+    monkeypatch.setattr(auth_abs, "_abs_get", fake_get)
+    auth_abs._IDENT.clear()
+    assert auth_abs.abs_identity("tok")[0]["username"] == "david"
+    assert auth_abs.abs_identity("tok")[0]["username"] == "david"
     assert calls == [("/api/authorize", "POST", "tok")]
 
 
 def test_identity_of_a_bad_token_is_none(monkeypatch):
-    monkeypatch.setattr(reply, "_abs_url", lambda: "http://abs")
-    monkeypatch.setattr(reply, "_abs_get", lambda *a, **k: (None, 401))
-    reply._IDENT.clear()
-    assert reply.abs_identity("nope") == (None, 401)
-    assert reply.abs_identity("") == (None, 401)
+    monkeypatch.setattr(auth_abs, "_abs_url", lambda: "http://abs")
+    monkeypatch.setattr(auth_abs, "_abs_get", lambda *a, **k: (None, 401))
+    auth_abs._IDENT.clear()
+    assert auth_abs.abs_identity("nope") == (None, 401)
+    assert auth_abs.abs_identity("") == (None, 401)
 
 
 def test_a_refusal_is_never_cached(monkeypatch):
     # One transient failure used to refuse every reply for the next minute.
     answers = [(None, 0), ({"user": {"username": "d", "type": "root"}}, 200)]
-    monkeypatch.setattr(reply, "_abs_url", lambda: "http://abs")
+    monkeypatch.setattr(auth_abs, "_abs_url", lambda: "http://abs")
     # One server, so the two canned answers line up with the two calls. Without
     # this the test reads the dev machine's real abs-bridge.env: an extra server
     # there consumes an answer of its own and the assertion desyncs.
-    monkeypatch.setattr(reply, "abs_urls", lambda: ["http://abs"])
-    monkeypatch.setattr(reply, "_abs_get", lambda *a, **k: answers.pop(0))
-    reply._IDENT.clear()
-    assert reply.abs_identity("tok") == (None, 0)
-    assert reply.abs_identity("tok")[0]["username"] == "d"
+    monkeypatch.setattr(auth_abs, "abs_urls", lambda: ["http://abs"])
+    monkeypatch.setattr(auth_abs, "_abs_get", lambda *a, **k: answers.pop(0))
+    auth_abs._IDENT.clear()
+    assert auth_abs.abs_identity("tok") == (None, 0)
+    assert auth_abs.abs_identity("tok")[0]["username"] == "d"
 
 
 def test_an_unreachable_abs_is_not_a_401(monkeypatch):
     # A 401 sends the app off to refresh its token, and a failed refresh logs
     # the user out — an outage must never do that.
-    assert reply._identity_error(0)["status"] == 503
-    assert reply._identity_error(503)["status"] == 503
-    assert reply._identity_error(401)["status"] == 401
-    assert reply._identity_error(500)["status"] == 502
+    assert auth_abs._identity_error(0)["status"] == 503
+    assert auth_abs._identity_error(503)["status"] == 503
+    assert auth_abs._identity_error(401)["status"] == 401
+    assert auth_abs._identity_error(500)["status"] == 502
 
 
 # --- item → session -----------------------------------------------------------
@@ -102,17 +103,17 @@ def _manifests(tmp_path, monkeypatch, rows):
 def test_item_resolves_to_its_session(tmp_path, monkeypatch):
     _manifests(tmp_path, monkeypatch,
                [("abc-1", "/home/ryer/conversations/scratch/scratch - Drones")])
-    monkeypatch.setattr(reply, "_abs_url", lambda: "http://abs")
+    monkeypatch.setattr(auth_abs, "_abs_url", lambda: "http://abs")
     # ABS reports its own mount; only the <author>/<title> tail is shared.
-    monkeypatch.setattr(reply, "_abs_get",
+    monkeypatch.setattr(auth_abs, "_abs_get",
                         lambda *a, **k: ({"path": "/conversations/scratch/scratch - Drones"}, 200))
     assert reply.session_for_item("item1", "tok") == ("abc-1", "")
 
 
 def test_an_item_with_no_manifest_is_not_a_conversation(tmp_path, monkeypatch):
     _manifests(tmp_path, monkeypatch, [("abc-1", "/x/scratch/scratch - Drones")])
-    monkeypatch.setattr(reply, "_abs_url", lambda: "http://abs")
-    monkeypatch.setattr(reply, "_abs_get", lambda *a, **k: ({"path": "/books/Tolkien/Hobbit"}, 200))
+    monkeypatch.setattr(auth_abs, "_abs_url", lambda: "http://abs")
+    monkeypatch.setattr(auth_abs, "_abs_get", lambda *a, **k: ({"path": "/books/Tolkien/Hobbit"}, 200))
     sid, why = reply.session_for_item("item1", "tok")
     assert sid is None and "not a conversation" in why
 
@@ -120,8 +121,8 @@ def test_an_item_with_no_manifest_is_not_a_conversation(tmp_path, monkeypatch):
 def test_an_item_abs_will_not_show_us_is_refused(monkeypatch):
     # The caller's own bearer does the lookup, so ABS's library permissions
     # decide this for us: no item, no reply.
-    monkeypatch.setattr(reply, "_abs_url", lambda: "http://abs")
-    monkeypatch.setattr(reply, "_abs_get", lambda *a, **k: (None, 404))
+    monkeypatch.setattr(auth_abs, "_abs_url", lambda: "http://abs")
+    monkeypatch.setattr(auth_abs, "_abs_get", lambda *a, **k: (None, 404))
     assert reply.session_for_item("item1", "tok") == (None, "no such item")
 
 
@@ -129,15 +130,15 @@ def test_an_unreachable_abs_is_not_a_missing_item(monkeypatch):
     # These were the same message, and they send you to opposite places: one
     # says the library is wrong, the other says the server blinked. Status 0
     # is "could not be reached" (see _abs_get).
-    monkeypatch.setattr(reply, "_abs_url", lambda: "http://abs")
-    monkeypatch.setattr(reply, "_abs_get", lambda *a, **k: (None, 0))
+    monkeypatch.setattr(auth_abs, "_abs_url", lambda: "http://abs")
+    monkeypatch.setattr(auth_abs, "_abs_get", lambda *a, **k: (None, 0))
     sid, why = reply.session_for_item("item1", "tok")
     assert sid is None and "did not answer" in why and "no such item" not in why
 
 
 def test_a_broken_abs_says_what_it_said(monkeypatch):
-    monkeypatch.setattr(reply, "_abs_url", lambda: "http://abs")
-    monkeypatch.setattr(reply, "_abs_get", lambda *a, **k: (None, 500))
+    monkeypatch.setattr(auth_abs, "_abs_url", lambda: "http://abs")
+    monkeypatch.setattr(auth_abs, "_abs_get", lambda *a, **k: (None, 500))
     sid, why = reply.session_for_item("item1", "tok")
     assert sid is None and "500" in why and "no such item" not in why
 
@@ -167,7 +168,7 @@ def test_reply_refuses_an_empty_message():
 
 
 def test_reply_refuses_a_user_who_may_not_type(monkeypatch):
-    monkeypatch.setattr(reply, "abs_identity", lambda b: ({"username": "guest", "type": "user"}, 200))
+    monkeypatch.setattr(auth_abs, "abs_identity", lambda b: ({"username": "guest", "type": "user"}, 200))
     monkeypatch.delenv("MEDIA_REPLY_USERS", raising=False)
     typed = []
     monkeypatch.setattr(reply, "session_for_item",
@@ -178,7 +179,7 @@ def test_reply_refuses_a_user_who_may_not_type(monkeypatch):
 
 
 def test_a_session_with_no_transcript_is_not_revived(monkeypatch):
-    monkeypatch.setattr(reply, "abs_identity", lambda b: ({"username": "d", "type": "root"}, 200))
+    monkeypatch.setattr(auth_abs, "abs_identity", lambda b: ({"username": "d", "type": "root"}, 200))
     monkeypatch.delenv("MEDIA_REPLY_ROOT", raising=False)
     monkeypatch.setattr(reply, "session_for_item", lambda *a, **k: ("gone-1", ""))
     monkeypatch.setattr(reply, "live_sessions", dict)
@@ -201,7 +202,7 @@ def _allowed(monkeypatch):
     # a conversation called "You: hi". Tests that care about it override this.
     monkeypatch.setattr(reply, "_record_turn", lambda s, t, p="": None)
     monkeypatch.setattr(reply, "_ensure_submitted", lambda p, t, timeout=3.0, agent="claude": True)
-    monkeypatch.setattr(reply, "abs_identity", lambda b: ({"username": "d", "type": "root"}, 200))
+    monkeypatch.setattr(auth_abs, "abs_identity", lambda b: ({"username": "d", "type": "root"}, 200))
     monkeypatch.delenv("MEDIA_REPLY_ROOT", raising=False)
     monkeypatch.setattr(reply, "session_for_item", lambda *a, **k: ("sess-1", ""))
     monkeypatch.setattr(reply, "session_exists", lambda s: True)
@@ -212,8 +213,8 @@ def test_a_live_session_is_typed_into_directly(monkeypatch, _allowed):
     from agent_media_visual import canvas
     sent = []
     monkeypatch.setattr(reply, "live_sessions", lambda: {"sess-1": "%7"})
-    monkeypatch.setattr(canvas, "_pane_alive", lambda p: True)
-    monkeypatch.setattr(canvas, "_send_to_pane", lambda p, t: sent.append((p, t)) or "")
+    monkeypatch.setattr(panes, "alive", lambda p: True)
+    monkeypatch.setattr(reply, "_send_to_pane", lambda p, t: sent.append((p, t)) or "")
     monkeypatch.setattr(reply, "open_window", lambda *a, **k: pytest.fail("should not revive"))
     ok, detail = reply.reply("item1", "hi", "tok", quote="a turn")
     assert ok is True
@@ -232,7 +233,7 @@ def test_a_dead_session_is_revived_in_a_window(monkeypatch, _allowed):
 
     monkeypatch.setattr(reply, "live_sessions", dict)
     monkeypatch.setattr(reply, "open_window", fake_open)
-    monkeypatch.setattr(canvas, "_send_to_pane", lambda p, t: sent.append((p, t)) or "")
+    monkeypatch.setattr(reply, "_send_to_pane", lambda p, t: sent.append((p, t)) or "")
     ok, detail = reply.reply("item1", "hi", "tok")
     assert ok is True and detail["opened"] is True and detail["pane"] == "%9"
     assert opened == [("sess-1", "/home/ryer/projects/x", True)]
@@ -243,9 +244,9 @@ def test_a_stale_pane_id_falls_through_to_a_revive(monkeypatch, _allowed):
     # Pane ids get recycled, so a live_sessions hit is still probed.
     from agent_media_visual import canvas
     monkeypatch.setattr(reply, "live_sessions", lambda: {"sess-1": "%7"})
-    monkeypatch.setattr(canvas, "_pane_alive", lambda p: False)
+    monkeypatch.setattr(panes, "alive", lambda p: False)
     monkeypatch.setattr(reply, "open_window", lambda *a, **k: ("%9", ""))
-    monkeypatch.setattr(canvas, "_send_to_pane", lambda p, t: "")
+    monkeypatch.setattr(reply, "_send_to_pane", lambda p, t: "")
     ok, detail = reply.reply("item1", "hi", "tok")
     assert ok is True and detail["pane"] == "%9"
 
@@ -263,7 +264,7 @@ def test_branch_never_resumes_and_seeds_a_fresh_session(monkeypatch, _allowed):
     monkeypatch.setattr(reply, "live_sessions", lambda: {"sess-1": "%7"})
     monkeypatch.setattr(reply, "open_window",
                         lambda s, cwd, *, resume, agent="claude": opened.append(resume) or ("%9", ""))
-    monkeypatch.setattr(canvas, "_send_to_pane", lambda p, t: sent.append(t) or "")
+    monkeypatch.setattr(reply, "_send_to_pane", lambda p, t: sent.append(t) or "")
     ok, detail = reply.reply("item1", "go deeper", "tok", quote="a turn", mode="branch")
     assert ok is True and detail["branched"] is True
     assert opened == [False]                       # a branch is not a resume
@@ -274,7 +275,7 @@ def test_branch_never_resumes_and_seeds_a_fresh_session(monkeypatch, _allowed):
 
 def test_focus_refuses_a_pane_that_is_not_claude(monkeypatch):
     from agent_media_visual import canvas
-    monkeypatch.setattr(canvas, "_tmux_cc_panes", lambda: [{"pane": "%7"}])
+    monkeypatch.setattr(panes, "tmux_agent_panes", lambda: [{"pane": "%7"}])
     ok, why = reply.focus("%3")
     assert ok is False and "not a live agent pane" in why
 
@@ -282,7 +283,7 @@ def test_focus_refuses_a_pane_that_is_not_claude(monkeypatch):
 def test_focus_walks_the_client_to_the_pane(monkeypatch):
     from agent_media_visual import canvas
     calls = []
-    monkeypatch.setattr(canvas, "_tmux_cc_panes", lambda: [{"pane": "%7"}])
+    monkeypatch.setattr(panes, "tmux_agent_panes", lambda: [{"pane": "%7"}])
     monkeypatch.setattr(reply, "_tmux",
                         lambda a, **k: calls.append(a) or ("work" if "session_name" in a[-1]
                                                           else "@2" if "window_id" in a[-1] else ""))
@@ -296,7 +297,7 @@ def test_focus_walks_the_client_to_the_pane(monkeypatch):
 
 def test_conversation_says_yes_for_a_live_one(monkeypatch):
     monkeypatch.setattr(reply, "suggestion_for", lambda *a, **k: "sp4 is up now too")
-    monkeypatch.setattr(reply, "abs_identity", lambda b: ({"username": "d", "type": "root"}, 200))
+    monkeypatch.setattr(auth_abs, "abs_identity", lambda b: ({"username": "d", "type": "root"}, 200))
     monkeypatch.delenv("MEDIA_REPLY_ROOT", raising=False)
     monkeypatch.setattr(reply, "session_for_item", lambda *a, **k: ("sess-1", ""))
     monkeypatch.setattr(reply, "live_sessions", lambda: {"sess-1": "%7"})
@@ -309,14 +310,14 @@ def test_conversation_says_yes_for_a_live_one(monkeypatch):
 
 def test_conversation_says_no_to_someone_who_may_not_reply(monkeypatch):
     # The box must not appear where the send would be refused.
-    monkeypatch.setattr(reply, "abs_identity", lambda b: ({"username": "guest", "type": "user"}, 200))
+    monkeypatch.setattr(auth_abs, "abs_identity", lambda b: ({"username": "guest", "type": "user"}, 200))
     monkeypatch.delenv("MEDIA_REPLY_USERS", raising=False)
     ok, detail = reply.conversation("item1", "tok")
     assert ok is False and "not allowed" in detail["error"]
 
 
 def test_conversation_says_no_for_an_ordinary_audiobook(monkeypatch):
-    monkeypatch.setattr(reply, "abs_identity", lambda b: ({"username": "d", "type": "root"}, 200))
+    monkeypatch.setattr(auth_abs, "abs_identity", lambda b: ({"username": "d", "type": "root"}, 200))
     monkeypatch.delenv("MEDIA_REPLY_ROOT", raising=False)
     monkeypatch.setattr(reply, "session_for_item", lambda *a, **k: (None, "not a conversation"))
     ok, _ = reply.conversation("item1", "tok")
@@ -324,14 +325,14 @@ def test_conversation_says_no_for_an_ordinary_audiobook(monkeypatch):
 
 
 def test_an_unreachable_abs_does_not_read_as_a_bad_login(monkeypatch):
-    monkeypatch.setattr(reply, "abs_identity", lambda b: (None, 0))
+    monkeypatch.setattr(auth_abs, "abs_identity", lambda b: (None, 0))
     ok, detail = reply.reply("item1", "hi", "tok")
     assert ok is False and detail["status"] == 503
     assert "did not answer" in detail["error"]
 
 
 def test_a_rejected_token_reads_as_401(monkeypatch):
-    monkeypatch.setattr(reply, "abs_identity", lambda b: (None, 401))
+    monkeypatch.setattr(auth_abs, "abs_identity", lambda b: (None, 401))
     ok, detail = reply.conversation("item1", "tok")
     assert ok is False and detail["status"] == 401
 
@@ -342,8 +343,8 @@ def test_a_sent_reply_is_recorded_as_a_turn(monkeypatch, _allowed):
     from agent_media_visual import canvas
     recorded = []
     monkeypatch.setattr(reply, "live_sessions", lambda: {"sess-1": "%7"})
-    monkeypatch.setattr(canvas, "_pane_alive", lambda p: True)
-    monkeypatch.setattr(canvas, "_send_to_pane", lambda p, t: "")
+    monkeypatch.setattr(panes, "alive", lambda p: True)
+    monkeypatch.setattr(reply, "_send_to_pane", lambda p, t: "")
     monkeypatch.setattr(reply, "_record_turn", lambda s, t, p="": recorded.append((s, t)))
     ok, _ = reply.reply("item1", "try the second one", "tok", quote="a turn")
     assert ok is True
@@ -356,8 +357,8 @@ def test_nothing_is_recorded_when_the_send_fails(monkeypatch, _allowed):
     from agent_media_visual import canvas
     recorded = []
     monkeypatch.setattr(reply, "live_sessions", lambda: {"sess-1": "%7"})
-    monkeypatch.setattr(canvas, "_pane_alive", lambda p: True)
-    monkeypatch.setattr(canvas, "_send_to_pane", lambda p, t: "pane is gone")
+    monkeypatch.setattr(panes, "alive", lambda p: True)
+    monkeypatch.setattr(reply, "_send_to_pane", lambda p, t: "pane is gone")
     monkeypatch.setattr(reply, "_record_turn", lambda s, t, p="": recorded.append(s))
     ok, _ = reply.reply("item1", "hi", "tok")
     assert ok is False and recorded == []
@@ -393,16 +394,16 @@ def test_recording_a_turn_never_touches_the_real_library(monkeypatch):
 def test_one_server_by_default(monkeypatch, tmp_path):
     monkeypatch.delenv("MEDIA_ABS_URLS", raising=False)
     monkeypatch.setattr(reply.Path, "home", staticmethod(lambda: tmp_path))
-    monkeypatch.setattr(reply, "_abs_url", lambda: "http://one.example/")
-    assert reply.abs_urls() == ["http://one.example"]
+    monkeypatch.setattr(auth_abs, "_abs_url", lambda: "http://one.example/")
+    assert auth_abs.abs_urls() == ["http://one.example"]
 
 
 def test_extra_servers_come_from_the_environment(monkeypatch, tmp_path):
     monkeypatch.setenv("MEDIA_ABS_URLS", " http://two.example , http://one.example/ ,, ")
     monkeypatch.setattr(reply.Path, "home", staticmethod(lambda: tmp_path))
-    monkeypatch.setattr(reply, "_abs_url", lambda: "http://one.example")
+    monkeypatch.setattr(auth_abs, "_abs_url", lambda: "http://one.example")
     # Publishing server first, no duplicates, no empties.
-    assert reply.abs_urls() == ["http://one.example", "http://two.example"]
+    assert auth_abs.abs_urls() == ["http://one.example", "http://two.example"]
 
 
 def test_extra_servers_can_live_beside_the_abs_config(monkeypatch, tmp_path):
@@ -411,12 +412,12 @@ def test_extra_servers_can_live_beside_the_abs_config(monkeypatch, tmp_path):
     cfg.mkdir(parents=True)
     (cfg / "abs-bridge.env").write_text('ABS_URL=http://one.example\nABS_URLS="http://two.example"\n')
     monkeypatch.setattr(reply.Path, "home", staticmethod(lambda: tmp_path))
-    monkeypatch.setattr(reply, "_abs_url", lambda: "http://one.example")
-    assert reply.abs_urls() == ["http://one.example", "http://two.example"]
+    monkeypatch.setattr(auth_abs, "_abs_url", lambda: "http://one.example")
+    assert auth_abs.abs_urls() == ["http://one.example", "http://two.example"]
 
 
 def test_identity_tries_each_server_and_remembers_which(monkeypatch):
-    reply._IDENT.clear()
+    auth_abs._IDENT.clear()
     asked = []
 
     def fake_get(url, bearer, path, method="GET"):
@@ -425,39 +426,39 @@ def test_identity_tries_each_server_and_remembers_which(monkeypatch):
             return {"user": {"username": "david", "type": "root"}}, 200
         return None, 401
 
-    monkeypatch.setattr(reply, "abs_urls",
+    monkeypatch.setattr(auth_abs, "abs_urls",
                         lambda: ["http://one.example", "http://two.example"])
-    monkeypatch.setattr(reply, "_abs_get", fake_get)
-    user, status = reply.abs_identity("tok")
+    monkeypatch.setattr(auth_abs, "_abs_get", fake_get)
+    user, status = auth_abs.abs_identity("tok")
     assert (user["username"], status) == ("david", 200)
     assert asked == ["http://one.example", "http://two.example"]
     # And the item lookups that follow go to the server that knew them.
-    assert reply.abs_home("tok") == "http://two.example"
+    assert auth_abs.abs_home("tok") == "http://two.example"
 
 
 def test_a_token_no_server_knows_is_a_401(monkeypatch):
-    reply._IDENT.clear()
-    monkeypatch.setattr(reply, "abs_urls",
+    auth_abs._IDENT.clear()
+    monkeypatch.setattr(auth_abs, "abs_urls",
                         lambda: ["http://one.example", "http://two.example"])
-    monkeypatch.setattr(reply, "_abs_get", lambda *a, **k: (None, 401))
-    assert reply.abs_identity("tok") == (None, 401)
+    monkeypatch.setattr(auth_abs, "_abs_get", lambda *a, **k: (None, 401))
+    assert auth_abs.abs_identity("tok") == (None, 401)
 
 
 def test_a_server_being_down_does_not_hide_a_refusal(monkeypatch):
     # One unreachable, one refusing: the token is still the reason, and 401 is
     # what the app must be told rather than "the server did not answer".
-    reply._IDENT.clear()
+    auth_abs._IDENT.clear()
     seq = iter([(None, 0), (None, 401)])
-    monkeypatch.setattr(reply, "abs_urls",
+    monkeypatch.setattr(auth_abs, "abs_urls",
                         lambda: ["http://down.example", "http://two.example"])
-    monkeypatch.setattr(reply, "_abs_get", lambda *a, **k: next(seq))
-    assert reply.abs_identity("tok") == (None, 401)
+    monkeypatch.setattr(auth_abs, "_abs_get", lambda *a, **k: next(seq))
+    assert auth_abs.abs_identity("tok") == (None, 401)
 
 
 def test_abs_home_falls_back_to_the_publishing_server(monkeypatch):
-    reply._IDENT.clear()
-    monkeypatch.setattr(reply, "_abs_url", lambda: "http://one.example")
-    assert reply.abs_home("never-seen") == "http://one.example"
+    auth_abs._IDENT.clear()
+    monkeypatch.setattr(auth_abs, "_abs_url", lambda: "http://one.example")
+    assert auth_abs.abs_home("never-seen") == "http://one.example"
 
 
 # --- the transcript log flags a reply in flight ---------------------------------
@@ -467,7 +468,7 @@ def _log_ready(monkeypatch, tmp_path, lines):
     from agent_media_core import book_tracks
     _manifests(tmp_path, monkeypatch,
                [("sess-1", "/home/ryer/conversations/scratch/A talk")])
-    monkeypatch.setattr(reply, "abs_identity",
+    monkeypatch.setattr(auth_abs, "abs_identity",
                         lambda b: ({"username": "d", "type": "root"}, 200))
     monkeypatch.setattr(reply, "session_for_item", lambda *a, **k: ("sess-1", ""))
     monkeypatch.setattr(book_tracks, "conversation_log", lambda *a, **k: lines)
@@ -690,7 +691,7 @@ def _asker(monkeypatch, tmp_path):
     monkeypatch.setattr(reply, "_record_turn", lambda s, t, p="": None)
     monkeypatch.setattr(reply, "_settle", lambda p, timeout=5.0: None)
     monkeypatch.setattr(reply, "_ensure_submitted", lambda p, t, timeout=3.0, agent="claude": True)
-    monkeypatch.setattr(reply, "abs_identity", lambda b: ({"username": "d", "type": "root"}, 200))
+    monkeypatch.setattr(auth_abs, "abs_identity", lambda b: ({"username": "d", "type": "root"}, 200))
     monkeypatch.delenv("MEDIA_REPLY_ROOT", raising=False)
     _amux(tmp_path, monkeypatch, 'CC_DIR="/home/ryer/scratch"\nCC_FLAGS="--yolo"\n')
 
@@ -701,7 +702,7 @@ def test_ask_opens_a_fresh_window_and_types_the_first_message(monkeypatch, _aske
     monkeypatch.setattr(reply, "open_window",
                         lambda s, cwd, *, resume, host="", flags=(), agent="claude": opened.append((s, cwd, resume, host, list(flags))) or ("%9", ""))
     monkeypatch.setattr(reply, "session_of_pane", lambda p, timeout=10.0, agent="claude": "11111111-2222-3333-4444-555555555555")
-    monkeypatch.setattr(canvas, "_send_to_pane", lambda p, t: sent.append((p, t)) or "")
+    monkeypatch.setattr(reply, "_send_to_pane", lambda p, t: sent.append((p, t)) or "")
     monkeypatch.setattr(reply, "_record_turn", lambda s, t, p="": shelved.append((s, t)))
     ok, detail = reply.ask("what is the time", "tok", quote="a turn")
     assert ok is True
@@ -718,7 +719,7 @@ def test_ask_without_a_uuid_still_delivers_but_shelves_nothing(monkeypatch, _ask
     shelved = []
     monkeypatch.setattr(reply, "open_window", lambda *a, **k: ("%9", ""))
     monkeypatch.setattr(reply, "session_of_pane", lambda p, timeout=10.0, agent="claude": "")
-    monkeypatch.setattr(canvas, "_send_to_pane", lambda p, t: "")
+    monkeypatch.setattr(reply, "_send_to_pane", lambda p, t: "")
     monkeypatch.setattr(reply, "_record_turn", lambda s, t, p="": shelved.append(1))
     ok, detail = reply.ask("hi", "tok")
     assert ok is True and detail["session"] is None and shelved == []
@@ -731,7 +732,7 @@ def test_ask_refuses_an_empty_message_before_opening_anything(monkeypatch, _aske
 
 
 def test_ask_refuses_a_user_who_may_not_type(monkeypatch, _asker):
-    monkeypatch.setattr(reply, "abs_identity", lambda b: ({"username": "guest", "type": "user"}, 200))
+    monkeypatch.setattr(auth_abs, "abs_identity", lambda b: ({"username": "guest", "type": "user"}, 200))
     monkeypatch.setattr(reply, "open_window", lambda *a, **k: pytest.fail("opened"))
     ok, detail = reply.ask("hi", "tok")
     assert ok is False and detail["status"] == 403
@@ -770,7 +771,7 @@ def test_ask_in_a_project_opens_there_with_the_ask_flags(monkeypatch, _asker):
     monkeypatch.setattr(reply, "open_window",
                         lambda s, cwd, *, resume, host="", flags=(), agent="claude": opened.append((cwd, host, list(flags))) or ("%9", ""))
     monkeypatch.setattr(reply, "session_of_pane", lambda p, timeout=10.0, agent="claude": "")
-    monkeypatch.setattr(canvas, "_send_to_pane", lambda p, t: "")
+    monkeypatch.setattr(reply, "_send_to_pane", lambda p, t: "")
     ok, detail = reply.ask("hi", "tok", project="p-x")
     assert ok and detail["tmux"] == "p-x"
     assert opened == [("/home/ryer/projects/x", "p-x", ["--yolo"])]
@@ -785,11 +786,11 @@ def test_ask_in_an_unknown_project_opens_nothing(monkeypatch, _asker):
 
 def test_conversation_for_session_waits_for_the_item_and_its_tracks(tmp_path, monkeypatch):
     sid = "11111111-2222-3333-4444-555555555555"
-    monkeypatch.setattr(reply, "abs_identity", lambda b: ({"username": "d", "type": "root"}, 200))
+    monkeypatch.setattr(auth_abs, "abs_identity", lambda b: ({"username": "d", "type": "root"}, 200))
     monkeypatch.delenv("MEDIA_REPLY_ROOT", raising=False)
     monkeypatch.setattr(reply, "live_sessions", lambda: {sid: "%9"})
     monkeypatch.setattr(reply, "session_exists", lambda s: True)
-    monkeypatch.setattr(reply, "abs_home", lambda b: "http://phone-abs")
+    monkeypatch.setattr(auth_abs, "abs_home", lambda b: "http://phone-abs")
     _manifests(tmp_path, monkeypatch, [])
     ok, detail = reply.conversation_for_session(sid, "tok")
     assert ok is True and detail["item"] is None and detail["scanning"] is False and detail["live"] is True
@@ -806,7 +807,7 @@ def test_conversation_for_session_waits_for_the_item_and_its_tracks(tmp_path, mo
             return {"libraries": [{"id": "pod", "mediaType": "podcast"}, {"id": "conv", "mediaType": "book"}]}, 200
         return rows, 200
 
-    monkeypatch.setattr(reply, "_abs_get", abs_get)
+    monkeypatch.setattr(auth_abs, "_abs_get", abs_get)
     ok, detail = reply.conversation_for_session(sid, "tok")
     assert detail["item"] is None and detail["scanning"] is True     # created, no tracks yet
     assert all(u == "http://phone-abs" and b == "tok" for u, b, _ in asked)   # the caller's server
@@ -899,8 +900,8 @@ def test_a_reply_that_never_left_the_box_is_a_refusal(monkeypatch, _allowed):
     from agent_media_visual import canvas
     shelved = []
     monkeypatch.setattr(reply, "live_sessions", lambda: {"sess-1": "%7"})
-    monkeypatch.setattr(canvas, "_pane_alive", lambda p: True)
-    monkeypatch.setattr(canvas, "_send_to_pane", lambda p, t: "")
+    monkeypatch.setattr(panes, "alive", lambda p: True)
+    monkeypatch.setattr(reply, "_send_to_pane", lambda p, t: "")
     monkeypatch.setattr(reply, "_ensure_submitted", lambda p, t, timeout=3.0, agent="claude": False)
     monkeypatch.setattr(reply, "_record_turn", lambda s, t, p="": shelved.append(1))
     ok, detail = reply.reply("item1", "hi", "tok")
@@ -915,7 +916,7 @@ def test_an_ask_that_never_left_the_box_is_a_refusal(monkeypatch, _asker):
     monkeypatch.setattr(reply, "open_window",
                         lambda s, cwd, *, resume, host="", flags=(), agent="claude": ("%9", ""))
     monkeypatch.setattr(reply, "session_of_pane", lambda p, timeout=10.0, agent="claude": "sess-9")
-    monkeypatch.setattr(canvas, "_send_to_pane", lambda p, t: "")
+    monkeypatch.setattr(reply, "_send_to_pane", lambda p, t: "")
     monkeypatch.setattr(reply, "_ensure_submitted", lambda p, t, timeout=3.0, agent="claude": False)
     monkeypatch.setattr(reply, "_record_turn", lambda s, t, p="": shelved.append(1))
     ok, detail = reply.ask("what is the time", "tok")
@@ -1172,7 +1173,7 @@ SID = "11111111-2222-3333-4444-555555555555"
 
 @pytest.fixture
 def _manager(monkeypatch):
-    monkeypatch.setattr(reply, "abs_identity", lambda b: ({"username": "d", "type": "root"}, 200))
+    monkeypatch.setattr(auth_abs, "abs_identity", lambda b: ({"username": "d", "type": "root"}, 200))
     monkeypatch.delenv("MEDIA_REPLY_ROOT", raising=False)
     monkeypatch.setattr(reply, "_retag", lambda s: None)
 
@@ -1180,7 +1181,7 @@ def _manager(monkeypatch):
 def test_resume_a_live_session_just_says_where(monkeypatch, _manager):
     from agent_media_visual import canvas
     monkeypatch.setattr(reply, "live_sessions", lambda: {SID: "%7"})
-    monkeypatch.setattr(canvas, "_pane_alive", lambda p: True)
+    monkeypatch.setattr(panes, "alive", lambda p: True)
     monkeypatch.setattr(reply, "open_window", lambda *a, **k: pytest.fail("already live"))
     ok, d = reply.session_resume(SID, "tok")
     assert ok and d == {"session": SID, "pane": "%7", "live": True, "opened": False}
@@ -1246,14 +1247,14 @@ def test_a_draft_keeps_the_writer_clock_and_is_capped(tmp_path, monkeypatch, _ma
 def test_a_draft_is_gated_like_a_reply(monkeypatch):
     assert reply.draft_read("../x", "tok")[1]["status"] == 400
     assert reply.draft_write("../x", "hi", 0, "tok")[1]["status"] == 400
-    monkeypatch.setattr(reply, "abs_identity", lambda b: ({"username": "guest", "type": "user"}, 200))
+    monkeypatch.setattr(auth_abs, "abs_identity", lambda b: ({"username": "guest", "type": "user"}, 200))
     assert reply.draft_read(SID, "tok")[1]["status"] == 403
     assert reply.draft_write(SID, "hi", 0, "tok")[1]["status"] == 403
 
 
 def test_manage_needs_a_session_id_and_a_permitted_user(monkeypatch):
     assert reply.session_close("../x", "tok")[1]["status"] == 400
-    monkeypatch.setattr(reply, "abs_identity", lambda b: ({"username": "guest", "type": "user"}, 200))
+    monkeypatch.setattr(auth_abs, "abs_identity", lambda b: ({"username": "guest", "type": "user"}, 200))
     assert reply.session_resume(SID, "tok")[1]["status"] == 403
 
 
@@ -1261,8 +1262,8 @@ def test_a_reply_into_a_live_pane_checks_its_enter_landed(monkeypatch, _allowed)
     from agent_media_visual import canvas
     checked = []
     monkeypatch.setattr(reply, "live_sessions", lambda: {"sess-1": "%7"})
-    monkeypatch.setattr(canvas, "_pane_alive", lambda p: True)
-    monkeypatch.setattr(canvas, "_send_to_pane", lambda p, t: "")
+    monkeypatch.setattr(panes, "alive", lambda p: True)
+    monkeypatch.setattr(reply, "_send_to_pane", lambda p, t: "")
     monkeypatch.setattr(reply, "_ensure_submitted",
                         lambda p, t, timeout=3.0, agent="claude": checked.append((p, t)) or True)
     ok, _ = reply.reply("item1", "a long message that the TUI is still taking when Enter arrives", "tok")
@@ -1294,7 +1295,7 @@ def test_a_fresh_pi_is_told_its_id_up_front(monkeypatch, _asker):
                         lambda s, cwd, *, resume, host="", flags=(), agent="claude":
                         opened.append((s, agent, list(flags))) or ("%9", ""))
     monkeypatch.setattr(reply, "session_of_pane", lambda *a, **k: pytest.fail("pi's id is known"))
-    monkeypatch.setattr(canvas, "_send_to_pane", lambda p, t: "")
+    monkeypatch.setattr(reply, "_send_to_pane", lambda p, t: "")
     monkeypatch.setattr(reply, "_record_turn", lambda s, t, p="": shelved.append(s))
     ok, detail = reply.ask("hi", "tok", agent="pi")
     assert ok and detail["agent"] == "pi"
@@ -1308,7 +1309,7 @@ def test_a_fresh_codex_is_asked_its_session_after_the_send(monkeypatch, _asker):
     order = []
     monkeypatch.setattr(reply, "open_window",
                         lambda s, cwd, *, resume, host="", flags=(), agent="claude": ("%9", ""))
-    monkeypatch.setattr(canvas, "_send_to_pane", lambda p, t: order.append("send") or "")
+    monkeypatch.setattr(reply, "_send_to_pane", lambda p, t: order.append("send") or "")
     monkeypatch.setattr(reply, "session_of_pane",
                         lambda p, timeout=10.0, agent="claude": order.append(agent) or "01a0bb92-2fe2-7252-aa57-b8e7c84394a1")
     monkeypatch.setattr(reply, "_record_turn", lambda s, t, p="": None)
@@ -1393,8 +1394,8 @@ def test_a_directory_no_session_has_run_in_is_refused(tmp_path, monkeypatch):
     # /ask opens a shell where it is told to, so the phone picks from the
     # list the server published, not from anywhere on the disk.
     _places_world(tmp_path, monkeypatch, [("s-1", "agent-media", 100)])
-    monkeypatch.setattr(reply, "abs_identity", lambda b: ({"username": "d", "type": "root"}, 200))
-    monkeypatch.setattr(reply, "may_reply", lambda u: (True, ""))
+    monkeypatch.setattr(auth_abs, "abs_identity", lambda b: ({"username": "d", "type": "root"}, 200))
+    monkeypatch.setattr(auth_abs, "may_reply", lambda u: (True, ""))
     ok, detail = reply.ask("hi", "tok", cwd="/etc")
     assert not ok and detail["status"] == 404
 

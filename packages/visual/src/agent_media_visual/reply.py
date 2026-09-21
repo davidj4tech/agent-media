@@ -53,6 +53,8 @@ import urllib.request
 import uuid
 from pathlib import Path
 
+from agent_media_server import auth_abs, panes
+
 log = logging.getLogger("agent-media.visual.reply")
 
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
@@ -67,167 +69,6 @@ _SESSION = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 # the text on the floor, so this is a readiness probe, not a sleep.
 READY_TIMEOUT_S = float(os.environ.get("MEDIA_REPLY_READY_TIMEOUT") or 45.0)
 READY_POLL_S = 0.5
-
-
-# --- who is asking ------------------------------------------------------------
-
-# ABS is asked once per token per minute, not once per keystroke — /authorize
-# is a database read on their side and this sits in the path of a POST a human
-# made by hand.
-_IDENT_TTL_S = 60.0
-_IDENT_LOCK = threading.Lock()
-_IDENT: dict[str, tuple[float, dict | None]] = {}
-
-
-def _abs_url() -> str:
-    from agent_media_core import library
-
-    url, _token, _lib = library._abs_cfg()
-    return url
-
-
-def abs_urls() -> list[str]:
-    """Every Audiobookshelf this canvas will speak to, likeliest first.
-
-    One host can run more than one server — a second one to try a new client
-    against, say — and the app sends the bearer of whichever it is signed in
-    to. A bearer means nothing to the server that did not issue it, so "who is
-    this?" has to be asked of each in turn rather than only of the one we
-    publish to.
-
-    This is an allow-list, and deliberately not built from anything the caller
-    says: the caller's own token is forwarded to whatever is on it, so a
-    caller-named address would be a way to have us post their login to a host
-    of their choosing.
-
-    Extra servers go in `ABS_URLS` in ~/.config/agent-media/abs-bridge.env
-    (comma-separated), beside the ABS config that is already there, or in
-    MEDIA_ABS_URLS for a one-off. With neither set this is exactly the single
-    configured server it always was.
-    """
-    extra = os.environ.get("MEDIA_ABS_URLS") or ""
-    try:
-        for line in (Path.home() / ".config" / "agent-media"
-                     / "abs-bridge.env").read_text().splitlines():
-            line = line.strip()
-            if line.startswith("ABS_URLS=") and not extra:
-                extra = line.split("=", 1)[1].strip().strip('"\'')
-    except OSError:
-        pass
-    out, seen = [], set()
-    for u in [_abs_url()] + extra.split(","):
-        u = (u or "").strip().rstrip("/")
-        if u and u not in seen:
-            seen.add(u)
-            out.append(u)
-    return out
-
-
-def abs_home(bearer: str) -> str:
-    """Which Audiobookshelf this bearer belongs to, if we have found out.
-
-    Only meaningful after `abs_identity`, which is what does the finding; on
-    its own it answers with the server we publish to, which is the right guess
-    and the only one worth making.
-    """
-    with _IDENT_LOCK:
-        hit = _IDENT.get((bearer or "").strip())
-    if hit and time.monotonic() - hit[0] < _IDENT_TTL_S and len(hit) > 2:
-        return hit[2]
-    return _abs_url()
-
-
-def _abs_get(url: str, bearer: str, path: str,
-             method: str = "GET") -> tuple[dict | None, int]:
-    """`(body, status)`. Status 0 means Audiobookshelf could not be reached.
-
-    The status matters: "your token is no good" and "the server did not
-    answer" look identical from here otherwise, and they need opposite
-    responses — one should send the app off to refresh its token, the other
-    must not, because a failed refresh logs the user out.
-    """
-    req = urllib.request.Request(
-        url + path, method=method,
-        headers={"Authorization": f"Bearer {bearer}",
-                 "Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=8) as r:
-            return json.loads(r.read()), r.status
-    except urllib.error.HTTPError as e:
-        return None, e.code
-    except (urllib.error.URLError, OSError, ValueError):
-        return None, 0
-
-
-def abs_identity(bearer: str) -> tuple[dict | None, int]:
-    """`(user, status)` for this bearer — who ABS says it belongs to.
-
-    Asks ABS the same question the app asks at startup. Only *successes* are
-    cached: caching a refusal meant one transient failure refused every reply
-    for the next minute, which is exactly how this first went wrong.
-    """
-    bearer = (bearer or "").strip()
-    if not bearer:
-        return None, 401
-    now = time.monotonic()
-    with _IDENT_LOCK:
-        hit = _IDENT.get(bearer)
-        if hit and now - hit[0] < _IDENT_TTL_S:
-            return hit[1], 200
-    urls = abs_urls()
-    if not urls:
-        return None, 0
-    # Asked of each server until one recognises the token. A refusal from a
-    # server that did not issue it is not news, so a 401 is only the answer
-    # once every one of them has said it.
-    worst = 0
-    for url in urls:
-        body, status = _abs_get(url, bearer, "/api/authorize", method="POST")
-        user = (body or {}).get("user") if isinstance(body, dict) else None
-        user = user if isinstance(user, dict) and user.get("username") else None
-        if user:
-            with _IDENT_LOCK:
-                _IDENT[bearer] = (now, user, url)
-            return user, 200
-        if status:
-            worst = status if worst in (0, 401) or status == 401 else worst
-    return None, worst
-
-
-def _identity_error(status: int) -> dict:
-    """Turn "ABS would not tell us who this is" into an answer the app can act
-    on.
-
-    401 is the only status that should reach the app as 401, because the app
-    answers a 401 by refreshing its token and retrying — and if that refresh
-    fails it logs the user out. An Audiobookshelf that is merely down must
-    therefore never come back as 401: it would end the session over an outage.
-    """
-    if status == 401:
-        return {"error": "Audiobookshelf rejected that login", "status": 401}
-    if status in (0, 502, 503, 504):
-        return {"error": "Audiobookshelf did not answer", "status": 503}
-    return {"error": f"Audiobookshelf answered {status}", "status": 502}
-
-
-def may_reply(user: dict | None) -> tuple[bool, str]:
-    """Whether this ABS user may type into a session, and why not if not.
-
-    Root is allowed by default: on a single-user server root is the owner, and
-    making the sole admin edit a config file to talk to their own agents is
-    friction that buys nothing. Everyone else is named explicitly — by
-    username, not by type, because `admin` is a library-management role and
-    someone trusted with metadata is not thereby trusted with a keyboard.
-    """
-    if not user:
-        return False, "not signed in to Audiobookshelf"
-    name = str(user.get("username") or "")
-    if user.get("type") == "root" and (os.environ.get("MEDIA_REPLY_ROOT") or "1") != "0":
-        return True, name
-    allowed = {u.strip() for u in (os.environ.get("MEDIA_REPLY_USERS") or "").split(",") if u.strip()}
-    if name in allowed:
-        return True, name
-    return False, f"{name} is not allowed to reply"
 
 
 # --- which conversation, and so which session ---------------------------------
@@ -259,10 +100,10 @@ def session_for_item(item_id: str, bearer: str) -> tuple[str | None, str]:
     item_id = (item_id or "").strip()
     if not item_id:
         return None, "no item id"
-    url = abs_home(bearer)
+    url = auth_abs.abs_home(bearer)
     if not url:
         return None, "no Audiobookshelf configured on this host"
-    item, status = _abs_get(url, bearer, f"/api/items/{item_id}")
+    item, status = auth_abs._abs_get(url, bearer, f"/api/items/{item_id}")
     if not item:
         # The status is the difference between "that item is not there" and
         # "Audiobookshelf did not answer", which were both reported as the
@@ -321,9 +162,7 @@ def live_sessions() -> dict[str, str]:
             env = Path(d, "environ").read_bytes().split(b"\0")
         except OSError:
             continue
-        from . import panes as _panes
-
-        pane = _panes.addr_of_env(dict(e.split(b"=", 1) for e in env if b"=" in e))
+        pane = panes.addr_of_env(dict(e.split(b"=", 1) for e in env if b"=" in e))
         if not pane:
             continue
         # Claude's own record first: it follows /resume and /clear, and it is
@@ -363,12 +202,10 @@ def agent_of(session: str) -> str:
 
 
 def _agent_of_pane(pane: str) -> str:
-    from . import canvas, panes
-
     if not panes.is_herdr(pane):
         # Hermes runs as the venv's python, so the pane's command name is no
         # answer; its own process says so.
-        by_argv = canvas._agent_by_argv(
+        by_argv = panes.agent_by_argv(
             _tmux(["display", "-pt", pane, "#{pane_pid}"]))
         if by_argv:
             return by_argv
@@ -378,7 +215,7 @@ def _agent_of_pane(pane: str) -> str:
         cmd = panes.process_name(pane)
     else:
         cmd = _tmux(["display", "-pt", pane, "#{pane_current_command}"])
-    return cmd if cmd in canvas.AGENT_COMMANDS else "claude"
+    return cmd if cmd in panes.AGENT_COMMANDS else "claude"
 
 
 def transcript_cwd(session: str) -> str:
@@ -391,8 +228,6 @@ def transcript_cwd(session: str) -> str:
         cwd = harnesses.cwd_of(session)
         if cwd:
             return cwd
-        from . import panes
-
         pane = live_sessions().get(session, "")
         return panes.cwd(pane) if pane else ""
     if harnesses.harness_of(session) in (harnesses.CODEX, harnesses.PI):
@@ -430,8 +265,6 @@ _SGR = re.compile(r"\x1b\[([0-9;]*)m")
 
 def _capture_pane(pane: str) -> str:
     """The bottom of `pane` with its colours, which is where the ghost lives."""
-    from . import panes
-
     return panes.capture(pane, lines=40, ansi=True)
 
 
@@ -553,8 +386,6 @@ def send_rename(session: str, title: str) -> str:
     automatic-rename off, so every later name it should have picked up was
     lost; this turns it back on.
     """
-    from . import panes
-
     pane = conversation_pane(session)
     if not pane:
         return "no pane: the session is not running"
@@ -652,12 +483,10 @@ def approval_for(pane: str, agent: str = "claude") -> dict | None:
     arrives after the screen has moved on answers nothing (the question a
     listener read is the question they answered).
     """
-    from . import canvas
-
     if not pane:
         return None
-    cap = canvas._strip_ansi(_capture_pane(pane))
-    if canvas._classify_agent(cap, agent) != "approval":
+    cap = panes.strip_ansi(_capture_pane(pane))
+    if panes.classify(cap, agent) != "approval":
         return None
     dialog = parse_dialog(cap)
     if not dialog or not dialog["options"]:
@@ -679,15 +508,13 @@ def answer(session: str, choice: int, key: str, bearer: str) -> tuple[bool, dict
     still up — same options, same words — so this cannot be turned into a
     way of pressing keys into whatever a pane has moved on to.
     """
-    from . import canvas
-
     session = (session or "").strip()
     if not _SESSION.fullmatch(session):
         return False, {"error": "not a session id", "status": 400}
     if not _gate(bearer)[0]:
         return False, _gate(bearer)[1]
     pane = live_sessions().get(session, "")
-    if not pane or not canvas._pane_alive(pane):
+    if not pane or not panes.alive(pane):
         return False, {"error": f"session {session[:8]} is not live", "status": 404}
     agent = _agent_of_pane(pane)
     dialog = approval_for(pane, agent)
@@ -698,8 +525,6 @@ def answer(session: str, choice: int, key: str, bearer: str) -> tuple[bool, dict
                        "approval": dialog}
     if choice not in {o["n"] for o in dialog["options"]}:
         return False, {"error": f"no option {choice}", "status": 400, "approval": dialog}
-    from . import panes
-
     if panes.is_herdr(pane):
         panes._run(["herdr", "pane", "send-keys", panes.herdr_pane(pane), str(choice)])
         time.sleep(0.15)
@@ -793,12 +618,8 @@ def pane_ready(pane: str, agent: str = "claude") -> bool:
     exactly what `send_input` refuses to do blind — the difference is that this
     window is one we opened seconds ago and the text on it is matched first.
     """
-    from . import canvas
-
-    from . import panes
-
-    cap = canvas._strip_ansi(panes.capture(pane, lines=40, ansi=False))
-    state = canvas._classify_agent(cap, agent)
+    cap = panes.strip_ansi(panes.capture(pane, lines=40, ansi=False))
+    state = panes.classify(cap, agent)
     # Claude's resume modal is answered below; Codex's startup prompts (hooks
     # to trust, a directory to trust) are the person's to answer, and text
     # typed into one is lost — so for the others only a waiting composer is
@@ -996,9 +817,9 @@ def focus(pane: str) -> tuple[bool, str]:
     feature. Only panes hosting Claude Code are eligible, so this cannot be
     used to go rummaging through someone's shells.
     """
-    from . import canvas, panes
+    from . import canvas
 
-    if pane not in {p["pane"] for p in canvas._tmux_cc_panes() + canvas._herdr_cc_panes()}:
+    if pane not in {p["pane"] for p in panes.tmux_agent_panes() + canvas._herdr_cc_panes()}:
         return False, f"not a live agent pane: {pane!r}"
     if panes.is_herdr(pane):
         # herdr focuses a pane by id, workspace and tab included.
@@ -1221,13 +1042,11 @@ def _unsent(pane: str, head: str, agent: str, window: float) -> bool:
     Fails open. A capture that comes back empty reads as taken, because the
     alternative is hammering Enter at a pane we cannot see.
     """
-    from . import canvas
-
     deadline = time.monotonic() + window
     while True:
         time.sleep(0.5)
-        cap = canvas._strip_ansi(_capture_pane(pane))
-        if canvas._classify_agent(cap, agent) == "working":
+        cap = panes.strip_ansi(_capture_pane(pane))
+        if panes.classify(cap, agent) == "working":
             return False
         if agent == "pi":
             # pi's composer is the box between the last two rules.
@@ -1278,6 +1097,17 @@ def _unsent_error(pane: str, session: str = "") -> dict:
             "session": session or None, "status": 502}
 
 
+def _send_to_pane(pane: str, text: str) -> str:
+    """Type `text` + Enter into a pane, tmux's or herdr's (amux's
+    literal-then-Enter timing, which Claude Code's input buffering needs).
+    Returns "" or an error.
+
+    The one seam every message into a conversation goes through — tests
+    replace it to record what would have been typed."""
+    return panes.send(pane, text)
+
+
+
 def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
         agent: str = "", cwd: str = "") -> tuple[bool, dict]:
     """Start a fresh session with `text` as its first message.
@@ -1292,19 +1122,17 @@ def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
     without the library's naming convention in the middle.
     `agent` picks Claude Code (the default, or MEDIA_ASK_AGENT), Codex or pi.
     """
-    from . import canvas
-
     text = " ".join((text or "").split())
     if not text:
         return False, {"error": "empty message"}
-    user, status = abs_identity(bearer)
+    user, status = auth_abs.abs_identity(bearer)
     if not user:
-        return False, _identity_error(status)
-    ok, why = may_reply(user)
+        return False, auth_abs._identity_error(status)
+    ok, why = auth_abs.may_reply(user)
     if not ok:
         return False, {"error": why, "status": 403}
     agent = (agent or os.environ.get("MEDIA_ASK_AGENT") or "claude").strip().lower()
-    if agent not in canvas.AGENT_COMMANDS:
+    if agent not in panes.AGENT_COMMANDS:
         return False, {"error": f"unknown agent {agent!r}", "status": 400}
     where = (cwd or "").strip()
     host, cwd, flags = ask_target()
@@ -1331,7 +1159,7 @@ def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
     session = fixed or (session_of_pane(pane) if agent == "claude" else "")
     _settle(pane)
     body = compose(text, quote)
-    send_err = canvas._send_to_pane(pane, body)
+    send_err = _send_to_pane(pane, body)
     if send_err:
         return False, {"error": send_err, "session": session or None, "pane": pane}
     took = _ensure_submitted(pane, body, agent=agent)
@@ -1370,15 +1198,15 @@ def item_for_session(session: str, bearer: str) -> tuple[str | None, bool]:
     folder = _folder_for_session(session)
     if not folder:
         return None, False
-    url = abs_home(bearer)
+    url = auth_abs.abs_home(bearer)
     if not url:
         return None, False
     tail = _tail(folder)
-    libs, _status = _abs_get(url, bearer, "/api/libraries")
+    libs, _status = auth_abs._abs_get(url, bearer, "/api/libraries")
     for lib in (libs or {}).get("libraries") or []:
         if lib.get("mediaType") != "book":
             continue
-        page, _status = _abs_get(
+        page, _status = auth_abs._abs_get(
             url, bearer, f"/api/libraries/{lib.get('id')}/items?limit=1000&sort=addedAt&desc=1")
         for item in (page or {}).get("results") or []:
             if _tail(item.get("path") or "") == tail and item.get("id"):
@@ -1396,10 +1224,10 @@ def conversation_for_session(session: str, bearer: str) -> tuple[bool, dict]:
     session = (session or "").strip()
     if not _SESSION.fullmatch(session):
         return False, {"error": "not a session id", "status": 400}
-    user, status = abs_identity(bearer)
+    user, status = auth_abs.abs_identity(bearer)
     if not user:
-        return False, _identity_error(status)
-    ok, why = may_reply(user)
+        return False, auth_abs._identity_error(status)
+    ok, why = auth_abs.may_reply(user)
     if not ok:
         return False, {"error": why, "status": 403}
     pane = live_sessions().get(session, "")
@@ -1436,10 +1264,10 @@ def speech_now(bearer: str, state: dict) -> tuple[bool, dict]:
     own server, so a tap can open it. Gated like `/conversation`: titles and
     sentences are the conversation's, and the ABS bearer is the credential.
     """
-    user, status = abs_identity(bearer)
+    user, status = auth_abs.abs_identity(bearer)
     if not user:
-        return False, _identity_error(status)
-    ok, why = may_reply(user)
+        return False, auth_abs._identity_error(status)
+    ok, why = auth_abs.may_reply(user)
     if not ok:
         return False, {"error": why, "status": 403}
     speaking = bool(state.get("speaking"))
@@ -1474,8 +1302,6 @@ _STATES_LOCK = threading.Lock()
 
 
 def _live_states() -> list[dict]:
-    from . import canvas
-
     tails = {}
     for f in _manifest_dir().glob("*.json"):
         try:
@@ -1485,7 +1311,7 @@ def _live_states() -> list[dict]:
         tails[str(data.get("session") or f.stem)] = _tail(data.get("folder") or "")
     out = []
     for sid, pane in live_sessions().items():
-        cls = canvas._classify_agent(canvas._strip_ansi(_capture_pane(pane)),
+        cls = panes.classify(panes.strip_ansi(_capture_pane(pane)),
                                      _agent_of_pane(pane)) or "input"
         out.append({"session": sid, "tail": tails.get(sid, ""),
                     "state": _STATE_NAMES.get(cls, "waiting")})
@@ -1513,10 +1339,10 @@ def session_states(bearer: str) -> tuple[bool, dict]:
 
 def may_control_speech(bearer: str) -> tuple[bool, dict]:
     """The gate for `/speech/ctl`: the same person who may reply may pause."""
-    user, status = abs_identity(bearer)
+    user, status = auth_abs.abs_identity(bearer)
     if not user:
-        return False, _identity_error(status)
-    ok, why = may_reply(user)
+        return False, auth_abs._identity_error(status)
+    ok, why = auth_abs.may_reply(user)
     return (True, {}) if ok else (False, {"error": why, "status": 403})
 
 
@@ -1539,8 +1365,6 @@ def _pane_titles() -> dict[str, str]:
             titles[f[0]] = _SPINNER.sub("", f[2]).strip()
     # herdr keeps the same string as the pane's label, one call per pane —
     # there is no list form that carries it, and there are few of them.
-    from . import panes
-
     for addr in _live_herdr_panes():
         title = _SPINNER.sub("", panes.label(addr)).strip()
         if title:
@@ -1703,10 +1527,10 @@ def ask_routed(text: str, bearer: str, *, target: str = "", player_item: str = "
     text = " ".join((text or "").split())
     if not text:
         return False, {"error": "empty message"}
-    user, status = abs_identity(bearer)
+    user, status = auth_abs.abs_identity(bearer)
     if not user:
-        return False, _identity_error(status)
-    ok, why = may_reply(user)
+        return False, auth_abs._identity_error(status)
+    ok, why = auth_abs.may_reply(user)
     if not ok:
         return False, {"error": why, "status": 403}
 
@@ -1763,10 +1587,10 @@ def ask_routed(text: str, bearer: str, *, target: str = "", player_item: str = "
 # --- managing the session behind a conversation ---------------------------------
 
 def _gate(bearer: str) -> tuple[dict | None, dict]:
-    user, status = abs_identity(bearer)
+    user, status = auth_abs.abs_identity(bearer)
     if not user:
-        return None, _identity_error(status)
-    ok, why = may_reply(user)
+        return None, auth_abs._identity_error(status)
+    ok, why = auth_abs.may_reply(user)
     if not ok:
         return None, {"error": why, "status": 403}
     return user, {}
@@ -1794,10 +1618,8 @@ def session_resume(session: str, bearer: str) -> tuple[bool, dict]:
         return False, {"error": "not a session id", "status": 400}
     if not _gate(bearer)[0]:
         return False, _gate(bearer)[1]
-    from . import canvas
-
     pane = live_sessions().get(session, "")
-    if pane and canvas._pane_alive(pane):
+    if pane and panes.alive(pane):
         return True, {"session": session, "pane": pane, "live": True, "opened": False}
     if not session_exists(session):
         return False, {"error": f"session {session[:8]} has no transcript to resume", "status": 404}
@@ -1938,8 +1760,6 @@ def _record_turn(session: str, text: str, pane: str = "") -> None:
     conversation is filed under is read off its turns, and a fresh session's
     first export may hold only this turn.
     """
-    from . import panes
-
     where = {}
     if pane:
         at = panes.where(pane)
@@ -1981,15 +1801,13 @@ def reply(item: str, text: str, bearer: str, *, quote: str = "",
     forking a conversation, which Claude Code cannot really do (see the
     proposal: a true fork means truncating an undocumented transcript format).
     """
-    from . import canvas
-
     text = (text or "").strip()
     if not text:
         return False, {"error": "empty reply"}
-    user, status = abs_identity(bearer)
+    user, status = auth_abs.abs_identity(bearer)
     if not user:
-        return False, _identity_error(status)
-    ok, why = may_reply(user)
+        return False, auth_abs._identity_error(status)
+    ok, why = auth_abs.may_reply(user)
     if not ok:
         return False, {"error": why, "status": 403}
     session, err = session_for_item(item, bearer)
@@ -2004,7 +1822,7 @@ def reply(item: str, text: str, bearer: str, *, quote: str = "",
         pane, err = open_window("", transcript_cwd(session), resume=False, agent=agent)
         if err:
             return False, {"error": err, "pane": pane or None}
-        send_err = canvas._send_to_pane(pane, body)
+        send_err = _send_to_pane(pane, body)
         if send_err:
             return False, {"session": session, "pane": pane, "opened": True,
                            "branched": True, "error": send_err}
@@ -2024,12 +1842,10 @@ def deliver(session: str, body: str, text: str) -> tuple[bool, dict]:
     is typed (the quote rides along in it). Shared by a reply from a
     conversation's page and a reply the assistant button routed here.
     """
-    from . import canvas
-
     pane = live_sessions().get(session, "")
     opened = False
     agent = agent_of(session)
-    if pane and canvas._pane_alive(pane):
+    if pane and panes.alive(pane):
         pass
     elif not session_exists(session):
         # No transcript: nothing to revive, and reviving into a fresh session
@@ -2040,7 +1856,7 @@ def deliver(session: str, body: str, text: str) -> tuple[bool, dict]:
         if err:
             return False, {"error": err, "pane": pane or None}
         opened = True
-    send_err = canvas._send_to_pane(pane, body)
+    send_err = _send_to_pane(pane, body)
     if send_err:
         return False, {"error": send_err, "session": session, "pane": pane}
     # A long reply's Enter can arrive while the TUI is still taking the text
@@ -2061,10 +1877,10 @@ def conversation(item: str, bearer: str) -> tuple[bool, dict]:
     the answer here is yes. Same two gates as `reply`, in the same order, so
     the box cannot appear where the send would be refused.
     """
-    user, status = abs_identity(bearer)
+    user, status = auth_abs.abs_identity(bearer)
     if not user:
-        return False, _identity_error(status)
-    ok, why = may_reply(user)
+        return False, auth_abs._identity_error(status)
+    ok, why = auth_abs.may_reply(user)
     if not ok:
         return False, {"error": why, "status": 403}
     session, err = session_for_item(item, bearer)
@@ -2088,10 +1904,10 @@ def commands_for(item: str, session: str, project: str, bearer: str,
     """
     from agent_media_core import slash_menu
 
-    user, status = abs_identity(bearer)
+    user, status = auth_abs.abs_identity(bearer)
     if not user:
-        return False, _identity_error(status)
-    ok, why = may_reply(user)
+        return False, auth_abs._identity_error(status)
+    ok, why = auth_abs.may_reply(user)
     if not ok:
         return False, {"error": why, "status": 403}
     if item and not session:
@@ -2122,10 +1938,10 @@ def share_from_app(text: str, channel: str, bearer: str) -> tuple[bool, dict]:
     from agent_media_core import share as sharemod
     from agent_media_core.entrypoints import share_listener
 
-    user, status = abs_identity(bearer)
+    user, status = auth_abs.abs_identity(bearer)
     if not user:
-        return False, _identity_error(status)
-    ok, why = may_reply(user)
+        return False, auth_abs._identity_error(status)
+    ok, why = auth_abs.may_reply(user)
     if not ok:
         return False, {"error": why, "status": 403}
     if not (text or "").strip():
@@ -2150,10 +1966,10 @@ def rename_conversation(item: str, session: str, title: str, bearer: str) -> tup
     """
     from agent_media_core import book_tracks
 
-    user, status = abs_identity(bearer)
+    user, status = auth_abs.abs_identity(bearer)
     if not user:
-        return False, _identity_error(status)
-    ok, why = may_reply(user)
+        return False, auth_abs._identity_error(status)
+    ok, why = auth_abs.may_reply(user)
     if not ok:
         return False, {"error": why, "status": 403}
     if item and not session:
@@ -2220,10 +2036,10 @@ def log_for_item(item: str, bearer: str) -> tuple[bool, dict]:
     anyone who can read it could have read them by listening — but an account
     that may not reply has no business being handed a transcript either.
     """
-    user, status = abs_identity(bearer)
+    user, status = auth_abs.abs_identity(bearer)
     if not user:
-        return False, _identity_error(status)
-    ok, why = may_reply(user)
+        return False, auth_abs._identity_error(status)
+    ok, why = auth_abs.may_reply(user)
     if not ok:
         return False, {"error": why, "status": 403}
     session, err = session_for_item(item, bearer)

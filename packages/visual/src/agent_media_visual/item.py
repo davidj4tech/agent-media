@@ -98,6 +98,8 @@ def item_for_app(item_id: str, bearer: str) -> tuple[bool, dict]:
     because the app answers a 401 by refreshing and can log the user out if
     that fails.
     """
+    from agent_media_server import auth_abs
+
     from . import reply
 
     item_id = (item_id or "").strip()
@@ -107,10 +109,10 @@ def item_for_app(item_id: str, bearer: str) -> tuple[bool, dict]:
         return False, {"error": "no Audiobookshelf login", "status": 401}
     # Which server this login belongs to — the app may be signed in to a second
     # one, and the item ids of one mean nothing to the other.
-    user, status = reply.abs_identity(bearer)
+    user, status = auth_abs.abs_identity(bearer)
     if not user:
-        return False, reply._identity_error(status)
-    url = reply.abs_home(bearer)
+        return False, auth_abs._identity_error(status)
+    url = auth_abs.abs_home(bearer)
     if not url:
         return False, {"error": "no Audiobookshelf configured on this host",
                        "status": 503}
@@ -122,9 +124,9 @@ def item_for_app(item_id: str, bearer: str) -> tuple[bool, dict]:
         with urllib.request.urlopen(req, timeout=20) as r:
             item = json.loads(r.read())
     except urllib.error.HTTPError as e:
-        return False, reply._identity_error(e.code)
+        return False, auth_abs._identity_error(e.code)
     except (urllib.error.URLError, OSError, ValueError):
-        return False, reply._identity_error(0)
+        return False, auth_abs._identity_error(0)
     if not isinstance(item, dict) or not item.get("id"):
         return False, {"error": "Audiobookshelf sent no item", "status": 502}
     out = slim_item(item)
@@ -134,7 +136,7 @@ def item_for_app(item_id: str, bearer: str) -> tuple[bool, dict]:
     # rearranging it once the reply box has asked. Same two gates, so a page
     # that opens as a chat always gets its reply box.
     session = None
-    if reply.may_reply(user)[0]:
+    if auth_abs.may_reply(user)[0]:
         session, _why = reply.session_for_path(item.get("path") or "")
     out["conversation"] = bool(session)
     return True, out

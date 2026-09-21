@@ -18,8 +18,8 @@ HERE="$(cd "$(dirname "$0")/../../.." && pwd)"
 PHONE="${MEDIA_CANVAS_PHONE:-p8a}"
 
 cd "$HERE"
-if [ -n "$(git status --porcelain -- packages/visual)" ]; then
-    echo "packages/visual has uncommitted changes -- commit before deploying." >&2
+if [ -n "$(git status --porcelain -- packages/visual packages/server)" ]; then
+    echo "packages/visual or packages/server has uncommitted changes -- commit before deploying." >&2
     exit 1
 fi
 git push -q origin main 2>/dev/null || true
