@@ -3452,13 +3452,35 @@ def _submit_event(event: Event,
         # 12.8s, back to back. The claim still lands before anything is fed
         # to the broker: it is joined before the first play, and again on the
         # way out so a late claim can never outlive our release of it.
+        # Whether the claim thread loaded the playlist, leaving only the start
+        # to the main thread.
+        _preloaded = {"ok": False}
+        # Set on the way out, so a claim thread still waiting for the lead
+        # when the reply ends loads nothing. (One that already loaded leaves
+        # an unstarted playlist; the next reply's load clears it.)
+        _abandon = threading.Event()
+
         def _claim_and_prefetch() -> None:
             _wait_and_claim_broker(sink, target)
             # The lead, once it is in hand. Every way out sets this before
             # joining the thread, so the wait cannot outlive the reply.
             _lead_ready.wait()
+            if _abandon.is_set():
+                return
             getattr(sink, "prefetch", lambda *a, **k: None)(
                 [p for _, p in clip_data], target)
+            # The player is ours from the claim on, so the clips can go to it
+            # now and start later: Sasonica fetches each clip as it is
+            # appended, and that fetch — most of the 2.45s from play to
+            # audible (21 Sep) — then runs while before_speech is still
+            # pausing the music. After the prefetch, because where a clip is
+            # read from depends on whether that succeeded. Not after a
+            # reply that rendered nothing: there is nothing to load.
+            load = getattr(sink, "load_playlist", None)
+            if load is not None and clip_data and _remote_playlist(target):
+                with _clip_lock:
+                    lead = [p for _, p in clip_data]
+                _preloaded["ok"] = bool(load(lead, target))
 
         _claim = threading.Thread(target=_claim_and_prefetch,
                                   name="speech-claim", daemon=True)
@@ -3606,7 +3628,10 @@ def _submit_event(event: Event,
                 # playlist-pos to move the popup/highlight; a dropped poll lags
                 # the follow-along, it never cuts the audio.
                 try:
-                    sink.play_playlist([p for _, p in clip_data], target)
+                    if _preloaded["ok"]:
+                        sink.start_playlist(target)
+                    else:
+                        sink.play_playlist([p for _, p in clip_data], target)
                     played_any = True
                 except Exception as e:  # noqa: BLE001
                     log.warning("intake: play_playlist failed: %s", e)
@@ -3912,7 +3937,9 @@ def _submit_event(event: Event,
             # A claim still in flight (before_speech raised) must finish
             # before it is released, or it would land after and hold the
             # broker for its whole TTL. It may be waiting for a lead that is
-            # never coming; let it go first.
+            # never coming; let it go first — and tell it the reply is over,
+            # so it does not load a playlist nobody will start.
+            _abandon.set()
             _lead_ready.set()
             _claim.join()
             # Drop the cross-host broker claim before the flock so the next host

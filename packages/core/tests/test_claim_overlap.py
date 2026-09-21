@@ -219,3 +219,73 @@ def test_before_speech_failing_cannot_strand_the_claim_thread(monkeypatch):
     assert not t.is_alive(), "the reply deadlocked joining the claim thread"
     assert raised
     assert sink.events.index("claimed") < sink.events.index("released")
+
+
+# --- load early, start late -------------------------------------------------
+
+
+class _SplitSink(_Sink):
+    """A player that can be loaded and started apart, like SinkSpeech."""
+
+    def __init__(self, started, load_ok=True):
+        super().__init__(started)
+        self.loaded = threading.Event()
+        self._load_ok = load_ok
+
+    def load_playlist(self, uris, target=None, gapless=True):
+        self.events.append("loaded")
+        self.loaded.set()
+        return self._load_ok
+
+    def start_playlist(self, target=None):
+        self.events.append("started")
+        return True
+
+
+class _SlowCoord(_Coord):
+    """before_speech that takes as long as pausing music does — long enough
+    to find out whether the playlist was loaded while it ran."""
+
+    def __init__(self, started, sink):
+        super().__init__(started)
+        self._sink = sink
+        self.loaded_during = None
+
+    def before_speech(self, title="", priority="", defer_music=False, text=""):
+        self._started.set()
+        self.loaded_during = self._sink.loaded.wait(timeout=5)
+
+
+def test_the_playlist_is_loaded_while_before_speech_runs():
+    """Sasonica fetches a clip as it is appended. Loading once the broker is
+    ours — not once the music is paused — lets that fetch run behind it."""
+    started = threading.Event()
+    sink = _SplitSink(started)
+    coord = _SlowCoord(started, sink)
+    _say(sink, coord)
+
+    assert coord.loaded_during, "the playlist was only loaded after before_speech"
+    assert sink.events.index("claimed") < sink.events.index("loaded")
+    assert sink.events.index("prefetched") < sink.events.index("loaded")
+    assert sink.events.index("loaded") < sink.events.index("started")
+    assert "played" not in sink.events, "loaded AND played in one batch"
+
+
+def test_a_load_that_failed_falls_back_to_playing_it_whole():
+    started = threading.Event()
+    sink = _SplitSink(started, load_ok=False)
+    _say(sink, _Coord(started))
+
+    assert "played" in sink.events
+    assert "started" not in sink.events
+
+
+def test_a_streamed_reply_that_renders_nothing_loads_nothing(monkeypatch):
+    _streaming(monkeypatch)
+    monkeypatch.setattr(S, "render_text", lambda *a, **k: (False, "engine down"))
+    started = threading.Event()
+    sink = _SplitSink(started)
+    _say(sink, _Coord(started))
+
+    assert "loaded" not in sink.events
+    assert "started" not in sink.events

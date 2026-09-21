@@ -443,24 +443,10 @@ class SinkSpeech:
         self._relay_unavailable.discard(target.name)
         return True
 
-    def play_playlist(self, uris: "list", target: Target = DEFAULT_TARGET,
-                      gapless: bool = True) -> None:
-        """Load all of a response's clips as a gapless playlist and start it.
-
-        The (remote) player then advances through the clips *autonomously* — no
-        per-sentence drive from this host, so a bridge hiccup can't stall or cut
-        the reply, and clips play back-to-back with no inter-sentence gap. The
-        caller monitors `playlist_pos` to follow along (now_playing/highlight).
-        """
-        sock = _socket_for(target)
-        device = _device_for(target)
-        # One batched round-trip instead of ~10 (each a ~600ms hop over the
-        # bridge). Build the whole playlist BEFORE starting: a `loadfile replace`
-        # would play the (~0.5s) first clip *immediately*, and it can END before
-        # the rest are appended, leaving mpv idle with unplayed items. So clear,
-        # append every clip to the idle player (append does NOT auto-play), then
-        # jump to index 0 — from there mpv auto-advances gaplessly.
+    def _load_cmds(self, uris: "list", target: Target, gapless: bool) -> list:
+        """The clips, cleared in and appended to an idle player — not started."""
         cmds: list = []
+        device = _device_for(target)
         if device is not None:
             cmds.append(["set_property", "audio-device", device])
         cmds.append(["set_property", "gapless-audio", "yes" if gapless else "no"])
@@ -470,13 +456,20 @@ class SinkSpeech:
         for uri in uris:
             cmds.append(["loadfile", _clip_uri_for(str(uri), target, prefer_url),
                          "append"])
-        cmds.append(["set_property", "pause", False])
-        cmds.append(["set_property", "mute", False])
-        cmds.append(["set_property", "playlist-pos", 0])
+        return cmds
+
+    @staticmethod
+    def _start_cmds() -> list:
+        return [["set_property", "pause", False],
+                ["set_property", "mute", False],
+                ["set_property", "playlist-pos", 0]]
+
+    def _send_or_miss(self, cmds: list, target: Target, what: str) -> bool:
         try:
-            ipc.command_batch(sock, cmds, critical=True)
+            ipc.command_batch(_socket_for(target), cmds, critical=True)
+            return True
         except (ipc.MpvIpcError, OSError) as e:
-            log.warning("sink-speech: play_playlist batch failed: %s", e)
+            log.warning("sink-speech: %s batch failed: %s", what, e)
             # The fallback chain is exhausted — this reply never sounded.
             # Queue a "missed speech" phone notification that retries until
             # the (probably dozed) phone wakes and can show it.
@@ -485,6 +478,46 @@ class SinkSpeech:
                 record_miss(target.name)
             except Exception:  # noqa: BLE001 — alerting must not break playback
                 pass
+            return False
+
+    def play_playlist(self, uris: "list", target: Target = DEFAULT_TARGET,
+                      gapless: bool = True) -> None:
+        """Load all of a response's clips as a gapless playlist and start it.
+
+        The (remote) player then advances through the clips *autonomously* — no
+        per-sentence drive from this host, so a bridge hiccup can't stall or cut
+        the reply, and clips play back-to-back with no inter-sentence gap. The
+        caller monitors `playlist_pos` to follow along (now_playing/highlight).
+
+        One batched round-trip instead of ~10 (each a ~600ms hop over the
+        bridge). Build the whole playlist BEFORE starting: a `loadfile replace`
+        would play the (~0.5s) first clip *immediately*, and it can END before
+        the rest are appended, leaving mpv idle with unplayed items. So clear,
+        append every clip to the idle player (append does NOT auto-play), then
+        jump to index 0 — from there mpv auto-advances gaplessly.
+
+        load_playlist + start_playlist are the same two halves, sent apart.
+        """
+        self._send_or_miss(self._load_cmds(uris, target, gapless)
+                           + self._start_cmds(), target, "play_playlist")
+
+    def load_playlist(self, uris: "list", target: Target = DEFAULT_TARGET,
+                      gapless: bool = True) -> bool:
+        """The first half of play_playlist: the clips loaded, not started.
+
+        Sasonica's player starts fetching a clip the moment it is appended,
+        even to an idle list (BuiltinSpeech.warm). Loading as soon as the
+        broker is ours and starting later lets that fetch — most of the 2.45s
+        from play to audible on 21 Sep — happen while before_speech is still
+        pausing the music. mpv opens nothing until it plays, so there it gains
+        nothing and costs nothing. True if sent.
+        """
+        return self._send_or_miss(self._load_cmds(uris, target, gapless),
+                                  target, "load_playlist")
+
+    def start_playlist(self, target: Target = DEFAULT_TARGET) -> bool:
+        """The second half of play_playlist: play what load_playlist loaded."""
+        return self._send_or_miss(self._start_cmds(), target, "start_playlist")
 
     def append_clips(self, uris: "list", target: Target = DEFAULT_TARGET) -> bool:
         """Append clips to a playlist that is already playing. True if sent.
