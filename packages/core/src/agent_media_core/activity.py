@@ -32,7 +32,10 @@ MAX_BYTES = 512 * 1024
 KEEP_LINES = 2000
 #: A finished turn keeps at most this many steps for the list under it.
 MAX_STEPS = 80
-_UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+#: A session id worth a file of its own: a uuid, or Hermes's clock-stamped id.
+#: Both are safe as filenames, which is the other half of what this guards.
+_UUID = re.compile(r"^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+                   r"|[0-9]{8}_[0-9]{6}_[0-9a-f]{4,})$")
 #: Tools that are bookkeeping, not work anyone would want listed.
 _QUIET = {"TodoWrite", "ToolSearch", "TaskOutput", "BashOutput", "update_plan"}
 #: Codex's and pi's names for the same tools.

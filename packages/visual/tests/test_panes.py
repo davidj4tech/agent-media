@@ -161,3 +161,29 @@ def test_where_names_the_grouping_each_multiplexer_uses(monkeypatch):
     monkeypatch.setattr(panes, "_run", lambda argv, timeout=10: "p-agent-media")
     assert panes.where("%562") == {"source": "tmux", "session": "p-agent-media"}
     assert panes.where("herdr:w6:p1") == {"source": "herdr", "session": "w6"}
+
+
+# --- hermes: an agent whose pane does not say its name ------------------------
+
+def test_a_hermes_pane_is_recognised_by_the_process_in_it(monkeypatch):
+    from agent_media_visual import canvas
+    from agent_media_core import harnesses
+
+    monkeypatch.setattr(harnesses, "_argv", lambda pid: [
+        "/h/.hermes/hermes-agent/venv/bin/python3",
+        "/h/.hermes/hermes-agent/venv/bin/hermes", "--tui"])
+    assert canvas._agent_by_argv("123") == "hermes"
+    monkeypatch.setattr(harnesses, "_argv", lambda pid: ["/usr/bin/zsh"])
+    assert canvas._agent_by_argv("123") == ""
+    assert canvas._agent_by_argv("") == ""
+
+
+def test_hermes_is_working_while_it_says_so():
+    from agent_media_visual import canvas
+
+    ready = " ─ ready │ opus 4.8 │ 30.5k t ─\n meridian ❯ Ask me anything…"
+    busy = " ─ ヽ(>∀<☆)☆ formulating…   · 2s\n meridian ❯ Ctrl+C to interrupt…"
+    assert canvas._classify_agent(ready, "hermes") == "input"
+    assert canvas._classify_agent(busy, "hermes") == "working"
+    # Not painted yet is not "waiting for you".
+    assert canvas._classify_agent("", "hermes") is None

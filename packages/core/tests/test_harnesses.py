@@ -104,3 +104,91 @@ def test_pi_events_reach_the_step_list_and_the_registry(homes, monkeypatch):
                          "tool_name": "read", "tool_input": {"path": "/x/a.py"}}, "pi")
     rows = (activity.activity_dir() / f"{PI}.jsonl").read_text().splitlines()
     assert json.loads(rows[-1])["text"] == "Read a.py"
+
+
+# --- hermes: a store, not a file per conversation ------------------------------
+
+HM = "20260921_102508_f74b02"
+
+
+@pytest.fixture
+def hermes_home(tmp_path, monkeypatch):
+    """A Hermes installation with two profiles, one session in the second."""
+    import sqlite3
+
+    home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    (home / "profiles" / "meridian").mkdir(parents=True)
+    (home / "active_profile").write_text("meridian\n")
+    for db in (home / "state.db", home / "profiles" / "meridian" / "state.db"):
+        c = sqlite3.connect(db)
+        c.execute("create table sessions (id text primary key, cwd text, title text,"
+                  " started_at real, ended_at real)")
+        c.execute("create table messages (id integer primary key, session_id text,"
+                  " role text, content text, timestamp real)")
+        c.commit()
+        c.close()
+    c = sqlite3.connect(home / "profiles" / "meridian" / "state.db")
+    c.execute("insert into sessions values (?, ?, ?, ?, ?)",
+              (HM, None, None, 1789950355.0, None))
+    c.executemany("insert into messages (session_id, role, content, timestamp) values (?,?,?,?)",
+                  [(HM, "user", "reply with exactly: hermes reached", 1789950356.0),
+                   (HM, "assistant", "hermes reached", 1789950359.0)])
+    c.commit()
+    c.close()
+    return home
+
+
+def test_a_hermes_session_is_found_in_whichever_profile_holds_it(hermes_home):
+    assert harnesses.harness_of(HM) == harnesses.HERMES
+    assert harnesses.harness_of("20260921_000000_ffffff") == ""
+
+
+def test_hermes_ids_are_session_ids_though_they_are_not_uuids():
+    assert harnesses._safe(HM)
+    assert harnesses.is_hermes(HM) and not harnesses.is_hermes(CX)
+    assert not harnesses._safe("../etc/passwd")
+
+
+def test_a_hermes_conversation_is_named_by_what_was_asked(hermes_home):
+    # It leaves `title` null unless renamed, so the first question stands in.
+    assert harnesses.title_of(HM) == ""
+    assert harnesses.first_prompt(HM) == "reply with exactly: hermes reached"
+
+
+def test_a_tui_session_records_no_directory(hermes_home):
+    # Not a bug to work around here: the caller falls back to the pane's own.
+    assert harnesses.cwd_of(HM) == ""
+
+
+def test_hermes_is_started_and_resumed_in_its_tui(hermes_home):
+    assert harnesses.fresh_argv(harnesses.HERMES) == ["--tui"]
+    assert harnesses.resume_argv(harnesses.HERMES, HM) == ["--tui", "--resume", HM]
+
+
+def test_a_hermes_is_recognised_by_its_argv_not_its_name():
+    # It runs as the venv's python with the script as an argument.
+    assert harnesses._hermes_pid(["/h/.hermes/hermes-agent/venv/bin/python3",
+                                  "/h/.hermes/hermes-agent/venv/bin/hermes", "--tui"])
+    assert harnesses._hermes_pid(["/home/ryer/.local/bin/hermes"])
+    assert not harnesses._hermes_pid(["/usr/bin/python3", "-m", "http.server"])
+    assert not harnesses._hermes_pid([])
+
+
+def test_the_profile_decides_which_store_a_live_hermes_writes_to(hermes_home, monkeypatch):
+    # Its SQLite connection is per-transaction, so the profile is read from the
+    # process, or from the installation's active one.
+    monkeypatch.setattr(harnesses, "_env_of", lambda pid, key: "")
+    assert harnesses._hermes_store_of("1") == hermes_home / "profiles" / "meridian" / "state.db"
+    monkeypatch.setattr(harnesses, "_env_of",
+                        lambda pid, key: str(hermes_home) if key == "HERMES_HOME" else "")
+    assert harnesses._hermes_store_of("1") == hermes_home / "state.db"
+
+
+def test_a_live_hermes_is_on_the_newest_session_it_could_have_started(hermes_home, monkeypatch):
+    monkeypatch.setattr(harnesses, "_env_of", lambda pid, key: "")
+    monkeypatch.setattr(harnesses, "_started_at", lambda pid: 1789950000.0)
+    assert harnesses._hermes_session("1") == HM
+    # A process that started after every row on file has not said anything yet.
+    monkeypatch.setattr(harnesses, "_started_at", lambda pid: 1789960000.0)
+    assert harnesses._hermes_session("1") == ""

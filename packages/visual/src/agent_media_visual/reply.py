@@ -385,6 +385,16 @@ def transcript_cwd(session: str) -> str:
     """The working directory a session ran in, from its own transcript."""
     from agent_media_core import harnesses
 
+    if harnesses.is_hermes(session):
+        # Hermes records no cwd for a TUI session, so the pane it is running
+        # in answers instead — which is the same directory, while it lasts.
+        cwd = harnesses.cwd_of(session)
+        if cwd:
+            return cwd
+        from . import panes
+
+        pane = live_sessions().get(session, "")
+        return panes.cwd(pane) if pane else ""
     if harnesses.harness_of(session) in (harnesses.CODEX, harnesses.PI):
         return harnesses.cwd_of(session)
     for f in glob.glob(os.path.expanduser(f"~/.claude/projects/*/{session}.jsonl")):

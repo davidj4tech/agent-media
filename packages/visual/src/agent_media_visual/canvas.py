@@ -664,6 +664,10 @@ def _tmux_cc_panes() -> list[dict]:
                                 "-p", "-S", "-40"]))
         preview = next((ln.strip()[:60] for ln in reversed(cap.splitlines())
                         if ln.strip()), "")
+        # A window named for the process ("python3", how Hermes shows up) is
+        # no name for a conversation; the tmux session is the better one.
+        if win == f[1]:
+            win = ""
         agents.append({"name": (win if win and win != sess else sess),
                        "session": sess,
                        "state": _classify_agent(cap, cmd) or "input",
