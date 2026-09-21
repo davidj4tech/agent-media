@@ -222,3 +222,110 @@ def test_the_render_pool_is_bounded(monkeypatch):
     assert S._render_workers(2) == 2       # never more workers than sentences
     monkeypatch.setenv("MEDIA_RENDER_WORKERS", "0")
     assert S._render_workers(32) == 32     # the old behaviour, on request
+
+
+class _Player(_Sink):
+    """Behaves like the phone's players: each clip plays for one snapshot and
+    the player advances only if it already holds the next one. Out of clips,
+    it goes idle with its list intact — and an append does not restart it.
+    A stop clears the list, as both mpv and Sasonica do."""
+
+    def __init__(self, gate, open_at=3, stop_after=None, keeps_pos=False):
+        super().__init__()
+        self.list = []
+        self.pos = None
+        # Sasonica stays on the last clip it played when it runs dry; mpv
+        # reports -1.
+        self._keeps_pos = keeps_pos
+        self._last = -1
+        self.jumps = []
+        self.played = []
+        self._gate = gate
+        self._open_at = open_at
+        self._stop_after = stop_after
+
+    def play_playlist(self, uris, target=None, gapless=True):
+        self.loaded = [str(u) for u in uris]
+        self.list = list(self.loaded)
+        self.pos = 0
+
+    def append_clips(self, uris, target=None):
+        self.appended.extend(str(u) for u in uris)
+        self.list.extend(str(u) for u in uris)
+        return True
+
+    def set_playlist_pos(self, pos, target=None):
+        self.jumps.append(pos)
+        self.pos = pos
+
+    def stop(self, target=None):
+        self.list = []
+        self.pos = None
+
+    def snapshot(self, target=None):
+        self.snapshots += 1
+        if self.snapshots >= self._open_at:
+            self._gate.set()
+        if self.pos is None:
+            return {"idle-active": True, "playlist-count": len(self.list),
+                    "playlist-pos": self._last if self._keeps_pos else -1}
+        cur = self.pos
+        self._last = cur
+        self.played.append(cur)
+        if self._stop_after is not None and cur == self._stop_after:
+            self.stop()          # somebody pressed stop at the phone
+        else:
+            self.pos = cur + 1 if cur + 1 < len(self.list) else None
+        return {"idle-active": False, "playlist-pos": cur, "pause": False,
+                "time-pos": float(self.snapshots), "mute": False,
+                "playlist-count": len(self.list)}
+
+
+def _gated(gate):
+    def render(text, outfile, **_):
+        if not text.startswith("The first"):
+            gate.wait(timeout=5)
+        return _render(text, outfile)
+    return render
+
+
+@pytest.mark.parametrize("keeps_pos", [False, True], ids=["mpv", "sasonica"])
+def test_a_player_that_ran_dry_is_put_back_on_the_next_clip(monkeypatch,
+                                                            keeps_pos):
+    """The underrun, as the phone really behaves: the lead ends, the player
+    idles, the next clip is appended — and nothing plays unless we jump."""
+    gate = threading.Event()
+    monkeypatch.setattr(S, "render_text", _gated(gate))
+    monkeypatch.setenv("MEDIA_STREAM_CLIPS", "1")
+    monkeypatch.setenv("MEDIA_STREAM_LEAD_S", "2")   # one clip
+
+    player = _Player(gate, keeps_pos=keeps_pos)
+    S.submit_event(Event(text=FOUR, source=Source.CLI, target=PHONE,
+                         metadata={"pane": "%7"}),
+                   state=StateStore(), sink=player, coordinator=_Coord())
+
+    assert 1 in player.jumps, "the idle player was never restarted"
+    assert player.played == [0, 1, 2, 3], (
+        f"every sentence should be heard, in order: {player.played}")
+
+
+def test_a_reply_stopped_at_the_phone_stays_stopped(monkeypatch):
+    """A stop also leaves an idle player with sentences unplayed. It clears
+    the list, which an underrun never does — so it is not restarted."""
+    gate = threading.Event()
+    monkeypatch.setattr(S, "render_text", _gated(gate))
+    monkeypatch.setenv("MEDIA_STREAM_CLIPS", "1")
+    monkeypatch.setenv("MEDIA_STREAM_LEAD_S", "2")   # one clip
+
+    # Stopped on the first clip, with the tail still rendering: its appends
+    # then refill the list the stop cleared, which must not read as ours.
+    player = _Player(gate, open_at=1, stop_after=0)
+    state = StateStore()
+    S.submit_event(Event(text=FOUR, source=Source.CLI, target=PHONE,
+                         metadata={"pane": "%7"}),
+                   state=state, sink=player, coordinator=_Coord())
+
+    assert player.jumps == [], f"a stopped reply was restarted: {player.jumps}"
+    assert player.played == [0]
+    ex = (_row(state) or {}).get("extras") or {}
+    assert len(ex.get("clip_uris") or []) == 4, "still archived whole"

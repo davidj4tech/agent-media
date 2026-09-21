@@ -3231,6 +3231,18 @@ def submit_event(event: Event,
 
     total_duration_s = sum(durations)
 
+    # How many of `clip_data` the player holds, in order — the lead, then each
+    # append. Its list is ours exactly when its playlist-count equals this: a
+    # stop clears the list on both players, and appends after it can only
+    # refill it partway, so a short count means the reply was stopped.
+    _handed = [0]
+    # Clear while the reply has stepped aside for a higher speaker: the
+    # playlist is someone else's then, and an append would land in it.
+    _may_hand = threading.Event()
+    _may_hand.set()
+    # Stopped at the phone, or lost the player: hand nothing more over.
+    _player_gone = threading.Event()
+
     def _settle_rest(player=None) -> None:
         """Resolve the sentences the reply did not wait for.
 
@@ -3242,16 +3254,26 @@ def submit_event(event: Event,
                 if not _adopt(i) or player is None:
                     continue
                 with _clip_lock:
-                    newest = clip_data[-1][1]
-                try:
-                    # Push it to the player's own dir first, for the same
-                    # reason the lead is prefetched: append should be a local
-                    # loadfile, not a network fetch the player stalls on.
-                    getattr(player, "prefetch", lambda *a, **k: None)(
-                        [newest], target)
-                    player.append_clips([newest], target)
-                except Exception as e:  # noqa: BLE001 — rendered and archived
-                    log.warning("intake: append_clips failed: %s", e)
+                    k = len(clip_data) - 1
+                    newest = clip_data[k][1]
+                # Bounded: the follow loop sets it on every way out, so this
+                # only guards against a path that forgot to.
+                _may_hand.wait(timeout=120)
+                if _player_gone.is_set():
+                    continue
+                with _clip_lock:
+                    if k < _handed[0]:
+                        continue    # a resume's reload already carried it
+                    try:
+                        # Push it to the player's own dir first, for the same
+                        # reason the lead is prefetched: append should be a
+                        # local loadfile, not a network fetch it stalls on.
+                        getattr(player, "prefetch", lambda *a, **k: None)(
+                            [newest], target)
+                        if player.append_clips([newest], target):
+                            _handed[0] += 1
+                    except Exception as e:  # noqa: BLE001 — rendered and archived
+                        log.warning("intake: append_clips failed: %s", e)
         finally:
             _rest_done.set()
 
@@ -3531,6 +3553,9 @@ def submit_event(event: Event,
                 # The reply started on its lead; the rest of the sentences are
                 # appended to the playlist as they render, and the player
                 # advances into them on its own.
+                if played_any:
+                    with _clip_lock:
+                        _handed[0] = len(clip_data)
                 if played_any and not _rest_done.is_set():
                     _rest_thread = threading.Thread(
                         target=_settle_rest, kwargs={"player": sink},
@@ -3560,10 +3585,18 @@ def submit_event(event: Event,
                 _pl_started = time.monotonic()
                 hard_deadline = _pl_started + (total_duration_s or 0.0) + 5.0
                 last_broker_refresh = time.monotonic()
+                # Ticks spent waiting for the player to list clips it was
+                # handed (streaming only) — bounded, so a failed append cannot
+                # hold the reply open.
+                lag = 0
                 while played_any:
                     # Streaming appends clips under us, so the reply's length
                     # and its last index are read fresh each tick rather than
-                    # captured before it started.
+                    # captured before it started. `rest_was_done` is read FIRST
+                    # and before the snapshot: if every sentence was resolved
+                    # by then, `n` is final and the snapshot below was taken
+                    # after the last append was sent.
+                    rest_was_done = _rest_done.is_set()
                     n = len(clip_data)
                     total_duration_s = sum(durations)
                     hard_deadline = _pl_started + total_duration_s + 5.0
@@ -3587,17 +3620,26 @@ def submit_event(event: Event,
                     if playback_lock.should_yield():
                         resume_i = i if 0 <= i < n else 0
                         highlighter.cancel_pending()
+                        _may_hand.clear()
                         sink.stop(target)
                         getattr(sink, "release_broker",
                                 lambda *a, **k: None)(target)
                         playback_lock.yield_to_higher()
                         _wait_and_claim_broker(sink, target)
                         try:
-                            sink.play_playlist([p for _, p in clip_data], target)
+                            # Under the lock, so the tail cannot slip a clip in
+                            # between this list and the count of it.
+                            with _clip_lock:
+                                reload = [p for _, p in clip_data]
+                                sink.play_playlist(reload, target)
+                                _handed[0] = len(reload)
                             if resume_i > 0:
                                 sink.set_playlist_pos(resume_i, target)
                         except Exception as e:  # noqa: BLE001
                             log.warning("intake: resume after yield failed: %s", e)
+                            _player_gone.set()
+                        finally:
+                            _may_hand.set()
                         # Re-arm follow state; recompute the blind-hold deadline for
                         # only the audio that's left (wall-clock advanced while the
                         # higher-priority reply played).
@@ -3608,6 +3650,10 @@ def submit_event(event: Event,
                         stall = 0
                         remaining = max(0.0, total_duration_s - offsets[resume_i])
                         hard_deadline = time.monotonic() + remaining + 5.0
+                        # Re-base the start the loop head measures from, so its
+                        # per-tick deadline agrees with this one instead of
+                        # counting the time the higher speaker had.
+                        _pl_started = time.monotonic() - offsets[resume_i]
                         last_broker_refresh = time.monotonic()
                         _mark(resume_i)
                         continue
@@ -3654,13 +3700,54 @@ def submit_event(event: Event,
                         time.sleep(0.1)
                         continue
                     if snap.get("idle-active"):
-                        if not _rest_done.is_set():
-                            # Streaming: the player drank the lead faster than
-                            # the tail rendered. More clips are coming, so this
-                            # is a gap in the audio, not the end of the reply —
-                            # the append restarts it.
-                            time.sleep(0.1)
-                            continue
+                        if stream:
+                            # The player ran out of clips. Neither the phone's
+                            # mpv nor Sasonica's player restarts itself when a
+                            # clip is appended to an idle list (append never
+                            # auto-plays, and Sasonica treats append-play the
+                            # same), so a streamed reply that outran its tail
+                            # has to be jumped onto the next clip — the same
+                            # playlist-pos that starts every reply.
+                            #
+                            # An underrun leaves the list intact; a stop at
+                            # the phone clears it on both players. Only the
+                            # first is restarted: a reply stopped on purpose
+                            # stays stopped. A count the snapshot missed is
+                            # neither, and waits.
+                            count = snap.get("playlist-count")
+                            if count == 0:
+                                _player_gone.set()
+                                finished = True
+                                break
+                            if count is not None and count == _handed[0]:
+                                # Still exactly our list: the player ran dry.
+                                # Sasonica keeps its position on the last clip
+                                # it played; mpv reports -1, and then the last
+                                # clip we saw it on stands in.
+                                at = snap.get("playlist-pos")
+                                last = at if isinstance(at, int) and at >= 0 else i
+                                if last + 1 < count:
+                                    sink.set_playlist_pos(last + 1, target)
+                                    lag = 0
+                                    time.sleep(0.1)
+                                    continue
+                            # Not the end yet while sentences are still coming,
+                            # nor while the player lists fewer clips than it
+                            # was handed: an append in flight during the read
+                            # would otherwise be dropped as "after the end".
+                            # That second wait is bounded (~3s) — an append
+                            # that failed must not hold the reply open.
+                            if not rest_was_done:
+                                time.sleep(0.1)
+                                continue
+                            if (count is None or count != _handed[0]) and lag < 30:
+                                lag += 1
+                                time.sleep(0.1)
+                                continue
+                            if count is not None and count != _handed[0]:
+                                # Never came back to the list we built: it was
+                                # stopped and partly refilled by our appends.
+                                _player_gone.set()
                         finished = True
                         break  # playlist finished
                     pos = snap.get("playlist-pos")
@@ -3692,6 +3779,9 @@ def submit_event(event: Event,
                             log.warning("intake: playlist stalled; ending follow")
                             break
                     time.sleep(0.1)
+                # However the loop ended, the tail must never sit waiting to
+                # hand over (a yield that did not come back clears it).
+                _may_hand.set()
                 # Blind-hold: the follow loop stopped but we never positively saw
                 # the playlist end (the bridge went unreadable / stalled). The
                 # phone is most likely still playing our clips, so keep the token

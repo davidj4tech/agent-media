@@ -543,8 +543,11 @@ class SinkSpeech:
         try:
             return ipc.get_properties(
                 _socket_for(target),
+                # playlist-count tells a streamed reply's underrun (the
+                # player ran out of clips; its list is intact) from a stop at
+                # the phone (both players clear the list) — see submit.py.
                 ["playlist-pos", "idle-active", "pause", "time-pos", "mute",
-                 "speed"],
+                 "speed", "playlist-count"],
                 # Above the 1.28s the app really takes, so a tick under load
                 # returns a whole snapshot rather than one missing the very
                 # field (idle-active) the loop ends on.
