@@ -27,7 +27,9 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Optional
+import threading
+from contextlib import contextmanager
+from typing import Iterator, Optional
 
 from ..types import Target
 from .music import SinkMusic
@@ -69,6 +71,10 @@ class SinkMusicRouter:
         self.app = app or SinkMusicApp()
         # Which backend the in-force duck was sent to. See duck()/unduck().
         self._ducked_backend = None
+        # See one_resolution().
+        self._pin_lock = threading.Lock()
+        self._pin_depth = 0
+        self._pinned = None
 
     # ---- backend resolution ---------------------------------------------
 
@@ -92,10 +98,44 @@ class SinkMusicRouter:
 
     def _observe_backend(self):
         """Backend the coordinator should observe/duck: the app, then the
-        phone's mpv, whichever is live, else Mopidy."""
+        phone's mpv, whichever is live, else Mopidy. Asked once for all the
+        calls inside one_resolution()."""
+        if not self._pin_depth:
+            return self._resolve_observed()
+        # Held while resolving, so a concurrent caller waits for this answer
+        # rather than probing the phone all over again.
+        with self._pin_lock:
+            if self._pinned is None:
+                self._pinned = self._resolve_observed()
+            return self._pinned
+
+    def _resolve_observed(self):
         if self._app_live():
             return self.app
         return self.local if self._local_live() else self.mopidy
+
+    @contextmanager
+    def one_resolution(self) -> Iterator[None]:
+        """Decide which backend is live once for the calls inside.
+
+        Each call re-resolves, which the module docstring calls cheap — one
+        bridge probe. Over the phone's link it is two (the app, then the
+        phone's mpv), ~1s each, and interrupting music for speech makes three
+        calls: what is playing, where it is, pause it. So before_speech was
+        resolving the backend three times — 2.7s for the probe alone and
+        ~3.5s more to pause, on 21 Sep — and nothing stopped the three
+        answers from disagreeing: the URI read from one backend and the pause
+        sent to another. Inside this block they are asked once and agree.
+        """
+        with self._pin_lock:
+            self._pin_depth += 1
+        try:
+            yield
+        finally:
+            with self._pin_lock:
+                self._pin_depth -= 1
+                if not self._pin_depth:
+                    self._pinned = None
 
     def _backend_for(self, target: Target):
         """Backend for a call that names a target explicitly.

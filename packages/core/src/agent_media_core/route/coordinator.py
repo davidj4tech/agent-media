@@ -16,6 +16,7 @@ import os
 import time
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from typing import Optional
 
 from .. import snapcast
@@ -445,6 +446,19 @@ class Coordinator:
         taking the room. Empty means normal, which is what an ordinary answer
         to a question is.
         """
+        # Every music call below re-resolves which backend is live — two
+        # probes across the tailnet each time — so the probe, the position
+        # and the pause are asked to agree on one answer (see
+        # SinkMusicRouter.one_resolution). A plain SinkMusic has no router to
+        # pin.
+        pin = getattr(self.music, "one_resolution", None)
+        with pin() if pin is not None else nullcontext():
+            self._before_speech(title=title, priority=priority,
+                                defer_music=defer_music, text=text)
+
+    def _before_speech(self, *, title: str, priority: str,
+                       defer_music: bool, text: str) -> None:
+        """The body of before_speech, run with the music backend pinned."""
         self._title(title)
         self.speaking_line(text)
         self._priority(priority)
