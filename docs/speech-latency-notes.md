@@ -88,3 +88,36 @@ cold-connect that `pre_pause_remote` exists to hide is not in play here.
 
 The next win is the pre-speech path, not the renderer: the broker claim and
 the pause/duck round trips, or overlapping them with the render.
+
+## Where a round trip goes, and the first fix (21 Sep)
+
+Each IPC call to the phone opens a fresh TCP connection. With the phone on a
+~430ms tailnet path (tailscale ping 429ms, via a public IP — off home Wi-Fi):
+
+| call | took |
+| --- | --- |
+| TCP connect alone | 0.44s |
+| `get_property`, one | 0.87s |
+| `get_properties`, five | 1.30s |
+
+So a call is a connect plus a request, and nothing on the phone is slow. An
+uncontended broker claim makes four of them (read, read again inside
+`claim_broker`, write, read back after a desync sleep).
+
+`d2ff126` runs the claim (and the prefetch) beside `before_speech` instead of
+ahead of it. Re-timed on a quieter link with nothing to pause: claim 2.7s and
+before_speech 2.5s, now concurrent — the pre-speech path costs the longer of
+the two instead of both.
+
+Not done, in order of value:
+
+1. Reuse one connection per endpoint within a reply — saves a connect
+   (~0.44s here) on every call after the first, the follow loop's snapshot
+   included. A shared-layer change (mpv broadcasts events to every client, so
+   a reused socket has to skip lines that are not its reply).
+2. Drop the redundant owner read in `claim_broker` (4 calls -> 3).
+
+Side finding: at this link speed the music endpoint's calls exceed the 1.2s
+slow line and trip its 20s breaker (it was open when first probed). While it
+is open, non-critical music calls are skipped — including the probe that
+decides whether to duck music under speech.
