@@ -162,6 +162,12 @@ Left, in rough order of value:
    only STARTED (playlist-pos 0) once before_speech is done. With music on,
    before_speech outlasts the claim by ~2s, which would hide the whole fetch.
    Without music, it gains little. Termux mpv does not fetch on append.
+
+   BUILT `ec24a85`. Measured with music loaded but PAUSED: start -> audible
+   2.02s (was 2.45s); the load's head start over the start was only 0.74s,
+   because before_speech barely outlasted the claim. With music playing it
+   should run ~2s longer than the claim — enough for the whole fetch — but
+   that case is not measured yet.
 2. The music probe (3.2s) resolves app and phone liveness one after the
    other; they are independent and could be asked together (~0.9s).
 3. Nagle on the phone: batched reads cost two round trips because the
