@@ -38,6 +38,16 @@ Stdlib-only HTTP server. Endpoints:
                   at: those same sessions, plus `places` — the directories
                   sessions have run in, newest first, which a fresh chat can
                   be opened in (`{"cwd": …}` to /ask)
+  GET  /harnesses + an Audiobookshelf bearer → the four harnesses: installed,
+                  which version, signed in or not, and which of install and
+                  login this host has a recipe for
+  POST /harnesses/run {"agent", "action": "install"|"login"} + an ABS bearer →
+                  run it in a background tmux window; answers with the pane
+  GET  /harnesses/screen?pane=%23 + an ABS bearer → that window's screen, and
+                  whether the command has finished
+  POST /harnesses/keys {"pane", "text"?, "key"?} + an ABS bearer → type into it
+                  (an OAuth code pasted back, a y, an Enter)
+  POST /harnesses/close {"pane"} + an ABS bearer → end that window
   GET  /sessions/state  + an Audiobookshelf bearer → every live session's
                   working / waiting / approval, by uuid and item folder tail
   POST /session/resume {"session"} → bring that session back in a tmux
@@ -1528,6 +1538,8 @@ _CORS_PATHS = frozenset({
     "/reply", "/ask", "/focus", "/session/resume", "/session/close", "/draft",
     "/session/answer",
     "/speech/now", "/speech/ctl", "/sessions/state", "/commands", "/rename",
+    "/harnesses", "/harnesses/run", "/harnesses/screen",
+    "/harnesses/keys", "/harnesses/close",
 })
 
 #: What the app's speech player may do: the popup's listening keys — pause,
@@ -1761,6 +1773,19 @@ class Handler(BaseHTTPRequestHandler):
             bearer = (self.headers.get("Authorization") or "").removeprefix("Bearer").strip()
             ok, detail = _reply.targets(bearer)
             self._json(200 if ok else detail.pop("status", 403), {"ok": ok, **detail})
+        elif path == "/harnesses":
+            # The four harnesses and what each needs — is it installed, is it
+            # signed in — so the app can offer the buttons that would fix it.
+            from . import agents as _agents
+            bearer = (self.headers.get("Authorization") or "").removeprefix("Bearer").strip()
+            ok, detail = _agents.agents(bearer)
+            self._json(200 if ok else detail.pop("status", 403), {"ok": ok, **detail})
+        elif path == "/harnesses/screen":
+            # The install or sign-in window, as the desk sees it.
+            from . import agents as _agents
+            bearer = (self.headers.get("Authorization") or "").removeprefix("Bearer").strip()
+            ok, detail = _agents.screen((parse_qs(query).get("pane") or [""])[0], bearer)
+            self._json(200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
         elif path == "/conversations":
             # What the assistant button can be pointed at: live sessions and
             # recent conversations, by title. Gated like /conversation.
@@ -2117,6 +2142,27 @@ class Handler(BaseHTTPRequestHandler):
             if not ok:
                 print(f"answer: refused ({detail.get('error')}) for "
                       f"{str(body.get('session'))[:8]}", file=sys.stderr, flush=True)
+            self._json(200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+        elif path in ("/harnesses/run", "/harnesses/keys", "/harnesses/close"):
+            # Getting an agent onto this host and signing into it, from the
+            # app: a command in a background tmux window, its screen read and
+            # typed into. Gated like /reply, and only the windows this opened
+            # can be reached — see agents.py.
+            from . import agents as _agents
+            body = self._read_json() or {}
+            bearer = (self.headers.get("Authorization") or "").removeprefix("Bearer").strip()
+            if path.endswith("run"):
+                ok, detail = _agents.run(str(body.get("agent") or ""),
+                                         str(body.get("action") or ""), bearer)
+            elif path.endswith("keys"):
+                ok, detail = _agents.keys(str(body.get("pane") or ""),
+                                          str(body.get("text") or ""),
+                                          str(body.get("key") or ""), bearer)
+            else:
+                ok, detail = _agents.close(str(body.get("pane") or ""), bearer)
+            if not ok:
+                print(f"harnesses: refused ({detail.get('error')}) on {path} "
+                      f"from {self.client_address[0]}", file=sys.stderr)
             self._json(200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
         elif path == "/draft":
             # Half a reply, held for next time the conversation is opened.

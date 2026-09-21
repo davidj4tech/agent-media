@@ -838,21 +838,17 @@ def ensure_host(host: str, cwd: str) -> bool:
 
 
 def _claude_bin(name: str = "claude") -> str:
-    """Where `claude` (or `codex`, `pi`) is, by absolute path.
+    """Where `claude` (or `codex`, `pi`, `hermes`) is, by absolute path.
 
     A window's command runs with whatever PATH the tmux session was born
     with, and a session the canvas made from under systemd has the user
     manager's — no ~/.local/bin, no bun, no npm — so `claude` was "not found"
-    in a window that looked exactly like a working one.
+    in a window that looked exactly like a working one. `harnesses.program`
+    is that enriched lookup, shared with the installer.
     """
-    home = Path.home()
-    extra = [home / ".local" / "bin", home / ".bun" / "bin", home / ".npm-global" / "bin",
-             home / ".claude" / "local", Path("/usr/local/bin"),
-             # fnm puts the live node on PATH through a per-shell symlink dir
-             # under /run; its `default` alias is the stable name for it.
-             home / ".local" / "share" / "fnm" / "aliases" / "default" / "bin"]
-    path = os.pathsep.join([os.environ.get("PATH") or "", *map(str, extra)])
-    return shutil.which(name, path=path) or name
+    from agent_media_core import harnesses
+
+    return harnesses.program(name) or name
 
 
 def open_window(session: str, cwd: str, *, resume: bool, host: str = "",

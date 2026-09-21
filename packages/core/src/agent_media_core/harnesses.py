@@ -506,3 +506,147 @@ def fresh_argv(harness: str, session: str = "") -> list[str]:
     if harness == HERMES:
         return ["--tui"]
     return []
+
+
+# --- having one at all -------------------------------------------------------------
+
+def bin_path() -> str:
+    """PATH with the places agents are installed, whatever the caller inherited.
+
+    A canvas started by systemd has the user manager's PATH — no `~/.local/bin`,
+    no bun, no npm — so `claude` was "not found" in a window that looked exactly
+    like a working one. Everything that asks "is this agent here" or "where is
+    it" asks through this, so the answer does not depend on who is asking.
+    """
+    home = Path.home()
+    extra = [home / ".local" / "bin", home / ".bun" / "bin", home / ".npm-global" / "bin",
+             home / ".claude" / "local", Path("/usr/local/bin"),
+             # fnm puts the live node on PATH through a per-shell symlink dir
+             # under /run; its `default` alias is the stable name for it.
+             home / ".local" / "share" / "fnm" / "aliases" / "default" / "bin"]
+    return os.pathsep.join([os.environ.get("PATH") or "", *map(str, extra)])
+
+
+def program(name: str) -> str:
+    """Absolute path of `name` (an agent, or `npm`), or "" when it is not here."""
+    return shutil.which(name, path=bin_path()) or ""
+
+
+def installed(harness: str) -> bool:
+    return bool(program(harness))
+
+
+@dataclass(frozen=True)
+class Recipe:
+    """How to get an agent, and how to sign into it.
+
+    `install` and `update` are whole commands (the first word resolved through
+    `program`, so `npm` is found the same way `claude` is); `login` and
+    `status` are the arguments that follow the agent itself.
+
+    Empty means "not offered from here", which is a real answer for two of
+    them: pi has no interactive sign-in — it reads API keys from its settings
+    and the environment — and Hermes is a git checkout its own installer makes,
+    so it can be updated from here but not conjured.
+    """
+    install: tuple[str, ...] = ()
+    update: tuple[str, ...] = ()
+    login: tuple[str, ...] = ()
+    status: tuple[str, ...] = ()
+
+
+#: One row per harness. The install channels are the ones these agents are
+#: actually on here: claude and pi are npm globals, codex ships its own
+#: updater, hermes is a checkout under `~/.hermes` that updates itself.
+RECIPES: dict[str, Recipe] = {
+    CLAUDE: Recipe(
+        install=("npm", "install", "-g", "@anthropic-ai/claude-code"),
+        update=("npm", "install", "-g", "@anthropic-ai/claude-code@latest"),
+        login=("auth", "login"),
+        status=("auth", "status"),
+    ),
+    CODEX: Recipe(
+        install=("npm", "install", "-g", "@openai/codex"),
+        update=("codex", "update"),
+        login=("login",),
+        status=("login", "status"),
+    ),
+    PI: Recipe(
+        install=("npm", "install", "-g", "@earendil-works/pi-coding-agent"),
+        update=("pi", "update", "self"),
+    ),
+    HERMES: Recipe(
+        update=("hermes", "update", "--yes"),
+        login=("setup",),
+    ),
+}
+
+
+def install_argv(harness: str) -> list[str]:
+    """The command that gets `harness` here, or brings it up to date. [] if none.
+
+    Which of the two it is depends on whether the agent is already installed:
+    an agent that ships its own updater knows more about its installation than
+    this table does, so once it is here it is asked rather than reinstalled.
+    """
+    r = RECIPES.get(harness)
+    if not r:
+        return []
+    argv = list(r.update if (installed(harness) and r.update) else r.install)
+    if not argv:
+        return []
+    return [program(argv[0]) or argv[0], *argv[1:]]
+
+
+def login_argv(harness: str) -> list[str]:
+    """The command that signs into `harness` interactively. [] when it has none."""
+    r = RECIPES.get(harness)
+    exe = program(harness)
+    if not r or not r.login or not exe:
+        return []
+    return [exe, *r.login]
+
+
+def auth_state(harness: str, timeout: float = 15.0) -> tuple[str, str]:
+    """`(state, detail)` — "in", "out" or "unknown", and a line to show.
+
+    Only two of the four can be asked without opening a terminal: Claude
+    answers `auth status` in JSON, Codex exits non-zero when it is signed out.
+    The other two are reported honestly as unknown rather than guessed at.
+    """
+    import subprocess
+
+    r = RECIPES.get(harness)
+    exe = program(harness)
+    if not r or not r.status or not exe:
+        return "unknown", ""
+    try:
+        done = subprocess.run([exe, *r.status], capture_output=True, text=True,
+                              timeout=timeout, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return "unknown", ""
+    out = (done.stdout or "") + (done.stderr or "")
+    if harness == CLAUDE:
+        try:
+            data = json.loads(done.stdout)
+        except ValueError:
+            return "unknown", " ".join(out.split())[:200]
+        who = str(data.get("email") or data.get("authMethod") or "")
+        return ("in" if data.get("loggedIn") else "out"), who
+    line = " ".join(out.split())[:200]
+    return ("in" if done.returncode == 0 and "logged in" in out.lower() else "out"), line
+
+
+def version_of(harness: str, timeout: float = 10.0) -> str:
+    """What `harness --version` says, trimmed to one line. "" when it cannot say."""
+    import subprocess
+
+    exe = program(harness)
+    if not exe:
+        return ""
+    try:
+        done = subprocess.run([exe, "--version"], capture_output=True, text=True,
+                              timeout=timeout, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return " ".join((done.stdout or done.stderr or "").split())[:80]
