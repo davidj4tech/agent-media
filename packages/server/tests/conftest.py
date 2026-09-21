@@ -36,10 +36,12 @@ def _clean_media_env(monkeypatch, tmp_path):
     from agent_media_server import recaps
 
     recaps._reset_for_tests()
-    # The same for the messages read out of those transcripts.
-    from agent_media_server import transcript
+    # The same for the messages read out of those transcripts, and no thread
+    # stream's watcher left running from another test.
+    from agent_media_server import thread_events, transcript
 
     transcript._reset_for_tests()
+    thread_events._reset_for_tests()
     # Memory for /sessions/state is read from /proc: an empty fake root, so
     # a test sees "unknown" unless it builds a process tree of its own, and
     # no pid left over from a real sweep in another test.

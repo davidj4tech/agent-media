@@ -21,6 +21,9 @@ device gets its token):
   GET  /conversation/log?item=<abs item id>|session=<uuid>[&limit=&before=]
                   → the conversation, read: its messages from the transcript
                   (transcript.py) and its spoken lines
+  GET  /threads/<uuid>/events   → the same thread as a stream of changes
+                  (SSE; thread_events.py). `?access_token=` stands in for the
+                  bearer where a client cannot set headers
   GET  /item?id=<abs item id>   → that library item carrying only what the
                   app reads, gzipped (1267 KB → 25 KB on a long
                   conversation); see abs_item.py
@@ -85,6 +88,7 @@ device gets its token):
 from __future__ import annotations
 
 import json
+import re
 import sys
 from http.server import BaseHTTPRequestHandler
 from typing import Callable
@@ -137,6 +141,18 @@ CORS_PATHS = CORS_PATHS | NOTES_PATHS
 # (the canvas's own `_cors` reads that set for every answer it sends).
 CORS_POST_PATHS = frozenset({"/pair"})
 
+# The per-thread event stream (§11), `/threads/<session>/events`: an app route
+# like the ones above, but a path with the thread in it, so it is matched
+# rather than listed. `cors_path` is the one test for both.
+THREAD_EVENTS = re.compile(r"/threads/([^/]+)/events")
+
+
+def cors_path(path: str) -> bool:
+    """Whether `path` is an app route a browser on another origin may reach
+    (any method): `CORS_PATHS`, or a thread's event stream."""
+    return path in CORS_PATHS or bool(THREAD_EVENTS.fullmatch(path))
+
+
 # Long enough that a chat page's polling is not preceded by a preflight every
 # time; short enough that a change here is picked up the same day.
 CORS_MAX_AGE = "3600"
@@ -177,8 +193,8 @@ def _cors(h: BaseHTTPRequestHandler) -> None:
     browser never attaches anything of its own to these.
     """
     path = h.path.split("?", 1)[0]
-    if path not in CORS_PATHS and not (path in CORS_POST_PATHS
-                                       and h.command in ("POST", "OPTIONS")):
+    if not cors_path(path) and not (path in CORS_POST_PATHS
+                                    and h.command in ("POST", "OPTIONS")):
         return
     h.send_header("Access-Control-Allow-Origin", "*")
     h.send_header("Access-Control-Expose-Headers", "Content-Encoding")
@@ -264,7 +280,7 @@ def dispatch(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
 
 def _options(h: BaseHTTPRequestHandler, path: str) -> bool:
     """CORS preflight. Anything not on the list is not ours to allow."""
-    if path not in CORS_PATHS and path not in CORS_POST_PATHS:
+    if not cors_path(path) and path not in CORS_POST_PATHS:
         return False
     h.send_response(204)
     h.send_header("Access-Control-Allow-Origin", "*")
@@ -279,7 +295,10 @@ def _options(h: BaseHTTPRequestHandler, path: str) -> bool:
 
 def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
     query = h.path.partition("?")[2]
-    if path == "/item":
+    events = THREAD_EVENTS.fullmatch(path)
+    if events:
+        _thread_events(h, events.group(1), query)
+    elif path == "/item":
         # The library item, carrying only what the app reads. Sasonica asks
         # here first and falls back to Audiobookshelf, so this is a way of
         # being quick rather than a thing to depend on. See abs_item.py for
@@ -388,6 +407,32 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
     else:
         return False
     return True
+
+
+def _thread_events(h: BaseHTTPRequestHandler, session: str, query: str) -> None:
+    """`GET /threads/{session}/events` — the thread as a stream (§11,
+    thread_events.py). Holds this handler thread until the client goes.
+
+    The credential is the usual bearer, or `?access_token=` for a plain
+    `EventSource` (which cannot set headers). The query string is never
+    logged: nothing here prints it, and the canvas's request log redacts it.
+    Refusals are ordinary JSON answers, before the stream opens.
+    """
+    from . import thread_events
+
+    bearer = _bearer(h) or (parse_qs(query).get("access_token") or [""])[0].strip()
+    if not sessions._SESSION.fullmatch(session or ""):
+        _json(h, 400, {"ok": False, "error": "not a session id"})
+        return
+    user, err = auth.gate(bearer)
+    if not user:
+        _json(h, err.pop("status", 401), {"ok": False, **err})
+        return
+    if not sessions.live_sessions().get(session) and not sessions.session_exists(session) \
+            and threads._manifest_for(session) is None:
+        _json(h, 404, {"ok": False, "error": "no such session"})
+        return
+    thread_events.serve(h, session)
 
 
 def _base_url(h: BaseHTTPRequestHandler) -> str:

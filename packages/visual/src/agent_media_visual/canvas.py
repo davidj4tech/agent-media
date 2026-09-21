@@ -1408,6 +1408,8 @@ _CORS_PATHS = _app.CORS_PATHS
 _CORS_MAX_AGE = _app.CORS_MAX_AGE
 _APP_SPEECH_ACTIONS = _speech._APP_SPEECH_ACTIONS
 _MAX_BODY = _app.MAX_BODY
+#: `access_token=<anything>` in a request line, for `log_message` to redact.
+_ACCESS_TOKEN = re.compile(r"(access_token=)[^&\s]*")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1415,6 +1417,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt: str, *args) -> None:  # noqa: A003
         if os.environ.get("MEDIA_VISUAL_DEBUG") == "1":
+            # The thread stream takes its credential in the query when a
+            # client cannot set headers (§11); the request line must never
+            # carry it into a log.
+            args = tuple(_ACCESS_TOKEN.sub(r"\1…", a) if isinstance(a, str) else a
+                         for a in args)
             super().log_message(fmt, *args)
 
     def _cors(self) -> None:
@@ -1424,7 +1431,7 @@ class Handler(BaseHTTPRequestHandler):
         credential is the Authorization header the client sets by hand, so the
         browser never attaches anything of its own to these.
         """
-        if self.path.split("?", 1)[0] not in _CORS_PATHS:
+        if not _app.cors_path(self.path.split("?", 1)[0]):
             return
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Expose-Headers", "Content-Encoding")
