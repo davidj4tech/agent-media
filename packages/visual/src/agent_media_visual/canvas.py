@@ -29,11 +29,15 @@ Stdlib-only HTTP server. Endpoints:
                   routed: a picked session, a session named in the words
                   ("reply to drones, …"), the player's conversation, the one
                   last spoken to, else a FRESH session in the scratch tmux
-                  session — or in `project` (a series name), in the directory
-                  its conversations ran in, 404 if none is known. 300 +
+                  session — or in `project` (a series name) or `cwd` (a
+                  directory from /targets), 404 if neither is known. 300 +
                   candidates when a spoken name is ambiguous.
   GET  /conversations  + an Audiobookshelf bearer → live sessions and
                   recent conversations, by title (the picker)
+  GET  /targets   + an Audiobookshelf bearer → what a message can be pointed
+                  at: those same sessions, plus `places` — the directories
+                  sessions have run in, newest first, which a fresh chat can
+                  be opened in (`{"cwd": …}` to /ask)
   GET  /sessions/state  + an Audiobookshelf bearer → every live session's
                   working / waiting / approval, by uuid and item folder tail
   POST /session/resume {"session"} → bring that session back in a tmux
@@ -1485,7 +1489,7 @@ PAGE_ID = hashlib.sha256(PAGE.encode()).hexdigest()[:12]
 # canvas (Audiobookshelf on :13379, this on :8781). The Capacitor app never
 # needed it — a native HTTP client is not subject to the same-origin policy.
 _CORS_PATHS = frozenset({
-    "/conversation", "/conversation/log", "/conversations", "/item",
+    "/conversation", "/conversation/log", "/conversations", "/targets", "/item",
     "/reply", "/ask", "/focus", "/session/resume", "/session/close", "/draft",
     "/session/answer",
     "/speech/now", "/speech/ctl", "/sessions/state", "/commands",
@@ -1712,6 +1716,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, {"ok": ok, **detail})
             else:
                 self._json(detail.pop("status", 404), {"ok": ok, **detail})
+        elif path == "/targets":
+            # Everything a message can be pointed at — running sessions and
+            # the directories a fresh one can open in — so the app renders a
+            # list instead of working one out from the library.
+            from . import reply as _reply
+            bearer = (self.headers.get("Authorization") or "").removeprefix("Bearer").strip()
+            ok, detail = _reply.targets(bearer)
+            self._json(200 if ok else detail.pop("status", 403), {"ok": ok, **detail})
         elif path == "/conversations":
             # What the assistant button can be pointed at: live sessions and
             # recent conversations, by title. Gated like /conversation.
@@ -2025,7 +2037,8 @@ class Handler(BaseHTTPRequestHandler):
                 parse=body.get("parse", True) is not False,
                 dry=body.get("dry") is True,
                 agent=str(body.get("agent") or ""),
-                project=str(body.get("project") or ""))
+                project=str(body.get("project") or ""),
+                cwd=str(body.get("cwd") or ""))
             status = detail.pop("status", 400)
             if not ok:
                 print(f"ask: refused {status} ({detail.get('error')}) "

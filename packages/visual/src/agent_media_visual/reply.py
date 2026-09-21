@@ -1042,6 +1042,63 @@ def project_target(project: str) -> tuple[str, str]:
     return "", ""
 
 
+def places(limit: int = 6) -> list[dict]:
+    """`[{name, path, at}]` — the directories sessions have actually run in.
+
+    What "a new chat in X" can mean, worked out from this host rather than
+    from a library: every shelved conversation names its session, and a
+    session's transcript names the directory it ran in. Newest first, one row
+    per directory, `limit` of them (0 for all).
+
+    This replaces the app asking Audiobookshelf for the series of a library
+    that had to be called Conversations, whose series names had to be the
+    tmux session names of this particular desk. Another canvas answers this
+    with its own directories and the app is none the wiser.
+    """
+    seen: dict[str, float] = {}
+
+    def take(sid: str, at: float) -> bool:
+        """Keep that session's directory. False when the list is full."""
+        if limit and len(seen) >= limit:
+            return False
+        cwd = transcript_cwd(sid)
+        if cwd and cwd not in seen and os.path.isdir(cwd):
+            seen[cwd] = at
+        return True
+
+    # Somewhere a session is running is the most current answer there is, and
+    # it beats the shelf whatever the shelf's timestamps say.
+    now = time.time()
+    for sid in live_sessions():
+        if not take(sid, now):
+            break
+    rows = []
+    for f in _manifest_dir().glob("*.json"):
+        try:
+            rows.append((f.stat().st_mtime, json.loads(f.read_text())))
+        except (OSError, ValueError):
+            continue
+    for at, data in sorted(rows, key=lambda r: -r[0]):
+        sid = str(data.get("session") or "")
+        if sid and not take(sid, at):
+            break
+    return [{"name": os.path.basename(path) or path, "path": path, "at": round(at, 3)}
+            for path, at in seen.items()]
+
+
+def targets(bearer: str) -> tuple[bool, dict]:
+    """`/targets`: everything a message can be pointed at, in one answer.
+
+    `sessions` are running or lately shelved conversations (the picker's own
+    list); `places` are the directories a fresh session can be opened in.
+    Gated like `/conversations`.
+    """
+    ok, detail = may_control_speech(bearer)
+    if not ok:
+        return False, detail
+    return True, {"sessions": sessions_index(), "places": places()}
+
+
 def _settle(pane: str, timeout: float = 5.0) -> None:
     """Wait until the screen in `pane` stops changing (or `timeout` passes).
 
@@ -1138,7 +1195,7 @@ def _unsent_error(pane: str, session: str = "") -> dict:
 
 
 def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
-        agent: str = "") -> tuple[bool, dict]:
+        agent: str = "", cwd: str = "") -> tuple[bool, dict]:
     """Start a fresh session with `text` as its first message.
 
     What the phone's assistant button does. Nothing to resume and no item yet:
@@ -1146,7 +1203,9 @@ def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
     listener's turn is shelved against the new session's uuid so the
     conversation appears in the library once its first reply is spoken. The
     app is told the uuid and polls `/conversation?session=` for the item.
-    `project` (a series name) opens it in that project's directory instead.
+    `project` (a series name) opens it in that project's directory instead,
+    and `cwd` (a directory, as `/targets` hands them out) says the same thing
+    without the library's naming convention in the middle.
     `agent` picks Claude Code (the default, or MEDIA_ASK_AGENT), Codex or pi.
     """
     from . import canvas
@@ -1163,10 +1222,18 @@ def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
     agent = (agent or os.environ.get("MEDIA_ASK_AGENT") or "claude").strip().lower()
     if agent not in canvas.AGENT_COMMANDS:
         return False, {"error": f"unknown agent {agent!r}", "status": 400}
+    where = (cwd or "").strip()
     host, cwd, flags = ask_target()
     if agent != "claude":
         flags = []          # amux's flags are claude's (--dangerously-skip-permissions)
-    if project:
+    if where:
+        # A directory named outright. Only somewhere a session has actually
+        # run: this opens a shell there, so it is not the phone's to choose
+        # freely.
+        if where not in {p["path"] for p in places(limit=0)}:
+            return False, {"error": f"no session has run in {where!r}", "status": 404}
+        host, cwd = os.path.basename(where), where
+    elif project:
         host, cwd = project_target(project)
         if not cwd:
             return False, {"error": f"no directory known for project {project!r}", "status": 404}
@@ -1534,7 +1601,7 @@ def _title_of(session: str, index: list[dict] | None = None) -> str:
 
 def ask_routed(text: str, bearer: str, *, target: str = "", player_item: str = "",
                sticky: str = "", parse: bool = True, dry: bool = False,
-               project: str = "", agent: str = "") -> tuple[bool, dict]:
+               project: str = "", agent: str = "", cwd: str = "") -> tuple[bool, dict]:
     """The assistant button's words, sent where they belong.
 
     In order: a target the app names outright (`target`, a session uuid from
@@ -1596,7 +1663,7 @@ def ask_routed(text: str, bearer: str, *, target: str = "", player_item: str = "
                       "session": session or None, "title": _title_of(session, index) if session else "",
                       "item": item if ready else None, "text": text, "dry": True}
     if not session:
-        ok, detail = ask(text, bearer, project=project, agent=agent)
+        ok, detail = ask(text, bearer, project=project, agent=agent, cwd=cwd)
         if ok:
             detail.update({"mode": "new", "how": how or "default", "title": "", "text": text})
         return ok, detail

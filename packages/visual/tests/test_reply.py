@@ -1,6 +1,7 @@
 """Replying to a conversation from the Audiobookshelf player."""
 
 import json
+import os
 
 import pytest
 
@@ -1088,7 +1089,16 @@ def test_routed_ask_passes_the_project_to_a_fresh_session(_router, monkeypatch):
     seen = {}
     monkeypatch.setattr(reply, "ask", lambda text, bearer, **k: seen.update(k) or (True, {"session": "new-1"}))
     ok, d = reply.ask_routed("hi", "tok", target="new", project="p-x")
-    assert ok and d["mode"] == "new" and seen == {"project": "p-x", "agent": ""}
+    assert ok and d["mode"] == "new" and seen == {"project": "p-x", "agent": "", "cwd": ""}
+
+
+def test_routed_ask_passes_a_directory_to_a_fresh_session(_router, monkeypatch):
+    # `/targets` hands out directories, not series names; they reach `ask`
+    # the same way a project does.
+    seen = {}
+    monkeypatch.setattr(reply, "ask", lambda text, bearer, **k: seen.update(k) or (True, {"session": "new-1"}))
+    ok, d = reply.ask_routed("hi", "tok", target="new", cwd="/home/ryer/projects/runlet")
+    assert ok and seen["cwd"] == "/home/ryer/projects/runlet"
 
 
 def test_routed_ask_a_bare_name_switches_and_sends_nothing(_router):
@@ -1280,3 +1290,61 @@ def test_open_window_runs_the_agents_own_resume(monkeypatch):
     assert cmds[0].endswith(f"/bin/codex resume {sid}")
     assert cmds[1].endswith(f"/bin/pi --session {sid}")
     assert cmds[2].endswith(f"/bin/pi --session-id {sid}")
+
+
+# --- where a new chat can be opened -------------------------------------------
+
+def _places_world(tmp_path, monkeypatch, rows, live=()):
+    """`rows` is [(session, cwd, mtime)]; each gets a manifest and a directory."""
+    manifests = tmp_path / "manifests"
+    manifests.mkdir()
+    cwds = {}
+    for sid, name, at in rows:
+        d = tmp_path / name
+        d.mkdir(exist_ok=True)
+        cwds[sid] = str(d)
+        f = manifests / f"{sid}.json"
+        f.write_text(json.dumps({"session": sid, "folder": f"/conversations/x/{sid}"}))
+        os.utime(f, (at, at))
+    monkeypatch.setattr(reply, "_manifest_dir", lambda: manifests)
+    monkeypatch.setattr(reply, "live_sessions", lambda: {s: "%1" for s in live})
+    monkeypatch.setattr(reply, "transcript_cwd", lambda sid: cwds.get(sid, ""))
+    return cwds
+
+
+def test_places_are_the_directories_sessions_ran_in(tmp_path, monkeypatch):
+    _places_world(tmp_path, monkeypatch, [
+        ("s-1", "agent-media", 100), ("s-2", "runlet", 200)])
+    names = [p["name"] for p in reply.places()]
+    assert names == ["runlet", "agent-media"]      # newest first
+
+
+def test_one_row_per_directory_however_many_talks_it_held(tmp_path, monkeypatch):
+    cwds = _places_world(tmp_path, monkeypatch, [
+        ("s-1", "agent-media", 100), ("s-2", "runlet", 200)])
+    cwds["s-1"] = cwds["s-2"]                      # both ran in runlet
+    assert [p["name"] for p in reply.places()] == ["runlet"]
+
+
+def test_a_session_running_now_is_newer_than_anything_shelved(tmp_path, monkeypatch):
+    _places_world(tmp_path, monkeypatch,
+                  [("s-1", "agent-media", 100), ("s-2", "runlet", 9e9)],
+                  live=["s-1"])
+    assert [p["name"] for p in reply.places()][0] == "agent-media"
+
+
+def test_places_stop_at_the_limit(tmp_path, monkeypatch):
+    _places_world(tmp_path, monkeypatch, [
+        (f"s-{i}", f"dir-{i}", 100 + i) for i in range(10)])
+    assert len(reply.places(limit=3)) == 3
+    assert len(reply.places(limit=0)) == 10
+
+
+def test_a_directory_no_session_has_run_in_is_refused(tmp_path, monkeypatch):
+    # /ask opens a shell where it is told to, so the phone picks from the
+    # list the server published, not from anywhere on the disk.
+    _places_world(tmp_path, monkeypatch, [("s-1", "agent-media", 100)])
+    monkeypatch.setattr(reply, "abs_identity", lambda b: ({"username": "d", "type": "root"}, 200))
+    monkeypatch.setattr(reply, "may_reply", lambda u: (True, ""))
+    ok, detail = reply.ask("hi", "tok", cwd="/etc")
+    assert not ok and detail["status"] == 404
