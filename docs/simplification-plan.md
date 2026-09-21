@@ -1,6 +1,6 @@
 # Simplifying agent-media for the Sasonica rebuild (draft, 21 Sep 2026)
 
-Companion to `runlet/docs/umbrella.md` (Sasonica = app + server + link + shell).
+Companion to `sasonica-shell/docs/umbrella.md` (the repo was `runlet` until 21 Sep 2026) (Sasonica = app + server + link + shell).
 The rebuild puts an assistant-ui front end on agent-media directly and retires
 Audiobookshelf. That is the moment to shrink the server side too.
 

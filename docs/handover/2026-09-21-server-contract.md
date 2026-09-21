@@ -5,7 +5,7 @@
 Decided today, in order:
 
 - **Sasonica** is the umbrella name: app + server + link (Cloudflare Tunnel) +
-  shell (Runlet). See `~/projects/runlet/docs/umbrella.md`.
+  shell (Runlet). See `~/projects/sasonica-shell/docs/umbrella.md`.
 - The phone app is being rebuilt: Capacitor 7 shell and our Java stay; the
   Nuxt 2 / ABS web layer is replaced by **assistant-ui** (React), built with
   **React Router v7 in SPA mode**. See `docs/app-redesign-options.md`.
