@@ -1218,6 +1218,8 @@ def rename(session: str, title: str, *, target=None) -> str:
         harnesses.set_name(session, title)
     else:
         conversation.set_session_name(session, title)
+        # Closed: the name has to be in the transcript to survive a resume.
+        conversation.record_title(session, title)
     if folder:
         set_metadata(session, Path(folder), target=target)
     return title

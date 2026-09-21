@@ -152,6 +152,33 @@ def set_session_name(session: str, title: str) -> bool:
     return True
 
 
+def record_title(session: str, title: str) -> bool:
+    """Name an ended session the way `/rename` would. False if it cannot be.
+
+    Claude Code keeps a session's name as `custom-title` lines in its own
+    transcript and takes the last one on resume, so a session named at the
+    terminal kept that name through a rename made while it was closed — the
+    name file is only its automatic name, and loses to a chosen one. One more
+    line of the same shape is what a `/rename` would have left.
+
+    Only for a session that is not running: a live one writes its title again
+    every turn from memory, so it is renamed by typing `/rename` into it.
+    """
+    path = transcript(session)
+    title = " ".join((title or "").split())
+    if path is None or not title or pane_of(session):
+        return False
+    line = json.dumps({"type": "custom-title", "customTitle": title, "sessionId": session},
+                      ensure_ascii=False, separators=(",", ":"))
+    try:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except OSError as e:  # noqa: BLE001 — the shelf's copy is the one that matters
+        log.debug("cannot record title for %s (%s)", session, e)
+        return False
+    return True
+
+
 def pane_of(session: str) -> str:
     """The tmux pane this session is running in, or "".
 

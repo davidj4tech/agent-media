@@ -550,3 +550,28 @@ def test_no_tmux_at_all_is_not_a_traceback(monkeypatch):
     monkeypatch.setattr(C.subprocess, "run", boom)
     assert C.start("why?", channel="music", title="Blue") is None
     assert C.find_window("ask Blue") is None
+
+
+def test_a_closed_session_is_renamed_in_its_transcript(tmp_path, monkeypatch):
+    """Claude Code resumes with the last custom-title in the transcript, so a
+    name chosen at the terminal outlived a rename made while it was closed."""
+    import json
+
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    t = tmp_path / "projects" / "-home-x" / "s1.jsonl"
+    t.parent.mkdir(parents=True)
+    t.write_text('{"type":"custom-title","customTitle":"old","sessionId":"s1"}\n')
+    monkeypatch.setattr(C, "pane_of", lambda s: "")
+    assert C.record_title("s1", "  A  new name ")
+    last = json.loads(t.read_text().splitlines()[-1])
+    assert last == {"type": "custom-title", "customTitle": "A new name", "sessionId": "s1"}
+
+
+def test_a_running_session_is_not_written_to(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    t = tmp_path / "projects" / "-home-x" / "s1.jsonl"
+    t.parent.mkdir(parents=True)
+    t.write_text("")
+    monkeypatch.setattr(C, "pane_of", lambda s: "%3")
+    assert not C.record_title("s1", "A name")
+    assert t.read_text() == ""
