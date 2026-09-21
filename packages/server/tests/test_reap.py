@@ -774,3 +774,21 @@ def test_the_timer_template_runs_the_reaper():
     assert "exec media session-reap" in (src / "run").read_text()
     assert "OnCalendar=*:0/15" in (src / "timer").read_text()
     assert "requires: origin" in (src / "roles").read_text()
+
+
+def test_gateway_sessions_are_machinery_not_threads(monkeypatch, tmp_path):
+    """Meridian's pool lives in ~/.meridian; its agents are never threads and
+    never reaped. The check is on the agent process's own working folder."""
+    import os
+
+    from agent_media_server import sessions
+
+    monkeypatch.delenv("MEDIA_SESSIONS_EXCLUDE_CWD", raising=False)
+    assert os.path.realpath(os.path.expanduser("~/.meridian")) in sessions._excluded_dirs()
+    here = os.path.realpath(os.getcwd())
+    monkeypatch.setenv("MEDIA_SESSIONS_EXCLUDE_CWD", here)
+    assert sessions._is_machinery(os.getpid(), sessions._excluded_dirs())
+    monkeypatch.setenv("MEDIA_SESSIONS_EXCLUDE_CWD", str(tmp_path / "elsewhere"))
+    assert not sessions._is_machinery(os.getpid(), sessions._excluded_dirs())
+    monkeypatch.setenv("MEDIA_SESSIONS_EXCLUDE_CWD", "")
+    assert sessions._excluded_dirs() == []

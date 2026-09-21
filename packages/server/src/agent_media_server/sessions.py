@@ -103,6 +103,33 @@ def session_for_path(path: str) -> tuple[str | None, str]:
 # --- is that session live, and where ------------------------------------------
 
 
+#: Folders whose agents are machinery, not conversations: Meridian (the
+#: gateway) keeps a pool of Claude Code sessions in `~/.meridian`, each in a
+#: `_meridian` tmux pane, and serves requests through them. They are not
+#: David's threads — they must not appear in the thread list, and the idle
+#: reaper must never close them (it would take the gateway down with it; the
+#: first dry run on 2026-09-22 listed three as would-close). Comma-separated,
+#: `~` expanded; MEDIA_SESSIONS_EXCLUDE_CWD overrides the default.
+_EXCLUDE_DEFAULT = "~/.meridian"
+
+
+def _excluded_dirs() -> list[str]:
+    raw = os.environ.get("MEDIA_SESSIONS_EXCLUDE_CWD")
+    raw = _EXCLUDE_DEFAULT if raw is None else raw
+    return [os.path.realpath(os.path.expanduser(p.strip())) for p in raw.split(",") if p.strip()]
+
+
+def _is_machinery(pid: int, excluded: list[str]) -> bool:
+    """Is this agent process running in an excluded folder?"""
+    if not excluded:
+        return False
+    try:
+        cwd = os.path.realpath(os.readlink(f"/proc/{pid}/cwd"))
+    except OSError:
+        return False
+    return any(cwd == d or cwd.startswith(d + os.sep) for d in excluded)
+
+
 def live_sessions() -> dict[str, str]:
     """`{session uuid: pane}` for every Claude Code process in a pane.
 
@@ -119,6 +146,7 @@ def live_sessions() -> dict[str, str]:
     reg = Path.home() / ".claude" / "tmux-sessions"
     live: dict[str, str] = {}
     pids: dict[str, int] = {}
+    excluded = _excluded_dirs()
     for d in glob.glob("/proc/[0-9]*"):
         try:
             cmd = Path(d, "cmdline").read_bytes().split(b"\0")
@@ -129,6 +157,8 @@ def live_sessions() -> dict[str, str]:
             continue
         pane = panes.addr_of_env(dict(e.split(b"=", 1) for e in env if b"=" in e))
         if not pane:
+            continue
+        if _is_machinery(int(os.path.basename(d)), excluded):
             continue
         # Claude's own record first: it follows /resume and /clear, and it is
         # there when our pane registry lost the entry (claude_sessions).
@@ -154,6 +184,8 @@ def live_sessions() -> dict[str, str]:
     from agent_media_core import harnesses
 
     for run in harnesses.running():
+        if run.pid and _is_machinery(run.pid, excluded):
+            continue
         if run.pane and run.session not in live:
             live[run.session] = run.pane
             pids[run.session] = run.pid
