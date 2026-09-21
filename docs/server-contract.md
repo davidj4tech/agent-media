@@ -13,10 +13,12 @@ The document has two halves:
 - **v1 — what the rebuild needs.** Four changes decided with David on
   21 Sep 2026: device tokens instead of the Audiobookshelf login, threads
   keyed by session instead of by library item, a per-thread event stream,
-  and stop. **Device tokens (§9) and threads keyed by session (§10) are
-  BUILT (22 Sep 2026)** — those sections now give the shapes as
-  implemented, and the deviations from the first draft. The stream (§11),
-  stop (§12) and error codes (§13) are still specified only.
+  and stop. **Device tokens (§9), threads keyed by session (§10) and the
+  per-thread stream (§11) are BUILT (22 Sep 2026)** — those sections now
+  give the shapes as implemented, and the deviations from the first draft.
+  Stop (§12) and error codes (§13) are still specified only. The log
+  also gained **messages** (§6.2.2): the thread read from the agent's own
+  transcript, as the terminal shows it, rather than from speech.
 
 Then the binding to assistant-ui's `ExternalStoreRuntime`, the gaps, and an
 appendix of everything that is *not* part of the app contract.
@@ -99,8 +101,9 @@ routes (the `_CORS_PATHS` set, §3.1) also carry
 Content-Encoding` — on refusals too, or a browser shows "network error"
 instead of the server's own sentence.
 
-**Compression.** Only `GET /item` compresses (gzip, when `Accept-Encoding`
-allows and the body is over 4 KiB). Nothing else does.
+**Compression.** `GET /item` and (since 22 Sep 2026) `GET
+/conversation/log` compress: gzip, when `Accept-Encoding` allows and the
+body is over 4 KiB. Nothing else does.
 
 **Picture URLs** come back canvas-relative (`/img/<name>`); the client
 prefixes its base URL. An absolute URL is another host's spool and is used as
@@ -120,7 +123,10 @@ The app routes: `/conversation`, `/conversation/log`, `/conversations`,
 `/targets`, `/item`, `/reply`, `/ask`, `/focus`, `/session/resume`,
 `/session/close`, `/session/answer`, `/draft`, `/speech/now`, `/speech/ctl`,
 `/sessions/state`, `/commands`, `/rename`, `/harnesses`, `/harnesses/run`,
-`/harnesses/screen`, `/harnesses/keys`, `/harnesses/close`, `/share`.
+`/harnesses/screen`, `/harnesses/keys`, `/harnesses/close`, `/share`,
+and (22 Sep 2026) `/threads/{session}/events` — matched as a pattern, not
+listed (`app.cors_path`), so its preflight and its answers, refusals
+included, carry the same headers.
 
 `/pair` (22 Sep 2026, §9) is open cross-origin for **POST and its preflight
 only** (`app.CORS_POST_PATHS`; the preflight's `Allow-Methods` is `POST,
@@ -202,6 +208,7 @@ media-share refuses to start otherwise.
 | **key** (approval) | 12 hex chars, sha1 of the dialog text | fingerprints a question so an answer can only land on the question that was read |
 | **id** (line) | an integer speech-history row id | only on lines that were spoken; used for `replay-id` |
 | **at** (line) | epoch seconds, 3 dp | when the turn was spoken (or typed). **The de facto line identity**: a live line keeps its `at` when it becomes a finished one |
+| **id** (message) | the transcript `uuid` of the message's first record (`"line:<at>"` for harnesses read from lines) | a message's identity (§6.2.2): stable as it grows, what `message` events (§11) and `?before=` name |
 
 ---
 
@@ -429,12 +436,20 @@ while a turn is pending.
 
 #### `GET /conversation/log?item=<item>` · `?session=<session>` — gated
 
-The conversation as lines — the chat itself. The `?session=` form (22 Sep
-2026, §10) answers the same envelope with the same line shapes and wins when
-both are given; it never asks ABS, so `start`/`end` are always `null` on it.
+The conversation — the chat itself — as **messages** read from the agent's
+transcript (§6.2.2, 22 Sep 2026) and as the older **lines** built from
+speech. The `?session=` form (22 Sep 2026, §10) answers the same envelope
+with the same shapes and wins when both are given; it never asks ABS, so
+`start`/`end` are always `null` on it.
+
+Query (both forms): `limit` — how many messages, newest first page
+(default 60, at most 500); `before` — a message `id`: only messages before
+it (the next page back). Neither touches `lines`.
 
 ```json
 {"ok": true, "session": "6c73…",
+ "messages": [ …message… ],
+ "older": true,
  "lines": [ …line… ],
  "pending": false,
  "working": null,
@@ -445,8 +460,16 @@ both are given; it never asks ABS, so `start`/`end` are always `null` on it.
 
 **Envelope**
 
-- `pending`: the last line is the listener's, or a turn is running — show
-  "thinking" and poll faster.
+- `messages` (22 Sep 2026): the thread as its transcript has it, oldest
+  first — §6.2.2. The client's source of truth for what was said.
+- `older` (22 Sep 2026): messages exist before the first one here; ask
+  with `?before=<messages[0].id>`.
+- `lines`: **deprecated** (22 Sep 2026). The spoken turns, as before; kept
+  so clients that read them keep working, and removed once both clients
+  read `messages`. New clients should not read them.
+- `pending`: the last line is the listener's, a turn is running, or (a
+  live session) the last message is the listener's — show "thinking" and
+  poll faster.
 - `working`: `null`, or what the running turn is doing:
   `{"since": <epoch>, "count": <steps so far>, "current": "<step text>",
   "current_at": <epoch|null>, "steps": ["…", …], "server_time": <epoch>}`.
@@ -531,7 +554,8 @@ pane and no transcript (§10).
 Clients: S (`ConversationLog.vue`), W (`useConversationLog.ts`). **Adaptive
 poll, by `setTimeout`:** 1 s while a line is live or just after, 2 s while
 `working` or `approval` (S), 15 s idle. S holds auto-scroll for 8 s after a
-manual scroll.
+manual scroll. v1 clients open the stream (§11) instead and fall back to
+this poll.
 
 ##### `approval`
 
@@ -555,6 +579,123 @@ all draw the same numbered list. The fields:
   still answer it.
 
 Answer with `POST /session/answer`.
+
+#### 6.2.2 Messages — BUILT 22 Sep 2026
+
+Code: `agent_media_server/transcript.py` (the parser and the speech join),
+`threads.messages_for`. Pinned by `packages/server/tests/test_transcript.py`.
+
+Why: lines come from speech history, so a reply appeared only once it had
+been queued and rendered for speech — behind any other speech waiting — and
+only as the words spoken. The terminal has the reply the moment it is
+written, with its steps and narration. Messages are read from the same file.
+
+```json
+{"id": "8a1f…-uuid",
+ "role": "assistant",
+ "at": 1790000123.456,
+ "parts": [
+   {"type": "reasoning", "text": "", "redacted": true},
+   {"type": "reasoning", "text": "Found the route table; reading it next.", "redacted": false},
+   {"type": "tool", "name": "Bash", "title": "Run the tests",
+    "input_summary": "pytest -q packages/server/tests", "status": "done",
+    "result_summary": "466 passed in 24s", "tool_use_id": "toolu_01…"},
+   {"type": "ask", "ask": [{"question", "options": [{"label", "description"}], "multiSelect"}],
+    "status": "done", "answer": "A", "tool_use_id": "toolu_02…"},
+   {"type": "text", "text": "All fixed. The log now…"}],
+ "spoken": {"id": 4711, "key": "3f9a…", "at": 1790000131.2,
+            "images": ["/img/…"], "figure": true,
+            "live": {"sentences": […], "sentence": 1, "offsets": […], "elapsed": 3.2,
+                     "server_time": 1790000134.4, "delay": 0.0, "paused": false}},
+ "turn": {"running": false}}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `id` | the transcript `uuid` of the message's first record. Stable: a message keeps it as it grows. Codex/pi/Hermes (below): `"line:<at>"` |
+| `role` | `"user"` or `"assistant"` |
+| `at` | epoch seconds, 3 dp, of the first record |
+| `parts` | in order, as the terminal draws them (below) |
+| `spoken` | the speech of this message, or `null` if it was not spoken (or cannot be recognised). `id` is the history row for `/speech/ctl replay-id` (`null` while it is still playing for the first time); `key` the reply's dedup key; `images`/`figure` as on lines, only when drawn; `live` only while it plays — the §6.2 live-line fields, moved here |
+| `turn.running` | the turn is still going: the last record asked for a tool, or a tool has no result yet. Always `false` when the session is not live |
+| `command` | user messages that are a slash command only: `{name, args, text}`, the line's chip (`slash.py`); settings commands are never messages |
+
+**Parts.**
+- `text` — the words. Cut at 32 KB.
+- `reasoning` — `redacted: false` with the text the model wrote, or
+  `redacted: true` with `""`: thinking whose text Claude Code does not keep.
+  A run of redacted blocks is one part. **What the transcripts on red5
+  hold** (Claude Code 2.1.263–2.1.278, Sep 2026, 40 recent transcripts):
+  ~90 % of `thinking` blocks are signature-only (`"thinking": ""`) — the
+  reasoning itself is not in the file. The ones with text are the model's
+  short running *narration* between tool calls ("Spec corrections are
+  committed. Next I'll…"); their signatures are marked `narration`, the
+  empty ones `thinking`. So the phone gets the narration verbatim and a
+  "thought" marker where the model thought. `redacted_thinking` blocks (none
+  seen) become redacted parts too.
+- `tool` — `name`; `title`, the step in plain English (`activity.describe`,
+  what `working.steps` already says); `input_summary` — Bash's command line,
+  Read's path and line range, Edit's path and `−old +new` line counts,
+  Write's path and line count, Grep/Glob's pattern, WebFetch's URL, Agent's
+  description; other tools their input as compact JSON; all cut at 300
+  chars; `status` `running` | `done` | `error` (an interrupted turn's
+  unanswered tools are `error`, "interrupted"); `result_summary` — the
+  first 300 chars of the result, except Read, which says `"N lines"`.
+  **File contents are never shipped**: `toolUseResult` (which holds whole
+  files) is never read. A subagent is one `Agent` tool part; its own turns
+  (sidechain records) are not messages.
+- `ask` — an AskUserQuestion, in the §6.2 `ask` shape, with the `answer`
+  once given. Claude Code writes it to the transcript only after it is
+  answered; the one on screen now is `approval`.
+
+**What a message is.** A prompt starts a user message; the assistant
+records after it, up to the next prompt, are one assistant message (every
+text, thinking and tool block of the turn, with tool results attached by
+`tool_use_id`). A prompt typed while a turn runs (`queued_command`) is a
+user message where it landed, and the turn continues in a new assistant
+message. Left out: `isMeta` records, compact summaries, sidechains,
+attachments and bookkeeping records, `system` records (a recap is the
+envelope's `recap`), and the harness's asides in the prompt stream (task
+notifications, reminders, local command output — `strip_system_blocks`, the
+speech path's rule): those are not messages, but the turn after one is a
+new message.
+
+**The speech join** (`transcript.join_speech`), in order:
+1. **By key.** The Stop hook keys a reply by `sha1(strip_markdown(reply
+   without [[visual:]] markers))`, before any spoken summary rewrites it,
+   and the line carries that key. The same hash of the assistant message's
+   final text (the last text part; also the text parts after its last tool,
+   joined) is an exact match. A `[[reveal:]]` reply is spoken in two halves,
+   each keyed on its own; the first half's line wins.
+2. **By words**, for what the key misses (old rows, a reply handed to the
+   hook differently than it is reconstructed): the unclaimed agent line
+   most similar (≥ 0.6, `difflib` on normalised words) to the final text
+   among those said no earlier than 5 s before the message began.
+3. A listener line joins the user message with the same words said within
+   two minutes of it.
+
+Each line joins one message. **Failure mode:** a message never spoken, or
+whose speech is not recognised, keeps `spoken: null` — the join never
+guesses by time alone, so a wrong replay is impossible and a missing one is
+the cost. A line that joins nothing (a notification, a question read on the
+alert lane) stays in `lines` and is not a message. Speech whose audio the
+cache has swept is not in the lines either (session_feed drops it), so old
+messages lose `spoken` as their clips are swept.
+
+**Codex, pi and Hermes** have no parser yet: their messages are their lines
+reshaped (one text or ask part each, `id` `"line:<at>"`, `spoken` when the
+line was spoken). The Builder in `transcript.py` is fed one record at a
+time — the shape a headless session's stream-json events also have — so
+each harness gets its own reader in front of it.
+
+**Cost** (measured on red5, 22 Sep 2026, the 8 largest transcripts, 7.5–
+11.1 MB, page cache warm): a first read, from the end, 40–210 ms; the
+whole file 40–100 ms; an unchanged file 0.03 ms (a stat); an append of a
+few records 0.1–0.25 ms (only the new bytes are read). A page of 60
+messages is 106–315 KB of JSON, 32–87 KB gzipped — tool summaries are two
+thirds of it. Per file, the fold is cached with the inode and the offset
+read to; a file that shrank, was replaced or rewritten in place (the bytes
+before the old offset differ) is read again from the end.
 
 #### `GET /commands` — gated
 
@@ -1107,7 +1248,7 @@ per-thread stream copies its conventions.
 | --- | --- | --- | --- |
 | Credential | the caller's ABS bearer, checked with ABS | a device token, checked locally (§9) | **built 22 Sep 2026** |
 | Thread id | ABS item id on half the routes | session id everywhere (§10) | **built 22 Sep 2026** |
-| Live updates | poll `/conversation/log` 1–15 s | `GET /threads/{session}/events` (§11) | specified |
+| Live updates | poll `/conversation/log` 1–15 s | `GET /threads/{session}/events` (§11) | **built 22 Sep 2026** |
 | Stop | none | `POST /session/stop` (§12) | specified |
 | Errors | `ok` + `error`, status as §3 | the same, plus a machine `code`; every error has `ok` (§13) | specified (`/pair` already answers with `code`) |
 
@@ -1315,7 +1456,10 @@ Until then they stay, and are `null` or `""` where nothing fills them.
 
 ---
 
-## 11. v1: the per-thread stream
+## 11. v1: the per-thread stream — BUILT 22 Sep 2026
+
+Code: `packages/server/src/agent_media_server/thread_events.py`, routed in
+`app.py`. Pinned by `packages/server/tests/test_thread_events.py`.
 
 ```
 GET /threads/{session}/events
@@ -1327,47 +1471,88 @@ Accept: text/event-stream
 clients use a fetch-based reader that can (e.g.
 `@microsoft/fetch-event-source`; Capacitor's WebView supports streamed
 fetch). `?access_token=` is accepted as a fallback for a plain
-`EventSource`. The server must never log that query string.
+`EventSource`. It is never logged: nothing prints the query, and the
+canvas's request log (`MEDIA_VISUAL_DEBUG=1`) redacts it. Gated by
+`auth.gate` like every app route (a device token, or an ABS bearer).
 
-**Frames.** Named events (`event: <type>`), JSON `data`, and a
-per-connection increasing `id`.
+**Frames.** Named events (`event: <type>`), JSON `data`, a per-connection
+increasing `id`, and `retry: 2000` first.
 
 | Event | Data | When |
 | --- | --- | --- |
-| `snapshot` | the whole `/conversation/log` envelope plus `{"state", "live", "pane", "resumable"}` | first frame on every connection |
-| `line` | `{"op": "append" \| "replace", "line": <line>}` | a line appears, or an existing one (matched by `at`) changes: ends, gains pictures or `work`, is placed |
-| `live` | `{"at", "sentence", "elapsed", "server_time", "paused", "delay"}` | the live line's sentence, pause or clock changes — **not** at 1 Hz; the client runs the clock between frames |
+| `snapshot` | the whole `/conversation/log?session=` envelope (default page: `messages`, `older`, `lines`, `pending`, `working`, `approval`, `suggestion`, `recap`) plus `{"state", "live": bool, "pane", "resumable"}` | first frame on every connection |
+| `message` | `{"op": "append" \| "replace", "message": <message>}` (§6.2.2) | a message appears, or one (matched by `id`) changes: grows a part, a tool finishes, its turn ends, it gains or loses `spoken` |
+| `live` | `{"id", "at", "sentences", "sentence", "offsets", "elapsed", "server_time", "delay", "paused"}` — the message being spoken, by `id` — or `null` when nothing is | a new reply starts, the sentence changes, pause or resume, or the clock jumps (more than 1 s from where it should be: a skip) — **not** at 1 Hz; the client runs the clock between frames |
 | `working` | the `working` object, or `null` | a step starts, or the turn ends |
 | `approval` | the `approval` object, or `null` | a dialog appears, changes or goes |
 | `suggestion` | `{"text": "…"}` | the ghost or follow-up arrives or clears |
 | `state` | `{"state": "working" \| "waiting" \| "approval" \| "ended", "live": bool, "pane"}` | the session changes state; `ended` when its pane goes |
+| `recap` | `{"text", "at", "source"}` or `null` | a newer recap is written |
 | `ping` | `{}` | 15 s of silence |
 
-`isRunning` is `state == "working"` or `pending` from the snapshot
-(§14).
+`isRunning` is `state == "working"`, `pending`, or the last message's
+`turn.running` (§14).
+
+**Applying events.** Keep messages by `id`. `append` adds at the end —
+unless the `id` is already held, which can happen in the moment between a
+snapshot and the first event: then it replaces. `replace` replaces in place.
+Only the newest page (60) is watched; a replace never arrives for a message
+older than that.
 
 **Reconnection.** The server keeps no per-client history. On every
 (re)connect it sends a fresh `snapshot`, and `Last-Event-ID` is accepted
-but ignored. A client replaces its thread state with each snapshot. This
-is deliberate: the full log is small, and a missed-event protocol is
-more to get wrong than it saves.
+but ignored. A client replaces its thread state with each snapshot. A
+client that falls 256 events behind is disconnected, and its reconnect's
+snapshot is the catch-up.
 
-**Server side.** One watcher per *subscribed session* (not per
-connection), fanning out to that session's subscribers. It re-reads at 1 s
-while a line is live or a turn is working, and at 3 s otherwise. It diffs
-against the last snapshot and emits the smallest events that turn one
-into the other. The watcher stops when its last subscriber leaves. Cap: 8
-subscribers per session, 32 streams in total; over the cap is 503, as on
-`/events`.
+**Server side.** One watcher per *subscribed session*, fanning out to that
+session's subscribers, started by the first and stopped when the last
+leaves. Its baseline is read before the first subscriber's snapshot, so a
+change that lands between the two is sent (at worst twice), never lost.
 
-**Errors before the stream opens:** 401/403 (auth), 400 not a session id,
-404 no such session (no transcript and not live). After it opens, errors
-are not reported in-stream — the connection closes, and the reconnect's
-`snapshot` (or its 404) says what happened.
+- **The transcript** is stat-polled every 0.3 s (stdlib only, no inotify).
+  When it grows, the watcher waits for the writes to settle (0.2 s quiet,
+  at most 1 s from the first), reads the new bytes only (§6.2.2's cache)
+  and sends the messages that appeared or changed. Measured on red5 with a
+  copy of an 11 MB transcript, default intervals, in-process server: **append
+  → `message` event median 0.33 s, max 0.5 s** (20 appends). What it
+  replaces was a 1–15 s poll of speech history, which had the reply only
+  once it was being spoken.
+- **Everything else** — speech (which message is spoken, and the live
+  one), working, the dialog, the suggestion, the state, the recap — is
+  re-read every 1 s while a turn is working or speech is live, and every 3 s
+  otherwise, and each is sent only when it changed (a clock field alone,
+  `server_time`, is not a change).
+- **Held threads.** Each connection holds one of the canvas's handler
+  threads (ThreadingHTTPServer). Every write that fails ends it, and the
+  15 s ping means a vanished client is noticed within one; its watcher stops
+  when it was the last.
+- **Caps:** 8 subscribers per session, 32 streams in total; over either,
+  503 `{"ok": false, "error": "too many open threads"}`.
+- The canvas's own `/events` (§7) is separate and unchanged.
+
+**Errors before the stream opens:** 401/403 (auth, the §4.1/§9 answers), 400
+`"not a session id"`, 404 `"no such session"` (not live, no transcript, no
+manifest). After it opens, errors are not reported in-stream — the
+connection closes, and the reconnect's `snapshot` (or its 404) says what
+happened.
 
 **The thread list** stays polled (`/sessions/state` at 5 s, `/targets` on
 open). A list stream is left for later: it would be a second watcher over
 every pane, for a list that changes slowly.
+
+### Deviations from the 21 Sep draft
+
+- `line` events are **`message`** events carrying §6.2.2 messages, matched
+  by `id` rather than `at`. Lines still ride in the snapshot, deprecated,
+  and are not streamed.
+- `live` names its message by `id` (and still carries `at`), and is `null`
+  when speech stops.
+- A `recap` event was added.
+- The transcript is watched at 0.3 s (plus a 0.2 s settle) rather than
+  re-read at 1 s / 3 s; the 1 s / 3 s re-read covers the rest.
+- 404's words are `"no such session"`, and a session with a manifest but no
+  transcript and no pane still streams (its lines).
 
 ---
 
@@ -1468,16 +1653,17 @@ and calls back.
 
 ### Messages
 
-`convertMessage(line) → ThreadMessageLike`:
+`convertMessage(message) → ThreadMessageLike` (22 Sep 2026: from §6.2.2
+messages; lines are deprecated):
 
-| ThreadMessageLike | From the line |
+| ThreadMessageLike | From the message |
 | --- | --- |
-| `id` | `` `${session}:${line.at}` `` — stable across live → finished |
-| `role` | `who == "you"` → `"user"`, else `"assistant"` |
-| `createdAt` | `new Date(line.at * 1000)` |
-| `content` | a `text` part with `line.text`; the pictures (below); for an `ask` line, a `tool-call` part `{toolName: "AskUserQuestion", args: {questions: line.ask}}` |
-| `status` (assistant) | `{type: "complete"}`; `{type: "running"}` for the live line while it is speaking |
-| `metadata.custom` | `{work, command, id, figure, live: {sentences, offsets, …}}` for the follow-along, work summary and slash-command chip components |
+| `id` | `message.id` — stable as the message grows |
+| `role` | `message.role` |
+| `createdAt` | `new Date(message.at * 1000)` |
+| `content` | the parts, in order: `text` → `{type: "text", text}`; `reasoning` → `{type: "reasoning", text}` (a redacted one → a collapsed "Thought" with no text); `tool` → `{type: "tool-call", toolCallId: tool_use_id, toolName: name, args: {summary: input_summary, title}, result: result_summary}` (no `result` while `status == "running"`; `isError` when `error`); `ask` → `{type: "tool-call", toolName: "AskUserQuestion", toolCallId, args: {questions: ask}, result: answer}`; the pictures (below) |
+| `status` (assistant) | `{type: "running"}` while `turn.running`, else `{type: "complete"}` |
+| `metadata.custom` | `{command, spoken: {id, key, figure, live}}` for the replay button, follow-along and slash-command chip components |
 
 **Pictures are not `image` parts, yet.** assistant-ui silently drops an
 image part whose URL is not https, `blob:` or `data:`, and the canvas serves
@@ -1499,8 +1685,8 @@ the thread list's preview line.
 
 | Runtime | v0 | v1 |
 | --- | --- | --- |
-| `messages` | `/conversation/log` poll (`?session=` since 22 Sep 2026) | `snapshot` + `line` events |
-| `isRunning` | `pending` | `state == "working"` or `pending`. Note that assistant-ui disables the composer while running, but a Claude Code session takes messages mid-turn (they queue), so the app passes sends through while running |
+| `messages` | `/conversation/log` poll (`?session=` and `messages` since 22 Sep 2026) | `snapshot` + `message` events (§11), **built 22 Sep 2026** |
+| `isRunning` | `pending` | `state == "working"`, `pending`, or the last message's `turn.running`. Note that assistant-ui disables the composer while running, but a Claude Code session takes messages mid-turn (they queue), so the app passes sends through while running |
 | `onNew` in a thread | `POST /reply {item, text}`; a thread not on the shelf yet has no item, so it goes through `POST /ask {text, target: session}` | `POST /reply {session, text}` — **available since 22 Sep 2026**, for every thread, shelved or not |
 | `onNew` in a new thread | `POST /ask {text, target: "new", cwd?, agent?}` | same; the returned `session` becomes the thread id |
 | `onCancel` | — (gap) | `POST /session/stop`; a second cancel within 5 s sends `speech: "silence"` |
@@ -1587,7 +1773,7 @@ that is the v0 behaviour, and a gap (§16).
 | --- | --- |
 | Device auth | **built 22 Sep 2026** (§9). Left: `code: "bad_token"` on a revoked token's 401 (with §13), and the app side (scan, keystore, send the token) |
 | Session-keyed log and reply | **built 22 Sep 2026** (§10) |
-| Live thread updates | specified (§11), not built |
+| Live thread updates | **built 22 Sep 2026** (§11), with messages from the transcript (§6.2.2). Left: the app side, and transcript parsers for Codex, pi and Hermes |
 | Stop | specified (§12), not built; needs a per-session speech marker in core (`after` / `all`) |
 | Machine-readable error codes | specified (§13), not built |
 | Archive / unarchive a thread | **built 22 Sep 2026**: `POST /session/archive` and `archived` on `/targets` rows (§6.1, §6.4), a server-side flag in `<state_dir>/archived.json`. Left: the app side, and moving any existing ABS `archived` tags over (not done — the tag and the flag are independent until then) |
@@ -1677,6 +1863,14 @@ That is a later decision, not part of this contract.
   parts with the same rig, imported from `test_contract`. Among other things,
   every gated GET passes on a device token without ABS being asked, and the
   device token never reaches ABS.
+- `test_transcript.py` pins messages (§6.2.2) against small synthetic
+  transcripts: every record type, redacted and visible thinking, tool
+  pairing and summaries (no file contents), turns, incremental reads,
+  shrink/replace/rewrite, reading from the end, paging, and the speech
+  join. `test_thread_events.py` pins the stream (§11) over real HTTP with
+  shrunk intervals: snapshot then appends as the file grows, the speech
+  join and `live`, state and suggestion, reconnect, one watcher per session,
+  pings, caps, auth, and that `/events` is untouched.
 - `test_recaps.py` pins recaps ([Recaps](#recaps)): parsing, the backwards
   read, the cache, and the `recap` field on both routes. The server conftest
   points `CLAUDE_CONFIG_DIR` at a throwaway dir, so no test reads a real

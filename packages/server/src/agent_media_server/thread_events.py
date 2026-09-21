@@ -183,7 +183,9 @@ class Watcher:
         stat = self._stat
         first = last = 0.0
         next_full = time.monotonic() + (FAST_S if self._busy else SLOW_S)
-        while not self._stop.wait(POLL_S):
+        # While a burst of writes settles, look again after the debounce
+        # rather than a whole poll: the wait is the debounce, not both.
+        while not self._stop.wait(DEBOUNCE_S if first else POLL_S):
             now = time.monotonic()
             try:
                 st = transcript.file_state(self.session)
