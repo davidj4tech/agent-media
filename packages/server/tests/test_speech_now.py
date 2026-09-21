@@ -85,7 +85,8 @@ def test_session_states_name_the_pane_class(monkeypatch, tmp_path):
     monkeypatch.setattr(sessions, "_STATES_CACHE", (0.0, []))
     ok, out = sessions.session_states("tok")
     assert ok
-    assert out["sessions"] == [{"session": SID, "tail": "agent-media/Filters", "state": "working"}]
+    assert out["sessions"] == [{"session": SID, "tail": "agent-media/Filters", "state": "working",
+                                "mem_mb": None}]
 
 
 def test_session_states_are_swept_once_per_ttl(monkeypatch):

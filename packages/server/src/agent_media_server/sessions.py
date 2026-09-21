@@ -20,7 +20,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import auth, auth_abs, panes, recaps
+from . import auth, auth_abs, panes, procmem, recaps
 
 
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
@@ -115,8 +115,10 @@ def live_sessions() -> dict[str, str]:
     started fresh. Driven off live processes either way, so a stale
     registry entry cannot resurrect a dead session on a recycled pane.
     """
+    global _PIDS
     reg = Path.home() / ".claude" / "tmux-sessions"
     live: dict[str, str] = {}
+    pids: dict[str, int] = {}
     for d in glob.glob("/proc/[0-9]*"):
         try:
             cmd = Path(d, "cmdline").read_bytes().split(b"\0")
@@ -147,13 +149,24 @@ def live_sessions() -> dict[str, str]:
                 sid = parts[0]
         if sid:
             live[sid] = pane
+            pids[sid] = int(os.path.basename(d))
     # Codex and pi, each found its own way (see agent_media_core.harnesses).
     from agent_media_core import harnesses
 
     for run in harnesses.running():
         if run.pane and run.session not in live:
             live[run.session] = run.pane
+            pids[run.session] = run.pid
+    # Kept for the memory column of /sessions/state (`_live_states`): this
+    # sweep already found each session's process, and finding it again would
+    # be a second walk of /proc. Rebound whole, never mutated, so a reader on
+    # another thread sees one sweep's answer or the next one's.
+    _PIDS = pids
     return live
+
+
+#: `{session: agent pid}` as the latest `live_sessions` sweep found them.
+_PIDS: dict[str, int] = {}
 
 
 def agent_of(session: str) -> str:
@@ -626,7 +639,9 @@ _STATE_NAMES = {"working": "working", "input": "waiting", "approval": "approval"
 #: Every open library polls this, and each poll is a /proc sweep plus a
 #: capture-pane per live session; a few seconds collapses them to one.
 _STATES_TTL_S = 3.0
-_STATES_CACHE: tuple[float, list[dict]] = (0.0, [])
+#: `(monotonic at, (rows, host))`. Anything with a zero time is stale and
+#: never unpacked, which is how tests reset it.
+_STATES_CACHE: tuple[float, object] = (0.0, [])
 _STATES_LOCK = threading.Lock()
 
 
@@ -639,12 +654,25 @@ def _live_states() -> list[dict]:
             continue
         tails[str(data.get("session") or f.stem)] = _tail(data.get("folder") or "")
     out = []
-    for sid, pane in live_sessions().items():
+    live = live_sessions()
+    # Memory per session: the agent process the sweep just found and all of
+    # its descendants, in one pass over /proc for every session (procmem).
+    pids = _PIDS
+    mem = procmem.tree_mem_mb({sid: pids.get(sid) for sid in live})
+    for sid, pane in live.items():
         cls = panes.classify(panes.strip_ansi(_capture_pane(pane)),
                                      _agent_of_pane(pane)) or "input"
         out.append({"session": sid, "tail": tails.get(sid, ""),
-                    "state": _STATE_NAMES.get(cls, "waiting")})
+                    "state": _STATE_NAMES.get(cls, "waiting"),
+                    "mem_mb": mem.get(sid)})
     return out
+
+
+def _host(rows: list[dict]) -> dict:
+    """The envelope's `host` block: the machine's memory, and how much of it
+    the listed sessions hold (the sum of the rows' known `mem_mb`)."""
+    return {**procmem.host_mem(),
+            "sessions_mem_mb": sum(r.get("mem_mb") or 0 for r in rows)}
 
 
 def session_states(bearer: str) -> tuple[bool, dict]:
@@ -652,18 +680,22 @@ def session_states(bearer: str) -> tuple[bool, dict]:
 
     Keyed by the item folder's `<author>/<title>` tail as well as the uuid, so
     the app can match its shelf without asking for each item. A session not
-    listed is not live. Gated like `/conversations`.
+    listed is not live. Each row carries `mem_mb`, and the answer a `host`
+    block, both computed inside the same cached sweep. Gated like
+    `/conversations`.
     """
     global _STATES_CACHE
     ok, detail = auth.may_control_speech(bearer)
     if not ok:
         return False, detail
     with _STATES_LOCK:
-        at, rows = _STATES_CACHE
+        at, cached = _STATES_CACHE
         if time.monotonic() - at > _STATES_TTL_S:
             rows = _live_states()
-            _STATES_CACHE = (time.monotonic(), rows)
-    return True, {"sessions": rows}
+            cached = (rows, _host(rows))
+            _STATES_CACHE = (time.monotonic(), cached)
+        rows, host = cached
+    return True, {"sessions": rows, "host": host}
 
 
 # --- which conversation the phone means -----------------------------------------
@@ -732,9 +764,16 @@ def sessions_index() -> list[dict]:
     summary for that session, `{"text", "at"}`, or None (none written yet, or
     not a Claude session). The app uses it as the row's preview line. Cached
     per transcript in `recaps`, so once warm a list of ~44 costs a stat each.
+
+    And `archived`: whether the thread has been archived (`archive`). Archived
+    rows stay in the list — the app files them under "Archived" itself, and
+    un-archiving from there needs the row.
     """
+    from . import archive
+
     live = live_sessions()
     titles = _pane_titles()
+    flags = archive.archived()
     seen: set[str] = set()
     out = []
     for sid, pane in live.items():
@@ -743,11 +782,11 @@ def sessions_index() -> list[dict]:
             continue
         seen.add(sid)
         out.append({"session": sid, "title": title, "live": True, "pane": pane,
-                    "recap": recaps.latest_recap(sid)})
+                    "recap": recaps.latest_recap(sid), "archived": sid in flags})
     for sid, title, at in _recent_conversations():
         if sid in seen:
             continue
         seen.add(sid)
         out.append({"session": sid, "title": title, "live": False, "pane": None, "at": at,
-                    "recap": recaps.latest_recap(sid)})
+                    "recap": recaps.latest_recap(sid), "archived": sid in flags})
     return out

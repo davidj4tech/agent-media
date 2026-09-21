@@ -223,10 +223,12 @@ Everything a message can be pointed at.
 ```json
 {"ok": true,
  "sessions": [
-   {"session": "0f1e…", "title": "Sasonica web", "live": true, "pane": "%42", "recap": null},
+   {"session": "0f1e…", "title": "Sasonica web", "live": true, "pane": "%42", "recap": null,
+    "archived": false},
    {"session": "6c73…", "title": "Sasonica music", "live": false, "pane": null, "at": 1790000000.1,
     "recap": {"text": "We're making the conversation page show what Claude is doing. Next: try it on the phone.",
-              "at": 1789807216.618}}],
+              "at": 1789807216.618},
+    "archived": true}],
  "places": [{"name": "agent-media", "path": "/home/ryer/projects/agent-media", "at": 1790000000.1}]}
 ```
 
@@ -240,6 +242,11 @@ Everything a message can be pointed at.
 - `recap` (every row, 22 Sep 2026): Claude Code's latest "while you were
   away" summary for that session, `{"text", "at"}`, or `null`. See
   [Recaps](#recaps) below. The app uses it as the row's preview line.
+- `archived` (every row, 22 Sep 2026): whether the thread is archived — a
+  flag this server keeps per session (`archive.py`, `<state_dir>/archived.json`),
+  set with `POST /session/archive` (§6.4). **Archived rows stay in the list**;
+  the app files them under an "Archived" section itself. Talking to a thread
+  (a reply, or an `/ask` routed into it) clears the flag.
 - `places`: up to 6 directories sessions have run in, newest first
   (running sessions count as "now"). These are the only directories a new
   chat may be opened in — `/ask` checks against this list (with no limit).
@@ -282,8 +289,10 @@ again from scratch. Measured on red5's 44 real transcripts (107 MB, 22 Sep
 2026): the body of `/targets` took 0.16–0.24 s on a fresh process's first
 call and ~0.13 s warm, both before and after; `latest_recap` over all 44
 took 0.058 s cold (page cache warm) and 0.3 ms warm. The one real cost is
-the first read of files that are not in the page cache at all: 0.72 s once,
-after which it is gone.
+the first read of files that are not in the page cache at all (0.5–0.72 s
+seen; red5 runs with ~1.5 GB free, so the cache does get evicted). That is
+paid once per canvas process: after it, the in-process cache means an
+unchanged file is only stat'ed and a growing one only read at its end.
 
 #### `GET /conversations` — gated
 
@@ -296,7 +305,10 @@ reasons; v1 drops it in favour of `/targets`.
 What each live session is doing.
 
 ```json
-{"ok": true, "sessions": [{"session": "0f1e…", "tail": "p-agent-media/Sasonica web", "state": "working"}]}
+{"ok": true,
+ "sessions": [{"session": "0f1e…", "tail": "p-agent-media/Sasonica web", "state": "working",
+               "mem_mb": 364}],
+ "host": {"mem_total_mb": 7758, "mem_available_mb": 1568, "sessions_mem_mb": 3009}}
 ```
 
 - `state`: `working` | `waiting` (has answered, waiting on you) |
@@ -305,7 +317,22 @@ What each live session is doing.
   the shelf can match items without asking for each. `""` when the session
   has no shelf entry yet.
 - Only live sessions are listed. Absent means not live.
+- `mem_mb` (22 Sep 2026): resident memory of the session's agent process
+  (the claude / codex / pi / hermes process `live_sessions` found) **and all
+  its descendants** — MCP servers, sandboxes — in whole MB (`procmem.py`).
+  RSS is summed per process, so shared pages count once per process: the
+  same measure `ps` shows, and an overestimate of what closing would free.
+  `null` when it cannot be read (the process ended mid-sweep).
+- `host` (22 Sep 2026): `mem_total_mb` and `mem_available_mb` from
+  `/proc/meminfo` (`null` if missing), and `sessions_mem_mb`, the sum of the
+  rows' known `mem_mb` (0 with no rows). What the phone needs to say "ten
+  sessions hold 3 GB of 7.7, 1.5 left — close some".
 - Cached 3 s server-side (each poll is a /proc sweep and a capture per pane).
+  Memory is computed inside the same cached sweep: the pids come from the
+  sweep that finds the sessions, and one more pass over `/proc` (each
+  process's parent, then `statm` for tree members only) answers every
+  session at once. Measured on red5 with 10 live sessions: the sweep
+  took ~0.24 s with or without it; the memory pass alone is ~15 ms.
 
 Clients: S (`mixins/sasonicaArchive.js`, `pages/ask.vue`), **polled every 5 s**.
 
@@ -658,6 +685,28 @@ Clients: S (`ReplyBox.vue`).
   so close is undone by resume.
 
 Clients: S (`ReplyBox.vue`), W (`useConversationSession.ts`).
+
+#### `POST /session/archive` — gated (22 Sep 2026)
+
+`{"session", "archived": true | false}` → `{"ok": true, "session", "archived"}`.
+
+- File a thread under Archived, or take it back out. The flag is kept here,
+  per session, in `<state_dir>/archived.json` (`{"<session>": <archived at>}`,
+  written atomically under a thread lock and an flock) — not an ABS tag.
+- `archived` defaults to `true` when absent; anything but a JSON boolean is
+  400 `"archived must be true or false"`. Setting what is already set is a
+  200 that writes nothing.
+- **Archiving ends nothing.** A live session stays live. "End & archive" is
+  two requests: `/session/close`, then this.
+- **Talking un-archives.** A reply, or an `/ask` routed into the thread,
+  clears the flag once the words are in (`send.deliver`); a send that
+  failed leaves it. A `branch` reply does not: it opens a new thread.
+- The row stays in `/targets` and `/conversations` with `archived: true`.
+- 400 `"not a session id"`; 404 `"no such session <first 8>"` for a session
+  that is not live, has no transcript and is not on the shelf.
+- In `CORS_PATHS`.
+
+Pinned by `packages/server/tests/test_archive_and_memory.py`.
 
 #### `POST /session/answer` — gated
 
@@ -1208,13 +1257,13 @@ that is the v0 behaviour, and a gap (§16).
 
 | Adapter | Source |
 | --- | --- |
-| `threads` | `/targets.sessions`, with `status: "regular"`, `title`, and `live` / `/sessions/state` for badges; `recap.text` as the preview line under the title |
-| `archivedThreads` | — (gap: archive is an ABS tag today) |
+| `threads` | `/targets.sessions` rows with `archived: false`, with `status: "regular"`, `title`, and `live` / `/sessions/state` for badges (and `mem_mb`, for a "close some" hint when `host.mem_available_mb` runs low); `recap.text` as the preview line under the title |
+| `archivedThreads` | `/targets.sessions` rows with `archived: true`, `status: "archived"` — the server lists them, the app splits them out |
 | `threadId` | the session id |
 | `onSwitchToThread(id)` | open `/threads/{id}/events`; draft from `GET /draft` |
 | `onSwitchToNewThread()` | a local, unsent thread (with a `place` / `agent` picker from `/targets.places` and `/harnesses`); it becomes real on the first `onNew` |
 | `onRename(id, title)` | `POST /rename {session, title}` |
-| `onArchive` / `onUnarchive` | — (gap) |
+| `onArchive` / `onUnarchive` | `POST /session/archive {session, archived: true \| false}` (§6.4). Ends nothing; an "End & archive" action also sends `/session/close`. A reply into an archived thread un-archives it server-side, so the app just re-reads `/targets` |
 | `onDelete` | — (gap; `/session/close` ends a session, it does not delete a thread) |
 
 ---
@@ -1258,7 +1307,8 @@ that is the v0 behaviour, and a gap (§16).
 | Live thread updates | specified (§11), not built |
 | Stop | specified (§12), not built; needs a per-session speech marker in core (`after` / `all`) |
 | Machine-readable error codes | specified (§13), not built |
-| Archive / unarchive a thread | none. Today it is the ABS `archived` tag. Needs a server-side flag on the session (manifest or a small state file) and `POST /session/archive` |
+| Archive / unarchive a thread | **built 22 Sep 2026**: `POST /session/archive` and `archived` on `/targets` rows (§6.1, §6.4), a server-side flag in `<state_dir>/archived.json`. Left: the app side, and moving any existing ABS `archived` tags over (not done — the tag and the flag are independent until then) |
+| Session memory on the phone | **built 22 Sep 2026**: `mem_mb` per `/sessions/state` row and its `host` block (§6.1). Left: the app side |
 | Delete a thread | none, and deliberately not proposed: transcripts are the harness's. Needs a decision |
 | Attachments (a photo, a file) | none. `/reply` is text only. Needs an upload route and a way to hand a file path to the harness |
 | Answer a multi-select or free-text ask from the phone | none. `/session/answer` presses one number. Needs keystroke sequences per harness |
@@ -1346,6 +1396,10 @@ That is a later decision, not part of this contract.
   read, the cache, and the `recap` field on both routes. The server conftest
   points `CLAUDE_CONFIG_DIR` at a throwaway dir, so no test reads a real
   transcript.
+- `test_archive_and_memory.py` pins `POST /session/archive`, `archived` on
+  the rows, un-archive on send, and `mem_mb` / `host` on `/sessions/state`
+  against a fake `/proc` tree. The conftest points `procmem.PROC` at an empty
+  throwaway dir, so no test reads the machine's real processes for memory.
 - Run all three packages' tests together (`packages/server/tests
   packages/visual/tests packages/core/tests` in one pytest run): basename
   collisions and cross-suite isolation faults only show up that way.

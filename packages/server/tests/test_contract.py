@@ -173,13 +173,14 @@ def test_targets_shape(server, shelf, signed_in):
     assert res.status == 200
     assert keys(obj) == {"ok", "sessions", "places"}
     live, shelved = obj["sessions"]
-    # `recap` joined on 22 Sep 2026, deliberately: Claude Code's latest "while
-    # you were away" summary, the list's preview line (§6.1). Null here: the
-    # rig has no transcripts.
-    assert keys(live) == {"session", "title", "live", "pane", "recap"}
+    # `recap` and `archived` joined on 22 Sep 2026, deliberately: Claude
+    # Code's latest "while you were away" summary, the list's preview line,
+    # and the server-kept archive flag (§6.1). Null / false here: the rig has
+    # no transcripts and nothing archived.
+    assert keys(live) == {"session", "title", "live", "pane", "recap", "archived"}
     assert live == {"session": SID2, "title": "Sasonica web", "live": True, "pane": "%42",
-                    "recap": None}
-    assert keys(shelved) == {"session", "title", "live", "pane", "at", "recap"}
+                    "recap": None, "archived": False}
+    assert keys(shelved) == {"session", "title", "live", "pane", "at", "recap", "archived"}
     assert shelved["live"] is False and shelved["pane"] is None
     assert [keys(p) for p in obj["places"]] == [{"name", "path", "at"}]
 
@@ -195,8 +196,14 @@ def test_conversations_is_the_same_session_rows(server, shelf, signed_in):
 def test_sessions_state_shape(server, shelf, signed_in):
     res, obj = call(server, "GET", "/sessions/state", headers=AUTH)
     assert res.status == 200
-    assert keys(obj) == {"ok", "sessions"}
-    assert obj["sessions"] == [{"session": SID2, "tail": "", "state": "working"}]
+    # `mem_mb` per row and the `host` block joined on 22 Sep 2026,
+    # deliberately (§6.1). The rig's live session has no process, so its
+    # memory is unknown: null, and not counted in the sum.
+    assert keys(obj) == {"ok", "sessions", "host"}
+    assert obj["sessions"] == [{"session": SID2, "tail": "", "state": "working",
+                                "mem_mb": None}]
+    assert keys(obj["host"]) == {"mem_total_mb", "mem_available_mb", "sessions_mem_mb"}
+    assert obj["host"]["sessions_mem_mb"] == 0
 
 
 # --- one conversation -------------------------------------------------------------

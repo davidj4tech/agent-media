@@ -782,5 +782,11 @@ def deliver(session: str, body: str, text: str) -> tuple[bool, dict]:
     if not _ensure_submitted(pane, body, agent=agent):
         return False, {**_unsent_error(pane, session), "opened": opened}
     _record_turn(session, text, pane)
+    # A thread you are talking to is not archived. Here rather than in
+    # `reply`, so a routed `/ask` that lands in an archived thread clears it
+    # too; only once the words are in, so a send that failed leaves it be.
+    from . import archive
+
+    archive.unarchive_quietly(session)
     return True, {"session": session, "pane": pane, "opened": opened,
                   "submitted": True}

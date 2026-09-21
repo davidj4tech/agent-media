@@ -58,6 +58,9 @@ device gets its token):
   POST /session/resume {"session"} → bring that session back in a tmux
                   window (a reply's revive, without the reply)
   POST /session/close  {"session"} → close the pane it runs in
+  POST /session/archive {"session", "archived": true|false} → file the
+                  thread under Archived, or take it back out (a flag this
+                  server keeps; see archive.py). Ends nothing
   POST /session/answer {"session", "choice", "key"} → answer the dialog that
                   session is stopped on (a permission prompt); refused unless
                   that same question, fingerprinted by `key`, is still on its
@@ -82,8 +85,8 @@ from http.server import BaseHTTPRequestHandler
 from typing import Callable
 from urllib.parse import parse_qs
 
-from . import (abs_item, auth, devices, drafts, harnesses, routing, send, sessions, share,
-               speech, threads)
+from . import (abs_item, archive, auth, devices, drafts, harnesses, routing, send, sessions,
+               share, speech, threads)
 
 # The endpoints a browser on another origin may reach. Everything here
 # carries its own credential — a paired device's token, or the caller's
@@ -101,7 +104,7 @@ from . import (abs_item, auth, devices, drafts, harnesses, routing, send, sessio
 CORS_PATHS = frozenset({
     "/conversation", "/conversation/log", "/conversations", "/targets", "/item",
     "/reply", "/ask", "/focus", "/session/resume", "/session/close", "/draft",
-    "/session/answer",
+    "/session/answer", "/session/archive",
     "/speech/now", "/speech/ctl", "/sessions/state", "/commands", "/rename",
     "/harnesses", "/harnesses/run", "/harnesses/screen",
     "/harnesses/keys", "/harnesses/close", "/share",
@@ -505,6 +508,14 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         body = _read_json(h) or {}
         fn = send.session_resume if path.endswith("resume") else send.session_close
         ok, detail = fn(str(body.get("session") or ""), _bearer(h))
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    elif path == "/session/archive":
+        # Archive or un-archive a thread: a flag kept here, by session, now
+        # that the ABS tag it used to be is going. It ends nothing — "End &
+        # archive" in the app also sends /session/close. Gated like it.
+        body = _read_json(h) or {}
+        ok, detail = archive.session_archive(str(body.get("session") or ""),
+                                             body.get("archived"), _bearer(h))
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path == "/session/answer":
         # Answering the dialog a session is stopped on — a permission

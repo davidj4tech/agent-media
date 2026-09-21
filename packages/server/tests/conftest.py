@@ -36,3 +36,11 @@ def _clean_media_env(monkeypatch, tmp_path):
     from agent_media_server import recaps
 
     recaps._reset_for_tests()
+    # Memory for /sessions/state is read from /proc: an empty fake root, so
+    # a test sees "unknown" unless it builds a process tree of its own, and
+    # no pid left over from a real sweep in another test.
+    from agent_media_server import procmem, sessions
+
+    (tmp_path / "fake-proc").mkdir(exist_ok=True)
+    monkeypatch.setattr(procmem, "PROC", tmp_path / "fake-proc")
+    monkeypatch.setattr(sessions, "_PIDS", {})
