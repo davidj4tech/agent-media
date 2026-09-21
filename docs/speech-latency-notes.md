@@ -125,3 +125,35 @@ decides whether to duck music under speech.
 FIXED `86763f0`: the budget for a policy call is now four round trips on its
 link (fastest recent connect, capped at 3s), not a flat 1.2s. Live: reads of
 0.89-1.32s against a 2.5s budget left the music breaker shut.
+
+## After the round of cuts (21 Sep, evening)
+
+Committed, each with a test that fails without it:
+
+| commit | cut |
+| --- | --- |
+| `d2ff126` | broker claim runs beside before_speech |
+| `86763f0` | slow-call breaker budget scales with the link (music ducks again) |
+| `46e3d52` | connections reused within a reply (0.87s -> 0.43s per call after the first) |
+| `872b6ee` | no book probe against the speech player (was 1.9s, always "no") |
+| `056f1dc` | broker claim reads the owner once |
+| `1cc0b8e` | streaming: the lead renders behind the pre-speech round trips |
+| `a0a67d5` | before_speech resolves the music backend once, not three times |
+
+Measured from taking the token to the playlist being sent, music loaded on
+the phone: 7.2s -> 5.0s (before_speech 6.2s -> 4.1s; position + pause after
+the probe ~3.5s -> 0.9s). Without music, 4.3s measured before the last three
+cuts; not re-measured after them.
+
+Left, in rough order of value:
+
+1. **Unmeasured: the phone's own part** — from play_playlist to audible.
+   Sasonica fetches each clip over HTTP from red5; the MediaPlayer spike
+   measured an HTTP prepare at 8.5s against 44ms for a local file. If the app
+   player prepares from HTTP, this may be the largest piece left. Measure by
+   polling snapshots after play_playlist until time-pos advances.
+2. The music probe (3.2s) resolves app and phone liveness one after the
+   other; they are independent and could be asked together (~0.9s).
+3. Nagle on the phone: batched reads cost two round trips because the
+   server holds every reply after the first until the first is ACKed.
+   `setTcpNoDelay(true)` in Sasonica's MpvServer (an APK), `nodelay` on socat.
