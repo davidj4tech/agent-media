@@ -4,7 +4,13 @@ Status: step 1 built 2026-09-19 (sasonica 60e78920): the listener answers on
 p8a:6613 and a `media say` through it played. red5 still points at the
 companion's 6612; switch with `MEDIA_SPEECH_SOCKET_APP=tcp://p8a:6613`. The
 classes live in `com.audiobookshelf.app.speech` (a `com.sasonica` package was
-invisible to the Kotlin compile). Proposal written 2026-09-19. Written the day music moved to
+invisible to the Kotlin compile). red5 switched to 6613 the same night.
+Step 2 (sasonica 70b79368): a reply ducks music / pauses a book in process
+(`SasonicaSpeechHold`), and the speech bar takes the mini player's slot.
+Step 3 (sasonica ce7b7cc3, 2026-09-21): the mic classes came across and
+`SasonicaHolds` pauses speech for dictation and holds it for a voice session;
+`/state` has a `holds` line. Not yet: the companion's cards, RingerState,
+HoldRate, and call_guard still reads the companion's /mic. Proposal written 2026-09-19. Written the day music moved to
 Sasonica's player (agent-media 9b4b13e, sasonica ced15c0c). That left the phone
 with three apps between it and the rooms: Termux's mpv, the companion (which
 speaks) and Sasonica (which plays books and music). This is the plan for
