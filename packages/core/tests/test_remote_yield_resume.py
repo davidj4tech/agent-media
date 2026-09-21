@@ -46,6 +46,9 @@ class _ScriptedOwnerSink:
         return self._seq.pop(0) if len(self._seq) > 1 else self._seq[0]
 
     def claim_broker(self, target):
+        # As the real claim does: it loses while another host holds it.
+        if self.active_other_owner(target) is not None:
+            return False
         self.claims += 1
         return True
 
@@ -60,6 +63,22 @@ def test_wait_claims_immediately_when_free(monkeypatch):
     sink = _ScriptedOwnerSink([None])
     S._wait_and_claim_broker(sink, PHONE)
     assert sink.claims == 1
+
+
+def test_an_uncontended_claim_reads_the_owner_once():
+    """The claim reads the owner itself before writing. Reading it first as
+    well was a whole extra round trip to the phone on every reply."""
+    class _Counting(_ScriptedOwnerSink):
+        reads = 0
+
+        def active_other_owner(self, target):
+            _Counting.reads += 1
+            return super().active_other_owner(target)
+
+    sink = _Counting([None])
+    S._wait_and_claim_broker(sink, PHONE)
+    assert sink.claims == 1
+    assert _Counting.reads == 1
 
 
 def test_wait_holds_until_other_owner_frees(monkeypatch):

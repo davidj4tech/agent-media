@@ -2379,17 +2379,21 @@ def _wait_and_claim_broker(sink: "SinkSpeech", target: Target) -> None:
     deadline = time.monotonic() + timeout
     last_seen: Optional[float] = None
     while True:
+        # Try the claim first: it reads the owner itself before writing, so
+        # reading it here as well cost a whole round trip to the phone on
+        # every reply for an answer it was about to get again. The owner is
+        # read separately only when the claim loses, to watch whether the
+        # holder is still alive.
+        try:
+            if claim(target):
+                return
+        except Exception:  # noqa: BLE001
+            return
         try:
             info = sink.active_other_owner(target)
         except Exception:  # noqa: BLE001
             info = None
-        if info is None:
-            try:
-                if claim(target):
-                    return
-            except Exception:  # noqa: BLE001
-                return
-        else:
+        if info is not None:
             # Another host holds it; while its claim's deadline keeps advancing
             # it's alive, so reset our give-up and keep waiting rather than
             # clobber a healthy long reply on the other machine.
