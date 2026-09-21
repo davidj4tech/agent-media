@@ -264,9 +264,11 @@ _DEFAULT_FLAG_POLL_S = 0.3
 # ENGAGE_S before we duck/pause (so short voice-typing utterances are ignored —
 # only sustained dictation triggers it), and absent for RELEASE_S before we
 # release (so the flag flicking off between utterances doesn't drop the hold).
-# The companion app's mic probe, which is the successor to the Automate flow
-# that wrote the flag file. Loopback only, like every other bridge on the phone.
-_DEFAULT_MIC_URL = "http://127.0.0.1:8770/mic"
+# The phone app's mic probe, which is the successor to the Automate flow that
+# wrote the flag file. Loopback only, like every other bridge on the phone.
+# Sasonica's control port since 2026-09-21 (the companion's 8770 before it was
+# folded in; same line format).
+_DEFAULT_MIC_URL = "http://127.0.0.1:8772/mic"
 _DEFAULT_MIC_POLL_S = 0.25
 # The mic gets its own, much shorter engage debounce. The flag file's 1.5s is
 # not a policy about dictation, it is a defence against a flag that flickers:
@@ -323,9 +325,13 @@ _DEFAULT_MIC_MAX_S = 120.0
 # instrumented run shows no activity start of any kind.
 #
 # `am` is still the gate: it exists on Android and nowhere else.
+#
+# Sasonica since 2026-09-21: the media-button broadcast phone_player already
+# thaws it with. The player service it wakes brings the remote service, and
+# with it the mic watch, back up (PlayerNotificationService.onCreate).
 _DEFAULT_MIC_REVIVE_CMD = (
-    "am broadcast -a net.agentmedia.companion.WAKE"
-    " -n net.agentmedia.companion/.WakeReceiver --include-stopped-packages")
+    "am broadcast -n com.sasonica.app/androidx.media.session.MediaButtonReceiver"
+    " -a android.intent.action.MEDIA_BUTTON")
 # ...and the activity is still here, because since Android 12 a background app
 # may not start a foreground service unless an exemption applies (an activity in
 # a task on Recents, a battery-optimisation exemption — this app has neither
@@ -340,7 +346,7 @@ _DEFAULT_MIC_REVIVE_CMD = (
 # deaths this revives from that evening were that timeout, so the old door was
 # helping to close itself.
 _DEFAULT_MIC_REVIVE_FALLBACK_CMD = (
-    "am start -n net.agentmedia.companion/.WakeActivity")
+    "am start -n com.sasonica.app/com.audiobookshelf.app.MainActivity")
 # How long the quiet knock gets to work before the loud one follows. The next
 # failing poll after this is what fires it, and during a backoff those are
 # `_MIC_BACKOFF_S` apart — so anything below that simply means "the next one".

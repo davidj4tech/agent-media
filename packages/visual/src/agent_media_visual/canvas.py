@@ -1539,7 +1539,7 @@ _CORS_PATHS = frozenset({
     "/session/answer",
     "/speech/now", "/speech/ctl", "/sessions/state", "/commands", "/rename",
     "/harnesses", "/harnesses/run", "/harnesses/screen",
-    "/harnesses/keys", "/harnesses/close",
+    "/harnesses/keys", "/harnesses/close", "/share",
 })
 
 #: What the app's speech player may do: the popup's listening keys — pause,
@@ -2037,6 +2037,15 @@ class Handler(BaseHTTPRequestHandler):
             ok, detail = send_input(str(body.get("text") or ""),
                                     str(body.get("target") or "speaker"))
             self._json(200 if ok else 400, {"ok": ok, "detail": detail})
+        elif path == "/share":
+            # "Play with agent-media" from the app's share sheet: media-share's
+            # /share, with the caller's ABS bearer instead of a token of its own.
+            from . import reply as _reply
+            bearer = (self.headers.get("Authorization") or "").removeprefix("Bearer").strip()
+            body = self._read_json() or {}
+            ok, detail = _reply.share_from_app(str(body.get("text") or ""),
+                                               str(body.get("channel") or ""), bearer)
+            self._json(200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
         elif path == "/speech/ctl":
             # The app's speech bar buttons. The caller's ABS bearer, like
             # /reply, and only the listener's verbs (_APP_SPEECH_ACTIONS).

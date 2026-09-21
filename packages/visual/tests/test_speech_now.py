@@ -115,3 +115,32 @@ def test_session_states_refuse_a_stranger(monkeypatch):
     _as(monkeypatch, user=None, status=401)
     ok, _ = reply.session_states("")
     assert not ok
+
+
+def test_a_share_from_the_app_is_gated_and_dispatched(monkeypatch):
+    from agent_media_core import share as sharemod
+    from agent_media_core.entrypoints import share_listener
+
+    _as(monkeypatch, user=None, status=401)
+    ok, out = reply.share_from_app("https://example.com/x", "", "")
+    assert not ok and out.get("status") in (401, 403)
+
+    _as(monkeypatch)
+    verdict = sharemod.Verdict(channel="music", content_type="music", title="A song", reason="short")
+    monkeypatch.setattr(sharemod, "share", lambda text, channel="", probe_timeout=0: ("https://example.com/x", verdict))
+    played = []
+    monkeypatch.setattr(share_listener, "_play", lambda url, v, where: played.append((url, v.channel)))
+    ok, out = reply.share_from_app("look https://example.com/x", "banana", "tok")
+    assert ok and out["channel"] == "music" and out["title"] == "A song"
+    import time
+    for _ in range(50):
+        if played:
+            break
+        time.sleep(0.01)
+    assert played == [("https://example.com/x", "music")]
+
+
+def test_nothing_shared_is_said_so(monkeypatch):
+    _as(monkeypatch)
+    ok, out = reply.share_from_app("   ", "", "tok")
+    assert not ok and out["error"] == "nothing shared"
