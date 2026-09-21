@@ -16,6 +16,9 @@ Config (env / ~/.config/agent-media.env):
   MEDIA_VISUAL_MIN_CHARS   only illustrate replies at least this long
                            (default 320, matching the summary threshold —
                            one-liners aren't worth a picture)
+  MEDIA_VISUAL_AMBIENT     "0" to draw only what a reply asks for with a
+                           [[visual:]] / [[reveal:]] marker, and nothing for
+                           the rest (default "1": every long reply gets art)
 """
 
 from __future__ import annotations
@@ -73,6 +76,16 @@ def visual_enabled() -> bool:
     return (os.environ.get("MEDIA_SPEECH_VISUAL", "0") or "0").strip() == "1"
 
 
+def ambient_enabled() -> bool:
+    """Whether a reply that asked for no picture gets one anyway.
+
+    Turned off on red5 on 2026-09-22: the ambient artwork read as decoration
+    in the chat app and behind the words on the wall, and each piece still
+    cost a model call to shape it. A figure a reply asks for is unaffected.
+    """
+    return (os.environ.get("MEDIA_VISUAL_AMBIENT", "1") or "1").strip() != "0"
+
+
 def visual_min_chars() -> int:
     try:
         return int(os.environ.get("MEDIA_VISUAL_MIN_CHARS", "") or DEFAULT_MIN_CHARS)
@@ -99,6 +112,8 @@ def spawn_visual(raw_reply: str, spoken_text: str, session: str = "",
     [[visual:]]/[[reveal:]] marker) makes the image purposeful: the hint is
     the spec, drawn as a figure. `key` (the intake dedup key) lets a later
     speech replay re-show this reply's visual."""
+    if not hint and not ambient_enabled():
+        return
     exe = shutil.which("media-visual")
     if not exe:
         return

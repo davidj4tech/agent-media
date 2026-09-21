@@ -156,3 +156,28 @@ def test_deduped_reply_does_not_spawn(tmp_path, monkeypatch):
 
     assert H._handle_stop(
         _stop_payload(tmp_path, "A duplicate reply that was already spoken.")) == 0
+
+
+def test_ambient_off_skips_a_reply_that_asked_for_nothing(monkeypatch):
+    monkeypatch.setenv("MEDIA_VISUAL_AMBIENT", "0")
+    monkeypatch.setattr(_visual.shutil, "which", lambda name: "/bin/media-visual")
+    calls = []
+    monkeypatch.setattr(_visual.subprocess, "Popen", lambda argv, **kw: calls.append(argv))
+    _visual.spawn_visual("a long reply " * 40, "a long reply")
+    assert calls == []
+
+
+def test_ambient_off_still_draws_a_figure_that_was_asked_for(monkeypatch):
+    monkeypatch.setenv("MEDIA_VISUAL_AMBIENT", "0")
+    monkeypatch.setattr(_visual.shutil, "which", lambda name: "/bin/media-visual")
+    calls = []
+    monkeypatch.setattr(_visual.subprocess, "Popen", lambda argv, **kw: calls.append(argv))
+    _visual.spawn_visual("reply", "reply", hint="a box labelled server")
+    assert len(calls) == 1 and "--hint" in calls[0]
+
+
+def test_ambient_is_on_unless_turned_off(monkeypatch):
+    monkeypatch.delenv("MEDIA_VISUAL_AMBIENT", raising=False)
+    assert _visual.ambient_enabled()
+    monkeypatch.setenv("MEDIA_VISUAL_AMBIENT", "0")
+    assert not _visual.ambient_enabled()
