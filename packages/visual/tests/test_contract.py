@@ -27,8 +27,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_media_server import auth_abs, panes
-from agent_media_visual import canvas, reply
+from agent_media_server import auth_abs, panes, send, sessions, speech
+from agent_media_visual import canvas
 
 SID = "6c73498c-02c1-4846-8350-a82006973571"
 SID2 = "0f1e2d3c-4b5a-4968-8776-a5b4c3d2e1f0"
@@ -50,12 +50,12 @@ def typed(monkeypatch):
         return f
 
     monkeypatch.setattr(canvas, "send_input", rec("send_input", (False, "stubbed")))
-    monkeypatch.setattr(reply, "_send_to_pane", rec("_send_to_pane", ""))
+    monkeypatch.setattr(send, "_send_to_pane", rec("_send_to_pane", ""))
     monkeypatch.setattr(panes, "send", rec("panes.send", "stubbed"))
-    monkeypatch.setattr(reply, "_tmux", rec("_tmux", ""))
-    monkeypatch.setattr(reply, "open_window", rec("open_window", ("", "stubbed")))
-    monkeypatch.setattr(reply, "_ensure_submitted", rec("_ensure_submitted", True))
-    monkeypatch.setattr(reply, "_record_turn", rec("_record_turn", None))
+    monkeypatch.setattr(panes, "_tmux", rec("_tmux", ""))
+    monkeypatch.setattr(send, "open_window", rec("open_window", ("", "stubbed")))
+    monkeypatch.setattr(send, "_ensure_submitted", rec("_ensure_submitted", True))
+    monkeypatch.setattr(send, "_record_turn", rec("_record_turn", None))
     monkeypatch.setattr(canvas, "_media", rec("_media", "ok\n"))
     return log
 
@@ -67,18 +67,18 @@ def shelf(monkeypatch, tmp_path):
     d.mkdir()
     (d / f"{SID}.json").write_text(json.dumps(
         {"session": SID, "folder": "/lib/Conversations/p-agent-media/Sasonica music"}))
-    monkeypatch.setattr(reply, "_manifest_dir", lambda: d)
-    monkeypatch.setattr(reply, "live_sessions", lambda: {SID2: "%42"})
-    monkeypatch.setattr(reply, "_pane_titles", lambda: {"%42": "Sasonica web"})
-    monkeypatch.setattr(reply, "transcript_cwd", lambda s: str(tmp_path))
-    monkeypatch.setattr(reply, "session_exists", lambda s: True)
-    monkeypatch.setattr(reply, "_capture_pane", lambda p: "")
-    monkeypatch.setattr(reply, "_agent_of_pane", lambda p: "claude")
-    monkeypatch.setattr(reply, "_followup", lambda s: None)
+    monkeypatch.setattr(sessions, "_manifest_dir", lambda: d)
+    monkeypatch.setattr(sessions, "live_sessions", lambda: {SID2: "%42"})
+    monkeypatch.setattr(sessions, "_pane_titles", lambda: {"%42": "Sasonica web"})
+    monkeypatch.setattr(sessions, "transcript_cwd", lambda s: str(tmp_path))
+    monkeypatch.setattr(sessions, "session_exists", lambda s: True)
+    monkeypatch.setattr(sessions, "_capture_pane", lambda p: "")
+    monkeypatch.setattr(sessions, "_agent_of_pane", lambda p: "claude")
+    monkeypatch.setattr(sessions, "_followup", lambda s: None)
     monkeypatch.setattr(panes, "classify", lambda cap, agent="claude": "working")
     monkeypatch.setattr(panes, "alive", lambda p: True)
-    monkeypatch.setattr(reply, "_STATES_CACHE", (0.0, []))
-    reply._NOW_CACHE.clear()
+    monkeypatch.setattr(sessions, "_STATES_CACHE", (0.0, []))
+    speech._NOW_CACHE.clear()
     return tmp_path
 
 
@@ -293,8 +293,8 @@ def test_ask_dry_run_to_a_picked_session(server, shelf, signed_in, typed):
 
 
 def test_ask_ambiguous_is_300_with_candidates(server, shelf, signed_in, typed, monkeypatch):
-    monkeypatch.setattr(reply, "live_sessions", lambda: {SID2: "%42", SID: "%43"})
-    monkeypatch.setattr(reply, "_pane_titles",
+    monkeypatch.setattr(sessions, "live_sessions", lambda: {SID2: "%42", SID: "%43"})
+    monkeypatch.setattr(sessions, "_pane_titles",
                         lambda: {"%42": "Sasonica web", "%43": "Sasonica music"})
     res, obj = call(server, "POST", "/ask", {"text": "reply to sasonica, hi"}, AUTH)
     assert res.status == 300, obj
@@ -309,7 +309,7 @@ def test_ask_empty_is_400(server, shelf, signed_in):
 
 
 def test_reply_to_a_live_session_shape(server, shelf, signed_in, typed, monkeypatch):
-    monkeypatch.setattr(reply, "live_sessions", lambda: {SID: "%42"})
+    monkeypatch.setattr(sessions, "live_sessions", lambda: {SID: "%42"})
     res, obj = call(server, "POST", "/reply", {"item": "li_1", "text": "yes"}, AUTH)
     assert res.status == 200, obj
     assert keys(obj) == {"ok", "session", "pane", "opened", "submitted"}
@@ -320,8 +320,8 @@ def test_reply_to_a_live_session_shape(server, shelf, signed_in, typed, monkeypa
 
 
 def test_reply_unsent_is_502_with_the_pane(server, shelf, signed_in, typed, monkeypatch):
-    monkeypatch.setattr(reply, "live_sessions", lambda: {SID: "%42"})
-    monkeypatch.setattr(reply, "_ensure_submitted", lambda *a, **k: False)
+    monkeypatch.setattr(sessions, "live_sessions", lambda: {SID: "%42"})
+    monkeypatch.setattr(send, "_ensure_submitted", lambda *a, **k: False)
     res, obj = call(server, "POST", "/reply", {"item": "li_1", "text": "yes"}, AUTH)
     assert res.status == 502
     assert keys(obj) == {"ok", "error", "pane", "submitted", "session", "opened"}
@@ -349,7 +349,7 @@ def test_rename_shape(server, shelf, signed_in, monkeypatch):
     from agent_media_core import book_tracks
 
     monkeypatch.setattr(book_tracks, "rename", lambda s, t: t)
-    monkeypatch.setattr(reply, "send_rename", lambda s, t: "no pane: the session is not running")
+    monkeypatch.setattr(send, "send_rename", lambda s, t: "no pane: the session is not running")
     res, obj = call(server, "POST", "/rename", {"session": SID, "title": "New name"}, AUTH)
     assert res.status == 200, obj
     assert obj == {"ok": True, "session": SID, "title": "New name", "terminal": False,
@@ -369,7 +369,7 @@ def test_session_close_when_not_live(server, shelf, signed_in):
 
 
 def test_session_answer_when_nothing_is_asked_is_409(server, shelf, signed_in, monkeypatch, typed):
-    monkeypatch.setattr(reply, "approval_for", lambda pane, agent="claude": None)
+    monkeypatch.setattr(sessions, "approval_for", lambda pane, agent="claude": None)
     res, obj = call(server, "POST", "/session/answer",
                     {"session": SID2, "choice": 1, "key": "abc"}, AUTH)
     assert res.status == 409

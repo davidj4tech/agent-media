@@ -1,0 +1,268 @@
+"""One conversation: whether it can be replied to, and what was said in it.
+
+Moved out of the canvas's reply.py. `/conversation` (by item or by session),
+`/conversation/log`, `/commands` and `/rename` answer from here.
+
+The log's pictures are the canvas's: it remembers what it drew for each reply
+in its own spool, which this package does not know about. So the canvas
+registers a `pictures_for` callback at startup (`set_pictures_for`) and the
+log asks it; without one, the lines simply carry no pictures.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+from pathlib import Path
+from typing import Callable
+
+from . import auth_abs, send, sessions
+
+log = logging.getLogger("agent-media.server.threads")
+
+
+def item_for_session(session: str, bearer: str) -> tuple[str | None, bool]:
+    """`(item id, ready)` for `session` on the caller's own Audiobookshelf.
+
+    The caller's server and the caller's bearer, on purpose: this host
+    publishes to more than one ABS and each gives the same folder a different
+    id, so an id from "our" server is a 404 on the phone signed in to the
+    other. `ready` is whether ABS has built the item's tracks yet — the app's
+    item page cannot open one it has only just created (the first attempt
+    sent the phone to a trackless item and it bounced home with "Failed to
+    get library item"), so the caller should wait for both.
+    """
+    folder = sessions._folder_for_session(session)
+    if not folder:
+        return None, False
+    url = auth_abs.abs_home(bearer)
+    if not url:
+        return None, False
+    tail = sessions._tail(folder)
+    libs, _status = auth_abs._abs_get(url, bearer, "/api/libraries")
+    for lib in (libs or {}).get("libraries") or []:
+        if lib.get("mediaType") != "book":
+            continue
+        page, _status = auth_abs._abs_get(
+            url, bearer, f"/api/libraries/{lib.get('id')}/items?limit=1000&sort=addedAt&desc=1")
+        for item in (page or {}).get("results") or []:
+            if sessions._tail(item.get("path") or "") == tail and item.get("id"):
+                tracks = int(((item.get("media") or {}).get("numTracks")) or 0)
+                return str(item["id"]), tracks > 0
+    return None, False
+
+
+def conversation_for_session(session: str, bearer: str) -> tuple[bool, dict]:
+    """`/conversation?session=`: where a session started from the phone got to.
+
+    Same gates as `conversation`. The answer is `ok` from the first poll —
+    the session is real — and `item` fills in when the library has it.
+    """
+    session = (session or "").strip()
+    if not sessions._SESSION.fullmatch(session):
+        return False, {"error": "not a session id", "status": 400}
+    user, status = auth_abs.abs_identity(bearer)
+    if not user:
+        return False, auth_abs._identity_error(status)
+    ok, why = auth_abs.may_reply(user)
+    if not ok:
+        return False, {"error": why, "status": 403}
+    pane = sessions.live_sessions().get(session, "")
+    item, ready = item_for_session(session, bearer)
+    return True, {"session": session, "item": item if ready else None,
+                  "scanning": bool(item) and not ready,
+                  "live": bool(pane), "pane": pane or None,
+                  "resumable": sessions.session_exists(session)}
+
+
+def conversation(item: str, bearer: str) -> tuple[bool, dict]:
+    """Whether `item` is a conversation this caller may reply to.
+
+    The app asks this before drawing the reply box, so it never has to know
+    what a conversation is or which library holds them — it shows the box when
+    the answer here is yes. Same two gates as `reply`, in the same order, so
+    the box cannot appear where the send would be refused.
+    """
+    user, status = auth_abs.abs_identity(bearer)
+    if not user:
+        return False, auth_abs._identity_error(status)
+    ok, why = auth_abs.may_reply(user)
+    if not ok:
+        return False, {"error": why, "status": 403}
+    session, err = sessions.session_for_item(item, bearer)
+    if not session:
+        return False, {"error": err, "status": 404}
+    pane = sessions.live_sessions().get(session, "")
+    return True, {"session": session, "live": bool(pane), "pane": pane or None,
+                  "resumable": sessions.session_exists(session),
+                  "suggestion": sessions.suggestion_for(session, pane)}
+
+
+def commands_for(item: str, session: str, project: str, bearer: str,
+                 cwd: str = "") -> tuple[bool, dict]:
+    """The slash menu for a conversation, or for a project about to start one.
+
+    The menu belongs to a directory, not to a conversation: a project's own
+    skills and commands are what make the list worth having, and two sessions
+    in the same tree get the same answer. Gated like `/conversation` — the
+    menu names this machine's skills, so a caller who may not reply may not
+    read it either.
+    """
+    from agent_media_core import slash_menu
+
+    user, status = auth_abs.abs_identity(bearer)
+    if not user:
+        return False, auth_abs._identity_error(status)
+    ok, why = auth_abs.may_reply(user)
+    if not ok:
+        return False, {"error": why, "status": 403}
+    if item and not session:
+        session, err = sessions.session_for_item(item, bearer)
+        if not session:
+            return False, {"error": err, "status": 404}
+    where = cwd
+    cwd = sessions.transcript_cwd(session) if session else ""
+    if not cwd and project:
+        _name, cwd = sessions.project_target(project)
+    # A place from `/targets` names its directory outright — trusted only as
+    # far as the list that published it, same as `/ask`.
+    if not cwd and where and where in {p["path"] for p in sessions.places(limit=0)}:
+        cwd = where
+    cwd = cwd or os.path.expanduser("~")
+    return True, {"cwd": cwd, "commands": slash_menu.menu(cwd)}
+
+
+def rename_conversation(item: str, session: str, title: str, bearer: str) -> tuple[bool, dict]:
+    """Rename a conversation from the app. Gated like `/reply`.
+
+    The name is kept by agent-media and given to Claude Code as well, so the
+    terminal and the shelf call it the same thing.
+    """
+    from agent_media_core import book_tracks
+
+    user, status = auth_abs.abs_identity(bearer)
+    if not user:
+        return False, auth_abs._identity_error(status)
+    ok, why = auth_abs.may_reply(user)
+    if not ok:
+        return False, {"error": why, "status": 403}
+    if item and not session:
+        session, err = sessions.session_for_item(item, bearer)
+        if not session:
+            return False, {"error": err, "status": 404}
+    title = " ".join((title or "").split())
+    if not title:
+        return False, {"error": "no title", "status": 400}
+    named = book_tracks.rename(session, title)
+    if not named:
+        return False, {"error": "could not rename", "status": 500}
+    # A running Claude Code never re-reads its name file, so it is told the
+    # way a person would: `/rename` typed into its pane. Not being able to
+    # (ended, or mid-sentence in the box) is not a failed rename — the shelf
+    # and the name file have it, and the next session starts with it.
+    why = send.send_rename(session, named)
+    return True, {"session": session, "title": named,
+                  "terminal": not why, "why": why or None}
+
+
+#: `pictures_for(key) -> (images, figure)`: what the canvas drew for the reply
+#: with that dedup key. Registered by the canvas (`set_pictures_for`); None
+#: until it is, and then no line carries pictures.
+_PICTURES_FOR: Callable[[str], tuple[list, bool]] | None = None
+
+
+def set_pictures_for(fn: Callable[[str], tuple[list, bool]] | None) -> None:
+    """Hand in the canvas's picture lookup (see `attach_pictures`)."""
+    global _PICTURES_FOR
+    _PICTURES_FOR = fn
+
+
+def attach_pictures(lines: list) -> None:
+    """Give each log line the picture(s) the canvas drew for that reply.
+
+    The visual channel remembers what it pushed for a reply under the reply's
+    dedup key (state.save_push), and the speech row carries the same key, so
+    the join is a lookup — the canvas's lookup, `pictures_for`, since the
+    spool is its. Each line gains `images`: canvas-relative or absolute URLs
+    the app can put straight into an <img>, and `figure`: whether the picture
+    was drawn to be read (a [[visual:]] figure) rather than ambient artwork.
+    """
+    pictures_for = _PICTURES_FOR
+    if pictures_for is None:
+        return
+    for line in lines:
+        key = line.get("key")
+        if not key:
+            continue
+        images, figure = pictures_for(key)
+        if images:
+            line["images"] = images
+            line["figure"] = figure
+
+
+def log_for_item(item: str, bearer: str) -> tuple[bool, dict]:
+    """The conversation behind `item`, as readable lines. Same gates as a reply.
+
+    Gated identically on purpose: the log is the words of the conversation, so
+    anyone who can read it could have read them by listening — but an account
+    that may not reply has no business being handed a transcript either.
+    """
+    user, status = auth_abs.abs_identity(bearer)
+    if not user:
+        return False, auth_abs._identity_error(status)
+    ok, why = auth_abs.may_reply(user)
+    if not ok:
+        return False, {"error": why, "status": 403}
+    session, err = sessions.session_for_item(item, bearer)
+    if not session:
+        return False, {"error": err, "status": 404}
+    try:
+        from agent_media_core import book_tracks
+
+        for f in sorted(sessions._manifest_dir().glob("*.json")):
+            try:
+                data = json.loads(f.read_text())
+            except (OSError, ValueError):
+                continue
+            if str(data.get("session") or f.stem) == session:
+                lines = book_tracks.conversation_log(
+                    session, Path(str(data.get("folder") or "")),
+                    target="conversations")
+                # `pending` is true while the last thing said was the listener's:
+                # a reply is in, no answer has landed yet. The app shows a
+                # "thinking" line and polls faster until it clears, rather than
+                # waiting out a whole idle poll with nothing on screen.
+                pending = bool(lines) and lines[-1].get("who") == "you"
+                attach_pictures(lines)
+                # What the session did for each reply ("Worked for 3m · 14
+                # steps"), and what it is doing now, in place of the dots.
+                # A turn typed at the desk counts too: the phone shows it
+                # working even before that message reaches the transcript.
+                from agent_media_core import activity as _activity
+                working = _activity.attach(session, lines)
+                pending = pending or bool(working)
+                # The ghost prompt rides along with every poll: it appears a
+                # few seconds after the turn it follows, so a one-off read at
+                # page-open would mostly find it not there yet.
+                pane = sessions.live_sessions().get(session, "")
+                last = lines[-1] if lines else {}
+                suggestion = ("" if pending else
+                              sessions.suggestion_for(session, pane, last.get("key") or ""))
+                # A session waiting on a permission dialog is not working and
+                # not finished: it is stopped until somebody answers, and the
+                # phone is often the only place anybody is looking.
+                approval = sessions.approval_for(pane, sessions._agent_of_pane(pane)) if pane else None
+                return True, {"session": session, "lines": lines,
+                              "pending": pending, "working": working,
+                              "approval": approval,
+                              "suggestion": suggestion}
+    except Exception as e:  # noqa: BLE001
+        # Say so in the journal as well as to the caller: the app folds every
+        # failed fetch into an empty transcript, so this line is the only
+        # record on this side of what actually went wrong.
+        log.exception("conversation log for %s (session %s) failed: %s",
+                      item, session, e)
+        return False, {"error": f"could not read the conversation ({e})",
+                       "status": 500}
+    return False, {"error": "no manifest for that conversation", "status": 404}

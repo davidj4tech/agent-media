@@ -143,6 +143,36 @@ def load_push(key: str) -> dict | None:
     return (data.get(str(key)) or {}).get("payload")
 
 
+def pictures_for(key: str) -> tuple[list, bool]:
+    """`(images, figure)`: the picture(s) the canvas drew for the reply `key`.
+
+    The server's conversation log asks this through a callback the canvas
+    registers (agent_media_server.threads.set_pictures_for), because the spool
+    is the canvas's and the server does not import it. `images` are
+    canvas-relative or absolute URLs the app can put straight into an <img>;
+    `figure` is whether the picture was drawn to be read (a [[visual:]]
+    figure) rather than ambient artwork. Only pictures still in the spool are
+    offered — a swept file would be a broken image, and a transcript with
+    holes in it is worse than one with no pictures.
+    """
+    payload = load_push(key)
+    if not payload:
+        return [], False
+    names = ([payload.get("image")] if payload.get("image")
+             else [b.get("image") for b in payload.get("sequence") or []])
+    spool = spool_dir()
+    images = []
+    for name in names:
+        name = str(name or "").strip()
+        if not name:
+            continue
+        if "/" in name:
+            images.append(name)          # absolute: another host's spool
+        elif (spool / name).is_file():
+            images.append("/img/" + name)
+    return images, payload.get("purpose") == "figure"
+
+
 # --- spool GC -----------------------------------------------------------------
 
 def gc_spool(keep: int | None = None) -> int:

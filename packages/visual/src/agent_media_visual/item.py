@@ -98,9 +98,7 @@ def item_for_app(item_id: str, bearer: str) -> tuple[bool, dict]:
     because the app answers a 401 by refreshing and can log the user out if
     that fails.
     """
-    from agent_media_server import auth_abs
-
-    from . import reply
+    from agent_media_server import auth_abs, sessions
 
     item_id = (item_id or "").strip()
     if not item_id:
@@ -137,6 +135,6 @@ def item_for_app(item_id: str, bearer: str) -> tuple[bool, dict]:
     # that opens as a chat always gets its reply box.
     session = None
     if auth_abs.may_reply(user)[0]:
-        session, _why = reply.session_for_path(item.get("path") or "")
+        session, _why = sessions.session_for_path(item.get("path") or "")
     out["conversation"] = bool(session)
     return True, out

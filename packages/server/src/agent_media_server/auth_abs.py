@@ -193,3 +193,25 @@ def may_reply(user: dict | None) -> tuple[bool, str]:
     if name in allowed:
         return True, name
     return False, f"{name} is not allowed to reply"
+
+
+# --- the gates the routes share --------------------------------------------------
+
+def may_control_speech(bearer: str) -> tuple[bool, dict]:
+    """The gate for `/speech/ctl`: the same person who may reply may pause."""
+    user, status = abs_identity(bearer)
+    if not user:
+        return False, _identity_error(status)
+    ok, why = may_reply(user)
+    return (True, {}) if ok else (False, {"error": why, "status": 403})
+
+
+def _gate(bearer: str) -> tuple[dict | None, dict]:
+    """`(user, {})` when this bearer may manage sessions, else `(None, error)`."""
+    user, status = abs_identity(bearer)
+    if not user:
+        return None, _identity_error(status)
+    ok, why = may_reply(user)
+    if not ok:
+        return None, {"error": why, "status": 403}
+    return user, {}

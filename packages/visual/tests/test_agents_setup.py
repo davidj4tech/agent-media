@@ -3,6 +3,7 @@
 import pytest
 
 from agent_media_core import harnesses
+from agent_media_server import auth_abs, panes, send, sessions
 from agent_media_visual import agents
 
 
@@ -10,9 +11,9 @@ from agent_media_visual import agents
 def _here(tmp_path, monkeypatch):
     """A registry of our own, an open gate, and a tmux that says yes."""
     monkeypatch.setenv("MEDIA_AGENT_SETUP_DIR", str(tmp_path / "setup"))
-    monkeypatch.setattr(agents.reply, "may_control_speech", lambda bearer: (True, {}))
-    monkeypatch.setattr(agents.reply, "ask_target", lambda: ("scratch", "/home/ryer", []))
-    monkeypatch.setattr(agents.reply, "ensure_host", lambda host, cwd: True)
+    monkeypatch.setattr(auth_abs, "may_control_speech", lambda bearer: (True, {}))
+    monkeypatch.setattr(send, "ask_target", lambda: ("scratch", "/home/ryer", []))
+    monkeypatch.setattr(send, "ensure_host", lambda host, cwd: True)
 
 
 def _tmux(monkeypatch, answer="%7", record=None):
@@ -24,7 +25,7 @@ def _tmux(monkeypatch, answer="%7", record=None):
         if argv[0] == "display":
             return "%7"
         return ""
-    monkeypatch.setattr(agents.reply, "_tmux", fake)
+    monkeypatch.setattr(panes, "_tmux", fake)
 
 
 # --- what is here ------------------------------------------------------------
@@ -66,7 +67,7 @@ def test_hermes_cannot_be_conjured_from_nothing(monkeypatch):
 
 
 def test_the_gate_is_the_app_bearer(monkeypatch):
-    monkeypatch.setattr(agents.reply, "may_control_speech",
+    monkeypatch.setattr(auth_abs, "may_control_speech",
                         lambda bearer: (False, {"error": "not allowed", "status": 403}))
     assert agents.agents("")[0] is False
     assert agents.run("claude", "install", "")[0] is False
@@ -114,7 +115,7 @@ def _opened(monkeypatch):
 
 def test_screen_reads_the_window_and_sees_it_finish(monkeypatch):
     pane = _opened(monkeypatch)
-    monkeypatch.setattr(agents.reply, "_capture_pane",
+    monkeypatch.setattr(sessions, "_capture_pane",
                         lambda p: "Open https://auth.example/code\n\n[finished: 0]\n\n")
     ok, detail = agents.screen(pane, "bearer")
     assert ok and detail["done"] is True and detail["exit"] == 0
@@ -124,7 +125,7 @@ def test_screen_reads_the_window_and_sees_it_finish(monkeypatch):
 
 def test_a_running_window_is_not_done(monkeypatch):
     pane = _opened(monkeypatch)
-    monkeypatch.setattr(agents.reply, "_capture_pane", lambda p: "Waiting for sign-in...")
+    monkeypatch.setattr(sessions, "_capture_pane", lambda p: "Waiting for sign-in...")
     ok, detail = agents.screen(pane, "bearer")
     assert ok and detail["done"] is False and detail["exit"] is None
 
@@ -140,7 +141,7 @@ def test_a_pane_we_did_not_open_is_refused(monkeypatch):
 def test_typing_a_code_back_types_one_line(monkeypatch):
     pane = _opened(monkeypatch)
     sent = []
-    monkeypatch.setattr(agents.reply, "_tmux",
+    monkeypatch.setattr(panes, "_tmux",
                         lambda argv, timeout=10: sent.append(argv) or "%7")
     ok, _ = agents.keys(pane, "ABC-123\nrm -rf /", "Enter", "bearer")
     assert ok
@@ -157,7 +158,7 @@ def test_only_keys_we_press(monkeypatch):
 
 def test_a_window_that_went_away_is_gone_not_refused(monkeypatch):
     pane = _opened(monkeypatch)
-    monkeypatch.setattr(agents.reply, "_tmux", lambda argv, timeout=10: "")
+    monkeypatch.setattr(panes, "_tmux", lambda argv, timeout=10: "")
     ok, detail = agents.screen(pane, "bearer")
     assert ok is False and detail["status"] == 410
     # And it is forgotten, so the id cannot be reused against us later.
@@ -167,7 +168,7 @@ def test_a_window_that_went_away_is_gone_not_refused(monkeypatch):
 def test_close_kills_the_window_once(monkeypatch):
     pane = _opened(monkeypatch)
     killed = []
-    monkeypatch.setattr(agents.reply, "_tmux",
+    monkeypatch.setattr(panes, "_tmux",
                         lambda argv, timeout=10: killed.append(argv) or "%7")
     assert agents.close(pane, "bearer")[0] is True
     assert ["kill-pane", "-t", pane] in killed

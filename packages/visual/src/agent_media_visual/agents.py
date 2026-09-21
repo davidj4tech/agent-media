@@ -11,7 +11,7 @@ it. Both halves work the same way, because both are terminal programs that
 ask questions:
 
 * the command is opened in a background tmux window on this host, the way a
-  phone-started chat is (`reply.open_window`), so what happens is visible at
+  phone-started chat is (`send.open_window`), so what happens is visible at
   the desk and survives the app being closed;
 * the phone reads that window's screen through `screen()` and types into it
   through `keys()` — an OAuth code pasted back, a `y` to a prompt;
@@ -23,7 +23,7 @@ ask questions:
 Only panes this module opened can be read or typed into, which is what keeps
 `keys()` from being a way to go rummaging through the desk's other windows.
 The gate on every call is the same ABS bearer the rest of the app carries
-(`reply.may_control_speech`) — installing an agent is no more authority than
+(`auth_abs.may_control_speech`) — installing an agent is no more authority than
 `/ask` already hands out, which opens a session with permissions skipped.
 """
 
@@ -38,7 +38,7 @@ from pathlib import Path
 
 from agent_media_core import harnesses
 
-from . import reply
+from agent_media_server import auth_abs, panes, send, sessions
 
 #: Named keys the phone may press. Text is typed literally; anything that is
 #: not a plain line of text has to be one of these, so a request cannot ask
@@ -88,7 +88,7 @@ def _row(pane: str) -> dict:
 
 
 def _alive(pane: str) -> bool:
-    return bool(reply._tmux(["display", "-pt", pane, "#{pane_id}"]))
+    return bool(panes._tmux(["display", "-pt", pane, "#{pane_id}"]))
 
 
 def _forget(pane: str) -> None:
@@ -108,7 +108,7 @@ def agents(bearer: str) -> tuple[bool, dict]:
     pi and Hermes, neither of which will say without a terminal. `actions`
     are the buttons worth showing: what this host actually has a recipe for.
     """
-    ok, detail = reply.may_control_speech(bearer)
+    ok, detail = auth_abs.may_control_speech(bearer)
     if not ok:
         return False, detail
     rows = []
@@ -145,8 +145,8 @@ def _window(argv: list[str], title: str) -> tuple[str, str]:
     watching from the phone. After it, `sleep` — not a shell — holds the pane
     open (see the module docstring).
     """
-    host, cwd, _flags = reply.ask_target()
-    if not reply.ensure_host(host, cwd):
+    host, cwd, _flags = send.ask_target()
+    if not send.ensure_host(host, cwd):
         return "", f"could not get a client onto tmux session {host!r}"
     inner = (f"{shlex.join(argv)}; printf '\\n[finished: %s]\\n' \"$?\"; "
              f"exec sleep {LINGER_S}")
@@ -154,7 +154,7 @@ def _window(argv: list[str], title: str) -> tuple[str, str]:
     # systemd PATH as claude was, and this command is usually npm.
     cmd = (f"exec env PATH={shlex.quote(harnesses.bin_path())} "
            f"sh -c {shlex.quote(inner)}")
-    pane = reply._tmux(["new-window", "-d", "-t", f"{host}:", "-c", cwd,
+    pane = panes._tmux(["new-window", "-d", "-t", f"{host}:", "-c", cwd,
                         "-n", title, "-P", "-F", "#{pane_id}", cmd])
     return (pane, "") if pane else ("", "tmux could not open a window")
 
@@ -165,7 +165,7 @@ def run(agent: str, action: str, bearer: str) -> tuple[bool, dict]:
     Answers with the pane it opened and the command it is running; the phone
     then polls `screen()` for the same window the desk can see.
     """
-    ok, detail = reply.may_control_speech(bearer)
+    ok, detail = auth_abs.may_control_speech(bearer)
     if not ok:
         return False, detail
     agent = (agent or "").strip()
@@ -196,7 +196,7 @@ def screen(pane: str, bearer: str, lines: int = 60) -> tuple[bool, dict]:
     being gone: the pane deliberately stays alive afterwards so the last
     screen can still be read.
     """
-    ok, detail = reply.may_control_speech(bearer)
+    ok, detail = auth_abs.may_control_speech(bearer)
     if not ok:
         return False, detail
     row = _row(pane)
@@ -205,9 +205,7 @@ def screen(pane: str, bearer: str, lines: int = 60) -> tuple[bool, dict]:
     if not _alive(pane):
         _forget(pane)
         return False, {"error": f"window {pane} is gone", "status": 410}
-    from . import canvas
-
-    text = canvas._strip_ansi(reply._capture_pane(pane))
+    text = panes.strip_ansi(sessions._capture_pane(pane))
     found = DONE.search(text)
     rows = [ln.rstrip() for ln in text.splitlines()]
     while rows and not rows[-1]:
@@ -225,7 +223,7 @@ def keys(pane: str, text: str, key: str, bearer: str) -> tuple[bool, dict]:
     Text goes in literally and is sent as typed; `key` presses one of `KEYS`
     instead. Both refuse any pane this module did not open.
     """
-    ok, detail = reply.may_control_speech(bearer)
+    ok, detail = auth_abs.may_control_speech(bearer)
     if not ok:
         return False, detail
     if not _row(pane):
@@ -242,20 +240,20 @@ def keys(pane: str, text: str, key: str, bearer: str) -> tuple[bool, dict]:
     if text:
         # A code pasted from a browser is one line; a newline in it would
         # submit halfway through, so only the first line is typed.
-        reply._tmux(["send-keys", "-t", pane, "-l", text.splitlines()[0]])
+        panes._tmux(["send-keys", "-t", pane, "-l", text.splitlines()[0]])
     if key:
-        reply._tmux(["send-keys", "-t", pane, key])
+        panes._tmux(["send-keys", "-t", pane, key])
     return True, {"pane": pane}
 
 
 def close(pane: str, bearer: str) -> tuple[bool, dict]:
     """`/agents/close`: end that window. Ours only, and forgotten afterwards."""
-    ok, detail = reply.may_control_speech(bearer)
+    ok, detail = auth_abs.may_control_speech(bearer)
     if not ok:
         return False, detail
     if not _row(pane):
         return False, {"error": f"not a setup window: {pane!r}", "status": 404}
     if _alive(pane):
-        reply._tmux(["kill-pane", "-t", pane])
+        panes._tmux(["kill-pane", "-t", pane])
     _forget(pane)
     return True, {"pane": pane}

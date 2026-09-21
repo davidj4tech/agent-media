@@ -100,7 +100,9 @@ from urllib.parse import parse_qs
 
 from agent_media_server import auth_abs as _auth_abs
 from agent_media_server import panes as _panes
+from agent_media_server import threads as _threads
 
+from . import state as _state
 from .state import spool_dir
 
 DEFAULT_PORT = 8781
@@ -555,10 +557,15 @@ AGENT_COMMANDS = _panes.AGENT_COMMANDS
 _classify_agent = _panes.classify
 _agent_by_argv = _panes.agent_by_argv
 _tmux_cc_panes = _panes.tmux_agent_panes
+_herdr_cc_panes = _panes.herdr_agent_panes
 _pane_alive = _panes.alive
 # Type `text` + Enter into a pane, tmux's or herdr's (amux's literal-then-Enter
 # timing, which Claude Code's input buffering needs). Returns "" or an error.
 _send_to_pane = _panes.send
+
+# The conversation log's pictures are this canvas's spool: the server asks
+# through a callback rather than importing us (threads.set_pictures_for).
+_threads.set_pictures_for(_state.pictures_for)
 
 
 # /agents fan-out is expensive — `tmux list-panes` plus a `capture-pane` per
@@ -581,30 +588,6 @@ def _agents_payload() -> list[dict]:
         _AGENTS_CACHE["t"] = now
         _AGENTS_CACHE["data"] = data
         return data
-
-
-def _herdr_cc_panes() -> list[dict]:
-    """The same rows as `_tmux_cc_panes`, for agents hosted by herdr.
-
-    Discovery is the live-process walk `reply.live_sessions` already does —
-    herdr's own pane list says which panes exist, not which of them is an
-    agent we may type into.
-    """
-    from . import panes, reply as _reply
-
-    agents = []
-    for addr in {a for a in _reply.live_sessions().values() if panes.is_herdr(a)}:
-        cap = _strip_ansi(panes.capture(addr, lines=40, ansi=False))
-        agent = _reply._agent_of_pane(addr) or "claude"
-        preview = next((ln.strip()[:60] for ln in reversed(cap.splitlines())
-                        if ln.strip()), "")
-        agents.append({"name": panes.label(addr) or panes.herdr_pane(addr),
-                       "session": panes.where(addr).get("session", ""),
-                       "state": _classify_agent(cap, agent) or "input",
-                       "agent": agent,
-                       "dir": panes.cwd(addr), "preview": preview,
-                       "source": "herdr", "pane": addr})
-    return agents
 
 
 def _last_speaker() -> dict | None:

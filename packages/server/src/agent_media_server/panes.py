@@ -376,3 +376,37 @@ def tmux_agent_panes() -> list[dict]:
                        "dir": cwd, "preview": preview,
                        "source": "tmux", "pane": pane_id})
     return agents
+
+
+def herdr_agent_panes() -> list[dict]:
+    """The same rows as `tmux_agent_panes`, for agents hosted by herdr.
+
+    Discovery is the live-process walk `sessions.live_sessions` already does —
+    herdr's own pane list says which panes exist, not which of them is an
+    agent we may type into.
+    """
+    from . import sessions
+
+    agents = []
+    for addr in {a for a in sessions.live_sessions().values() if is_herdr(a)}:
+        cap = strip_ansi(capture(addr, lines=40, ansi=False))
+        agent = sessions._agent_of_pane(addr) or "claude"
+        preview = next((ln.strip()[:60] for ln in reversed(cap.splitlines())
+                        if ln.strip()), "")
+        agents.append({"name": label(addr) or herdr_pane(addr),
+                       "session": where(addr).get("session", ""),
+                       "state": classify(cap, agent) or "input",
+                       "agent": agent,
+                       "dir": cwd(addr), "preview": preview,
+                       "source": "herdr", "pane": addr})
+    return agents
+
+
+def _tmux(argv: list[str], timeout: int = 10) -> str:
+    """`tmux <argv>`'s stdout, stripped; "" on failure or a non-zero exit."""
+    try:
+        out = subprocess.run(["tmux", *argv], capture_output=True, text=True,
+                             timeout=timeout, check=False)
+        return out.stdout.strip() if out.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        return ""

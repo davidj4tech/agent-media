@@ -256,7 +256,7 @@ def _manifests(tmp_path, monkeypatch, rows):
     for session, folder in rows:
         (d / f"{session}.json").write_text(
             json.dumps({"session": session, "folder": folder}))
-    monkeypatch.setattr("agent_media_visual.reply._manifest_dir", lambda: d)
+    monkeypatch.setattr("agent_media_server.sessions._manifest_dir", lambda: d)
 
 
 def test_an_item_with_a_session_behind_it_is_flagged_a_conversation(tmp_path, monkeypatch):
