@@ -382,8 +382,30 @@ class Coordinator:
         except Exception as e:  # noqa: BLE001
             self._log_err("rooms: snapcast reduck failed", str(e))
 
+    def _book_is_the_speech_player(self) -> bool:
+        """Is the book endpoint only the speech player's socket?
+
+        With no book socket of its own, a target's book falls back to its
+        speech socket. For `app` that is Sasonica's speech player (p8a:6613) —
+        books there play through ExoPlayer on another listener — so the probe
+        asked our own speech player whether it was playing a book: 1.9s per
+        reply, the longest thing before_speech did (21 Sep), for an answer that
+        could only ever be no. Or worse than no: a reply still sounding there
+        would have read as a book, and "pausing the book" would have paused
+        speech. Where a book really does share the speech mpv, the speech
+        playlist replaces it anyway, so pausing it for later was already moot.
+        """
+        from ..sinks.book import _socket_for as _book_socket
+        try:
+            return (str(_book_socket(self.book_target))
+                    == str(_speech._socket_for(self.book_target)))
+        except Exception:  # noqa: BLE001 — unsure means ask, as before
+            return False
+
     def _probe_book_active(self) -> bool:
         """Is the book channel playing? Asked concurrently (see before_speech)."""
+        if self._book_is_the_speech_player():
+            return False
         try:
             return bool(self.book.active(self.book_target))
         except Exception:  # noqa: BLE001 — surfaced by the caller
