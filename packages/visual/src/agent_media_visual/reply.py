@@ -1540,7 +1540,7 @@ def sessions_index() -> list[dict]:
     return out
 
 
-_NEW = re.compile(r"^\s*(?:(?:start|open)\s+a\s+)?(?:new|fresh)\s+(?:(claude|codex|pi)\s+)?(?:chat|conversation|session|thread)\b[\s,.:;!-]*(.*)$",
+_NEW = re.compile(r"^\s*(?:(?:start|open)\s+a\s+)?(?:new|fresh)\s+(?:(claude|codex|pi|hermes)\s+)?(?:chat|conversation|session|thread)\b[\s,.:;!-]*(.*)$",
                   re.I | re.S)
 # Dictation carries no punctuation, so the name is not delimited: it is
 # however many words after the verb best fit a title, and the message is
@@ -1636,7 +1636,7 @@ def ask_routed(text: str, bearer: str, *, target: str = "", player_item: str = "
     nothing: the app confirms a guess (a spoken name, the player, the last
     thread) with the listener before committing with an explicit `target`.
     A fresh session opens in `project` when one is named, and runs `agent`
-    (claude, codex, pi) when one is named or spoken (see `ask`).
+    (claude, codex, pi, hermes) when one is named or spoken (see `ask`).
     """
     text = " ".join((text or "").split())
     if not text:

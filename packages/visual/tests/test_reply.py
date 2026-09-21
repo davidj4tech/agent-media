@@ -1348,3 +1348,10 @@ def test_a_directory_no_session_has_run_in_is_refused(tmp_path, monkeypatch):
     monkeypatch.setattr(reply, "may_reply", lambda u: (True, ""))
     ok, detail = reply.ask("hi", "tok", cwd="/etc")
     assert not ok and detail["status"] == 404
+
+
+def test_a_new_hermes_chat_can_be_asked_for_out_loud():
+    # The four agents are all namable in the words the button hears.
+    for agent in ("claude", "codex", "pi", "hermes"):
+        kind, hit, rest = reply.resolve_target(f"new {agent} chat, what time is it", [])
+        assert kind == "new" and hit == {"agent": agent} and rest == "what time is it"
