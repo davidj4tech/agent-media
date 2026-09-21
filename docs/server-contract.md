@@ -674,6 +674,12 @@ new message.
 3. A listener line joins the user message with the same words said within
    two minutes of it.
 
+Measured on red5's 8 most recent agent-media sessions (22 Sep 2026,
+read-only): 204 of 209 spoken agent lines joined a message, **all of them by
+key**. Of the 5 left over, 4 were questions read on the alert lane (their
+`ask` part carries no `spoken` yet) and 1 a reply the join did not
+recognise. 165 of 178 listener lines joined a user message.
+
 Each line joins one message. **Failure mode:** a message never spoken, or
 whose speech is not recognised, keeps `spoken: null` — the join never
 guesses by time alone, so a wrong replay is impossible and a missing one is
