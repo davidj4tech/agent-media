@@ -66,6 +66,47 @@ def _slow_s() -> float:
         return 1.2
 
 
+# Recent TCP connect times per endpoint, this process. A connect is one round
+# trip, so these measure the link a call rides — see _link_slow_s.
+_connect_s: dict[str, list[float]] = {}
+_CONNECT_SAMPLES = 8
+# A healthy call is a connect plus a request (two round trips); a batched read
+# is three. Four leaves room for an ordinary wobble without calling it a fault.
+_RTTS_PER_CALL = 4
+
+
+def _slow_cap_s() -> float:
+    """The most a link's round trip may raise the budget. A lossy link inflates
+    even the fastest connect; past this it is slow however far away it is."""
+    try:
+        return float(os.environ.get("MEDIA_MPV_SLOW_CAP_MS", "3000")) / 1000
+    except ValueError:
+        return 3.0
+
+
+def _link_slow_s(endpoint: str | Path) -> float:
+    """The latency budget for a policy call, scaled to the link it rides.
+
+    A flat budget cannot tell a phone that is far away from one that is not
+    going to answer. On 21 Sep p8a sat at 430ms RTT off home Wi-Fi, where an
+    honest five-property read takes 1.30s — over the 1.2s default, so the
+    music endpoint's breaker was open whenever a reply asked it anything, and
+    the probe that decides whether to duck the music under speech was skipped.
+    The breaker was built to stop a device that "wasn't going to answer
+    usefully anyway"; a 1.3s answer is a useful one.
+
+    So the budget is a number of round trips on this link, measured from its
+    connects — the FASTEST of them, since a lost SYN inflates one sample by a
+    whole retransmit — never below the configured default, and capped.
+    Unmeasured (no tcp connect yet in this process), it is the default.
+    """
+    base = _slow_s()
+    samples = _connect_s.get(str(endpoint))
+    if not samples:
+        return base
+    return min(max(base, _RTTS_PER_CALL * min(samples)), max(base, _slow_cap_s()))
+
+
 def _breaker_s() -> float:
     """How long to skip a slow endpoint. 0 disables the breaker entirely."""
     try:
@@ -131,7 +172,7 @@ def _record(endpoint: str | Path, elapsed: float, failed: bool,
     window = _breaker_s() if breaker_s is None else breaker_s
     if window <= 0:
         return
-    limit = _slow_s() if slow_s is None else slow_s
+    limit = _link_slow_s(endpoint) if slow_s is None else slow_s
     state = _state()
     was_open = key in state
     if failed or (limit > 0 and elapsed >= limit):
@@ -166,7 +207,11 @@ def _open(endpoint: str | Path, timeout: float) -> socket.socket:
             raise MpvIpcError(f"bad tcp endpoint {ep!r} (want tcp://host:port)")
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(timeout)
+        t = time.monotonic()
         s.connect((host, int(port)))
+        samples = _connect_s.setdefault(ep, [])
+        samples.append(time.monotonic() - t)
+        del samples[:-_CONNECT_SAMPLES]
         return s
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.settimeout(timeout)
