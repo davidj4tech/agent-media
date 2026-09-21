@@ -3175,7 +3175,105 @@ def _replay_row(row: dict) -> int:
     # Where speech goes now — `media speech-target`, else the env default —
     # asked once, so every push below lands on the same player.
     speech_target = _speech_target()
+    # Say so, rather than push something the player cannot open and leave it
+    # playing whatever it held — which is what the listener then hears as
+    # "that ▶ played the wrong bubble".
+    missing = _replay_audio_missing(row, clip_uris, speech_target)
+    if missing:
+        print(f"media replay: {missing}", file=sys.stderr)
+        return 1
 
+    # A recorded reply, played again: it takes the playback token like any
+    # reply, so a reply arriving while it plays waits for it instead of
+    # pushing over it (see _SpeechPlaybackLock). Not a restart of the turn
+    # that is still speaking (no id yet): that turn's own follow loop holds
+    # the token and follows the same clips, and yielding to itself would
+    # speak it twice.
+    recorded = row.get("id") is not None
+    pane = _caller_pane()
+    # Stop any follower still tracking an earlier replay first: it may be the
+    # one holding the token.
+    _stop_replay_trackers()
+    replay_lock = None
+    if recorded:
+        from .intake.submit import _REPLAY_RANK, _SpeechPlaybackLock
+        replay_lock = _SpeechPlaybackLock(kind="replay")
+        if not replay_lock.take_within(_replay_wait_s(), rank=_REPLAY_RANK,
+                                       session=f"replay:{os.getpid()}"):
+            print("media replay: speech is busy; playing anyway",
+                  file=sys.stderr)
+            replay_lock = None
+    try:
+        return _push_replay(row, ex, clip_uris, clip_durations, replay_text,
+                            speech_target, pane, recorded, replay_lock)
+    finally:
+        # Handed to the follower, the descriptor is closed here and the token
+        # lives on in it; otherwise this is the release.
+        if replay_lock is not None:
+            replay_lock.release()
+
+
+def _replay_wait_s() -> float:
+    """How long a replay waits for the speaker to step aside before playing
+    anyway. Kept under the canvas's 25s budget for a speech verb."""
+    try:
+        return max(0.0, float(os.environ.get("MEDIA_REPLAY_WAIT_S") or 8.0))
+    except (TypeError, ValueError):
+        return 8.0
+
+
+def _replay_audio_missing(row: dict, clip_uris: list, target: Target) -> str:
+    """Why this row's audio cannot be played on `target`, or "" if it can.
+
+    Two ways it cannot, both of which used to fail in silence:
+    - it was rendered on the far side (`clips_remote`) for another player,
+      and its clips are bare names beside THAT player, not this one;
+    - its clips were cleared from this host's cache (2026-08-28's disk-full
+      sweep took 373 rows' worth), so there is nothing to send.
+    """
+    ex = row.get("extras") or {}
+    played_on = str(row.get("target") or "")
+    if ex.get("clips_remote"):
+        if played_on and played_on != target.name:
+            return (f"that reply's audio lives on {played_on}, and speech "
+                    f"now plays on {target.name}")
+        return ""
+    gone = [u for u in clip_uris
+            if str(u).startswith("/") and not os.path.isfile(str(u))]
+    if gone:
+        return "that reply's audio is no longer on this host (cache cleared)"
+    return ""
+
+
+def _replay_track_pidfile():
+    """Where the replay follower's pid is kept. One, not one per pane as it
+    was (/tmp/media-replay-track-<pane>.pid): there is one speech player, so
+    a replay from the app (no pane) must supersede one started from the
+    popup, and the follower now also holds the playback token."""
+    return state_dir() / "replay-track.pid"
+
+
+def _stop_replay_trackers() -> None:
+    """Supersede any follower still tracking a prior replay (killpg: it runs
+    in its own session). The tracker only exits by itself when the speech
+    player goes idle, so replaying again before the prior playlist finishes
+    (rapid < / > traversal, re-pressing r/Space, a second ▶ in the app) would
+    otherwise leave the old tracker running on the shared socket, still
+    holding the playback token and writing the old clip's sentences over the
+    new one. Done before anything else touches the player or the row."""
+    import signal as _signal
+    try:
+        os.killpg(int(_replay_track_pidfile().read_text().strip()),
+                  _signal.SIGTERM)
+    except (OSError, ValueError, ProcessLookupError, PermissionError):
+        pass
+
+
+def _push_replay(row: dict, ex: dict, clip_uris: list, clip_durations: list,
+                 replay_text: str, speech_target: Target, pane: str,
+                 recorded: bool, replay_lock) -> int:
+    """The body of `_replay_row` once the token is settled: push the clips,
+    label them, write now_playing and spawn the follower."""
     # Re-show the reply's visual concurrently with the (slow, bridge-bound)
     # playback push below; the thread outlives neither — the process waits.
     threading.Thread(target=_replay_visual, args=(ex,)).start()
@@ -3209,9 +3307,13 @@ def _replay_row(row: dict) -> int:
         # missing/refused socket (mpv not up yet) must be a no-op, not a
         # traceback (_open raises raw FileNotFoundError/ConnectionRefused).
         sink.play(clip_uris[0], speech_target)
+        # The player the clip went to, not `_sock()`: that follows the
+        # now-playing row, which until this replay writes its own still names
+        # whatever played last — a different player once the target moved.
+        sock = _socket_for(speech_target)
         try:
-            ipc.set_property(_sock(), "pause", False, critical=True)
-            ipc.set_property(_sock(), "mute", False, critical=True)
+            ipc.set_property(sock, "pause", False, critical=True)
+            ipc.set_property(sock, "mute", False, critical=True)
         except (ipc.MpvIpcError, OSError):
             pass
     # Say what is playing, the way live speech says it. Every display that
@@ -3245,8 +3347,12 @@ def _replay_row(row: dict) -> int:
     # the only handle on "where you are" is the text, and two turns can say the
     # same thing. Absent on a live readout, which is correct — the turn being
     # spoken for the first time is not a record yet.
-    if row.get("id") is not None:
+    if recorded:
         np_extras["history_id"] = row["id"]
+        # What the app's speech bar reads (`/speech/now` `replay`), and what
+        # tells a live reply's follow loop that the row is not its to write
+        # (submit._replay_is_audible).
+        np_extras["replay"] = True
     elif row.get("started_at") is not None:
         # A live turn restarted by `<` has no record yet — _live_history_row
         # hands back the turn that is speaking, id None — so name it by the
@@ -3298,6 +3404,9 @@ def _replay_row(row: dict) -> int:
         np_extras["play_started_at"] = time.time()
     else:
         clip_offsets = []
+    if "current_sentence_idx" in np_extras:
+        # The first words, from the first read: the follower moves it on.
+        np_extras["current_sentence"] = clip_sentences[0]
     if have_durations:
         # Spawn a detached follower so the replay behaves like live playback
         # even though _do_replay returns immediately: it mirrors the player's
@@ -3305,30 +3414,11 @@ def _replay_row(row: dict) -> int:
         # 00:00 for the whole replay — and forever after, since nothing would
         # clear the row) and, for multi-clip turns with a pane, fires the
         # copy-mode highlight per sentence.
-        # TTS_POPUP_PANE is the original pane that opened the popup; TMUX_PANE
-        # inside display-popup is the popup's own ephemeral pane.
-        pane = _caller_pane()
-        # Supersede any tracker still polling from a prior replay. The
-        # tracker only self-exits when the speech mpv goes idle, so
-        # replaying again before the prior playlist finishes (rapid < / >
-        # traversal, re-pressing r/Space) would otherwise leave the old
-        # tracker running on the shared socket — it never sees "its"
-        # playback end and keeps highlighting the new clip with the old
-        # clip's sentences. killpg the previous one (start_new_session ⇒
-        # the child's pid is its own pgid). Mirrors the per-pane pidfile
-        # pattern _tmux_highlight_text uses for its clear-timer. Killed
-        # BEFORE the set_now_playing below so a dying tracker can never
-        # race a clear against the fresh row.
-        import re as _re
-        import signal as _signal
-        _pane_safe = _re.sub(r"[^A-Za-z0-9_-]", "_", pane) if pane else "nopane"
-        _trk_pidfile = f"/tmp/media-replay-track-{_pane_safe}.pid"
-        try:
-            with open(_trk_pidfile) as _f:
-                _old_pgid = int(_f.read().strip())
-            os.killpg(_old_pgid, _signal.SIGTERM)
-        except (OSError, ValueError, ProcessLookupError, PermissionError):
-            pass
+        # `pane` (TTS_POPUP_PANE, the pane that opened the popup; TMUX_PANE
+        # inside display-popup is the popup's own ephemeral pane) was asked
+        # up front, where any follower of an earlier replay was also stopped
+        # (_stop_replay_trackers) — before the set_now_playing below, so a
+        # dying tracker can never race a clear against the fresh row.
         # Follow along from a known pane, whether the turn is a clip per
         # sentence (playlist position picks the sentence) or one clip holding
         # all of them (the offsets do). A single-clip turn never followed
@@ -3337,21 +3427,33 @@ def _replay_row(row: dict) -> int:
         _hl = bool(pane and clip_sentences
                    and (len(clip_sentences) == len(clip_uris) > 1
                         or clip_offsets))
+        # The playback token goes with it: the follower is what lasts as long
+        # as the replay, so it is what holds the token (see
+        # _SpeechPlaybackLock's politeness rules).
+        lock_fd = replay_lock.fileno if replay_lock is not None else None
         _trk = subprocess.Popen(
             [sys.executable, "-m", "agent_media_core.cli",
              "replay-track",
              "--sentences", json.dumps(clip_sentences) if _hl else "",
              "--offsets", json.dumps(clip_offsets) if _hl else "",
              "--pane", pane,
-             "--durations", json.dumps(clip_durations)],
+             "--durations", json.dumps(clip_durations)]
+            + (["--lock-fd", str(lock_fd)] if lock_fd is not None else []),
             start_new_session=True,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            pass_fds=(lock_fd,) if lock_fd is not None else (),
         )
+        if replay_lock is not None:
+            # Close our copy WITHOUT unlocking: flock belongs to the open file
+            # description the follower now shares, and an unlock from here
+            # would release it for the follower too.
+            replay_lock.handed_off()
         try:
-            with open(_trk_pidfile, "w") as _f:
-                _f.write(str(_trk.pid))
+            pidfile = _replay_track_pidfile()
+            pidfile.parent.mkdir(parents=True, exist_ok=True)
+            pidfile.write_text(str(_trk.pid))
         except OSError:
             pass
         # Stamp the follower as the row's writer: the store's orphan guard
@@ -3713,6 +3815,11 @@ def cmd_replay_track(a) -> int:
     On observed end-of-playback we clear the row, like the live path's
     ``finally`` does; if we die uncleanly instead, the row still carries our
     pid so the store's orphan guard self-heals it on the next read.
+
+    With `--lock-fd`, we also hold the playback token the replay took, until
+    we exit: a new ordinary reply waits for the replay rather than playing
+    over it. A question or an urgent say ends the replay instead
+    (`_step_aside`).
     """
     from .intake.submit import _HighlightScheduler, _playout_delay_s
     sentences: list[str] = json.loads(a.sentences) if a.sentences else []
@@ -3745,6 +3852,34 @@ def cmd_replay_track(a) -> int:
             os.environ["TMUX"] = "x"  # fallback: truthy, tmux resolves socket
 
     state = StateStore()
+
+    # The playback token, when the replay took it and handed it down: held
+    # for as long as this process lives, which is as long as the replay plays.
+    token = None
+    lock_fd = getattr(a, "lock_fd", -1)
+    if lock_fd is not None and lock_fd >= 0:
+        from .intake.submit import _REPLAY_RANK, _SpeechPlaybackLock
+        token = _SpeechPlaybackLock.adopt(lock_fd, rank=_REPLAY_RANK,
+                                          session=f"replay:{os.getpid()}")
+
+    def _barged_in() -> bool:
+        """A question, a permission prompt or an urgent say wants the voice.
+        Ordinary replies never do: they wait for the replay to end."""
+        try:
+            return token is not None and token.should_yield()
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _step_aside() -> int:
+        """Stop the replay for the speaker that barged in, and end. It is a
+        copy of something already said, so it is not resumed; stopping it
+        here (rather than leaving the newcomer's load to cut it) keeps the
+        audio and the cleared row in step."""
+        try:
+            ipc.command(_sock(), "stop", critical=True)
+        except Exception:  # noqa: BLE001
+            pass
+        return _finish()
 
     def _owns(ex: dict) -> bool:
         # A newer writer (a live reply, or the next replay's tracker) may have
@@ -3823,6 +3958,8 @@ def cmd_replay_track(a) -> int:
         started = time.time()
         last = -1
         while True:
+            if _barged_in():
+                return _step_aside()
             # The row owns the timeline: `media skip` re-stamps its origin and
             # a pause freezes it, so reading it back each tick is what keeps a
             # replay in step with the audio instead of with the wall clock.
@@ -3862,6 +3999,8 @@ def cmd_replay_track(a) -> int:
     fail_streak = 0
     while True:
         time.sleep(0.15)
+        if _barged_in():
+            return _step_aside()
         try:
             # One batched snapshot per tick — over the phone bridge each hop
             # is slow, and this loop is per-tick anyway for the mirror.
@@ -7666,6 +7805,8 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument("--offsets", default="")
     s.add_argument("--pane", default="")
     s.add_argument("--durations", default="")
+    # The playback token, taken by the replay and handed down (_replay_row).
+    s.add_argument("--lock-fd", type=int, default=-1)
     s.set_defaults(func=cmd_replay_track)
 
     s = sub.add_parser("errors", help="recent errors from every component")

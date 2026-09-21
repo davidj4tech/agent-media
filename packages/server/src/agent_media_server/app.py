@@ -461,7 +461,12 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         arg = max(1, arg) if action == "replay-id" else max(1, min(999, arg))
         out = speech.run_ctl(action, arg)
         print(f"speech/ctl: {action} -> {out.strip()[:120]!r}", file=sys.stderr)
-        _json(h, 200, {"ok": True, "out": out})
+        reply = {"ok": True, "out": out}
+        if out.startswith("error: "):
+            # The verb ran and could not do it (a replay whose audio is
+            # gone): the words are for the listener, as a toast.
+            reply["error"] = out[len("error: "):]
+        _json(h, 200, reply)
     elif path == "/rename":
         # ⋮ → Rename, from the app. The name outlives the next turn and
         # reaches the terminal too (see book_tracks.rename).

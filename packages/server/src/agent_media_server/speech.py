@@ -64,6 +64,31 @@ def _session_title(session: str) -> str:
     return ""
 
 
+#: `{session: (title, at)}` for the waiting replies: same TTL, no ABS call.
+_TITLE_CACHE: dict[str, tuple[str, float]] = {}
+
+
+def _queued_row(q: dict) -> dict:
+    """One waiting reply, as `/speech/now` `queued` lists it."""
+    session = str(q.get("session") or "")
+    title = ""
+    if sessions._SESSION.fullmatch(session):
+        now = time.time()
+        hit = _TITLE_CACHE.get(session)
+        if not hit or now - hit[1] > _NOW_TTL_S:
+            hit = (_session_title(session), now)
+            _TITLE_CACHE[session] = hit
+        title = hit[0]
+    else:
+        session = ""
+    try:
+        at = float(q.get("at") or 0) or None
+    except (TypeError, ValueError):
+        at = None
+    return {"session": session or None, "title": title,
+            "urgent": bool(q.get("urgent")), "at": at}
+
+
 def speech_now(bearer: str, state: dict) -> tuple[bool, dict]:
     """`/speech/now`: what is being said right now, named for a person.
 
@@ -86,6 +111,14 @@ def speech_now(bearer: str, state: dict) -> tuple[bool, dict]:
     # Where that voice is (or the next one will be): the bar shows it, and
     # the picker behind it is /audio/targets.
     out["target"] = state.get("target") or audio.speech_target_now(out["live"])
+    # A recorded reply played again (the bar's replay, ▶ on a bubble): what is
+    # heard is that reply, under its own session, and not a new one.
+    out["replay"] = bool(out["live"] and state.get("replay"))
+    # Replies said but not heard yet, because the voice is busy. The app's
+    # "New reply waiting". Named, like the live one, but title only: the
+    # library item is looked up when it plays.
+    out["queued"] = [_queued_row(q) for q in state.get("queued") or []
+                     if isinstance(q, dict)]
     session = str(state.get("session") or "")
     if out["live"] and sessions._SESSION.fullmatch(session):
         now = time.time()

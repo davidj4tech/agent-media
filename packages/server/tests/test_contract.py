@@ -407,8 +407,47 @@ def test_speech_now_quiet_shape(server, shelf, signed_in, monkeypatch):
     res, obj = call(server, "GET", "/speech/now", headers=AUTH)
     assert res.status == 200
     assert keys(obj) == {"ok", "live", "speaking", "paused", "sentence", "session",
-                         "title", "item", "pos", "dur", "speed", "muted", "target"}
+                         "title", "item", "pos", "dur", "speed", "muted", "target",
+                         "replay", "queued"}
     assert obj["live"] is False and obj["session"] is None
+    assert obj["replay"] is False and obj["queued"] == []
+
+
+def test_speech_now_names_a_replay_and_what_waits(server, shelf, signed_in, monkeypatch):
+    """A replay is reported as what is heard, under its own session, and a
+    reply that arrived meanwhile is listed as waiting rather than playing."""
+    replayed, waiting = "6c73498c-02c1-4846-8350-a82006973571", \
+        "5f8ca313-c85f-469e-afc7-f3068bc2bfda"
+    monkeypatch.setattr(canvas, "speech_state", lambda: {
+        "kind": "state", "speaking": True, "session": replayed, "replay": True,
+        "sentence": "An older sentence.",
+        "queued": [{"session": waiting, "urgent": False, "at": 1790031449.7}]})
+    monkeypatch.setattr(sessions, "sessions_index", lambda: [
+        {"session": waiting, "title": "Speech bar"},
+        {"session": replayed, "title": "Filters"}])
+    from agent_media_server import threads
+    monkeypatch.setattr(threads, "item_for_session", lambda s, b: (None, False))
+    speech._NOW_CACHE.clear()
+    speech._TITLE_CACHE.clear()
+    res, obj = call(server, "GET", "/speech/now", headers=AUTH)
+    assert res.status == 200, obj
+    assert obj["session"] == replayed and obj["replay"] is True
+    assert obj["sentence"] == "An older sentence."
+    assert [keys(q) for q in obj["queued"]] == [{"session", "title", "urgent", "at"}]
+    q = obj["queued"][0]
+    assert (q["session"], q["title"], q["urgent"], q["at"]) == \
+        (waiting, "Speech bar", False, 1790031449.7)
+    assert obj["title"] == "Filters"
+
+
+def test_speech_ctl_says_why_a_replay_failed(server, shelf, signed_in, monkeypatch):
+    monkeypatch.setattr(canvas, "_media_ctl", lambda argv, timeout: (
+        "error: that reply's audio is no longer on this host (cache cleared)"))
+    res, obj = call(server, "POST", "/speech/ctl",
+                    {"action": "replay-id", "arg": 9222}, AUTH)
+    assert res.status == 200
+    assert obj["ok"] is True
+    assert obj["error"] == "that reply's audio is no longer on this host (cache cleared)"
 
 
 def test_speech_ctl_takes_only_listener_verbs(server, shelf, signed_in, typed):

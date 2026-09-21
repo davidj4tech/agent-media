@@ -1492,6 +1492,17 @@ _PRIO_RANK = {
 }
 
 
+#: The rank a replay holds the token at. A replay is the listener's own
+#: "play me that one" (popup r / < / >, the app's ▶ on a bubble), so it is
+#: above every ordinary reply — a live NORMAL reply steps aside for it, and a
+#: new one queues behind it — and one below HIGH, so a question, a permission
+#: prompt or `media say --urgent` still barges in on it. One below HIGH rather
+#: than NORMAL + 1 because a reply that has yielded re-queues a notch above its
+#: base rank (`yield_to_higher`), clamped to exactly this; a replay must not
+#: read that reply's wait to resume as a reason to step aside.
+_REPLAY_RANK = _PRIO_RANK[Priority.HIGH] - 1
+
+
 def _rank_of(priority: Priority) -> int:
     return _PRIO_RANK.get(priority, _PRIO_RANK[Priority.NORMAL])
 
@@ -1601,9 +1612,44 @@ class _SpeechPlaybackLock:
 
     Rendering is intentionally left outside the lock so sessions still render
     their clips in parallel; only the broker hand-off serializes.
+
+    Politeness — what a NEW reply does while the listener is hearing something:
+
+      * same session, below URGENT -> waits its turn in canonical order; the
+        clip that is speaking always finishes.
+      * another session, NORMAL    -> waits for the token; never interrupts.
+      * a REPLAY is audible        -> waits. A replay (`media replay`, the
+        popup's r / < / >, the app's ▶ on a bubble) holds this same token for
+        as long as it plays, at `_REPLAY_RANK`, held by its follower process
+        (`replay-track`), which inherits the descriptor from the replay command.
+        Before that, a replay pushed its playlist without the token: a reply
+        arriving meanwhile took the free token, whichever of the two pushed
+        last was heard, and the reply's follow loop wrote ITS sentences over
+        the replay's now_playing row — the speech bar named one thing and the
+        listener heard another (2026-09-22).
+      * HIGH / URGENT (questions, permission prompts, `media say --urgent`)
+        -> barge in as before: a live reply steps aside at its next boundary
+        and resumes afterwards; a replay is stopped and not resumed, since it
+        is a copy of something already said.
+
+    A replay asks for the token at `_REPLAY_RANK` with a bounded wait
+    (`take_within`): an ordinary reply that is speaking steps aside for it and
+    resumes after it (still paused, if it was). If the holder cannot step aside
+    in time (still pausing the music, say), the replay proceeds unserialized,
+    as every replay did before.
+
+    While they wait, replies are listed in the waiter registry, which is what
+    `speech_queue()` reads for the app's "New reply waiting" (`/speech/now`
+    `queued`). Nothing a waiting reply does touches the now_playing row or the
+    speech-events log: both are written only once it holds the token.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, speaker: str = "", kind: str = "reply") -> None:
+        # The Claude session id the speech belongs to, for `speech_queue()`
+        # only — the ordering identity is `_session` (a pane, usually). And
+        # what is waiting: a "reply" (anything a producer said) or a "replay".
+        self._speaker: str = speaker or ""
+        self._kind: str = kind or "reply"
         self._fd: Optional[int] = None
         self._rank: int = _PRIO_RANK[Priority.NORMAL]
         # The Claude session this speech belongs to. Priority preemption only
@@ -1639,9 +1685,13 @@ class _SpeechPlaybackLock:
             # can't corrupt the numeric fields; the pending flag is appended
             # after it rather than inserted, so older three-line (and
             # single-line, rank-only) files still parse.
+            # Lines five and six (who is speaking, and whether it is a reply
+            # or a replay) are for `speech_queue()`; the scan below ignores
+            # them, and an older four-line file reads as an anonymous reply.
             (d / self._token).write_text(
                 f"{self._rank}\n{self._seq!r}\n"
-                f"{self._session}\n{1 if self._pending else 0}")
+                f"{self._session}\n{1 if self._pending else 0}\n"
+                f"{self._speaker}\n{self._kind}")
         except OSError:
             pass
 
@@ -1968,6 +2018,85 @@ class _SpeechPlaybackLock:
             # A holder is no longer a waiter; also clears the entry on give-up.
             self._unregister()
 
+    def take_within(self, wait_s: float, *, rank: int, session: str) -> bool:
+        """Take the token at `rank` within `wait_s` seconds, or give up. True
+        when held.
+
+        For a replay, which is a person pressing play. `_take`'s give-up is
+        progress-aware and would wait out a whole healthy reply: right for a
+        reply, wrong for a keypress. The holder normally steps aside within a
+        tick of seeing us (`should_yield`); if it cannot (it is still before
+        its first clip, or blind), we stop waiting and the caller plays anyway,
+        exactly as it did before replays took the token. Like `_take`, defers
+        to a strictly higher-ranked waiter from another session, so a question
+        arriving at the same moment goes first.
+        """
+        if self._disabled():
+            return False
+        self._rank = rank
+        self._session = session
+        self._seq = self._seq or time.time()
+        self._pending = False
+        try:
+            path = _speech_lock_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(str(path), os.O_CREAT | os.O_RDWR, 0o644)
+        except OSError as e:  # noqa: BLE001
+            log.warning("speech lock: open failed (%s); replay unserialized", e)
+            return False
+        self._register()
+        deadline = time.monotonic() + max(0.0, wait_s)
+        try:
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except OSError:
+                    pass
+                else:
+                    if self._preempting_rank() <= self._rank:
+                        self._fd = fd
+                        return True
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_UN)
+                    except OSError:
+                        pass
+                if time.monotonic() >= deadline:
+                    os.close(fd)
+                    return False
+                time.sleep(0.1)
+        finally:
+            self._unregister()
+
+    @classmethod
+    def adopt(cls, fd: int, *, rank: int, session: str) -> "_SpeechPlaybackLock":
+        """A lock object for a token another process took and handed down as an
+        open descriptor (the replay command to its `replay-track`). flock
+        belongs to the open file description, so the token stays held for as
+        long as any process keeps the descriptor: here, until the follower
+        exits."""
+        lock = cls(kind="replay")
+        lock._fd = fd
+        lock._rank = rank
+        lock._session = session
+        return lock
+
+    @property
+    def fileno(self) -> Optional[int]:
+        """The held token's descriptor, None when not held."""
+        return self._fd
+
+    def handed_off(self) -> None:
+        """Close this process's copy of the descriptor WITHOUT unlocking, once
+        a child has inherited it (`adopt`). An unlock from here would release
+        the shared open file description, and with it the child's token."""
+        if self._fd is not None:
+            try:
+                os.close(self._fd)
+            except OSError:
+                pass
+            self._fd = None
+        self._unregister()
+
     def should_yield(self) -> bool:
         """True when we should step aside at the next clip boundary: for a
         strictly higher-priority speaker from a *different* session, or for a
@@ -2068,6 +2197,63 @@ class _SpeechPlaybackLock:
     def __exit__(self, *exc: object) -> bool:
         self.release()
         return False
+
+
+def _replay_is_audible(extras: dict) -> bool:
+    """True when the speech row is a replay's and its follower is still alive
+    in another process: what the listener hears is that replay."""
+    if not extras.get("replay"):
+        return False
+    try:
+        pid = int(extras.get("writer_pid") or 0)
+    except (TypeError, ValueError):
+        return False
+    return pid > 0 and pid != os.getpid() and _pid_alive(pid)
+
+
+def speech_queue() -> list[dict]:
+    """The replies waiting for the playback token: the app's "New reply
+    waiting" (`/speech/now` `queued`).
+
+    Read straight from the waiter registry `_SpeechPlaybackLock` keeps. An
+    entry exists from the moment a reply asks for the token until it takes it,
+    gives up, or is flushed (each of which removes it), so this is exactly
+    "said, not yet heard". Left out: dead waiters, replies still rendering
+    (pending: nothing is waiting on them yet) and replays (the listener's own
+    keypress, about to play). A reply that stepped aside for a question is
+    listed: it is waiting to resume.
+
+    `[{"session": <Claude id> | None, "urgent": bool, "at": <submitted, epoch s>}]`,
+    in the order they are likely to play: urgent first, then oldest first.
+    """
+    out: list[dict] = []
+    try:
+        entries = list(_speech_wait_dir().iterdir())
+    except OSError:
+        return out
+    for f in entries:
+        try:
+            pid = int(f.name.split(".", 1)[0])
+        except (ValueError, IndexError):
+            continue
+        if not _pid_alive(pid):
+            continue
+        try:
+            lines = f.read_text().splitlines()
+            rank = int(lines[0].strip())
+            seq = float(lines[1].strip()) if len(lines) > 1 else 0.0
+        except (OSError, ValueError, IndexError):
+            continue
+        if len(lines) > 3 and lines[3].strip() == "1":
+            continue
+        if len(lines) > 5 and lines[5].strip() == "replay":
+            continue
+        speaker = lines[4].strip() if len(lines) > 4 else ""
+        out.append({"session": speaker or None,
+                    "urgent": rank >= _PRIO_RANK[Priority.HIGH],
+                    "at": seq})
+    out.sort(key=lambda q: (not q["urgent"], q["at"]))
+    return out
 
 
 def _audio_dir() -> Path:
@@ -2734,7 +2920,7 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
     timeout = float(os.environ.get("MEDIA_REMOTE_SAY_TIMEOUT", "180"))
     seq = time.time()
     session = (event.metadata or {}).get("session") or ""
-    lock = _SpeechPlaybackLock()
+    lock = _SpeechPlaybackLock(speaker=session)
     lock.acquire(event.priority, session=session,
                  supersede=bool((event.metadata or {}).get("supersede")),
                  seq=seq)
@@ -3037,7 +3223,7 @@ def _submit_event(event: Event,
     # finish rendering first, find the queue empty, and speak ahead of us.
     # Created here, acquired for real once the clips exist (and released on
     # every path out, including muted / render-failed).
-    playback_lock = _SpeechPlaybackLock()
+    playback_lock = _SpeechPlaybackLock(speaker=source_session)
     playback_lock.announce(event.priority, session=order_session,
                            seq=started_at)
     # The tmux session that owns the source pane, and the conversation title
@@ -3613,6 +3799,11 @@ def _submit_event(event: Event,
                 # One local read, so a pause stamped between marks is not
                 # thrown away by this one. See carry_pause_stamp.
                 prior = (state.get_now_playing("speech") or {}).get("extras") or {}
+                if _replay_is_audible(prior):
+                    # A replay that could not get the token in time pushed
+                    # over us and is what is heard now. The row says so; this
+                    # reply must not write its own sentences over it.
+                    return
                 _stamp_start(idx, live, prior, extras)
                 carry_pause_stamp(prior, extras, live is not None)
                 state.set_now_playing(
@@ -3678,6 +3869,9 @@ def _submit_event(event: Event,
                 # handed (streaming only) — bounded, so a failed append cannot
                 # hold the reply open.
                 lag = 0
+                # Whether the player was paused at the last readable tick,
+                # carried across a yield (see there).
+                last_paused = False
                 while played_any:
                     # Streaming appends clips under us, so the reply's length
                     # and its last index are read fresh each tick rather than
@@ -3708,6 +3902,12 @@ def _submit_event(event: Event,
                     # 1:1 to the sentence index for the popup/highlight.
                     if playback_lock.should_yield():
                         resume_i = i if 0 <= i < n else 0
+                        # A reply the listener had paused comes back paused.
+                        # It is now also what a replay displaces (a ▶ tapped
+                        # on another bubble mid-pause), and resuming it on
+                        # its own when the replay ends would be the reply
+                        # talking over a choice the listener made.
+                        resume_paused = last_paused
                         highlighter.cancel_pending()
                         _may_hand.clear()
                         sink.stop(target)
@@ -3724,6 +3924,8 @@ def _submit_event(event: Event,
                                 _handed[0] = len(reload)
                             if resume_i > 0:
                                 sink.set_playlist_pos(resume_i, target)
+                            if resume_paused:
+                                getattr(sink, "pause", lambda *a, **k: None)(target)
                         except Exception as e:  # noqa: BLE001
                             log.warning("intake: resume after yield failed: %s", e)
                             _player_gone.set()
@@ -3771,6 +3973,7 @@ def _submit_event(event: Event,
                         time.sleep(0.1)
                         continue
                     misses = 0
+                    last_paused = bool(snap.get("pause"))
                     mute_watcher.poll(snap.get("mute"))  # from the same snapshot
                     nav = _read_nav_request(target)
                     if nav is not None:
@@ -4174,7 +4377,7 @@ def submit_stream(sentences,
                                           source_pane)
         # Serialize playback across sessions (rendering keeps streaming in
         # parallel via the producer thread while we wait our turn for the broker).
-        playback_lock = _SpeechPlaybackLock()
+        playback_lock = _SpeechPlaybackLock(speaker=source_session)
         playback_lock.acquire(
             event.priority, session=order_session,
             supersede=bool((event.metadata or {}).get("supersede")),

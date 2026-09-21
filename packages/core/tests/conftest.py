@@ -97,6 +97,21 @@ os.environ["MEDIA_FLOOR_MIRROR"] = "0"
 
 
 @pytest.fixture(autouse=True)
+def _no_live_speech_token(monkeypatch, tmp_path):
+    """Keep the suite off the live speech token and its followers.
+
+    A replay now takes the playback token (`speech-playback.lock`), registers
+    in `speech-waiters/` and stops any earlier replay's follower by the pid in
+    `replay-track.pid` — all under the state dir. A test that replays without
+    isolating that dir would queue behind (or make yield) whatever reply is
+    speaking on the developer's phone, and could SIGTERM a real replay's
+    follower. So every test starts with its own state dir; a test that points
+    XDG_STATE_HOME somewhere itself still wins, being set after this.
+    """
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
+
+
+@pytest.fixture(autouse=True)
 def _no_follow_pane(monkeypatch):
     """Keep the suite out of the developer's terminal.
 

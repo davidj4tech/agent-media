@@ -818,10 +818,33 @@ The speech bar.
 ```json
 {"ok": true, "live": true, "speaking": true, "paused": false,
  "sentence": "…", "session": "6c73…" | null, "title": "…", "item": "li_…" | null,
- "pos": 12.0, "dur": 40.0, "speed": 1.6, "muted": false, "target": "app" | null}
+ "pos": 12.0, "dur": 40.0, "speed": 1.6, "muted": false, "target": "app" | null,
+ "replay": false,
+ "queued": [{"session": "5f8c…" | null, "title": "…", "urgent": false, "at": 1790031449.7}]}
 ```
 
+- It describes what is **heard**. A reply waiting for the voice (another
+  reply or a replay is playing) is not `live`, does not change `session`,
+  `sentence` or `pos`, and is listed in `queued` instead.
 - `live` = speaking or paused.
+- `replay` is true while what is heard is a recorded reply played again (the
+  bar's `replay`/`prev`, `replay-id` from a bubble, the desk popup). Its
+  `session`, `title` and `sentence` are the replayed reply's. False when not
+  live.
+- `queued` lists replies said but not yet heard, in the order they are likely
+  to play (urgent first, then oldest): `session` (null for a reply with no
+  session, e.g. `media say`), `title` (as for the live one; `""` if unknown),
+  `urgent` (a question, a permission prompt or `media say --urgent`: it will
+  interrupt what is playing) and `at` (when it was submitted, epoch seconds).
+  Always present; `[]` when nothing waits. A reply that stepped aside for an
+  urgent one is listed while it waits to resume. Replies still rendering and
+  replays are not listed. Read from the playback lock's waiter registry
+  (`intake.submit.speech_queue`).
+- Who waits for whom: an ordinary reply never interrupts — not another
+  session's reply, not its own session's earlier one, and not a replay. A
+  replay interrupts an ordinary reply, which resumes after it (paused, if it
+  was). An urgent reply interrupts either; the reply resumes, the replay
+  does not. (`_SpeechPlaybackLock`'s docstring is the full rule.)
 - `target` is where the voice is: while live, the reply's own target (from
   its now-playing row — a reply moved mid-way by §6.9 still names where it
   started); when quiet, where the next reply will play. `null` only if the
@@ -845,6 +868,12 @@ Actions (`_APP_SPEECH_ACTIONS`): `toggle`, `skip-`, `skip+`, `para-`,
   1–999), or a history row id for `replay-id` (not clamped).
 - Anything else is 400 `"unknown action"`.
 - `ok: true` means the command ran, not that it did anything — read `out`.
+- `error` is added (and `out` starts `error: `) when the verb ran and could
+  not do it — a replay whose audio was cleared from the cache, or was
+  rendered for another player. Show it; nothing else played instead.
+- `replay`, `replay-id` and `prev` can take up to ~8 s longer than before
+  (`MEDIA_REPLAY_WAIT_S`): a replay waits for a speaking reply to step aside
+  before it plays, rather than playing over it.
 
 Clients: S (`SpeechBar.vue`; `replay-id` from `ConversationLog.vue`).
 

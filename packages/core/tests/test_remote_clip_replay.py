@@ -88,7 +88,7 @@ def test_replay_does_not_ship_a_clip_that_is_already_there(monkeypatch):
     assert ("play", "remote-1.mp3") in calls
 
 
-def test_replay_still_prefetches_locally_rendered_clips(monkeypatch):
+def test_replay_still_prefetches_locally_rendered_clips(monkeypatch, tmp_path):
     from agent_media_core import cli
 
     calls = []
@@ -97,8 +97,10 @@ def test_replay_still_prefetches_locally_rendered_clips(monkeypatch):
     monkeypatch.setattr(cli.ipc, "set_property", lambda *a, **k: None)
     monkeypatch.setattr(cli, "_sock", lambda: "tcp://phone.example:6602")
 
-    row = {"uri": "/home/x/clip.mp3", "text": "hi",
-           "extras": {"clip_uris": ["/home/x/clip.mp3"]}}
+    clip = tmp_path / "clip.mp3"      # real: a replay refuses a cleared cache
+    clip.write_bytes(b"x")
+    row = {"uri": str(clip), "text": "hi",
+           "extras": {"clip_uris": [str(clip)]}}
     cli._replay_row(row)
     assert ("prefetch",) in calls
 

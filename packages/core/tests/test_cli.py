@@ -701,16 +701,20 @@ def test_replay_refuses_a_row_that_never_rendered(monkeypatch):
     assert "built" not in played, "nothing should have been pushed to a sink"
 
 
-def test_replay_resolves_history(monkeypatch):
+def test_replay_resolves_history(monkeypatch, tmp_path):
     played = {}
+    # Real files: a replay refuses clips that are gone from the cache.
+    latest, older = tmp_path / "latest.mp3", tmp_path / "older.mp3"
+    latest.write_bytes(b"x")
+    older.write_bytes(b"x")
 
     class FakeStore:
         def get_now_playing(self, sink):
             return None
 
         def recent_history(self, *, sink, limit):
-            return [{"uri": "/clips/latest.mp3", "text": "a"},
-                    {"uri": "/clips/older.mp3", "text": "b"}][:limit]
+            return [{"uri": str(latest), "text": "a"},
+                    {"uri": str(older), "text": "b"}][:limit]
 
         def set_now_playing(self, sink, *, uri, started_at, target, extras):
             # _do_replay always refreshes now_playing so the status-bar
@@ -727,13 +731,13 @@ def test_replay_resolves_history(monkeypatch):
     class A:
         index = 1
     assert cli.cmd_replay(A()) == 0
-    assert played["uri"] == "/clips/latest.mp3"
+    assert played["uri"] == str(latest)
 
     class A2:
         index = 2
     assert cli.cmd_replay(A2()) == 0
-    assert played["uri"] == "/clips/older.mp3"
-    assert played["now_playing_uri"] == "/clips/older.mp3"
+    assert played["uri"] == str(older)
+    assert played["now_playing_uri"] == str(older)
 
 
 # --- replay-at-cursor (cursor -> clip) -------------------------------------

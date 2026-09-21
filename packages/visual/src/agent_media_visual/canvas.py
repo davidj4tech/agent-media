@@ -245,6 +245,38 @@ def _media(args: list[str], timeout: int = 10) -> str:
     return _run([_media_bin(), *args], timeout)
 
 
+#: Speech verbs that start a replay. A replay now waits (MEDIA_REPLAY_WAIT_S,
+#: 8s) for a speaking reply to step aside before it pushes, and the push
+#: itself is round trips to the phone, so ten seconds would kill it midway.
+_REPLAY_VERBS = frozenset({"replay", "replay-id", "prev"})
+
+
+def _media_ctl(args: list[str], timeout: int) -> str:
+    """Like `_media`, but a command that FAILED says why: "error: <its last
+    stderr line>". A replay that cannot play (its audio is gone, or lives on
+    another player) used to come back as "" — the same as one that worked."""
+    try:
+        out = subprocess.run([_media_bin(), *args], capture_output=True,
+                             text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if out.returncode != 0:
+        why = [ln for ln in (out.stderr or "").splitlines() if ln.strip()]
+        if why:
+            return "error: " + why[-1].removeprefix("media replay: ").strip()
+    return (out.stdout or "").strip()
+
+
+def _speech_ctl(action: str, arg: int) -> str:
+    """One whitelisted speech verb for the app's speech bar (/speech/ctl)."""
+    argv = ctl_argv("speech", action, arg)
+    if argv is None:
+        return ""
+    if action in _REPLAY_VERBS:
+        return _media_ctl(argv, timeout=25)
+    return _media(argv)
+
+
 def _book_title() -> str:
     """The book channel's media-title straight off its mpv IPC socket (the
     popup does the same via socat) — `media book now` is a bare URI."""
@@ -791,6 +823,16 @@ def _speech_extras() -> dict:
         return {}
 
 
+def _speech_queue() -> list:
+    """The replies waiting for the playback token (core's `speech_queue`):
+    `[{"session", "urgent", "at"}]`. Empty on any problem."""
+    try:
+        from agent_media_core.intake.submit import speech_queue
+        return speech_queue()
+    except Exception:  # noqa: BLE001 — a missing badge is never a fault
+        return []
+
+
 # --- the words live where they are produced ----------------------------------
 # A canvas on a render-only host (the phone's local control surface) has no
 # speech state to read: now_playing for speech is written where the reply is
@@ -957,6 +999,16 @@ def speech_state() -> dict:
         # to a different session than the current voice, and the app to name
         # the conversation on its speech bar (paused too).
         state["session"] = str(ex["source_session"])[:80]
+    if (state["speaking"] or state.get("paused")) and ex.get("replay"):
+        # What is heard is a recorded reply played again, not a new one. The
+        # row is the replay's own: a reply that arrives while it plays waits
+        # for the token and writes nothing until it has it.
+        state["replay"] = True
+    # Replies said but not yet heard, waiting for the voice to be free. Only
+    # when there are some: this frame rides a 1 Hz broadcast.
+    queued = _speech_queue()
+    if queued:
+        state["queued"] = queued
     lines = [" ".join(str(t).split()) for t in (ex.get("clip_sentences") or [])]
     lines = [t for t in lines if t]
     if lines:
@@ -1775,7 +1827,9 @@ class Handler(BaseHTTPRequestHandler):
             print(f"ctl: unknown action {channel}/{action}", file=sys.stderr)
             self._json(400, {"ok": False, "err": "unknown action"})
             return
-        out = _media(argv)
+        out = (_media_ctl(argv, timeout=25)
+               if channel == "speech" and action in _REPLAY_VERBS
+               else _media(argv))
         # Logged because a control that does nothing is indistinguishable from
         # a control that was never asked to do anything, and telling those two
         # apart has cost days. One line per action, with what `media` said.
@@ -1793,7 +1847,7 @@ class Handler(BaseHTTPRequestHandler):
 # routes too.
 _app.register(
     speech_state=lambda: speech_state(),
-    speech_ctl=lambda action, arg: _media(ctl_argv("speech", action, arg)),
+    speech_ctl=lambda action, arg: _speech_ctl(action, arg),
     pictures_for=_state.pictures_for,
     token_ok=lambda handler: _authorized(handler))
 
