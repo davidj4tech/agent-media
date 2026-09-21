@@ -1203,7 +1203,15 @@ def rename(session: str, title: str, *, target=None) -> str:
     folder = manifest.get("folder")
     manifest["title"] = title
     _write_manifest(session, manifest)
-    conversation.set_session_name(session, title)
+    # And the agent itself, where it can be told: Claude keeps a name file,
+    # Hermes takes a rename on its store, the other two have no way in that
+    # does not write into their own records (see harnesses.set_name).
+    from . import harnesses
+
+    if harnesses.is_hermes(session):
+        harnesses.set_name(session, title)
+    else:
+        conversation.set_session_name(session, title)
     if folder:
         set_metadata(session, Path(folder), target=target)
     return title

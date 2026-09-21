@@ -192,3 +192,26 @@ def test_a_live_hermes_is_on_the_newest_session_it_could_have_started(hermes_hom
     # A process that started after every row on file has not said anything yet.
     monkeypatch.setattr(harnesses, "_started_at", lambda pid: 1789960000.0)
     assert harnesses._hermes_session("1") == ""
+
+
+def test_a_rename_reaches_hermes_own_store(hermes_home, monkeypatch):
+    ran = []
+
+    class Done:
+        returncode = 0
+
+    monkeypatch.setattr(harnesses.shutil, "which", lambda n: "/bin/hermes")
+    import subprocess
+
+    monkeypatch.setattr(subprocess, "run", lambda argv, **kw: ran.append(argv) or Done())
+    assert harnesses.set_name(HM, "  Reached  from the phone ")
+    assert ran == [["/bin/hermes", "sessions", "rename", HM, "Reached from the phone"]]
+
+
+def test_the_agents_with_no_way_in_are_not_pretended_at(hermes_home):
+    # codex rewrites its own index and pi is named by a typed command; the
+    # shelf still renames both, this half just cannot.
+    assert not harnesses.set_name(CX, "Anything")
+    assert not harnesses.set_name(PI, "Anything")
+    assert not harnesses.set_name(HM, "   ")
+    assert not harnesses.set_name("../etc/passwd", "Anything")

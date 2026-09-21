@@ -412,9 +412,14 @@ def transcript_cwd(session: str) -> str:
 
 
 def session_exists(session: str) -> bool:
+    """Whether some harness still has this conversation — so it can be reopened.
+
+    `transcript` answers for the three that write a file; Hermes keeps its in
+    a database, so the question is which harness owns the id at all.
+    """
     from agent_media_core import harnesses
 
-    return harnesses.transcript(session) is not None
+    return bool(harnesses.harness_of(session))
 
 
 # --- the ghost prompt -----------------------------------------------------------

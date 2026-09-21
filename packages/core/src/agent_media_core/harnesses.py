@@ -47,6 +47,7 @@ import glob
 import json
 import os
 import re
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -442,6 +443,42 @@ def running() -> list[Running]:
             if sid:
                 out.append(Running(int(pid), sid, _pane_of(pid), HERMES))
     return out
+
+
+# --- naming one ------------------------------------------------------------------
+
+
+def set_name(session: str, title: str) -> bool:
+    """Tell the agent itself what this conversation is called. Whether it took.
+
+    A rename from the phone is kept by agent-media and shown on the shelf
+    whatever happens here; this is the second half — the terminal calling it
+    the same thing. Only two of the four can be told:
+
+    * claude  `~/.claude/session-autoname/<id>`, the file its own `/rename`
+              writes (handled by `conversation.set_session_name`, which owns
+              that path).
+    * hermes  `hermes sessions rename <id> <title>`, straight into its store.
+    * codex   thread names live in its own `session_index.jsonl`, which it
+              rewrites by appending; a half-written row there is codex's
+              problem, not ours, so it is left alone.
+    * pi      names come from `/name` typed into the session, and typing into
+              a live agent to rename it would show up as a turn.
+    """
+    import subprocess
+
+    title = " ".join((title or "").split())
+    if not title or not _safe(session):
+        return False
+    if is_hermes(session):
+        exe = shutil.which(HERMES) or str(_hermes_dir().parent / ".local/bin/hermes")
+        try:
+            done = subprocess.run([exe, "sessions", "rename", session, title],
+                                  capture_output=True, timeout=20, check=False)
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return done.returncode == 0
+    return False
 
 
 # --- starting one ----------------------------------------------------------------
