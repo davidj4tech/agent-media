@@ -71,6 +71,12 @@ live). The "Follow along" pill resyncs the voice as well as the view (it
 drops the skew window and asks `/speech/now` and the log at once, and the
 skew estimate now corrects a bold left *behind* the voice — a skip taken at
 the desk, a media key — not only one running ahead; `chat/test/resync.mjs`).
+Every harness's conversations in the one list (§6.16: `harnesses.stored()`
+sweeps Claude's, Codex's, pi's and Hermes's own stores, stat-only; every
+`/targets` row carries `harness`, store-only rows carry `source: "store"`;
+a 30-day window and 40 rows per harness, `?history=all` lifts it; the app
+wears the agent as a chip on each row and filters by it, with "Older than
+30 days" in the same menu).
 
 ## In flight
 
@@ -100,11 +106,9 @@ read them from Next instead of the old app's :8772.
 
 ## Queued, in order
 
-1. **Every harness's sessions** — Claude (`claude agents --json`), Codex,
-   pi, Hermes in one list. Not VS Code.
-2. **Full Codex and pi messages** in threads (today flattened).
-3. **Typed tools for Sasonica Shell.**
-4. **Sasonica Shell OAuth** — the proposal is written, not built.
+1. **Full Codex and pi messages** in threads (today flattened).
+2. **Typed tools for Sasonica Shell.**
+3. **Sasonica Shell OAuth** — the proposal is written, not built.
 
 ## Loose ends
 
