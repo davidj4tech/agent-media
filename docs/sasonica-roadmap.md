@@ -1,0 +1,89 @@
+# Sasonica roadmap
+
+What is built, in flight and queued for Sasonica: the chat app and its
+Android shell (Sasonica Next), the server here in agent-media, and
+Sasonica Shell. One list, so any session (or David) can see where things
+stand. Update it when an item lands or a decision is made.
+
+Where things live:
+
+- **Server:** agent-media `packages/server`, contract in
+  [server-contract.md](server-contract.md). Python, and staying Python.
+- **Chat app:** `~/projects/sasonica-chat/chat`, branch `chat-prototype`
+  (React Router + assistant-ui). Preview on red5 `:8795`
+  (`sasonica-chat-preview`).
+- **Sasonica Next:** the Capacitor shell, repo `davidj4tech/Sasonica`,
+  branch `android-next` (checkout `~/projects/sasonica-next`), rebased onto
+  `chat-prototype`. CI builds `sasonica-next-apk`; install with
+  `agent-phone-adb install`.
+- **Sasonica Shell:** `~/projects/sasonica-shell` (formerly Runlet).
+- **Licences:** agent-media, the chat app + Next, and Sasonica Shell are
+  Apache-2.0, copyright South Pen Labs. The Audiobookshelf forks (the old
+  Sasonica app, sasonica-web) stay GPL v3; never copy their code into
+  `chat/`.
+
+## Standing decisions
+
+- New app work lands in **Next first**; the browser preview is a fallback.
+- Keep publishing conversations to Audiobookshelf until the old app retires.
+- Idle sessions close after 12 h (6 h when memory is tight); closed is not
+  archived.
+- Headless sessions are on, with normal permissions.
+- Layout: `default` or `projects-per-tmux-session` (David's), detected by
+  the installer.
+- Optional extras (agent-memory, agent-mail, …) are opt-in in the Sasonica
+  installer and detected at runtime; the app shows a feature only when its
+  extra is present.
+
+## Done
+
+Pairing and device tokens; threads by session; transcript messages and
+per-thread SSE; speech bar with full controls; follow-along; recaps; exit
+and archive; idle closer; audio destination picker and Android output
+switcher; multi-line sends; per-session stop; multi-select questions; Home
+dashboard; background agents in a thread; thread-list sorting; project
+line under titles; menus that close on an outside tap; the brand and icons;
+the About page; seven text sizes (7–19 px, Default 13); the digital-
+assistant slot in Next; the coding-agents installer in Settings; Sasonica
+Shell rename, named URLs and client labels; answered questions stop being
+read out.
+
+## In flight
+
+- **Tap to read from here** — tap a sentence in the message being spoken to
+  jump there; start an older spoken message from a sentence. Server
+  `goto-sentence` via `/speech/ctl`, one-call replay from a sentence.
+- **Background notifications (Next)** — a native foreground service holding
+  one stream to the server; "New reply" / "Needs you" notifications that
+  open the thread. Not Firebase.
+
+## Queued, in order
+
+1. **"From <name>" for peer messages** — a message another session sent
+   renders as a small note, not the listener's bubble (server marks it
+   `peer` already).
+2. **Search** — full text over every thread (closed, headless, archived
+   too), with highlight and jump; titles, recaps and projects; long-term
+   memory as a separate section when agent-memory is installed. An
+   incremental index on the server (e.g. SQLite FTS5).
+3. **Advanced setting** — per-device, off by default. First use: search
+   gains "Tool steps". Home for dev bits (timing readout, raw events).
+4. **Every harness's sessions** — Claude (`claude agents --json`), Codex,
+   pi, Hermes in one list. Not VS Code.
+5. **Full Codex and pi messages** in threads (today flattened).
+6. **Next's own speech player** — Media3, reusing the old app's
+   `com.audiobookshelf.app.speech` package (companion-origin, Apache); its
+   own speech target and port. Run in parallel with the old app for a few
+   days, then switch the default. This is what lets the old app retire.
+7. **Typed tools for Sasonica Shell.**
+8. **Sasonica Shell OAuth** — the proposal is written, not built.
+
+## Loose ends
+
+- `follow.mjs` at the largest text size fails on and off.
+- The About page shows the server host but no server version (no route).
+- The Windows install test leaves stray PATH entries.
+- A stale saved question for a session may not clear after it's answered
+  (the PostToolUse clear may not fire).
+- Once the old app retires, move Next into its own repository so the
+  licence split is clean.
