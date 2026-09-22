@@ -127,7 +127,7 @@ CORS_PATHS = CORS_PATHS | AUDIO_PATHS
 
 # Browsing and capturing notes (notes.py). The same arrangement.
 NOTES_PATHS = frozenset({"/notes", "/notes/view", "/notes/read", "/notes/search",
-                         "/notes/capture", "/notes/setup"})
+                         "/notes/capture", "/notes/setup", "/notes/say"})
 CORS_PATHS = CORS_PATHS | NOTES_PATHS
 
 # Paths opened to other origins for POST (and its preflight) ONLY. `/pair` is
@@ -711,6 +711,13 @@ def _notes(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
         if not ok:
             print(f"notes/setup: refused ({detail.get('error')}) "
                   f"from {h.client_address[0]}", file=sys.stderr)
+    elif method == "POST" and path == "/notes/say":
+        body = _read_json(h) or {}
+        try:
+            at = max(0, int(body.get("at") or 0))
+        except (TypeError, ValueError):
+            at = 0
+        ok, detail = notes.say(str(body.get("path") or ""), at, bearer)
     elif method == "POST" and path == "/notes/capture":
         body = _read_json(h) or {}
         ok, detail = notes.capture(str(body.get("text") or ""),

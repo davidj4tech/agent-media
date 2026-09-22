@@ -287,3 +287,36 @@ def test_paragtd_installs_in_a_window(fresh, server, tmp_path):
     assert "bin/bootstrap" in windows[0][-1] and str(tmp_path / "paragtd") in windows[0][-1]
     assert _call(server, "POST", "/notes/setup",
                  {"component": "memory", "action": "install"})[0] == 400
+
+
+# --- reading aloud -----------------------------------------------------------------
+
+def test_spoken_drops_the_org_furniture():
+    text = notes.spoken(":PROPERTIES:\n:ID: x\n:END:\n#+title: T\n* TODO Call the bank :phone:\n"
+                        "  SCHEDULED: <2026-09-20 Sun>\n- [ ] ask about [[id:abc][the loan]]\nPlain.\n")
+    assert text == "Todo: Call the bank.\nask about the loan\nPlain."
+
+
+def test_say_hands_the_note_to_media_say(tree, server, monkeypatch):
+    monkeypatch.setattr(auth, "may_control_speech", lambda b: (True, {}) if b == "good"
+                        else (False, {"error": "no", "status": 403}))
+    started = []
+
+    class FakePopen:
+        def __init__(self, argv, **kw):
+            started.append(argv)
+            self.stdin = self
+            self.data = b""
+
+        def write(self, b):
+            started.append(b.decode())
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(notes.subprocess, "Popen", FakePopen)
+    assert _call(server, "POST", "/notes/say", {"path": "inbox.org"}, bearer="bad")[0] == 403
+    status, got = _call(server, "POST", "/notes/say", {"path": "roam/projects/bank.org"})
+    assert status == 200 and got["title"] == "Bank"
+    assert started[0][-1] == "say" and started[1] == "telly money"
+    assert _call(server, "POST", "/notes/say", {"path": "nope.org"})[0] == 404

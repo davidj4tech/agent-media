@@ -13,6 +13,7 @@ capture only has to land in `inbox.org`.
   GET  /notes/search?q=        → {"notes": [...], "memories": [...]}
                                  (&all=1 takes in session notes; &memory=0 skips memory)
   POST /notes/capture {"text", "kind": "todo"|"note", "memory": bool}
+  POST /notes/say {"path", "at"?}  → read a note (or one heading) aloud
 
 Setting all this up on a host is notes_setup.py (/notes/setup).
 
@@ -478,3 +479,55 @@ def _remember(text: str, kind: str) -> None:
         "text": f"David noted ({kind}): {text}",
         "metadata": {"source": "agent-media notes", "path": "inbox.org",
                      "kind": kind}})
+
+
+# --- reading aloud -----------------------------------------------------------------
+
+MAX_SPOKEN = 6000
+
+_LINK = re.compile(r"\[\[(?:[^\]]+)\]\[([^\]]*)\]\]|\[\[([^\]]+)\]\]")
+_DRAWER = re.compile(r"^\s*:[A-Z_]+:\s*$(?:.*?)^\s*:END:\s*$\n?", re.M | re.S)
+
+
+def spoken(text: str) -> str:
+    """Org as something to listen to: no drawers, keywords or dates; links
+    by their label; a heading as a sentence of its own."""
+    text = _DRAWER.sub("", text)
+    out = []
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or s.startswith(("#+", "#", "SCHEDULED", "DEADLINE", "CLOSED")):
+            continue
+        m = _HEADING.match(line)
+        if m:
+            s = m.group(4).strip()
+            if m.group(2) in ("TODO", "NEXT", "WAITING"):
+                s = f"{m.group(2).capitalize()}: {s}"
+            s = s.rstrip(".") + "."
+        s = _LINK.sub(lambda k: k.group(1) or k.group(2).removeprefix("id:"), s)
+        s = re.sub(r"^[-+]\s+(\[[ X-]\]\s+)?", "", s)
+        out.append(s)
+    return "\n".join(out)[:MAX_SPOKEN].strip()
+
+
+def say(rel: str, at: int, bearer: str) -> tuple[bool, dict]:
+    """Hand a note to the speech pipeline (`media say`), like any reply.
+    Gated like the speech bar, since it makes the phone talk."""
+    ok, detail = auth.may_control_speech(bearer)
+    if not ok:
+        return False, detail
+    ok, got = read(rel, at, bearer)
+    if not ok:
+        return False, got
+    text = spoken(got["text"])
+    if not text:
+        return False, {"error": "nothing in that note to read", "status": 422}
+    try:
+        p = subprocess.Popen([sys.executable, "-m", "agent_media_core.cli", "say"],
+                             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+        p.stdin.write(text.encode())
+        p.stdin.close()
+    except OSError as e:
+        return False, {"error": f"could not start speech ({e})", "status": 503}
+    return True, {"path": got["path"], "at": at, "title": got["title"], "chars": len(text)}

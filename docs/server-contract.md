@@ -1191,6 +1191,17 @@ text}]}`.
   the background, as best effort.
 - 400 when the text is empty, 413 when it is over 8 KB.
 
+#### `POST /notes/say` — `auth.may_control_speech`, like `/speech/ctl`
+
+`{"path", "at"?}` → `{"ok", "path", "at", "title", "chars"}`.
+- The note, or with `at` its subtree, is spoken through `media say`, the same
+  way as a reply.
+- The text is cleaned for listening first (`notes.spoken`): drawers,
+  keywords and dates are dropped, links become their labels, and each
+  heading becomes a sentence ("Todo: Call the bank.").
+- It is capped at 6,000 characters.
+- 404 and 409 as for `/notes/read`; 422 when nothing readable is left.
+
 #### `GET /notes/setup` · `POST /notes/setup` — `auth.may_control_speech`, like `/harnesses`
 
 This is the Notes tab's checklist for a host that has no notes yet
