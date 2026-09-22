@@ -185,13 +185,16 @@ def test_targets_shape(server, shelf, signed_in):
     # thread ran, for the small line under its title and the By-project order
     # (§6.1). Null when unknown — the live row here has no transcript; the
     # shelved one is filed under a series, which names its project.
+    # `harness` joined on 23 Sep 2026: which agent holds the conversation
+    # ("claude", "codex", "pi", "hermes"), now that the list is every
+    # harness's sessions and not only the ones that spoke (§6.16).
     assert keys(live) == {"session", "title", "live", "pane", "recap", "archived",
-                          "rested", "pinned", "project", "cwd"}
+                          "rested", "pinned", "project", "cwd", "harness"}
     assert live == {"session": SID2, "title": "Sasonica web", "live": True, "pane": "%42",
                     "recap": None, "archived": False, "rested": None, "pinned": False,
-                    "project": None, "cwd": None}
+                    "project": None, "cwd": None, "harness": "claude"}
     assert keys(shelved) == {"session", "title", "live", "pane", "at", "recap", "archived",
-                             "rested", "pinned", "project", "cwd"}
+                             "rested", "pinned", "project", "cwd", "harness"}
     assert shelved["project"] == "p-agent-media" and shelved["cwd"] is None
     assert shelved["rested"] is None and shelved["pinned"] is False
     assert shelved["live"] is False and shelved["pane"] is None

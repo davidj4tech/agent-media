@@ -441,7 +441,8 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
         # Everything a message can be pointed at — running sessions and
         # the directories a fresh one can open in — so the app renders a
         # list instead of working one out from the library.
-        ok, detail = sessions.targets(_bearer(h))
+        ok, detail = sessions.targets(
+            _bearer(h), (parse_qs(query).get("history") or [""])[0])
         _json(h, 200 if ok else detail.pop("status", 403), {"ok": ok, **detail})
     elif path == "/dashboard":
         # The home screen: one cheap aggregate of the sweeps the other

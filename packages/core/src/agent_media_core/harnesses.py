@@ -377,6 +377,141 @@ def _hermes_session(pid: str) -> str:
     return str(row[0]) if row else ""
 
 
+# --- every conversation on disk, whichever agent wrote it -----------------------
+
+
+@dataclass(frozen=True)
+class Stored:
+    """One conversation a harness has written down, found by its own store.
+
+    `at` is when it was last written to (a file's mtime; for Hermes the last
+    message, else when it started). `path` is the transcript, "" for Hermes,
+    whose conversations live in a database.
+    """
+    session: str
+    harness: str
+    at: float
+    path: str = ""
+    #: The store's own name for the directory it ran in ("" when the store
+    #: does not say, as Codex's does not).
+    folder: str = ""
+
+
+def _folder_of(harness: str, cwd: str) -> str:
+    """What `cwd` is called in that harness's store, so a directory can be
+    matched without opening a single conversation.
+
+    Claude names a project directory after the path with every `/` and `.`
+    turned into `-`; pi wraps the same shape in `--`. Codex files by date and
+    says nothing about the directory, so it cannot be matched this way.
+    """
+    flat = re.sub(r"[/.]", "-", cwd.rstrip("/"))
+    return f"--{flat.lstrip('-')}--" if harness == PI else flat
+
+
+def _scan(root: Path, depth: int, name: re.Pattern, harness: str) -> list[Stored]:
+    """Session files `depth` directories below `root`, by mtime.
+
+    One `scandir` per directory and no file is opened: a list of a thousand
+    conversations costs a stat each, which is what lets this be asked on
+    every poll.
+    """
+    dirs = [root]
+    for _ in range(depth):
+        below = []
+        for d in dirs:
+            try:
+                below += [Path(e.path) for e in os.scandir(d) if e.is_dir()]
+            except OSError:
+                continue
+        dirs = below
+    out = []
+    for d in dirs:
+        try:
+            entries = list(os.scandir(d))
+        except OSError:
+            continue
+        for e in entries:
+            m = name.fullmatch(e.name)
+            if not m or not e.is_file():
+                continue
+            try:
+                at = e.stat().st_mtime
+            except OSError:
+                continue
+            out.append(Stored(m.group(1), harness, at, e.path, d.name))
+    return out
+
+
+def _hermes_stored() -> list[Stored]:
+    """Every Hermes conversation, in every profile's store.
+
+    Unlike `_hermes_rows` this asks all of them: a listing is the union of
+    the profiles, not whichever one answers first.
+    """
+    import sqlite3
+
+    out = []
+    for db in hermes_stores():
+        try:
+            with sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=1.0) as c:
+                rows = c.execute(
+                    "select s.id, coalesce(max(m.timestamp), s.ended_at, s.started_at, 0) "
+                    "from sessions s left join messages m on m.session_id = s.id "
+                    "group by s.id").fetchall()
+        except sqlite3.Error:
+            continue
+        for sid, at in rows:
+            if _safe(str(sid or "")):
+                out.append(Stored(str(sid), HERMES, float(at or 0.0)))
+    return out
+
+
+def stored(*, since: float = 0.0, limit: int = 0,
+           exclude: tuple[str, ...] = ()) -> list[Stored]:
+    """Every conversation on this host, newest first, whichever agent held it.
+
+    This is the whole of "what has been talked about here": the harnesses'
+    own stores, not the sessions that happen to be running and not the ones
+    that reached the library by speaking. `since` drops anything not written
+    to since that epoch time, `limit` caps each harness (after the cut, so a
+    quiet agent is never crowded out by a busy one), and `exclude` names
+    directories to leave out, matched against each store's own name for them
+    (`_folder_of`, so not a single file is opened). Codex files by date and
+    says nothing about the directory, so `exclude` does not reach it.
+
+    An id written twice — the same conversation under two project
+    directories — is listed once, at its newest.
+    """
+    skip = {h: [_folder_of(h, d) for d in exclude if d.strip()] for h in (CLAUDE, PI)}
+    found = _scan(_claude_dir() / "projects", 1, re.compile(f"({_UUID})\\.jsonl"), CLAUDE)
+    found += _scan(_codex_dir() / "sessions", 3, re.compile(f"rollout-.*-({_UUID})\\.jsonl"), CODEX)
+    found += _scan(_pi_dir() / "sessions", 1, re.compile(f".*_({_UUID})\\.jsonl"), PI)
+    found += _hermes_stored()
+    newest: dict[str, Stored] = {}
+    for row in found:
+        if row.at < since:
+            continue
+        # A directory the caller wants nothing from: a gateway's scratch
+        # folder holds thousands of one-shot sessions nobody had.
+        if any(row.folder == d or row.folder.startswith(d.rstrip("-") + "-")
+               for d in skip.get(row.harness, ())):
+            continue
+        seen = newest.get(row.session)
+        if seen is None or row.at > seen.at:
+            newest[row.session] = row
+    rows = sorted(newest.values(), key=lambda r: r.at, reverse=True)
+    if limit > 0:
+        kept, counts = [], dict.fromkeys(HARNESSES, 0)
+        for row in rows:
+            if counts.get(row.harness, 0) >= limit:
+                continue
+            counts[row.harness] = counts.get(row.harness, 0) + 1
+            kept.append(row)
+        rows = kept
+    return rows
+
+
 def registry_dir() -> Path:
     base = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
     return Path(base) / "agent-media" / "agent-panes"

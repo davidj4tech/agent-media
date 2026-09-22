@@ -38,6 +38,13 @@ def _clean_media_env(monkeypatch, tmp_path):
     # throwaway dir, so a test never reads David's real ones, and forget what
     # the last test's files held (the cache is keyed by path and inode).
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    # The other harnesses' stores are read the same way (the thread list is
+    # every harness's conversations, not only Claude's), so point those at
+    # throwaway dirs too — unset, a test would list this machine's real
+    # Codex, pi and Hermes conversations.
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(tmp_path / "pi"))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     from agent_media_server import recaps
 
     recaps._reset_for_tests()
@@ -60,6 +67,11 @@ def _clean_media_env(monkeypatch, tmp_path):
     monkeypatch.setattr(sessions, "_PIDS", {})
     # A session's directory is kept once found; the subagents' scans too.
     monkeypatch.setattr(sessions, "_CWDS", {})
+    # Titles read out of a transcript are cached by (size, mtime); a tmp_path
+    # file can land on the same pair as the last test's.
+    monkeypatch.setattr(sessions, "_HEADLESS_TITLES", {})
+    monkeypatch.setattr(sessions, "_STORED_TITLES", {})
+    monkeypatch.setattr(sessions, "_FIRST_PROMPT", {})
     from agent_media_server import agents
 
     agents._reset_for_tests()

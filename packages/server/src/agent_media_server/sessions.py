@@ -767,17 +767,20 @@ def places(limit: int = 6) -> list[dict]:
             for path, at in seen.items()]
 
 
-def targets(bearer: str) -> tuple[bool, dict]:
+def targets(bearer: str, history: str = "") -> tuple[bool, dict]:
     """`/targets`: everything a message can be pointed at, in one answer.
 
-    `sessions` are running or lately shelved conversations (the picker's own
-    list); `places` are the directories a fresh session can be opened in.
+    `sessions` are the conversations this host holds — running, lately
+    shelved, and (within `STORE_DAYS`) whatever each harness's own store
+    remembers; `places` are the directories a fresh session can be opened in.
+    `history="all"` lifts the window, for the app's "Everything" filter.
     Gated like `/conversations`.
     """
     ok, detail = auth.may_control_speech(bearer)
     if not ok:
         return False, detail
-    return True, {"sessions": sessions_index(), "places": places()}
+    days = -1.0 if history == "all" else STORE_DAYS
+    return True, {"sessions": sessions_index(days=days), "places": places()}
 
 
 def _manifest_of(session: str) -> dict:
@@ -1116,7 +1119,99 @@ def _headless_rows(seen: set[str], flags, pinned, marks) -> list[dict]:
     return out
 
 
-def sessions_index() -> list[dict]:
+#: How far back the harnesses' own stores are read for the thread list, and
+#: at most how many conversations each of them contributes. A conversation
+#: that never spoke and is not running is known only from its store, and
+#: without a window that is every session this machine has ever held.
+STORE_DAYS = float(os.environ.get("MEDIA_SESSIONS_STORE_DAYS") or 30)
+STORE_ROWS = int(os.environ.get("MEDIA_SESSIONS_STORE_ROWS") or 40)
+
+
+def _stored_index() -> list:
+    """Every conversation on disk, whichever agent wrote it, excluded
+    directories dropped (`_excluded_dirs` — the gateway's scratch folder is
+    thousands of sessions nobody had). Stat-only: no transcript is opened."""
+    from agent_media_core import harnesses
+
+    return harnesses.stored(exclude=tuple(_excluded_dirs()))
+
+
+#: `{session: ((size, mtime), title)}` for titles read from a store's own
+#: transcript, so an unchanged conversation costs a stat.
+_STORED_TITLES: dict[str, tuple[tuple, str]] = {}
+
+
+def _stored_title(row) -> str:
+    """What to call a conversation only its harness's store knows about: the
+    shelf's name if it ever reached the library, else the one the agent gave
+    it (a `/rename`, Claude's `ai-title`, Codex's and pi's thread names),
+    else the first thing asked. "" when the transcript is gone.
+
+    `session_feed._asked` knows each harness's own answer to this; the cache
+    here is what keeps a list of forty from re-reading forty transcripts.
+    """
+    shelf = _shelf_title(_manifest_of(row.session))
+    if shelf:
+        return shelf if len(shelf) <= 60 else shelf[:59] + "…"
+    sig: tuple = ()
+    if row.path:
+        try:
+            st = os.stat(row.path)
+            sig = (st.st_size, st.st_mtime)
+        except OSError:
+            return ""
+    else:                      # Hermes keeps conversations in a database.
+        sig = (0, row.at)
+    hit = _STORED_TITLES.get(row.session)
+    if hit and hit[0] == sig:
+        return hit[1]
+    from agent_media_core import session_feed
+
+    title = " ".join(session_feed._asked(row.session, []).split())
+    if title.startswith(f"Conversation {row.session[:8]}"):
+        title = ""             # nothing in it to name it by
+    title = title if len(title) <= 60 else title[:59] + "…"
+    _STORED_TITLES[row.session] = (sig, title)
+    return title
+
+
+def _stored_rows(rows: list, seen: set[str], flags, pinned, marks,
+                 *, days: float) -> list[dict]:
+    """The conversations only their harness's store knows about, as
+    `/targets` rows: never spoken, not running, and until now invisible to
+    the app — a Codex thread from this morning, a Claude session that was all
+    reading.
+
+    `days` is the window (0 or less: everything). Each harness is capped
+    separately after the cut, so a busy agent cannot crowd out a quiet one.
+    Marked `source: "store"`; a row whose transcript has nothing to name it
+    by is left out rather than listed as "Conversation 0f3a…".
+    """
+    from . import rest
+
+    cutoff = (time.time() - days * 86400) if days > 0 else 0.0
+    kept, counts = [], {}
+    for row in rows:
+        if row.session in seen or row.at < cutoff:
+            continue
+        if counts.get(row.harness, 0) >= STORE_ROWS:
+            continue
+        title = _stored_title(row)
+        if not title:
+            continue
+        counts[row.harness] = counts.get(row.harness, 0) + 1
+        seen.add(row.session)
+        kept.append({"session": row.session, "title": title, "live": False,
+                     "pane": None, "at": round(row.at, 3),
+                     "recap": recaps.recap_for(row.session),
+                     "archived": row.session in flags,
+                     "rested": rest.row_mark(row.session, False, marks),
+                     "pinned": row.session in pinned,
+                     "harness": row.harness, "source": "store"})
+    return kept
+
+
+def sessions_index(*, days: float = STORE_DAYS) -> list[dict]:
     """What the assistant button can be pointed at: live sessions first, by
     the title on their pane, then recently shelved conversations by their
     folder name. One row per session; a live one that is also on the shelf
@@ -1146,6 +1241,11 @@ def sessions_index() -> list[dict]:
     flags = archive.archived()
     pinned = pins.pinned()
     marks = rest.rested()
+    # One stat-only sweep of every harness's store, which answers two
+    # questions at once: which agent holds each conversation (no glob per
+    # row), and which conversations the app has never been told about.
+    store = _stored_index()
+    agents = {r.session: r.harness for r in store}
     seen: set[str] = set()
     out = []
     for sid, pane in live.items():
@@ -1156,7 +1256,8 @@ def sessions_index() -> list[dict]:
         seen.add(sid)
         out.append({"session": sid, "title": title, "live": True, "pane": pane,
                     "recap": recaps.recap_for(sid), "archived": sid in flags,
-                    "rested": None, "pinned": sid in pinned})
+                    "rested": None, "pinned": sid in pinned,
+                    "harness": agents.get(sid) or _agent_of_pane(pane)})
     for row in _headless_rows(seen, flags, pinned, marks):
         out.append(row)
     shelved = 0
@@ -1170,7 +1271,11 @@ def sessions_index() -> list[dict]:
         seen.add(sid)
         out.append({"session": sid, "title": title, "live": False, "pane": None, "at": at,
                     "recap": recaps.recap_for(sid), "archived": sid in flags,
-                    "rested": rest.row_mark(sid, False, marks), "pinned": sid in pinned})
+                    "rested": rest.row_mark(sid, False, marks), "pinned": sid in pinned,
+                    "harness": agents.get(sid, "claude")})
+    # And the conversations no pane, no driver and no shelf knows about —
+    # every harness's own store (§6.16).
+    out += _stored_rows(store, seen, flags, pinned, marks, days=days)
     # Where each thread is: its directory and the project it is filed under,
     # for the small line under the title and the list's By-project order.
     return add_projects(out)

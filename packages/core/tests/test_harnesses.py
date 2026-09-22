@@ -215,3 +215,75 @@ def test_the_agents_with_no_way_in_are_not_pretended_at(hermes_home):
     assert not harnesses.set_name(PI, "Anything")
     assert not harnesses.set_name(HM, "   ")
     assert not harnesses.set_name("../etc/passwd", "Anything")
+
+
+@pytest.fixture
+def alone(homes, monkeypatch, tmp_path):
+    """`homes` with Hermes pointed somewhere empty too, so a listing is the
+    fixture's conversations and not this machine's."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    return homes
+
+
+def test_every_conversation_on_disk_is_listed_newest_first(alone):
+    homes = alone
+    """`stored` is the whole shelf: each harness's own store, no process and
+    no library involved."""
+    claude = homes / "claude" / "projects" / "-home-x-scratch"
+    claude.mkdir(parents=True)
+    CL = "3d1b4a2c-1111-4222-8333-444455556666"
+    (claude / f"{CL}.jsonl").write_text('{"cwd": "/home/x/scratch"}\n')
+    os.utime(claude / f"{CL}.jsonl", (1790000000, 1790000000))
+    rows = harnesses.stored()
+    by = {r.session: r for r in rows}
+    assert set(by) == {CL, CX, PI}
+    assert by[CL].harness == "claude" and by[PI].harness == "pi"
+    assert by[CL].folder == "-home-x-scratch"
+    assert [r.at for r in rows] == sorted((r.at for r in rows), reverse=True)
+
+
+def test_a_window_and_a_cap_keep_the_list_short(alone):
+    homes = alone
+    # The fixture's codex and pi files were written just now; age them, so
+    # "since" is about the conversations and not about the clock.
+    for old_file in homes.glob("*/sessions/**/*.jsonl"):
+        os.utime(old_file, (1789000000, 1789000000))
+    claude = homes / "claude" / "projects" / "-home-x-scratch"
+    claude.mkdir(parents=True)
+    ids = [f"3d1b4a2c-1111-4222-8333-44445555{n:04d}" for n in range(3)]
+    for n, sid in enumerate(ids):
+        f = claude / f"{sid}.jsonl"
+        f.write_text("{}\n")
+        os.utime(f, (1790000000 + n, 1790000000 + n))
+    # The window is by last activity, not by when it started.
+    assert {r.session for r in harnesses.stored(since=1790000002)} == {ids[2]}
+    # The cap is per harness, so codex and pi are not crowded out by claude.
+    capped = harnesses.stored(since=1789000000, limit=1)
+    assert sorted(r.harness for r in capped) == ["claude", "codex", "pi"]
+    assert [r.session for r in capped if r.harness == "claude"] == [ids[2]]
+
+
+def test_a_directory_can_be_left_out_without_opening_anything(alone):
+    homes = alone
+    """The gateway's scratch folder: thousands of sessions nobody had."""
+    for folder, sid in ((("claude", "projects", "-home-x--meridian"),
+                         "3d1b4a2c-1111-4222-8333-444455557777"),
+                        (("pi", "sessions", "--home-x--meridian--"),
+                         "3d1b4a2c-1111-4222-8333-444455558888")):
+        d = homes.joinpath(*folder)
+        d.mkdir(parents=True)
+        name = f"{sid}.jsonl" if folder[0] == "claude" else f"2026-09-19T21-29-33-432Z_{sid}.jsonl"
+        (d / name).write_text("{}\n")
+    kept = {r.session for r in harnesses.stored(exclude=("/home/x/.meridian",))}
+    assert kept == {CX, PI}
+    assert harnesses._folder_of("claude", "/home/x/.meridian") == "-home-x--meridian"
+    assert harnesses._folder_of("pi", "/home/x/.meridian") == "--home-x--meridian--"
+
+
+def test_hermes_conversations_come_from_every_profile(hermes_home, monkeypatch, tmp_path):
+    for var in ("CLAUDE_CONFIG_DIR", "CODEX_HOME", "PI_CODING_AGENT_DIR"):
+        monkeypatch.setenv(var, str(tmp_path / var.lower()))
+    rows = harnesses.stored()
+    assert [(r.session, r.harness) for r in rows] == [(HM, "hermes")]
+    # The last message is when it was last talked to.
+    assert rows[0].at == 1789950359.0

@@ -257,8 +257,9 @@ Everything a message can be pointed at.
   plus **every archived one**, however old (23 Sep 2026): the caps on
   closed rows (40 shelved, 20 ended headless) count only rows not archived,
   so the app's Archived filter shows them all.
-  **`at` is only on shelved rows.** A session appears once, live if it
-  is live.
+  Then the conversations only a harness's store knows about (§6.16).
+  **`at` is only on rows that are not live.** A session appears once, live
+  if it is live.
 - `recap` (every row, 22 Sep 2026): the latest "where this thread was"
   summary for that session, `{"text", "at", "source"}`, or `null` — Claude
   Code's own "while you were away" paragraph (`"source": "claude"`), or the
@@ -279,6 +280,11 @@ Everything a message can be pointed at.
   `/session/close` is never rested.
 - `pinned` (every row, 22 Sep 2026): kept open against the idle reaper, set
   with `POST /session/pin` (§6.4). A pin affects the reaper only.
+- `harness` (every row, 23 Sep 2026): which agent holds the conversation —
+  `"claude"`, `"codex"`, `"pi"` or `"hermes"`. Rows the app has never seen
+  before carry `source: "store"` as well: conversations known only from
+  their harness's own store, because they never spoke and are not running
+  (§6.16, where the window and the caps are).
 - `cwd` and `project` (every row, 22 Sep 2026): where the thread ran — the
   first `cwd` its Claude Code transcript records (Codex/pi/Hermes: their
   own session files), and the project that names, as the layout calls one
@@ -2049,6 +2055,50 @@ only the project above it changes.
 
 Clients: the chat app's thread ⋯ menu ("Move to project…") and a long press
 on a row in the thread list.
+
+### 6.16 Every harness's conversations — gated (built 23 Sep 2026)
+
+A thread used to be one of three things: a pane with an agent in it, a
+session sessiond drives, or a conversation that spoke and so reached the
+library. A Codex thread from this morning that said nothing was none of
+them, and the app never heard of it. `/targets` now reads **each harness's
+own store** as well:
+
+| Harness | Where its conversations are |
+| --- | --- |
+| claude | `~/.claude/projects/<encoded cwd>/<id>.jsonl` |
+| codex | `~/.codex/sessions/YYYY/MM/DD/rollout-<stamp>-<id>.jsonl` |
+| pi | `~/.pi/agent/sessions/--<cwd>--/<stamp>_<id>.jsonl` |
+| hermes | `~/.hermes/state.db` and each profile's (a table, not a file) |
+
+`harnesses.stored()` (core) is that sweep, and it is **stat-only** — one
+`scandir` per directory, no transcript opened, ~4,000 conversations in
+0.06 s — so the list can be built on every poll.
+
+- **Every row carries `harness`**: `"claude" | "codex" | "pi" | "hermes"`.
+  Live rows and shelved rows gained it too; the app shows it as a chip and
+  filters by it.
+- **Store-only rows** are shaped like any other closed row, plus `source:
+  "store"`. `at` is when the conversation was last written to.
+- **The window**: `MEDIA_SESSIONS_STORE_DAYS` (30) back,
+  `MEDIA_SESSIONS_STORE_ROWS` (40) per harness — capped *after* the cut, so
+  a busy agent cannot crowd out a quiet one. `GET /targets?history=all`
+  lifts the window, which is what the app's "Everything" filter asks for.
+- **Excluded directories** are the ones the live sweep and the reaper
+  already leave alone (`MEDIA_SESSIONS_EXCLUDE_CWD`, default `~/.meridian`):
+  a gateway's scratch folder holds thousands of one-shot sessions nobody
+  had. Matched against each store's own name for the directory, so nothing
+  is opened to decide. Codex files by date and says nothing about the
+  directory, so the exclusion does not reach it.
+- **A row needs a name**: the shelf's, else the agent's own (a `/rename`,
+  Claude's `ai-title`, Codex's and pi's thread names), else the first thing
+  asked. A transcript with nothing to name it by is left out rather than
+  listed as "Conversation 0f3a…". Cached by `(size, mtime)`, so an unchanged
+  conversation costs a stat.
+- A conversation that is running, or on the shelf, is listed **once** — as
+  the live or shelved row it already was.
+
+Not VS Code: it keeps no conversation store of its own on this host.
 
 ## 7. `/events` (v0) — canvas-wide, not the app's stream
 

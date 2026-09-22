@@ -627,9 +627,12 @@ def test_flag_off_asks_open_a_pane_even_with_sessiond_running(app_host, server, 
     st, body = req(server, "POST", "/ask", {"text": "hello", "target": "new"}, AUTH)
     assert any(t[0] == "open_window" for t in typed)       # the pane path, as before
     assert "driver" not in body
-    # And a headless thread is neither listed nor driven with the flag off.
+    # And a headless thread is not driven with the flag off. Its transcript
+    # is still on disk, so the list may carry it as any other past
+    # conversation (§6.16) — never as a live or drivable one.
     st, body = req(server, "GET", "/targets", headers=AUTH)
-    assert all(r["session"] != sid for r in body["sessions"])
+    listed = [r for r in body["sessions"] if r["session"] == sid]
+    assert all(not r["live"] and "driver" not in r for r in listed)
     assert driver.for_session(sid).kind == "pane"
 
 
