@@ -14,7 +14,11 @@ Step 3 (sasonica ce7b7cc3, 2026-09-21): the mic classes came across and
 rate are served on Sasonica's :8772 and call_guard, ringer.py and doctor read
 them there (deployed on p8a, call_guard logs `mic source: …:8772/mic`); the
 waiting card and the share sheet moved; the mic revive knocks on Sasonica.
-Left: step 5, uninstalling the companion and its Termux bridges. Proposal written 2026-09-19. Written the day music moved to
+Step 5 (2026-09-22): the companion is uninstalled from p8a and its three
+loopback bridges (mpv-*-bridge-local) are down with a `down` file; the tailnet
+bridges stay. Decided the same day: Sasonica Next takes this speech and holds
+code as it is (companion-origin, Apache-2.0, not ABS code) and swaps only the
+player for Media3. Proposal written 2026-09-19. Written the day music moved to
 Sasonica's player (agent-media 9b4b13e, sasonica ced15c0c). That left the phone
 with three apps between it and the rooms: Termux's mpv, the companion (which
 speaks) and Sasonica (which plays books and music). This is the plan for
