@@ -696,6 +696,31 @@ class Supervisor:
                 "queued": busy, "acked": acked, "state": s.state, "live": s.live,
                 "pid": s.proc.pid if s.live else None}
 
+    def rename(self, session: str, title: str) -> dict:
+        """`/rename <title>` into a live session: Claude Code takes it under
+        `-p` as a local command (no model call; it writes `custom-title` to
+        the transcript and answers "Session renamed to: …" with a zero-cost
+        `result` — measured 22 Sep 2026, 2.1.278). Not a turn: nothing counts
+        it, and a parked session is not woken for it — the name is already in
+        its transcript (`book_tracks.rename`), which its next resume reads.
+        Behind a running turn it queues, like any message."""
+        title = " ".join((title or "").split())
+        if not title:
+            raise Refused("no title", "empty_text")
+        with self.lock:
+            s = self._get(session)
+            if not s.live:
+                return {"session": session, "renamed": False,
+                        "why": "headless sessions pick up the name on their next resume"}
+            busy = s.state in ("working", "approval")
+            uid = str(uuid.uuid4())
+            self._write(s, {"type": "user", "session_id": "", "uuid": uid,
+                            "message": {"role": "user",
+                                        "content": [{"type": "text",
+                                                     "text": f"/rename {title}"}]},
+                            "parent_tool_use_id": None})
+        return {"session": session, "renamed": True, "queued": busy, "uuid": uid}
+
     def resume(self, session: str) -> dict:
         with self.lock:
             s = self._get(session)
@@ -818,6 +843,8 @@ class Supervisor:
             if op == "send":
                 return {"ok": True, **self.send(sid, str(req.get("text") or ""),
                                                 uid=str(req.get("uuid") or ""))}
+            if op == "rename":
+                return {"ok": True, **self.rename(sid, str(req.get("title") or ""))}
             if op == "resume":
                 return {"ok": True, **self.resume(sid)}
             if op == "interrupt":

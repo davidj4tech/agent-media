@@ -285,6 +285,19 @@ class HeadlessDriver:
         return True, {"session": session, "pane": None, "live": False,
                       "closed": bool(r.get("closed")), "driver": HEADLESS}
 
+    def rename(self, session: str, title: str) -> str:
+        """Tell the session its new name. "" when it was told, else why not
+        (`send.send_rename`'s answer)."""
+        r = call("rename", session=session, title=title, timeout=15.0)
+        if r.get("ok"):
+            return "" if r.get("renamed") else str(r.get("why") or "not renamed")
+        if r.get("code") == "down":
+            return "the session host is not running; the name is kept for its next resume"
+        if r.get("code") == "bad_request":
+            # A sessiond from before the op: restarted, it takes it.
+            return "the session host is too old to rename; the name is kept for its next resume"
+        return str(r.get("error") or "not renamed")
+
     def interrupt(self, session):
         r = call("interrupt", session=session, timeout=15.0)
         if not r.get("ok"):

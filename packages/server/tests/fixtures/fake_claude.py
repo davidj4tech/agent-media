@@ -239,6 +239,21 @@ class Fake:
             time.sleep(TICK)
             if text == "crash":
                 os._exit(3)
+            if text.startswith("/rename "):
+                # A local command under -p (measured on 2.1.278): the name
+                # into the transcript, a synthetic reply, a zero-cost result.
+                title = text[len("/rename "):].strip()
+                with open(transcript_path(), "a") as fh:
+                    fh.write(json.dumps({"type": "custom-title", "customTitle": title,
+                                         "sessionId": SESSION}) + "\n")
+                words = f"Session renamed to: {title}"
+                emit({"type": "assistant", "message": {
+                    "model": "<synthetic>", "id": str(uuid.uuid4()), "type": "message",
+                    "role": "assistant", "content": [{"type": "text", "text": words}],
+                    "stop_reason": "end_turn"}})
+                self.result(words, turns=0)
+                self.lifecycle(msg, "completed")
+                return
             if text.startswith("tool:"):
                 self.tool_turn(text[5:].strip())
             elif text == "ask":

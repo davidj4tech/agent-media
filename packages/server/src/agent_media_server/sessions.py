@@ -663,15 +663,27 @@ def targets(bearer: str) -> tuple[bool, dict]:
     return True, {"sessions": sessions_index(), "places": places()}
 
 
-def _folder_for_session(session: str) -> str:
+def _manifest_of(session: str) -> dict:
     for f in sorted(_manifest_dir().glob("*.json")):
         try:
             data = json.loads(f.read_text())
         except (OSError, ValueError):
             continue
         if str(data.get("session") or f.stem) == session:
-            return str(data.get("folder") or "")
-    return ""
+            return data
+    return {}
+
+
+def _folder_for_session(session: str) -> str:
+    return str(_manifest_of(session).get("folder") or "")
+
+
+def _shelf_title(data: dict) -> str:
+    """The shelf's name for a conversation: its `title` — a `/rename`, kept in
+    the manifest — else the folder it was filed under, which keeps its first
+    name for good."""
+    return (" ".join(str(data.get("title") or "").split())
+            or os.path.basename(str(data.get("folder") or "")).strip())
 
 
 # --- what each live session is doing, for the app's shelf filters --------------
@@ -907,9 +919,9 @@ def _headless_title(session: str, view: dict) -> str:
     was filed under), else Claude's own (`/rename` in the transcript, then its
     `ai-title`), else the first message. Proposal §8, the order `_live_title`
     uses for Codex and pi."""
-    folder = _folder_for_session(session)
-    if folder:
-        return os.path.basename(folder)
+    shelf = _shelf_title(_manifest_of(session))
+    if shelf:
+        return shelf if len(shelf) <= 60 else shelf[:59] + "…"
     from agent_media_core import conversation
 
     path = conversation.transcript(session)

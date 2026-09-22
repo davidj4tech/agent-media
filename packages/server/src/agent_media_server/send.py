@@ -73,7 +73,16 @@ def send_rename(session: str, title: str) -> str:
     hand. Renaming the window directly also turned that window's
     automatic-rename off, so every later name it should have picked up was
     lost; this turns it back on.
+
+    A headless session (MEDIA_HEADLESS) has no pane: it gets the same
+    `/rename` as a stream-json message through sessiond, which Claude Code
+    takes under `-p`; a parked one reads the name from its transcript on its
+    next resume.
     """
+    from . import driver
+
+    if driver.owned_headless(session):
+        return driver.headless_driver().rename(session, title)
     pane = sessions.conversation_pane(session)
     if not pane:
         return "no pane: the session is not running"

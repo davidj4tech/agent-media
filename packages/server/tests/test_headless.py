@@ -602,3 +602,56 @@ def test_a_pane_session_refuses_the_structured_answer(app_host, server, signed_i
     st, body = req(server, "POST", "/session/answer",
                     {"session": pane_sid, "request_id": "r", "decision": "allow"}, AUTH)
     assert st == 400 and body["error"] == "this session answers by number (choice and key)"
+
+
+# --- rename -------------------------------------------------------------------------
+
+def test_rename_reaches_a_live_headless_session_and_the_shelf_name_lists(
+        app_host, server, signed_in, typed, monkeypatch, tmp_path):
+    from agent_media_core import book_tracks
+
+    shelf = tmp_path / "book-tracks"
+
+    def rename(session, title):
+        # What book_tracks.rename keeps: the manifest's title (the folder
+        # keeps its first name).
+        (shelf / f"{session}.json").write_text(json.dumps(
+            {"session": session, "folder": str(tmp_path / "Conversations" / "First name"),
+             "title": title}))
+        return title
+
+    monkeypatch.setattr(book_tracks, "rename", rename)
+    st, body = req(server, "POST", "/ask", {"text": "reply: hi", "target": "new"}, AUTH)
+    sid = body["session"]
+    wait_for(lambda: state(app_host, sid) == "waiting")
+    turns = app_host.sup.get(sid)["turns"]
+    st, body = req(server, "POST", "/rename", {"session": sid, "title": "Better name"}, AUTH)
+    assert st == 200 and body == {"ok": True, "session": sid, "title": "Better name",
+                                  "terminal": True, "why": None}
+    wait_for(lambda: last_text(app_host, sid) == "Session renamed to: Better name")
+    assert not _typed_into_panes(typed)
+    # Not a turn, and not the listener's words.
+    assert app_host.sup.get(sid)["turns"] == turns
+    assert not [t for t in app_host.turns if "rename" in t[1]]
+    st, body = req(server, "GET", "/targets", headers=AUTH)
+    row = next(r for r in body["sessions"] if r["session"] == sid)
+    assert row["title"] == "Better name"
+
+
+def test_rename_of_a_parked_headless_session_says_when_it_lands(
+        app_host, server, signed_in, typed, monkeypatch):
+    from agent_media_core import book_tracks
+
+    monkeypatch.setattr(book_tracks, "rename", lambda s, t: t)
+    sid = start(app_host, "reply: pineapple")
+    wait_for(lambda: state(app_host, sid) == "waiting")
+    monkeypatch.setenv("MEDIA_SESSIOND_IDLE", "0")
+    app_host.sup.park_idle(time.time() + 5)
+    wait_for(lambda: state(app_host, sid) == "parked")
+    n = len(starts(app_host))
+    st, body = req(server, "POST", "/rename", {"session": sid, "title": "Later"}, AUTH)
+    assert st == 200 and body["terminal"] is False
+    assert body["why"] == "headless sessions pick up the name on their next resume"
+    # Not woken for it.
+    assert state(app_host, sid) == "parked" and len(starts(app_host)) == n
+    assert not _typed_into_panes(typed)
