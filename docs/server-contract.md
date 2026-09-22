@@ -133,7 +133,8 @@ The app routes: `/conversation`, `/conversation/log`, `/conversations`,
 `/targets`, `/item`, `/reply`, `/ask`, `/focus`, `/session/resume`,
 `/session/close`, `/session/answer`, `/session/stop`, `/draft`, `/speech/now`, `/speech/ctl`,
 `/sessions/state`, `/commands`, `/rename`, `/harnesses`, `/harnesses/run`,
-`/harnesses/screen`, `/harnesses/keys`, `/harnesses/close`, `/share`,
+`/harnesses/screen`, `/harnesses/keys`, `/harnesses/close`,
+`/harnesses/logout` (23 Sep 2026), `/share`,
 `/search` (23 Sep 2026), and (22 Sep 2026) `/threads/{session}/events` — matched as a pattern, not
 listed (`app.cors_path`), so its preflight and its answers, refusals
 included, carry the same headers.
@@ -1389,13 +1390,28 @@ Getting an agent onto the host and signed in, from the phone.
 
 | Route | Request | Response |
 | --- | --- | --- |
-| `GET /harnesses` | – | `{"ok", "agents": [{"name", "present", "path", "version", "auth": "in"\|"out"\|"unknown", "account", "actions": ["install", "login"], "installed_action": "install"\|"update"}]}` |
+| `GET /harnesses` | – | `{"ok", "agents": [{"name", "present", "path", "version", "auth": "in"\|"out"\|"unknown", "account", "actions": ["install", "login", "logout"], "installed_action": "install"\|"update"}]}` |
 | `POST /harnesses/run` | `{"agent", "action": "install"\|"login"}` | `{"ok", "pane", "agent", "action", "cmd"}` · 400 unknown agent/action, 409 already running, 503 no window |
 | `GET /harnesses/screen?pane=` | – | `{"ok", "pane", "agent", "action", "cmd", "lines": [...], "done": bool, "exit": int\|null}` · 404 not ours, 410 gone |
 | `POST /harnesses/keys` | `{"pane", "text"?, "key"?}` | `{"ok", "pane"}` · 400 bad key / nothing to type, 404, 410 |
 | `POST /harnesses/close` | `{"pane"}` | `{"ok", "pane"}` · 404 |
+| `POST /harnesses/logout` (23 Sep 2026) | `{"agent"}` | `{"ok", "agent", "cmd", "exit", "lines", "auth"}` · 400 unknown agent, 409 no sign-out, 503/504 it would not run |
 
 Only windows `/harnesses/run` opened can be read or typed into.
+
+`logout` is in `actions` only where `auth` is already `in`: on `out` it would
+do nothing, and on the two that answer `unknown` its effect would be
+invisible. It opens no window — `claude auth logout` and `codex logout`
+delete the stored credentials and exit — so it answers with what the command
+said and the state read back afterwards. It is the one call here that takes
+something away, including the credential every session the app starts runs
+on, so the client asks before making it.
+
+Signed out is also enforced where it bites: `POST /ask` refuses a fresh chat
+with a harness that is missing or signed out (409, `{"agent", "fix":
+"harnesses"}`) rather than opening a window that sits on the harness's own
+sign-in screen and never answers. A *resumed* session is not checked — it is
+already running. `unknown` is let through.
 
 Clients: S (`utils/sasonicaAgents.js`, `AgentSetup.vue`), screen **polled 1.5 s**.
 

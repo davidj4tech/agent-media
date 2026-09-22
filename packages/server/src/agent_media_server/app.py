@@ -60,6 +60,8 @@ device gets its token):
   POST /harnesses/keys {"pane", "text"?, "key"?} → type into it (an OAuth
                   code pasted back, a y, an Enter)
   POST /harnesses/close {"pane"} → end that window
+  POST /harnesses/logout {"agent"} → forget this host's credentials for it
+                  (no window: it deletes a file and exits)
   GET  /sessions/events → the same, as a stream of changes, for a phone's
                   background notifier (session_events.py, §6.13)
   GET  /sessions/state  → every live session's working / waiting / approval,
@@ -148,7 +150,8 @@ CORS_PATHS = frozenset({
     "/session/move",
     "/speech/now", "/speech/ctl", "/speech/sentences", "/sessions/state", "/commands", "/rename",
     "/harnesses", "/harnesses/run", "/harnesses/screen",
-    "/harnesses/keys", "/harnesses/close", "/share", "/dashboard",
+    "/harnesses/keys", "/harnesses/close", "/harnesses/logout",
+    "/share", "/dashboard",
     "/sessions/events", "/search",
 })
 
@@ -824,7 +827,8 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
             print(f"answer: refused ({detail.get('error')}) for "
                   f"{str(body.get('session'))[:8]}", file=sys.stderr, flush=True)
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
-    elif path in ("/harnesses/run", "/harnesses/keys", "/harnesses/close"):
+    elif path in ("/harnesses/run", "/harnesses/keys", "/harnesses/close",
+                  "/harnesses/logout"):
         # Getting an agent onto this host and signing into it, from the
         # app: a command in a background tmux window, its screen read and
         # typed into. Gated like /reply, and only the windows this opened
@@ -834,6 +838,8 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         if path.endswith("run"):
             ok, detail = harnesses.run(str(body.get("agent") or ""),
                                        str(body.get("action") or ""), bearer)
+        elif path.endswith("logout"):
+            ok, detail = harnesses.sign_out(str(body.get("agent") or ""), bearer)
         elif path.endswith("keys"):
             ok, detail = harnesses.keys(str(body.get("pane") or ""),
                                         str(body.get("text") or ""),

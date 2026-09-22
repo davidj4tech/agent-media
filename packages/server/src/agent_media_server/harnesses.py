@@ -120,6 +120,11 @@ def agents(bearer: str) -> tuple[bool, dict]:
             actions.append("install")
         if here and harnesses.login_argv(name):
             actions.append("login")
+        # Signing out is offered only where the page can already say the
+        # agent is signed in: on "out" it would do nothing, and on the
+        # "unknown" two it would be a button whose effect nobody can see.
+        if here and state == "in" and harnesses.logout_argv(name):
+            actions.append("logout")
         rows.append({
             "name": name,
             "present": bool(here),
@@ -187,6 +192,43 @@ def run(agent: str, action: str, bearer: str) -> tuple[bool, dict]:
     cmd = shlex.join(argv)
     _remember(pane, agent, action, cmd)
     return True, {"pane": pane, "agent": agent, "action": action, "cmd": cmd}
+
+
+def sign_out(agent: str, bearer: str, timeout: float = 30.0) -> tuple[bool, dict]:
+    """`/harnesses/logout`: forget this host's credentials for `agent`.
+
+    No window: `claude auth logout` and `codex logout` delete a file and
+    exit, so there is nothing to watch and nothing to type. The answer is
+    the command's own last words and its exit code, and the app re-reads
+    `/harnesses` afterwards rather than trusting this to have worked.
+
+    It is the one button here that takes something away — including, for
+    Claude, the credential every session this app starts runs on — so the
+    app asks before calling it. The gate is the same bearer as the rest.
+    """
+    import subprocess
+
+    ok, detail = auth.may_control_speech(bearer)
+    if not ok:
+        return False, detail
+    agent = (agent or "").strip()
+    if agent not in harnesses.HARNESSES:
+        return False, {"error": f"not an agent: {agent!r}", "status": 400}
+    argv = harnesses.logout_argv(agent)
+    if not argv:
+        return False, {"error": f"{agent} has no sign-out to run", "status": 409}
+    try:
+        done = subprocess.run(argv, capture_output=True, text=True,
+                              timeout=timeout, check=False,
+                              env={**os.environ, "PATH": harnesses.bin_path()})
+    except OSError as exc:
+        return False, {"error": f"could not run {agent} logout: {exc}", "status": 503}
+    except subprocess.TimeoutExpired:
+        return False, {"error": f"{agent} logout did not finish", "status": 504}
+    said = [ln.rstrip() for ln in
+            ((done.stdout or "") + (done.stderr or "")).splitlines() if ln.strip()]
+    return True, {"agent": agent, "cmd": shlex.join(argv), "exit": done.returncode,
+                  "lines": said[-10:], "auth": harnesses.auth_state(agent)[0]}
 
 
 def screen(pane: str, bearer: str, lines: int = 60) -> tuple[bool, dict]:

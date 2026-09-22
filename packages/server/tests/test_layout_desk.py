@@ -29,6 +29,9 @@ def default_desk(monkeypatch, tmp_path):
 def asker(monkeypatch):
     opened = []
     monkeypatch.setattr(send, "_record_turn", lambda s, t, p="": None)
+    # The harness is asked whether it could answer at all; here it always
+    # could (test_ask_refuses_a_signed_out_agent covers the check itself).
+    monkeypatch.setattr(send, "_agent_unready", lambda agent: "")
     monkeypatch.setattr(send, "_settle", lambda p, timeout=5.0: None)
     monkeypatch.setattr(send, "_ensure_submitted", lambda p, t, timeout=3.0, agent="claude": True)
     monkeypatch.setattr(send, "_send_to_pane", lambda p, t: "")

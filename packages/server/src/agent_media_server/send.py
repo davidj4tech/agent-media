@@ -613,6 +613,25 @@ def _send_to_pane(pane: str, text: str) -> str:
 
 
 
+def _agent_unready(agent: str) -> str:
+    """Why a fresh `agent` chat would not answer, or "" if it should.
+
+    Only the two that can be asked are asked (`harnesses.auth_state`): pi and
+    Hermes answer "unknown" without a terminal, and a guess there would block
+    a chat that works. A resumed session is not checked — it is already
+    running, whatever the credentials on disk now say.
+    """
+    from agent_media_core import harnesses
+
+    if not harnesses.program(agent):
+        return f"{agent} is not installed on this host"
+    try:
+        state, _who = harnesses.auth_state(agent, timeout=5.0)
+    except Exception:          # noqa: BLE001 - a check that fails is not a refusal
+        return ""
+    return f"{agent} is signed out on this host" if state == "out" else ""
+
+
 def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
         agent: str = "", cwd: str = "", cwd_trusted: bool = False) -> tuple[bool, dict]:
     """Start a fresh session with `text` as its first message.
@@ -638,6 +657,14 @@ def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
     agent = (agent or os.environ.get("MEDIA_ASK_AGENT") or "claude").strip().lower()
     if agent not in panes.AGENT_COMMANDS:
         return False, {"error": f"unknown agent {agent!r}", "status": 400}
+    why = _agent_unready(agent)
+    if why:
+        # Without this the window opens and the harness sits on its own
+        # sign-in screen: a thread that appears in the app, is typed into,
+        # and never answers. Saying so here is the difference between a
+        # visible error and a conversation that looks stuck.
+        return False, {"error": why, "status": 409, "agent": agent,
+                       "fix": "harnesses"}
     where = (cwd or "").strip()
     host, cwd, flags = ask_target()
     if agent != "claude":

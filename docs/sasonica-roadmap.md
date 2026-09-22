@@ -83,6 +83,16 @@ harness in `transcript.py` — prompts, replies, thinking and every step with
 its command and result, instead of one line per spoken sentence; Hermes
 keeps a database, so it still answers from its lines).
 
+Signing out of a harness, and not offering what cannot answer (23 Sep 2026):
+Codex's sign-in from the phone dead-ended on `localhost:1455` — the browser
+flow's callback is the *phone* — so it runs `codex login --device-auth`, a
+code read off the pane. Coding agents now also has Sign out on any row it
+says is signed in (`POST /harnesses/logout`, no window, asks first in the
+row), New chat drops agents this host has not got and dims signed-out ones
+with a link to the page, and `POST /ask` refuses a fresh chat with a missing
+or signed-out harness (409) instead of opening a window that sits on the
+harness's own sign-in screen and never answers.
+
 The Organiser's own Show and Sort menus (chat `lib/noteSort.ts`, per device):
 Show keeps or hides done and cancelled items (the view is asked again,
 `/notes/view?done=1`), waiting and someday ones, and plain notes with their

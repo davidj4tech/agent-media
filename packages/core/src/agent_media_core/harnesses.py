@@ -687,6 +687,7 @@ class Recipe:
     install: tuple[str, ...] = ()
     update: tuple[str, ...] = ()
     login: tuple[str, ...] = ()
+    logout: tuple[str, ...] = ()
     status: tuple[str, ...] = ()
 
 
@@ -698,6 +699,7 @@ RECIPES: dict[str, Recipe] = {
         install=("npm", "install", "-g", "@anthropic-ai/claude-code"),
         update=("npm", "install", "-g", "@anthropic-ai/claude-code@latest"),
         login=("auth", "login"),
+        logout=("auth", "logout"),
         status=("auth", "status"),
     ),
     CODEX: Recipe(
@@ -709,6 +711,7 @@ RECIPES: dict[str, Recipe] = {
         # is a code read off the pane and typed into auth.openai.com, so it
         # works from whichever screen the person is holding.
         login=("login", "--device-auth"),
+        logout=("logout",),
         status=("login", "status"),
     ),
     PI: Recipe(
@@ -745,6 +748,20 @@ def login_argv(harness: str) -> list[str]:
     if not r or not r.login or not exe:
         return []
     return [exe, *r.login]
+
+
+def logout_argv(harness: str) -> list[str]:
+    """The command that signs `harness` out. [] when it has none.
+
+    Unlike the sign-in, both of these are a deletion of stored credentials
+    and nothing else: they ask nothing and exit at once, so the caller runs
+    them for an answer rather than opening a window to watch.
+    """
+    r = RECIPES.get(harness)
+    exe = program(harness)
+    if not r or not r.logout or not exe:
+        return []
+    return [exe, *r.logout]
 
 
 def auth_state(harness: str, timeout: float = 15.0) -> tuple[str, str]:

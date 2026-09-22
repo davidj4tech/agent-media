@@ -41,8 +41,10 @@ def test_a_missing_agent_offers_install_and_not_login(monkeypatch):
     assert rows["codex"]["actions"] == ["install"]
     assert rows["codex"]["installed_action"] == "install"
     # Installed: the same button is an update, and signing in is on offer.
+    # Signed in, so signing out is too — and never on the one that is not here.
     assert rows["claude"]["installed_action"] == "update"
-    assert rows["claude"]["actions"] == ["install", "login"]
+    assert rows["claude"]["actions"] == ["install", "login", "logout"]
+    assert "logout" not in rows["codex"]["actions"]
 
 
 def test_pi_is_honest_about_having_no_sign_in(monkeypatch):
@@ -173,3 +175,44 @@ def test_close_kills_the_window_once(monkeypatch):
     assert agents.close(pane, "bearer")[0] is True
     assert ["kill-pane", "-t", pane] in killed
     assert agents.close(pane, "bearer")[1]["status"] == 404
+
+
+# --- signing out --------------------------------------------------------------
+
+def test_signed_out_agents_are_not_offered_a_sign_out(monkeypatch):
+    """Nothing to take away, and on pi and Hermes nothing anyone could see."""
+    monkeypatch.setattr(harnesses, "program", lambda name: "/x/" + name)
+    monkeypatch.setattr(harnesses, "auth_state",
+                        lambda name, **k: (("out" if name == "claude" else "unknown"), ""))
+    monkeypatch.setattr(harnesses, "version_of", lambda name, **k: "1.2.3")
+    rows = {r["name"]: r for r in agents.agents("bearer")[1]["agents"]}
+    assert "logout" not in rows["claude"]["actions"]
+    assert "logout" not in rows["pi"]["actions"]
+
+
+def test_sign_out_runs_the_command_and_re_reads_the_state(monkeypatch):
+    ran = []
+
+    class Done:
+        returncode = 0
+        stdout = "Signed out.\n"
+        stderr = ""
+
+    def fake_run(argv, **kw):
+        ran.append(argv)
+        return Done()
+
+    monkeypatch.setattr(harnesses, "logout_argv", lambda name: ["/x/codex", "logout"])
+    monkeypatch.setattr(harnesses, "auth_state", lambda name, **k: ("out", ""))
+    monkeypatch.setattr("subprocess.run", fake_run)
+    ok, detail = agents.sign_out("codex", "bearer")
+    assert ok and ran == [["/x/codex", "logout"]]
+    # No window: the answer is the command's own, with the state after it.
+    assert detail["exit"] == 0 and detail["lines"] == ["Signed out."]
+    assert detail["auth"] == "out" and "pane" not in detail
+
+
+def test_sign_out_of_something_with_no_recipe_is_refused(monkeypatch):
+    monkeypatch.setattr(harnesses, "logout_argv", lambda name: [])
+    assert agents.sign_out("pi", "bearer")[1]["status"] == 409
+    assert agents.sign_out("rm -rf", "bearer")[1]["status"] == 400

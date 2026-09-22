@@ -690,6 +690,9 @@ def test_hold_client_falls_back_to_an_in_process_holder(monkeypatch):
 @pytest.fixture
 def _asker(monkeypatch, tmp_path):
     monkeypatch.setattr(send, "_record_turn", lambda s, t, p="": None)
+    # The harness is asked whether it could answer at all; here it always
+    # could (test_ask_refuses_a_signed_out_agent covers the check itself).
+    monkeypatch.setattr(send, "_agent_unready", lambda agent: "")
     monkeypatch.setattr(send, "_settle", lambda p, timeout=5.0: None)
     monkeypatch.setattr(send, "_ensure_submitted", lambda p, t, timeout=3.0, agent="claude": True)
     monkeypatch.setattr(auth_abs, "abs_identity", lambda b: ({"username": "d", "type": "root"}, 200))
@@ -1412,3 +1415,32 @@ def test_sessions_index_lists_every_archived_thread_past_the_shelf_cap(tmp_path,
     rows = sessions.sessions_index()
     assert [(r["session"][0], r["archived"]) for r in rows] == [
         ("a", True), ("b", False), ("c", False), ("e", True)]
+
+
+def test_ask_refuses_a_signed_out_agent_instead_of_opening_a_dead_chat(monkeypatch, _asker):
+    """A window would open on the harness's own sign-in screen and never answer."""
+    monkeypatch.setattr(send, "_agent_unready", lambda agent: f"{agent} is signed out on this host")
+    monkeypatch.setattr(send, "open_window", lambda *a, **k: pytest.fail("opened"))
+    ok, detail = send.ask("hi", "tok", agent="codex")
+    assert ok is False and detail["status"] == 409
+    assert "signed out" in detail["error"] and detail["fix"] == "harnesses"
+
+
+def test_what_makes_an_agent_unready(monkeypatch):
+    """Missing or signed out; pi and Hermes say "unknown" and are let through."""
+    from agent_media_core import harnesses as core
+
+    monkeypatch.setattr(core, "program", lambda name: "" if name == "hermes" else "/x/" + name)
+    monkeypatch.setattr(core, "auth_state",
+                        lambda name, **k: ("out", "") if name == "codex" else ("unknown", ""))
+    assert "not installed" in send._agent_unready("hermes")
+    assert "signed out" in send._agent_unready("codex")
+    assert send._agent_unready("pi") == ""
+
+
+def test_an_auth_check_that_blows_up_is_not_a_refusal(monkeypatch):
+    from agent_media_core import harnesses as core
+
+    monkeypatch.setattr(core, "program", lambda name: "/x/" + name)
+    monkeypatch.setattr(core, "auth_state", lambda name, **k: (_ for _ in ()).throw(OSError("boom")))
+    assert send._agent_unready("claude") == ""
