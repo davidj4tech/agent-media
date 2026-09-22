@@ -5,6 +5,8 @@ another GTD file — the two things an inbox needs besides capture.
       → {"path", "at", "state", "repeated", "next"?}
   POST /notes/refile {"path", "at", "title", "to", "date"?}
       → {"path", "at", "to"}
+  POST /notes/date   {"path", "at", "title", "kind", "date", "time"?}
+      → {"path", "at", "kind", "date", "time"}
 
 `at` is the heading's line as the app last saw it and `title` its text. The
 file may have moved on since (a capture, an Emacs save, the sync), so the
@@ -22,6 +24,11 @@ in next-actions.org (as NEXT), waiting-for under "* Waiting" (as WAITING),
 the tickler under "* Tickler" (SCHEDULED on the date given), someday and
 projects at the top level of their files. The subtree moves whole, its
 levels shifted to fit.
+
+Changing a date rewrites the heading's SCHEDULED or DEADLINE stamp (`kind`)
+in place, keeping its repeater and, unless `time` is given, its time of
+day; `time: ""` drops the time. An empty `date` takes the stamp off, and
+the planning line with it once nothing is left on it.
 
 Every file touched is flocked while it is read and rewritten, as capture
 locks the inbox, so the two never interleave. Emacs sees a changed file.
@@ -291,3 +298,65 @@ def refile(rel: str, at: int, title: str, to: str, bearer: str,
         return False, e.detail
     except OSError as e:
         return False, {"error": f"could not move it ({e})", "status": 500}
+
+
+_TIME = re.compile(r"\d{1,2}:\d{2}(?:-\d{1,2}:\d{2})?")
+
+
+def set_date(rel: str, at: int, title: str, kind: str, date: str, bearer: str,
+             time: str | None = None) -> tuple[bool, dict]:
+    user, err = auth.gate(bearer)
+    if not user:
+        return False, err
+    kind = (kind or "").strip().upper()
+    if kind not in ("SCHEDULED", "DEADLINE"):
+        return False, {"error": f"not a date kind: {kind!r}", "status": 400}
+    when = None
+    if (date or "").strip():
+        try:
+            when = dt.date.fromisoformat(date.strip())
+        except ValueError:
+            return False, {"error": "the date must be YYYY-MM-DD", "status": 400}
+    if time is not None:
+        time = time.strip()
+        if time and not _TIME.fullmatch(time):
+            return False, {"error": "the time must be HH:MM", "status": 400}
+    stamp_re = re.compile(rf"{kind}:\s*<([^>]*)>")
+    try:
+        path = _gtd_path(rel)
+        with ExitStack() as stack:
+            f = _Locked(path, stack)
+            i = _locate(f.lines, at, title)
+            plan = i + 1 if i + 1 < len(f.lines) and _PLANNING.match(f.lines[i + 1]) else None
+            old = stamp_re.search(f.lines[plan]) if plan is not None else None
+            new_time = ""
+            if when:
+                # What the old stamp carried after its date: a time, a repeater.
+                parts = old.group(1).split()[1:] if old else []
+                parts = [x for x in parts if not re.fullmatch(r"[^\s\d]+", x)]  # the weekday
+                old_time = next((x for x in parts if _TIME.fullmatch(x)), "")
+                rest = [x for x in parts if x != old_time]
+                new_time = old_time if time is None else time
+                inner = " ".join([when.isoformat(), _DAYS[when.weekday()]]
+                                 + ([new_time] if new_time else []) + rest)
+                stamp = f"{kind}: <{inner}>"
+                if old:
+                    f.lines[plan] = stamp_re.sub(lambda _m: stamp, f.lines[plan], count=1)
+                elif plan is not None:
+                    f.lines[plan] = f"{f.lines[plan].rstrip()} {stamp}"
+                else:
+                    f.lines.insert(i + 1, " " * (_level(f.lines[i]) + 1) + stamp)
+            elif old:
+                indent = re.match(r"\s*", f.lines[plan]).group(0)
+                rest_line = re.sub(r"\s+", " ", stamp_re.sub("", f.lines[plan])).strip()
+                if rest_line:
+                    f.lines[plan] = indent + rest_line
+                else:
+                    del f.lines[plan]
+            f.save()
+            return True, {"path": _rel(path), "at": i + 1, "kind": kind.lower(),
+                          "date": when.isoformat() if when else "", "time": new_time}
+    except Refused as e:
+        return False, e.detail
+    except OSError as e:
+        return False, {"error": f"could not change the file ({e})", "status": 500}

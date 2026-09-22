@@ -120,6 +120,40 @@ def test_refile_to_someday_goes_top_level(org):
         "* TODO Fix the TV ssh\n   SCHEDULED: <2026-09-20 Sun 08:45>\n   Body about the telly.\n** a sub-point\n")
 
 
+def test_a_new_date_keeps_the_time_and_the_repeater(org):
+    ok, got = notes_edit.set_date("inbox.org", _line("Fix the TV"), "Fix the TV ssh",
+                                  "scheduled", "2026-09-26", "good")
+    assert ok and got == {"path": "inbox.org", "at": 4, "kind": "scheduled",
+                          "date": "2026-09-26", "time": "08:45"}
+    assert "** TODO Fix the TV ssh\n   SCHEDULED: <2026-09-26 Sat 08:45>\n" in (org / "inbox.org").read_text()
+    notes_edit.set_date("inbox.org", 4, "Fix the TV ssh", "scheduled", "2026-09-26", "good", time="10:00")
+    assert "SCHEDULED: <2026-09-26 Sat 10:00>\n" in (org / "inbox.org").read_text()
+    notes_edit.set_date("inbox.org", 4, "Fix the TV ssh", "scheduled", "2026-09-26", "good", time="")
+    assert "SCHEDULED: <2026-09-26 Sat>\n" in (org / "inbox.org").read_text()
+    notes_edit.set_date("inbox.org", _line("Water plants"), "Water plants", "scheduled", "2026-10-01", "good")
+    assert "** TODO Water plants\n   SCHEDULED: <2026-10-01 Thu +1d>\n" in (org / "inbox.org").read_text()
+
+
+def test_a_date_is_added_beside_the_other_or_on_a_new_line_and_taken_off(org):
+    notes_edit.set_date("inbox.org", 4, "Fix the TV ssh", "deadline", "2026-09-30", "good")
+    text = (org / "inbox.org").read_text()
+    assert "   SCHEDULED: <2026-09-20 Sun 08:45> DEADLINE: <2026-09-30 Wed>\n" in text
+    ok, got = notes_edit.set_date("inbox.org", 0, "Call the bank", "scheduled", "2026-09-23", "good")
+    assert ok and "** NEXT [#A] Call the bank :phone:\n   SCHEDULED: <2026-09-23 Wed>\n" in (org / "inbox.org").read_text()
+    notes_edit.set_date("inbox.org", got["at"], "Call the bank", "scheduled", "", "good")
+    notes_edit.set_date("inbox.org", 4, "Fix the TV ssh", "deadline", "", "good")
+    assert (org / "inbox.org").read_text() == INBOX
+
+
+def test_bad_dates_are_refused(org):
+    assert notes_edit.set_date("inbox.org", 4, "", "scheduled", "26/9", "good")[1]["status"] == 400
+    assert notes_edit.set_date("inbox.org", 4, "", "closed", "2026-09-26", "good")[1]["status"] == 400
+    assert notes_edit.set_date("inbox.org", 4, "", "scheduled", "2026-09-26", "good", time="7pm")[1]["status"] == 400
+    assert notes_edit.set_date("inbox.org", 4, "", "scheduled", "2026-09-26", "bad")[1]["status"] == 401
+    assert notes_edit.set_date("roam/n.org", 1, "", "scheduled", "2026-09-26", "good")[1]["status"] == 400
+    assert (org / "inbox.org").read_text() == INBOX
+
+
 def test_edits_are_gated_and_kept_to_the_gtd_files(org):
     assert notes_edit.set_state("inbox.org", 4, "", "DONE", "bad")[1]["status"] == 401
     for rel in ("roam/n.org", "../x.org", "astro.org"):
@@ -156,6 +190,11 @@ def test_the_routes(org):
                                              "title": "Parcel", "to": "waiting"})
         assert status == 200 and got["path"] == "waiting-for.org"
         assert (org / "waiting-for.org").read_text() == "* Waiting\n** WAITING Parcel\n"
+        status, got = post("/notes/date", {"path": "inbox.org", "at": _line("Call the bank"),
+                                           "title": "Call the bank", "date": "2026-09-24",
+                                           "time": "19:00"})
+        assert status == 200 and got["kind"] == "scheduled" and got["time"] == "19:00"
+        assert "SCHEDULED: <2026-09-24 Thu 19:00>" in (org / "inbox.org").read_text()
         assert post("/notes/refile", {"path": "inbox.org", "at": 1, "title": "Gone",
                                       "to": "next"})[0] == 409
     finally:

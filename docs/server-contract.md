@@ -1490,14 +1490,14 @@ text}]}`.
   that list afresh.
 - 400 when the text is empty; 404 and 409 as for `/notes/read`.
 
-#### `POST /notes/state` · `POST /notes/refile` — gated (`auth.gate`)
+#### `POST /notes/state` · `POST /notes/refile` · `POST /notes/date` — gated (`auth.gate`)
 
 These change a heading in one of the GTD files at the top of the tree:
 inbox, next-actions, waiting-for, tickler, someday, projects, areas and
 routines. Roam notes cannot be changed here (400). Every file touched is
 flocked while it is read and rewritten, the same lock capture takes.
 
-**Finding the heading.** Both routes take the heading as `at` (its line as
+**Finding the heading.** All three routes take the heading as `at` (its line as
 the app last saw it) plus `title` (its text).
 - If that line still holds that title, it is used.
 - If not, the single heading with that title is used.
@@ -1532,6 +1532,19 @@ the app last saw it) plus `title` (its text).
   - `someday`, `projects`, `inbox`: at the top level of their files.
 - A missing file or headline is created.
 - 400 when the heading is already in the target file.
+
+`/notes/date {"path", "at", "title", "kind", "date", "time"?}` → `{"ok",
+"path", "at", "kind", "date", "time"}`
+- `kind` is `scheduled` (the default) or `deadline`.
+- `date` (YYYY-MM-DD) replaces that stamp's date in place. A repeater on it
+  stays. Its time of day stays too, unless `time` is given: `"HH:MM"` sets
+  it and `""` drops it.
+- With no stamp of that kind, one is added: to the end of the planning
+  line, or on a new planning line under the heading.
+- An empty `date` takes the stamp off, and the planning line with it if
+  nothing is left on it.
+- `time` in the answer is the time the stamp now has (`""` for none).
+- 400 for a malformed date, time or kind.
 
 #### `GET /notes/setup` · `POST /notes/setup` — `auth.may_control_speech`, like `/harnesses`
 

@@ -144,7 +144,8 @@ CORS_PATHS = CORS_PATHS | AUDIO_PATHS
 # Browsing and capturing notes (notes.py). The same arrangement.
 NOTES_PATHS = frozenset({"/notes", "/notes/view", "/notes/read", "/notes/search",
                          "/notes/capture", "/notes/setup", "/notes/say",
-                         "/notes/state", "/notes/refile", "/notes/ask"})
+                         "/notes/state", "/notes/refile", "/notes/date",
+                         "/notes/ask"})
 CORS_PATHS = CORS_PATHS | NOTES_PATHS
 
 # Paths opened to other origins for POST (and its preflight) ONLY. `/pair` is
@@ -810,15 +811,23 @@ def _notes(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
         if not ok:
             print(f"notes/setup: refused ({detail.get('error')}) "
                   f"from {h.client_address[0]}", file=sys.stderr)
-    elif method == "POST" and path in ("/notes/state", "/notes/refile"):
-        # Marking a heading done (or any state), and moving it to another
-        # GTD file. Line and title together find it (notes_edit.py).
+    elif method == "POST" and path in ("/notes/state", "/notes/refile", "/notes/date"):
+        # Marking a heading done (or any state), moving it to another GTD
+        # file, and changing its date. Line and title together find it
+        # (notes_edit.py).
         body = _read_json(h) or {}
         try:
             at = max(0, int(body.get("at") or 0))
         except (TypeError, ValueError):
             at = 0
-        if path.endswith("state"):
+        if path.endswith("date"):
+            time_ = body.get("time")
+            ok, detail = notes_edit.set_date(str(body.get("path") or ""), at,
+                                             str(body.get("title") or ""),
+                                             str(body.get("kind") or "scheduled"),
+                                             str(body.get("date") or ""), bearer,
+                                             time=None if time_ is None else str(time_))
+        elif path.endswith("state"):
             ok, detail = notes_edit.set_state(str(body.get("path") or ""), at,
                                               str(body.get("title") or ""),
                                               str(body.get("state") or ""), bearer)
