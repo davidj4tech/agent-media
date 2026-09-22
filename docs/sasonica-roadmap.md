@@ -61,7 +61,10 @@ projects from an incremental FTS5 index on red5, memory as its own section
 when agent-memory answers; the app's ⌕ on Home and Threads, a hit opens its
 thread at that message, lit; Codex/pi/Hermes hits land by time, not by id);
 the Advanced setting (per device, off: search's "Tool steps", the
-follow-along lead, device id and server address, the legacy connection).
+follow-along lead, device id and server address, the legacy connection). Moving a
+thread to another project (`POST /session/move`, §6.15: filed on the server,
+its transcript refiled, a live session closed and reopened there; the picker
+is in the thread menu and the list's long press).
 
 ## In flight
 
