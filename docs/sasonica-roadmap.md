@@ -51,7 +51,7 @@ select a word in an older reply → "Read from here"; not yet tried on the
 phone with real audio); background notifications in Next (a `specialUse`
 foreground service on `GET /sessions/events`, §6.13: "New reply" /
 "Needs you", Settings toggle; untested on the phone: Doze, reboot, cold-start
-tap, network handover).
+tap, network handover); "From <name>" on another session's messages.
 
 ## In flight
 
@@ -59,24 +59,21 @@ Nothing.
 
 ## Queued, in order
 
-1. **"From <name>" for peer messages** — a message another session sent
-   renders as a small note, not the listener's bubble (server marks it
-   `peer` already).
-2. **Search** — full text over every thread (closed, headless, archived
+1. **Search** — full text over every thread (closed, headless, archived
    too), with highlight and jump; titles, recaps and projects; long-term
    memory as a separate section when agent-memory is installed. An
    incremental index on the server (e.g. SQLite FTS5).
-3. **Advanced setting** — per-device, off by default. First use: search
+2. **Advanced setting** — per-device, off by default. First use: search
    gains "Tool steps". Home for dev bits (timing readout, raw events).
-4. **Every harness's sessions** — Claude (`claude agents --json`), Codex,
+3. **Every harness's sessions** — Claude (`claude agents --json`), Codex,
    pi, Hermes in one list. Not VS Code.
-5. **Full Codex and pi messages** in threads (today flattened).
-6. **Next's own speech player** — Media3, reusing the old app's
+4. **Full Codex and pi messages** in threads (today flattened).
+5. **Next's own speech player** — Media3, reusing the old app's
    `com.audiobookshelf.app.speech` package (companion-origin, Apache); its
    own speech target and port. Run in parallel with the old app for a few
    days, then switch the default. This is what lets the old app retire.
-7. **Typed tools for Sasonica Shell.**
-8. **Sasonica Shell OAuth** — the proposal is written, not built.
+6. **Typed tools for Sasonica Shell.**
+7. **Sasonica Shell OAuth** — the proposal is written, not built.
 
 ## Loose ends
 
