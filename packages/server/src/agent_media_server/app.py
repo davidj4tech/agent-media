@@ -109,7 +109,7 @@ from urllib.parse import parse_qs
 
 from . import (abs_item, archive, auth, devices, drafts, harnesses, pins, routing, send,
                sessions, share, speech, threads)
-from . import audio, notes, notes_setup
+from . import audio, notes, notes_edit, notes_setup
 
 # The endpoints a browser on another origin may reach. Everything here
 # carries its own credential — a paired device's token, or the caller's
@@ -140,7 +140,8 @@ CORS_PATHS = CORS_PATHS | AUDIO_PATHS
 
 # Browsing and capturing notes (notes.py). The same arrangement.
 NOTES_PATHS = frozenset({"/notes", "/notes/view", "/notes/read", "/notes/search",
-                         "/notes/capture", "/notes/setup", "/notes/say"})
+                         "/notes/capture", "/notes/setup", "/notes/say",
+                         "/notes/state", "/notes/refile"})
 CORS_PATHS = CORS_PATHS | NOTES_PATHS
 
 # Paths opened to other origins for POST (and its preflight) ONLY. `/pair` is
@@ -761,6 +762,23 @@ def _notes(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
         if not ok:
             print(f"notes/setup: refused ({detail.get('error')}) "
                   f"from {h.client_address[0]}", file=sys.stderr)
+    elif method == "POST" and path in ("/notes/state", "/notes/refile"):
+        # Marking a heading done (or any state), and moving it to another
+        # GTD file. Line and title together find it (notes_edit.py).
+        body = _read_json(h) or {}
+        try:
+            at = max(0, int(body.get("at") or 0))
+        except (TypeError, ValueError):
+            at = 0
+        if path.endswith("state"):
+            ok, detail = notes_edit.set_state(str(body.get("path") or ""), at,
+                                              str(body.get("title") or ""),
+                                              str(body.get("state") or ""), bearer)
+        else:
+            ok, detail = notes_edit.refile(str(body.get("path") or ""), at,
+                                           str(body.get("title") or ""),
+                                           str(body.get("to") or ""), bearer,
+                                           date=str(body.get("date") or ""))
     elif method == "POST" and path == "/notes/say":
         body = _read_json(h) or {}
         try:

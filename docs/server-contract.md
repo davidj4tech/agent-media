@@ -1451,6 +1451,49 @@ text}]}`.
 - It is capped at 6,000 characters.
 - 404 and 409 as for `/notes/read`; 422 when nothing readable is left.
 
+#### `POST /notes/state` · `POST /notes/refile` — gated (`auth.gate`)
+
+These change a heading in one of the GTD files at the top of the tree:
+inbox, next-actions, waiting-for, tickler, someday, projects, areas and
+routines. Roam notes cannot be changed here (400). Every file touched is
+flocked while it is read and rewritten, the same lock capture takes.
+
+**Finding the heading.** Both routes take the heading as `at` (its line as
+the app last saw it) plus `title` (its text).
+- If that line still holds that title, it is used.
+- If not, the single heading with that title is used.
+- If there are none, or more than one, the answer is 409. The app should
+  refresh and ask again; the server never guesses.
+
+`/notes/state {"path", "at", "title", "state"}` → `{"ok", "path", "at",
+"state", "repeated", "next"?}`
+- `state` is one of TODO, NEXT, WAITING, SOMEDAY, DONE, CANCELLED, or `""`
+  (no keyword).
+- Closing a heading puts `CLOSED: [stamp]` on its planning line, creating
+  the line if there is none. Reopening takes the stamp off again.
+- A heading whose planning line has a repeater (`+1d`, `++1w`, `.+1m`) is
+  not closed. Its timestamps move to the next occurrence, as Org does:
+  - `+` moves one interval;
+  - `++` moves to the next occurrence after today;
+  - `.+` moves one interval from today.
+
+  The heading keeps its state, and the answer says `repeated: true` with
+  `next`, the new date.
+- `at` in the answer is where the heading is now.
+
+`/notes/refile {"path", "at", "title", "to", "date"?}` → `{"ok", "path",
+"at", "to"}`
+- `to` is one of next, waiting, tickler, someday, projects or inbox. The
+  whole subtree moves, with its heading levels shifted to fit.
+- Where it lands follows paragtd's capture templates:
+  - `next`: under `* Inbox` in next-actions.org, as NEXT.
+  - `waiting`: under `* Waiting` in waiting-for.org, as WAITING.
+  - `tickler`: under `* Tickler` in tickler.org, with `SCHEDULED:` set to
+    `date` (YYYY-MM-DD, required; replaces any earlier SCHEDULED).
+  - `someday`, `projects`, `inbox`: at the top level of their files.
+- A missing file or headline is created.
+- 400 when the heading is already in the target file.
+
 #### `GET /notes/setup` · `POST /notes/setup` — `auth.may_control_speech`, like `/harnesses`
 
 This is the Notes tab's checklist for a host that has no notes yet
