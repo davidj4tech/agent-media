@@ -205,17 +205,39 @@ def _hook_ask(session: str) -> dict | None:
 
 def _match(scr: dict, hook: dict | None) -> int | None:
     """Which of the hook's questions is on screen (the review page: 0), or
-    None when the hook's question is not the one up."""
+    None when the hook's question is not the one up.
+
+    The screen's question text is often only a fragment: on a phone-width
+    pane the question wraps and the dialog scrolls, so what is left is its
+    middle or its end, and a match on the opening words failed and sent
+    David to the desk with the whole question saved (2026-09-22). So, in
+    order: the words (either containing the other); the options (labels
+    are short and survive the wrap); and, with one question pending and
+    nothing on screen to compare, that one.
+    """
     if not hook:
         return None
-    qs = [_norm(q.get("question") or "") for q in hook.get("questions") or []]
+    hq = hook.get("questions") or []
+    qs = [_norm(q.get("question") or "") for q in hq]
     if scr["review"]:
         seen = [_norm(r["question"]) for r in scr["reviewed"]]
-        return 0 if seen and all(s in qs for s in seen) else None
+        return 0 if seen and all(any(s in q or q in s for q in qs) for s in seen) else None
     cur = scr["question"]
     for i, q in enumerate(qs):
-        if cur and (q == cur or q.startswith(cur) or cur.startswith(q)):
+        if cur and (q == cur or q.startswith(cur) or cur.startswith(q) or cur in q or q in cur):
             return i
+    shown = [_norm(o.get("label") or "") for o in scr.get("options") or []]
+    if shown:
+        for i, q in enumerate(hq):
+            labels = [_norm(o.get("label") or "") for o in q.get("options") or []]
+            if len(labels) == len(shown) and all(a == b or a.startswith(b) or b.startswith(a)
+                                                 for a, b in zip(labels, shown)):
+                return i
+    if len(hq) == 1 and not cur and not shown:
+        # Nothing on screen to compare with (the dialog scrolled to its
+        # footer): the one pending question is the best reading. With
+        # anything visible, a mismatch wins — the hook's file can be stale.
+        return 0
     return None
 
 

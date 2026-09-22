@@ -243,6 +243,12 @@ def _answer_of(content) -> str:
 # --- the fold ---------------------------------------------------------------------
 
 
+#: `<cross-session-message from="…" from-name="agent-media-71" …>text</…>`,
+#: possibly followed by the harness's own notes about it.
+_PEER = re.compile(r'^<cross-session-message\b(?P<attrs>[^>]*)>\s*(?P<body>.*?)\s*</cross-session-message>', re.S)
+_PEER_NAME = re.compile(r'\bfrom-name="([^"]*)"')
+
+
 def _user_text(content) -> tuple[str, bool]:
     """(the prompt's words, whether it carries tool results)."""
     if isinstance(content, str):
@@ -425,6 +431,17 @@ class Builder:
                 self._close()
                 return
             self._user(rec, cmd["text"], cmd)
+            return
+        peer = _PEER.match(stripped)
+        if peer:
+            # Another Claude session's message, delivered into this one: it
+            # reads as the listener's own bubble with the raw tags in it
+            # otherwise. Kept as a user-side message, marked with who sent it.
+            body = " ".join(peer.group("body").split())
+            self._user(rec, body)
+            if self.messages and self.messages[-1]["parts"][0].get("text") == _cut(body, TEXT_MAX):
+                name = _PEER_NAME.search(peer.group("attrs"))
+                self.messages[-1]["peer"] = {"name": (name.group(1) if name else "") or "another session"}
             return
         words = strip_system_blocks(stripped)
         if not words:
