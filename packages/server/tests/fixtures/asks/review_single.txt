@@ -1,0 +1,30 @@
+
+● You picked kiwi.
+
+✻ Baked for 2s · done 2:13 PM
+
+❯ Use AskUserQuestion now: ONE single-select question "Pick a size?" header "Size", options Small (little), Large
+  (big). Nothing else.
+
+● User answered Claude's questions:
+  ⎿  · Pick a size? → medium
+
+● You picked medium.
+
+✻ Cogitated for 2s · done 2:13 PM
+
+❯ Use AskUserQuestion now: ONE question, multiSelect true, "Which fruits do you like?" header "Fruit", options Apple
+  (crisp), Pear (soft), Plum (tart). Nothing else.
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Fruit  ✔ Submit  →
+
+Review your answers
+
+ ● Which fruits do you like?
+   → Apple, Plum, kiwi
+
+Ready to submit your answers?
+
+❯ 1. Submit answers
+  2. Cancel

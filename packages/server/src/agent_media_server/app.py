@@ -74,9 +74,12 @@ device gets its token):
   POST /session/answer {"session", "choice", "key"} → answer the dialog that
                   session is stopped on (a permission prompt); refused unless
                   that same question, fingerprinted by `key`, is still on its
-                  screen. A headless session also takes {"session",
-                  "request_id", "decision": "allow"|"deny", "answers"?,
-                  "message"?} (driver/headless.py)
+                  screen. A question (AskUserQuestion) takes {"session",
+                  "key", "answers": [{"question_index", "selected": [n],
+                  "other_text"?}]} on a pane (asks.py) or headless; a
+                  headless session also takes {"session", "request_id",
+                  "decision": "allow"|"deny", "answers"?, "message"?}
+                  (driver/headless.py)
   GET  /draft?session=<uuid>   → what was left half-typed in that
                   conversation's reply box
   POST /draft     {"session", "text", "at"?} → hold it (empty text drops it)
@@ -634,11 +637,11 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path == "/session/answer":
         # Answering the dialog a session is stopped on — a permission
-        # prompt, Codex's hooks review. A number, never text, and only
-        # while that very question is still up (see send.answer). A
-        # headless session also takes the structured form: the request's
-        # `request_id`, a `decision` ("allow" | "deny") and, for a
-        # question, `answers` — multi-select and free text included.
+        # prompt, Codex's hooks review: a number, and only while that very
+        # question is still up (see send.answer). A question takes
+        # structured `answers` — multi-select and free text included —
+        # given to a pane key by key (asks.py); a headless session also
+        # takes its request's `request_id` and a `decision`.
         body = _read_json(h) or {}
         try:
             choice = int(body.get("choice"))

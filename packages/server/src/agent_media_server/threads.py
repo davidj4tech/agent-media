@@ -309,7 +309,7 @@ def _envelope(session: str, lines: list, *, limit: int = MESSAGES_LIMIT,
     if hl is not None:
         approval = hl["approval"]
     else:
-        approval = sessions.approval_for(pane, sessions._agent_of_pane(pane)) if pane else None
+        approval = sessions.approval_for(pane, sessions._agent_of_pane(pane), session) if pane else None
     # Claude Code's own "while you were away" summary, for the card at the top
     # of the thread. Deliberately not a line: nobody said it, and it is not
     # part of the conversation the agent sees. The latest only, not every one

@@ -1,0 +1,30 @@
+● You picked medium.
+
+✻ Cogitated for 2s · done 2:13 PM
+
+❯ Use AskUserQuestion now: ONE question, multiSelect true, "Which fruits do you like?" header "Fruit", options Apple
+  (crisp), Pear (soft), Plum (tart). Nothing else.
+
+● User declined to answer questions
+  ⎿  · Which fruits do you like? (Apple / Pear / Plum)
+
+✻ Cooked for 1s · done 2:14 PM
+
+❯ Use AskUserQuestion now with TWO questions in one call: Q1 single-select "Which colour?" header "Colour", options Red
+  (warm), Blue (cool), Green (calm). Q2 multiSelect true "Which pets?" header "Pets", options Cat (independent), Dog
+  (loyal), Fish (quiet). Nothing else.
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Colour  ☐ Pets  ✔ Submit  →
+
+Review your answers
+
+⚠ You have not answered all questions
+
+ ● Which colour?
+   → Blue
+
+Ready to submit your answers?
+
+❯ 1. Submit answers
+  2. Cancel

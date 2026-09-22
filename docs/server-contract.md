@@ -602,6 +602,52 @@ all draw the same numbered list. The fields:
 
 Answer with `POST /session/answer`.
 
+**Question form** (22 Sep 2026). Claude Code's AskUserQuestion on a pane is
+read by `agent_media_server/asks.py`, and its approval carries the fields
+above **and**:
+
+```json
+{"kind": "question",
+ "multiSelect": true,
+ "free_text": true,
+ "questions": [{"question": "Which colour?", "header": "Colour", "multiSelect": false,
+                "free_text": true,
+                "options": [{"n": 1, "label": "Red", "description": "warm",
+                             "detail": "warm", "checked": false}, …]},
+               {"question": "Which pets?", "header": "Pets", "multiSelect": true, …}],
+ "current": 1, "review": false,
+ "tool_use_id": "toolu_01…", "source": "hook"}
+```
+
+- `questions` is every question asked, in order, options numbered from 1.
+  Claude Code writes the tool call to its transcript only once it is
+  answered, so the words come from the PreToolUse hook, which keeps the tool
+  input (`agent_media_core/pending_asks.py`, `<state_dir>/asks/<session>.json`):
+  `source: "hook"` when that copy's question is the one on screen, which is
+  checked every read. Otherwise (`source: "screen"`) only the tab on screen is
+  known: one question, and `partial: true` when the dialog has other tabs.
+- `checked` is what the screen shows ticked, for the question on screen
+  (`current`); `review` is true on the "Review your answers" page.
+- `free_text`: every question offers an "Other" row ("Type something").
+- `key` hashes the tool call (`source: "hook"`), so it holds across tabs and
+  ticks; from the screen alone it hashes the question and its labels.
+- The v0 `options` are this tab's rows as numbered on screen, the free-text
+  and "Chat about this" rows included, with `checked`.
+
+What the dialog is, measured on Claude Code 2.1.278 (captures in
+`packages/server/tests/fixtures/asks/`): a tab row (`←  ☐ Colour  ☒ Pets
+✔ Submit  →`; one single-select question has just ` ☐ Size`), the question,
+the options — `N. [ ] label` / `N. [✔] label` with the description under it
+for multi-select, `N. label ✔` for the chosen single-select one — then the
+free-text row, a `Submit` row (multi-select), a rule, `N. Chat about this`
+and the footer; after the last tab, "Review your answers" with `1. Submit
+answers` / `2. Cancel`. The keys: a digit picks a single-select option and
+moves to the next tab (one question: sends it); on a multi-select it toggles
+that box without moving; the free-text row's digit moves the cursor there,
+where typing fills and ticks it and digits are text; Tab goes to the next
+tab (from the free-text row, to the Submit row, where Enter moves on); Left
+goes back; `1` on the review page sends.
+
 **Headless form** (22 Sep 2026, §17). A headless session's approval is not
 read off a screen: it is the agent's own pending permission request
 (`control_request can_use_tool`), kept by `media-sessiond` until answered —
@@ -627,8 +673,10 @@ fields above, so a client that answers by number keeps working:
 
 - `id`: the CLI's request id — what the structured answer echoes.
 - `kind`: `"tool"`, or `"question"` for AskUserQuestion, which also carries
-  `questions`: `[{"question", "header", "options": [{"label",
-  "description"}], "multiSelect"}]`, as asked.
+  `questions`: `[{"question", "header", "options": [{"n", "label",
+  "description", "detail", "checked": false}], "multiSelect", "free_text":
+  true}]`, as asked, and `multiSelect` / `free_text` — the pane's question
+  form, so one card serves both.
 - `input_summary`: the same one-line summary a message's tool part has
   (§6.2.2). `input`: the request's input, strings cut at 300 chars.
 - `suggestions`: the request's `permission_suggestions`, verbatim (spike:
@@ -1074,6 +1122,43 @@ and Enter — never text — and only while that same dialog is on screen.
   and let the person choose again.
 - 504 `"the question is still on screen"` — the keys went nowhere.
 
+**A question** (22 Sep 2026: AskUserQuestion — multi-select, free text,
+several questions) takes structured answers, the same shape for a pane and
+a headless session:
+
+```json
+{"session": "…", "key": "<approval.key>",
+ "answers": [{"question_index": 0, "selected": [2]},
+             {"question_index": 1, "selected": [1, 3], "other_text": "a newt"}]}
+```
+
+`selected` holds option numbers (`questions[i].options[].n`), `other_text`
+the "Other" words; every question needs an answer, and a single-select one
+exactly one (an option or words). The headless dict form (below, by
+question text and label) is accepted on a pane too. A pane is given it key
+by key (`asks.drive`), the screen read back after every step: it goes back to
+the first tab, picks or ticks (and unticks what is ticked and not wanted),
+types words only once the cursor is on the free-text row, moves tab by tab,
+and sends from the review page — then waits, as the numbered form does, for
+the dialog to go.
+
+- 200 `{"ok": true, "session", "pane", "answers": {"Which colour?": "Blue",
+  "Which pets?": "Cat, Fish, a newt"}, "waiting", "approval"}` — `answers` is
+  what the agent is handed.
+- 400 `"no answer for …"`, `"no option n in …"`, `"… takes one answer"`,
+  `"no such question …"` (with `approval`) — nothing was pressed.
+- 409 `"the question has changed"` (a `key` no longer on screen) with the
+  current `approval`; 409 `"only part of this question is on screen: answer
+  it at the desk"` for a pane question with `partial: true` (several tabs and
+  no hook copy, or a list scrolled off a short pane).
+- 504 `"the question did not take the answer: <step>"` with the `approval`
+  now on screen — a step the screen did not follow; whatever keys went in
+  stay in (the dialog is not cancelled).
+- A number (`choice`) on a question: one single-select question, as before
+  (the digit, then Enter); one multi-select question, as `selected: [n]`;
+  several questions, 400 `"this question takes answers, not a number"`.
+  `answers` on a permission prompt: 400.
+
 **Headless sessions** (22 Sep 2026, §17) take the same numbered form (1 =
 Allow, 2 = Deny; a single single-select question by its option's number),
 and a structured one:
@@ -1101,8 +1186,10 @@ and a structured one:
   died with its process — `"that request was lost when the session host
   restarted; send a message to carry on"` (§17). 503 `code: "down"` when
   `media-sessiond` is not running.
-- A pane session refuses the structured form: 400 `"this session answers by
-  number (choice and key)"`.
+- The list form above works here too, with `key` and no `request_id` (the
+  request pending now).
+- A pane session refuses allow/deny by `request_id`: 400 `"this session
+  answers by number (choice and key)"`. Its questions take `answers` (above).
 
 Clients: S (`ConversationLog.vue`).
 
@@ -1452,8 +1539,15 @@ Pinned by `packages/server/tests/test_devices.py`.
      terminal only. Opened in a browser it is **refused** (it reaches
      `GET /pair`, the amux page, which does not know device codes).
 
-   `--host` and `--port` set the base (default: this machine's hostname and
-   `MEDIA_VISUAL_PORT`/8781), as they do for the amux link.
+   `--host` and `--port` set the base, as they do for the amux link.
+   Default host (22 Sep 2026): `MEDIA_VISUAL_PAIR_HOST`, else this
+   machine's **tailnet IP** (`tailscale ip -4`), else its hostname — a bare
+   MagicDNS name (`red5`) is not reachable from Sasonica Next, whose
+   network security config allows cleartext only to tailnet addresses
+   ("Could not reach http://red5:8781"). Default port `MEDIA_VISUAL_PORT`/8781.
+   The app link is printed first, on a line of its own, then the QR; the
+   http form last, marked as reference. (The app's pairing screen also
+   takes the http form: `server` and `c` from it.)
 2. The app redeems it:
 
    `POST /pair {"code": "…", "device": "Pixel 8a"}` — no auth.
@@ -1996,9 +2090,17 @@ Two things look alike and are answered the same way:
   attach the options to that message's tool-call part. Otherwise render it
   as answered and read-only.
 
-AskUserQuestion's multi-select and free-text "Other" cannot be answered by
-number. For those, the tool UI offers "answer at the desk" (`/focus`) —
-that is the v0 behaviour, and a gap (§16) for pane sessions.
+An approval with `kind: "question"` (a pane's AskUserQuestion, or a
+headless one) is a card built from `questions`: tap an option for a
+single-select, checkboxes (starting from `checked`) and a Send for a
+multi-select, an "Other" field per question, one Send for several
+questions; answer with `POST /session/answer {session, key, answers:
+[{question_index, selected, other_text?}]}` (plus `request_id` for a
+headless one, optional). On 409, re-render from the returned `approval`;
+`partial: true` still means "answer at the desk" (`/focus`). A pane's
+pending ask has no `ask` part yet (it reaches the transcript when answered),
+so the card stands at the end of the thread; a headless one attaches to its
+running `ask` part by `tool_use_id`.
 
 A **headless** session's approval (§6.2, headless form) is structured: render
 `kind: "tool"` as the tool call (`tool`, `input_summary`, `input`) with
@@ -2064,7 +2166,7 @@ request_id: approval.id, decision, answers?, message?}`. No desk needed.
 | Session memory on the phone | **built 22 Sep 2026**: `mem_mb` per `/sessions/state` row and its `host` block (§6.1). Left: the app side |
 | Delete a thread | none, and deliberately not proposed: transcripts are the harness's. Needs a decision |
 | Attachments (a photo, a file) | none. `/reply` is text only. Needs an upload route and a way to hand a file path to the harness |
-| Answer a multi-select or free-text ask from the phone | **headless sessions: built 22 Sep 2026** (§6.4, §17 — structured `answers`). Pane sessions: none; `/session/answer` presses one number |
+| Answer a multi-select or free-text ask from the phone | **built 22 Sep 2026** for both: headless (§17) and panes (§6.2 question form, §6.4 — `answers` given key by key, the screen checked after each). Left: a list scrolled off a short pane, and several tabs when the hook did not keep the question, still go to the desk |
 | Edit / regenerate | not possible with the harnesses; `branch` is the substitute |
 | A thread-list stream | deliberately deferred (§11) |
 | Offline reading and downloads | none. ABS provided them for audio; the new app needs its own cache of the log (and of speech clips, if listening offline matters) |

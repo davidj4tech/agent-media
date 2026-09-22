@@ -133,14 +133,21 @@ def approval_of(entry: dict) -> dict:
         for q in inp.get("questions") or []:
             if not isinstance(q, dict):
                 continue
+            # Numbered, with `detail` and `checked`, the way a pane's question
+            # is (asks.approval), so one card and one answer shape serve both.
             qs.append({"question": str(q.get("question") or ""),
                        "header": str(q.get("header") or ""),
-                       "options": [{"label": str(o.get("label") or ""),
-                                    "description": str(o.get("description") or "")}
-                                   for o in q.get("options") or [] if isinstance(o, dict)],
-                       "multiSelect": bool(q.get("multiSelect"))})
+                       "options": [{"n": j + 1, "label": str(o.get("label") or ""),
+                                    "description": str(o.get("description") or ""),
+                                    "detail": str(o.get("description") or ""),
+                                    "checked": False}
+                                   for j, o in enumerate(o for o in q.get("options") or []
+                                                         if isinstance(o, dict))],
+                       "multiSelect": bool(q.get("multiSelect")),
+                       "free_text": True})
         out.update(kind="question", questions=qs,
-                   question=qs[0]["question"] if qs else "")
+                   question=qs[0]["question"] if qs else "",
+                   multiSelect=any(q["multiSelect"] for q in qs), free_text=True)
         one = len(qs) == 1 and not qs[0]["multiSelect"]
         # Numbered only when a number can answer it: one single-select
         # question. Several questions, multi-select or free text need the
@@ -346,6 +353,11 @@ class HeadlessDriver:
                                "approval": current}
             entry = pending[0]
             rid = current["id"]
+            if request.get("answers") is not None:
+                # Structured answers fingerprinted by `key`, the shape a pane's
+                # question takes too: the request is the one pending.
+                decision = str(request.get("decision") or "").strip().lower() or "allow"
+                return self._answer_entry(session, entry, rid, decision, request, current)
             choice = int(request.get("choice") or 0)
             if choice not in {o["n"] for o in current["options"]}:
                 return False, {"error": f"no option {choice}", "status": 400,
@@ -356,6 +368,11 @@ class HeadlessDriver:
                 decision = "allow"
                 label = next(o["label"] for o in current["options"] if o["n"] == choice)
                 request = {**request, "answers": {current["questions"][0]["question"]: label}}
+        return self._answer_entry(session, entry, rid, decision, request, current)
+
+    def _answer_entry(self, session, entry, rid, decision, request, current):
+        from .. import asks
+
         appr = approval_of(entry)
         if decision not in ("allow", "deny"):
             return False, {"error": "decision must be allow or deny", "status": 400,
@@ -366,7 +383,16 @@ class HeadlessDriver:
             response = {"behavior": "deny",
                         "message": str(request.get("message") or "").strip() or DENY_MESSAGE}
         elif appr["kind"] == "question":
-            got = _answers_for(appr["questions"], request.get("answers"))
+            answers = request.get("answers")
+            if isinstance(answers, list):
+                # `[{question_index, selected: [n], other_text?}]` (§6.4), as
+                # the labels the agent is handed.
+                try:
+                    answers = asks.as_labels(appr["questions"],
+                                             asks.normalise(appr["questions"], answers))
+                except asks.Refused as e:
+                    return False, {"error": str(e), "status": 400, "approval": appr}
+            got = _answers_for(appr["questions"], answers)
             if isinstance(got, str):
                 return False, {"error": got, "status": 400, "approval": appr}
             response = {"behavior": "allow",

@@ -1,0 +1,30 @@
+
+❯ Use AskUserQuestion now: ONE single-select question "Pick a size?" header "Size", options Small (little), Large
+  (big). Nothing else.
+
+● User answered Claude's questions:
+  ⎿  · Pick a size? → medium
+
+● You picked medium.
+
+✻ Cogitated for 2s · done 2:13 PM
+
+❯ Use AskUserQuestion now: ONE question, multiSelect true, "Which fruits do you like?" header "Fruit", options Apple
+  (crisp), Pear (soft), Plum (tart). Nothing else.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☐ Fruit  ✔ Submit  →
+
+Which fruits do you like?
+
+❯ 1. [ ] Apple
+  crisp
+  2. [ ] Pear
+  soft
+  3. [ ] Plum
+  tart
+  4. [ ] Type something
+     Submit
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel

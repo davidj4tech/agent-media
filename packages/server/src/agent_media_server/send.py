@@ -116,30 +116,46 @@ def answer(session: str, choice: int, key: str, bearer: str, *,
     from . import driver
 
     request: dict = {"choice": choice, "key": key}
-    if request_id or decision:
+    if request_id or decision or answers is not None:
         request = {"request_id": request_id, "decision": decision, "answers": answers,
-                   "message": message}
+                   "message": message, "key": key}
     return driver.for_session(session).answer(session, request)
 
 
-def _answer_pane(session: str, choice: int, key: str) -> tuple[bool, dict]:
-    """The pane driver's answer: a number and Enter, never text.
+def _answer_pane(session: str, choice: int, key: str, answers=None) -> tuple[bool, dict]:
+    """The pane driver's answer: a number and Enter — or, for a question
+    (AskUserQuestion), the structured `answers` given key by key.
 
     The digit moves the selection and Enter takes it (measured on all three).
     Refused unless that very dialog is still up — same options, same words —
     so this cannot be turned into a way of pressing keys into whatever a pane
-    has moved on to.
+    has moved on to. A question's words are typed only onto its free-text
+    row, and only once the screen shows the cursor there (asks.drive).
     """
     pane = sessions.live_sessions().get(session, "")
     if not pane or not panes.alive(pane):
         return False, {"error": f"session {session[:8]} is not live", "status": 404}
     agent = sessions._agent_of_pane(pane)
-    dialog = sessions.approval_for(pane, agent)
+    dialog = sessions.approval_for(pane, agent, session)
     if not dialog:
         return False, {"error": "that session is not waiting on a question", "status": 409}
     if key and key != dialog["key"]:
         return False, {"error": "the question has changed", "status": 409,
                        "approval": dialog}
+    if dialog.get("kind") == "question" and not dialog.get("review"):
+        qs = dialog.get("questions") or []
+        if answers is None and (dialog.get("multiSelect") or len(qs) > 1):
+            # A number cannot answer several questions, and on a multi-select
+            # the digit only ticks a box: give it as the one box ticked.
+            if len(qs) != 1 or choice not in {o["n"] for o in qs[0]["options"]}:
+                return False, {"error": "this question takes answers, not a number",
+                               "status": 400, "approval": dialog}
+            answers = [{"question_index": 0, "selected": [choice]}]
+        if answers is not None:
+            return _answer_question(session, pane, agent, dialog, answers)
+    elif answers is not None:
+        return False, {"error": "this is not a question: answer it by number (choice and key)",
+                       "status": 400, "approval": dialog}
     if choice not in {o["n"] for o in dialog["options"]}:
         return False, {"error": f"no option {choice}", "status": 400, "approval": dialog}
     if panes.is_herdr(pane):
@@ -155,13 +171,50 @@ def _answer_pane(session: str, choice: int, key: str) -> tuple[bool, dict]:
     deadline = time.monotonic() + 3.0
     while time.monotonic() < deadline:
         time.sleep(0.4)
-        now = sessions.approval_for(pane, agent)
+        now = sessions.approval_for(pane, agent, session)
         if not now or now["key"] != dialog["key"]:
             return True, {"session": session, "pane": pane, "answered": choice,
                           "label": next(o["label"] for o in dialog["options"] if o["n"] == choice),
                           "waiting": bool(now), "approval": now}
     return False, {"error": "the question is still on screen", "status": 504,
                    "session": session, "pane": pane, "approval": dialog}
+
+
+def _answer_question(session: str, pane: str, agent: str, dialog: dict,
+                     answers) -> tuple[bool, dict]:
+    """Give an AskUserQuestion its structured answers (asks.drive), then check
+    the dialog has gone, as the numbered path does."""
+    from . import asks
+
+    qs = dialog.get("questions") or []
+    if dialog.get("partial") or any(not q["question"] or not q["options"] for q in qs):
+        # Without the hook's copy only the tab on screen is known, and a
+        # scrolled list hides some of its options.
+        return False, {"error": "only part of this question is on screen: answer it at the desk",
+                       "status": 409, "approval": dialog}
+    try:
+        want = asks.normalise(qs, answers)
+    except asks.Refused as e:
+        return False, {"error": str(e), "status": e.status, "approval": dialog}
+    tabbed = not (len(qs) == 1 and not qs[0]["multiSelect"])
+    try:
+        asks.drive(asks.Screen(pane, sessions._capture_pane), qs, want, tabbed=tabbed)
+    except asks.Stuck as e:
+        now = sessions.approval_for(pane, agent, session)
+        log.warning("answer: %s stuck on %s", session[:8], e)
+        return False, {"error": f"the question did not take the answer: {e}", "status": 504,
+                       "session": session, "pane": pane, "approval": now}
+    deadline = time.monotonic() + 3.0
+    while True:
+        now = sessions.approval_for(pane, agent, session)
+        if not now or now["key"] != dialog["key"] or now.get("kind") != "question":
+            return True, {"session": session, "pane": pane,
+                          "answers": asks.as_text(qs, want),
+                          "waiting": bool(now), "approval": now}
+        if time.monotonic() >= deadline:
+            return False, {"error": "the question is still on screen", "status": 504,
+                           "session": session, "pane": pane, "approval": now}
+        time.sleep(0.3)
 
 
 # --- reviving a session that has ended -----------------------------------------

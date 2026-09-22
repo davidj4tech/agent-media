@@ -1,0 +1,30 @@
+  speech including queued
+  replies), "Every harness
+  sessions" (One thread
+  list fed by claude agents
+  json), "Codex and pi"
+  (short). Nothing else.
+────────────────────────────
+←  ☒ Next  ✔ Submit  →
+
+Which of these long tasks
+should I start next today?
+
+❯ 1. [✔ Speech and
+     ]  multi-line fixes
+  Stop silences only that
+  thread speech including
+  queued replies
+  2. [  Every harness
+     ]  sessions
+  One thread list fed by
+  claude agents json
+  3. [ ] Codex and pi
+  short
+  4. [ ] Type something
+     Submit
+────────────────────────────
+  5. Chat about this
+
+Enter to select · ↑/↓ to
+navigate · Esc to cancel

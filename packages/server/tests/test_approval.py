@@ -88,7 +88,7 @@ def test_answering_sends_a_number_and_enter(monkeypatch, _live):
 
     monkeypatch.setattr(panes, "_tmux",
                         lambda argv, timeout=10: _live.append(argv[-1]) or answered.__setitem__("n", 1) or "")
-    monkeypatch.setattr(sessions, "approval_for", lambda pane, agent="claude": gone(pane, agent)
+    monkeypatch.setattr(sessions, "approval_for", lambda pane, agent="claude", session="": gone(pane, agent)
                         if answered["n"] else {"key": key, "agent": agent,
                                                "question": "q", "options": [{"n": 1, "label": "Yes"}]})
     ok, detail = send.answer(SID, 1, key, "tok")

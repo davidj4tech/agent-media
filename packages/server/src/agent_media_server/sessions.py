@@ -461,18 +461,29 @@ def parse_dialog(cap: str) -> dict | None:
                         for n, label, detail in options]}
 
 
-def approval_for(pane: str, agent: str = "claude") -> dict | None:
+def approval_for(pane: str, agent: str = "claude", session: str = "") -> dict | None:
     """What `pane` is waiting to be told, or None if it is not waiting.
 
     `key` fingerprints the dialog: an answer carries it back, so a tap that
     arrives after the screen has moved on answers nothing (the question a
     listener read is the question they answered).
+
+    Claude Code's AskUserQuestion — multi-select, free text, several
+    questions, the review page — is read by `asks` and carries the question
+    fields as well (`kind: "question"`); `session` lets it use the question
+    the PreToolUse hook kept, which holds every tab's words.
     """
     if not pane:
         return None
     cap = panes.strip_ansi(_capture_pane(pane))
     if panes.classify(cap, agent) != "approval":
         return None
+    if agent == "claude":
+        from . import asks
+
+        q = asks.approval(cap, session, agent)
+        if q is not None:
+            return q
     dialog = parse_dialog(cap)
     if not dialog or not dialog["options"]:
         return None

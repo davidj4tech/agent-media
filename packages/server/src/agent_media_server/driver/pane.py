@@ -44,9 +44,15 @@ class PaneDriver:
     def answer(self, session, request):
         from .. import send
 
+        if request.get("answers") is not None:
+            # A question's structured answers: given key by key, checked on
+            # the screen as they go (asks.drive). No request id: a pane's
+            # question is fingerprinted by its `key`.
+            return send._answer_pane(session, 0, str(request.get("key") or ""),
+                                     answers=request["answers"])
         if "request_id" in request:
-            # The structured form is a headless session's; a pane's dialog is
-            # read off a screen and answered by its number.
+            # Allow/deny by request id is a headless session's; a pane's
+            # permission prompt is read off a screen and answered by number.
             return False, {"error": "this session answers by number (choice and key)",
                            "status": 400, "approval": self.approval(session)}
         return send._answer_pane(session, int(request.get("choice") or 0),
@@ -70,7 +76,7 @@ class PaneDriver:
         from .. import sessions
 
         pane = sessions.live_sessions().get(session, "")
-        return sessions.approval_for(pane, sessions._agent_of_pane(pane)) if pane else None
+        return sessions.approval_for(pane, sessions._agent_of_pane(pane), session) if pane else None
 
     def interrupt(self, session):
         """Escape into a working pane, then watch it stop. Never on a dialog."""

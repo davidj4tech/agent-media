@@ -398,7 +398,7 @@ def test_session_close_when_not_live(server, shelf, signed_in):
 
 
 def test_session_answer_when_nothing_is_asked_is_409(server, shelf, signed_in, monkeypatch, typed):
-    monkeypatch.setattr(sessions, "approval_for", lambda pane, agent="claude": None)
+    monkeypatch.setattr(sessions, "approval_for", lambda pane, agent="claude", session="": None)
     res, obj = call(server, "POST", "/session/answer",
                     {"session": SID2, "choice": 1, "key": "abc"}, AUTH)
     assert res.status == 409

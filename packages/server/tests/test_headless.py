@@ -280,6 +280,29 @@ def test_a_question_is_answered_with_multi_select_and_free_text(host):
     wait_for(lambda: last_text(host, sid) == "answers: apple, pear; Something else entirely")
 
 
+def test_a_question_takes_the_answer_shape_a_pane_takes(host):
+    # The same `[{question_index, selected, other_text}]` and `key` a pane's
+    # question is answered with (asks.py), so the phone has one card.
+    sid = start(host, "ask")
+    wait_for(lambda: state(host, sid) == "approval")
+    appr = driver.headless_driver().approval(sid)
+    assert appr["multiSelect"] is True and appr["free_text"] is True
+    pear = appr["questions"][0]["options"][1]
+    assert (pear["n"], pear["label"], pear["checked"]) == (2, "pear", False)
+    ok, d = driver.headless_driver().answer(sid, {"key": appr["key"], "answers": [
+        {"question_index": 0, "selected": [9]}, {"question_index": 1, "other_text": "Sam"}]})
+    assert not ok and d["status"] == 400 and "no option 9" in d["error"]
+    ok, d = driver.headless_driver().answer(sid, {"key": "stale0000000", "answers": []})
+    assert not ok and d["status"] == 409
+    ok, d = driver.headless_driver().answer(sid, {"key": appr["key"], "answers": [
+        {"question_index": 0, "selected": [1, 3]},
+        {"question_index": 1, "selected": [], "other_text": "Sam"}]})
+    assert ok and d["decision"] == "allow"
+    assert d["answers"] == {"Which fruits do you like?": "apple, fig",
+                            "What should I call you?": "Sam"}
+    wait_for(lambda: last_text(host, sid) == "answers: apple, fig; Sam")
+
+
 # --- parking and resuming -----------------------------------------------------------
 
 def test_an_idle_session_is_parked_and_resumed_on_the_next_message(host, monkeypatch):
@@ -596,7 +619,7 @@ def test_a_pane_session_refuses_the_structured_answer(app_host, server, signed_i
 
     pane_sid = "0f1e2d3c-4b5a-4968-8776-a5b4c3d2e1f0"
     monkeypatch.setattr(sessions, "live_sessions", lambda: {pane_sid: "%42"})
-    monkeypatch.setattr(sessions, "approval_for", lambda p, a="claude": None)
+    monkeypatch.setattr(sessions, "approval_for", lambda p, a="claude", s="": None)
     monkeypatch.setattr(sessions, "_agent_of_pane", lambda p: "claude")
     monkeypatch.setattr(panes, "alive", lambda p: True)
     st, body = req(server, "POST", "/session/answer",

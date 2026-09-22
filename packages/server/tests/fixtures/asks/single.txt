@@ -1,0 +1,30 @@
+  ⎿  · Which fruits do you like? (Apple / Pear / Plum)
+
+✻ Cooked for 1s · done 2:14 PM
+
+❯ Use AskUserQuestion now with TWO questions in one call: Q1 single-select "Which colour?" header "Colour", options Red
+  (warm), Blue (cool), Green (calm). Q2 multiSelect true "Which pets?" header "Pets", options Cat (independent), Dog
+  (loyal), Fish (quiet). Nothing else.
+
+● User declined to answer questions
+  ⎿  · Which colour? (Red / Blue / Green)
+     · Which pets? (Cat / Dog / Fish)
+
+✻ Sautéed for 1s · done 2:14 PM
+
+❯ Use AskUserQuestion now: ONE single-select question "Pick a size?" header "Size", options Small (little), Large
+  (big). Nothing else.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ☐ Size
+
+Pick a size?
+
+❯ 1. Small
+     little
+  2. Large
+     big
+  3. Type something.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel

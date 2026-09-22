@@ -673,6 +673,26 @@ def _emit_ask(ask: str, payload: dict, lead: str = "", structure: list | None = 
     return 0
 
 
+def _keep_pending_ask(payload: dict) -> None:
+    """Keep the question as data for the phone (agent_media_core.pending_asks).
+
+    The transcript gets the tool call only once it is answered, so this is
+    the one place the whole question — every tab, every option, which are
+    multi-select — exists while it is on screen. Before the speech below,
+    and whatever it decides: a question not read aloud still wants answering.
+    """
+    session = str(payload.get("session_id") or "")
+    if not session:
+        return
+    try:
+        from agent_media_core import pending_asks
+
+        pending_asks.record(session, str(payload.get("tool_use_id") or ""),
+                            payload.get("tool_input") or {})
+    except Exception as e:  # noqa: BLE001 — the phone falls back to the screen
+        log.info("hook: could not keep the pending question (%s)", e)
+
+
 def _handle_pretooluse(payload: dict) -> int:
     """PreToolUse path — the *real* AskUserQuestion trigger.
 
@@ -685,6 +705,7 @@ def _handle_pretooluse(payload: dict) -> int:
     """
     if payload.get("tool_name") != "AskUserQuestion":
         return 0
+    _keep_pending_ask(payload)
     ask = strip_markdown(_format_ask_question(payload.get("tool_input") or {}).strip())
     if not ask:
         return 0
@@ -1094,6 +1115,12 @@ def _handle_posttooluse(payload: dict) -> int:
         return 0
     text = answers_from_response(payload.get("tool_response"))
     session = payload.get("session_id") or ""
+    try:
+        from agent_media_core import pending_asks
+
+        pending_asks.clear(session, str(payload.get("tool_use_id") or ""))
+    except Exception as e:  # noqa: BLE001 — a stale file is never used anyway
+        log.info("hook: could not clear the pending question (%s)", e)
     if not text or not session:
         return 0
     return _record_listener_text(session, text)
