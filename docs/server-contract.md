@@ -387,7 +387,7 @@ What each live session is doing.
 ```json
 {"ok": true,
  "sessions": [{"session": "0f1e…", "tail": "p-agent-media/Sasonica web", "state": "working",
-               "mem_mb": 364}],
+               "mem_mb": 364, "title": "Sasonica web"}],
  "host": {"mem_total_mb": 7758, "mem_available_mb": 1568, "sessions_mem_mb": 3009}}
 ```
 
@@ -396,6 +396,10 @@ What each live session is doing.
   A headless row (§17) has it from the agent's own events instead, and
   carries `"driver": "headless"` (a fifth key only it has); `mem_mb` is its
   process tree, measured the same way.
+- `title`: the session's name as `/targets` gives it (a pane's own title, or
+  its first message while Claude still calls it "Claude Code"; a headless
+  row's §17 title). So a notice can name a chat started since the app last
+  fetched `/targets`; before this it fell back to the id's first 8 characters.
 - `tail`: the item folder's `<project>/<title>` — **ABS-specific**, there so
   the shelf can match items without asking for each. `""` when the session
   has no shelf entry yet.

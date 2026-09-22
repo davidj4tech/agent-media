@@ -849,11 +849,16 @@ def _live_states() -> list[dict]:
     # its descendants, in one pass over /proc for every session (procmem).
     pids = _PIDS
     mem = procmem.tree_mem_mb({sid: pids.get(sid) for sid in live})
+    # The title too, so a notice can name a session the app's last /targets
+    # never saw (a chat started since): one tmux call for every pane.
+    titles = _pane_titles() if live else {}
     for sid, pane in live.items():
         # An unrecognised screen has always been listed as waiting here.
         state = activity_of(sid, pane)["state"] or "waiting"
+        title = (_display_title(sid, titles[pane]) if pane in titles
+                 else _live_title(sid))
         out.append({"session": sid, "tail": tails.get(sid, ""),
-                    "state": state, "mem_mb": mem.get(sid)})
+                    "state": state, "mem_mb": mem.get(sid), "title": title})
     # Headless sessions sessiond is running (MEDIA_HEADLESS): the state is
     # sessiond's, from the agent's own events, and the memory is its process
     # tree the same way. Marked `driver: "headless"`; pane rows are unchanged.
@@ -869,7 +874,7 @@ def _live_states() -> list[dict]:
             sid = str(v["session"])
             out.append({"session": sid, "tail": tails.get(sid, ""),
                         "state": contract_state(v), "mem_mb": hmem.get(sid),
-                        "driver": "headless"})
+                        "title": _headless_title(sid, v), "driver": "headless"})
     return out
 
 
