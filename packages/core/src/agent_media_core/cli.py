@@ -4345,8 +4345,15 @@ def cmd_say(a) -> int:
         # supersede implies urgent: barge in AND drop the same-session messages
         # this one interrupts/precedes, rather than letting them resume.
         metadata["supersede"] = True
+    # Said by an agent inside its own turn (a lead-in before a question, a
+    # note while it works): the same voice its replies are spoken in, because
+    # it is the same speaker. A shell outside an agent has no workspace in
+    # its environment and keeps the default voice.
+    from .intake.hook_claude_code import voice_for_session
+
+    voice = voice_for_session(os.environ.get("MEDIA_SOURCE_WORKSPACE", "").strip())
     submit_event(Event(
-        text=text, source=Source.CLI,
+        text=text, source=Source.CLI, voice=voice,
         priority=Priority.URGENT if urgent else Priority.NORMAL,
         metadata=metadata))
     return 0

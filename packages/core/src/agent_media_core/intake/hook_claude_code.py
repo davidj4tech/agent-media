@@ -151,7 +151,7 @@ def _source_place() -> dict:
     return out
 
 
-def _voice_for_session(sess: str) -> Optional[str]:
+def voice_for_session(sess: str) -> Optional[str]:
     """Pick a TTS voice for the given tmux session name.
 
     Resolution order:
@@ -178,6 +178,11 @@ def _voice_for_session(sess: str) -> Optional[str]:
         return None
     h = int(hashlib.sha1(sess.encode("utf-8")).hexdigest(), 16)
     return pool[h % len(pool)]
+
+
+#: Named without the underscore since `media say` asks too: an agent's own
+#: aside is spoken in the voice of the conversation it belongs to.
+_voice_for_session = voice_for_session
 
 
 def _notif_label(sess: str) -> str:
@@ -665,7 +670,7 @@ def _emit_ask(ask: str, payload: dict, lead: str = "", structure: list | None = 
         and _client_pane_focused()) else Priority.HIGH
     submit_event(Event(text=msg, source=Source.CLAUDE_CODE,
                        priority=priority,
-                       voice=_voice_for_session(sess),
+                       voice=voice_for_session(sess),
                        metadata={"kind": "notif", "ask": structure or True,
                                  "session": payload.get("session_id") or "",
                                  **_source_place()}),
@@ -793,7 +798,7 @@ def _handle_notification(payload: dict) -> int:
 
     submit_event(Event(text=msg, source=Source.CLAUDE_CODE,
                        priority=priority,
-                       voice=_voice_for_session(sess),
+                       voice=voice_for_session(sess),
                        metadata={"kind": "notif",
                                  "session": payload.get("session_id") or "",
                                  **_source_place()}))
@@ -1058,7 +1063,7 @@ def _handle_stop(payload: dict) -> int:
     _play_detached(
         Event(text=text, source=Source.CLAUDE_CODE,
               priority=Priority.NORMAL,
-              voice=_voice_for_session(_session_name()),
+              voice=voice_for_session(_session_name()),
               metadata=metadata))
     return 0
 

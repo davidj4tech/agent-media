@@ -2495,6 +2495,25 @@ def _tmux_window_for_pane(pane: str) -> str:
     return label
 
 
+def _source_session(metadata) -> str:
+    """Which conversation this speech belongs to.
+
+    The hooks say so outright — they are handed the id. A `media say` run by
+    an agent inside its own tool call does not, and used to file itself as an
+    announcement from nobody: outside the conversation's turns, in the wrong
+    voice, and with nothing to replay. Its environment knows, though: Claude
+    Code exports `CLAUDE_CODE_SESSION_ID`, and a headless session is started
+    with `MEDIA_SESSIOND_SESSION`. `MEDIA_SOURCE_SESSION` overrides both, for
+    a caller that speaks on another conversation's behalf.
+
+    A shell that is not inside an agent has none of these and is unchanged.
+    """
+    md = metadata or {}
+    return str(md.get("session") or os.environ.get("MEDIA_SOURCE_SESSION")
+               or os.environ.get("CLAUDE_CODE_SESSION_ID")
+               or os.environ.get("MEDIA_SESSIOND_SESSION") or "").strip()
+
+
 def _source_place(metadata, pane: str) -> tuple[str, str]:
     """Where a clip was said — ``(tmux session, window name)`` — preferring what
     the caller already knew over what tmux can still be asked.
@@ -2516,7 +2535,11 @@ def _source_place(metadata, pane: str) -> tuple[str, str]:
     md = metadata or {}
     tmux = str(md.get("tmux") or "").strip()
     window = str(md.get("window") or "").strip()
-    return (tmux or _tmux_session_for_pane(pane),
+    # And a paneless agent (headless, or a tool call with no tmux) is told its
+    # workspace the same way the hooks are, so its speech gets the voice and
+    # the mute of the conversation it belongs to rather than the default one.
+    return (tmux or _tmux_session_for_pane(pane)
+            or os.environ.get("MEDIA_SOURCE_WORKSPACE", "").strip(),
             window or _tmux_window_for_pane(pane))
 
 
@@ -3071,7 +3094,7 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
 
     timeout = float(os.environ.get("MEDIA_REMOTE_SAY_TIMEOUT", "180"))
     seq = time.time()
-    session = (event.metadata or {}).get("session") or ""
+    session = _source_session(event.metadata)
     lock = _SpeechPlaybackLock(speaker=session)
     lock.acquire(event.priority, session=session,
                  supersede=bool((event.metadata or {}).get("supersede")),
@@ -3369,7 +3392,7 @@ def _submit_event(event: Event,
     # The Claude Code session id (from the hook payload), persisted so the
     # popup can resume the conversation when its source pane has since been
     # closed — `goto-pane` falls back to `claude --resume <session>`.
-    source_session = (event.metadata or {}).get("session") or ""
+    source_session = _source_session(event.metadata)
     source_ask = bool((event.metadata or {}).get("ask"))
     order_session = _order_session(source_pane, source_session)
     # Claim this reply's place in its session's speech queue *now*, before the
@@ -4392,7 +4415,7 @@ def submit_stream(sentences,
     started_at = time.time()
 
     source_pane = (event.metadata or {}).get("pane") or os.environ.get("TMUX_PANE", "")
-    source_session = (event.metadata or {}).get("session") or ""
+    source_session = _source_session(event.metadata)
     source_ask = bool((event.metadata or {}).get("ask"))
     order_session = _order_session(source_pane, source_session)
     source_tmux_session, source_window = _source_place(event.metadata, source_pane)
