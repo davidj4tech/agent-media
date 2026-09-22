@@ -7,7 +7,7 @@ name = "agent-media-visual"
 version = "0.0.1"
 description = "Generated-image canvas alongside spoken replies (SSE web page + pluggable image engines)."
 readme = "README.md"
-license = { text = "MIT" }
+license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
 # Stdlib HTTP only (http.server, urllib); core is used for the shared
 # env-file layering so gateway config comes from ~/.config/agent-media.env.

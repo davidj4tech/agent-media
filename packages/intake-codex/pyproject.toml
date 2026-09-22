@@ -7,7 +7,7 @@ name = "agent-media-intake-codex"
 version = "0.1.0"
 description = "Codex (OpenAI CLI) stdin-pipe intake hook for agent-media."
 readme = "README.md"
-license = { text = "MIT" }
+license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
 dependencies = ["agent-media-core"]
 

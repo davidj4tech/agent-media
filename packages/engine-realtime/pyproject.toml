@@ -7,7 +7,7 @@ name = "agent-media-engine-realtime"
 version = "0.1.0"
 description = "OpenAI Realtime (WebSocket) TTS render engine for agent-media."
 readme = "README.md"
-license = { text = "MIT" }
+license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
 # The WebSocket flow runs in a subprocess interpreter (MEDIA_REALTIME_PYTHON)
 # that provides `websockets`, so this package has no hard runtime dependency.

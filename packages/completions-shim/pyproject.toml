@@ -7,7 +7,7 @@ name = "agent-media-completions-shim"
 version = "0.1.0"
 description = "OpenAI /v1/chat/completions over a live Claude Code session — conversational OWUI Call mode."
 readme = "README.md"
-license = { text = "MIT" }
+license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
 dependencies = ["agent-media-core"]
 # Stdlib HTTP server; talks to the canvas HTTP surface (/input, /agents, /peek).

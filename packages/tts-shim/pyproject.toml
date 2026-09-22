@@ -7,7 +7,7 @@ name = "agent-media-tts-shim"
 version = "0.1.0"
 description = "OpenAI-compatible /v1/audio/speech shim — voices OWUI/SillyTavern through agent-media engines (+ canvas)."
 readme = "README.md"
-license = { text = "MIT" }
+license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
 dependencies = ["agent-media-core"]
 # Stdlib HTTP server (like the canvas). Renders via agent_media_core.render.

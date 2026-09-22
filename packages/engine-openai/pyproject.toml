@@ -7,7 +7,7 @@ name = "agent-media-engine-openai"
 version = "0.1.0"
 description = "OpenAI TTS render engine for agent-media."
 readme = "README.md"
-license = { text = "MIT" }
+license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
 
 # No hard dependency on the `openai` package: the engine shells out to a Python

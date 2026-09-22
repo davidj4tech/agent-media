@@ -7,7 +7,7 @@ name = "agent-media-abs-bridge"
 version = "0.1.0"
 description = "Audiobookshelf integration for agent-media's book channel."
 readme = "README.md"
-license = { text = "MIT" }
+license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
 dependencies = ["agent-media-core"]
 

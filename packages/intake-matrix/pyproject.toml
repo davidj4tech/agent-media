@@ -7,7 +7,7 @@ name = "agent-media-intake-matrix"
 version = "0.1.0"
 description = "Matrix intake adapter for agent-media (chat room -> speech/music/book)."
 readme = "README.md"
-license = { text = "MIT" }
+license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
 dependencies = ["agent-media-core"]
 # Matrix protocol via stdlib urllib — no extra deps.

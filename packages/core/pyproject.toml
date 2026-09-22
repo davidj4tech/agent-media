@@ -6,6 +6,7 @@ build-backend = "hatchling.build"
 name = "agent-media-core"
 version = "0.0.0"
 description = "Core lib for agent-media: intake/route/render/transcribe/capture/sinks/state"
+license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
 dependencies = [
     # 2.x is required: mcp_server.py uses MCPServer, which replaced the FastMCP

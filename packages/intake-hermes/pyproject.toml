@@ -7,7 +7,7 @@ name = "agent-media-intake-hermes"
 version = "0.1.0"
 description = "Hermes Agent shell-hook intake for agent-media: speaks Hermes turn output."
 readme = "README.md"
-license = { text = "MIT" }
+license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
 dependencies = ["agent-media-core"]
 

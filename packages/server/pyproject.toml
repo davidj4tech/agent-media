@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "agent-media-server"
 version = "0.0.1"
 description = "The app's API: sessions, replies, threads and the auth in front of them."
-license = { text = "MIT" }
+license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
 # Stdlib HTTP only, like the canvas it was split out of. `visual` depends on
 # this package, never the other way round (docs/proposals/2026-09-21-server-package.md).

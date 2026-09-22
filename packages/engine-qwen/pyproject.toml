@@ -7,7 +7,7 @@ name = "agent-media-engine-qwen"
 version = "0.1.0"
 description = "Qwen / DashScope TTS render engine for agent-media."
 readme = "README.md"
-license = { text = "MIT" }
+license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
 # Uses only the stdlib (urllib) to call the DashScope HTTP API.
 
