@@ -82,11 +82,12 @@ def test_session_states_name_the_pane_class(monkeypatch, tmp_path):
     monkeypatch.setattr(sessions, "_manifest_dir", lambda: tmp_path)
     monkeypatch.setattr(sessions, "live_sessions", lambda: {SID: "%3"})
     monkeypatch.setattr(sessions, "_capture_pane", lambda pane: "✻ Thinking… (esc to interrupt)")
+    monkeypatch.setattr(sessions, "_pane_titles", lambda: {"%3": "Filters"})
     monkeypatch.setattr(sessions, "_STATES_CACHE", (0.0, []))
     ok, out = sessions.session_states("tok")
     assert ok
     assert out["sessions"] == [{"session": SID, "tail": "agent-media/Filters", "state": "working",
-                                "mem_mb": None}]
+                                "mem_mb": None, "title": "Filters"}]
 
 
 def test_session_states_are_swept_once_per_ttl(monkeypatch):

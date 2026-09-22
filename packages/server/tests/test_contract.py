@@ -212,9 +212,12 @@ def test_sessions_state_shape(server, shelf, signed_in):
     # `mem_mb` per row and the `host` block joined on 22 Sep 2026,
     # deliberately (§6.1). The rig's live session has no process, so its
     # memory is unknown: null, and not counted in the sum.
+    # `title` joined the same day, the name /targets gives the session.
     assert keys(obj) == {"ok", "sessions", "host"}
+    _, targets = call(server, "GET", "/targets", headers=AUTH)
+    title = next(r["title"] for r in targets["sessions"] if r["session"] == SID2)
     assert obj["sessions"] == [{"session": SID2, "tail": "", "state": "working",
-                                "mem_mb": None}]
+                                "mem_mb": None, "title": title}]
     assert keys(obj["host"]) == {"mem_total_mb", "mem_available_mb", "sessions_mem_mb"}
     assert obj["host"]["sessions_mem_mb"] == 0
 

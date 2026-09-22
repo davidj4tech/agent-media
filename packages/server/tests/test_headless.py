@@ -559,7 +559,8 @@ def test_ask_new_starts_a_headless_session_and_it_is_listed(app_host, server, si
     st, body = req(server, "GET", "/sessions/state", headers=AUTH)
     row = next(r for r in body["sessions"] if r["session"] == sid)
     assert row["state"] == "waiting" and row["driver"] == "headless"
-    assert set(row) == {"session", "tail", "state", "mem_mb", "driver"}
+    assert set(row) == {"session", "tail", "state", "mem_mb", "title", "driver"}
+    assert row["title"] == "reply: hi there"   # as /targets names it
 
     st, body = req(server, "GET", f"/conversation?session={sid}", headers=AUTH)
     assert body["live"] is True and body["pane"] is None and body["resumable"] is True
