@@ -67,7 +67,10 @@ its transcript refiled, a live session closed and reopened there; the picker
 is in the thread menu and the list's long press). Naming a thread after its
 first turn (§6.4: a headless one has no `ai-title`, so sessiond runs the
 auto-rename once the opening turn is done — needs a sessiond restart to go
-live).
+live). The "Follow along" pill resyncs the voice as well as the view (it
+drops the skew window and asks `/speech/now` and the log at once, and the
+skew estimate now corrects a bold left *behind* the voice — a skip taken at
+the desk, a media key — not only one running ahead; `chat/test/resync.mjs`).
 
 ## In flight
 
