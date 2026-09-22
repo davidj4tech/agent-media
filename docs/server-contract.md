@@ -25,6 +25,10 @@ The document has two halves:
   held by `media-sessiond` instead of a TUI in a pane. Every shape below
   holds for it; the few additions are marked "headless" where they occur.
   With the flag off nothing in this file changes.
+- **Layouts (§18).** Where an app chat's pane opens is a host setting:
+  `projects-per-tmux-session` (David's desk: amux, `p-<project>` sessions) or
+  `default` (one `sasonica` tmux session, projects are folders). Detected,
+  written at install; no route's shape changes.
 
 Then the binding to assistant-ui's `ExternalStoreRuntime`, the gaps, and an
 appendix of everything that is *not* part of the app contract.
@@ -867,7 +871,7 @@ Request:
 | `parse` | default `true`: read a target from the words ("reply to drones, …", "new codex chat, …") |
 | `dry` | `true`: say where it would go, send nothing |
 | `agent` | `claude` \| `codex` \| `pi` \| `hermes` for a fresh session (default `MEDIA_ASK_AGENT`, else claude) |
-| `project` | open a fresh session in that series' directory |
+| `project` | open a fresh session in that project's directory: a series (`p-agent-media`) on David's desk, a folder basename (`agent-media`) in the default layout (§18) |
 | `cwd` | open a fresh session in that directory — must be a `/targets` place |
 
 Routing, first match wins:
@@ -875,8 +879,9 @@ Routing, first match wins:
 2. A target spoken at the start of the words (`how: "spoken"`).
 3. The player's thread — `player_session`, else `player_item` (`how: "player"`).
 4. `sticky`, if it still exists (`how: "sticky"`).
-5. A fresh session (`how: "default"`), in `cwd`, `project`, or the scratch
-   amux registration (`MEDIA_ASK_SESSION`).
+5. A fresh session (`how: "default"`), in `cwd`, `project`, or the layout's
+   fresh target (§18): the scratch amux registration (`MEDIA_ASK_SESSION`)
+   on David's desk, home in the `sasonica` tmux session otherwise.
 
 Responses (`mode` tells them apart):
 
@@ -2037,6 +2042,43 @@ writes nothing to tmux.
 
 `claude agents --json` lists headless sessions too (seen in the smoke run);
 nothing here reads it.
+
+## 18. Layouts — BUILT 22 Sep 2026
+
+Where a session started or revived from the app opens depends on the host's
+desk, and `agent_media_core/layout.py` is the one place that answers it:
+
+```toml
+# ~/.config/agent-media/config.toml (top level)
+layout = "default"          # or "projects-per-tmux-session"
+```
+
+Precedence: `MEDIA_LAYOUT` → the file → detected. Detection says
+`projects-per-tmux-session` only when `~/.amux/sessions/` exists **and** the
+hook that files panes into project sessions is installed (a SessionStart
+`tmux-organise-panes` entry in Claude Code's settings, or tmux-claude-resume
+in the tmux config); anything else is `default`. `media-setup init` writes
+what it detected (`--layout` to choose), `media-setup layout [--set …]` says
+which is active and why, and `media selfcheck` / `media doctor` report it
+(`layout=`, `layout_why=`).
+
+| Question | `projects-per-tmux-session` (David's) | `default` |
+| --- | --- | --- |
+| Fresh chat, no place (`/ask`) | amux `scratch` registration: its dir and flags, tmux `amux-scratch` | home, tmux `sasonica`, no flags |
+| Fresh chat in a `cwd` place | tmux session = the folder's basename | tmux `sasonica` |
+| What `project` names | a series = the tmux session it ran in (`p-<name>`) | a `/targets` place, by folder basename |
+| Revived / branched window | the tmux session with a client attached (`MEDIA_REPLY_TMUX`) | `sasonica` (`MEDIA_REPLY_TMUX`), client held |
+| Client held on the target | yes, for a named target | yes, always `sasonica` |
+| New window moved by a SessionStart hook | yes (expected, harmless) | no |
+| Headless workspace (filing, voice) | the tmux session a pane would have used | the folder's basename (`sasonica` for home) |
+| Series for a chat filed under `sasonica` | the tmux name | the transcript's folder |
+| Series from an encoded `~/projects/<x>` path | `p-<x>` | `<x>` |
+
+With `MEDIA_HEADLESS` on, `default` needs no tmux at all for app chats; a
+pane is opened only for a harness without a headless driver (Codex, pi,
+Hermes) or a revive of a pane session. `MEDIA_ASK_TMUX` / `MEDIA_ASK_CWD` /
+`MEDIA_ASK_FLAGS` override the fresh target in both layouts. Nothing on the
+wire changes: `tmux` in an `/ask` answer names whichever session was used.
 
 ---
 

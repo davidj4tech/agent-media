@@ -1296,8 +1296,16 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--config", help="write somewhere other than the default")
     sp.add_argument("--force", action="store_true",
                     help="overwrite an existing config")
+    sp.add_argument("--layout", choices=("default", "projects-per-tmux-session"),
+                    help="where app sessions open (default: detected)")
     sp.add_argument("--dry-run", action="store_true")
     sp.set_defaults(func=cmd_init)
+
+    sp = sub.add_parser("layout",
+                        help="show which layout is active and why (--set to choose)")
+    sp.add_argument("--set", choices=("default", "projects-per-tmux-session"))
+    sp.add_argument("--config", help="a config other than the default")
+    sp.set_defaults(func=cmd_layout)
 
     sp = sub.add_parser("feed",
                         help="switch on the podcast feed (token, services, "
@@ -1383,6 +1391,13 @@ _STARTER_CONFIG = """\
 #
 # One machine on its own holds all three, and that is the whole of what
 # "standalone" means -- there is no mode to switch.
+
+# Where sessions started from the app open (agent_media_core/layout.py):
+#   default                     headless, or windows in one tmux session `sasonica`
+#   projects-per-tmux-session   a tmux session per project (p-<name>), amux, the
+#                               SessionStart hook that files panes into them
+# Written from what was detected at install; `media-setup layout` says why.
+layout = "{layout}"
 
 [host]
 roles = [{roles}]
@@ -1563,15 +1578,24 @@ def cmd_init(args: argparse.Namespace) -> int:
     """Write a starter config, if there is not one already."""
     from .config import config_path
 
+    from . import layout as _layout
+
     path = Path(args.config) if args.config else config_path()
+    chosen = getattr(args, "layout", None) or _layout.current(path).name
     if path.exists() and not args.force:
+        # The layout is the one thing written into an existing file: an
+        # install says which desk this is, so the host stops guessing. Never
+        # over a setting already there.
+        if not args.dry_run and _layout.write_setting(chosen, path):
+            print(f"media-setup: {path}: added layout = {chosen!r}")
         print(f"media-setup: {path} already exists — leaving it alone "
               f"(--force to overwrite)")
         return 0
 
     roles = args.roles.split(",") if args.roles else _guess_roles()
     rendered = _STARTER_CONFIG.format(
-        roles=", ".join(f'"{r.strip()}"' for r in roles if r.strip()))
+        roles=", ".join(f'"{r.strip()}"' for r in roles if r.strip()),
+        layout=_layout._normalise(chosen) or _layout.DEFAULT)
 
     if args.dry_run:
         print(f"# would write {path}:")
@@ -1585,6 +1609,29 @@ def cmd_init(args: argparse.Namespace) -> int:
           f"if wrong, then:\n"
           f"  media-setup install-services   # installs only what these roles want\n"
           f"  media-setup install-hooks      # wire up the agent side")
+    return 0
+
+
+def cmd_layout(args: argparse.Namespace) -> int:
+    """Say which layout is active and why; `--set` writes it into config.toml."""
+    from . import layout as _layout
+    from .config import config_path
+
+    path = Path(args.config) if args.config else config_path()
+    if args.set:
+        try:
+            changed = _layout.write_setting(args.set, path, replace=True)
+        except ValueError as e:
+            print(f"media-setup: {e}", file=sys.stderr)
+            return 2
+        print(f"media-setup: {path}: layout = {_layout._normalise(args.set)!r}"
+              + ("" if changed else " (already)"))
+    now = _layout.current(path)
+    print(f"layout: {now.name}")
+    print(f"  from {now.source}: {now.why}")
+    if now.source != "detected":
+        name, why = _layout.detect()
+        print(f"  detection would say {name}: {why}")
     return 0
 
 

@@ -197,7 +197,16 @@ def workspace_for(session: str, ts: list[Turn]) -> str:
 
     names = Counter(t.workspace for t in ts if t.workspace)
     if names:
-        return names.most_common(1)[0][0]
+        name = names.most_common(1)[0][0]
+        from . import layout
+
+        if name == layout.CHAT_TMUX and not layout.projects():
+            # The default layout opens every app chat in the one `sasonica`
+            # session, so that name files nothing apart: the folder does.
+            from . import harnesses
+
+            return layout.project_of_path(harnesses.cwd_of(session)) or name
+        return name
 
     from .conversation import transcript
 
@@ -226,7 +235,12 @@ def workspace_for(session: str, ts: list[Turn]) -> str:
     # export had only the listener's typed prompt — which records no tmux
     # session — was filed under "agent-media" while every other one from the
     # same session sat under "p-agent-media", two series for one project.
-    return f"p-{tail.strip()}" if sep and tail.strip() else ""
+    #
+    # `p-` only on that desk (agent_media_core/layout.py); anywhere else the
+    # project is the folder's own name.
+    from . import layout
+
+    return layout.encoded_project_label(tail) if sep else ""
 
 
 def title_for(session: str, ts: list[Turn]) -> str:

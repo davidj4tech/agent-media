@@ -26,8 +26,12 @@ session (MEDIA_HEADLESS, sessiond.py) never reaches them.
 Moved out of the canvas's reply.py.
 
 Config (env):
+  MEDIA_LAYOUT        "default" | "projects-per-tmux-session" (else config.toml,
+                      else detected) — agent_media_core/layout.py answers every
+                      "which tmux session" below
   MEDIA_REPLY_TMUX    tmux session to open revived windows in (default: the
-                      one with an attached client)
+                      one with an attached client; `sasonica` in the default
+                      layout)
   MEDIA_ASK_SESSION   amux session name whose registration (directory, flags)
                       a fresh session started from the phone copies
                       (default: scratch); MEDIA_ASK_TMUX / MEDIA_ASK_CWD /
@@ -306,8 +310,9 @@ def open_window(session: str, cwd: str, *, resume: bool, host: str = "",
     `agent` is "claude", "codex" or "pi". A fresh pi is started with
     `session` as its id when one is given; the others choose their own.
 
-    `host` names the tmux session to open it in; by default the one someone is
-    attached to. `flags` go to `claude` (a fresh session may want
+    `host` names the tmux session to open it in; by default the layout's
+    (`layout.revive_host`): the one someone is attached to on David's desk,
+    `sasonica` otherwise. `flags` go to `claude` (a fresh session may want
     `--dangerously-skip-permissions`; a revived one wants nothing).
 
     Background (`-d`) on purpose: this is triggered from the phone, and a
@@ -317,8 +322,9 @@ def open_window(session: str, cwd: str, *, resume: bool, host: str = "",
 
     Two things observed doing this for real, neither a fault:
 
-    * The window does not stay where we put it — a SessionStart hook moves it
-      into the session named for its project. The pane id survives the move, so
+    * On David's desk (`layout.expects_move_hook`) the window does not stay
+      where we put it — a SessionStart hook moves it into the session named
+      for its project. The pane id survives the move, so
       everything downstream still works; do not "fix" the target.
     * Answering the resume modal means resuming from a summary, and that runs a
       compaction first. On a large transcript the reply sits in Claude Code's
@@ -338,6 +344,12 @@ def open_window(session: str, cwd: str, *, resume: bool, host: str = "",
                 return where, (f"session {session[:8]} is already running"
                                + (f" in {where}" if where else f" outside tmux (pid {pid})"))
     cwd = cwd or os.path.expanduser("~")
+    if not host:
+        # David's desk: "" — the session someone is attached to. The default
+        # layout: `sasonica`, with a client held on it.
+        from agent_media_core import layout
+
+        host = layout.revive_host()
     if host:
         if not ensure_host(host, cwd):
             return "", f"could not get a client onto tmux session {host!r}"
@@ -402,32 +414,18 @@ def focus(pane: str) -> tuple[bool, str]:
 def ask_target() -> tuple[str, str, list[str]]:
     """`(tmux session, cwd, claude flags)` for a session started from the phone.
 
-    Copied from the amux registration named by MEDIA_ASK_SESSION (default
-    `scratch`) — the same directory and flags `amux start scratch` would use,
-    in the tmux session amux would put it in — so where a phone-started chat
-    lands is set in one place, with amux. Each part can be overridden.
+    The layout's answer (agent_media_core.layout.fresh_target). On David's
+    desk it is copied from the amux registration named by MEDIA_ASK_SESSION
+    (default `scratch`) — the same directory and flags `amux start scratch`
+    would use, in the tmux session amux would put it in — so where a
+    phone-started chat lands is set in one place, with amux. In the default
+    layout it is home, in the one `sasonica` session. Each part can be
+    overridden (MEDIA_ASK_TMUX / MEDIA_ASK_CWD / MEDIA_ASK_FLAGS).
     """
-    name = (os.environ.get("MEDIA_ASK_SESSION") or "scratch").strip()
-    cwd, flags = "", ""
-    env = Path(os.path.expanduser(os.environ.get("CC_HOME") or "~/.amux")) / "sessions" / f"{name}.env"
-    try:
-        for line in env.read_text().splitlines():
-            k, _, v = line.partition("=")
-            k = k.strip()
-            v = v.strip()
-            if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
-                v = v[1:-1]
-            if k == "CC_DIR":
-                cwd = v
-            elif k == "CC_FLAGS":
-                flags = v
-    except OSError:
-        pass
-    host = (os.environ.get("MEDIA_ASK_TMUX") or "").strip() or f"amux-{name}"
-    cwd = os.path.expanduser((os.environ.get("MEDIA_ASK_CWD") or "").strip() or cwd or "~")
-    flags_s = os.environ.get("MEDIA_ASK_FLAGS")
-    argv = shlex.split(flags_s if flags_s is not None else flags)
-    return host, cwd, argv
+    from agent_media_core import layout
+
+    host, cwd, flags = layout.fresh_target()
+    return host, cwd, shlex.split(flags)
 
 
 def _settle(pane: str, timeout: float = 5.0) -> None:
@@ -577,7 +575,9 @@ def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
         # freely.
         if where not in {p["path"] for p in sessions.places(limit=0)}:
             return False, {"error": f"no session has run in {where!r}", "status": 404}
-        host, cwd = os.path.basename(where), where
+        from agent_media_core import layout
+
+        host, cwd = layout.place_host(where), where
     elif project:
         host, cwd = sessions.project_target(project)
         if not cwd:
@@ -586,10 +586,17 @@ def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
     # driver/. The directory and the tmux session name were chosen above,
     # the same for both: the name is where a pane would open, and what a
     # headless session is filed and voiced under.
+    from agent_media_core import layout
+
     from . import driver
 
-    return driver.for_new(agent).start(agent=agent, cwd=cwd, text=text, host=host,
-                                       flags=flags, quote=quote)
+    chosen = driver.for_new(agent)
+    if chosen.kind == driver.HEADLESS:
+        # No pane, so no tmux session to be filed under: the layout says what
+        # it would have been (David's: the session itself; default: the folder).
+        host = layout.workspace_for(host, cwd)
+    return chosen.start(agent=agent, cwd=cwd, text=text, host=host,
+                        flags=flags, quote=quote)
 
 
 def _ask_pane(text: str, *, agent: str, cwd: str, host: str, flags: list[str],

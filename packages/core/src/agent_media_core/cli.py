@@ -6472,8 +6472,21 @@ def selfcheck_facts() -> "dict[str, str]":
     facts.update(_mic_block_facts())
     facts.update(_ringer_facts())
     facts.update(_package_facts())
+    facts.update(_layout_facts())
     _cache_facts(facts)
     return facts
+
+
+def _layout_facts() -> "dict[str, str]":
+    """Which layout (agent_media_core/layout.py) this host runs, and why —
+    reported, never a problem: both are healthy, and the one worth seeing is
+    a detected one that is not what the desk looks like."""
+    try:
+        from . import layout
+        now = layout.current()
+    except Exception as e:  # noqa: BLE001
+        return {"layout": "unknown", "layout_why": str(e)[:200]}
+    return {"layout": now.name, "layout_why": f"{now.source}: {now.why}"}
 
 
 def _package_facts() -> "dict[str, str]":
@@ -7334,11 +7347,15 @@ def _scan_local() -> "list[str]":
     """This host's own problems. `doctor` is usually run from the machine doing
     the deploying, and its own install can rot exactly like a remote one."""
     print("checking local...", end="", flush=True)
+    facts: "dict[str, str]" = {}
     try:
-        problems = health_problems(selfcheck_facts())
+        facts = selfcheck_facts()
+        problems = health_problems(facts)
     except Exception as e:  # noqa: BLE001
         problems = [f"selfcheck failed: {e}"]
     print(" " + "; ".join(f"[{p}]" for p in problems) if problems else " ok")
+    if facts.get("layout"):
+        print(f"  layout: {facts['layout']} ({facts.get('layout_why', '')})")
     return problems
 
 

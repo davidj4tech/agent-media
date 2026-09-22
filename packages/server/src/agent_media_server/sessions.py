@@ -575,9 +575,20 @@ def project_target(project: str) -> tuple[str, str]:
     has one — a project has no registration of its own, only its history.
     The window opens in the tmux session of that name; the SessionStart hook
     would move it there from the cwd anyway.
+
+    That is David's layout (agent_media_core/layout.py). In the default one a
+    project is a folder, named by its basename, from the places sessions have
+    run in (`places`); the window opens in the layout's one chat session.
     """
     project = (project or "").strip()
     if not project:
+        return "", ""
+    from agent_media_core import layout
+
+    if not layout.projects():
+        for p in places(limit=0):
+            if layout.project_of_path(p["path"]) == project and os.path.isdir(p["path"]):
+                return layout.project_host(project), p["path"]
         return "", ""
     rows = []
     for f in _manifest_dir().glob("*.json"):
@@ -591,7 +602,7 @@ def project_target(project: str) -> tuple[str, str]:
     for _at, sid in sorted(rows, reverse=True):
         cwd = transcript_cwd(sid)
         if cwd and os.path.isdir(cwd):
-            return project, cwd
+            return layout.project_host(project), cwd
     return "", ""
 
 

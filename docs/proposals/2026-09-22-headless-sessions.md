@@ -375,6 +375,17 @@ Neither handoff happens implicitly. A reply to a pane session types into the
 pane, and a reply to a headless one goes to the host. Switching is a button,
 because the two kinds behave differently (approvals, the terminal view).
 
+**Which desk (22 Sep 2026, built).** "The desk" above is David's: a tmux
+session per project, amux, and a SessionStart hook that files panes into
+them. That is now one of two layouts (server-contract.md §18,
+`agent_media_core/layout.py`), detected from the amux directory plus that
+hook and written to config.toml at install. On a fresh host the layout is
+`default`: app chats are headless, and whatever still needs a pane (the
+"move to desk" revive, a harness without a headless driver) opens as a
+window in one tmux session, `sasonica`, with a client held on it. "Open at
+the desk" there means `tmux attach -t sasonica`. Nothing in this section's
+handoffs changes; only where the pane lands.
+
 **Claude's own background sessions** (`claude --bg`, `claude agents`, `claude
 attach`) look like the missing middle: a supervisor-owned process you can
 attach any terminal to. But they have no documented way to *send* a message

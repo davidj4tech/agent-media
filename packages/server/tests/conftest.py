@@ -21,6 +21,11 @@ def _clean_media_env(monkeypatch, tmp_path):
     for k in list(os.environ):
         if k.startswith("MEDIA_"):
             monkeypatch.delenv(k, raising=False)
+    # The layout (agent_media_core/layout.py) is pinned to David's, which is
+    # what these tests were written against: detection reads the real HOME
+    # (~/.amux, ~/.claude/settings.json), so unpinned they would pass on red5
+    # and fail anywhere else. test_layout.py unpins it where it needs to.
+    monkeypatch.setenv("MEDIA_LAYOUT", "projects-per-tmux-session")
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     # Paired devices live under that state dir too (devices.json, the pairing
     # codes); the in-process bits — the parsed-file cache and the per-address

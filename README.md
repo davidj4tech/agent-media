@@ -40,6 +40,9 @@ media-setup install-hooks     # wire the agent side (Claude Code Stop/Notificati
 ```
 
 `init` guesses the roles and says so; edit the file if the guess is wrong.
+It also records the **layout** — where sessions started from the app open:
+`default` (headless, or windows in one `sasonica` tmux session) unless it finds
+a tmux-session-per-project desk. `media-setup layout` says which and why.
 
 ### One machine or several
 

@@ -150,3 +150,12 @@ def _no_followup_calls(monkeypatch):
     the answer in the developer's own state dir). Tests of the follow-up
     itself re-enable it explicitly."""
     monkeypatch.setenv("MEDIA_FOLLOWUP", "0")
+
+
+@pytest.fixture(autouse=True)
+def _david_layout(monkeypatch):
+    """The layout (agent_media_core/layout.py) pinned to David's, which is
+    what these tests were written against: detection reads the real HOME
+    (~/.amux, ~/.claude/settings.json), so unpinned they would pass on red5
+    and fail anywhere else. test_layout.py unpins it where it needs to."""
+    monkeypatch.setenv("MEDIA_LAYOUT", "projects-per-tmux-session")
