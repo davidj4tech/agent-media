@@ -24,17 +24,22 @@ What a move does, in order:
    not. A session working on something is refused — an interrupted turn
    would lose whatever it had not written yet.
 
-What a move deliberately does **not** touch is the library. The shelf folder
-is `<author>/<title>` under the Conversations root, and Audiobookshelf reads
-a folder that moves as a *new item*: new id, no progress, the old one left
-behind (the same reason `book_tracks.folder_for` keeps the first folder for
-ever). One item that keeps its identity is worth more than one filed under
-the right author, so the conversation stays where it was published and the
-project it shows in the app is the one kept here.
+4. **Its folder moves.** The conversation's own files are
+   `<project>/<title>` under the Conversations root, so the folder is moved
+   under the new project and the manifest points at it there: the files on
+   disk and the app say the same thing, and `project_of` derives the new
+   project from the folder even without (1).
+
+   This costs the old Audiobookshelf app that conversation's listening
+   progress — ABS reads a folder that moved as a *new* item, new id and all
+   (the same reason `book_tracks.folder_for` keeps its first folder for
+   ever). David decided on 23 Sep 2026 that agreement between the files and
+   the app is worth more than progress in an app on its way out.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -139,6 +144,56 @@ def move_transcript(session: str, cwd: str) -> str:
     return ""
 
 
+# --- where the conversation's own files live ----------------------------------
+
+def move_folder(session: str, project: str) -> tuple[str, str]:
+    """Move the conversation's library folder under `project`.
+
+    `(new folder, error)` — `("", "")` when there is nothing to move.
+
+    `<Conversations root>/<project>/<title>`: the title part is kept exactly
+    as it is (`book_tracks.folder_for` chose it once and an item that renames
+    itself is a new item), only the project above it changes. The manifest is
+    rewritten to point at the new path, which is what makes
+    `sessions.project_of` agree without the override.
+
+    Nothing published yet, no manifest, or a folder already gone: "" — the
+    move is about a thread, and a thread with no files still moves.
+    """
+    from agent_media_core import book_tracks
+
+    if not project:
+        return "", ""                   # a directory outside any project
+    path = sessions._manifest_dir() / f"{session}.json"
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return "", ""
+    folder = Path(str(data.get("folder") or ""))
+    if not str(folder) or not folder.is_dir():
+        return "", ""
+    dest = book_tracks.root() / book_tracks.safe_name(project) / folder.name
+    if dest == folder:
+        return "", ""
+    if dest.exists():
+        return "", f"{dest} is already there"
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(folder), str(dest))
+    except OSError as e:
+        return "", f"could not move the folder: {e}"
+    data["folder"] = str(dest)
+    tmp = path.with_suffix(f".tmp.{os.getpid()}")
+    try:
+        tmp.write_text(json.dumps(data))
+        tmp.replace(path)
+    except OSError as e:
+        # The files moved and the manifest still points at where they were:
+        # say so rather than leave the caller thinking it went cleanly.
+        return str(dest), f"moved the folder, but could not record it: {e}"
+    return str(dest), ""
+
+
 # --- the move -----------------------------------------------------------------
 
 def _destination(project: str, cwd: str) -> tuple[str, str, str]:
@@ -216,7 +271,14 @@ def move(session: str, project: str = "", cwd: str = "",
     MOVES.put(session, {"project": project, "cwd": dest, "at": round(time.time(), 3)})
 
     out = {"session": session, "project": project or None, "cwd": dest,
-           "restarted": False, "pane": None, "live": False}
+           "restarted": False, "pane": None, "live": False, "folder": None}
+    # The conversation's own files follow. Not fatal on its own — the thread
+    # has moved either way — so a failure is reported beside the move, not
+    # instead of it.
+    folder, why = move_folder(session, project)
+    out["folder"] = folder or None
+    if why:
+        out["folder_error"] = why
     if not live:
         return True, out
 

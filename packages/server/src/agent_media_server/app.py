@@ -77,9 +77,10 @@ device gets its token):
   POST /session/pin {"session", "pinned": true|false} → keep that session
                   open against the idle reaper (pins.py, reap.py)
   POST /session/move {"session", "project"|"cwd"} → move a conversation to
-                  another project: file it there, move its transcript, and
-                  bring a live session back in that directory, restarting it
-                  (moves.py, §6.15). Refused while it is working
+                  another project: file it there, move its transcript and its
+                  library folder, and bring a live session back in that
+                  directory, restarting it (moves.py, §6.15). Refused while
+                  it is working
   POST /session/answer {"session", "choice", "key"} → answer the dialog that
                   session is stopped on (a permission prompt); refused unless
                   that same question, fingerprinted by `key`, is still on its
@@ -781,8 +782,8 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path == "/session/move":
         # Move a conversation to another project: file it there, move its
-        # transcript, and bring a live session back in that directory
-        # (moves.py). Gated like /session/archive.
+        # transcript and its library folder, and bring a live session back
+        # in that directory (moves.py). Gated like /session/archive.
         from . import moves
 
         body = _read_json(h) or {}

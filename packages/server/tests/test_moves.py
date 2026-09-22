@@ -8,6 +8,7 @@ open or close a tmux window is recorded rather than done.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -40,6 +41,20 @@ def dest(monkeypatch, tmp_path):
     monkeypatch.setattr(sessions, "project_target",
                         lambda p: ("p-agent-mail", str(d)) if p == "p-agent-mail" else ("", ""))
     return str(d)
+
+
+@pytest.fixture()
+def library(monkeypatch, tmp_path):
+    """The Conversations root, with SID's own folder under `p-agent-media`."""
+    root = tmp_path / "conversations"
+    folder = root / "p-agent-media" / "Sasonica music"
+    folder.mkdir(parents=True)
+    (folder / "001 - a turn.mp3").write_bytes(b"audio")
+    monkeypatch.setenv("MEDIA_BOOK_TRACKS_ROOT", str(root))
+    sessions._manifest_dir().mkdir(parents=True, exist_ok=True)
+    (sessions._manifest_dir() / f"{SID}.json").write_text(
+        json.dumps({"session": SID, "folder": str(folder), "turns": []}))
+    return root
 
 
 @pytest.fixture()
@@ -167,3 +182,54 @@ def test_the_thread_lists_under_its_new_project(
     # And a resume opens where it was moved to, not where the transcript ran
     # (`transcript_cwd` itself is stubbed by the rig; `session_cwd` is not).
     assert sessions.session_cwd(SID) == dest
+
+
+# --- the conversation's own files ---------------------------------------------
+
+def test_the_folder_moves_under_the_new_project(claude, dest, library):
+    folder, why = moves.move_folder(SID, "p-agent-mail")
+    assert why == ""
+    to = library / "p-agent-mail" / "Sasonica music"
+    assert folder == str(to)
+    assert (to / "001 - a turn.mp3").read_bytes() == b"audio"
+    assert not (library / "p-agent-media" / "Sasonica music").exists()
+    # The manifest points at it there, so the project derives without the override.
+    kept = json.loads((sessions._manifest_dir() / f"{SID}.json").read_text())
+    assert kept["folder"] == str(to)
+    assert sessions.project_of("", kept["folder"]) == "p-agent-mail"
+
+
+def test_the_title_part_of_the_folder_is_kept(claude, dest, library):
+    """An item that renames itself is a new item: only the project changes."""
+    folder, _why = moves.move_folder(SID, "p-agent-mail")
+    assert Path(folder).name == "Sasonica music"
+
+
+def test_a_folder_already_there_is_refused(claude, dest, library):
+    (library / "p-agent-mail" / "Sasonica music").mkdir(parents=True)
+    folder, why = moves.move_folder(SID, "p-agent-mail")
+    assert folder == "" and "already there" in why
+    assert (library / "p-agent-media" / "Sasonica music").is_dir()   # left alone
+
+
+def test_a_thread_with_no_files_still_moves(claude, dest, library):
+    assert moves.move_folder(SID2, "p-agent-mail") == ("", "")       # no manifest
+
+
+def test_the_move_takes_the_folder_with_it(server, shelf, signed_in, claude, dest,
+                                           library, windows):
+    _res, obj = call(server, "POST", "/session/move",
+                     {"session": SID, "project": "p-agent-mail"}, AUTH)
+    assert obj["ok"] is True
+    assert obj["folder"] == str(library / "p-agent-mail" / "Sasonica music")
+    assert "folder_error" not in obj
+
+
+def test_a_folder_that_could_not_move_is_said_beside_the_move(
+        server, shelf, signed_in, claude, dest, library, windows):
+    (library / "p-agent-mail" / "Sasonica music").mkdir(parents=True)
+    _res, obj = call(server, "POST", "/session/move",
+                     {"session": SID, "project": "p-agent-mail"}, AUTH)
+    assert obj["ok"] is True                       # the thread moved
+    assert "already there" in obj["folder_error"]  # its files did not
+    assert moves.moved(SID)["project"] == "p-agent-mail"

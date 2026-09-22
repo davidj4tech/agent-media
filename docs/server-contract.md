@@ -1997,7 +1997,8 @@ Clients: the chat app's search screen (`/find`, the ⌕ at the end of the Home |
 #### `POST /session/move` — gated
 
 `{"session", "project"?, "cwd"?}` → `{"ok": true, "session", "project",
-"cwd", "restarted": bool, "pane": null | "%23", "live": bool}`.
+"cwd", "restarted": bool, "pane": null | "%23", "live": bool, "folder":
+null | "…", "folder_error"?: "…"}`.
 
 A thread has no project field to set: `project` on a `/targets` row is read
 off the directory the session ran in and the shelf folder it is filed under
@@ -2013,7 +2014,15 @@ off the directory the session ran in and the shelf folder it is filed under
    dash), so the file and its `<session>/` sidecar are refiled under the new
    directory. Claude Code only: Codex, pi and Hermes keep their own stores
    and move by (1) alone.
-3. **A live session restarts there** — the pane is closed and reopened with
+3. **Its folder moves** — the conversation's own files are
+   `<project>/<title>` under the Conversations root, so the folder goes
+   under the new project and the manifest points at it there (`folder` in
+   the answer). The files on disk and the app then agree, and `project_of`
+   derives the new project from the folder even without (1). A folder that
+   could not move (one of that name is already there) is reported as
+   `folder_error` beside a move that otherwise happened — the thread moved
+   either way.
+4. **A live session restarts there** — the pane is closed and reopened with
    `--resume` in the new directory, in the tmux session that project uses
    (`layout.project_host`). Claude Code cannot change its own cwd mid-
    session, so the conversation continues and the process does not; the
@@ -2030,12 +2039,13 @@ session, and an interrupted turn loses whatever it had not written. Stop it
 directory that is not there, 404 when no harness still holds the session,
 401 unpaired.
 
-**The library is not touched.** The shelf folder is `<author>/<title>`
-under the Conversations root and Audiobookshelf reads a folder that moves as
-a *new* item — new id, no progress, the old one left behind (the same
-reason `book_tracks.folder_for` keeps the first folder for ever). So the
-conversation stays published where it was, and the project the app shows is
-the one kept here.
+**What the folder move costs.** Audiobookshelf reads a folder that moved as
+a *new* item — new id, no progress, the old one left behind (the same reason
+`book_tracks.folder_for` keeps its first folder for ever), so a moved
+conversation loses its place in the old ABS app. David decided on 23 Sep
+2026 that the files and the app agreeing is worth more than progress in an
+app on its way out. The title part of the folder is kept exactly as it was:
+only the project above it changes.
 
 Clients: the chat app's thread ⋯ menu ("Move to project…") and a long press
 on a row in the thread list.
