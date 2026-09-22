@@ -7950,6 +7950,16 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument("--dir", type=int, default=1, help="-1 back, 1 forward")
     s.add_argument("--seek-fallback", type=float, default=5.0,
                    help="seconds to time-seek when there's no sentence sequence")
+    # Whose reply a jump means. cmd_skip has read this since "read from here"
+    # was built — the transcript on screen belongs to whoever spoke it, not to
+    # whatever spoke last — and the canvas has sent it on every tap, but it
+    # was never declared here. argparse refused the whole command: every tap
+    # exited 2 before touching the player, printing a usage error onto a
+    # stderr nobody read, while the app moved its own highlight and the audio
+    # stayed where it was (David, 23 Sep 2026, on three separate days of
+    # "the follow-along moves but the audio doesn't").
+    s.add_argument("--pane", default=None,
+                   help="the pane whose reply a jump means (read from here)")
     s.set_defaults(func=cmd_skip)
 
     s = sub.add_parser("replay", help="replay the Nth most recent clip (1=latest)")
