@@ -60,7 +60,8 @@ Ops (request `{"op", …}` → `{"ok": true, …}` or `{"ok": false, "error",
 Config (env): MEDIA_SESSIOND_SOCKET, MEDIA_SESSIOND_IDLE, MEDIA_SESSIOND_MAX,
 MEDIA_SESSIOND_CLOSE_GRACE, MEDIA_SESSIOND_CLAUDE (the binary; default
 `harnesses.program("claude")`), MEDIA_HEADLESS_MODEL (`--model`),
-MEDIA_HEADLESS_PERMISSIONS (`strict` | `normal`, see permissions.py).
+MEDIA_HEADLESS_PERMISSIONS (`strict` | `normal`, see permissions.py),
+MEDIA_HEADLESS_EXTRA_ARGS (more `claude` flags; debugging and smoke runs).
 """
 
 from __future__ import annotations
@@ -429,6 +430,14 @@ class Supervisor:
         model = (os.environ.get("MEDIA_HEADLESS_MODEL") or "").strip()
         if model:
             argv += ["--model", model]
+        # More `claude` flags, for debugging and smoke runs — e.g.
+        # `--setting-sources project,local` keeps the user's hooks (and
+        # speech) out of a test session.
+        extra = (os.environ.get("MEDIA_HEADLESS_EXTRA_ARGS") or "").strip()
+        if extra:
+            import shlex
+
+            argv += shlex.split(extra)
         argv += ["--resume", s.id] if resume else ["--session-id", s.id]
         return argv
 
