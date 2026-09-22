@@ -683,7 +683,13 @@ written, with its steps and narration. Messages are read from the same file.
 | `command` | user messages that are a slash command only: `{name, args, text}`, the line's chip (`slash.py`); settings commands are never messages |
 
 **Parts.**
-- `text` — the words. Cut at 32 KB.
+- `text` — the words, **as Markdown** (Claude writes Markdown; the client
+  renders it — assistant-ui's `MarkdownText`). `[[visual: …]]` and
+  `[[reveal: …]]` markers are removed from assistant text (since 22 Sep
+  2026): they are instructions to the canvas, never words to read. A marker
+  mid-sentence leaves one space; one on its own line leaves no blank line.
+  The speech join (below) keys on the raw words before they are removed.
+  Cut at 32 KB.
 - `reasoning` — `redacted: false` with the text the model wrote, or
   `redacted: true` with `""`: thinking whose text Claude Code does not keep.
   A run of redacted blocks is one part. **What the transcripts on red5
@@ -948,6 +954,16 @@ running session as `/rename <title>`. `terminal: false` with a `why`
 (ended, or someone is mid-sentence in its box) is **not** a failure: the
 shelf has the name, and the next session starts with it. 400 `"no title"`;
 500 `"could not rename"`.
+
+**Headless sessions** (§17, 22 Sep 2026): the same `/rename <title>` goes
+to a live one as a stream-json message through sessiond — Claude Code takes
+it under `-p` as a local command (no model call, a zero-cost `result`, a
+`custom-title` record; measured on 2.1.278) and it is not counted as a turn
+or shelved as the listener's words; behind a running turn it queues. A
+parked one is not woken for it: `terminal: false`, `why: "headless sessions
+pick up the name on their next resume"` (the name is already in its
+transcript). Their `/targets` rows show the shelf's name — the manifest's
+`title` (the rename), then the folder's.
 
 Clients: S (`ReplyBox.vue`).
 
@@ -1620,24 +1636,49 @@ increasing `id`, and `retry: 2000` first.
 
 | Event | Data | When |
 | --- | --- | --- |
-| `snapshot` | the whole `/conversation/log?session=` envelope (default page: `messages`, `older`, `lines`, `pending`, `working`, `approval`, `suggestion`, `recap`) plus `{"state", "live": bool, "pane", "resumable"}` | first frame on every connection |
+| `snapshot` | `{"ok": true}`, the `/conversation/log?session=` envelope — `messages` (the newest **30**, or `?limit=`), `older`, `lines` (deprecated; only those of the page, below), `pending`, `working`, `approval`, `suggestion`, `recap` — plus `{"state", "session_live": bool, "live": bool (deprecated alias of `session_live`), "pane", "resumable"}` | first frame on every connection |
 | `message` | `{"op": "append" \| "replace", "message": <message>}` (§6.2.2) | a message appears, or one (matched by `id`) changes: grows a part, a tool finishes, its turn ends, it gains or loses `spoken` |
 | `live` | `{"id", "at", "sentences", "sentence", "offsets", "elapsed", "server_time", "delay", "paused"}` — the message being spoken, by `id` — or `null` when nothing is | a new reply starts, the sentence changes, pause or resume, or the clock jumps (more than 1 s from where it should be: a skip) — **not** at 1 Hz; the client runs the clock between frames |
 | `working` | the `working` object, or `null` | a step starts, or the turn ends |
 | `approval` | the `approval` object, or `null` | a dialog appears, changes or goes |
 | `suggestion` | `{"text": "…"}` | the ghost or follow-up arrives or clears |
-| `state` | `{"state": "working" \| "waiting" \| "approval" \| "ended", "live": bool, "pane"}` | the session changes state; `ended` when its pane goes |
+| `state` | `{"state": "working" \| "waiting" \| "approval" \| "ended", "session_live": bool, "live": bool (deprecated alias), "pane"}` | the session changes state; `ended` when its pane goes |
+| `pending` | `{"pending": bool}` | it changes — the log's rule: a live session whose last message is the listener's, the turn working (a step running, or a headless session `working`), or the last line the listener's. Set from the transcript as soon as a prompt lands; cleared by the 1 s / 3 s re-read |
 | `recap` | `{"text", "at", "source"}` or `null` | a newer recap is written |
 | `ping` | `{}` | 15 s of silence |
 
 `isRunning` is `state == "working"`, `pending`, or the last message's
 `turn.running` (§14).
 
+**`live` means two things — fixed by a rename.** In the snapshot and the
+`state` event, `live` was "the session is running"; the `live` *event* is
+the follow-along clock. The first is now **`session_live`**. `live` stays on
+both, with the same value, **for one release** (deprecated 22 Sep 2026) and
+then goes; read `session_live`.
+
+**The page.** `GET /threads/{session}/events?limit=N` (1–500, default 30)
+sets how many messages the snapshot carries. Older ones come from
+`/conversation/log?session=&messages=1&before=<the first id held>`. The
+snapshot's `lines` are cut to the same page (those said no earlier than 5 s
+before its first message, plus a live one) whenever `older` is true.
+Measured on red5's busiest thread (22 Sep 2026): `lines` were 184 KB of a
+268 KB snapshot.
+
+**Compression.** With `Accept-Encoding: gzip` (not `q=0`) the stream is
+gzipped: `Content-Encoding: gzip`, `Vary: Accept-Encoding`, still
+`Cache-Control: no-store` and `X-Accel-Buffering: no`, no Content-Length.
+One gzip member per connection, sync-flushed after every frame (`retry`,
+each event, each ping), so every event reaches the client whole and at once
+— a fetch-based reader sees plain text (the browser/WebView inflates it).
+Without the header, plain as before.
+
 **Applying events.** Keep messages by `id`. `append` adds at the end —
 unless the `id` is already held, which can happen in the moment between a
-snapshot and the first event: then it replaces. `replace` replaces in place.
-Only the newest page (60) is watched; a replace never arrives for a message
-older than that.
+snapshot and the first event: then it replaces. `replace` replaces in place;
+**a `replace` for an `id` not held is ignored** — the watcher watches the
+newest 60, the snapshot is 30, so it can name a message the client has not
+paged back to (and when it has, it holds it, and the replace applies). A
+replace never arrives for a message older than the newest 60.
 
 **Reconnection.** The server keeps no per-client history. On every
 (re)connect it sends a fresh `snapshot`, and `Last-Event-ID` is accepted
@@ -1682,7 +1723,9 @@ change that lands between the two is sent (at worst twice), never lost.
 `"not a session id"`, 404 `"no such session"` (not live, no transcript, no
 manifest). After it opens, errors are not reported in-stream — the
 connection closes, and the reconnect's `snapshot` (or its 404) says what
-happened.
+happened. However the stream ends — the client going, falling 256 behind,
+a failed snapshot, a bug — the request counts as answered: nothing further
+(no 404) is ever written onto that socket.
 
 **The thread list** stays polled (`/sessions/state` at 5 s, `/targets` on
 open). A list stream is left for later: it would be a second watcher over
@@ -1831,7 +1874,7 @@ messages; lines are deprecated):
 | `id` | `message.id` — stable as the message grows |
 | `role` | `message.role` |
 | `createdAt` | `new Date(message.at * 1000)` |
-| `content` | the parts, in order: `text` → `{type: "text", text}`; `reasoning` → `{type: "reasoning", text}` (a redacted one → a collapsed "Thought" with no text); `tool` → `{type: "tool-call", toolCallId: tool_use_id, toolName: name, args: {summary: input_summary, title}, result: result_summary}` (no `result` while `status == "running"`; `isError` when `error`); `ask` → `{type: "tool-call", toolName: "AskUserQuestion", toolCallId, args: {questions: ask}, result: answer}`; the pictures (below) |
+| `content` | the parts, in order: `text` → `{type: "text", text}` (Markdown — render with `MarkdownText`; canvas markers already removed); `reasoning` → `{type: "reasoning", text}` (a redacted one → a collapsed "Thought" with no text); `tool` → `{type: "tool-call", toolCallId: tool_use_id, toolName: name, args: {summary: input_summary, title}, result: result_summary}` (no `result` while `status == "running"`; `isError` when `error`); `ask` → `{type: "tool-call", toolName: "AskUserQuestion", toolCallId, args: {questions: ask}, result: answer}`; the pictures (below) |
 | `status` (assistant) | `{type: "running"}` while `turn.running`, else `{type: "complete"}` |
 | `metadata.custom` | `{command, spoken: {id, key, figure, live}}` for the replay button, follow-along and slash-command chip components |
 
@@ -1856,7 +1899,7 @@ the thread list's preview line.
 | Runtime | v0 | v1 |
 | --- | --- | --- |
 | `messages` | `/conversation/log` poll (`?session=` and `messages` since 22 Sep 2026) | `snapshot` + `message` events (§11), **built 22 Sep 2026** |
-| `isRunning` | `pending` | `state == "working"`, `pending`, or the last message's `turn.running`. Note that assistant-ui disables the composer while running, but a Claude Code session takes messages mid-turn (they queue), so the app passes sends through while running |
+| `isRunning` | `pending` | `state == "working"`, `pending` (the snapshot's, then `pending` events), or the last message's `turn.running`. Note that assistant-ui disables the composer while running, but a Claude Code session takes messages mid-turn (they queue), so the app passes sends through while running |
 | `onNew` in a thread | `POST /reply {item, text}`; a thread not on the shelf yet has no item, so it goes through `POST /ask {text, target: session}` | `POST /reply {session, text}` — **available since 22 Sep 2026**, for every thread, shelved or not |
 | `onNew` in a new thread | `POST /ask {text, target: "new", cwd?, agent?}` | same; the returned `session` becomes the thread id |
 | `onCancel` | — (gap) | `POST /session/stop`; a second cancel within 5 s sends `speech: "silence"` |
