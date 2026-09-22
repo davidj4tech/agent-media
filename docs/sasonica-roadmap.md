@@ -48,13 +48,14 @@ assistant slot in Next; the coding-agents installer in Settings; Sasonica
 Shell rename, named URLs and client labels; answered questions stop being
 read out; tap to read from here (tap a sentence while it is spoken;
 select a word in an older reply → "Read from here"; not yet tried on the
-phone with real audio).
+phone with real audio); background notifications in Next (a `specialUse`
+foreground service on `GET /sessions/events`, §6.13: "New reply" /
+"Needs you", Settings toggle; untested on the phone: Doze, reboot, cold-start
+tap, network handover).
 
 ## In flight
 
-- **Background notifications (Next)** — a native foreground service holding
-  one stream to the server; "New reply" / "Needs you" notifications that
-  open the thread. Not Firebase.
+Nothing.
 
 ## Queued, in order
 
