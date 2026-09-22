@@ -1532,7 +1532,13 @@ machines are. Code: `agent_media_server/dashboard.py`. Pinned by
   no turn on file); `count` — steps so far.
 - `speech`: `/speech/now` (§6.5) cut to `now` (`live`, `speaking`, `paused`,
   `session`, `title`, `sentence`, `target`, `replay`) and its `queued` rows
-  verbatim.
+  verbatim. It is built over the last speech snapshot this route read, not
+  a fresh one: the canvas's snapshot runs `media popup-status`, 1–3 s on red5
+  (which is most of `/speech/now`'s own time). Younger than 1.5 s it is used
+  as is; older (up to 20 s) it is still used while one background read
+  replaces it; past that, or before the first, the request waits for a read.
+  So the line can lag the voice by a poll or two — the speech bar's own
+  `/speech/now` poll is the live one.
 - `recent`: up to 8 `/targets` rows, archived ones left out, newest first by
   `at` — a shelved row's own `at`, else the transcript's mtime (a live row),
   else the recap's. `recap` and `rested` as on `/targets`.

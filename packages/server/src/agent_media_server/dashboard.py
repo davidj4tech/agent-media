@@ -13,7 +13,8 @@ costs about what `/sessions/state` does:
   pane) or the headless driver's pending request — only for rows the sweep
   says are on a dialog;
 * what a working turn is doing: the activity file its hooks append to;
-* the speech bar's `/speech/now`, cut down;
+* the speech bar's `/speech/now`, cut down, over the last speech snapshot
+  read (`_speech_state`: a snapshot costs a `media` subprocess);
 * the machines: `/proc/meminfo`, the reaper's log, `systemctl --user
   is-active` and `tailscale status --json`, cached `MEDIA_DASHBOARD_HOSTS_TTL`
   (15 s) — never ssh, never a peer's own answer in the request path.
@@ -57,14 +58,26 @@ _TRANSCRIPTS: dict[str, Path | None] = {}
 _run = subprocess.run
 _which = shutil.which
 
+#: The canvas's speech snapshot runs `media popup-status` (1–3 s on red5), so
+#: the dashboard serves the last one it read — stale-while-revalidate: younger
+#: than SPEECH_FRESH_S it is used as is; older, it is still used (up to
+#: SPEECH_STALE_S) while one background read replaces it; past that, or with
+#: none yet, the request waits for a read.
+SPEECH_FRESH_S = 1.5
+SPEECH_STALE_S = 20.0
+_SPEECH: tuple[float, dict | None] = (0.0, None)
+_SPEECH_BUSY = threading.Event()
+
 _SPEECH_KEYS = ("live", "speaking", "paused", "session", "title", "sentence", "target",
                 "replay")
 
 
 def _reset_for_tests() -> None:
-    global _INDEX, _HOSTS
+    global _INDEX, _HOSTS, _SPEECH
     _INDEX = (0.0, [])
     _HOSTS = (0.0, None)
+    _SPEECH = (0.0, None)
+    _SPEECH_BUSY.clear()
     _TRANSCRIPTS.clear()
 
 
@@ -136,6 +149,28 @@ def _recent(index: list[dict]) -> list[dict]:
                      "rested": r.get("rested")})
     rows.sort(key=lambda x: -(x["at"] or 0))
     return rows[:RECENT_ROWS]
+
+
+def _read_speech() -> dict:
+    global _SPEECH
+    try:
+        st = speech.current_state()
+    finally:
+        _SPEECH_BUSY.clear()
+    _SPEECH = (time.monotonic(), st)
+    return st
+
+
+def _speech_state() -> dict:
+    at, st = _SPEECH
+    age = time.monotonic() - at
+    if st is None or age > SPEECH_STALE_S:
+        _SPEECH_BUSY.set()
+        return _read_speech()
+    if age > SPEECH_FRESH_S and not _SPEECH_BUSY.is_set():
+        _SPEECH_BUSY.set()
+        threading.Thread(target=_read_speech, name="dashboard-speech", daemon=True).start()
+    return st
 
 
 # --- machines ------------------------------------------------------------------------
@@ -325,7 +360,7 @@ def build(bearer: str) -> dict:
                 needs.append(row)
         elif r["state"] == "working":
             working.append(_working(sid, titles.get(sid, "")))
-    _sok, now = speech.speech_now(bearer, speech.current_state())
+    _sok, now = speech.speech_now(bearer, _speech_state())
     hosts, agents = _hosts(rows, host)
     return {"at": round(time.time(), 3), "needs_you": needs, "working": working,
             "speech": {"now": {k: now.get(k) for k in _SPEECH_KEYS},

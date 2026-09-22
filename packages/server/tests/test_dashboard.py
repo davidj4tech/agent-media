@@ -200,3 +200,35 @@ def test_preflight_is_open(server):
     res, _ = call(server, "OPTIONS", "/dashboard")
     assert res.status == 204
     assert res.getheader("Access-Control-Allow-Origin") == "*"
+
+
+def test_speech_snapshot_is_served_stale_while_it_is_read_again(monkeypatch):
+    # The canvas's snapshot is a `media` subprocess: a poll must not wait on it.
+    import threading
+    import time as _time
+
+    dashboard._reset_for_tests()
+    reads: list = []
+    gate = threading.Event()
+
+    def state():
+        reads.append(1)
+        if len(reads) > 1:
+            gate.wait(5)
+        return {"speaking": len(reads) > 1}
+
+    monkeypatch.setattr(speech, "current_state", state)
+    assert dashboard._speech_state() == {"speaking": False}     # nothing yet: waits
+    assert dashboard._speech_state() == {"speaking": False}     # fresh: no read
+    assert len(reads) == 1
+    at, st = dashboard._SPEECH
+    monkeypatch.setattr(dashboard, "_SPEECH", (at - dashboard.SPEECH_FRESH_S - 1, st))
+    assert dashboard._speech_state() == {"speaking": False}     # stale, served now
+    assert dashboard._speech_state() == {"speaking": False}     # one read in flight
+    gate.set()
+    deadline = _time.monotonic() + 5
+    while dashboard._SPEECH[1] == st and _time.monotonic() < deadline:
+        _time.sleep(0.01)
+    assert len(reads) == 2
+    assert dashboard._speech_state() == {"speaking": True}
+    dashboard._reset_for_tests()
