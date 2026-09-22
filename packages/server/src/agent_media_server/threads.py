@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 from typing import Callable
 
-from . import auth, auth_abs, recaps, send, sessions, transcript
+from . import auth, auth_abs, driver, recaps, send, sessions, transcript
 
 log = logging.getLogger("agent-media.server.threads")
 
@@ -71,11 +71,18 @@ def conversation_for_session(session: str, bearer: str) -> tuple[bool, dict]:
     if not user:
         return False, err
     pane = sessions.live_sessions().get(session, "")
+    live, resumable = bool(pane), sessions.session_exists(session)
+    if not pane:
+        hl = driver.headless_state(session)
+        if hl is not None:
+            # A headless session: live while sessiond runs it, and resumable
+            # whenever it has a record (a reply resumes it).
+            live, resumable = hl["live"], True
     item, ready = item_for_session(session, bearer)
     return True, {"session": session, "item": item if ready else None,
                   "scanning": bool(item) and not ready,
-                  "live": bool(pane), "pane": pane or None,
-                  "resumable": sessions.session_exists(session),
+                  "live": live, "pane": pane or None,
+                  "resumable": resumable,
                   # The same ghost prompt `?item=` offers (§6.2.1), so a
                   # client that only knows sessions draws the same box.
                   "suggestion": sessions.suggestion_for(session, pane)}
@@ -96,8 +103,10 @@ def conversation(item: str, bearer: str) -> tuple[bool, dict]:
     if not session:
         return False, {"error": err, "status": 404}
     pane = sessions.live_sessions().get(session, "")
-    return True, {"session": session, "live": bool(pane), "pane": pane or None,
-                  "resumable": sessions.session_exists(session),
+    hl = None if pane else driver.headless_state(session)
+    return True, {"session": session,
+                  "live": bool(pane) or bool(hl and hl["live"]), "pane": pane or None,
+                  "resumable": sessions.session_exists(session) or hl is not None,
                   "suggestion": sessions.suggestion_for(session, pane)}
 
 
@@ -274,20 +283,29 @@ def _envelope(session: str, lines: list, *, limit: int = MESSAGES_LIMIT,
     # after the turn it follows, so a one-off read at page-open would mostly
     # find it not there yet.
     pane = sessions.live_sessions().get(session, "")
+    # A headless session (MEDIA_HEADLESS) has no pane: whether it is live and
+    # what it is stopped on come from sessiond instead of a screen.
+    hl = None if pane else driver.headless_state(session)
+    live = bool(pane) or bool(hl and hl["live"])
     last = lines[-1] if lines else {}
     # The thread as the terminal has it (transcript.py). A prompt is in the
     # transcript the moment it is typed, well before any speech of it, so a
     # live session whose last message is the listener's is pending too.
-    messages, older = messages_for(session, lines, working=bool(working), live=bool(pane),
+    messages, older = messages_for(session, lines, working=bool(working), live=live,
                                    limit=limit, before=before)
-    if pane and not before and messages and messages[-1]["role"] == "user":
+    if live and not before and messages and messages[-1]["role"] == "user":
+        pending = True
+    if hl is not None and hl["live"] and hl["state"] == "working":
         pending = True
     suggestion = ("" if pending else
                   sessions.suggestion_for(session, pane, last.get("key") or ""))
     # A session waiting on a permission dialog is not working and not
     # finished: it is stopped until somebody answers, and the phone is often
     # the only place anybody is looking.
-    approval = sessions.approval_for(pane, sessions._agent_of_pane(pane)) if pane else None
+    if hl is not None:
+        approval = hl["approval"]
+    else:
+        approval = sessions.approval_for(pane, sessions._agent_of_pane(pane)) if pane else None
     # Claude Code's own "while you were away" summary, for the card at the top
     # of the thread. Deliberately not a line: nobody said it, and it is not
     # part of the conversation the agent sees. The latest only, not every one
@@ -404,7 +422,8 @@ def session_log(session: str, *, limit=None, before: str = "") -> tuple[bool, di
                                              positions=False)
         if data is None and not lines \
                 and not sessions.live_sessions().get(session) \
-                and not sessions.session_exists(session):
+                and not sessions.session_exists(session) \
+                and not driver.owned_headless(session):
             return False, {"error": "no conversation for that session yet", "status": 404}
         return True, _envelope(session, lines, limit=_limit(limit), before=before)
     except Exception as e:  # noqa: BLE001

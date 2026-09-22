@@ -435,8 +435,10 @@ def _thread_events(h: BaseHTTPRequestHandler, session: str, query: str) -> None:
     if not user:
         _json(h, err.pop("status", 401), {"ok": False, **err})
         return
+    from . import driver
+
     if not sessions.live_sessions().get(session) and not sessions.session_exists(session) \
-            and threads._manifest_for(session) is None:
+            and threads._manifest_for(session) is None and not driver.owned_headless(session):
         _json(h, 404, {"ok": False, "error": "no such session"})
         return
     thread_events.serve(h, session)

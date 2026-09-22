@@ -52,7 +52,7 @@ import queue
 import threading
 import time
 
-from . import sessions, threads, transcript
+from . import driver, sessions, threads, transcript
 
 log = logging.getLogger("agent-media.server.thread_events")
 
@@ -111,9 +111,13 @@ def _plain(obj, drop=("server_time",)):
 
 
 def session_state(session: str) -> dict:
-    """`{"state", "live", "pane"}` — what the session is doing, from its pane."""
+    """`{"state", "live", "pane"}` — what the session is doing, from its pane,
+    or for a headless session (MEDIA_HEADLESS) from sessiond."""
     pane = sessions.live_sessions().get(session, "")
     if not pane:
+        hl = driver.headless_state(session)
+        if hl is not None:
+            return {"state": hl["state"], "live": hl["live"], "pane": None}
         return {"state": "ended", "live": False, "pane": None}
     st = sessions.activity_of(session, pane).get("state") or "waiting"
     return {"state": st, "live": True, "pane": pane}
@@ -179,10 +183,23 @@ class Watcher:
 
     # -- the loop --
 
+    def _headless_seq(self) -> int | None:
+        """sessiond's event count for this session, when it is headless —
+        a new event (a turn starting, a permission request, a result) is
+        reason to re-read now rather than at the next 1 s / 3 s tick. None
+        for a pane session, or with MEDIA_HEADLESS off."""
+        if not driver.owned_headless(self.session):
+            return None
+        from .driver.headless import call
+
+        r = call("events", session=self.session, since=1 << 62, timeout=2.0)
+        return int(r["seq"]) if r.get("ok") else None
+
     def _run(self) -> None:
         stat = self._stat
         first = last = 0.0
         next_full = time.monotonic() + (FAST_S if self._busy else SLOW_S)
+        seq = self._headless_seq()
         # While a burst of writes settles, look again after the debounce
         # rather than a whole poll: the wait is the debounce, not both.
         while not self._stop.wait(DEBOUNCE_S if first else POLL_S):
@@ -196,6 +213,11 @@ class Watcher:
                 if first and (now - last >= DEBOUNCE_S or now - first >= DEBOUNCE_MAX_S):
                     first = 0.0
                     self._messages()
+                if seq is not None:
+                    got = self._headless_seq()
+                    if got is not None and got != seq:
+                        seq = got
+                        next_full = now      # state or approval moved: re-read now
                 if now >= next_full:
                     self._full(emit=True)
                     next_full = time.monotonic() + (FAST_S if self._busy else SLOW_S)

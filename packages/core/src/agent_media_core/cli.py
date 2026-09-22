@@ -7155,6 +7155,15 @@ def cmd_session_reap(a) -> int:
     return reap.run(mode, as_json=a.json, write_log=not a.no_log)
 
 
+def cmd_sessiond(a) -> int:
+    """Run media-sessiond, the host of headless agent sessions
+    (agent_media_server.sessiond). Runs until SIGTERM."""
+    sd = _server_module("sessiond")
+    if sd is None:
+        return 1
+    return sd.main(["--socket", a.socket] if a.socket else [])
+
+
 def cmd_session_archive_import(a) -> int:
     """Carry ABS `archived` tags over to the server's archive flag."""
     imp = _server_module("archive_import")
@@ -8004,6 +8013,14 @@ def _build_parser() -> argparse.ArgumentParser:
     sr.add_argument("--no-log", action="store_true",
                     help="print only; do not append to <state_dir>/session-reap.log")
     sr.set_defaults(func=cmd_session_reap)
+
+    sd = sub.add_parser("sessiond",
+                        help="host headless agent sessions for the phone (MEDIA_HEADLESS); "
+                             "a service, normally run by the media-sessiond unit")
+    sd.add_argument("--socket", default="",
+                    help="unix socket (default: MEDIA_SESSIOND_SOCKET, else "
+                         "$XDG_RUNTIME_DIR/agent-media/sessiond.sock)")
+    sd.set_defaults(func=cmd_sessiond)
 
     sai = sub.add_parser("session-archive-import",
                          help="set the archive flag for conversations tagged "

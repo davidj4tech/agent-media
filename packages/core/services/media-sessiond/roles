@@ -1,0 +1,6 @@
+# Headless sessions run where the agents and their logins are — the host
+# replies come from. Only once the feature is switched on there: without
+# MEDIA_HEADLESS in agent-media.env the service is skipped, never installed
+# and idle.
+requires: origin
+requires-env: MEDIA_HEADLESS

@@ -1,0 +1,25 @@
+#!/bin/sh
+# media-sessiond — holds the headless agent sessions chats from the phone run
+# in (MEDIA_HEADLESS=1). See agent_media_server/sessiond.py and
+# docs/proposals/2026-09-22-headless-sessions.md.
+#
+# Its own service, not the canvas's: a headless session's stdin is its only
+# way in, and the canvas restarts after every pull. This restarts only when
+# its own code changes — and a restart ends every session it holds (each is
+# resumed with `--resume` on its next message; a permission request pending
+# at that moment is lost and must be asked again).
+#
+# The canvas reaches it over $XDG_RUNTIME_DIR/agent-media/sessiond.sock (mode
+# 0600). It never touches tmux.
+#
+# Settings, from ~/.config/agent-media.env:
+#   MEDIA_HEADLESS_PERMISSIONS  strict (default) | normal — strict asks the
+#                               phone for anything but read-only tools
+#   MEDIA_SESSIOND_IDLE         seconds idle before a session is parked (1800)
+#   MEDIA_SESSIOND_MAX          live sessions at once (4)
+#   MEDIA_HEADLESS_MODEL        --model for every headless session (unset)
+exec 2>&1
+[ -f "$HOME/.config/agent-media.env" ] && . "$HOME/.config/agent-media.env"
+export MEDIA_HEADLESS_PERMISSIONS MEDIA_SESSIOND_IDLE MEDIA_SESSIOND_MAX \
+       MEDIA_SESSIOND_CLOSE_GRACE MEDIA_HEADLESS_MODEL MEDIA_SESSIOND_SOCKET
+exec media sessiond

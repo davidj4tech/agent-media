@@ -688,7 +688,20 @@ def activity_of(session: str, pane: str, *, with_draft: bool = False) -> dict:
     changing. Today it is read off the pane: `None` means the screen does not
     look like the agent at all (not painted yet, or not an agent), which the
     reaper treats as a reason to leave it alone.
+
+    A headless session (MEDIA_HEADLESS; no pane) is answered by sessiond,
+    from the agent's own events: its state, or None when it is not running.
+    It never has a draft — nobody types into it.
     """
+    if not pane:
+        from . import driver
+
+        hl = driver.headless_state(session) if session else None
+        if hl is not None:
+            out = {"state": hl["state"] if hl["live"] else None}
+            if with_draft:
+                out["draft"] = False
+            return out
     cls = panes.classify(panes.strip_ansi(_capture_pane(pane)), _agent_of_pane(pane)) \
         if pane else None
     out: dict = {"state": _STATE_NAMES.get(cls, "waiting") if cls else None}
@@ -716,6 +729,22 @@ def _live_states() -> list[dict]:
         state = activity_of(sid, pane)["state"] or "waiting"
         out.append({"session": sid, "tail": tails.get(sid, ""),
                     "state": state, "mem_mb": mem.get(sid)})
+    # Headless sessions sessiond is running (MEDIA_HEADLESS): the state is
+    # sessiond's, from the agent's own events, and the memory is its process
+    # tree the same way. Marked `driver: "headless"`; pane rows are unchanged.
+    from . import driver
+
+    if driver.headless_enabled():
+        from .driver.headless import contract_state
+
+        hl = [v for v in driver.headless_driver().rows()
+              if v.get("live") and v.get("session") and v["session"] not in live]
+        hmem = procmem.tree_mem_mb({v["session"]: v.get("pid") for v in hl})
+        for v in hl:
+            sid = str(v["session"])
+            out.append({"session": sid, "tail": tails.get(sid, ""),
+                        "state": contract_state(v), "mem_mb": hmem.get(sid),
+                        "driver": "headless"})
     return out
 
 
@@ -854,6 +883,77 @@ def _recent_conversations(limit: int = 40) -> list[tuple[str, str, float]]:
     return rows[:limit]
 
 
+#: Ended headless sessions listed at most (live ones always are): newest
+#: first. A spoken one is on the shelf as well, which dedups against this.
+HEADLESS_ENDED_ROWS = 20
+#: `{session: ((size, mtime), title)}` for headless titles read from the
+#: transcript, so an unchanged one is a stat.
+_HEADLESS_TITLES: dict[str, tuple[tuple, str]] = {}
+
+
+def _headless_title(session: str, view: dict) -> str:
+    """A headless session's name: the shelf's (a `/rename`, or the folder it
+    was filed under), else Claude's own (`/rename` in the transcript, then its
+    `ai-title`), else the first message. Proposal §8, the order `_live_title`
+    uses for Codex and pi."""
+    folder = _folder_for_session(session)
+    if folder:
+        return os.path.basename(folder)
+    from agent_media_core import conversation
+
+    path = conversation.transcript(session)
+    title = ""
+    if path is not None:
+        try:
+            st = path.stat()
+            sig = (st.st_size, st.st_mtime)
+        except OSError:
+            sig = None
+        hit = _HEADLESS_TITLES.get(session)
+        if hit and sig and hit[0] == sig:
+            title = hit[1]
+        elif sig:
+            from agent_media_core import session_feed
+
+            title = session_feed._asked(session, [])
+            _HEADLESS_TITLES[session] = (sig, title)
+    title = " ".join((title or str(view.get("first_text") or "")).split())
+    return title if len(title) <= 60 else title[:59] + "…"
+
+
+def _headless_rows(seen: set[str], flags, pinned, marks) -> list[dict]:
+    """The sessions sessiond holds, as `/targets` rows (MEDIA_HEADLESS only).
+
+    Shaped like the pane rows, plus four keys that only headless rows carry:
+    `driver: "headless"`, `drivable: true` (the phone can send, answer and
+    stop it), `harness` and `source: "sessiond"`. `pane` is always null.
+    Live ones first; ended ones (parked, closed) newest first, capped.
+    """
+    from . import driver, rest
+
+    if not driver.headless_enabled():
+        return []
+    views = [v for v in driver.headless_driver().rows()
+             if v.get("session") and v["session"] not in seen]
+    live = [v for v in views if v.get("live")]
+    ended = sorted((v for v in views if not v.get("live")),
+                   key=lambda v: -float(v.get("last_event_at") or 0))[:HEADLESS_ENDED_ROWS]
+    out = []
+    for v in live + ended:
+        sid = str(v["session"])
+        seen.add(sid)
+        row = {"session": sid, "title": _headless_title(sid, v), "live": bool(v.get("live")),
+               "pane": None}
+        if not row["live"]:
+            row["at"] = round(float(v.get("last_event_at") or 0), 3)
+        row.update({"recap": recaps.recap_for(sid), "archived": sid in flags,
+                    "rested": None if row["live"] else rest.row_mark(sid, False, marks),
+                    "pinned": sid in pinned, "driver": "headless", "drivable": True,
+                    "harness": str(v.get("agent") or "claude"), "source": "sessiond"})
+        out.append(row)
+    return out
+
+
 def sessions_index() -> list[dict]:
     """What the assistant button can be pointed at: live sessions first, by
     the title on their pane, then recently shelved conversations by their
@@ -893,6 +993,8 @@ def sessions_index() -> list[dict]:
         out.append({"session": sid, "title": title, "live": True, "pane": pane,
                     "recap": recaps.recap_for(sid), "archived": sid in flags,
                     "rested": None, "pinned": sid in pinned})
+    for row in _headless_rows(seen, flags, pinned, marks):
+        out.append(row)
     for sid, title, at in _recent_conversations():
         if sid in seen:
             continue
