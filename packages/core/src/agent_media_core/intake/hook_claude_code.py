@@ -93,11 +93,28 @@ def _tmux(args: list[str], timeout: float = 2.0) -> str:
         return ""
 
 
+def _headless_workspace() -> str:
+    """The workspace a headless session stands in for, or "".
+
+    A session started from the phone runs headless (the server's
+    media-sessiond), with no pane and no tmux session. sessiond marks it
+    `MEDIA_SOURCE_KIND=headless` and sets `MEDIA_SOURCE_WORKSPACE` to the tmux
+    session a pane would have opened in (`amux-scratch`, `p-agent-media`) —
+    so its speech gets the same per-session voice, mute and filing as a pane
+    session's would. Only honoured with the marker, so a stray variable in a
+    desk shell changes nothing.
+    """
+    if os.environ.get("MEDIA_SOURCE_KIND") != "headless":
+        return ""
+    return (os.environ.get("MEDIA_SOURCE_WORKSPACE") or "").strip()
+
+
 def _session_name() -> str:
-    """Current tmux session name, or "" when not running inside tmux."""
+    """Current tmux session name, or "" when not running inside tmux — or, for
+    a headless session, the workspace sessiond gave it."""
     pane = os.environ.get("TMUX_PANE")
     if not pane:
-        return ""
+        return _headless_workspace()
     return _tmux(["display-message", "-p", "-t", pane, "#{session_name}"])
 
 
@@ -119,7 +136,10 @@ def _source_place() -> dict:
     """
     pane = os.environ.get("TMUX_PANE") or ""
     if not pane:
-        return {}
+        # A headless session: no pane to name, but the workspace it is filed
+        # under (see `_headless_workspace`) rides as its tmux session.
+        ws = _headless_workspace()
+        return {"tmux": ws} if ws else {}
     out = {"pane": pane}
     info = _tmux(["display-message", "-p", "-t", pane,
                   "#{session_name}\t#{window_name}"])
