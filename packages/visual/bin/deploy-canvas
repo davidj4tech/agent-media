@@ -66,3 +66,16 @@ if [ "$red5_id" != "$phone_id" ]; then
     exit 1
 fi
 echo "both on $red5_id"
+
+# media-sessiond owns running headless chats, so a deploy never restarts it
+# (that would cut a reply off mid-turn). Say when it is older than the code
+# just deployed, so the restart is a choice rather than a surprise.
+if systemctl --user is-active --quiet agent-media-sessiond 2>/dev/null; then
+    started="$(systemctl --user show -p ActiveEnterTimestamp --value agent-media-sessiond)"
+    started_s="$(date -d "$started" +%s 2>/dev/null || echo 0)"
+    code_s="$(git log -1 --format=%ct -- packages/server packages/core)"
+    if [ "$started_s" -lt "$code_s" ]; then
+        echo "note: media-sessiond predates this code -- restart it when no headless chat is mid-reply:"
+        echo "      systemctl --user restart agent-media-sessiond"
+    fi
+fi
