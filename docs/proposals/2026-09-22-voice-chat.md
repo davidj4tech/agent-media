@@ -1,6 +1,7 @@
 # Proposal: voice chat with barge-in (22 Sep 2026)
 
-Status: **plan, nothing built.** The goal David asked for is "full duplex
+Status: **plan; step 0 (spike) measured 22 Sep 2026, see §3a.** Decided
+22 Sep: Sasonica Next, Haiku by default, speaker first (earbuds tested too). The goal David asked for is "full duplex
 chat". What this delivers is the practical version of it: the phone listens
 the whole time a voice chat is open, the reply starts speaking within a
 couple of seconds of him stopping, and talking over it cuts it off at once
@@ -80,6 +81,32 @@ model. Two later levers:
 - **Speculative send** on a stable partial transcript can win back ~0.5s.
   It risks answering half a sentence, so it comes last and only if measured
   to help.
+
+## 3a. Measured (step 0, 22 Sep 2026)
+
+`spike/voice/latency.py`, warm `claude -p --include-partial-messages --model
+haiku`, six prompts, red5 under a load average of ~3 (other sessions
+building); raw rows in `spike/voice/results-haiku.json`.
+
+| From his text arriving on red5 to… | median | max |
+|---|---|---|
+| first text delta | 1.46s | 1.82s |
+| first complete sentence | 1.60s | 2.06s |
+| whole reply (2–4 sentences) | 2.18s | 2.54s |
+| piper renders that sentence | 1.14s* | 3.48s |
+| edge renders it | 4.30s | 22.9s |
+
+\* Called directly and warm, piper takes 0.34s for a 60-character
+sentence; the spike's figure includes the engine wrapper and red5's load.
+
+Reading: **server side is ~2–2.6s** (first sentence plus piper), so with the
+recogniser's endpointing (~0.6s) and the phone trip (~0.5s) the total is
+**~3–3.7s**, a second over the estimate in §3. Edge is out for voice (a 23s
+outlier). Levers, cheapest first: start on the first clause, not the first
+sentence (a comma or dash after ~6 words; Haiku's sentences run 60–140
+characters); render in a voice-only piper worker that nothing else queues on;
+then the spoken acknowledgement. Go: the shape holds; step 1 carries the
+first-clause split.
 
 ## 4. Steps
 

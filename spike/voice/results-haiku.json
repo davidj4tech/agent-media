@@ -1,0 +1,82 @@
+{
+ "summary": {
+  "model": "haiku",
+  "runs": 6,
+  "delta_s": {
+   "median": 1.458,
+   "max": 1.823
+  },
+  "sentence_s": {
+   "median": 1.599,
+   "max": 2.06
+  },
+  "turn_s": {
+   "median": 2.18,
+   "max": 2.54
+  },
+  "piper_render_s": {
+   "median": 1.135,
+   "max": 3.475
+  },
+  "edge_render_s": {
+   "median": 4.303,
+   "max": 22.931
+  }
+ },
+ "rows": [
+  {
+   "prompt": "Hey, what's a good way to wind down after a long day?",
+   "first_sentence": "Take a walk outside to get some fresh air and clear your head.",
+   "delta_s": 1.366,
+   "sentence_s": 1.407,
+   "turn_s": 2.089,
+   "piper_render_s": 3.475,
+   "edge_render_s": 6.085
+  },
+  {
+   "prompt": "Quick one: why is the sky blue?",
+   "first_sentence": "Sunlight has all colors mixed together, but when it hits air molecules in the atmosphere, blue light scatters way more easily than other colors.",
+   "delta_s": 1.149,
+   "sentence_s": 1.461,
+   "turn_s": 2.102,
+   "piper_render_s": 1.924,
+   "edge_render_s": 1.239
+  },
+  {
+   "prompt": "Can you give me an idea for dinner tonight, something easy?",
+   "first_sentence": "Pasta with jarred sauce and whatever vegetables you have on hand\u2014takes fifteen minutes.",
+   "delta_s": 1.137,
+   "sentence_s": 1.19,
+   "turn_s": 1.822,
+   "piper_render_s": 0.903,
+   "edge_render_s": 22.931
+  },
+  {
+   "prompt": "What's the difference between a latte and a flat white?",
+   "first_sentence": "A latte's mostly steamed milk with a shot of espresso and a thick layer of foam on top.",
+   "delta_s": 1.64,
+   "sentence_s": 1.871,
+   "turn_s": 2.258,
+   "piper_render_s": 0.497,
+   "edge_render_s": 2.522
+  },
+  {
+   "prompt": "Tell me something interesting about octopuses.",
+   "first_sentence": "Octopuses have nine brains\u2014one central brain and a mini-brain in each of their eight arms.",
+   "delta_s": 1.823,
+   "sentence_s": 2.06,
+   "turn_s": 2.54,
+   "piper_render_s": 1.293,
+   "edge_render_s": 0.97
+  },
+  {
+   "prompt": "How do I stop my headphones tangling in my pocket?",
+   "first_sentence": "Wrap them in a figure-eight pattern around your fingers, then secure it with a small velcro strap or even a rubber band.",
+   "delta_s": 1.549,
+   "sentence_s": 1.737,
+   "turn_s": 2.332,
+   "piper_render_s": 0.976,
+   "edge_render_s": 8.432
+  }
+ ]
+}
