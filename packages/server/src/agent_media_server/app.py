@@ -62,6 +62,10 @@ device gets its token):
   POST /session/resume {"session"} → bring that session back in a tmux
                   window (a reply's revive, without the reply)
   POST /session/close  {"session"} → close the pane it runs in
+  POST /session/stop {"session", "speech"?: "auto"|"silence"} → stop what
+                  is happening: interrupt the turn while it works (a headless
+                  session's interrupt, or Escape into a working pane), else
+                  stop this thread's speech (stop.py, §12)
   POST /session/archive {"session", "archived": true|false} → file the
                   thread under Archived, or take it back out (a flag this
                   server keeps; see archive.py). Ends nothing
@@ -116,7 +120,7 @@ from . import audio, notes, notes_setup
 CORS_PATHS = frozenset({
     "/conversation", "/conversation/log", "/conversations", "/targets", "/item",
     "/reply", "/ask", "/focus", "/session/resume", "/session/close", "/draft",
-    "/session/answer", "/session/archive", "/session/pin",
+    "/session/answer", "/session/archive", "/session/pin", "/session/stop",
     "/speech/now", "/speech/ctl", "/sessions/state", "/commands", "/rename",
     "/harnesses", "/harnesses/run", "/harnesses/screen",
     "/harnesses/keys", "/harnesses/close", "/share",
@@ -591,6 +595,19 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         body = _read_json(h) or {}
         fn = send.session_resume if path.endswith("resume") else send.session_close
         ok, detail = fn(str(body.get("session") or ""), _bearer(h))
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    elif path == "/session/stop":
+        # The app's stop button (server-contract.md §12): interrupt the turn
+        # while it works, else stop this thread's speech; `speech: "silence"`
+        # (a second press) stops its speech as well. See stop.py.
+        from . import stop
+
+        body = _read_json(h) or {}
+        ok, detail = stop.session_stop(str(body.get("session") or ""),
+                                       str(body.get("speech") or "auto"), _bearer(h))
+        if not ok:
+            print(f"stop: refused ({detail.get('error')}) for "
+                  f"{str(body.get('session'))[:8]}", file=sys.stderr, flush=True)
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path == "/session/archive":
         # Archive or un-archive a thread: a flag kept here, by session, now

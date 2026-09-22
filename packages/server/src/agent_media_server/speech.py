@@ -48,6 +48,20 @@ def run_ctl(action: str, arg: int) -> str:
     return _CTL(action, arg) if _CTL is not None else ""
 
 
+def stop_speech() -> str:
+    """Stop the clip playing now, on the player it is playing on — what
+    `media stop` does. "" when done, else why not. `/session/stop` calls this
+    only after checking the clip is the thread's own (stop.py)."""
+    try:
+        from agent_media_core.cli import _active_speech_target
+        from agent_media_core.sinks.speech import SinkSpeech
+
+        SinkSpeech().stop(_active_speech_target())
+        return ""
+    except Exception as e:  # noqa: BLE001 — reported, never raised into a route
+        return str(e) or type(e).__name__
+
+
 # --- what is being said, for the app's mini player ------------------------------
 
 #: `{session: (title, item, at)}` — a reply is polled every couple of seconds
