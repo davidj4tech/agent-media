@@ -264,10 +264,13 @@ def _user_text(content) -> tuple[str, bool]:
     return "\n".join(texts), results
 
 
-def is_boundary(rec: dict) -> bool:
+def is_boundary(rec: dict, sidechain: bool = False) -> bool:
     """A record that starts a new turn: a prompt, not a tool result. Reading
-    from one of these on, every tool result has its tool call in view."""
-    if rec.get("type") != "user" or rec.get("isSidechain") or rec.get("isMeta"):
+    from one of these on, every tool result has its tool call in view.
+    `sidechain`: the file is a subagent's own (agents.py), whose every record
+    is a sidechain one."""
+    if rec.get("type") != "user" or rec.get("isMeta") \
+            or (rec.get("isSidechain") and not sidechain):
         return False
     text, results = _user_text((rec.get("message") or {}).get("content"))
     return bool(text.strip()) and not results
@@ -282,7 +285,10 @@ class Builder:
     diffs by `id`.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, sidechain: bool = False) -> None:
+        #: Read sidechain records instead of skipping them: a subagent's own
+        #: transcript (`subagents/agent-<id>.jsonl`) is nothing but.
+        self.sidechain = sidechain
         self.messages: list[dict] = []
         self._cur: dict | None = None          # the assistant message still open
         self._stop: str | None = None          # its last stop_reason
@@ -331,7 +337,7 @@ class Builder:
     # -- records --
 
     def feed(self, rec: dict) -> None:
-        if not isinstance(rec, dict) or rec.get("isSidechain"):
+        if not isinstance(rec, dict) or (rec.get("isSidechain") and not self.sidechain):
             return
         uid = rec.get("uuid")
         if uid:
@@ -529,7 +535,7 @@ def _feed_range(b: Builder, fh, lo: int, hi: int) -> None:
             b.feed(rec)
 
 
-def _tail_start(fh, end: int, prompts: int) -> int:
+def _tail_start(fh, end: int, prompts: int, sidechain: bool = False) -> int:
     """The offset of the line `prompts` prompts back from `end` (0 when the
     file has fewer). Reads backwards; only lines that could be a prompt are
     parsed."""
@@ -561,7 +567,7 @@ def _tail_start(fh, end: int, prompts: int) -> int:
             if b'"type":"user"' not in raw or b'"tool_result"' in raw:
                 continue
             rec = _parse_line(raw)
-            if rec is not None and is_boundary(rec):
+            if rec is not None and is_boundary(rec, sidechain):
                 found += 1
                 if found >= prompts:
                     return at
@@ -569,13 +575,14 @@ def _tail_start(fh, end: int, prompts: int) -> int:
 
 
 class _File:
-    __slots__ = ("ino", "size", "mtime", "lo", "offset", "seam", "builder", "lock")
+    __slots__ = ("ino", "size", "mtime", "lo", "offset", "seam", "builder", "lock", "sidechain")
 
-    def __init__(self) -> None:
+    def __init__(self, sidechain: bool = False) -> None:
         self.ino = self.size = self.lo = self.offset = 0
         self.mtime = 0.0
         self.seam = b""
-        self.builder = Builder()
+        self.sidechain = sidechain
+        self.builder = Builder(sidechain)
         self.lock = threading.Lock()
 
 
@@ -588,10 +595,11 @@ def _reset_for_tests() -> None:
         _CACHE.clear()
 
 
-def _read(path: str, full: bool) -> tuple[list[dict], bool] | None:
+def _read(path: str, full: bool, sidechain: bool = False) -> tuple[list[dict], bool] | None:
     """`(messages, more)` for the transcript at `path`: the cached fold,
     brought up to date. `more` is whether older messages exist that have not
-    been read (the file was read from its end); `full` reads them."""
+    been read (the file was read from its end); `full` reads them.
+    `sidechain`: a subagent's transcript (see `Builder`)."""
     try:
         st = os.stat(path)
     except OSError:
@@ -599,7 +607,7 @@ def _read(path: str, full: bool) -> tuple[list[dict], bool] | None:
     with _LOCK:
         f = _CACHE.get(path)
         if f is None:
-            f = _CACHE[path] = _File()
+            f = _CACHE[path] = _File(sidechain)
             while len(_CACHE) > _CACHE_MAX:
                 _CACHE.pop(next(iter(_CACHE)))
     with f.lock:
@@ -614,13 +622,13 @@ def _read(path: str, full: bool) -> tuple[list[dict], bool] | None:
                 if not appended:
                     # First sight, shrunk, replaced or rewritten: from scratch,
                     # from the end.
-                    f.builder = Builder()
-                    f.lo = 0 if full else _tail_start(fh, end, TAIL_PROMPTS)
+                    f.builder = Builder(f.sidechain)
+                    f.lo = 0 if full else _tail_start(fh, end, TAIL_PROMPTS, f.sidechain)
                     f.offset = f.lo
                 elif full and f.lo:
                     # Older messages wanted: read what came before the tail.
                     # `lo` is a prompt, so everything before it is closed.
-                    older = Builder()
+                    older = Builder(f.sidechain)
                     _feed_range(older, fh, 0, f.lo)
                     older.close_open()
                     f.builder.messages[:0] = older.messages
@@ -655,13 +663,20 @@ def messages(session: str, *, limit: int | None = None, before: str = "") \
     path = transcript_path(session)
     if not path:
         return None
-    got = _read(path, full=False)
+    return messages_at(path, limit=limit, before=before)
+
+
+def messages_at(path: str, *, limit: int | None = None, before: str = "",
+                sidechain: bool = False) -> tuple[list[dict], bool] | None:
+    """`messages`, for the transcript at `path` — a session's, or with
+    `sidechain` a subagent's own (agents.py). None when it cannot be read."""
+    got = _read(path, full=False, sidechain=sidechain)
     if got is None:
         return None
     msgs, more = got
     want_older = bool(before) and not any(m["id"] == before for m in msgs[1:])
     if (limit and len(msgs) < limit and more) or (want_older and more):
-        got = _read(path, full=True)
+        got = _read(path, full=True, sidechain=sidechain)
         if got is None:
             return None
         msgs, more = got

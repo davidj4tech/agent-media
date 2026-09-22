@@ -24,6 +24,9 @@ device gets its token):
   GET  /threads/<uuid>/events   → the same thread as a stream of changes
                   (SSE; thread_events.py). `?access_token=` stands in for the
                   bearer where a client cannot set headers
+  GET  /threads/<uuid>/agents   → the thread's background agents (agents.py)
+  GET  /threads/<uuid>/agents/<id>/log[?limit=&before=]   → one agent's own
+                  turns as messages, read-only
   GET  /item?id=<abs item id>   → that library item carrying only what the
                   app reads, gzipped (1267 KB → 25 KB on a long
                   conversation); see abs_item.py
@@ -159,12 +162,16 @@ CORS_POST_PATHS = frozenset({"/pair"})
 # like the ones above, but a path with the thread in it, so it is matched
 # rather than listed. `cors_path` is the one test for both.
 THREAD_EVENTS = re.compile(r"/threads/([^/]+)/events")
+# A thread's background agents (§6.12), and one agent's own log.
+THREAD_AGENTS = re.compile(r"/threads/([^/]+)/agents")
+AGENT_LOG = re.compile(r"/threads/([^/]+)/agents/([^/]+)/log")
 
 
 def cors_path(path: str) -> bool:
     """Whether `path` is an app route a browser on another origin may reach
-    (any method): `CORS_PATHS`, or a thread's event stream."""
-    return path in CORS_PATHS or bool(THREAD_EVENTS.fullmatch(path))
+    (any method): `CORS_PATHS`, a thread's event stream, or its agents."""
+    return path in CORS_PATHS or any(r.fullmatch(path)
+                                     for r in (THREAD_EVENTS, THREAD_AGENTS, AGENT_LOG))
 
 
 # Long enough that a chat page's polling is not preceded by a preflight every
@@ -314,6 +321,11 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
         # The stream answers the request however it ends — it must never
         # fall through to the caller's 404 on a socket it already wrote to.
         _thread_events(h, events.group(1), query)
+        return True
+    agents_m = THREAD_AGENTS.fullmatch(path)
+    log_m = AGENT_LOG.fullmatch(path)
+    if agents_m or log_m:
+        _thread_agents(h, (agents_m or log_m).group(1), log_m.group(2) if log_m else None, query)
         return True
     elif path == "/item":
         # The library item, carrying only what the app reads. Sasonica asks
@@ -471,6 +483,40 @@ def _thread_events(h: BaseHTTPRequestHandler, session: str, query: str) -> bool:
     raw = (qs.get("limit") or [""])[0]
     limit = threads._limit(raw) if raw else None
     return thread_events.serve(h, session, limit=limit, gzip=thread_events.accepts_gzip(h))
+
+
+def _thread_agents(h: BaseHTTPRequestHandler, session: str, agent_id: str | None,
+                   query: str) -> None:
+    """`GET /threads/{session}/agents` and `…/agents/{id}/log` (§6.12,
+    agents.py): the thread's background agents, and one agent's own turns as
+    messages. Read-only; gated like the thread's log."""
+    from . import agents
+
+    if not sessions._SESSION.fullmatch(session or ""):
+        _json(h, 400, {"ok": False, "error": "not a session id"})
+        return
+    user, err = auth.gate(_bearer(h))
+    if not user:
+        _json(h, err.pop("status", 401), {"ok": False, **err})
+        return
+    if agent_id is not None:
+        qs = parse_qs(query)
+        ok, detail = agents.agent_log(session, agent_id,
+                                      limit=threads._limit((qs.get("limit") or [None])[0]),
+                                      before=(qs.get("before") or [""])[0])
+        if ok:
+            _json_z(h, 200, {"ok": True, **detail})
+        else:
+            _json(h, detail.pop("status", 404), {"ok": False, **detail})
+        return
+    rows = agents.agents(session)
+    if rows is None and not sessions.live_sessions().get(session) \
+            and not sessions.session_exists(session):
+        _json(h, 404, {"ok": False, "error": "no such session"})
+        return
+    rows = rows or []
+    _json_z(h, 200, {"ok": True, "session": session, "counts": agents.counts(rows),
+                     "agents": rows})
 
 
 def _base_url(h: BaseHTTPRequestHandler) -> str:

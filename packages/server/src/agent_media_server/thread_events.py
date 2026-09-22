@@ -13,6 +13,7 @@ sends only what changed:
                  "session_live": bool, "live": bool (deprecated alias), "pane"}
     pending     {"pending": bool} — a reply is in and no answer has landed
     recap       the latest recap, or null
+    agents      {"running", "total"} — the thread's background agents (§6.12)
     ping        {} after PING_S of silence
 
 **One watcher per session**, shared by every connection to it, started by the
@@ -60,7 +61,7 @@ import threading
 import time
 import zlib
 
-from . import driver, sessions, threads, transcript
+from . import agents, driver, sessions, threads, transcript
 
 log = logging.getLogger("agent-media.server.thread_events")
 
@@ -163,8 +164,21 @@ def snapshot(session: str, limit: int | None = None) -> tuple[bool, dict]:
                         if (l.get("at") or 0.0) >= cutoff or l.get("live")]
     env.update({"state": st["state"], "session_live": st["session_live"],
                 "live": st["session_live"], "pane": st["pane"],
-                "resumable": sessions.session_exists(session)})
+                "resumable": sessions.session_exists(session),
+                "agents": agent_counts(session, st["session_live"])})
+    # Where the thread is, for the small line under its title (§6.1).
+    sessions.add_projects([env])
     return True, env
+
+
+def agent_counts(session: str, live: bool) -> dict:
+    """`{"running", "total"}` of the session's background agents (§6.12);
+    zeros when it has none, or they cannot be read."""
+    try:
+        return agents.counts(agents.agents(session, live=live))
+    except Exception:  # noqa: BLE001 — a count is a nicety; never fail a snapshot
+        log.exception("thread events %s: agents unreadable", session[:8])
+        return {"running": 0, "total": 0}
 
 
 class Watcher:
@@ -306,7 +320,8 @@ class Watcher:
         now = {"working": env.get("working"), "approval": env.get("approval"),
                "suggestion": {"text": env.get("suggestion") or ""},
                "state": st, "pending": {"pending": bool(env.get("pending"))},
-               "recap": env.get("recap")}
+               "recap": env.get("recap"),
+               "agents": agent_counts(self.session, st["session_live"])}
         for name, value in now.items():
             self._update(name, value, emit)
         self._busy = bool(env.get("working")) or bool(live) or st["state"] == "working"

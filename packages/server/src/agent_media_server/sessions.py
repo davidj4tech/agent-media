@@ -254,6 +254,97 @@ def transcript_cwd(session: str) -> str:
     return ""
 
 
+#: `{session: cwd}` — a session's directory never changes once its
+#: transcript has one, so a found one is kept (rows ask for ~60 at a time).
+_CWDS: dict[str, str] = {}
+
+
+def session_cwd(session: str) -> str:
+    """The directory `session` ran in, "" when unknown: the first `cwd` its
+    Claude Code transcript records (the transcript `recaps` finds), else
+    `transcript_cwd` for the other harnesses. Cached once found."""
+    hit = _CWDS.get(session)
+    if hit:
+        return hit
+    from . import recaps
+
+    cwd = ""
+    path = recaps.transcript_path(session)
+    if path:
+        try:
+            with open(path, "rb") as fh:
+                for n, line in enumerate(fh):
+                    if n > 400:
+                        break
+                    if b'"cwd"' not in line:
+                        continue
+                    try:
+                        cwd = str(json.loads(line).get("cwd") or "")
+                    except ValueError:
+                        continue
+                    if cwd:
+                        break
+        except OSError:
+            cwd = ""
+    else:
+        from agent_media_core import harnesses
+
+        if harnesses.harness_of(session) and harnesses.harness_of(session) != harnesses.CLAUDE:
+            cwd = transcript_cwd(session)
+    if cwd:
+        _CWDS[session] = cwd
+    return cwd
+
+
+def project_of(cwd: str, folder: str = "") -> str | None:
+    """A session's project, as the layout names one (agent_media_core/
+    layout.py), or None when nothing says.
+
+    David's layout: the series its shelf folder is filed under
+    (`p-agent-media`), else `p-<name>` for a directory under ~/projects (a
+    worktree inside one counts as that project); a directory outside
+    ~/projects names no project. Default layout: the folder's basename
+    (`layout.project_of_path`)."""
+    from agent_media_core import layout
+
+    if layout.projects():
+        series = Path(folder).parent.name if folder else ""
+        if series:
+            return series
+        root = os.path.expanduser("~/projects")
+        if cwd and cwd.startswith(root + "/"):
+            tail = cwd[len(root) + 1:].split("/", 1)[0]
+            return layout.encoded_project_label(tail) or None
+        return None
+    return layout.project_of_path(cwd) if cwd else None
+
+
+def _shelf_folders() -> dict[str, str]:
+    out = {}
+    for f in _manifest_dir().glob("*.json"):
+        try:
+            data = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        folder = str(data.get("folder") or "")
+        if folder:
+            out[str(data.get("session") or f.stem)] = folder
+    return out
+
+
+def add_projects(rows: list[dict], folders: dict[str, str] | None = None) -> list[dict]:
+    """Give each row `cwd` and `project` (`project_of`), null when unknown,
+    in place. `folders`: the shelf's `{session: folder}` when the caller has
+    it (read here otherwise)."""
+    folders = _shelf_folders() if folders is None else folders
+    for r in rows:
+        sid = str(r.get("session") or "")
+        cwd = session_cwd(sid) if sid else ""
+        r["cwd"] = cwd or None
+        r["project"] = project_of(cwd, folders.get(sid, ""))
+    return rows
+
+
 def session_exists(session: str) -> bool:
     """Whether some harness still has this conversation — so it can be reopened.
 
@@ -1036,4 +1127,6 @@ def sessions_index() -> list[dict]:
         out.append({"session": sid, "title": title, "live": False, "pane": None, "at": at,
                     "recap": recaps.recap_for(sid), "archived": sid in flags,
                     "rested": rest.row_mark(sid, False, marks), "pinned": sid in pinned})
-    return out
+    # Where each thread is: its directory and the project it is filed under,
+    # for the small line under the title and the list's By-project order.
+    return add_projects(out)

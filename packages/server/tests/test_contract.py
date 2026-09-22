@@ -134,7 +134,8 @@ def keys(obj) -> set:
 GATED_GETS = ["/targets", "/sessions/state", "/conversations",
               f"/conversation?item=li_1", f"/conversation?session={SID}",
               "/conversation/log?item=li_1", f"/draft?session={SID}",
-              "/speech/now", f"/commands?session={SID}", "/audio/targets", "/dashboard"]
+              "/speech/now", f"/commands?session={SID}", "/audio/targets", "/dashboard",
+              f"/threads/{SID}/agents"]
 
 
 @pytest.mark.parametrize("path", GATED_GETS)
@@ -180,12 +181,18 @@ def test_targets_shape(server, shelf, signed_in):
     # same day, deliberately: the idle reaper's mark on a session it closed
     # ({"at", "reason"} | null, always null while live) and the keep-open pin
     # (§6.1, §6.4 /session/pin).
+    # `project` and `cwd` joined on 22 Sep 2026, deliberately: where the
+    # thread ran, for the small line under its title and the By-project order
+    # (§6.1). Null when unknown — the live row here has no transcript; the
+    # shelved one is filed under a series, which names its project.
     assert keys(live) == {"session", "title", "live", "pane", "recap", "archived",
-                          "rested", "pinned"}
+                          "rested", "pinned", "project", "cwd"}
     assert live == {"session": SID2, "title": "Sasonica web", "live": True, "pane": "%42",
-                    "recap": None, "archived": False, "rested": None, "pinned": False}
+                    "recap": None, "archived": False, "rested": None, "pinned": False,
+                    "project": None, "cwd": None}
     assert keys(shelved) == {"session", "title", "live", "pane", "at", "recap", "archived",
-                             "rested", "pinned"}
+                             "rested", "pinned", "project", "cwd"}
+    assert shelved["project"] == "p-agent-media" and shelved["cwd"] is None
     assert shelved["rested"] is None and shelved["pinned"] is False
     assert shelved["live"] is False and shelved["pane"] is None
     assert [keys(p) for p in obj["places"]] == [{"name", "path", "at"}]

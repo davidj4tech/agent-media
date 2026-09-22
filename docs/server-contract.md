@@ -276,6 +276,17 @@ Everything a message can be pointed at.
   `/session/close` is never rested.
 - `pinned` (every row, 22 Sep 2026): kept open against the idle reaper, set
   with `POST /session/pin` (§6.4). A pin affects the reaper only.
+- `cwd` and `project` (every row, 22 Sep 2026): where the thread ran — the
+  first `cwd` its Claude Code transcript records (Codex/pi/Hermes: their
+  own session files), and the project that names, as the layout calls one
+  (`sessions.project_of`, `agent_media_core/layout.py`). David's layout: the
+  series its shelf folder is filed under (`p-agent-media`), else `p-<name>`
+  for a directory under `~/projects` (a worktree inside one counts), else
+  `null`. Default layout: the folder's basename (home is `sasonica`). Both
+  `null` when unknown. The app draws `project` as a small line under the
+  title and groups its By-project order by it. The same two keys are on
+  `/conversations` rows, `/dashboard`'s `recent`, `working` and
+  `needs_you` rows, and the thread stream's snapshot (§11).
 - `places`: up to 6 directories sessions have run in, newest first
   (running sessions count as "now"). These are the only directories a new
   chat may be opened in — `/ask` checks against this list (with no limit).
@@ -762,7 +773,7 @@ written, with its steps and narration. Messages are read from the same file.
   first 300 chars of the result, except Read, which says `"N lines"`.
   **File contents are never shipped**: `toolUseResult` (which holds whole
   files) is never read. A subagent is one `Agent` tool part; its own turns
-  (sidechain records) are not messages.
+  (sidechain records) are not messages — they are its own log (§6.12).
 - `ask` — an AskUserQuestion, in the §6.2 `ask` shape, with the `answer`
   once given. Claude Code writes it to the transcript only after it is
   answered; the one on screen now is `approval`.
@@ -1585,6 +1596,8 @@ machines are. Code: `agent_media_server/dashboard.py`. Pinned by
 - `recent`: up to 8 `/targets` rows, archived ones left out, newest first by
   `at` — a shelved row's own `at`, else the transcript's mtime (a live row),
   else the recap's. `recap` and `rested` as on `/targets`.
+- `project`, `cwd` (22 Sep 2026) on every `recent`, `working` and
+  `needs_you` row: as on `/targets` (§6.1), `null` when unknown.
 - `places`: `/targets.places`. `agents`: the four harnesses, `present` =
   installed on this host (a PATH lookup only — `/harnesses` has versions and
   sign-in).
@@ -1613,6 +1626,105 @@ recaps and transcript lookups), warm 0.084 s, 0.28 s when the state sweep's
 3 s cache has lapsed.
 
 Clients: the chat app's Home, polled every ~5 s while visible.
+
+### 6.12 Background agents — gated (built 22 Sep 2026)
+
+The subagents a thread has spawned (Claude Code's Agent / Task tool), and
+each one's own turns. Code: `agent_media_server/agents.py`; pinned by
+`packages/server/tests/test_agents.py`. Read-only: nothing here writes to a
+transcript. Claude Code sessions only (other harnesses answer `[]`).
+
+Claude Code keeps each subagent beside the thread's transcript:
+`~/.claude/projects/<proj>/<session>/subagents/agent-<id>.jsonl` (the
+agent's own turns, every record a sidechain one) and `agent-<id>.meta.json`
+(`{agentType, isFork, description, toolUseId, parentAgentId, spawnDepth,
+requestShape, model}`).
+
+#### `GET /threads/{session}/agents` — gated (`auth.gate`, like the log)
+
+```json
+{"ok": true, "session": "5f8c…",
+ "counts": {"running": 1, "total": 3},
+ "agents": [
+   {"id": "a788bec427a1f3f12", "description": "Home dashboard + FAB fix, server and app",
+    "agent_type": "general-purpose", "is_fork": false, "parent_id": null, "depth": 1,
+    "started_at": 1790053121.745, "ended_at": 1790056110.385, "status": "done",
+    "current_step": null, "steps": 134, "last_at": 1790056110.224},
+   {"id": "a49bff707ac5eb98b", "description": "Build and ship GET /dashboard server",
+    "agent_type": "fork", "is_fork": true, "parent_id": "a788bec427a1f3f12", "depth": 2,
+    "started_at": 1790053301.492, "ended_at": 1790054032.094, "status": "done",
+    "current_step": null, "steps": 34, "last_at": 1790054031.972},
+   {"id": "a16b8d9cc8415b2f9", "description": "App: agents strip, sorting, menus",
+    "agent_type": "fork", "is_fork": true, "parent_id": "a8f25a5199a6eea1a", "depth": 2,
+    "started_at": 1790056789.373, "ended_at": null, "status": "running",
+    "current_step": "Add agents to mock server", "steps": 33, "last_at": 1790057005.051}]}
+```
+
+- Rows in start order (`started_at`, then `id`); the app sorts them itself.
+  `[]` (and zero counts) for a thread with no subagents.
+- `id`: the file's `<id>` (`[0-9a-z]{6,64}`). `parent_id`: another row's
+  `id` (`parentAgentId`: an agent spawned by an agent), `null` when the
+  thread spawned it. `depth`: `spawnDepth` (1 = the thread's own).
+  `agent_type`: `agentType`; `is_fork`: `isFork`, or type `"fork"`.
+- `started_at`: the Agent call's own record in the parent's transcript (the
+  thread's, or the parent agent's), else the agent file's first record —
+  not the file's first record by default: **a fork's file opens with a copy
+  of its parent's conversation, at the original times**, and those copied
+  turns are neither its steps nor its log.
+- `steps`: its tool calls since `started_at`. `current_step`: the latest
+  one's title (`activity.describe`, as `working.current` words it) while
+  `running`, else `null`. `last_at`: its file's newest record.
+- `ended_at`: when its terminal record was written; for a `stopped` agent
+  with none, its `last_at`; `null` while running.
+- `status`, **conservatively** — "done"/"failed" only on the harness's own
+  word, "running" only while something says it could be:
+  1. **A terminal record**: the newest `<task-notification>` naming it (by
+     `<task-id>` = its id, or `<tool-use-id>`), found in the thread's
+     transcript or any subagent's — as a user prompt, a `queued_command`
+     attachment (a child's lands in its parent agent's file) or a
+     `queue-operation` enqueue (the thread's). Only a record whose text *is*
+     a notification counts, not one quoted inside other words, and only its
+     head (before `<summary>`) is read. `completed` → `done`, `failed` →
+     `failed`, `killed` → `stopped`. Failing that, the Agent call's own
+     `tool_result`, unless it is the background launch answer (a foreground
+     agent's result is its end): `is_error` → `failed` (an interrupt →
+     `stopped`), else `done`.
+  2. **Resumed after it**: a background agent can be sent another message,
+     so one id can notify more than once. When the agent's file has records
+     more than `GRACE_S` (5 s) newer than its terminal record, that record
+     is old news and rule 3 decides.
+  3. **Otherwise** `running` while the thread's session is live (a pane or a
+     headless session: a background agent dies with its process) **and** the
+     agent's file changed in the last 30 min (`MEDIA_AGENTS_STALE_S`); else
+     the terminal status it had, or `stopped` when it never had one (cut off:
+     the session ended or was resumed, or it went quiet longer than any tool
+     call runs).
+- 400 `"not a session id"`; 404 `"no such session"` (no transcript, not
+  live, unknown to every harness).
+
+#### `GET /threads/{session}/agents/{id}/log?limit=&before=` — gated
+
+One agent's own turns, as §6.2.2 messages from the same parser (reading
+sidechain records): `{"ok": true, "session", "agent": <row>, "messages",
+"older"}`. `limit` (default 60, at most 500) and `before` page back exactly
+as on `/conversation/log`; `?messages=1` is accepted and implied. The first
+message is the prompt it was given; a fork's copied turns are left out
+(`older` is then false). `spoken` is always `null`; when the agent is not
+`running`, no message's `turn.running` is true. Gzipped when accepted. 404
+`"no such agent"`.
+
+**Cost.** Every file (the thread's and each agent's) is scanned forwards
+once and then only for its new bytes, cached with (inode, offset, seam) as
+in §6.2.2; a line is parsed only when a byte test says it could matter (a
+notification, an Agent/Task call or its result, a tool call in an agent's
+own file); an unchanged file is a stat. Measured on red5 (22 Sep 2026, a
+34-agent thread, 11 MB transcript + 55 MB of agent files, page cache warm):
+first call 0.77 s, warm 0.027 s; a 60-message agent log 0.05 s. The thread
+stream (§11) counts them on each 1 s / 3 s re-read (a glob and a stat per
+file once warm).
+
+Clients: the chat app's thread header strip ("3 running · 12 done") and its
+read-only agent view.
 
 ## 7. `/events` (v0) — canvas-wide, not the app's stream
 
@@ -1884,7 +1996,7 @@ increasing `id`, and `retry: 2000` first.
 
 | Event | Data | When |
 | --- | --- | --- |
-| `snapshot` | `{"ok": true}`, the `/conversation/log?session=` envelope — `messages` (the newest **30**, or `?limit=`), `older`, `lines` (deprecated; only those of the page, below), `pending`, `working`, `approval`, `suggestion`, `recap` — plus `{"state", "session_live": bool, "live": bool (deprecated alias of `session_live`), "pane", "resumable"}` | first frame on every connection |
+| `snapshot` | `{"ok": true}`, the `/conversation/log?session=` envelope — `messages` (the newest **30**, or `?limit=`), `older`, `lines` (deprecated; only those of the page, below), `pending`, `working`, `approval`, `suggestion`, `recap` — plus `{"state", "session_live": bool, "live": bool (deprecated alias of `session_live`), "pane", "resumable"}`, and (22 Sep 2026) `"agents": {"running", "total"}` (§6.12), `"project"`, `"cwd"` (§6.1) | first frame on every connection |
 | `message` | `{"op": "append" \| "replace", "message": <message>}` (§6.2.2) | a message appears, or one (matched by `id`) changes: grows a part, a tool finishes, its turn ends, it gains or loses `spoken` |
 | `live` | `{"id", "at", "sentences", "sentence", "offsets", "elapsed", "server_time", "delay", "paused"}` — the message being spoken, by `id` — or `null` when nothing is | a new reply starts, the sentence changes, pause or resume, or the clock jumps (more than 1 s from where it should be: a skip) — **not** at 1 Hz; the client runs the clock between frames |
 | `working` | the `working` object, or `null` | a step starts, or the turn ends |
@@ -1893,6 +2005,7 @@ increasing `id`, and `retry: 2000` first.
 | `state` | `{"state": "working" \| "waiting" \| "approval" \| "ended", "session_live": bool, "live": bool (deprecated alias), "pane"}` | the session changes state; `ended` when its pane goes |
 | `pending` | `{"pending": bool}` | it changes — the log's rule: a live session whose last message is the listener's, the turn working (a step running, or a headless session `working`), or the last line the listener's. Set from the transcript as soon as a prompt lands; cleared by the 1 s / 3 s re-read |
 | `recap` | `{"text", "at", "source"}` or `null` | a newer recap is written |
+| `agents` | `{"running", "total"}` — the thread's background agents (§6.12) | an agent starts, ends or resumes (checked on the 1 s / 3 s re-read) |
 | `ping` | `{}` | 15 s of silence |
 
 `isRunning` is `state == "working"`, `pending`, or the last message's
@@ -2520,6 +2633,13 @@ That is a later decision, not part of this contract.
   rested mark and each way it is cleared, and the tag → session mapping. The
   live sweep, the panes, speech, the gateway and ABS are all fakes; closing
   is a recorder.
+- `test_agents.py` pins the background agents (§6.12) against synthetic
+  thread and subagent transcripts: every status rule (notification in each
+  of its three record shapes, a quoted one ignored, a foreground result,
+  resumed, stale, the session gone), forks nested with their copied turns
+  left out, incremental reads, the log and its paging, both routes' shapes
+  and refusals, the snapshot's counts and the `agents` event, and
+  `project_of` in both layouts.
 - `test_dashboard.py` pins `GET /dashboard` (§6.11) over real HTTP: every
   key set, needs-you from a permission prompt and a question, working from an
   activity file, the reaper log's last run, systemctl and tailscale faked

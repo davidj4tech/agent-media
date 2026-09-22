@@ -55,3 +55,8 @@ def _clean_media_env(monkeypatch, tmp_path):
     (tmp_path / "fake-proc").mkdir(exist_ok=True)
     monkeypatch.setattr(procmem, "PROC", tmp_path / "fake-proc")
     monkeypatch.setattr(sessions, "_PIDS", {})
+    # A session's directory is kept once found; the subagents' scans too.
+    monkeypatch.setattr(sessions, "_CWDS", {})
+    from agent_media_server import agents
+
+    agents._reset_for_tests()

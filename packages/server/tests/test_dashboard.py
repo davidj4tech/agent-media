@@ -90,7 +90,9 @@ def test_shape_while_working(server, shelf, signed_in, machine):
     assert keys(obj) == TOP
     assert obj["needs_you"] == []
     assert obj["working"] == [{"session": SID2, "title": "Sasonica web",
-                               "current": "Run the tests", "since": 1790000000.0, "count": 2}]
+                               "current": "Run the tests", "since": 1790000000.0, "count": 2,
+                               # The small project line (§6.1): unknown here.
+                               "project": None, "cwd": None}]
     assert keys(obj["speech"]) == {"now", "queued"}
     assert keys(obj["speech"]["now"]) == {"live", "speaking", "paused", "session", "title",
                                           "sentence", "target", "replay"}
@@ -100,8 +102,10 @@ def test_shape_while_working(server, shelf, signed_in, machine):
     recent = {r["session"]: r for r in obj["recent"]}
     assert set(recent) == {SID, SID2}
     for r in obj["recent"]:
-        assert keys(r) == {"session", "title", "recap", "at", "live", "rested"}
+        assert keys(r) == {"session", "title", "recap", "at", "live", "rested", "project", "cwd"}
     assert recent[SID2]["live"] is True and recent[SID]["live"] is False
+    # The shelved one is filed under a series: that is its project.
+    assert recent[SID]["project"] == "p-agent-media" and recent[SID2]["project"] is None
     assert [keys(p) for p in obj["places"]] == [{"name", "path", "at"}]
     assert obj["agents"] == [{"name": "claude", "present": True},
                              {"name": "codex", "present": True},
@@ -130,7 +134,7 @@ def test_a_permission_prompt_needs_you_with_its_approval(server, shelf, signed_i
     _, obj = call(server, "GET", "/dashboard", headers=AUTH)
     assert obj["working"] == []
     [row] = obj["needs_you"]
-    assert keys(row) == {"session", "title", "kind", "approval"}
+    assert keys(row) == {"session", "title", "kind", "approval", "project", "cwd"}
     assert (row["session"], row["title"], row["kind"]) == (SID2, "Sasonica web", "approval")
     ap = row["approval"]
     assert ap["question"].endswith("Do you want to proceed?")

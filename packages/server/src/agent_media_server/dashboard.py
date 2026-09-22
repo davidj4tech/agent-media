@@ -146,7 +146,8 @@ def _recent(index: list[dict]) -> list[dict]:
             at = r["recap"].get("at")
         rows.append({"session": sid, "title": str(r.get("title") or ""),
                      "recap": r.get("recap"), "at": at, "live": bool(r.get("live")),
-                     "rested": r.get("rested")})
+                     "rested": r.get("rested"), "project": r.get("project"),
+                     "cwd": r.get("cwd")})
     rows.sort(key=lambda x: -(x["at"] or 0))
     return rows[:RECENT_ROWS]
 
@@ -344,6 +345,7 @@ def build(bearer: str) -> dict:
     rows, host = st["sessions"], st["host"]
     index = _index()
     titles = {str(r.get("session")): str(r.get("title") or "") for r in index}
+    where = {str(r.get("session")): r for r in index}
     live = sessions.live_sessions()
     needs, working = [], []
     for r in rows:
@@ -360,6 +362,14 @@ def build(bearer: str) -> dict:
                 needs.append(row)
         elif r["state"] == "working":
             working.append(_working(sid, titles.get(sid, "")))
+    # The project line under each card's title: the index's, else worked out
+    # (a session the index left out, e.g. a live one with no title yet).
+    missing = [r for r in needs + working if str(r["session"]) not in where]
+    sessions.add_projects(missing)
+    for r in needs + working:
+        known = where.get(str(r["session"]))
+        if known is not None:
+            r["project"], r["cwd"] = known.get("project"), known.get("cwd")
     _sok, now = speech.speech_now(bearer, _speech_state())
     hosts, agents = _hosts(rows, host)
     return {"at": round(time.time(), 3), "needs_you": needs, "working": working,
