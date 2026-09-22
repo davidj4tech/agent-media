@@ -703,7 +703,12 @@ RECIPES: dict[str, Recipe] = {
     CODEX: Recipe(
         install=("npm", "install", "-g", "@openai/codex"),
         update=("codex", "update"),
-        login=("login",),
+        # `--device-auth`: the browser flow's callback goes to localhost:1455,
+        # which from the phone is the phone — nothing is listening there, and
+        # the login server on this host binds 127.0.0.1 besides. Device auth
+        # is a code read off the pane and typed into auth.openai.com, so it
+        # works from whichever screen the person is holding.
+        login=("login", "--device-auth"),
         status=("login", "status"),
     ),
     PI: Recipe(
