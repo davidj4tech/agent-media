@@ -47,6 +47,9 @@ def _clean_media_env(monkeypatch, tmp_path):
 
     transcript._reset_for_tests()
     thread_events._reset_for_tests()
+    from agent_media_server import session_events
+
+    session_events._reset_for_tests()
     # Memory for /sessions/state is read from /proc: an empty fake root, so
     # a test sees "unknown" unless it builds a process tree of its own, and
     # no pid left over from a real sweep in another test.

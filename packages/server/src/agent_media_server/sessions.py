@@ -894,18 +894,24 @@ def session_states(bearer: str) -> tuple[bool, dict]:
     block, both computed inside the same cached sweep. Gated like
     `/conversations`.
     """
-    global _STATES_CACHE
     ok, detail = auth.may_control_speech(bearer)
     if not ok:
         return False, detail
+    rows, host = cached_states()
+    return True, {"sessions": rows, "host": host}
+
+
+def cached_states() -> tuple[list[dict], dict]:
+    """`(rows, host)` — the `/sessions/state` sweep, at most `_STATES_TTL_S`
+    old. No auth: the caller's (`session_states`, the sessions stream)."""
+    global _STATES_CACHE
     with _STATES_LOCK:
         at, cached = _STATES_CACHE
         if time.monotonic() - at > _STATES_TTL_S:
             rows = _live_states()
             cached = (rows, _host(rows))
             _STATES_CACHE = (time.monotonic(), cached)
-        rows, host = cached
-    return True, {"sessions": rows, "host": host}
+        return cached
 
 
 # --- which conversation the phone means -----------------------------------------

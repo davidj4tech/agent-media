@@ -60,6 +60,8 @@ device gets its token):
   POST /harnesses/keys {"pane", "text"?, "key"?} → type into it (an OAuth
                   code pasted back, a y, an Enter)
   POST /harnesses/close {"pane"} → end that window
+  GET  /sessions/events → the same, as a stream of changes, for a phone's
+                  background notifier (session_events.py, §6.13)
   GET  /sessions/state  → every live session's working / waiting / approval,
                   by uuid and item folder tail
   POST /session/resume {"session"} → bring that session back in a tmux
@@ -138,6 +140,7 @@ CORS_PATHS = frozenset({
     "/speech/now", "/speech/ctl", "/speech/sentences", "/sessions/state", "/commands", "/rename",
     "/harnesses", "/harnesses/run", "/harnesses/screen",
     "/harnesses/keys", "/harnesses/close", "/share", "/dashboard",
+    "/sessions/events",
 })
 
 # Where the audio goes (audio.py). Its own set, joined here, so the block
@@ -327,6 +330,11 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
         # fall through to the caller's 404 on a socket it already wrote to.
         _thread_events(h, events.group(1), query)
         return True
+    if path == "/sessions/events":
+        # Every session's state as a stream (§6.13): the phone's background
+        # notifier. Answers the request however it ends.
+        _session_events(h, query)
+        return True
     agents_m = THREAD_AGENTS.fullmatch(path)
     log_m = AGENT_LOG.fullmatch(path)
     if agents_m or log_m:
@@ -505,6 +513,22 @@ def _thread_events(h: BaseHTTPRequestHandler, session: str, query: str) -> bool:
     raw = (qs.get("limit") or [""])[0]
     limit = threads._limit(raw) if raw else None
     return thread_events.serve(h, session, limit=limit, gzip=thread_events.accepts_gzip(h))
+
+
+def _session_events(h: BaseHTTPRequestHandler, query: str) -> None:
+    """`GET /sessions/events[?ping=]` — the session list as a stream (§6.13,
+    session_events.py). Gated like `/sessions/state`; `?access_token=` is
+    accepted for a plain `EventSource` and, like the thread stream's, never
+    logged."""
+    from . import session_events
+
+    qs = parse_qs(query)
+    bearer = _bearer(h) or (qs.get("access_token") or [""])[0].strip()
+    ok, err = auth.may_control_speech(bearer)
+    if not ok:
+        _json(h, err.pop("status", 401), {"ok": False, **err})
+        return
+    session_events.serve(h, bearer, ping_s=session_events.ping_of((qs.get("ping") or [""])[0]))
 
 
 def _thread_agents(h: BaseHTTPRequestHandler, session: str, agent_id: str | None,

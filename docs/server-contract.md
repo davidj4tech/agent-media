@@ -1806,6 +1806,59 @@ file once warm).
 Clients: the chat app's thread header strip ("3 running · 12 done") and its
 read-only agent view.
 
+### 6.13 The session list as a stream — gated (built 22 Sep 2026)
+
+#### `GET /sessions/events[?ping=<s>]` — gated (`auth.may_control_speech`, like `/sessions/state`)
+
+What a phone's background notifier holds open while the app is closed
+(Sasonica Next's `NotifyService`): one connection that says when any live
+session changes state, so it can post "New reply · <title>" (`working` →
+`waiting`) and "Needs you · <title>" (→ `approval`) without polling. Code:
+`agent_media_server/session_events.py`. Pinned by
+`packages/server/tests/test_session_events.py`.
+
+```
+GET /sessions/events?ping=120
+Authorization: Bearer <device token>
+Accept: text/event-stream
+```
+
+```
+retry: 5000
+
+id: 1
+event: sessions
+data: {"sessions":[{"session":"0f1e…","title":"Sasonica web","state":"working"}],"at":1790053383.513}
+
+id: 2
+event: ping
+data: {}
+```
+
+- `sessions`: the first frame on every connection, then again whenever any
+  row's `session`, `title` or `state` changes — the whole list each time
+  (it is a few rows), sorted by `session`. `state` is `/sessions/state`'s
+  (§6.1): `working` | `waiting` | `approval`; absent means not live. The
+  client diffs against what it held; the server keeps nothing per client, so
+  a reconnect's first frame is the catch-up (a client that remembers the
+  last list across a reconnect sees what changed while it was away).
+- `ping`: `{}` after `?ping=` seconds of silence — 15 to 300, default 15,
+  clamped. A phone asks for a long one so an idle connection wakes the radio
+  only for real changes.
+- Auth like `/sessions/state`; `?access_token=` is accepted for a plain
+  `EventSource` and never logged (the canvas's request log redacts it). The
+  bearer is checked again every 300 s and the stream ends if it is refused
+  (a revoked device), so the reconnect gets the 401.
+- **Server side.** One watcher for every connection, started by the first
+  and stopped by the last, reading `sessions.cached_states()` — the same
+  3 s-cached sweep `/sessions/state` uses — every 3 s. So while the app is
+  polling the list the stream costs no extra sweep, and while it is closed
+  it costs one per 3 s. At most 16 streams (503 `"too many open streams"`);
+  each holds one handler thread, and a failed write (at the latest the next
+  ping) ends it. Not gzipped: frames are a few hundred bytes.
+- Errors before the stream opens: the §4.1 / §9 auth answers. After, none
+  in-stream: the connection closes.
+
 ## 7. `/events` (v0) — canvas-wide, not the app's stream
 
 One SSE stream for every screen. The canvas page, the wake watcher and the
@@ -2180,8 +2233,9 @@ a failed snapshot, a bug — the request counts as answered: nothing further
 (no 404) is ever written onto that socket.
 
 **The thread list** stays polled (`/sessions/state` at 5 s, `/targets` on
-open). A list stream is left for later: it would be a second watcher over
-every pane, for a list that changes slowly.
+open) in the app. `/sessions/events` (§6.13, 22 Sep 2026) streams the
+list's states, for the phone's background notifier; it reads the same
+cached sweep rather than watching every pane itself.
 
 ### Deviations from the 21 Sep draft
 
