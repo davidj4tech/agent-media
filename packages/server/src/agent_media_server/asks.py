@@ -95,6 +95,18 @@ def parse(cap: str) -> dict | None:
     lines = [ln.rstrip() for ln in (cap or "").splitlines()]
     review_at = max((i for i, ln in enumerate(lines)
                      if ln.strip() == "Review your answers"), default=None)
+    if review_at is None:
+        # A short pane scrolls the title off (22 Sep 2026, 34x14): the page
+        # is still known by its closing prompt, read from the first answer
+        # that is left on screen.
+        ready = max((i for i, ln in enumerate(lines)
+                     if ln.strip().startswith(("Ready to submit your answers", "You have not answered all"))),
+                    default=None)
+        if ready is not None:
+            first = next((i for i in range(ready) if lines[i].strip().startswith("● ")), ready)
+            # The title goes back where it was, just above that answer.
+            lines.insert(first, "Review your answers")
+            review_at = first
     if review_at is not None and any(re.match(r"^\s*[❯›>]?\s*1\.\s+Submit answers", ln)
                                      for ln in lines[review_at:]):
         top = max((j for j in range(review_at) if _RULE.match(lines[j])), default=-1)
@@ -203,6 +215,11 @@ def _hook_ask(session: str) -> dict | None:
     return pending_asks.read(session)
 
 
+def _label_eq(a: str, b: str) -> bool:
+    """Two option labels the same, allowing for a wrap that cut one short."""
+    return bool(a and b) and (a == b or a.startswith(b) or b.startswith(a))
+
+
 def _match(scr: dict, hook: dict | None) -> int | None:
     """Which of the hook's questions is on screen (the review page: 0), or
     None when the hook's question is not the one up.
@@ -233,6 +250,20 @@ def _match(scr: dict, hook: dict | None) -> int | None:
             if len(labels) == len(shown) and all(a == b or a.startswith(b) or b.startswith(a)
                                                  for a, b in zip(labels, shown)):
                 return i
+        # A short pane scrolls the dialog, so only some options are left,
+        # and the "question" read is the tail of an option's description:
+        # a two-question ask on a 46x20 pane showed option 2 alone, and the
+        # phone got one question to answer for both (2026-09-22). Each
+        # option keeps its number, so match those against the saved labels;
+        # when exactly one question fits, it is that one.
+        fits = []
+        numbered = [(o.get("n"), _norm(o.get("label") or "")) for o in scr.get("options") or []]
+        for i, q in enumerate(hq if all(isinstance(n, int) for n, _ in numbered) else []):
+            labels = [_norm(o.get("label") or "") for o in q.get("options") or []]
+            if all(1 <= n <= len(labels) and _label_eq(labels[n - 1], lab) for n, lab in numbered):
+                fits.append(i)
+        if len(fits) == 1:
+            return fits[0]
     if len(hq) == 1 and not cur and not shown:
         # Nothing on screen to compare with (the dialog scrolled to its
         # footer): the one pending question is the best reading. With
@@ -320,7 +351,9 @@ def approval(cap: str, session: str = "", agent: str = "claude") -> dict | None:
             v0.append({"n": scr["chat_n"], "label": "Chat about this", "detail": ""})
         question = current["question"] or scr["question"]
     return {"question": question,
-            "partial": partial or scr.get("partial", False),
+            # With the hook's copy every question is known, however much of
+            # the dialog a short pane scrolled away.
+            "partial": partial or (origin == "screen" and scr.get("partial", False)),
             "options": v0,
             "key": hashlib.sha1(seed.encode()).hexdigest()[:12],
             "agent": agent,

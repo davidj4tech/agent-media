@@ -122,6 +122,22 @@ def test_the_hook_s_copy_gives_every_tab_of_the_question():
     assert asks.approval(cap("review_two_partial"), SID)["key"] == a["key"]
 
 
+def test_a_scrolled_dialog_is_known_by_its_numbered_options():
+    # 22 Sep 2026, a 34x14 pane: the dialog scrolled until only option 2 and
+    # the tail of option 1's description were left, and the phone was handed
+    # one question to answer for both.
+    qs = [{"question": "Which app should voice chat live in?", "header": "App", "multiSelect": False,
+           "options": [{"label": "Sasonica Next (Recommended)", "description": "x"},
+                       {"label": "Old Sasonica app", "description": "y"}]},
+          {"question": "Which model should answer in a voice chat?", "header": "Model", "multiSelect": False,
+           "options": [{"label": "Haiku by default (Recommended)", "description": "x"},
+                       {"label": "The session's own model", "description": "y"}]}]
+    _keep(questions=qs)
+    a = asks.approval(cap("two_q1_scrolled"), SID)
+    assert a["source"] == "hook" and a["current"] == 0
+    assert [q["header"] for q in a["questions"]] == ["App", "Model"]
+
+
 def test_a_hook_copy_of_another_question_is_not_used():
     _keep(questions=[{"question": "Something else?", "options": [{"label": "A"}]}])
     a = asks.approval(cap("multi_fresh"), SID)
