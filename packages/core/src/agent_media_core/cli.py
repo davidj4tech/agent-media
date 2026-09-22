@@ -2794,18 +2794,21 @@ def cmd_jump(a) -> int:
     if a.where == "start":
         ipc.command(sock, "seek", 0, "absolute", critical=True)
         return 0
-    # End-of-response on the phone lane: hand the reply's own follow loop a
-    # past-the-end jump and touch the player not at all. The loop reads the
-    # request on its next tick, stops the playlist it loaded, and releases the
-    # token to whatever is queued — so only this turn's clips go. Doing it
-    # from here instead took ~7 serial round trips at 1-3s each to p8a: an End
-    # tapped on 22 Sep landed 11s later, by which time the clip had nearly
-    # played out and the key looked dead. A plain `stop` would be as quick but
-    # is not turn-scoped: arriving after this reply ended, it cuts the next.
-    # A replay has no follow loop to read the request (its tracker never
-    # looks), so it keeps the path below.
+    # End-of-response on the phone lane: hand the turn's own follower — a live
+    # reply's follow loop, or a replay's tracker — a past-the-end jump and
+    # touch the player not at all. The follower reads the request on its next
+    # tick, stops what it loaded, and releases the token to whatever is
+    # queued — so only this turn's clips go. Doing it from here instead took
+    # ~7 serial round trips at 1-3s each to p8a: an End tapped on 22 Sep
+    # landed 11s later, by which time the clip had nearly played out and the
+    # key looked dead. A plain `stop` would be as quick but is not
+    # turn-scoped: arriving after this turn ended, it cuts the next.
+    # The follower is the row's writer; with none (a replay without clip
+    # durations spawns no tracker) nobody would read the request.
     np = _now_speaking() or {}
-    if _remote_speech() and _speech_in_flight() and not _is_replay(np):
+    ex = np.get("extras") or {}
+    if (_remote_speech() and _speech_in_flight() and ex.get("writer_pid")
+            and ex.get("kind") != "remote-say"):
         _write_nav_request(sys.maxsize, np.get("target") or _speech_target().name)
         return 0
     # End-of-response. On a *replay* the clips are queued as one mpv playlist,
@@ -2832,19 +2835,6 @@ def cmd_jump(a) -> int:
         _write_nav_request(len(sentences),
                            (np or {}).get("target") or _speech_target().name)
     return _seek_to_end(sock)
-
-
-def _is_replay(np: dict) -> bool:
-    """Is the speech in `np` a replay rather than a live reply? A recorded
-    replay says so; a live turn restarted by `<` does not, but its row is
-    written by the replay tracker, whose pid the tracker's pidfile holds."""
-    ex = np.get("extras") or {}
-    if ex.get("replay"):
-        return True
-    try:
-        return int(_replay_track_pidfile().read_text().strip()) == ex.get("writer_pid")
-    except (OSError, ValueError):
-        return False
 
 
 def _nav_target(cur: int, n: int, para_idx: list, unit: str,
@@ -3898,7 +3888,8 @@ def cmd_replay_track(a) -> int:
             return False
 
     def _step_aside() -> int:
-        """Stop the replay for the speaker that barged in, and end. It is a
+        """Stop the replay for the speaker that barged in, or for End of
+        reply, and end. It is a
         copy of something already said, so it is not resumed; stopping it
         here (rather than leaving the newcomer's load to cut it) keeps the
         audio and the cleared row in step."""
@@ -3907,6 +3898,24 @@ def cmd_replay_track(a) -> int:
         except Exception:  # noqa: BLE001
             pass
         return _finish()
+
+    from .intake.submit import _nav_flag_path
+    n_items = max(len(sentences), len(durations), 1)
+
+    def _ended_by_listener() -> bool:
+        """End of reply was asked for (`media jump end` on a remote lane
+        writes a past-the-end jump for the turn's follower, which for a replay
+        is us). A sentence step is left where it is: it is not ours to eat."""
+        np = state.get_now_playing("speech") or {}
+        path = _nav_flag_path(Target(name=np.get("target")
+                                     or _speech_target().name))
+        try:
+            if int(path.read_text().strip()) < n_items:
+                return False
+            path.unlink(missing_ok=True)
+        except (OSError, ValueError):
+            return False
+        return True
 
     def _owns(ex: dict) -> bool:
         # A newer writer (a live reply, or the next replay's tracker) may have
@@ -3985,7 +3994,7 @@ def cmd_replay_track(a) -> int:
         started = time.time()
         last = -1
         while True:
-            if _barged_in():
+            if _barged_in() or _ended_by_listener():
                 return _step_aside()
             # The row owns the timeline: `media skip` re-stamps its origin and
             # a pause freezes it, so reading it back each tick is what keeps a
@@ -4026,7 +4035,7 @@ def cmd_replay_track(a) -> int:
     fail_streak = 0
     while True:
         time.sleep(0.15)
-        if _barged_in():
+        if _barged_in() or _ended_by_listener():
             return _step_aside()
         try:
             # One batched snapshot per tick — over the phone bridge each hop

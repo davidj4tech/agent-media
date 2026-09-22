@@ -302,18 +302,21 @@ def test_jump_end_lands_on_last_clip_of_playlist(monkeypatch):
     assert fake.calls[-1] == ("command", "seek", 100, "absolute-percent")
 
 
-def test_jump_end_on_phone_ends_the_live_reply_through_its_loop(monkeypatch):
-    """On the phone lane End hands the reply's follow loop a past-the-end jump
-    and sends the player nothing: seven serial round trips to p8a made the key
-    land ~11s late, and a raw `stop` could cut the next turn instead."""
+@pytest.mark.parametrize("extras", [{"writer_pid": 1},
+                                    {"writer_pid": 1, "replay": True}],
+                         ids=["live reply", "replay"])
+def test_jump_end_on_phone_hands_the_turn_to_its_follower(monkeypatch, extras):
+    """On the phone lane End hands the turn's follower (a live reply's loop or
+    a replay's tracker) a past-the-end jump and sends the player nothing:
+    seven serial round trips to p8a made the key land ~11s late, and a raw
+    `stop` could cut the next turn instead."""
     fake = _FakeIpc({"playlist-count": 3})
     navs: list = []
     monkeypatch.setattr(cli, "ipc", fake)
     monkeypatch.setattr(cli, "_sock", lambda: "tcp://phone.example:6613")
     monkeypatch.setattr(cli, "_speech_in_flight", lambda: True)
     monkeypatch.setattr(cli, "_now_speaking",
-                        lambda: {"target": "app", "extras": {"writer_pid": 1}})
-    monkeypatch.setattr(cli, "_is_replay", lambda np: False)
+                        lambda: {"target": "app", "extras": extras})
     monkeypatch.setattr(cli, "_write_nav_request",
                         lambda idx, target: navs.append((idx, target)))
 
@@ -324,8 +327,8 @@ def test_jump_end_on_phone_ends_the_live_reply_through_its_loop(monkeypatch):
     assert fake.calls == []
 
 
-def test_jump_end_on_phone_replay_still_drives_the_player(monkeypatch):
-    """A replay has no follow loop to read the request."""
+def test_jump_end_on_phone_without_a_follower_drives_the_player(monkeypatch):
+    """A replay with no tracker has nobody to read the request."""
     fake = _FakeIpc({"playlist-count": 3})
     monkeypatch.setattr(cli, "ipc", fake)
     monkeypatch.setattr(cli, "_sock", lambda: "tcp://phone.example:6613")

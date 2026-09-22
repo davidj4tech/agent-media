@@ -523,6 +523,45 @@ def test_the_follower_keeps_the_voice_from_an_ordinary_reply(monkeypatch):
         token.release()
 
 
+def test_the_follower_stops_the_replay_for_end_of_reply(monkeypatch):
+    """End of reply on the phone lane hands the follower a past-the-end jump;
+    it stops the replay and ends, as for a question."""
+    state = StateStore()
+    state.set_now_playing("speech", uri="/c.mp3", started_at=time.time(),
+                          target="app", extras={"replay": True,
+                                                "writer_pid": os.getpid()})
+    stopped: list = []
+    monkeypatch.setattr(cli.ipc, "command",
+                        lambda sock, *args, **k: stopped.append(args))
+    S._nav_flag_path(APP).write_text(str(sys.maxsize))
+    started = time.monotonic()
+    rc = cli.cmd_replay_track(argparse.Namespace(
+        sentences=json.dumps(["One.", "Two."]), offsets=json.dumps([0.0, 30.0]),
+        pane="", durations=json.dumps([60.0]), lock_fd=-1))
+    assert rc == 0
+    assert time.monotonic() - started < 5, "End did not end the replay"
+    assert ("stop",) in stopped
+    assert state.get_now_playing("speech") is None
+    assert not S._nav_flag_path(APP).exists()
+
+
+def test_the_follower_leaves_a_sentence_step_alone(monkeypatch):
+    """A jump to a sentence is not End: the follower plays on and leaves it."""
+    state = StateStore()
+    state.set_now_playing("speech", uri="/c.mp3", started_at=time.time(),
+                          target="app", extras={"replay": True,
+                                                "writer_pid": os.getpid()})
+    stopped: list = []
+    monkeypatch.setattr(cli.ipc, "command",
+                        lambda sock, *args, **k: stopped.append(args))
+    S._nav_flag_path(APP).write_text("1")
+    cli.cmd_replay_track(argparse.Namespace(
+        sentences=json.dumps(["One.", "Two."]), offsets=json.dumps([0.0, 0.2]),
+        pane="", durations=json.dumps([0.6]), lock_fd=-1))
+    assert stopped == []
+    assert S._nav_flag_path(APP).read_text() == "1"
+
+
 # --- a reply that was paused comes back paused ----------------------------------
 
 class _PausedThenYieldSink(_PlaylistSink):
