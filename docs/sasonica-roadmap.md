@@ -85,7 +85,18 @@ toggle, off until turned on; `MEDIA_SPEECH_SOCKET_NEXT=tcp://p8a:6614` and
 `media say --target next` point red5 at it. The protocol test came across to
 JUnit and runs in CI. Next: build it on CI, sideload beside the old app, and
 listen — the speed at 1.6x and the gap between sentences are the two things
-Media3 has to prove.
+Media3 has to prove. **First reply through it played on p8a, 23 Sep 2026**:
+two clips, the join fired on its own and volunteered `playlist-pos`, and
+`idle-active` went true at the end.
+
+**The hold tier in Next** (23 Sep 2026). `Holds.java` — dictation pauses a
+reply and it carries on; a voice session or a call holds every reply until it
+is over, with the Speak now / Later card; urgent takes the room. `MicWatch`,
+`MicSteady`, `MicSource`, `BargeIn`, `DictationHold`, `HoldRate` and
+`RingerState` came across unchanged, with their tests as JUnit. No `BookHold`
+(Next has no book). Still to do: serve `/mic`, `/ringer` and the hold rate on
+a port of Next's own, so `call_guard`, `ringer.py` and `media doctor` can
+read them from Next instead of the old app's :8772.
 
 ## Queued, in order
 
