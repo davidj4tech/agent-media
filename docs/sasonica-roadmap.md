@@ -83,6 +83,15 @@ harness in `transcript.py` — prompts, replies, thinking and every step with
 its command and result, instead of one line per spoken sentence; Hermes
 keeps a database, so it still answers from its lines).
 
+The Organiser's own Show and Sort menus (chat `lib/noteSort.ts`, per device):
+Show keeps or hides done and cancelled items (the view is asked again,
+`/notes/view?done=1`), waiting and someday ones, and plain notes with their
+section headings; Sort is File order, Date, Priority, Title or Recently
+changed — anything but File order flattens the list, since a section heading
+only means something where the file put it, and in the agenda it orders the
+items inside a day, not the days. Merged to `chat-prototype` and on the red5
+preview; in Next at the next CI build.
+
 ## In flight
 
 **Next's own speech player.** Media3 (David, 23 Sep 2026: the reason
