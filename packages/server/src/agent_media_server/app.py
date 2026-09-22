@@ -86,7 +86,7 @@ device gets its token):
   GET  /draft?session=<uuid>   → what was left half-typed in that
                   conversation's reply box
   POST /draft     {"session", "text", "at"?} → hold it (empty text drops it)
-  POST /rename    {"item"|"session", "title"} → rename a conversation
+  POST /rename    {"item"|"session", "title"|"auto"} → rename a conversation
   POST /share     {"text", "channel"?} → play a shared link
   GET  /speech/now   → what is being said, named for the speech bar
   POST /speech/ctl   {"action", "arg"?} → a listener's speech verb
@@ -611,7 +611,7 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         body = _read_json(h) or {}
         ok, detail = threads.rename_conversation(
             str(body.get("item") or ""), str(body.get("session") or ""),
-            str(body.get("title") or ""), _bearer(h))
+            str(body.get("title") or ""), _bearer(h), auto=bool(body.get("auto")))
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path == "/reply":
         # Reply to a conversation from inside the Audiobookshelf player.

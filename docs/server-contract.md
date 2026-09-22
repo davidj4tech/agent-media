@@ -1041,6 +1041,13 @@ running session as `/rename <title>`. `terminal: false` with a `why`
 shelf has the name, and the next session starts with it. 400 `"no title"`;
 500 `"could not rename"`.
 
+**Auto** (22 Sep 2026): `{"session", "auto": true}` with no `title` has the
+server name it — the conversation's text (its opening and its latest, 8k
+chars) to the summary gateway on `MEDIA_TITLE_MODEL`, else the follow-up's
+model — and then renames exactly as above; the answer's `title` is the name
+it chose. A `title` sent alongside wins. 502 `"could not think of a name"`
+when the gateway gives nothing usable. Takes a few seconds.
+
 **Headless sessions** (§17, 22 Sep 2026): the same `/rename <title>` goes
 to a live one as a stream-json message through sessiond — Claude Code takes
 it under `-p` as a local command (no model call, a zero-cost `result`, a

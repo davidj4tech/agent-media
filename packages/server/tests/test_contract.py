@@ -395,6 +395,39 @@ def test_rename_shape(server, shelf, signed_in, monkeypatch):
                    "why": "no pane: the session is not running"}
 
 
+def test_rename_auto_names_it_from_the_conversation(server, shelf, signed_in, monkeypatch):
+    from agent_media_core import book_tracks
+    from agent_media_server import threads
+
+    seen = {}
+    monkeypatch.setattr(threads, "auto_title", lambda s: seen.setdefault("s", s) and "Speech bar fixes")
+    monkeypatch.setattr(book_tracks, "rename", lambda s, t: t)
+    monkeypatch.setattr(send, "send_rename", lambda s, t: None)
+    res, obj = call(server, "POST", "/rename", {"session": SID, "auto": True}, AUTH)
+    assert res.status == 200, obj
+    assert seen["s"] == SID
+    assert obj == {"ok": True, "session": SID, "title": "Speech bar fixes", "terminal": True, "why": None}
+
+
+def test_rename_auto_without_a_name_is_502(server, shelf, signed_in, monkeypatch):
+    from agent_media_server import threads
+
+    monkeypatch.setattr(threads, "auto_title", lambda s: "")
+    res, obj = call(server, "POST", "/rename", {"session": SID, "auto": True}, AUTH)
+    assert res.status == 502 and obj["error"] == "could not think of a name"
+
+
+def test_auto_title_cleans_the_models_line(monkeypatch):
+    from agent_media_core.intake import _summary
+    from agent_media_server import threads
+
+    monkeypatch.setattr(threads, "_conversation_text", lambda s: "Person: fix the bar")
+    monkeypatch.setattr(_summary, "_chat", lambda *a, **k: 'Title: "Speech bar fixes."\nmore')
+    assert threads.auto_title(SID) == "Speech bar fixes"
+    monkeypatch.setattr(_summary, "_chat", lambda *a, **k: None)
+    assert threads.auto_title(SID) == ""
+
+
 def test_session_resume_when_live(server, shelf, signed_in):
     res, obj = call(server, "POST", "/session/resume", {"session": SID2}, AUTH)
     assert res.status == 200

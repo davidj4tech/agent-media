@@ -141,11 +141,63 @@ def commands_for(item: str, session: str, project: str, bearer: str,
     return True, {"cwd": cwd, "commands": slash_menu.menu(cwd)}
 
 
-def rename_conversation(item: str, session: str, title: str, bearer: str) -> tuple[bool, dict]:
+#: What the auto-rename asks for. A resume-list name, not a summary.
+AUTO_TITLE_PROMPT = (
+    "You name a conversation between a person and their coding assistant, the "
+    "way it would be listed in a history of chats. Read it and reply with a "
+    "short title for what it is about: two to six words, sentence case, "
+    "specific (\"Speech bar on the lock screen\", not \"Fixing a bug\"). No "
+    "quotes, no preamble, no trailing full stop. Reply with the title only."
+)
+
+
+def _conversation_text(session: str, budget: int = 8000) -> str:
+    """The thread as plain text for naming it: how it opened (what it is
+    about) and how it stands now (what it became), inside `budget` chars."""
+    ok, detail = session_log(session, limit=MESSAGES_MAX)
+    if not ok:
+        return ""
+    turns = []
+    for m in detail.get("messages") or []:
+        words = " ".join(str(p.get("text") or "") for p in m.get("parts") or []
+                         if p.get("type") == "text").strip()
+        if words:
+            who = "Person" if m.get("role") == "user" else "Assistant"
+            turns.append(f"{who}: {' '.join(words.split())[:1200]}")
+    text = "\n\n".join(turns)
+    if len(text) <= budget:
+        return text
+    half = budget // 2
+    return text[:half] + "\n\n[…]\n\n" + text[-half:]
+
+
+def auto_title(session: str) -> str:
+    """A name for the conversation from the summary gateway, or "" when it
+    cannot be had. The follow-up's model (a small hosted one): the summary's
+    local model takes half a minute on red5 for a line."""
+    from agent_media_core.intake._summary import DEFAULT_TIMEOUT, _chat, _int_env
+
+    text = _conversation_text(session)
+    if not text:
+        return ""
+    model = (os.environ.get("MEDIA_TITLE_MODEL")
+             or os.environ.get("MEDIA_FOLLOWUP_MODEL") or None)
+    timeout = _int_env("MEDIA_TITLE_TIMEOUT", _int_env("MEDIA_SUMMARY_TIMEOUT", DEFAULT_TIMEOUT))
+    out = (_chat(AUTO_TITLE_PROMPT, text, timeout, model=model) or "").strip()
+    line = out.splitlines()[0] if out else ""
+    if line.lower().startswith("title:"):
+        line = line[len("title:"):]
+    line = " ".join(line.split()).strip("\"'`*#").rstrip(".").strip()
+    return line if 0 < len(line) <= 80 else ""
+
+
+def rename_conversation(item: str, session: str, title: str, bearer: str,
+                        auto: bool = False) -> tuple[bool, dict]:
     """Rename a conversation from the app. Gated like `/reply`.
 
     The name is kept by agent-media and given to Claude Code as well, so the
-    terminal and the shelf call it the same thing.
+    terminal and the shelf call it the same thing. `auto` with no title asks
+    the gateway to name it from what was said (`auto_title`).
     """
     from agent_media_core import book_tracks
 
@@ -157,6 +209,10 @@ def rename_conversation(item: str, session: str, title: str, bearer: str) -> tup
         if not session:
             return False, {"error": err, "status": 404}
     title = " ".join((title or "").split())
+    if not title and auto:
+        title = auto_title(session)
+        if not title:
+            return False, {"error": "could not think of a name", "status": 502}
     if not title:
         return False, {"error": "no title", "status": 400}
     named = book_tracks.rename(session, title)
