@@ -1672,6 +1672,17 @@ each event, each ping), so every event reaches the client whole and at once
 — a fetch-based reader sees plain text (the browser/WebView inflates it).
 Without the header, plain as before.
 
+**Size**, measured against red5's live canvas, read-only (22 Sep 2026): the
+first frame on the connection (wire bytes up to the end of the snapshot).
+
+| Thread | before (60 messages, all lines) | 30, plain | 30, gzip | `?limit=60`, gzip |
+| --- | --- | --- | --- | --- |
+| busiest, 10 MB transcript (lines 184 KB of it) | 268.6 KB | 49.8 KB | **13.0 KB** | 28.7 KB |
+| tool-heavy, 14 MB transcript (47 messages in the tail) | 238.7 KB | 166.2 KB | **48.1 KB** | 70.4 KB |
+
+The rest of a tool-heavy page is its tool summaries (§6.2.2), which gzip
+takes to about a third.
+
 **Applying events.** Keep messages by `id`. `append` adds at the end —
 unless the `id` is already held, which can happen in the moment between a
 snapshot and the first event: then it replaces. `replace` replaces in place;
