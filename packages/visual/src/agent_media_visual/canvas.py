@@ -1910,6 +1910,10 @@ def main() -> None:
     threading.Thread(target=_state_poller, daemon=True).start()
     if os.environ.get("MEDIA_VISUAL_VIDEO", "1") != "0":
         threading.Thread(target=_video_poller, daemon=True).start()
+    # The search index (GET /search): built in the background at a low
+    # priority, then kept up; MEDIA_SEARCH_INDEX=0 leaves it to the queries.
+    from agent_media_server import search as _search
+    _search.start()
     print(f"canvas on http://{args.bind}:{args.port}/  spool={spool_dir()}")
     srv.serve_forever()
 

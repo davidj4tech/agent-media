@@ -134,7 +134,7 @@ The app routes: `/conversation`, `/conversation/log`, `/conversations`,
 `/session/close`, `/session/answer`, `/session/stop`, `/draft`, `/speech/now`, `/speech/ctl`,
 `/sessions/state`, `/commands`, `/rename`, `/harnesses`, `/harnesses/run`,
 `/harnesses/screen`, `/harnesses/keys`, `/harnesses/close`, `/share`,
-and (22 Sep 2026) `/threads/{session}/events` — matched as a pattern, not
+`/search` (23 Sep 2026), and (22 Sep 2026) `/threads/{session}/events` — matched as a pattern, not
 listed (`app.cors_path`), so its preflight and its answers, refusals
 included, carry the same headers.
 
@@ -485,6 +485,16 @@ with the same shapes and wins when both are given; it never asks ABS, so
 Query (both forms): `limit` — how many messages, newest first page
 (default 60, at most 500); `before` — a message `id`: only messages before
 it (the next page back). Neither touches `lines`.
+
+`around` — a message `id` (a search hit, §6.14; `?session=` form only;
+messages come back without `messages=1`): the page holding that message,
+from 5 messages before it **to the newest**, so the live thread joins on
+below it; `older` as usual. When that would be more than 500 messages, the
+page is `limit` long from 5 before it, and `newer: true` says the thread
+goes on past it. The answer also carries `"around": {"id", "found",
+"newer"}` and `newer`. An id that is not there (`found: false`) answers the
+newest page, as without it. Other harnesses' threads find their line ids
+(`line:<at>`) the same way.
 
 ```json
 {"ok": true, "session": "6c73…",
@@ -1862,6 +1872,113 @@ data: {}
   ping) ends it. Not gzipped: frames are a few hundred bytes.
 - Errors before the stream opens: the §4.1 / §9 auth answers. After, none
   in-stream: the connection closes.
+
+### 6.14 Search — gated (built 23 Sep 2026)
+
+#### `GET /search?q=<words>[&limit=][&before=<at>][&tools=1][&memory=0]` — gated (`auth.gate`)
+
+Every thread's messages — both sides; live, closed, headless and archived
+threads alike — plus thread titles, recaps and projects, plus long-term
+memory as its own section when this host has agent-memory. Code:
+`agent_media_server/search.py`; pinned by
+`packages/server/tests/test_search.py`. Gzipped when accepted.
+
+```json
+{"ok": true, "q": "follow along", "terms": ["follow", "along"], "tools": false,
+ "threads": [
+   {"session": "5f8c…", "title": "Sasonica rebuild", "project": "p-agent-media",
+    "harness": "claude", "live": true, "archived": false,
+    "recap": "Wired the follow-along clock…", "at": 1790088100.2,
+    "match": {"recap": [[10, 22]]}}],
+ "messages": [
+   {"session": "5f8c…", "message": "8a1f…-uuid", "role": "assistant",
+    "at": 1789971302.844, "kind": "text",
+    "snippet": {"text": "…1. My follow-along formula was wrong. It compares…",
+                "match": [[9, 21]]},
+    "thread": {"title": "Sasonica rebuild", "project": "p-agent-media",
+               "harness": "claude", "live": true, "archived": false}}],
+ "next": 1789955853.211,
+ "indexing": false,
+ "memory": {"available": true,
+            "items": [{"id": "…", "user": "ryer", "score": 0.61, "text": "…"}]}}
+```
+
+- **The query.** `q` is words; a `"quoted phrase"` stays whole. Every term
+  must match; the last one matches as a prefix, so results come as you type.
+  Case and accents are ignored (FTS5 `unicode61`). `terms` is how `q` was
+  read — the app highlights them in the thread after a jump. No words
+  (`q` empty or all punctuation): 400 `"nothing to search for"`.
+- **`messages`**, newest first, at most `limit` (default 20, at most 100).
+  `message` is the §6.2.2 message id (the transcript `uuid` of its first
+  record) — the id `/conversation/log?around=` takes. `kind` is `text`, or
+  `tool` for a tool step. `snippet.text` is ~14 words around the match with
+  `…` where it was cut; `snippet.match` is `[start, end]` character offsets
+  of each matched word in it. One hit per message per kind. `next` is the
+  last hit's `at` when the page is full (ask again with `before=<next>`),
+  else `null`; a `before` that is not a number is 400. With `before`,
+  `threads` is `[]` and `memory` is left out: they belong to the first page.
+- **`tools=1`** (the app's Advanced setting) adds tool steps: a tool's name,
+  its title, its input summary and its result summary (§6.2.2 — summaries,
+  never file contents). Without it they are never searched.
+- **`threads`**: at most 20, newest first — threads whose title, latest
+  recap or project hold every term (case-insensitive substring). Names are
+  the thread list's (`/targets`, a 10 s cache) where it has the thread,
+  else the index's: a `/rename`, then Claude's `ai-title`, then the first
+  prompt. `match` gives offsets per field that matched.
+- **`memory`**: only on the first page and unless `memory=0`.
+  `{"available": false}` when agent-memory is not installed here or does
+  not answer; otherwise `{"available": true, "items": [...]}`, the same
+  items as `/notes/search`'s `memories` (Hippocampus, the `ryer` and `sam`
+  namespaces). Installed means `agent-memory-search` on PATH or in
+  `~/.local/bin`, `~/.config/hippocampus.env` (or `sacred-brain.env`), or
+  `HIPPOCAMPUS_URL` / `AGENT_MEMORY_HIPPOCAMPUS_URL` set; answering means
+  its `GET /health` within 1.5 s. Checked once a minute. A store that fails
+  mid-query gives `items: []` and an `error`.
+- **`indexing`**: `true` while some changed transcript was not yet read
+  (the first build, or a query that ran out of its 0.6 s catch-up) —
+  results may be missing the newest words. Ask again shortly.
+- **What is searched.** Claude Code transcripts (every §6.2.2 message:
+  text, narration, an ask's question and answer); pi session files (each
+  `message` record); Codex rollouts (each `message` item, Codex's preamble
+  skipped, and its tool calls); Hermes stores (every profile's `messages`).
+  Subagents' own turns are not. **Left out:** threads in an excluded folder
+  (`MEDIA_SESSIONS_EXCLUDE_CWD`, default `~/.meridian`: Meridian's pool) are
+  never read; machinery — a `claude -p` run whose transcript says
+  `entrypoint: sdk-*` (a pipeline's calls, the slash-menu probe) — is
+  indexed but never answered, unless sessiond holds it as a headless
+  thread (§17).
+- **Jumping.** For Claude Code hits, open
+  `/conversation/log?session=<session>&around=<message>` (§6.2). pi, Codex
+  and Hermes threads are shown from their spoken lines (§6.2.2), whose ids
+  are not the index's (`rec:<offset>`, the pi record id, `hermes:<id>`): the
+  jump says `found: false` and the app places the thread by `at` instead.
+
+**The index.** SQLite FTS5 at `$XDG_STATE_HOME/agent-media/search.db`
+(`~/.local/state/…`): a `docs` table (one row per message and kind: session,
+message id, role, at, byte position, words) behind two external-content FTS
+tables (text, tool steps), a `threads` table (cwd, project, names, latest
+recap, entrypoint, first and last message) and a `files` table (per file:
+inode, size, mtime, the offset read to, the 256 bytes before it, and
+`resume` — the offset of the last prompt). A file that grew is re-read from
+`resume`, its rows from there on replaced (the turn that was open has
+grown); a file that shrank, was replaced or rewritten in place is read
+again; an unchanged one is a stat. Hermes resumes from its highest message
+id. The canvas builds it on a background thread at nice 15 after start,
+then looks for changes every 60 s (`MEDIA_SEARCH_INTERVAL_S`;
+`MEDIA_SEARCH_INDEX=0` turns the thread off and leaves it to queries); each
+query first catches up changed files, newest first, for up to 0.6 s. A
+schema change (`SCHEMA_VERSION`) rebuilds it. By hand:
+`python -m agent_media_server.search rebuild | refresh | status | query <words>`.
+
+**Cost** (measured on red5, 23 Sep 2026, into a scratch state dir): the
+first build over 4,083 files (611 MB of Claude transcripts — 2,854 of them
+Meridian's, skipped — plus 244 pi, 34 Codex and 3 Hermes stores) took
+**25 s** at nice 10, peak RSS **56 MB**, and made a **70 MB** index: 1,255
+threads, 15,772 message rows, 22,547 tool-step rows. A catch-up with a few
+changed files: ~0.14 s. Nothing is held in memory between queries but
+SQLite's 4 MB page cache per connection.
+
+Clients: the chat app's search screen (Threads tab).
 
 ## 7. `/events` (v0) — canvas-wide, not the app's stream
 

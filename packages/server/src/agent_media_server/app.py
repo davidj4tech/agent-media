@@ -102,6 +102,9 @@ device gets its token):
                   working, what is being said, recent threads with recaps,
                   places and agents for a quick start, and the machines
                   (dashboard.py, §6.11)
+  GET  /search?q=[&limit=&before=&tools=1&memory=0] → every thread's messages,
+                  titles, recaps and projects, and long-term memory when this
+                  host has agent-memory (search.py, §6.14)
   GET  /audio/targets  → where speech and music play, and where they could
   POST /audio/target   {"channel", "target"} → choose (null = the default);
                   see audio.py
@@ -140,7 +143,7 @@ CORS_PATHS = frozenset({
     "/speech/now", "/speech/ctl", "/speech/sentences", "/sessions/state", "/commands", "/rename",
     "/harnesses", "/harnesses/run", "/harnesses/screen",
     "/harnesses/keys", "/harnesses/close", "/share", "/dashboard",
-    "/sessions/events",
+    "/sessions/events", "/search",
 })
 
 # Where the audio goes (audio.py). Its own set, joined here, so the block
@@ -390,10 +393,14 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
         session = qs.get("session", [""])[0]
         page = {"limit": qs.get("limit", [None])[0], "before": qs.get("before", [""])[0]}
         if session:
-            ok, detail = threads.log_for_session(session, _bearer(h), **page)
+            # `around=<message id>`: the page holding that message (a jump
+            # from search, §6.14). Session form only.
+            ok, detail = threads.log_for_session(session, _bearer(h), **page,
+                                                 around=qs.get("around", [""])[0])
         else:
             ok, detail = threads.log_for_item(qs.get("item", [""])[0], _bearer(h), **page)
-        if ok and qs.get("messages", [""])[0] not in ("1", "true", "yes"):
+        if ok and qs.get("messages", [""])[0] not in ("1", "true", "yes") \
+                and not qs.get("around", [""])[0]:
             # Messages are opt-in on this route. A client that polls it — the
             # app before it moved to the thread stream — would otherwise carry
             # 30–90 KB of tool summaries on every poll, 1–15 s apart, over a
@@ -410,6 +417,20 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
             _json_z(h, 200, {"ok": ok, **detail})
         else:
             _json(h, detail.pop("status", 404), {"ok": ok, **detail})
+    elif path == "/search":
+        # Every thread's messages, titles, recaps and projects, and long-term
+        # memory when this host has it (search.py, §6.14).
+        from . import search
+
+        qs = parse_qs(query)
+        arg = lambda k: (qs.get(k) or [""])[0]  # noqa: E731
+        ok, detail = search.search(arg("q"), _bearer(h), limit=arg("limit"),
+                                   before=arg("before"), tools=arg("tools") in ("1", "true"),
+                                   memory=arg("memory") not in ("0", "false"))
+        if ok:
+            _json_z(h, 200, {"ok": True, **detail})
+        else:
+            _json(h, detail.pop("status", 400), {"ok": False, **detail})
     elif path == "/targets":
         # Everything a message can be pointed at — running sessions and
         # the directories a fresh one can open in — so the app renders a

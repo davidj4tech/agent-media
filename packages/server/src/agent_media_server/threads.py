@@ -290,7 +290,8 @@ MESSAGES_MAX = 500
 
 
 def messages_for(session: str, lines: list, *, working: bool, live: bool,
-                 limit: int = MESSAGES_LIMIT, before: str = "") -> tuple[list, bool]:
+                 limit: int = MESSAGES_LIMIT, before: str = "", around: str = "",
+                 jump: dict | None = None) -> tuple[list, bool]:
     """`(messages, older)`: the thread as its transcript has it, with speech
     joined on (transcript.py). `older` is whether messages exist before the
     first one returned.
@@ -299,9 +300,30 @@ def messages_for(session: str, lines: list, *, working: bool, live: bool,
     — or a Claude session whose transcript cannot be found — gets messages
     made from its spoken lines, text only, until it has a parser of its own.
     """
-    got = transcript.messages(session, limit=limit, before=before)
+    got = None
+    if around:
+        # A jump from search (§6.14): the page holding that message, from a
+        # few before it on. `jump` says whether it was found and whether the
+        # thread goes on past the page; not found, the newest page as usual.
+        win = transcript.messages_around(session, around, limit=limit, most=MESSAGES_MAX)
+        if win is not None:
+            got = win[0], win[1]
+            if jump is not None:
+                jump.update(found=True, newer=win[2])
+        elif transcript.transcript_path(session):
+            got = transcript.messages(session, limit=limit)
+    if got is None:
+        got = transcript.messages(session, limit=limit, before=before)
     if got is None:
         msgs = transcript.messages_from_lines(lines, working=working)
+        if around:
+            win = transcript.window_around(msgs, around, limit, MESSAGES_MAX)
+            if win is not None:
+                msgs, older, newer = win
+                if jump is not None:
+                    jump.update(found=True, newer=newer)
+                transcript.strip_markers(msgs)
+                return msgs, older
         if before:
             idx = next((i for i, m in enumerate(msgs) if m["id"] == before), None)
             msgs = msgs[:idx] if idx is not None else []
@@ -322,7 +344,7 @@ def messages_for(session: str, lines: list, *, working: bool, live: bool,
 
 
 def _envelope(session: str, lines: list, *, limit: int = MESSAGES_LIMIT,
-              before: str = "") -> dict:
+              before: str = "", around: str = "") -> dict:
     """The `/conversation/log` answer around `lines`: the messages, pending,
     working, approval and the suggestion, the same whichever way the thread
     was named."""
@@ -351,8 +373,9 @@ def _envelope(session: str, lines: list, *, limit: int = MESSAGES_LIMIT,
     # The thread as the terminal has it (transcript.py). A prompt is in the
     # transcript the moment it is typed, well before any speech of it, so a
     # live session whose last message is the listener's is pending too.
+    jump = {"found": False, "newer": False}
     messages, older = messages_for(session, lines, working=bool(working), live=live,
-                                   limit=limit, before=before)
+                                   limit=limit, before=before, around=around, jump=jump)
     if live and not before and messages and messages[-1]["role"] == "user":
         pending = True
     if hl is not None and hl["live"] and hl["state"] == "working":
@@ -373,9 +396,13 @@ def _envelope(session: str, lines: list, *, limit: int = MESSAGES_LIMIT,
     # `recaps.recaps()` when something wants it. Falls back to the recap the
     # idle reaper wrote before resting the session, when that is newer.
     recap = recaps.recap_for(session)
-    return {"session": session, "lines": lines, "messages": messages, "older": older,
-            "pending": pending, "working": working, "approval": approval,
-            "suggestion": suggestion, "recap": recap}
+    out = {"session": session, "lines": lines, "messages": messages, "older": older,
+           "pending": pending, "working": working, "approval": approval,
+           "suggestion": suggestion, "recap": recap}
+    if around:
+        out["around"] = {"id": around, **jump}
+        out["newer"] = jump["newer"]
+    return out
 
 
 def age_live(detail: dict) -> None:
@@ -438,7 +465,7 @@ def log_for_item(item: str, bearer: str, *, limit=None, before: str = "") -> tup
 
 
 def log_for_session(session: str, bearer: str, *, limit=None,
-                    before: str = "") -> tuple[bool, dict]:
+                    before: str = "", around: str = "") -> tuple[bool, dict]:
     """`/conversation/log?session=`: the same lines, named by the thread's own
     id (server-contract.md §10). Same envelope, same line shapes, same gate.
 
@@ -465,10 +492,11 @@ def log_for_session(session: str, bearer: str, *, limit=None,
     user, err = auth.gate(bearer)
     if not user:
         return False, err
-    return session_log(session, limit=limit, before=before)
+    return session_log(session, limit=limit, before=before, around=around)
 
 
-def session_log(session: str, *, limit=None, before: str = "") -> tuple[bool, dict]:
+def session_log(session: str, *, limit=None, before: str = "",
+                around: str = "") -> tuple[bool, dict]:
     """The session form's answer without its gate: what `/conversation/log
     ?session=` answers once the caller is let in, and what the per-thread
     stream sends as its snapshot (thread_events.py). `session` must already
@@ -485,7 +513,8 @@ def session_log(session: str, *, limit=None, before: str = "") -> tuple[bool, di
                 and not sessions.session_exists(session) \
                 and not driver.owned_headless(session):
             return False, {"error": "no conversation for that session yet", "status": 404}
-        return True, _envelope(session, lines, limit=_limit(limit), before=before)
+        return True, _envelope(session, lines, limit=_limit(limit), before=before,
+                               around=around)
     except Exception as e:  # noqa: BLE001
         log.exception("conversation log for session %s failed: %s", session, e)
         return False, {"error": f"could not read the conversation ({e})",

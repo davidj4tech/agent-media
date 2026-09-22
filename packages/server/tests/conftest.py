@@ -63,3 +63,8 @@ def _clean_media_env(monkeypatch, tmp_path):
     from agent_media_server import agents
 
     agents._reset_for_tests()
+    # The search index lives under the state dir above; forget the last
+    # test's connection and its short-lived caches.
+    from agent_media_server import search
+
+    search._reset_for_tests()

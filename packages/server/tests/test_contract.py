@@ -135,7 +135,7 @@ GATED_GETS = ["/targets", "/sessions/state", "/conversations",
               f"/conversation?item=li_1", f"/conversation?session={SID}",
               "/conversation/log?item=li_1", f"/draft?session={SID}",
               "/speech/now", f"/commands?session={SID}", "/audio/targets", "/dashboard",
-              f"/threads/{SID}/agents"]
+              f"/threads/{SID}/agents", "/search?q=x"]
 
 
 @pytest.mark.parametrize("path", GATED_GETS)

@@ -689,6 +689,43 @@ def messages_at(path: str, *, limit: int | None = None, before: str = "",
     return copy_messages(msgs), more
 
 
+#: A jump (`around`) shows this many messages before the one it names.
+AROUND_BEFORE = 5
+
+
+def window_around(msgs: list[dict], around: str, limit: int, most: int) \
+        -> tuple[list[dict], bool, bool] | None:
+    """`(window, older, newer)` of `msgs` (oldest first) holding the message
+    `around`, or None when it is not there. The window runs from a few
+    messages before it to the newest, so the live thread joins on below it —
+    unless that is more than `most` messages; then it is `limit` long and
+    `newer` says the thread goes on past it."""
+    idx = next((i for i, m in enumerate(msgs) if m["id"] == around), None)
+    if idx is None:
+        return None
+    start = max(0, idx - AROUND_BEFORE)
+    if len(msgs) - start <= most:
+        return msgs[start:], start > 0, False
+    return msgs[start:start + limit], start > 0, True
+
+
+def messages_around(session: str, around: str, *, limit: int, most: int) \
+        -> tuple[list[dict], bool, bool] | None:
+    """`window_around` over a Claude Code session's whole transcript (copies).
+    None when there is no transcript or no such message."""
+    path = transcript_path(session)
+    if not path:
+        return None
+    got = _read(path, full=True)
+    if got is None:
+        return None
+    win = window_around(got[0], around, limit, most)
+    if win is None:
+        return None
+    msgs, older, newer = win
+    return copy_messages(msgs), older, newer
+
+
 def file_state(session: str) -> tuple[int, int, float] | None:
     """`(inode, size, mtime)` of the session's transcript — what a watcher
     polls to know there is something new to read."""
