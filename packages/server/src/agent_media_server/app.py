@@ -89,6 +89,10 @@ device gets its token):
   POST /speech/ctl   {"action", "arg"?} → a listener's speech verb
   POST /focus     {"pane": "%23"} → bring the attached tmux client to a pane
                   (the canvas's own token also admits this one)
+  GET  /dashboard → the home screen in one answer: what needs you, what is
+                  working, what is being said, recent threads with recaps,
+                  places and agents for a quick start, and the machines
+                  (dashboard.py, §6.11)
   GET  /audio/targets  → where speech and music play, and where they could
   POST /audio/target   {"channel", "target"} → choose (null = the default);
                   see audio.py
@@ -126,7 +130,7 @@ CORS_PATHS = frozenset({
     "/session/answer", "/session/archive", "/session/pin", "/session/stop",
     "/speech/now", "/speech/ctl", "/sessions/state", "/commands", "/rename",
     "/harnesses", "/harnesses/run", "/harnesses/screen",
-    "/harnesses/keys", "/harnesses/close", "/share",
+    "/harnesses/keys", "/harnesses/close", "/share", "/dashboard",
 })
 
 # Where the audio goes (audio.py). Its own set, joined here, so the block
@@ -386,6 +390,13 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
         # list instead of working one out from the library.
         ok, detail = sessions.targets(_bearer(h))
         _json(h, 200 if ok else detail.pop("status", 403), {"ok": ok, **detail})
+    elif path == "/dashboard":
+        # The home screen: one cheap aggregate of the sweeps the other
+        # routes keep warm (dashboard.py).
+        from . import dashboard
+
+        ok, detail = dashboard.dashboard(_bearer(h))
+        _json_z(h, 200 if ok else detail.pop("status", 403), {"ok": ok, **detail})
     elif path == "/harnesses":
         # The four harnesses and what each needs — is it installed, is it
         # signed in — so the app can offer the buttons that would fix it.

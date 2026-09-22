@@ -1483,6 +1483,88 @@ Clients: none yet (a Notes tab in S is next).
 
 ---
 
+### 6.11 Dashboard — gated (built 22 Sep 2026)
+
+#### `GET /dashboard` — gated (`auth.may_control_speech`, like `/targets`)
+
+The app's Home screen in one answer: what needs you, what is working, what
+is being said, where each thread was, where a new chat can start, and how the
+machines are. Code: `agent_media_server/dashboard.py`. Pinned by
+`packages/server/tests/test_dashboard.py`. Gzipped when the caller accepts it.
+
+```json
+{"ok": true, "at": 1790053383.513,
+ "needs_you": [{"session": "0f1e…", "title": "Sasonica web", "kind": "question",
+                "approval": {…the §6.2 approval object…}}],
+ "working": [{"session": "01a0…", "title": "Set up websites on red4",
+              "current": "cloudflare api execute", "since": 1790045840.684, "count": 15}],
+ "speech": {"now": {"live": false, "speaking": false, "paused": false, "session": null,
+                    "title": "", "sentence": "", "target": "app", "replay": false},
+            "queued": [{"session": "5f8c…", "title": "…", "urgent": false, "at": 1790031449.7}]},
+ "recent": [{"session": "5f8c…", "title": "…", "live": true, "at": 1790053201.164, "rested": null,
+             "recap": {"text": "…", "at": 1790052694.779, "source": "claude"}}],
+ "places": [{"name": "agent-media", "path": "/home/ryer/projects/agent-media", "at": 1790053383.1}],
+ "agents": [{"name": "claude", "present": true}, {"name": "codex", "present": true},
+            {"name": "pi", "present": true}, {"name": "hermes", "present": true}],
+ "hosts": [{"name": "red5", "role": "origin,render", "local": true, "online": true, "last_seen": null,
+            "sessions": 3, "mem_used_mb": 5269, "mem_total_mb": 7758, "mem_available_mb": 2489,
+            "sessions_mem_mb": 943, "tight": false,
+            "reaper": {"mode": "apply", "last_run_at": 1790053206.0, "closed_last_run": 0},
+            "shell": {"service": "sasonica-shell", "active": true},
+            "sessiond": {"service": "agent-media-sessiond", "active": true}},
+           {"name": "hpo", "role": "peer", "local": false, "online": true, "last_seen": 1790000400.1,
+            "sessions": null, "mem_used_mb": null, "mem_total_mb": null, "mem_available_mb": null,
+            "sessions_mem_mb": null, "tight": null, "reaper": null, "shell": null, "sessiond": null}]}
+```
+
+- `needs_you`: every live session `/sessions/state` has in `approval` whose
+  dialog could still be read — the approval object exactly as
+  `/conversation/log` carries it (§6.2 `approval`: a permission prompt, a
+  pane's question form, or a headless request), so the card is answered in
+  place with `POST /session/answer`. `kind` is `"question"` when the
+  approval's `kind` is, else `"approval"`. A headless row adds `"driver":
+  "headless"`. A row the sweep says is on a dialog that is gone by the time
+  its pane is read is left out.
+- `working`: every live session in `working`, with what its running turn is
+  doing from the activity file its hooks append to (the same
+  `activity.attach` the log's `working` uses): `current` — the step in
+  progress, `""` before the first; `since` — when the turn began (null with
+  no turn on file); `count` — steps so far.
+- `speech`: `/speech/now` (§6.5) cut to `now` (`live`, `speaking`, `paused`,
+  `session`, `title`, `sentence`, `target`, `replay`) and its `queued` rows
+  verbatim.
+- `recent`: up to 8 `/targets` rows, archived ones left out, newest first by
+  `at` — a shelved row's own `at`, else the transcript's mtime (a live row),
+  else the recap's. `recap` and `rested` as on `/targets`.
+- `places`: `/targets.places`. `agents`: the four harnesses, `present` =
+  installed on this host (a PATH lookup only — `/harnesses` has versions and
+  sign-in).
+- `hosts`: this host first, then `MEDIA_DASHBOARD_PEERS` (default `hpo`;
+  empty for none). Local: `role` is its roles (`config.host_roles`), comma
+  joined, `""` when none are declared; memory from `/proc/meminfo`
+  (`mem_used_mb` = total − available), `sessions` and `sessions_mem_mb` from
+  the `/sessions/state` sweep, `tight` the idle reaper's rule (§6.1
+  Resting); `reaper` is the last run in `session-reap.log` (the lines sharing
+  its newest stamp: its `mode`, when, how many it closed; all null/0 with no
+  log); `shell` and `sessiond` are `systemctl --user is-active` of
+  `sasonica-shell` and `agent-media-sessiond` (`MEDIA_DASHBOARD_SHELL_UNIT`,
+  `…_SESSIOND_UNIT`), `active` null when systemctl cannot say. A peer is only
+  what `tailscale status --json` knows — `online`, `last_seen` (null when
+  tailscale never saw it or cannot be asked) — and null everywhere else.
+  Nothing here reaches another machine: no ssh, no peer's own answer.
+
+**Cost.** Built from sweeps something else keeps warm: the `/sessions/state`
+sweep (3 s), `sessions_index()` (cached here 4 s), `places()`, one pane
+capture per session on a dialog, one activity file per working session, the
+speech snapshot. The machine part (two `systemctl`, one `tailscale`, the
+reaper log's last 16 KB, the harness PATH lookup) is cached
+`MEDIA_DASHBOARD_HOSTS_TTL` (15 s). Measured in-process on red5 (22 Sep
+2026, 3 live sessions, 6 places, auth stubbed): first call 0.74 s (cold
+recaps and transcript lookups), warm 0.084 s, 0.28 s when the state sweep's
+3 s cache has lapsed.
+
+Clients: the chat app's Home, polled every ~5 s while visible.
+
 ## 7. `/events` (v0) — canvas-wide, not the app's stream
 
 One SSE stream for every screen. The canvas page, the wake watcher and the
@@ -2389,6 +2471,10 @@ That is a later decision, not part of this contract.
   rested mark and each way it is cleared, and the tag → session mapping. The
   live sweep, the panes, speech, the gateway and ABS are all fakes; closing
   is a recorder.
+- `test_dashboard.py` pins `GET /dashboard` (§6.11) over real HTTP: every
+  key set, needs-you from a permission prompt and a question, working from an
+  activity file, the reaper log's last run, systemctl and tailscale faked
+  (and missing), the machine cache, archived rows left out of `recent`.
 - `test_driver.py`, `test_headless.py` and `test_stop.py` pin the Driver
   seam, headless sessions and stop (§12, §17): the pane driver's Escape
   rules; a real in-process sessiond against a fake `claude` for start,
