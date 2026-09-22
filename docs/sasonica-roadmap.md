@@ -46,13 +46,12 @@ line under titles; menus that close on an outside tap; the brand and icons;
 the About page; seven text sizes (7–19 px, Default 13); the digital-
 assistant slot in Next; the coding-agents installer in Settings; Sasonica
 Shell rename, named URLs and client labels; answered questions stop being
-read out.
+read out; tap to read from here (tap a sentence while it is spoken;
+select a word in an older reply → "Read from here"; not yet tried on the
+phone with real audio).
 
 ## In flight
 
-- **Tap to read from here** — tap a sentence in the message being spoken to
-  jump there; start an older spoken message from a sentence. Server
-  `goto-sentence` via `/speech/ctl`, one-call replay from a sentence.
 - **Background notifications (Next)** — a native foreground service holding
   one stream to the server; "New reply" / "Needs you" notifications that
   open the thread. Not Firebase.
