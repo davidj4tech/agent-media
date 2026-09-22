@@ -44,6 +44,11 @@ class PaneDriver:
     def answer(self, session, request):
         from .. import send
 
+        if "request_id" in request:
+            # The structured form is a headless session's; a pane's dialog is
+            # read off a screen and answered by its number.
+            return False, {"error": "this session answers by number (choice and key)",
+                           "status": 400, "approval": self.approval(session)}
         return send._answer_pane(session, int(request.get("choice") or 0),
                                  str(request.get("key") or ""))
 

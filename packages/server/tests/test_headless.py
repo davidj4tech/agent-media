@@ -287,7 +287,7 @@ def test_an_idle_session_is_parked_and_resumed_on_the_next_message(host, monkeyp
     wait_for(lambda: state(host, sid) == "waiting")
     pid = host.sup.get(sid)["pid"]
     monkeypatch.setenv("MEDIA_SESSIOND_IDLE", "0")
-    assert host.sup.park_idle() == [sid]
+    assert host.sup.park_idle(time.time() + 5) == [sid]
     wait_for(lambda: state(host, sid) == "parked")
     assert not host.sup.get(sid)["live"]
     assert driver.headless_driver().state(sid)["state"] == "ended"
@@ -304,7 +304,7 @@ def test_never_parks_a_session_waiting_on_an_approval(host, monkeypatch):
     sid = start(host, "tool: touch z")
     wait_for(lambda: state(host, sid) == "approval")
     monkeypatch.setenv("MEDIA_SESSIOND_IDLE", "0")
-    assert host.sup.park_idle() == []
+    assert host.sup.park_idle(time.time() + 5) == []
     assert host.sup.get(sid)["live"]
 
 
@@ -324,7 +324,7 @@ def test_resume_brings_a_parked_session_back_saying_nothing(host, monkeypatch):
     sid = start(host, "reply: a")
     wait_for(lambda: state(host, sid) == "waiting")
     monkeypatch.setenv("MEDIA_SESSIOND_IDLE", "0")
-    host.sup.park_idle()
+    host.sup.park_idle(time.time() + 5)
     wait_for(lambda: state(host, sid) == "parked")
     ok, d = driver.headless_driver().resume(sid)
     assert ok and d["opened"] is True and d["live"] is True and d["pane"] is None
@@ -478,3 +478,127 @@ def test_the_socket_is_private(host):
     assert hd.call("ping")["ok"] is True
     assert hd.call("nonsense")["code"] == "bad_request"
     assert hd.call("get", session="0f1e2d3c-4b5a-4968-8776-a5b4c3d2e1f0")["code"] == "not_found"
+
+
+# --- the routes, over HTTP -----------------------------------------------------------------
+
+from test_contract import AUTH, call, server, signed_in, typed  # noqa: E402,F401 — fixtures
+
+
+@pytest.fixture()
+def app_host(host, monkeypatch, tmp_path):
+    """The canvas's routes in front of the running sessiond: no pane is live,
+    a fresh chat opens in `work`, and every pane path is a recorder."""
+    from agent_media_server import sessions, speech
+
+    shelf = tmp_path / "book-tracks"
+    shelf.mkdir()
+    monkeypatch.setattr(sessions, "_manifest_dir", lambda: shelf)
+    monkeypatch.setattr(sessions, "live_sessions", lambda: {})
+    monkeypatch.setattr(sessions, "_pane_titles", lambda: {})
+    monkeypatch.setattr(sessions, "_followup", lambda s: None)
+    monkeypatch.setattr(sessions, "_STATES_CACHE", (0.0, []))
+    monkeypatch.setenv("MEDIA_ASK_CWD", str(host.work))
+    monkeypatch.setenv("MEDIA_ASK_TMUX", "amux-scratch")
+    speech._NOW_CACHE.clear()
+    return host
+
+
+def req(*a, **k):
+    res, obj = call(*a, **k)
+    return res.status, obj
+
+
+def _typed_into_panes(typed) -> list:
+    return [t for t in typed if t[0] in ("open_window", "_send_to_pane", "panes.send")]
+
+
+def test_ask_new_starts_a_headless_session_and_it_is_listed(app_host, server, signed_in, typed):
+    st, body = req(server, "POST", "/ask", {"text": "reply: hi there", "target": "new"}, AUTH)
+    assert st == 200 and body["ok"], body
+    sid = body["session"]
+    assert body["mode"] == "new" and body["how"] == "asked" and body["driver"] == "headless"
+    assert body["pane"] is None and body["fresh"] is True and body["agent"] == "claude"
+    assert not _typed_into_panes(typed)
+    wait_for(lambda: state(app_host, sid) == "waiting")
+    # Filed and voiced under the tmux session a pane would have opened in.
+    assert starts(app_host)[0]["env"]["MEDIA_SOURCE_WORKSPACE"] == "amux-scratch"
+
+    st, body = req(server, "GET", "/targets", headers=AUTH)
+    row = next(r for r in body["sessions"] if r["session"] == sid)
+    assert row == {"session": sid, "title": "reply: hi there", "live": True, "pane": None,
+                   "recap": None, "archived": False, "rested": None, "pinned": False,
+                   "driver": "headless", "drivable": True, "harness": "claude",
+                   "source": "sessiond"}
+    st, body = req(server, "GET", "/sessions/state", headers=AUTH)
+    row = next(r for r in body["sessions"] if r["session"] == sid)
+    assert row["state"] == "waiting" and row["driver"] == "headless"
+    assert set(row) == {"session", "tail", "state", "mem_mb", "driver"}
+
+    st, body = req(server, "GET", f"/conversation?session={sid}", headers=AUTH)
+    assert body["live"] is True and body["pane"] is None and body["resumable"] is True
+
+
+def test_the_ask_default_route_is_headless_too(app_host, server, signed_in, typed):
+    st, body = req(server, "POST", "/ask", {"text": "reply: from the button"}, AUTH)
+    assert st == 200 and body["how"] == "default" and body["driver"] == "headless"
+    assert not _typed_into_panes(typed)
+
+
+def test_reply_approval_answer_and_close_over_http(app_host, server, signed_in, typed):
+    st, body = req(server, "POST", "/ask", {"text": "reply: a", "target": "new"}, AUTH)
+    sid = body["session"]
+    wait_for(lambda: state(app_host, sid) == "waiting")
+    st, body = req(server, "POST", "/reply", {"session": sid, "text": "tool: touch x"}, AUTH)
+    assert st == 200 and body == {"ok": True, "session": sid, "pane": None, "opened": False,
+                                  "submitted": True, "driver": "headless", "queued": False,
+                                  "acked": True, "uuid": body["uuid"]}
+    wait_for(lambda: state(app_host, sid) == "approval")
+    st, log = req(server, "GET", f"/conversation/log?session={sid}&messages=1", headers=AUTH)
+    appr = log["approval"]
+    assert appr["kind"] == "tool" and appr["tool"] == "Bash" and appr["input_summary"] == "touch x"
+    st, body = req(server, "POST", "/session/answer",
+                    {"session": sid, "request_id": "gone", "decision": "allow"}, AUTH)
+    assert st == 409 and body["error"] == "the question has changed"
+    assert body["approval"]["id"] == appr["id"]
+    st, body = req(server, "POST", "/session/answer",
+                    {"session": sid, "request_id": appr["id"], "decision": "allow"}, AUTH)
+    assert st == 200 and body["ok"] and body["decision"] == "allow" and body["approval"] is None
+    wait_for(lambda: last_text(app_host, sid) == "ran touch x")
+    st, log = req(server, "GET", f"/conversation/log?session={sid}&messages=1", headers=AUTH)
+    assert log["approval"] is None
+    assert [m["role"] for m in log["messages"]][-2:] == ["user", "assistant"]
+    st, body = req(server, "POST", "/session/close", {"session": sid}, AUTH)
+    assert st == 200 and body["closed"] is True and body["pane"] is None
+    wait_for(lambda: state(app_host, sid) == "closed")
+    st, body = req(server, "GET", f"/conversation?session={sid}", headers=AUTH)
+    assert body["live"] is False and body["resumable"] is True
+    assert not _typed_into_panes(typed)
+
+
+def test_flag_off_asks_open_a_pane_even_with_sessiond_running(app_host, server, signed_in,
+                                                             typed, monkeypatch):
+    st, body = req(server, "POST", "/ask", {"text": "reply: a", "target": "new"}, AUTH)
+    sid = body["session"]
+    monkeypatch.delenv("MEDIA_HEADLESS")
+    st, body = req(server, "POST", "/ask", {"text": "hello", "target": "new"}, AUTH)
+    assert any(t[0] == "open_window" for t in typed)       # the pane path, as before
+    assert "driver" not in body
+    # And a headless thread is neither listed nor driven with the flag off.
+    st, body = req(server, "GET", "/targets", headers=AUTH)
+    assert all(r["session"] != sid for r in body["sessions"])
+    assert driver.for_session(sid).kind == "pane"
+
+
+def test_a_pane_session_refuses_the_structured_answer(app_host, server, signed_in, typed,
+                                                      monkeypatch):
+    from agent_media_server import panes, sessions
+
+    pane_sid = "0f1e2d3c-4b5a-4968-8776-a5b4c3d2e1f0"
+    monkeypatch.setattr(sessions, "live_sessions", lambda: {pane_sid: "%42"})
+    monkeypatch.setattr(sessions, "approval_for", lambda p, a="claude": None)
+    monkeypatch.setattr(sessions, "_agent_of_pane", lambda p: "claude")
+    monkeypatch.setattr(panes, "alive", lambda p: True)
+    st, body = req(server, "POST", "/session/answer",
+                    {"session": pane_sid, "request_id": "r", "decision": "allow"}, AUTH)
+    assert st == 400 and body["error"] == "this session answers by number (choice and key)"

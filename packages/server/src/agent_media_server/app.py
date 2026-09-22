@@ -70,7 +70,9 @@ device gets its token):
   POST /session/answer {"session", "choice", "key"} → answer the dialog that
                   session is stopped on (a permission prompt); refused unless
                   that same question, fingerprinted by `key`, is still on its
-                  screen
+                  screen. A headless session also takes {"session",
+                  "request_id", "decision": "allow"|"deny", "answers"?,
+                  "message"?} (driver/headless.py)
   GET  /draft?session=<uuid>   → what was left half-typed in that
                   conversation's reply box
   POST /draft     {"session", "text", "at"?} → hold it (empty text drops it)
@@ -608,14 +610,21 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
     elif path == "/session/answer":
         # Answering the dialog a session is stopped on — a permission
         # prompt, Codex's hooks review. A number, never text, and only
-        # while that very question is still up (see send.answer).
+        # while that very question is still up (see send.answer). A
+        # headless session also takes the structured form: the request's
+        # `request_id`, a `decision` ("allow" | "deny") and, for a
+        # question, `answers` — multi-select and free text included.
         body = _read_json(h) or {}
         try:
             choice = int(body.get("choice"))
         except (TypeError, ValueError):
             choice = 0
         ok, detail = send.answer(str(body.get("session") or ""), choice,
-                                 str(body.get("key") or ""), _bearer(h))
+                                 str(body.get("key") or ""), _bearer(h),
+                                 request_id=str(body.get("request_id") or ""),
+                                 decision=str(body.get("decision") or ""),
+                                 answers=body.get("answers"),
+                                 message=str(body.get("message") or ""))
         if not ok:
             print(f"answer: refused ({detail.get('error')}) for "
                   f"{str(body.get('session'))[:8]}", file=sys.stderr, flush=True)
