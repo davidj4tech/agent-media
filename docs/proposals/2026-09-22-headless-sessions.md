@@ -563,7 +563,7 @@ subscription login with `ANTHROPIC_API_KEY` stripped.
   `prompt_suggestion`.
 - **Stop (§12 of the contract)**: built through the drivers; the
   per-session speech marker is not, so there is no cutoff and this thread's
-  queued replies are not dropped.
+  queued replies are not dropped. (Built later the same day: contract §12.)
 - **`claude agents --json`** does list headless sessions (seen in the smoke
   run); nothing reads it.
 - **`/rename`** of a headless session keeps the name on the shelf and

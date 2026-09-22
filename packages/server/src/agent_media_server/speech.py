@@ -62,6 +62,44 @@ def stop_speech() -> str:
         return str(e) or type(e).__name__
 
 
+# --- the per-session speech marker (/session/stop, server-contract.md §12) -----
+#
+# Thin seams over core's marker (`intake/submit.py`), so stop.py reads as the
+# table in §12 and the tests can record what was cut without a state dir.
+
+
+def cut_session(session: str, mode: str, at: float) -> float | None:
+    """Skip this thread's speech from `at`: `after` (what it says next, until
+    the listener's next turn) or `all` (what it has not been heard saying)."""
+    from agent_media_core.intake.submit import request_session_speech_cut
+
+    return request_session_speech_cut(session, mode, at)
+
+
+def has_cutoff(session: str) -> bool:
+    """Whether an `after` cutoff already stands on this thread."""
+    from agent_media_core.intake.submit import session_speech_cut
+
+    return "after" in session_speech_cut(session)
+
+
+def end_cutoff(session: str) -> None:
+    """Lift this thread's `after` cutoff (the listener spoke, or nothing was
+    interrupted after all)."""
+    from agent_media_core.intake.submit import end_session_speech_cut
+
+    end_session_speech_cut(session)
+
+
+def waiting_for(session: str, at: float) -> list[dict]:
+    """This thread's replies waiting for the voice, submitted by `at` — what an
+    `all` cut at `at` drops (replies still rendering are not listed)."""
+    from agent_media_core.intake.submit import speech_queue
+
+    return [q for q in speech_queue()
+            if q.get("session") == session and float(q.get("at") or 0) <= at]
+
+
 # --- what is being said, for the app's mini player ------------------------------
 
 #: `{session: (title, item, at)}` — a reply is polled every couple of seconds

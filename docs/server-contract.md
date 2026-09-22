@@ -19,7 +19,7 @@ The document has two halves:
   Error codes (§13) are still specified only. The log
   also gained **messages** (§6.2.2): the thread read from the agent's own
   transcript, as the terminal shows it, rather than from speech. **Stop
-  (§12) is BUILT (22 Sep 2026)** except the per-session speech marker.
+  (§12) is BUILT (22 Sep 2026)**, with its per-session speech marker (`after` / `all`).
 - **Headless sessions (§17), behind `MEDIA_HEADLESS` (off by default).**
   With the flag on, a new chat from the app runs as a `claude -p` process
   held by `media-sessiond` instead of a TUI in a pane. Every shape below
@@ -1405,7 +1405,7 @@ per-thread stream copies its conventions.
 | Credential | the caller's ABS bearer, checked with ABS | a device token, checked locally (§9) | **built 22 Sep 2026** |
 | Thread id | ABS item id on half the routes | session id everywhere (§10) | **built 22 Sep 2026** |
 | Live updates | poll `/conversation/log` 1–15 s | `GET /threads/{session}/events` (§11) | **built 22 Sep 2026** |
-| Stop | none | `POST /session/stop` (§12) | **built 22 Sep 2026**, less the speech marker |
+| Stop | none | `POST /session/stop` (§12) | **built 22 Sep 2026**, speech marker included |
 | Errors | `ok` + `error`, status as §3 | the same, plus a machine `code`; every error has `ok` (§13) | specified (`/pair` already answers with `code`) |
 
 The v0 routes keep working through the migration. v1 adds; it removes
@@ -1757,11 +1757,14 @@ every pane, for a list that changes slowly.
 
 ---
 
-## 12. v1: stop — BUILT 22 Sep 2026 (less the speech marker)
+## 12. v1: stop — BUILT 22 Sep 2026
 
 Code: `agent_media_server/stop.py`, the drivers' `interrupt`
-(`driver/pane.py`, `driver/headless.py`), `speech.stop_speech`. Pinned by
-`packages/server/tests/test_stop.py`. As built:
+(`driver/pane.py`, `driver/headless.py`), `speech.stop_speech`, and the
+per-session marker in core (`intake/submit.py`:
+`request_session_speech_cut`, `end_session_speech_cut`,
+`session_speech_cut`). Pinned by `packages/server/tests/test_stop.py` and
+`packages/core/tests/test_session_speech_cut.py`. As built:
 
 - **Interrupt** goes through the driver that owns the session: a headless
   session gets the `interrupt` control request (its receipt names queued
@@ -1769,16 +1772,47 @@ Code: `agent_media_server/stop.py`, the drivers' `interrupt`
   while it is `working`, watched for up to 3 s (504 `"still working after
   Escape"`). Codex panes are Escaped too; pi and Hermes answer
   `interrupted: false, "why": "not supported for pi"`.
-- **Speech** is stopped only when what is heard is this thread's (the
+- **The clip** is stopped only when what is heard is this thread's (the
   canvas's speech snapshot names the session): `SinkSpeech().stop` on the
   player it is playing on, as `media stop` does.
-- **Not built — the per-session marker.** Core has no per-session speech
-  marker yet (`after` / `all` below). So `cutoff` is always `null`; a reply
-  the interrupted turn had already handed to the Stop hook still speaks;
-  and "this thread's queue" is not dropped — only the clip playing now is
-  stopped. Needs the marker and its checkpoint in `intake/submit.py`.
+- **The marker.** One file per Claude session
+  (`$XDG_STATE_HOME/agent-media/speech-cut/<sha1 of the session id>`, JSON)
+  with up to two stamps, both the press time:
+  - `after` — set just **before** the interrupt, so a reply the turn
+    finishes while the Escape lands is already behind it; taken back if
+    nothing was interrupted (504, or `interrupted: false`), since that
+    turn's reply is still worth hearing. A second press in the same exchange
+    keeps the first stamp. It ends when the session next submits a listener
+    turn: the `UserPromptSubmit` hook (the desk, and headless sessions,
+    whose hooks run under `-p`) and every message the server sends
+    (`send._record_turn`, all drivers and harnesses). Backstop:
+    `MEDIA_SPEECH_CUT_TTL_S` (1800 s) after it was set, for a harness whose
+    desk-typed turns nothing reports (Codex, pi, Hermes).
+  - `all` — every reply of this session submitted up to the stamp and not
+    yet heard. One-shot by construction: later replies have later stamps.
+- **The checkpoint** is the global flush's: after the reply has the playback
+  token and any hold is over, just before its first clip. A reply stopped
+  there — queued behind another session, still rendering, or waiting out a
+  hold — is not played, and still writes its history row with
+  `extras.flushed: true`. `all` is also checked **between clips** of the
+  reply playing (both the per-clip loop and the phone playlist's), so the
+  rest of the reply the stopped clip belonged to does not start up again.
+  `after` never cuts a reply mid-play. Keyed by the Claude session id
+  (`source_session`), not the pane, so another thread — even in the same
+  tmux session — is never touched. `media say --supersede`'s marker is the
+  model and is unchanged; `request_speech_flush()` (global) is unchanged.
+- **`flushed`** in the response is the number of this thread's replies
+  waiting for the voice at the press (`speech_queue()`) that the `all` cut
+  dropped; replies still rendering are dropped too but not counted.
+- `speech: "silence"` sets `all` even when another thread is the one
+  heard (its clip is left alone), and `after` too when the turn was working.
 - `state` afterwards is the driver's (`ended` for a session not running).
 - In `CORS_PATHS`.
+
+Response as built: the specification's below, plus `"flushed": <int>`;
+`cutoff` is the `after` stamp when an interrupt landed, else `null`;
+`speech: "stopped"` whenever this thread's speech was stopped or its queue
+dropped.
 
 The specification, as it was written:
 
@@ -2004,7 +2038,7 @@ request_id: approval.id, decision, answers?, message?}`. No desk needed.
 | Device auth | **built 22 Sep 2026** (§9). Left: `code: "bad_token"` on a revoked token's 401 (with §13), and the app side (scan, keystore, send the token) |
 | Session-keyed log and reply | **built 22 Sep 2026** (§10) |
 | Live thread updates | **built 22 Sep 2026** (§11), with messages from the transcript (§6.2.2). Left: the app side, and transcript parsers for Codex, pi and Hermes |
-| Stop | **built 22 Sep 2026** (§12), except the per-session speech marker in core (`after` / `all`): no cutoff, and this thread's queued replies are not dropped |
+| Stop | **built 22 Sep 2026** (§12), with the per-session speech marker in core (`after` / `all`): the cutoff, and this thread's queued replies dropped |
 | Machine-readable error codes | specified (§13), not built |
 | Archive / unarchive a thread | **built 22 Sep 2026**: `POST /session/archive` and `archived` on `/targets` rows (§6.1, §6.4), a server-side flag in `<state_dir>/archived.json`. Left: the app side, and moving any existing ABS `archived` tags over (not done — the tag and the flag are independent until then) |
 | Session memory on the phone | **built 22 Sep 2026**: `mem_mb` per `/sessions/state` row and its `host` block (§6.1). Left: the app side |

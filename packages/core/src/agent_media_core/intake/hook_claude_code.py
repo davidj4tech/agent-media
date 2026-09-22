@@ -1118,6 +1118,14 @@ def _handle_user_prompt(payload: dict) -> int:
     session = payload.get("session_id") or ""
     if not session:
         return 0
+    # The listener's next turn ends a stop's cutoff (`/session/stop`), so this
+    # exchange speaks normally. Any prompt counts, recorded or not.
+    try:
+        from .submit import end_session_speech_cut
+
+        end_session_speech_cut(session)
+    except Exception as e:  # noqa: BLE001 — the prompt reached Claude either way
+        log.warning("hook: could not end the speech cutoff (%s)", e)
     # A slash command is an instruction rather than a sentence, and some of
     # them are instructions to the tool rather than to the work. `slash` holds
     # that judgement so the reply box makes it the same way.

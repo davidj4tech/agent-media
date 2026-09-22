@@ -1347,6 +1347,150 @@ def _speech_flushed(seq: float) -> bool:
         return False
 
 
+# --- the per-session cut (`/session/stop`, server-contract.md §12) -------------
+#
+# One file per Claude session, beside the supersede markers and keyed the same
+# way (sha1 of the session id), holding up to two stamps:
+#
+#   "after": drop this session's replies SUBMITTED after it — the cutoff a stop
+#            sets while the turn is working. What was said before the stop is
+#            still true and still plays; what the interrupted turn says after
+#            it does not. Ends when the session next submits a listener turn
+#            (`end_session_speech_cut`), so the next exchange speaks normally,
+#            with `_SPEECH_CUT_TTL_S` as the backstop for a harness whose turns
+#            nobody reports.
+#   "all":   drop every reply from this session submitted up to it and not yet
+#            playing — queued, rendering, waiting on the lock or a hold — and
+#            the rest of the one playing now. One-shot by construction: a later
+#            submission has a later stamp.
+#
+# Checked where the global flush is (the last checkpoint before a reply's first
+# clip plays) and, for "all", between clips too. A dropped reply still writes
+# its history row, marked flushed, exactly as a flushed one does.
+
+_CUT_MODES = ("after", "all")
+
+
+def _speech_cut_dir() -> Path:
+    state = Path(os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state"))
+    return state / "agent-media" / "speech-cut"
+
+
+def _speech_cut_path(session: str) -> Path:
+    return _speech_cut_dir() / hashlib.sha1(session.encode("utf-8")).hexdigest()
+
+
+def _speech_cut_ttl_s() -> float:
+    try:
+        return float(os.environ.get("MEDIA_SPEECH_CUT_TTL_S", "1800"))
+    except ValueError:
+        return 1800.0
+
+
+def _read_speech_cut(session: str) -> dict:
+    try:
+        rec = json.loads(_speech_cut_path(session).read_text())
+    except (OSError, ValueError):
+        return {}
+    return rec if isinstance(rec, dict) else {}
+
+
+def _write_speech_cut(session: str, rec: dict) -> None:
+    path = _speech_cut_path(session)
+    rec = {k: v for k, v in rec.items() if v is not None}
+    try:
+        if not any(k in rec for k in _CUT_MODES):
+            path.unlink(missing_ok=True)
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex[:6]}")
+        tmp.write_text(json.dumps(rec))
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def request_session_speech_cut(session: str, mode: str = "after",
+                               at: Optional[float] = None) -> Optional[float]:
+    """Drop this session's speech from `at` (default now): `after` skips the
+    replies it submits after `at`, `all` skips every one of its replies
+    submitted up to `at` that has not finished playing. Returns the stamp
+    recorded, or None when there is no session to cut.
+
+    Another session's speech is never touched, and the archive never is: a
+    skipped reply writes its history row, marked flushed.
+    """
+    session = (session or "").strip()
+    if mode not in _CUT_MODES:
+        raise ValueError(f"mode must be one of {_CUT_MODES}, not {mode!r}")
+    if not session:
+        return None
+    at = float(at if at is not None else time.time())
+    rec = _read_speech_cut(session)
+    rec["session"] = session
+    if mode == "after":
+        # Two stops in one exchange: the first cutoff stands (nothing a
+        # listener said lies between them, so both cut the same turn).
+        prev = rec.get("after")
+        rec["after"] = min(float(prev), at) if isinstance(prev, (int, float)) else at
+        rec["set_at"] = time.time()
+    else:
+        prev = rec.get("all")
+        rec["all"] = max(float(prev), at) if isinstance(prev, (int, float)) else at
+    _write_speech_cut(session, rec)
+    return at
+
+
+def session_speech_cut(session: str) -> dict:
+    """The cut standing on `session`: `{"after": ts?, "all": ts?}` ({} none).
+    An `after` past its TTL is reported as gone, as the checkpoint treats it."""
+    rec = _read_speech_cut((session or "").strip()) if session else {}
+    out = {k: rec[k] for k in _CUT_MODES if isinstance(rec.get(k), (int, float))}
+    set_at = rec.get("set_at")
+    if "after" in out and isinstance(set_at, (int, float)) \
+            and time.time() - set_at > _speech_cut_ttl_s():
+        out.pop("after")
+    return out
+
+
+def end_session_speech_cut(session: str) -> None:
+    """The listener spoke to `session` again: its cutoff (`after`) ends here.
+    An `all` stamp stays — it only ever covers replies submitted before it."""
+    session = (session or "").strip()
+    if not session:
+        return
+    rec = _read_speech_cut(session)
+    if "after" not in rec:
+        return
+    rec.pop("after", None)
+    rec.pop("set_at", None)
+    _write_speech_cut(session, rec)
+
+
+def _speech_cut(session: str, seq: float, *, playing: bool = False) -> bool:
+    """True when this session's reply submitted at `seq` has been cut.
+
+    `playing`: asked between clips of a reply already speaking, where only an
+    `all` cut applies — the cutoff lets through what started before it."""
+    if not session:
+        return False
+    rec = _read_speech_cut(session)
+    if not rec:
+        return False
+    all_at = rec.get("all")
+    if isinstance(all_at, (int, float)) and seq <= all_at:
+        return True
+    if playing:
+        return False
+    after = rec.get("after")
+    if not isinstance(after, (int, float)) or seq <= after:
+        return False
+    set_at = rec.get("set_at")
+    if isinstance(set_at, (int, float)) and time.time() - set_at > _speech_cut_ttl_s():
+        return False
+    return True
+
+
 def set_speech_hold(seconds: float, owner: str | None = None) -> float:
     """Hold the START of new speech playback, returning the expiry epoch
     (0.0 if the marker could not be written).
@@ -2933,7 +3077,7 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
     # Same last-checkpoint gate as the local path: wait out an active hold,
     # then drop if a flush arrived while we were queued or held.
     _wait_speech_hold()
-    if _speech_flushed(seq):
+    if _speech_flushed(seq) or _speech_cut(session, seq):
         lock.release()
         return None
     started_at = time.time()
@@ -3618,7 +3762,9 @@ def _submit_event(event: Event,
         # either way — only the audio is skipped. The clip already SPEAKING
         # when the flush was requested is deliberately not cut; pause / stop /
         # supersede exist for that.
-        if _speech_flushed(started_at):
+        # Cut by `/session/stop` (`request_session_speech_cut`): the same
+        # skip, for this session only.
+        if _speech_flushed(started_at) or _speech_cut(source_session, started_at):
             playback_lock.release()
             return _archive(flushed=True)
         # Cross-host: also claim the shared remote broker so another machine's
@@ -3885,7 +4031,9 @@ def _submit_event(event: Event,
                     hard_deadline = _pl_started + total_duration_s + 5.0
                     # Superseded by a later URGENT in this session — drop the
                     # rest of the playlist instead of yielding-and-resuming.
-                    if playback_lock.should_abort():
+                    # Or stopped from the app (`all` cut): the same drop.
+                    if playback_lock.should_abort() or _speech_cut(
+                            source_session, started_at, playing=True):
                         highlighter.cancel_pending()
                         sink.stop(target)
                         finished = True
@@ -4096,7 +4244,9 @@ def _submit_event(event: Event,
                 while 0 <= i < n:
                     # Superseded by a later URGENT in this session — drop the
                     # remaining sentences instead of yielding-and-resuming.
-                    if playback_lock.should_abort():
+                    # Or stopped from the app (`all` cut): the same drop.
+                    if playback_lock.should_abort() or _speech_cut(
+                            source_session, started_at, playing=True):
                         break
                     # Step aside between sentences if a higher-priority speaker
                     # (e.g. a notification) is waiting; resume it once that's done.
@@ -4396,8 +4546,11 @@ def submit_stream(sentences,
         try:
             while True:
                 # Superseded by a later URGENT in this session — drop the rest
-                # (whether or not we've started) instead of resuming.
-                if playback_lock.should_abort():
+                # (whether or not we've started) instead of resuming. Or cut
+                # by `/session/stop`: before the first clip either mode, after
+                # it only `all`.
+                if playback_lock.should_abort() or _speech_cut(
+                        source_session, started_at, playing=i > 0):
                     break
                 # Step aside between sentences for a higher-priority speaker;
                 # resume this clip once it's done. Only after the first clip has

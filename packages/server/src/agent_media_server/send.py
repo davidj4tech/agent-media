@@ -762,6 +762,15 @@ def _record_turn(session: str, text: str, pane: str = "") -> None:
     conversation is filed under is read off its turns, and a fresh session's
     first export may hold only this turn.
     """
+    # The listener spoke again: a stop's cutoff on this session's speech ends
+    # here (server-contract.md §12). Synchronous, so the reply this turn
+    # starts cannot race it; the prompt hook ends it too, for the desk.
+    try:
+        from agent_media_core.intake.submit import end_session_speech_cut
+
+        end_session_speech_cut(session)
+    except Exception as e:  # noqa: BLE001 — the words reached the session
+        print(f"reply: could not end the speech cutoff ({e})", file=sys.stderr)
     where = {}
     if pane:
         at = panes.where(pane)
