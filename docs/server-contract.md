@@ -1418,9 +1418,11 @@ agents' own notes, close to a thousand of them.
 
 #### `GET /notes/read?path=<rel>[&at=<line>]`
 
-`{"ok", "path", "at", "title", "text", "links": [{label, path}]}`. `text` is
-raw Org, capped at 256 KB. With `at`, only the subtree under that heading is
-returned. `links` resolves the text's `[[id:…]]` links to paths.
+`{"ok", "path", "at", "title", "text", "links": [{label, path}], "chats":
+[{session, title, at}]}`. `text` is raw Org, capped at 256 KB. With `at`,
+only the subtree under that heading is returned. `links` resolves the text's
+`[[id:…]]` links to paths. `chats` lists the chats started about this item
+with `POST /notes/ask`, newest first (at most 20).
 - 404 for anything outside the tree, in a dot-dir, a directory, or a file that
   is not `.org`/`.md`/`.txt`.
 - 409 when the line at `at` is no longer a heading, meaning the file changed
@@ -1461,6 +1463,21 @@ text}]}`.
   heading becomes a sentence ("Todo: Call the bank.").
 - It is capped at 6,000 characters.
 - 404 and 409 as for `/notes/read`; 422 when nothing readable is left.
+
+#### `POST /notes/ask` — gated (`auth.gate`), like `/ask`
+
+`{"path", "at"?, "text", "agent"?}` → `/ask`'s answer for a new session
+(§6.3: `session`, `pane`, `opened`, `fresh`, …) plus `path` and `at`.
+- The Organiser's chat box (`notes_chat.py`). A fresh session opens in the
+  notes tree itself, so the agent can read and edit the file. No session need
+  have run there before: the server chose the directory, not the client.
+- Its first message names the item, then the words:
+  `About "<title>" in my Org notes (~/org/<path>, line <at>, <STATE>): <text>`.
+  A whole note (no `at`) leaves out the line and the state.
+- The session is recorded against the item's file and title (not its line,
+  which moves), for `/notes/read`'s `chats`. A refile to another file starts
+  that list afresh.
+- 400 when the text is empty; 404 and 409 as for `/notes/read`.
 
 #### `POST /notes/state` · `POST /notes/refile` — gated (`auth.gate`)
 

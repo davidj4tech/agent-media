@@ -14,6 +14,7 @@ capture only has to land in `inbox.org`.
                                  (&all=1 takes in session notes; &memory=0 skips memory)
   POST /notes/capture {"text", "kind": "todo"|"note", "memory": bool}
   POST /notes/say {"path", "at"?}  → read a note (or one heading) aloud
+  POST /notes/ask {"path", "at"?, "text"} → a chat about it (notes_chat.py)
 
 Setting all this up on a host is notes_setup.py (/notes/setup).
 

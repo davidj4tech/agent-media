@@ -112,7 +112,7 @@ from urllib.parse import parse_qs
 
 from . import (abs_item, archive, auth, devices, drafts, harnesses, pins, routing, send,
                sessions, share, speech, threads)
-from . import audio, notes, notes_edit, notes_setup
+from . import audio, notes, notes_chat, notes_edit, notes_setup
 
 # The endpoints a browser on another origin may reach. Everything here
 # carries its own credential — a paired device's token, or the caller's
@@ -144,7 +144,7 @@ CORS_PATHS = CORS_PATHS | AUDIO_PATHS
 # Browsing and capturing notes (notes.py). The same arrangement.
 NOTES_PATHS = frozenset({"/notes", "/notes/view", "/notes/read", "/notes/search",
                          "/notes/capture", "/notes/setup", "/notes/say",
-                         "/notes/state", "/notes/refile"})
+                         "/notes/state", "/notes/refile", "/notes/ask"})
 CORS_PATHS = CORS_PATHS | NOTES_PATHS
 
 # Paths opened to other origins for POST (and its preflight) ONLY. `/pair` is
@@ -795,6 +795,8 @@ def _notes(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
         except ValueError:
             at = 0
         ok, detail = notes.read(arg("path"), at, bearer)
+        if ok:
+            detail["chats"] = notes_chat.chats(detail["path"], detail["title"])
     elif method == "GET" and path == "/notes/search":
         ok, detail = notes.search(arg("q"), bearer, everything=arg("all") == "1",
                                   memory=arg("memory") != "0")
@@ -832,6 +834,16 @@ def _notes(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
         except (TypeError, ValueError):
             at = 0
         ok, detail = notes.say(str(body.get("path") or ""), at, bearer)
+    elif method == "POST" and path == "/notes/ask":
+        # A chat about this item: a fresh session in the notes tree (notes_chat.py).
+        body = _read_json(h) or {}
+        try:
+            at = max(0, int(body.get("at") or 0))
+        except (TypeError, ValueError):
+            at = 0
+        ok, detail = notes_chat.ask(str(body.get("path") or ""), at,
+                                    str(body.get("text") or ""), bearer,
+                                    agent=str(body.get("agent") or ""))
     elif method == "POST" and path == "/notes/capture":
         body = _read_json(h) or {}
         ok, detail = notes.capture(str(body.get("text") or ""),

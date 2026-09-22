@@ -614,7 +614,7 @@ def _send_to_pane(pane: str, text: str) -> str:
 
 
 def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
-        agent: str = "", cwd: str = "") -> tuple[bool, dict]:
+        agent: str = "", cwd: str = "", cwd_trusted: bool = False) -> tuple[bool, dict]:
     """Start a fresh session with `text` as its first message.
 
     What the phone's assistant button does. Nothing to resume and no item yet:
@@ -626,6 +626,8 @@ def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
     and `cwd` (a directory, as `/targets` hands them out) says the same thing
     without the library's naming convention in the middle.
     `agent` picks Claude Code (the default, or MEDIA_ASK_AGENT), Codex or pi.
+    `cwd_trusted` is for the server's own callers (a chat about a note opens
+    in the notes tree), never for a directory the phone named.
     """
     text = " ".join((text or "").split())
     if not text:
@@ -644,7 +646,7 @@ def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
         # A directory named outright. Only somewhere a session has actually
         # run: this opens a shell there, so it is not the phone's to choose
         # freely.
-        if where not in {p["path"] for p in sessions.places(limit=0)}:
+        if not cwd_trusted and where not in {p["path"] for p in sessions.places(limit=0)}:
             return False, {"error": f"no session has run in {where!r}", "status": 404}
         from agent_media_core import layout
 
