@@ -302,6 +302,46 @@ def test_jump_end_lands_on_last_clip_of_playlist(monkeypatch):
     assert fake.calls[-1] == ("command", "seek", 100, "absolute-percent")
 
 
+def test_jump_end_on_phone_ends_the_live_reply_through_its_loop(monkeypatch):
+    """On the phone lane End hands the reply's follow loop a past-the-end jump
+    and sends the player nothing: seven serial round trips to p8a made the key
+    land ~11s late, and a raw `stop` could cut the next turn instead."""
+    fake = _FakeIpc({"playlist-count": 3})
+    navs: list = []
+    monkeypatch.setattr(cli, "ipc", fake)
+    monkeypatch.setattr(cli, "_sock", lambda: "tcp://phone.example:6613")
+    monkeypatch.setattr(cli, "_speech_in_flight", lambda: True)
+    monkeypatch.setattr(cli, "_now_speaking",
+                        lambda: {"target": "app", "extras": {"writer_pid": 1}})
+    monkeypatch.setattr(cli, "_is_replay", lambda np: False)
+    monkeypatch.setattr(cli, "_write_nav_request",
+                        lambda idx, target: navs.append((idx, target)))
+
+    class A:
+        where = "end"
+    assert cli.cmd_jump(A()) == 0
+    assert navs == [(cli.sys.maxsize, "app")]
+    assert fake.calls == []
+
+
+def test_jump_end_on_phone_replay_still_drives_the_player(monkeypatch):
+    """A replay has no follow loop to read the request."""
+    fake = _FakeIpc({"playlist-count": 3})
+    monkeypatch.setattr(cli, "ipc", fake)
+    monkeypatch.setattr(cli, "_sock", lambda: "tcp://phone.example:6613")
+    monkeypatch.setattr(cli, "_speech_in_flight", lambda: True)
+    monkeypatch.setattr(cli, "_now_speaking",
+                        lambda: {"target": "app", "extras": {"replay": True}})
+    monkeypatch.setattr(cli, "StateStore", lambda: type(
+        "S", (), {"get_now_playing": lambda self, ch: None})())
+    monkeypatch.setattr(cli, "_write_nav_request", lambda *a, **k: None)
+
+    class A:
+        where = "end"
+    assert cli.cmd_jump(A()) == 0
+    assert fake.calls[-1] == ("command", "seek", 100, "absolute-percent")
+
+
 def test_every_speech_control_bypasses_the_slow_endpoint_breaker(monkeypatch):
     """A keypress must reach the player even while the breaker is open.
 

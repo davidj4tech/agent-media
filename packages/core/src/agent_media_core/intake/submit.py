@@ -4113,6 +4113,19 @@ def _submit_event(event: Event,
                         getattr(sink, "refresh_broker",
                                 lambda *a, **k: None)(target)
                         last_broker_refresh = time.monotonic()
+                    # A jump asked for from the popup or the app. Read before
+                    # the snapshot, which takes ~1.3s to p8a: none of this
+                    # needs it, and End of reply should not wait on a read.
+                    nav = _read_nav_request(target)
+                    if nav is not None:
+                        if nav >= n:
+                            highlighter.cancel_pending()
+                            sink.stop(target)
+                            finished = True   # skip past last clip = intentional end
+                            break
+                        sink.set_playlist_pos(max(0, nav), target)
+                        nav_jump = True
+                        stall = 0
                     # One batched snapshot per tick (pos/idle/pause/time) instead
                     # of four separate ~600ms bridge hops — keeps the follow-along
                     # tight rather than lagging the audio by seconds.
@@ -4134,16 +4147,6 @@ def _submit_event(event: Event,
                     misses = 0
                     last_paused = bool(snap.get("pause"))
                     mute_watcher.poll(snap.get("mute"))  # from the same snapshot
-                    nav = _read_nav_request(target)
-                    if nav is not None:
-                        if nav >= n:
-                            highlighter.cancel_pending()
-                            sink.stop(target)
-                            finished = True   # skip past last clip = intentional end
-                            break
-                        sink.set_playlist_pos(max(0, nav), target)
-                        nav_jump = True
-                        stall = 0
                     if snap.get("pause"):
                         if 0 <= i < n:
                             _mark(i, live=snap)  # reflect the pause in now_playing

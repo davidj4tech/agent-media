@@ -2794,6 +2794,20 @@ def cmd_jump(a) -> int:
     if a.where == "start":
         ipc.command(sock, "seek", 0, "absolute", critical=True)
         return 0
+    # End-of-response on the phone lane: hand the reply's own follow loop a
+    # past-the-end jump and touch the player not at all. The loop reads the
+    # request on its next tick, stops the playlist it loaded, and releases the
+    # token to whatever is queued — so only this turn's clips go. Doing it
+    # from here instead took ~7 serial round trips at 1-3s each to p8a: an End
+    # tapped on 22 Sep landed 11s later, by which time the clip had nearly
+    # played out and the key looked dead. A plain `stop` would be as quick but
+    # is not turn-scoped: arriving after this reply ended, it cuts the next.
+    # A replay has no follow loop to read the request (its tracker never
+    # looks), so it keeps the path below.
+    np = _now_speaking() or {}
+    if _remote_speech() and _speech_in_flight() and not _is_replay(np):
+        _write_nav_request(sys.maxsize, np.get("target") or _speech_target().name)
+        return 0
     # End-of-response. On a *replay* the clips are queued as one mpv playlist,
     # so seeking the last entry to its end finishes the whole response. During
     # a *live* readout each sentence is a separate loadfile (playlist-count 1):
@@ -2818,6 +2832,19 @@ def cmd_jump(a) -> int:
         _write_nav_request(len(sentences),
                            (np or {}).get("target") or _speech_target().name)
     return _seek_to_end(sock)
+
+
+def _is_replay(np: dict) -> bool:
+    """Is the speech in `np` a replay rather than a live reply? A recorded
+    replay says so; a live turn restarted by `<` does not, but its row is
+    written by the replay tracker, whose pid the tracker's pidfile holds."""
+    ex = np.get("extras") or {}
+    if ex.get("replay"):
+        return True
+    try:
+        return int(_replay_track_pidfile().read_text().strip()) == ex.get("writer_pid")
+    except (OSError, ValueError):
+        return False
 
 
 def _nav_target(cur: int, n: int, para_idx: list, unit: str,
