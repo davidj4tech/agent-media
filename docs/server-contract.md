@@ -759,7 +759,7 @@ written, with its steps and narration. Messages are read from the same file.
 
 | Field | Meaning |
 | --- | --- |
-| `id` | the transcript `uuid` of the message's first record. Stable: a message keeps it as it grows. Codex/pi/Hermes (below): `"line:<at>"` |
+| `id` | the transcript `uuid` of the message's first record — Codex's item id (`msg_…`, `ctc_…`), pi's record id. Stable: a message keeps it as it grows. Hermes (below): `"line:<at>"` |
 | `role` | `"user"` or `"assistant"` |
 | `at` | epoch seconds, 3 dp, of the first record |
 | `parts` | in order, as the terminal draws them (below) |
@@ -842,11 +842,28 @@ alert lane) stays in `lines` and is not a message. Speech whose audio the
 cache has swept is not in the lines either (session_feed drops it), so old
 messages lose `spoken` as their clips are swept.
 
-**Codex, pi and Hermes** have no parser yet: their messages are their lines
-reshaped (one text or ask part each, `id` `"line:<at>"`, `spoken` when the
-line was spoken). The Builder in `transcript.py` is fed one record at a
-time — the shape a headless session's stream-json events also have — so
-each harness gets its own reader in front of it.
+**Codex and pi have readers of their own** (23 Sep 2026). `READERS` in
+`transcript.py` holds one per harness: the fold from that harness's records
+into the messages above, and the two cheap tests the backwards scan makes on
+a raw line before parsing it. What each contributes:
+
+| | Codex (`rollout-*.jsonl`) | pi (`<stamp>_<id>.jsonl`) |
+| --- | --- | --- |
+| a prompt | `response_item` `message`, role `user` — its `developer` messages and the tag-wrapped preamble are not the conversation | `message` record, role `user` |
+| the words | role `assistant`, `output_text` | role `assistant`, `text` blocks |
+| thinking | `reasoning` — a `summary` when there is one, else encrypted: a redacted part, as a signature-only Claude block is | `thinking` blocks, **with their words** |
+| a step | `custom_tool_call` (the sandboxed `exec`, whose command is pulled out of its script) and `function_call`, answered by the matching `*_output` | `toolCall` blocks, answered by a `toolResult` record naming the call (`isError` marks a failure) |
+| the turn ends | `event_msg` `task_complete` | the next prompt, or a `compaction` |
+
+Tool names are canonicalised (`activity.canonical_tool`: `bash`, `exec`,
+`exec_command` → `Bash`), so one table of summaries and titles serves every
+harness. `turn.running` on these is "a tool call is still waiting on its
+result" — neither harness writes a stop reason, and whether a session is
+working now is §6.2's question, not the transcript's.
+
+**Hermes** keeps its conversations in a SQLite database rather than a file,
+so it has no reader: its messages are still its lines reshaped (one text or
+ask part each, `id` `"line:<at>"`, `spoken` when the line was spoken).
 
 **Cost** (measured on red5, 22 Sep 2026, the 8 largest transcripts, 7.5–
 11.1 MB, page cache warm): a first read, from the end, 40–210 ms; the
@@ -1966,10 +1983,12 @@ memory as its own section when this host has agent-memory. Code:
   indexed but never answered, unless sessiond holds it as a headless
   thread (§17).
 - **Jumping.** For Claude Code hits, open
-  `/conversation/log?session=<session>&around=<message>` (§6.2). pi, Codex
-  and Hermes threads are shown from their spoken lines (§6.2.2), whose ids
-  are not the index's (`rec:<offset>`, the pi record id, `hermes:<id>`): the
-  jump says `found: false` and the app places the thread by `at` instead.
+  `/conversation/log?session=<session>&around=<message>` (§6.2). Codex and
+  pi threads are read from their transcripts now (§6.2.2), but the index
+  still names *records* rather than messages (`rec:<offset>`, the pi record
+  id), so only a pi hit on the record that opened a message matches; every
+  other Codex, pi or Hermes hit says `found: false` and the app places the
+  thread by `at` instead.
 
 **The index.** SQLite FTS5 at `$XDG_STATE_HOME/agent-media/search.db`
 (`~/.local/state/…`): a `docs` table (one row per message and kind: session,

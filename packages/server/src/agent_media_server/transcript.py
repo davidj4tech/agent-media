@@ -23,13 +23,15 @@ Speech is joined on afterwards (`join_speech`): the spoken row's id (for
 replay), its dedup key (for its pictures) and, while it plays, the
 follow-along clock.
 
-**Claude Code only**, for now. Codex, pi and Hermes answer with messages made
-from their spoken lines (`messages_from_lines`). A harness gets its own
-parser by adding a `(records → Builder)` reader here; the Builder is the part
-that knows what a message is, and it is fed one record at a time — which is
-also the shape a headless session's stream-json events have (the spike,
-`docs/notes/2026-09-22-headless-spike.md`: one `assistant` event per content
-block, `user` events for tool results), so the same fold serves both.
+**Claude Code, Codex and pi**, each with a reader in `READERS`: a fold from
+that harness's records into the messages above, plus the two cheap tests the
+backwards scan makes on a raw line. Hermes keeps its conversations in a
+database rather than a file, so its threads are still made from their spoken
+lines (`messages_from_lines`), text only. A Builder is fed one record at a
+time — which is also the shape a headless session's stream-json events have
+(the spike, `docs/notes/2026-09-22-headless-spike.md`: one `assistant` event
+per content block, `user` events for tool results), so the same fold serves
+both.
 
 **What is left out.** The transcript holds a great deal the terminal never
 draws, and some it draws that is not the conversation:
@@ -472,6 +474,248 @@ class Builder:
         self._close()
 
 
+
+# --- Codex and pi: the same messages, from their own transcripts -----------------
+#
+# Each of these folds one harness's records into the message shape above, so a
+# client reads one format whatever wrote the conversation. They are fed the
+# same way the Claude builder is (`_read` → `feed`), and they answer the same
+# three questions: what is a message, what ends a turn, and which raw line
+# starts one (`Reader.wants`/`prompt_hint`, the cheap tests the backwards scan
+# makes before parsing anything).
+
+
+def _norm_tool(name: str) -> str:
+    """A harness's name for a tool, as Claude Code spells it, so the summaries
+    above ("Read canvas.py (lines 1–40)") serve every harness. Unknown names
+    are left alone."""
+    from agent_media_core import activity
+
+    return activity.canonical_tool(name)
+
+
+def _tool_part(name: str, inp, tid: str) -> dict:
+    inp = inp if isinstance(inp, dict) else {}
+    canon = _norm_tool(name)
+    return {"type": "tool", "name": canon, "title": _title(name, inp),
+            "input_summary": input_summary(canon, inp), "status": "running",
+            "result_summary": "", "tool_use_id": tid}
+
+
+class _HarnessBuilder(Builder):
+    """What Codex's and pi's folds share: the Claude builder's message
+    keeping (`_close`, `_user`, `_assistant_msg`, `settle`), with the record
+    reading replaced. A turn here is running only while a tool call is
+    waiting on its result — neither harness writes a `stop_reason`, and
+    "is it working now" is answered by the session's own state (§6.2), not
+    by its transcript."""
+
+    def feed(self, rec: dict) -> None:
+        raise NotImplementedError
+
+    def settle(self) -> None:
+        cur = self._cur
+        if cur is not None and not any(p.get("status") == "running" for p in cur["parts"]):
+            cur["turn"]["running"] = False
+
+    def _finish_tool(self, tid: str, content, *, error: bool = False) -> None:
+        got = self._tools.pop(str(tid or ""), None)
+        if not got:
+            return
+        name, part = got
+        part["status"] = "error" if error else "done"
+        # A failed Read answers with what went wrong, not with how much it
+        # read: the "N lines" summary is for a Read that worked.
+        part["result_summary"] = (_cut(_result_text(content).strip(), SUMMARY_MAX)
+                                  if error else result_summary(name, content))
+
+
+#: Codex staples its instructions and environment in as messages of their own:
+#: a `developer` role, or a user message that is one big tag.
+_CODEX_ASIDE = re.compile(r"^\s*(?:<|#\s*AGENTS\.md)")
+
+
+class CodexBuilder(_HarnessBuilder):
+    """`~/.codex/sessions/.../rollout-*.jsonl`.
+
+    The conversation is in `response_item` records: `message` (developer,
+    user, assistant), `reasoning` (a summary when there is one, else
+    encrypted — the same "there was thinking here" the Claude side shows for
+    a signature-only block), and two shapes of tool call, `custom_tool_call`
+    (the sandboxed `exec`) and `function_call`, each answered later by an
+    `*_output` record naming the same `call_id`. `event_msg` records repeat
+    what the response items already said; only `task_complete` is read, to
+    end the turn.
+    """
+
+    def feed(self, rec: dict) -> None:
+        if not isinstance(rec, dict):
+            return
+        kind = rec.get("type")
+        p = rec.get("payload") if isinstance(rec.get("payload"), dict) else {}
+        if kind == "event_msg":
+            if p.get("type") == "task_complete":
+                self._close()
+            return
+        if kind != "response_item":
+            return
+        t = p.get("type")
+        if t == "message":
+            self._message(rec, p)
+        elif t == "reasoning":
+            self._reasoning(rec, p)
+        elif t in ("custom_tool_call", "function_call"):
+            self._call(rec, p)
+        elif t in ("custom_tool_call_output", "function_call_output"):
+            self._finish_tool(p.get("call_id"), _codex_output(p.get("output")))
+
+    def _message(self, rec: dict, p: dict) -> None:
+        role = p.get("role")
+        text = _codex_text(p.get("content")).strip()
+        if not text:
+            return
+        if role == "assistant":
+            msg = self._assistant_msg(_codex_rec(rec, p))
+            msg["turn"]["running"] = True
+            msg["parts"].append({"type": "text", "text": _cut(text, TEXT_MAX)})
+        elif role == "user" and not _CODEX_ASIDE.match(text):
+            self._user(_codex_rec(rec, p), _cut(text, TEXT_MAX))
+
+    def _reasoning(self, rec: dict, p: dict) -> None:
+        said = " ".join(str(s.get("text") or "") for s in p.get("summary") or []
+                        if isinstance(s, dict)).strip()
+        msg = self._assistant_msg(_codex_rec(rec, p))
+        msg["turn"]["running"] = True
+        parts = msg["parts"]
+        if said:
+            parts.append({"type": "reasoning", "text": _cut(said, REASONING_MAX),
+                          "redacted": False})
+        elif not (parts and parts[-1].get("type") == "reasoning" and parts[-1].get("redacted")):
+            parts.append({"type": "reasoning", "text": "", "redacted": True})
+
+    def _call(self, rec: dict, p: dict) -> None:
+        msg = self._assistant_msg(_codex_rec(rec, p))
+        msg["turn"]["running"] = True
+        name = str(p.get("name") or "")
+        tid = str(p.get("call_id") or p.get("id") or "")
+        part = _tool_part(name, _codex_args(p), tid)
+        msg["parts"].append(part)
+        if tid:
+            self._tools[tid] = (part["name"], part)
+
+
+def _codex_rec(rec: dict, p: dict) -> dict:
+    """A record in the shape the shared message keeping expects: an id and a
+    time. Codex numbers its items (`msg_…`, `ctc_…`) and stamps the line."""
+    return {"uuid": str(p.get("id") or rec.get("timestamp") or ""),
+            "timestamp": rec.get("timestamp")}
+
+
+def _codex_text(content) -> str:
+    if isinstance(content, str):
+        return content
+    out = []
+    for b in content or []:
+        if isinstance(b, dict) and b.get("type") in ("input_text", "output_text", "text"):
+            out.append(str(b.get("text") or ""))
+    return "\n".join(out)
+
+
+def _codex_output(output) -> str:
+    return _codex_text(output) if not isinstance(output, str) else output
+
+
+#: `exec` hands its command over as a little script: `tools.exec_command({cmd:"…"})`.
+_EXEC_CMD = re.compile(r'cmd\s*:\s*"((?:[^"\\]|\\.)*)"')
+
+
+def _codex_args(p: dict) -> dict:
+    """A call's arguments as a dict, whichever way Codex wrote them: JSON in
+    `arguments`, or the `exec` script in `input` (whose command is pulled out
+    when it is there, so the step reads as the command it ran)."""
+    raw = p.get("arguments")
+    if isinstance(raw, str) and raw.strip().startswith("{"):
+        try:
+            got = json.loads(raw)
+            if isinstance(got, dict):
+                return got
+        except ValueError:
+            pass
+    if isinstance(raw, dict):
+        return raw
+    text = p.get("input")
+    if isinstance(text, str):
+        m = _EXEC_CMD.search(text)
+        if m:
+            try:
+                return {"command": json.loads(f'"{m.group(1)}"')}
+            except ValueError:
+                return {"command": m.group(1)}
+        return {"command": text}
+    return {}
+
+
+def _pi_rec(rec: dict) -> dict:
+    """pi's records in the shape the shared message keeping expects: it
+    numbers every line (`id`, and `parentId` before it) and stamps it."""
+    return {"uuid": str(rec.get("id") or rec.get("timestamp") or ""),
+            "timestamp": rec.get("timestamp")}
+
+
+class PiBuilder(_HarnessBuilder):
+    """`~/.pi/agent/sessions/--<cwd>--/<stamp>_<id>.jsonl`.
+
+    One `message` record per turn part, told apart by `message.role`: `user`,
+    `assistant` (text, `thinking` — with its words, unlike Codex's — and
+    `toolCall` blocks), and `toolResult`, which names the call it answers
+    (`toolCallId`) and says whether it failed. `compaction` ends a turn, as
+    Claude's compact boundary does.
+    """
+
+    def feed(self, rec: dict) -> None:
+        if not isinstance(rec, dict):
+            return
+        if rec.get("type") == "compaction":
+            self._close()
+            return
+        if rec.get("type") != "message":
+            return
+        m = rec.get("message") if isinstance(rec.get("message"), dict) else {}
+        role = m.get("role")
+        blocks = m.get("content")
+        if isinstance(blocks, str):
+            blocks = [{"type": "text", "text": blocks}]
+        if role == "toolResult":
+            self._finish_tool(m.get("toolCallId"), blocks, error=bool(m.get("isError")))
+            return
+        if role == "user":
+            text = "\n".join(str(b.get("text") or "") for b in blocks or []
+                              if isinstance(b, dict) and b.get("type") == "text").strip()
+            if text:
+                self._user(_pi_rec(rec), _cut(text, TEXT_MAX))
+            return
+        if role != "assistant":
+            return
+        msg = self._assistant_msg(_pi_rec(rec))
+        msg["turn"]["running"] = True
+        for b in blocks or []:
+            if not isinstance(b, dict):
+                continue
+            t = b.get("type")
+            if t == "text" and str(b.get("text") or "").strip():
+                msg["parts"].append({"type": "text", "text": _cut(str(b["text"]), TEXT_MAX)})
+            elif t == "thinking":
+                said = str(b.get("thinking") or "").strip()
+                msg["parts"].append({"type": "reasoning",
+                                     "text": _cut(said, REASONING_MAX) if said else "",
+                                     "redacted": not said})
+            elif t == "toolCall":
+                tid = str(b.get("id") or "")
+                part = _tool_part(str(b.get("name") or ""), b.get("arguments"), tid)
+                msg["parts"].append(part)
+                if tid:
+                    self._tools[tid] = (part["name"], part)
+
 def copy_messages(messages: list[dict]) -> list[dict]:
     """Copies the caller may change (the speech join does) without touching
     the cache."""
@@ -487,8 +731,8 @@ def copy_messages(messages: list[dict]) -> list[dict]:
 # --- reading a file ---------------------------------------------------------------
 
 
-def _parse_line(raw: bytes) -> dict | None:
-    if not any(w in raw for w in _WANT):
+def _parse_line(raw: bytes, wants: tuple = _WANT) -> dict | None:
+    if not any(w in raw for w in wants):
         return None
     try:
         rec = json.loads(raw)
@@ -515,7 +759,7 @@ def _seam(fh, offset: int) -> bytes:
     return fh.read(offset - lo)
 
 
-def _feed_range(b: Builder, fh, lo: int, hi: int) -> None:
+def _feed_range(b: Builder, fh, lo: int, hi: int, wants: tuple = _WANT) -> None:
     """Feed every line in bytes [lo, hi) (line boundaries), in order."""
     fh.seek(lo)
     left = hi - lo
@@ -526,16 +770,17 @@ def _feed_range(b: Builder, fh, lo: int, hi: int) -> None:
         lines = buf.split(b"\n")
         carry = lines.pop()
         for raw in lines:
-            rec = _parse_line(raw)
+            rec = _parse_line(raw, wants)
             if rec is not None:
                 b.feed(rec)
     if carry.strip():
-        rec = _parse_line(carry)
+        rec = _parse_line(carry, wants)
         if rec is not None:
             b.feed(rec)
 
 
-def _tail_start(fh, end: int, prompts: int, sidechain: bool = False) -> int:
+def _tail_start(fh, end: int, prompts: int, sidechain: bool = False,
+                reader: "Reader | None" = None) -> int:
     """The offset of the line `prompts` prompts back from `end` (0 when the
     file has fewer). Reads backwards; only lines that could be a prompt are
     parsed."""
@@ -561,28 +806,81 @@ def _tail_start(fh, end: int, prompts: int, sidechain: bool = False) -> int:
         for raw in lines:
             starts.append(o)
             o += len(raw) + 1
+        rd = reader or READERS["claude"]
         for raw, at in zip(reversed(lines), reversed(starts)):
-            # A tool result is never a prompt, and it is the line that
-            # carries whole files: not worth parsing to find that out.
-            if b'"type":"user"' not in raw or b'"tool_result"' in raw:
+            if not rd.prompt_hint(raw):
                 continue
-            rec = _parse_line(raw)
-            if rec is not None and is_boundary(rec, sidechain):
+            rec = _parse_line(raw, rd.wants)
+            if rec is not None and rd.boundary(rec, sidechain):
                 found += 1
                 if found >= prompts:
                     return at
     return 0
 
 
-class _File:
-    __slots__ = ("ino", "size", "mtime", "lo", "offset", "seam", "builder", "lock", "sidechain")
+class Reader:
+    """How one harness's transcript is read: the fold (`build`), the words a
+    line must hold to be worth parsing (`wants`), and how a prompt is
+    recognised — cheaply from the raw line (`prompt_hint`), then for certain
+    from the parsed record (`boundary`). The backwards scan that finds where
+    to start reading uses the last two; nothing else here is harness-aware.
+    """
 
-    def __init__(self, sidechain: bool = False) -> None:
+    __slots__ = ("build", "wants", "prompt_hint", "boundary")
+
+    def __init__(self, build, wants, prompt_hint, boundary) -> None:
+        self.build, self.wants = build, wants
+        self.prompt_hint, self.boundary = prompt_hint, boundary
+
+
+def _claude_hint(raw: bytes) -> bool:
+    # A tool result is never a prompt, and it is the line that carries whole
+    # files: not worth parsing to find that out.
+    return b'"type":"user"' in raw and b'"tool_result"' not in raw
+
+
+def _codex_boundary(rec: dict, sidechain: bool = False) -> bool:
+    p = rec.get("payload") if isinstance(rec.get("payload"), dict) else {}
+    if rec.get("type") != "response_item" or p.get("type") != "message" \
+            or p.get("role") != "user":
+        return False
+    text = _codex_text(p.get("content")).strip()
+    return bool(text) and not _CODEX_ASIDE.match(text)
+
+
+def _pi_boundary(rec: dict, sidechain: bool = False) -> bool:
+    m = rec.get("message") if isinstance(rec.get("message"), dict) else {}
+    if rec.get("type") != "message" or m.get("role") != "user":
+        return False
+    return any(isinstance(b, dict) and b.get("type") == "text" and str(b.get("text") or "").strip()
+               for b in (m.get("content") or []))
+
+
+READERS: dict[str, Reader] = {
+    "claude": Reader(lambda sidechain=False: Builder(sidechain), _WANT,
+                     _claude_hint, is_boundary),
+    "codex": Reader(lambda sidechain=False: CodexBuilder(),
+                    (b'"response_item"', b'"task_complete"'),
+                    lambda raw: b'"role": "user"' in raw or b'"role":"user"' in raw,
+                    _codex_boundary),
+    "pi": Reader(lambda sidechain=False: PiBuilder(),
+                 (b'"type": "message"', b'"type":"message"', b'"compaction"'),
+                 lambda raw: b'"role": "user"' in raw or b'"role":"user"' in raw,
+                 _pi_boundary),
+}
+
+
+class _File:
+    __slots__ = ("ino", "size", "mtime", "lo", "offset", "seam", "builder", "lock",
+                 "sidechain", "reader")
+
+    def __init__(self, sidechain: bool = False, reader: Reader | None = None) -> None:
         self.ino = self.size = self.lo = self.offset = 0
         self.mtime = 0.0
         self.seam = b""
         self.sidechain = sidechain
-        self.builder = Builder(sidechain)
+        self.reader = reader or READERS["claude"]
+        self.builder = self.reader.build(sidechain)
         self.lock = threading.Lock()
 
 
@@ -595,7 +893,8 @@ def _reset_for_tests() -> None:
         _CACHE.clear()
 
 
-def _read(path: str, full: bool, sidechain: bool = False) -> tuple[list[dict], bool] | None:
+def _read(path: str, full: bool, sidechain: bool = False,
+          harness: str = "claude") -> tuple[list[dict], bool] | None:
     """`(messages, more)` for the transcript at `path`: the cached fold,
     brought up to date. `more` is whether older messages exist that have not
     been read (the file was read from its end); `full` reads them.
@@ -607,7 +906,7 @@ def _read(path: str, full: bool, sidechain: bool = False) -> tuple[list[dict], b
     with _LOCK:
         f = _CACHE.get(path)
         if f is None:
-            f = _CACHE[path] = _File(sidechain)
+            f = _CACHE[path] = _File(sidechain, READERS.get(harness) or READERS["claude"])
             while len(_CACHE) > _CACHE_MAX:
                 _CACHE.pop(next(iter(_CACHE)))
     with f.lock:
@@ -622,19 +921,20 @@ def _read(path: str, full: bool, sidechain: bool = False) -> tuple[list[dict], b
                 if not appended:
                     # First sight, shrunk, replaced or rewritten: from scratch,
                     # from the end.
-                    f.builder = Builder(f.sidechain)
-                    f.lo = 0 if full else _tail_start(fh, end, TAIL_PROMPTS, f.sidechain)
+                    f.builder = f.reader.build(f.sidechain)
+                    f.lo = 0 if full else _tail_start(fh, end, TAIL_PROMPTS, f.sidechain,
+                                                      f.reader)
                     f.offset = f.lo
                 elif full and f.lo:
                     # Older messages wanted: read what came before the tail.
                     # `lo` is a prompt, so everything before it is closed.
-                    older = Builder(f.sidechain)
-                    _feed_range(older, fh, 0, f.lo)
+                    older = f.reader.build(f.sidechain)
+                    _feed_range(older, fh, 0, f.lo, f.reader.wants)
                     older.close_open()
                     f.builder.messages[:0] = older.messages
                     f.builder._seen |= older._seen
                     f.lo = 0
-                _feed_range(f.builder, fh, f.offset, end)
+                _feed_range(f.builder, fh, f.offset, end, f.reader.wants)
                 f.builder.settle()
                 f.offset = end
                 f.seam = _seam(fh, end)
@@ -651,32 +951,54 @@ def transcript_path(session: str) -> str:
     return recaps.transcript_path(session)
 
 
+def transcript_of(session: str) -> tuple[str, str]:
+    """`(harness, path)` of a transcript this module can read, or `("", "")`.
+
+    Claude Code first (its own lookup knows where a moved thread went), then
+    the stores of the harnesses with a reader here. Hermes keeps
+    conversations in a database, so it has no path and no parser: its
+    threads are still built from their spoken lines."""
+    path = transcript_path(session)
+    if path:
+        return "claude", path
+    from agent_media_core import harnesses
+
+    found = harnesses.transcript(session)
+    if not found or found[0] not in READERS:
+        return "", ""
+    return found[0], str(found[1])
+
+
 def messages(session: str, *, limit: int | None = None, before: str = "") \
         -> tuple[list[dict], bool] | None:
-    """`(messages, more)` for a Claude Code session, oldest first — copies,
-    safe to change — or None when it has no transcript (another harness, or
-    none yet).
+    """`(messages, more)` for a session, oldest first — copies, safe to
+    change — or None when there is no transcript this can read (Hermes,
+    which keeps conversations in a database, or nothing written yet).
+
+    Claude Code, Codex and pi each have a reader (`READERS`); the harness is
+    decided by which store holds the file.
 
     `limit` keeps the newest that many; `before` (a message id) keeps only
     those before it. `more` says older ones exist beyond what was returned.
     """
-    path = transcript_path(session)
+    harness, path = transcript_of(session)
     if not path:
         return None
-    return messages_at(path, limit=limit, before=before)
+    return messages_at(path, limit=limit, before=before, harness=harness)
 
 
 def messages_at(path: str, *, limit: int | None = None, before: str = "",
-                sidechain: bool = False) -> tuple[list[dict], bool] | None:
+                sidechain: bool = False, harness: str = "claude") \
+        -> tuple[list[dict], bool] | None:
     """`messages`, for the transcript at `path` — a session's, or with
     `sidechain` a subagent's own (agents.py). None when it cannot be read."""
-    got = _read(path, full=False, sidechain=sidechain)
+    got = _read(path, full=False, sidechain=sidechain, harness=harness)
     if got is None:
         return None
     msgs, more = got
     want_older = bool(before) and not any(m["id"] == before for m in msgs[1:])
     if (limit and len(msgs) < limit and more) or (want_older and more):
-        got = _read(path, full=True, sidechain=sidechain)
+        got = _read(path, full=True, sidechain=sidechain, harness=harness)
         if got is None:
             return None
         msgs, more = got
@@ -711,12 +1033,12 @@ def window_around(msgs: list[dict], around: str, limit: int, most: int) \
 
 def messages_around(session: str, around: str, *, limit: int, most: int) \
         -> tuple[list[dict], bool, bool] | None:
-    """`window_around` over a Claude Code session's whole transcript (copies).
-    None when there is no transcript or no such message."""
-    path = transcript_path(session)
+    """`window_around` over a session's whole transcript (copies). None when
+    there is no transcript this can read, or no such message."""
+    harness, path = transcript_of(session)
     if not path:
         return None
-    got = _read(path, full=True)
+    got = _read(path, full=True, harness=harness)
     if got is None:
         return None
     win = window_around(got[0], around, limit, most)
@@ -728,8 +1050,9 @@ def messages_around(session: str, around: str, *, limit: int, most: int) \
 
 def file_state(session: str) -> tuple[int, int, float] | None:
     """`(inode, size, mtime)` of the session's transcript — what a watcher
-    polls to know there is something new to read."""
-    path = transcript_path(session)
+    polls to know there is something new to read. Whichever harness wrote
+    it, so a Codex or pi thread streams like a Claude one."""
+    path = transcript_of(session)[1]
     if not path:
         return None
     try:

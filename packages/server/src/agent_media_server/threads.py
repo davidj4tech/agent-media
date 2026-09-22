@@ -336,8 +336,8 @@ def messages_for(session: str, lines: list, *, working: bool, live: bool,
     joined on (transcript.py). `older` is whether messages exist before the
     first one returned.
 
-    Claude Code sessions are read from their transcript. Every other harness
-    — or a Claude session whose transcript cannot be found — gets messages
+    Claude Code, Codex and pi sessions are read from their transcript.
+    Hermes — or any session whose transcript cannot be found — gets messages
     made from its spoken lines, text only, until it has a parser of its own.
     """
     got = None
@@ -350,7 +350,7 @@ def messages_for(session: str, lines: list, *, working: bool, live: bool,
             got = win[0], win[1]
             if jump is not None:
                 jump.update(found=True, newer=win[2])
-        elif transcript.transcript_path(session):
+        else:
             got = transcript.messages(session, limit=limit)
     if got is None:
         got = transcript.messages(session, limit=limit, before=before)

@@ -78,6 +78,11 @@ a 30-day window and 40 rows per harness, `?history=all` lifts it; the app
 wears the agent as a chip on each row and filters by it, with "Older than
 30 days" in the same menu).
 
+Codex and pi threads read from their own transcripts (§6.2.2: a reader per
+harness in `transcript.py` — prompts, replies, thinking and every step with
+its command and result, instead of one line per spoken sentence; Hermes
+keeps a database, so it still answers from its lines).
+
 ## In flight
 
 **Next's own speech player.** Media3 (David, 23 Sep 2026: the reason
@@ -106,13 +111,15 @@ read them from Next instead of the old app's :8772.
 
 ## Queued, in order
 
-1. **Full Codex and pi messages** in threads (today flattened).
-2. **Typed tools for Sasonica Shell.**
-3. **Sasonica Shell OAuth** — the proposal is written, not built.
+1. **Typed tools for Sasonica Shell.**
+2. **Sasonica Shell OAuth** — the proposal is written, not built.
 
 ## Loose ends
 
 - `follow.mjs` at the largest text size fails on and off.
+- `test_session_events.py::test_a_state_change_sends_the_list_again` times
+  out on and off when the machine is busy (the SSE watcher's poll is 50 ms
+  in that test); it passes on its own.
 - The About page shows the server host but no server version (no route).
 - The Windows install test leaves stray PATH entries.
 - A stale saved question for a session may not clear after it's answered

@@ -40,8 +40,18 @@ _UUID = re.compile(r"^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 _QUIET = {"TodoWrite", "ToolSearch", "TaskOutput", "BashOutput", "update_plan"}
 #: Codex's and pi's names for the same tools.
 _ALIASES = {"bash": "Bash", "shell": "Bash", "exec_command": "Bash", "local_shell": "Bash",
+            # Codex's sandboxed runner: a little script whose command is
+            # pulled out when it reads like one (transcript._codex_args).
+            "exec": "Bash",
             "read": "Read", "edit": "Edit", "write": "Write", "grep": "Grep",
             "find": "Glob", "ls": "LS", "web_search": "WebSearch"}
+
+
+def canonical_tool(name: str) -> str:
+    """A harness's name for a tool as Claude Code spells it ("bash" → "Bash",
+    "exec_command" → "Bash"), so anything that summarises a tool call by name
+    needs one table rather than four. An unknown name is left alone."""
+    return _ALIASES.get(name or "", name or "")
 
 
 def activity_dir() -> Path:

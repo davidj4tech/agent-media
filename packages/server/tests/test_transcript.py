@@ -328,7 +328,7 @@ def test_growth_reads_only_the_new_bytes(script, monkeypatch):
     ranges = []
     real = T._feed_range
     monkeypatch.setattr(T, "_feed_range",
-                        lambda b, fh, lo, hi: (ranges.append((lo, hi)), real(b, fh, lo, hi)))
+                        lambda b, fh, lo, hi, *a: (ranges.append((lo, hi)), real(b, fh, lo, hi, *a)))
     size = os.path.getsize(script.path)
     script.prompt("Question 2")
     script.text("Answer 2.", msgid="m9")
