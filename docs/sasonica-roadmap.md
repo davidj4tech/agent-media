@@ -82,7 +82,7 @@ from the old app unchanged (companion-origin, Apache-2.0), a new
 `SpeechService`, a `mediaPlayback` foreground service that binds the phone's
 tailnet address on **6614** (the old app keeps 6613, so both run). A Settings
 toggle, off until turned on; `MEDIA_SPEECH_SOCKET_NEXT=tcp://p8a:6614` and
-`media say --target next` point red5 at it. The protocol test came across to
+`media speech-target next` point red5 at it. The protocol test came across to
 JUnit and runs in CI. Next: build it on CI, sideload beside the old app, and
 listen — the speed at 1.6x and the gap between sentences are the two things
 Media3 has to prove. **First reply through it played on p8a, 23 Sep 2026**:
