@@ -1062,6 +1062,18 @@ model — and then renames exactly as above; the answer's `title` is the name
 it chose. A `title` sent alongside wins. 502 `"could not think of a name"`
 when the gateway gives nothing usable. Takes a few seconds.
 
+**After the first turn** (23 Sep 2026): a headless thread nobody has named
+names itself. When a session's first turn ends without an error, sessiond
+runs the same naming off a thread (`threads.name_unnamed` → `auto_title` →
+`book_tracks.rename`) and types `/rename` into the live session, so the
+shelf, the library item and Claude Code's own copy agree. It is skipped for
+a thread that already has a name — the manifest's `title` (a `/rename`) or
+Claude Code's name file, which `/rename` at the terminal writes too; the
+folder does not count, being the question it opened with. Nothing waits on
+it and every failure is silent. `MEDIA_AUTO_TITLE=0` switches it off. Only
+headless: a session at the terminal is named by Claude Code itself (an
+`ai-title` record), which `-p` does not write.
+
 **Headless sessions** (§17, 22 Sep 2026): the same `/rename <title>` goes
 to a live one as a stream-json message through sessiond — Claude Code takes
 it under `-p` as a local command (no model call, a zero-cost `result`, a

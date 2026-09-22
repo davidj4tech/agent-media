@@ -51,6 +51,8 @@ def host(monkeypatch, tmp_path):
     monkeypatch.setenv("MEDIA_SESSIOND_CLOSE_GRACE", "3")
     monkeypatch.setenv("FAKE_CLAUDE_LOG", str(tmp_path / "fake.log"))
     monkeypatch.setenv("FAKE_CLAUDE_TICK", "0.01")
+    # Naming a thread is a gateway call; the tests that want it turn it on.
+    monkeypatch.setenv("MEDIA_AUTO_TITLE", "0")
     # What a pane's environment would leak into a child, to prove it does not.
     monkeypatch.setenv("TMUX_PANE", "%99")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-should-not-pass")
@@ -696,3 +698,85 @@ def test_rename_of_a_parked_headless_session_says_when_it_lands(
     # Not woken for it.
     assert state(app_host, sid) == "parked" and len(starts(app_host)) == n
     assert not _typed_into_panes(typed)
+
+
+# --- naming a thread after its first turn -------------------------------------------
+
+def _names(monkeypatch, title="Speech bar on the lock screen", named=None):
+    """The gateway's answer stubbed, and what `book_tracks.rename` kept."""
+    from agent_media_core import book_tracks
+    from agent_media_server import threads
+
+    asked: list = []
+    monkeypatch.setenv("MEDIA_AUTO_TITLE", "1")
+    monkeypatch.setattr(threads, "auto_title", lambda s: asked.append(s) or title)
+    monkeypatch.setattr(book_tracks, "rename",
+                        lambda s, t: (named if named is not None else []).append((s, t)) or t)
+    return asked
+
+
+def test_the_first_turn_names_a_thread_nobody_has_named(host, monkeypatch):
+    from agent_media_server import threads
+
+    monkeypatch.setattr(threads, "is_named", lambda s: False)
+    kept: list = []
+    asked = _names(monkeypatch, named=kept)
+    sid = start(host, "reply: hi")
+    wait_for(lambda: last_text(host, sid) == "Session renamed to: Speech bar on the lock screen")
+    assert asked == [sid]
+    assert kept == [(sid, "Speech bar on the lock screen")]
+    # Naming it is not a turn of the conversation.
+    assert host.sup.get(sid)["turns"] == 1
+
+
+def test_a_thread_that_already_has_a_name_keeps_it(host, monkeypatch):
+    from agent_media_server import threads
+
+    monkeypatch.setattr(threads, "is_named", lambda s: True)
+    asked = _names(monkeypatch)
+    sid = start(host, "reply: hi")
+    wait_for(lambda: state(host, sid) == "waiting")
+    time.sleep(0.2)
+    assert asked == []
+
+
+def test_only_the_first_turn_names_it(host, monkeypatch):
+    from agent_media_server import threads
+
+    monkeypatch.setattr(threads, "is_named", lambda s: False)
+    asked = _names(monkeypatch)
+    sid = start(host, "reply: hi")
+    wait_for(lambda: asked)
+    driver.headless_driver().send(sid, "", "reply: and again")
+    wait_for(lambda: last_text(host, sid) == "and again")
+    time.sleep(0.2)
+    assert asked == [sid]
+
+
+def test_the_name_is_the_shelfs_title_not_the_folder(monkeypatch, tmp_path):
+    from agent_media_core import conversation
+    from agent_media_server import threads
+
+    monkeypatch.setattr(conversation, "session_name", lambda s: "")
+    manifest = {"session": "s1", "folder": str(tmp_path / "Can we do an auto rename")}
+    monkeypatch.setattr(threads, "_manifest_for", lambda s: manifest)
+    # Filed under the opening question is not the same as named.
+    assert not threads.is_named("s1")
+    manifest["title"] = "Auto-naming a thread"
+    assert threads.is_named("s1")
+    # And Claude Code's own name for it counts.
+    del manifest["title"]
+    monkeypatch.setattr(conversation, "session_name", lambda s: "Auto naming a thread")
+    assert threads.is_named("s1")
+
+
+def test_naming_is_skipped_when_it_is_off_or_the_gateway_says_nothing(monkeypatch):
+    from agent_media_server import threads
+
+    monkeypatch.setattr(threads, "is_named", lambda s: False)
+    monkeypatch.setattr(threads, "auto_title", lambda s: "")
+    monkeypatch.setenv("MEDIA_AUTO_TITLE", "1")
+    assert threads.name_unnamed("s1") == ""
+    monkeypatch.setattr(threads, "auto_title", lambda s: "A name")
+    monkeypatch.setenv("MEDIA_AUTO_TITLE", "0")
+    assert threads.name_unnamed("s1") == ""

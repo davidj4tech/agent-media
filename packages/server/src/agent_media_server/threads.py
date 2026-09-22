@@ -191,6 +191,46 @@ def auto_title(session: str) -> str:
     return line if 0 < len(line) <= 80 else ""
 
 
+#: A thread nobody has named is named for them once its first turn is done
+#: (sessiond, §17). "0" switches that off; the name itself is `auto_title`.
+def auto_title_enabled() -> bool:
+    return (os.environ.get("MEDIA_AUTO_TITLE", "1") or "1").strip() != "0"
+
+
+def is_named(session: str) -> bool:
+    """Whether this conversation has a name somebody chose or Claude chose.
+
+    The shelf's `title` (a `/rename`, kept in the manifest) or Claude Code's
+    own name for the session — which `/rename` replaces, so it covers a
+    rename made at the terminal too. Deliberately not the folder, which is
+    the question the thread opened with rather than a name for it.
+    """
+    from agent_media_core import conversation
+
+    data = _manifest_for(session) or {}
+    if " ".join(str(data.get("title") or "").split()):
+        return True
+    return bool(conversation.session_name(session))
+
+
+def name_unnamed(session: str) -> str:
+    """Name a thread that has no name, and file the name. "" if it keeps none.
+
+    Everything `rename_conversation` does but telling the running agent,
+    which is the caller's to do (sessiond types `/rename` into it directly).
+    Silent about every failure: an unnamed thread is still a thread, and this
+    runs behind a turn nobody is waiting on.
+    """
+    if not session or not auto_title_enabled() or is_named(session):
+        return ""
+    title = auto_title(session)
+    if not title:
+        return ""
+    from agent_media_core import book_tracks
+
+    return book_tracks.rename(session, title)
+
+
 def rename_conversation(item: str, session: str, title: str, bearer: str,
                         auto: bool = False) -> tuple[bool, dict]:
     """Rename a conversation from the app. Gated like `/reply`.

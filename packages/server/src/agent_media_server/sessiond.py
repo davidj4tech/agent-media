@@ -226,6 +226,7 @@ class Session:
         self.stderr_tail: collections.deque = collections.deque(maxlen=40)
         self.write_lock = threading.Lock()
         self.file_lines = 0
+        self.auto_titled = False
 
     @property
     def live(self) -> bool:
@@ -575,9 +576,36 @@ class Supervisor:
             elif t == "result":
                 s.last_result = _result_summary(obj)
                 s.set_state("approval" if s.pending else "waiting")
+                if s.turns == 1 and not s.auto_titled and not obj.get("is_error"):
+                    s.auto_titled = True
+                    threading.Thread(target=self._auto_title, args=(s,), daemon=True,
+                                     name="auto-title").start()
             if (s.state, len(s.pending)) != before or t in ("result", "control_request"):
                 self._save(s)
             self.cond.notify_all()
+
+    def _auto_title(self, s: Session) -> None:
+        """Name a thread nobody has named, its first turn done (threads.py).
+
+        Off a thread: naming is a gateway call of a few seconds, and the
+        turn it follows is already answered. The name is filed by
+        `name_unnamed` (shelf, name file, the library item) and typed into
+        the live session here, because a running Claude Code writes its own
+        title again every turn and would put the old one back.
+        """
+        from . import threads
+
+        try:
+            title = threads.name_unnamed(s.id)
+            if not title:
+                return
+            self.rename(s.id, title)
+        except Refused as e:
+            log.debug("sessiond: auto-title %s not typed in (%s)", s.id[:8], e.error)
+        except Exception:  # noqa: BLE001 — a nameless thread is not a failure
+            log.exception("sessiond: auto-title %s", s.id[:8])
+        else:
+            log.info("sessiond: %s named %r", s.id[:8], title)
 
     def _reply_error(self, s: Session, rid: str, error: str) -> None:
         try:
