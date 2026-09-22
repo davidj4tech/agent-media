@@ -483,6 +483,28 @@ def _qr(url: str) -> str:
         return "  (pip install qrcode for a scannable QR — or open the URL below)"
 
 
+def _pair_host() -> str:
+    """The host a pairing link names: MEDIA_VISUAL_PAIR_HOST, else this
+    machine's tailnet IP, else its hostname.
+
+    Not the bare hostname first: a short MagicDNS name (`red5`) resolves only
+    where the tailnet's DNS is in use, and Sasonica Next allows cleartext only
+    to tailnet addresses — a link naming `red5` failed to pair with "Could not
+    reach http://red5:8781" (22 Sep 2026). The tailnet IP reaches it anywhere
+    on the tailnet.
+    """
+    want = (os.environ.get("MEDIA_VISUAL_PAIR_HOST") or "").strip()
+    if want:
+        return want
+    try:
+        from agent_media_core.setup import _tailnet_address
+
+        ip = _tailnet_address()
+    except Exception:  # noqa: BLE001 — the hostname still names it
+        ip = ""
+    return ip or _socket.gethostname()
+
+
 def _cmd_pair(argv: list[str]) -> int:
     """`media-visual-canvas pair` — mint a one-time link (+ QR) that installs
     this host's amux token into a device's browser, so no secret is typed by
@@ -492,9 +514,9 @@ def _cmd_pair(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(
         prog="media-visual-canvas pair",
         description="Mint a one-time pairing link (and QR) for a device.")
-    ap.add_argument("--host", default=(os.environ.get("MEDIA_VISUAL_PAIR_HOST")
-                                       or _socket.gethostname()),
-                    help="host used in the URL (default: this machine's hostname)")
+    ap.add_argument("--host", default=None,
+                    help="host used in the URL (default: MEDIA_VISUAL_PAIR_HOST, else this "
+                         "machine's tailnet IP, else its hostname)")
     ap.add_argument("--port", type=int,
                     default=int(os.environ.get("MEDIA_VISUAL_PORT") or DEFAULT_PORT))
     ap.add_argument("--device", metavar="NAME",
@@ -502,6 +524,8 @@ def _cmd_pair(argv: list[str]) -> int:
                          "for a device called NAME (server-contract.md §9). Without "
                          "this, the link installs the amux token into a browser")
     args = ap.parse_args(argv)
+    if not args.host:
+        args.host = _pair_host()
 
     if args.device is not None:
         return _cmd_pair_device(args.device, args.host, args.port)
@@ -537,12 +561,15 @@ def _cmd_pair_device(name: str, host: str, port: int) -> int:
         return 2
     code, _expires = _devices.mint_code(name)
     app_link, web_link = _devices.links(code, host, port)
-    print(f"\n  Scan with Sasonica to pair {name!r} "
-          f"(valid {_devices.pair_ttl() // 60} min, one-time):\n")
+    # The app link first, on its own: it is what gets copied into the app's
+    # pairing screen, and the http form below it was being copied instead.
+    print(f"\n  Pair {name!r} with Sasonica (valid {_devices.pair_ttl() // 60} min, "
+          f"one-time) — paste this into its pairing screen, or scan the QR:\n")
+    print(f"    {app_link}\n")
     print(_qr(app_link))
     # The http form is for the person at the terminal (the host and code, in
     # a shape they recognise); opened in a browser it is refused, on purpose.
-    print(f"\n  {app_link}\n  {web_link}   (reference: code {code})\n")
+    print(f"\n  server {host}:{port} · code {code}\n  (for reference only: {web_link})\n")
     return 0
 
 

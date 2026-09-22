@@ -338,6 +338,25 @@ def test_pair_device_cli_prints_both_links(capsys, monkeypatch):
     assert "[QR sasonica://pair?" in out
 
 
+def test_the_link_names_the_tailnet_ip_before_the_hostname(capsys, monkeypatch):
+    # A bare MagicDNS name (`red5`) is not reachable from Sasonica Next,
+    # which allows cleartext only to tailnet addresses.
+    from agent_media_core import setup
+
+    monkeypatch.setattr(canvas, "_qr", lambda url: "")
+    monkeypatch.setattr(setup, "_tailnet_address", lambda: "100.64.0.7")
+    assert canvas._pair_host() == "100.64.0.7"
+    monkeypatch.setenv("MEDIA_VISUAL_PAIR_HOST", "red5.example.ts.net")
+    assert canvas._pair_host() == "red5.example.ts.net"
+    monkeypatch.delenv("MEDIA_VISUAL_PAIR_HOST")
+    assert canvas._cmd_pair(["--device", "Pixel 8a"]) == 0
+    out = capsys.readouterr().out
+    first = next(ln for ln in out.splitlines() if "://" in ln)
+    assert first.strip().startswith("sasonica://pair?server=http%3A%2F%2F100.64.0.7%3A8781")
+    monkeypatch.setattr(setup, "_tailnet_address", lambda: "")
+    assert canvas._pair_host() == canvas._socket.gethostname()
+
+
 def test_pair_without_device_is_unchanged(capsys, monkeypatch, tmp_path):
     monkeypatch.setattr(canvas, "_qr", lambda url: "")
     monkeypatch.setattr(canvas, "_amux_token", lambda: "t")
