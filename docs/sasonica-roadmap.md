@@ -74,19 +74,26 @@ the desk, a media key — not only one running ahead; `chat/test/resync.mjs`).
 
 ## In flight
 
-Nothing.
+**Next's own speech player.** Media3 (David, 23 Sep 2026: the reason
+MediaPlayer was chosen — the companion had no Gradle build — is gone). Built:
+`com.sasonica.next.speech` — `MpvServer`, `Json` and `ClipCache` carried over
+from the old app unchanged (companion-origin, Apache-2.0), a new
+`Media3Speech` on ExoPlayer behind the same `MpvServer.Player` interface, and
+`SpeechService`, a `mediaPlayback` foreground service that binds the phone's
+tailnet address on **6614** (the old app keeps 6613, so both run). A Settings
+toggle, off until turned on; `MEDIA_SPEECH_SOCKET_NEXT=tcp://p8a:6614` and
+`media say --target next` point red5 at it. The protocol test came across to
+JUnit and runs in CI. Next: build it on CI, sideload beside the old app, and
+listen — the speed at 1.6x and the gap between sentences are the two things
+Media3 has to prove.
 
 ## Queued, in order
 
 1. **Every harness's sessions** — Claude (`claude agents --json`), Codex,
    pi, Hermes in one list. Not VS Code.
 2. **Full Codex and pi messages** in threads (today flattened).
-3. **Next's own speech player** — Media3, reusing the old app's
-   `com.audiobookshelf.app.speech` package (companion-origin, Apache); its
-   own speech target and port. Run in parallel with the old app for a few
-   days, then switch the default. This is what lets the old app retire.
-4. **Typed tools for Sasonica Shell.**
-5. **Sasonica Shell OAuth** — the proposal is written, not built.
+3. **Typed tools for Sasonica Shell.**
+4. **Sasonica Shell OAuth** — the proposal is written, not built.
 
 ## Loose ends
 
@@ -97,3 +104,10 @@ Nothing.
   (the PostToolUse clear may not fire).
 - Once the old app retires, move Next into its own repository so the
   licence split is clean.
+- Next's speech service cannot start itself after a reboot: Android 15 will
+  not start a `mediaPlayback` service from `BOOT_COMPLETED`. Opening the app
+  starts it. Worth solving before Next's player becomes the default.
+- Next's speech takes audio focus (it is the app's only player), so while
+  both apps are installed a reply pauses the old app's book through Android
+  rather than in process. That is the intended behaviour, but it is the
+  arbitration the old app does more carefully, and it has not been heard yet.

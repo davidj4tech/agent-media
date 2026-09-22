@@ -55,6 +55,9 @@ KNOWN_SPEECH = ("app", "phone", "rooms", "local")
 
 _SPEECH_LABELS = {
     "app": "Phone (Sasonica)",
+    # Sasonica Next's own Media3 player, on its own port while the two run
+    # side by side. Offered only where the env configures it.
+    "next": "Phone (Sasonica Next)",
     "phone": "Phone (Termux player)",
     "rooms": "House speakers",
 }
