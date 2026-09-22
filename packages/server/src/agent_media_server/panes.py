@@ -94,25 +94,66 @@ def capture(addr: str, lines: int = 40, ansi: bool = True) -> str:
     return _run(argv)
 
 
+#: The most typed at once. Claude Code reads a burst of more than ~900
+#: characters arriving together as a paste (measured 22 Sep 2026: 800 typed,
+#: 1000 a "[Pasted text #1]" placeholder), and a paste reaches the model
+#: wrapped in `<pasted_content>` — as material, not as the listener's
+#: instruction, which the model then declines to act on. Each `send-keys` is
+#: its own write, so a long message goes in as several.
+TYPE_CHUNK = 400
+
+
+def flatten(text: str) -> str:
+    """`text` on one line: for a composer that cannot be given a newline."""
+    return " ".join((text or "").split())
+
+
+def multiline_ok(addr: str, agent: str = "claude") -> bool:
+    """Whether a message with line breaks can go into this pane as written.
+
+    Claude Code in tmux: yes, a newline is Alt+Enter (`M-Enter`). Not
+    bracketed paste, though tmux can do it (`paste-buffer -p`): Claude Code
+    wraps every paste, even one line, in `<pasted_content>`, and the model
+    treats it as quoted material rather than as what it was asked (probed 22
+    Sep 2026, v2.1.278). The others are unprobed — Codex, pi, Hermes — and so
+    is herdr, which has no key-by-key send to put Alt+Enter through: flattened.
+    """
+    return agent == "claude" and not is_herdr(addr)
+
+
+def _type_tmux(addr: str, text: str) -> None:
+    """Type `text` into a tmux pane, a line at a time with Alt+Enter between
+    (Claude Code's newline), each line in `TYPE_CHUNK` pieces."""
+    for n, line in enumerate(text.split("\n")):
+        if n:
+            subprocess.run(["tmux", "send-keys", "-t", addr, "M-Enter"],
+                           timeout=5, check=True)
+        for k in range(0, len(line), TYPE_CHUNK):
+            subprocess.run(["tmux", "send-keys", "-t", addr, "-l", line[k:k + TYPE_CHUNK]],
+                           timeout=5, check=True)
+
+
 def send(addr: str, text: str) -> str:
     """Type `text` then Enter into that pane. Returns "" or the error.
 
     Literal-then-Enter, with a beat between: Claude Code's input buffering
-    drops an Enter that arrives in the same breath as the text.
+    drops an Enter that arrives in the same breath as the text. A line break
+    in `text` is typed as Alt+Enter, which only Claude Code reads as a newline
+    — callers flatten for the rest (`multiline_ok`). herdr is always flattened.
     """
     if not alive(addr):
         return f"pane {addr} is gone"
+    text = (text or "").replace("\r\n", "\n").replace("\r", "\n")
     try:
         if is_herdr(addr):
             pane = herdr_pane(addr)
-            subprocess.run(["herdr", "pane", "send-text", pane, text],
+            subprocess.run(["herdr", "pane", "send-text", pane, flatten(text)],
                            capture_output=True, timeout=5, check=True)
             time.sleep(0.05)
             subprocess.run(["herdr", "pane", "send-keys", pane, "enter"],
                            capture_output=True, timeout=5, check=True)
             return ""
-        subprocess.run(["tmux", "send-keys", "-t", addr, "-l", text],
-                       timeout=5, check=True)
+        _type_tmux(addr, text)
         time.sleep(0.05)
         subprocess.run(["tmux", "send-keys", "-t", addr, "Enter"],
                        timeout=5, check=True)

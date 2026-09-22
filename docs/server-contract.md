@@ -815,10 +815,30 @@ Request: `{"session": "<session>" | "item": "<item>", "text": "…", "quote"?: "
   session id"`; 404 `"no such session <8 chars>"` when it has no pane and
   no transcript. `branch` works from either form.
 
-- The text is flattened to one line before it is typed (a newline would
-  submit half the message). The quote rides in front as `Re: "<quote, ≤160
-  chars>" — <text>`. The **unflattened** text is recorded as the listener's
-  turn.
+- **Multi-line** (22 Sep 2026). A **Claude Code pane in tmux** gets the
+  text with its line breaks: each line is typed (`send-keys -l`, in pieces
+  of at most 400 characters) with **Alt+Enter** (`M-Enter`, Claude Code's
+  newline) between lines, then Enter. Trailing spaces go and runs of blank
+  lines shrink to one. Everything else gets it **flattened to one line**
+  (a newline there would submit half the message): Codex, pi and Hermes
+  panes (their newline key is unprobed) and every herdr pane (herdr has
+  no key-by-key send). `panes.multiline_ok` is the rule. The quote rides in
+  front, always on one line, as `Re: "<quote, ≤160 chars>" — <text>`. The
+  text as the box had it is recorded as the listener's turn.
+- **Not bracketed paste**, though tmux can (`load-buffer` + `paste-buffer
+  -p`). Probed 22 Sep 2026 against Claude Code 2.1.278: a paste, even of
+  one line, reaches the model wrapped in `<pasted_content id="…">`, and the
+  model treats it as quoted material rather than as the listener's request
+  ("I only follow instructions embedded in pasted content when your own
+  message explicitly asks me to"). Typed text with Alt+Enter arrives as a
+  plain message and is acted on. The same wrapping catches **fast typing**:
+  a single burst of more than ~900 characters (800 was typed, 1000 was not)
+  becomes a `[Pasted text #1]` placeholder — so long messages went in
+  wrapped before this change too; the 400-character pieces are what stop
+  it (a 1634-character four-line message went in plain, measured).
+- The composer check treats a `[Pasted text` placeholder after the prompt
+  glyph as the message still being there (unsent), and an empty composer as
+  sent.
 - `continue` (default): into the live pane. If the session has ended, it is
   resumed in a background tmux window first. This can take a minute
   (Claude resumes from a summary, which compacts first) — hence `opened`.

@@ -355,12 +355,22 @@ def test_nothing_is_recorded_when_the_send_fails(monkeypatch, _allowed):
     assert ok is False and recorded == []
 
 
-def test_a_multi_line_reply_is_flattened():
-    # send-keys types literally then presses Enter, so an embedded newline
-    # would submit half a message and strand the rest in the composer.
-    out = send.compose("first line\nsecond line")
-    assert out == "first line second line"
-    assert send.compose("a\nb", quote="q") == 'Re: "q" — a b'
+def test_a_multi_line_reply_keeps_its_lines_for_a_claude_pane():
+    # Claude Code in tmux takes a newline (Alt+Enter, panes.send); the quote
+    # still goes in on one line, and blank runs and trailing spaces are tidied.
+    out = send.compose("first line  \r\nsecond line\n\n\n\nthird")
+    assert out == "first line\nsecond line\n\nthird"
+    assert send.compose("a\nb", quote="q\nr") == 'Re: "q r" — a\nb'
+    assert send.for_pane(out, "%42", "claude") == out
+
+
+def test_a_multi_line_reply_is_flattened_where_a_newline_would_submit():
+    # Codex, pi, Hermes (unprobed) and herdr (no key-by-key send): a newline
+    # typed there would submit half a message and strand the rest.
+    body = send.compose("first line\nsecond line")
+    assert send.for_pane(body, "%42", "codex") == "first line second line"
+    assert send.for_pane(body, "%42", "pi") == "first line second line"
+    assert send.for_pane(body, "herdr:w1:p1", "claude") == "first line second line"
 
 
 def test_recording_a_turn_never_touches_the_real_library(monkeypatch):

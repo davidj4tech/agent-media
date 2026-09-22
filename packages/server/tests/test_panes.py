@@ -83,6 +83,51 @@ def test_send_types_then_presses_enter(monkeypatch):
     assert ran[1] == ["tmux", "send-keys", "-t", "%562", "Enter"]
 
 
+def test_a_multi_line_message_is_typed_with_alt_enter_between_lines(monkeypatch):
+    # Not bracketed paste: Claude Code wraps a paste in <pasted_content> and the
+    # model reads it as material rather than as the listener's message.
+    _record(monkeypatch)
+    ran = []
+    monkeypatch.setattr(panes.subprocess, "run", lambda argv, **kw: ran.append(argv))
+    monkeypatch.setattr(panes.time, "sleep", lambda _s: None)
+    assert panes.send("%562", "one\r\ntwo\n\nfour") == ""
+    keys = [a[4:] for a in ran]
+    assert keys == [["-l", "one"], ["M-Enter"], ["-l", "two"], ["M-Enter"],
+                    ["M-Enter"], ["-l", "four"], ["Enter"]]
+    assert not any("paste-buffer" in a for a in ran)
+
+
+def test_a_long_line_goes_in_as_pieces_no_bigger_than_a_chunk(monkeypatch):
+    # One burst over ~900 characters is taken for a paste ("[Pasted text #1]").
+    _record(monkeypatch)
+    ran = []
+    monkeypatch.setattr(panes.subprocess, "run", lambda argv, **kw: ran.append(argv))
+    monkeypatch.setattr(panes.time, "sleep", lambda _s: None)
+    text = "x" * (panes.TYPE_CHUNK * 2 + 7)
+    assert panes.send("%562", text) == ""
+    pieces = [a[5] for a in ran if a[4:5] == ["-l"]]
+    assert "".join(pieces) == text
+    assert max(map(len, pieces)) <= panes.TYPE_CHUNK and len(pieces) == 3
+    assert ran[-1][4:] == ["Enter"]
+
+
+def test_herdr_is_always_given_one_line(monkeypatch):
+    _record(monkeypatch)
+    ran = []
+    monkeypatch.setattr(panes.subprocess, "run", lambda argv, **kw: ran.append(argv))
+    monkeypatch.setattr(panes.time, "sleep", lambda _s: None)
+    assert panes.send("herdr:w6:p1", "one\ntwo") == ""
+    assert ran[0] == ["herdr", "pane", "send-text", "w6:p1", "one two"]
+
+
+def test_only_claude_in_tmux_takes_a_newline():
+    assert panes.multiline_ok("%1", "claude")
+    assert not panes.multiline_ok("%1", "codex")
+    assert not panes.multiline_ok("%1", "pi")
+    assert not panes.multiline_ok("%1", "hermes")
+    assert not panes.multiline_ok("herdr:w1:p1", "claude")
+
+
 def test_nothing_is_typed_into_a_pane_that_is_gone(monkeypatch):
     monkeypatch.setattr(panes, "_run", lambda argv, timeout=10: "")
     typed = []

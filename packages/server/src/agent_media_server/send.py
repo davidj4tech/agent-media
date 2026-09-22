@@ -463,6 +463,9 @@ _COMPOSER = {"claude": sessions._PROMPT_GLYPH, "codex": "\u203a"}   # ❯, ›
 #: is much shorter than the one `conversation.submit` defaults to.
 _SUBMIT_SETTLE_S = 1.5
 
+#: What Claude Code shows in the composer in place of a pasted message.
+_PASTE_PLACEHOLDER = "[Pasted text"
+
 
 def _unsent(pane: str, head: str | tuple[str, ...], agent: str, window: float) -> bool:
     """Whether the message is still sitting in `pane`'s composer for all of `window`.
@@ -498,7 +501,12 @@ def _unsent(pane: str, head: str | tuple[str, ...], agent: str, window: float) -
         else:
             flat = " ".join(cap.split())
             i = flat.rfind(_COMPOSER.get(agent, sessions._PROMPT_GLYPH))
-            if i < 0 or not any(m in flat[i:] for m in marks):
+            if i < 0:
+                return False
+            # A message Claude Code took as a paste sits in the box as a
+            # placeholder ("[Pasted text #1 +12 lines]"), none of its words
+            # on screen: still unsent while the placeholder is there.
+            if not any(m in flat[i:] for m in (*marks, _PASTE_PLACEHOLDER)):
                 return False
         if time.monotonic() >= deadline:
             return True
@@ -621,7 +629,7 @@ def _ask_pane(text: str, *, agent: str, cwd: str, host: str, flags: list[str],
     # after the send.
     session = fixed or (sessions.session_of_pane(pane) if agent == "claude" else "")
     _settle(pane)
-    body = compose(text, quote)
+    body = for_pane(compose(text, quote), pane, agent)
     send_err = _send_to_pane(pane, body)
     if send_err:
         return False, {"error": send_err, "session": session or None, "pane": pane}
@@ -731,24 +739,32 @@ def session_close(session: str, bearer: str) -> tuple[bool, dict]:
 
 # --- the whole move -----------------------------------------------------------
 
-# Quote and reply go in on ONE line. `send-keys` types literally and then
-# presses Enter, so an embedded newline would submit half a message; a quoted
-# turn is context, not a document, and one line carries it.
+# A quoted turn is context, not a document: it goes in on one line, cut short.
 _QUOTE_LIMIT = 160
 
 
 def compose(text: str, quote: str = "") -> str:
-    # The reply is flattened too, not just the quote: the box grows to several
-    # rows now, and shift+enter puts a real newline in it. `send-keys` types
-    # literally and then presses Enter, so a newline mid-message would submit
-    # the first half and leave the rest sitting in the composer.
-    text = " ".join((text or "").split())
-    quote = " ".join((quote or "").split())
+    """What a pane is typed: the reply with its line breaks (trailing spaces
+    and runs of blank lines tidied), after the quote on one line.
+
+    The breaks survive to the pane only where it can take them
+    (`panes.multiline_ok`, Claude Code in tmux: Alt+Enter); `for_pane`
+    flattens for the rest, where a newline mid-message would submit the first
+    half and leave the rest sitting in the composer.
+    """
+    lines = [ln.rstrip() for ln in (text or "").replace("\r\n", "\n").split("\n")]
+    text = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+    quote = panes.flatten(quote)
     if not quote:
         return text
     if len(quote) > _QUOTE_LIMIT:
         quote = quote[:_QUOTE_LIMIT - 1] + "…"
     return f'Re: "{quote}" — {text}'
+
+
+def for_pane(body: str, pane: str, agent: str = "claude") -> str:
+    """`body` as `pane` can take it: flattened unless it can be given a newline."""
+    return body if panes.multiline_ok(pane, agent) else panes.flatten(body)
 
 
 def _record_turn(session: str, text: str, pane: str = "") -> None:
@@ -840,8 +856,9 @@ def reply(item: str, text: str, bearer: str, *, quote: str = "",
         session, err = sessions.session_for_item(item, bearer)
         if not session:
             return False, {"error": err, "status": 404}
-    # `body` is typed on one line (compose flattens it); `text` is recorded
-    # with the breaks the reply box had, so the transcript keeps them.
+    # `body` is what a pane is typed (its breaks kept only where the pane can
+    # take them, `for_pane`); `text` is recorded with the breaks the reply box
+    # had, so the transcript keeps them.
     body = compose(text, quote)
 
     if mode == "branch" and driver.owned_headless(session):
@@ -858,6 +875,7 @@ def reply(item: str, text: str, bearer: str, *, quote: str = "",
         pane, err = open_window("", sessions.transcript_cwd(session), resume=False, agent=agent)
         if err:
             return False, {"error": err, "pane": pane or None}
+        body = for_pane(body, pane, agent)
         send_err = _send_to_pane(pane, body)
         if send_err:
             return False, {"session": session, "pane": pane, "opened": True,
@@ -876,7 +894,7 @@ def deliver(session: str, body: str, text: str, *, quote: str = "") -> tuple[boo
     driver that owns it (driver/).
 
     `text` is the listener's own words, shelved as their turn; `body` is what
-    a pane is typed (the quote rides along in it, flattened). A headless
+    a pane is typed (the quote rides along in it, on one line). A headless
     session takes `text` as written and `quote` as its own paragraph. Shared
     by a reply from a conversation's page and a reply the assistant button
     routed here.
@@ -903,6 +921,7 @@ def _deliver_pane(session: str, body: str, text: str) -> tuple[bool, dict]:
         if err:
             return False, {"error": err, "pane": pane or None}
         opened = True
+    body = for_pane(body, pane, agent)
     send_err = _send_to_pane(pane, body)
     if send_err:
         return False, {"error": send_err, "session": session, "pane": pane}

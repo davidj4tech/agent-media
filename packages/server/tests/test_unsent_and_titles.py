@@ -29,6 +29,19 @@ def test_an_empty_composer_is_sent(monkeypatch):
     assert not send._unsent("%1", ("I want to try a new", "uses the paragtd repo?"), "claude", 0)
 
 
+def test_a_paste_placeholder_in_the_composer_is_still_unsent(monkeypatch):
+    # A message Claude Code took as a paste shows none of its words.
+    _screen(monkeypatch, "── \n❯ [Pasted text #1 +12 lines]\n──\n  paste again to expand")
+    assert send._unsent("%1", ("Line one of the", "the last line."), "claude", 0)
+
+
+def test_a_multi_line_message_in_the_composer_is_still_unsent(monkeypatch):
+    msg = "Line one of the note\nand the last line here."
+    _screen(monkeypatch, "── \n❯ Line one of the note\n  and the last line here.\n──")
+    flat = " ".join(msg.split())
+    assert send._unsent("%1", (flat[:24], flat[-24:]), "claude", 0)
+
+
 def test_an_unnamed_claude_session_takes_its_first_message(monkeypatch, tmp_path):
     proj = tmp_path / ".claude" / "projects" / "-x"
     proj.mkdir(parents=True)
