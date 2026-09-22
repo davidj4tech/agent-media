@@ -1277,14 +1277,50 @@ and on every refusal.
 
 #### `POST /speech/ctl` — gated
 
-`{"action", "arg"?}` → `{"ok": true, "out": "<what media printed>"}`.
+`{"action", "arg"?, "sentence"?, "session"?}` → `{"ok": true, "out": "<what media printed>"}`.
 
 Actions (`_APP_SPEECH_ACTIONS`): `toggle`, `skip-`, `skip+`, `para-`,
 `para+`, `jump-end`, `prev`, `replay`, `replay-id`, `speed-`, `speed+`,
-`speed0`, `vol-`, `vol+`, `mute`.
+`speed0`, `vol-`, `vol+`, `mute`, `goto-sentence`.
 - `arg` is the turn index for `prev` and `replay` (1 = latest, clamped
   1–999), or a history row id for `replay-id` (not clamped).
 - Anything else is 400 `"unknown action"`.
+
+**Read from here** (built 22 Sep 2026). Sentence indices are always the
+server's own list, 0-based, never a client's re-split of the text:
+
+- `goto-sentence` jumps the reply being said to sentence `arg` of the live
+  message's `sentences` (§6.2 live fields / `spoken.live.sentences`, i.e.
+  the now-playing row's `clip_sentences`) and carries on from there
+  (`media skip --unit sentence --to N`). `arg` must be a JSON integer
+  0–9999, else 400 `"arg must be a sentence index"` (`true`, `"3"` and
+  `-1` are refused, not coerced). An index past the end is clamped to the
+  last sentence. With nothing speaking or paused it is 409 `"nothing is
+  being said"` — it never brings a finished reply back. `session`
+  (optional) names the thread the tap was in; if a different session's
+  reply is being heard it is 409 `"that reply is no longer being said"`.
+  The live fields then follow the new position (the bold moves on the next
+  answer; the app moves it at once and lets the next answer confirm it).
+- `replay-id` with `sentence` plays history row `arg` starting at that
+  sentence of the list `GET /speech/sentences` returns for it — one
+  command (`media replay --id ID --from-sentence N`), so there is no
+  replay-then-seek race and the sentences before it are never heard. Same
+  validation as above (400 `"sentence must be a sentence index"`); clamped
+  to the row's last sentence; a row with no sentence map (its clip arrays
+  were swept, or the lane kept no timeline) plays from the top. The live
+  fields of the replay count from the start of the reply, as if the earlier
+  sentences had played, so `sentence`/`offsets`/`elapsed` read as usual.
+
+#### `GET /speech/sentences?id=<history id>` — gated
+
+`{"ok": true, "id": 48213, "sentences": ["First.", "Second.", …]}` — the
+sentences a replay of that spoken reply can start at, in the order
+`replay-id` + `sentence` counts them (`cli.replay_sentence_map`). `[]` when
+it can only be replayed from the top. 400 for an id that is not a number,
+404 `"no such spoken reply"` for an id that is not a speech-history row.
+Same gate as `/speech/ctl`. Fetched on demand (the app asks when the
+listener picks "Read from here"), so the message log does not carry a
+second copy of every reply's words.
 - `ok: true` means the command ran, not that it did anything — read `out`.
 - `error` is added (and `out` starts `error: `) when the verb ran and could
   not do it — a replay whose audio was cleared from the cache, or was
@@ -1293,7 +1329,10 @@ Actions (`_APP_SPEECH_ACTIONS`): `toggle`, `skip-`, `skip+`, `para-`,
   (`MEDIA_REPLAY_WAIT_S`): a replay waits for a speaking reply to step aside
   before it plays, rather than playing over it.
 
-Clients: S (`SpeechBar.vue`; `replay-id` from `ConversationLog.vue`).
+Clients: S (`SpeechBar.vue`; `replay-id` from `ConversationLog.vue`);
+the chat app (speech bar; `replay-id` from a message's ▶; `goto-sentence`
+on a tap in the message being said; `replay-id` + `sentence` from "Read from
+here" on an older one).
 
 ### 6.6 Harness setup — gated
 

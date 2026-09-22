@@ -16,23 +16,31 @@ from . import audio, auth, sessions, threads
 
 #: What the app's speech player may do: the popup's listening keys — pause,
 #: the sentence and paragraph steps, older/newer turn and replay, speed,
-#: volume and a momentary mute. The bearer is a listener's; the popup's other
-#: keys (keep a pane muted, focus tmux, open URLs) are the desk's.
+#: volume and a momentary mute — and "read from here": `goto-sentence` (jump
+#: the reply being said to one of its sentences) and `replay-id` with a
+#: `sentence` (play a recorded reply from one). The bearer is a listener's;
+#: the popup's other keys (keep a pane muted, focus tmux, open URLs) are the
+#: desk's.
 _APP_SPEECH_ACTIONS = frozenset({
     "toggle", "skip-", "skip+", "para-", "para+", "jump-end",
     "prev", "replay", "replay-id", "speed-", "speed+", "speed0", "vol-", "vol+", "mute",
+    "goto-sentence",
 })
+
+#: The highest sentence index a request may name. Far past any reply (the
+#: canvas keeps 120 lines of one); only here so a number is a number.
+MAX_SENTENCE = 9999
 
 #: The canvas's speech snapshot (`canvas.speech_state`), and its runner for one
 #: whitelisted speech verb (`action, arg -> what media said`). Handed in by
 #: the canvas at import (`set_speech`); a server with no canvas has a speech
 #: bar that is always quiet and controls that do nothing.
 _STATE: Callable[[], dict] | None = None
-_CTL: Callable[[str, int], str] | None = None
+_CTL: Callable[..., str] | None = None
 
 
 def set_speech(state: Callable[[], dict] | None = None,
-               ctl: Callable[[str, int], str] | None = None) -> None:
+               ctl: Callable[..., str] | None = None) -> None:
     """Hand in the canvas's speech snapshot and its transport runner."""
     global _STATE, _CTL
     _STATE, _CTL = state, ctl
@@ -43,9 +51,50 @@ def current_state() -> dict:
     return _STATE() if _STATE is not None else {"kind": "state", "speaking": False}
 
 
-def run_ctl(action: str, arg: int) -> str:
-    """Run one speech verb already checked against `_APP_SPEECH_ACTIONS`."""
-    return _CTL(action, arg) if _CTL is not None else ""
+def run_ctl(action: str, arg: int, sentence: int | None = None) -> str:
+    """Run one speech verb already checked against `_APP_SPEECH_ACTIONS`.
+    `sentence` is the index for `goto-sentence` and `replay-id`'s "from
+    here"; it rides as the canvas's `sarg` (its `arg` is clamped 1-999, and
+    sentence zero is the one most often asked for)."""
+    if _CTL is None:
+        return ""
+    if sentence is None:
+        return _CTL(action, arg)
+    return _CTL(action, arg, str(int(sentence)))
+
+
+def sentence_arg(value) -> int | None:
+    """A request's sentence index: a whole number 0..MAX_SENTENCE, else None.
+    `True` is not 1 and "3" is not 3 — the app sends numbers."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if 0 <= value <= MAX_SENTENCE else None
+
+
+def goto_refusal(session: str = "") -> str:
+    """Why `goto-sentence` cannot run now, or "". It moves the reply being
+    said; with none, `media skip --to` would bring back whichever reply the
+    canvas last showed and jump into that — a tap on one message must never
+    start another. `session`, when the app names it, must be the one heard."""
+    st = current_state()
+    if not (st.get("speaking") or st.get("paused")):
+        return "nothing is being said"
+    if session and st.get("session") and st.get("session") != session:
+        return "that reply is no longer being said"
+    return ""
+
+
+def row_sentences(row_id: int) -> list[str] | None:
+    """The sentences a replay of history row `row_id` can start at
+    (`cli.replay_sentence_map`), [] when it can only play from the top, or
+    None when there is no such spoken row."""
+    from agent_media_core.cli import replay_sentence_map
+    from agent_media_core.state.store import StateStore
+
+    row = StateStore().history_row(int(row_id))
+    if not row or row.get("sink") != "speech":
+        return None
+    return replay_sentence_map(row)
 
 
 def stop_speech() -> str:

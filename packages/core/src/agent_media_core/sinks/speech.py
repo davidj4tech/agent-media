@@ -459,10 +459,10 @@ class SinkSpeech:
         return cmds
 
     @staticmethod
-    def _start_cmds() -> list:
+    def _start_cmds(start: int = 0) -> list:
         return [["set_property", "pause", False],
                 ["set_property", "mute", False],
-                ["set_property", "playlist-pos", 0]]
+                ["set_property", "playlist-pos", max(0, int(start))]]
 
     def _send_or_miss(self, cmds: list, target: Target, what: str) -> bool:
         try:
@@ -481,7 +481,7 @@ class SinkSpeech:
             return False
 
     def play_playlist(self, uris: "list", target: Target = DEFAULT_TARGET,
-                      gapless: bool = True) -> None:
+                      gapless: bool = True, start: int = 0) -> None:
         """Load all of a response's clips as a gapless playlist and start it.
 
         The (remote) player then advances through the clips *autonomously* — no
@@ -497,9 +497,12 @@ class SinkSpeech:
         jump to index 0 — from there mpv auto-advances gaplessly.
 
         load_playlist + start_playlist are the same two halves, sent apart.
+
+        `start` jumps to that clip instead of the first ("read from here" on a
+        replay): the same batch, so the clips before it are never heard.
         """
         self._send_or_miss(self._load_cmds(uris, target, gapless)
-                           + self._start_cmds(), target, "play_playlist")
+                           + self._start_cmds(start), target, "play_playlist")
 
     def load_playlist(self, uris: "list", target: Target = DEFAULT_TARGET,
                       gapless: bool = True) -> bool:

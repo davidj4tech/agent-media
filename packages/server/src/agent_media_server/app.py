@@ -89,7 +89,11 @@ device gets its token):
   POST /rename    {"item"|"session", "title"|"auto"} → rename a conversation
   POST /share     {"text", "channel"?} → play a shared link
   GET  /speech/now   → what is being said, named for the speech bar
-  POST /speech/ctl   {"action", "arg"?} → a listener's speech verb
+  POST /speech/ctl   {"action", "arg"?, "sentence"?, "session"?} → a
+                  listener's speech verb (goto-sentence / replay-id from a
+                  sentence: "read from here")
+  GET  /speech/sentences?id=<history id> → the sentences a replay of that
+                  reply can start at, as goto/replay count them
   POST /focus     {"pane": "%23"} → bring the attached tmux client to a pane
                   (the canvas's own token also admits this one)
   GET  /dashboard → the home screen in one answer: what needs you, what is
@@ -131,7 +135,7 @@ CORS_PATHS = frozenset({
     "/conversation", "/conversation/log", "/conversations", "/targets", "/item",
     "/reply", "/ask", "/focus", "/session/resume", "/session/close", "/draft",
     "/session/answer", "/session/archive", "/session/pin", "/session/stop",
-    "/speech/now", "/speech/ctl", "/sessions/state", "/commands", "/rename",
+    "/speech/now", "/speech/ctl", "/speech/sentences", "/sessions/state", "/commands", "/rename",
     "/harnesses", "/harnesses/run", "/harnesses/screen",
     "/harnesses/keys", "/harnesses/close", "/share", "/dashboard",
 })
@@ -436,6 +440,23 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
         # What the app's reply box was left holding for this session.
         ok, detail = drafts.draft_read((parse_qs(query).get("session") or [""])[0], _bearer(h))
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    elif path == "/speech/sentences":
+        # "Read from here" on a reply that is not playing: its sentences as
+        # the replay counts them, so the index the app sends back with
+        # `replay-id` is the server's, never a client re-split.
+        ok, detail = auth.may_control_speech(_bearer(h))
+        if not ok:
+            _json(h, detail.pop("status", 403), {"ok": False, **detail})
+            return True
+        raw = (parse_qs(query).get("id") or [""])[0]
+        if not raw.isdigit():
+            _json(h, 400, {"ok": False, "error": "id must be a history row id"})
+            return True
+        found = speech.row_sentences(int(raw))
+        if found is None:
+            _json(h, 404, {"ok": False, "error": "no such spoken reply"})
+            return True
+        _json(h, 200, {"ok": True, "id": int(raw), "sentences": found})
     elif path == "/speech/now":
         # The app's speech bar: /speech's live bit, named — the session's
         # title and library item — and gated by the caller's ABS bearer.
@@ -593,12 +614,33 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         # the popup keeps hist_idx: 1 is the latest reply.
         # `replay-id` carries a history row id instead, which is not an
         # index and is not clamped.
-        try:
-            arg = int(body.get("arg") or 1)
-        except (TypeError, ValueError):
+        # "Read from here" (§6.5): `goto-sentence` takes the sentence index
+        # as `arg` (0 is the first — so no clamping to 1), and `replay-id`
+        # takes one as `sentence`. Both are validated, never coerced: a tap
+        # that lands on the wrong sentence is worse than a 400.
+        sentence = None
+        if action == "goto-sentence":
+            sentence = speech.sentence_arg(body.get("arg"))
+            if sentence is None:
+                _json(h, 400, {"ok": False, "error": "arg must be a sentence index"})
+                return True
+            why = speech.goto_refusal(str(body.get("session") or ""))
+            if why:
+                _json(h, 409, {"ok": False, "error": why})
+                return True
             arg = 1
-        arg = max(1, arg) if action == "replay-id" else max(1, min(999, arg))
-        out = speech.run_ctl(action, arg)
+        else:
+            try:
+                arg = int(body.get("arg") or 1)
+            except (TypeError, ValueError):
+                arg = 1
+            arg = max(1, arg) if action == "replay-id" else max(1, min(999, arg))
+            if action == "replay-id" and body.get("sentence") is not None:
+                sentence = speech.sentence_arg(body.get("sentence"))
+                if sentence is None:
+                    _json(h, 400, {"ok": False, "error": "sentence must be a sentence index"})
+                    return True
+        out = speech.run_ctl(action, arg, sentence)
         print(f"speech/ctl: {action} -> {out.strip()[:120]!r}", file=sys.stderr)
         reply = {"ok": True, "out": out}
         if out.startswith("error: "):

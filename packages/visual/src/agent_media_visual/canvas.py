@@ -267,9 +267,10 @@ def _media_ctl(args: list[str], timeout: int) -> str:
     return (out.stdout or "").strip()
 
 
-def _speech_ctl(action: str, arg: int) -> str:
-    """One whitelisted speech verb for the app's speech bar (/speech/ctl)."""
-    argv = ctl_argv("speech", action, arg)
+def _speech_ctl(action: str, arg: int, sarg: str = "") -> str:
+    """One whitelisted speech verb for the app's speech bar (/speech/ctl).
+    `sarg` is a sentence index (goto-sentence, replay-id from a sentence)."""
+    argv = ctl_argv("speech", action, arg, sarg)
     if argv is None:
         return ""
     if action in _REPLAY_VERBS:
@@ -1300,8 +1301,12 @@ def ctl_argv(channel: str, action: str, arg: int,
             "toggle": ["toggle"],
             "prev": ["replay-prev", "--idx", str(arg)],
             "replay": ["replay", str(arg)],
-            # A transcript line's own turn, by its history id (never clamped).
-            "replay-id": ["replay", "--id", str(arg)],
+            # A transcript line's own turn, by its history id (never clamped),
+            # from one of its sentences when `sarg` names it ("read from
+            # here" in the app: one command, so there is no replay-then-seek
+            # race).
+            "replay-id": ["replay", "--id", str(arg)]
+                         + (["--from-sentence", sarg] if sarg.isdigit() else []),
             "jump-end": ["jump", "end"],
             "vol-": ["volume", "-5"],
             "vol+": ["volume", "5"],
@@ -1881,7 +1886,7 @@ class Handler(BaseHTTPRequestHandler):
 # routes too.
 _app.register(
     speech_state=lambda: speech_state(),
-    speech_ctl=lambda action, arg: _speech_ctl(action, arg),
+    speech_ctl=lambda action, arg, sarg="": _speech_ctl(action, arg, sarg),
     pictures_for=_state.pictures_for,
     token_ok=lambda handler: _authorized(handler))
 

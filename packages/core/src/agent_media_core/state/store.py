@@ -1058,6 +1058,24 @@ class StateStore:
         except Exception:  # noqa: BLE001 — a nicer label is never worth a crash
             return False
 
+    def history_row(self, row_id: int) -> Optional[dict]:
+        """One history row by its id (extras parsed), or None."""
+        with self._cursor() as cur:
+            cur.execute("SELECT id, sink, uri, started_at, ended_at, target, source, "
+                        "content_type, text, extras FROM history WHERE id = ?",
+                        (int(row_id),))
+            r = cur.fetchone()
+        if r is None:
+            return None
+        row = dict(zip(["id", "sink", "uri", "started_at", "ended_at", "target",
+                        "source", "content_type", "text", "extras"], r))
+        if row.get("extras"):
+            try:
+                row["extras"] = json.loads(row["extras"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return row
+
     def recent_history(self, *, sink: Optional[str] = None,
                        limit: int = 20) -> list[dict]:
         q = ("SELECT id, sink, uri, started_at, ended_at, target, source, "

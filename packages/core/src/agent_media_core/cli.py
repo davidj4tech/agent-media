@@ -3056,6 +3056,7 @@ def cmd_skip(a) -> int:
                 ipc.set_property(sock, "playlist-pos", target, critical=True)
         except (ipc.MpvIpcError, TypeError, ValueError):
             pass
+        _restamp_replay_clock(np, ex, target, n)
         _force_highlight_sentence(sentences[target])
         return 0
     # One clip holding every sentence, with the boundaries known: the far side
@@ -3095,6 +3096,29 @@ def cmd_skip(a) -> int:
     # actual playout target's flag).
     _write_nav_request(target, (np or {}).get("target") or _speech_target().name)
     return 0
+
+
+def _restamp_replay_clock(np: Optional[dict], ex: dict, target: int, n: int) -> None:
+    """A replay played as a playlist has no follower moving its clock — the
+    tracker mirrors the player's position, not `play_started_at` — so a jump
+    left the reader's bold (transcript `_live_turn`) counting on from the
+    old place. Move the clock's origin with the jump. Only a replay's row:
+    a live reply's clip lane measures its own starts and re-marks the row."""
+    durations = ex.get("clip_durations_s") or []
+    if not ex.get("history_id") or len(durations) != n or not (0 <= target < n):
+        return
+    try:
+        at = float(ex.get("paused_at") or time.time())
+        ex["play_started_at"] = at - sum(float(d or 0) for d in durations[:target])
+        ex["current_sentence_idx"] = target
+        ex["current_sentence"] = (ex.get("clip_sentences") or [""] * n)[target]
+        StateStore().set_now_playing(
+            "speech", uri=(np or {}).get("uri") or "",
+            started_at=(np or {}).get("started_at") or time.time(),
+            target=(np or {}).get("target") or _speech_target().name,
+            extras=ex)
+    except Exception:  # noqa: BLE001 — the jump already happened
+        pass
 
 
 def _replay_visual(extras: dict) -> None:
@@ -3162,12 +3186,43 @@ def _do_replay(index: int, session: Optional[str] = None) -> int:
     return 1
 
 
-def _replay_row(row: dict) -> int:
+def replay_sentence_map(row: dict) -> list[str]:
+    """The sentences a replay of this row can start at, in the order
+    `replay --from-sentence N` counts them — or [] when it can only play from
+    the top.
+
+    The same two lanes `_push_replay` follows: one clip per sentence (the
+    playlist position IS the sentence), or one clip holding them all with the
+    timeline recorded when it first played (`clip_offsets_s`). Anything else —
+    a row whose clip arrays were swept, a lane that kept no timeline — has no
+    sentence to start at. `/speech/sentences` hands the app this list, so the
+    index it sends back is this list's and nobody re-splits the words.
+    """
+    ex = row.get("extras") or {}
+    if not isinstance(ex, dict):
+        return []
+    clip_uris = ex.get("clip_uris") or ([row["uri"]] if row.get("uri") else [])
+    sentences = [str(t) for t in (ex.get("clip_sentences") or [])]
+    offsets = ex.get("clip_offsets_s") or []
+    if not sentences or not clip_uris:
+        return []
+    if len(sentences) == len(clip_uris):
+        return sentences
+    if len(clip_uris) == 1 and len(offsets) == len(sentences):
+        return sentences
+    return []
+
+
+def _replay_row(row: dict, from_sentence: Optional[int] = None) -> int:
     """Play one speech-history row: push its clips to the speech target and
     refresh now_playing (+ position follower). The traversal path addresses
     rows by index (`_do_replay`); the clip browser addresses them by history
     id (`replay --id`), which stays stable while a picker is open even if new
-    clips land meanwhile."""
+    clips land meanwhile.
+
+    `from_sentence` starts it at that sentence of `replay_sentence_map(row)`
+    ("read from here" in the app) — clamped into it, and ignored for a row
+    that has no sentence map (it plays from the top)."""
     uri = row.get("uri")
     if not uri:
         return 1
@@ -3220,9 +3275,14 @@ def _replay_row(row: dict) -> int:
             print("media replay: speech is busy; playing anyway",
                   file=sys.stderr)
             replay_lock = None
+    smap = replay_sentence_map(row)
+    start = 0
+    if from_sentence is not None and smap:
+        start = max(0, min(int(from_sentence), len(smap) - 1))
     try:
         return _push_replay(row, ex, clip_uris, clip_durations, replay_text,
-                            speech_target, pane, recorded, replay_lock)
+                            speech_target, pane, recorded, replay_lock,
+                            start=start)
     finally:
         # Handed to the follower, the descriptor is closed here and the token
         # lives on in it; otherwise this is the release.
@@ -3286,11 +3346,29 @@ def _stop_replay_trackers() -> None:
         pass
 
 
+def _seek_when_loaded(sock, secs: float, tries: int = 20) -> bool:
+    """Seek a clip that was only just loaded. A player that has not opened the
+    file yet refuses a seek, so ask again for a moment rather than play the
+    reply from the top after all."""
+    for _ in range(max(1, tries)):
+        try:
+            ipc.command(sock, "seek", float(secs), "absolute", critical=True)
+            return True
+        except (ipc.MpvIpcError, OSError):
+            time.sleep(0.1)
+    return False
+
+
 def _push_replay(row: dict, ex: dict, clip_uris: list, clip_durations: list,
                  replay_text: str, speech_target: Target, pane: str,
-                 recorded: bool, replay_lock) -> int:
+                 recorded: bool, replay_lock, start: int = 0) -> int:
     """The body of `_replay_row` once the token is settled: push the clips,
-    label them, write now_playing and spawn the follower."""
+    label them, write now_playing and spawn the follower.
+
+    `start` (already checked against `replay_sentence_map`) is the sentence
+    to begin at: the playlist starts on that clip in the same batch, and the
+    one-clip lane seeks to where it begins; the row's clock (`play_started_at`)
+    is stamped as if the sentences before it had already played."""
     # Re-show the reply's visual concurrently with the (slow, bridge-bound)
     # playback push below; the thread outlives neither — the process waits.
     threading.Thread(target=_replay_visual, args=(ex,)).start()
@@ -3317,8 +3395,16 @@ def _push_replay(row: dict, ex: dict, clip_uris: list, clip_durations: list,
     # through a few clips then looked like the popup had hung. Mirrors the live
     # intake path (play_playlist), which also clears any lingering pause/mute so
     # a "replay" ("I want to hear this now") is audible past a stale pause/mute.
+    clip_sentences_: list = ex.get("clip_sentences") or []
+    offsets_: list = ex.get("clip_offsets_s") or []
+    one_clip_timeline = (start > 0 and len(clip_uris) == 1
+                         and len(offsets_) == len(clip_sentences_) > start)
     if len(clip_uris) > 1:
-        sink.play_playlist(clip_uris, speech_target)
+        if start > 0 and len(clip_sentences_) == len(clip_uris):
+            sink.play_playlist(clip_uris, speech_target, start=start)
+        else:
+            start = 0
+            sink.play_playlist(clip_uris, speech_target)
     else:
         # Single clip: one loadfile + explicit state reset. OSError too — a
         # missing/refused socket (mpv not up yet) must be a no-op, not a
@@ -3333,6 +3419,11 @@ def _push_replay(row: dict, ex: dict, clip_uris: list, clip_durations: list,
             ipc.set_property(sock, "mute", False, critical=True)
         except (ipc.MpvIpcError, OSError):
             pass
+        if one_clip_timeline:
+            if not _seek_when_loaded(sock, float(offsets_[start])):
+                start = 0
+        else:
+            start = 0
     # Say what is playing, the way live speech says it. Every display that
     # shows the spoken words reads the two properties the coordinator writes as
     # it speaks (`sinks/speech.py`: TITLE_PROPERTY, TEXT_PROPERTY) — the phone's
@@ -3405,7 +3496,12 @@ def _push_replay(row: dict, ex: dict, clip_uris: list, clip_durations: list,
         cpi = ex.get("clip_paragraph_idx")
         if cpi and len(cpi) == len(clip_uris):
             np_extras["clip_paragraph_idx"] = cpi
-        np_extras["current_sentence_idx"] = 0
+        np_extras["current_sentence_idx"] = start
+        if start and have_durations:
+            # Started part-way: the clock a reader follows (transcript
+            # `_live_turn`, the app's bold) counts from where the sentences
+            # before it would have begun.
+            np_extras["play_started_at"] = time.time() - sum(clip_durations[:start])
         clip_offsets = []            # positions, not offsets, drive this one
     elif (clip_sentences and len(clip_uris) == 1
             and len(clip_offsets) == len(clip_sentences)):
@@ -3415,15 +3511,16 @@ def _push_replay(row: dict, ex: dict, clip_uris: list, clip_durations: list,
         # followable — without it a replayed reply is just audio.
         np_extras["clip_sentences"] = clip_sentences
         np_extras["clip_offsets_s"] = clip_offsets
-        np_extras["current_sentence_idx"] = 0
+        np_extras["current_sentence_idx"] = start
         # The origin the follower reads (and that skip/pause re-stamp). Set
         # here rather than in the follower so both agree from the first tick.
-        np_extras["play_started_at"] = time.time()
+        # Started part-way, it is as if the reply began that long ago.
+        np_extras["play_started_at"] = time.time() - float(clip_offsets[start])
     else:
         clip_offsets = []
     if "current_sentence_idx" in np_extras:
         # The first words, from the first read: the follower moves it on.
-        np_extras["current_sentence"] = clip_sentences[0]
+        np_extras["current_sentence"] = clip_sentences[np_extras["current_sentence_idx"]]
     if have_durations:
         # Spawn a detached follower so the replay behaves like live playback
         # even though _do_replay returns immediately: it mirrors the player's
@@ -3490,7 +3587,9 @@ def cmd_replay(a) -> int:
         # picker is open.
         for row in _speech_history(2000):
             if row.get("id") == a.id:
-                return _replay_row(row)
+                start = getattr(a, "from_sentence", None)
+                return (_replay_row(row) if start is None
+                        else _replay_row(row, from_sentence=start))
         print(f"media replay: no clip with id {a.id}", file=sys.stderr)
         return 1
     # Scope < / > / r traversal to the current tmux session's clips.
@@ -7851,6 +7950,9 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument("--id", type=int, default=None,
                    help="replay by stable history id instead (see "
                         "'history --lines'; used by the clip browser)")
+    s.add_argument("--from-sentence", type=int, default=None, metavar="N",
+                   help="with --id: start at sentence N (0-based) of that "
+                        "reply, where its clips allow it")
     s.set_defaults(func=cmd_replay)
 
     s = sub.add_parser("replay-prev", help=argparse.SUPPRESS)  # popup < (restart-first)
