@@ -124,6 +124,9 @@ ACK_S = 6.0
 #: How long `interrupt` waits for its receipt, then for the turn to end.
 RECEIPT_S = 5.0
 SETTLE_S = 3.0
+#: The deny a pending request gets when the user types a message instead.
+TYPED_INSTEAD = ("The user answered by typing a message instead of choosing; "
+                 "their message follows. Take it as the answer.")
 
 
 # --- where things are -------------------------------------------------------------
@@ -681,7 +684,19 @@ class Supervisor:
                 self._ensure_room(exclude=s)
                 self._spawn(s, resume=True)
                 resumed = True
-            busy = s.state in ("working", "approval")
+            # A message typed while a question or permission is up answers
+            # it: the CLI waits on the control response and would only queue
+            # the message behind it, so the card sticks with nothing to press.
+            # Decline each, saying the reply follows, and let the message run.
+            for rid in list(s.pending):
+                self._write(s, {"type": "control_response",
+                                "response": {"subtype": "success", "request_id": rid,
+                                             "response": {"behavior": "deny",
+                                                          "message": TYPED_INSTEAD}}})
+                del s.pending[rid]
+            if s.state == "approval":
+                s.set_state("working")
+            busy = s.state == "working"
             self._write(s, {"type": "user", "session_id": "", "uuid": uid,
                             "message": {"role": "user",
                                         "content": [{"type": "text", "text": text}]},

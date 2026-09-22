@@ -280,6 +280,20 @@ def test_a_question_is_answered_with_multi_select_and_free_text(host):
     wait_for(lambda: last_text(host, sid) == "answers: apple, pear; Something else entirely")
 
 
+def test_a_message_typed_over_a_question_answers_it(host):
+    # Typed instead of choosing: the question is declined with a note that
+    # the reply follows, so it does not sit on screen with nothing to press.
+    sid = start(host, "ask")
+    wait_for(lambda: state(host, sid) == "approval")
+    ok, d = driver.headless_driver().send(sid, {}, "reply: Saturday works")
+    assert ok and d["queued"] is True
+    assert driver.headless_driver().approval(sid) is None
+    wait_for(lambda: last_text(host, sid) == "Saturday works")
+    sent = [e for e in host.sup.sessions[sid].events if e.get("type") == "user"]
+    assert any("answered by typing a message" in json.dumps(e) for e in sent)
+    assert state(host, sid) == "waiting"
+
+
 def test_a_question_takes_the_answer_shape_a_pane_takes(host):
     # The same `[{question_index, selected, other_text}]` and `key` a pane's
     # question is answered with (asks.py), so the phone has one card.
