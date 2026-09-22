@@ -1393,3 +1393,22 @@ def test_a_new_hermes_chat_can_be_asked_for_out_loud():
     for agent in ("claude", "codex", "pi", "hermes"):
         kind, hit, rest = routing.resolve_target(f"new {agent} chat, what time is it", [])
         assert kind == "new" and hit == {"agent": agent} and rest == "what time is it"
+
+
+def test_sessions_index_lists_every_archived_thread_past_the_shelf_cap(tmp_path, monkeypatch):
+    # The shelf lists SHELF_ROWS closed threads; archived ones are listed
+    # whatever their age and do not use up a place (the app's Archived filter).
+    from agent_media_server import archive
+
+    monkeypatch.setattr(sessions, "SHELF_ROWS", 2)
+    monkeypatch.setattr(sessions, "live_sessions", lambda: {})
+    monkeypatch.setattr(sessions, "_pane_titles", lambda: {})
+    ids = [f"{c * 8}-1111-2222-3333-444444444444" for c in "abcde"]
+    _manifests(tmp_path, monkeypatch, [(sid, f"/c/scratch/scratch - {sid[0]}") for sid in ids])
+    for i, sid in enumerate(ids):  # a newest … e oldest
+        t = 1_790_000_000 - i * 60
+        os.utime(sessions._manifest_dir() / f"{sid}.json", (t, t))
+    monkeypatch.setattr(archive, "archived", lambda: {ids[0]: 1.0, ids[4]: 1.0})
+    rows = sessions.sessions_index()
+    assert [(r["session"][0], r["archived"]) for r in rows] == [
+        ("a", True), ("b", False), ("c", False), ("e", True)]

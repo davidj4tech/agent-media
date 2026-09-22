@@ -253,7 +253,10 @@ Everything a message can be pointed at.
   pane (Claude's terminal title with the spinner stripped; Codex, pi and
   Hermes from their own session files, cut to 60 chars). A live session
   with no title is left out. Then up to 40 shelved conversations, newest
-  first, titled by their folder name, with `at` = the manifest's mtime.
+  first, titled by their folder name, with `at` = the manifest's mtime —
+  plus **every archived one**, however old (23 Sep 2026): the caps on
+  closed rows (40 shelved, 20 ended headless) count only rows not archived,
+  so the app's Archived filter shows them all.
   **`at` is only on shelved rows.** A session appears once, live if it
   is live.
 - `recap` (every row, 22 Sep 2026): the latest "where this thread was"

@@ -1002,8 +1002,15 @@ def _display_title(session: str, pane_title: str) -> str:
     return first if len(first) <= 60 else first[:59] + "…"
 
 
-def _recent_conversations(limit: int = 40) -> list[tuple[str, str, float]]:
-    """`[(session, title, last modified)]` from the shelf, newest first."""
+#: Shelved conversations listed at most, newest first — archived ones aside,
+#: which are always listed (and do not use up a place), so the app's Archived
+#: filter can show every one of them.
+SHELF_ROWS = 40
+
+
+def _recent_conversations(limit: int = 0) -> list[tuple[str, str, float]]:
+    """`[(session, title, last modified)]` from the shelf, newest first
+    (`limit` of them, 0 for all)."""
     rows = []
     for f in _manifest_dir().glob("*.json"):
         try:
@@ -1016,11 +1023,12 @@ def _recent_conversations(limit: int = 40) -> list[tuple[str, str, float]]:
         if sid and title:
             rows.append((sid, title, at))
     rows.sort(key=lambda r: -r[2])
-    return rows[:limit]
+    return rows[:limit] if limit else rows
 
 
-#: Ended headless sessions listed at most (live ones always are): newest
-#: first. A spoken one is on the shelf as well, which dedups against this.
+#: Ended headless sessions listed at most (live and archived ones always
+#: are): newest first. A spoken one is on the shelf as well, which dedups
+#: against this.
 HEADLESS_ENDED_ROWS = 20
 #: `{session: ((size, mtime), title)}` for headless titles read from the
 #: transcript, so an unchanged one is a stat.
@@ -1063,7 +1071,8 @@ def _headless_rows(seen: set[str], flags, pinned, marks) -> list[dict]:
     Shaped like the pane rows, plus four keys that only headless rows carry:
     `driver: "headless"`, `drivable: true` (the phone can send, answer and
     stop it), `harness` and `source: "sessiond"`. `pane` is always null.
-    Live ones first; ended ones (parked, closed) newest first, capped.
+    Live ones first; ended ones (parked, closed) newest first, capped —
+    the archived ones aside, which are always listed.
     """
     from . import driver, rest
 
@@ -1073,7 +1082,9 @@ def _headless_rows(seen: set[str], flags, pinned, marks) -> list[dict]:
              if v.get("session") and v["session"] not in seen]
     live = [v for v in views if v.get("live")]
     ended = sorted((v for v in views if not v.get("live")),
-                   key=lambda v: -float(v.get("last_event_at") or 0))[:HEADLESS_ENDED_ROWS]
+                   key=lambda v: -float(v.get("last_event_at") or 0))
+    kept = {v["session"] for v in [v for v in ended if v["session"] not in flags][:HEADLESS_ENDED_ROWS]}
+    ended = [v for v in ended if v["session"] in flags or v["session"] in kept]
     out = []
     for v in live + ended:
         sid = str(v["session"])
@@ -1105,7 +1116,9 @@ def sessions_index() -> list[dict]:
 
     And `archived`: whether the thread has been archived (`archive`). Archived
     rows stay in the list — the app files them under "Archived" itself, and
-    un-archiving from there needs the row.
+    un-archiving from there needs the row. Every archived row is listed: the
+    caps on closed rows (`SHELF_ROWS`, `HEADLESS_ENDED_ROWS`) count only the
+    ones not archived.
 
     And `rested` — `{"at", "reason"}` when the idle reaper closed it, None
     otherwise and always None while live (`rest`) — and `pinned`, whether it
@@ -1131,9 +1144,14 @@ def sessions_index() -> list[dict]:
                     "rested": None, "pinned": sid in pinned})
     for row in _headless_rows(seen, flags, pinned, marks):
         out.append(row)
+    shelved = 0
     for sid, title, at in _recent_conversations():
         if sid in seen:
             continue
+        if sid not in flags:
+            if shelved >= SHELF_ROWS:
+                continue
+            shelved += 1
         seen.add(sid)
         out.append({"session": sid, "title": title, "live": False, "pane": None, "at": at,
                     "recap": recaps.recap_for(sid), "archived": sid in flags,
