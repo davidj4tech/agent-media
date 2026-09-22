@@ -1363,12 +1363,15 @@ def _speech_flushed(seq: float) -> bool:
 #            playing — queued, rendering, waiting on the lock or a hold — and
 #            the rest of the one playing now. One-shot by construction: a later
 #            submission has a later stamp.
+#   "ask":   the question on screen was answered: drop this session's question
+#            read-outs submitted up to it, the one playing now included. Only
+#            the read-out — the lead-in before it and the reply after it play.
 #
 # Checked where the global flush is (the last checkpoint before a reply's first
 # clip plays) and, for "all", between clips too. A dropped reply still writes
 # its history row, marked flushed, exactly as a flushed one does.
 
-_CUT_MODES = ("after", "all")
+_CUT_MODES = ("after", "all", "ask")
 
 
 def _speech_cut_dir() -> Path:
@@ -1435,8 +1438,8 @@ def request_session_speech_cut(session: str, mode: str = "after",
         rec["after"] = min(float(prev), at) if isinstance(prev, (int, float)) else at
         rec["set_at"] = time.time()
     else:
-        prev = rec.get("all")
-        rec["all"] = max(float(prev), at) if isinstance(prev, (int, float)) else at
+        prev = rec.get(mode)
+        rec[mode] = max(float(prev), at) if isinstance(prev, (int, float)) else at
     _write_speech_cut(session, rec)
     return at
 
@@ -1467,16 +1470,21 @@ def end_session_speech_cut(session: str) -> None:
     _write_speech_cut(session, rec)
 
 
-def _speech_cut(session: str, seq: float, *, playing: bool = False) -> bool:
+def _speech_cut(session: str, seq: float, *, playing: bool = False,
+                ask: bool = False) -> bool:
     """True when this session's reply submitted at `seq` has been cut.
 
     `playing`: asked between clips of a reply already speaking, where only an
-    `all` cut applies — the cutoff lets through what started before it."""
+    `all` cut applies — the cutoff lets through what started before it.
+    `ask`: this is a question's read-out, which an answer (`ask`) also cuts."""
     if not session:
         return False
     rec = _read_speech_cut(session)
     if not rec:
         return False
+    ask_at = rec.get("ask")
+    if ask and isinstance(ask_at, (int, float)) and seq <= ask_at:
+        return True
     all_at = rec.get("all")
     if isinstance(all_at, (int, float)) and seq <= all_at:
         return True
@@ -3077,7 +3085,8 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
     # Same last-checkpoint gate as the local path: wait out an active hold,
     # then drop if a flush arrived while we were queued or held.
     _wait_speech_hold()
-    if _speech_flushed(seq) or _speech_cut(session, seq):
+    if _speech_flushed(seq) or _speech_cut(
+            session, seq, ask=bool((event.metadata or {}).get("ask"))):
         lock.release()
         return None
     started_at = time.time()
@@ -3361,6 +3370,7 @@ def _submit_event(event: Event,
     # popup can resume the conversation when its source pane has since been
     # closed — `goto-pane` falls back to `claude --resume <session>`.
     source_session = (event.metadata or {}).get("session") or ""
+    source_ask = bool((event.metadata or {}).get("ask"))
     order_session = _order_session(source_pane, source_session)
     # Claim this reply's place in its session's speech queue *now*, before the
     # renders below: a shorter sibling submitted a moment later would otherwise
@@ -3764,7 +3774,7 @@ def _submit_event(event: Event,
         # supersede exist for that.
         # Cut by `/session/stop` (`request_session_speech_cut`): the same
         # skip, for this session only.
-        if _speech_flushed(started_at) or _speech_cut(source_session, started_at):
+        if _speech_flushed(started_at) or _speech_cut(source_session, started_at, ask=source_ask):
             playback_lock.release()
             return _archive(flushed=True)
         # Cross-host: also claim the shared remote broker so another machine's
@@ -4033,7 +4043,8 @@ def _submit_event(event: Event,
                     # rest of the playlist instead of yielding-and-resuming.
                     # Or stopped from the app (`all` cut): the same drop.
                     if playback_lock.should_abort() or _speech_cut(
-                            source_session, started_at, playing=True):
+                            source_session, started_at, playing=True,
+                            ask=source_ask):
                         highlighter.cancel_pending()
                         sink.stop(target)
                         finished = True
@@ -4246,7 +4257,8 @@ def _submit_event(event: Event,
                     # remaining sentences instead of yielding-and-resuming.
                     # Or stopped from the app (`all` cut): the same drop.
                     if playback_lock.should_abort() or _speech_cut(
-                            source_session, started_at, playing=True):
+                            source_session, started_at, playing=True,
+                            ask=source_ask):
                         break
                     # Step aside between sentences if a higher-priority speaker
                     # (e.g. a notification) is waiting; resume it once that's done.
@@ -4378,6 +4390,7 @@ def submit_stream(sentences,
 
     source_pane = (event.metadata or {}).get("pane") or os.environ.get("TMUX_PANE", "")
     source_session = (event.metadata or {}).get("session") or ""
+    source_ask = bool((event.metadata or {}).get("ask"))
     order_session = _order_session(source_pane, source_session)
     source_tmux_session, source_window = _source_place(event.metadata, source_pane)
     # Durable per-pane / per-session mute: render the stream into clips for
@@ -4550,7 +4563,8 @@ def submit_stream(sentences,
                 # by `/session/stop`: before the first clip either mode, after
                 # it only `all`.
                 if playback_lock.should_abort() or _speech_cut(
-                        source_session, started_at, playing=i > 0):
+                        source_session, started_at, playing=i > 0,
+                        ask=source_ask):
                     break
                 # Step aside between sentences for a higher-priority speaker;
                 # resume this clip once it's done. Only after the first clip has

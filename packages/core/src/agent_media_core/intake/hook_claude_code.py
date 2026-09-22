@@ -1102,6 +1102,25 @@ def answers_from_response(response) -> str:
     return ""
 
 
+def _stop_playing_ask(session: str) -> None:
+    """Stop the clip playing now if it is this session's question read-out.
+
+    The cut above skips the read-out's remaining clips; this is the one
+    already speaking. Anything else playing — another thread, this thread's
+    lead-in — is left alone.
+    """
+    from agent_media_core.state import StateStore
+
+    np = StateStore().get_now_playing("speech") or {}
+    extras = np.get("extras") or {}
+    if not extras.get("ask") or extras.get("source_session") != session:
+        return
+    from agent_media_core.cli import _active_speech_target
+    from agent_media_core.sinks.speech import SinkSpeech
+
+    SinkSpeech().stop(_active_speech_target())
+
+
 def _handle_posttooluse(payload: dict) -> int:
     """PostToolUse(AskUserQuestion) — record the option the listener chose.
 
@@ -1121,6 +1140,15 @@ def _handle_posttooluse(payload: dict) -> int:
         pending_asks.clear(session, str(payload.get("tool_use_id") or ""))
     except Exception as e:  # noqa: BLE001 — a stale file is never used anyway
         log.info("hook: could not clear the pending question (%s)", e)
+    if session:
+        # Answered: the read-out of its options has nothing left to ask.
+        try:
+            from .submit import request_session_speech_cut
+
+            request_session_speech_cut(session, "ask")
+            _stop_playing_ask(session)
+        except Exception as e:  # noqa: BLE001 — worst case it reads on
+            log.info("hook: could not cut the question read-out (%s)", e)
     if not text or not session:
         return 0
     return _record_listener_text(session, text)

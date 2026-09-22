@@ -246,3 +246,37 @@ def test_a_cut_needs_a_session_and_a_known_mode():
     with pytest.raises(ValueError):
         S.request_session_speech_cut(A, "some")
     assert not S._speech_cut("", time.time())
+
+
+# --- ask: the question was answered -------------------------------------------
+
+def _ask(text, session, state, sink):
+    return S.submit_event(Event(text=text, source=Source.CLAUDE_CODE,
+                                metadata={"session": session, "kind": "notif",
+                                          "ask": True}),
+                          state=state, sink=sink, coordinator=_Coord())
+
+
+def test_an_answer_ends_the_question_read_out_at_its_clip():
+    state = StateStore()
+    sink = _Sink(on_play=lambda n: n == 1 and S.request_session_speech_cut(A, "ask"))
+    _ask("Which one? Option one. Option two. Option three.", A, state, sink)
+    assert len(sink.played) == 1, "the options kept reading after the answer"
+
+
+def test_an_answer_leaves_the_lead_in_and_the_reply_alone():
+    state, sink = StateStore(), _Sink()
+    S.request_session_speech_cut(A, "ask", at=time.time() + 60)
+    _say("The lead-in. It sets up the question.", A, state, sink)
+    assert len(sink.played) == 2
+    rid = _ask("Which one? Option one.", A, state, sink)
+    assert len(sink.played) == 2 and _row(state, rid)["extras"]["flushed"] is True
+    _ask("Another thread asks. Option one.", B, state, sink)
+    assert len(sink.played) > 2
+
+
+def test_a_later_question_is_read_out():
+    state, sink = StateStore(), _Sink()
+    S.request_session_speech_cut(A, "ask")
+    rid = _ask("The next question. Option one.", A, state, sink)
+    assert sink.played and not _row(state, rid)["extras"].get("flushed")
