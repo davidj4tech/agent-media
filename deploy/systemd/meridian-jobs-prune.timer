@@ -1,0 +1,9 @@
+[Unit]
+Description=Daily: move old Meridian job records to ~/backups
+
+[Timer]
+OnCalendar=*-*-* 04:20
+Persistent=true
+
+[Install]
+WantedBy=timers.target
