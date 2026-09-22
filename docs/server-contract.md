@@ -747,6 +747,7 @@ written, with its steps and narration. Messages are read from the same file.
 | `spoken` | the speech of this message, or `null` if it was not spoken (or cannot be recognised). `id` is the history row for `/speech/ctl replay-id` (`null` while it is still playing for the first time); `key` the reply's dedup key; `images`/`figure` as on lines, only when drawn; `live` only while it plays — the §6.2 live-line fields, moved here |
 | `turn.running` | the turn is still going: the last record asked for a tool, or a tool has no result yet. Always `false` when the session is not live |
 | `command` | user messages that are a slash command only: `{name, args, text}`, the line's chip (`slash.py`); settings commands are never messages |
+| `peer` | user messages another session delivered into this one (a `<cross-session-message>`): `{name}`; the text is only the message body. Not the listener's words — the app shows a small "From <name>" and never counts it as a send of its own |
 
 **Parts.**
 - `text` — the words, **as Markdown** (Claude writes Markdown; the client
