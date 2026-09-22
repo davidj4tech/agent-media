@@ -250,9 +250,13 @@ def messages_for(session: str, lines: list, *, working: bool, live: bool,
             idx = next((i for i, m in enumerate(msgs) if m["id"] == before), None)
             msgs = msgs[:idx] if idx is not None else []
         older = bool(limit) and len(msgs) > limit
-        return (msgs[-limit:] if older else msgs), older
+        msgs = msgs[-limit:] if older else msgs
+        transcript.strip_markers(msgs)
+        return msgs, older
     msgs, older = got
     transcript.join_speech(msgs, lines)
+    # The canvas's markers are not for reading; the join above needed them.
+    transcript.strip_markers(msgs)
     if not live:
         # A turn in a session nobody is running is not running, whatever its
         # last record says (it was killed mid-turn).

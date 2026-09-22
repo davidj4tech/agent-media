@@ -126,10 +126,14 @@ def test_snapshot_first_then_appends_as_the_transcript_grows(server, signed_in, 
     assert st.headers["access-control-allow-origin"] == "*"
     ev, snap = st.event()
     assert ev == "snapshot"
-    assert {"session", "lines", "messages", "older", "pending", "working", "approval",
-            "suggestion", "recap", "state", "live", "pane", "resumable"} <= set(snap)
+    assert {"ok", "session", "lines", "messages", "older", "pending", "working", "approval",
+            "suggestion", "recap", "state", "session_live", "live", "pane",
+            "resumable"} <= set(snap)
+    assert snap["ok"] is True
     assert [m["role"] for m in snap["messages"]] == ["user", "assistant"]
-    assert snap["state"] == "working" and snap["live"] is True and snap["pane"] == "%7"
+    assert snap["state"] == "working" and snap["pane"] == "%7"
+    # `session_live` is the session running; `live` its deprecated alias.
+    assert snap["session_live"] is True and snap["live"] is True
 
     t0 = time.monotonic()
     s.prompt("And now?")
@@ -194,11 +198,13 @@ def test_state_and_suggestion_events(server, signed_in, convo, monkeypatch):
     st = Stream(server, f"/threads/{SID}/events", AUTH)
     st.event()
     monkeypatch.setattr(panes, "classify", lambda cap, agent="claude": "input")
-    assert st.next("state") == {"state": "waiting", "live": True, "pane": "%7"}
+    assert st.next("state") == {"state": "waiting", "session_live": True, "live": True,
+                                "pane": "%7"}
     monkeypatch.setattr(sessions, "_followup", lambda s: {"text": "Ship it?", "key": ""})
     assert st.next("suggestion") == {"text": "Ship it?"}
     live.pop(SID)
-    assert st.next("state") == {"state": "ended", "live": False, "pane": None}
+    assert st.next("state") == {"state": "ended", "session_live": False, "live": False,
+                                "pane": None}
     st.close()
 
 
@@ -302,3 +308,174 @@ def test_canvas_events_is_untouched(server, convo):
     assert json.loads(frame.decode().partition("data: ")[2])["kind"] == "hello"
     assert thread_events.watching() == {}
     st.close()
+
+
+# --- 22 Sep 2026: what the app's live-stream build found ----------------------------
+
+
+def test_the_snapshot_is_the_newest_page_and_limit_asks_for_more(server, signed_in, convo,
+                                                                spoken):
+    s, _live = convo
+    long_ago = time.time() - 86400
+    spoken.extend([{"who": "you", "text": "long ago", "at": long_ago},
+                   {"who": "agent", "text": "so it was", "at": long_ago + 1}])
+    for i in range(40):
+        s.prompt(f"q{i}")
+        s.text(f"a{i}", msgid=f"r{i}")
+        s.end_turn()
+    spoken.append({"who": "you", "text": "q39", "at": time.time()})
+    st = Stream(server, f"/threads/{SID}/events", AUTH)
+    _, snap = st.event()
+    st.close()
+    assert len(snap["messages"]) == thread_events.SNAPSHOT_LIMIT == 30
+    assert snap["older"] is True
+    assert snap["messages"][-1]["parts"][0]["text"] == "a39"
+    st = Stream(server, f"/threads/{SID}/events?limit=5", AUTH)
+    _, snap = st.event()
+    st.close()
+    # The deprecated lines ride for the same page only.
+    assert all(l["at"] >= snap["messages"][0]["at"] - 5 for l in snap["lines"])
+    assert [m["parts"][0]["text"] for m in snap["messages"]] == ["a37", "q38", "a38",
+                                                                  "q39", "a39"]
+    st = Stream(server, f"/threads/{SID}/events?limit=500", AUTH)
+    _, snap = st.event()
+    st.close()
+    assert len(snap["messages"]) == 82 and snap["older"] is False
+    # The whole thread: every line.
+    assert [l["text"] for l in snap["lines"]][:2] == ["long ago", "so it was"]
+
+
+class GzipStream(Stream):
+    """The same reader over a gzipped body, inflated as it arrives."""
+
+    def __init__(self, *a, **kw):
+        import zlib
+
+        self._z = zlib.decompressobj(31)
+        self._raw = True
+        super().__init__(*a, **kw)
+        self._raw = False
+        # What came in with the headers is compressed too.
+        self.buf = self._z.decompress(self.buf)
+
+    def _until(self, sep, deadline=5.0):
+        if self._raw:
+            return super()._until(sep, deadline)
+        end = time.monotonic() + deadline
+        while sep not in self.buf:
+            self.sock.settimeout(max(0.01, end - time.monotonic()))
+            try:
+                chunk = self.sock.recv(65536)
+            except socket.timeout:
+                raise TimeoutError(f"no {sep!r} in {self.buf[:200]!r}")
+            if not chunk:
+                raise EOFError(self.buf[:200])
+            self.buf += self._z.decompress(chunk)
+        head, _, self.buf = self.buf.partition(sep)
+        return head
+
+
+def test_gzip_when_asked_with_every_event_flushed(server, signed_in, convo):
+    s, _live = convo
+    st = GzipStream(server, f"/threads/{SID}/events", {**AUTH, "Accept-Encoding": "gzip"})
+    assert st.status == 200
+    assert st.headers["content-encoding"] == "gzip"
+    assert st.headers["x-accel-buffering"] == "no"
+    assert st.headers["cache-control"] == "no-store"
+    assert "content-length" not in st.headers
+    ev, snap = st.event()
+    assert ev == "snapshot" and snap["ok"] is True
+    # A later event arrives whole on its own: the compressor was flushed.
+    s.prompt("Compressed?")
+    got = st.next("message")
+    assert got["message"]["parts"][0]["text"] == "Compressed?"
+    assert st.next("ping", deadline=2.0) == {}
+    st.close()
+    # Not asked (or refused): plain.
+    plain = Stream(server, f"/threads/{SID}/events", {**AUTH, "Accept-Encoding": "gzip;q=0"})
+    assert "content-encoding" not in plain.headers and plain.event()[0] == "snapshot"
+    plain.close()
+
+
+def test_pending_is_sent_when_it_changes(server, signed_in, convo):
+    s, _live = convo
+    st = Stream(server, f"/threads/{SID}/events", AUTH)
+    _, snap = st.event()
+    assert snap["pending"] is False
+    s.prompt("Are you there?")
+    assert st.next("pending") == {"pending": True}
+    s.text("Here.", msgid="m9")
+    s.end_turn()
+    assert st.next("pending") == {"pending": False}
+    st.close()
+
+
+def test_the_stream_answers_once_however_it_ends(server, signed_in, convo, monkeypatch):
+    """The request is handled when the stream ends: nothing falls through to
+    the canvas's 404 onto a socket that already carried the stream."""
+    from agent_media_visual import canvas
+
+    sent, handled = [], []
+    real_send, real_dispatch = canvas.Handler._send, canvas._app.dispatch
+
+    def spy_send(self, code, body, ctype):
+        sent.append(code)
+        return real_send(self, code, body, ctype)
+
+    def spy_dispatch(h, method, path):
+        got = real_dispatch(h, method, path)
+        if path.startswith("/threads/"):
+            handled.append(got)
+        return got
+
+    monkeypatch.setattr(canvas.Handler, "_send", spy_send)
+    monkeypatch.setattr(canvas._app, "dispatch", spy_dispatch)
+    # The client goes away.
+    st = Stream(server, f"/threads/{SID}/events", AUTH)
+    st.event()
+    st.close()
+    assert _wait(lambda: handled == [True])
+    # The stream fails after its headers are out.
+    monkeypatch.setattr(thread_events, "snapshot",
+                        lambda session, limit=None: (_ for _ in ()).throw(RuntimeError("bug")))
+    st = Stream(server, f"/threads/{SID}/events", AUTH)
+    assert st.status == 200
+    rest = st.buf
+    while True:
+        try:
+            chunk = st.sock.recv(65536)
+        except socket.timeout:
+            break
+        if not chunk:
+            break
+        rest += chunk
+    st.close()
+    assert _wait(lambda: handled == [True, True])
+    assert b"HTTP/1." not in rest and b"not found" not in rest
+    assert 404 not in sent
+    assert _wait(lambda: thread_events.watching() == {})
+
+
+def test_markers_are_not_part_of_the_text(server, signed_in, convo, spoken):
+    from agent_media_server import transcript
+
+    s, _live = convo
+    reply = ("Let me draw it. [[reveal: two boxes, an arrow]] As you can see, it **flows**."
+             "\n\n[[visual: a table of three rows]]\n\nDone.")
+    s.prompt("Draw it")
+    s.text(reply, msgid="m5")
+    s.end_turn()
+    # Spoken in halves, keyed on the raw words: the join still finds it.
+    first_half = transcript.spoken_keys(reply)[1]
+    spoken.append({"who": "agent", "text": "Let me draw it.", "at": time.time(),
+                   "key": first_half, "id": 31, "start": None, "end": None})
+    st = Stream(server, f"/threads/{SID}/events", AUTH)
+    _, snap = st.event()
+    st.close()
+    msg = snap["messages"][-1]
+    assert msg["parts"][0]["text"] == "Let me draw it. As you can see, it **flows**.\n\nDone."
+    assert msg["spoken"]["key"] == first_half
+    # The log route strips them too (one reader, threads.messages_for).
+    res, obj = call(server, "GET", f"/conversation/log?session={SID}&messages=1", headers=AUTH)
+    assert "[[" not in obj["messages"][-1]["parts"][0]["text"]
+    assert transcript.display_text("No markers [here].") == "No markers [here]."

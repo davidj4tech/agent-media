@@ -303,7 +303,10 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
     query = h.path.partition("?")[2]
     events = THREAD_EVENTS.fullmatch(path)
     if events:
+        # The stream answers the request however it ends — it must never
+        # fall through to the caller's 404 on a socket it already wrote to.
         _thread_events(h, events.group(1), query)
+        return True
     elif path == "/item":
         # The library item, carrying only what the app reads. Sasonica asks
         # here first and falls back to Audiobookshelf, so this is a way of
@@ -422,32 +425,37 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
     return True
 
 
-def _thread_events(h: BaseHTTPRequestHandler, session: str, query: str) -> None:
+def _thread_events(h: BaseHTTPRequestHandler, session: str, query: str) -> bool:
     """`GET /threads/{session}/events` — the thread as a stream (§11,
     thread_events.py). Holds this handler thread until the client goes.
+    Always True: every path through here answers the request.
 
     The credential is the usual bearer, or `?access_token=` for a plain
     `EventSource` (which cannot set headers). The query string is never
     logged: nothing here prints it, and the canvas's request log redacts it.
-    Refusals are ordinary JSON answers, before the stream opens.
+    Refusals are ordinary JSON answers, before the stream opens. `?limit=`
+    is the snapshot's message count (default `thread_events.SNAPSHOT_LIMIT`).
     """
     from . import thread_events
 
-    bearer = _bearer(h) or (parse_qs(query).get("access_token") or [""])[0].strip()
+    qs = parse_qs(query)
+    bearer = _bearer(h) or (qs.get("access_token") or [""])[0].strip()
     if not sessions._SESSION.fullmatch(session or ""):
         _json(h, 400, {"ok": False, "error": "not a session id"})
-        return
+        return True
     user, err = auth.gate(bearer)
     if not user:
         _json(h, err.pop("status", 401), {"ok": False, **err})
-        return
+        return True
     from . import driver
 
     if not sessions.live_sessions().get(session) and not sessions.session_exists(session) \
             and threads._manifest_for(session) is None and not driver.owned_headless(session):
         _json(h, 404, {"ok": False, "error": "no such session"})
-        return
-    thread_events.serve(h, session)
+        return True
+    raw = (qs.get("limit") or [""])[0]
+    limit = threads._limit(raw) if raw else None
+    return thread_events.serve(h, session, limit=limit, gzip=thread_events.accepts_gzip(h))
 
 
 def _base_url(h: BaseHTTPRequestHandler) -> str:

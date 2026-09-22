@@ -10,7 +10,8 @@ sends only what changed:
     approval    the dialog the session is stopped on, or null
     suggestion  {"text"}
     state       {"state": "working" | "waiting" | "approval" | "ended",
-                 "live": bool, "pane"}
+                 "session_live": bool, "live": bool (deprecated alias), "pane"}
+    pending     {"pending": bool} — a reply is in and no answer has landed
     recap       the latest recap, or null
     ping        {} after PING_S of silence
 
@@ -41,6 +42,12 @@ a dead client must be noticed: every write that fails ends the connection,
 and a `ping` goes out after `PING_S` of silence so a vanished client fails
 within one.
 
+**Size.** The snapshot carries the newest `SNAPSHOT_LIMIT` messages (30;
+`?limit=` asks for 1–500) — older ones are paged with `/conversation/log
+?before=`. The stream is gzipped when the client sends `Accept-Encoding:
+gzip`: one compressor for the connection, sync-flushed after every frame so
+each event reaches the client whole and at once.
+
 Standard library only; the watcher polls with `os.stat` (no inotify).
 """
 
@@ -51,6 +58,7 @@ import logging
 import queue
 import threading
 import time
+import zlib
 
 from . import driver, sessions, threads, transcript
 
@@ -73,6 +81,10 @@ MAX_PER_SESSION = 8
 MAX_TOTAL = 32
 #: Events a connection may fall behind before it is dropped.
 QUEUE_MAX = 256
+#: Messages in the snapshot unless the client asks (`?limit=`). A busy
+#: thread's 60 were ~390 KB of JSON; the phone draws the end first and pages
+#: back with `/conversation/log?before=`.
+SNAPSHOT_LIMIT = 30
 
 #: The follow-along fields that tick; a message is not "changed" when only
 #: these moved — the `live` event carries them.
@@ -110,27 +122,47 @@ def _plain(obj, drop=("server_time",)):
     return obj
 
 
+def _state(state: str, live: bool, pane) -> dict:
+    # `live` here is "the session is running", which is not the `live` event
+    # (the follow-along clock). `session_live` says so; `live` stays one
+    # release as a deprecated alias (server-contract.md §11).
+    return {"state": state, "session_live": live, "live": live, "pane": pane}
+
+
 def session_state(session: str) -> dict:
-    """`{"state", "live", "pane"}` — what the session is doing, from its pane,
-    or for a headless session (MEDIA_HEADLESS) from sessiond."""
+    """`{"state", "session_live", "live", "pane"}` — what the session is
+    doing, from its pane, or for a headless session (MEDIA_HEADLESS) from
+    sessiond."""
     pane = sessions.live_sessions().get(session, "")
     if not pane:
         hl = driver.headless_state(session)
         if hl is not None:
-            return {"state": hl["state"], "live": hl["live"], "pane": None}
-        return {"state": "ended", "live": False, "pane": None}
+            return _state(hl["state"], hl["live"], None)
+        return _state("ended", False, None)
     st = sessions.activity_of(session, pane).get("state") or "waiting"
-    return {"state": st, "live": True, "pane": pane}
+    return _state(st, True, pane)
 
 
-def snapshot(session: str) -> tuple[bool, dict]:
-    """The first frame: the log envelope plus the session's state (§11)."""
-    ok, env = threads.session_log(session)
+def snapshot(session: str, limit: int | None = None) -> tuple[bool, dict]:
+    """The first frame: the log envelope (its newest `limit` messages,
+    `SNAPSHOT_LIMIT` by default) plus the session's state (§11)."""
+    ok, env = threads.session_log(session, limit=limit or SNAPSHOT_LIMIT)
     if not ok:
         return False, env
     threads.age_live(env)
     st = session_state(session)
-    env.update({"state": st["state"], "live": st["live"], "pane": st["pane"],
+    env = {"ok": True, **env}
+    msgs = env.get("messages") or []
+    if env.get("older") and msgs:
+        # The deprecated lines, cut to the page the messages are: on a long
+        # thread they were most of the snapshot (184 of 268 KB on red5's
+        # busiest, 22 Sep 2026) and are not streamed, so a line older than
+        # the page is one nothing will ever update.
+        cutoff = (msgs[0].get("at") or 0.0) - transcript._JOIN_EARLY_S
+        env["lines"] = [l for l in env.get("lines") or []
+                        if (l.get("at") or 0.0) >= cutoff or l.get("live")]
+    env.update({"state": st["state"], "session_live": st["session_live"],
+                "live": st["session_live"], "pane": st["pane"],
                 "resumable": sessions.session_exists(session)})
     return True, env
 
@@ -243,10 +275,18 @@ class Watcher:
             return
         msgs, _older = got
         transcript.join_speech(msgs, self._lines)
-        if not self._last.get("state", {}).get("live"):
+        transcript.strip_markers(msgs)
+        live = bool(self._last.get("state", {}).get("session_live"))
+        if not live:
             for m in msgs:
                 m["turn"]["running"] = False
         self._diff_messages(msgs, emit=True)
+        # A prompt is in the transcript well before anything else says so:
+        # a live session whose last message is the listener's is pending
+        # (the log's rule), and the phone should know now, not at the next
+        # full read. Clearing is the full read's (it knows `working`).
+        if live and msgs and msgs[-1]["role"] == "user":
+            self._update("pending", {"pending": True}, emit=True)
 
     def _full(self, emit: bool) -> None:
         if not emit:
@@ -265,15 +305,21 @@ class Watcher:
         self._live, self._live_read = live, time.time()
         now = {"working": env.get("working"), "approval": env.get("approval"),
                "suggestion": {"text": env.get("suggestion") or ""},
-               "state": st, "recap": env.get("recap")}
+               "state": st, "pending": {"pending": bool(env.get("pending"))},
+               "recap": env.get("recap")}
         for name, value in now.items():
-            if name in self._last and _plain(self._last[name]) == _plain(value):
-                continue
-            first = name not in self._last
-            self._last[name] = value
-            if emit and not first:
-                self._emit(name, value)
+            self._update(name, value, emit)
         self._busy = bool(env.get("working")) or bool(live) or st["state"] == "working"
+
+    def _update(self, name: str, value, emit: bool) -> None:
+        """Remember `value` as the latest `name`; send it if it changed (and
+        this is not the baseline read)."""
+        if name in self._last and _plain(self._last[name]) == _plain(value):
+            return
+        first = name not in self._last
+        self._last[name] = value
+        if emit and not first:
+            self._emit(name, value)
 
     def _live_changed(self, live: dict | None) -> bool:
         """Whether the follow-along moved in a way the client's own clock
@@ -347,47 +393,97 @@ def _reset_for_tests() -> None:
 # --- the connection ---------------------------------------------------------------
 
 
-def serve(h, session: str) -> None:
+def accepts_gzip(h) -> bool:
+    """Whether the client said it takes a gzipped body (and did not refuse
+    it with `q=0`)."""
+    for part in (h.headers.get("Accept-Encoding") or "").lower().split(","):
+        name, _, params = part.strip().partition(";")
+        if name.strip() in ("gzip", "*"):
+            q = params.strip().removeprefix("q=").strip() if "q=" in params else "1"
+            try:
+                return float(q) > 0
+            except ValueError:
+                return True
+    return False
+
+
+class _Out:
+    """The stream's writer: plain, or through one gzip member for the whole
+    connection, sync-flushed after every frame — a flush per event is what
+    makes a compressed event stream arrive event by event rather than when a
+    deflate block fills."""
+
+    def __init__(self, wfile, gzip: bool) -> None:
+        self.wfile = wfile
+        self.z = zlib.compressobj(6, zlib.DEFLATED, 31) if gzip else None
+
+    def write(self, data: bytes) -> None:
+        if self.z is not None:
+            data = self.z.compress(data) + self.z.flush(zlib.Z_SYNC_FLUSH)
+        self.wfile.write(data)
+        self.wfile.flush()
+
+    def finish(self) -> None:
+        """End the gzip member (its trailer), best effort: the client may be
+        gone, and a stream is read up to its last flush either way."""
+        if self.z is None:
+            return
+        try:
+            self.wfile.write(self.z.flush(zlib.Z_FINISH))
+            self.wfile.flush()
+        except (OSError, ValueError, zlib.error):
+            pass
+
+
+def serve(h, session: str, *, limit: int | None = None, gzip: bool = False) -> bool:
     """Hold the connection open and stream `session` to it until it goes.
 
     Runs on the handler's own thread. Auth and the session check are the
     caller's (app.py), done before any of this; from here on errors are not
     reported in-stream — the connection closes and the reconnect's snapshot
     (or its 404) says what happened.
+
+    Always True — the request was answered, however the stream ended (the
+    client went, it fell too far behind, the snapshot failed, or a bug): a
+    caller must never write a second answer onto this socket.
     """
     got = subscribe(session)
     if got is None:
         from .app import _json
 
         _json(h, 503, {"ok": False, "error": "too many open threads"})
-        return
+        return True
     w, sub = got
     h.close_connection = True
+    out = None
     try:
         h.send_response(200)
         h.send_header("Content-Type", "text/event-stream")
         h.send_header("Cache-Control", "no-store")
         h.send_header("X-Accel-Buffering", "no")
         h.send_header("Connection", "close")
+        h.send_header("Vary", "Accept-Encoding")
+        if gzip:
+            h.send_header("Content-Encoding", "gzip")
         from .app import _cors
 
         _cors(h)
         h.end_headers()
-        h.wfile.write(b"retry: 2000\n\n")
+        out = _Out(h.wfile, gzip)
+        out.write(b"retry: 2000\n\n")
         n = 0
 
         def send(event: str, data) -> None:
             nonlocal n
             n += 1
             body = json.dumps(data, separators=(",", ":"))
-            h.wfile.write(f"id: {n}\nevent: {event}\ndata: {body}\n\n".encode())
-            h.wfile.flush()
+            out.write(f"id: {n}\nevent: {event}\ndata: {body}\n\n".encode())
 
         # Subscribed first, then the snapshot: anything that changes while it
         # is built is queued behind it rather than lost.
-        ok, snap = snapshot(session)
+        ok, snap = snapshot(session, limit)
         if not ok:
-            return
+            return True
         send("snapshot", snap)
         while not sub.dropped:
             try:
@@ -398,5 +494,10 @@ def serve(h, session: str) -> None:
             send(event, data)
     except (BrokenPipeError, ConnectionResetError, OSError):
         pass
+    except Exception:  # noqa: BLE001 — the headers are out; nothing else may be
+        log.exception("thread events %s: stream failed", session[:8])
     finally:
         unsubscribe(w, sub)
+        if out is not None:
+            out.finish()
+    return True

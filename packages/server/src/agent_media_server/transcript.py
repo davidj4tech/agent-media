@@ -816,6 +816,37 @@ def join_speech(msgs: list[dict], lines: list[dict]) -> None:
                 break
 
 
+#: A `[[visual: …]]` / `[[reveal: …]]` marker, as the Stop hook reads it
+#: (intake/_visual.py), with the spaces around it.
+_MARKER = re.compile(r"[ \t]*\[\[\s*(?:visual|reveal)\s*:\s*.+?\s*\]\][ \t]*",
+                     re.IGNORECASE | re.DOTALL)
+
+
+def display_text(text: str) -> str:
+    """`text` without its `[[visual:]]` / `[[reveal:]]` markers — they are
+    instructions to the canvas, never words for anyone to read. The markdown
+    stays (the client renders it). A marker mid-sentence leaves one space; one
+    on a line of its own leaves no blank line behind."""
+    if "[[" not in (text or ""):
+        return text
+    out = _MARKER.sub(" ", text)
+    out = re.sub(r"(?m)^ +| +$", "", out)
+    out = re.sub(r"\n{3,}", "\n\n", out)
+    return out.strip()
+
+
+def strip_markers(msgs: list[dict]) -> None:
+    """Every assistant text part through `display_text`, in place. After the
+    speech join, which keys on the raw words (a `[[reveal:]]` reply is keyed
+    by its halves)."""
+    for m in msgs:
+        if m.get("role") != "assistant":
+            continue
+        for p in m.get("parts") or []:
+            if p.get("type") == "text" and "[[" in (p.get("text") or ""):
+                p["text"] = display_text(p["text"])
+
+
 def live_of(msgs: list[dict]) -> dict | None:
     """`{"id", "at", ...follow-along}` for the message whose speech is
     playing now, or None."""
