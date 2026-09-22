@@ -17,6 +17,12 @@ fresh session from the assistant button (`ask`), resuming and closing a
 session, answering a dialog, `/rename`. Typing a message is the one seam
 `_send_to_pane`, which the tests replace with a recorder.
 
+Since 22 Sep 2026 the gated entry points here (`reply`, `deliver`, `ask`,
+`answer`, `session_resume`, `session_close`) ask the Driver seam (driver/)
+which driver owns the session. The pane driver calls back into the `_…_pane`
+functions below, which are the code these routes always ran; a headless
+session (MEDIA_HEADLESS, sessiond.py) never reaches them.
+
 Moved out of the canvas's reply.py.
 
 Config (env):
@@ -77,13 +83,16 @@ def send_rename(session: str, title: str) -> str:
     return ""
 
 
-def answer(session: str, choice: int, key: str, bearer: str) -> tuple[bool, dict]:
-    """Answer the dialog a session is holding. `(ok, detail)`.
+def answer(session: str, choice: int, key: str, bearer: str, *,
+           request_id: str = "", decision: str = "", answers=None,
+           message: str = "") -> tuple[bool, dict]:
+    """Answer what a session is waiting on. `(ok, detail)`.
 
-    A number and Enter, never text: the digit moves the selection and Enter
-    takes it (measured on all three). Refused unless that very dialog is
-    still up — same options, same words — so this cannot be turned into a
-    way of pressing keys into whatever a pane has moved on to.
+    Two forms, both through the driver that owns the session (driver/): the
+    numbered one — `choice` and the dialog's `key` — which every session
+    takes, and the structured one — `request_id` and `decision` ("allow" |
+    "deny", with `answers` for a question) — which a headless session takes
+    (server-contract.md §6.4).
     """
     session = (session or "").strip()
     if not sessions._SESSION.fullmatch(session):
@@ -91,6 +100,23 @@ def answer(session: str, choice: int, key: str, bearer: str) -> tuple[bool, dict
     user, err = auth.gate(bearer)
     if not user:
         return False, err
+    from . import driver
+
+    request: dict = {"choice": choice, "key": key}
+    if request_id or decision:
+        request = {"request_id": request_id, "decision": decision, "answers": answers,
+                   "message": message}
+    return driver.for_session(session).answer(session, request)
+
+
+def _answer_pane(session: str, choice: int, key: str) -> tuple[bool, dict]:
+    """The pane driver's answer: a number and Enter, never text.
+
+    The digit moves the selection and Enter takes it (measured on all three).
+    Refused unless that very dialog is still up — same options, same words —
+    so this cannot be turned into a way of pressing keys into whatever a pane
+    has moved on to.
+    """
     pane = sessions.live_sessions().get(session, "")
     if not pane or not panes.alive(pane):
         return False, {"error": f"session {session[:8]} is not live", "status": 404}
@@ -556,6 +582,20 @@ def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
         host, cwd = sessions.project_target(project)
         if not cwd:
             return False, {"error": f"no directory known for project {project!r}", "status": 404}
+    # A pane, or (MEDIA_HEADLESS) a headless process sessiond holds — see
+    # driver/. The directory and the tmux session name were chosen above,
+    # the same for both: the name is where a pane would open, and what a
+    # headless session is filed and voiced under.
+    from . import driver
+
+    return driver.for_new(agent).start(agent=agent, cwd=cwd, text=text, host=host,
+                                       flags=flags, quote=quote)
+
+
+def _ask_pane(text: str, *, agent: str, cwd: str, host: str, flags: list[str],
+              quote: str = "") -> tuple[bool, dict]:
+    """The pane driver's fresh session: a background tmux window in `host`,
+    the words typed in, the listener's turn shelved against its uuid."""
     # pi takes its id up front; the others are asked for theirs.
     fixed = str(uuid.uuid4()) if agent == "pi" else ""
     pane, err = open_window(fixed, cwd, resume=False, host=host, flags=flags, agent=agent)
@@ -605,6 +645,14 @@ def session_resume(session: str, bearer: str) -> tuple[bool, dict]:
     user, err = auth.gate(bearer)
     if not user:
         return False, err
+    from . import driver
+
+    return driver.for_session(session).resume(session)
+
+
+def _resume_pane(session: str) -> tuple[bool, dict]:
+    """The pane driver's resume: already live says where; else a background
+    window running `claude --resume` (or the harness's own)."""
     pane = sessions.live_sessions().get(session, "")
     if pane and panes.alive(pane):
         return True, {"session": session, "pane": pane, "live": True, "opened": False}
@@ -655,7 +703,9 @@ def session_close(session: str, bearer: str) -> tuple[bool, dict]:
     user, err = auth.gate(bearer)
     if not user:
         return False, err
-    ok, detail = close_pane(session)
+    from . import driver
+
+    ok, detail = driver.for_session(session).close(session)
     if ok and detail.get("closed"):
         from . import rest
 
@@ -751,12 +801,15 @@ def reply(item: str, text: str, bearer: str, *, quote: str = "",
     user, err = auth.gate(bearer)
     if not user:
         return False, err
+    from . import driver
+
     if session:
         # A session id nothing knows — not running, no transcript — is the
         # same answer an item with no session behind it gets: not there.
         # Checked here rather than left to `deliver`, because `branch` would
         # otherwise open a fresh session in no particular directory.
-        if not sessions.live_sessions().get(session) and not sessions.session_exists(session):
+        if not sessions.live_sessions().get(session) and not sessions.session_exists(session) \
+                and not driver.owned_headless(session):
             return False, {"error": f"no such session {session[:8]}", "status": 404}
     else:
         session, err = sessions.session_for_item(item, bearer)
@@ -766,6 +819,15 @@ def reply(item: str, text: str, bearer: str, *, quote: str = "",
     # with the breaks the reply box had, so the transcript keeps them.
     body = compose(text, quote)
 
+    if mode == "branch" and driver.owned_headless(session):
+        # A branch runs where the thread it came from ran (proposal §8): a
+        # fresh headless session in the same directory, seeded the same way.
+        ok, detail = driver.headless_driver().start(
+            agent="claude", cwd=sessions.transcript_cwd(session) or driver.headless_driver().cwd_of(session),
+            text=text, quote=quote)
+        if ok:
+            detail["branched"] = True
+        return ok, detail
     if mode == "branch":
         agent = sessions.agent_of(session)
         pane, err = open_window("", sessions.transcript_cwd(session), resume=False, agent=agent)
@@ -781,16 +843,27 @@ def reply(item: str, text: str, bearer: str, *, quote: str = "",
         return True, {"session": session, "pane": pane, "opened": True,
                       "branched": True, "submitted": True}
 
-    return deliver(session, body, text)
+    return deliver(session, body, text, quote=quote)
 
 
-def deliver(session: str, body: str, text: str) -> tuple[bool, dict]:
-    """Put `body` into `session`'s live pane, reviving it if it has ended.
+def deliver(session: str, body: str, text: str, *, quote: str = "") -> tuple[bool, dict]:
+    """Put `body` into `session`, reviving it if it has ended — through the
+    driver that owns it (driver/).
 
     `text` is the listener's own words, shelved as their turn; `body` is what
-    is typed (the quote rides along in it). Shared by a reply from a
-    conversation's page and a reply the assistant button routed here.
+    a pane is typed (the quote rides along in it, flattened). A headless
+    session takes `text` as written and `quote` as its own paragraph. Shared
+    by a reply from a conversation's page and a reply the assistant button
+    routed here.
     """
+    from . import driver
+
+    return driver.for_session(session).send(session, body, text, quote=quote)
+
+
+def _deliver_pane(session: str, body: str, text: str) -> tuple[bool, dict]:
+    """The pane driver's send: type `body` into the live pane, reviving the
+    session in a background window if it has ended."""
     pane = sessions.live_sessions().get(session, "")
     opened = False
     agent = sessions.agent_of(session)
