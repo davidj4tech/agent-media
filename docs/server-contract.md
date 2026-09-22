@@ -625,7 +625,10 @@ above **and**:
   input (`agent_media_core/pending_asks.py`, `<state_dir>/asks/<session>.json`):
   `source: "hook"` when that copy's question is the one on screen, which is
   checked every read. Otherwise (`source: "screen"`) only the tab on screen is
-  known: one question, and `partial: true` when the dialog has other tabs.
+  known: one question — or, when the dialog has other tabs (or is the review
+  page, or its list scrolled off a short pane), `partial: true` and
+  `questions: []`: the card says "answer it at the desk", while the v0
+  `question` / `options` still describe the tab on screen.
 - `checked` is what the screen shows ticked, for the question on screen
   (`current`); `review` is true on the "Review your answers" page.
 - `free_text`: every question offers an "Other" row ("Type something").

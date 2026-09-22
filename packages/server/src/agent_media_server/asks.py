@@ -250,12 +250,13 @@ def approval(cap: str, session: str = "", agent: str = "claude") -> dict | None:
         tool_use_id = str(hook.get("tool_use_id") or "")
         current = qs[at]
     elif scr["review"]:
-        qs = [{"question": r["question"], "header": "", "multiSelect": False,
-               "free_text": True, "options": []} for r in scr["reviewed"]]
+        # The review page without the hook's copy: the questions' words are
+        # there, their options are not.
+        qs = []
         partial = True
         seed = "review|" + "|".join(r["question"] for r in scr["reviewed"])
         tool_use_id = ""
-        current = qs[0] if qs else {"question": "", "options": []}
+        current = {"question": "", "options": []}
         at = 0
     else:
         opts = [{"n": o["n"], "label": o["label"], "description": o["detail"],
@@ -279,6 +280,10 @@ def approval(cap: str, session: str = "", agent: str = "claude") -> dict | None:
             "|".join(f"{o['n']}.{o['label']}" for o in scr["options"])
         tool_use_id = ""
         current = qs[at]
+        if partial:
+            # Not all of it can be drawn, so none of it is offered as a card:
+            # the app says "answer it at the desk" (and a number still works).
+            qs = []
     if scr["review"]:
         v0 = [{"n": 1, "label": "Submit answers", "detail": ""},
               {"n": 2, "label": "Cancel", "detail": ""}]

@@ -146,7 +146,9 @@ def test_the_v0_fields_are_kept_for_a_client_that_answers_by_number():
 
 def test_several_tabs_without_the_hook_are_partial():
     a = asks.approval(cap("two_q2"))
-    assert a["partial"] is True and len(a["questions"]) == 1
+    # No card for part of a question: the app sends it to the desk.
+    assert a["partial"] is True and a["questions"] == [] and a["kind"] == "question"
+    assert a["question"] == "Which pets?" and a["options"][0]["label"] == "Cat"
 
 
 def test_approval_for_reads_a_question_through_the_pane(monkeypatch):
