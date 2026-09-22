@@ -790,12 +790,12 @@ def _marked(snippet: str) -> dict:
 
 
 def _mark_terms(text: str, terms: list[str]) -> list[list[int]]:
-    """Offsets of each term (case-insensitive; the last as a prefix) in a
-    plain string: for titles, recaps and projects, which are not in FTS."""
+    """Offsets of each term (case-insensitive, at the start of a word — a
+    word or a prefix of one, as FTS matches) in a plain string: for titles,
+    recaps and projects, which are not in FTS."""
     spans = []
-    low = text.lower()
     for t in terms:
-        for m in re.finditer(re.escape(t.lower()), low):
+        for m in re.finditer(r"(?<!\w)" + re.escape(t), text, re.IGNORECASE):
             spans.append([m.start(), m.end()])
     spans.sort()
     merged: list[list[int]] = []
@@ -867,7 +867,6 @@ def _threads_rows(conn: sqlite3.Connection) -> dict[str, dict]:
 
 def _thread_hits(terms: list[str], rows: dict[str, dict], listed: dict[str, dict],
                  owned: set[str]) -> list[dict]:
-    low = [t.lower() for t in terms]
     hits = []
     for sid in set(rows) | set(listed):
         t = rows.get(sid)
@@ -878,8 +877,8 @@ def _thread_hits(terms: list[str], rows: dict[str, dict], listed: dict[str, dict
         view = _thread_view(sid, t, listed.get(sid))
         fields = {"title": view["title"], "recap": view["recap"] or "",
                   "project": view["project"] or ""}
-        hay = " \n".join(fields.values()).lower()
-        if not all(w in hay for w in low):
+        hay = " \n".join(fields.values())
+        if not all(_mark_terms(hay, [w]) for w in terms):
             continue
         view["match"] = {k: _mark_terms(v, terms) for k, v in fields.items()
                          if v and _mark_terms(v, terms)}

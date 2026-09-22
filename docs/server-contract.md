@@ -1978,7 +1978,7 @@ threads, 15,772 message rows, 22,547 tool-step rows. A catch-up with a few
 changed files: ~0.14 s. Nothing is held in memory between queries but
 SQLite's 4 MB page cache per connection.
 
-Clients: the chat app's search screen (Threads tab).
+Clients: the chat app's search screen (`/find`, the ⌕ at the end of the Home | Threads switch; a message hit opens `/t/<session>?at=<message>`).
 
 ## 7. `/events` (v0) — canvas-wide, not the app's stream
 
