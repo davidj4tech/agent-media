@@ -498,6 +498,19 @@ def test_session_answer_gives_a_pane_its_structured_answers(pane):
     assert fake.sent == d["answers"]
 
 
+def test_answers_sent_while_the_review_page_is_up_still_land(pane):
+    _keep()
+    fake = pane(FakeAsk(HOOK["questions"]))
+    fake.state[0]["choice"] = 1
+    fake.tab, fake.review = 2, True
+    a = sessions.approval_for("%7", "claude", SID)
+    assert a["review"] is True and len(a["questions"]) == 2
+    ok, d = send.answer(SID, 0, a["key"], "tok", answers=[
+        {"question_index": 0, "selected": [2]}, {"question_index": 1, "selected": [3]}])
+    assert ok, d
+    assert fake.sent == {"Which colour?": "Blue", "Which pets?": "Fish"}
+
+
 def test_a_stale_key_is_409_with_the_question_now_up(pane):
     _keep()
     fake = pane(FakeAsk(HOOK["questions"]))

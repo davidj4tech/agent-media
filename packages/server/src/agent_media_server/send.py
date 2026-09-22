@@ -142,7 +142,8 @@ def _answer_pane(session: str, choice: int, key: str, answers=None) -> tuple[boo
     if key and key != dialog["key"]:
         return False, {"error": "the question has changed", "status": 409,
                        "approval": dialog}
-    if dialog.get("kind") == "question" and not dialog.get("review"):
+    if dialog.get("kind") == "question" and (answers is not None or not dialog.get("review")):
+        # (The review page by number is its own list: 1 sends, 2 cancels.)
         qs = dialog.get("questions") or []
         if answers is None and (dialog.get("multiSelect") or len(qs) > 1):
             # A number cannot answer several questions, and on a multi-select

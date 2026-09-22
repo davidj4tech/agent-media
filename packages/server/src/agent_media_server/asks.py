@@ -353,7 +353,7 @@ def normalise(questions: list[dict], answers) -> list[dict]:
                 sel = [int(n) for n in sel]
             except (TypeError, ValueError):
                 raise Refused("selected holds option numbers")
-            want[i] = {"selected": sel, "other": str(a.get("other_text") or "").strip()}
+            want[i] = {"selected": sel, "other": _norm(str(a.get("other_text") or ""))}
     elif isinstance(answers, dict):
         by_text = {_norm(q["question"]): i for i, q in enumerate(questions)}
         for q, a in answers.items():
@@ -371,7 +371,9 @@ def normalise(questions: list[dict], answers) -> list[dict]:
                     sel.append(labels[x])
                 else:
                     other.append(x)
-            want[i] = {"selected": sel, "other": ", ".join(other)}
+            # One line: the free-text row is typed into, and a newline
+            # there is Enter.
+            want[i] = {"selected": sel, "other": _norm(", ".join(other))}
     else:
         raise Refused("answers needed: [{question_index, selected, other_text?}]")
     for i, (q, w) in enumerate(zip(questions, want)):
