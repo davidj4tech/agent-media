@@ -1,9 +1,13 @@
 # Proposal: headless sessions (22 Sep 2026)
 
-Status: **proposal, nothing built.** It sits under the server contract
-(`docs/server-contract.md`) and the package split
-(`proposals/2026-09-21-server-package.md`). It changes how the server reaches
-a session. It does not change what the app sees, beyond a few additive fields.
+Status: **steps 0–4 built (22 Sep 2026), behind `MEDIA_HEADLESS`, off by
+default.** Step 0 is the spike (`notes/2026-09-22-headless-spike.md`); what
+was built for steps 1–4, and where it departs from this text, is in
+[§12 As built](#12-as-built-22-sep-2026), after §11. Steps 5–8 are not
+started. It sits under the server contract (`docs/server-contract.md`, §17
+there) and the package split (`proposals/2026-09-21-server-package.md`). It
+changes how the server reaches a session. It does not change what the app
+sees, beyond a few additive fields.
 
 ## The short version
 
@@ -482,6 +486,104 @@ driver's state source.
 | Open in the TUI afterwards | yes, by id, when not running (docs) | via `--remote` to the daemon (help); plain `codex resume` **unverified** | likely, same directory (**unverified**) | same `state.db` (**unverified**) |
 | Subscription login | yes for own use (`-p` without `--bare`); **restricted for third-party products** (docs) | ChatGPT login or API key (README) | subscription or API key (providers.md) | provider config (**unverified**) |
 | Licence | Claude Code: Anthropic terms; Python SDK wrapper MIT; TS SDK: Commercial Terms | Apache-2.0 | MIT | MIT |
+
+---
+
+## 12. As built (22 Sep 2026)
+
+Decisions from David the same day: go ahead after the spike; **phone-started
+chats run headless with a stricter permission profile** (his settings allow
+`Bash(*)`/`Write(*)`, which must not apply there), switchable per host back
+to normal settings "if it gets too busy"; desk sessions stay in panes;
+subscription login with `ANTHROPIC_API_KEY` stripped.
+
+| Step | State | Where |
+| --- | --- | --- |
+| 1. The seam | **done** | `driver/__init__.py`, `driver/pane.py`; `send.py`'s gated entry points dispatch; every pane test unchanged |
+| 2. media-sessiond + Claude adapter | **done**, behind `MEDIA_HEADLESS` | `sessiond.py`, `driver/headless.py`; `media sessiond`; unit template `packages/core/services/media-sessiond/` (not installed) |
+| 3. Structured approvals | **done** (no separate store — sessiond keeps them) | `driver/headless.py` `approval_of`, `/session/answer` structured form; strict profile `permissions.py` |
+| 4. Stop and the stream | **stop done** less the speech marker; the §11 stream reads headless state and is nudged by sessiond's event counter | `stop.py`, `thread_events.py` |
+| 5. Handoffs | not started | |
+| 6. Flip the default | not done — `MEDIA_HEADLESS` stays off | |
+| 7–8 | not started | |
+
+**Deviations from the text above.**
+
+- **The flag** is `MEDIA_HEADLESS=1` (not `MEDIA_ASK_DRIVER`). It turns on
+  headless for every fresh Claude session `/ask` starts, and makes the
+  readers list sessiond's sessions. The spike's child marker became
+  `MEDIA_SOURCE_KIND=headless` (plus `MEDIA_SOURCE_WORKSPACE`), so the one
+  name does not mean two things.
+- **Permissions (§5).** Not a per-place mode: a per-host profile,
+  `MEDIA_HEADLESS_PERMISSIONS=strict|normal`, default strict. Strict cannot
+  drop the user settings (`--setting-sources ""` silences the hooks, spike
+  change 8), so it keeps them and overlays `--settings` whose `ask` rules
+  name every non-read-only tool and **mirror every user and project `allow`
+  rule** — Claude Code evaluates deny → ask → allow — plus `--permission-mode
+  default`. Checked for real: a project `allow: Bash(*)` did not pre-approve
+  a Bash call. The cost: a harmless `ls` asks the phone too; a sessiond-side
+  auto-allow for read-only shell commands was left out as too easy to get
+  wrong.
+- **Approval shape (§2, §5).** `kind` is `"tool"` or `"question"` (not
+  `"ask"`/`"plan"`; ExitPlanMode arrives as an ordinary tool request).
+  Fields follow spike change 7: `id`, `tool`, `display_name`,
+  `input_summary`, `input` (trimmed), `description`, `blocked_path`,
+  `tool_use_id`, `suggestions`, `questions`. The v0 `question`/`options`/
+  `key` stay alongside. The answer is `{session, request_id, decision:
+  "allow"|"deny", answers?, message?}` rather than `{id, decision: {…}}`;
+  `remember` (echoing a suggestion) is not built.
+- **No approvals store** yet: sessiond is the only producer, and keeps the
+  pending requests itself (it had to — the CLI does not re-send them).
+- **Restarts (§4).** A pending request does not survive a sessiond restart;
+  it is recorded as `lost` and answering it is a 409 with `code: "lost"`.
+  The next message resumes the session and the model, seeing its tool call
+  interrupted, asks again if it still wants it. At start-up sessiond ends
+  any child a crashed instance left (matched by `MEDIA_SESSIOND_SESSION` in
+  its environment).
+- **Idle parking** measures idleness from the last event; there is no
+  "no subscriber" condition. Never parked on an approval, while working, or
+  with queued messages.
+- **`/reply`** no longer flattens for headless sessions and sends the quote
+  as a Markdown quote paragraph; `/ask` still flattens (its parse needs one
+  line).
+- **Titles (§8)**: the shelf's name, then Claude's (`custom-title`, then the
+  last `ai-title`), then the first message.
+- **Suggestions**: the Haiku follow-up, as the spike concluded; nothing reads
+  `prompt_suggestion`.
+- **Stop (§12 of the contract)**: built through the drivers; the
+  per-session speech marker is not, so there is no cutoff and this thread's
+  queued replies are not dropped.
+- **`claude agents --json`** does list headless sessions (seen in the smoke
+  run); nothing reads it.
+- **`/rename`** of a headless session keeps the name on the shelf and
+  answers `terminal: false` (nothing is typed; sending `/rename` as a
+  message was not tried).
+- **The socket** lives under `$XDG_RUNTIME_DIR`, which systemd user services
+  have and runit services do not (the phone): there it falls back to the
+  state dir, and both the canvas and sessiond must agree — set
+  `MEDIA_SESSIOND_SOCKET` if they run under different managers.
+
+**The smoke run** (22 Sep 2026, haiku, Claude Code 2.1.278, silent:
+`--setting-sources project,local` so no user hooks, plus
+`MEDIA_HOOK_ENABLED=0`; a project `allow: ["Bash(*)", "Write(*)"]` in the
+scratch cwd; driven through `driver/headless.py` and an in-process sessiond):
+
+| | measured |
+| --- | --- |
+| `start` call (spawn, write, wait for the CLI's ack) | 1.86 s |
+| start → first `result` ("pineapple") | 3.63 s (`ttft_ms` 1638) |
+| idle RSS | 270 MB |
+| warm `send` call / → `result` ("mango") | 0.01 s / 1.37 s |
+| send → approval on the thread (Bash `touch`, despite `allow: Bash(*)`) | 1.86 s |
+| `answer` allow → `result` ("done", file created) | 1.46 s |
+| `interrupt` mid-tool → receipt and `aborted_tools`, state `waiting` | 0.11 s |
+| `close` → process gone (record `closed`) | 0.91 s (exit code 1: the last turn was the interrupted one) |
+
+To switch it on for a host: `MEDIA_HEADLESS=1` in `~/.config/agent-media.env`
+(optionally `MEDIA_HEADLESS_PERMISSIONS`, `MEDIA_SESSIOND_IDLE`,
+`MEDIA_SESSIOND_MAX`, `MEDIA_HEADLESS_MODEL`), `media-setup
+install-services media-sessiond` (the role file requires `origin` and the
+flag), then restart the canvas so it reads the flag.
 
 ---
 

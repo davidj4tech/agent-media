@@ -16,9 +16,15 @@ The document has two halves:
   and stop. **Device tokens (§9), threads keyed by session (§10) and the
   per-thread stream (§11) are BUILT (22 Sep 2026)** — those sections now
   give the shapes as implemented, and the deviations from the first draft.
-  Stop (§12) and error codes (§13) are still specified only. The log
+  Error codes (§13) are still specified only. The log
   also gained **messages** (§6.2.2): the thread read from the agent's own
-  transcript, as the terminal shows it, rather than from speech.
+  transcript, as the terminal shows it, rather than from speech. **Stop
+  (§12) is BUILT (22 Sep 2026)** except the per-session speech marker.
+- **Headless sessions (§17), behind `MEDIA_HEADLESS` (off by default).**
+  With the flag on, a new chat from the app runs as a `claude -p` process
+  held by `media-sessiond` instead of a TUI in a pane. Every shape below
+  holds for it; the few additions are marked "headless" where they occur.
+  With the flag off nothing in this file changes.
 
 Then the binding to assistant-ui's `ExternalStoreRuntime`, the gaps, and an
 appendix of everything that is *not* part of the app contract.
@@ -121,7 +127,7 @@ does, because it is served from the ABS port.
 
 The app routes: `/conversation`, `/conversation/log`, `/conversations`,
 `/targets`, `/item`, `/reply`, `/ask`, `/focus`, `/session/resume`,
-`/session/close`, `/session/answer`, `/draft`, `/speech/now`, `/speech/ctl`,
+`/session/close`, `/session/answer`, `/session/stop`, `/draft`, `/speech/now`, `/speech/ctl`,
 `/sessions/state`, `/commands`, `/rename`, `/harnesses`, `/harnesses/run`,
 `/harnesses/screen`, `/harnesses/keys`, `/harnesses/close`, `/share`,
 and (22 Sep 2026) `/threads/{session}/events` — matched as a pattern, not
@@ -269,6 +275,15 @@ Everything a message can be pointed at.
 - `places`: up to 6 directories sessions have run in, newest first
   (running sessions count as "now"). These are the only directories a new
   chat may be opened in — `/ask` checks against this list (with no limit).
+- **Headless rows** (`MEDIA_HEADLESS`, §17): the sessions `media-sessiond`
+  holds are listed after the live pane sessions — the running ones, then up
+  to 20 ended ones (parked or closed), newest first — with the same keys
+  plus four that only they carry: `"driver": "headless"`, `"drivable": true`
+  (the phone can send to it, answer it and stop it), `"harness": "claude"`
+  and `"source": "sessiond"`. `pane` is always `null`; `live` is whether its
+  process is running; an ended one has `at` (its last event) like a shelved
+  row. Title: the shelf's name, else Claude's (`/rename`, then `ai-title`),
+  else the first message. Pane rows never carry the four keys.
 
 Clients: S (`utils/sasonicaTargets.js`, drawer and ask page), on open.
 
@@ -363,6 +378,9 @@ What each live session is doing.
 
 - `state`: `working` | `waiting` (has answered, waiting on you) |
   `approval` (stopped on a dialog). Read from the pane's screen, not a hook.
+  A headless row (§17) has it from the agent's own events instead, and
+  carries `"driver": "headless"` (a fifth key only it has); `mem_mb` is its
+  process tree, measured the same way.
 - `tail`: the item folder's `<project>/<title>` — **ABS-specific**, there so
   the shelf can match items without asking for each. `""` when the session
   has no shelf entry yet.
@@ -580,6 +598,46 @@ all draw the same numbered list. The fields:
 
 Answer with `POST /session/answer`.
 
+**Headless form** (22 Sep 2026, §17). A headless session's approval is not
+read off a screen: it is the agent's own pending permission request
+(`control_request can_use_tool`), kept by `media-sessiond` until answered —
+it never times out. The object carries the request's fields **and** the v0
+fields above, so a client that answers by number keeps working:
+
+```json
+{"id": "34c79dca-81d5-47ff-a698-e9fd66575082",
+ "kind": "tool",
+ "tool": "Bash", "display_name": "Bash",
+ "input_summary": "touch allowed.txt",
+ "input": {"command": "touch allowed.txt", "description": "Create a file"},
+ "description": "Create a file", "blocked_path": null,
+ "tool_use_id": "toolu_01QZ7KJFURZG1GqikT7cdVHc",
+ "suggestions": [{"type": "addRules", "destination": "localSettings", …}],
+ "at": 1790000123.4,
+ "question": "Allow Bash: touch allowed.txt?",
+ "partial": false,
+ "options": [{"n": 1, "label": "Allow", "detail": ""},
+             {"n": 2, "label": "Deny", "detail": ""}],
+ "key": "5d1f0e9a2b7c", "agent": "claude"}
+```
+
+- `id`: the CLI's request id — what the structured answer echoes.
+- `kind`: `"tool"`, or `"question"` for AskUserQuestion, which also carries
+  `questions`: `[{"question", "header", "options": [{"label",
+  "description"}], "multiSelect"}]`, as asked.
+- `input_summary`: the same one-line summary a message's tool part has
+  (§6.2.2). `input`: the request's input, strings cut at 300 chars.
+- `suggestions`: the request's `permission_suggestions`, verbatim (spike:
+  `addRules → localSettings`, `setMode acceptEdits → session`, …). Nothing
+  here applies them yet.
+- v0 fields: `question` is "Allow <tool>: <summary>?" for a tool, the first
+  question's words for a question. `options` is Allow/Deny for a tool; for a
+  question, the options numbered **only when one single-select question is
+  asked** — otherwise `[]` and `partial: true`, because a number cannot
+  answer it. `key` is a hash of `id`.
+- One approval at a time: the oldest pending request. The next appears once
+  it is answered.
+
 #### 6.2.2 Messages — BUILT 22 Sep 2026
 
 Code: `agent_media_server/transcript.py` (the parser and the speech join),
@@ -768,6 +826,19 @@ Response:
 `branch` adds `"branched": true`. `opened: true` means a window was
 revived. Show "opening" rather than "sent".
 
+**Headless** (§17): nothing is flattened — the agent gets the text as
+written, and a quote rides as its own paragraph (a Markdown `>` quote) —
+and nothing is typed. The answer is `{"ok": true, "session", "pane": null,
+"opened": <resumed a parked or closed session>, "submitted": true,
+"driver": "headless", "queued": <a turn was running: the message is queued
+and may join that turn at its next tool boundary, so one reply can answer
+both>, "acked": <the agent acknowledged it>, "uuid": <the id it was sent
+with>}`. A session parked for idleness is resumed by the reply (a few
+seconds slower). `branch` opens a fresh headless session in the same
+directory. 503 `code: "down"` when `media-sessiond` is not running (a
+headless thread is never revived in a pane), 503 `code: "busy"` when the
+host is at `MEDIA_SESSIOND_MAX` and nothing is idle.
+
 Errors: 400 `"empty reply"`. 404 when the item is not a conversation.
 **502 with `submitted: false` and `pane`**: the words are in the composer
 but were never taken — say so, don't show a typing indicator forever.
@@ -832,6 +903,17 @@ Responses (`mode` tells them apart):
 `session` can be `null` on a fresh Claude session whose id had not
 registered within 10 s. The words were still sent.
 
+**Headless** (§17): with `MEDIA_HEADLESS` on, every fresh Claude session
+`/ask` starts — `target: "new"`, a spoken "new chat", and the default route —
+is headless: `{"ok": true, "mode": "new", "how", "session": "<never null:
+chosen up front>", "pane": null, "opened": true, "fresh": true, "tmux":
+null, "agent": "claude", "submitted": true, "driver": "headless", "acked",
+"title": "", "text"}`. It runs in the same directory a pane would have (the
+`cwd`, `project`, or the scratch registration's), with the amux flags
+dropped (the permission profile is sessiond's, §17). Codex, pi and Hermes
+still open panes. `/ask` flattens its words as before (the parse needs one
+line); only `/reply` passes newlines through.
+
 Errors:
 - 400 `"empty message"`.
 - **300** `{"ok": false, "error": "which conversation?", "ambiguous": [<sessions
@@ -879,6 +961,12 @@ Clients: S (`ReplyBox.vue`).
   marked rested, and drops a `rested` mark left from an earlier reaper close.
   A resume that opens the session drops the mark too
   ([Resting](#resting)).
+- **Headless** (§17): resume respawns the agent with `--resume` (no modal
+  under `-p`) and answers `pane: null`, `"driver": "headless"`; close ends
+  its stdin, then SIGTERM after `MEDIA_SESSIOND_CLOSE_GRACE` (10 s), and
+  answers at once. A closed headless session stays headless: the next reply
+  resumes it with sessiond, never in a pane. The idle reaper does not touch
+  headless sessions — sessiond parks its own (§17).
 
 Clients: S (`ReplyBox.vue`), W (`useConversationSession.ts`).
 
@@ -944,6 +1032,36 @@ and Enter — never text — and only while that same dialog is on screen.
 - 409 `"the question has changed"` with the current `approval` — re-render
   and let the person choose again.
 - 504 `"the question is still on screen"` — the keys went nowhere.
+
+**Headless sessions** (22 Sep 2026, §17) take the same numbered form (1 =
+Allow, 2 = Deny; a single single-select question by its option's number),
+and a structured one:
+
+```json
+{"session": "…", "request_id": "<approval.id>", "decision": "allow" | "deny",
+ "answers": {"Which fruits do you like?": ["apple", "pear"],
+             "What should I call you?": "Something else entirely"},
+ "message": "not today"}
+```
+
+- `decision` is required unless `answers` is given (then it is `allow`).
+  `answers` is for a question: every question answered, by label, a list of
+  labels (multi-select, sent to the agent joined with ", "), or free text.
+  `message` is what a deny tells the agent (default: declined from the
+  phone, do not retry).
+- 200 `{"ok": true, "session", "pane": null, "request_id", "decision",
+  "waiting": bool, "approval": <the next one> | null, "driver": "headless"}`,
+  plus `answers` (as sent to the agent) for a question, and `answered` /
+  `label` when answered by number.
+- 400 `"decision must be allow or deny"`, `"no such question …"`, `"no answer
+  for …"`, `"no option n"`. 404 not live. 409 `"that session is not waiting
+  on a question"`; 409 `"the question has changed"` (an `id` no longer
+  pending) with the current `approval`; 409 `code: "lost"` when the request
+  died with its process — `"that request was lost when the session host
+  restarted; send a message to carry on"` (§17). 503 `code: "down"` when
+  `media-sessiond` is not running.
+- A pane session refuses the structured form: 400 `"this session answers by
+  number (choice and key)"`.
 
 Clients: S (`ConversationLog.vue`).
 
@@ -1266,7 +1384,7 @@ per-thread stream copies its conventions.
 | Credential | the caller's ABS bearer, checked with ABS | a device token, checked locally (§9) | **built 22 Sep 2026** |
 | Thread id | ABS item id on half the routes | session id everywhere (§10) | **built 22 Sep 2026** |
 | Live updates | poll `/conversation/log` 1–15 s | `GET /threads/{session}/events` (§11) | **built 22 Sep 2026** |
-| Stop | none | `POST /session/stop` (§12) | specified |
+| Stop | none | `POST /session/stop` (§12) | **built 22 Sep 2026**, less the speech marker |
 | Errors | `ok` + `error`, status as §3 | the same, plus a machine `code`; every error has `ok` (§13) | specified (`/pair` already answers with `code`) |
 
 The v0 routes keep working through the migration. v1 adds; it removes
@@ -1547,6 +1665,13 @@ change that lands between the two is sent (at worst twice), never lost.
 - **Caps:** 8 subscribers per session, 32 streams in total; over either,
   503 `{"ok": false, "error": "too many open threads"}`.
 - The canvas's own `/events` (§7) is separate and unchanged.
+- **Headless sessions** (§17): the messages come from the transcript
+  exactly as above (Claude Code writes it under `-p` too). `state` and
+  `approval` come from `media-sessiond` rather than a screen, and the
+  watcher also polls sessiond's event counter every 0.3 s: a new event (a
+  turn starting, a permission request, a result) triggers the full re-read
+  at once instead of at the next 1 s / 3 s tick. `state` is `ended` while
+  the session is parked or closed.
 
 **Errors before the stream opens:** 401/403 (auth, the §4.1/§9 answers), 400
 `"not a session id"`, 404 `"no such session"` (not live, no transcript, no
@@ -1573,7 +1698,30 @@ every pane, for a list that changes slowly.
 
 ---
 
-## 12. v1: stop
+## 12. v1: stop — BUILT 22 Sep 2026 (less the speech marker)
+
+Code: `agent_media_server/stop.py`, the drivers' `interrupt`
+(`driver/pane.py`, `driver/headless.py`), `speech.stop_speech`. Pinned by
+`packages/server/tests/test_stop.py`. As built:
+
+- **Interrupt** goes through the driver that owns the session: a headless
+  session gets the `interrupt` control request (its receipt names queued
+  messages, which then run as their own turn); a pane gets Escape, only
+  while it is `working`, watched for up to 3 s (504 `"still working after
+  Escape"`). Codex panes are Escaped too; pi and Hermes answer
+  `interrupted: false, "why": "not supported for pi"`.
+- **Speech** is stopped only when what is heard is this thread's (the
+  canvas's speech snapshot names the session): `SinkSpeech().stop` on the
+  player it is playing on, as `media stop` does.
+- **Not built — the per-session marker.** Core has no per-session speech
+  marker yet (`after` / `all` below). So `cutoff` is always `null`; a reply
+  the interrupted turn had already handed to the Stop hook still speaks;
+  and "this thread's queue" is not dropped — only the clip playing now is
+  stopped. Needs the marker and its checkpoint in `intake/submit.py`.
+- `state` afterwards is the driver's (`ended` for a session not running).
+- In `CORS_PATHS`.
+
+The specification, as it was written:
 
 ```
 POST /session/stop
@@ -1737,7 +1885,13 @@ Two things look alike and are answered the same way:
 
 AskUserQuestion's multi-select and free-text "Other" cannot be answered by
 number. For those, the tool UI offers "answer at the desk" (`/focus`) —
-that is the v0 behaviour, and a gap (§16).
+that is the v0 behaviour, and a gap (§16) for pane sessions.
+
+A **headless** session's approval (§6.2, headless form) is structured: render
+`kind: "tool"` as the tool call (`tool`, `input_summary`, `input`) with
+Allow/Deny, and `kind: "question"` from `questions` with multi-select and an
+"Other" free-text field; answer with `POST /session/answer {session,
+request_id: approval.id, decision, answers?, message?}`. No desk needed.
 
 ### Thread list adapter (`ExternalStoreThreadListAdapter`)
 
@@ -1791,13 +1945,13 @@ that is the v0 behaviour, and a gap (§16).
 | Device auth | **built 22 Sep 2026** (§9). Left: `code: "bad_token"` on a revoked token's 401 (with §13), and the app side (scan, keystore, send the token) |
 | Session-keyed log and reply | **built 22 Sep 2026** (§10) |
 | Live thread updates | **built 22 Sep 2026** (§11), with messages from the transcript (§6.2.2). Left: the app side, and transcript parsers for Codex, pi and Hermes |
-| Stop | specified (§12), not built; needs a per-session speech marker in core (`after` / `all`) |
+| Stop | **built 22 Sep 2026** (§12), except the per-session speech marker in core (`after` / `all`): no cutoff, and this thread's queued replies are not dropped |
 | Machine-readable error codes | specified (§13), not built |
 | Archive / unarchive a thread | **built 22 Sep 2026**: `POST /session/archive` and `archived` on `/targets` rows (§6.1, §6.4), a server-side flag in `<state_dir>/archived.json`. Left: the app side, and moving any existing ABS `archived` tags over (not done — the tag and the flag are independent until then) |
 | Session memory on the phone | **built 22 Sep 2026**: `mem_mb` per `/sessions/state` row and its `host` block (§6.1). Left: the app side |
 | Delete a thread | none, and deliberately not proposed: transcripts are the harness's. Needs a decision |
 | Attachments (a photo, a file) | none. `/reply` is text only. Needs an upload route and a way to hand a file path to the harness |
-| Answer a multi-select or free-text ask from the phone | none. `/session/answer` presses one number. Needs keystroke sequences per harness |
+| Answer a multi-select or free-text ask from the phone | **headless sessions: built 22 Sep 2026** (§6.4, §17 — structured `answers`). Pane sessions: none; `/session/answer` presses one number |
 | Edit / regenerate | not possible with the harnesses; `branch` is the substitute |
 | A thread-list stream | deliberately deferred (§11) |
 | Offline reading and downloads | none. ABS provided them for audio; the new app needs its own cache of the log (and of speech clips, if listening offline matters) |
@@ -1805,6 +1959,84 @@ that is the v0 behaviour, and a gap (§16).
 | Push notifications (a session waiting on you) | none. Matrix or FCM; out of scope here |
 | Choose where agent-media plays (phone / house speakers / host) | **built 22 Sep 2026** (§6.9). Left: the app's picker (§14), and moving music that is already playing |
 | The phone's own output (earbuds / speaker / Cast) | none here, and not the server's: that is Android's route for whatever the app plays, so it is an app-side feature for the Capacitor build (an output switcher / `MediaRouter`), separate from §6.9 |
+
+---
+
+## 17. Drivers and headless sessions — BUILT 22 Sep 2026, behind `MEDIA_HEADLESS` (off)
+
+Code: `agent_media_server/driver/` (the seam, `pane.py`, `headless.py`),
+`sessiond.py`, `permissions.py`, `stop.py`. Proposal:
+`proposals/2026-09-22-headless-sessions.md`; measurements:
+`notes/2026-09-22-headless-spike.md`. Pinned by `test_driver.py`,
+`test_headless.py` (a real in-process sessiond against
+`tests/fixtures/fake_claude.py`, which speaks the spike's recorded
+envelopes) and `test_stop.py`.
+
+**The Driver seam.** The routes that act on a session — `/reply`, `/ask`
+(fresh sessions), `/session/answer`, `/session/resume`, `/session/close`,
+`/session/stop` — gate as before, then ask which driver owns the session:
+`start`, `send`, `resume`, `interrupt`, `answer`, `close`, `state`,
+`approval`. The **pane** driver is the code these routes always ran, called
+unchanged. The **headless** driver talks to `media-sessiond`. A session is
+headless when sessiond has a record of it (`<state>/sessiond/<session>.json`,
+read from disk, so a headless thread stays headless — and answers 503 —
+while sessiond is down); anything else is a pane session. With the flag
+off every lookup is the pane driver and nothing reads sessiond's records.
+
+**Which chats are headless.** With `MEDIA_HEADLESS=1` on the canvas's host:
+every fresh Claude session `/ask` starts (§6.3). Replies, resumes and
+branches of a headless thread stay headless. Desk sessions, Codex, pi and
+Hermes, and every pane session stay in panes. There is no handoff between
+the two yet (proposal §7).
+
+**media-sessiond** (`media sessiond`; unit template
+`packages/core/services/media-sessiond/`, installed only where
+`MEDIA_HEADLESS` is set) owns the `claude -p --input-format stream-json
+--output-format stream-json --verbose --permission-prompt-tool stdio
+--session-id <id>` processes, so they survive canvas restarts. It speaks
+JSON lines on `$XDG_RUNTIME_DIR/agent-media/sessiond.sock` (0600, in a 0700
+dir; `MEDIA_SESSIOND_SOCKET`). Children get the subscription login
+(`ANTHROPIC_*` stripped), no `TMUX*`/`HERDR*`/`CLAUDE*` (bar
+`CLAUDE_CONFIG_DIR`), and `MEDIA_SOURCE_KIND=headless` +
+`MEDIA_SOURCE_WORKSPACE` (the tmux session a pane would have opened in). It
+writes nothing to tmux.
+
+- **State from events**, never from sends: `system/init` or
+  `command_lifecycle started` → working; `can_use_tool` → approval;
+  `result` → waiting. Every message carries a client uuid (the interrupt
+  receipt and the lifecycle name it). Events are kept per session (in memory
+  and `<id>.events.jsonl`, trimmed) with a counter the thread stream polls.
+- **Parking.** Waiting for `MEDIA_SESSIOND_IDLE` (1800 s) → stdin closed,
+  process gone, record `parked`; the next message resumes it with
+  `--resume`. Never parked while working, on an approval, or with queued
+  messages. At most `MEDIA_SESSIOND_MAX` (4) live; a fifth parks the least
+  recently used idle one, else 503 `busy`.
+- **Restarts.** A sessiond restart ends its children. A permission request
+  pending then is not re-sent by the CLI on `--resume`, so it is recorded
+  under `lost`: the thread shows no approval, `/session/answer` for it is
+  409 `code: "lost"`, and the next message resumes the session (the model
+  sees its tool call interrupted and asks again if it still wants it). At
+  start-up any child a crashed instance left running is terminated.
+- **Permissions** (`MEDIA_HEADLESS_PERMISSIONS`, per host): `strict`
+  (default) keeps every settings source — hooks, speech — and adds a
+  `--settings` overlay whose `ask` rules name every tool but a read-only list
+  (`Read`, `Glob`, `Grep`, `LS`, `NotebookRead`, `TodoWrite`, `WebSearch`,
+  `ToolSearch`, `Skill`, `BashOutput`) **and mirror each user and project
+  `allow` rule** (`Bash(*)`, `Write(*)`, …), plus `--permission-mode default`.
+  Ask beats allow in Claude Code, so everything else becomes an approval on
+  the phone. `normal` drops the overlay: the user's own settings decide, and
+  whatever still asks comes to the phone. Verified end to end on 22 Sep 2026:
+  a project `allow: Bash(*)` did not pre-approve a Bash call under strict.
+- **Speech**: the hooks run under `-p`, so a headless reply is spoken by the
+  Stop hook like a pane's, with `source_session` set, `source_pane` empty,
+  and (since the hook honours `MEDIA_SOURCE_WORKSPACE`) the same
+  `source_tmux_session`, voice and mute as a pane in that workspace.
+- **Other settings**: `MEDIA_HEADLESS_MODEL` (`--model`),
+  `MEDIA_SESSIOND_CLOSE_GRACE` (10 s), `MEDIA_SESSIOND_CLAUDE` (the binary),
+  `MEDIA_HEADLESS_EXTRA_ARGS` (more flags; debugging and smoke runs).
+
+`claude agents --json` lists headless sessions too (seen in the smoke run);
+nothing here reads it.
 
 ---
 
@@ -1902,6 +2134,14 @@ That is a later decision, not part of this contract.
   rested mark and each way it is cleared, and the tag → session mapping. The
   live sweep, the panes, speech, the gateway and ABS are all fakes; closing
   is a recorder.
+- `test_driver.py`, `test_headless.py` and `test_stop.py` pin the Driver
+  seam, headless sessions and stop (§12, §17): the pane driver's Escape
+  rules; a real in-process sessiond against a fake `claude` for start,
+  send, a message queued mid-turn, interrupt, approvals allowed and denied,
+  structured and numbered answers, questions with multi-select and free
+  text, park and resume, a crash, close, a restart that loses a pending
+  request, orphans, the permission overlay; the routes over HTTP; and that
+  with the flag off `/ask` opens a pane and nothing headless is listed.
 - Run all three packages' tests together (`packages/server/tests
   packages/visual/tests packages/core/tests` in one pytest run): basename
   collisions and cross-suite isolation faults only show up that way.
