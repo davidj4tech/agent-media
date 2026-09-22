@@ -41,7 +41,9 @@ Pairing and device tokens; threads by session; transcript messages and
 per-thread SSE; speech bar with full controls; follow-along; recaps; exit
 and archive; idle closer; audio destination picker and Android output
 switcher; multi-line sends; per-session stop; multi-select questions; Home
-dashboard; background agents in a thread; thread-list sorting; project
+dashboard; background agents in a thread; thread-list sorting and filter
+(Active / Live / Closed / Archived / Everything, one project; `/targets`
+now lists every archived thread, past the 40-row cap); project
 line under titles; menus that close on an outside tap; the brand and icons;
 the About page; seven text sizes (7–19 px, Default 13); the digital-
 assistant slot in Next; the coding-agents installer in Settings; Sasonica
