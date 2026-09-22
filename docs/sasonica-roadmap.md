@@ -64,7 +64,10 @@ the Advanced setting (per device, off: search's "Tool steps", the
 follow-along lead, device id and server address, the legacy connection). Moving a
 thread to another project (`POST /session/move`, §6.15: filed on the server,
 its transcript refiled, a live session closed and reopened there; the picker
-is in the thread menu and the list's long press).
+is in the thread menu and the list's long press). Naming a thread after its
+first turn (§6.4: a headless one has no `ai-title`, so sessiond runs the
+auto-rename once the opening turn is done — needs a sessiond restart to go
+live).
 
 ## In flight
 
