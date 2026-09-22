@@ -1980,6 +1980,54 @@ SQLite's 4 MB page cache per connection.
 
 Clients: the chat app's search screen (`/find`, the ⌕ at the end of the Home | Threads switch; a message hit opens `/t/<session>?at=<message>`).
 
+### 6.15 Move a thread to another project — gated (built 23 Sep 2026)
+
+#### `POST /session/move` — gated
+
+`{"session", "project"?, "cwd"?}` → `{"ok": true, "session", "project",
+"cwd", "restarted": bool, "pane": null | "%23", "live": bool}`.
+
+A thread has no project field to set: `project` on a `/targets` row is read
+off the directory the session ran in and the shelf folder it is filed under
+(§6.1). So a move is three things, in order (`moves.py`):
+
+1. **Filed here** — `<state_dir>/moved.json`, `{session: {project, cwd,
+   at}}`. Every later `project` and `cwd` for that thread comes from this
+   first, so the thread list, the By-project headings and search follow at
+   once.
+2. **Its transcript moves** — `claude --resume <id>` only finds a session
+   from the directory it ran in (transcripts live under
+   `~/.claude/projects/<encoded cwd>/`, every non-alphanumeric character a
+   dash), so the file and its `<session>/` sidecar are refiled under the new
+   directory. Claude Code only: Codex, pi and Hermes keep their own stores
+   and move by (1) alone.
+3. **A live session restarts there** — the pane is closed and reopened with
+   `--resume` in the new directory, in the tmux session that project uses
+   (`layout.project_host`). Claude Code cannot change its own cwd mid-
+   session, so the conversation continues and the process does not; the
+   answer carries the new `pane`. A closed thread opens nothing:
+   `restarted: false`, and the next resume lands in the new directory.
+
+Name the destination either way: `project` (its directory is the one that
+project's newest conversation ran in, `sessions.project_target`) or `cwd`
+(any directory on this host, whose project is whatever the layout calls it).
+
+**409** `"that session is working — stop it first"`: a move restarts the
+session, and an interrupted turn loses whatever it had not written. Stop it
+(`/session/stop`) and move it then. 400 for an unknown project or a
+directory that is not there, 404 when no harness still holds the session,
+401 unpaired.
+
+**The library is not touched.** The shelf folder is `<author>/<title>`
+under the Conversations root and Audiobookshelf reads a folder that moves as
+a *new* item — new id, no progress, the old one left behind (the same
+reason `book_tracks.folder_for` keeps the first folder for ever). So the
+conversation stays published where it was, and the project the app shows is
+the one kept here.
+
+Clients: the chat app's thread ⋯ menu ("Move to project…") and a long press
+on a row in the thread list.
+
 ## 7. `/events` (v0) — canvas-wide, not the app's stream
 
 One SSE stream for every screen. The canvas page, the wake watcher and the

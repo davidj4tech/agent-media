@@ -76,6 +76,10 @@ device gets its token):
                   server keeps; see archive.py). Ends nothing
   POST /session/pin {"session", "pinned": true|false} → keep that session
                   open against the idle reaper (pins.py, reap.py)
+  POST /session/move {"session", "project"|"cwd"} → move a conversation to
+                  another project: file it there, move its transcript, and
+                  bring a live session back in that directory, restarting it
+                  (moves.py, §6.15). Refused while it is working
   POST /session/answer {"session", "choice", "key"} → answer the dialog that
                   session is stopped on (a permission prompt); refused unless
                   that same question, fingerprinted by `key`, is still on its
@@ -140,6 +144,7 @@ CORS_PATHS = frozenset({
     "/conversation", "/conversation/log", "/conversations", "/targets", "/item",
     "/reply", "/ask", "/focus", "/session/resume", "/session/close", "/draft",
     "/session/answer", "/session/archive", "/session/pin", "/session/stop",
+    "/session/move",
     "/speech/now", "/speech/ctl", "/speech/sentences", "/sessions/state", "/commands", "/rename",
     "/harnesses", "/harnesses/run", "/harnesses/screen",
     "/harnesses/keys", "/harnesses/close", "/share", "/dashboard",
@@ -773,6 +778,20 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         body = _read_json(h) or {}
         ok, detail = archive.session_archive(str(body.get("session") or ""),
                                              body.get("archived"), _bearer(h))
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    elif path == "/session/move":
+        # Move a conversation to another project: file it there, move its
+        # transcript, and bring a live session back in that directory
+        # (moves.py). Gated like /session/archive.
+        from . import moves
+
+        body = _read_json(h) or {}
+        ok, detail = moves.move(str(body.get("session") or ""),
+                                project=str(body.get("project") or ""),
+                                cwd=str(body.get("cwd") or ""), bearer=_bearer(h))
+        if not ok:
+            print(f"move: refused ({detail.get('error')}) for "
+                  f"{str(body.get('session'))[:8]}", file=sys.stderr, flush=True)
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path == "/session/pin":
         # Keep a session open against the idle reaper (reap.py). A flag kept

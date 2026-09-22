@@ -227,7 +227,13 @@ def _agent_of_pane(pane: str) -> str:
 
 
 def transcript_cwd(session: str) -> str:
-    """The working directory a session ran in, from its own transcript."""
+    """The working directory a session ran in, from its own transcript — or
+    the one it was moved to, which is where a resume must open it."""
+    from . import moves
+
+    hit = moves.moved_cwd(session)
+    if hit:
+        return hit
     from agent_media_core import harnesses
 
     if harnesses.is_hermes(session):
@@ -264,6 +270,11 @@ def session_cwd(session: str) -> str:
     Claude Code transcript records (the transcript `recaps` finds), else
     `transcript_cwd` for the other harnesses. Cached once found."""
     hit = _CWDS.get(session)
+    if hit:
+        return hit
+    from . import moves
+
+    hit = moves.moved_cwd(session)
     if hit:
         return hit
     from . import recaps
@@ -337,11 +348,15 @@ def add_projects(rows: list[dict], folders: dict[str, str] | None = None) -> lis
     in place. `folders`: the shelf's `{session: folder}` when the caller has
     it (read here otherwise)."""
     folders = _shelf_folders() if folders is None else folders
+    from . import moves
+
     for r in rows:
         sid = str(r.get("session") or "")
         cwd = session_cwd(sid) if sid else ""
         r["cwd"] = cwd or None
-        r["project"] = project_of(cwd, folders.get(sid, ""))
+        # A thread that was moved is filed where it was moved to, whatever
+        # its transcript and its shelf folder still say (moves.py).
+        r["project"] = moves.moved_project(sid) or project_of(cwd, folders.get(sid, ""))
     return rows
 
 
