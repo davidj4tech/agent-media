@@ -2201,6 +2201,50 @@ own store** as well:
 
 Not VS Code: it keeps no conversation store of its own on this host.
 
+### 6.17 Alerts — reported by the host, read gated (built 24 Sep 2026)
+
+The watchers on a host (disk, hosts, logins, the memory store, …) report
+**what is true now** on every run; the store decides what changed. Code:
+`agent_media_server/alerts.py`; producer helper `agent-alert` in agent-config;
+proposal `docs/proposals/2026-09-24-alerts-and-digests.md`. Pinned by
+`packages/server/tests/test_alerts.py`.
+
+#### `POST /alerts` — the host's own token (`X-Auth-Token`, the amux token) or a paired device
+
+```
+{"id": "disk.red5.root", "level": "warn", "title": "red5: / at 93% (7G free)",
+ "detail": "…", "fix": "…", "host": "red5", "step": 90, "confirm": 1,
+ "every_s": 900, "kind": "status"}
+→ {"ok": true, "alert": {…}, "change": "raised", "notify": true}
+```
+
+- `id`: `[a-z0-9][a-z0-9._:-]{0,119}`, stable per thing watched.
+- `level`: `ok` | `info` | `warn` | `needs`. `kind`: `status` (default; raises
+  and clears) or `digest` (a one-off body, kept as the latest per id).
+- `change`: `raised` (to warn+), `escalated` (a higher level, or a higher
+  `step` at the same one), `eased`, `cleared` (back below warn), `digest`, or
+  `null`. `notify` is true for raised and escalated, and for a digest at warn+.
+- `confirm: N` holds a raise until N reports in a row; a clear is never held.
+- `every_s`: a status alert unheard from for 3× that raises `<id>.silent`.
+- A raise files one TODO in `~/org/inbox.org` carrying `:ALERT_ID:`; a clear
+  appends `Cleared` and marks a routine one (never acked, never `needs`) DONE.
+  `MEDIA_ALERTS_INBOX` points elsewhere, `0` turns it off.
+
+#### `GET /alerts[?open=1]` — gated
+
+`{"alerts": [...], "at"}`: open ones first (worst, then newest); without
+`open=1`, then digests and clears from the last 14 days. Each row: `id, kind,
+level, peak, step, title, detail, fix, host, every_s, first_seen, last_seen,
+changed_at, cleared_at, acked_at, open`.
+
+#### `POST /alerts/ack {"id"}` — gated
+
+Seen it: kept open, not re-notified; a clear leaves its TODO open. 404 for an
+unknown id. The next raise forgets the ack.
+
+Not yet: the `alerts` event on `/sessions/events` and Next's Home section
+(proposal step 2).
+
 ## 7. `/events` (v0) — canvas-wide, not the app's stream
 
 One SSE stream for every screen. The canvas page, the wake watcher and the

@@ -1,0 +1,198 @@
+"""The alert store (alerts.py, server-contract.md §6.17).
+
+The state machine is driven with an explicit clock; the inbox record against a
+throwaway inbox.org; the routes over real HTTP to an in-process canvas.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from agent_media_server import alerts
+
+from test_contract import AUTH, call, server, signed_in, typed  # noqa: F401
+
+
+def rep(now, aid="disk.red5.root", level="ok", **kw):
+    ok, d = alerts.report({"id": aid, "level": level, **kw}, now=now)
+    assert ok, d
+    return d
+
+
+# --- the state machine -----------------------------------------------------------
+
+def test_ok_is_quiet_and_a_raise_notifies():
+    assert rep(1, level="ok")["change"] is None
+    d = rep(2, level="warn", title="red5 root is 91% full", step=90)
+    assert (d["change"], d["notify"]) == ("raised", True)
+    assert d["alert"]["open"] and d["alert"]["first_seen"] == 2
+
+
+def test_the_same_level_again_only_bumps_last_seen():
+    rep(1, level="warn", title="t", step=90)
+    d = rep(2, level="warn", step=90)
+    assert (d["change"], d["notify"]) == (None, False)
+    assert d["alert"]["last_seen"] == 2 and d["alert"]["title"] == "t"
+
+
+def test_a_higher_step_escalates_and_a_lower_one_rearms():
+    rep(1, level="warn", step=90)
+    assert rep(2, level="warn", step=95)["change"] == "escalated"
+    assert rep(3, level="warn", step=90)["change"] is None
+    assert rep(4, level="warn", step=95)["change"] == "escalated"
+
+
+def test_warn_to_needs_escalates_and_back_eases_quietly():
+    rep(1, level="warn")
+    assert rep(2, level="needs")["change"] == "escalated"
+    d = rep(3, level="warn")
+    assert (d["change"], d["notify"]) == ("eased", False)
+    assert d["alert"]["peak"] == "needs"
+
+
+def test_clear_is_quiet_and_closes_the_row():
+    rep(1, level="warn")
+    d = rep(2, level="ok", title="red5 root is fine")
+    assert (d["change"], d["notify"]) == ("cleared", False)
+    assert not d["alert"]["open"] and d["alert"]["cleared_at"] == 2
+
+
+def test_confirm_holds_a_raise_until_it_repeats():
+    rep(1, "host.red3", "ok")
+    assert rep(2, "host.red3", "warn", confirm=2)["change"] is None
+    assert rep(3, "host.red3", "warn", confirm=2)["change"] == "raised"
+
+
+def test_confirm_resets_when_the_run_is_broken():
+    rep(1, "host.red3", "warn", confirm=2)
+    rep(2, "host.red3", "ok", confirm=2)
+    assert rep(3, "host.red3", "warn", confirm=2)["change"] is None
+    assert rep(4, "host.red3", "warn", confirm=2)["change"] == "raised"
+
+
+def test_a_clear_is_never_held():
+    rep(1, "host.red3", "warn")
+    assert rep(2, "host.red3", "ok", confirm=5)["change"] == "cleared"
+
+
+def test_ack_stops_nothing_but_is_forgotten_on_the_next_raise():
+    rep(1, level="warn")
+    ok, d = alerts.ack("disk.red5.root", now=2)
+    assert ok and d["alert"]["acked_at"] == 2
+    rep(3, level="ok")
+    assert rep(4, level="warn")["alert"]["acked_at"] is None
+
+
+def test_ack_of_nothing_is_404():
+    assert alerts.ack("nope")[1]["status"] == 404
+
+
+def test_digest_is_kept_latest_and_notifies_only_at_warn():
+    d = rep(1, "digest.describe", "info", kind="digest", title="TTS 24h", detail="a")
+    assert (d["change"], d["notify"]) == ("digest", False)
+    d = rep(2, "digest.describe", "warn", kind="digest", detail="b")
+    assert d["notify"] and d["alert"]["detail"] == "b"
+    assert not d["alert"]["open"]
+
+
+@pytest.mark.parametrize("body", [{"id": "Bad Id", "level": "ok"},
+                                  {"id": "x", "level": "loud"},
+                                  {"id": "x", "level": "ok", "kind": "event"}])
+def test_bad_reports_are_400(body):
+    ok, d = alerts.report(body)
+    assert not ok and d["status"] == 400
+
+
+def test_a_silent_producer_raises_its_own_alert_and_clears_when_heard():
+    rep(0, "memory.health", "ok", every_s=3600)
+    listing = alerts.listing(now=3 * 3600 + 1)
+    silent = [a for a in listing["alerts"] if a["id"] == "memory.health.silent"]
+    assert silent and silent[0]["level"] == "warn" and silent[0]["open"]
+    rep(3 * 3600 + 2, "memory.health", "ok", every_s=3600)
+    after = {a["id"]: a for a in alerts.listing(now=3 * 3600 + 3)["alerts"]}
+    assert not after["memory.health.silent"]["open"]
+
+
+def test_listing_puts_open_first_worst_first():
+    rep(1, "a", "warn")
+    rep(2, "b", "needs")
+    rep(3, "c", "warn")
+    rep(4, "c", "ok")
+    ids = [a["id"] for a in alerts.listing(now=5)["alerts"]]
+    assert ids[:2] == ["b", "a"] and "c" in ids[2:]
+    assert [a["id"] for a in alerts.listing(open_only=True, now=5)["alerts"]] == ["b", "a"]
+
+
+# --- the inbox record --------------------------------------------------------------
+
+@pytest.fixture()
+def inbox(tmp_path, monkeypatch):
+    p = tmp_path / "inbox.org"
+    p.write_text("#+title: Inbox\n\n* TODO Something else\n  body\n")
+    monkeypatch.setenv("MEDIA_ALERTS_INBOX", str(p))
+    return p
+
+
+def test_a_raise_files_one_todo_with_the_alert_id(inbox):
+    rep(1, level="warn", title="red5 root is 91% full", detail="df line",
+        fix="Free space", host="red5")
+    rep(2, level="warn", step=95)
+    rep(3, level="needs")
+    text = inbox.read_text()
+    assert text.count(":ALERT_ID: disk.red5.root") == 1
+    assert "* TODO red5 root is 91% full" in text and "Fix: Free space" in text
+    assert "* TODO Something else" in text
+
+
+def test_a_routine_clear_closes_the_todo(inbox):
+    rep(1, level="warn", title="red5 root is 91% full")
+    rep(2, level="ok")
+    text = inbox.read_text()
+    assert "* DONE red5 root is 91% full\n  CLOSED: [" in text
+    assert "Cleared [" in text
+    assert text.index("Cleared") < len(text)  # inside the entry
+    assert "* TODO Something else" in text
+
+
+def test_a_needs_or_acked_clear_leaves_it_open(inbox):
+    rep(1, "a", "needs", title="login expired")
+    rep(2, "a", "ok")
+    rep(3, "b", "warn", title="host down")
+    alerts.ack("b", now=4)
+    rep(5, "b", "ok")
+    text = inbox.read_text()
+    assert "* TODO login expired" in text and "* TODO host down" in text
+    assert text.count("Cleared [") == 2
+
+
+def test_the_next_incident_files_a_new_todo(inbox):
+    rep(1, level="warn", title="full")
+    rep(2, level="ok")
+    rep(3, level="warn", title="full again")
+    text = inbox.read_text()
+    assert "* DONE full" in text and "* TODO full again" in text
+
+
+# --- the routes --------------------------------------------------------------------
+
+def test_report_needs_the_host_token_or_a_device(server, monkeypatch):
+    monkeypatch.setenv("AMUX_AUTH_TOKEN", "hosttok")
+    body = {"id": "disk.red5.root", "level": "warn", "title": "t"}
+    res, _ = call(server, "POST", "/alerts", body)
+    assert res.status == 401
+    res, _ = call(server, "POST", "/alerts", body, {"Authorization": "Bearer nope"})
+    assert res.status == 401
+    res, d = call(server, "POST", "/alerts", body, {"X-Auth-Token": "hosttok"})
+    assert res.status == 200 and d["change"] == "raised" and d["notify"] is True
+
+
+def test_list_and_ack_take_the_app_gate(server, signed_in, monkeypatch):
+    monkeypatch.setenv("AMUX_AUTH_TOKEN", "hosttok")
+    call(server, "POST", "/alerts", {"id": "host.red3", "level": "needs", "title": "red3 down"},
+         {"X-Auth-Token": "hosttok"})
+    res, d = call(server, "GET", "/alerts?open=1", headers=AUTH)
+    assert res.status == 200 and [a["id"] for a in d["alerts"]] == ["host.red3"]
+    res, d = call(server, "POST", "/alerts/ack", {"id": "host.red3"}, AUTH)
+    assert res.status == 200 and d["alert"]["acked_at"]
+    res, _ = call(server, "POST", "/alerts/ack", {"id": "nope"}, AUTH)
+    assert res.status == 404

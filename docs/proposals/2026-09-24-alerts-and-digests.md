@@ -1,6 +1,7 @@
 # Proposal: one alert path for the watchers and digests, shown in Sasonica Next (24 Sep 2026)
 
-Status: **proposal, decided 24 Sep 2026, nothing built.** Adds an alert store and routes to the
+Status: **decided 24 Sep 2026; step 1 built the same day** (store, routes,
+`agent-alert`, disk-watch and host-watch ported). Adds an alert store and routes to the
 server (a new §6.x in `server-contract.md`), one event type to
 `GET /sessions/events` (§6.13), a producer helper in `agent-config`, and an
 Alerts view in Next.

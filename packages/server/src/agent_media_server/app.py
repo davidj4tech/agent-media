@@ -114,6 +114,13 @@ device gets its token):
   GET  /search?q=[&limit=&before=&tools=1&memory=0] → every thread's messages,
                   titles, recaps and projects, and long-term memory when this
                   host has agent-memory (search.py, §6.14)
+  POST /alerts    {"id", "level", "kind"?, "title"?, "detail"?, "fix"?,
+                   "host"?, "step"?, "confirm"?, "every_s"?} → a watcher
+                  says what is true now; the store answers what changed and
+                  whether to notify (alerts.py, §6.17). The host's own token
+                  or a paired device
+  GET  /alerts[?open=1] → open alerts, then recent digests and clears
+  POST /alerts/ack {"id"} → seen it: no re-notify, nothing cleared
   GET  /audio/targets  → where speech and music play, and where they could
   POST /audio/target   {"channel", "target"} → choose (null = the default);
                   see audio.py
@@ -130,7 +137,7 @@ from urllib.parse import parse_qs
 
 from . import (abs_item, archive, auth, devices, drafts, harnesses, pins, routing, send,
                sessions, share, speech, threads)
-from . import audio, notes, notes_chat, notes_edit, notes_setup
+from . import alerts, audio, notes, notes_chat, notes_edit, notes_setup
 
 # The endpoints a browser on another origin may reach. Everything here
 # carries its own credential — a paired device's token, or the caller's
@@ -169,6 +176,10 @@ NOTES_PATHS = frozenset({"/notes", "/notes/view", "/notes/read", "/notes/search"
                          "/notes/state", "/notes/refile", "/notes/date",
                          "/notes/ask"})
 CORS_PATHS = CORS_PATHS | NOTES_PATHS
+
+# What the watchers report (alerts.py, §6.17). The same arrangement.
+ALERT_PATHS = frozenset({"/alerts", "/alerts/ack"})
+CORS_PATHS = CORS_PATHS | ALERT_PATHS
 
 # Paths opened to other origins for POST (and its preflight) ONLY. `/pair` is
 # the one: `POST /pair` is how the chat bundle, served from another origin,
@@ -313,6 +324,8 @@ def dispatch(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
         return _audio(h, method, path)
     if path in NOTES_PATHS and method in ("GET", "POST"):
         return _notes(h, method, path)
+    if path in ALERT_PATHS and method in ("GET", "POST"):
+        return _alerts(h, method, path)
     if method == "GET":
         return _get(h, path)
     if method == "POST":
@@ -951,6 +964,43 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
             return True
         ok, detail = send.focus(str(body.get("pane") or ""))
         _json(h, 200 if ok else 400, {"ok": ok, "detail": detail})
+    else:
+        return False
+    return True
+
+
+# --- what the watchers report ------------------------------------------------------
+
+def _alerts(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
+    """`/alerts` and `/alerts/ack` (alerts.py, §6.17).
+
+    A report is admitted with the host's own token — a watcher on this host,
+    which has the shell and so the token — or a paired device's; reading and
+    acking take the app's gate like every other route.
+    """
+    bearer = _bearer(h)
+    if method == "POST" and path == "/alerts":
+        if not ((_TOKEN_OK is not None and _TOKEN_OK(h)) or auth.is_device(bearer)):
+            _json(h, 401, {"ok": False, "error": "unauthorized"})
+            return True
+        body = _read_json(h)
+        if body is None:
+            _json(h, 400, {"ok": False, "error": "not JSON"})
+            return True
+        ok, detail = alerts.report(body)
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+        return True
+    user, err = auth.gate(bearer)
+    if not user:
+        _json(h, err.pop("status", 401), {"ok": False, **err})
+        return True
+    if method == "GET" and path == "/alerts":
+        open_only = parse_qs(h.path.partition("?")[2]).get("open", [""])[0] in ("1", "true")
+        _json(h, 200, {"ok": True, **alerts.listing(open_only=open_only)})
+    elif method == "POST" and path == "/alerts/ack":
+        body = _read_json(h) or {}
+        ok, detail = alerts.ack(str(body.get("id") or ""))
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     else:
         return False
     return True

@@ -212,7 +212,10 @@ read them from Next instead of the old app's :8772.
    `agent-alert` helper to a server-side store; the store does the edge
    detection, the `alerts` event rides `/sessions/events` to Next's
    notifier, cards get **Fix it** (a session via `POST /ask`) and **Ack**,
-   and inbox.org stays the record. disk-watch and host-watch port first.
+   and inbox.org stays the record. **Step 1 DONE 24 Sep 2026**: the store
+   (§6.17, `POST/GET /alerts`, `/alerts/ack`), `agent-alert` with an offline
+   fallback, and disk-watch + host-watch reporting through it (delivery is
+   still the digest pane). Next: the `alerts` event and the Home section.
 
 ## Loose ends
 
