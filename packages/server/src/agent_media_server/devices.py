@@ -229,13 +229,29 @@ def revoke(device_id: str) -> bool:
         return True
 
 
+def may_enrol(device: dict | None) -> bool:
+    """Whether this device may pair another one, list them, or revoke one.
+
+    Off unless the row says otherwise, so every device paired before the bit
+    existed (and every one minted without `--enrol`) simply cannot: the shell
+    is still the only way in, which is where this started. It is a property
+    of the device, not of the person — the owner at the desk has a shell and
+    needs no bit.
+    """
+    return bool((device or {}).get("enrol"))
+
+
 # --- pairing ----------------------------------------------------------------------
 
-def mint_code(name: str) -> tuple[str, float]:
+def mint_code(name: str, enrol: bool = False) -> tuple[str, float]:
     """A fresh pairing code for a device called `name`: `(code, expires)`.
 
     Several may be outstanding at once (pairing a phone and a tablet in the
     same sitting); expired ones are swept whenever the file is written.
+
+    `enrol` rides on the code, not on the redemption: the right to enrol
+    other devices is granted by whoever mints, and a device cannot ask for
+    it any more than it can name itself (see `redeem`).
     """
     code = secrets.token_hex(4)
     expires = time.time() + pair_ttl()
@@ -244,7 +260,7 @@ def mint_code(name: str) -> tuple[str, float]:
         codes = {c: v for c, v in _read(codes_path(), {}).items()
                  if isinstance(v, dict) and float(v.get("expires") or 0) > now}
         codes[code] = {"name": " ".join((name or "").split())[:80],
-                       "expires": round(expires, 3)}
+                       "expires": round(expires, 3), "enrol": bool(enrol)}
         _write(codes_path(), codes)
     return code, expires
 
@@ -298,9 +314,11 @@ def redeem(code: str, device: str, ip: str = "") -> dict | None:
         token = secrets.token_urlsafe(32)
         name = entry.get("name") or " ".join((device or "").split())[:80] or "device"
         row = {"id": "d_" + secrets.token_hex(6), "name": name, "sha256": _hash(token),
-               "created": round(now, 3), "last_seen": round(now, 3), "last_ip": ip or ""}
+               "created": round(now, 3), "last_seen": round(now, 3), "last_ip": ip or "",
+               "enrol": bool(entry.get("enrol"))}
         _save(list(_load()) + [row])
-    return {"token": token, "device_id": row["id"], "name": name}
+    return {"token": token, "device_id": row["id"], "name": name,
+            "enrol": bool(row["enrol"])}
 
 
 def _reset_for_tests() -> None:
@@ -352,5 +370,6 @@ def cli_devices(argv: list[str]) -> int:
 
     for d in rows:
         print(f"{d.get('id'):<16} {d.get('name', ''):<24} paired {when(d.get('created'))}"
-              f"  seen {when(d.get('last_seen'))} from {d.get('last_ip') or '-'}")
+              f"  seen {when(d.get('last_seen'))} from {d.get('last_ip') or '-'}"
+              f"{'  [enrols]' if may_enrol(d) else ''}")
     return 0

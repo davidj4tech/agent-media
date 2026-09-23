@@ -53,9 +53,13 @@ def _device(bearer: str) -> dict | None:
 
 def _owner(dev: dict) -> dict:
     """The user a device token stands for: the owner, marked as a device so
-    `may_reply` and `abs_bearer` can tell."""
+    `may_reply` and `abs_bearer` can tell.
+
+    `enrol` is the one right a device does not automatically have (§9): it
+    rides here so a route can ask without reading the store again.
+    """
     return {"username": f"device:{dev.get('name') or dev.get('id')}", "type": "root",
-            "device": dev.get("id")}
+            "device": dev.get("id"), "enrol": devices.may_enrol(dev)}
 
 
 def identity(bearer: str) -> tuple[dict | None, int]:
@@ -91,6 +95,24 @@ def may_control_speech(bearer: str) -> tuple[bool, dict]:
 
 def is_device(bearer: str) -> bool:
     return _device(bearer) is not None
+
+
+def may_enrol(bearer: str) -> tuple[dict | None, dict]:
+    """`gate`, and then the enrol bit: `(user, {})` for a device that may pair
+    another, else `(None, error)` with a status.
+
+    An ABS login is **not** a way in. The bit is carried by a device row, and
+    the person at the desk has the CLI — so the answer for anything else is
+    403, not "fall through and see". A 401 for a bearer that is nobody, so
+    the app knows to pair rather than to ask for a different device.
+    """
+    user, err = gate(bearer)
+    if not user:
+        return None, err
+    if not user.get("enrol"):
+        return None, {"status": 403, "code": "not_enrolled",
+                      "error": "this device may not manage other devices"}
+    return user, {}
 
 
 def abs_bearer(bearer: str) -> str:

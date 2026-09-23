@@ -524,12 +524,16 @@ def _cmd_pair(argv: list[str]) -> int:
                     help="pair the Sasonica app instead: mint a device pairing code "
                          "for a device called NAME (server-contract.md §9). Without "
                          "this, the link installs the amux token into a browser")
+    ap.add_argument("--enrol", action="store_true",
+                    help="with --device: let this device pair others from the app "
+                         "(list them, mint a code, revoke one). Off by default — "
+                         "the shell is the only way in until a device is given it")
     args = ap.parse_args(argv)
     if not args.host:
         args.host = _pair_host()
 
     if args.device is not None:
-        return _cmd_pair_device(args.device, args.host, args.port)
+        return _cmd_pair_device(args.device, args.host, args.port, enrol=args.enrol)
 
     if not _amux_token():
         print("no amux token on this host (~/.amux/auth_token) — nothing to pair.",
@@ -548,7 +552,7 @@ def _cmd_pair(argv: list[str]) -> int:
     return 0
 
 
-def _cmd_pair_device(name: str, host: str, port: int) -> int:
+def _cmd_pair_device(name: str, host: str, port: int, enrol: bool = False) -> int:
     """`pair --device NAME`: a code the app trades for a device token at
     `POST /pair`. The code lives in the server package's own store
     (agent_media_server.devices), NOT the spool's `pair-code` above — the two
@@ -560,7 +564,7 @@ def _cmd_pair_device(name: str, host: str, port: int) -> int:
     if not name:
         print("--device needs a name, e.g. --device \"Pixel 8a\"", file=sys.stderr)
         return 2
-    code, _expires = _devices.mint_code(name)
+    code, _expires = _devices.mint_code(name, enrol=enrol)
     app_link, web_link = _devices.links(code, host, port)
     # The app link first, on its own: it is what gets copied into the app's
     # pairing screen, and the http form below it was being copied instead.
@@ -571,6 +575,8 @@ def _cmd_pair_device(name: str, host: str, port: int) -> int:
     # The http form is for the person at the terminal (the host and code, in
     # a shape they recognise); opened in a browser it is refused, on purpose.
     print(f"\n  server {host}:{port} · code {code}\n  (for reference only: {web_link})\n")
+    if enrol:
+        print("  This one may pair other devices from the app.\n")
     return 0
 
 

@@ -481,6 +481,17 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
             _json(h, err.get("status", 401), {"ok": False, "error": "not allowed"})
         else:
             _json(h, 200, {"ok": True, "sessions": sessions.sessions_index()})
+    elif path == "/devices":
+        # Which devices are paired (§9). Gated on the enrol bit, not merely
+        # on being a device: what else is paired is the owner's business, and
+        # a device that may not enrol has no use for the list.
+        user, err = auth.may_enrol(_bearer(h))
+        if not user:
+            _json(h, err.get("status", 401),
+                  {"ok": False, "code": err.get("code"), "error": err.get("error", "not allowed")})
+        else:
+            _json(h, 200, {"ok": True, "devices": devices.list_devices(),
+                           "self": user.get("device")})
     elif path == "/sessions/state":
         ok, detail = sessions.session_states(_bearer(h))
         _json(h, 200 if ok else detail.pop("status", 403), {"ok": ok, **detail})
@@ -648,13 +659,75 @@ def _pair(h: BaseHTTPRequestHandler) -> None:
     # `name` is the one the device will be known by — the name given at the
     # desk wins over the one the phone sent — so the app can say "paired as".
     _json(h, 200, {"ok": True, "token": got["token"], "device_id": got["device_id"],
-                   "name": got["name"],
+                   "name": got["name"], "enrol": bool(got.get("enrol")),
                    "server": {"name": socket.gethostname(), "base": _base_url(h)}})
+
+
+def _devices_code(h: BaseHTTPRequestHandler) -> None:
+    """`POST /devices/code {"device", "enrol"}` — mint a pairing code (§9).
+
+    The couch half of `media-visual-canvas pair --device`: the same code, the
+    same store, the same 30-minute window, asked for by a device that carries
+    the enrol bit instead of by someone with a shell.
+
+    `enrol` in the body passes the bit on, and a device can only pass on what
+    it has — which is trivially true here, since only an enrolled device
+    reaches this line at all. The name is the body's, because the person
+    holding the phone is the one deciding what the tablet is called; that is
+    the same rule as the desk's, not an exception to it.
+    """
+    import socket
+
+    user, err = auth.may_enrol(_bearer(h))
+    if not user:
+        _json(h, err.get("status", 401),
+              {"ok": False, "code": err.get("code"), "error": err.get("error", "not allowed")})
+        return
+    body = _read_json(h) or {}
+    name = str(body.get("device") or "").strip()
+    if not name:
+        _json(h, 400, {"ok": False, "code": "no_device_name",
+                       "error": "a device needs a name"})
+        return
+    code, expires = devices.mint_code(name, enrol=bool(body.get("enrol")))
+    base = _base_url(h)
+    host, _, port = base.partition("://")[2].partition(":")
+    app_link, browser_link = devices.links(code, host, int(port or 8781))
+    print(f"devices: {user.get('device')} minted a code for {name!r}", file=sys.stderr)
+    _json(h, 200, {"ok": True, "code": code, "expires": round(expires, 3),
+                   "name": name, "enrol": bool(body.get("enrol")),
+                   "links": {"app": app_link, "browser": browser_link},
+                   "server": {"name": socket.gethostname(), "base": base}})
+
+
+def _devices_revoke(h: BaseHTTPRequestHandler) -> None:
+    """`POST /devices/revoke {"id"}` — forget a device (§9).
+
+    A device may revoke itself; nothing here stops it. The shell is the floor
+    under that: `media-visual-canvas devices --revoke` still works when the
+    last enrolled device has thrown itself out.
+    """
+    user, err = auth.may_enrol(_bearer(h))
+    if not user:
+        _json(h, err.get("status", 401),
+              {"ok": False, "code": err.get("code"), "error": err.get("error", "not allowed")})
+        return
+    device_id = str((_read_json(h) or {}).get("id") or "").strip()
+    if not devices.revoke(device_id):
+        _json(h, 404, {"ok": False, "code": "no_such_device",
+                       "error": "no device with that id"})
+        return
+    print(f"devices: {user.get('device')} revoked {device_id}", file=sys.stderr)
+    _json(h, 200, {"ok": True, "id": device_id, "devices": devices.list_devices()})
 
 
 def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
     if path == "/pair":
         _pair(h)
+    elif path == "/devices/code":
+        _devices_code(h)
+    elif path == "/devices/revoke":
+        _devices_revoke(h)
     elif path == "/share":
         # "Play with agent-media" from the app's share sheet: media-share's
         # /share, with the caller's ABS bearer instead of a token of its own.

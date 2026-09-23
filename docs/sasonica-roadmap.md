@@ -161,8 +161,16 @@ read them from Next instead of the old app's :8772.
 
 ## Queued, in order
 
-1. **Sasonica Shell OAuth** — the proposal is written, not built.
-2. **One setup for a machine, from the Coding agents page** (David, 23 Sep
+1. **Devices screen in the app** — the server half landed 23 Sep 2026
+   (`GET /devices`, `POST /devices/code`, `POST /devices/revoke`,
+   contract §9 "Enrolling from the app"). What is left is the screen:
+   Settings → Devices, shown only when `POST /pair` said `enrol: true`, a
+   row per device with when it was last seen, "Pair a device" (a name, then
+   the code and its QR), and revoke behind a confirm. Steps 2–4 of
+   `docs/proposals/2026-09-23-accounts-and-the-identity-seam.md` (OIDC, an
+   issuer) stay parked until there is a second person.
+2. **Sasonica Shell OAuth** — the proposal is written, not built.
+3. **One setup for a machine, from the Coding agents page** (David, 23 Sep
    2026). A working machine needs three installers today: `media-setup`
    (agent-media's own hooks and services), Sasonica Shell's `install.mjs`
    (Worker, D1, keys, runner), and **agent-config**, which carries

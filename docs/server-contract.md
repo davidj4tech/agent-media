@@ -2347,9 +2347,57 @@ they find nothing, and the item fields stay `null`.
   which this pass did not add to the shared envelope, and `test_contract`'s
   key sets are unchanged. It is also not a 503 unless ABS is down, in which
   case the §4.1 mapping applies to it as to any unknown bearer.
-- A device token carries the rights `may_reply` grants the owner. There is
-  a single scope in v1. Scopes arrive with the hosted tier, if it needs
-  them.
+- A device token carries the rights `may_reply` grants the owner, plus one
+  bit of its own: `enrol` (below). Otherwise a single scope in v1. Scopes
+  arrive with the hosted tier, if it needs them.
+
+### Enrolling from the app — BUILT 23 Sep 2026
+
+Pairing began as a thing you could only do at the desk, which is the one
+place you are not when you want to pair a tablet. A device row carries
+`enrol` (default **false**, including for every row paired before the bit
+existed), and a device that has it may do from the app exactly what the
+shell does: list, mint, revoke.
+
+- `media-visual-canvas pair --device NAME --enrol` mints a code that grants
+  it. Without `--enrol` nothing changes, so the shell stays the only way in
+  until a device is deliberately given the bit. `devices` marks such a row
+  `[enrols]`.
+- `POST /pair` now answers with `"enrol": true|false` — what this device
+  may do, told to it once, so the app knows whether to offer the screen.
+
+Three routes, all gated by `auth.may_enrol` (the §9 gate, then the bit).
+A bearer that is nobody gets **401**; a good token without the bit gets
+**403** `{"code": "not_enrolled"}` — the token is fine, the right is not
+there, and an ABS login is not a way round it.
+
+```
+GET  /devices
+  → {"ok": true, "self": "d_7f3a…", "devices": [ {id, name, created,
+      last_seen, last_ip, enrol}, … ]}          (never the sha256)
+
+POST /devices/code {"device": "Pixel Tablet", "enrol": false}
+  → {"ok": true, "code": "7f3a09c1", "expires": <ts>, "name", "enrol",
+     "links": {"app": "sasonica://pair?…", "browser": "http://…/pair?c=…&device=1"},
+     "server": {"name", "base"}}
+  → 400 {"code": "no_device_name"} for a blank name
+POST /devices/revoke {"id": "d_…"}
+  → {"ok": true, "id", "devices": [ … ]}   → 404 {"code": "no_such_device"}
+```
+
+The minted code is the same code in the same store with the same TTL as the
+desk's — `POST /devices/code` is `pair --device` with a device's token where
+the shell would be. `links.app` is built from the address the request
+arrived on, so the tablet is told where to find the server the phone is
+actually talking to.
+
+The name comes from the body here, where at the desk the body's name is
+ignored: it is the same rule both times, that whoever is enrolling decides
+what the new device is called, and on the couch that is the phone.
+
+A device may revoke itself, and the last enrolled device may throw itself
+out. That is not a lockout: `media-visual-canvas devices --revoke` is the
+floor under all of this, and the desk can always mint again.
 
 ### Migration
 

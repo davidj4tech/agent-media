@@ -80,7 +80,8 @@ def test_pairing_hands_out_a_token_and_the_server(server):
     code, _ = devices.mint_code("Pixel 8a")
     res, obj = _pair(server, code)
     assert res.status == 200, obj
-    assert keys(obj) == {"ok", "token", "device_id", "name", "server"}
+    assert keys(obj) == {"ok", "token", "device_id", "name", "server", "enrol"}
+    assert obj["enrol"] is False                     # not unless the desk said so
     assert obj["ok"] is True
     assert len(obj["token"]) == 43                   # token_urlsafe(32)
     assert obj["device_id"].startswith("d_")
@@ -287,7 +288,8 @@ def test_the_store_has_no_token_and_is_owner_only(server, device):
     raw = devices.devices_path().read_text()
     assert token not in raw
     (row,) = json.loads(raw)
-    assert set(row) == {"id", "name", "sha256", "created", "last_seen", "last_ip"}
+    assert set(row) == {"id", "name", "sha256", "created", "last_seen", "last_ip",
+                        "enrol"}
     assert row["last_ip"] == "127.0.0.1"
     for p in (devices.devices_path(), devices.codes_path()):
         assert stat.S_IMODE(os.stat(p).st_mode) == 0o600, p
@@ -378,3 +380,125 @@ def test_devices_cli_lists_and_revokes(capsys):
     assert devices.cli_devices(["--revoke", got["device_id"]]) == 1
     assert devices.cli_devices([]) == 0
     assert "no paired devices" in capsys.readouterr().out
+
+
+# --- the enrol bit: pairing another device from the app (§9) ----------------------
+
+@pytest.fixture()
+def enroller(server):
+    """A paired device that may enrol others: `(token, device_id)`."""
+    code, _ = devices.mint_code("Pixel 8a", enrol=True)
+    res, obj = _pair(server, code)
+    assert res.status == 200, obj
+    assert obj["enrol"] is True
+    return obj["token"], obj["device_id"]
+
+
+def _auth(token):
+    return {"Authorization": f"Bearer {token}"}
+
+
+def test_a_plain_device_may_not_manage_devices(server, device):
+    """The default, and the one that matters: a paired phone is not an admin.
+    403 with a code, not a 401 — the token is good, the right is not there."""
+    token, _ = device
+    for method, path, body in (("GET", "/devices", None),
+                               ("POST", "/devices/code", {"device": "Tablet"}),
+                               ("POST", "/devices/revoke", {"id": "d_whatever"})):
+        res, obj = call(server, method, path, body, _auth(token))
+        assert res.status == 403, (path, res.status, obj)
+        assert obj["code"] == "not_enrolled" and obj["ok"] is False
+
+
+def test_an_unknown_bearer_is_told_to_pair_not_that_it_lacks_a_right(server):
+    res, obj = call(server, "GET", "/devices", None, _auth("nobody"))
+    assert res.status == 401 and obj["ok"] is False
+
+
+def test_an_enrolled_device_lists_what_is_paired(server, enroller, device):
+    token, me = enroller
+    res, obj = call(server, "GET", "/devices", None, _auth(token))
+    assert res.status == 200 and obj["ok"] is True
+    ids = [d["id"] for d in obj["devices"]]
+    assert me in ids and device[1] in ids
+    assert obj["self"] == me
+    # The listing is the store without its secrets.
+    assert all("sha256" not in d for d in obj["devices"])
+
+
+def test_an_enrolled_device_mints_a_code_another_device_redeems(server, enroller):
+    token, _ = enroller
+    res, obj = call(server, "POST", "/devices/code", {"device": "Pixel Tablet"}, _auth(token))
+    assert res.status == 200, obj
+    assert obj["name"] == "Pixel Tablet" and obj["enrol"] is False
+    assert obj["links"]["app"].startswith("sasonica://pair?server=")
+    # It is a real code in the real store: the tablet pairs with it.
+    res2, paired = _pair(server, obj["code"], device="ignored")
+    assert res2.status == 200 and paired["name"] == "Pixel Tablet"
+    # And what it made is a plain device — the right did not come with it.
+    assert paired["enrol"] is False
+    res3, obj3 = call(server, "GET", "/devices", None, _auth(paired["token"]))
+    assert res3.status == 403 and obj3["code"] == "not_enrolled"
+
+
+def test_the_bit_can_be_passed_on_deliberately(server, enroller):
+    token, _ = enroller
+    _, obj = call(server, "POST", "/devices/code",
+                  {"device": "Study tablet", "enrol": True}, _auth(token))
+    _, paired = _pair(server, obj["code"])
+    assert paired["enrol"] is True
+    res, listed = call(server, "GET", "/devices", None, _auth(paired["token"]))
+    assert res.status == 200 and listed["ok"] is True
+
+
+def test_a_code_needs_a_name(server, enroller):
+    token, _ = enroller
+    res, obj = call(server, "POST", "/devices/code", {"device": "  "}, _auth(token))
+    assert res.status == 400 and obj["code"] == "no_device_name"
+
+
+def test_revoking_from_the_app_stops_that_token(server, enroller, device):
+    token, _ = enroller
+    victim, victim_id = device
+    res, obj = call(server, "POST", "/devices/revoke", {"id": victim_id}, _auth(token))
+    assert res.status == 200 and obj["id"] == victim_id
+    assert victim_id not in [d["id"] for d in obj["devices"]]
+    # The revoked token is now nobody: it falls through to ABS, which refuses it.
+    res2, _ = call(server, "GET", "/conversations", None, _auth(victim))
+    assert res2.status in (401, 403, 502, 503)
+    res3, obj3 = call(server, "POST", "/devices/revoke", {"id": victim_id}, _auth(token))
+    assert res3.status == 404 and obj3["code"] == "no_such_device"
+
+
+def test_a_device_paired_before_the_bit_existed_cannot_enrol(server):
+    """Upgrade: rows already in devices.json have no `enrol` key at all."""
+    code, _ = devices.mint_code("Old phone")
+    _, obj = _pair(server, code)
+    rows = devices._load()
+    for r in rows:
+        r.pop("enrol", None)
+    devices._save(rows)
+    assert devices.may_enrol(devices.list_devices()[0]) is False
+    res, err = call(server, "GET", "/devices", None, _auth(obj["token"]))
+    assert res.status == 403 and err["code"] == "not_enrolled"
+
+
+def test_pair_device_cli_can_grant_it(capsys, monkeypatch):
+    monkeypatch.setattr(canvas, "_qr", lambda url: "[qr]")
+    assert canvas._cmd_pair_device("Pixel Tablet", "red5", 8781, enrol=True) == 0
+    out = capsys.readouterr().out
+    assert "may pair other devices" in out
+    code = out.split("code ")[1].split()[0]
+    got = devices.redeem(code, "", "10.0.0.2")
+    assert got["enrol"] is True
+    assert devices.cli_devices([]) == 0
+    assert "[enrols]" in capsys.readouterr().out
+
+
+def test_pair_device_cli_grants_nothing_by_default(capsys, monkeypatch):
+    monkeypatch.setattr(canvas, "_qr", lambda url: "[qr]")
+    assert canvas._cmd_pair_device("Pixel 8a", "red5", 8781) == 0
+    out = capsys.readouterr().out
+    assert "may pair other devices" not in out
+    got = devices.redeem(out.split("code ")[1].split()[0], "", "10.0.0.3")
+    assert got["enrol"] is False
