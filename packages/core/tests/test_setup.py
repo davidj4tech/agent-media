@@ -707,7 +707,7 @@ def test_the_speech_hook_goes_where_it_works(tmp_path, monkeypatch):
     assert changed
     got = {ev: [h for g in settings["hooks"][ev] for h in g["hooks"]]
            for ev in settings["hooks"]}
-    assert set(got) == {"Stop", "Notification", "PreToolUse"}
+    assert set(got) == {"Stop", "Notification", "PreToolUse", "PostToolUse"}
     assert got["Stop"][0] == {"type": "command", "command": "media-hook-claude-code",
                               "timeout": 120, "async": True}
     assert got["Notification"][0]["timeout"] == 30
@@ -715,6 +715,32 @@ def test_the_speech_hook_goes_where_it_works(tmp_path, monkeypatch):
     # Idempotent, and it rewrites its own entry rather than adding a second.
     again, changed = setup._merge_hooks(settings, "media-hook-claude-code")
     assert not changed and again == settings
+
+
+def test_the_ask_hooks_are_matched_to_the_ask(tmp_path):
+    """Both ask hooks carry `matcher: AskUserQuestion`, and the answer hook is
+    there at all: without PostToolUse nothing cuts a question's read-out when
+    it is answered, so the options are still being read to someone who has
+    already chosen. Unmatched, these two would spawn a process per tool call."""
+    settings, _ = setup._merge_hooks({}, "media-hook-claude-code")
+    for event in ("PreToolUse", "PostToolUse"):
+        groups = settings["hooks"][event]
+        assert [g.get("matcher") for g in groups] == ["AskUserQuestion"]
+    assert [g.get("matcher") for g in settings["hooks"]["Stop"]] == [None]
+
+
+def test_an_existing_ask_group_keeps_its_place_and_gains_its_matcher(tmp_path):
+    """The group this installer already owns is rewritten in place — the
+    matcher is set on it rather than a second, matcher-less group appended."""
+    before = {"hooks": {"PostToolUse": [
+        {"matcher": "Bash", "hooks": [{"type": "command", "command": "someone-else"}]},
+        {"hooks": [{"type": "command", "command": "media-hook-claude-code"}]}]}}
+    after, changed = setup._merge_hooks(before, "media-hook-claude-code")
+    assert changed
+    groups = after["hooks"]["PostToolUse"]
+    assert len(groups) == 2
+    assert groups[0]["matcher"] == "Bash"
+    assert groups[1]["matcher"] == "AskUserQuestion"
 
 
 def test_a_hook_this_installer_does_not_own_is_left_alone(tmp_path):

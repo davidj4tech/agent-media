@@ -68,12 +68,25 @@ CLAUDE_HOOK_TIMEOUT = 30
 #:     is spoken before it is asked (AskUserQuestion); the listener's own
 #:     words reach the shelf from the transcript, so no prompt hook is
 #:     needed for them.
+#:   * **PostToolUse is what ends a question.** `_handle_posttooluse` is the
+#:     only thing that cuts a question's read-out when it is answered
+#:     (`request_session_speech_cut(session, "ask")`), records the chosen
+#:     option as a listener turn, and clears the pending ask the phone shows.
+#:     Without it every one of those is dead code: the options keep being
+#:     read aloud to somebody who has already chosen (23 Sep 2026 — it had
+#:     never been registered, so they always did).
+#:
+#: The last field is the tool matcher. It is not decoration on the two ask
+#: hooks: unmatched, they would run this command on *every* tool call, which
+#: is a process spawned per Bash line. A group that already carries a matcher
+#: keeps it; one of ours that is missing it gets it.
 #:
 #: A hook this installer does not name is left exactly as it is: the merge
 #: rewrites its own entries and removes nothing.
-CLAUDE_HOOK_SPEC = (("Stop", 120, True), ("Notification", 30, True),
-                    ("PreToolUse", 30, True))
-CLAUDE_HOOK_EVENTS = tuple(event for event, _, _ in CLAUDE_HOOK_SPEC)
+CLAUDE_HOOK_SPEC = (("Stop", 120, True, None), ("Notification", 30, True, None),
+                    ("PreToolUse", 30, True, "AskUserQuestion"),
+                    ("PostToolUse", 30, True, "AskUserQuestion"))
+CLAUDE_HOOK_EVENTS = tuple(event for event, _, _, _ in CLAUDE_HOOK_SPEC)
 
 
 def claude_settings_path() -> Path:
@@ -97,7 +110,7 @@ def _merge_hooks(settings: dict, command: str) -> tuple[dict, bool]:
     hooks = settings.setdefault("hooks", {})
     changed = False
 
-    for event, timeout, async_ in CLAUDE_HOOK_SPEC:
+    for event, timeout, async_, matcher in CLAUDE_HOOK_SPEC:
         target_entry = {"type": "command", "command": command, "timeout": timeout}
         if async_:
             target_entry["async"] = True
@@ -113,12 +126,18 @@ def _merge_hooks(settings: dict, command: str) -> tuple[dict, bool]:
                     if h != target_entry:
                         inner[i] = target_entry
                         changed = True
+                    if matcher and group.get("matcher") != matcher:
+                        group["matcher"] = matcher
+                        changed = True
                     replaced = True
                     break
             if replaced:
                 break
         if not replaced:
-            groups.append({"hooks": [target_entry]})
+            group = {"hooks": [target_entry]}
+            if matcher:
+                group["matcher"] = matcher
+            groups.append(group)
             changed = True
 
     return settings, changed
