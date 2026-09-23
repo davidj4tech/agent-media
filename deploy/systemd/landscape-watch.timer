@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly (Monday morning): landscape watch digest
+
+[Timer]
+OnCalendar=Mon *-*-* 07:30
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target

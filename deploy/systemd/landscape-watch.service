@@ -1,0 +1,8 @@
+[Unit]
+Description=Weekly digest of projects similar to agent-media / Sasonica
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/share/fnm/aliases/default/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/projects/agent-media/packages/core/scripts/landscape-watch.sh
+TimeoutStartSec=45min
