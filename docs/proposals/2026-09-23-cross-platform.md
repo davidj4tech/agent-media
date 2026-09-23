@@ -77,10 +77,43 @@ the service backend, the PulseAudio calls — and the pane model, which was
 the expensive part, travels as it stands. That is the difference between a
 platform layer we design and one we already shipped for another reason.
 
+## Zellij, checked against the same three verbs (David's, 23 Sep)
+
+Zellij 0.44.3 is already on this machine (`~/.local/bin/zellij`), so this
+part is measured rather than recalled — and it clears the bar the pane layer
+actually sets:
+
+| what `panes.py` needs | tmux | zellij 0.44.3 |
+|---|---|---|
+| read an arbitrary pane | `capture-pane -t %562` | `action dump-screen -p terminal_1` (`--full` for scrollback, `--ansi` for colour) |
+| type into an arbitrary pane | `send-keys -t` | `action write-chars -p` |
+| label a pane | `select-pane -T` | `action rename-pane -p` |
+| find the pane a process is in | `TMUX_PANE` | `ZELLIJ_PANE_ID` (also `ZELLIJ_SESSION_NAME`, `ZELLIJ_SOCKET_DIR`) |
+
+Every action takes `--pane-id`, so nothing has to be focused first — which
+was the objection worth checking, since a capture that steals focus would
+race with whoever is reading the screen. It does not.
+
+So `zellij:terminal_1` is a third address in exactly the shape `panes.py`
+already dispatches, and unlike herdr's wider platform support, this one can
+be verified here today without asking anyone.
+
+**Windows, though: no.** Zellij's server terminal IO lives in
+`os_input_output_unix.rs`, and there is no Windows counterpart; upstream's
+answer there is WSL. So Zellij makes **macOS** cheap and says nothing about
+Windows — where herdr, if it builds, remains the only route for the daemon,
+and Sasonica Shell remains the route that needs no daemon.
+
+Not a contest: herdr is already integrated and may travel further; Zellij is
+verifiable now and is the lower-risk way to prove the pane layer really is a
+layer. Either one being added is the test — if a second non-tmux
+multiplexer drops in without touching `cli.py`, the abstraction is real.
+
 ## The three platforms, honestly
 
 **macOS.** Everything the core shells out to exists: tmux, ssh, mpv, rsync,
-fcntl. What is missing is launchd (8 unit files plus the runit scripts), the
+fcntl — and Zellij and herdr besides, so the pane layer has three candidates
+there rather than one. What is missing is launchd (8 unit files plus the runit scripts), the
 PulseAudio calls (`pactl`, `playerctl` — CoreAudio has neither), and
 `/proc/<pid>/environ`, which is how we find which pane a process is in;
 macOS needs `ps -E` or `libproc`. Nothing here is research. Call it a week,
@@ -102,9 +135,11 @@ daemon follow later.
 
 ## The order, if we do it
 
-0. **Ask herdr about macOS and Windows builds**, and about pane read/send
-   parity there. Everything below is sized by that answer, and it costs one
-   message.
+0. **Prove the pane layer with Zellij**, locally, before any platform work:
+   a `zellij:` address beside `%562` and `herdr:`, verified on red5 where
+   0.44.3 already is. If that lands without touching `cli.py`, the layer is
+   real; if it does not, that is the finding. In parallel, **ask herdr about
+   macOS and Windows builds** — one message, and it sizes the Windows half.
 1. **A platform module in `core`** — `_lock.py` behind it first, then
    `/proc/environ` reads. One file to import, no scattered conditionals.
    This is worth doing on its own merits: it makes the posix assumptions
