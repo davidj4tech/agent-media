@@ -134,6 +134,39 @@ colour. Worth knowing it is available as a fallback on an old Unix that has
 nothing newer; not worth being the second multiplexer we prove the layer
 with.
 
+## kitty and WezTerm (David's, 23 Sep) — and the question they raise
+
+Neither is installed on red5, so this is recollection, not measurement. But
+they are a different *kind* of candidate from tmux, Zellij and screen, and
+the difference matters more than the verb table:
+
+**They are terminal emulators.** tmux, Zellij, screen and herdr all
+multiplex on a machine with no display; kitty and WezTerm multiplex inside a
+window on a desk. Our agents live on red5 and are reached over ssh, so the
+first question is not "can it send text to a pane" but **"can it run with no
+display at all"**. That is where the two part company:
+
+- **kitty.** `kitten @ get-text`, `@ send-text --match id:N`,
+  `@ set-window-title`, and `KITTY_WINDOW_ID` in the environment — the four
+  needs are met, over its remote-control socket, which works across ssh. But
+  the multiplexing *is* the GUI app; there is no headless kitty. On a
+  server that is a non-starter, unless the model inverts and agents live in
+  the terminal on the laptop instead of on the host that owns the media.
+  David is right that there is no Windows build either.
+- **WezTerm.** Has `wezterm-mux-server` — an explicitly headless multiplexer
+  daemon — alongside `wezterm cli get-text --pane-id`, `send-text
+  --pane-id`, and `WEZTERM_PANE` in the environment. **And it builds for
+  Windows.** That makes it the only candidate so far that could be both the
+  pane layer *and* the answer on Windows, without a display and without
+  waiting on herdr.
+
+So WezTerm deserves the same treatment Zellij got: install
+`wezterm-mux-server` on red5, try the three verbs against a pane it owns,
+and see whether `wezterm:<pane-id>` drops into `panes.py` beside the others.
+If it does, the Windows verdict below changes from "herdr, if it builds, or
+no daemon at all" to "there is a supported path". That is the single most
+valuable unknown in this document.
+
 ## The three platforms, honestly
 
 **macOS.** Everything the core shells out to exists: tmux, ssh, mpv, rsync,
@@ -145,8 +178,9 @@ macOS needs `ps -E` or `libproc`. Nothing here is research. Call it a week,
 and the honest version of "nearly free" is "nearly free *if* the Mac is a
 render or observe host, not the origin".
 
-**Windows.** No tmux, no `/proc`, no signals, no runit. With herdr as the
-pane layer the first of those stops mattering and the rest are the nameable
+**Windows.** No tmux, no `/proc`, no signals, no runit. With herdr — or,
+more promisingly, `wezterm-mux-server` — as the pane layer the first of
+those stops mattering and the rest are the nameable
 ones, so this moves from "a different program" to "expensive but bounded" —
 conditional entirely on herdr having a Windows build. Until that is
 answered, the shipping answer stands: **Sasonica Shell runs natively there**
@@ -163,8 +197,10 @@ daemon follow later.
 0. **Prove the pane layer with Zellij**, locally, before any platform work:
    a `zellij:` address beside `%562` and `herdr:`, verified on red5 where
    0.44.3 already is. If that lands without touching `cli.py`, the layer is
-   real; if it does not, that is the finding. In parallel, **ask herdr about
-   macOS and Windows builds** — one message, and it sizes the Windows half.
+   real; if it does not, that is the finding. In parallel, **try
+   `wezterm-mux-server`** (headless, and it builds for Windows) and **ask
+   herdr about macOS and Windows builds** — between them they size the
+   Windows half.
 1. **A platform module in `core`** — `_lock.py` behind it first, then
    `/proc/environ` reads. One file to import, no scattered conditionals.
    This is worth doing on its own merits: it makes the posix assumptions
