@@ -4354,6 +4354,27 @@ def _submit_event(event: Event,
                     paused_for = 0.0
                     last_tick = time.monotonic()
                     while time.monotonic() < hard_deadline:
+                        # The listener is still in charge of a reply we can no
+                        # longer see. Stop, End of reply and a supersede were
+                        # only ever read by the loop above, so once the bridge
+                        # went unreadable — which on this link is often — the
+                        # hold sat out the rest of the reply ignoring every one
+                        # of them: "I clicked End of reply and it is still
+                        # playing". None of these need the player to answer.
+                        if playback_lock.should_abort() or _speech_cut(
+                                source_session, started_at, playing=True,
+                                ask=source_ask):
+                            highlighter.cancel_pending()
+                            sink.stop(target)
+                            break
+                        nav = _read_nav_request(target)
+                        if nav is not None:
+                            if nav >= len(clip_data):
+                                highlighter.cancel_pending()
+                                sink.stop(target)
+                                break          # End of reply
+                            sink.set_playlist_pos(max(0, nav), target)
+                            mark_i = max(0, nav)
                         snap = sink.snapshot(target)
                         now_t = time.monotonic()
                         waited, last_tick = now_t - last_tick, now_t

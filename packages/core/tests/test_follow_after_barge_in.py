@@ -204,3 +204,27 @@ def test_the_ended_row_keeps_the_measured_starts(monkeypatch):
     assert len(starts) == len(row["extras"]["clip_sentences"])
     assert starts[0] == 0.0
     assert starts == sorted(starts)          # a sentence never starts earlier
+
+
+def test_end_of_reply_is_heard_while_the_player_is_unreadable(monkeypatch):
+    """The blind hold has to obey the listener, not only the clock.
+
+    Stop, End of reply and a supersede were read only by the follow loop, so
+    once the bridge went unreadable — which on this link is often — the hold
+    sat out the rest of the reply ignoring all three. "I clicked End of reply
+    and it's still playing." None of them need the player to answer.
+    """
+    monkeypatch.setattr(S, "render_text", _fake_render)
+    # Unreadable for good: the loop bails into the hold and stays there.
+    sink = _ScriptedSink([_playing(0)] + [{}])
+    asked = {"n": 0}
+
+    def fake_nav(target=None):
+        # Nothing for the loop above, which gives up after ~50 unreadable
+        # ticks; End of reply only once the hold is the one asking.
+        asked["n"] += 1
+        return len(TEXT.split(". ")) if asked["n"] > 60 else None
+
+    monkeypatch.setattr(S, "_read_nav_request", fake_nav)
+    _run(sink)
+    assert sink.stops >= 1, "End of reply never reached the player"
