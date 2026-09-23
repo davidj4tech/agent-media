@@ -195,11 +195,11 @@ read them from Next instead of the old app's :8772.
   the newest turn carries `sentences` + `offsets` with no `live` (§6.2,
   `f1739ec`), measured now that `clip_starts_s` outlives the row. See
   [docs/notes/2026-09-23-follow-along-after-barge-in.md](notes/2026-09-23-follow-along-after-barge-in.md).
-  **Left: the app half** — `followAlong.ts` builds its clock from `live`
-  only, so the new payload is unread. It needs a position that is not
-  `elapsed`: the player's own. Open question first — how does the app know
-  the player still holds *that* turn? `/speech/now` would have to name it
-  (an `at` or a history id), which is a contract addition of its own.
+  **Done 23 Sep 2026**: `/speech/now` names the turn it is on (`turn`,
+  §6.5, `315e6e7`), the message carries `spoken.timeline` where `live` would
+  be (`b721515`), and the app bolds from the player's own `pos` when there is
+  no live clock (sasonica-chat `0f97d007`, `test/lostlive.mjs` — verified
+  failing without the wiring).
 - `follow.mjs` at the largest text size fails on and off.
 - `test_session_events.py::test_a_state_change_sends_the_list_again` times
   out on and off when the machine is busy (the SSE watcher's poll is 50 ms
