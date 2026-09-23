@@ -357,8 +357,18 @@ class Builder:
                 self._close()
         elif kind == "attachment":
             att = rec.get("attachment") or {}
-            if att.get("type") == "queued_command" and isinstance(att.get("prompt"), str):
-                self._prompt(rec, att["prompt"])
+            # A message typed while a turn was running. Claude Code wrote the
+            # prompt as a string and now writes it as content blocks; either
+            # is the same message, and dropping the second kind lost every
+            # mid-turn message from the thread — they survived only as spoken
+            # lines, which a reader then saw placed by when they were read
+            # aloud rather than by when they were sent.
+            if att.get("type") == "queued_command":
+                text = att.get("prompt")
+                if isinstance(text, list):
+                    text = _user_text(text)[0]
+                if isinstance(text, str) and text.strip():
+                    self._prompt(rec, text)
 
     def _feed_assistant(self, rec: dict) -> None:
         m = rec.get("message") or {}

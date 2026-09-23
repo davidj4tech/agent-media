@@ -204,6 +204,27 @@ def test_a_prompt_typed_mid_turn_is_a_message(script):
     assert out[1]["parts"][0]["status"] == "done"
 
 
+def test_a_mid_turn_prompt_written_as_blocks_is_the_same_message(script):
+    """Claude Code wrote the queued prompt as a string and now writes it as
+    content blocks. Reading only the first shape dropped every message David
+    sent while a turn was running: it reached the thread only as a spoken
+    line, placed by when it was read aloud rather than when he sent it."""
+    s = script
+    s.prompt("Start")
+    s.tool("Bash", {"command": "make"}, "t1")
+    s.write(s.base("attachment", attachment={
+        "type": "queued_command",
+        "prompt": [{"type": "text", "text": "also do the docs"}]}))
+    s.write(s.base("attachment", attachment={
+        "type": "queued_command", "prompt": [{"type": "text", "text": "   "}]}))
+    s.write(s.base("attachment", attachment={"type": "queued_command", "prompt": []}))
+    s.result("t1", "ok")
+    s.text("Done, and the docs.")
+    assert [(m["role"], texts(m)) for m in msgs()] == [
+        ("user", ["Start"]), ("assistant", []), ("user", ["also do the docs"]),
+        ("assistant", ["Done, and the docs."])]
+
+
 def test_compaction(script):
     s = script
     s.prompt("Before")
