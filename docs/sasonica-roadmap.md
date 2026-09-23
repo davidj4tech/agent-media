@@ -175,8 +175,11 @@ read them from Next instead of the old app's :8772.
       extra it finds, each skipped with a reason when its tool is absent),
       and `media-setup status --json` is the same rows for the page.
       `--config-dir` writes a Sasonica-managed config and records
-      `CLAUDE_CONFIG_DIR`. Still to do: have agent-config *call* the
-      profile rather than carry its own copy of those hooks.
+      `CLAUDE_CONFIG_DIR`. agent-config now *calls* the profile instead of
+      carrying its own copy of the speech hooks (agent-config `c36c128`) —
+      which caught the drift that made it worth doing: its timeouts were
+      right and agent-media's installer still wrote an older set (Stop at
+      30 s instead of 120, no `async`, the wrong third event).
    2. **The page**: the app already installs and signs in harnesses (§6.6),
       so the same page shows *this machine's wiring* — hooks, services,
       skills, mailbox, catch-up — each with what is missing and a button
@@ -190,6 +193,11 @@ read them from Next instead of the old app's :8772.
   question barges in mid-reply: the audio resumes, the live row does not, so
   the thread stops highlighting. Diagnosed as far as
   [docs/notes/2026-09-23-follow-along-after-barge-in.md](notes/2026-09-23-follow-along-after-barge-in.md).
+- red5 is missing three services its own roles want:
+  `mpv-book-bridge-local`, `mpv-music-bridge-local`,
+  `mpv-speech-bridge-local` (found by `media-setup status`, 23 Sep 2026).
+  Either the roles claim a capability this host has not got, or they were
+  never installed here.
 - `follow.mjs` at the largest text size fails on and off.
 - `test_session_events.py::test_a_state_change_sends_the_list_again` times
   out on and off when the machine is busy (the SSE watcher's poll is 50 ms
