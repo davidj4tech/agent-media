@@ -34,6 +34,17 @@ Where things live:
 - Optional extras (agent-memory, agent-mail, …) are opt-in in the Sasonica
   installer and detected at runtime; the app shows a feature only when its
   extra is present.
+- **The distributable wiring is a Sasonica profile inside agent-media**
+  (David, 23 Sep 2026), installed by `media-setup`: agent-media already owns
+  the hooks, the services and the installer, so the profile is one
+  definition with two consumers — agent-config includes it, and everyone
+  else installs it on its own. agent-config stays David's personal layer.
+- **It merges into the machine's own Claude Code config** (`~/.claude/
+  settings.json`, backed up first, nothing else touched), because the point
+  is that the phone drives the *same* sessions — same skills, same memory,
+  same panes. A **Sasonica-managed config dir** (its own
+  `CLAUDE_CONFIG_DIR`) is offered for people who do not want Sasonica in
+  their settings; it costs them that sharing.
 
 ## Done
 
@@ -153,11 +164,17 @@ read them from Next instead of the old app's :8772.
    everything else — the mail inbox hook, the session autoname, the
    catch-up hook, the skills directory, `agent-media.env`. A fresh machine
    that runs only the first two looks set up and is missing half of it.
-   The app already installs and signs in harnesses (§6.6), so the same
-   page should show *this machine's wiring* — hooks, services, skills,
-   mailbox, catch-up — each with what is missing and a button that runs
-   the installer that owns it. The server should call the existing
-   installers, not reimplement them.
+   Two parts, in this order:
+   1. **The Sasonica profile** (standing decision above): move that third
+      set into agent-media as a named profile `media-setup` installs,
+      merging into the machine's own config, with the managed-config-dir
+      option beside it. agent-config then includes the profile instead of
+      carrying its own copy.
+   2. **The page**: the app already installs and signs in harnesses (§6.6),
+      so the same page shows *this machine's wiring* — hooks, services,
+      skills, mailbox, catch-up — each with what is missing and a button
+      that runs the installer that owns it. The server calls the existing
+      installers, never reimplements them.
 
 ## Loose ends
 
