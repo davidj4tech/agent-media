@@ -200,6 +200,13 @@ read them from Next instead of the old app's :8772.
   be (`b721515`), and the app bolds from the player's own `pos` when there is
   no live clock (sasonica-chat `0f97d007`, `test/lostlive.mjs` — verified
   failing without the wiring).
+- **A server-settings section in the app** — *maybe, 23 Sep 2026*. Nothing
+  server-wide is settable from the phone: auto-naming (`MEDIA_AUTO_TITLE`)
+  and which model names a thread (`MEDIA_TITLE_MODEL`) are env vars on red5.
+  Not Advanced, which is per device and reveals detail rather than changing
+  the server for everyone paired to it. Left as env vars deliberately: a
+  bad name costs one tap of Rename, which wins for good. Build the section
+  when two or three settings want it, not for one checkbox.
 - `follow.mjs` at the largest text size fails on and off.
 - `test_session_events.py::test_a_state_change_sends_the_list_again` times
   out on and off when the machine is busy (the SSE watcher's poll is 50 ms
