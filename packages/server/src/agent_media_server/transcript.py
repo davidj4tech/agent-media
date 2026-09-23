@@ -1140,6 +1140,15 @@ def _spoken(line: dict) -> dict:
         out["figure"] = bool(line.get("figure"))
     if line.get("live"):
         out["live"] = {k: line.get(k) for k in LIVE_FIELDS}
+    elif line.get("sentences"):
+        # The turn's timeline with no claim that it is playing: the newest
+        # turn carries it whether or not the live row survived (§6.2). A
+        # client that can see the player's own position (`/speech/now`'s
+        # `pos` and `turn`) bolds from that instead of an `elapsed` that
+        # died with the row.
+        out["timeline"] = {"sentences": line.get("sentences") or [],
+                           "offsets": line.get("offsets") or [],
+                           "measured": bool(line.get("measured"))}
     return out
 
 

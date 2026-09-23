@@ -785,7 +785,8 @@ written, with its steps and narration. Messages are read from the same file.
  "spoken": {"id": 4711, "key": "3f9a…", "at": 1790000131.2,
             "images": ["/img/…"], "figure": true,
             "live": {"sentences": […], "sentence": 1, "offsets": […], "elapsed": 3.2,
-                     "server_time": 1790000134.4, "delay": 0.0, "paused": false}},
+                     "server_time": 1790000134.4, "delay": 0.0, "paused": false},
+            "timeline": {"sentences": […], "offsets": […], "measured": true}},
  "turn": {"running": false}}
 ```
 
@@ -795,7 +796,7 @@ written, with its steps and narration. Messages are read from the same file.
 | `role` | `"user"` or `"assistant"` |
 | `at` | epoch seconds, 3 dp, of the first record |
 | `parts` | in order, as the terminal draws them (below) |
-| `spoken` | the speech of this message, or `null` if it was not spoken (or cannot be recognised). `id` is the history row for `/speech/ctl replay-id` (`null` while it is still playing for the first time); `key` the reply's dedup key; `images`/`figure` as on lines, only when drawn; `live` only while it plays — the §6.2 live-line fields, moved here |
+| `spoken` | the speech of this message, or `null` if it was not spoken (or cannot be recognised). `id` is the history row for `/speech/ctl replay-id` (`null` while it is still playing for the first time); `key` the reply's dedup key; `images`/`figure` as on lines, only when drawn; `live` only while it plays — the §6.2 live-line fields, moved here; `timeline` instead of `live` on the newest spoken turn when it is not playing (`{sentences, offsets, measured}`, §6.2) |
 | `turn.running` | the turn is still going: the last record asked for a tool, or a tool has no result yet. Always `false` when the session is not live |
 | `command` | user messages that are a slash command only: `{name, args, text}`, the line's chip (`slash.py`); settings commands are never messages |
 | `peer` | user messages another session delivered into this one (a `<cross-session-message>`): `{name}`; the text is only the message body. Not the listener's words — the app shows a small "From <name>" and never counts it as a send of its own |
