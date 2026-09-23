@@ -13,7 +13,7 @@ Each entry: repo or URL, then what we care about in it.
   handoff, push notifications, voice, E2E-encrypted relay.
 - siteboon/claudecodeui — web/mobile UI over Claude Code and Cursor CLI
   sessions; file tree, git panel, session browser.
-- sst/opencode — terminal agent with a client/server split; its web, desktop
+- anomalyco/opencode (was sst/opencode) — terminal agent with a client/server split; its web, desktop
   and remote clients, and how they share a session.
 - omnara-ai/omnara — "mission control" for agents from the phone; approvals and
   questions as notifications.

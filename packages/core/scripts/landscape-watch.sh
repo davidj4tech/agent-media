@@ -24,9 +24,10 @@ are building now).
 
 1. Read $DIR/watchlist.md.${prev:+ The previous digest is $prev; report what is NEW since it, do not repeat it.}
 2. For each entry, check recent releases, merged PRs, changelogs and notable
-   issues (use \`gh\` for GitHub repos, web search/fetch otherwise). Verify repo
+   issues (use \`gh\` for GitHub repos). Verify repo
    names; if one moved or died, say so.
-3. Discovery: search GitHub, Hacker News and the web for NEW projects in the
+3. Also use WebSearch (required, not optional) for each non-GitHub entry,
+   Anthropic's Claude Code changelog, and discovery: search GitHub, Hacker News and the web for NEW projects in the
    same space (phone/remote UIs for Claude Code, Codex, opencode; voice or TTS
    for coding agents) from roughly the last month.
 4. Write $OUT in this shape:
@@ -40,7 +41,7 @@ Only write that one file. Do not edit anything else."
 
 claude -p "$prompt" \
   --model "$MODEL" \
-  --allowedTools "Read,Glob,Grep,WebSearch,WebFetch,Bash(gh:*),Write($DIR/**)" \
+  --allowedTools "Read,Glob,Grep,WebSearch,WebFetch,Bash(gh:*),Edit($DIR/**)" \
   --permission-mode acceptEdits \
   > "${XDG_STATE_HOME:-$HOME/.local/state}/landscape-watch.last.log" 2>&1
 
@@ -50,7 +51,7 @@ git add -- "$OUT"
 git commit -q -m "docs: landscape watch $TODAY" -- "$OUT" || true
 
 # Top item of "Worth stealing" makes the TODO title informative on the agenda.
-lead="$(awk '/^## Worth stealing/{f=1;next} /^## /{f=0} f && /^[-*] /{sub(/^[-*] +/,"");print;exit}' "$OUT" | cut -c1-90)"
+lead="$(awk '/^## Worth stealing/{f=1;next} /^## /{f=0} f && /^[-*] /{sub(/^[-*] +/,"");print;exit}' "$OUT" | sed -E 's/\*\*//g; s/\. .*/./' | cut -c1-90)"
 {
   printf '\n* TODO Landscape watch %s: %s\n' "$TODAY" "${lead:-read the digest}"
   printf '  [[file:%s/%s][Digest]] — skim "Worth stealing"; move good suggested additions into the watch list.\n' "$REPO" "$OUT"
