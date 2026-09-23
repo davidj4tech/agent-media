@@ -196,6 +196,15 @@ read them from Next instead of the old app's :8772.
       installers, never reimplements them (`media-setup status --json` is
       already that list).
 
+5. **Alerts and digests in Next** (David, 24 Sep 2026) —
+   `docs/proposals/2026-09-24-alerts-and-digests.md`. The dozen red5
+   watchers (disk, host, login, mcp, memory health, issue watches) and the
+   digests (describe, agenda, landscape) report status through one
+   `agent-alert` helper to a server-side store; the store does the edge
+   detection, the `alerts` event rides `/sessions/events` to Next's
+   notifier, cards get **Fix it** (a session via `POST /ask`) and **Ack**,
+   and inbox.org stays the record. disk-watch and host-watch port first.
+
 ## Loose ends
 
 - **A reply with a figure had no follow-along at all** (David, 23 Sep 2026)
