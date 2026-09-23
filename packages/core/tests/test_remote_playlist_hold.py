@@ -125,3 +125,55 @@ def test_bail_holds_token_until_idle_confirmed(state_env, monkeypatch):
     # Duck bracketed exactly once and nothing was left playing.
     assert (coord.before, coord.after) == (1, 1)
     assert state.get_now_playing("speech") is None
+
+
+class _BlindSink(_DeadBridgeThenIdleSink):
+    """A bridge that never comes back — every snapshot is unreadable.
+
+    Which is not the exotic case it sounds like: the breaker that ended the
+    follow above stays open, so once a link starts dropping packets the hold
+    that follows is blind for the whole rest of the reply.
+    """
+
+    def snapshot(self, target=None):
+        self.snapshot_calls += 1
+        return None
+
+
+def test_the_highlight_keeps_moving_while_the_bridge_is_down(state_env, monkeypatch):
+    """A blind hold still knows where the reply has got to.
+
+    The clips were measured before any of this played, so their start offsets
+    plus the clock say which sentence is being spoken — no read required. The
+    hold used to advance the highlight only on a snapshot that landed, so on a
+    link losing packets it froze on whichever sentence the bridge died on and
+    stayed there to the end of the reply: "no follow along?" (David, 23 Sep
+    2026).
+    """
+    monkeypatch.setattr(S, "render_text", _fake_render)
+    monkeypatch.setattr(S, "_clip_duration", lambda *_a, **_k: 10.0)
+
+    # A clock the loop's own sleeps drive, so "later" happens without waiting.
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(S.time, "sleep",
+                        lambda *_a, **_k: clock.__setitem__("t", clock["t"] + 0.1))
+    monkeypatch.setattr(S.time, "monotonic", lambda: clock["t"])
+
+    state = StateStore()
+    marks = []
+    real_set = state.set_now_playing
+
+    def spy(channel, **kw):
+        if channel == "speech":
+            marks.append((kw.get("extras") or {}).get("current_sentence_idx"))
+        return real_set(channel, **kw)
+
+    monkeypatch.setattr(state, "set_now_playing", spy)
+
+    sink = _BlindSink()
+    S.submit_event(_phone_event(), state=state, sink=sink, coordinator=_RecordingCoord())
+
+    assert 1 in marks, (
+        "the highlight never left the first sentence, so a listener watching "
+        f"it saw the reply stop moving: {marks}")
+    assert marks == sorted(marks), "the clock walked the highlight backwards"

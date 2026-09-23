@@ -4386,15 +4386,45 @@ def _submit_event(event: Event,
                                 mark_i = pos
                             if 0 <= mark_i < len(clip_data):
                                 _mark(mark_i, live=snap)
-                            if snap.get("pause") and paused_for < _BLIND_PAUSE_CAP_S:
-                                # Paused is not over. Spending the reply's own
-                                # length while nothing is playing is how a reply
-                                # the listener held ended up with no live row —
-                                # and then no follow-along when they resumed it.
-                                # Capped, so a player stuck at pause=true cannot
-                                # hold the speech token for ever.
-                                paused_for += waited
-                                hard_deadline += waited
+                        else:
+                            # Nothing came back — and on a link losing two
+                            # packets in five that is most ticks, because the
+                            # breaker that ended the follow above stays open.
+                            # Reading the player is not the only way to know
+                            # where a reply has got to: the clips were measured
+                            # before any of this played, so `offsets` says when
+                            # each sentence starts and the clock says how far
+                            # in we are. Following that is what keeps the
+                            # highlight moving through exactly the stretch a
+                            # listener notices ("no follow along?" — David,
+                            # 23 Sep 2026); before it, the highlight froze on
+                            # whatever sentence the bridge died on and stayed
+                            # there for the rest of the reply.
+                            #
+                            # Forwards only, and never past the last clip: the
+                            # clock is an estimate, and an estimate that can
+                            # walk backwards is worse than one that waits. A
+                            # snapshot that does land still wins outright.
+                            elapsed = time.monotonic() - _pl_started - paused_for
+                            guess = mark_i
+                            for idx, start in enumerate(offsets[:len(clip_data)]):
+                                if start <= elapsed:
+                                    guess = idx
+                                else:
+                                    break
+                            if guess > mark_i:
+                                mark_i = guess
+                                _mark(mark_i)
+                        if (snap and snap.get("pause")
+                                and paused_for < _BLIND_PAUSE_CAP_S):
+                            # Paused is not over. Spending the reply's own
+                            # length while nothing is playing is how a reply
+                            # the listener held ended up with no live row —
+                            # and then no follow-along when they resumed it.
+                            # Capped, so a player stuck at pause=true cannot
+                            # hold the speech token for ever.
+                            paused_for += waited
+                            hard_deadline += waited
                         time.sleep(0.5)
             else:
                 i = 0
