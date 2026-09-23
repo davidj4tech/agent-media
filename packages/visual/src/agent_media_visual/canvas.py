@@ -851,6 +851,19 @@ def _speech_extras() -> dict:
         return {}
 
 
+def _sticky_speech_speed() -> Optional[float]:
+    """The rate the last `media speed` press set, or None if never set.
+
+    Speed lives on the player and survives a reply, so "what rate am I at"
+    outlives the row that was being played at it.
+    """
+    try:
+        from agent_media_core.state.store import StateStore
+        return StateStore().get_speech_speed()
+    except Exception:  # noqa: BLE001 — same garnish rule as the extras
+        return None
+
+
 def _speech_turn() -> dict:
     """Which turn the player is on: `{"at": <started_at>, "id": <history id>}`.
 
@@ -1043,9 +1056,16 @@ def speech_state() -> dict:
     # across replies, so a bar that dropped it the moment a reply ended said
     # 1× while the phone still held 2×, and then the next reply "changed speed
     # by itself" (David, 23 Sep 2026).
-    if ex.get("live_speed") is not None:
+    speed = ex.get("live_speed")
+    if speed is None:
+        # Nothing is playing and the row has been cleared, so there are no
+        # extras left to read it off — but the rate is still set at the
+        # player, and the bar that offers to change it has to say what it is
+        # changing *from*. The store is where every press writes it down.
+        speed = _sticky_speech_speed()
+    if speed is not None:
         try:
-            state["speed"] = round(float(ex["live_speed"]), 2)
+            state["speed"] = round(float(speed), 2)
         except (TypeError, ValueError):
             pass
     if state["speaking"] or state.get("paused"):
