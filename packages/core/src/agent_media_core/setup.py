@@ -56,9 +56,24 @@ HOOK_MATCH_SUBSTRINGS = (
     "claude-code-tts-hook",
 )
 CLAUDE_HOOK_TIMEOUT = 30
-# UserPromptSubmit records what the listener typed, so the transcript on the
-# shelf has the questions as well as the answers.
-CLAUDE_HOOK_EVENTS = ("Stop", "Notification", "UserPromptSubmit")
+#: Where the speech hook goes, and how it must be run there. Taken from a
+#: machine that works (red5, 23 Sep 2026) rather than from what this file
+#: used to assume — the three differences all matter:
+#:
+#:   * **Stop gets 120 s.** It is the hook that renders and hands over a
+#:     whole reply; 30 s kills a long one halfway.
+#:   * **Every one is `async`.** A hook that speaks must not hold the turn
+#:     open while it does, or the agent waits on its own voice.
+#:   * **PreToolUse, not UserPromptSubmit.** PreToolUse is where a question
+#:     is spoken before it is asked (AskUserQuestion); the listener's own
+#:     words reach the shelf from the transcript, so no prompt hook is
+#:     needed for them.
+#:
+#: A hook this installer does not name is left exactly as it is: the merge
+#: rewrites its own entries and removes nothing.
+CLAUDE_HOOK_SPEC = (("Stop", 120, True), ("Notification", 30, True),
+                    ("PreToolUse", 30, True))
+CLAUDE_HOOK_EVENTS = tuple(event for event, _, _ in CLAUDE_HOOK_SPEC)
 
 
 def claude_settings_path() -> Path:
@@ -82,13 +97,10 @@ def _merge_hooks(settings: dict, command: str) -> tuple[dict, bool]:
     hooks = settings.setdefault("hooks", {})
     changed = False
 
-    target_entry = {
-        "type": "command",
-        "command": command,
-        "timeout": CLAUDE_HOOK_TIMEOUT,
-    }
-
-    for event in CLAUDE_HOOK_EVENTS:
+    for event, timeout, async_ in CLAUDE_HOOK_SPEC:
+        target_entry = {"type": "command", "command": command, "timeout": timeout}
+        if async_:
+            target_entry["async"] = True
         groups = hooks.setdefault(event, [])
         # Look for an existing group containing one of our hooks and
         # rewrite it; otherwise append a new group.
@@ -98,9 +110,7 @@ def _merge_hooks(settings: dict, command: str) -> tuple[dict, bool]:
             for i, h in enumerate(inner):
                 cmd = (h.get("command") or "")
                 if any(s in cmd for s in HOOK_MATCH_SUBSTRINGS):
-                    if (h.get("command") != command
-                            or h.get("timeout") != CLAUDE_HOOK_TIMEOUT
-                            or h.get("type") != "command"):
+                    if h != target_entry:
                         inner[i] = target_entry
                         changed = True
                     replaced = True
@@ -1388,13 +1398,33 @@ def _hook_installed(path: Path, match: str) -> bool:
     return False
 
 
+def hook_command() -> str:
+    """The speech hook as a path a hook can actually run.
+
+    A bare name needs the login shell's PATH to have this install on it, and
+    a hook's does not always — under fnm, pyenv or a venv that is only
+    activated in a terminal, the entry point is there and unreachable. The
+    interpreter running this installer knows where its own scripts are, so
+    prefer that; fall back to the bare name for an install that has none
+    (which is also what the tests read).
+    """
+    beside = Path(sys.executable).with_name(CLAUDE_HOOK_COMMAND)
+    found = str(beside) if beside.exists() else shutil.which(CLAUDE_HOOK_COMMAND)
+    if not found:
+        return CLAUDE_HOOK_COMMAND
+    # `$HOME/...`, not this user's expanded path: hooks run through a shell,
+    # and the same settings file is read on machines whose home is elsewhere.
+    home = str(Path.home())
+    return f"$HOME{found[len(home):]}" if found.startswith(home + os.sep) else found
+
+
 def _row_speech(args, *, check_only: bool):
     """agent-media's own hooks: the ones that speak a reply and record a turn."""
     path = _settings_path(args)
     have = _hook_installed(path, CLAUDE_HOOK_COMMAND)
     if check_only:
         return ("ok" if have else "missing"), str(path)
-    merged, changed = _merge_hooks(_load_json(path), CLAUDE_HOOK_COMMAND)
+    merged, changed = _merge_hooks(_load_json(path), hook_command())
     if changed:
         _write_settings(path, merged, dry_run=args.dry_run)
     return ("installed" if changed else "ok"), str(path)
@@ -1421,7 +1451,11 @@ def _hook_row(hook, tool: str):
 
 
 def _row_services(args, *, check_only: bool):
-    names = service_template_names()
+    # The ones this host's roles actually want — counting the templates it
+    # has deliberately not installed as missing would report every machine
+    # as half-built.
+    roles = host_roles()
+    names = [n for n in service_template_names() if service_wanted(n, roles)[0]]
     if check_only:
         backend = _service_backend(None)
         if backend == "systemd":

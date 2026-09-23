@@ -696,3 +696,50 @@ def test_a_managed_config_dir_is_written_to_instead(tmp_path, monkeypatch, capsy
     assert setup.cmd_profile(args) == 0
     assert (tmp_path / "sasonica" / "settings.json").exists()
     assert f"CLAUDE_CONFIG_DIR={tmp_path / 'sasonica'}" in env.read_text()
+
+
+def test_the_speech_hook_goes_where_it_works(tmp_path, monkeypatch):
+    """The three differences that matter, taken from a machine that works:
+    Stop gets 120 s (it renders and hands over a whole reply), every entry is
+    async (a hook that speaks must not hold the turn open), and the third
+    event is PreToolUse — where a question is spoken before it is asked."""
+    settings, changed = setup._merge_hooks({}, "media-hook-claude-code")
+    assert changed
+    got = {ev: [h for g in settings["hooks"][ev] for h in g["hooks"]]
+           for ev in settings["hooks"]}
+    assert set(got) == {"Stop", "Notification", "PreToolUse"}
+    assert got["Stop"][0] == {"type": "command", "command": "media-hook-claude-code",
+                              "timeout": 120, "async": True}
+    assert got["Notification"][0]["timeout"] == 30
+    assert all(h["async"] is True for hs in got.values() for h in hs)
+    # Idempotent, and it rewrites its own entry rather than adding a second.
+    again, changed = setup._merge_hooks(settings, "media-hook-claude-code")
+    assert not changed and again == settings
+
+
+def test_a_hook_this_installer_does_not_own_is_left_alone(tmp_path):
+    mine = {"type": "command", "command": "someone-elses-hook"}
+    before = {"hooks": {"Stop": [{"hooks": [dict(mine)]}],
+                        "SessionStart": [{"hooks": [dict(mine)]}]}}
+    after, changed = setup._merge_hooks(before, "media-hook-claude-code")
+    assert changed
+    assert {"type": "command", "command": "someone-elses-hook"} in \
+        [h for g in after["hooks"]["Stop"] for h in g["hooks"]]
+    assert after["hooks"]["SessionStart"] == before["hooks"]["SessionStart"]
+
+
+def test_the_hook_is_named_by_a_path_a_hook_can_run(monkeypatch, tmp_path):
+    """A bare name needs the login shell's PATH to have this install on it,
+    and a hook's does not always. `$HOME/...`, not the expanded path: the
+    same settings file is read on machines whose home is elsewhere."""
+    binx = tmp_path / "home" / "venv" / "bin"
+    binx.mkdir(parents=True)
+    (binx / setup.CLAUDE_HOOK_COMMAND).write_text("#!/bin/sh\n")
+    monkeypatch.setattr(setup.sys, "executable", str(binx / "python3"))
+    monkeypatch.setattr(setup.Path, "home", classmethod(lambda cls: tmp_path / "home"))
+    assert setup.hook_command() == f"$HOME/venv/bin/{setup.CLAUDE_HOOK_COMMAND}"
+    # Nothing beside the interpreter and nothing on PATH: the bare name, which
+    # at least says what is missing when it fails.
+    monkeypatch.setattr(setup.sys, "executable", str(tmp_path / "nowhere" / "python3"))
+    monkeypatch.setattr(setup.shutil, "which", lambda name: None)
+    assert setup.hook_command() == setup.CLAUDE_HOOK_COMMAND
