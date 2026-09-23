@@ -189,6 +189,21 @@ read them from Next instead of the old app's :8772.
 
 ## Loose ends
 
+- **A reply with a figure had no follow-along at all** (David, 23 Sep 2026)
+  — not a beat behind: no bold anywhere, the whole way down. **Fixed 23 Sep
+  2026** (`32d6704`). A live line has no key (it has never been written to
+  history), so `join_speech` matches it to its message by words — and the
+  words it compared were the raw transcript text, markers and all, because
+  `strip_markers` runs after the join so the key path can have them. A
+  `[[visual:]]` marker is easily 400 characters, which is the whole window
+  `_norm(…)[:400]` looks at: the reply scored 0.45 against its own live
+  line where the bar is 0.6, joined nothing, and the thread had no live
+  line to follow. The word match now compares `display_text`, which is what
+  the voice was given. Note for whoever meets this again: it bites only
+  while a reply is live — afterwards the history row carries a key and the
+  key path matches, so the transcript reads perfectly and the fault looks
+  like the follow-along, not the join.
+
 - **The bold sat one sentence behind the voice** (David, 23 Sep 2026).
   **Fixed 23 Sep 2026** (`44f14f9`): `pos` and `elapsed` were on different
   clocks. The live frame's `elapsed` is wall time since `play_started_at`,
