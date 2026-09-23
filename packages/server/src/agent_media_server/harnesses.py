@@ -194,6 +194,63 @@ def run(agent: str, action: str, bearer: str) -> tuple[bool, dict]:
     return True, {"pane": pane, "agent": agent, "action": action, "cmd": cmd}
 
 
+#: `name -> (checked_at, (latest, behind, line))`. Asked at most this often,
+#: because the page is opened far more often than anything publishes.
+_LATEST: dict[str, tuple[float, tuple[str, bool | None, str]]] = {}
+UPDATE_TTL_S = 3600.0
+
+
+def updates(bearer: str, refresh: bool = False) -> tuple[bool, dict]:
+    """`/harnesses/updates`: which of them a newer version exists for.
+
+    Its own route, and not part of `/harnesses`, because it is the only thing
+    here that goes to the network: the page draws its rows from the fast
+    answer and fills the update state in when this arrives. The three lookups
+    run together, and what they say is kept for an hour (`?refresh=1` asks
+    again).
+
+    `behind` is `true`, `false`, or `null` for "nobody can say": a lookup
+    that fails says nothing rather than claiming the thing is current.
+
+    Two ways of asking, by what the agent is. Three of them are npm packages,
+    so the registry is asked for the newest version and the two are compared.
+    Hermes is a checkout, so it is asked about itself (`hermes update
+    --check`, which fetches) and answers behind-or-not with no version at all.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    ok, detail = auth.may_control_speech(bearer)
+    if not ok:
+        return False, detail
+    names = [n for n in harnesses.HARNESSES if harnesses.installed(n)]
+    now = time.time()
+    ask = [n for n in names
+           if refresh or now - _LATEST.get(n, (0.0, ""))[0] > UPDATE_TTL_S]
+    if ask:
+        with ThreadPoolExecutor(max_workers=len(ask)) as pool:
+            for name, found in zip(ask, pool.map(_ask_about, ask)):
+                # A failed lookup is remembered too, so a host with no network
+                # is not asked again for every row on every page load.
+                _LATEST[name] = (now, found)
+    rows = []
+    for name in names:
+        checked, found = _LATEST.get(name, (0.0, ("", None, "")))
+        latest, said_behind, line = found
+        here = harnesses.version_number(harnesses.version_of(name))
+        behind = harnesses.is_behind(here, latest) if latest else said_behind
+        rows.append({"name": name, "installed": here, "latest": latest,
+                     "behind": behind, "line": line, "checked_at": checked})
+    return True, {"updates": rows}
+
+
+def _ask_about(name: str) -> tuple[str, bool | None, str]:
+    """`(latest, behind, line)` — whichever of the two ways this one answers."""
+    if harnesses.RECIPES.get(name, harnesses.Recipe()).check:
+        behind, line = harnesses.update_check(name)
+        return "", behind, line
+    return harnesses.latest_of(name), None, ""
+
+
 def sign_out(agent: str, bearer: str, timeout: float = 30.0) -> tuple[bool, dict]:
     """`/harnesses/logout`: forget this host's credentials for `agent`.
 

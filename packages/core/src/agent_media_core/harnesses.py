@@ -689,6 +689,11 @@ class Recipe:
     login: tuple[str, ...] = ()
     logout: tuple[str, ...] = ()
     status: tuple[str, ...] = ()
+    #: The npm package it is published as, for "is there a newer one?".
+    package: str = ""
+    #: …or the agent's own way of answering that, for one that is not a
+    #: package: Hermes is a checkout, and only it knows about its remote.
+    check: tuple[str, ...] = ()
 
 
 #: One row per harness. The install channels are the ones these agents are
@@ -701,6 +706,7 @@ RECIPES: dict[str, Recipe] = {
         login=("auth", "login"),
         logout=("auth", "logout"),
         status=("auth", "status"),
+        package="@anthropic-ai/claude-code",
     ),
     CODEX: Recipe(
         install=("npm", "install", "-g", "@openai/codex"),
@@ -713,14 +719,17 @@ RECIPES: dict[str, Recipe] = {
         login=("login", "--device-auth"),
         logout=("logout",),
         status=("login", "status"),
+        package="@openai/codex",
     ),
     PI: Recipe(
         install=("npm", "install", "-g", "@earendil-works/pi-coding-agent"),
         update=("pi", "update", "self"),
+        package="@earendil-works/pi-coding-agent",
     ),
     HERMES: Recipe(
         update=("hermes", "update", "--yes"),
         login=("setup",),
+        check=("update", "--check"),
     ),
 }
 
@@ -762,6 +771,95 @@ def logout_argv(harness: str) -> list[str]:
     if not r or not r.logout or not exe:
         return []
     return [exe, *r.logout]
+
+
+#: The version inside whatever `--version` prints: "codex-cli 0.156.0",
+#: "2.1.278 (Claude Code)". Compared as strings of numbers, not as text.
+_VERSION = re.compile(r"\d+(?:\.\d+)+(?:[-+][0-9A-Za-z.-]+)?")
+
+
+def version_number(text: str) -> str:
+    """The version in `text`, or "". Both ends of a comparison go through this."""
+    found = _VERSION.search(text or "")
+    return found.group(0) if found else ""
+
+
+def _parts(version: str) -> tuple:
+    """`1.2.10` as numbers, so it sorts above `1.2.9`. A pre-release suffix
+    is dropped: this decides "is there a newer one", not which one to fetch."""
+    head = version.split("-")[0].split("+")[0]
+    return tuple(int(n) for n in head.split(".") if n.isdigit())
+
+
+def is_behind(installed_version: str, latest: str) -> bool | None:
+    """Is this one older than that one? None when either cannot be read."""
+    a, b = version_number(installed_version), version_number(latest)
+    if not a or not b:
+        return None
+    pa, pb = _parts(a), _parts(b)
+    if not pa or not pb:
+        return None
+    return pa < pb
+
+
+def latest_of(harness: str, timeout: float = 20.0) -> str:
+    """The newest published version of `harness`, or "".
+
+    npm is the only registry any of them are on, and Hermes is not on it —
+    it is a checkout, and answering for it would mean a fetch. "" is the
+    honest answer there, and the caller shows no update state at all rather
+    than a guess.
+    """
+    import subprocess
+
+    r = RECIPES.get(harness)
+    npm = program("npm")
+    if not r or not r.package or not npm:
+        return ""
+    try:
+        done = subprocess.run([npm, "view", r.package, "version"],
+                              capture_output=True, text=True, timeout=timeout,
+                              check=False, env={**os.environ, "PATH": bin_path()})
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return version_number(done.stdout or "") if done.returncode == 0 else ""
+
+
+def update_check(harness: str, timeout: float = 90.0) -> tuple[bool | None, str]:
+    """Ask the agent itself whether it is behind. `(behind, what it said)`.
+
+    For the one that is not a package: `hermes update --check` fetches from
+    its remotes and says either "Already up to date" or "Update available",
+    which is the whole answer — there is no version to compare, and a commit
+    id would mean nothing on the page. It touches the network (about ten
+    seconds), so the caller caches it like the registry lookups.
+    """
+    import subprocess
+
+    r = RECIPES.get(harness)
+    exe = program(harness)
+    if not r or not r.check or not exe:
+        return None, ""
+    try:
+        done = subprocess.run([exe, *r.check], capture_output=True, text=True,
+                              timeout=timeout, check=False,
+                              env={**os.environ, "PATH": bin_path()})
+    except (OSError, subprocess.SubprocessError):
+        return None, ""
+    said = (done.stdout or "") + (done.stderr or "")
+    low = said.lower()
+    # Both phrases are the agent's own; anything else is "could not say",
+    # never "current", so a check that changes its wording cannot quietly
+    # start claiming everything is up to date.
+    if "update available" in low:
+        behind = True
+    elif "up to date" in low:
+        behind = False
+    else:
+        return None, ""
+    line = next((ln.strip() for ln in reversed(said.splitlines())
+                 if "update available" in ln.lower() or "up to date" in ln.lower()), "")
+    return behind, line[:120]
 
 
 def auth_state(harness: str, timeout: float = 15.0) -> tuple[str, str]:

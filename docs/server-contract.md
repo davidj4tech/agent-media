@@ -134,7 +134,7 @@ The app routes: `/conversation`, `/conversation/log`, `/conversations`,
 `/session/close`, `/session/answer`, `/session/stop`, `/draft`, `/speech/now`, `/speech/ctl`,
 `/sessions/state`, `/commands`, `/rename`, `/harnesses`, `/harnesses/run`,
 `/harnesses/screen`, `/harnesses/keys`, `/harnesses/close`,
-`/harnesses/logout` (23 Sep 2026), `/share`,
+`/harnesses/logout`, `/harnesses/updates` (23 Sep 2026), `/share`,
 `/search` (23 Sep 2026), and (22 Sep 2026) `/threads/{session}/events` — matched as a pattern, not
 listed (`app.cors_path`), so its preflight and its answers, refusals
 included, carry the same headers.
@@ -1396,6 +1396,7 @@ Getting an agent onto the host and signed in, from the phone.
 | `POST /harnesses/keys` | `{"pane", "text"?, "key"?}` | `{"ok", "pane"}` · 400 bad key / nothing to type, 404, 410 |
 | `POST /harnesses/close` | `{"pane"}` | `{"ok", "pane"}` · 404 |
 | `POST /harnesses/logout` (23 Sep 2026) | `{"agent"}` | `{"ok", "agent", "cmd", "exit", "lines", "auth"}` · 400 unknown agent, 409 no sign-out, 503/504 it would not run |
+| `GET /harnesses/updates[?refresh=1]` (23 Sep 2026) | – | `{"ok", "updates": [{"name", "installed", "latest", "behind": bool\|null, "line", "checked_at"}]}` |
 
 Only windows `/harnesses/run` opened can be read or typed into.
 
@@ -1406,6 +1407,20 @@ delete the stored credentials and exit — so it answers with what the command
 said and the state read back afterwards. It is the one call here that takes
 something away, including the credential every session the app starts runs
 on, so the client asks before making it.
+
+`/harnesses/updates` is the slow half of `/harnesses`, and its own route
+because it is the only thing here that goes to the network: the page draws
+its rows from `/harnesses` and fills the update state in when this lands.
+Installed harnesses only, asked two ways — the three npm packages by
+`npm view <pkg> version` against what `--version` says here, and Hermes by
+`hermes update --check`, which fetches from its remotes and answers
+behind-or-not with no version at all (`line` is what it said). `behind: null`
+is "nobody could say" and must never render as up to date. Answers are cached
+an hour on the server; `?refresh=1` asks again (the page's ↻, and after an
+install window closes).
+
+The client hides the Update button on a row that is `behind: false` — there
+is nothing for it to do — and labels it `Update to <latest>` when there is.
 
 Signed out is also enforced where it bites: `POST /ask` refuses a fresh chat
 with a harness that is missing or signed out (409, `{"agent", "fix":

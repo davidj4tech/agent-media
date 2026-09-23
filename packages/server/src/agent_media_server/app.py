@@ -62,6 +62,8 @@ device gets its token):
   POST /harnesses/close {"pane"} → end that window
   POST /harnesses/logout {"agent"} → forget this host's credentials for it
                   (no window: it deletes a file and exits)
+  GET  /harnesses/updates[?refresh=1] → which of them something newer exists
+                  for; goes to the network, so it is its own route
   GET  /sessions/events → the same, as a stream of changes, for a phone's
                   background notifier (session_events.py, §6.13)
   GET  /sessions/state  → every live session's working / waiting / approval,
@@ -151,6 +153,7 @@ CORS_PATHS = frozenset({
     "/speech/now", "/speech/ctl", "/speech/sentences", "/sessions/state", "/commands", "/rename",
     "/harnesses", "/harnesses/run", "/harnesses/screen",
     "/harnesses/keys", "/harnesses/close", "/harnesses/logout",
+    "/harnesses/updates",
     "/share", "/dashboard",
     "/sessions/events", "/search",
 })
@@ -458,6 +461,12 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
         # The four harnesses and what each needs — is it installed, is it
         # signed in — so the app can offer the buttons that would fix it.
         ok, detail = harnesses.agents(_bearer(h))
+        _json(h, 200 if ok else detail.pop("status", 403), {"ok": ok, **detail})
+    elif path == "/harnesses/updates":
+        # Is any of them out of date? The slow half of /harnesses, asked
+        # separately so the rows draw first (harnesses.py).
+        ok, detail = harnesses.updates(
+            _bearer(h), refresh=bool((parse_qs(query).get("refresh") or [""])[0]))
         _json(h, 200 if ok else detail.pop("status", 403), {"ok": ok, **detail})
     elif path == "/harnesses/screen":
         # The install or sign-in window, as the desk sees it.

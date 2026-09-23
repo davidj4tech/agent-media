@@ -216,3 +216,62 @@ def test_sign_out_of_something_with_no_recipe_is_refused(monkeypatch):
     monkeypatch.setattr(harnesses, "logout_argv", lambda name: [])
     assert agents.sign_out("pi", "bearer")[1]["status"] == 409
     assert agents.sign_out("rm -rf", "bearer")[1]["status"] == 400
+
+
+# --- is anything out of date --------------------------------------------------
+
+def _no_cache():
+    agents._LATEST.clear()
+
+
+def test_updates_compares_the_registry_with_what_is_here(monkeypatch):
+    _no_cache()
+    monkeypatch.setattr(harnesses, "installed", lambda name: name in ("claude", "codex"))
+    monkeypatch.setattr(harnesses, "version_of",
+                        lambda name, **k: "2.0.0 (x)" if name == "claude" else "codex-cli 0.155.1")
+    monkeypatch.setattr(harnesses, "latest_of",
+                        lambda name, **k: "2.0.0" if name == "claude" else "0.156.0")
+    ok, detail = agents.updates("bearer")
+    rows = {r["name"]: r for r in detail["updates"]}
+    assert ok and set(rows) == {"claude", "codex"}
+    assert rows["claude"]["behind"] is False
+    assert rows["codex"]["behind"] is True and rows["codex"]["latest"] == "0.156.0"
+
+
+def test_a_lookup_that_says_nothing_is_not_up_to_date(monkeypatch):
+    """"Could not ask" must never render as "current": that hides an update."""
+    _no_cache()
+    monkeypatch.setattr(harnesses, "installed", lambda name: name == "codex")
+    monkeypatch.setattr(harnesses, "version_of", lambda name, **k: "codex-cli 0.155.1")
+    monkeypatch.setattr(harnesses, "latest_of", lambda name, **k: "")
+    rows = agents.updates("bearer")[1]["updates"]
+    assert rows[0]["behind"] is None
+
+
+def test_the_one_that_is_not_a_package_is_asked_about_itself(monkeypatch):
+    _no_cache()
+    asked = []
+    monkeypatch.setattr(harnesses, "installed", lambda name: name == "hermes")
+    monkeypatch.setattr(harnesses, "version_of", lambda name, **k: "Hermes 0.17.0")
+    monkeypatch.setattr(harnesses, "latest_of",
+                        lambda name, **k: pytest.fail("hermes is not on npm"))
+    monkeypatch.setattr(harnesses, "update_check",
+                        lambda name, **k: asked.append(name) or (True, "Update available."))
+    rows = agents.updates("bearer")[1]["updates"]
+    assert asked == ["hermes"]
+    assert rows[0]["behind"] is True and rows[0]["latest"] == ""
+    assert "Update available" in rows[0]["line"]
+
+
+def test_the_network_is_asked_once_an_hour_unless_told_otherwise(monkeypatch):
+    _no_cache()
+    calls = []
+    monkeypatch.setattr(harnesses, "installed", lambda name: name == "codex")
+    monkeypatch.setattr(harnesses, "version_of", lambda name, **k: "codex-cli 0.155.1")
+    monkeypatch.setattr(harnesses, "latest_of",
+                        lambda name, **k: calls.append(name) or "0.156.0")
+    agents.updates("bearer")
+    agents.updates("bearer")
+    assert calls == ["codex"]
+    agents.updates("bearer", refresh=True)
+    assert calls == ["codex", "codex"]

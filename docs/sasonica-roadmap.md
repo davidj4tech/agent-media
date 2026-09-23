@@ -83,6 +83,15 @@ harness in `transcript.py` — prompts, replies, thinking and every step with
 its command and result, instead of one line per spoken sentence; Hermes
 keeps a database, so it still answers from its lines).
 
+Coding agents says what is out of date (23 Sep 2026): `GET
+/harnesses/updates`, its own route because it is the only thing on that page
+that goes to the network — the rows draw first and the update state fills in.
+The three npm ones are compared against `npm view`; Hermes answers its own
+`hermes update --check` (a fetch, ~10 s, no version — just behind or not).
+Cached an hour, re-asked by ↻ and after an install. An agent that is current
+has no Update button at all, one that is behind says `Update to 0.156.0`, and
+"could not ask" shows nothing rather than claiming it is current.
+
 Signing out of a harness, and not offering what cannot answer (23 Sep 2026):
 Codex's sign-in from the phone dead-ended on `localhost:1455` — the browser
 flow's callback is the *phone* — so it runs `codex login --device-auth`, a
