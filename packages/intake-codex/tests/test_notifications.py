@@ -21,15 +21,29 @@ def events(monkeypatch):
 def test_notification_metadata_and_text(events):
     assert codex.main([json.dumps({
         "type": "agent-turn-complete", "last-assistant-message": "Hello world",
-        "thread-id": "session-123", "turn-id": "turn-456", "cwd": "/tmp",
+        "thread-id": "01a0a6f1-ed4b-7f91-8d63-a61653a846f9",
+        "turn-id": "turn-456", "cwd": "/tmp",
         "input-messages": ["Do not speak this"],
     })]) == 0
     assert len(events) == 1
     assert events[0].text == "Hello world"
     assert events[0].source == Source.CODEX
     assert events[0].metadata == {
-        "kind": "stop", "session": "session-123", "turn_id": "turn-456", "cwd": "/tmp",
+        "kind": "stop", "session": "01a0a6f1-ed4b-7f91-8d63-a61653a846f9",
+        "turn_id": "turn-456", "cwd": "/tmp",
     }
+
+
+def test_thread_id_that_is_not_a_session_is_dropped(events):
+    """A thread shelved under a non-session id is one no route can address:
+    `/conversation`, `/session/archive` and `/reply` all answer 400."""
+    assert codex.main([json.dumps({
+        "type": "agent-turn-complete", "last-assistant-message": "Hello world",
+        "thread-id": "codex-adapter-verification", "cwd": "/tmp",
+    })]) == 0
+    assert events[0].text == "Hello world"
+    assert "session" not in events[0].metadata
+    assert events[0].metadata["cwd"] == "/tmp"
 
 
 def test_plain_stdin(events, monkeypatch):

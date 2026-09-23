@@ -6,9 +6,18 @@ the prompt becomes a "You:" turn, a tool call a step on the phone.
 """
 
 import json
+import re
 import sys
 from agent_media_core.types import Source
 from agent_media_core.intake import run_hook_stdin as run
+
+
+#: What a thread id has to look like to be usable as a session: a uuid, or
+#: Hermes's clock stamp. Mirrors the server's `sessions._SESSION` — every
+#: session-taking route rejects anything else with 400 "not a session id", so
+#: a turn shelved under one is a thread nobody can open, archive or reply to.
+_SESSION = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+                      r"|[0-9]{8}_[0-9]{6}_[0-9a-f]{4,}")
 
 
 def _is_structured(text: str) -> bool:
@@ -54,8 +63,15 @@ def main(argv: list[str] | None = None) -> int:
     for key, target in (("thread-id", "session"), ("turn-id", "turn_id"),
                         ("cwd", "cwd")):
         value = payload.get(key)
-        if isinstance(value, str) and value:
-            metadata[target] = value
+        if not (isinstance(value, str) and value):
+            continue
+        if target == "session" and not _SESSION.fullmatch(value):
+            # Codex itself always sends a uuid; a hand-made payload need not.
+            # Speak the turn, but do not name a thread the app cannot address.
+            print(f"media-hook-codex: ignoring thread-id {value!r} "
+                  "(not a session id)", file=sys.stderr)
+            continue
+        metadata[target] = value
     return run(Source.CODEX, "CODEX", text=text, metadata=metadata)
 
 
