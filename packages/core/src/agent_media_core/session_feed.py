@@ -83,6 +83,11 @@ class Turn:
     #: lines up with the clips that survived. Empty otherwise — a caller that
     #: wants to name a clip has to cope with not being told.
     sentences: list = field(default_factory=list)
+    #: Seconds from the start of the reply at which each surviving clip's
+    #: sentence began, as the player reached it (`clip_starts_s`). Empty when
+    #: the reply never played far enough to measure them, and a caller then
+    #: has only `durations` to apportion with.
+    starts: list = field(default_factory=list)
     #: True when the listener typed this turn from the player rather than the
     #: assistant speaking it. A conversation has two sides; this is which.
     listener: bool = False
@@ -150,7 +155,8 @@ def turns(session: str, *, store=None) -> list[Turn]:
         uris = ex.get("clip_uris") or ([row["uri"]] if row.get("uri") else [])
         durs = list(ex.get("clip_durations_s") or [])
         said = list(ex.get("clip_sentences") or [])
-        clips, kept, lines = [], [], []
+        began = list(ex.get("clip_starts_s") or [])
+        clips, kept, lines, at_s = [], [], [], []
         for i, u in enumerate(uris):
             p = Path(str(u))
             if not p.is_file():
@@ -161,12 +167,19 @@ def turns(session: str, *, store=None) -> list[Turn]:
             # swept must take its sentence with it, or every later line names
             # the wrong audio.
             lines.append(said[i] if i < len(said) else "")
+            # Same rule as the sentence: a start belongs to its clip, so a
+            # swept clip takes its offset with it rather than shifting every
+            # later sentence onto the wrong audio.
+            at_s.append(began[i] if i < len(began) else None)
         if not clips:
             continue
         out.append(Turn(at=float(row.get("started_at") or 0),
                         text=(row.get("text") or ""),
                         clips=clips, durations=kept,
                         sentences=(lines if any(lines) else []),
+                        starts=([float(x) for x in at_s]
+                                if at_s and all(x is not None for x in at_s)
+                                else []),
                         listener=bool(ex.get("listener")),
                         key=str(ex.get("dedup_key") or ""),
                         ask=(ex.get("ask") if isinstance(ex.get("ask"), list) else []),

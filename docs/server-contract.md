@@ -597,6 +597,35 @@ server's, and any skew between them moves the bold by exactly that much.
 `server_time` is there so the *server* can age `elapsed` up to the moment
 it sends the answer, which it already does.
 
+**The newest turn's timeline, without `live` (23 Sep 2026).** The live line
+exists only while `now_playing` names the reply, and there are several ways
+to lose that row while the audio plays on: a barge-in, a submit that died, a
+phone that was handed the clips and is playing them itself. A reader
+following the bold then had nothing to follow for the rest of the reply.
+
+So the **newest spoken turn** carries two extra fields whether or not
+anything is live:
+
+| Field | Meaning |
+| --- | --- |
+| `sentences` | the turn split into sentences, as spoken |
+| `offsets` | seconds from the start of the turn at which each begins |
+| `measured` | `true` when the player measured the offsets; `false` when they were apportioned from clip lengths (that one drifts within a reply) |
+
+There is **no `live`, no `elapsed`, no `server_time`** — this is not a claim
+that the turn is playing. It is the timeline, handed over so a player that
+knows its own position can bold from its own clock; on the phone lane the app
+*is* the player. When the line is live, the live line's fields win and these
+are not written over it.
+
+Only the newest turn: a whole conversation's sentences is payload nobody
+reads, and the newest is the only one a player still holds.
+
+`clip_starts_s` (what the player reached) now survives onto the ended history
+row, so these offsets are measured rather than apportioned whenever the reply
+played far enough to measure them. A clip the cache has swept takes its start
+with it, so a surviving sentence is never bolded against another's audio.
+
 **Line order and identity.** Shelved turns (in manifest order), then the
 live tail (turns spoken but not yet published, by `at`), then the live
 line. When a live line ends, it becomes an ordinary line **with the same

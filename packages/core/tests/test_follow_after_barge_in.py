@@ -187,3 +187,20 @@ def test_the_blind_hold_keeps_following(monkeypatch):
                          + [{"idle-active": True, "pause": False}])
     _run(sink)
     assert 2 in marked
+
+
+def test_the_ended_row_keeps_the_measured_starts(monkeypatch):
+    """`clip_starts_s` is what the player actually reached. It lived only on
+    the now-playing row, so it died with it — and a reader left with the ended
+    row could only apportion the timeline from clip lengths, which counts from
+    submit and leaves out the gaps between clips. The archive keeps them."""
+    monkeypatch.setattr(S, "render_text", _fake_render)
+    sink = _ScriptedSink([_playing(0), _playing(1), _playing(2),
+                          {"idle-active": True, "pause": False}])
+    _run(sink)
+
+    row = StateStore().recent_history(sink="speech", limit=1)[0]
+    starts = row["extras"]["clip_starts_s"]
+    assert len(starts) == len(row["extras"]["clip_sentences"])
+    assert starts[0] == 0.0
+    assert starts == sorted(starts)          # a sentence never starts earlier

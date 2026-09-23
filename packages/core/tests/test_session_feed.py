@@ -599,3 +599,29 @@ def test_a_long_name_is_still_trimmed_at_a_word(tmp_path, monkeypatch):
     title = session_feed.title_for(SESSION, [])
     assert title.startswith("A name so long") and title.endswith("…")
     assert len(title) < 80
+
+
+def test_a_turn_carries_the_measured_sentence_starts(clip):
+    """`clip_starts_s` survives on the ended row, so a reader that has lost
+    the live row gets the timeline the player measured rather than one
+    apportioned from clip lengths."""
+    a, b = clip("a.mp3"), clip("b.mp3")
+    store = _Store([_row([a, b], text="One. Two.", durs=[1.0, 2.0],
+                         clip_sentences=["One.", "Two."],
+                         clip_starts_s=[0.0, 1.4])])
+    turn = session_feed.turns(SESSION, store=store)[0]
+    assert turn.starts == [0.0, 1.4]
+
+
+def test_a_swept_clip_takes_its_start_with_it(tmp_path, clip):
+    """A start belongs to its clip. If the cache swept the first one, the
+    remaining sentence must not inherit its offset — every later sentence
+    would then be bolded against the wrong audio."""
+    gone = tmp_path / "swept.mp3"          # never written: the cache took it
+    b = clip("b.mp3")
+    store = _Store([_row([gone, b], text="One. Two.", durs=[1.0, 2.0],
+                         clip_sentences=["One.", "Two."],
+                         clip_starts_s=[0.0, 1.4])])
+    turn = session_feed.turns(SESSION, store=store)[0]
+    assert turn.sentences == ["Two."]
+    assert turn.starts == [1.4]

@@ -3698,6 +3698,14 @@ def _submit_event(event: Event,
     # when mpv reports idle.
     _highlight_delay_s = _playout_delay_s(target.name)
 
+    # When each sentence started, on the reply's own clock — see _stamp_start.
+    # `origin` is `play_started_at`; `last` the sentence the previous mark was
+    # for, so a re-mark (a pause reflected, a stall poll) does not move a start
+    # that has already happened. Declared out here, above `_archive`, because
+    # the ended row wants the measured starts too: a reader that has lost the
+    # live row can only apportion the timeline otherwise.
+    mark_clock: dict = {"origin": None, "starts": [], "last": None}
+
     def _archive(*, flushed: bool = False) -> Optional[int]:
         """The one history write, shared by every path that records this reply
         — played, muted, or flushed — so they cannot drift in what they store.
@@ -3718,6 +3726,14 @@ def _submit_event(event: Event,
                   "clip_durations_s": durations,
                   "clip_paragraph_idx": clip_para,
                   **(event.metadata or {})}
+        # Where each sentence actually began, when the reply played far enough
+        # to measure it. Summed durations count from submit and leave out the
+        # gaps between clips, so a reader handed only those bolds ahead of the
+        # voice; these are what the player reached, and they outlive the
+        # now-playing row (`book_tracks.conversation_log`).
+        if mark_clock["starts"]:
+            extras["clip_starts_s"] = [round(float(x), 3)
+                                       for x in mark_clock["starts"]]
         if fallback_info:
             extras["fallback"] = fallback_info
         if muted:
@@ -3888,11 +3904,6 @@ def _submit_event(event: Event,
                           pane=source_pane, source=event.source.value,
                           target=target.name)
             mute_watcher = _MuteDuckWatcher(sink, target, coordinator)
-            # When each sentence started, on the reply's own clock — see
-            # _stamp_start. `origin` is `play_started_at`; `last` the sentence
-            # the previous mark was for, so a re-mark (a pause reflected, a
-            # stall poll) does not move a start that has already happened.
-            mark_clock: dict = {"origin": None, "starts": [], "last": None}
 
             def _stamp_start(idx: int, live: Optional[dict], prior: dict,
                              extras: dict) -> None:

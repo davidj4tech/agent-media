@@ -619,3 +619,73 @@ def test_the_window_is_this_sessions_pane_and_a_live_one(tmp_path, monkeypatch):
     assert conversation.pane_of("s-live") == "%7"
     assert conversation.pane_of("s-dead") == ""      # its pid is gone
     assert conversation.pane_of("s-never") == ""
+
+
+def test_the_newest_turn_carries_its_timeline_without_being_live(tmp_path, monkeypatch):
+    """The live line exists only while `now_playing` names the reply, and a
+    barge-in (or a submit that died) can take that row away while the phone
+    plays on. The newest turn hands over its sentences and offsets anyway, so
+    a player that knows its own position keeps bolding — and says nothing
+    about being live, because it is not a claim that anything is playing."""
+    from agent_media_core import book_tracks as bt, session_feed
+    folder = tmp_path / "p-agent-media" / "A talk"
+    monkeypatch.setattr(bt, "_read_manifest", lambda s: {"turns": []})
+    monkeypatch.setattr(bt, "_abs_ready", lambda target=None: None)
+    monkeypatch.setattr(bt, "_live_turn", lambda s: None)
+    hist = [
+        session_feed.Turn(at=100.0, text="An older answer.",
+                          sentences=["An older answer."], durations=[2.0]),
+        session_feed.Turn(at=300.0, text="One. Two. Three.",
+                          sentences=["One.", "Two.", "Three."],
+                          durations=[1.0, 2.0, 3.0],
+                          starts=[0.0, 1.4, 3.9]),
+    ]
+    monkeypatch.setattr(session_feed, "turns", lambda s, store=None: list(hist))
+
+    lines = bt.conversation_log("sess-1", folder)
+    newest = lines[-1]
+    assert newest["sentences"] == ["One.", "Two.", "Three."]
+    assert newest["offsets"] == [0.0, 1.4, 3.9]   # measured, not summed
+    assert newest["measured"] is True
+    assert "live" not in newest and "elapsed" not in newest
+    # Only the newest: a whole conversation's sentences is payload nobody reads.
+    assert "sentences" not in lines[0]
+
+
+def test_an_unmeasured_turn_apportions_its_offsets(tmp_path, monkeypatch):
+    """A reply that never played far enough to measure a start still gets a
+    timeline — summed clip lengths — and is labelled as not measured, because
+    that one drifts within a reply and a reader is owed the difference."""
+    from agent_media_core import book_tracks as bt, session_feed
+    folder = tmp_path / "p-agent-media" / "A talk"
+    monkeypatch.setattr(bt, "_read_manifest", lambda s: {"turns": []})
+    monkeypatch.setattr(bt, "_abs_ready", lambda target=None: None)
+    monkeypatch.setattr(bt, "_live_turn", lambda s: None)
+    hist = [session_feed.Turn(at=300.0, text="One. Two.",
+                              sentences=["One.", "Two."], durations=[1.5, 2.0])]
+    monkeypatch.setattr(session_feed, "turns", lambda s, store=None: list(hist))
+
+    line = bt.conversation_log("sess-1", folder)[-1]
+    assert line["offsets"] == [0.0, 1.5]
+    assert line["measured"] is False
+
+
+def test_a_live_newest_turn_keeps_the_live_fields(tmp_path, monkeypatch):
+    """When the row is live, the live line wins: its `elapsed`/`server_time`
+    are not overwritten by the ended turn's static timeline."""
+    from agent_media_core import book_tracks as bt, session_feed
+    folder = tmp_path / "p-agent-media" / "A talk"
+    monkeypatch.setattr(bt, "_read_manifest", lambda s: {"turns": []})
+    monkeypatch.setattr(bt, "_abs_ready", lambda target=None: None)
+    hist = [session_feed.Turn(at=300.0, text="One. Two.", id=7,
+                              sentences=["One.", "Two."], durations=[1.5, 2.0])]
+    monkeypatch.setattr(session_feed, "turns", lambda s, store=None: list(hist))
+    monkeypatch.setattr(bt, "_live_turn", lambda s: {
+        "at": 900.0, "text": "One. Two.", "listener": False,
+        "sentences": ["One.", "Two."], "sentence": 1, "offsets": [0.0, 1.4],
+        "elapsed": 2.0, "paused": False, "server_time": 902.0, "delay": 0.0,
+        "history_id": 7})
+
+    line = bt.conversation_log("sess-1", folder)[-1]
+    assert line["live"] is True
+    assert line["offsets"] == [0.0, 1.4] and line["elapsed"] == 2.0

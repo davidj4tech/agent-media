@@ -989,6 +989,41 @@ def conversation_log(session: str, folder: Path, *, target=None,
                      "server_time": live["server_time"], "delay": live["delay"]})
         if replayed is None:
             out.append(line)
+
+    # The newest spoken turn carries its sentences and their offsets even when
+    # nothing is live. The live line exists only while `now_playing` names the
+    # reply, and there are several ways to lose that row while the audio plays
+    # on — a barge-in, a submit that died, a phone that was handed the clips
+    # and is playing them by itself. A reader that was following then had
+    # nothing to follow for the rest of the reply.
+    #
+    # No `live`, no `elapsed`, no `server_time`: this is not a claim that the
+    # turn is playing. It is the timeline, handed over so a player that knows
+    # its own position can bold from its own clock — which on the phone lane
+    # is the app itself. One turn, because a whole conversation's sentences is
+    # a payload nobody reads and the newest is the only one still in a player.
+    newest = max(said) if said else None
+    if newest is not None and getattr(said[newest], "sentences", None):
+        for line in reversed(out):
+            if line.get("at") != newest:
+                continue
+            if not line.get("live") and "sentences" not in line:
+                turn = said[newest]
+                offsets = [round(float(x), 3)
+                           for x in (getattr(turn, "starts", None) or [])]
+                if not offsets:
+                    acc, offsets = 0.0, []
+                    for d in (getattr(turn, "durations", None) or []):
+                        offsets.append(round(acc, 3))
+                        acc += float(d or 0)
+                line.update({"sentences": list(turn.sentences),
+                             "offsets": offsets,
+                             # Measured by the player, or apportioned from the
+                             # clip lengths — the second drifts within a reply,
+                             # and a reader owed an explanation for a bold that
+                             # runs ahead needs to know which it was handed.
+                             "measured": bool(getattr(turn, "starts", None))})
+            break
     return [line for line in out if _said_by_anyone(line)]
 
 

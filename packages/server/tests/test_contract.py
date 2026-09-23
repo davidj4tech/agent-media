@@ -302,6 +302,18 @@ def test_conversation_log_line_shape_from_book_tracks(monkeypatch):
     assert keys(line) == {"start", "end", "who", "text", "at", "key", "id", "ask"}
     assert line["who"] == "agent" and line["text"] == "Which?" and line["id"] == 7
 
+    # The newest turn also hands over its timeline when it has one — without
+    # `live`, which is a claim about playing and not one this makes.
+    spoken = SimpleNamespace(at=20.0, text="One. Two.", listener=False, key="k2",
+                             ask=[], command=None, id=8,
+                             sentences=["One.", "Two."], durations=[1.5, 2.0],
+                             starts=[0.0, 1.4])
+    monkeypatch.setattr(book_tracks.session_feed, "turns", lambda s: [spoken])
+    (line,) = book_tracks.conversation_log(SID, None)
+    assert keys(line) == {"start", "end", "who", "text", "at", "key", "id",
+                          "sentences", "offsets", "measured"}
+    assert line["offsets"] == [0.0, 1.4] and line["measured"] is True
+
 
 def test_commands_shape(server, shelf, signed_in, monkeypatch):
     from agent_media_core import slash_menu
