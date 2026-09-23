@@ -111,6 +111,12 @@ only means something where the file put it, and in the agenda it orders the
 items inside a day, not the days. Merged to `chat-prototype` and on the red5
 preview; in Next at the next CI build.
 
+Typed tools for Sasonica Shell (`docs/tools-and-approvals.md` §1: a skill
+declares actions with typed arguments in `~/.config/sasonica/tools/`, the
+runner publishes name, description, schema and sha256 — never the argv —
+and a call runs a fixed argv with `execFile`, no shell; first set is speak,
+music now/pause/resume and memory search, live on red5).
+
 ## In flight
 
 **Next's own speech player.** Media3 (David, 23 Sep 2026: the reason
@@ -139,8 +145,7 @@ read them from Next instead of the old app's :8772.
 
 ## Queued, in order
 
-1. **Typed tools for Sasonica Shell.**
-2. **Sasonica Shell OAuth** — the proposal is written, not built.
+1. **Sasonica Shell OAuth** — the proposal is written, not built.
 
 ## Loose ends
 
