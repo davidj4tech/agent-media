@@ -2992,7 +2992,14 @@ So all three are supported and documented; none is assumed.
 | TLS | the proxy's cert | terminated at the provider's edge | none — plain http on the mesh |
 | Server's IP visible | yes | no | mesh only |
 | Extra daemon | no (the proxy exists) | yes | no |
-| Who it fits | a VPS (red5) | a laptop or NUC behind a router — **most people** | one person, one mesh |
+| Who it fits | a VPS (red5) | a laptop or NUC behind a router — **most people** | anyone already on a mesh — offer it first, assume it never |
+
+**From the app, all three are one thing: a base URL.** The app has no
+transport setting and must never grow one — it stores the address the
+pairing link carried (§9) and talks https or http to it. So "configurable
+from the app" is already the design; what is missing is a way to *enter* an
+address without a pairing command run at a desk. That gap is the setup flow,
+not the transport.
 
 ### A. Reverse proxy (red5 today)
 
@@ -3022,11 +3029,20 @@ Cloudflare and `tailscale funnel` do). Device tokens travel over https only.
 
 ### C. Tailnet only
 
-What ships today. Sasonica Next's network security config allows cleartext
-**only to tailnet addresses**, which is why a bare MagicDNS name fails to
-pair (§9) and why this is not a shape a stranger can adopt. Under A or B the
-app is talking https to a public name, so that rule stops applying — it is
-not a blocker to remove, just one that goes quiet.
+What ships today, and the shape to offer **first** to anyone who already has
+a mesh (David, 23 Sep 2026): it is the least work and the least exposure.
+It is simply not one a stranger can adopt, so it cannot be the only one.
+
+**Correction to §9 (23 Sep 2026).** §9 says Sasonica Next's network security
+config "allows cleartext only to tailnet addresses". It does not:
+`android/app/src/main/res/xml/network_security_config.xml` is
+`<base-config cleartextTrafficPermitted="true">` with no domain rules — in
+Sasonica Next, sasonica-chat and sasonica alike. So the
+"Could not reach http://red5:8781" that produced that note was **name
+resolution** (a bare MagicDNS name needs the tailnet's DNS), not a cleartext
+refusal. Consequence, and it is the useful half: a plain-http server on a
+home LAN (`http://192.168.1.10:8781`) is **already allowed**. There is no
+app-side blocker to shape A or B, and none to a LAN-only install either.
 
 ### Before anything is exposed: the amux token
 
