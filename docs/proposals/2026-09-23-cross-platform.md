@@ -109,6 +109,31 @@ verifiable now and is the lower-risk way to prove the pane layer really is a
 layer. Either one being added is the test — if a second non-tmux
 multiplexer drops in without touching `cli.py`, the abstraction is real.
 
+## GNU screen, considered (David's, 23 Sep)
+
+Not disqualified by age — screen is maintained (5.x, 2024) — and on paper it
+has all four: `screen -X -p <window> stuff` types, `hardcopy -h` dumps with
+scrollback, `title` labels, and it exports `$STY` and `$WINDOW`, which is the
+same discovery shape as `TMUX_PANE`. **Unverified here:** screen is not
+installed on red5, so unlike the Zellij row above, this is recollection.
+
+It still loses on three specifics, none of them about age:
+
+- **Windows, not panes.** `-p` addresses a *window*; split regions are a
+  display concept and are not addressable the same way. Our model is a pane
+  per agent, and `layout.py` splits deliberately.
+- **A file, not stdout.** `hardcopy` writes to a path and drops styling;
+  there is no equivalent of `capture-pane -e` or `dump-screen --ansi`, and
+  the canvas reads colour to classify what an agent is doing.
+- **"It's everywhere" is dated.** macOS ships a 2006-era 4.00.03 build, so
+  the portability argument for choosing it over Zellij largely evaporates —
+  and Windows has no native build either way.
+
+So: it would probably work, it buys nothing Zellij does not, and it costs
+colour. Worth knowing it is available as a fallback on an old Unix that has
+nothing newer; not worth being the second multiplexer we prove the layer
+with.
+
 ## The three platforms, honestly
 
 **macOS.** Everything the core shells out to exists: tmux, ssh, mpv, rsync,
