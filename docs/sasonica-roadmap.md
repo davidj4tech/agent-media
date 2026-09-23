@@ -190,9 +190,16 @@ read them from Next instead of the old app's :8772.
 ## Loose ends
 
 - **Follow-along is lost for the rest of a reply** when another session's
-  question barges in mid-reply: the audio resumes, the live row does not, so
-  the thread stops highlighting. Diagnosed as far as
+  question barges in mid-reply. Three holes fixed in the follow loop
+  (`23efc2d`), and the live row no longer has to survive for the bold to:
+  the newest turn carries `sentences` + `offsets` with no `live` (§6.2,
+  `f1739ec`), measured now that `clip_starts_s` outlives the row. See
   [docs/notes/2026-09-23-follow-along-after-barge-in.md](notes/2026-09-23-follow-along-after-barge-in.md).
+  **Left: the app half** — `followAlong.ts` builds its clock from `live`
+  only, so the new payload is unread. It needs a position that is not
+  `elapsed`: the player's own. Open question first — how does the app know
+  the player still holds *that* turn? `/speech/now` would have to name it
+  (an `at` or a history id), which is a contract addition of its own.
 - red5 is missing three services its own roles want:
   `mpv-book-bridge-local`, `mpv-music-bridge-local`,
   `mpv-speech-bridge-local` (found by `media-setup status`, 23 Sep 2026).
