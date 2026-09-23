@@ -1127,13 +1127,29 @@ STORE_DAYS = float(os.environ.get("MEDIA_SESSIONS_STORE_DAYS") or 30)
 STORE_ROWS = int(os.environ.get("MEDIA_SESSIONS_STORE_ROWS") or 40)
 
 
+def _store_excluded_dirs() -> list[str]:
+    """Directories whose *past* conversations are not threads.
+
+    The live sweep's exclusions (`_excluded_dirs`: machinery the reaper must
+    never close) plus `MEDIA_SESSIONS_STORE_EXCLUDE_CWD`, which is only
+    about the list — a directory whose sessions are written by a schedule
+    rather than by a person, hundreds of them, each named after the report
+    it printed. A session David opens there himself is still live, still
+    reaped, still listed.
+    """
+    raw = os.environ.get("MEDIA_SESSIONS_STORE_EXCLUDE_CWD") or ""
+    extra = [os.path.realpath(os.path.expanduser(p.strip()))
+             for p in raw.split(",") if p.strip()]
+    return _excluded_dirs() + extra
+
+
 def _stored_index() -> list:
     """Every conversation on disk, whichever agent wrote it, excluded
-    directories dropped (`_excluded_dirs` — the gateway's scratch folder is
-    thousands of sessions nobody had). Stat-only: no transcript is opened."""
+    directories dropped (`_store_excluded_dirs`). Stat-only: no transcript
+    is opened."""
     from agent_media_core import harnesses
 
-    return harnesses.stored(exclude=tuple(_excluded_dirs()))
+    return harnesses.stored(exclude=tuple(_store_excluded_dirs()))
 
 
 #: `{session: ((size, mtime), title)}` for titles read from a store's own

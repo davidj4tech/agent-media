@@ -97,3 +97,15 @@ def test_a_directory_can_be_left_out(stores, monkeypatch):
     scratch folder is thousands of sessions nobody had."""
     monkeypatch.setenv("MEDIA_SESSIONS_EXCLUDE_CWD", "/home/x/scratch")
     assert set(_rows()) == {CX}      # codex's paths say nothing about the cwd
+
+
+def test_a_directory_can_be_left_out_of_the_list_alone(stores, monkeypatch):
+    """A folder whose sessions are written by a schedule: hundreds of them,
+    each named after the report it printed. Only the *list* drops them — a
+    session opened there by hand is live, and the reaper still has it."""
+    monkeypatch.setenv("MEDIA_SESSIONS_STORE_EXCLUDE_CWD", "~/scratch")
+    monkeypatch.setenv("HOME", "/home/x")
+    assert set(_rows()) == {CX}
+    # Not the live sweep's list, which is what the reaper reads.
+    assert "/home/x/scratch" not in sessions._excluded_dirs()
+    assert "/home/x/scratch" in sessions._store_excluded_dirs()

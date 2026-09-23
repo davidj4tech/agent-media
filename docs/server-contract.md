@@ -2122,9 +2122,13 @@ own store** as well:
 - **Excluded directories** are the ones the live sweep and the reaper
   already leave alone (`MEDIA_SESSIONS_EXCLUDE_CWD`, default `~/.meridian`):
   a gateway's scratch folder holds thousands of one-shot sessions nobody
-  had. Matched against each store's own name for the directory, so nothing
-  is opened to decide. Codex files by date and says nothing about the
-  directory, so the exclusion does not reach it.
+  had. `MEDIA_SESSIONS_STORE_EXCLUDE_CWD` (comma-separated, empty by
+  default) drops a directory from **the list only** — for a folder whose
+  sessions are written by a schedule rather than by a person; one opened
+  there by hand is still live, still listed, still reaped. Both are matched
+  against each store's own name for the directory, so nothing is opened to
+  decide. Codex files by date and says nothing about the directory, so
+  neither exclusion reaches it.
 - **A row needs a name**: the shelf's, else the agent's own (a `/rename`,
   Claude's `ai-title`, Codex's and pi's thread names), else the first thing
   asked. A transcript with nothing to name it by is left out rather than
