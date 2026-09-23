@@ -231,3 +231,24 @@ def test_a_reply_split_across_clips_becomes_one_transcript(monkeypatch):
                                  "source_pane": "%99"})
     other = canvas.speech_state()
     assert other["lines"] == ["Somebody else."]
+
+
+def test_speed_survives_the_end_of_a_reply(monkeypatch):
+    """The rate sticks at the player across replies, so the bar must keep
+    showing it once a reply ends.
+
+    Reported as the speed changing by itself: the bar dropped back to 1× the
+    moment the voice stopped, while the phone still held 2×, so the next reply
+    "started fast for no reason" (David, 23 Sep 2026).
+    """
+    _fake_media(monkeypatch, "○")
+    monkeypatch.setattr(canvas, "_speech_extras", lambda: {"live_speed": 2.0})
+    st = canvas.speech_state()
+    assert st["speaking"] is False
+    assert st["speed"] == 2.0
+
+
+def test_speed_is_shown_while_speaking_too(monkeypatch):
+    _fake_media(monkeypatch, "▶ 00:02 / 00:30")
+    monkeypatch.setattr(canvas, "_speech_extras", lambda: {"live_speed": 1.25})
+    assert canvas.speech_state()["speed"] == 1.25

@@ -26,6 +26,7 @@ import threading
 import time
 from typing import Optional
 
+from . import _lock as fcntl
 from ._paths import state_dir
 from .sinks import _mpv_ipc as ipc
 from .sinks.music import SinkMusic
@@ -2326,6 +2327,30 @@ def cmd_toggle(a) -> int:
         # raced the renderer — say.sh clears pause before each clip — and cost
         # two round trips to do one thing.
         if not _speech_in_flight():
+            # The row is not the only truth about whether a voice is going.
+            # It is written by the process following the reply, and when that
+            # follow loses the bridge and exits, the phone plays the rest of
+            # the reply out of its own queue with nothing left here saying so.
+            # Space then fell through to REPLAY — so the one thing a listener
+            # wants at that moment (stop talking) started more talking, and
+            # the audio could not be paused at all (David, 23 Sep 2026: "a
+            # session that's playing audio that I can't pause").
+            #
+            # So ask the player before giving up on it. Only a positive "not
+            # idle" pauses: a lost packet or a dead bridge answers None and
+            # lands on the old replay behaviour, which is what it was for.
+            snap = {}
+            try:
+                snap = ipc.display_properties(
+                    _sock(), ["idle-active", "pause"], timeout=2.0) or {}
+            except (ipc.MpvIpcError, OSError):
+                snap = {}
+            if snap.get("idle-active") is False:
+                want = not bool(snap.get("pause"))
+                ipc.set_property(_sock(), "pause", want, critical=True)
+                _stamp_speech_pause(want)
+                _SNAP_CACHE["value"] = None
+                return 0
             pane = os.environ.get("TTS_POPUP_PANE") or os.environ.get("TMUX_PANE", "")
             return _do_replay(_history_index_for_pane(pane) or 1)
         # critical: a keypress is not policy chatter. Fire-and-forget, because
@@ -2724,6 +2749,34 @@ def _speed_next(cur: float, direction: int) -> float:
     return max(round(cur - _SPEED_FLAT, 2), _SPEED_MIN)
 
 
+@contextlib.contextmanager
+def _speed_lock():
+    """Serialise the read-compute-write a relative speed step is.
+
+    Advisory, whole-file, released on close or process death — every press is
+    its own short-lived `media speed`, so the lock has to live in the
+    filesystem. Never blocks for long: the body is a file read and a file
+    write, and a lock we cannot take is not worth losing a keypress over.
+    """
+    path = state_dir() / "speech-speed.lock"
+    fh = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fh = path.open("a+")
+        fcntl.flock(fh, fcntl.LOCK_EX)
+    except OSError:
+        fh = None
+    try:
+        yield
+    finally:
+        if fh is not None:
+            try:
+                fcntl.flock(fh, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            fh.close()
+
+
 def cmd_speed(a) -> int:
     """Set speech speed: absolute factor, 'reset' (→1.0), or relative 'up'/'down'
     (the listening-mode [ / ] keys) which snap the live sink along the speed ladder.
@@ -2732,27 +2785,43 @@ def cmd_speed(a) -> int:
     f = a.factor
 
     def _cur() -> float:
-        # For a remote target read the live speed off the local mirror rather
-        # than paying a bridge round-trip (matches cmd_toggle).
+        # Ladder off what the last press SET, not off a reading taken over the
+        # phone link. Two presses inside one ~2s round trip both read the same
+        # rung and both land on it, so the app's own optimistic ladder ran a
+        # rung ahead of the player (David, 23 Sep 2026: "I set it to 2x on the
+        # clip before... it was 1.5x"). The store is written by every press
+        # under _speed_lock, so it is always the newest intent, and it costs a
+        # file read rather than a round trip — which is also why the change is
+        # heard sooner. A live reading only seeds it when there is none, and a
+        # player that forgot its rate (an app restart) re-agrees on the first
+        # press, because what we send is absolute.
+        stored = StateStore().get_speech_speed()
+        if isinstance(stored, (int, float)):
+            return float(stored)
         if _remote_speech():
             sp = _speech_display_state()[5]
             return float(sp) if isinstance(sp, (int, float)) else 1.0
         cur = _get("speed", critical=True)
         return float(cur) if isinstance(cur, (int, float)) else 1.0
 
-    if f == "reset":
-        target = 1.0
-    elif f in ("up", "down"):
-        target = _speed_next(_cur(), 1 if f == "up" else -1)
-    elif f and f[0] in "+-":
-        target = max(_SPEED_MIN, min(_SPEED_MAX, _cur() + float(f)))
-    else:
-        target = max(_SPEED_MIN, min(_SPEED_MAX, float(f)))
-    target = round(target, 2)
+    # One press at a time: a relative step is read-compute-write, and the
+    # presses that race are exactly the ones a listener makes — [ [ [ to get
+    # somewhere. Held across the write so the next press reads the new rung.
+    with _speed_lock():
+        if f == "reset":
+            target = 1.0
+        elif f in ("up", "down"):
+            target = _speed_next(_cur(), 1 if f == "up" else -1)
+        elif f and f[0] in "+-":
+            target = max(_SPEED_MIN, min(_SPEED_MAX, _cur() + float(f)))
+        else:
+            target = max(_SPEED_MIN, min(_SPEED_MAX, float(f)))
+        target = round(target, 2)
+        # Remember it before the wire: the next press must ladder off this
+        # rung even if the write is still in flight, and an absolute value
+        # sent twice is the same value.
+        StateStore().set_speech_speed(target)
     ipc.set_property(sock, "speed", target, critical=True)
-    # Remember it: the rate sticks on the broker across clips, so the popup
-    # keeps showing it while idle (see _sticky_speech_speed).
-    StateStore().set_speech_speed(target)
     if _remote_speech():
         _patch_speech_mirror(live_speed=target)
     return 0

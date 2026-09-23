@@ -1038,13 +1038,17 @@ def speech_state() -> dict:
         # arrive, which an accumulate-as-you-go model could never manage.
         if ex.get("visual"):
             state["visual"] = ex["visual"]
+    # For the app's player: what [ ] and m would change. Read whether or not a
+    # voice is live, like the sentences above — the rate sticks at the player
+    # across replies, so a bar that dropped it the moment a reply ended said
+    # 1× while the phone still held 2×, and then the next reply "changed speed
+    # by itself" (David, 23 Sep 2026).
+    if ex.get("live_speed") is not None:
+        try:
+            state["speed"] = round(float(ex["live_speed"]), 2)
+        except (TypeError, ValueError):
+            pass
     if state["speaking"] or state.get("paused"):
-        # For the app's player: what [ ] and m would change.
-        if ex.get("live_speed") is not None:
-            try:
-                state["speed"] = round(float(ex["live_speed"]), 2)
-            except (TypeError, ValueError):
-                pass
         if "live_mute" in ex:
             state["muted"] = bool(ex["live_mute"])
     if (state["speaking"] or state.get("paused")) and ex.get("source_session"):

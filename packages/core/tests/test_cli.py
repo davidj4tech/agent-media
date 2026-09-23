@@ -366,6 +366,9 @@ def test_every_speech_control_bypasses_the_slow_endpoint_breaker(monkeypatch):
         def set_speech_speed(self, rate):
             pass
 
+        def get_speech_speed(self):
+            return None
+
     fake = _FakeIpc({"playlist-count": 1, "volume": 100, "speed": 1.0,
                      "idle-active": False, "playlist-pos": 0})
     monkeypatch.setattr(cli, "ipc", fake)

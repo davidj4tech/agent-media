@@ -872,11 +872,18 @@ class StateStore:
         clips — but a *remote* broker (the phone) can only be read over the
         bridge, and while idle there's no now_playing mirror to read it from.
         Stashing it here lets the popup show "you're still at 1.5×" between
-        replies without paying a round-trip. 1.0 clears the row (nothing to
-        show).
+        replies without paying a round-trip.
+
+        1.0 is a rate like any other, and is written down like one. It used to
+        clear the row, on the reasoning that there was nothing to show — but
+        the row is also where a relative step (`media speed up`) starts from,
+        and an absent row sends it back to the player to ask. That round trip
+        is both the delay a listener hears and the window two quick presses
+        race in, so the rung after a reset must be written down like the rest.
+        Nothing shows a bare 1.0: the readouts hide it themselves.
         """
         with self._cursor() as cur:
-            if rate is None or abs(float(rate) - 1.0) <= 0.005:
+            if rate is None:
                 cur.execute("DELETE FROM meta WHERE key = ?",
                             (self._SPEECH_SPEED_KEY,))
             else:

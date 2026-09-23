@@ -21,14 +21,25 @@ def test_roundtrips_a_rate(tmp_path):
     assert st.get_speech_speed() == 1.5
 
 
-def test_normal_rate_clears_the_row(tmp_path):
+def test_normal_rate_is_a_rate_like_any_other(tmp_path):
+    """1.0 is written down, not erased. The row is where a relative step
+    starts from, and an absent one sends the step to the phone to ask —
+    which is the delay, and the race, that `media speed up` had."""
     st = _store(tmp_path)
     st.set_speech_speed(1.5)
     st.set_speech_speed(1.0)
-    assert st.get_speech_speed() is None
-    st.set_speech_speed(1.5)
+    assert st.get_speech_speed() == 1.0
     st.set_speech_speed(None)
     assert st.get_speech_speed() is None
+
+
+def test_a_plain_rate_is_still_not_shown(tmp_path, monkeypatch):
+    """What "nothing to show" always meant: the readout hides 1.0 itself."""
+    st = _store(tmp_path)
+    st.set_speech_speed(1.0)
+    line = cli.render_status(idle=False, pos=1.0, dur=2.0, paused=False,
+                             muted=False, speed=st.get_speech_speed())
+    assert "×" not in line
 
 
 def test_sticky_falls_back_to_the_stored_rate_when_idle(monkeypatch, tmp_path):
@@ -44,7 +55,7 @@ def test_sticky_prefers_and_records_a_live_reading(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "StateStore", lambda: st)
     assert cli._sticky_speech_speed(1.25) == 1.25
     assert st.get_speech_speed() == 1.25
-    # Back to normal: the live reading wins and the row goes away, so a broker
-    # that restarted at 1.0 stops being reported as fast.
+    # Back to normal: the live reading wins, so a broker that restarted at
+    # 1.0 stops being reported as fast.
     assert cli._sticky_speech_speed(1.0) == 1.0
-    assert st.get_speech_speed() is None
+    assert st.get_speech_speed() == 1.0

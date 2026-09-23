@@ -91,8 +91,19 @@ def test_the_flip_comes_from_the_row(remote, monkeypatch):
         "a second press on a paused reply has to resume it")
 
 
+def _player_says(monkeypatch, **props):
+    monkeypatch.setattr(cli.ipc, "display_properties", lambda *a, **k: props)
+
+
+def _player_unreadable(monkeypatch):
+    def unreachable(*a, **k):
+        raise cli.ipc.MpvIpcError("packet lost")
+    monkeypatch.setattr(cli.ipc, "display_properties", unreachable)
+
+
 def test_idle_still_replays(remote, monkeypatch):
     monkeypatch.setattr(cli, "_now_speaking", lambda: None)
+    _player_says(monkeypatch, **{"idle-active": True})
     cli.cmd_toggle(None)
     assert remote == [("REPLAY",)]
 
@@ -100,5 +111,47 @@ def test_idle_still_replays(remote, monkeypatch):
 def test_dead_writer_is_not_in_flight(remote, monkeypatch):
     """A crashed submit process must not leave pause addressing a ghost."""
     _speaking(monkeypatch, alive=False)
+    _player_says(monkeypatch, **{"idle-active": True})
+    cli.cmd_toggle(None)
+    assert remote == [("REPLAY",)]
+
+
+def test_no_row_but_the_phone_is_still_talking(remote, monkeypatch):
+    """The other half of "the row is not the only truth".
+
+    When the follow-along loses the bridge and its writer exits, the phone
+    plays the rest of the reply out of its own queue and nothing here says so.
+    Falling straight through to replay meant the one key that means "stop
+    talking" started more talking, and the audio could not be paused at all.
+    """
+    monkeypatch.setattr(cli, "_now_speaking", lambda: None)
+    _player_says(monkeypatch, **{"idle-active": False, "pause": False})
+    sets = []
+    monkeypatch.setattr(cli.ipc, "set_property",
+                        lambda sock, name, value, **k: sets.append((name, value)))
+
+    assert cli.cmd_toggle(None) == 0
+    assert sets == [("pause", True)]
+    assert ("REPLAY",) not in remote
+
+
+def test_no_row_and_already_paused_resumes(remote, monkeypatch):
+    """And it has to flip both ways, or the same press strands the reply."""
+    monkeypatch.setattr(cli, "_now_speaking", lambda: None)
+    _player_says(monkeypatch, **{"idle-active": False, "pause": True})
+    sets = []
+    monkeypatch.setattr(cli.ipc, "set_property",
+                        lambda sock, name, value, **k: sets.append((name, value)))
+
+    cli.cmd_toggle(None)
+    assert sets == [("pause", False)]
+
+
+def test_a_lost_packet_still_replays(remote, monkeypatch):
+    """Only a positive "not idle" pauses: an unreadable player answers the
+    same as a silent one, and guessing wrong there is what this whole module
+    is about."""
+    monkeypatch.setattr(cli, "_now_speaking", lambda: None)
+    _player_unreadable(monkeypatch)
     cli.cmd_toggle(None)
     assert remote == [("REPLAY",)]
