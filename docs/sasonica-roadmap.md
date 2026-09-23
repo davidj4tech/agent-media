@@ -189,6 +189,22 @@ read them from Next instead of the old app's :8772.
 
 ## Loose ends
 
+- **The bold sat one sentence behind the voice** (David, 23 Sep 2026).
+  **Fixed 23 Sep 2026** (`44f14f9`): `pos` and `elapsed` were on different
+  clocks. The live frame's `elapsed` is wall time since `play_started_at`,
+  so it carries the gaps between clips; `live_pos_s` — what `/speech/now`'s
+  `pos` and the progress bar ride — was summed clip lengths, which carries
+  none. Measured on a real reply: one 4.88s gap between clip 0 and clip 1
+  (the first sentence is played alone while the rest render), then a
+  constant 4.87s at all thirteen later boundaries, spread under 50 ms. The
+  app closes the loop — `useElapsedSkew` reads `elapsed - pos` as staleness
+  and holds the bold back by it — and most sentences in that reply ran
+  3–5s, hence exactly one sentence. `submit.wall_position()` now rides the
+  measured starts, and publishes `total_wall_s` so the bar's denominator is
+  on the same clock (clamping a wall position against the summed audio
+  pegged it at 100% a gap early). No app change: the skew estimate collapses
+  to the real staleness it was written to measure.
+
 - **Follow-along is lost for the rest of a reply** when another session's
   question barges in mid-reply. Three holes fixed in the follow loop
   (`23efc2d`), and the live row no longer has to survive for the bold to:
