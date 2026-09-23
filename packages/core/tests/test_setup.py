@@ -1,5 +1,6 @@
 """Tests for media-setup's `server` role (rooms audio hub wiring)."""
 import argparse
+import json
 import os
 
 from agent_media_core import setup
@@ -594,3 +595,104 @@ def test_a_changed_schedule_lands_even_when_the_service_did_not_change(
     tmr = (root / "agent-media-feed-publish.timer").read_text()
     assert "OnUnitActiveSec=5min" in tmr
     assert "OnCalendar" not in tmr
+
+
+# --- the Sasonica profile ---------------------------------------------------
+#
+# What a machine needs before Sasonica works on it, in one table (the standing
+# decision of 23 Sep 2026). The rows that matter here are the ones nobody
+# would notice going wrong: an extra that is not installed must be *skipped
+# with a reason* rather than failing or, worse, quietly writing a hook for a
+# command that is not there; and a re-run must leave a settings.json alone.
+
+def _profile_args(tmp_path, **kw):
+    return argparse.Namespace(settings=str(tmp_path / "settings.json"),
+                              config_dir=None, backend="auto", dry_run=False, **kw)
+
+
+def _only_hook_rows(monkeypatch):
+    """Leave the services and the shell out: they touch the machine."""
+    rows = tuple(r for r in setup.PROFILE_ROWS if r[0] not in ("services", "shell"))
+    monkeypatch.setattr(setup, "PROFILE_ROWS", rows)
+
+
+def test_profile_writes_the_hooks_and_is_idempotent(tmp_path, monkeypatch, capsys):
+    _only_hook_rows(monkeypatch)
+    monkeypatch.setattr(setup.shutil, "which", lambda name: f"/usr/bin/{name}")
+    args = _profile_args(tmp_path)
+    assert setup.cmd_profile(args) == 0
+    data = json.loads((tmp_path / "settings.json").read_text())
+    cmds = [h.get("command") for groups in data["hooks"].values()
+            for g in groups for h in (g.get("hooks") or [])]
+    assert any(setup.CLAUDE_HOOK_COMMAND in c for c in cmds)
+    assert any("agent-mail-inbox-hook" in c for c in cmds)
+    assert any("agent-repo-catchup" in c for c in cmds)
+    # Again: nothing changes, and nothing is added a second time.
+    before = (tmp_path / "settings.json").read_text()
+    assert setup.cmd_profile(args) == 0
+    assert (tmp_path / "settings.json").read_text() == before
+    assert "installed" not in capsys.readouterr().out.splitlines()[-1]
+
+
+def test_an_extra_that_is_not_here_is_skipped_with_a_reason(tmp_path, monkeypatch, capsys):
+    _only_hook_rows(monkeypatch)
+    monkeypatch.setattr(setup.shutil, "which", lambda name: None)
+    monkeypatch.setattr(setup.Path, "exists", lambda self: False)
+    assert setup.cmd_profile(_profile_args(tmp_path)) == 0
+    out = capsys.readouterr().out
+    assert "skipped   mail" in out and "is not installed here" in out
+    data = json.loads((tmp_path / "settings.json").read_text())
+    cmds = [h.get("command") for groups in data["hooks"].values()
+            for g in groups for h in (g.get("hooks") or [])]
+    assert not any("agent-mail-inbox-hook" in c for c in cmds)
+
+
+def test_profile_keeps_what_was_already_in_settings(tmp_path, monkeypatch):
+    _only_hook_rows(monkeypatch)
+    monkeypatch.setattr(setup.shutil, "which", lambda name: f"/usr/bin/{name}")
+    (tmp_path / "settings.json").write_text(json.dumps({
+        "model": "opus", "permissions": {"allow": ["Bash(*)"]},
+        "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "mine"}]}]}}))
+    assert setup.cmd_profile(_profile_args(tmp_path)) == 0
+    data = json.loads((tmp_path / "settings.json").read_text())
+    assert data["model"] == "opus" and data["permissions"]["allow"] == ["Bash(*)"]
+    stop = [h["command"] for g in data["hooks"]["Stop"] for h in g["hooks"]]
+    assert "mine" in stop, "someone else's hook was dropped"
+    # And the file it replaced is still there to go back to.
+    assert (tmp_path / "settings.json.bak").exists()
+
+
+def test_a_dry_run_writes_nothing(tmp_path, monkeypatch, capsys):
+    _only_hook_rows(monkeypatch)
+    monkeypatch.setattr(setup.shutil, "which", lambda name: f"/usr/bin/{name}")
+    args = _profile_args(tmp_path, )
+    args.dry_run = True
+    assert setup.cmd_profile(args) == 0
+    assert not (tmp_path / "settings.json").exists()
+    assert "would do" in capsys.readouterr().out
+
+
+def test_status_says_what_is_missing(tmp_path, monkeypatch):
+    _only_hook_rows(monkeypatch)
+    monkeypatch.setattr(setup.shutil, "which", lambda name: f"/usr/bin/{name}")
+    args = _profile_args(tmp_path)
+    rows = {r["name"]: r for r in setup.profile_status(args)}
+    assert rows["speech"]["state"] == "missing"
+    setup.cmd_profile(args)
+    rows = {r["name"]: r for r in setup.profile_status(args)}
+    assert rows["speech"]["state"] == "ok" and rows["catchup"]["state"] == "ok"
+    assert rows["speech"]["kind"] == "core" and rows["catchup"]["kind"] == "extra"
+
+
+def test_a_managed_config_dir_is_written_to_instead(tmp_path, monkeypatch, capsys):
+    """The Advanced option: Sasonica's own config directory, and the
+    CLAUDE_CONFIG_DIR that points every session at it."""
+    _only_hook_rows(monkeypatch)
+    monkeypatch.setattr(setup.shutil, "which", lambda name: f"/usr/bin/{name}")
+    env = tmp_path / "agent-media.env"
+    monkeypatch.setattr(setup, "_agent_media_env_path", lambda: env)
+    args = argparse.Namespace(settings=None, config_dir=str(tmp_path / "sasonica"),
+                              backend="auto", dry_run=False)
+    assert setup.cmd_profile(args) == 0
+    assert (tmp_path / "sasonica" / "settings.json").exists()
+    assert f"CLAUDE_CONFIG_DIR={tmp_path / 'sasonica'}" in env.read_text()

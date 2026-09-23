@@ -35,9 +35,30 @@ API key. See **[`docs/reference/extensions.md`](./docs/reference/extensions.md)*
 ```sh
 pip install "agent-media-core @ git+https://github.com/davidj4tech/agent-media#subdirectory=packages/core"
 media-setup init              # writes ~/.config/agent-media/config.toml
-media-setup install-services  # installs only the services this host's roles want
-media-setup install-hooks     # wire the agent side (Claude Code Stop/Notification)
+media-setup profile           # wire this machine: hooks, services, shell, extras
 ```
+
+`profile` is the whole of it, and it is idempotent, so it is also the repair.
+`media-setup status` prints the same rows afterwards (`--json` for the app's
+setup page), each one `ok`, `MISSING`, or skipped because the tool it wires
+is not on this machine:
+
+```
+profile speech    ok       the hooks that speak a reply and record the turn
+profile services  ok       this host's services, by its roles
+profile shell     ok       the tmux popup and control surface on PATH
+profile mail      -        agent mail announced at the top of a turn (agent-mail is not installed here)
+profile catchup   ok       what landed in the shared trees since a session last looked
+```
+
+The hooks are merged into **your own** Claude Code config
+(`~/.claude/settings.json`, backed up first, nothing else touched), because
+the point is that the phone drives the same sessions you work in — same
+skills, same memory, same panes. `media-setup profile --config-dir <dir>`
+writes a Sasonica-managed config instead and records it as
+`CLAUDE_CONFIG_DIR`; that costs the sharing, which is why the app offers it
+under Advanced. The pieces are still there on their own
+(`install-services`, `install-hooks`) if you want one of them.
 
 `init` guesses the roles and says so; edit the file if the guess is wrong.
 It also records the **layout** — where sessions started from the app open:

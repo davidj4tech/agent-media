@@ -5,6 +5,12 @@ and (on Termux) the runit service tree. Replaces the manual
 settings.json paste in the legacy audio-relay README.
 
 Subcommands:
+  media-setup profile [--dry-run]       Wire this machine for Sasonica: the
+                                        hooks, the services, the shell, and
+                                        every extra it finds. One command for
+                                        a fresh machine; idempotent, so it is
+                                        also the repair.
+  media-setup status [--json]           What this machine has, row by row.
   media-setup check                     Verify prereq binaries.
   media-setup install-hooks [--dry-run] Merge hook entries into
                                         ~/.claude/settings.json.
@@ -21,7 +27,10 @@ Subcommands:
 
 Everything is idempotent. The settings.json writer makes a `.bak` copy
 before touching the live file, and only rewrites if the merged content
-differs.
+differs. Hooks are merged into the machine's own Claude Code config, because
+the point of Sasonica is that the phone drives the same sessions you work in;
+`--config-dir` writes a Sasonica-managed config instead, which the app offers
+under Advanced.
 """
 
 from __future__ import annotations
@@ -1198,7 +1207,16 @@ def cmd_check(_: argparse.Namespace) -> int:
 
 # --- Status ----------------------------------------------------------------
 
-def cmd_status(_: argparse.Namespace) -> int:
+def cmd_status(args: argparse.Namespace) -> int:
+    # The profile first: one row per thing this machine needs, which is what
+    # the app's setup page draws. --json is that list and nothing else.
+    if getattr(args, "json", False):
+        print(json.dumps({"rows": profile_status(args)}, indent=2))
+        return 0
+    for row in profile_status(args):
+        mark = {"ok": "ok", "missing": "MISSING", "absent": "-"}.get(row["state"], row["state"])
+        print(f"profile {row['name']:9} {mark:8} {row['what']}"
+              + (f" ({row['detail']})" if row["state"] != "ok" else ""))
     path = claude_settings_path()
     if not path.exists():
         print(f"settings: {path} missing")
@@ -1270,6 +1288,226 @@ def _print_feed_status() -> None:
         when = time.strftime("%Y-%m-%d", time.localtime(newest)) if newest else "-"
         print(f"feed {name}: {len(eps)} episode(s), newest {when}")
 
+
+
+# --- the Sasonica profile --------------------------------------------------
+#
+# What a machine needs before Sasonica works on it — the standing decision of
+# 23 Sep 2026 (docs/sasonica-roadmap.md). Three installers used to be needed
+# and only two of them were Sasonica's: agent-media's own hooks and services,
+# Sasonica Shell's Worker and runner, and then a personal dotfiles repo that
+# quietly carried the rest. A machine that ran the first two looked set up and
+# was missing half of it.
+#
+# So the rest is named here, in one table, with three things per row: what it
+# is, how to tell whether this machine has it, and what installs it. Every row
+# is idempotent, and an `extra` row is skipped — with a reason, never silently
+# — when the tool it wires is not on this machine. That is the same rule the
+# services follow (`requires-env`, `requires-config`), for the same reason:
+# "not installed here" is a fact about the machine, not a failure.
+#
+# It merges into the machine's OWN Claude Code config, because the point of
+# Sasonica is that the phone drives the same sessions you work in — same
+# skills, same memory, same panes. `--config-dir` writes a Sasonica-managed
+# config instead (the app offers it under Advanced); it costs that sharing.
+
+#: The hooks the profile registers beyond agent-media's own. Each is
+#: `(event, command, match, timeout, async_)`: `match` is the substring that
+#: says an entry in settings.json is this row's, so a re-run rewrites it
+#: rather than adding a second copy.
+_MAIL_HOOK = ("UserPromptSubmit",
+              '[ -x $HOME/.local/bin/agent-mail-inbox-hook ] && '
+              '$HOME/.local/bin/agent-mail-inbox-hook --new || true',
+              "agent-mail-inbox-hook", 5, False)
+_CATCHUP_HOOK = ("UserPromptSubmit",
+                 "s=$(jq -r '.session_id // \"x\"' 2>/dev/null); "
+                 '[ -x $HOME/.local/bin/agent-repo-catchup ] && '
+                 '$HOME/.local/bin/agent-repo-catchup '
+                 '--state "$HOME/.local/state/agent-media/catchup/$s" '
+                 '2>/dev/null || true',
+                 "agent-repo-catchup", 10, False)
+
+
+def _merge_hook_entry(settings: dict, event: str, command: str, match: str,
+                      timeout: int, async_: bool = False) -> tuple[dict, bool]:
+    """`_merge_hooks` for one arbitrary hook. Same rule: an entry whose
+    command contains `match` is ours, and is rewritten in place."""
+    settings = json.loads(json.dumps(settings))
+    groups = settings.setdefault("hooks", {}).setdefault(event, [])
+    entry: dict = {"type": "command", "command": command, "timeout": timeout}
+    if async_:
+        entry["async"] = True
+    for group in groups:
+        inner = group.get("hooks") or []
+        for i, h in enumerate(inner):
+            if match in (h.get("command") or ""):
+                if inner[i] != entry:
+                    inner[i] = entry
+                    return settings, True
+                return settings, False
+    groups.append({"hooks": [entry]})
+    return settings, True
+
+
+def _settings_path(args: argparse.Namespace) -> Path:
+    """Where the hooks go: a Sasonica-managed config dir, an explicit file,
+    else this machine's own Claude Code settings."""
+    if getattr(args, "config_dir", None):
+        return Path(os.path.expanduser(args.config_dir)) / "settings.json"
+    if getattr(args, "settings", None):
+        return Path(args.settings)
+    return claude_settings_path()
+
+
+def _write_settings(path: Path, settings: dict, *, dry_run: bool) -> None:
+    rendered = json.dumps(settings, indent=2) + "\n"
+    if dry_run:
+        print(f"# would write {path}")
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        try:
+            shutil.copy2(str(path), str(path) + ".bak")
+        except OSError as e:
+            raise SystemExit(f"media-setup: backup of {path} failed: {e}")
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(rendered)
+    tmp.replace(path)
+
+
+def _hook_installed(path: Path, match: str) -> bool:
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return False
+    for groups in (data.get("hooks") or {}).values():
+        for group in groups or []:
+            for h in group.get("hooks") or []:
+                if match in (h.get("command") or ""):
+                    return True
+    return False
+
+
+def _row_speech(args, *, check_only: bool):
+    """agent-media's own hooks: the ones that speak a reply and record a turn."""
+    path = _settings_path(args)
+    have = _hook_installed(path, CLAUDE_HOOK_COMMAND)
+    if check_only:
+        return ("ok" if have else "missing"), str(path)
+    merged, changed = _merge_hooks(_load_json(path), CLAUDE_HOOK_COMMAND)
+    if changed:
+        _write_settings(path, merged, dry_run=args.dry_run)
+    return ("installed" if changed else "ok"), str(path)
+
+
+def _hook_row(hook, tool: str):
+    """A row that registers `hook` when `tool` is on this machine."""
+    event, command, match, timeout, async_ = hook
+
+    def row(args, *, check_only: bool):
+        path = _settings_path(args)
+        if shutil.which(tool) is None and not Path(
+                os.path.expanduser(f"~/.local/bin/{tool}")).exists():
+            return "absent", f"{tool} is not installed here"
+        if check_only:
+            return ("ok" if _hook_installed(path, match) else "missing"), str(path)
+        merged, changed = _merge_hook_entry(_load_json(path), event, command,
+                                            match, timeout, async_)
+        if changed:
+            _write_settings(path, merged, dry_run=args.dry_run)
+        return ("installed" if changed else "ok"), str(path)
+
+    return row
+
+
+def _row_services(args, *, check_only: bool):
+    names = service_template_names()
+    if check_only:
+        backend = _service_backend(None)
+        if backend == "systemd":
+            sd = systemd_user_dir()
+            missing = [n for n in names if not (sd / _systemd_unit_name(n)).exists()]
+        else:
+            root = services_dir()
+            missing = [n for n in names
+                       if not (root and ((root / n).exists() or (root / n).is_symlink()))]
+        return ("ok" if not missing else "missing"), f"{len(names) - len(missing)}/{len(names)}"
+    # The services command takes arguments of its own; give it a namespace
+    # with its defaults rather than the profile's.
+    ns = argparse.Namespace(backend=getattr(args, "backend", "auto") or "auto",
+                            root=None, now=False, services=[],
+                            dry_run=args.dry_run)
+    rc = cmd_install_services(ns)
+    return ("installed" if rc == 0 else "failed"), f"{len(names)} service(s)"
+
+
+def _row_shell(args, *, check_only: bool):
+    target = Path.home() / ".local" / "bin" / "media-popup"
+    if check_only:
+        return ("ok" if target.exists() or target.is_symlink() else "missing"), str(target)
+    ns = argparse.Namespace(dry_run=args.dry_run)
+    rc = cmd_install_shell(ns)
+    return ("installed" if rc == 0 else "failed"), str(target)
+
+
+#: name, one line for a person, kind, and the function that checks or installs.
+PROFILE_ROWS = (
+    ("speech", "the hooks that speak a reply and record the turn", "core", _row_speech),
+    ("services", "this host's services, by its roles", "core", _row_services),
+    ("shell", "the tmux popup and control surface on PATH", "core", _row_shell),
+    ("mail", "agent mail announced at the top of a turn", "extra",
+     _hook_row(_MAIL_HOOK, "agent-mail-inbox-hook")),
+    ("catchup", "what landed in the shared trees since a session last looked",
+     "extra", _hook_row(_CATCHUP_HOOK, "agent-repo-catchup")),
+)
+
+
+def profile_status(args: argparse.Namespace) -> list[dict]:
+    """Each row of the profile as this machine has it: `state` is "ok",
+    "missing" or "absent" (an extra whose tool is not here)."""
+    out = []
+    for name, what, kind, fn in PROFILE_ROWS:
+        try:
+            state, detail = fn(args, check_only=True)
+        except Exception as e:                       # noqa: BLE001
+            state, detail = "unknown", str(e)
+        out.append({"name": name, "what": what, "kind": kind,
+                    "state": state, "detail": detail})
+    return out
+
+
+def cmd_profile(args: argparse.Namespace) -> int:
+    """Install the profile: every core row, and every extra whose tool is here."""
+    where = _settings_path(args)
+    print(f"media-setup profile: wiring this machine ({where})")
+    failed = 0
+    for name, what, kind, fn in PROFILE_ROWS:
+        try:
+            state, detail = fn(args, check_only=False)
+        except SystemExit:
+            raise
+        except Exception as e:                       # noqa: BLE001
+            state, detail, = "failed", str(e)
+        if state == "failed":
+            failed += 1
+        if state == "installed" and args.dry_run:
+            state = "would"
+        mark = {"installed": "installed", "would": "would do", "ok": "ok",
+                "absent": "skipped", "failed": "FAILED"}.get(state, state)
+        print(f"  {mark:9} {name:9} {what}" + (f" ({detail})" if state in
+                                               ("absent", "failed") else ""))
+    if getattr(args, "config_dir", None):
+        added = _merge_env_defaults(
+            _agent_media_env_path(),
+            (("CLAUDE_CONFIG_DIR", str(Path(os.path.expanduser(args.config_dir)))),),
+            dry_run=args.dry_run)
+        if added:
+            print(f"  {'would set' if args.dry_run else 'installed'} config    "
+                  "CLAUDE_CONFIG_DIR in agent-media.env")
+        else:
+            print("  ok        config    CLAUDE_CONFIG_DIR already set "
+                  "(agent-media.env wins; edit it to change)")
+    return 1 if failed else 0
 
 # --- CLI -------------------------------------------------------------------
 
@@ -1368,8 +1606,26 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--dry-run", action="store_true")
     sp.set_defaults(func=cmd_migrate_env)
 
+    sp = sub.add_parser("profile",
+                        help="Wire this machine for Sasonica (hooks, services, "
+                             "shell, and the extras it finds)")
+    sp.add_argument("--settings", help="Path to settings.json (default: "
+                    "~/.claude/settings.json)")
+    sp.add_argument("--config-dir", help="A Sasonica-managed Claude Code config "
+                    "directory to write into instead of this machine's own "
+                    "(the app offers this under Advanced); also recorded as "
+                    "CLAUDE_CONFIG_DIR in agent-media.env")
+    sp.add_argument("--backend", choices=("auto", "systemd", "runit"),
+                    default="auto")
+    sp.add_argument("--dry-run", action="store_true")
+    sp.set_defaults(func=cmd_profile)
+
     sp = sub.add_parser("status",
                         help="Show current wiring")
+    sp.add_argument("--json", action="store_true",
+                    help="the profile's rows as JSON, for the app's setup page")
+    sp.add_argument("--settings", help="Path to settings.json")
+    sp.add_argument("--config-dir", help="A Sasonica-managed config directory")
     sp.set_defaults(func=cmd_status)
 
     return p
