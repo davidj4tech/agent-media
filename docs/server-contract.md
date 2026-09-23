@@ -1318,7 +1318,7 @@ The speech bar.
 {"ok": true, "live": true, "speaking": true, "paused": false,
  "sentence": "…", "session": "6c73…" | null, "title": "…", "item": "li_…" | null,
  "pos": 12.0, "dur": 40.0, "speed": 1.6, "muted": false, "target": "app" | null,
- "replay": false,
+ "replay": false, "turn": {"at": 1790031449.7, "id": 91},
  "queued": [{"session": "5f8c…" | null, "title": "…", "urgent": false, "at": 1790031449.7}]}
 ```
 
@@ -1350,6 +1350,14 @@ The speech bar.
   host could not say. Names are §6.9's.
 - `session`, `title` and `item` are filled only while live and only for a
   valid session id. Title and item are cached per session for 60 s.
+- `turn` (23 Sep 2026) names which turn is being spoken, keyed the way the
+  log's lines are: `at` is the line's `at`, and `id` the history row on a
+  replay. Present only while live; absent when the host could not say.
+  It is what makes `pos` usable — a position is worth nothing until you know
+  what it is a position *into*. A reader holding a line's `sentences` and
+  `offsets` (§6.2, the newest turn carries them with no `live`) matches
+  `turn.at` against its line and bolds `pos` against the offsets, on the
+  player's own clock. That is the path that survives losing the live row.
 - `pos`, `dur` and `speed` may be `null`.
 
 Clients: S (`SpeechBar.vue`). **Polled 1.5 s while speaking, 5 s idle, 15 s

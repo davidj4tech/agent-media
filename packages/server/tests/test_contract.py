@@ -504,6 +504,31 @@ def test_speech_now_names_a_replay_and_what_waits(server, shelf, signed_in, monk
     assert obj["title"] == "Filters"
 
 
+def test_speech_now_names_the_turn_it_is_on(server, shelf, signed_in, monkeypatch):
+    """`turn` keys the player to a log line (`{at, id}`), so a reader can tell
+    whether the sentences it holds are the ones being spoken. Without it the
+    app has a position and nothing to say what the position is into — which is
+    what a line that carries its timeline without being live needs."""
+    sid = "6c73498c-02c1-4846-8350-a82006973571"
+    monkeypatch.setattr(canvas, "speech_state", lambda: {
+        "kind": "state", "speaking": True, "session": sid, "pos": 4.2,
+        "turn": {"at": 1790031449.7, "id": 91}})
+    monkeypatch.setattr(sessions, "sessions_index", lambda: [
+        {"session": sid, "title": "Filters"}])
+    from agent_media_server import threads
+    monkeypatch.setattr(threads, "item_for_session", lambda s, b: (None, False))
+    speech._NOW_CACHE.clear()
+    speech._TITLE_CACHE.clear()
+    _, obj = call(server, "GET", "/speech/now", headers=AUTH)
+    assert obj["turn"] == {"at": 1790031449.7, "id": 91}
+
+    # Nothing playing: no turn to name, and the quiet shape is unchanged.
+    monkeypatch.setattr(canvas, "speech_state", lambda: {
+        "kind": "state", "speaking": False, "turn": {"at": 1790031449.7}})
+    _, quiet = call(server, "GET", "/speech/now", headers=AUTH)
+    assert "turn" not in quiet
+
+
 def test_speech_ctl_says_why_a_replay_failed(server, shelf, signed_in, monkeypatch):
     monkeypatch.setattr(canvas, "_media_ctl", lambda argv, timeout: (
         "error: that reply's audio is no longer on this host (cache cleared)"))

@@ -86,3 +86,39 @@ def test_a_replay_that_hangs_is_not_an_error(monkeypatch):
 
     monkeypatch.setattr(canvas.subprocess, "run", run)
     assert canvas._speech_ctl("replay", 1) == ""
+
+
+def test_the_snapshot_names_the_turn_being_spoken(monkeypatch):
+    """`turn` keys the player to a transcript line (`at`, and `id` on a
+    replay). A reader holding a line's sentences can then tell whether they
+    are the ones being spoken — which is what lets the bold survive losing
+    the live row."""
+    _speaking(monkeypatch, {"source_session": NEW, "current_sentence": "New."})
+    monkeypatch.setattr(canvas, "_speech_turn",
+                        lambda: {"at": 1790031449.7, "id": 91})
+    assert canvas.speech_state()["turn"] == {"at": 1790031449.7, "id": 91}
+
+
+def test_nothing_playing_names_no_turn(monkeypatch):
+    monkeypatch.setattr(canvas, "_media", lambda args, timeout=10: "")
+    monkeypatch.setattr(canvas, "_speech_extras", lambda: {})
+    monkeypatch.setattr(canvas, "_speech_queue", lambda: [])
+    monkeypatch.setattr(canvas, "_speech_turn", lambda: {"at": 1.0})
+    assert "turn" not in canvas.speech_state()
+
+
+def test_the_turn_is_read_from_the_now_playing_row(monkeypatch, tmp_path):
+    """Read from the row itself, not the extras — `started_at` is the key the
+    log's lines carry, and a row with no history id (a fresh reply, not a
+    replay) names only that."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    from agent_media_core.state.store import StateStore
+
+    st = StateStore()
+    st.set_now_playing("speech", uri="/tmp/a.mp3", started_at=1790031449.7,
+                       extras={"source_session": NEW})
+    assert canvas._speech_turn() == {"at": 1790031449.7}
+
+    st.set_now_playing("speech", uri="/tmp/a.mp3", started_at=1790031500.0,
+                       extras={"source_session": NEW, "history_id": 91})
+    assert canvas._speech_turn() == {"at": 1790031500.0, "id": 91}

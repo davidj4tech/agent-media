@@ -215,6 +215,12 @@ def speech_now(bearer: str, state: dict) -> tuple[bool, dict]:
     # A recorded reply played again (the bar's replay, ▶ on a bubble): what is
     # heard is that reply, under its own session, and not a new one.
     out["replay"] = bool(out["live"] and state.get("replay"))
+    # Which turn the player is on, keyed the way the log's lines are
+    # (`{"at", "id"}`). The transcript can then match `pos` to a line it
+    # already holds — which is the whole point of a line carrying its
+    # timeline without being live: the bold survives losing the live row.
+    if out["live"] and isinstance(state.get("turn"), dict):
+        out["turn"] = state["turn"]
     # Replies said but not heard yet, because the voice is busy. The app's
     # "New reply waiting". Named, like the live one, but title only: the
     # library item is looked up when it plays.

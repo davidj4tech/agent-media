@@ -851,6 +851,31 @@ def _speech_extras() -> dict:
         return {}
 
 
+def _speech_turn() -> dict:
+    """Which turn the player is on: `{"at": <started_at>, "id": <history id>}`.
+
+    The transcript's lines are keyed by `at` (`book_tracks.conversation_log`),
+    so this is what lets a reader match "the player is on this" to a line it
+    already has — including after the live row is gone and the line is an
+    ordinary one carrying only its timeline. `id` is set on a replay, where
+    what is audible is a recorded row rather than the turn that started now.
+    """
+    try:
+        from agent_media_core.state.store import StateStore
+        np = StateStore().get_now_playing("speech") or {}
+        ex = np.get("extras") or {}
+        at = np.get("started_at")
+        if at is None:
+            return {}
+        out = {"at": round(float(at), 3)}
+        rid = int(ex.get("history_id") or 0)
+        if rid:
+            out["id"] = rid
+        return out
+    except Exception:  # noqa: BLE001 — a bold that cannot resync is not a fault
+        return {}
+
+
 def _speech_queue() -> list:
     """The replies waiting for the playback token (core's `speech_queue`):
     `[{"session", "urgent", "at"}]`. Empty on any problem."""
@@ -1027,6 +1052,13 @@ def speech_state() -> dict:
         # to a different session than the current voice, and the app to name
         # the conversation on its speech bar (paused too).
         state["session"] = str(ex["source_session"])[:80]
+    if state["speaking"] or state.get("paused"):
+        # Which turn this is, so a reader can tell whether the sentences it
+        # holds are the ones being spoken. Without it the app can see a
+        # position but not what the position is *into*.
+        turn = _speech_turn()
+        if turn:
+            state["turn"] = turn
     if (state["speaking"] or state.get("paused")) and ex.get("replay"):
         # What is heard is a recorded reply played again, not a new one. The
         # row is the replay's own: a reply that arrives while it plays waits
