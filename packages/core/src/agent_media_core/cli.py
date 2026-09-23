@@ -654,7 +654,11 @@ def _announced_timeline():
             return (True, None, None, False, False, None, False)
     ps = ex.get("play_started_at")
     lp = ex.get("live_pos_s")
-    total = float(ex["total_duration_s"])
+    # The reply's length on the clock `live_pos_s` is on: `total_wall_s` when
+    # the marks measured it (it carries the gaps between clips), else the
+    # summed audio. Clamping a wall position against the audio sum pegged the
+    # bar at 100% a gap before the end.
+    total = float(ex.get("total_wall_s") or ex["total_duration_s"])
     speed = float(ex.get("live_speed") or 1.0)
     if lp is None and ps:
         # Clamped: an overrun means the utterance finished and cleanup has not
@@ -674,7 +678,7 @@ def _announced_timeline():
             pos = min(pos + max(time.time() - float(at), 0.0) * speed, total)
     else:
         pos = ex.get("clip_offset_s") or 0.0
-    return (False, pos, ex.get("total_duration_s"),
+    return (False, pos, total,
             bool(ex.get("live_pause")), bool(ex.get("live_mute")),
             ex.get("live_speed") or 1.0, True)
 

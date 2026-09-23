@@ -23,7 +23,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, Sequence
 
 from .. import _lock as fcntl
 from .. import audio_targets
@@ -1074,6 +1074,37 @@ def elapsed_from_row(extras: dict, origin: float) -> float:
     paused_at = extras.get("paused_at")
     now = float(paused_at) if paused_at else time.time()
     return max(0.0, now - base)
+
+
+def wall_position(idx: int, live: Optional[dict], extras: dict,
+                  durations: Sequence[float]) -> None:
+    """Put `live_pos_s` on the same clock as the live frame's `elapsed`, and
+    say how long the reply runs on that clock.
+
+    `elapsed` (book_tracks) is wall time since `play_started_at`, so it
+    carries the gaps between clips — the first sentence is rendered and
+    played alone while the rest are still being made, and that gap alone
+    measured 4.9s on a real reply. `live_pos_s` was `offsets[idx] +
+    time-pos`: summed clip lengths, every gap excluded. Two clocks, and the
+    app closed the loop between them — `useElapsedSkew` reads
+    `elapsed - pos` as staleness and holds the bold back by it, so a
+    constant 4.9s difference put the bold a whole sentence behind the voice
+    (David, 23 Sep 2026).
+
+    The measured starts `_stamp_start` has just written are the wall clock,
+    so ride those instead. `total_wall_s` is the same answer for the
+    denominator: this clip's real start plus the audio still to come. The
+    bar needs it, or a wall-clock position pegs it at 100% a gap early.
+    """
+    starts = [float(x) for x in (extras.get("clip_starts_s") or [])]
+    if idx >= len(starts):
+        return                          # nothing measured for this one yet
+    if live is not None:
+        tp = live.get("time-pos")
+        extras["live_pos_s"] = (starts[idx] + float(tp)
+                                if tp is not None else starts[idx])
+    extras["total_wall_s"] = round(
+        starts[idx] + sum(float(d or 0) for d in durations[idx:]), 3)
 
 
 def carry_pause_stamp(prior: dict, extras: dict, live_seen: bool) -> None:
@@ -4002,6 +4033,7 @@ def _submit_event(event: Event,
                     # reply must not write its own sentences over it.
                     return
                 _stamp_start(idx, live, prior, extras)
+                wall_position(idx, live, extras, durations)
                 carry_pause_stamp(prior, extras, live is not None)
                 state.set_now_playing(
                     "speech", uri=str(clip_i), started_at=started_at,

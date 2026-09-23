@@ -104,3 +104,22 @@ def test_a_pause_and_resume_does_not_lose_the_place(monkeypatch, tmp_path):
     _idle, pos, *_ = cli._announced_timeline()
     assert pos == pytest.approx(4.3, abs=0.3), (
         "the five seconds paused were counted as five seconds spoken")
+
+
+def test_the_wall_length_is_the_end_when_the_marks_measured_it(monkeypatch):
+    """`live_pos_s` carries the gaps between clips (submit.wall_position), so
+    the summed audio is the wrong end to clamp it against: the bar pegged at
+    100% a gap before the reply finished, and read a gap short throughout."""
+    import time
+    _row(monkeypatch, live_pos_s=TOTAL - 1.0, live_pos_at=time.time(),
+         total_wall_s=TOTAL + 4.87)
+    _idle, pos, dur, *_ = cli._announced_timeline()
+    assert dur == TOTAL + 4.87
+    assert pos == pytest.approx(TOTAL - 1.0, abs=0.2), "not clamped early"
+
+
+def test_without_measured_starts_the_summed_audio_is_still_the_end(monkeypatch):
+    import time
+    _row(monkeypatch, live_pos_s=3.3, live_pos_at=time.time())
+    _idle, _pos, dur, *_ = cli._announced_timeline()
+    assert dur == TOTAL
