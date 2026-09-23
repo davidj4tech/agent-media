@@ -149,6 +149,10 @@ read them from Next instead of the old app's :8772.
 
 ## Loose ends
 
+- **Follow-along is lost for the rest of a reply** when another session's
+  question barges in mid-reply: the audio resumes, the live row does not, so
+  the thread stops highlighting. Diagnosed as far as
+  [docs/notes/2026-09-23-follow-along-after-barge-in.md](notes/2026-09-23-follow-along-after-barge-in.md).
 - `follow.mjs` at the largest text size fails on and off.
 - `test_session_events.py::test_a_state_change_sends_the_list_again` times
   out on and off when the machine is busy (the SSE watcher's poll is 50 ms
