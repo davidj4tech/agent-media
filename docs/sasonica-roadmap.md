@@ -262,6 +262,48 @@ read them from Next instead of the old app's :8772.
   `live` means "has a pane". A session with neither a pane nor a headless
   state still moves (nothing is running there).
 
+- **Moving a live session splits its transcript in two** (23 Sep 2026).
+  `move_transcript()` (`moves.py`) `shutil.move`s the `.jsonl` into the
+  destination project's directory, but a running Claude Code holds the old
+  path: the history lands under the new project and the next turn re-creates
+  a fresh file at the path derived from the session's cwd. The conversation
+  ends up as two files with the same session id and no overlapping uuids,
+  the tail's first row correctly parented to the head's last — one thread
+  cut in half. **Both moves made that afternoon did it**: the session that
+  wrote the Matrix proposal (190 rows under
+  `-home-ryer-projects-agent-media`, the rest under `-home-ryer-scratch`)
+  and the headless one behind the collapse-reasoning ask (337 + 173),
+  moved eight minutes apart, both recorded in `moved.json`.
+  The busy gate does not catch it and should not have to: nothing was
+  *running*, the sessions were merely open — which also means the fix in
+  `83721c3` does not cover this.
+  Why it shows: `harnesses.transcript()` globs every project directory and
+  takes `max(hits, key=mtime)`, so a reader gets whichever half was written
+  to last — the app showed the newer half and none of the thread's own
+  history. And `move_transcript` picks its *source* with
+  `sorted(root.glob(f"*/{session}.jsonl"))[0]`, so once a session is split a
+  later move grabs whichever directory sorts first.
+  Both were stitched by hand (head rows ahead of the tail, deduped by uuid,
+  `os.replace` onto the file the session is still appending to — Claude Code
+  reopens per write, so nothing was lost; backups in `~/scratch/`), and the
+  orphaned halves retired. Options for a real fix: leave the file alone for
+  a session that is open and let the override alone move the thread (the
+  docstring already allows "nothing to move" as a non-error), or move it and
+  stitch on next read.
+
+- **Not every duplicate transcript is a split** (23 Sep 2026), worth knowing
+  before the next diagnosis. A sweep of `~/.claude/projects` found six
+  session ids in two directories each; only the two above were splits. The
+  four others — three runlet ↔ sasonica-shell pairs and an August
+  agent-media ↔ scratch pair — are **copy-forwards**: the newer file
+  contains *every* uuid of the older (identical in three cases, +939 rows
+  in one), the leftovers of the runlet → sasonica-shell rename, not damage.
+  Uuid overlap is what tells the two apart: a split shares none, a copy
+  shares all. The stale copies were retired (backups in
+  `~/scratch/transcript-stale-copies/`), because they are what makes
+  `move_transcript`'s `sorted(...)[0]` and `transcript()`'s newest-mtime
+  pick the wrong file.
+
 - `follow.mjs` at the largest text size fails on and off.
 - `test_session_events.py::test_a_state_change_sends_the_list_again` times
   out on and off when the machine is busy (the SSE watcher's poll is 50 ms
