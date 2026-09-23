@@ -146,6 +146,18 @@ read them from Next instead of the old app's :8772.
 ## Queued, in order
 
 1. **Sasonica Shell OAuth** — the proposal is written, not built.
+2. **One setup for a machine, from the Coding agents page** (David, 23 Sep
+   2026). A working machine needs three installers today: `media-setup`
+   (agent-media's own hooks and services), Sasonica Shell's `install.mjs`
+   (Worker, D1, keys, runner), and **agent-config**, which carries
+   everything else — the mail inbox hook, the session autoname, the
+   catch-up hook, the skills directory, `agent-media.env`. A fresh machine
+   that runs only the first two looks set up and is missing half of it.
+   The app already installs and signs in harnesses (§6.6), so the same
+   page should show *this machine's wiring* — hooks, services, skills,
+   mailbox, catch-up — each with what is missing and a button that runs
+   the installer that owns it. The server should call the existing
+   installers, not reimplement them.
 
 ## Loose ends
 
