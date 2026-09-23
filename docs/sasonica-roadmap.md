@@ -195,6 +195,15 @@ read them from Next instead of the old app's :8772.
       that runs the installer that owns it. The server calls the existing
       installers, never reimplements them (`media-setup status --json` is
       already that list).
+4. **opencode, and more than one account per harness** (David, 24 Sep
+   2026) — `docs/proposals/2026-09-24-opencode-and-harness-profiles.md`.
+   opencode becomes a fifth row in `RECIPES`; a *harness profile* (a
+   harness plus its config dir: `CLAUDE_CONFIG_DIR`, `CODEX_HOME`,
+   `PI_CODING_AGENT_DIR`, `XDG_DATA_HOME`, Hermes's own profiles) gives
+   every harness multiple logins; pi first needs a login recipe at all.
+   Also decided there: Next is **not** rebased on opencode-mobile, but its
+   diff viewer, tool-call approval, self-hosted F-Droid repo and demo mode
+   are queued as app work, in that order.
 
 5. **Alerts and digests in Next** (David, 24 Sep 2026) —
    `docs/proposals/2026-09-24-alerts-and-digests.md`. The dozen red5
