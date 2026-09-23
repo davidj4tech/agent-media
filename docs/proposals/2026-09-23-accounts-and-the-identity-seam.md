@@ -138,6 +138,26 @@ Steps 2–4 are dead weight for one person on a tailnet. Step 1 is not.
   panes, and that is a much larger change than authentication. Accounts
   here are enrolment for one household, and the hosted tier's real cost is
   that separation, not its login page.
+
+  Worth being exact about the split, because it decides how much of this is
+  buyable:
+
+  | Layer | Who does it |
+  |---|---|
+  | Accounts, roles, invitations, billing | Drupal |
+  | Devices, verification, revocation, power levels, room ACLs, receipts, push | Matrix |
+  | **One shell, one `~/.claude`, one filesystem** | **us, and nobody else** |
+
+  The top two bands are solved problems with maintained implementations, and
+  taking them means *retiring* code rather than writing it: Matrix's device
+  model is this document's §9 and its enrol bit, its power levels are the
+  scope, its read receipts are `/seen`, its push gateway is the
+  notifications. The bottom band has no vendor. A room cannot sandbox a
+  filesystem, and a JWT cannot stop one account's session reading another's
+  transcript — that needs an OS user or a container per account, with
+  quotas, and every place that shells out or reads `~/.claude` made to ask
+  *whose*. It is the multi-step part, it is isolation rather than identity,
+  and none of the work above brings it closer.
 - **The amux token.** `GET /pair` stays what it is: the canvas's page, no
   CORS, its own store, unreachable from any of this. Nothing above may ever
   be a route to being handed it.
