@@ -73,7 +73,8 @@ foreground service on `GET /sessions/events`, §6.13: "New reply" /
 tap, network handover); "From <name>" on another session's messages;
 search (`GET /search`, §6.14: every thread's messages, titles, recaps and
 projects from an incremental FTS5 index on red5, memory as its own section
-when agent-memory answers; the app's ⌕ on Home and Threads, a hit opens its
+when agent-memory answers; the app's ⌕ beside Show / Sort on Threads, with a
+Show of its own seeded from the list's filter; a hit opens its
 thread at that message, lit; Codex/pi/Hermes hits land by time, not by id);
 the Advanced setting (per device, off: search's "Tool steps", the
 follow-along lead, device id and server address, the legacy connection). Moving a
@@ -168,17 +169,20 @@ read them from Next instead of the old app's :8772.
    everything else — the mail inbox hook, the session autoname, the
    catch-up hook, the skills directory, `agent-media.env`. A fresh machine
    that runs only the first two looks set up and is missing half of it.
-   Two parts, in this order:
-   1. **The Sasonica profile** (standing decision above): move that third
-      set into agent-media as a named profile `media-setup` installs,
-      merging into the machine's own config, with the managed-config-dir
-      option beside it. agent-config then includes the profile instead of
-      carrying its own copy.
+   Two parts:
+   1. **The Sasonica profile** — **DONE 23 Sep 2026**: `media-setup profile`
+      wires a machine in one command (hooks, services, shell, and every
+      extra it finds, each skipped with a reason when its tool is absent),
+      and `media-setup status --json` is the same rows for the page.
+      `--config-dir` writes a Sasonica-managed config and records
+      `CLAUDE_CONFIG_DIR`. Still to do: have agent-config *call* the
+      profile rather than carry its own copy of those hooks.
    2. **The page**: the app already installs and signs in harnesses (§6.6),
       so the same page shows *this machine's wiring* — hooks, services,
       skills, mailbox, catch-up — each with what is missing and a button
       that runs the installer that owns it. The server calls the existing
-      installers, never reimplements them.
+      installers, never reimplements them (`media-setup status --json` is
+      already that list).
 
 ## Loose ends
 
