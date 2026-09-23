@@ -225,8 +225,22 @@ read them from Next instead of the old app's :8772.
   ordering by activity means live rows first, then the rest by `at`
   descending — note `SessionRow.at` is only set on shelved rows, so a live
   row has no activity time to sort by and the server would have to carry
-  one. The sheet (`ProjectPicker`, `SessionSheets.tsx`) also wants a
-  scrollable `action-list` rather than a sheet that grows past the screen.
+  one. **Do it the way the Show menu does** (David, 23 Sep 2026): the
+  threads screen's filter already lists every project, as a scrolling
+  `Popover` with section heads (`routes/threads.tsx`), and that treatment is
+  what a long list wants — not the sheet's `action-list`, which grows past
+  the screen. Both read the same `projects`, so the activity ordering lands
+  in `knownProjects()` and fixes the Show menu at the same time.
+
+- **`/session/move` does not guard a session with no pane** (23 Sep 2026).
+  The busy check is `if live and _busy(session, pane)` (`moves.py`), and
+  `live` needs a tmux pane, so a headless or non-interactive session — one
+  the app cannot see a pane for — skips the gate entirely and has its
+  transcript moved mid-turn. That is the very thing the gate is for ("an
+  interrupted turn would lose whatever it had not written yet"). Found by
+  trying to move a live paneless session onto agent-media; the move was not
+  run. A paneless session needs its own working check (the harness's own
+  state, not a pane capture) before the transcript moves.
 
 - `follow.mjs` at the largest text size fails on and off.
 - `test_session_events.py::test_a_state_change_sends_the_list_again` times
