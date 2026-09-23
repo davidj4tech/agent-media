@@ -44,7 +44,10 @@ Where things live:
   is that the phone drives the *same* sessions — same skills, same memory,
   same panes. A **Sasonica-managed config dir** (its own
   `CLAUDE_CONFIG_DIR`) is offered for people who do not want Sasonica in
-  their settings; it costs them that sharing.
+  their settings; it costs them that sharing, so it sits under **Advanced**
+  in the app (David, 23 Sep 2026) — the same per-device switch that hides
+  the device id, the server address and search's tool steps. Merging is
+  what an ordinary install does without being asked.
 
 ## Done
 
