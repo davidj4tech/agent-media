@@ -59,7 +59,8 @@ dashboard; background agents in a thread; thread-list sorting and filter
 (Active / Live / Closed / Archived / Everything, one project, and any
 number of states — Needs you / Working / Your turn; `/targets`
 now lists every archived thread, past the 40-row cap; By project's
-headings fold, kept per device); project
+headings fold, kept per device; filtered to one project, the + starts the
+new chat there, 23 Sep 2026); project
 line under titles; menus that close on an outside tap; the brand and icons;
 the About page; seven text sizes (7–19 px, Default 13); the digital-
 assistant slot in Next; the coding-agents installer in Settings; Sasonica
