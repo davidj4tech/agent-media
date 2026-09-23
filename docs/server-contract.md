@@ -2048,7 +2048,14 @@ threads, 15,772 message rows, 22,547 tool-step rows. A catch-up with a few
 changed files: ~0.14 s. Nothing is held in memory between queries but
 SQLite's 4 MB page cache per connection.
 
-Clients: the chat app's search screen (`/find`, the ⌕ at the end of the Home | Threads switch; a message hit opens `/t/<session>?at=<message>`).
+Clients: the chat app's search screen (`/find`, the ⌕ beside Show / Sort on
+the thread list — search looks through threads, so it lives with the thread
+list's own controls; a message hit opens `/t/<session>?at=<message>`). The
+screen carries a Show of its own — Show, project and agent, seeded from the
+list's filter (Active becomes Everything, since the list only folds archived
+rows) and shown on screen, `?show=&project=&agent=`. The server is asked for
+everything regardless: the narrowing is applied to the hits, which already
+carry `project`, `harness`, `live` and `archived`.
 
 ### 6.15 Move a thread to another project — gated (built 23 Sep 2026)
 
