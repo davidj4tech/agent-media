@@ -1238,6 +1238,13 @@ def _speech_supersede_dir() -> Path:
     return state / "agent-media" / "speech-supersede"
 
 
+#: How long the blind hold will keep waiting out a player that says it is
+#: paused, over and above the reply's own remaining length. Matches the speech
+#: lock's own give-up window: past it, a "pause" nobody ever lifts is a wedged
+#: player, not a listener holding a thought.
+_BLIND_PAUSE_CAP_S = 600.0
+
+
 def _speech_events_path() -> Path:
     state = Path(os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state"))
     return state / "agent-media" / "speech-events.jsonl"
@@ -4026,6 +4033,16 @@ def _submit_event(event: Event,
                 if played_any:
                     _mark(0)
                 i = -1
+                # The sentence the now_playing row is on. `i` is the highlight's
+                # index and is deliberately reset to -1 (at the start, and after
+                # a yield) so the next reading re-shows the sentence — but the
+                # row has to keep saying where the reply is even before that
+                # reading lands. Marking off `i` meant a reply that came back
+                # from a barge-in paused never marked again: the row was left
+                # saying "not paused", its clock ran on without the pause taken
+                # off, and the app's bold walked away from the voice for the
+                # rest of the reply.
+                mark_i = 0
                 nav_jump = False
                 misses = 0
                 last_ms = -1
@@ -4051,6 +4068,11 @@ def _submit_event(event: Event,
                 # Whether the player was paused at the last readable tick,
                 # carried across a yield (see there).
                 last_paused = False
+                # Why the follow loop stopped, for the one line it logs on the
+                # way out. Every exit is a different bug when it is the wrong
+                # one, and until this was recorded the only trace a lost
+                # follow-along left was the absence of a highlight.
+                why = "fell out"
                 while played_any:
                     # Streaming appends clips under us, so the reply's length
                     # and its last index are read fresh each tick rather than
@@ -4071,6 +4093,8 @@ def _submit_event(event: Event,
                         highlighter.cancel_pending()
                         sink.stop(target)
                         finished = True
+                        why = ("superseded" if playback_lock.should_abort()
+                               else "cut")
                         break
                     # Step aside for a higher-priority speaker (e.g. a
                     # notification) waiting on the token, then resume this reply —
@@ -4128,6 +4152,7 @@ def _submit_event(event: Event,
                         # counting the time the higher speaker had.
                         _pl_started = time.monotonic() - offsets[resume_i]
                         last_broker_refresh = time.monotonic()
+                        mark_i = resume_i
                         _mark(resume_i)
                         continue
                     # Keep our cross-host broker claim alive while we play so
@@ -4145,6 +4170,7 @@ def _submit_event(event: Event,
                             highlighter.cancel_pending()
                             sink.stop(target)
                             finished = True   # skip past last clip = intentional end
+                            why = f"skipped past the last clip (nav={nav})"
                             break
                         sink.set_playlist_pos(max(0, nav), target)
                         nav_jump = True
@@ -4161,9 +4187,21 @@ def _submit_event(event: Event,
                         # sentence start stamped at the end was half a second
                         # late (_stamp_start).
                         snap["_read_at"] = (asked + time.time()) / 2
-                    if not snap:
+                    # `get_properties` answers with whatever succeeded and
+                    # leaves the rest out, so a snapshot can come back missing
+                    # exactly the field a branch below turns on — and `.get`
+                    # reads an absent `pause` as "not paused" and an absent
+                    # `idle-active` as "still playing". The first is how a
+                    # reply the listener paused was counted as making no
+                    # progress and abandoned 8s later. An incomplete answer is
+                    # no answer: count it as a miss, which is already the
+                    # bounded, resume-safe way of not knowing.
+                    if not snap or "pause" not in snap or "idle-active" not in snap:
                         misses += 1
                         if misses > 50:        # ~5s fully unreadable → bail
+                            why = ("player unreadable for ~5s"
+                                   if not snap else
+                                   "snapshots kept coming back incomplete")
                             break
                         time.sleep(0.1)
                         continue
@@ -4171,8 +4209,8 @@ def _submit_event(event: Event,
                     last_paused = bool(snap.get("pause"))
                     mute_watcher.poll(snap.get("mute"))  # from the same snapshot
                     if snap.get("pause"):
-                        if 0 <= i < n:
-                            _mark(i, live=snap)  # reflect the pause in now_playing
+                        if 0 <= mark_i < n:
+                            _mark(mark_i, live=snap)  # reflect it in now_playing
                         stall = 0
                         time.sleep(0.1)
                         continue
@@ -4195,6 +4233,7 @@ def _submit_event(event: Event,
                             if count == 0:
                                 _player_gone.set()
                                 finished = True
+                                why = "playlist emptied under us"
                                 break
                             if count is not None and count == _handed[0]:
                                 # Still exactly our list: the player ran dry.
@@ -4225,6 +4264,12 @@ def _submit_event(event: Event,
                                 # Never came back to the list we built: it was
                                 # stopped and partly refilled by our appends.
                                 _player_gone.set()
+                                why = (f"playlist replaced under us "
+                                       f"(count={count} handed={_handed[0]})")
+                            else:
+                                why = "playlist finished"
+                        else:
+                            why = "playlist finished"
                         finished = True
                         break  # playlist finished
                     pos = snap.get("playlist-pos")
@@ -4237,6 +4282,8 @@ def _submit_event(event: Event,
                                          first=(i == 0), force=nav_jump)
                         nav_jump = False
                         stall = 0
+                    if 0 <= pos < n:
+                        mark_i = pos
                     if 0 <= i < n:
                         # Every tick, not just on sentence change: keep the mirrored
                         # live position/pause/speed/mute fresh so the popup's redraw
@@ -4247,15 +4294,30 @@ def _submit_event(event: Event,
                     # shared broker), bail so a response can never hang. A gapless
                     # clip boundary resets time-pos, which counts as progress.
                     ms = snap.get("time-pos")
-                    if ms is not None and ms != last_ms:
+                    if ms is None:
+                        # The player answered, but not about this. Not knowing
+                        # where it is is not evidence that it is stuck.
+                        pass
+                    elif ms != last_ms:
                         last_ms = ms
                         stall = 0
                     else:
                         stall += 1
                         if stall > 80:         # ~8s with no progress → give up
-                            log.warning("intake: playlist stalled; ending follow")
+                            why = "no playback progress for ~8s"
                             break
                     time.sleep(0.1)
+                # One line saying which exit ended the follow and where it had
+                # got to. At WARNING for every exit but the ordinary one,
+                # because nothing configures a handler in the detached hook
+                # child: logging's lastResort carries WARNING and above to
+                # ~/.cache/agent-media/hook-play.log, and drops INFO on the
+                # floor. Until this was written, a lost follow-along left no
+                # trace anywhere but the missing highlight.
+                (log.info if (finished and why == "playlist finished")
+                 else log.warning)(
+                    "intake: follow ended (%s) at sentence %d/%d, finished=%s",
+                    why, (i + 1) if i >= 0 else 0, len(clip_data), finished)
                 # However the loop ended, the tail must never sit waiting to
                 # hand over (a yield that did not come back clears it).
                 _may_hand.set()
@@ -4268,12 +4330,39 @@ def _submit_event(event: Event,
                 # dead bridge, and sink.idle() reports idle on IPC error, so either
                 # alone would release us straight back into the clobber.
                 if played_any and not finished:
-                    log.info("intake: lost follow-along; holding speech token "
-                             "until audio completes")
+                    log.warning("intake: lost follow-along; holding speech "
+                                "token until audio completes")
+                    # The hold used to be blind in both directions: it neither
+                    # said where the reply had got to nor listened to what the
+                    # player said while it waited. So one unreadable stretch
+                    # cost the listener the highlight for the whole rest of a
+                    # reply that was still perfectly audible. Every snapshot
+                    # that does land here is followed, exactly as the loop
+                    # above would have followed it — this is a degraded follow,
+                    # not an absence of one.
+                    paused_for = 0.0
+                    last_tick = time.monotonic()
                     while time.monotonic() < hard_deadline:
                         snap = sink.snapshot(target)
+                        now_t = time.monotonic()
+                        waited, last_tick = now_t - last_tick, now_t
                         if snap and snap.get("idle-active"):
                             break
+                        if snap:
+                            pos = snap.get("playlist-pos")
+                            if isinstance(pos, int) and 0 <= pos < len(clip_data):
+                                mark_i = pos
+                            if 0 <= mark_i < len(clip_data):
+                                _mark(mark_i, live=snap)
+                            if snap.get("pause") and paused_for < _BLIND_PAUSE_CAP_S:
+                                # Paused is not over. Spending the reply's own
+                                # length while nothing is playing is how a reply
+                                # the listener held ended up with no live row —
+                                # and then no follow-along when they resumed it.
+                                # Capped, so a player stuck at pause=true cannot
+                                # hold the speech token for ever.
+                                paused_for += waited
+                                hard_deadline += waited
                         time.sleep(0.5)
             else:
                 i = 0

@@ -93,7 +93,9 @@ class _Sink:
         # keeps polling an idle player rather than calling the reply over.
         if self._gate is not None and self.snapshots >= self._idle_first:
             self._gate.set()
-        return {"idle-active": True}
+        # A real snapshot always carries `pause` — the follow loop now counts
+        # one that doesn't as unreadable rather than as "not paused".
+        return {"idle-active": True, "pause": False}
 
     def set_playlist_pos(self, pos, target=None):
         pass
@@ -267,7 +269,8 @@ class _Player(_Sink):
         if self.snapshots >= self._open_at:
             self._gate.set()
         if self.pos is None:
-            return {"idle-active": True, "playlist-count": len(self.list),
+            return {"idle-active": True, "pause": False,
+                    "playlist-count": len(self.list),
                     "playlist-pos": self._last if self._keeps_pos else -1}
         cur = self.pos
         self._last = cur
