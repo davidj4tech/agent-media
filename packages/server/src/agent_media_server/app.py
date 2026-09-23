@@ -50,7 +50,7 @@ device gets its token):
                   plus `places` — the directories sessions have run in, newest
                   first, which a fresh chat can be opened in (`{"cwd": …}` to
                   /ask)
-  GET  /harnesses → the four harnesses: installed, which version, signed in
+  GET  /harnesses → every harness: installed, which version, signed in
                   or not, and which of install and login this host has a
                   recipe for
   POST /harnesses/run {"agent", "action": "install"|"login"} → run it in a
@@ -458,7 +458,7 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
         ok, detail = dashboard.dashboard(_bearer(h))
         _json_z(h, 200 if ok else detail.pop("status", 403), {"ok": ok, **detail})
     elif path == "/harnesses":
-        # The four harnesses and what each needs — is it installed, is it
+        # Every harness and what each needs — is it installed, is it
         # signed in — so the app can offer the buttons that would fix it.
         ok, detail = harnesses.agents(_bearer(h))
         _json(h, 200 if ok else detail.pop("status", 403), {"ok": ok, **detail})

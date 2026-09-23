@@ -1798,7 +1798,7 @@ machines are. Code: `agent_media_server/dashboard.py`. Pinned by
   else the recap's. `recap` and `rested` as on `/targets`.
 - `project`, `cwd` (22 Sep 2026) on every `recent`, `working` and
   `needs_you` row: as on `/targets` (§6.1), `null` when unknown.
-- `places`: `/targets.places`. `agents`: the four harnesses, `present` =
+- `places`: `/targets.places`. `agents`: every harness (five since opencode, 24 Sep 2026), `present` =
   installed on this host (a PATH lookup only — `/harnesses` has versions and
   sign-in).
 - `hosts`: this host first, then `MEDIA_DASHBOARD_PEERS` (default `hpo`;

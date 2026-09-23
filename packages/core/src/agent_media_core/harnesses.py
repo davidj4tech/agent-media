@@ -32,6 +32,14 @@ state, a way back in. This is the table of those differences.
             resume: pi --session <id>; a fresh one can be given its id up
             front with --session-id, so a phone-started chat knows its uuid
             before anything is said
+    opencode  ~/.local/share/opencode/opencode.db (`XDG_DATA_HOME` moves it) —
+            SQLite like Hermes: `session` has the id, directory and title,
+            `message` and `part` the turns, each a JSON `data` column
+            live: an `opencode` process holds the database open; its session
+            is the one `--session` named, else the newest in its directory
+            started since the process was
+            resume: opencode --session <id>; ids are `ses_` and 26 letters
+            and digits, the third shape `_safe` knows
 
 pi's model calls often go through Meridian, which runs Claude Code headless
 under systemd. Those `claude` processes have no tmux pane and their sessions
@@ -52,14 +60,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-CLAUDE, CODEX, PI, HERMES = "claude", "codex", "pi", "hermes"
-HARNESSES = (CLAUDE, CODEX, PI, HERMES)
+CLAUDE, CODEX, PI, HERMES, OPENCODE = "claude", "codex", "pi", "hermes", "opencode"
+HARNESSES = (CLAUDE, CODEX, PI, HERMES, OPENCODE)
 
 _UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 #: Hermes numbers its sessions by the clock instead: `20260921_102508_f74b02`.
 _HERMES_ID = r"[0-9]{8}_[0-9]{6}_[0-9a-f]{4,}"
-#: Either shape, for anything that takes a session id from outside.
-SESSION_ID = re.compile(f"(?:{_UUID}|{_HERMES_ID})")
+#: opencode's: `ses_` and 26 base62 characters, `ses_f2fa343dcffeKPfrR1z5h6u4NN`.
+_OPENCODE_ID = r"ses_[0-9A-Za-z]{26}"
+#: Any of the shapes, for anything that takes a session id from outside.
+SESSION_ID = re.compile(f"(?:{_UUID}|{_HERMES_ID}|{_OPENCODE_ID})")
 _ROLLOUT = re.compile(r"rollout-.*-(" + _UUID + r")\.jsonl$")
 
 
@@ -77,6 +87,27 @@ def _pi_dir() -> Path:
 
 def _hermes_dir() -> Path:
     return Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes").expanduser()
+
+
+def opencode_db() -> Path:
+    """opencode's one database: every project's sessions, and its sign-ins."""
+    base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+    return Path(base).expanduser() / "opencode" / "opencode.db"
+
+
+def opencode_rows(sql: str, args: tuple = ()) -> list[tuple]:
+    """`sql` against opencode's database, read-only. [] when it is not there
+    or will not answer — a schema opencode has moved on from included."""
+    import sqlite3
+
+    db = opencode_db()
+    if not db.exists():
+        return []
+    try:
+        with sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=1.0) as c:
+            return c.execute(sql, args).fetchall()
+    except sqlite3.Error:
+        return []
 
 
 def hermes_stores() -> list[Path]:
@@ -114,6 +145,21 @@ def is_hermes(session: str) -> bool:
     return bool(re.fullmatch(_HERMES_ID, session or ""))
 
 
+def is_opencode(session: str) -> bool:
+    """Whether that id is opencode-shaped."""
+    return bool(re.fullmatch(_OPENCODE_ID, session or ""))
+
+
+#: The title opencode gives a session until it has named it.
+_OPENCODE_UNNAMED = re.compile(r"^New session - \d{4}-\d\d-\d\dT")
+
+
+def _opencode_session(session: str) -> tuple:
+    """`(directory, title)` of an opencode session, or () when it has none."""
+    rows = opencode_rows("select directory, title from session where id = ?", (session,))
+    return tuple(rows[0]) if rows else ()
+
+
 # --- where a conversation is written -------------------------------------------
 
 
@@ -132,7 +178,9 @@ def transcript(session: str) -> Optional[tuple[str, Path]]:
 
 
 def harness_of(session: str) -> str:
-    """"claude", "codex", "pi", "hermes", or "" when none of them has it."""
+    """"claude", "codex", "pi", "hermes", "opencode", or "" when none has it."""
+    if is_opencode(session):
+        return OPENCODE if _opencode_session(session) else ""
     if is_hermes(session):
         return HERMES if _hermes_rows(
             "select 1 from sessions where id = ?", (session,)) else ""
@@ -154,6 +202,9 @@ def _records(path: Path):
 
 def cwd_of(session: str) -> str:
     """The directory the session ran in, from its own file. "" if unknown."""
+    if is_opencode(session):
+        found = _opencode_session(session)
+        return str(found[0] or "") if found else ""
     if is_hermes(session):
         rows = _hermes_rows("select cwd from sessions where id = ?", (session,))
         # A Hermes TUI session records no cwd at all; the caller falls back to
@@ -189,7 +240,21 @@ def _is_preamble(text: str) -> bool:
 
 
 def first_prompt(session: str) -> str:
-    """The first thing the person asked, for codex, pi and hermes. "" otherwise."""
+    """The first thing the person asked, for codex, pi, hermes and opencode.
+    "" otherwise."""
+    if is_opencode(session):
+        # A user message's words are its text parts; `synthetic` ones are
+        # opencode's own additions (a file it attached), not what was typed.
+        rows = opencode_rows(
+            "select p.data from part p join message m on m.id = p.message_id "
+            "where p.session_id = ? and json_extract(m.data, '$.role') = 'user' "
+            "and json_extract(p.data, '$.type') = 'text' "
+            "and coalesce(json_extract(p.data, '$.synthetic'), 0) = 0 "
+            "order by m.time_created, p.id limit 1", (session,))
+        try:
+            return " ".join(str(json.loads(rows[0][0]).get("text") or "").split()) if rows else ""
+        except (ValueError, AttributeError):
+            return ""
     if is_hermes(session):
         rows = _hermes_rows(
             "select content from messages where session_id = ? and role = 'user' "
@@ -220,8 +285,13 @@ def title_of(session: str) -> str:
     Codex names threads in `session_index.jsonl` (rewritten by appending, so
     the last line for an id wins); pi writes `session_info` records into the
     session file (the last one wins, as a /name renames it). Claude's titles
-    are read by session_feed, which knows its record types.
+    are read by session_feed, which knows its record types. opencode keeps
+    one on the session row: a timestamp until it has thought of a better one.
     """
+    if is_opencode(session):
+        found = _opencode_session(session)
+        title = " ".join(str(found[1] or "").split()) if found else ""
+        return "" if _OPENCODE_UNNAMED.match(title) else title
     if is_hermes(session):
         # Hermes leaves it null unless `hermes sessions rename` has been run.
         rows = _hermes_rows("select title from sessions where id = ?", (session,))
@@ -377,6 +447,31 @@ def _hermes_session(pid: str) -> str:
     return str(row[0]) if row else ""
 
 
+def _opencode_live_session(pid: str, argv: list[str]) -> str:
+    """The session a live opencode is on, or "" before it has one.
+
+    One started with `--session <id>` (a resume, or `-s`) says so in its
+    arguments. Otherwise it is like Hermes: the database is shared by every
+    opencode, so the session is the newest one in this process's directory
+    started since the process was. A subagent's session has a parent and is
+    never the one the pane is on.
+    """
+    for i, a in enumerate(argv[1:], 1):
+        if a in ("--session", "-s") and i + 1 < len(argv) and is_opencode(argv[i + 1]):
+            return argv[i + 1]
+        if a.startswith("--session=") and is_opencode(a.split("=", 1)[1]):
+            return a.split("=", 1)[1]
+    try:
+        cwd = os.readlink(f"/proc/{pid}/cwd")
+    except OSError:
+        return ""
+    rows = opencode_rows(
+        "select id from session where directory = ? and parent_id is null "
+        "and time_created >= ? order by time_created desc limit 1",
+        (cwd, int((_started_at(pid) - 5.0) * 1000)))
+    return str(rows[0][0]) if rows else ""
+
+
 # --- every conversation on disk, whichever agent wrote it -----------------------
 
 
@@ -467,6 +562,16 @@ def _hermes_stored() -> list[Stored]:
     return out
 
 
+def _opencode_stored() -> list[Stored]:
+    """Every opencode conversation. A subagent's session (it has a parent) is
+    part of its parent's, not one of its own; an archived one was put away."""
+    return [Stored(str(sid), OPENCODE, float(at or 0) / 1000.0)
+            for sid, at in opencode_rows(
+                "select id, time_updated from session "
+                "where parent_id is null and time_archived is null")
+            if is_opencode(str(sid or ""))]
+
+
 def stored(*, since: float = 0.0, limit: int = 0,
            exclude: tuple[str, ...] = ()) -> list[Stored]:
     """Every conversation on this host, newest first, whichever agent held it.
@@ -488,6 +593,7 @@ def stored(*, since: float = 0.0, limit: int = 0,
     found += _scan(_codex_dir() / "sessions", 3, re.compile(f"rollout-.*-({_UUID})\\.jsonl"), CODEX)
     found += _scan(_pi_dir() / "sessions", 1, re.compile(f".*_({_UUID})\\.jsonl"), PI)
     found += _hermes_stored()
+    found += _opencode_stored()
     newest: dict[str, Stored] = {}
     for row in found:
         if row.at < since:
@@ -557,7 +663,7 @@ def _registered() -> list[Running]:
 
 
 def running() -> list[Running]:
-    """Every live codex, pi and hermes, with the session each is on.
+    """Every live codex, pi, hermes and opencode, with the session each is on.
 
     Claude is not here: claude_sessions has Claude's own record of that, and
     the reply code keeps its extra fallbacks. A codex that has not been sent
@@ -577,6 +683,10 @@ def running() -> list[Running]:
             sid = _hermes_session(pid)
             if sid:
                 out.append(Running(int(pid), sid, _pane_of(pid), HERMES))
+        elif os.path.basename(argv[0]) == OPENCODE and argv[1:2] not in (["serve"], ["web"]):
+            sid = _opencode_live_session(pid, argv)
+            if sid:
+                out.append(Running(int(pid), sid, _pane_of(pid), OPENCODE))
     return out
 
 
@@ -625,7 +735,7 @@ def resume_argv(harness: str, session: str) -> list[str]:
         return ["resume", session]
     if harness == HERMES:
         return ["--tui", "--resume", session]
-    if harness == PI:
+    if harness in (PI, OPENCODE):
         return ["--session", session]
     return ["--resume", session]
 
@@ -634,7 +744,8 @@ def fresh_argv(harness: str, session: str = "") -> list[str]:
     """The arguments for a new session; pi can be told its id up front.
 
     Hermes cannot: `--pass-session-id` only puts the id in its own prompt, so
-    a Hermes started here is asked for its id afterwards, like codex.
+    a Hermes started here is asked for its id afterwards, like codex. Nor can
+    opencode, whose ids it makes itself.
     """
     if harness == PI and _safe(session):
         return ["--session-id", session]
@@ -730,6 +841,17 @@ RECIPES: dict[str, Recipe] = {
         update=("hermes", "update", "--yes"),
         login=("setup",),
         check=("update", "--check"),
+    ),
+    # An npm package that ships a native binary per platform, and upgrades
+    # itself once here. `auth login` is a provider picker, driven in the
+    # window like Hermes's `setup`. There is no logout here: `auth logout`
+    # with no provider named is a picker too, and this runs it blind.
+    OPENCODE: Recipe(
+        install=("npm", "install", "-g", "opencode-ai"),
+        update=("opencode", "upgrade"),
+        login=("auth", "login"),
+        status=("auth", "list"),
+        package="opencode-ai",
     ),
 }
 
@@ -865,9 +987,10 @@ def update_check(harness: str, timeout: float = 90.0) -> tuple[bool | None, str]
 def auth_state(harness: str, timeout: float = 15.0) -> tuple[str, str]:
     """`(state, detail)` — "in", "out" or "unknown", and a line to show.
 
-    Only two of the four can be asked without opening a terminal: Claude
-    answers `auth status` in JSON, Codex exits non-zero when it is signed out.
-    The other two are reported honestly as unknown rather than guessed at.
+    Three of the five can be asked without opening a terminal: Claude
+    answers `auth status` in JSON, Codex exits non-zero when it is signed out,
+    and opencode counts its stored credentials. The other two are reported
+    honestly as unknown rather than guessed at.
     """
     import subprocess
 
@@ -888,8 +1011,38 @@ def auth_state(harness: str, timeout: float = 15.0) -> tuple[str, str]:
             return "unknown", " ".join(out.split())[:200]
         who = str(data.get("email") or data.get("authMethod") or "")
         return ("in" if data.get("loggedIn") else "out"), who
+    if harness == OPENCODE:
+        return _opencode_auth(out)
     line = " ".join(out.split())[:200]
     return ("in" if done.returncode == 0 and "logged in" in out.lower() else "out"), line
+
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _opencode_auth(said: str) -> tuple[str, str]:
+    """What `opencode auth list` says, as a sign-in state.
+
+    It draws a box: "N credentials" under the stored ones, then the providers
+    whose API key is in the environment. Either is a way in. Neither is
+    still not "out" — opencode's own free models need no sign-in at all, so
+    a chat started with none works, and "out" would have `/ask` refuse it.
+    """
+    text = _ANSI.sub("", said)
+    m = re.search(r"(\d+)\s+credentials?\b", text)
+    stored = int(m.group(1)) if m else 0
+    env = re.split(r"\bEnvironment\b", text, maxsplit=1)
+    # "●  Venice AI VENICE_API_KEY": the provider, then the variable.
+    from_env = re.findall(r"●\s+(.+?)\s+[A-Z][A-Z0-9_]+\s*$", env[1], re.M) \
+        if len(env) > 1 else []
+    if stored or from_env:
+        said = [f"{stored} credential{'s' if stored != 1 else ''}"] if stored else []
+        if from_env:
+            said.append("keys for " + ", ".join(from_env[:3]))
+        return "in", "; ".join(said)
+    if not m:
+        return "unknown", " ".join(text.split())[:200]
+    return "unknown", "no sign-in: opencode's free models only"
 
 
 def version_of(harness: str, timeout: float = 10.0) -> str:

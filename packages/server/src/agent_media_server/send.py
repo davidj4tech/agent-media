@@ -552,6 +552,20 @@ def _unsent(pane: str, head: str | tuple[str, ...], agent: str, window: float) -
             box = cap.splitlines()[rules[-2] + 1:rules[-1]] if len(rules) >= 2 else []
             if not any(m in " ".join(" ".join(box).split()) for m in marks):
                 return False
+        elif agent == "opencode":
+            # opencode's composer is the run of `┃` lines straight above the
+            # `╹▀▀▀` that closes it; a sent message is drawn with the same
+            # bar further up, but with the model's line between.
+            lines = cap.splitlines()
+            end = next((i for i in range(len(lines) - 1, -1, -1)
+                        if lines[i].lstrip().startswith("╹")), -1)
+            box = []
+            for ln in reversed(lines[:end] if end >= 0 else []):
+                if not ln.lstrip().startswith("┃"):
+                    break
+                box.append(ln.lstrip()[1:])
+            if not any(m in " ".join(" ".join(box).split()) for m in marks):
+                return False
         else:
             flat = " ".join(cap.split())
             i = flat.rfind(_COMPOSER.get(agent, sessions._PROMPT_GLYPH))

@@ -38,13 +38,14 @@ _UUID = re.compile(r"^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
                    r"|[0-9]{8}_[0-9]{6}_[0-9a-f]{4,})$")
 #: Tools that are bookkeeping, not work anyone would want listed.
 _QUIET = {"TodoWrite", "ToolSearch", "TaskOutput", "BashOutput", "update_plan"}
-#: Codex's and pi's names for the same tools.
+#: Codex's, pi's and opencode's names for the same tools.
 _ALIASES = {"bash": "Bash", "shell": "Bash", "exec_command": "Bash", "local_shell": "Bash",
             # Codex's sandboxed runner: a little script whose command is
             # pulled out when it reads like one (transcript._codex_args).
             "exec": "Bash",
             "read": "Read", "edit": "Edit", "write": "Write", "grep": "Grep",
-            "find": "Glob", "ls": "LS", "web_search": "WebSearch"}
+            "find": "Glob", "ls": "LS", "web_search": "WebSearch",
+            "glob": "Glob", "list": "LS", "webfetch": "WebFetch", "todowrite": "TodoWrite"}
 
 
 def canonical_tool(name: str) -> str:

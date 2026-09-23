@@ -189,6 +189,10 @@ def last_message_at(session: str) -> float | None:
 
     if h.is_hermes(session):
         return _hermes_last(session)
+    if h.is_opencode(session):
+        rows = h.opencode_rows(
+            "select max(time_created) from message where session_id = ?", (session,))
+        return rows[0][0] / 1000.0 if rows and rows[0][0] is not None else None
     found = h.transcript(session)
     if not found:
         return None

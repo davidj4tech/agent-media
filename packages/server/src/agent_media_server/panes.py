@@ -317,7 +317,7 @@ def classify_cc(pane: str) -> "str | None":
 
 #: What each coding agent's pane reports as its command. Codex and pi hold
 #: conversations the phone can reach too (see agent_media_core.harnesses).
-AGENT_COMMANDS = ("claude", "codex", "pi", "hermes")
+AGENT_COMMANDS = ("claude", "codex", "pi", "hermes", "opencode")
 
 
 def classify(pane: str, agent: str = "claude") -> "str | None":
@@ -355,6 +355,15 @@ def classify(pane: str, agent: str = "claude") -> "str | None":
         if sum(1 for ln in tail if re.fullmatch(r"\s*─{8,}\s*", ln)) < 2:
             return None
         return "working" if re.search(r"Working\.\.\.", pane) else "input"
+    if agent == "opencode":
+        # Its footer: "esc interrupt" beside a progress bar while a turn
+        # runs, "ctrl+p commands" at the right of it always. Its permission
+        # prompt has not been seen here yet, so nothing says "approval".
+        if re.search(r"esc interrupt", pane):
+            return "working"
+        if re.search(r"ctrl\+p commands", pane):
+            return "input"
+        return None
     return classify_cc(pane)
 
 

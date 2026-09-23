@@ -24,11 +24,12 @@ from . import auth, auth_abs, panes, procmem, recaps
 
 
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
-#: What counts as a session id from outside — a uuid (claude, codex, pi) or
-#: Hermes's clock-stamped `20260921_102508_f74b02`. The gates below take this;
-#: `_UUID` stays where the shape itself is the point (claude's argv).
+#: What counts as a session id from outside — a uuid (claude, codex, pi),
+#: Hermes's clock-stamped `20260921_102508_f74b02` or opencode's `ses_…`.
+#: The gates below take this; `_UUID` stays where the shape itself is the
+#: point (claude's argv).
 _SESSION = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
-                      r"|[0-9]{8}_[0-9]{6}_[0-9a-f]{4,}")
+                      r"|[0-9]{8}_[0-9]{6}_[0-9a-f]{4,}|ses_[0-9A-Za-z]{26}")
 
 
 # --- which conversation, and so which session ---------------------------------
@@ -244,7 +245,7 @@ def transcript_cwd(session: str) -> str:
             return cwd
         pane = live_sessions().get(session, "")
         return panes.cwd(pane) if pane else ""
-    if harnesses.harness_of(session) in (harnesses.CODEX, harnesses.PI):
+    if harnesses.harness_of(session) in (harnesses.CODEX, harnesses.PI, harnesses.OPENCODE):
         return harnesses.cwd_of(session)
     for f in glob.glob(os.path.expanduser(f"~/.claude/projects/*/{session}.jsonl")):
         try:

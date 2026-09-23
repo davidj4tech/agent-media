@@ -726,6 +726,109 @@ class PiBuilder(_HarnessBuilder):
                 if tid:
                     self._tools[tid] = (part["name"], part)
 
+
+#: opencode's argument names, as the summaries above spell them.
+_OPENCODE_ARGS = {"filePath": "file_path", "oldString": "old_string",
+                  "newString": "new_string"}
+_OPENCODE_TOTAL = re.compile(r"\(End of file - total (\d+) lines?\)")
+
+
+class OpencodeBuilder(_HarnessBuilder):
+    """opencode's database (`agent_media_core.harnesses.opencode_db`).
+
+    Not a file: `message` rows carry the role, `part` rows the content, each a
+    JSON `data` column. Fed one message at a time (`{"id", "at", "role",
+    "parts", "finish", "error"}`, from `_opencode_rows`). An assistant turn is
+    several messages — one per model step — so they fold into one until the
+    next prompt. A tool part holds its own result (`state`: pending, running,
+    completed, error), so it is settled where it stands.
+    """
+
+    def feed(self, rec: dict) -> None:
+        r = {"uuid": rec.get("id"), "timestamp": rec.get("at")}
+        parts = [p for p in rec.get("parts") or [] if isinstance(p, dict)]
+        if rec.get("role") == "user":
+            text = "\n".join(str(p.get("text") or "") for p in parts
+                             if p.get("type") == "text" and not p.get("synthetic")).strip()
+            if text:
+                self._user(r, _cut(text, TEXT_MAX))
+            return
+        if rec.get("role") != "assistant":
+            return
+        msg = self._assistant_msg(r)
+        msg["turn"]["running"] = True
+        for p in parts:
+            t = p.get("type")
+            if t == "text" and str(p.get("text") or "").strip():
+                msg["parts"].append({"type": "text", "text": _cut(str(p["text"]), TEXT_MAX)})
+            elif t == "reasoning":
+                said = str(p.get("text") or "").strip()
+                msg["parts"].append({"type": "reasoning",
+                                     "text": _cut(said, REASONING_MAX) if said else "",
+                                     "redacted": not said})
+            elif t == "tool":
+                st = p.get("state") if isinstance(p.get("state"), dict) else {}
+                inp = st.get("input") if isinstance(st.get("input"), dict) else {}
+                inp = {_OPENCODE_ARGS.get(k, k): v for k, v in inp.items()}
+                tid = str(p.get("callID") or p.get("id") or "")
+                part = _tool_part(str(p.get("tool") or ""), inp, tid)
+                msg["parts"].append(part)
+                self._tools[tid] = (part["name"], part)
+                if st.get("status") == "completed":
+                    out = str(st.get("output") or "")
+                    self._finish_tool(tid, out)
+                    # Its Read wraps the file in <path>/<content> tags and
+                    # says the count itself, which is the count to show.
+                    total = _OPENCODE_TOTAL.search(out) if part["name"] == "Read" else None
+                    if total:
+                        part["result_summary"] = f"{total.group(1)} lines"
+                elif st.get("status") == "error":
+                    self._finish_tool(tid, str(st.get("error") or ""), error=True)
+        if rec.get("finish") == "stop" or rec.get("error"):
+            self._close(interrupted=bool(rec.get("error")))
+
+
+def _opencode_rows(session: str) -> list[dict]:
+    """A session's messages with their parts, oldest first, as
+    `OpencodeBuilder.feed` takes them."""
+    from agent_media_core import harnesses
+
+    msgs: dict[str, dict] = {}
+    for mid, at, mdata, pdata in harnesses.opencode_rows(
+            "select m.id, m.time_created, m.data, p.data from message m "
+            "left join part p on p.message_id = m.id "
+            "where m.session_id = ? order by m.time_created, m.id, p.id", (session,)):
+        rec = msgs.get(mid)
+        if rec is None:
+            try:
+                m = json.loads(mdata)
+            except ValueError:
+                m = {}
+            m = m if isinstance(m, dict) else {}
+            rec = msgs[mid] = {
+                "id": mid, "role": m.get("role"), "parts": [],
+                "at": datetime.fromtimestamp(at / 1000.0, timezone.utc).isoformat(),
+                "finish": m.get("finish"), "error": m.get("error")}
+        if pdata:
+            try:
+                rec["parts"].append(json.loads(pdata))
+            except ValueError:
+                pass
+    return list(msgs.values())
+
+
+def _opencode_messages(session: str) -> list[dict] | None:
+    """Every message of an opencode session, or None when it has none."""
+    rows = _opencode_rows(session)
+    if not rows:
+        return None
+    b = OpencodeBuilder()
+    for rec in rows:
+        b.feed(rec)
+    b.settle()
+    return b.messages
+
+
 def copy_messages(messages: list[dict]) -> list[dict]:
     """Copies the caller may change (the speech join does) without touching
     the cache."""
@@ -993,8 +1096,28 @@ def messages(session: str, *, limit: int | None = None, before: str = "") \
     """
     harness, path = transcript_of(session)
     if not path:
-        return None
+        return _opencode_page(session, limit=limit, before=before)
     return messages_at(path, limit=limit, before=before, harness=harness)
+
+
+def _opencode_page(session: str, *, limit: int | None, before: str) \
+        -> tuple[list[dict], bool] | None:
+    """`messages` for opencode, which keeps a database rather than a file: the
+    whole session is read each time (a query, no file to walk backwards)."""
+    from agent_media_core import harnesses
+
+    msgs = _opencode_messages(session) if harnesses.is_opencode(session) else None
+    if msgs is None:
+        return None
+    more = False
+    if before:
+        idx = next((i for i, m in enumerate(msgs) if m["id"] == before), None)
+        more = bool(idx)
+        msgs = msgs[:idx] if idx is not None else []
+    if limit and len(msgs) > limit:
+        more = True
+        msgs = msgs[-limit:]
+    return copy_messages(msgs), more
 
 
 def messages_at(path: str, *, limit: int | None = None, before: str = "",
@@ -1046,9 +1169,10 @@ def messages_around(session: str, around: str, *, limit: int, most: int) \
     """`window_around` over a session's whole transcript (copies). None when
     there is no transcript this can read, or no such message."""
     harness, path = transcript_of(session)
-    if not path:
-        return None
-    got = _read(path, full=True, harness=harness)
+    if path:
+        got = _read(path, full=True, harness=harness)
+    else:
+        got = _opencode_page(session, limit=None, before="")
     if got is None:
         return None
     win = window_around(got[0], around, limit, most)
@@ -1061,10 +1185,20 @@ def messages_around(session: str, around: str, *, limit: int, most: int) \
 def file_state(session: str) -> tuple[int, int, float] | None:
     """`(inode, size, mtime)` of the session's transcript — what a watcher
     polls to know there is something new to read. Whichever harness wrote
-    it, so a Codex or pi thread streams like a Claude one."""
+    it, so a Codex or pi thread streams like a Claude one. An opencode
+    session has no file: its parts are counted and their newest change
+    taken, which moves exactly when a file's size and mtime would."""
     path = transcript_of(session)[1]
     if not path:
-        return None
+        from agent_media_core import harnesses
+
+        if not harnesses.is_opencode(session):
+            return None
+        rows = harnesses.opencode_rows(
+            "select count(*), max(time_updated) from part where session_id = ?", (session,))
+        if not rows or not rows[0][0]:
+            return None
+        return 0, int(rows[0][0]), float(rows[0][1] or 0) / 1000.0
     try:
         st = os.stat(path)
     except OSError:
