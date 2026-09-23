@@ -148,6 +148,35 @@ def test_a_working_session_is_refused(server, shelf, signed_in, claude, dest, wi
     assert moves.moved(SID2) == {}
 
 
+def test_a_working_session_with_no_pane_is_refused(
+        server, shelf, signed_in, claude, dest, windows, monkeypatch):
+    """The gate is the turn, not the pane (23 Sep 2026).
+
+    A headless session has no screen to read, so the check used to be
+    skipped for it and its transcript moved mid-turn — the very thing the
+    gate exists to stop.
+    """
+    from agent_media_server import driver
+
+    monkeypatch.setattr(driver, "headless_state",
+                        lambda sid: {"state": "working", "live": True, "pane": None}
+                        if sid == SID else None)
+    res, obj = call(server, "POST", "/session/move",
+                    {"session": SID, "project": "p-agent-mail"}, AUTH)
+    assert res.status == 409 and "working" in obj["error"]
+    assert moves.moved(SID) == {}
+    assert (claude / moves.encoded_dir("/home/ryer/projects/agent-media")
+            / f"{SID}.jsonl").exists()
+
+
+def test_a_shelved_session_with_no_pane_still_moves(
+        server, shelf, signed_in, claude, dest, windows):
+    """Nothing is running there: no pane and no headless state is not busy."""
+    res, obj = call(server, "POST", "/session/move",
+                    {"session": SID, "project": "p-agent-mail"}, AUTH)
+    assert res.status == 200 and obj["restarted"] is False
+
+
 def test_a_directory_may_be_named_instead_of_a_project(
         server, shelf, signed_in, claude, dest, windows):
     _res, obj = call(server, "POST", "/session/move", {"session": SID, "cwd": dest}, AUTH)

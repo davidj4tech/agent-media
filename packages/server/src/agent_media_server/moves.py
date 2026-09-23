@@ -218,15 +218,16 @@ def _destination(project: str, cwd: str) -> tuple[str, str, str]:
 
 
 def _busy(session: str, pane: str) -> bool:
-    """Whether that session is mid-turn, and so must not be restarted.
+    """Whether that session is mid-turn, and so must not be moved.
 
-    Read off the pane the same way `send` reads it, because a headless
-    session has no pane to read: `driver` answers for that one.
+    `sessions.activity_of` is the one place that is answered, with a pane or
+    without one: a headless session has no screen to read, and sessiond
+    answers for it from the agent's own events. It used to be read off the
+    pane here, and a session with no pane skipped the gate altogether — so
+    the very thing the gate is for, a turn losing what it had not written
+    yet, happened to exactly the sessions the app cannot see a pane for.
     """
-    if not pane:
-        return False
-    cap = panes.strip_ansi(sessions._capture_pane(pane))
-    return panes.classify(cap, sessions.agent_of(session)) == "working"
+    return sessions.activity_of(session, pane)["state"] == "working"
 
 
 def move(session: str, project: str = "", cwd: str = "",
@@ -252,7 +253,8 @@ def move(session: str, project: str = "", cwd: str = "",
 
     pane = sessions.live_sessions().get(session, "")
     live = bool(pane and panes.alive(pane))
-    if live and _busy(session, pane):
+    # Pane or no pane: a running turn is a running turn.
+    if _busy(session, pane):
         return False, {"error": "that session is working — stop it first",
                        "pane": pane, "status": 409}
     if live:
