@@ -1,6 +1,6 @@
 # Proposal: one alert path for the watchers and digests, shown in Sasonica Next (24 Sep 2026)
 
-Status: **proposal, nothing built.** Adds an alert store and routes to the
+Status: **proposal, decided 24 Sep 2026, nothing built.** Adds an alert store and routes to the
 server (a new §6.x in `server-contract.md`), one event type to
 `GET /sessions/events` (§6.13), a producer helper in `agent-config`, and an
 Alerts view in Next.
@@ -115,8 +115,7 @@ interval. That is the gap that hid agent-memory-healthcheck.
   retires describe-digest's own tmux session.
 - **inbox.org** keeps the record. The first raise to `warn`/`needs` files a TODO
   with an `:ALERT_ID:` property (dedupe by property, not by heading text), and a
-  clear appends `Cleared <timestamp>` under it. Whether a clear also marks it
-  DONE is open question 1.
+  clear appends `Cleared <timestamp>` under it. A clear marks routine ones DONE (decided, below).
 
 ## Migration
 
@@ -136,13 +135,13 @@ In order, each step useful on its own:
 5. **Retire** `agent-digest-pane` as a delivery path once nothing but the
    fallback uses it.
 
-## Open questions
+## Decided (David, 24 Sep 2026)
 
-1. **Does a clear close the org TODO?** Recommend: yes for `status` alerts that
-   cleared on their own (host back, disk freed), with a `Cleared` note; leave it
-   open if David acked it or it was `needs`.
-2. **Where do alerts live in Next: a Home section, or a tab?** Recommend: a Home
-   section with a count badge; promote it to a tab only if it gets busy.
-3. **Hosts other than red5** (p8a, sp4, pn) report to red5's server over the
-   tailnet with a device token. Or does each host run its own store? Recommend:
-   red5 is the one store; the fallback covers red5 being down.
+1. **A clear closes routine TODOs.** A `status` alert that clears on its own
+   (host back, disk freed) marks its TODO DONE with a `Cleared` note; one that
+   David acked, or that was `needs`, stays open with the note only.
+2. **Alerts are a Home section** in Next with a count badge; a tab only if it
+   gets busy.
+3. **red5 is the one store.** Other hosts (p8a, sp4, pn) report over the
+   tailnet with a device token (`may_report`); `agent-alert`'s fallback
+   covers red5 being down.
