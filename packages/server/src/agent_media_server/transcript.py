@@ -1197,7 +1197,16 @@ def join_speech(msgs: list[dict], lines: list[dict]) -> None:
     for m in replies:
         if m["spoken"]:
             continue
-        texts = _final_texts(m)
+        # Without the canvas markers: a `[[visual:]]` is an instruction, never
+        # a word anybody said, so the spoken line does not have it. They are
+        # stripped after the join (`strip_markers`), which left the raw text
+        # here — and a marker is easily 400 characters, which is the whole
+        # window this compares. A reply whose figure sat near the top scored
+        # 0.45 against its own live line and joined nothing, so the thread had
+        # no live line to follow for the length of that reply: no bold at all,
+        # the whole way down (David, 23 Sep 2026). The key path above needs
+        # the raw text and keeps it — `spoken_keys` does its own stripping.
+        texts = [display_text(t) for t in _final_texts(m)]
         if not texts:
             continue
         want = _norm(texts[0])[:400]

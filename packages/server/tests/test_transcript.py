@@ -488,6 +488,37 @@ def test_spoken_join_by_words_and_unspoken_stays_null(script):
     assert second["spoken"] is None
 
 
+def test_a_figure_does_not_cost_the_reply_its_live_line(script):
+    """A live line has no key, so it joins by words — and the words it is
+    compared against still had the `[[visual:]]` marker in them, which the
+    voice never said. A marker near the top of a reply is easily the whole
+    400-character window, and the reply then joined nothing: no live line on
+    the message, so no bold anywhere for as long as it spoke (David, 23 Sep
+    2026). Measured on the reply that showed it: 0.45 against a 0.6 bar.
+    """
+    script.prompt("Explain it")
+    script.text("Fixed, and this is the test of it.\n\n"
+                "[[visual: two horizontal timelines stacked, the top one "
+                "labelled elapsed with a shaded gap between the first clip "
+                "and the second, the bottom one labelled pos with the clips "
+                "butted together, and a dashed line down from the boundary "
+                "showing that the two disagree by the width of the gap]]\n\n"
+                "The bold was on a different clock from the voice, which is "
+                "why it sat a whole sentence behind.")
+    out = msgs()
+    reply = out[1]
+    spoken = ("Fixed, and this is the test of it. The bold was on a different "
+              "clock from the voice, which is why it sat a whole sentence "
+              "behind.")
+    live = {"live": True, "sentences": ["Fixed, and this is the test of it."],
+            "sentence": 0, "offsets": [0.0], "elapsed": 0.4,
+            "server_time": 100.0, "delay": 0.0, "paused": False}
+    # No key: a line that is still playing has never been written to history.
+    T.join_speech(out, [_line("agent", spoken, reply["at"] + 900, **live)])
+    assert reply["spoken"] is not None, "the reply lost its live line to its own figure"
+    assert reply["spoken"]["live"] == {k: live[k] for k in T.LIVE_FIELDS}
+
+
 def test_reveal_halves_join_by_their_own_key(script):
     script.prompt("Draw")
     script.text("Look here. [[reveal: a diagram]] As you can see, it works.")
