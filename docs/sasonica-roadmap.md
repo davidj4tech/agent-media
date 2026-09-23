@@ -208,15 +208,21 @@ read them from Next instead of the old app's :8772.
   bad name costs one tap of Rename, which wins for good. Build the section
   when two or three settings want it, not for one checkbox.
 - **The question form should sit at the bottom while it is being filled**
-  (David, 23 Sep 2026). Answering an AskUserQuestion in the app means
-  scrolling down to reach the form: what the reply put above it pushes it
-  off the bottom of the screen. He asked for the reasoning to be collapsed
-  while the form is open. Measure before building it that way — `Reasoning`
-  (`parts.tsx`) already defaults to collapsed (`useState(false)`), so the
-  height above the card is coming from somewhere else (the tool steps, the
-  reply text, or a reasoning block he opened earlier and that stayed open).
-  Whatever it is, the want is the card pinned in view until it is answered,
-  not a particular part collapsed.
+  (David, 23 Sep 2026). **Done 23 Sep 2026**: the card is docked, not
+  collapsed around. Measured first, at 390×780 against a new mock fixture
+  whose ask sits under a reply taller than the screen (`Mock: asking after
+  a long reply`): nothing above the card was collapsible — the reasoning is
+  already shut and the steps are one folded "Worked · 4 steps" line. What
+  pushed the form off the screen was the reply itself, and no amount of
+  collapsing would hold it there while the reply grew under it.
+  So the dialog the session is stopped on now renders **once**, in the
+  viewport footer above the speech bar (`Thread`'s `dock`, sasonica-chat
+  `…`): it is in view whatever the thread is scrolled to, until it is
+  answered. `buildItems({dock: true})` keeps the stream from showing a
+  second copy — a pending ask keeps its place in the conversation, marked
+  "Waiting on your answer — the form is below". The dock is capped at half
+  the screen and scrolls inside itself, so a two-question form never pushes
+  the composer away.
 
 - **The project picker should be ordered by recently active** (David, 23
   Sep 2026), and it needs scroll: Move to project… lists every project on
@@ -231,6 +237,16 @@ read them from Next instead of the old app's :8772.
   what a long list wants — not the sheet's `action-list`, which grows past
   the screen. Both read the same `projects`, so the activity ordering lands
   in `knownProjects()` and fixes the Show menu at the same time.
+  **Done 23 Sep 2026**: the order is one function, `projectOptions()`
+  (`lib/threadSort.ts`) — a project is as recent as its most recent thread,
+  measured with the same `recency()` the list's Most recent uses (a running
+  thread is now), with "Other" last and the name breaking ties. Both
+  `projectsOf()` (the Show menu) and `knownProjects()` (the thread page's
+  move) read it, so the Show menu was fixed by the same change. The picker
+  keeps the sheet's frame — it is summoned from a long press, which has no
+  anchor to drop a `Popover` from — and takes the menu's treatment inside
+  it: `menu-head` sections (Running now / Recently used) over a list capped
+  at half the screen that scrolls.
 
 - **`/session/move` does not guard a session with no pane** (23 Sep 2026).
   The busy check is `if live and _busy(session, pane)` (`moves.py`), and
@@ -239,8 +255,12 @@ read them from Next instead of the old app's :8772.
   transcript moved mid-turn. That is the very thing the gate is for ("an
   interrupted turn would lose whatever it had not written yet"). Found by
   trying to move a live paneless session onto agent-media; the move was not
-  run. A paneless session needs its own working check (the harness's own
-  state, not a pane capture) before the transcript moves.
+  run. **Fixed 23 Sep 2026**: `_busy()` asks `sessions.activity_of()`, the
+  one place "is this session busy" is answered — it reads the pane when
+  there is one and sessiond's own view of a headless session when there is
+  not — and the gate no longer asks whether the session is `live`, since
+  `live` means "has a pane". A session with neither a pane nor a headless
+  state still moves (nothing is running there).
 
 - `follow.mjs` at the largest text size fails on and off.
 - `test_session_events.py::test_a_state_change_sends_the_list_again` times
