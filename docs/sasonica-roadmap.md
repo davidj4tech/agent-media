@@ -62,7 +62,8 @@ now lists every archived thread, past the 40-row cap; By project's
 headings fold, kept per device; filtered to one project, the + starts the
 new chat there, 23 Sep 2026); project
 line under titles; menus that close on an outside tap; the brand and icons;
-the About page; seven text sizes (7–19 px, Default 13); the digital-
+the About page; seven text sizes (9–21 px, Default 15), and a pinch
+steps through them and saves the choice (24 Sep 2026); the digital-
 assistant slot in Next; the coding-agents installer in Settings; Sasonica
 Shell rename, named URLs and client labels; answered questions stop being
 read out; tap to read from here (tap a sentence while it is spoken;
