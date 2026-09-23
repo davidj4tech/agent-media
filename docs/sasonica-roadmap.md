@@ -200,11 +200,6 @@ read them from Next instead of the old app's :8772.
   `elapsed`: the player's own. Open question first — how does the app know
   the player still holds *that* turn? `/speech/now` would have to name it
   (an `at` or a history id), which is a contract addition of its own.
-- red5 is missing three services its own roles want:
-  `mpv-book-bridge-local`, `mpv-music-bridge-local`,
-  `mpv-speech-bridge-local` (found by `media-setup status`, 23 Sep 2026).
-  Either the roles claim a capability this host has not got, or they were
-  never installed here.
 - `follow.mjs` at the largest text size fails on and off.
 - `test_session_events.py::test_a_state_change_sends_the_list_again` times
   out on and off when the machine is busy (the SSE watcher's poll is 50 ms
