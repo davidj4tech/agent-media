@@ -207,6 +207,27 @@ read them from Next instead of the old app's :8772.
   the server for everyone paired to it. Left as env vars deliberately: a
   bad name costs one tap of Rename, which wins for good. Build the section
   when two or three settings want it, not for one checkbox.
+- **The question form should sit at the bottom while it is being filled**
+  (David, 23 Sep 2026). Answering an AskUserQuestion in the app means
+  scrolling down to reach the form: what the reply put above it pushes it
+  off the bottom of the screen. He asked for the reasoning to be collapsed
+  while the form is open. Measure before building it that way — `Reasoning`
+  (`parts.tsx`) already defaults to collapsed (`useState(false)`), so the
+  height above the card is coming from somewhere else (the tool steps, the
+  reply text, or a reasoning block he opened earlier and that stayed open).
+  Whatever it is, the want is the card pinned in view until it is answered,
+  not a particular part collapsed.
+
+- **The project picker should be ordered by recently active** (David, 23
+  Sep 2026), and it needs scroll: Move to project… lists every project on
+  the server alphabetically, so the one he wants is rarely near the top.
+  `knownProjects()` (`hooks/useThreads.ts`) sorts with `localeCompare`;
+  ordering by activity means live rows first, then the rest by `at`
+  descending — note `SessionRow.at` is only set on shelved rows, so a live
+  row has no activity time to sort by and the server would have to carry
+  one. The sheet (`ProjectPicker`, `SessionSheets.tsx`) also wants a
+  scrollable `action-list` rather than a sheet that grows past the screen.
+
 - `follow.mjs` at the largest text size fails on and off.
 - `test_session_events.py::test_a_state_change_sends_the_list_again` times
   out on and off when the machine is busy (the SSE watcher's poll is 50 ms
