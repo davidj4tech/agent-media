@@ -51,7 +51,9 @@ separate document: `proposals/2026-09-21-server-package.md`.
 
 ## 2. Servers
 
-Three HTTP servers, all stdlib `http.server`, all on the tailnet.
+Three HTTP servers, all stdlib `http.server`, all on the tailnet (§19:
+the tailnet is the development path; a reverse proxy or an outbound tunnel
+is how anyone else reaches one).
 
 | Server | Code | Port | Who talks to it |
 | --- | --- | --- | --- |
@@ -2965,6 +2967,94 @@ pane is opened only for a harness without a headless driver (Codex, pi,
 Hermes) or a revive of a pane session. `MEDIA_ASK_TMUX` / `MEDIA_ASK_CWD` /
 `MEDIA_ASK_FLAGS` override the fresh target in both layouts. Nothing on the
 wire changes: `tmux` in an `/ask` answer names whichever session was used.
+
+---
+
+## 19. Reaching the server — the three shapes (23 Sep 2026)
+
+The phone always dials out; the server is the only side that needs an
+address. How it gets one is a **deployment choice, not a code path**: the
+server already takes its public identity from the request it answered
+(`Host` as sent, `https` when `X-Forwarded-Proto` says so — §9), and the
+pairing link carries whatever base URL the desk hands it. All three shapes
+below run the same binary with the same auth.
+
+David, 23 Sep 2026: the tailnet is the development path, not the product —
+"asking a user to stand up a mesh VPN before they can chat is a dead
+product". But it is also not the only alternative to a tunnel: red5 happens
+to be a Hetzner box with a public IPv4, which most people's server is not.
+So all three are supported and documented; none is assumed.
+
+| | **A. Reverse proxy** | **B. Outbound tunnel** | **C. Tailnet only** |
+| --- | --- | --- | --- |
+| Needs | a public address or a forwarded port, a DNS name, a proxy you already run | an account with a tunnel provider (`cloudflared`, `tailscale funnel`) | every client on the mesh |
+| Inbound firewall hole | yes (443) | **no** | no |
+| TLS | the proxy's cert | terminated at the provider's edge | none — plain http on the mesh |
+| Server's IP visible | yes | no | mesh only |
+| Extra daemon | no (the proxy exists) | yes | no |
+| Who it fits | a VPS (red5) | a laptop or NUC behind a router — **most people** | one person, one mesh |
+
+### A. Reverse proxy (red5 today)
+
+red5 has a public IPv4 and `caddy.service` already terminating TLS for the
+Matrix vhosts, so a tunnel would add a hop and a dependency for nothing.
+One vhost is the whole change:
+
+```caddy
+app.ryer.org {
+	reverse_proxy 100.103.43.93:8781
+}
+```
+
+**The upstream is the tailnet IP, not loopback.** The canvas binds the
+Tailscale address on red5 (§2) — `reverse_proxy 127.0.0.1:8781` fails with
+a connection refused. Caddy sets `X-Forwarded-Proto: https` itself, which is
+what makes `POST /pair` hand the app an `https://` base (§9).
+
+### B. Outbound tunnel
+
+`cloudflared tunnel --url http://100.103.43.93:8781`, or a named tunnel with
+a config file, gives a public hostname with no inbound hole and no IP
+disclosure. This is the shape to document first for other people: it is the
+only one that works unchanged behind CGNAT or a router nobody can configure.
+The tunnel must terminate TLS and forward `X-Forwarded-Proto` (both
+Cloudflare and `tailscale funnel` do). Device tokens travel over https only.
+
+### C. Tailnet only
+
+What ships today. Sasonica Next's network security config allows cleartext
+**only to tailnet addresses**, which is why a bare MagicDNS name fails to
+pair (§9) and why this is not a shape a stranger can adopt. Under A or B the
+app is talking https to a public name, so that rule stops applying — it is
+not a blocker to remove, just one that goes quiet.
+
+### Before anything is exposed: the amux token
+
+Opening the canvas port publicly puts §4.2's desk routes there too, and
+`/input` types keystrokes into live agent panes. What holds today:
+
+- `MEDIA_VISUAL_TRUST_TAILNET` is **not set on red5** (checked 23 Sep 2026),
+  so the token is enforced. That flag drops the check *entirely*, including
+  `/input` — it must never be set on a host reachable from outside the mesh.
+  A `media doctor` check for "trust-tailnet on + a proxy in front" is owed.
+- The token is `~/.amux/auth_token`, 43 chars of `token_urlsafe(32)`, so
+  entropy is not the problem.
+
+What is owed before exposure:
+
+- **Constant-time compare.** `_authorized()` in `canvas.py` uses `got ==
+  token`; `devices.py` already uses `hmac.compare_digest`. Same fix, same
+  file.
+- **A rate limit on the desk routes.** `POST /pair` has one (10 failures per
+  source per 10 min, §9); `/input` and `/ctl` have none.
+- **Revocability.** One static string shared by every browser that ever
+  paired, with no listing and no revoke — unlike device tokens (§9), which
+  have both. The end state is desk routes on device tokens with a scope, and
+  the amux token retired.
+
+Until those land, the defensible posture is A or B with the app routes
+proxied and the desk routes left on the mesh; with them landed, the whole
+port can go behind one vhost, canvas page included.
 
 ---
 
