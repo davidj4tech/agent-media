@@ -1,0 +1,10 @@
+# The socket this exposes is THIS device's own mpv, on 127.0.0.1, for apps
+# running on the same phone (Sasonica, the old companion). A host that only
+# renders for the rooms, or only holds the library, has no on-device app to
+# serve and no loopback worth opening — so it belongs where the phone is,
+# beside call-guard, mic-block and ringer-state.
+#
+# Without this line the service declared no roles, which means "wanted
+# everywhere": `media-setup status` reported red5 as missing three services
+# it should never have (23 Sep 2026).
+requires: observe

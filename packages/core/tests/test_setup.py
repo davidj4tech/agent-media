@@ -743,3 +743,15 @@ def test_the_hook_is_named_by_a_path_a_hook_can_run(monkeypatch, tmp_path):
     monkeypatch.setattr(setup.sys, "executable", str(tmp_path / "nowhere" / "python3"))
     monkeypatch.setattr(setup.shutil, "which", lambda name: None)
     assert setup.hook_command() == setup.CLAUDE_HOOK_COMMAND
+
+
+def test_the_loopback_bridges_belong_where_the_phone_is():
+    """They expose THIS device's own mpv on 127.0.0.1 for apps on the same
+    phone. Declaring no roles means "wanted everywhere", which is how red5
+    came to be reported as missing three services it should never have."""
+    phone, hub = {"observe", "render"}, {"origin", "render"}
+    for name in ("mpv-book-bridge-local", "mpv-music-bridge-local",
+                 "mpv-speech-bridge-local"):
+        assert setup.service_wanted(name, phone)[0], name
+        wanted, why = setup.service_wanted(name, hub)
+        assert not wanted and "observe" in why, (name, why)
