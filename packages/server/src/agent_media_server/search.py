@@ -448,7 +448,7 @@ def _codex_files() -> list[tuple[str, str]]:
     out = []
     for f in glob.glob(str(harnesses._codex_dir() / "sessions" / "*" / "*" / "*" / "rollout-*.jsonl")):
         m = harnesses._ROLLOUT.search(f)
-        if m:
+        if m and not harnesses.codex_subagent(f):
             out.append((f, m.group(1)))
     return out
 

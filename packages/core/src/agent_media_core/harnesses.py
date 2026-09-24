@@ -572,6 +572,26 @@ def _opencode_stored() -> list[Stored]:
             if is_opencode(str(sid or ""))]
 
 
+_CODEX_SUBAGENT: dict[str, bool] = {}
+
+
+def codex_subagent(path: str) -> bool:
+    """Whether a Codex rollout is a subagent's — the guardian that reviews an
+    approval request, say — which is part of its parent's conversation, not
+    one of its own. Its first record says so (`source.subagent`); a rollout
+    never changes its first line, so each file is read once."""
+    got = _CODEX_SUBAGENT.get(path)
+    if got is None:
+        try:
+            with open(path, encoding="utf-8") as fh:
+                rec = json.loads(fh.readline() or "{}")
+        except (OSError, ValueError):
+            return False
+        source = (rec.get("payload") or {}).get("source") if rec.get("type") == "session_meta" else None
+        got = _CODEX_SUBAGENT[path] = isinstance(source, dict) and "subagent" in source
+    return got
+
+
 def stored(*, since: float = 0.0, limit: int = 0,
            exclude: tuple[str, ...] = ()) -> list[Stored]:
     """Every conversation on this host, newest first, whichever agent held it.
@@ -590,7 +610,9 @@ def stored(*, since: float = 0.0, limit: int = 0,
     """
     skip = {h: [_folder_of(h, d) for d in exclude if d.strip()] for h in (CLAUDE, PI)}
     found = _scan(_claude_dir() / "projects", 1, re.compile(f"({_UUID})\\.jsonl"), CLAUDE)
-    found += _scan(_codex_dir() / "sessions", 3, re.compile(f"rollout-.*-({_UUID})\\.jsonl"), CODEX)
+    found += [r for r in _scan(_codex_dir() / "sessions", 3,
+                               re.compile(f"rollout-.*-({_UUID})\\.jsonl"), CODEX)
+              if not codex_subagent(r.path)]
     found += _scan(_pi_dir() / "sessions", 1, re.compile(f".*_({_UUID})\\.jsonl"), PI)
     found += _hermes_stored()
     found += _opencode_stored()

@@ -263,6 +263,19 @@ def test_a_window_and_a_cap_keep_the_list_short(alone):
     assert [r.session for r in capped if r.harness == "claude"] == [ids[2]]
 
 
+def test_a_codex_subagent_is_part_of_its_parent_not_a_conversation(alone):
+    """Codex's guardian reviews an approval request in a rollout of its own;
+    it is not something anyone talked to."""
+    homes = alone
+    sub = "01a0d1d6-46db-7dc3-9126-108b913241eb"
+    day = homes / "codex" / "sessions" / "2026" / "09" / "16"
+    meta = {"type": "session_meta", "payload": {
+        "id": sub, "parent_thread_id": CX, "cwd": "/home/x/scratch",
+        "source": {"subagent": {"other": "guardian"}}, "thread_source": "guardian_review"}}
+    (day / f"rollout-2026-09-16T08-00-00-{sub}.jsonl").write_text(json.dumps(meta) + "\n")
+    assert {r.session for r in harnesses.stored() if r.harness == "codex"} == {CX}
+
+
 def test_a_directory_can_be_left_out_without_opening_anything(alone):
     homes = alone
     """The gateway's scratch folder: thousands of sessions nobody had."""
