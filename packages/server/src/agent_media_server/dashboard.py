@@ -28,12 +28,13 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 import threading
 import time
 from datetime import datetime
 from pathlib import Path
 
-from . import auth, sessions, speech
+from . import alerts, auth, sessions, speech
 
 #: `sessions_index()` is a tmux listing plus a walk of the shelf; the
 #: dashboard is polled every ~5 s, and a title or recap a few seconds old is
@@ -376,7 +377,16 @@ def build(bearer: str) -> dict:
             "speech": {"now": {k: now.get(k) for k in _SPEECH_KEYS},
                        "queued": list(now.get("queued") or [])},
             "recent": _recent(index), "places": sessions.places(),
-            "agents": agents, "hosts": hosts}
+            "agents": agents, "hosts": hosts, "digests": _digests()}
+
+
+def _digests() -> list[dict]:
+    """The morning digests waiting behind a Play (alerts.spoken_digests)."""
+    try:
+        return alerts.spoken_digests()
+    except Exception as e:  # noqa: BLE001 — Home without the row, not a 500
+        print(f"dashboard: digests: {e}", file=sys.stderr)
+        return []
 
 
 def dashboard(bearer: str) -> tuple[bool, dict]:

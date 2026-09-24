@@ -16,7 +16,10 @@ and this module decides what that *changes*:
     eased      down, but still warn+         quiet
     cleared    warn/needs → ok/info          quiet line; the TODO closes
     digest     a `kind: digest` report (a one-off body: describe, agenda,
-               landscape) — kept as the latest per id, notify only at warn+
+               landscape) — kept as the latest per id, notify only at warn+.
+               With `spoken`, its read-out is rendered **held**
+               (`media say --hold`): nothing is said until someone presses
+               Play — the row's `speech` names the history row to replay
 
 `confirm: N` holds a raise until the same level has been reported N times in
 a row (host-watch's "two misses before crying wolf"); a clear is never held.
@@ -37,9 +40,13 @@ the proposal puts an `alerts` event on `/sessions/events` for Next.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
+import shutil
 import sqlite3
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -54,6 +61,8 @@ STALE_FACTOR = 3
 #: How long a cleared alert or an old digest stays in the list.
 KEEP_S = 14 * 86400
 _LIMITS = {"title": 200, "detail": 4000, "fix": 1000, "host": 64}
+#: A digest's read-out: the agenda's 20 items read aloud run to ~2,500.
+SPOKEN_MAX = 12000
 
 _LOCK = threading.Lock()
 
@@ -100,6 +109,10 @@ def _connect() -> sqlite3.Connection:
     con = sqlite3.connect(_db_path(), timeout=5)
     con.row_factory = sqlite3.Row
     con.executescript(_SCHEMA)
+    cols = {r["name"] for r in con.execute("PRAGMA table_info(alerts)")}
+    if "speech_key" not in cols:
+        # Added 25 Sep 2026: the held read-out of a digest (`spoken`).
+        con.execute("ALTER TABLE alerts ADD COLUMN speech_key TEXT")
     return con
 
 
@@ -120,7 +133,50 @@ def _public(row: sqlite3.Row | dict) -> dict:
     return {k: r.get(k) for k in ("id", "kind", "level", "peak", "step", "title", "detail",
                                   "fix", "host", "every_s", "first_seen", "last_seen",
                                   "changed_at", "cleared_at", "acked_at")} | {
-        "open": r.get("kind") == "status" and RANK.get(r.get("level"), 0) >= WARN}
+        "open": r.get("kind") == "status" and RANK.get(r.get("level"), 0) >= WARN,
+        "speech": _speech(r.get("speech_key"))}
+
+
+def _speech(key: str | None) -> dict | None:
+    """A digest's held read-out: `{"id", "heard"}` once rendered (`id` is what
+    `/speech/ctl replay-id` plays), `{"id": None}` while it renders or if it
+    never did; None for a row with nothing to hear."""
+    if not key:
+        return None
+    try:
+        from agent_media_core.state import StateStore
+
+        for row in StateStore().recent_history(sink="speech", limit=400):
+            ex = row.get("extras")
+            if isinstance(ex, dict) and ex.get("dedup_key") == key:
+                return {"id": int(row["id"]), "heard": bool(ex.get("heard"))}
+    except Exception:  # noqa: BLE001 — a missing Play, never a failed listing
+        pass
+    return {"id": None, "heard": False}
+
+
+def _media_bin() -> str:
+    return shutil.which("media") or str(Path(sys.executable).parent / "media")
+
+
+def _render_held(aid: str, title: str, spoken: str, key: str) -> None:
+    """Render `spoken` held, in the background: `media say --hold`.
+
+    Not attributed to any conversation — the server's own environment may
+    name one (a canvas started from a session's shell), so those are dropped.
+    """
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("TMUX_PANE", "CLAUDE_CODE_SESSION_ID", "MEDIA_SOURCE_SESSION",
+                        "MEDIA_SESSIOND_SESSION", "MEDIA_SOURCE_WORKSPACE")}
+    env["PATH"] = os.pathsep.join([str(Path(sys.executable).parent),
+                                   str(Path.home() / ".local" / "bin"), env.get("PATH", "")])
+    try:
+        subprocess.Popen([_media_bin(), "say", "--hold", "--key", key, "--digest", aid,
+                          "--label", title or aid, spoken],
+                         env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError as e:
+        print(f"alerts: could not render {aid}'s read-out: {e}", file=sys.stderr)
 
 
 def _log(con, now: float, aid: str, change: str, level: str, title: str) -> None:
@@ -147,17 +203,27 @@ def report(body: dict, *, now: float | None = None) -> tuple[bool, dict]:
     step = _int(body.get("step"), 0, 1_000_000, 0) or 0
     confirm = _int(body.get("confirm"), 1, 10, 1) or 1
     every_s = _int(body.get("every_s"), 30, 30 * 86400, None)
+    spoken = str(body.get("spoken") or "").strip()[:SPOKEN_MAX] if kind == "digest" else ""
+    key = (f"alert:{aid}:" + hashlib.sha1(f"{now}:{spoken}".encode()).hexdigest()[:16]
+           if spoken else None)
     with _LOCK:
         con = _connect()
         try:
             with con:
                 change, row = _apply(con, aid, kind, level, fields, step, confirm,
                                      every_s, now)
+                if kind == "digest":
+                    # A new digest replaces the last one's read-out, or drops
+                    # it when this one has none.
+                    con.execute("UPDATE alerts SET speech_key=? WHERE id=?", (key, aid))
+                    row["speech_key"] = key
                 silent = _sweep(con, now)
         finally:
             con.close()
     for r in silent:
         _org(r, "raised")
+    if key:
+        _render_held(aid, fields["title"], spoken, key)
     notify = change in ("raised", "escalated") or (
         change == "digest" and RANK[level] >= WARN)
     if change in ("raised", "cleared"):
@@ -297,6 +363,23 @@ def listing(*, open_only: bool = False, now: float | None = None) -> dict:
                    and (r["kind"] == "digest" or r["cleared_at"])),
                   key=lambda r: -r["changed_at"])
     return {"alerts": open_ + rest, "at": now}
+
+
+def spoken_digests(*, within_s: float = 36 * 3600, now: float | None = None) -> list[dict]:
+    """Recent digests with a read-out, newest first, for Home's Play row
+    (`/dashboard`'s `digests`). A plain read: no sweep, no inbox — the
+    dashboard asks every few seconds."""
+    now = time.time() if now is None else now
+    with _LOCK:
+        con = _connect()
+        try:
+            rows = con.execute(
+                "SELECT * FROM alerts WHERE kind='digest' AND speech_key IS NOT NULL"
+                " AND changed_at >= ? ORDER BY changed_at DESC", (now - within_s,)).fetchall()
+        finally:
+            con.close()
+    return [{k: r[k] for k in ("id", "title", "level", "changed_at", "speech")}
+            for r in map(_public, rows)]
 
 
 def ack(aid: str, *, now: float | None = None) -> tuple[bool, dict]:

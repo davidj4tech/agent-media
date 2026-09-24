@@ -1939,6 +1939,9 @@ machines are. Code: `agent_media_server/dashboard.py`. Pinned by
 - `places`: `/targets.places`. `agents`: every harness (five since opencode, 24 Sep 2026), `present` =
   installed on this host (a PATH lookup only — `/harnesses` has versions and
   sign-in).
+- `digests` (25 Sep 2026): the last 36 h of spoken digests (§6.17), newest
+  first — `[{"id", "title", "level", "changed_at", "speech": {"id", "heard"}}]`.
+  Home shows each as a Play row; nothing is read out until it is pressed.
 - `hosts`: this host first, then `MEDIA_DASHBOARD_PEERS` (default `hpo`;
   empty for none). Local: `role` is its roles (`config.host_roles`), comma
   joined, `""` when none are declared; memory from `/proc/meminfo`
@@ -2364,6 +2367,10 @@ proposal `docs/proposals/2026-09-24-alerts-and-digests.md`. Pinned by
   `null`. `notify` is true for raised and escalated, and for a digest at warn+.
 - `confirm: N` holds a raise until N reports in a row; a clear is never held.
 - `every_s`: a status alert unheard from for 3× that raises `<id>.silent`.
+- `spoken` (digest only, ≤12,000 chars; 25 Sep 2026): its read-out. The
+  server renders it **held** in the background (`media say --hold`): nothing
+  is said; the desk gets a toast (`prefix y` plays it) and the row's `speech`
+  gets an id to play. A digest reported without `spoken` drops the last one's.
 - A raise files one TODO in `~/org/inbox.org` carrying `:ALERT_ID:`; a clear
   appends `Cleared` and marks a routine one (never acked, never `needs`) DONE.
   `MEDIA_ALERTS_INBOX` points elsewhere, `0` turns it off.
@@ -2373,7 +2380,10 @@ proposal `docs/proposals/2026-09-24-alerts-and-digests.md`. Pinned by
 `{"alerts": [...], "at"}`: open ones first (worst, then newest); without
 `open=1`, then digests and clears from the last 14 days. Each row: `id, kind,
 level, peak, step, title, detail, fix, host, every_s, first_seen, last_seen,
-changed_at, cleared_at, acked_at, open`.
+changed_at, cleared_at, acked_at, open, speech`. `speech` is null with no
+read-out; else `{"id", "heard"}`, `id` null while it renders (or if it never
+did), otherwise the history row `POST /speech/ctl {"action": "replay-id",
+"arg": id}` plays — which marks it heard.
 
 #### `POST /alerts/ack {"id"}` — gated
 

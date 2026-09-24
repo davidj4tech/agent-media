@@ -115,17 +115,20 @@ def _where(pane: str) -> str:
                   "#{session_name}:#{window_index} #{window_name}"]) or pane
 
 
-def remember(event: Event, ask: bool = False) -> None:
+def remember(event: Event, ask: bool = False, *, key: str = "",
+             where: str = "") -> None:
     """Put up the toast for `event`, which the caller renders held
     (`metadata["held"]`): what `play` and `take_for_opened` find it by.
-    `ask`: it is a question's read-out, dropped once answered (`drop_asks`)."""
+    `ask`: it is a question's read-out, dropped once answered (`drop_asks`).
+    `key` and `where` are for a caller with no pane (`media say --hold` from
+    a timer): the row's key it will look the row up by, and the toast's label."""
     pane = os.environ.get("TMUX_PANE") or ""
-    key = hashlib.sha1(event.text.encode("utf-8")).hexdigest()
+    key = key or hashlib.sha1(event.text.encode("utf-8")).hexdigest()
     record = {
         "held_at": time.time(),
         "pane": pane,
         "session": (event.metadata or {}).get("session") or "",
-        "where": _where(pane) if pane else "",
+        "where": where or (_where(pane) if pane else ""),
         # The row's dedup key (`_play_now` sets it on a reply, the ask path
         # on a question): how play finds the row.
         "key": key,

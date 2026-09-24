@@ -87,6 +87,40 @@ def test_ack_of_nothing_is_404():
     assert alerts.ack("nope")[1]["status"] == 404
 
 
+def test_a_spoken_digest_is_rendered_held_and_played_by_its_row(monkeypatch):
+    held = []
+    monkeypatch.setattr(alerts, "_render_held", lambda *a: held.append(a))
+    d = rep(1, "digest.agenda", "info", kind="digest", title="Org agenda",
+            detail="a", spoken="Org agenda for today. 3 items.")
+    assert len(held) == 1
+    aid, title, spoken, key = held[0]
+    assert (aid, title, spoken) == ("digest.agenda", "Org agenda",
+                                    "Org agenda for today. 3 items.")
+    # Rendering: no row yet, so nothing to play.
+    assert d["alert"]["speech"] == {"id": None, "heard": False}
+
+    from agent_media_core.state import StateStore
+    rid = StateStore().add_history(sink="speech", uri="/tmp/x.mp3", started_at=1,
+                                   ended_at=1, target="next", source="cli",
+                                   text=spoken, extras={"held": True, "dedup_key": key})
+    listed = alerts.spoken_digests(now=2)
+    assert [(r["id"], r["speech"]) for r in listed] == [
+        ("digest.agenda", {"id": rid, "heard": False})]
+    StateStore().mark_heard(rid)
+    assert alerts.spoken_digests(now=2)[0]["speech"]["heard"] is True
+
+    # The next digest without a read-out drops the old one's Play.
+    rep(3, "digest.agenda", "info", kind="digest", detail="b")
+    assert alerts.spoken_digests(now=4) == [] and len(held) == 1
+
+
+def test_spoken_is_ignored_on_a_status_alert(monkeypatch):
+    held = []
+    monkeypatch.setattr(alerts, "_render_held", lambda *a: held.append(a))
+    d = rep(1, level="warn", spoken="red5 is full")
+    assert held == [] and d["alert"]["speech"] is None
+
+
 def test_digest_is_kept_latest_and_notifies_only_at_warn():
     d = rep(1, "digest.describe", "info", kind="digest", title="TTS 24h", detail="a")
     assert (d["change"], d["notify"]) == ("digest", False)

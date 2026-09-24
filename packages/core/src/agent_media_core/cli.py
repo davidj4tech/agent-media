@@ -4492,10 +4492,22 @@ def cmd_say(a) -> int:
     from .intake.hook_claude_code import voice_for_session
 
     voice = voice_for_session(os.environ.get("MEDIA_SOURCE_WORKSPACE", "").strip())
-    submit_event(Event(
+    hold = getattr(a, "hold", False)
+    if hold and getattr(a, "digest", None):
+        metadata["digest"] = a.digest
+    event = Event(
         text=text, source=Source.CLI, voice=voice,
-        priority=Priority.URGENT if urgent else Priority.NORMAL,
-        metadata=metadata))
+        priority=Priority.URGENT if urgent and not hold else Priority.NORMAL,
+        metadata=metadata)
+    if hold:
+        # Rendered and archived unplayed, like a held reply (intake/toast.py):
+        # the desk gets a toast (`prefix y`), the app a Play, and nothing is
+        # read out until someone asks — a morning digest, not an announcement.
+        from .intake import toast
+
+        toast.remember(event, key=getattr(a, "key", None) or "",
+                       where=getattr(a, "label", None) or "")
+    submit_event(event)
     return 0
 
 
@@ -8197,6 +8209,13 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="unattended alert — nobody asked for it (a timer, a "
                         "watcher). Held, not queued, while the target device's "
                         "ringer is on silent; still written to history")
+    s.add_argument("--hold", action="store_true",
+                   help="render and keep it, unplayed: a toast at the desk "
+                        "(prefix y plays it) and a Play in the app")
+    s.add_argument("--key", help="with --hold: the history row's key, for a "
+                                 "caller that finds the row again (the alert store)")
+    s.add_argument("--label", help="with --hold: the toast's name for it")
+    s.add_argument("--digest", help="with --hold: the alert-store digest id it reads out")
     s.set_defaults(func=cmd_say)
 
     s = sub.add_parser("bookmark", help="bookmark current media position")

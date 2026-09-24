@@ -18,7 +18,7 @@ from agent_media_server import asks, dashboard, panes, reap, sessions, speech
 from test_contract import (AUTH, SID, SID2, call, keys, server, shelf,  # noqa: F401
                            signed_in, typed)
 
-TOP = {"ok", "at", "needs_you", "working", "speech", "recent", "places", "agents", "hosts"}
+TOP = {"ok", "at", "needs_you", "working", "speech", "recent", "places", "agents", "hosts", "digests"}
 HOST = {"name", "role", "local", "online", "last_seen", "sessions", "mem_used_mb",
         "mem_total_mb", "mem_available_mb", "sessions_mem_mb", "tight", "reaper",
         "shell", "sessiond"}
