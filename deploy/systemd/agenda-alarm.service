@@ -1,0 +1,7 @@
+[Unit]
+Description=Speak [#A] Org TODOs whose SCHEDULED/DEADLINE time has come (media agenda-alarm)
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/share/fnm/aliases/default/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/projects/agent-media/.venv/bin/media agenda-alarm

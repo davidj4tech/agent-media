@@ -1,0 +1,9 @@
+[Unit]
+Description=Every minute: speak [#A] Org TODOs whose time has come
+
+[Timer]
+OnCalendar=*-*-* *:*:05
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

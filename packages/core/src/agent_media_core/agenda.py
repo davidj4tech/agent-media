@@ -34,6 +34,7 @@ from typing import Optional
 from .docs import Section, speak_inline_org
 
 _TS = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
+_CLOCK = re.compile(r"\b(\d{1,2}):(\d{2})\b")
 _REPEATER = re.compile(r"[.+]{1,2}\d+[hdwmy]")
 
 
@@ -48,6 +49,9 @@ class Item:
     deadline: Optional[_dt.date] = None
     repeating: bool = False
     file: str = ""
+    # The clock time on the timestamp (`<2026-09-24 Thu 14:00>`), if any.
+    scheduled_at: Optional[_dt.time] = None
+    deadline_at: Optional[_dt.time] = None
 
     @property
     def when(self) -> Optional[_dt.date]:
@@ -67,6 +71,17 @@ def _date(raw: Optional[str]) -> Optional[_dt.date]:
         return None
 
 
+def _clock(raw: Optional[str]) -> Optional[_dt.time]:
+    """The start time on a timestamp; a range (`14:00-15:00`) starts at 14:00."""
+    m = _CLOCK.search(raw or "")
+    if not m:
+        return None
+    try:
+        return _dt.time(int(m.group(1)), int(m.group(2)))
+    except ValueError:
+        return None
+
+
 def _item(d: dict) -> Item:
     sched = d.get("scheduled") or ""
     return Item(
@@ -80,6 +95,8 @@ def _item(d: dict) -> Item:
         repeating=bool(_REPEATER.search(sched or "")
                        or _REPEATER.search(d.get("deadline") or "")),
         file=str(d.get("file") or ""),
+        scheduled_at=_clock(sched),
+        deadline_at=_clock(d.get("deadline")),
     )
 
 
@@ -111,6 +128,7 @@ def entries_via_command(timeout: float = 60.0) -> Optional[list]:
 _HEAD = re.compile(r"^\*+\s+([A-Z]{3,})\s+(.*?)(?:\s+(:[\w@#%:]+:))?\s*$")
 _SCHED = re.compile(r"SCHEDULED:\s*([<\[][^>\]]+[>\]])")
 _DEAD = re.compile(r"DEADLINE:\s*([<\[][^>\]]+[>\]])")
+_PRIO = re.compile(r"\[#([A-Z0-9])\]\s*")
 _DONE_WORDS = {"DONE", "CANCELLED", "CANCELED"}
 
 
@@ -135,12 +153,16 @@ def entries_via_files(paths: list) -> list:
             if not m:
                 continue
             state, heading = m.group(1), m.group(2)
+            prio = _PRIO.match(heading)
+            if prio:
+                heading = heading[prio.end():]
             tail = "\n".join(lines[i + 1:i + 3])
             s = _SCHED.search(tail)
             d = _DEAD.search(tail)
             items.append(_item({
                 "todo": state, "heading": heading,
                 "done": state in _DONE_WORDS,
+                "priority": prio.group(1) if prio else "",
                 "tags": [t for t in (m.group(3) or "").split(":") if t],
                 "scheduled": s.group(1) if s else None,
                 "deadline": d.group(1) if d else None,

@@ -2681,6 +2681,20 @@ def cmd_mute_pane(a) -> int:
     return 0
 
 
+def cmd_agenda_alarm(a) -> int:
+    """Speak priority-A TODOs whose clock time has come (agenda_alarm.py)."""
+    from . import agenda_alarm
+
+    def speak(text: str) -> bool:
+        r = subprocess.run([sys.executable, "-m", "agent_media_core.cli",
+                            "say", "--alert", text], timeout=300)
+        return r.returncode == 0
+
+    for text in agenda_alarm.run(speak=speak, dry_run=a.dry_run):
+        print(("would say: " if a.dry_run else "said: ") + text)
+    return 0
+
+
 def cmd_priority(a) -> int:
     """Mark a conversation *always speak*: never held, never muted (see
     speak_priority.py). Default: this pane's conversation, toggled.
@@ -8038,6 +8052,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p_mp.add_argument("state", nargs="?", choices=["on", "off", "toggle"],
                       default="toggle")
     p_mp.set_defaults(func=cmd_mute_pane)
+    p_aa = sub.add_parser("agenda-alarm",
+                          help="speak [#A] TODOs whose SCHEDULED/DEADLINE time has come")
+    p_aa.add_argument("--dry-run", action="store_true", help="print, speak nothing")
+    p_aa.set_defaults(func=cmd_agenda_alarm)
     p_pr = sub.add_parser("priority",
                           help="always speak one conversation (never held or muted)")
     p_pr.add_argument("--session", help="agent session id (default: this pane's)")
