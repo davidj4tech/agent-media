@@ -40,6 +40,11 @@ bind a \
 # popup, toggles the feature on/off; uppercase V here forces the next turn.)
 bind V run-shell -b "media highlight-now"
 
+# The desk toast (MEDIA_TOAST_GATE=1): a reply from a pane you are not looking
+# at waits in the status line until you ask for it.
+bind y run-shell -b "media toast play"
+bind Y run-shell -b "media toast dismiss"
+
 # The follow-along pane (`media follow` in a split of its own) has no prefix
 # key: the popup's `v` is the one control for following along, and it drives
 # every surface — the copy-mode highlight, the pane, and the status row. One

@@ -900,7 +900,8 @@ def conversation_log(session: str, folder: Path, *, target=None,
             except Exception as e:  # noqa: BLE001 — a log without times still reads
                 log.warning("book-tracks: no track offsets for the log (%s)", e)
 
-    def _line(who_listener, text, pos, at=None, key="", ask=None, command=None, rid=0):
+    def _line(who_listener, text, pos, at=None, key="", ask=None, command=None, rid=0,
+              unheard=False):
         text = (text or "").strip()
         who = "you" if who_listener else "agent"
         if who == "you" and text.startswith("You: "):
@@ -917,6 +918,8 @@ def conversation_log(session: str, folder: Path, *, target=None,
             # The history row, for `/speech/ctl` replay-id: a tap plays the
             # turn through the speech player rather than the book's.
             line["id"] = rid
+        if unheard:
+            line["unheard"] = True
         if ask:
             # The spoken sentence is "host / pane: Question. Option 1: …" —
             # right for a voice, wrong for a bubble. Hand over the structure
@@ -954,7 +957,8 @@ def conversation_log(session: str, folder: Path, *, target=None,
                          at, spoken.key if spoken else "",
                          ask=(spoken.ask if spoken else None),
                          command=(spoken.command if spoken else None),
-                         rid=(getattr(spoken, "id", 0) if spoken else 0)))
+                         rid=(getattr(spoken, "id", 0) if spoken else 0),
+                         unheard=bool(spoken and getattr(spoken, "unheard", False))))
 
     # The live tail: turns in speech history the manifest has not caught up to
     # yet. Shown at once, with no position — the audio item does not place them
@@ -965,7 +969,8 @@ def conversation_log(session: str, folder: Path, *, target=None,
         seen.add(at)
         out.append(_line(said[at].listener, said[at].text, {}, at,
                          said[at].key, ask=said[at].ask,
-                         command=said[at].command, rid=getattr(said[at], "id", 0)))
+                         command=said[at].command, rid=getattr(said[at], "id", 0),
+                         unheard=getattr(said[at], "unheard", False)))
 
     # The turn speaking right now, if it has not already landed as an ended
     # row above. This is what puts a reply on screen *while* it is being
@@ -980,6 +985,7 @@ def conversation_log(session: str, folder: Path, *, target=None,
         # Marked live, with the sentence being spoken, so the transcript can
         # follow the voice sentence by sentence rather than just show the turn.
         # A replay marks the turn it replays, in its place.
+        line.pop("unheard", None)   # it is being heard now
         line.update({"live": True, "sentences": live["sentences"],
                      "sentence": live["sentence"], "offsets": live["offsets"],
                      "elapsed": live["elapsed"], "paused": live["paused"],

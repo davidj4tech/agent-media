@@ -2307,6 +2307,18 @@ def _stamp_speech_pause(paused: Optional[bool] = None) -> None:
     stamp_speech_pause(StateStore(), paused)
 
 
+def cmd_toast(a) -> int:
+    from .intake import toast
+
+    if a.action == "play":
+        return toast.play()
+    if a.action == "dismiss":
+        return toast.dismiss()
+    for r in toast.listing():
+        print(f"{r['age_s']:>5}s  {r['where']}  {r['text']}")
+    return 0
+
+
 def cmd_toggle(a) -> int:
     # If nothing is loaded, "play" means replay a clip (matches the old
     # popup's Space = play/pause-or-replay). Prefer the most recent clip from
@@ -3353,9 +3365,17 @@ def _replay_row(row: dict, from_sentence: Optional[int] = None) -> int:
     if from_sentence is not None and smap:
         start = max(0, min(int(from_sentence), len(smap) - 1))
     try:
-        return _push_replay(row, ex, clip_uris, clip_durations, replay_text,
-                            speech_target, pane, recorded, replay_lock,
-                            start=start)
+        rc = _push_replay(row, ex, clip_uris, clip_durations, replay_text,
+                          speech_target, pane, recorded, replay_lock,
+                          start=start)
+        if rc == 0 and ex.get("held") and row.get("id"):
+            # A held reply has now been heard: the transcript drops its
+            # big Play (session_feed.Turn.unheard).
+            try:
+                StateStore().mark_heard(int(row["id"]))
+            except Exception as e:  # noqa: BLE001 — it played; the mark is cosmetic
+                print(f"media replay: could not mark it heard ({e})", file=sys.stderr)
+        return rc
     finally:
         # Handed to the follower, the descriptor is closed here and the token
         # lives on in it; otherwise this is the release.
@@ -7930,6 +7950,11 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="print one frame and exit")
     s.set_defaults(func=cmd_follow)
     sub.add_parser("toggle", help="play/pause").set_defaults(func=cmd_toggle)
+    s = sub.add_parser("toast",
+                       help="replies held for the desk toast (MEDIA_TOAST_GATE=1): "
+                            "play the newest, dismiss it, or list them")
+    s.add_argument("action", choices=["play", "dismiss", "list"])
+    s.set_defaults(func=cmd_toast)
     s = sub.add_parser("speech-flush",
                        help="drop every queued/pending reply; the clip "
                             "currently speaking plays out")

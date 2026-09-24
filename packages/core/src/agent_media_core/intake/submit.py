@@ -3453,6 +3453,9 @@ def _submit_event(event: Event,
     # but is never played through the broker and never ducks music. Decided
     # once, up front, so we also skip the remote pre-pause below.
     muted = state.resolve_mute(source_pane, source_tmux_session)
+    # Held for the desk toast (intake/toast.py): rendered and archived like a
+    # muted reply, played only when the listener asks for it.
+    muted = muted or bool((event.metadata or {}).get("held"))
     if muted:
         # Nothing will be played, so give the queue slot announced above back
         # immediately rather than making this session's next reply wait on a
@@ -4605,6 +4608,9 @@ def submit_stream(sentences,
     # Durable per-pane / per-session mute: render the stream into clips for
     # popup replay/history, but never play it or duck music. See submit_event.
     muted = state.resolve_mute(source_pane, source_tmux_session)
+    # Held for the desk toast (intake/toast.py): rendered and archived like a
+    # muted reply, played only when the listener asks for it.
+    muted = muted or bool((event.metadata or {}).get("held"))
     do_highlight = event.source not in (_Source.CLI,)
     if do_highlight:
         ensure_follow_view(pane=source_pane)   # self-gates on the flag

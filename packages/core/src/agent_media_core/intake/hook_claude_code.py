@@ -1060,11 +1060,16 @@ def _handle_stop(payload: dict) -> int:
         # No whole-reply summary, but per-block describe is on: carry the raw
         # reply so the detached child can describe its code/tables (off the fork).
         metadata["describe_raw"] = raw
-    _play_detached(
-        Event(text=text, source=Source.CLAUDE_CODE,
-              priority=Priority.NORMAL,
-              voice=voice_for_session(_session_name()),
-              metadata=metadata))
+    event = Event(text=text, source=Source.CLAUDE_CODE,
+                  priority=Priority.NORMAL,
+                  voice=voice_for_session(_session_name()),
+                  metadata=metadata)
+    # Someone at the desk looking at another pane: toast it, play on request.
+    from . import toast
+    if toast.should_hold():
+        toast.hold(event)
+        return 0
+    _play_detached(event)
     return 0
 
 

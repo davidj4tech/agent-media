@@ -1272,6 +1272,10 @@ def _spoken(line: dict) -> dict:
     if line.get("images"):
         out["images"] = line["images"]
         out["figure"] = bool(line.get("figure"))
+    if line.get("unheard") and not line.get("live"):
+        # Held for the listener and never played (§6.2.2): the app makes its
+        # play key the big one.
+        out["unheard"] = True
     if line.get("live"):
         out["live"] = {k: line.get(k) for k in LIVE_FIELDS}
     elif line.get("sentences"):

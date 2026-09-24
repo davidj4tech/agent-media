@@ -558,6 +558,7 @@ newest page, as without it. Other harnesses' threads find their line ids
 | `command` | slash commands | `{"name": "review", "args": "123", "text": "/review 123"}` — the chip for a slash command typed from the box (`agent_media_core/slash.py`); `text` on the line is `command.text`. Settings commands (`/model`, …) never become lines |
 | `images` | when drawn | `["/img/…", …]` — the pictures the canvas drew for this reply, still in the spool |
 | `figure` | with `images` | `true` for a `[[visual:]]` figure, `false` for ambient art |
+| `unheard` | held replies | `true` for a reply held for the listener and never played (the desk toast, `intake/toast.py`: history `extras.held` without `extras.heard`); absent once a replay has played it, and on the line being heard (24 Sep 2026) |
 | `work` | agent lines | `{"seconds", "count", "steps": [...]}` — what the turn did before this reply |
 
 **The live line.** At most one line — the one being spoken now, or a
@@ -796,7 +797,7 @@ written, with its steps and narration. Messages are read from the same file.
 | `role` | `"user"` or `"assistant"` |
 | `at` | epoch seconds, 3 dp, of the first record |
 | `parts` | in order, as the terminal draws them (below) |
-| `spoken` | the speech of this message, or `null` if it was not spoken (or cannot be recognised). `id` is the history row for `/speech/ctl replay-id` (`null` while it is still playing for the first time); `key` the reply's dedup key; `images`/`figure` as on lines, only when drawn; `live` only while it plays — the §6.2 live-line fields, moved here; `timeline` instead of `live` on the newest spoken turn when it is not playing (`{sentences, offsets, measured}`, §6.2) |
+| `spoken` | the speech of this message, or `null` if it was not spoken (or cannot be recognised). `id` is the history row for `/speech/ctl replay-id` (`null` while it is still playing for the first time); `key` the reply's dedup key; `images`/`figure` as on lines, only when drawn; `live` only while it plays — the §6.2 live-line fields, moved here; `timeline` instead of `live` on the newest spoken turn when it is not playing (`{sentences, offsets, measured}`, §6.2); `unheard: true` on a reply held and never played (as on lines) — the app makes its play key the big one |
 | `turn.running` | the turn is still going: the last record asked for a tool, or a tool has no result yet. Always `false` when the session is not live |
 | `command` | user messages that are a slash command only: `{name, args, text}`, the line's chip (`slash.py`); settings commands are never messages |
 | `peer` | user messages another session delivered into this one (a `<cross-session-message>`): `{name}`; the text is only the message body. Not the listener's words — the app shows a small "From <name>" and never counts it as a send of its own |

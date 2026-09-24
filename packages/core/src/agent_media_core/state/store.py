@@ -1065,6 +1065,22 @@ class StateStore:
         except Exception:  # noqa: BLE001 — a nicer label is never worth a crash
             return False
 
+    def mark_heard(self, row_id: int) -> bool:
+        """Record that a held reply has now been played (`extras.heard`).
+
+        Only a row marked `held` is touched: it is what the transcript's
+        "unheard" reads, and nothing else asks. Returns True if it wrote.
+        """
+        row = self.history_row(row_id)
+        ex = (row or {}).get("extras")
+        if not isinstance(ex, dict) or not ex.get("held") or ex.get("heard"):
+            return False
+        ex["heard"] = True
+        with self._cursor() as cur:
+            cur.execute("UPDATE history SET extras = ? WHERE id = ?",
+                        (json.dumps(ex), int(row_id)))
+        return True
+
     def history_row(self, row_id: int) -> Optional[dict]:
         """One history row by its id (extras parsed), or None."""
         with self._cursor() as cur:

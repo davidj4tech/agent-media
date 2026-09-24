@@ -105,6 +105,9 @@ class Turn:
     #: The speech-history row's id: what `media replay --id` plays, so a
     #: reader can ask for this turn again by name rather than by position.
     id: int = 0
+    #: Held for the listener (the desk toast) and not played since: a reply
+    #: that is waiting to be heard, not one that was silenced on purpose.
+    unheard: bool = False
 
     @property
     def title(self) -> str:
@@ -185,7 +188,8 @@ def turns(session: str, *, store=None) -> list[Turn]:
                         ask=(ex.get("ask") if isinstance(ex.get("ask"), list) else []),
                         command=(ex.get("command") if isinstance(ex.get("command"), dict) else {}),
                         workspace=(ex.get("source_tmux_session") or "").strip(),
-                        id=int(row.get("id") or 0)))
+                        id=int(row.get("id") or 0),
+                        unheard=bool(ex.get("held") and not ex.get("heard"))))
     out.sort(key=lambda t: t.at)
     return out
 
