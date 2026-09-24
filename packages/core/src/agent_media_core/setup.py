@@ -1503,6 +1503,34 @@ def _row_shell(args, *, check_only: bool):
     return ("installed" if rc == 0 else "failed"), str(target)
 
 
+def opencode_plugin_source() -> Path:
+    """The agent-media plugin for opencode, as this checkout ships it."""
+    return Path(__file__).resolve().parents[2] / "opencode" / "agent-media.js"
+
+
+def opencode_plugin_dest() -> Path:
+    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / "opencode" / "plugins" / "agent-media.js"
+
+
+def _row_opencode(args, *, check_only: bool):
+    """opencode's plugin: it has no hooks file, it loads every script in its
+    plugins directory, so the plugin is linked in there. Found the way the
+    hook extras find their tools: on PATH, which is the installing shell's."""
+    if shutil.which("opencode") is None:
+        return "absent", "opencode is not installed here"
+    src, dest = opencode_plugin_source(), opencode_plugin_dest()
+    if not src.exists():
+        return "absent", f"no plugin at {src} (not a source checkout)"
+    linked = dest.is_symlink() and dest.resolve() == src
+    if check_only:
+        return ("ok" if linked else "missing"), str(dest)
+    if linked:
+        return "ok", str(dest)
+    ok = _symlink_into(src, dest, dry_run=args.dry_run)
+    return ("installed" if ok else "failed"), str(dest)
+
+
 #: name, one line for a person, kind, and the function that checks or installs.
 PROFILE_ROWS = (
     ("speech", "the hooks that speak a reply and record the turn", "core", _row_speech),
@@ -1512,6 +1540,8 @@ PROFILE_ROWS = (
      _hook_row(_MAIL_HOOK, "agent-mail-inbox-hook")),
     ("catchup", "what landed in the shared trees since a session last looked",
      "extra", _hook_row(_CATCHUP_HOOK, "agent-repo-catchup")),
+    ("opencode", "opencode's replies spoken and its turns recorded (its plugin)",
+     "extra", _row_opencode),
 )
 
 

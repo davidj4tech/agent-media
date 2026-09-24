@@ -154,6 +154,38 @@ def is_opencode(session: str) -> bool:
 _OPENCODE_UNNAMED = re.compile(r"^New session - \d{4}-\d\d-\d\dT")
 
 
+def opencode_last_reply(session: str) -> tuple[str, str]:
+    """`(message id, text)` of what the agent said since the last prompt —
+    every assistant step's text, in order — or ("", "") when it said nothing.
+
+    opencode's plugin hears "idle" but not the words; they are in the
+    database by then, so the speech hook reads them here. The id is the
+    last step's, which is what a repeat of the same idle is told apart by.
+    """
+    rows = opencode_rows(
+        "select m.id, json_extract(m.data, '$.role'), p.data from message m "
+        "left join part p on p.message_id = m.id where m.session_id = ? "
+        "order by m.time_created, m.id, p.id", (session,))
+    said: list[str] = []
+    last = ""
+    for mid, role, pdata in rows:
+        if role == "user":
+            said, last = [], ""
+            continue
+        if role != "assistant":
+            continue
+        last = str(mid)
+        try:
+            p = json.loads(pdata) if pdata else {}
+        except ValueError:
+            continue
+        if isinstance(p, dict) and p.get("type") == "text" and not p.get("synthetic"):
+            text = str(p.get("text") or "").strip()
+            if text:
+                said.append(text)
+    return (last, "\n\n".join(said)) if said else ("", "")
+
+
 def _opencode_session(session: str) -> tuple:
     """`(directory, title)` of an opencode session, or () when it has none."""
     rows = opencode_rows("select directory, title from session where id = ?", (session,))

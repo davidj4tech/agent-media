@@ -110,14 +110,27 @@ composer check after a send); `sessions.py` (`_SESSION`, cwd);
 `webfetch`, `todowrite`). Tests: `core/tests/test_harnesses_opencode.py`,
 `server/tests/test_opencode_transcript.py`.
 
+**Speech — built 24 Sep 2026.** opencode was installed on red5
+(`npm i -g opencode-ai`; `opencode-ai` was already in the fleet's
+`~/.npmrc` allow-scripts list). `packages/core/opencode/agent-media.js` is a
+plugin, linked into `~/.config/opencode/plugins/` by `media-setup profile`
+(the `opencode` extra row). It sends `chat.message` as UserPromptSubmit and
+`tool.execute.before` as PreToolUse, and on `session.idle` sends Stop, then
+runs `media-hook-opencode --session <id>`. opencode tells a plugin a session
+went idle, not what it said, so the hook reads the reply back from the
+database (`harnesses.opencode_last_reply`: every assistant text since the
+last prompt), keeps the last step's id per session so a repeated idle is
+spoken once, and skips a subagent's session. Tried for real: a run on the
+free model was spoken (source `opencode`) and its prompt filed as a
+"You:" turn. The test conftests now point `XDG_DATA_HOME` at a throwaway
+dir, since opencode's real database is on red5 now.
+
 **Not done yet, for opencode:**
 
-- **Speech.** Nothing speaks an opencode reply: every other harness has a
-  hook or extension feeding agent-media. opencode's equivalent is a plugin
-  (`opencode plugin <module>`, JS, event hooks) — the next piece.
 - **Approval.** Its permission prompt has not been seen (the default
   permissions asked nothing in the test), so `classify` never says
-  "approval" for it.
+  "approval" for it. The plugin API has a `permission.ask` hook, which
+  could report it the way Claude's PreToolUse does.
 - **Search and recaps.** The FTS index (`search._sources`) and the recap
   reader (`reap`) don't read it yet.
 - **Rename.** No CLI to set a title from outside; like pi, the phone's name
@@ -224,8 +237,8 @@ under-describing it (the dir holds settings and sessions, not only a login).
 ## Order
 
 1. **opencode row** — **built 24 Sep 2026** (above). Shows up on the Coding
-   agents page with no app change once the canvas is restarted. Left: its
-   speech plugin, search/recaps, approval.
+   agents page with no app change once the canvas is restarted. Its speech
+   plugin: built 24 Sep 2026. Left: search/recaps, approval.
 2. **pi login recipe + auth status** — so pi stops answering `unknown`.
    Prerequisite for pi profiles meaning anything.
 3. **Profiles** — `profiles.json`, the `profile` parameter on §6.6, per-dir

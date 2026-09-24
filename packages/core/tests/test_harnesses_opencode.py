@@ -118,3 +118,49 @@ def test_no_sign_in_is_unknown_not_out():
     # Its free models need none, so "out" would wrongly refuse a new chat.
     state, detail = harnesses._opencode_auth(LIST_NONE)
     assert state == "unknown" and "free models" in detail
+
+
+# --- speech: the plugin says "idle", the hook reads the reply back --------------
+
+
+def test_the_last_reply_is_everything_said_since_the_prompt(store):
+    sid = "ses_" + "c" * 26
+    add(store, sid, messages=[
+        ("user", {}, [{"type": "text", "text": "first"}]),
+        ("assistant", {}, [{"type": "text", "text": "old answer"}]),
+        ("user", {}, [{"type": "text", "text": "second"}]),
+        ("assistant", {}, [{"type": "reasoning", "text": "hm"},
+                           {"type": "text", "text": "Looking."}]),
+        ("assistant", {"finish": "stop"}, [{"type": "text", "text": "Found it."}]),
+    ])
+    mid, text = harnesses.opencode_last_reply(sid)
+    assert text == "Looking.\n\nFound it."
+    assert mid.endswith("004")
+    assert harnesses.opencode_last_reply("ses_" + "d" * 26) == ("", "")
+
+
+@pytest.fixture
+def spoken(store, tmp_path, monkeypatch):
+    from agent_media_core.intake import hook_opencode
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    said = []
+    monkeypatch.setattr(hook_opencode, "run",
+                        lambda source, prefix, *, text, metadata: said.append((text, metadata)) or 0)
+    return hook_opencode, said
+
+
+def test_the_hook_speaks_a_reply_once(spoken):
+    hook, said = spoken
+    assert hook.main(["--session", OC]) == 0
+    assert hook.main(["--session", OC]) == 0
+    assert said == [("Done.", {"session": OC})]
+
+
+def test_a_subagents_idle_is_not_spoken(spoken, store):
+    hook, said = spoken
+    add(store, "ses_" + "e" * 26, parent=OC, messages=[
+        ("assistant", {"finish": "stop"}, [{"type": "text", "text": "subagent notes"}])])
+    hook.main(["--session", "ses_" + "e" * 26])
+    hook.main(["--session", "not-an-id"])
+    assert said == []

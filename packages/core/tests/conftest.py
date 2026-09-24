@@ -109,6 +109,10 @@ def _no_live_speech_token(monkeypatch, tmp_path):
     XDG_STATE_HOME somewhere itself still wins, being set after this.
     """
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
+    # opencode's conversations live under XDG_DATA_HOME (harnesses.opencode_db);
+    # unset, a test that lists every harness's sessions would read this
+    # machine's real ones.
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
 
 
 @pytest.fixture(autouse=True)

@@ -43,10 +43,11 @@ def _clean_media_env(monkeypatch, tmp_path):
     # The other harnesses' stores are read the same way (the thread list is
     # every harness's conversations, not only Claude's), so point those at
     # throwaway dirs too — unset, a test would list this machine's real
-    # Codex, pi and Hermes conversations.
+    # Codex, pi, Hermes and opencode conversations.
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
     monkeypatch.setenv("PI_CODING_AGENT_DIR", str(tmp_path / "pi"))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
     from agent_media_server import recaps
 
     recaps._reset_for_tests()
