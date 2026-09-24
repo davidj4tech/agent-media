@@ -385,16 +385,29 @@ def subscribe(session: str) -> tuple[Watcher, Subscriber] | None:
 def _play_waiting(session: str) -> None:
     """The thread was opened: play its newest held Normal reply that has
     never been played (core's toast.take_for_opened). Off the request thread:
-    a reply still rendering is waited for, and a replay takes seconds."""
+    a reply still rendering is waited for.
+
+    The replay runs detached with no timeout, not through the speech bar's
+    verb (which gives `media replay` 25 s): pushing a many-clip reply to the
+    phone is a round trip a clip, and a replay killed mid-push plays the
+    clips it got that far with and then stops, before its follower (the
+    bar, the follow-along) ever starts."""
     try:
+        import subprocess
+        import sys
+
+        from agent_media_core._paths import state_dir
         from agent_media_core.intake import toast
 
         rid = toast.take_for_opened(session)
-        if rid is not None:
-            from . import speech
-
-            log.info("thread %s opened: playing its waiting reply %s", session[:8], rid)
-            speech.run_ctl("replay-id", rid)
+        if rid is None:
+            return
+        log.info("thread %s opened: playing its waiting reply %s", session[:8], rid)
+        with open(state_dir() / "opened-replay.log", "ab") as err:
+            subprocess.Popen([sys.executable, "-m", "agent_media_core.cli",
+                              "replay", "--id", str(rid)],
+                             start_new_session=True, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=err)
     except Exception:  # noqa: BLE001 — a missed replay leaves its Play
         log.exception("thread %s opened: could not play its waiting reply", session[:8])
 
