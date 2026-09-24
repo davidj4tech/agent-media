@@ -254,17 +254,41 @@ _REPLAY_VERBS = frozenset({"replay", "replay-id", "prev"})
 def _media_ctl(args: list[str], timeout: int) -> str:
     """Like `_media`, but a command that FAILED says why: "error: <its last
     stderr line>". A replay that cannot play (its audio is gone, or lives on
-    another player) used to come back as "" — the same as one that worked."""
+    another player) used to come back as "" — the same as one that worked.
+
+    A replay still going after `timeout` is left to finish, not killed, and
+    reads as "": pushing a many-clip reply to the phone is a round trip a
+    clip, and one killed mid-push played the clips it had loaded and stopped
+    before its follower (the speech bar, the follow-along) started."""
+    import tempfile
+
     try:
-        out = subprocess.run([_media_bin(), *args], capture_output=True,
-                             text=True, timeout=timeout)
-    except (OSError, subprocess.SubprocessError):
+        out = tempfile.TemporaryFile("w+")
+        err = tempfile.TemporaryFile("w+")
+        proc = subprocess.Popen([_media_bin(), *args], stdin=subprocess.DEVNULL,
+                                stdout=out, stderr=err, text=True,
+                                start_new_session=True)
+    except OSError:
         return ""
-    if out.returncode != 0:
-        why = [ln for ln in (out.stderr or "").splitlines() if ln.strip()]
+    try:
+        rc = proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        def reap():
+            proc.wait()
+            out.close()
+            err.close()
+        threading.Thread(target=reap, daemon=True, name="replay-reap").start()
+        return ""
+    out.seek(0)
+    err.seek(0)
+    stdout, stderr = out.read(), err.read()
+    out.close()
+    err.close()
+    if rc != 0:
+        why = [ln for ln in (stderr or "").splitlines() if ln.strip()]
         if why:
             return "error: " + why[-1].removeprefix("media replay: ").strip()
-    return (out.stdout or "").strip()
+    return (stdout or "").strip()
 
 
 def _speech_ctl(action: str, arg: int, sarg: str = "") -> str:

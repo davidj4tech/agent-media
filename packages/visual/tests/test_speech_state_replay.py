@@ -45,30 +45,42 @@ def test_the_queue_is_read_from_the_waiter_registry(monkeypatch):
     assert canvas._speech_queue() == []
 
 
-class _Done:
-    def __init__(self, rc, out="", err=""):
-        self.returncode, self.stdout, self.stderr = rc, out, err
+class _Proc:
+    """A `media` child: exits `rc` having written `out`/`err`, or hangs."""
+    killed = False
+
+    def __init__(self, rc, out="", err="", hang=False):
+        self.rc, self.out, self.err, self.hang = rc, out, err, hang
+
+    def __call__(self, argv, **kw):
+        self.argv = argv
+        kw["stdout"].write(self.out)
+        kw["stderr"].write(self.err)
+        return self
+
+    def wait(self, timeout=None):
+        self.timeout = timeout
+        if self.hang and timeout is not None:
+            raise subprocess.TimeoutExpired(self.argv, timeout)
+        return self.rc
+
+    def kill(self):
+        self.killed = True
 
 
 def test_a_failed_replay_says_why(monkeypatch):
-    seen = {}
-
-    def run(argv, **kw):
-        seen["argv"], seen["timeout"] = argv, kw.get("timeout")
-        return _Done(1, err="media replay: that reply's audio is no longer on "
-                            "this host (cache cleared)\n")
-
-    monkeypatch.setattr(canvas.subprocess, "run", run)
+    proc = _Proc(1, err="media replay: that reply's audio is no longer on "
+                        "this host (cache cleared)\n")
+    monkeypatch.setattr(canvas.subprocess, "Popen", proc)
     out = canvas._speech_ctl("replay-id", 9222)
     assert out == "error: that reply's audio is no longer on this host (cache cleared)"
-    assert seen["argv"][1:] == ["replay", "--id", "9222"]
+    assert proc.argv[1:] == ["replay", "--id", "9222"]
     # Room for the replay to wait for a speaking reply to step aside.
-    assert seen["timeout"] >= 20
+    assert proc.timeout >= 20
 
 
 def test_a_replay_that_worked_reads_as_before(monkeypatch):
-    monkeypatch.setattr(canvas.subprocess, "run",
-                        lambda argv, **kw: _Done(0, out="3\n"))
+    monkeypatch.setattr(canvas.subprocess, "Popen", _Proc(0, out="3\n"))
     assert canvas._speech_ctl("prev", 2) == "3"
 
 
@@ -80,12 +92,13 @@ def test_other_verbs_keep_the_short_path(monkeypatch):
     assert seen == [["toggle"]]
 
 
-def test_a_replay_that_hangs_is_not_an_error(monkeypatch):
-    def run(argv, **kw):
-        raise subprocess.TimeoutExpired(argv, kw.get("timeout"))
-
-    monkeypatch.setattr(canvas.subprocess, "run", run)
+def test_a_slow_replay_is_left_to_finish(monkeypatch):
+    """A long reply's push outlasts the wait: killing it cut the reply off
+    and its follower (the bar, the follow-along) never started."""
+    proc = _Proc(0, hang=True)
+    monkeypatch.setattr(canvas.subprocess, "Popen", proc)
     assert canvas._speech_ctl("replay", 1) == ""
+    assert not proc.killed
 
 
 def test_the_snapshot_names_the_turn_being_spoken(monkeypatch):
