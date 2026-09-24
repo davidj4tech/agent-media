@@ -2533,6 +2533,15 @@ def _tmux_window_for_pane(pane: str) -> str:
     return label
 
 
+def _unmuted_by_priority(muted: bool, event: Event, source_session: str) -> bool:
+    """An always-speak conversation (speak_priority.py) overrides a pane or
+    session mute. A held reply stays held: it is played on request only."""
+    if not muted or (event.metadata or {}).get("held"):
+        return muted
+    from ..speak_priority import is_priority
+    return not is_priority(source_session)
+
+
 def _source_session(metadata) -> str:
     """Which conversation this speech belongs to.
 
@@ -3456,6 +3465,7 @@ def _submit_event(event: Event,
     # Held for the desk toast (intake/toast.py): rendered and archived like a
     # muted reply, played only when the listener asks for it.
     muted = muted or bool((event.metadata or {}).get("held"))
+    muted = _unmuted_by_priority(muted, event, source_session)
     if muted:
         # Nothing will be played, so give the queue slot announced above back
         # immediately rather than making this session's next reply wait on a
@@ -4611,6 +4621,7 @@ def submit_stream(sentences,
     # Held for the desk toast (intake/toast.py): rendered and archived like a
     # muted reply, played only when the listener asks for it.
     muted = muted or bool((event.metadata or {}).get("held"))
+    muted = _unmuted_by_priority(muted, event, source_session)
     do_highlight = event.source not in (_Source.CLI,)
     if do_highlight:
         ensure_follow_view(pane=source_pane)   # self-gates on the flag

@@ -61,3 +61,30 @@ def session_pin(session: str, flag, bearer: str) -> tuple[bool, dict]:
     except OSError as e:
         return False, {"error": f"could not save the pin ({e})", "status": 500}
     return True, {"session": session, "pinned": flag}
+
+
+def session_priority(session: str, flag, bearer: str) -> tuple[bool, dict]:
+    """`POST /session/priority {"session", "priority"}`: mark a thread
+    always-speak — its replies are never held by the desk toast or silenced
+    by a pane mute (`agent_media_core.speak_priority`). Refused exactly as
+    `/session/pin` is; `priority` defaults to true."""
+    from agent_media_core import speak_priority
+
+    session = (session or "").strip()
+    if not sessions._SESSION.fullmatch(session):
+        return False, {"error": "not a session id", "status": 400}
+    if flag is None:
+        flag = True
+    if not isinstance(flag, bool):
+        return False, {"error": "priority must be true or false", "status": 400}
+    user, err = auth.gate(bearer)
+    if not user:
+        return False, err
+    if not (sessions.live_sessions().get(session) or sessions.session_exists(session)
+            or sessions._folder_for_session(session)):
+        return False, {"error": f"no such session {session[:8]}", "status": 404}
+    try:
+        speak_priority.set_priority(session, flag)
+    except OSError as e:
+        return False, {"error": f"could not save the priority ({e})", "status": 500}
+    return True, {"session": session, "priority": flag}

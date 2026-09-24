@@ -640,6 +640,30 @@ def test_pins_persist_and_survive_another_process(monkeypatch):
     assert pins.set_pinned(SID2, False) is True and pins.pinned() == {}
 
 
+# --- always speak ----------------------------------------------------------------------------
+
+def test_priority_toggles_and_shows_on_the_rows(server, shelf, signed_in, typed):
+    from agent_media_core import speak_priority
+
+    res, obj = call(server, "POST", "/session/priority",
+                    {"session": SID2, "priority": True}, AUTH)
+    assert res.status == 200 and obj == {"ok": True, "session": SID2, "priority": True}
+    _, targets = call(server, "GET", "/targets", headers=AUTH)
+    by = {r["session"]: r for r in targets["sessions"]}
+    assert by[SID2]["priority"] is True and by[SID]["priority"] is False
+    assert by[SID2]["pinned"] is False                        # not a pin
+    assert typed == []
+    res, obj = call(server, "POST", "/session/priority",
+                    {"session": SID2, "priority": False}, AUTH)
+    assert obj == {"ok": True, "session": SID2, "priority": False}
+    assert not speak_priority.is_priority(SID2)
+    res, obj = call(server, "POST", "/session/priority", {"session": "nope"}, AUTH)
+    assert res.status == 400
+    res, obj = call(server, "POST", "/session/priority", {"session": SID, "priority": 1}, AUTH)
+    assert res.status == 400 and obj["error"] == "priority must be true or false"
+    assert "/session/priority" in app.CORS_PATHS
+
+
 # --- the archive import ---------------------------------------------------------------------
 
 @pytest.fixture()

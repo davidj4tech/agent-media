@@ -80,6 +80,9 @@ device gets its token):
                   server keeps; see archive.py). Ends nothing
   POST /session/pin {"session", "pinned": true|false} → keep that session
                   open against the idle reaper (pins.py, reap.py)
+  POST /session/priority {"session", "priority": true|false} → that
+                  thread's replies always speak: never held by the desk
+                  toast, never silenced by a pane mute (pins.py)
   POST /session/move {"session", "project"|"cwd"} → move a conversation to
                   another project: file it there, move its transcript and its
                   library folder, and bring a live session back in that
@@ -155,7 +158,7 @@ from . import alerts, audio, notes, notes_chat, notes_edit, notes_setup
 CORS_PATHS = frozenset({
     "/conversation", "/conversation/log", "/conversations", "/targets", "/item",
     "/reply", "/ask", "/focus", "/session/resume", "/session/close", "/draft",
-    "/session/answer", "/session/archive", "/session/pin", "/session/stop",
+    "/session/answer", "/session/archive", "/session/pin", "/session/priority", "/session/stop",
     "/session/move",
     "/speech/now", "/speech/ctl", "/speech/sentences", "/sessions/state", "/commands", "/rename",
     "/harnesses", "/harnesses/run", "/harnesses/screen",
@@ -899,6 +902,12 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         body = _read_json(h) or {}
         ok, detail = pins.session_pin(str(body.get("session") or ""),
                                       body.get("pinned"), _bearer(h))
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    elif path == "/session/priority":
+        # Always speak this thread (agent_media_core.speak_priority).
+        body = _read_json(h) or {}
+        ok, detail = pins.session_priority(str(body.get("session") or ""),
+                                           body.get("priority"), _bearer(h))
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path == "/session/answer":
         # Answering the dialog a session is stopped on — a permission

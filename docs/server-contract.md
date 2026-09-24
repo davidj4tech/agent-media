@@ -283,6 +283,9 @@ Everything a message can be pointed at.
   `/session/close` is never rested.
 - `pinned` (every row, 22 Sep 2026): kept open against the idle reaper, set
   with `POST /session/pin` (§6.4). A pin affects the reaper only.
+- `priority` (every row, 24 Sep 2026): the thread always speaks — its
+  replies are never held by the desk toast and never silenced by a pane
+  mute. Set with `POST /session/priority` (§6.4) or `media priority`.
 - `harness` (every row, 23 Sep 2026): which agent holds the conversation —
   `"claude"`, `"codex"`, `"pi"` or `"hermes"`. Rows the app has never seen
   before carry `source: "store"` as well: conversations known only from
@@ -1214,6 +1217,24 @@ the book-tracks manifests, and only reads from ABS.
 - In `CORS_PATHS`.
 
 Pinned by `packages/server/tests/test_reap.py`.
+
+#### `POST /session/priority` — gated (24 Sep 2026)
+
+`{"session", "priority": true | false}` → `{"ok": true, "session", "priority"}`.
+
+- Always speak this thread: its replies play at once, like the pane you are
+  looking at. The desk toast does not hold them and a pane or tmux-session
+  mute does not silence them. A reply already held stays held (it plays on
+  request). Outlives the session, like a pin.
+- Kept in core (`agent_media_core/speak_priority.py`), per session, in
+  `<state_dir>/speak-priority.json` (`{"<session>": <set at>}`), so the
+  hooks read it without the server; `media priority [on|off|toggle|status]`
+  sets the same flag from a pane.
+- Refusals, the default (`true`) and CORS exactly as `/session/pin`, with
+  `"priority must be true or false"`.
+
+Pinned by `packages/server/tests/test_reap.py` and
+`packages/core/tests/test_speak_priority.py`.
 
 #### `POST /session/answer` — gated
 

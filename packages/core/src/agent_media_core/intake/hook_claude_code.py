@@ -1065,8 +1065,10 @@ def _handle_stop(payload: dict) -> int:
                   voice=voice_for_session(_session_name()),
                   metadata=metadata)
     # Someone at the desk looking at another pane: toast it, play on request.
+    # An always-speak conversation (`media priority`) is never held.
     from . import toast
-    if toast.should_hold():
+    from ..speak_priority import is_priority
+    if not is_priority(metadata["session"]) and toast.should_hold():
         toast.hold(event)
         return 0
     _play_detached(event)
