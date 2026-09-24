@@ -92,6 +92,27 @@ KEYWORDS = (("TODO", "NEXT", "WAITING"), ("DONE", "CANCELLED"))
 
 MANIFEST = ".paragtd.json"
 
+_PROPS = ":PROPERTIES:\n:CREATED: %U\n:END:\n"
+_STEP = ':PROPERTIES:\n:TRIGGER: next-sibling todo!(NEXT) scheduled!("++0d")\n:END:\n'
+
+#: paragtd-capture-templates, for a tree without a manifest.
+CAPTURE = [
+    {"key": "t", "label": "Todo", "target": "file", "file": "inbox.org",
+     "template": "* TODO %?\n" + _PROPS},
+    {"key": "n", "label": "Next action", "target": "file+headline", "file": "next-actions.org",
+     "headline": "Inbox", "template": "* NEXT %?\n" + _PROPS},
+    {"key": "w", "label": "Waiting for", "target": "file+headline", "file": "waiting-for.org",
+     "headline": "Waiting", "template": "* WAITING %?\n" + _PROPS},
+    {"key": "k", "label": "Tickler / defer until", "target": "file+headline", "file": "tickler.org",
+     "headline": "Tickler", "template": "* TODO %?\nSCHEDULED: %^T\n" + _PROPS},
+    {"key": "p", "label": "Project (sequenced steps)", "target": "file", "file": "projects.org",
+     "template": "* TODO %?\n:PROPERTIES:\n:CREATED: %U\n:ORDERED: t\n:END:\n"
+                 "** NEXT First step\n" + _STEP + "** TODO Second step\n" + _STEP
+                 + "** TODO Third step\n"},
+    {"key": "j", "label": "Journal entry", "target": "file+olp+datetree", "file": "journal.org",
+     "tree_type": "week", "template": "* %U %?\n"},
+]
+
 log = logging.getLogger(__name__)
 _LOCK = threading.Lock()
 _CACHE: dict = {"key": None, "data": None}
@@ -180,6 +201,26 @@ class Paragtd(Profile):
 
     def refile_targets(self, root: Path):
         return REFILE_TARGETS
+
+    def capture_kinds(self, root: Path) -> list[dict]:
+        # The Emacs's own templates, site ones too, when it wrote them down.
+        got = manifest(root).get("capture")
+        if isinstance(got, list):
+            return [c for c in got if isinstance(c, dict) and c.get("type", "entry") == "entry"
+                    and isinstance(c.get("template"), str) and isinstance(c.get("file"), str)]
+        return CAPTURE
+
+    def setup_rows(self, root: Path) -> list[dict]:
+        from . import astro
+
+        return [astro.setup_row(root)]
+
+    def setup_run(self, root: Path, component: str, action: str) -> dict | None:
+        if component != "astro":
+            return None
+        from . import astro
+
+        return astro.setup_run(root, action)
 
     def enforces_dependencies(self) -> bool:
         # paragtd-setup-sequence turns on org-enforce-todo-dependencies.

@@ -255,6 +255,7 @@ def status(bearer: str) -> tuple[bool, dict]:
     if not ok:
         return False, detail
     rows = [r for r in (_org(), _agenda(), _sync(), _memory(), _paragtd()) if r]
+    rows += notes.profile().setup_rows(notes.root())
     return True, {"components": rows,
                   "search": "ripgrep" if shutil.which("rg") else "built-in"}
 
@@ -294,7 +295,9 @@ def run(component: str, action: str, bearer: str) -> tuple[bool, dict]:
     ok, detail = auth.may_control_speech(bearer)
     if not ok:
         return False, detail
-    rows = {r["name"]: r for r in (_org(), _agenda(), _sync(), _paragtd()) if r}
+    prof = notes.profile()
+    extra = {r["name"]: r for r in prof.setup_rows(notes.root())}
+    rows = {r["name"]: r for r in (_org(), _agenda(), _sync(), _paragtd()) if r} | extra
     row = rows.get(component)
     if not row:
         return False, {"error": f"nothing to set up called {component!r}", "status": 400}
@@ -307,6 +310,12 @@ def run(component: str, action: str, bearer: str) -> tuple[bool, dict]:
                           **_create()}
         except OSError as e:
             return False, {"error": f"could not create the notes ({e})", "status": 500}
+    if component in extra:
+        try:
+            got = prof.setup_run(notes.root(), component, action) or {}
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
+            return False, {"error": str(e), "status": 502}
+        return True, {"component": component, "action": action, "done": True, **got}
     if (component, action) == ("agenda", "import"):
         try:
             return True, {"component": component, "action": action, "done": True,

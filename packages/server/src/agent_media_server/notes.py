@@ -275,8 +275,17 @@ def views(bearer: str) -> tuple[bool, dict]:
     targets = [{"name": to, "label": labels.get(fname) or to.capitalize(),
                 "path": fname, **({"needs_date": True} if dated else {})}
                for to, (fname, _h, _s, dated) in prof.refile_targets(root()).items()]
+    from . import notes_capture
+
+    kinds = []
+    for c in prof.capture_kinds(root()):
+        spec = notes_capture.fields(c["template"])
+        if spec is not None:
+            kinds.append({"name": c["key"], "label": c.get("label") or c["key"],
+                          "path": c["file"], "fields": spec,
+                          "needs_text": notes_capture.needs_text(c["template"])})
     return True, {"root": str(root()), "views": out, "profile": prof.name,
-                  "capture_file": prof.capture_file,
+                  "capture_file": prof.capture_file, "capture_kinds": kinds,
                   "states": {"open": list(kw.open), "done": list(kw.done)},
                   "refile_targets": targets}
 
@@ -483,18 +492,22 @@ def entry(text: str, kind: str, now: dt.datetime | None = None) -> str:
     return f"{head}\n:PROPERTIES:\n:CREATED: {_org_now(now)}\n:END:\n{body}"
 
 
-def capture(text: str, kind: str, bearer: str, *, remember: bool = True) -> tuple[bool, dict]:
-    """Append to the profile's capture file, and (unless told not to)
-    remember it."""
+def capture(text: str, kind: str, bearer: str, *, remember: bool = True,
+            fields: dict | None = None) -> tuple[bool, dict]:
+    """Append a to-do or a note to the profile's capture file, or file one
+    of its capture templates (`kind` = the template's key, notes_capture.py);
+    and (unless told not to) remember it."""
     user, err = auth.gate(bearer)
     if not user:
         return False, err
     text = (text or "").replace("\r\n", "\n").strip()
-    if not text:
-        return False, {"error": "nothing to capture", "status": 400}
     if len(text) > MAX_CAPTURE:
         return False, {"error": "too long for a capture", "status": 413}
-    kind = kind if kind in ("todo", "note") else "todo"
+    if kind not in ("todo", "note", ""):
+        return _capture_template(text, kind, fields or {}, user, remember)
+    if not text:
+        return False, {"error": "nothing to capture", "status": 400}
+    kind = kind or "todo"
     fname = profile().capture_file
     inbox = root() / fname
     block = entry(text, kind)
@@ -516,6 +529,27 @@ def capture(text: str, kind: str, bearer: str, *, remember: bool = True) -> tupl
     print(f"notes: captured a {kind} ({len(text)} chars) for "
           f"{user.get('username')}", file=sys.stderr)
     return True, {"path": fname, "at": at, "kind": kind, "remembered": remember}
+
+
+def _capture_template(text: str, kind: str, values: dict, user: dict,
+                      remember: bool) -> tuple[bool, dict]:
+    from . import notes_capture
+
+    tpl = next((c for c in profile().capture_kinds(root()) if c.get("key") == kind), None)
+    if tpl is None:
+        return False, {"error": f"no capture template {kind!r}", "status": 400}
+    try:
+        got = notes_capture.capture(root(), tpl, text, values)
+    except notes_capture.CaptureError as e:
+        return False, e.detail
+    except OSError as e:
+        return False, {"error": f"could not write {tpl['file']} ({e})", "status": 500}
+    if remember and text:
+        threading.Thread(target=_remember, args=(text, tpl.get("label") or kind, got["path"]),
+                         daemon=True).start()
+    print(f"notes: captured with template {kind!r} ({len(text)} chars) for "
+          f"{user.get('username')}", file=sys.stderr)
+    return True, {**got, "kind": kind, "remembered": remember and bool(text)}
 
 
 def _remember(text: str, kind: str, fname: str) -> None:

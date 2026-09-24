@@ -1,6 +1,6 @@
 # Proposal: Notes on plain Org, with paragtd as an optional package (24 Sep 2026)
 
-Status: **decided 24 Sep 2026** (open questions answered as recommended); **steps 1 and 2 built the same day** (the profile seam and `packages/notes-paragtd`; agenda files, `#+TODO:` keywords, the Emacs import), step 3 (the `/notes` fields, and Next reading them), and step 4's sequencing (Org's blocking in core, paragtd's trigger in its package). Also built: the manifest (paragtd `c2af9ea`, read by the profile). Still to come: capture templates on the phone, and the astro timer. Changes §6.10 of `server-contract.md` (new
+Status: **decided 24 Sep 2026** (open questions answered as recommended); **steps 1 and 2 built the same day** (the profile seam and `packages/notes-paragtd`; agenda files, `#+TODO:` keywords, the Emacs import), step 3 (the `/notes` fields, and Next reading them), and step 4's sequencing (Org's blocking in core, paragtd's trigger in its package). Also built: the manifest (paragtd `c2af9ea`, read by the profile). Then capture templates on the phone (`notes_capture.py`) and the astro timer (notes-paragtd's `astro.py`). Changes §6.10 of `server-contract.md` (new
 fields on `GET /notes`, a profile-dependent refile/capture list), moves the
 GTD-specific half of `notes.py` / `notes_edit.py` / `notes_setup.py` into a
 new `packages/notes-paragtd`, and adds one export command to paragtd.

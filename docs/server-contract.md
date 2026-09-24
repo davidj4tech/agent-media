@@ -1618,7 +1618,8 @@ All five routes use `auth.gate`. GETs are gzipped when the client accepts it.
 
 `{"ok", "root", "views": [{"name", "label", "kind": "agenda"|"file"|"folder",
 "path"?, "count"?, "states"?}], "profile", "capture_file", "states",
-"refile_targets": [{"name", "label", "path", "needs_date"?}]}`. `agenda` comes
+"refile_targets": [{"name", "label", "path", "needs_date"?}], "capture_kinds":
+[{"name", "label", "path", "fields", "needs_text"}]}`. `agenda` comes
 first. There is one `file` view per profile file that exists (`count` = open
 TODO-like headings, `states` = that file's keywords as `{"open": [...],
 "done": [...]}`): for paragtd, its core files in its order and with its
@@ -1631,7 +1632,8 @@ its six fixed folders; under plain Org they are whatever is under `roam/`.
 The rest is what the app offers rather than hard-codes: `profile` (`"paragtd"`
 or null), `capture_file`, `states` (the keywords a file with no declaration of
 its own gets), and `refile_targets` (a target with `needs_date` asks for a
-date, as the tickler does).
+date, as the tickler does). `capture_kinds` are the profile's capture
+templates the phone can fill (below); plain Org has none.
 
 **Agenda files (plain Org).** `[notes] agenda_files` in config.toml, else
 `MEDIA_AGENDA_FILES` (colon-separated, the list `media agenda` reads): paths
@@ -1700,6 +1702,30 @@ text}]}`.
 - Unless `memory` is false, the text is also written to the memory store in
   the background, as best effort.
 - 400 when the text is empty, 413 when it is over 8 KB.
+
+**Capture templates** (`notes_capture.py`). With `"kind": "<template key>"`
+and `"fields": {id: value}`, the body is filled from that template and filed
+where it says, as org-capture would. Answer: `{"path", "at", "kind",
+"remembered"}`. The templates are the profile's: paragtd's come from its
+manifest, site ones included, or else its defaults t n w k p j. A template is
+offered only when the phone can fill it:
+- `%?` takes the first line of the text, and the rest becomes the body;
+- `%U %u %T %t` and `%<fmt>` are now;
+- `%^{Prompt}` is a text field, `%^{Prompt|a|b}` a choice, `%^{Prompt}t`,
+  `%^t` and `%^T` a date or date-and-time field;
+- `%i` and `%a` are empty.
+
+Anything else (`%(sexp)`, `%[file]`, tag prompts) needs Emacs, so the
+template is left out. Each field is `{id, label, type: text|choice|date|datetime,
+options?, active?}`, and a date value is `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM`.
+The targets are:
+- `file`: the end, or the top with `prepend`;
+- `file+headline`: under the headline, which is made if missing;
+- `file+olp+datetree`: under the day, in a year/month/day tree, or
+  year/ISO-week/day with `tree_type: "week"`, made in date order.
+
+The file must be an `.org` file inside the tree. 400 for an unknown key, a
+missing field or a bad date. `needs_text` false means the text may be empty.
 
 #### `POST /notes/say` — `auth.may_control_speech`, like `/speech/ctl`
 
@@ -1819,6 +1845,7 @@ This is the Notes tab's checklist for a host that has no notes yet
 |---|---|---|
 | `org` | the tree, with the profile's files (it is `ok` once the capture file exists) | `clone` (only when `MEDIA_NOTES_REPO` is set and the folder is empty); `create` (writes any missing profile files and roam folders: paragtd's set, or for plain Org only `inbox.org`; never overwrites; runs `git init` if the folder is not a repo) |
 | `agenda` | plain Org only: whether `[notes] agenda_files` is set | `import` (when `emacsclient` is on the host): asks the running Emacs for `org-agenda-files` and `org-todo-keywords` once and writes them into `[notes]` in config.toml, leaving the rest of the file as it is; answers `{"files", "outside", "keywords", "enforce_todo_dependencies"}` (it copies `org-enforce-todo-dependencies` too), 502 when Emacs does not answer |
+| `astro` | paragtd only: whether the monthly `paragtd-astro.timer` is on, and which years `astro.org` has | `enable` (writes the user unit and timer, enables it, and fills in any missing year now); `run` (this year and next, where missing, with paragtd's generator and `--append`); 502 when the generator fails |
 | `sync` | that `org-autosync.timer` is enabled; needs a git repo with a remote | `enable` |
 | `memory` | that the store answers `/health` | none. It runs on the hub and is optional. |
 | `paragtd` | the Emacs package and astro generator (`MEDIA_PARAGTD_DIR`, default `~/projects/paragtd`) | `install` (clone plus `bin/bootstrap`), `update`; optional |

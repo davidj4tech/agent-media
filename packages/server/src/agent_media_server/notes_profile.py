@@ -110,6 +110,23 @@ class Profile:
         the heading is SCHEDULED on it)."""
         return {name: (fname, None, None, False) for name, _, fname in self.files(root)}
 
+    def capture_kinds(self, root: Path) -> list[dict]:
+        """Capture templates beyond the plain to-do and note:
+        `{key, label, target, file, headline?, tree_type?, prepend?,
+        template}`, as org-capture-templates has them (notes_capture.py
+        fills them). Plain Org has none."""
+        return []
+
+    def setup_rows(self, root: Path) -> list[dict]:
+        """Extra rows for the setup checklist (notes_setup.py's shape)."""
+        return []
+
+    def setup_run(self, root: Path, component: str, action: str) -> dict | None:
+        """Do `action` on one of `setup_rows`' components: what the answer
+        adds, or None when it is not one of them. Raise RuntimeError to
+        refuse or report a failure."""
+        return None
+
     def enforces_dependencies(self) -> bool:
         """Whether a heading may not close while a child, or under an
         `:ORDERED:` parent an earlier sibling, is open — Org's

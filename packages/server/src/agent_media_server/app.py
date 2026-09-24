@@ -1119,7 +1119,8 @@ def _notes(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
         body = _read_json(h) or {}
         ok, detail = notes.capture(str(body.get("text") or ""),
                                    str(body.get("kind") or "todo"), bearer,
-                                   remember=body.get("memory", True) is not False)
+                                   remember=body.get("memory", True) is not False,
+                                   fields=body.get("fields") if isinstance(body.get("fields"), dict) else None)
     else:
         return False
     if ok and method == "GET":
