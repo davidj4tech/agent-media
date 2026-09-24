@@ -26,7 +26,28 @@ def screen(shelf, signed_in, monkeypatch):
     monkeypatch.setattr(sessions, "_STATES_TTL_S", 0.0)
     monkeypatch.setattr(session_events, "POLL_S", 0.05)
     monkeypatch.setattr(session_events, "PING_MIN_S", 0.2)
-    return s
+    # A closed stream is only noticed at its next write; a long ping kept
+    # each test's subscriber attached into the next test.
+    monkeypatch.setattr(session_events, "PING_DEFAULT_S", 0.3)
+    _idle_watcher()
+    yield s
+    _idle_watcher()
+
+
+def _idle_watcher(deadline: float = 5.0) -> None:
+    """The watcher is one per process: a stream from the test before may not
+    have noticed its socket closed yet (a busy machine), and a subscriber
+    that finds it still running is handed that test's rows as its first
+    frame. Wait for it to wind down, then forget what it read."""
+    w = session_events._W
+    end = time.monotonic() + deadline
+    while time.monotonic() < end:
+        with w.cond:
+            if w.subs <= 0 and w.thread is None:
+                break
+        time.sleep(0.02)
+    with w.cond:
+        w.rows = None
 
 
 def test_refused_without_a_credential(server, screen, monkeypatch):
@@ -53,7 +74,7 @@ def test_first_frame_is_the_list(server, screen):
 
 
 def test_a_state_change_sends_the_list_again(server, screen):
-    st = Stream(server, "/sessions/events?ping=300", AUTH)
+    st = Stream(server, "/sessions/events?ping=0.3", AUTH)
     try:
         assert st.next("sessions")["sessions"][0]["state"] == "working"
         screen["cls"] = "input"  # the turn ended: waiting on you
