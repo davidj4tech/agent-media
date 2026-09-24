@@ -100,7 +100,13 @@ another thread's draft (or a new chat's) and opens it; `@` in the reply box
 offers threads by title. The send carries `refs` and the server adds a line
 per chip with the session and its transcript path (§6.3, `refs.py`); the
 sent message shows the chip as a link to that thread (`chat/test/refs.mjs`).
-Not yet tried on the phone.
+Inside a thread its ⋮ offers Insert a thread… instead, which puts the chip
+at the caret of the words being written (25 Sep 2026). Threads outside
+~/projects are filed under their directory (`org`, `scratch`), never the
+shelf's catch-all `conversation` folder. `media session-delete` removes a
+thread everywhere (speech history, shelf, library item, search, flags),
+backed up first and kept deleted; `codex exec` and /tmp runs are never
+spoken or shelved (25 Sep 2026).
 
 Codex and pi threads read from their own transcripts (§6.2.2: a reader per
 harness in `transcript.py` — prompts, replies, thinking and every step with
