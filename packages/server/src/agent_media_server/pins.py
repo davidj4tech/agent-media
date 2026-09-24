@@ -63,20 +63,26 @@ def session_pin(session: str, flag, bearer: str) -> tuple[bool, dict]:
     return True, {"session": session, "pinned": flag}
 
 
-def session_priority(session: str, flag, bearer: str) -> tuple[bool, dict]:
-    """`POST /session/priority {"session", "priority"}`: mark a thread
-    always-speak — its replies are never held by the desk toast or silenced
-    by a pane mute (`agent_media_core.speak_priority`). Refused exactly as
-    `/session/pin` is; `priority` defaults to true."""
+def session_priority(session: str, flag, bearer: str, level=None) -> tuple[bool, dict]:
+    """`POST /session/priority {"session", "level"}`: the thread's speech
+    level — `interrupt`, `auto`, `normal` or `quiet`
+    (`agent_media_core.speak_priority`). The older `{"priority": bool}` is
+    auto / normal and still accepted. Refused exactly as `/session/pin` is;
+    with neither given, auto."""
     from agent_media_core import speak_priority
 
     session = (session or "").strip()
     if not sessions._SESSION.fullmatch(session):
         return False, {"error": "not a session id", "status": 400}
-    if flag is None:
-        flag = True
-    if not isinstance(flag, bool):
-        return False, {"error": "priority must be true or false", "status": 400}
+    if level is None:
+        if flag is None:
+            flag = True
+        if not isinstance(flag, bool):
+            return False, {"error": "priority must be true or false", "status": 400}
+        level = "auto" if flag else "normal"
+    if level not in speak_priority.LEVELS:
+        return False, {"error": "level must be interrupt, auto, normal or quiet",
+                       "status": 400}
     user, err = auth.gate(bearer)
     if not user:
         return False, err
@@ -84,7 +90,8 @@ def session_priority(session: str, flag, bearer: str) -> tuple[bool, dict]:
             or sessions._folder_for_session(session)):
         return False, {"error": f"no such session {session[:8]}", "status": 404}
     try:
-        speak_priority.set_priority(session, flag)
+        speak_priority.set_level(session, level)
     except OSError as e:
-        return False, {"error": f"could not save the priority ({e})", "status": 500}
-    return True, {"session": session, "priority": flag}
+        return False, {"error": f"could not save the level ({e})", "status": 500}
+    return True, {"session": session, "level": level,
+                  "priority": level in speak_priority.SPEAKS}

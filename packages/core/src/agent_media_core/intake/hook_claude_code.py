@@ -1060,15 +1060,20 @@ def _handle_stop(payload: dict) -> int:
         # No whole-reply summary, but per-block describe is on: carry the raw
         # reply so the detached child can describe its code/tables (off the fork).
         metadata["describe_raw"] = raw
+    # The conversation's speech level (`media priority`, speak_priority.py):
+    # interrupt and auto are never held, interrupt also cuts in on another
+    # conversation, quiet is archived unheard and never played by itself.
+    from . import toast
+    from ..speak_priority import SPEAKS, level_of
+    level = level_of(metadata["session"])
+    if level == "quiet":
+        metadata["held"] = True
     event = Event(text=text, source=Source.CLAUDE_CODE,
-                  priority=Priority.NORMAL,
+                  priority=Priority.HIGH if level == "interrupt" else Priority.NORMAL,
                   voice=voice_for_session(_session_name()),
                   metadata=metadata)
     # Someone at the desk looking at another pane: toast it, play on request.
-    # An always-speak conversation (`media priority`) is never held.
-    from . import toast
-    from ..speak_priority import is_priority
-    if not is_priority(metadata["session"]) and toast.should_hold():
+    if level != "quiet" and level not in SPEAKS and toast.should_hold():
         toast.hold(event)
         return 0
     _play_detached(event)

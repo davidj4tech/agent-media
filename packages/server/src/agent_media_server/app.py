@@ -80,9 +80,9 @@ device gets its token):
                   server keeps; see archive.py). Ends nothing
   POST /session/pin {"session", "pinned": true|false} → keep that session
                   open against the idle reaper (pins.py, reap.py)
-  POST /session/priority {"session", "priority": true|false} → that
-                  thread's replies always speak: never held by the desk
-                  toast, never silenced by a pane mute (pins.py)
+  POST /session/priority {"session", "level"} → that thread's speech
+                  level: interrupt | auto | normal | quiet
+                  (agent_media_core/speak_priority.py, pins.py)
   POST /session/move {"session", "project"|"cwd"} → move a conversation to
                   another project: file it there, move its transcript and its
                   library folder, and bring a live session back in that
@@ -907,7 +907,8 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         # Always speak this thread (agent_media_core.speak_priority).
         body = _read_json(h) or {}
         ok, detail = pins.session_priority(str(body.get("session") or ""),
-                                           body.get("priority"), _bearer(h))
+                                           body.get("priority"), _bearer(h),
+                                           level=body.get("level"))
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path == "/session/answer":
         # Answering the dialog a session is stopped on — a permission

@@ -647,7 +647,8 @@ def test_priority_toggles_and_shows_on_the_rows(server, shelf, signed_in, typed)
 
     res, obj = call(server, "POST", "/session/priority",
                     {"session": SID2, "priority": True}, AUTH)
-    assert res.status == 200 and obj == {"ok": True, "session": SID2, "priority": True}
+    assert res.status == 200 and obj == {"ok": True, "session": SID2, "level": "auto",
+                                         "priority": True}
     _, targets = call(server, "GET", "/targets", headers=AUTH)
     by = {r["session"]: r for r in targets["sessions"]}
     assert by[SID2]["priority"] is True and by[SID]["priority"] is False
@@ -655,13 +656,26 @@ def test_priority_toggles_and_shows_on_the_rows(server, shelf, signed_in, typed)
     assert typed == []
     res, obj = call(server, "POST", "/session/priority",
                     {"session": SID2, "priority": False}, AUTH)
-    assert obj == {"ok": True, "session": SID2, "priority": False}
+    assert obj == {"ok": True, "session": SID2, "level": "normal", "priority": False}
     assert not speak_priority.is_priority(SID2)
     res, obj = call(server, "POST", "/session/priority", {"session": "nope"}, AUTH)
     assert res.status == 400
     res, obj = call(server, "POST", "/session/priority", {"session": SID, "priority": 1}, AUTH)
     assert res.status == 400 and obj["error"] == "priority must be true or false"
     assert "/session/priority" in app.CORS_PATHS
+
+
+def test_speech_level_is_set_and_shows_on_the_rows(server, shelf, signed_in, typed):
+    for level, prio in (("interrupt", True), ("quiet", False), ("auto", True)):
+        res, obj = call(server, "POST", "/session/priority", {"session": SID2, "level": level}, AUTH)
+        assert res.status == 200 and obj == {"ok": True, "session": SID2, "level": level,
+                                             "priority": prio}
+        _, targets = call(server, "GET", "/targets", headers=AUTH)
+        row = next(r for r in targets["sessions"] if r["session"] == SID2)
+        assert row["speech"] == level and row["priority"] is prio
+    res, obj = call(server, "POST", "/session/priority", {"session": SID2, "level": "loud"}, AUTH)
+    assert res.status == 400 and obj["error"] == "level must be interrupt, auto, normal or quiet"
+    call(server, "POST", "/session/priority", {"session": SID2, "level": "normal"}, AUTH)
 
 
 # --- the archive import ---------------------------------------------------------------------

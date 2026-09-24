@@ -2696,17 +2696,17 @@ def cmd_agenda_alarm(a) -> int:
 
 
 def cmd_priority(a) -> int:
-    """Mark a conversation *always speak*: never held, never muted (see
-    speak_priority.py). Default: this pane's conversation, toggled.
-    `status` lists every one."""
+    """A conversation's speech level (speak_priority.py): interrupt, auto,
+    normal or quiet. Default: this pane's conversation; `on`/`off` are auto
+    and normal, `toggle` flips auto. `status` lists every one."""
     from . import speak_priority
     action = getattr(a, "state", None) or "toggle"
     if action == "status":
-        rows = speak_priority.priority_sessions()
+        rows = speak_priority.levels()
         if not rows:
-            print("no priority conversations")
-        for sid, at in sorted(rows.items(), key=lambda kv: kv[1]):
-            print(f"{sid}  since {time.strftime('%F %H:%M', time.localtime(at))}")
+            print("every conversation is normal")
+        for sid, level in sorted(rows.items(), key=lambda kv: kv[1]):
+            print(f"{sid}  {level}")
         return 0
     session = getattr(a, "session", None) or ""
     if not session:
@@ -2716,10 +2716,12 @@ def cmd_priority(a) -> int:
         print("media priority: no conversation here — pass --session ID",
               file=sys.stderr)
         return 1
-    new = (action == "on" if action in ("on", "off")
-           else not speak_priority.is_priority(session))
-    speak_priority.set_priority(session, new)
-    print(f"{session[:8]}: {'always speak' if new else 'normal'}")
+    if action == "toggle":
+        level = "normal" if speak_priority.is_priority(session) else "auto"
+    else:
+        level = {"on": "auto", "off": "normal"}.get(action, action)
+    speak_priority.set_level(session, level)
+    print(f"{session[:8]}: {level}")
     return 0
 
 
@@ -8057,10 +8059,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p_aa.add_argument("--dry-run", action="store_true", help="print, speak nothing")
     p_aa.set_defaults(func=cmd_agenda_alarm)
     p_pr = sub.add_parser("priority",
-                          help="always speak one conversation (never held or muted)")
+                          help="a conversation's speech level: interrupt, auto, normal, quiet")
     p_pr.add_argument("--session", help="agent session id (default: this pane's)")
     p_pr.add_argument("--pane", help="tmux pane id (default: $TMUX_PANE)")
-    p_pr.add_argument("state", nargs="?", choices=["on", "off", "toggle", "status"],
+    p_pr.add_argument("state", nargs="?",
+                      choices=["interrupt", "auto", "normal", "quiet",
+                               "on", "off", "toggle", "status"],
                       default="toggle")
     p_pr.set_defaults(func=cmd_priority)
     sub.add_parser("mute-status",

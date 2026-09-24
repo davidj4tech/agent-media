@@ -283,9 +283,11 @@ Everything a message can be pointed at.
   `/session/close` is never rested.
 - `pinned` (every row, 22 Sep 2026): kept open against the idle reaper, set
   with `POST /session/pin` (§6.4). A pin affects the reaper only.
-- `priority` (every row, 24 Sep 2026): the thread always speaks — its
-  replies are never held by the desk toast and never silenced by a pane
-  mute. Set with `POST /session/priority` (§6.4) or `media priority`.
+- `speech` (every row, 24 Sep 2026): the thread's speech level —
+  `"interrupt"`, `"auto"`, `"normal"` or `"quiet"` — set with
+  `POST /session/priority` (§6.4) or `media priority`. `priority` (same
+  day) is true for interrupt and auto: its replies are never held by the
+  desk toast and never silenced by a pane mute.
 - `harness` (every row, 23 Sep 2026): which agent holds the conversation —
   `"claude"`, `"codex"`, `"pi"` or `"hermes"`. Rows the app has never seen
   before carry `source: "store"` as well: conversations known only from
@@ -1220,18 +1222,28 @@ Pinned by `packages/server/tests/test_reap.py`.
 
 #### `POST /session/priority` — gated (24 Sep 2026)
 
-`{"session", "priority": true | false}` → `{"ok": true, "session", "priority"}`.
+`{"session", "level"}` → `{"ok": true, "session", "level", "priority"}`.
 
-- Always speak this thread: its replies play at once, like the pane you are
-  looking at. The desk toast does not hold them and a pane or tmux-session
-  mute does not silence them. A reply already held stays held (it plays on
-  request). Outlives the session, like a pin.
+What happens to the thread's replies (a Claude Code Stop read-out; its
+questions are never touched):
+
+| level | the reply |
+|---|---|
+| `interrupt` | plays at once, at HIGH priority: another thread's reply steps aside at its next sentence and resumes after |
+| `auto` | plays at once: the desk toast does not hold it and a pane or tmux-session mute does not silence it |
+| `normal` | the usual rules (the default; nothing stored) |
+| `quiet` | rendered and archived unheard (`extras.held`, `unheard: true` on the transcript) and never played by itself |
+
+- `priority` in the answer, and on the rows, is true for interrupt and auto.
+  The older body `{"session", "priority": bool}` still works: true is auto,
+  false normal; with neither, auto.
 - Kept in core (`agent_media_core/speak_priority.py`), per session, in
-  `<state_dir>/speak-priority.json` (`{"<session>": <set at>}`), so the
-  hooks read it without the server; `media priority [on|off|toggle|status]`
-  sets the same flag from a pane.
-- Refusals, the default (`true`) and CORS exactly as `/session/pin`, with
-  `"priority must be true or false"`.
+  `<state_dir>/speak-priority.json` (`{"<session>": {"level", "at"}}`; a
+  bare number is the older flag, read as auto), so the hooks read it without
+  the server; `media priority [interrupt|auto|normal|quiet|status]` sets the
+  same thing from a pane. Outlives the session, like a pin.
+- 400 `"level must be interrupt, auto, normal or quiet"`; the other
+  refusals and CORS exactly as `/session/pin`.
 
 Pinned by `packages/server/tests/test_reap.py` and
 `packages/core/tests/test_speak_priority.py`.

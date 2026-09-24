@@ -1249,8 +1249,9 @@ def sessions_index(*, days: float = STORE_DAYS) -> list[dict]:
 
     And `rested` — `{"at", "reason"}` when the idle reaper closed it, None
     otherwise and always None while live (`rest`) — and `pinned`, whether it
-    is kept open against the reaper (`pins`), and `priority`, whether its
-    replies always speak (`agent_media_core.speak_priority`).
+    is kept open against the reaper (`pins`), and `speech`, its speech level
+    (`agent_media_core.speak_priority`) — `priority` says it is interrupt or
+    auto.
     """
     from . import archive, pins, rest
 
@@ -1294,11 +1295,13 @@ def sessions_index(*, days: float = STORE_DAYS) -> list[dict]:
     # And the conversations no pane, no driver and no shelf knows about —
     # every harness's own store (§6.16).
     out += _stored_rows(store, seen, flags, pinned, marks, days=days)
-    # And `priority`: its replies always speak, never held or muted.
-    from agent_media_core.speak_priority import priority_sessions
-    prio = priority_sessions()
+    # And `speech`, its level (interrupt | auto | normal | quiet), with
+    # `priority` kept for older clients: its replies are never held or muted.
+    from agent_media_core.speak_priority import SPEAKS, levels
+    lv = levels()
     for row in out:
-        row["priority"] = row["session"] in prio
+        row["speech"] = lv.get(row["session"], "normal")
+        row["priority"] = row["speech"] in SPEAKS
     # Where each thread is: its directory and the project it is filed under,
     # for the small line under the title and the list's By-project order.
     return add_projects(out)
