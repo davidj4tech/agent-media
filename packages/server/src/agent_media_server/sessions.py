@@ -1310,4 +1310,9 @@ def sessions_index(*, days: float = STORE_DAYS) -> list[dict]:
         row["priority"] = row["speech"] in SPEAKS
     # Where each thread is: its directory and the project it is filed under,
     # for the small line under the title and the list's By-project order.
+    from agent_media_core.deleted import deleted
+
+    gone = deleted()
+    if gone:
+        out = [r for r in out if r.get("session") not in gone]
     return add_projects(out)

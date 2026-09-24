@@ -59,6 +59,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if _is_structured(text):
         return 0
+    from agent_media_core import harnesses
+
+    thread = payload.get("thread-id")
+    if harnesses.codex_run_scripted(thread if isinstance(thread, str) else "",
+                                    str(payload.get("cwd") or "")):
+        # `codex exec` or a run from /tmp: a script's answer, not a reply to
+        # anyone — never spoken, never shelved (harnesses.codex_scripted).
+        return 0
     metadata = {}
     for key, target in (("thread-id", "session"), ("turn-id", "turn_id"),
                         ("cwd", "cwd")):

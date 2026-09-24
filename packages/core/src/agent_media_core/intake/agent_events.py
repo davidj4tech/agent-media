@@ -29,6 +29,13 @@ def handle(payload: dict, harness: str) -> int:
     event = str(payload.get("hook_event_name") or "")
     session = str(payload.get("session_id") or "")
     try:
+        if harness == "codex":
+            from .. import harnesses
+
+            # A script driving Codex (`codex exec`, a run from /tmp) is not a
+            # conversation: nothing of it is recorded, spoken or shelved.
+            if harnesses.codex_run_scripted(session, str(payload.get("cwd") or "")):
+                return 0
         if event == "SessionStart":
             from .. import harnesses
 

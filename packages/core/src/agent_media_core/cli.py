@@ -7464,6 +7464,15 @@ def cmd_session_archive_import(a) -> int:
     return imp.run(apply=a.apply, as_json=a.json)
 
 
+def cmd_session_delete(a) -> int:
+    """Delete threads everywhere this host keeps them (agent_media_server.forget)."""
+    forget = _server_module("forget")
+    if forget is None:
+        return 1
+    return forget.run(a.sessions, apply_=a.apply, abs_items=tuple(a.abs_item or ()),
+                      as_json=a.json)
+
+
 def cmd_selfcheck(a) -> int:
     """Report this host's install health as key=value lines."""
     print(SELFCHECK_SENTINEL)
@@ -8356,6 +8365,17 @@ def _build_parser() -> argparse.ArgumentParser:
     sai.add_argument("--apply", action="store_true", help="set the flags")
     sai.add_argument("--json", action="store_true")
     sai.set_defaults(func=cmd_session_archive_import)
+
+    sdel = sub.add_parser("session-delete",
+                          help="delete threads everywhere: speech history, shelf folder, "
+                               "library item, search rows, flags; kept deleted from then on "
+                               "(dry run unless --apply; a backup is written first)")
+    sdel.add_argument("sessions", nargs="+", metavar="SESSION")
+    sdel.add_argument("--abs-item", action="append", metavar="ID",
+                      help="also delete this library item (one ABS shows as missing)")
+    sdel.add_argument("--apply", action="store_true", help="delete")
+    sdel.add_argument("--json", action="store_true")
+    sdel.set_defaults(func=cmd_session_delete)
 
     sc = sub.add_parser("selfcheck",
                         help="report this host's install health (key=value lines)")

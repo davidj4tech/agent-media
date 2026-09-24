@@ -145,6 +145,26 @@ def _wipe(conn: sqlite3.Connection) -> None:
     conn.execute("COMMIT")
 
 
+def forget(session: str) -> int:
+    """Take a session out of the index: its messages, its thread row and its
+    files. The number of message rows removed. (A deleted thread's files are
+    not read again: `_sources` leaves deleted sessions out.)"""
+    with _WRITE:
+        conn = _connect()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            n = conn.execute("SELECT count(*) FROM docs WHERE session=?", (session,)).fetchone()[0]
+            _delete_docs(conn, "session=?", (session,))
+            conn.execute("DELETE FROM threads WHERE session=?", (session,))
+            conn.execute("DELETE FROM files WHERE session=?", (session,))
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+    _LISTED[0] = (0.0, {})
+    return int(n)
+
+
 def _reset_for_tests() -> None:
     conn = getattr(_LOCAL, "conn", None)
     if conn is not None:
@@ -448,7 +468,7 @@ def _codex_files() -> list[tuple[str, str]]:
     out = []
     for f in glob.glob(str(harnesses._codex_dir() / "sessions" / "*" / "*" / "*" / "rollout-*.jsonl")):
         m = harnesses._ROLLOUT.search(f)
-        if m and not harnesses.codex_subagent(f):
+        if m and not harnesses.codex_subagent(f) and not harnesses.codex_scripted(f):
             out.append((f, m.group(1)))
     return out
 
@@ -628,7 +648,10 @@ def _sources() -> list[tuple[str, str, str]]:
     out += [("pi", f, s) for f, s in _pi_files()]
     out += [("codex", f, s) for f, s in _codex_files()]
     out += [("hermes", str(p), "") for p in harnesses.hermes_stores()]
-    return out
+    from agent_media_core.deleted import deleted
+
+    gone = deleted()
+    return [src for src in out if src[2] not in gone] if gone else out
 
 
 def refresh(budget_s: float | None = None, pause_s: float = 0.0) -> dict:
@@ -808,6 +831,10 @@ def _mark_terms(text: str, terms: list[str]) -> list[list[int]]:
 
 
 def _hidden(entrypoint: str | None, session: str, owned: set[str]) -> bool:
+    from agent_media_core.deleted import is_deleted
+
+    if is_deleted(session):
+        return True
     return bool(entrypoint) and entrypoint.startswith("sdk") and session not in owned
 
 

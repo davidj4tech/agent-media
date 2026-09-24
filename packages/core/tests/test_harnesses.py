@@ -300,3 +300,29 @@ def test_hermes_conversations_come_from_every_profile(hermes_home, monkeypatch, 
     assert [(r.session, r.harness) for r in rows] == [(HM, "hermes")]
     # The last message is when it was last talked to.
     assert rows[0].at == 1789950359.0
+
+
+def test_a_scripted_codex_run_is_not_a_conversation(alone, monkeypatch, tmp_path):
+    """`codex exec` and runs from /tmp are a script's, not anyone's (the
+    Cloudflare DNS runs of 25 Sep 2026 were spoken and shelved)."""
+    homes = alone
+    day = homes / "codex" / "sessions" / "2026" / "09" / "25"
+    day.mkdir(parents=True, exist_ok=True)
+    runs = {"01a0d3d4-9c5f-7ea0-a7d6-060e7d7fcc2f": {"originator": "codex_exec", "source": "exec",
+                                                     "cwd": "/home/x/site"},
+            "01a0d3d5-7e07-7bd1-b24d-b33de540e3ef": {"originator": "codex-tui", "source": "cli",
+                                                     "cwd": "/tmp/work"}}
+    for sid, meta in runs.items():
+        rec = {"type": "session_meta", "payload": {"id": sid, **meta}}
+        (day / f"rollout-2026-09-25T00-32-01-{sid}.jsonl").write_text(json.dumps(rec) + "\n")
+    assert {r.session for r in harnesses.stored() if r.harness == "codex"} == {CX}
+    for sid in runs:
+        assert harnesses.codex_run_scripted(sid)
+    assert not harnesses.codex_run_scripted(CX)
+    assert harnesses.codex_run_scripted("", "/tmp")
+    # A deleted session is off the list whatever its agent kept.
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    from agent_media_core import deleted
+
+    deleted.mark([CX])
+    assert CX not in {r.session for r in harnesses.stored()}

@@ -604,24 +604,57 @@ def _opencode_stored() -> list[Stored]:
             if is_opencode(str(sid or ""))]
 
 
-_CODEX_SUBAGENT: dict[str, bool] = {}
+_CODEX_META: dict[str, dict] = {}
 
 
-def codex_subagent(path: str) -> bool:
-    """Whether a Codex rollout is a subagent's — the guardian that reviews an
-    approval request, say — which is part of its parent's conversation, not
-    one of its own. Its first record says so (`source.subagent`); a rollout
-    never changes its first line, so each file is read once."""
-    got = _CODEX_SUBAGENT.get(path)
+def _codex_meta(path: str) -> dict:
+    """A Codex rollout's first record (`session_meta`), or {}. A rollout never
+    changes its first line, so each file is read once."""
+    got = _CODEX_META.get(path)
     if got is None:
         try:
             with open(path, encoding="utf-8") as fh:
                 rec = json.loads(fh.readline() or "{}")
         except (OSError, ValueError):
-            return False
-        source = (rec.get("payload") or {}).get("source") if rec.get("type") == "session_meta" else None
-        got = _CODEX_SUBAGENT[path] = isinstance(source, dict) and "subagent" in source
+            return {}
+        got = _CODEX_META[path] = (rec.get("payload") or {}) if rec.get("type") == "session_meta" else {}
     return got
+
+
+def codex_subagent(path: str) -> bool:
+    """Whether a Codex rollout is a subagent's — the guardian that reviews an
+    approval request, say — which is part of its parent's conversation, not
+    one of its own. Its first record says so (`source.subagent`)."""
+    source = _codex_meta(path).get("source")
+    return isinstance(source, dict) and "subagent" in source
+
+
+def _in_tmp(cwd: str) -> bool:
+    import tempfile
+
+    cwd = (cwd or "").rstrip("/")
+    return any(cwd == t or cwd.startswith(t + "/")
+               for t in {"/tmp", tempfile.gettempdir().rstrip("/")})
+
+
+def codex_scripted(path: str) -> bool:
+    """Whether a Codex rollout is a script's run, not a conversation: `codex
+    exec` (originator `codex_exec`, source `exec`), or anything run from a
+    temp directory. A script driving Codex is nobody talking — its answers
+    were spoken aloud and shelved as threads (the Cloudflare DNS runs of
+    25 Sep 2026), and David had not started any of them."""
+    meta = _codex_meta(path)
+    return (meta.get("originator") == "codex_exec" or meta.get("source") == "exec"
+            or _in_tmp(str(meta.get("cwd") or "")))
+
+
+def codex_run_scripted(session: str, cwd: str = "") -> bool:
+    """For the hooks: whether this Codex session is a scripted run
+    (`codex_scripted`), from the cwd the hook was given or its rollout."""
+    if cwd and _in_tmp(cwd):
+        return True
+    found = transcript(session) if session else None
+    return bool(found) and found[0] == CODEX and codex_scripted(str(found[1]))
 
 
 def stored(*, since: float = 0.0, limit: int = 0,
@@ -644,13 +677,16 @@ def stored(*, since: float = 0.0, limit: int = 0,
     found = _scan(_claude_dir() / "projects", 1, re.compile(f"({_UUID})\\.jsonl"), CLAUDE)
     found += [r for r in _scan(_codex_dir() / "sessions", 3,
                                re.compile(f"rollout-.*-({_UUID})\\.jsonl"), CODEX)
-              if not codex_subagent(r.path)]
+              if not codex_subagent(r.path) and not codex_scripted(r.path)]
     found += _scan(_pi_dir() / "sessions", 1, re.compile(f".*_({_UUID})\\.jsonl"), PI)
     found += _hermes_stored()
     found += _opencode_stored()
+    from .deleted import deleted
+
+    gone = deleted()
     newest: dict[str, Stored] = {}
     for row in found:
-        if row.at < since:
+        if row.at < since or row.session in gone:
             continue
         # A directory the caller wants nothing from: a gateway's scratch
         # folder holds thousands of one-shot sessions nobody had.

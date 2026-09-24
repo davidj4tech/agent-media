@@ -396,6 +396,11 @@ def export_session(session: str, *, store=None) -> tuple[Optional[Path], int]:
     the gap, renaming files that are already on disk and already downloaded.
     What has been written is what decides where the next one goes.
     """
+    from .deleted import is_deleted
+
+    if is_deleted(session):
+        # Deleted: its folder would be rebuilt from whatever speech is left.
+        return None, 0
     turns = session_feed.turns(session, store=store)
     manifest = _read_manifest(session)
     folder = folder_for(session, turns, manifest)
