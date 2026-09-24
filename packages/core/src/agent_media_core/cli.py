@@ -7995,7 +7995,7 @@ def _build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_follow)
     sub.add_parser("toggle", help="play/pause").set_defaults(func=cmd_toggle)
     s = sub.add_parser("toast",
-                       help="replies held for the desk toast (MEDIA_TOAST_GATE=1): "
+                       help="Normal replies held until asked for (the desk toast): "
                             "play the newest, dismiss it, or list them")
     s.add_argument("action", choices=["play", "dismiss", "list"])
     s.set_defaults(func=cmd_toast)

@@ -7,9 +7,13 @@ What happens to a reply when it is ready:
   boundary and resumes afterwards (intake/submit.py `_SpeechPlaybackLock`).
 - **auto** — it plays at once. The desk toast (intake/toast.py) does not hold
   it and a pane or tmux-session mute (`media mute-pane`) does not silence it.
-- **normal** — the usual rules (the default; nothing is stored).
-- **quiet** — it is rendered and archived but never played by itself: it
-  waits in the transcript unheard (`extras.held`), with a Play in the app.
+- **normal** — it plays at once only while someone is looking at the
+  conversation (its thread open in the app, or its pane at the desk);
+  otherwise it waits unheard with a Play, and a toast at the desk if someone
+  is there (intake/toast.py). The default; nothing is stored.
+- **quiet** — it is rendered and archived but never played by itself, and
+  gets no toast: it waits in the transcript unheard (`extras.held`), with a
+  Play in the app.
 
 Questions (AskUserQuestion read-outs) are not touched at any level — they
 need an answer.

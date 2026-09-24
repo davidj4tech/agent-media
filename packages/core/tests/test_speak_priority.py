@@ -46,7 +46,7 @@ def test_a_priority_conversation_is_never_held_by_the_toast(tmp_path, monkeypatc
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     played, held = [], []
     monkeypatch.setattr(hook, "_play_detached", played.append)
-    monkeypatch.setattr(toast, "should_hold", lambda: True)
+    monkeypatch.setattr(toast, "should_hold", lambda session="": True)
     monkeypatch.setattr(toast, "hold", held.append)
     payload = {"session_id": SID, "last_assistant_message": "Done."}
     hook._handle_stop(payload)
@@ -54,6 +54,10 @@ def test_a_priority_conversation_is_never_held_by_the_toast(tmp_path, monkeypatc
     speak_priority.set_priority(SID, True)
     hook._handle_stop(payload)
     assert len(held) == 1 and len(played) == 1
+    # Quiet gets no toast: archived unheard, straight to the (held) render.
+    speak_priority.set_level(SID, "quiet")
+    hook._handle_stop({**payload, "last_assistant_message": "Quietly done."})
+    assert len(held) == 1 and len(played) == 2 and played[-1].metadata["held"]
 
 
 def test_levels_and_the_older_flag(tmp_path, monkeypatch):
@@ -79,7 +83,7 @@ def test_interrupt_is_high_and_quiet_is_held(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     played, held = [], []
     monkeypatch.setattr(hook, "_play_detached", played.append)
-    monkeypatch.setattr(toast, "should_hold", lambda: True)
+    monkeypatch.setattr(toast, "should_hold", lambda session="": True)
     monkeypatch.setattr(toast, "hold", held.append)
     payload = {"session_id": SID, "last_assistant_message": "Done."}
     speak_priority.set_level(SID, "interrupt")

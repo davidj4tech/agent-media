@@ -32,40 +32,50 @@ def _fake_tmux(monkeypatch, clients=(("/dev/pts/1", "%1", 5),)):
     return shown
 
 
-def test_gate_off_never_holds(monkeypatch):
-    _fake_tmux(monkeypatch)
-    monkeypatch.setenv("TMUX_PANE", "%3")
-    monkeypatch.delenv("MEDIA_TOAST_GATE", raising=False)
-    assert not toast.should_hold()
-
-
-def test_holds_only_off_pane_with_someone_at_the_desk(monkeypatch):
-    monkeypatch.setenv("MEDIA_TOAST_GATE", "1")
+def test_holds_unless_someone_is_looking_at_the_conversation(monkeypatch):
     monkeypatch.setenv("TMUX_PANE", "%3")
     _fake_tmux(monkeypatch)
-    assert toast.should_hold()                        # looking at %1
+    assert toast.should_hold("s1")                    # looking at %1
     _fake_tmux(monkeypatch, clients=(("/dev/pts/1", "%3", 5),))
-    assert not toast.should_hold()                    # looking at this pane
+    assert not toast.should_hold("s1")                # looking at this pane
     _fake_tmux(monkeypatch, clients=())
-    assert not toast.should_hold()                    # nobody attached
+    assert toast.should_hold("s1")                    # nobody attached: waits
 
 
 def test_a_stale_client_is_not_someone_at_the_desk(monkeypatch):
-    monkeypatch.setenv("MEDIA_TOAST_GATE", "1")
     monkeypatch.setenv("TMUX_PANE", "%3")
-    _fake_tmux(monkeypatch, clients=(("/dev/pts/1", "%1", 86400),))
-    assert not toast.should_hold()                    # away: the phone lane
+    _fake_tmux(monkeypatch, clients=(("/dev/pts/1", "%3", 600),))
+    assert not toast.should_hold("s1")                # a long turn, watched
+    _fake_tmux(monkeypatch, clients=(("/dev/pts/1", "%3", 86400),))
+    assert toast.should_hold("s1")                    # walked off: waits
     # The freshest client decides which pane is "the one you are on".
     _fake_tmux(monkeypatch, clients=(("/dev/pts/1", "%1", 86400),
                                      ("/dev/pts/2", "%3", 10)))
-    assert not toast.should_hold()
+    assert not toast.should_hold("s1")
 
 
-def test_outside_tmux_never_holds(monkeypatch):
-    monkeypatch.setenv("MEDIA_TOAST_GATE", "1")
-    monkeypatch.delenv("TMUX_PANE", raising=False)
+def test_open_in_the_app_plays(monkeypatch):
+    from agent_media_core import watching
+
+    monkeypatch.delenv("TMUX_PANE", raising=False)    # a headless session
     _fake_tmux(monkeypatch)
-    assert not toast.should_hold()
+    assert toast.should_hold("s1")
+    watching.publish({"s1": 1, "s2": 0})
+    assert not toast.should_hold("s1")
+    assert toast.should_hold("s2")
+    watching.publish({})
+    assert toast.should_hold("s1")
+
+
+def test_a_dead_servers_table_is_nothing_open(monkeypatch):
+    import json
+    from agent_media_core import watching
+
+    watching.publish({"s1": 1})
+    data = json.loads(watching._path().read_text())
+    data["pid"] = 2 ** 22 + 1                         # past pid_max: not running
+    watching._path().write_text(json.dumps(data))
+    assert not watching.is_open("s1")
 
 
 def test_hold_archives_unplayed_then_play_replays_the_row(monkeypatch):

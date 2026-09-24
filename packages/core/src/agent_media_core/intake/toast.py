@@ -1,14 +1,11 @@
-"""Hold a reply until the listener asks for it — the tmux toast (prototype).
+"""Hold a Normal reply until the listener asks for it (speak_priority.py).
 
-A reply from the pane the listener is looking at speaks at once. A reply from
-any other pane, while someone is at the desk (a client typed into within
-MEDIA_TOAST_PRESENCE_S, default 300), is held instead: a toast in the
-status line says it is ready, `prefix y` plays it and `prefix Y` drops it. The
-phone's version of the same rule is a tap on the notification; this is the
-desk's.
-
-Off unless MEDIA_TOAST_GATE=1. Nobody at the desk means the reply takes the
-usual path (the phone lane) and is not held.
+A reply from a conversation someone is looking at speaks at once: its thread
+on screen in the app, or its pane the one shown by the desk client typed into
+most recently (within MEDIA_TOAST_LOOKING_S, default 1800). Any other is held.
+With someone at the desk (a keystroke within MEDIA_TOAST_PRESENCE_S, 300), a toast in the status line says it is ready,
+`prefix y` plays it and `prefix Y` drops it; with nobody there, it just waits
+unheard in the app with its Play.
 
 A held reply is rendered and archived at once, like a muted pane's
 (`extras.held`), so it is in the transcript straight away — the app shows it
@@ -36,10 +33,6 @@ from ..types import Event
 log = logging.getLogger(__name__)
 
 
-def gate_enabled() -> bool:
-    return os.environ.get("MEDIA_TOAST_GATE", "0") == "1"
-
-
 def _ttl() -> int:
     try:
         return int(os.environ.get("MEDIA_TOAST_TTL", "1800"))
@@ -63,9 +56,17 @@ def _presence_s() -> int:
         return 300
 
 
-def _desk() -> Optional[tuple[str, str]]:
+def _looking_s() -> int:
+    try:
+        return int(os.environ.get("MEDIA_TOAST_LOOKING_S", "1800"))
+    except ValueError:
+        return 1800
+
+
+def _desk(within: Optional[int] = None) -> Optional[tuple[str, str]]:
     """(client, pane it shows) for the client typed into most recently, if
-    that was within MEDIA_TOAST_PRESENCE_S; else None — nobody at the desk.
+    that was within `within` seconds (MEDIA_TOAST_PRESENCE_S by default);
+    else None — nobody at the desk.
 
     Attached is not present: mosh and ssh clients stay attached for days after
     the listener has walked off, so keystroke recency is the signal.
@@ -80,7 +81,7 @@ def _desk() -> Optional[tuple[str, str]]:
             continue
         if best is None or ts_i > best[0]:
             best = (ts_i, name, pane)
-    if best is None or time.time() - best[0] > _presence_s():
+    if best is None or time.time() - best[0] > (_presence_s() if within is None else within):
         return None
     return best[1], best[2]
 
@@ -91,16 +92,19 @@ def _pending_dir() -> Path:
     return d
 
 
-def should_hold() -> bool:
-    """Hold this reply? Only with the gate on, from a tmux pane, with someone
-    at the desk looking at a different pane."""
-    if not gate_enabled():
+def should_hold(session: str = "") -> bool:
+    """Hold this Normal reply? Yes unless someone is looking at its
+    conversation: on screen in the app (core's watching.py), or its pane is
+    the one the desk's freshest client shows. That client may have been idle
+    for MEDIA_TOAST_LOOKING_S (default 1800), longer than presence: a long
+    turn is watched without a keystroke."""
+    from .. import watching
+
+    if watching.is_open(session):
         return False
     pane = os.environ.get("TMUX_PANE")
-    if not pane:
-        return False
-    desk = _desk()
-    return desk is not None and desk[1] != pane
+    desk = _desk(_looking_s()) if pane else None
+    return desk is None or desk[1] != pane
 
 
 def _where(pane: str) -> str:

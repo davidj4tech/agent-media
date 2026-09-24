@@ -373,6 +373,7 @@ def subscribe(session: str) -> tuple[Watcher, Subscriber] | None:
         if start:
             w = _WATCHERS[session] = Watcher(session)
         w.subs.append(sub)
+        _publish()
     if start:
         w.prime()
         w.start()
@@ -390,6 +391,15 @@ def unsubscribe(w: Watcher, sub: Subscriber) -> None:
             w.stop()
             if _WATCHERS.get(w.session) is w:
                 del _WATCHERS[w.session]
+        _publish()
+
+
+def _publish() -> None:
+    """Tell the Stop hook which threads are on screen (core's watching.py:
+    a Normal reply from one plays at once). Under `_LOCK`."""
+    from agent_media_core import watching as _watching
+
+    _watching.publish({s: len(w.subs) for s, w in _WATCHERS.items()})
 
 
 def watching() -> dict[str, int]:
@@ -403,6 +413,7 @@ def _reset_for_tests() -> None:
         for w in _WATCHERS.values():
             w.stop()
         _WATCHERS.clear()
+        _publish()
 
 
 # --- the connection ---------------------------------------------------------------

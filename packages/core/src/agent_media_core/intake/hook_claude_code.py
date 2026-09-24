@@ -1062,9 +1062,10 @@ def _handle_stop(payload: dict) -> int:
         metadata["describe_raw"] = raw
     # The conversation's speech level (`media priority`, speak_priority.py):
     # interrupt and auto are never held, interrupt also cuts in on another
-    # conversation, quiet is archived unheard and never played by itself.
+    # conversation, normal waits for a tap unless someone is looking at the
+    # conversation, quiet is archived unheard with no toast.
     from . import toast
-    from ..speak_priority import SPEAKS, level_of
+    from ..speak_priority import level_of
     level = level_of(metadata["session"])
     if level == "quiet":
         metadata["held"] = True
@@ -1072,8 +1073,8 @@ def _handle_stop(payload: dict) -> int:
                   priority=Priority.HIGH if level == "interrupt" else Priority.NORMAL,
                   voice=voice_for_session(_session_name()),
                   metadata=metadata)
-    # Someone at the desk looking at another pane: toast it, play on request.
-    if level != "quiet" and level not in SPEAKS and toast.should_hold():
+    # Nobody looking at this conversation: toast it, play on request.
+    if level == "normal" and toast.should_hold(metadata["session"]):
         toast.hold(event)
         return 0
     _play_detached(event)
