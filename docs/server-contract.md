@@ -1606,7 +1606,11 @@ default it is plain Org: every top-level `.org` file is a view, captures go to
 `inbox.org`, and the roam shelves are the folders under `roam/`. With the
 `notes-paragtd` package installed, and a tree that has `next-actions.org` (or
 `[notes] profile = "paragtd"`, `MEDIA_NOTES_PROFILE`), it is paragtd's: the
-GTD files at the top, and the refile targets and fresh tree below. Where a rule
+GTD files at the top, and the refile targets and fresh tree below. paragtd
+describes its setup in `.paragtd.json` at the top of the tree (written by
+Emacs at startup, synced with the tree). When it is there, its files are the
+agenda (and the views, except astro, journal and visioning), its keywords are
+the default keywords, and its astro `stale_days` ages alerts out. Where a rule
 below is the profile's, it says so. Commits are not the server's job: `org-autosync` commits and pushes the tree from every host.
 All five routes use `auth.gate`. GETs are gzipped when the client accepts it.
 
@@ -1639,8 +1643,9 @@ it is served. With neither set, every top-level `.org` file is used. Setup's
 **TODO keywords.** A file's `#+TODO:` / `#+SEQ_TODO:` / `#+TYP_TODO:` lines
 (several join up; `(w@/!)` keys are dropped; with no `|` the last word is the
 done state), else `[notes] todo_keywords` in config.toml (`["TODO", "NEXT",
-"|", "DONE"]`), else the profile's: paragtd's TODO NEXT WAITING SOMEDAY | DONE
-CANCELLED CANCELED, or Org's TODO | DONE. A word that is not one of the file's
+"|", "DONE"]`), else the profile's: paragtd's are the manifest's, or without
+one `paragtd-todo-keywords` (TODO NEXT WAITING | DONE CANCELLED); plain Org's
+are Org's TODO | DONE. A word that is not one of the file's
 keywords is part of the title.
 
 #### `GET /notes/view?name=<view>[&done=1]`

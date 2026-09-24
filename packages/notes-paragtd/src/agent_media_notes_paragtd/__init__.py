@@ -8,16 +8,21 @@ the views and what they are called, where each refile target puts a heading,
 what a fresh tree starts with, and how a sequenced project moves on when a
 step is closed (sequence.py).
 
-The lists mirror paragtd's `paragtd-paths.el` and `paragtd-capture.el` by
-hand. A manifest paragtd writes will replace them
-(docs/proposals/2026-09-24-notes-core-and-paragtd.md, step 4).
+paragtd describes its setup in `.paragtd.json` at the top of the tree
+(paragtd-export.el, written by Emacs at startup and synced with the tree):
+the core files, the TODO keywords, the astro settings, as that Emacs has
+them. It is read when it is there. The lists below are paragtd's defaults,
+for a tree without one (docs/proposals/2026-09-24-notes-core-and-paragtd.md).
 """
 
 from __future__ import annotations
 
+import json
+import logging
+import threading
 from pathlib import Path
 
-from agent_media_server.notes_profile import Profile
+from agent_media_server.notes_profile import Profile, _title, split_keywords
 
 from . import sequence
 
@@ -73,6 +78,48 @@ SKELETON = {
 #: paragtd-astro-stale-days: a past astro alert older than this is not agenda.
 ASTRO_STALE_DAYS = 2
 
+#: paragtd-core-files: the agenda, when there is no manifest.
+CORE_FILES = ("inbox.org", "next-actions.org", "waiting-for.org", "someday.org",
+              "tickler.org", "areas.org", "journal.org", "projects.org",
+              "visioning.org", "routines.org", "astro.org")
+
+#: Core files that are not a list to work through, so not a view: the
+#: generated astro alerts, the journal's datetree, the visioning notes.
+NOT_VIEWS = frozenset({"astro.org", "journal.org", "visioning.org"})
+
+#: paragtd-todo-keywords: TODO NEXT WAITING | DONE CANCELLED.
+KEYWORDS = (("TODO", "NEXT", "WAITING"), ("DONE", "CANCELLED"))
+
+MANIFEST = ".paragtd.json"
+
+log = logging.getLogger(__name__)
+_LOCK = threading.Lock()
+_CACHE: dict = {"key": None, "data": None}
+
+
+def manifest(root: Path) -> dict:
+    """`.paragtd.json`, or {} when there is none (or it will not parse).
+    Read again only when it changes."""
+    p = root / MANIFEST
+    try:
+        st = p.stat()
+    except OSError:
+        return {}
+    key = (str(p), st.st_mtime_ns, st.st_size)
+    with _LOCK:
+        if _CACHE["key"] == key:
+            return _CACHE["data"]
+    try:
+        data = json.loads(p.read_text())
+    except (OSError, ValueError) as e:
+        log.warning("paragtd: %s will not parse (%s); using the defaults", p, e)
+        data = {}
+    if not isinstance(data, dict) or data.get("version") != 1:
+        data = {}
+    with _LOCK:
+        _CACHE.update(key=key, data=data)
+    return data
+
 
 class Paragtd(Profile):
     name = "paragtd"
@@ -82,23 +129,51 @@ class Paragtd(Profile):
     skeleton = SKELETON
     roam_dirs = ("roam/projects", "roam/people", "roam/refs", "roam/notes",
                  "roam/journal")
-    #: paragtd-todo-keywords, plus SOMEDAY (the Organiser's someday list) and
-    #: the American CANCELED.
-    keywords = (("TODO", "NEXT", "WAITING", "SOMEDAY"), ("DONE", "CANCELLED", "CANCELED"))
+
+    keywords = KEYWORDS
+
+    def todo_keywords(self, root: Path):
+        # What the Emacs that wrote the manifest calls its keywords (one
+        # sequence or several), else paragtd-todo-keywords.
+        seqs = manifest(root).get("todo_keywords")
+        if isinstance(seqs, list) and seqs:
+            opens: list[str] = []
+            dones: list[str] = []
+            for seq in seqs:
+                if isinstance(seq, list):
+                    o, d = split_keywords([str(w) for w in seq])
+                    opens += [w for w in o if w not in opens]
+                    dones += [w for w in d if w not in dones]
+            if opens or dones:
+                return tuple(opens), tuple(dones)
+        return KEYWORDS
+
+    def _core(self, root: Path) -> tuple[str, ...]:
+        got = manifest(root).get("files")
+        if isinstance(got, list) and got and all(isinstance(f, str) for f in got):
+            return tuple(got)
+        return CORE_FILES
 
     def detect(self, root: Path) -> bool:
-        return (root / "next-actions.org").is_file()
+        return (root / "next-actions.org").is_file() or (root / MANIFEST).is_file()
 
     def files(self, root: Path):
-        return GTD_FILES
+        # The Organiser's order for paragtd's own files (the tickler beside
+        # waiting-for, as the capture keys have them), then any a site adds.
+        core = self._core(root)
+        out = [(name, label, f) for name, label, f in GTD_FILES if f in core]
+        out += [(Path(f).stem, _title(root / f), f) for f in core
+                if f not in NOT_VIEWS and "/" not in f and not any(f == g for _, _, g in GTD_FILES)]
+        return tuple(out)
 
     def agenda_files(self, root: Path):
-        return tuple(f for _, _, f in GTD_FILES) + ("astro.org",)
+        return self._core(root)
 
-    def agenda_keep(self, fname: str, days_ago: int) -> bool:
+    def agenda_keep(self, root: Path, fname: str, days_ago: int) -> bool:
         # Astro alerts are point-in-time and never marked DONE, so past ones
         # age out, as in paragtd-astro-skip-stale.
-        return fname != "astro.org" or days_ago <= ASTRO_STALE_DAYS
+        stale = (manifest(root).get("astro") or {}).get("stale_days")
+        return fname != "astro.org" or days_ago <= (stale if isinstance(stale, int) else ASTRO_STALE_DAYS)
 
     def roam_folders(self, root: Path):
         return ROAM_FOLDERS

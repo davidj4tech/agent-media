@@ -16,6 +16,13 @@ It registers under the `agent_media.notes_profiles` entry point. To choose a
 profile rather than rely on detection, set `[notes] profile = "paragtd"` (or
 `"none"`) in `~/.config/agent-media/config.toml`, or `MEDIA_NOTES_PROFILE`.
 
+When the tree has a `.paragtd.json` (paragtd writes it from Emacs; see
+paragtd's README, "Outside Emacs"), the file list, TODO keywords and astro
+settings come from it, so a site's own keywords reach the phone. Without one,
+paragtd's defaults are used. Closing a step of a sequenced project runs
+paragtd's next-step trigger (`sequence.py`), and Org's dependency blocking is
+on, as `paragtd-setup` turns it on in Emacs.
+
 paragtd itself is GPL-3.0 and is never imported. This package reads the files
 paragtd writes and runs its commands as separate processes.
 See `docs/proposals/2026-09-24-notes-core-and-paragtd.md`.

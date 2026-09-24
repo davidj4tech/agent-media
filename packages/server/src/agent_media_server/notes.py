@@ -111,7 +111,7 @@ def keywords(lines: list[str] | None = None) -> Keywords:
                 done += [w for w in d if w not in done]
     if open_ or done:
         return Keywords(tuple(open_), tuple(done))
-    o, d = notes_profile.configured_keywords() or profile().keywords
+    o, d = notes_profile.configured_keywords() or profile().todo_keywords(root())
     return Keywords(tuple(o), tuple(d))
 
 
@@ -215,7 +215,7 @@ def _agenda(today: dt.date | None = None) -> list[dict]:
                 continue
             if when > horizon:
                 continue
-            if not prof.agenda_keep(name, (today - when).days):
+            if not prof.agenda_keep(root(), name, (today - when).days):
                 continue
             items.append({**h, "date": date, "overdue": when < today})
     items.sort(key=lambda h: (h["date"], h["path"], h["at"]))

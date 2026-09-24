@@ -167,7 +167,8 @@ def test_paragtd_says_so_too(org, monkeypatch):
     monkeypatch.setenv("MEDIA_NOTES_PROFILE", "paragtd")
     ok, got = notes.views("good")
     assert got["profile"] == "paragtd"
-    assert got["states"]["open"] == ["TODO", "NEXT", "WAITING", "SOMEDAY"]
+    # paragtd-todo-keywords, with no manifest to say otherwise.
+    assert got["states"] == {"open": ["TODO", "NEXT", "WAITING"], "done": ["DONE", "CANCELLED"]}
     tickler = next(t for t in got["refile_targets"] if t["name"] == "tickler")
     assert tickler == {"name": "tickler", "label": "Tickler", "path": "tickler.org",
                        "needs_date": True}
@@ -213,3 +214,25 @@ def test_a_profile_has_no_agenda_row(org, monkeypatch):
     monkeypatch.setenv("MEDIA_NOTES_PROFILE", "paragtd")
     names = [r["name"] for r in notes_setup.status("good")[1]["components"]]
     assert "agenda" not in names
+
+
+# --- paragtd's manifest ------------------------------------------------------------
+
+def test_paragtd_reads_its_manifest(org, monkeypatch):
+    import json
+    (org / "next-actions.org").write_text("#+title: Next actions\n\n* Inbox\n")
+    (org / "extra.org").write_text("#+title: Extra things\n* HOLD Paused\n")
+    (org / ".paragtd.json").write_text(json.dumps({
+        "version": 1, "files": ["inbox.org", "next-actions.org", "extra.org", "astro.org"],
+        "todo_keywords": [["TODO(t)", "HOLD(h@)", "|", "DONE(d!)"], ["BUG", "|", "FIXED"]],
+        "astro": {"stale_days": 30}}))
+    ok, got = notes.views("good")
+    assert got["profile"] == "paragtd"     # detected by the tree
+    assert got["states"] == {"open": ["TODO", "HOLD", "BUG"], "done": ["DONE", "FIXED"]}
+    files = [(v["name"], v["label"]) for v in got["views"] if v["kind"] == "file"]
+    assert files == [("inbox", "Inbox"), ("next", "Next actions"), ("extra", "Extra things")]
+    assert notes.view("extra", "good")[1]["items"][0]["state"] == "HOLD"
+    # astro.org is on the agenda, and a month-old alert is still in it.
+    assert [i["title"] for i in notes._agenda(dt.date(2026, 9, 24))] == ["Full moon"]
+    (org / ".paragtd.json").write_text("{not json")
+    assert notes.views("good")[1]["states"]["open"] == ["TODO", "NEXT", "WAITING"]

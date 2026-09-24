@@ -83,7 +83,12 @@ class Profile:
         """The files the agenda is read from."""
         return tuple(f for _, _, f in self.files(root))
 
-    def agenda_keep(self, fname: str, days_ago: int) -> bool:
+    def todo_keywords(self, root: Path) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """The keywords of a file that declares none: `keywords`, unless the
+        profile reads them from the tree."""
+        return self.keywords
+
+    def agenda_keep(self, root: Path, fname: str, days_ago: int) -> bool:
         """Whether an open, dated item from `fname`, `days_ago` days in the
         past (negative = ahead), belongs on the agenda."""
         return True
