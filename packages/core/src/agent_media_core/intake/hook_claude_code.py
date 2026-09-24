@@ -668,13 +668,24 @@ def _emit_ask(ask: str, payload: dict, lead: str = "", structure: list | None = 
     priority = Priority.NORMAL if (
         os.environ.get("MEDIA_NOTIF_NO_INTERRUPT_FOCUSED", "1") != "0"
         and _client_pane_focused()) else Priority.HIGH
-    submit_event(Event(text=msg, source=Source.CLAUDE_CODE,
-                       priority=priority,
-                       voice=voice_for_session(sess),
-                       metadata={"kind": "notif", "ask": structure or True,
-                                 "session": payload.get("session_id") or "",
-                                 **_source_place()}),
-                 state=state)
+    session = payload.get("session_id") or ""
+    # The conversation's speech level (speak_priority.py): interrupt and auto
+    # speak a question at once; normal holds it like a reply, unless someone
+    # is looking at the conversation, and so does quiet — a question needs an
+    # answer, so it still gets its toast.
+    from . import toast
+    from ..speak_priority import level_of
+
+    held = level_of(session) in ("normal", "quiet") and toast.should_hold(session)
+    event = Event(text=msg, source=Source.CLAUDE_CODE,
+                  priority=Priority.NORMAL if held else priority,
+                  voice=voice_for_session(sess),
+                  metadata={"kind": "notif", "ask": structure or True,
+                            "session": session,
+                            **_source_place()})
+    if held:
+        toast.remember(event, ask=True)
+    submit_event(event, state=state)
     return 0
 
 
@@ -1165,6 +1176,9 @@ def _handle_posttooluse(payload: dict) -> int:
 
             request_session_speech_cut(session, "ask")
             _stop_playing_ask(session)
+            from . import toast
+
+            toast.drop_asks(session)
         except Exception as e:  # noqa: BLE001 — worst case it reads on
             log.info("hook: could not cut the question read-out (%s)", e)
     if not text or not session:

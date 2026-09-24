@@ -115,28 +115,59 @@ def _where(pane: str) -> str:
                   "#{session_name}:#{window_index} #{window_name}"]) or pane
 
 
-def hold(event: Event) -> None:
-    """Render and archive `event` unplayed, and put up the toast."""
+def remember(event: Event, ask: bool = False) -> None:
+    """Put up the toast for `event`, which the caller renders held
+    (`metadata["held"]`): what `play` and `take_for_opened` find it by.
+    `ask`: it is a question's read-out, dropped once answered (`drop_asks`)."""
     pane = os.environ.get("TMUX_PANE") or ""
+    key = hashlib.sha1(event.text.encode("utf-8")).hexdigest()
     record = {
         "held_at": time.time(),
         "pane": pane,
         "session": (event.metadata or {}).get("session") or "",
         "where": _where(pane) if pane else "",
-        # The hook's own dedup key (`_play_now`): how play finds the row.
-        "key": hashlib.sha1(event.text.encode("utf-8")).hexdigest(),
+        # The row's dedup key (`_play_now` sets it on a reply, the ask path
+        # on a question): how play finds the row.
+        "key": key,
         "text": event.text[:200],
+        "ask": ask,
     }
     path = _pending_dir() / f"{time.time_ns()}.json"
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(record))
     tmp.rename(path)
-    log.info("toast: held a reply from %s", record["where"])
+    log.info("toast: held a %s from %s", "question" if ask else "reply", record["where"])
     show(record["where"])
     event.metadata["held"] = True
+    event.metadata["dedup_key"] = key
+
+
+def hold(event: Event) -> None:
+    """Render and archive a reply unplayed, and put up the toast."""
+    remember(event)
     from .hook_claude_code import _play_detached
 
     _play_detached(event)
+
+
+def drop_asks(session: str) -> None:
+    """The session's question was answered: its read-out, if still waiting,
+    must not play when the conversation is opened, and has been heard."""
+    from ..state import StateStore
+
+    for p in _pending():
+        try:
+            r = json.loads(p.read_text())
+        except (OSError, ValueError):
+            continue
+        if r.get("ask") and r.get("session") == session:
+            try:
+                p.unlink()
+            except OSError:
+                pass
+            rid = _row_for(r.get("key") or "")
+            if rid is not None:
+                StateStore().mark_heard(rid)
 
 
 def _pending() -> list[Path]:
