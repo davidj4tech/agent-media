@@ -50,6 +50,7 @@ def test_the_missing_year_is_added(org):
     added = astro.ensure(org, dt.date(2026, 9, 24), run=_fake_run(calls))
     assert added == [2027] and astro.years(org) == [2026, 2027]
     assert calls[0][1:] == ["--year", "2027", "--output", str(org / "astro.org"),
+                            "--lunar-output", str(org / "lunar.org"),
                             "--timezone", "Australia/Melbourne", "--append"]
     assert astro.ensure(org, dt.date(2026, 12, 31), run=_fake_run(calls)) == []
 

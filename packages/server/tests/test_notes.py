@@ -51,6 +51,8 @@ def tree(tmp_path, monkeypatch):
     (root / "inbox.org").write_text(INBOX)
     (root / "astro.org").write_text(
         "* Full moon\n  SCHEDULED: <2026-09-01 Tue>\n* New moon\n  SCHEDULED: <2026-09-23 Wed>\n")
+    (root / "lunar.org").write_text(
+        "* Full moon routine\n<2026-09-01 Tue>\n* New moon routine\n<2026-09-23 Wed>\n")
     (root / "roam" / "projects" / "yoga.org").write_text(
         ":PROPERTIES:\n:ID:       yoga-id\n:END:\n#+title: agent-yoga\n\nsee [[id:bank-id][bank]]\n")
     (root / "roam" / "projects" / "bank.org").write_text(
@@ -122,22 +124,20 @@ def test_a_file_view_reads_states_and_dates(tree, server):
     assert "Old thing" in {h["title"] for h in done["items"]}
 
 
-def test_the_agenda_skips_stale_astro(tree):
+def test_the_agenda_has_the_lunar_routines_not_the_astro_alerts(tree):
     items = notes._agenda(dt.date(2026, 9, 22))
     titles = [h["title"] for h in items]
-    assert titles == ["Fix the TV ssh", "New moon", "Call the bank"]
+    assert titles == ["Fix the TV ssh", "New moon routine", "Call the bank"]
     assert items[0]["overdue"] is True
 
 
 def test_a_plain_timestamp_is_an_event_on_its_day(tree):
-    (tree / "astro.org").write_text(
-        "* Sun enters Virgo\n:PROPERTIES:\n:SIGN: Virgo\n:END:\n<2026-08-23 Sun 12:18>\n"
-        "* Sun enters Libra\n:PROPERTIES:\n:SIGN: Libra\n:END:\n<2026-09-23 Wed 10:05>\n")
-    items = [h for h in notes._agenda(dt.date(2026, 9, 22)) if h["path"] == "astro.org"]
+    items = [h for h in notes._agenda(dt.date(2026, 9, 22)) if h["path"] == "lunar.org"]
+    # The full moon three weeks back is over, not overdue.
     assert [(h["title"], h["date"], h["overdue"]) for h in items] == [
-        ("Sun enters Libra", "2026-09-23", False)]
-    # The day after, it is gone rather than overdue.
-    assert not [h for h in notes._agenda(dt.date(2026, 9, 24)) if h["path"] == "astro.org"]
+        ("New moon routine", "2026-09-23", False)]
+    # The day after, it is gone too.
+    assert not [h for h in notes._agenda(dt.date(2026, 9, 24)) if h["path"] == "lunar.org"]
 
 
 def test_read_a_subtree_and_follow_id_links(tree, server):

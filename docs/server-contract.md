@@ -1660,9 +1660,11 @@ keywords is part of the title.
 - `agenda` returns the headings scheduled or due within 7 days, plus
   overdue ones, each with `date` and `overdue`. A heading with a plain active
   timestamp in its body (`timestamp`) is an event: listed on its day and up to
-  7 days ahead, never overdue, as Org shows it. paragtd's agenda also reads
-  `astro.org` (its alerts are such events now), and drops an older, scheduled
-  astro alert more than 2 days past, matching `paragtd-astro-skip-stale`. Repeaters are
+  7 days ahead, never overdue, as Org shows it. paragtd's agenda reads
+  `lunar.org` (the new and full moon routines, such events) and not
+  `astro.org`, which has its own view in Emacs; where a manifest still lists
+  `astro.org`, an older, scheduled alert more than 2 days past is dropped,
+  matching `paragtd-astro-skip-stale`. Repeaters are
   not expanded, so a routine not yet marked done shows as overdue from its
   first date.
 - A folder view returns `{path, title, modified}`, newest first, at most 300.

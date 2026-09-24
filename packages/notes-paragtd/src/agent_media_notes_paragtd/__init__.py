@@ -3,7 +3,8 @@
 paragtd (https://github.com/davidj4tech/paragtd) is a PARA/GTD method for
 Org: the GTD files at the top of `~/org` (inbox, next actions, waiting for,
 tickler, …), org-roam notes under `roam/`, and astro alerts generated into
-`astro.org`. This profile tells the Notes server that layout: which files are
+`astro.org` (its own agenda view in Emacs, not the agenda), the new and full
+moon routines among them into `lunar.org` (in the agenda). This profile tells the Notes server that layout: which files are
 the views and what they are called, where each refile target puts a heading,
 what a fresh tree starts with, and how a sequenced project moves on when a
 step is closed (sequence.py).
@@ -81,11 +82,12 @@ ASTRO_STALE_DAYS = 2
 #: paragtd-core-files: the agenda, when there is no manifest.
 CORE_FILES = ("inbox.org", "next-actions.org", "waiting-for.org", "someday.org",
               "tickler.org", "areas.org", "journal.org", "projects.org",
-              "visioning.org", "routines.org", "astro.org")
+              "visioning.org", "routines.org", "lunar.org")
 
 #: Core files that are not a list to work through, so not a view: the
-#: generated astro alerts, the journal's datetree, the visioning notes.
-NOT_VIEWS = frozenset({"astro.org", "journal.org", "visioning.org"})
+#: generated astro alerts and lunar routines, the journal's datetree, the
+#: visioning notes.
+NOT_VIEWS = frozenset({"astro.org", "lunar.org", "journal.org", "visioning.org"})
 
 #: paragtd-todo-keywords: TODO NEXT WAITING | DONE CANCELLED.
 KEYWORDS = (("TODO", "NEXT", "WAITING"), ("DONE", "CANCELLED"))

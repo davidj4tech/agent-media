@@ -2,7 +2,7 @@
 
 paragtd generates its astro alerts a year at a time (`bin/paragtd-astro-
 generate --year Y --append`), each year a set of `* <Y> …` headings in
-`astro.org`. Nothing runs it on its own, so the alerts simply stop at the end
+`astro.org`, and the new and full moon routines in `lunar.org`. Nothing runs it on its own, so the alerts simply stop at the end
 of the last year someone remembered. `ensure` adds this year and next when
 either is missing; a monthly user timer runs it (`python -m
 agent_media_notes_paragtd.astro`), and the Organiser's setup screen turns the
@@ -60,7 +60,7 @@ def ensure(root: Path, today: dt.date | None = None, run=subprocess.run) -> list
             continue
         out = root / "astro.org"
         cmd = [s["generator"], "--year", str(year), "--output", str(out),
-               "--timezone", s["timezone"]] + (["--append"] if out.exists() else [])
+               "--lunar-output", str(root / "lunar.org"), "--timezone", s["timezone"]] + (["--append"] if out.exists() else [])
         p = run(cmd, capture_output=True, text=True, timeout=600)
         if p.returncode:
             raise RuntimeError(f"the astro generator failed for {year}: "
