@@ -47,6 +47,9 @@ def test_spawn_no_binary_is_silent_noop(monkeypatch):
 
 
 def test_spawn_passes_caption_and_raw_detached(monkeypatch):
+    # A hint-less reply only spawns with ambient art on; the host's own
+    # MEDIA_VISUAL_AMBIENT=0 must not decide this test.
+    monkeypatch.setenv("MEDIA_VISUAL_AMBIENT", "1")
     seen = {}
     monkeypatch.setattr(_visual.shutil, "which",
                         lambda name: "/usr/bin/media-visual")

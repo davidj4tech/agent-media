@@ -159,3 +159,16 @@ def _david_layout(monkeypatch):
     (~/.amux, ~/.claude/settings.json), so unpinned they would pass on red5
     and fail anywhere else. test_layout.py unpins it where it needs to."""
     monkeypatch.setenv("MEDIA_LAYOUT", "projects-per-tmux-session")
+
+
+@pytest.fixture(autouse=True)
+def _not_headless(monkeypatch):
+    """Keep a headless run's own identity out of the suite.
+
+    A session the server started from the phone (media-sessiond) carries
+    MEDIA_SOURCE_KIND=headless and its workspace, and the hook honours both —
+    so running the suite from such a session filed every "outside tmux" stop
+    under that workspace. A test that wants a headless session sets them.
+    """
+    monkeypatch.delenv("MEDIA_SOURCE_KIND", raising=False)
+    monkeypatch.delenv("MEDIA_SOURCE_WORKSPACE", raising=False)
