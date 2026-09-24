@@ -134,6 +134,13 @@ runner publishes name, description, schema and sha256 — never the argv —
 and a call runs a fixed argv with `execFile`, no shell; first set is speak,
 music now/pause/resume and memory search, live on red5).
 
+Always speak (24 Sep 2026): a thread's ⋮ menu (and the list's long press)
+has **Always speak** — its replies are never held by the desk toast and
+never silenced by a pane mute; a badge shows while it is on.
+`POST /session/priority`, rows carry `priority`, `media priority` at the
+desk. agent-media `04311ab`, chat `162761a5`, android-next `2a0ed8f0`.
+Not yet: `[#A]` Org TODOs read aloud when due (agreed, not built).
+
 ## In flight
 
 **Next's own speech player.** Media3 (David, 23 Sep 2026: the reason
