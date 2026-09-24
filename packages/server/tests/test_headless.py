@@ -53,6 +53,9 @@ def host(monkeypatch, tmp_path):
     monkeypatch.setenv("FAKE_CLAUDE_TICK", "0.01")
     # Naming a thread is a gateway call; the tests that want it turn it on.
     monkeypatch.setenv("MEDIA_AUTO_TITLE", "0")
+    # The host's own free memory must not decide a test; the one that wants
+    # a shortage sets it.
+    monkeypatch.setattr(sessiond, "mem_available_mb", lambda: None)
     # What a pane's environment would leak into a child, to prove it does not.
     monkeypatch.setenv("TMUX_PANE", "%99")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-should-not-pass")
@@ -357,6 +360,18 @@ def test_a_full_host_parks_the_least_recent_idle_session_or_refuses(host, monkey
     ok, d = driver.headless_driver().start(agent="claude", cwd=str(host.work), text="reply: c")
     assert not ok and d["status"] == 503 and d["code"] == "busy"
     assert "busy" in d["error"]
+
+
+def test_short_memory_parks_an_idle_session_or_refuses_saying_so(host, monkeypatch):
+    a = start(host, "reply: a")
+    wait_for(lambda: state(host, a) == "waiting")
+    monkeypatch.setattr(sessiond, "mem_available_mb", lambda: 600.0)
+    b = start(host, "slow: 5")
+    wait_for(lambda: state(host, a) == "parked")
+    wait_for(lambda: state(host, b) == "working")
+    ok, d = driver.headless_driver().start(agent="claude", cwd=str(host.work), text="reply: c")
+    assert not ok and d["status"] == 503 and d["code"] == "busy"
+    assert "low on memory (600 MB free)" in d["error"]
 
 
 def test_resume_brings_a_parked_session_back_saying_nothing(host, monkeypatch):

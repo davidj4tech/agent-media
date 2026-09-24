@@ -36,8 +36,10 @@ What it does per session:
   (default 1800) — stdin closed, the process gone, the transcript on disk —
   and resumes it with `--resume` on the next message. Never one waiting on an
   approval, working, or holding queued messages. At most `MEDIA_SESSIOND_MAX`
-  (default 4) run at once; a fifth parks the least recently used idle one, or
-  is refused with a sentence when none is idle.
+  (default 6) run at once, and fewer when the host is short of memory: below
+  `MEDIA_SESSIOND_MIN_FREE_MB` available (default 1024) there is no room for
+  another. Either way one more parks the least recently used idle one, or is
+  refused with a sentence when none is idle.
 
 It writes nothing to tmux. Transcripts land where Claude Code puts them
 (`~/.claude/projects/…`), so the canvas's transcript reader works unchanged.
@@ -58,6 +60,7 @@ Ops (request `{"op", …}` → `{"ok": true, …}` or `{"ok": false, "error",
 `answer`, `close`, `park`, `events`.
 
 Config (env): MEDIA_SESSIOND_SOCKET, MEDIA_SESSIOND_IDLE, MEDIA_SESSIOND_MAX,
+MEDIA_SESSIOND_MIN_FREE_MB,
 MEDIA_SESSIOND_CLOSE_GRACE, MEDIA_SESSIOND_CLAUDE (the binary; default
 `harnesses.program("claude")`), MEDIA_HEADLESS_MODEL (`--model`),
 MEDIA_HEADLESS_PERMISSIONS (`strict` | `normal`, see permissions.py),
@@ -110,7 +113,24 @@ def idle_s() -> float:
 
 
 def max_live() -> int:
-    return int(_env_f("MEDIA_SESSIOND_MAX", 4))
+    return int(_env_f("MEDIA_SESSIOND_MAX", 6))
+
+
+def min_free_mb() -> float:
+    """A session with its MCP servers takes 0.2–0.6 GB; red5 has 7.6 GB."""
+    return _env_f("MEDIA_SESSIOND_MIN_FREE_MB", 1024.0)
+
+
+def mem_available_mb() -> float | None:
+    """The kernel's MemAvailable, or None where there is no /proc/meminfo."""
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) / 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
 
 
 def close_grace_s() -> float:
@@ -637,13 +657,22 @@ class Supervisor:
 
     def _ensure_room(self, exclude: Session | None = None) -> None:
         """Make room for one more live process, parking the least recently
-        used idle one if the cap is reached; refuse when none is idle."""
+        used idle one if the cap is reached or memory is short; refuse when
+        none is idle."""
         live = [x for x in self.sessions.values() if x.running and x is not exclude]
-        if len(live) < max_live():
+        # Memory counts only once one of ours runs: with none, the shortage
+        # is someone else's, and refusing would only lock the phone out.
+        free = mem_available_mb()
+        short = bool(live) and free is not None and free < min_free_mb()
+        if len(live) < max_live() and not short:
             return
         idle = sorted((x for x in live if x.state == "waiting" and not x.pending
                        and not x.queued), key=lambda x: x.last_event_at)
         if not idle:
+            if short:
+                raise Refused(f"the host is low on memory ({free:.0f} MB free) with "
+                              f"{len(live)} phone sessions busy; close one or wait "
+                              "for one to finish", "busy")
             raise Refused(f"{len(live)} phone sessions are busy on this host; "
                           "close one or wait for one to finish", "busy")
         self._park(idle[0])

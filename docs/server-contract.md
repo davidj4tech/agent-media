@@ -1017,7 +1017,8 @@ with>}`. A session parked for idleness is resumed by the reply (a few
 seconds slower). `branch` opens a fresh headless session in the same
 directory. 503 `code: "down"` when `media-sessiond` is not running (a
 headless thread is never revived in a pane), 503 `code: "busy"` when the
-host is at `MEDIA_SESSIOND_MAX` and nothing is idle.
+host is at `MEDIA_SESSIOND_MAX`, or below `MEDIA_SESSIOND_MIN_FREE_MB` of
+free memory with one of its sessions running, and nothing is idle.
 
 Errors: 400 `"empty reply"`. 404 when the item is not a conversation.
 **502 with `submitted: false` and `pane`**: the words are in the composer
@@ -3170,8 +3171,10 @@ writes nothing to tmux.
 - **Parking.** Waiting for `MEDIA_SESSIOND_IDLE` (1800 s) → stdin closed,
   process gone, record `parked`; the next message resumes it with
   `--resume`. Never parked while working, on an approval, or with queued
-  messages. At most `MEDIA_SESSIOND_MAX` (4) live; a fifth parks the least
-  recently used idle one, else 503 `busy`.
+  messages. At most `MEDIA_SESSIOND_MAX` (6) live, and none more while the
+  host has under `MEDIA_SESSIOND_MIN_FREE_MB` (1024) available and one is
+  already running; one more parks the least recently used idle one, else
+  503 `busy` (its sentence says when memory was the reason).
 - **Restarts.** A sessiond restart ends its children. A permission request
   pending then is not re-sent by the CLI on `--resume`, so it is recorded
   under `lost`: the thread shows no approval, `/session/answer` for it is
