@@ -156,6 +156,12 @@ itself); a badge unless Normal. `POST /session/priority {level}`, rows carry
 android-next `35a2802a`; chat-prototype still has the older on/off toggle
 (another session had the same files open).
 
+Follow along can be turned off (David, 25 Sep 2026): Settings → Follow
+along → "Scroll with the voice", on by default, per device. Off, a spoken
+reply no longer moves the view — it stays where you put it, no pill — and
+the bold still marks the sentence (`lib/followOn.ts`, `test/follow.mjs` F6).
+chat-prototype `f85a2acf`, android-next `046fa5f7`, installed on p8a.
+
 ## In flight
 
 **Next's own speech player.** Media3 (David, 23 Sep 2026: the reason
