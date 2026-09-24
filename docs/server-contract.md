@@ -1613,13 +1613,35 @@ All five routes use `auth.gate`. GETs are gzipped when the client accepts it.
 #### `GET /notes`
 
 `{"ok", "root", "views": [{"name", "label", "kind": "agenda"|"file"|"folder",
-"path"?, "count"?}]}`. `agenda` comes first. There is one `file` view per
-profile file that exists (`count` = open TODO-like headings): for paragtd,
-its core files in its order and with its labels; for plain Org, each
-top-level `.org` file by name, labelled with its `#+title:`. Then there is one
+"path"?, "count"?, "states"?}], "profile", "capture_file", "states",
+"refile_targets": [{"name", "label", "path", "needs_date"?}]}`. `agenda` comes
+first. There is one `file` view per profile file that exists (`count` = open
+TODO-like headings, `states` = that file's keywords as `{"open": [...],
+"done": [...]}`): for paragtd, its core files in its order and with its
+labels; for plain Org, the agenda files (below) labelled with their
+`#+title:`, a file in a folder named `folder-file`. Then there is one
 `folder` view per roam shelf (`count` = notes). `roam-sessions` holds the
 agents' own notes, close to a thousand of them. Under paragtd the shelves are
 its six fixed folders; under plain Org they are whatever is under `roam/`.
+
+The rest is what the app offers rather than hard-codes: `profile` (`"paragtd"`
+or null), `capture_file`, `states` (the keywords a file with no declaration of
+its own gets), and `refile_targets` (a target with `needs_date` asks for a
+date, as the tickler does).
+
+**Agenda files (plain Org).** `[notes] agenda_files` in config.toml, else
+`MEDIA_AGENDA_FILES` (colon-separated, the list `media agenda` reads): paths
+relative to the notes root or absolute, a directory meaning the `.org` files
+in it, as in Org. Files outside the root are left out, since nothing outside
+it is served. With neither set, every top-level `.org` file is used. Setup's
+`agenda` row copies Emacs' own list in (below).
+
+**TODO keywords.** A file's `#+TODO:` / `#+SEQ_TODO:` / `#+TYP_TODO:` lines
+(several join up; `(w@/!)` keys are dropped; with no `|` the last word is the
+done state), else `[notes] todo_keywords` in config.toml (`["TODO", "NEXT",
+"|", "DONE"]`), else the profile's: paragtd's TODO NEXT WAITING SOMEDAY | DONE
+CANCELLED CANCELED, or Org's TODO | DONE. A word that is not one of the file's
+keywords is part of the title.
 
 #### `GET /notes/view?name=<view>[&done=1]`
 
@@ -1639,7 +1661,8 @@ its six fixed folders; under plain Org they are whatever is under `roam/`.
 #### `GET /notes/read?path=<rel>[&at=<line>]`
 
 `{"ok", "path", "at", "title", "text", "links": [{label, path}], "chats":
-[{session, title, at}]}`. `text` is raw Org, capped at 256 KB. With `at`,
+[{session, title, at}], "state", "states"}`. `state` is the heading's keyword
+(`""` for none, or for a whole note), `states` the file's keywords. `text` is raw Org, capped at 256 KB. With `at`,
 only the subtree under that heading is returned. `links` resolves the text's
 `[[id:…]]` links to paths. `chats` lists the chats started about this item
 with `POST /notes/ask`, newest first (at most 20).
@@ -1701,9 +1724,9 @@ text}]}`.
 
 #### `POST /notes/state` · `POST /notes/refile` · `POST /notes/date` · `POST /notes/priority` — gated (`auth.gate`)
 
-These change a heading in one of the profile's files at the top of the tree:
-for paragtd, inbox, next-actions, waiting-for, tickler, someday, projects,
-areas and routines; for plain Org, any top-level `.org` file. Roam notes cannot
+These change a heading in one of the profile's files: for paragtd, inbox,
+next-actions, waiting-for, tickler, someday, projects, areas and routines; for
+plain Org, the agenda files and the capture file. Roam notes cannot
 be changed here (400). Every file touched is
 flocked while it is read and rewritten, the same lock capture takes.
 
@@ -1716,8 +1739,8 @@ the app last saw it) plus `title` (its text).
 
 `/notes/state {"path", "at", "title", "state"}` → `{"ok", "path", "at",
 "state", "repeated", "next"?}`
-- `state` is one of TODO, NEXT, WAITING, SOMEDAY, DONE, CANCELLED, or `""`
-  (no keyword).
+- `state` is one of the file's keywords, or `""` (no keyword); anything else
+  is a 400. Closing means moving to one of its done keywords.
 - Closing a heading puts `CLOSED: [stamp]` on its planning line, creating
   the line if there is none. Reopening takes the stamp off again.
 - A heading whose planning line has a repeater (`+1d`, `++1w`, `.+1m`) is
@@ -1777,6 +1800,7 @@ This is the Notes tab's checklist for a host that has no notes yet
 | name | what it checks | actions |
 |---|---|---|
 | `org` | the tree, with the profile's files (it is `ok` once the capture file exists) | `clone` (only when `MEDIA_NOTES_REPO` is set and the folder is empty); `create` (writes any missing profile files and roam folders: paragtd's set, or for plain Org only `inbox.org`; never overwrites; runs `git init` if the folder is not a repo) |
+| `agenda` | plain Org only: whether `[notes] agenda_files` is set | `import` (when `emacsclient` is on the host): asks the running Emacs for `org-agenda-files` and `org-todo-keywords` once and writes them into `[notes]` in config.toml, leaving the rest of the file as it is; answers `{"files", "outside", "keywords"}`, 502 when Emacs does not answer |
 | `sync` | that `org-autosync.timer` is enabled; needs a git repo with a remote | `enable` |
 | `memory` | that the store answers `/health` | none. It runs on the hub and is optional. |
 | `paragtd` | the Emacs package and astro generator (`MEDIA_PARAGTD_DIR`, default `~/projects/paragtd`) | `install` (clone plus `bin/bootstrap`), `update`; optional |

@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import datetime as dt
 import fcntl
+import functools
 import json
 import os
 import re
@@ -39,12 +40,11 @@ import time
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 
 from . import auth, notes_profile
 
-DONE_STATES = frozenset({"DONE", "CANCELLED", "CANCELED"})
-STATES = ("TODO", "NEXT", "WAITING", "SOMEDAY", "DONE", "CANCELLED", "CANCELED")
 NOTE_SUFFIXES = (".org", ".md", ".txt")
 
 AGENDA_AHEAD_DAYS = 7
@@ -53,9 +53,8 @@ MAX_READ = 256 * 1024
 MAX_CAPTURE = 8 * 1024
 MAX_ITEMS = 300
 
-_HEADING = re.compile(
-    r"^(\*+)\s+(?:(" + "|".join(STATES) + r")\s+)?(?:\[#([A-C])\]\s+)?(.*?)"
-    r"(?:\s+(:[\w@#%:]+:))?\s*$")
+_STARS = re.compile(r"^(\*+)\s")
+_TODO_LINE = re.compile(r"^#\+(?:SEQ_|TYP_)?TODO:\s*(.*)$", re.I)
 _STAMP = re.compile(r"\b(SCHEDULED|DEADLINE):\s*<(\d{4}-\d{2}-\d{2})[^>]*>")
 _TITLE = re.compile(r"^#\+title:\s*(.+)$", re.I | re.M)
 _ID_PROP = re.compile(r"^\s*:ID:\s*(\S+)", re.M)
@@ -68,6 +67,61 @@ def root() -> Path:
 
 def profile() -> notes_profile.Profile:
     return notes_profile.active(root())
+
+
+# --- TODO keywords --------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class Keywords:
+    """A file's TODO keywords, as Org reads them."""
+    open: tuple[str, ...]
+    done: tuple[str, ...]
+
+    @property
+    def all(self) -> tuple[str, ...]:
+        return self.open + self.done
+
+    @property
+    def heading(self) -> re.Pattern:
+        """A heading line: stars, keyword, priority, title, tags."""
+        return _heading_re(self.all)
+
+
+@functools.lru_cache(maxsize=64)
+def _heading_re(words: tuple[str, ...]) -> re.Pattern:
+    kw = "|".join(re.escape(w) for w in sorted(words, key=len, reverse=True))
+    state = rf"(?:({kw})(?:\s+|$))?" if kw else "()"
+    return re.compile(
+        r"^(\*+)\s+" + state + r"(?:\[#([A-C])\]\s+)?(.*?)"
+        r"(?:\s+(:[\w@#%:]+:))?\s*$")
+
+
+def keywords(lines: list[str] | None = None) -> Keywords:
+    """The keywords for a file: its own `#+TODO:` lines (`#+SEQ_TODO:`,
+    `#+TYP_TODO:`, several of them joining up), else `[notes] todo_keywords`
+    in config.toml, else the profile's."""
+    open_: list[str] = []
+    done: list[str] = []
+    for line in lines or ():
+        if line.startswith("#+"):
+            m = _TODO_LINE.match(line)
+            if m:
+                o, d = notes_profile.split_keywords(m.group(1).split())
+                open_ += [w for w in o if w not in open_]
+                done += [w for w in d if w not in done]
+    if open_ or done:
+        return Keywords(tuple(open_), tuple(done))
+    o, d = notes_profile.configured_keywords() or profile().keywords
+    return Keywords(tuple(o), tuple(d))
+
+
+def keywords_of(path: Path) -> Keywords:
+    try:
+        with path.open(errors="replace") as f:
+            head = [ln for ln in f if ln.startswith("#+")]
+    except OSError:
+        head = []
+    return keywords(head)
 
 
 def _rel(p: Path) -> str:
@@ -100,9 +154,10 @@ def _headings(path: Path, *, done: bool) -> list[dict]:
         lines = path.read_text(errors="replace").splitlines()
     except OSError:
         return []
+    kw = keywords([ln for ln in lines if ln.startswith("#+")])
     out: list[dict] = []
     for i, line in enumerate(lines):
-        m = _HEADING.match(line)
+        m = kw.heading.match(line)
         if m:
             stars, state, prio, title, tags = m.groups()
             out.append({"path": _rel(path), "at": i + 1, "level": len(stars),
@@ -113,7 +168,7 @@ def _headings(path: Path, *, done: bool) -> list[dict]:
             for kind, date in _STAMP.findall(line):
                 out[-1][kind.lower()] = date
     if not done:
-        out = [h for h in out if h["state"] not in DONE_STATES]
+        out = [h for h in out if h["state"] not in kw.done]
     return out
 
 
@@ -201,18 +256,29 @@ def views(bearer: str) -> tuple[bool, dict]:
         return False, err
     prof = profile()
     out = [{"name": "agenda", "label": "Agenda", "kind": "agenda"}]
+    labels = {}
     for name, label, fname in prof.files(root()):
         p = root() / fname
+        labels[fname] = label
         if p.is_file():
             n = sum(1 for h in _headings(p, done=False) if h["state"])
+            kw = keywords_of(p)
             out.append({"name": name, "label": label, "kind": "file",
-                        "path": fname, "count": n})
+                        "path": fname, "count": n,
+                        "states": {"open": list(kw.open), "done": list(kw.done)}})
     for name, label, folder in prof.roam_folders(root()):
         d = root() / folder
         if d.is_dir():
             n = sum(1 for p in d.rglob("*") if p.suffix in NOTE_SUFFIXES)
             out.append({"name": name, "label": label, "kind": "folder", "count": n})
-    return True, {"root": str(root()), "views": out}
+    kw = keywords()
+    targets = [{"name": to, "label": labels.get(fname) or to.capitalize(),
+                "path": fname, **({"needs_date": True} if dated else {})}
+               for to, (fname, _h, _s, dated) in prof.refile_targets(root()).items()]
+    return True, {"root": str(root()), "views": out, "profile": prof.name,
+                  "capture_file": prof.capture_file,
+                  "states": {"open": list(kw.open), "done": list(kw.done)},
+                  "refile_targets": targets}
 
 
 def view(name: str, bearer: str, *, done: bool = False) -> tuple[bool, dict]:
@@ -245,23 +311,27 @@ def read(rel: str, at: int, bearer: str) -> tuple[bool, dict]:
     except OSError as e:
         return False, {"error": f"could not read it ({e})", "status": 500}
     title = _title_of(p)
+    lines = text.splitlines()
+    kw = keywords([ln for ln in lines if ln.startswith("#+")])
+    state = ""
     if at > 0:
-        lines = text.splitlines()
-        m = _HEADING.match(lines[at - 1]) if at <= len(lines) else None
+        m = kw.heading.match(lines[at - 1]) if at <= len(lines) else None
         if not m:
             return False, {"error": "no heading on that line (the file changed?)",
                            "status": 409}
         level = len(m.group(1))
         end = next((j for j in range(at, len(lines))
-                    if (n := _HEADING.match(lines[j])) and len(n.group(1)) <= level),
+                    if (n := _STARS.match(lines[j])) and len(n.group(1)) <= level),
                    len(lines))
         text = "\n".join(lines[at - 1:end]) + "\n"
         title = m.group(4).strip()
+        state = m.group(2) or ""
     ids = _id_index() if "[[id:" in text else {}
     links = [{"label": label or ids.get(i, i), "path": ids[i]}
              for i, label in _ID_LINK.findall(text) if i in ids]
     return True, {"path": _rel(p), "at": at, "title": title, "text": text,
-                  "links": links}
+                  "links": links, "state": state,
+                  "states": {"open": list(kw.open), "done": list(kw.done)}}
 
 
 def _scan(q: str, *, everything: bool, limit: int) -> list[dict]:
@@ -464,19 +534,21 @@ _LINK = re.compile(r"\[\[(?:[^\]]+)\]\[([^\]]*)\]\]|\[\[([^\]]+)\]\]")
 _DRAWER = re.compile(r"^\s*:[A-Z_]+:\s*$(?:.*?)^\s*:END:\s*$\n?", re.M | re.S)
 
 
-def spoken(text: str) -> str:
+def spoken(text: str, kw: Keywords | None = None) -> str:
     """Org as something to listen to: no drawers, keywords or dates; links
-    by their label; a heading as a sentence of its own."""
+    by their label; a heading as a sentence of its own, an open one led by
+    its keyword ("Todo: …")."""
+    kw = kw or keywords()
     text = _DRAWER.sub("", text)
     out = []
     for line in text.splitlines():
         s = line.strip()
         if not s or s.startswith(("#+", "#", "SCHEDULED", "DEADLINE", "CLOSED")):
             continue
-        m = _HEADING.match(line)
+        m = kw.heading.match(line)
         if m:
             s = m.group(4).strip()
-            if m.group(2) in ("TODO", "NEXT", "WAITING"):
+            if m.group(2) and m.group(2) in kw.open:
                 s = f"{m.group(2).capitalize()}: {s}"
             s = s.rstrip(".") + "."
         s = _LINK.sub(lambda k: k.group(1) or k.group(2).removeprefix("id:"), s)
@@ -494,7 +566,8 @@ def say(rel: str, at: int, bearer: str) -> tuple[bool, dict]:
     ok, got = read(rel, at, bearer)
     if not ok:
         return False, got
-    text = spoken(got["text"])
+    text = spoken(got["text"], Keywords(tuple(got["states"]["open"]),
+                                        tuple(got["states"]["done"])))
     if not text:
         return False, {"error": "nothing in that note to read", "status": 422}
     try:

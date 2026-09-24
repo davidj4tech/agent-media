@@ -8,6 +8,9 @@ What `notes.py` stands on, as a checklist the phone can read and fix:
            script and units come with the dotfiles `bin` package)
   memory   the memory store search asks and captures are written to — a
            check only; it is run on the hub, not installed from a phone
+  agenda   plain Org only: which files are the agenda, and the TODO keywords,
+           copied once from Emacs (`org-agenda-files`, `org-todo-keywords`)
+           into `[notes]` in config.toml, so the server never needs Emacs
   paragtd  optional: the Emacs package and the astro-alert generator
 
   GET  /notes/setup → {"components": [{name, label, state, detail, why,
@@ -26,13 +29,15 @@ commands on the host.
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
 from pathlib import Path
 
-from . import auth, harnesses, notes
+from . import auth, harnesses, notes, notes_profile
 
 PARAGTD_REPO_DEFAULT = "https://github.com/davidj4tech/paragtd.git"
 
@@ -141,11 +146,110 @@ def _paragtd() -> dict:
     return row
 
 
+#: Asked of a running Emacs: the agenda files, and each TODO sequence.
+_EMACS_ASK = """(progn (require 'org-agenda) (require 'json)
+  (json-encode
+   (list (cons 'files (vconcat (org-agenda-files t)))
+         (cons 'keywords
+               (vconcat (mapcar (lambda (s) (if (consp s) (vconcat (cdr s)) (vector s)))
+                                org-todo-keywords))))))"""
+
+
+def _agenda() -> dict | None:
+    """Plain Org's agenda: every top-level file until Emacs' list is
+    copied in. Not shown under a profile, which knows its own files."""
+    if notes.profile().name:
+        return None
+    row = {"name": "agenda", "label": "Agenda files", "optional": True,
+           "why": None, "actions": []}
+    files = notes_profile.configured_files(notes.root())
+    if files is not None:
+        row.update(state="ok", detail=f"{len(files)} files, from config.toml")
+    else:
+        row.update(state="off", detail="every .org file at the top of the folder",
+                   why="copy org-agenda-files and your TODO keywords from Emacs to use those")
+    if shutil.which("emacsclient"):
+        row["actions"].append("import")
+    return row
+
+
+def _from_emacs() -> dict:
+    try:
+        p = subprocess.run(["emacsclient", "--eval", _EMACS_ASK], capture_output=True,
+                           text=True, timeout=15)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise RuntimeError(f"could not ask Emacs ({e})") from e
+    if p.returncode:
+        raise RuntimeError((p.stderr.strip() or "emacsclient failed")
+                           + " (is the Emacs server running?)")
+    try:
+        return json.loads(json.loads(p.stdout.strip()))
+    except (ValueError, TypeError) as e:
+        raise RuntimeError(f"could not read Emacs' answer ({e})") from e
+
+
+def _set_notes_config(values: dict, path: Path | None = None) -> None:
+    """Set keys in config.toml's `[notes]` table, leaving the rest of the
+    file as it is. Values are lists of strings, written as JSON (which TOML
+    reads the same)."""
+    from agent_media_core import config
+
+    p = path or config.config_path()
+    try:
+        lines = p.read_text().splitlines()
+    except FileNotFoundError:
+        lines = []
+    head = next((i for i, ln in enumerate(lines) if ln.strip() == "[notes]"), None)
+    if head is None:
+        while lines and not lines[-1].strip():
+            lines.pop()
+        lines += ([""] if lines else []) + ["[notes]"]
+        head = len(lines) - 1
+    end = next((i for i in range(head + 1, len(lines)) if lines[i].lstrip().startswith("[")),
+               len(lines))
+    while end > head + 1 and not lines[end - 1].strip():
+        end -= 1
+    for key, value in values.items():
+        new = f"{key} = {json.dumps(value)}"
+        at = next((i for i in range(head + 1, end)
+                   if re.match(rf"\s*{re.escape(key)}\s*=", lines[i])), None)
+        if at is None:
+            lines.insert(end, new)
+            end += 1
+        else:
+            lines[at] = new
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("\n".join(lines).rstrip("\n") + "\n")
+
+
+def _import_from_emacs() -> dict:
+    got = _from_emacs()
+    base = notes.root().resolve()
+    files, outside = [], 0
+    for f in got.get("files") or []:
+        try:
+            files.append(Path(f).expanduser().resolve().relative_to(base).as_posix())
+        except (OSError, ValueError):
+            outside += 1
+    opens: list[str] = []
+    dones: list[str] = []
+    for seq in got.get("keywords") or []:
+        o, d = notes_profile.split_keywords([str(w) for w in seq])
+        opens += [w for w in o if w not in opens]
+        dones += [w for w in d if w not in dones]
+    values: dict = {"agenda_files": files}
+    if opens or dones:
+        values["todo_keywords"] = opens + ["|"] + dones
+    _set_notes_config(values)
+    return {"files": len(files), "outside": outside,
+            "keywords": values.get("todo_keywords", [])}
+
+
 def status(bearer: str) -> tuple[bool, dict]:
     ok, detail = auth.may_control_speech(bearer)
     if not ok:
         return False, detail
-    rows = [_org(), _sync(), _memory(), _paragtd()]
+    rows = [r for r in (_org(), _agenda(), _sync(), _memory(), _paragtd()) if r]
     return True, {"components": rows,
                   "search": "ripgrep" if shutil.which("rg") else "built-in"}
 
@@ -185,7 +289,7 @@ def run(component: str, action: str, bearer: str) -> tuple[bool, dict]:
     ok, detail = auth.may_control_speech(bearer)
     if not ok:
         return False, detail
-    rows = {r["name"]: r for r in (_org(), _sync(), _paragtd())}
+    rows = {r["name"]: r for r in (_org(), _agenda(), _sync(), _paragtd()) if r}
     row = rows.get(component)
     if not row:
         return False, {"error": f"nothing to set up called {component!r}", "status": 400}
@@ -198,6 +302,12 @@ def run(component: str, action: str, bearer: str) -> tuple[bool, dict]:
                           **_create()}
         except OSError as e:
             return False, {"error": f"could not create the notes ({e})", "status": 500}
+    if (component, action) == ("agenda", "import"):
+        try:
+            return True, {"component": component, "action": action, "done": True,
+                          **_import_from_emacs()}
+        except (RuntimeError, OSError) as e:
+            return False, {"error": str(e), "status": 502}
     if (component, action) == ("org", "clone"):
         return _windowed(component, action,
                          ["git", "clone", _notes_repo(), str(notes.root())])

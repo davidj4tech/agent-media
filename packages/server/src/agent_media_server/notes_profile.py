@@ -58,6 +58,9 @@ class Profile:
     skeleton: dict[str, str] = {"inbox.org": "#+title: Inbox\n\n"}
     #: Folders a fresh tree starts with.
     roam_dirs: tuple[str, ...] = ()
+    #: The TODO keywords of a file that declares none (`#+TODO:`) when
+    #: config.toml names none either: (open, done), Org's own default.
+    keywords: tuple[tuple[str, ...], tuple[str, ...]] = (("TODO",), ("DONE",))
 
     def detect(self, root: Path) -> bool:
         """Is `root` laid out this profile's way? Only asked when no profile
@@ -65,12 +68,16 @@ class Profile:
         return False
 
     def files(self, root: Path) -> tuple[tuple[str, str, str], ...]:
-        """(view name, label, file name) for each file view, in order."""
-        try:
-            found = sorted(p for p in root.glob("*.org") if p.is_file())
-        except OSError:
-            return ()
-        return tuple((p.stem, _title(p), p.name) for p in found)
+        """(view name, label, path under the root) for each file view, in
+        order: the configured agenda files, else every top-level `.org`."""
+        found = configured_files(root)
+        if found is None:
+            try:
+                found = sorted(p for p in root.glob("*.org") if p.is_file())
+            except OSError:
+                return ()
+        return tuple((_view_name(root, p), _title(p), p.relative_to(root).as_posix())
+                     for p in found)
 
     def agenda_files(self, root: Path) -> tuple[str, ...]:
         """The files the agenda is read from."""
@@ -98,10 +105,79 @@ class Profile:
         the heading is SCHEDULED on it)."""
         return {name: (fname, None, None, False) for name, _, fname in self.files(root)}
 
-    def editable(self, root: Path, fname: str) -> bool:
-        """Whether a top-level file may be changed from the app."""
-        return fname == self.capture_file or any(
-            f == fname for _, _, f in self.files(root))
+    def editable(self, root: Path, rel: str) -> bool:
+        """Whether a file (its path under the root) may be changed from the
+        app: the capture file and the file views."""
+        return rel == self.capture_file or any(f == rel for _, _, f in self.files(root))
+
+
+def _view_name(root: Path, p: Path) -> str:
+    return p.relative_to(root).with_suffix("").as_posix().replace("/", "-")
+
+
+def _notes_config() -> dict:
+    try:
+        from agent_media_core import config
+        got = config.load().get("notes")
+    except Exception:  # noqa: BLE001 — a bad config file means "nothing set"
+        return {}
+    return got if isinstance(got, dict) else {}
+
+
+def configured_files(root: Path) -> list[Path] | None:
+    """The agenda files config names — `[notes] agenda_files` in
+    config.toml, else MEDIA_AGENDA_FILES (colon-separated, what `media
+    agenda` reads) — as `.org` files under the root, a directory meaning
+    the `.org` files in it, as in Org. None when neither is set. A file
+    outside the notes root is left out: the app can only reach the tree."""
+    raw = _notes_config().get("agenda_files")
+    if isinstance(raw, str):
+        raw = [raw]
+    if not raw:
+        env = os.environ.get("MEDIA_AGENDA_FILES", "")
+        raw = [x for x in env.split(":") if x.strip()]
+    if not raw:
+        return None
+    base = root.resolve()
+    out: list[Path] = []
+    for entry in raw:
+        p = Path(str(entry)).expanduser()
+        p = p if p.is_absolute() else root / p
+        try:
+            found = sorted(p.glob("*.org")) if p.is_dir() else [p]
+        except OSError:
+            continue
+        for f in found:
+            try:
+                f.resolve().relative_to(base)
+            except (OSError, ValueError):
+                log.info("notes: %s is outside %s; left out", f, root)
+                continue
+            if f.suffix == ".org" and f.is_file() and f not in out:
+                out.append(root / f.resolve().relative_to(base))
+    return out
+
+
+def configured_keywords() -> tuple[tuple[str, ...], tuple[str, ...]] | None:
+    """`[notes] todo_keywords` in config.toml, Org's way: `["TODO", "NEXT",
+    "|", "DONE"]` (no bar: the last one is done). None when unset."""
+    raw = _notes_config().get("todo_keywords")
+    if not isinstance(raw, list) or not raw:
+        return None
+    return split_keywords([str(x) for x in raw])
+
+
+def split_keywords(words: list[str]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """One `#+TODO:` sequence as (open, done). Fast-access keys and logging
+    marks (`WAITING(w@/!)`) are dropped; with no `|` the last word is the
+    done state."""
+    words = [w.split("(", 1)[0] for w in words if w.split("(", 1)[0]]
+    if "|" in words:
+        i = words.index("|")
+        return tuple(words[:i]), tuple(w for w in words[i + 1:] if w != "|")
+    if len(words) < 2:
+        return tuple(words), ()
+    return tuple(words[:-1]), (words[-1],)
 
 
 PLAIN = Profile()

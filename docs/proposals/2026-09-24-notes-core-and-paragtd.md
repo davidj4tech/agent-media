@@ -1,6 +1,6 @@
 # Proposal: Notes on plain Org, with paragtd as an optional package (24 Sep 2026)
 
-Status: **decided 24 Sep 2026** (open questions answered as recommended); **step 1 built the same day** (the profile seam, `packages/notes-paragtd`). Changes §6.10 of `server-contract.md` (new
+Status: **decided 24 Sep 2026** (open questions answered as recommended); **steps 1 and 2 built the same day** (the profile seam and `packages/notes-paragtd`; agenda files, `#+TODO:` keywords, the Emacs import), and step 3's server half (the `/notes` fields). Changes §6.10 of `server-contract.md` (new
 fields on `GET /notes`, a profile-dependent refile/capture list), moves the
 GTD-specific half of `notes.py` / `notes_edit.py` / `notes_setup.py` into a
 new `packages/notes-paragtd`, and adds one export command to paragtd.

@@ -68,10 +68,8 @@ def prompt(got: dict, text: str) -> str:
     where = f"~/org/{got['path']}"
     if got.get("at"):
         where += f", line {got['at']}"
-        first = got["text"].split("\n", 1)[0]
-        m = notes._HEADING.match(first)
-        if m and m.group(2):
-            where += f", {m.group(2)}"
+        if got.get("state"):
+            where += f", {got['state']}"
     return f'About "{got["title"]}" in my Org notes ({where}): {text.strip()}'
 
 

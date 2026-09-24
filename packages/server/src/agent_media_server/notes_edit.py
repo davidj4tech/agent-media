@@ -47,9 +47,8 @@ from contextlib import ExitStack
 from pathlib import Path
 
 from . import auth
-from .notes import DONE_STATES, _HEADING, _rel, _safe_path, profile, root
+from .notes import _STARS, Keywords, _rel, _safe_path, keywords, profile, root
 
-SETTABLE = ("", "TODO", "NEXT", "WAITING", "SOMEDAY", "DONE", "CANCELLED")
 
 _PLANNING = re.compile(r"^\s*(?:SCHEDULED|DEADLINE|CLOSED):")
 _CLOSED = re.compile(r"\s*CLOSED:\s*\[[^\]]*\]")
@@ -67,10 +66,16 @@ class Refused(Exception):
 
 # --- finding the heading ----------------------------------------------------------
 
+def _kw(lines: list[str]) -> Keywords:
+    return keywords([ln for ln in lines if ln.startswith("#+")])
+
+
 def _locate(lines: list[str], at: int, title: str) -> int:
     """The index of the heading the app means (see the module docstring)."""
+    heading = _kw(lines).heading
+
     def title_at(i: int) -> str | None:
-        m = _HEADING.match(lines[i])
+        m = heading.match(lines[i])
         return m.group(4).strip() if m else None
 
     title = (title or "").strip()
@@ -87,7 +92,7 @@ def _locate(lines: list[str], at: int, title: str) -> int:
 
 
 def _level(line: str) -> int:
-    m = _HEADING.match(line)
+    m = _STARS.match(line)
     return len(m.group(1)) if m else 0
 
 
@@ -99,9 +104,9 @@ def _subtree_end(lines: list[str], i: int) -> int:
     return len(lines)
 
 
-def _with_state(line: str, state: str, prio: str | None = None) -> str:
+def _with_state(line: str, kw: Keywords, state: str, prio: str | None = None) -> str:
     """The heading line with `state` (and `prio`, when given; "" drops it)."""
-    m = _HEADING.match(line)
+    m = kw.heading.match(line)
     stars, _old, old_prio, title, tags = m.groups()
     prio = old_prio if prio is None else prio
     parts = [stars] + ([state] if state else []) + ([f"[#{prio}]"] if prio else []) + [title.strip()]
@@ -172,7 +177,7 @@ def _gtd_path(rel: str) -> Path:
     """Only the profile's files are edited from the app; roam notes are
     read-only."""
     p = _safe_path(rel)
-    if not p or p.parent != root().resolve() or not profile().editable(root(), p.name):
+    if not p or not profile().editable(root(), p.relative_to(root().resolve()).as_posix()):
         raise Refused("only the task files (inbox, next actions, …) can be changed here", 400)
     return p
 
@@ -185,23 +190,24 @@ def set_state(rel: str, at: int, title: str, state: str, bearer: str,
     if not user:
         return False, err
     state = (state or "").strip().upper()
-    if state not in SETTABLE:
-        return False, {"error": f"not a state: {state!r}", "status": 400}
     now = now or dt.datetime.now()
     try:
         path = _gtd_path(rel)
         with ExitStack() as stack:
             f = _Locked(path, stack)
+            kw = _kw(f.lines)
+            if state and state not in kw.all:
+                raise Refused(f"not a state in {_rel(path)}: {state!r}", 400)
             i = _locate(f.lines, at, title)
-            old = _HEADING.match(f.lines[i]).group(2) or ""
+            old = kw.heading.match(f.lines[i]).group(2) or ""
             plan = i + 1 if i + 1 < len(f.lines) and _PLANNING.match(f.lines[i + 1]) else None
-            closing = state in DONE_STATES and old not in DONE_STATES
+            closing = state in kw.done and old not in kw.done
             if closing and plan is not None and _REPEAT.search(f.lines[plan]):
                 f.lines[plan], nxt = _advance(f.lines[plan], now.date())
                 f.save()
                 return True, {"path": _rel(path), "at": i + 1, "state": old,
                               "repeated": True, "next": nxt}
-            f.lines[i] = _with_state(f.lines[i], state)
+            f.lines[i] = _with_state(f.lines[i], kw, state)
             if closing:
                 closed = f"CLOSED: {_stamp(now)}"
                 if plan is None:
@@ -209,7 +215,7 @@ def set_state(rel: str, at: int, title: str, state: str, bearer: str,
                 else:
                     indent = re.match(r"\s*", f.lines[plan]).group(0)
                     f.lines[plan] = f"{indent}{closed} {f.lines[plan].strip()}"
-            elif state not in DONE_STATES and old in DONE_STATES and plan is not None:
+            elif state not in kw.done and old in kw.done and plan is not None:
                 indent = re.match(r"\s*", f.lines[plan]).group(0)
                 rest = _CLOSED.sub("", f.lines[plan]).strip()
                 if rest:
@@ -250,6 +256,7 @@ def refile(rel: str, at: int, title: str, to: str, bearer: str,
             first, second = sorted([src_path, dst_path.resolve()], key=str)
             locked = {p: _Locked(p, stack) for p in (first, second)}
             src, dst = locked[src_path], locked[dst_path.resolve()]
+            src_kw = _kw(src.lines)
             i = _locate(src.lines, at, title)
             end = _subtree_end(src.lines, i)
             tree = src.lines[i:end]
@@ -277,7 +284,7 @@ def refile(rel: str, at: int, title: str, to: str, bearer: str,
             tree = [("*" * (_level(ln) + shift) + ln[_level(ln):]) if _level(ln) else ln
                     for ln in tree]
             if state:
-                tree[0] = _with_state(tree[0], state)
+                tree[0] = _with_state(tree[0], src_kw, state)
             if when:
                 stamp = f"SCHEDULED: <{when.isoformat()} {_DAYS[when.weekday()]}>"
                 if len(tree) > 1 and _PLANNING.match(tree[1]):
@@ -373,8 +380,9 @@ def set_priority(rel: str, at: int, title: str, priority: str, bearer: str) -> t
         with ExitStack() as stack:
             f = _Locked(path, stack)
             i = _locate(f.lines, at, title)
-            state = _HEADING.match(f.lines[i]).group(2) or ""
-            new = _with_state(f.lines[i], state, priority)
+            kw = _kw(f.lines)
+            state = kw.heading.match(f.lines[i]).group(2) or ""
+            new = _with_state(f.lines[i], kw, state, priority)
             if new != f.lines[i]:
                 f.lines[i] = new
                 f.save()

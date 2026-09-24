@@ -79,6 +79,9 @@ class Paragtd(Profile):
     skeleton = SKELETON
     roam_dirs = ("roam/projects", "roam/people", "roam/refs", "roam/notes",
                  "roam/journal")
+    #: paragtd-todo-keywords, plus SOMEDAY (the Organiser's someday list) and
+    #: the American CANCELED.
+    keywords = (("TODO", "NEXT", "WAITING", "SOMEDAY"), ("DONE", "CANCELLED", "CANCELED"))
 
     def detect(self, root: Path) -> bool:
         return (root / "next-actions.org").is_file()

@@ -27,6 +27,9 @@ def org(tmp_path, monkeypatch):
     monkeypatch.setattr(auth, "gate", lambda b: ({"username": "david"}, {}) if b == "good"
                         else (None, {"error": "no", "status": 401}))
     monkeypatch.setattr(auth, "may_control_speech", lambda b: (True, {}))
+    # Setup's checklist asks the memory store and systemd; neither is ours here.
+    monkeypatch.setattr(notes, "_memory_call", lambda *a, **k: None)
+    monkeypatch.setattr(notes_setup, "_systemctl", lambda *a: (127, "no systemctl here"))
     notes_profile._reset_for_tests()
     return root
 
@@ -91,3 +94,119 @@ def test_a_fresh_tree_is_just_an_inbox(tmp_path, monkeypatch, org):
     ok, got = notes_setup.run("org", "create", "good")
     assert ok and got["created"] == ["inbox.org"]
     assert sorted(p.name for p in root.iterdir()) == ["inbox.org"]
+
+
+# --- TODO keywords -------------------------------------------------------------------
+
+def test_a_file_declares_its_own_keywords(org):
+    (org / "work.org").write_text(
+        "#+title: Work\n#+TODO: TODO HOLD(h@) | DONE KILLED\n\n* HOLD Ship it\n* NEXT Not a state\n")
+    items = notes.view("work", "good")[1]["items"]
+    assert [(h["state"], h["title"]) for h in items] == [("HOLD", "Ship it"),
+                                                         ("", "NEXT Not a state")]
+    ok, got = notes.read("work.org", 4, "good")
+    assert got["state"] == "HOLD" and got["states"] == {"open": ["TODO", "HOLD"],
+                                                        "done": ["DONE", "KILLED"]}
+    # KILLED closes it; NEXT is not a state here.
+    assert notes_edit.set_state("work.org", 4, "Ship it", "KILLED", "good")[0]
+    assert "* KILLED Ship it\n  CLOSED:" in (org / "work.org").read_text()
+    assert notes.view("work", "good")[1]["items"] == [
+        {**items[1], "at": 6}]
+    ok, got = notes_edit.set_state("work.org", 6, "NEXT Not a state", "NEXT", "good")
+    assert not ok and got["status"] == 400
+
+
+def test_without_a_declaration_org_has_todo_and_done(org):
+    (org / "work.org").write_text("* NEXT Ship it\n* TODO Other\n")
+    items = notes.view("work", "good")[1]["items"]
+    assert [(h["state"], h["title"]) for h in items] == [("", "NEXT Ship it"), ("TODO", "Other")]
+
+
+def test_config_names_the_keywords(org, tmp_path, monkeypatch):
+    (tmp_path / "no-config.toml").write_text(
+        '[notes]\ntodo_keywords = ["TODO", "NEXT", "|", "DONE"]\n')
+    (org / "work.org").write_text("* NEXT Ship it\n* DONE Old\n")
+    items = notes.view("work", "good")[1]["items"]
+    assert [(h["state"], h["title"]) for h in items] == [("NEXT", "Ship it")]
+    assert notes.views("good")[1]["states"] == {"open": ["TODO", "NEXT"], "done": ["DONE"]}
+
+
+# --- agenda files --------------------------------------------------------------------
+
+def test_config_names_the_agenda_files(org, tmp_path, monkeypatch):
+    (org / "projects").mkdir()
+    (org / "projects" / "house.org").write_text(
+        "#+title: House\n* TODO Paint\n  SCHEDULED: <2026-09-24 Thu>\n")
+    (tmp_path / "no-config.toml").write_text(
+        f'[notes]\nagenda_files = ["work.org", "projects", "{tmp_path}/elsewhere.org"]\n')
+    (tmp_path / "elsewhere.org").write_text("* TODO outside\n")
+    views = _views(org)
+    assert [v for v in views if views[v]["kind"] == "file"] == ["work", "projects-house"]
+    assert views["projects-house"]["path"] == "projects/house.org"
+    assert [i["title"] for i in notes._agenda(dt.date(2026, 9, 24))] == ["Paint"]
+    # A file under a folder is editable when it is an agenda file.
+    assert notes_edit.set_state("projects/house.org", 2, "Paint", "DONE", "good")[0]
+    # The capture file stays editable even when it is not on the list.
+    assert notes_edit.set_state("inbox.org", 3, "Fix the TV", "DONE", "good")[0]
+
+
+def test_media_agenda_files_is_the_fallback(org, monkeypatch):
+    monkeypatch.setenv("MEDIA_AGENDA_FILES", f"{org}/work.org")
+    assert [v["name"] for v in notes.views("good")[1]["views"] if v["kind"] == "file"] == ["work"]
+
+
+def test_notes_says_what_the_app_should_offer(org):
+    ok, got = notes.views("good")
+    assert got["profile"] is None and got["capture_file"] == "inbox.org"
+    assert got["states"] == {"open": ["TODO"], "done": ["DONE"]}
+    assert {"name": "work", "label": "Work things", "path": "work.org"} in got["refile_targets"]
+    assert _views(org)["work"]["states"] == {"open": ["TODO"], "done": ["DONE"]}
+
+
+def test_paragtd_says_so_too(org, monkeypatch):
+    monkeypatch.setenv("MEDIA_NOTES_PROFILE", "paragtd")
+    ok, got = notes.views("good")
+    assert got["profile"] == "paragtd"
+    assert got["states"]["open"] == ["TODO", "NEXT", "WAITING", "SOMEDAY"]
+    tickler = next(t for t in got["refile_targets"] if t["name"] == "tickler")
+    assert tickler == {"name": "tickler", "label": "Tickler", "path": "tickler.org",
+                       "needs_date": True}
+
+
+# --- copying Emacs' settings ---------------------------------------------------------
+
+def test_the_config_writer_keeps_the_rest(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text('# mine\n[host]\nroles = ["render"]\n\n[notes]\nprofile = "none"\n'
+                 'agenda_files = ["old.org"]\n\n[peers.phone]\nhost = "p"\n')
+    notes_setup._set_notes_config({"agenda_files": ["a.org"], "todo_keywords": ["TODO", "|", "DONE"]}, p)
+    import tomllib
+    got = tomllib.loads(p.read_text())
+    assert got["notes"] == {"profile": "none", "agenda_files": ["a.org"],
+                            "todo_keywords": ["TODO", "|", "DONE"]}
+    assert got["host"] == {"roles": ["render"]} and got["peers"]["phone"]["host"] == "p"
+    assert p.read_text().startswith("# mine\n")
+    fresh = tmp_path / "new.toml"
+    notes_setup._set_notes_config({"agenda_files": []}, fresh)
+    assert tomllib.loads(fresh.read_text()) == {"notes": {"agenda_files": []}}
+
+
+def test_import_copies_emacs_settings(org, tmp_path, monkeypatch):
+    monkeypatch.setattr(notes_setup.shutil, "which", lambda _: "/usr/bin/emacsclient")
+    monkeypatch.setattr(notes_setup, "_from_emacs", lambda: {
+        "files": [str(org / "work.org"), "/elsewhere/x.org"],
+        "keywords": [["TODO(t)", "NEXT(n)", "|", "DONE(d!)"], ["BUG", "|", "FIXED"]]})
+    rows = {r["name"]: r for r in notes_setup.status("good")[1]["components"]}
+    assert rows["agenda"]["state"] == "off" and rows["agenda"]["actions"] == ["import"]
+    ok, got = notes_setup.run("agenda", "import", "good")
+    assert ok and got["files"] == 1 and got["outside"] == 1
+    assert got["keywords"] == ["TODO", "NEXT", "BUG", "|", "DONE", "FIXED"]
+    rows = {r["name"]: r for r in notes_setup.status("good")[1]["components"]}
+    assert rows["agenda"]["state"] == "ok"
+    assert [v for v in _views(org) if _views(org)[v]["kind"] == "file"] == ["work"]
+
+
+def test_a_profile_has_no_agenda_row(org, monkeypatch):
+    monkeypatch.setenv("MEDIA_NOTES_PROFILE", "paragtd")
+    names = [r["name"] for r in notes_setup.status("good")[1]["components"]]
+    assert "agenda" not in names
