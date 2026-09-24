@@ -178,3 +178,14 @@ def test_now_playing_still_wins_over_ownership(env, monkeypatch, registry):
                         extras={"source_pane": "%30", "source_tmux_session": "ts1",
                                 "source_session": "aaa"})
     assert cli._anchor_session() == "aaa"
+
+
+def test_the_listeners_own_turn_is_never_replayed(env):
+    """The app's replay said back David's question, not the answer
+    (2026-09-25): his turn is filed as the newest speech row, for the archive.
+    Replay and < / > walk the answers only."""
+    env.add_history(sink="speech", uri="/you.mp3", started_at=9.0, ended_at=9.0,
+                    target="none", source="listener", text="You: why?",
+                    extras={"source_session": "aaa"})
+    got = [r["text"] for r in cli._speech_history(10, session="aaa")]
+    assert got[0] == "A3" and "You: why?" not in got

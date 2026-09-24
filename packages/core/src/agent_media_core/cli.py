@@ -387,9 +387,13 @@ def _speech_history(n: int = 20, session: Optional[str] = None,
     # some of the best evidence of which conversation a pane was holding.
     _adopt_pane_sessions(rows)
     _adopt_pane_places(rows)
+    # And the listener's own turns (`book_tracks`, source "listener"): they are
+    # rendered only to be archived with the conversation, never played, and
+    # being the newest row they made replay say back what was just asked.
     rows = [r for r in rows
-            if not (isinstance(r.get("extras"), dict)
-                    and r["extras"].get("kind") == "notif")]
+            if r.get("source") != "listener"
+            and not (isinstance(r.get("extras"), dict)
+                     and r["extras"].get("kind") == "notif")]
     if include_live:
         live = _live_history_row()
         # started_at is the same float the lane will hand add_history, so it
