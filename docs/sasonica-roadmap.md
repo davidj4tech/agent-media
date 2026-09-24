@@ -176,6 +176,18 @@ is over, with the Speak now / Later card; urgent takes the room. `MicWatch`,
 a port of Next's own, so `call_guard`, `ringer.py` and `media doctor` can
 read them from Next instead of the old app's :8772.
 
+The Organiser on plain Org, paragtd as a package (24 Sep 2026,
+`docs/proposals/2026-09-24-notes-core-and-paragtd.md`): the layout is a notes
+profile. Plain Org by default (your agenda files and `#+TODO` keywords, copied
+once from Emacs by setup's `agenda` row), and paragtd's GTD files from
+`packages/notes-paragtd`, found by the tree. paragtd writes `.paragtd.json`
+(paragtd `c2af9ea`), and the profile reads its files and keywords from it.
+Closing a sequenced step from the phone follows Org's dependency blocking and
+runs paragtd's next-step trigger, and the Organiser says which step is next.
+The app takes its keywords and refile targets from `GET /notes`. On the red5
+server and preview; in Next at the next CI build. **Left:** paragtd's capture
+templates as capture kinds on the phone, and the astro timer.
+
 ## Queued, in order
 
 1. **Devices screen in the app** — the server half landed 23 Sep 2026
