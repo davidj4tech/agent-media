@@ -94,6 +94,13 @@ sweeps Claude's, Codex's, pi's and Hermes's own stores, stat-only; every
 a 30-day window and 40 rows per harness, `?history=all` lifts it; the app
 wears the agent as a chip on each row and filters by it, with "Older than
 30 days" in the same menu).
+Another conversation by chip instead of by title (David, 24 Sep 2026):
+Share into… on a thread's long press and ⋮ puts `@[<title>]` at the end of
+another thread's draft (or a new chat's) and opens it; `@` in the reply box
+offers threads by title. The send carries `refs` and the server adds a line
+per chip with the session and its transcript path (§6.3, `refs.py`); the
+sent message shows the chip as a link to that thread (`chat/test/refs.mjs`).
+Not yet tried on the phone.
 
 Codex and pi threads read from their own transcripts (§6.2.2: a reader per
 harness in `transcript.py` — prompts, replies, thinking and every step with

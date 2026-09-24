@@ -951,8 +951,16 @@ Clients: S (`ReplyBox.vue`), POST debounced 800 ms.
 
 Type into the session behind a conversation, reviving it if it has ended.
 
-Request: `{"session": "<session>" | "item": "<item>", "text": "…", "quote"?: "…", "mode"?: "continue" | "branch"}`
+Request: `{"session": "<session>" | "item": "<item>", "text": "…", "quote"?: "…", "mode"?: "continue" | "branch", "refs"?: {"<title>": "<session>"}}`
 
+- **`refs`** (24 Sep 2026), on `/reply` and `/ask`: `{"<title>":
+  "<session>"}` for the `@[<title>]` chips in `text` — another conversation
+  named by a chip (the app's Share… or `@` in the composer) instead of by
+  typing its title. Each chip gets a line at the foot of the text, `@[<title>]
+  is conversation <session> (<harness>, transcript <path>)`, so the agent
+  can read it; the chip itself stays as written. A chip with no entry in
+  `refs` is matched by title among the threads, used only when exactly one
+  has it; one that names nothing gets no line (`refs.py`).
 - `session` (22 Sep 2026, §10) wins when both are given. 400 `"not a
   session id"`; 404 `"no such session <8 chars>"` when it has no pane and
   no transcript. `branch` works from either form.

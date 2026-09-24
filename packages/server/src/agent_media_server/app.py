@@ -32,7 +32,7 @@ device gets its token):
                   conversation); see abs_item.py
   GET  /commands?item=|session=|project=|cwd=   → the slash menu
   POST /reply     {"session"|"item", "text": "...", "quote": "...",
-                   "mode": "continue"|"branch"} → type into that session (or
+                   "mode": "continue"|"branch", "refs"?} → type into that session (or
                   the one behind that item), reviving it in a background tmux
                   window if it has ended
   POST /ask       {"text", "target"?, "player_session"?|"player_item"?, "sticky"?,
@@ -140,7 +140,7 @@ from urllib.parse import parse_qs
 
 from . import (abs_item, archive, auth, devices, drafts, harnesses, pins, routing, send,
                sessions, share, speech, threads)
-from . import alerts, audio, notes, notes_chat, notes_edit, notes_setup
+from . import alerts, audio, notes, notes_chat, notes_edit, notes_setup, refs
 
 # The endpoints a browser on another origin may reach. Everything here
 # carries its own credential — a paired device's token, or the caller's
@@ -818,7 +818,8 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         # until the ABS exit, and `session` wins when both are sent.
         body = _read_json(h) or {}
         ok, detail = send.reply(
-            str(body.get("item") or ""), str(body.get("text") or ""), _bearer(h),
+            str(body.get("item") or ""),
+            refs.expand(str(body.get("text") or ""), body.get("refs")), _bearer(h),
             quote=str(body.get("quote") or ""),
             mode=str(body.get("mode") or "continue"),
             session=str(body.get("session") or ""))
@@ -838,7 +839,7 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         # credential — and it lands in the scratch tmux session.
         body = _read_json(h) or {}
         ok, detail = routing.ask_routed(
-            str(body.get("text") or ""), _bearer(h),
+            refs.expand(str(body.get("text") or ""), body.get("refs")), _bearer(h),
             target=str(body.get("target") or ""),
             player_item=str(body.get("player_item") or ""),
             player_session=str(body.get("player_session") or ""),
