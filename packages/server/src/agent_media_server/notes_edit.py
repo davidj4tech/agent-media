@@ -153,6 +153,100 @@ def _advance(line: str, today: dt.date) -> tuple[str, str | None]:
     return _REPEAT.sub(one, line), (first[0] if first else None)
 
 
+def set_stamp(lines: list[str], i: int, kind: str, when: dt.date | None,
+              time: str | None = None) -> str:
+    """Put the heading's SCHEDULED or DEADLINE (`kind`) on `when`, in place:
+    the old stamp's repeater stays, and its time of day unless `time` is
+    given (`""` drops it). `when` None takes the stamp off, and the planning
+    line with it once nothing is left on it. The stamp's time, now."""
+    stamp_re = re.compile(rf"{kind}:\s*<([^>]*)>")
+    plan = i + 1 if i + 1 < len(lines) and _PLANNING.match(lines[i + 1]) else None
+    old = stamp_re.search(lines[plan]) if plan is not None else None
+    new_time = ""
+    if when:
+        # What the old stamp carried after its date: a time, a repeater.
+        parts = old.group(1).split()[1:] if old else []
+        parts = [x for x in parts if not re.fullmatch(r"[^\s\d]+", x)]  # the weekday
+        old_time = next((x for x in parts if _TIME.fullmatch(x)), "")
+        rest = [x for x in parts if x != old_time]
+        new_time = old_time if time is None else time
+        inner = " ".join([when.isoformat(), _DAYS[when.weekday()]]
+                         + ([new_time] if new_time else []) + rest)
+        stamp = f"{kind}: <{inner}>"
+        if old:
+            lines[plan] = stamp_re.sub(lambda _m: stamp, lines[plan], count=1)
+        elif plan is not None:
+            lines[plan] = f"{lines[plan].rstrip()} {stamp}"
+        else:
+            lines.insert(i + 1, " " * (_level(lines[i]) + 1) + stamp)
+    elif old:
+        indent = re.match(r"\s*", lines[plan]).group(0)
+        rest_line = re.sub(r"\s+", " ", stamp_re.sub("", lines[plan])).strip()
+        if rest_line:
+            lines[plan] = indent + rest_line
+        else:
+            del lines[plan]
+    return new_time
+
+
+# --- dependencies ------------------------------------------------------------------
+
+_PROP = re.compile(r"^\s*:([A-Za-z0-9_@#%-]+):\s*(.*?)\s*$")
+
+
+def properties(lines: list[str], i: int) -> dict[str, str]:
+    """The heading's property drawer (after its planning line), keys upper-cased."""
+    j = i + 1
+    if j < len(lines) and _PLANNING.match(lines[j]):
+        j += 1
+    if j >= len(lines) or lines[j].strip().upper() != ":PROPERTIES:":
+        return {}
+    out: dict[str, str] = {}
+    for k in range(j + 1, len(lines)):
+        if lines[k].strip().upper() == ":END:" or _level(lines[k]):
+            break
+        m = _PROP.match(lines[k])
+        if m:
+            out[m.group(1).upper()] = m.group(2)
+    return out
+
+
+def parent(lines: list[str], i: int) -> int | None:
+    level = _level(lines[i])
+    return next((j for j in range(i - 1, -1, -1) if 0 < _level(lines[j]) < level), None)
+
+
+def _is_open(lines: list[str], j: int, kw: Keywords) -> bool:
+    m = kw.heading.match(lines[j])
+    return bool(m and m.group(2) and m.group(2) not in kw.done)
+
+
+def _title(lines: list[str], j: int, kw: Keywords) -> str:
+    return kw.heading.match(lines[j]).group(4).strip()
+
+
+def blocked_by(lines: list[str], i: int, kw: Keywords) -> str | None:
+    """What stops the heading closing under `org-enforce-todo-dependencies`,
+    as Org decides it (org-block-todo-from-children-or-siblings-or-parent):
+    an open child; or, under an `:ORDERED:` parent, an open heading before
+    it; and the same asked of each open ancestor in turn. The title of the
+    one in the way, or None."""
+    level = _level(lines[i])
+    for j in range(i + 1, _subtree_end(lines, i)):
+        if _level(lines[j]) == level + 1 and _is_open(lines, j, kw):
+            return _title(lines, j, kw)
+    here = i
+    while (up := parent(lines, here)) is not None:
+        if properties(lines, up).get("ORDERED", "").lower() not in ("", "nil"):
+            for j in range(up + 1, here):
+                if _level(lines[j]) and _is_open(lines, j, kw):
+                    return _title(lines, j, kw)
+        if not _is_open(lines, up, kw):
+            return None
+        here = up
+    return None
+
+
 # --- files, locked -----------------------------------------------------------------
 
 class _Locked:
@@ -202,6 +296,11 @@ def set_state(rel: str, at: int, title: str, state: str, bearer: str,
             old = kw.heading.match(f.lines[i]).group(2) or ""
             plan = i + 1 if i + 1 < len(f.lines) and _PLANNING.match(f.lines[i + 1]) else None
             closing = state in kw.done and old not in kw.done
+            prof = profile()
+            if closing and prof.enforces_dependencies():
+                who = blocked_by(f.lines, i, kw)
+                if who:
+                    raise Refused(f"it waits on “{who}”, which is still open", 409)
             if closing and plan is not None and _REPEAT.search(f.lines[plan]):
                 f.lines[plan], nxt = _advance(f.lines[plan], now.date())
                 f.save()
@@ -222,8 +321,10 @@ def set_state(rel: str, at: int, title: str, state: str, bearer: str,
                     f.lines[plan] = indent + rest
                 else:
                     del f.lines[plan]
+            extra = prof.after_state(f.lines, i, old, state, kw, now) or {}
             f.save()
-            return True, {"path": _rel(path), "at": i + 1, "state": state, "repeated": False}
+            return True, {"path": _rel(path), "at": i + 1, "state": state, "repeated": False,
+                          **extra}
     except Refused as e:
         return False, e.detail
     except OSError as e:
@@ -324,38 +425,12 @@ def set_date(rel: str, at: int, title: str, kind: str, date: str, bearer: str,
         time = time.strip()
         if time and not _TIME.fullmatch(time):
             return False, {"error": "the time must be HH:MM", "status": 400}
-    stamp_re = re.compile(rf"{kind}:\s*<([^>]*)>")
     try:
         path = _gtd_path(rel)
         with ExitStack() as stack:
             f = _Locked(path, stack)
             i = _locate(f.lines, at, title)
-            plan = i + 1 if i + 1 < len(f.lines) and _PLANNING.match(f.lines[i + 1]) else None
-            old = stamp_re.search(f.lines[plan]) if plan is not None else None
-            new_time = ""
-            if when:
-                # What the old stamp carried after its date: a time, a repeater.
-                parts = old.group(1).split()[1:] if old else []
-                parts = [x for x in parts if not re.fullmatch(r"[^\s\d]+", x)]  # the weekday
-                old_time = next((x for x in parts if _TIME.fullmatch(x)), "")
-                rest = [x for x in parts if x != old_time]
-                new_time = old_time if time is None else time
-                inner = " ".join([when.isoformat(), _DAYS[when.weekday()]]
-                                 + ([new_time] if new_time else []) + rest)
-                stamp = f"{kind}: <{inner}>"
-                if old:
-                    f.lines[plan] = stamp_re.sub(lambda _m: stamp, f.lines[plan], count=1)
-                elif plan is not None:
-                    f.lines[plan] = f"{f.lines[plan].rstrip()} {stamp}"
-                else:
-                    f.lines.insert(i + 1, " " * (_level(f.lines[i]) + 1) + stamp)
-            elif old:
-                indent = re.match(r"\s*", f.lines[plan]).group(0)
-                rest_line = re.sub(r"\s+", " ", stamp_re.sub("", f.lines[plan])).strip()
-                if rest_line:
-                    f.lines[plan] = indent + rest_line
-                else:
-                    del f.lines[plan]
+            new_time = set_stamp(f.lines, i, kind, when, time)
             f.save()
             return True, {"path": _rel(path), "at": i + 1, "kind": kind.lower(),
                           "date": when.isoformat() if when else "", "time": new_time}

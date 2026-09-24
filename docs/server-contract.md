@@ -1751,6 +1751,19 @@ the app last saw it) plus `title` (its text).
 
   The heading keeps its state, and the answer says `repeated: true` with
   `next`, the new date.
+- **Dependencies.** Under paragtd, or plain Org with `[notes]
+  enforce_todo_dependencies = true`, closing follows
+  `org-enforce-todo-dependencies`: a heading with an open child, or one
+  under an `:ORDERED:` parent with an open heading before it (asked again of
+  each open ancestor), is refused with 409, and the error names the heading
+  in the way.
+- **paragtd's trigger.** Closing a step whose `:TRIGGER:` is the form
+  `paragtd-sequence-subtree` writes, `next-sibling todo!(NEXT)
+  scheduled!("++Nd")`, does what org-edna would: the next sibling takes that
+  state and is SCHEDULED N days from today. The answer adds `"trigger":
+  "ran"` and `"triggered": {"title", "state", "scheduled"?, "at"}`. Any other
+  trigger is not run (`"trigger": "skipped"`; finish it in Emacs), and a
+  last step says `"trigger": "no next step"`.
 - `at` in the answer is where the heading is now.
 
 `/notes/refile {"path", "at", "title", "to", "date"?}` → `{"ok", "path",
@@ -1800,7 +1813,7 @@ This is the Notes tab's checklist for a host that has no notes yet
 | name | what it checks | actions |
 |---|---|---|
 | `org` | the tree, with the profile's files (it is `ok` once the capture file exists) | `clone` (only when `MEDIA_NOTES_REPO` is set and the folder is empty); `create` (writes any missing profile files and roam folders: paragtd's set, or for plain Org only `inbox.org`; never overwrites; runs `git init` if the folder is not a repo) |
-| `agenda` | plain Org only: whether `[notes] agenda_files` is set | `import` (when `emacsclient` is on the host): asks the running Emacs for `org-agenda-files` and `org-todo-keywords` once and writes them into `[notes]` in config.toml, leaving the rest of the file as it is; answers `{"files", "outside", "keywords"}`, 502 when Emacs does not answer |
+| `agenda` | plain Org only: whether `[notes] agenda_files` is set | `import` (when `emacsclient` is on the host): asks the running Emacs for `org-agenda-files` and `org-todo-keywords` once and writes them into `[notes]` in config.toml, leaving the rest of the file as it is; answers `{"files", "outside", "keywords", "enforce_todo_dependencies"}` (it copies `org-enforce-todo-dependencies` too), 502 when Emacs does not answer |
 | `sync` | that `org-autosync.timer` is enabled; needs a git repo with a remote | `enable` |
 | `memory` | that the store answers `/health` | none. It runs on the hub and is optional. |
 | `paragtd` | the Emacs package and astro generator (`MEDIA_PARAGTD_DIR`, default `~/projects/paragtd`) | `install` (clone plus `bin/bootstrap`), `update`; optional |

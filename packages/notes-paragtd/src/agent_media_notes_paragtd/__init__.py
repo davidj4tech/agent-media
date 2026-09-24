@@ -5,7 +5,8 @@ Org: the GTD files at the top of `~/org` (inbox, next actions, waiting for,
 tickler, …), org-roam notes under `roam/`, and astro alerts generated into
 `astro.org`. This profile tells the Notes server that layout: which files are
 the views and what they are called, where each refile target puts a heading,
-and what a fresh tree starts with.
+what a fresh tree starts with, and how a sequenced project moves on when a
+step is closed (sequence.py).
 
 The lists mirror paragtd's `paragtd-paths.el` and `paragtd-capture.el` by
 hand. A manifest paragtd writes will replace them
@@ -17,6 +18,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from agent_media_server.notes_profile import Profile
+
+from . import sequence
 
 #: paragtd-core-files: (view name, label, file).
 GTD_FILES = (
@@ -102,6 +105,13 @@ class Paragtd(Profile):
 
     def refile_targets(self, root: Path):
         return REFILE_TARGETS
+
+    def enforces_dependencies(self) -> bool:
+        # paragtd-setup-sequence turns on org-enforce-todo-dependencies.
+        return True
+
+    def after_state(self, lines, i, old, new, kw, now):
+        return sequence.after_state(lines, i, old, new, kw, now)
 
 
 profile = Paragtd()

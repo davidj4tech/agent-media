@@ -195,12 +195,15 @@ def test_import_copies_emacs_settings(org, tmp_path, monkeypatch):
     monkeypatch.setattr(notes_setup.shutil, "which", lambda _: "/usr/bin/emacsclient")
     monkeypatch.setattr(notes_setup, "_from_emacs", lambda: {
         "files": [str(org / "work.org"), "/elsewhere/x.org"],
-        "keywords": [["TODO(t)", "NEXT(n)", "|", "DONE(d!)"], ["BUG", "|", "FIXED"]]})
+        "keywords": [["TODO(t)", "NEXT(n)", "|", "DONE(d!)"], ["BUG", "|", "FIXED"]],
+        "enforce": True})
     rows = {r["name"]: r for r in notes_setup.status("good")[1]["components"]}
     assert rows["agenda"]["state"] == "off" and rows["agenda"]["actions"] == ["import"]
     ok, got = notes_setup.run("agenda", "import", "good")
     assert ok and got["files"] == 1 and got["outside"] == 1
     assert got["keywords"] == ["TODO", "NEXT", "BUG", "|", "DONE", "FIXED"]
+    assert got["enforce_todo_dependencies"] is True
+    assert notes_profile.PLAIN.enforces_dependencies()
     rows = {r["name"]: r for r in notes_setup.status("good")[1]["components"]}
     assert rows["agenda"]["state"] == "ok"
     assert [v for v in _views(org) if _views(org)[v]["kind"] == "file"] == ["work"]

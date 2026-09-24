@@ -146,13 +146,15 @@ def _paragtd() -> dict:
     return row
 
 
-#: Asked of a running Emacs: the agenda files, and each TODO sequence.
+#: Asked of a running Emacs: the agenda files, each TODO sequence, and
+#: whether a heading waits for its children and ordered siblings.
 _EMACS_ASK = """(progn (require 'org-agenda) (require 'json)
   (json-encode
    (list (cons 'files (vconcat (org-agenda-files t)))
          (cons 'keywords
                (vconcat (mapcar (lambda (s) (if (consp s) (vconcat (cdr s)) (vector s)))
-                                org-todo-keywords))))))"""
+                                org-todo-keywords)))
+         (cons 'enforce (if org-enforce-todo-dependencies t :json-false)))))"""
 
 
 def _agenda() -> dict | None:
@@ -190,8 +192,8 @@ def _from_emacs() -> dict:
 
 def _set_notes_config(values: dict, path: Path | None = None) -> None:
     """Set keys in config.toml's `[notes]` table, leaving the rest of the
-    file as it is. Values are lists of strings, written as JSON (which TOML
-    reads the same)."""
+    file as it is. Values are lists of strings or booleans, written as JSON
+    (which TOML reads the same)."""
     from agent_media_core import config
 
     p = path or config.config_path()
@@ -240,9 +242,12 @@ def _import_from_emacs() -> dict:
     values: dict = {"agenda_files": files}
     if opens or dones:
         values["todo_keywords"] = opens + ["|"] + dones
+    if isinstance(got.get("enforce"), bool):
+        values["enforce_todo_dependencies"] = got["enforce"]
     _set_notes_config(values)
     return {"files": len(files), "outside": outside,
-            "keywords": values.get("todo_keywords", [])}
+            "keywords": values.get("todo_keywords", []),
+            "enforce_todo_dependencies": values.get("enforce_todo_dependencies", False)}
 
 
 def status(bearer: str) -> tuple[bool, dict]:

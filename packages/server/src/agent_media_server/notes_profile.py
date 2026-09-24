@@ -105,6 +105,20 @@ class Profile:
         the heading is SCHEDULED on it)."""
         return {name: (fname, None, None, False) for name, _, fname in self.files(root)}
 
+    def enforces_dependencies(self) -> bool:
+        """Whether a heading may not close while a child, or under an
+        `:ORDERED:` parent an earlier sibling, is open — Org's
+        `org-enforce-todo-dependencies`. Plain Org: `[notes]
+        enforce_todo_dependencies` in config.toml, off by default as in Org."""
+        return _notes_config().get("enforce_todo_dependencies") is True
+
+    def after_state(self, lines: list[str], i: int, old: str, new: str, kw, now) -> dict | None:
+        """Further edits to the same file once the heading on line index `i`
+        has gone from `old` to `new` (a repeater that moved on instead is not
+        a change). Made in place, under the file's lock; what it returns is
+        added to /notes/state's answer."""
+        return None
+
     def editable(self, root: Path, rel: str) -> bool:
         """Whether a file (its path under the root) may be changed from the
         app: the capture file and the file views."""
