@@ -377,7 +377,26 @@ def subscribe(session: str) -> tuple[Watcher, Subscriber] | None:
     if start:
         w.prime()
         w.start()
+    threading.Thread(target=_play_waiting, args=(session,), daemon=True,
+                     name=f"opened:{session[:8]}").start()
     return w, sub
+
+
+def _play_waiting(session: str) -> None:
+    """The thread was opened: play its newest held Normal reply that has
+    never been played (core's toast.take_for_opened). Off the request thread:
+    a reply still rendering is waited for, and a replay takes seconds."""
+    try:
+        from agent_media_core.intake import toast
+
+        rid = toast.take_for_opened(session)
+        if rid is not None:
+            from . import speech
+
+            log.info("thread %s opened: playing its waiting reply %s", session[:8], rid)
+            speech.run_ctl("replay-id", rid)
+    except Exception:  # noqa: BLE001 — a missed replay leaves its Play
+        log.exception("thread %s opened: could not play its waiting reply", session[:8])
 
 
 def unsubscribe(w: Watcher, sub: Subscriber) -> None:

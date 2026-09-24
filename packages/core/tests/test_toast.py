@@ -171,3 +171,40 @@ def test_the_feed_and_the_log_carry_unheard(tmp_path):
     assert [l.get("unheard", False) for l in lines] == [False, True]
     st.mark_heard(rid)
     assert [t.unheard for t in session_feed.turns("s9", store=st)] == [False, False]
+
+
+def test_opening_the_conversation_plays_its_newest_unplayed_reply(monkeypatch):
+    from agent_media_core import speak_priority
+    from agent_media_core.state import StateStore
+
+    monkeypatch.setenv("TMUX_PANE", "%3")
+    monkeypatch.setenv("MEDIA_TOAST_RENDER_WAIT_S", "0")
+    _fake_tmux(monkeypatch)
+    import agent_media_core.intake.hook_claude_code as hook
+    monkeypatch.setattr(hook, "_play_detached", lambda e: None)
+    st = StateStore()
+    import hashlib
+
+    def row(text, **ex):
+        return st.add_history(sink="speech", uri="/x.mp3", started_at=time.time(),
+                              target="phone", source="claude-code", text=text,
+                              extras={"held": True, "session": "s1",
+                                      "dedup_key": hashlib.sha1(text.encode()).hexdigest(), **ex})
+
+    toast.hold(_event("older"))
+    toast.hold(_event("newer"))
+    row("older")
+    newer = row("newer")
+    assert toast.take_for_opened("other") is None
+    assert toast.take_for_opened("s1") == newer
+    assert toast.take_for_opened("s1") is None          # nothing plays twice
+
+    toast.hold(_event("heard already"))
+    rid = row("heard already")
+    st.mark_heard(rid)
+    assert toast.take_for_opened("s1") is None          # never replays a played one
+
+    toast.hold(_event("now quiet"))
+    row("now quiet")
+    speak_priority.set_level("s1", "quiet")
+    assert toast.take_for_opened("s1") is None

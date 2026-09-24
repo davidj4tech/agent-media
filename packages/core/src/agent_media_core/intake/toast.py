@@ -12,8 +12,11 @@ A held reply is rendered and archived at once, like a muted pane's
 unheard, with a big Play — and playing it is a replay of that history row,
 which marks it heard. What the toast keeps is only which row it is waiting
 on: JSON files under state_dir()/toast-pending, newest last. A toast older
-than MEDIA_TOAST_TTL seconds (default 1800) is dropped; the reply stays in
+than MEDIA_TOAST_TTL seconds (default 21600) is dropped; the reply stays in
 the transcript, still unheard.
+
+Opening the conversation in the app plays its newest waiting reply, if it has
+never been played (`take_for_opened`, called by the server's thread stream).
 """
 
 from __future__ import annotations
@@ -35,9 +38,9 @@ log = logging.getLogger(__name__)
 
 def _ttl() -> int:
     try:
-        return int(os.environ.get("MEDIA_TOAST_TTL", "1800"))
+        return int(os.environ.get("MEDIA_TOAST_TTL", "21600"))
     except ValueError:
-        return 1800
+        return 21600
 
 
 def _tmux(args: list[str]) -> str:
@@ -118,6 +121,7 @@ def hold(event: Event) -> None:
     record = {
         "held_at": time.time(),
         "pane": pane,
+        "session": (event.metadata or {}).get("session") or "",
         "where": _where(pane) if pane else "",
         # The hook's own dedup key (`_play_now`): how play finds the row.
         "key": hashlib.sha1(event.text.encode("utf-8")).hexdigest(),
@@ -225,6 +229,41 @@ def play() -> int:
     from ..cli import main as media
 
     return media(["replay", "--id", str(rid)])
+
+
+def take_for_opened(session: str) -> Optional[int]:
+    """The conversation `session` was just opened in the app: its newest
+    held Normal reply that has never been played, as a history row id to
+    replay, or None. All of the session's waiting toasts are taken, so
+    opening it again plays nothing twice; older replies keep their Play."""
+    from ..speak_priority import level_of
+    from ..state import StateStore
+
+    if not session:
+        return None
+    mine = []
+    for p in _pending():
+        try:
+            r = json.loads(p.read_text())
+        except (OSError, ValueError):
+            continue
+        if r.get("session") == session:
+            mine.append((p, r.get("key") or ""))
+    if not mine:
+        return None
+    for p, _key in mine:
+        try:
+            p.unlink()
+        except OSError:
+            pass
+    _after_take()
+    if level_of(session) != "normal":
+        return None
+    rid = _wait_for_row(mine[-1][1]) if mine[-1][1] else None
+    if rid is None:
+        return None
+    ex = (StateStore().history_row(rid) or {}).get("extras") or {}
+    return None if ex.get("heard") else rid
 
 
 def dismiss() -> int:
