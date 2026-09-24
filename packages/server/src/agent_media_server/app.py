@@ -177,7 +177,7 @@ CORS_PATHS = CORS_PATHS | AUDIO_PATHS
 NOTES_PATHS = frozenset({"/notes", "/notes/view", "/notes/read", "/notes/search",
                          "/notes/capture", "/notes/setup", "/notes/say",
                          "/notes/state", "/notes/refile", "/notes/date",
-                         "/notes/ask"})
+                         "/notes/priority", "/notes/ask"})
 CORS_PATHS = CORS_PATHS | NOTES_PATHS
 
 # What the watchers report (alerts.py, §6.17). The same arrangement.
@@ -1066,7 +1066,8 @@ def _notes(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
         if not ok:
             print(f"notes/setup: refused ({detail.get('error')}) "
                   f"from {h.client_address[0]}", file=sys.stderr)
-    elif method == "POST" and path in ("/notes/state", "/notes/refile", "/notes/date"):
+    elif method == "POST" and path in ("/notes/state", "/notes/refile", "/notes/date",
+                                       "/notes/priority"):
         # Marking a heading done (or any state), moving it to another GTD
         # file, and changing its date. Line and title together find it
         # (notes_edit.py).
@@ -1082,6 +1083,10 @@ def _notes(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
                                              str(body.get("kind") or "scheduled"),
                                              str(body.get("date") or ""), bearer,
                                              time=None if time_ is None else str(time_))
+        elif path.endswith("priority"):
+            ok, detail = notes_edit.set_priority(str(body.get("path") or ""), at,
+                                                 str(body.get("title") or ""),
+                                                 str(body.get("priority") or ""), bearer)
         elif path.endswith("state"):
             ok, detail = notes_edit.set_state(str(body.get("path") or ""), at,
                                               str(body.get("title") or ""),

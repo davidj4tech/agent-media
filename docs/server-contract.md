@@ -1671,7 +1671,7 @@ text}]}`.
   that list afresh.
 - 400 when the text is empty; 404 and 409 as for `/notes/read`.
 
-#### `POST /notes/state` · `POST /notes/refile` · `POST /notes/date` — gated (`auth.gate`)
+#### `POST /notes/state` · `POST /notes/refile` · `POST /notes/date` · `POST /notes/priority` — gated (`auth.gate`)
 
 These change a heading in one of the GTD files at the top of the tree:
 inbox, next-actions, waiting-for, tickler, someday, projects, areas and
@@ -1726,6 +1726,13 @@ the app last saw it) plus `title` (its text).
   nothing is left on it.
 - `time` in the answer is the time the stamp now has (`""` for none).
 - 400 for a malformed date, time or kind.
+
+`/notes/priority {"path", "at", "title", "priority"}` → `{"ok", "path",
+"at", "priority"}` (24 Sep 2026)
+- `priority` is `"A"`, `"B"`, `"C"` or `""` (take the cookie off); it is
+  written as Org's `[#A]` after the state. 400 for anything else.
+- An `[#A]` TODO whose SCHEDULED or DEADLINE has a clock time is read aloud
+  at that time (`media agenda-alarm`, agent_media_core `agenda_alarm.py`).
 
 #### `GET /notes/setup` · `POST /notes/setup` — `auth.may_control_speech`, like `/harnesses`
 

@@ -200,3 +200,16 @@ def test_the_routes(org):
     finally:
         srv.shutdown()
         srv.server_close()
+
+
+def test_priority_is_set_changed_and_taken_off(org):
+    at = _line("Call the bank")
+    ok, got = notes_edit.set_priority("inbox.org", at, "Call the bank", "b", "good")
+    assert ok and got["priority"] == "B"
+    assert "** NEXT [#B] Call the bank :phone:" in (org / "inbox.org").read_text()
+    ok, _ = notes_edit.set_priority("inbox.org", at, "Call the bank", "", "good")
+    assert "** NEXT Call the bank :phone:" in (org / "inbox.org").read_text()
+    ok, _ = notes_edit.set_priority("inbox.org", _line("Fix the TV ssh"), "Fix the TV ssh", "A", "good")
+    assert "** TODO [#A] Fix the TV ssh" in (org / "inbox.org").read_text()
+    ok, got = notes_edit.set_priority("inbox.org", at, "Call the bank", "D", "good")
+    assert not ok and got["status"] == 400

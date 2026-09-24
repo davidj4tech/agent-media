@@ -7,6 +7,8 @@ another GTD file — the two things an inbox needs besides capture.
       → {"path", "at", "to"}
   POST /notes/date   {"path", "at", "title", "kind", "date", "time"?}
       → {"path", "at", "kind", "date", "time"}
+  POST /notes/priority {"path", "at", "title", "priority": "A"|"B"|"C"|""}
+      → {"path", "at", "priority"}
 
 `at` is the heading's line as the app last saw it and `title` its text. The
 file may have moved on since (a capture, an Emacs save, the sync), so the
@@ -106,9 +108,11 @@ def _subtree_end(lines: list[str], i: int) -> int:
     return len(lines)
 
 
-def _with_state(line: str, state: str) -> str:
+def _with_state(line: str, state: str, prio: str | None = None) -> str:
+    """The heading line with `state` (and `prio`, when given; "" drops it)."""
     m = _HEADING.match(line)
-    stars, _old, prio, title, tags = m.groups()
+    stars, _old, old_prio, title, tags = m.groups()
+    prio = old_prio if prio is None else prio
     parts = [stars] + ([state] if state else []) + ([f"[#{prio}]"] if prio else []) + [title.strip()]
     out = " ".join(parts)
     return f"{out} {tags}" if tags else out
@@ -356,6 +360,33 @@ def set_date(rel: str, at: int, title: str, kind: str, date: str, bearer: str,
             f.save()
             return True, {"path": _rel(path), "at": i + 1, "kind": kind.lower(),
                           "date": when.isoformat() if when else "", "time": new_time}
+    except Refused as e:
+        return False, e.detail
+    except OSError as e:
+        return False, {"error": f"could not change the file ({e})", "status": 500}
+
+
+def set_priority(rel: str, at: int, title: str, priority: str, bearer: str) -> tuple[bool, dict]:
+    """Set or clear the heading's `[#A]` cookie. An `[#A]` with a clock time
+    on its SCHEDULED or DEADLINE is read aloud at that time (agent_media_core
+    agenda_alarm.py)."""
+    user, err = auth.gate(bearer)
+    if not user:
+        return False, err
+    priority = (priority or "").strip().upper()
+    if priority not in ("", "A", "B", "C"):
+        return False, {"error": f"not a priority: {priority!r}", "status": 400}
+    try:
+        path = _gtd_path(rel)
+        with ExitStack() as stack:
+            f = _Locked(path, stack)
+            i = _locate(f.lines, at, title)
+            state = _HEADING.match(f.lines[i]).group(2) or ""
+            new = _with_state(f.lines[i], state, priority)
+            if new != f.lines[i]:
+                f.lines[i] = new
+                f.save()
+            return True, {"path": _rel(path), "at": i + 1, "priority": priority}
     except Refused as e:
         return False, e.detail
     except OSError as e:
