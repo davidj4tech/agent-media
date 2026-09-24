@@ -134,16 +134,14 @@ runner publishes name, description, schema and sha256 — never the argv —
 and a call runs a fixed argv with `execFile`, no shell; first set is speak,
 music now/pause/resume and memory search, live on red5).
 
-Always speak (24 Sep 2026): a thread's ⋮ menu (and the list's long press)
-has **Always speak** — its replies are never held by the desk toast and
-never silenced by a pane mute; a badge shows while it is on.
-`POST /session/priority`, rows carry `priority`, `media priority` at the
-desk. agent-media `04311ab`, chat `162761a5`, android-next `2a0ed8f0`.
-And `[#A]` Org TODOs with a clock time are read aloud at that time
-(`media agenda-alarm`, every minute from `deploy/systemd/agenda-alarm.timer`,
-alert-class; date-only ones stay quiet, David's choice). The Organiser's
-note page has **Priority…** (A, B, C, none; `POST /notes/priority`).
-agent-media `8efd8ba` + `a7612ec`, chat `3d5a2048`, android-next `ab6c9251`.
+Speech levels (24 Sep 2026): a thread's ⋮ menu (and the list's long press)
+has **Speech…** — Interrupt (plays at once, and another chat's reply steps
+aside at its next sentence), Auto speak (never held by the desk toast or
+silenced by a pane mute), Normal, Quiet (archived unheard, never played by
+itself); a badge unless Normal. `POST /session/priority {level}`, rows carry
+`speech`, `media priority <level>` at the desk. agent-media `259b97e`,
+android-next `35a2802a`; chat-prototype still has the older on/off toggle
+(another session had the same files open).
 
 ## In flight
 
