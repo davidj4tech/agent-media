@@ -1,11 +1,12 @@
 """Notes: browse, search and capture into the Org tree, without Emacs.
 
-The tree is `~/org` (MEDIA_NOTES_DIR to move it), laid out the paragtd way:
-the GTD files at the top (inbox, next-actions, tickler, ...) and org-roam
-notes under `roam/`. Everything here reads and appends plain text; Emacs is
+The tree is `~/org` (MEDIA_NOTES_DIR to move it). Which files are the views,
+where a capture lands and the rest of the layout come from the notes profile
+(notes_profile.py): plain Org by default, or a method's own, such as the
+paragtd package's. Everything here reads and appends plain text; Emacs is
 one editor of the same files, never a dependency. Commits are not ours
 either: `org-autosync` commits and pushes the tree from every host, so a
-capture only has to land in `inbox.org`.
+capture only has to land in the capture file.
 
   GET  /notes                  → {"views": [{name, label, kind, count}]}
   GET  /notes/view?name=       → {"view", "items": [...]}   (&done=1 keeps DONE)
@@ -17,10 +18,6 @@ capture only has to land in `inbox.org`.
   POST /notes/ask {"path", "at"?, "text"} → a chat about it (notes_chat.py)
 
 Setting all this up on a host is notes_setup.py (/notes/setup).
-
-The file list and the capture template mirror paragtd's (paragtd-paths.el,
-paragtd-capture.el) by hand for now; that copy is what a paragtd JSON export
-would replace.
 
 Search asks the memory store (agent-memory's Hippocampus) beside ripgrep, and
 a capture is remembered there too, so a note surfaces in later recall. Both
@@ -44,42 +41,12 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from . import auth
-
-#: paragtd-core-files, with a label and what the app calls it.
-GTD_FILES = (
-    ("inbox", "Inbox", "inbox.org"),
-    ("next", "Next actions", "next-actions.org"),
-    ("waiting", "Waiting for", "waiting-for.org"),
-    ("tickler", "Tickler", "tickler.org"),
-    ("someday", "Someday", "someday.org"),
-    ("projects", "Projects", "projects.org"),
-    ("areas", "Areas", "areas.org"),
-    ("routines", "Routines", "routines.org"),
-)
-
-#: org-roam folders, as shelves of notes. Sessions are the agents' notes —
-#: hundreds of them — so they are a view of their own and left out of search
-#: unless asked for.
-ROAM_FOLDERS = (
-    ("roam-projects", "Project notes", "roam/projects"),
-    ("roam-people", "People", "roam/people"),
-    ("roam-refs", "References", "roam/refs"),
-    ("roam-notes", "Notes", "roam/notes"),
-    ("roam-journal", "Journal", "roam/journal"),
-    ("roam-sessions", "Agent sessions", "roam/sessions"),
-)
-
-#: Kept out of search by default: the agents' notes, the generated astro
-#: alerts, and backups.
-SEARCH_EXCLUDES = ("roam/sessions/**", "astro.org*", "*.bak*")
+from . import auth, notes_profile
 
 DONE_STATES = frozenset({"DONE", "CANCELLED", "CANCELED"})
 STATES = ("TODO", "NEXT", "WAITING", "SOMEDAY", "DONE", "CANCELLED", "CANCELED")
 NOTE_SUFFIXES = (".org", ".md", ".txt")
 
-#: paragtd-astro-stale-days: a past astro alert older than this is not agenda.
-ASTRO_STALE_DAYS = 2
 AGENDA_AHEAD_DAYS = 7
 
 MAX_READ = 256 * 1024
@@ -97,6 +64,10 @@ _ID_LINK = re.compile(r"\[\[id:([^\]]+)\](?:\[([^\]]*)\])?\]")
 
 def root() -> Path:
     return Path(os.environ.get("MEDIA_NOTES_DIR") or "~/org").expanduser()
+
+
+def profile() -> notes_profile.Profile:
+    return notes_profile.active(root())
 
 
 def _rel(p: Path) -> str:
@@ -172,14 +143,13 @@ def _folder_notes(folder: Path) -> list[dict]:
 
 def _agenda(today: dt.date | None = None) -> list[dict]:
     """What is scheduled or due in the next week, and what is overdue — the
-    agenda Emacs would show, from the same files. Astro alerts are
-    point-in-time and never marked DONE, so past ones age out as in
-    paragtd-astro-skip-stale."""
+    agenda Emacs would show, from the same files; the profile may drop some
+    (paragtd ages past astro alerts out)."""
     today = today or dt.date.today()
     horizon = today + dt.timedelta(days=AGENDA_AHEAD_DAYS)
-    files = [name for _, _, name in GTD_FILES] + ["astro.org"]
+    prof = profile()
     items = []
-    for name in files:
+    for name in prof.agenda_files(root()):
         for h in _headings(root() / name, done=False):
             date = h.get("deadline") or h.get("scheduled")
             if not date:
@@ -190,7 +160,7 @@ def _agenda(today: dt.date | None = None) -> list[dict]:
                 continue
             if when > horizon:
                 continue
-            if name == "astro.org" and (today - when).days > ASTRO_STALE_DAYS:
+            if not prof.agenda_keep(name, (today - when).days):
                 continue
             items.append({**h, "date": date, "overdue": when < today})
     items.sort(key=lambda h: (h["date"], h["path"], h["at"]))
@@ -229,14 +199,15 @@ def views(bearer: str) -> tuple[bool, dict]:
     user, err = auth.gate(bearer)
     if not user:
         return False, err
+    prof = profile()
     out = [{"name": "agenda", "label": "Agenda", "kind": "agenda"}]
-    for name, label, fname in GTD_FILES:
+    for name, label, fname in prof.files(root()):
         p = root() / fname
         if p.is_file():
             n = sum(1 for h in _headings(p, done=False) if h["state"])
             out.append({"name": name, "label": label, "kind": "file",
                         "path": fname, "count": n})
-    for name, label, folder in ROAM_FOLDERS:
+    for name, label, folder in prof.roam_folders(root()):
         d = root() / folder
         if d.is_dir():
             n = sum(1 for p in d.rglob("*") if p.suffix in NOTE_SUFFIXES)
@@ -250,10 +221,11 @@ def view(name: str, bearer: str, *, done: bool = False) -> tuple[bool, dict]:
         return False, err
     if name == "agenda":
         return True, {"view": name, "items": _agenda()}
-    for vname, _, fname in GTD_FILES:
+    prof = profile()
+    for vname, _, fname in prof.files(root()):
         if vname == name:
             return True, {"view": name, "items": _headings(root() / fname, done=done)}
-    for vname, _, folder in ROAM_FOLDERS:
+    for vname, _, folder in prof.roam_folders(root()):
         if vname == name:
             return True, {"view": name, "items": _folder_notes(root() / folder)}
     return False, {"error": f"no such view {name!r}", "status": 404}
@@ -305,7 +277,7 @@ def _scan(q: str, *, everything: bool, limit: int) -> list[dict]:
                 or any(part.startswith(".") for part in Path(rel).parts)):
             continue
         if not everything and any(fnmatch.fnmatch(rel, x.replace("/**", "/*"))
-                                  for x in SEARCH_EXCLUDES):
+                                  for x in profile().search_excludes):
             continue
         try:
             if p.stat().st_size > 2 * 1024 * 1024:
@@ -332,7 +304,7 @@ def _rg(q: str, *, everything: bool, limit: int) -> list[dict]:
     for s in NOTE_SUFFIXES:
         cmd += ["-g", f"*{s}"]
     if not everything:
-        for x in SEARCH_EXCLUDES:
+        for x in profile().search_excludes:
             cmd += ["-g", f"!{x}"]
     cmd += ["--", q, "."]
     try:
@@ -442,7 +414,8 @@ def entry(text: str, kind: str, now: dt.datetime | None = None) -> str:
 
 
 def capture(text: str, kind: str, bearer: str, *, remember: bool = True) -> tuple[bool, dict]:
-    """Append to inbox.org, and (unless told not to) remember it."""
+    """Append to the profile's capture file, and (unless told not to)
+    remember it."""
     user, err = auth.gate(bearer)
     if not user:
         return False, err
@@ -452,7 +425,8 @@ def capture(text: str, kind: str, bearer: str, *, remember: bool = True) -> tupl
     if len(text) > MAX_CAPTURE:
         return False, {"error": "too long for a capture", "status": 413}
     kind = kind if kind in ("todo", "note") else "todo"
-    inbox = root() / "inbox.org"
+    fname = profile().capture_file
+    inbox = root() / fname
     block = entry(text, kind)
     try:
         with inbox.open("a+") as f:
@@ -468,17 +442,17 @@ def capture(text: str, kind: str, bearer: str, *, remember: bool = True) -> tupl
     except OSError as e:
         return False, {"error": f"could not write the inbox ({e})", "status": 500}
     if remember:
-        threading.Thread(target=_remember, args=(text, kind), daemon=True).start()
+        threading.Thread(target=_remember, args=(text, kind, fname), daemon=True).start()
     print(f"notes: captured a {kind} ({len(text)} chars) for "
           f"{user.get('username')}", file=sys.stderr)
-    return True, {"path": "inbox.org", "at": at, "kind": kind, "remembered": remember}
+    return True, {"path": fname, "at": at, "kind": kind, "remembered": remember}
 
 
-def _remember(text: str, kind: str) -> None:
+def _remember(text: str, kind: str, fname: str) -> None:
     _memory_call("POST", "/memories", {
         "user_id": MEMORY_USERS[0],
         "text": f"David noted ({kind}): {text}",
-        "metadata": {"source": "agent-media notes", "path": "inbox.org",
+        "metadata": {"source": "agent-media notes", "path": fname,
                      "kind": kind}})
 
 

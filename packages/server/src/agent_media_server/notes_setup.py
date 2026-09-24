@@ -3,7 +3,7 @@
 What `notes.py` stands on, as a checklist the phone can read and fix:
 
   org      the tree itself — cloned from MEDIA_NOTES_REPO, or started fresh
-           with paragtd's files
+           with the notes profile's files (paragtd's, when it is installed)
   sync     org-autosync's timer, which commits and pushes the tree (the
            script and units come with the dotfiles `bin` package)
   memory   the memory store search asks and captures are written to — a
@@ -36,22 +36,6 @@ from . import auth, harnesses, notes
 
 PARAGTD_REPO_DEFAULT = "https://github.com/davidj4tech/paragtd.git"
 
-#: paragtd-core-files, and the head each starts with.
-SKELETON = {
-    "inbox.org": "#+title: Inbox\n#+startup: overview\n#+filetags: :inbox:\n\n",
-    "next-actions.org": "#+title: Next actions\n\n* Inbox\n",
-    "waiting-for.org": "#+title: Waiting for\n\n* Waiting\n",
-    "tickler.org": "#+title: Tickler\n\n* Tickler\n",
-    "someday.org": "#+title: Someday\n\n",
-    "areas.org": "#+title: Areas\n\n",
-    "projects.org": "#+title: Projects\n\n",
-    "journal.org": "#+title: Journal\n\n",
-    "visioning.org": "#+title: Visioning\n\n",
-    "routines.org": "#+title: Routines\n\n",
-}
-ROAM_DIRS = ("roam/projects", "roam/people", "roam/refs", "roam/notes", "roam/journal")
-
-
 def _notes_repo() -> str:
     return os.environ.get("MEDIA_NOTES_REPO", "").strip()
 
@@ -83,13 +67,15 @@ def _git(*args: str) -> str:
 
 def _org() -> dict:
     root = notes.root()
+    prof = notes.profile()
     row = {"name": "org", "label": "Notes folder", "optional": False,
            "detail": str(root), "why": None, "actions": []}
-    missing = [f for f in SKELETON if not (root / f).is_file()]
-    if root.is_dir() and "inbox.org" not in missing:
+    missing = [f for f in prof.skeleton if not (root / f).is_file()]
+    if root.is_dir() and (root / prof.capture_file).is_file():
         row["state"] = "ok"
         if missing:
-            row["why"] = f"{len(missing)} of paragtd's files are not here yet"
+            whose = f"{prof.name}'s" if prof.name else "the starting"
+            row["why"] = f"{len(missing)} of {whose} files are not here yet"
             row["actions"].append("create")
         return row
     row["state"] = "missing"
@@ -101,7 +87,7 @@ def _org() -> dict:
                       else "no notes here; start a fresh set (or set MEDIA_NOTES_REPO to clone yours)")
     else:
         row["actions"].append("create")
-        row["why"] = "the folder is here but has no inbox.org"
+        row["why"] = f"the folder is here but has no {prof.capture_file}"
     return row
 
 
@@ -167,17 +153,18 @@ def status(bearer: str) -> tuple[bool, dict]:
 # --- the doing -------------------------------------------------------------------
 
 def _create() -> dict:
-    """paragtd's files and roam folders, where they are missing. Never
+    """The profile's files and roam folders, where they are missing. Never
     overwrites a file that is there."""
     root = notes.root()
+    prof = notes.profile()
     made = []
     root.mkdir(parents=True, exist_ok=True)
-    for name, head in SKELETON.items():
+    for name, head in {prof.capture_file: "", **prof.skeleton}.items():
         p = root / name
         if not p.exists():
             p.write_text(head)
             made.append(name)
-    for d in ROAM_DIRS:
+    for d in prof.roam_dirs:
         (root / d).mkdir(parents=True, exist_ok=True)
     if not (root / ".git").exists() and shutil.which("git"):
         subprocess.run(["git", "init", "-q", str(root)], capture_output=True, timeout=15)

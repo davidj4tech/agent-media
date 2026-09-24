@@ -1600,19 +1600,26 @@ Clients: S (planned — the speech bar's picker, §14).
 ### 6.10 Notes — gated (built 22 Sep 2026)
 
 The Org tree (`~/org`, `MEDIA_NOTES_DIR` to move it), browsed, searched and
-captured into with no Emacs involved (`notes.py`). The layout is paragtd's:
-the GTD files at the top, org-roam notes under `roam/`. The file list and the
-capture template are copied from paragtd by hand for now. Commits are not
-the server's job: `org-autosync` commits and pushes the tree from every host.
+captured into with no Emacs involved (`notes.py`). The layout comes from the
+**notes profile** (`notes_profile.py`, docs/reference/extensions.md §1c). By
+default it is plain Org: every top-level `.org` file is a view, captures go to
+`inbox.org`, and the roam shelves are the folders under `roam/`. With the
+`notes-paragtd` package installed, and a tree that has `next-actions.org` (or
+`[notes] profile = "paragtd"`, `MEDIA_NOTES_PROFILE`), it is paragtd's: the
+GTD files at the top, and the refile targets and fresh tree below. Where a rule
+below is the profile's, it says so. Commits are not the server's job: `org-autosync` commits and pushes the tree from every host.
 All five routes use `auth.gate`. GETs are gzipped when the client accepts it.
 
 #### `GET /notes`
 
 `{"ok", "root", "views": [{"name", "label", "kind": "agenda"|"file"|"folder",
 "path"?, "count"?}]}`. `agenda` comes first. There is one `file` view per
-paragtd core file that exists (`count` = open TODO-like headings), and one
-`folder` view per roam folder (`count` = notes). `roam-sessions` holds the
-agents' own notes, close to a thousand of them.
+profile file that exists (`count` = open TODO-like headings): for paragtd,
+its core files in its order and with its labels; for plain Org, each
+top-level `.org` file by name, labelled with its `#+title:`. Then there is one
+`folder` view per roam shelf (`count` = notes). `roam-sessions` holds the
+agents' own notes, close to a thousand of them. Under paragtd the shelves are
+its six fixed folders; under plain Org they are whatever is under `roam/`.
 
 #### `GET /notes/view?name=<view>[&done=1]`
 
@@ -1621,8 +1628,9 @@ agents' own notes, close to a thousand of them.
   title, tags, scheduled?, deadline?}`. `at` is the 1-based line of the
   heading. DONE/CANCELLED headings are left out unless `done=1`.
 - `agenda` returns the headings scheduled or due within 7 days, plus
-  overdue ones, each with `date` and `overdue`. An astro alert more than 2
-  days past is dropped, matching `paragtd-astro-skip-stale`. Repeaters are
+  overdue ones, each with `date` and `overdue`. paragtd's agenda also reads
+  `astro.org`, and drops an astro alert more than 2 days past, matching
+  `paragtd-astro-skip-stale`. Repeaters are
   not expanded, so a routine not yet marked done shows as overdue from its
   first date.
 - A folder view returns `{path, title, modified}`, newest first, at most 300.
@@ -1645,8 +1653,8 @@ with `POST /notes/ask`, newest first (at most 20).
 `{"ok", "q", "notes": [{path, line, text}], "memories": [{id, user, score,
 text}]}`.
 - `notes` is a case-insensitive fixed-string ripgrep: at most 3 hits per file
-  and 30 in total. It skips `roam/sessions/`, `astro.org` and backups unless
-  `all=1`.
+  and 30 in total. It skips backups unless `all=1`; paragtd also skips
+  `roam/sessions/` and `astro.org`.
 - `memories` comes from the memory store (Hippocampus, the `ryer` and `sam`
   namespaces, as `agent-memory-search` uses), searched in parallel. When the
   store is down, the list comes back empty and the notes half still answers.
@@ -1654,10 +1662,10 @@ text}]}`.
 
 #### `POST /notes/capture`
 
-`{"text", "kind": "todo"|"note", "memory": bool}` → `{"ok", "path":
-"inbox.org", "at", "kind", "remembered"}`.
-- The capture is appended to `inbox.org` under an flock, using paragtd's "t"
-  template: `* TODO <first line>`, a `:CREATED:` drawer, then the remaining
+`{"text", "kind": "todo"|"note", "memory": bool}` → `{"ok", "path", "at",
+"kind", "remembered"}`.
+- The capture is appended to the profile's capture file (`inbox.org` for both
+  profiles) under an flock, using paragtd's "t" template: `* TODO <first line>`, a `:CREATED:` drawer, then the remaining
   lines as the body. `note` writes a plain heading instead of a TODO.
 - A body line starting with `*` is indented one space, so one capture is
   always one entry.
@@ -1693,9 +1701,10 @@ text}]}`.
 
 #### `POST /notes/state` · `POST /notes/refile` · `POST /notes/date` · `POST /notes/priority` — gated (`auth.gate`)
 
-These change a heading in one of the GTD files at the top of the tree:
-inbox, next-actions, waiting-for, tickler, someday, projects, areas and
-routines. Roam notes cannot be changed here (400). Every file touched is
+These change a heading in one of the profile's files at the top of the tree:
+for paragtd, inbox, next-actions, waiting-for, tickler, someday, projects,
+areas and routines; for plain Org, any top-level `.org` file. Roam notes cannot
+be changed here (400). Every file touched is
 flocked while it is read and rewritten, the same lock capture takes.
 
 **Finding the heading.** All three routes take the heading as `at` (its line as
@@ -1723,13 +1732,17 @@ the app last saw it) plus `title` (its text).
 
 `/notes/refile {"path", "at", "title", "to", "date"?}` → `{"ok", "path",
 "at", "to"}`
-- `to` is one of next, waiting, tickler, someday, projects or inbox. The
-  whole subtree moves, with its heading levels shifted to fit.
-- Where it lands follows paragtd's capture templates:
+- `to` is one of the profile's refile targets. The whole subtree moves, with
+  its heading levels shifted to fit.
+- Plain Org: `to` is a file view's name, and the heading lands at the top
+  level of that file.
+- paragtd: `to` is one of next, waiting, tickler, someday, projects or inbox,
+  and where it lands follows its capture templates:
   - `next`: under `* Inbox` in next-actions.org, as NEXT.
   - `waiting`: under `* Waiting` in waiting-for.org, as WAITING.
   - `tickler`: under `* Tickler` in tickler.org, with `SCHEDULED:` set to
-    `date` (YYYY-MM-DD, required; replaces any earlier SCHEDULED).
+    `date` (YYYY-MM-DD, required; replaces any earlier SCHEDULED). A target
+    that needs a date and has none is a 400.
   - `someday`, `projects`, `inbox`: at the top level of their files.
 - A missing file or headline is created.
 - 400 when the heading is already in the target file.
@@ -1763,7 +1776,7 @@ This is the Notes tab's checklist for a host that has no notes yet
 
 | name | what it checks | actions |
 |---|---|---|
-| `org` | the tree, with paragtd's files | `clone` (only when `MEDIA_NOTES_REPO` is set and the folder is empty); `create` (writes any missing paragtd files and roam folders, never overwrites, runs `git init` if the folder is not a repo) |
+| `org` | the tree, with the profile's files (it is `ok` once the capture file exists) | `clone` (only when `MEDIA_NOTES_REPO` is set and the folder is empty); `create` (writes any missing profile files and roam folders: paragtd's set, or for plain Org only `inbox.org`; never overwrites; runs `git init` if the folder is not a repo) |
 | `sync` | that `org-autosync.timer` is enabled; needs a git repo with a remote | `enable` |
 | `memory` | that the store answers `/health` | none. It runs on the hub and is optional. |
 | `paragtd` | the Emacs package and astro generator (`MEDIA_PARAGTD_DIR`, default `~/projects/paragtd`) | `install` (clone plus `bin/bootstrap`), `update`; optional |

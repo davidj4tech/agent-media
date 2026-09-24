@@ -21,10 +21,11 @@ Marking done does what Org does:
 - a heading with a repeater (`<2026-07-20 Mon +1d>`, `++1w`, `.+1m`) is not
   closed at all — its dates move to the next occurrence and it stays open.
 
-Refiling follows paragtd's capture templates: next actions under "* Inbox"
-in next-actions.org (as NEXT), waiting-for under "* Waiting" (as WAITING),
-the tickler under "* Tickler" (SCHEDULED on the date given), someday and
-projects at the top level of their files. The subtree moves whole, its
+Where a heading can be refiled to is the notes profile's (notes_profile.py):
+each target is a file, the headline it goes under (or the top level), and
+the state it takes. paragtd's follow its capture templates: next actions
+under "* Inbox" in next-actions.org (as NEXT), the tickler under "* Tickler"
+(SCHEDULED on the date given), and so on. The subtree moves whole, its
 levels shifted to fit.
 
 Changing a date rewrites the heading's SCHEDULED or DEADLINE stamp (`kind`)
@@ -46,17 +47,7 @@ from contextlib import ExitStack
 from pathlib import Path
 
 from . import auth
-from .notes import DONE_STATES, GTD_FILES, _HEADING, _rel, _safe_path, root
-
-#: `to` → (file, the headline it goes under or None for top level, state or None).
-REFILE_TARGETS = {
-    "next": ("next-actions.org", "Inbox", "NEXT"),
-    "waiting": ("waiting-for.org", "Waiting", "WAITING"),
-    "tickler": ("tickler.org", "Tickler", None),
-    "someday": ("someday.org", None, None),
-    "projects": ("projects.org", None, None),
-    "inbox": ("inbox.org", None, None),
-}
+from .notes import DONE_STATES, _HEADING, _rel, _safe_path, profile, root
 
 SETTABLE = ("", "TODO", "NEXT", "WAITING", "SOMEDAY", "DONE", "CANCELLED")
 
@@ -178,11 +169,11 @@ class _Locked:
 
 
 def _gtd_path(rel: str) -> Path:
-    """Only the GTD files are edited from the app; roam notes are read-only."""
+    """Only the profile's files are edited from the app; roam notes are
+    read-only."""
     p = _safe_path(rel)
-    names = {name for _, _, name in GTD_FILES} | {"inbox.org"}
-    if not p or p.parent != root().resolve() or p.name not in names:
-        raise Refused("only the GTD files (inbox, next actions, …) can be changed here", 400)
+    if not p or p.parent != root().resolve() or not profile().editable(root(), p.name):
+        raise Refused("only the task files (inbox, next actions, …) can be changed here", 400)
     return p
 
 
@@ -238,16 +229,17 @@ def refile(rel: str, at: int, title: str, to: str, bearer: str,
     user, err = auth.gate(bearer)
     if not user:
         return False, err
-    target = REFILE_TARGETS.get((to or "").strip())
+    target = profile().refile_targets(root()).get((to or "").strip())
     if not target:
         return False, {"error": f"cannot move a heading to {to!r}", "status": 400}
-    fname, headline, state = target
+    fname, headline, state, dated = target
     when = None
-    if to == "tickler":
+    if dated:
         try:
             when = dt.date.fromisoformat((date or "").strip())
         except ValueError:
-            return False, {"error": "the tickler needs a date (YYYY-MM-DD)", "status": 400}
+            return False, {"error": f"moving it to the {to} needs a date (YYYY-MM-DD)",
+                           "status": 400}
     try:
         src_path = _gtd_path(rel)
         dst_path = root() / fname

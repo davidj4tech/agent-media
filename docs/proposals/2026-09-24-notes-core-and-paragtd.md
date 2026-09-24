@@ -1,6 +1,6 @@
 # Proposal: Notes on plain Org, with paragtd as an optional package (24 Sep 2026)
 
-Status: **proposed 24 Sep 2026**. Changes §6.10 of `server-contract.md` (new
+Status: **decided 24 Sep 2026** (open questions answered as recommended); **step 1 built the same day** (the profile seam, `packages/notes-paragtd`). Changes §6.10 of `server-contract.md` (new
 fields on `GET /notes`, a profile-dependent refile/capture list), moves the
 GTD-specific half of `notes.py` / `notes_edit.py` / `notes_setup.py` into a
 new `packages/notes-paragtd`, and adds one export command to paragtd.
@@ -197,7 +197,7 @@ Steps 1–3 are what makes the app usable by someone without paragtd. Steps
 4–5 are what David asked for on the phone. Step 4 does not depend on 2–3, so
 it can go second if the phone matters more this week.
 
-## Open questions
+## Questions (decided 24 Sep 2026, each as recommended)
 
 1. **Where `notes-paragtd` lives.** It could be here in `packages/` (it's
    released and tested with the server, and Apache), or in the paragtd repo as

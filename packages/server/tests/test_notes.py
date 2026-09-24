@@ -29,6 +29,14 @@ INBOX = """\
 ** WAITING Parcel
 """
 
+@pytest.fixture(autouse=True)
+def _paragtd(monkeypatch):
+    """These trees are laid out the paragtd way, and the tests were written
+    against its views and refile targets (the notes-paragtd package; plain
+    Org is test_notes_plain.py)."""
+    monkeypatch.setenv("MEDIA_NOTES_PROFILE", "paragtd")
+
+
 #: What the stubbed store was asked to remember, this test.
 REMEMBERED: list[dict] = []
 

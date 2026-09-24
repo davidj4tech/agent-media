@@ -28,6 +28,14 @@ INBOX = """\
 NOW = dt.datetime(2026, 9, 22, 10, 30)
 
 
+@pytest.fixture(autouse=True)
+def _paragtd(monkeypatch):
+    """These trees are laid out the paragtd way, and the tests were written
+    against its views and refile targets (the notes-paragtd package; plain
+    Org is test_notes_plain.py)."""
+    monkeypatch.setenv("MEDIA_NOTES_PROFILE", "paragtd")
+
+
 @pytest.fixture()
 def org(tmp_path, monkeypatch):
     root = tmp_path / "org"
