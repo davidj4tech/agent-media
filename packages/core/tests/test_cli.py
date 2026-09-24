@@ -687,6 +687,30 @@ def test_skip_playlist_sets_playlist_pos_and_highlights(monkeypatch, tmp_path):
     assert hl["s"] == "b"
 
 
+def test_skip_forward_on_the_last_sentence_finishes_the_reply(monkeypatch, tmp_path):
+    """The speech bar's → on the last sentence was clamped back to that same
+    sentence and restarted it — heard as a ← (2026-09-25). Past the end is
+    the end: it finishes the reply, never re-sets playlist-pos."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    fake = _FakeIpc({"idle-active": False, "playlist-count": 3,
+                     "playlist-pos": 2})
+    monkeypatch.setattr(cli, "ipc", fake)
+    monkeypatch.setattr(cli, "_sock", lambda: "/s")
+    ended = []
+    monkeypatch.setattr(cli, "cmd_jump", lambda a: ended.append(a.where) or 0)
+
+    class FakeStore:
+        def get_now_playing(self, sink):
+            return {"extras": {"clip_sentences": ["a", "b", "c"],
+                               "clip_paragraph_idx": [0, 1, 2]}}
+
+    monkeypatch.setattr(cli, "StateStore", FakeStore)
+    assert cli.cmd_skip(_skip_args("sentence", 1)) == 0
+    assert cli.cmd_skip(_skip_args("paragraph", 1)) == 0
+    assert ended == ["end", "end"]
+    assert not [c for c in fake.calls if c[:2] == ("set", "playlist-pos")]
+
+
 def test_replay_steps_past_a_render_that_failed(monkeypatch):
     """`r` in the popup addresses the newest row. A row that never rendered has
     no clip — only the pseudo-uri naming the command the lane ran — and used to

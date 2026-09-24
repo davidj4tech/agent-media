@@ -3159,18 +3159,19 @@ def cmd_skip(a) -> int:
     # it differed, and stepping was the only way offered. The canvas transcript
     # asks for this when a line is double-tapped.
     if getattr(a, "to", None) is not None:
-        target = int(a.to)
+        target = min(max(int(a.to), 0), n - 1)
     else:
         target = _nav_target(cur, n, para_idx, a.unit, direction)
-    if target < 0:
-        target = 0
-    if target > n - 1:
-        target = n - 1
-    _write_skip_cursor(min(target, n - 1))
+        if target >= n:
+            # A step past the last sentence finishes the reply. It used to be
+            # clamped to the last sentence (a clamp meant for the absolute
+            # jump), so a forward press there restarted the sentence being
+            # heard — the speech bar's → sounded like a ←.
+            return cmd_jump(argparse.Namespace(where="end"))
+        target = max(target, 0)
+    _write_skip_cursor(target)
 
     if playlist:
-        if target >= n:
-            return _seek_to_end(sock)
         try:
             ipc.set_property(sock, "playlist-pos", target, critical=True)
         except ipc.MpvIpcError:
@@ -3194,8 +3195,6 @@ def cmd_skip(a) -> int:
     # a timeline. Seek the player to where the sentence starts.
     offsets = ex.get("clip_offsets_s") or []
     if len(offsets) == n:
-        if target >= n:
-            return _seek_to_end(sock)
         try:
             ipc.command(sock, "seek", float(offsets[target]), "absolute",
                         critical=True)
