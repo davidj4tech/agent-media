@@ -185,8 +185,12 @@ once from Emacs by setup's `agenda` row), and paragtd's GTD files from
 Closing a sequenced step from the phone follows Org's dependency blocking and
 runs paragtd's next-step trigger, and the Organiser says which step is next.
 The app takes its keywords and refile targets from `GET /notes`. On the red5
-server and preview; in Next at the next CI build. **Left:** paragtd's capture
-templates as capture kinds on the phone, and the astro timer.
+server and preview; in Next at the next CI build. Then **More…** beside the
+capture box: your capture templates (the manifest's, site ones too) filled
+and filed as org-capture would, prompts drawn above the box; templates that
+call Emacs functions (morning/midday/evening/visioning) stay in Emacs. And
+`paragtd-astro.timer` (monthly, turned on from setup) keeps astro.org a year
+ahead.
 
 ## Queued, in order
 
