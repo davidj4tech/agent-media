@@ -314,19 +314,25 @@ def project_of(cwd: str, folder: str = "") -> str | None:
 
     David's layout: the series its shelf folder is filed under
     (`p-agent-media`), else `p-<name>` for a directory under ~/projects (a
-    worktree inside one counts as that project); a directory outside
-    ~/projects names no project. Default layout: the folder's basename
-    (`layout.project_of_path`)."""
-    from agent_media_core import layout
+    worktree inside one counts as that project), else the name of the
+    directory it runs in (`org`, `scratch` — the name its tmux session has
+    when it has one); home itself names no project. The shelf's catch-all
+    folder (`book_tracks.UNFILED`, where a conversation with no workspace
+    goes: a phone-started one in ~/org) is not a series. Default layout: the
+    folder's basename (`layout.project_of_path`)."""
+    from agent_media_core import book_tracks, layout
 
     if layout.projects():
         series = Path(folder).parent.name if folder else ""
-        if series:
+        if series and series != book_tracks.UNFILED:
             return series
         root = os.path.expanduser("~/projects")
         if cwd and cwd.startswith(root + "/"):
             tail = cwd[len(root) + 1:].split("/", 1)[0]
             return layout.encoded_project_label(tail) or None
+        home = os.path.expanduser("~")
+        if cwd and cwd.rstrip("/") not in (home, root):
+            return Path(cwd).name or None
         return None
     return layout.project_of_path(cwd) if cwd else None
 

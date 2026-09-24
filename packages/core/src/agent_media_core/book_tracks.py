@@ -58,12 +58,17 @@ log = logging.getLogger(__name__)
 _UNSAFE = re.compile(r"[^\w .,()'’-]+")
 
 
+#: The folder a conversation with no workspace is filed under: a catch-all,
+#: not a project, so nothing should show it as one.
+UNFILED = "conversation"
+
+
 def safe_name(text: str, limit: int = 110) -> str:
     name = _UNSAFE.sub(" ", (text or "").replace("·", "-")).strip()
     name = re.sub(r"\s+", " ", name).strip(" .")
     if len(name) > limit:
         name = name[:limit].rsplit(" ", 1)[0].rstrip(" .,-")
-    return name or "conversation"
+    return name or UNFILED
 
 
 def root() -> Path:

@@ -299,7 +299,9 @@ Everything a message can be pointed at.
   (`sessions.project_of`, `agent_media_core/layout.py`). David's layout: the
   series its shelf folder is filed under (`p-agent-media`), else `p-<name>`
   for a directory under `~/projects` (a worktree inside one counts), else
-  `null`. Default layout: the folder's basename (home is `sasonica`). Both
+  the directory's own name (`org`, `scratch`; 24 Sep 2026), `null` for home.
+  The shelf's catch-all folder `conversation` (a thread with no workspace)
+  is never a series. Default layout: the folder's basename (home is `sasonica`). Both
   `null` when unknown. The app draws `project` as a small line under the
   title and groups its By-project order by it. The same two keys are on
   `/conversations` rows, `/dashboard`'s `recent`, `working` and

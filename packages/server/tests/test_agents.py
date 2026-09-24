@@ -413,7 +413,13 @@ def test_project_of_follows_the_layout(monkeypatch):
     assert sessions.project_of(f"{home}/agent-media") == "p-agent-media"
     assert sessions.project_of(f"{home}/agent-media/.claude/worktrees/x") == "p-agent-media"
     assert sessions.project_of("/tmp/x", "/lib/Conversations/p-music/A title") == "p-music"
-    assert sessions.project_of("/tmp/x") is None
+    # Outside ~/projects: the directory's own name (David's screenshot, 24 Sep
+    # 2026: ~/org threads were all "conversation"), never the shelf's
+    # catch-all folder, and home itself is no project.
+    assert sessions.project_of("/tmp/x") == "x"
+    assert sessions.project_of(os.path.expanduser("~/org"), "/lib/Conversations/conversation/About a TODO") == "org"
+    assert sessions.project_of(os.path.expanduser("~")) is None
+    assert sessions.project_of(home) is None
     assert sessions.project_of("") is None
     monkeypatch.setenv("MEDIA_LAYOUT", "default")
     assert sessions.project_of(f"{home}/agent-media") == "agent-media"
