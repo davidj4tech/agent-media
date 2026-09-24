@@ -152,6 +152,27 @@ def test_file_scan_reads_headings_and_dates(tmp_path):
     assert "money" in got[0].tags
 
 
+def test_file_scan_reads_plain_timestamped_headings(tmp_path):
+    p = tmp_path / "astro.org"
+    p.write_text("* 2026 Sun Sign Alerts\n"
+                 "** Sun enters Libra\n:PROPERTIES:\n:UTC: 2026-09-23 00:05\n:END:\n"
+                 "<2026-09-23 Wed 10:05>\n- Review the season's emphasis.\n"
+                 "** Undated note\n")
+    got = ag.entries_via_files([p])
+    assert [i.heading for i in got] == ["Sun enters Libra"]
+    assert got[0].timestamp == dt.date(2026, 9, 23) and got[0].todo == ""
+
+
+def test_a_past_event_is_over_not_overdue(monkeypatch):
+    monkeypatch.setenv("MEDIA_AGENDA_ASIDE_FILES", "astro.org")
+    ev = lambda h, days: ag._item({"heading": h, "file": "astro.org",
+                                   "timestamp": f"<{TODAY + dt.timedelta(days=days)}>"})
+    body = _text([ev("Sun enters Virgo", -1), ev("Full moon", 2)])
+    assert "Sun enters Virgo" not in body
+    assert "Full moon, Tuesday." in body and "1 entry in total." in body
+    assert "past" not in body.split("Astrology.")[0]
+
+
 def test_file_scan_survives_a_missing_file():
     assert ag.entries_via_files(["/nope/absent.org"]) == []
 

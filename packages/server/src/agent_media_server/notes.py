@@ -56,6 +56,8 @@ MAX_ITEMS = 300
 _STARS = re.compile(r"^(\*+)\s")
 _TODO_LINE = re.compile(r"^#\+(?:SEQ_|TYP_)?TODO:\s*(.*)$", re.I)
 _STAMP = re.compile(r"\b(SCHEDULED|DEADLINE):\s*<(\d{4}-\d{2}-\d{2})[^>]*>")
+# A plain active timestamp in an entry's body: an event on that day.
+_PLAIN = re.compile(r"<(\d{4}-\d{2}-\d{2})[^>]*>")
 _TITLE = re.compile(r"^#\+title:\s*(.+)$", re.I | re.M)
 _ID_PROP = re.compile(r"^\s*:ID:\s*(\S+)", re.M)
 _ID_LINK = re.compile(r"\[\[id:([^\]]+)\](?:\[([^\]]*)\])?\]")
@@ -167,6 +169,9 @@ def _headings(path: Path, *, done: bool) -> list[dict]:
         elif out and line.lstrip().startswith(("SCHEDULED", "DEADLINE")):
             for kind, date in _STAMP.findall(line):
                 out[-1][kind.lower()] = date
+        elif out and "timestamp" not in out[-1] and not line.lstrip().startswith("CLOSED"):
+            if plain := _PLAIN.search(line):
+                out[-1]["timestamp"] = plain.group(1)
     if not done:
         out = [h for h in out if h["state"] not in kw.done]
     return out
@@ -199,21 +204,23 @@ def _folder_notes(folder: Path) -> list[dict]:
 def _agenda(today: dt.date | None = None) -> list[dict]:
     """What is scheduled or due in the next week, and what is overdue — the
     agenda Emacs would show, from the same files; the profile may drop some
-    (paragtd ages past astro alerts out)."""
+    (paragtd ages past astro alerts out). A plain timestamp is an event on its
+    day: shown ahead like the rest, never overdue."""
     today = today or dt.date.today()
     horizon = today + dt.timedelta(days=AGENDA_AHEAD_DAYS)
     prof = profile()
     items = []
     for name in prof.agenda_files(root()):
         for h in _headings(root() / name, done=False):
-            date = h.get("deadline") or h.get("scheduled")
+            date = h.get("deadline") or h.get("scheduled") or h.get("timestamp")
             if not date:
                 continue
             try:
                 when = dt.date.fromisoformat(date)
             except ValueError:
                 continue
-            if when > horizon:
+            planned = h.get("deadline") or h.get("scheduled")
+            if when > horizon or (when < today and not planned):
                 continue
             if not prof.agenda_keep(root(), name, (today - when).days):
                 continue

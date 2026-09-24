@@ -52,11 +52,14 @@ class Item:
     # The clock time on the timestamp (`<2026-09-24 Thu 14:00>`), if any.
     scheduled_at: Optional[_dt.time] = None
     deadline_at: Optional[_dt.time] = None
+    # A plain active timestamp in the body: an event on that day, which is
+    # over once the day is, rather than a plan that can fall behind.
+    timestamp: Optional[_dt.date] = None
 
     @property
     def when(self) -> Optional[_dt.date]:
         """Deadlines outrank scheduling: one is a commitment, the other a plan."""
-        return self.deadline or self.scheduled
+        return self.deadline or self.scheduled or self.timestamp
 
 
 def _date(raw: Optional[str]) -> Optional[_dt.date]:
@@ -97,6 +100,7 @@ def _item(d: dict) -> Item:
         file=str(d.get("file") or ""),
         scheduled_at=_clock(sched),
         deadline_at=_clock(d.get("deadline")),
+        timestamp=_date(d.get("timestamp")),
     )
 
 
@@ -129,6 +133,9 @@ _HEAD = re.compile(r"^\*+\s+([A-Z]{3,})\s+(.*?)(?:\s+(:[\w@#%:]+:))?\s*$")
 _SCHED = re.compile(r"SCHEDULED:\s*([<\[][^>\]]+[>\]])")
 _DEAD = re.compile(r"DEADLINE:\s*([<\[][^>\]]+[>\]])")
 _PRIO = re.compile(r"\[#([A-Z0-9])\]\s*")
+_PLAIN_HEAD = re.compile(r"^\*+\s+(.*?)(?:\s+(:[\w@#%:]+:))?\s*$")
+_ACTIVE = re.compile(r"<\d{4}-\d{2}-\d{2}[^>]*>")
+_PLANNING = ("SCHEDULED", "DEADLINE", "CLOSED")
 _DONE_WORDS = {"DONE", "CANCELLED", "CANCELED"}
 
 
@@ -151,6 +158,9 @@ def entries_via_files(paths: list) -> list:
         for i, line in enumerate(lines):
             m = _HEAD.match(line)
             if not m:
+                event = _plain_event(lines, i)
+                if event:
+                    items.append(_item({**event, "file": name}))
                 continue
             state, heading = m.group(1), m.group(2)
             prio = _PRIO.match(heading)
@@ -169,6 +179,25 @@ def entries_via_files(paths: list) -> list:
                 "file": name,
             }))
     return items
+
+
+def _plain_event(lines: list, i: int) -> Optional[dict]:
+    """A heading with no state but an active timestamp in its body (before
+    the next heading): Org shows it on that day, so the scan does too."""
+    m = _PLAIN_HEAD.match(lines[i])
+    if not m:
+        return None
+    for j, line in enumerate(lines[i:]):
+        if j and line.startswith("*"):
+            return None
+        if line.lstrip().startswith(_PLANNING):
+            continue
+        ts = _ACTIVE.search(line)
+        if ts:
+            return {"todo": "", "heading": m.group(1),
+                    "tags": [t for t in (m.group(2) or "").split(":") if t],
+                    "timestamp": ts.group(0)}
+    return None
 
 
 def agenda_files() -> list:
@@ -220,8 +249,8 @@ def say_item(it: Item, today: _dt.date, with_date: bool = True) -> str:
     if it.priority:
         bits = f"priority {it.priority}, {bits}"
     if with_date and it.when:
-        verb = "due" if it.deadline else "scheduled"
-        bits += f", {verb} {say_date(it.when, today)}"
+        verb = "due" if it.deadline else "scheduled" if it.scheduled else ""
+        bits += f", {verb + ' ' if verb else ''}{say_date(it.when, today)}"
     return bits + "."
 
 
@@ -268,7 +297,10 @@ def _aside_title(files: set) -> str:
 def agenda_sections(items: list, today: Optional[_dt.date] = None) -> list:
     today = today or _dt.date.today()
     aside_names = aside_files()
-    open_all = [i for i in items if not i.done]
+    # An event whose day has passed is over, not overdue.
+    open_all = [i for i in items if not i.done
+                and not (i.timestamp and i.timestamp < today
+                         and not (i.deadline or i.scheduled))]
     aside = [i for i in open_all if i.file in aside_names]
     open_items = [i for i in open_all if i.file not in aside_names]
 

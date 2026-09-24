@@ -129,6 +129,17 @@ def test_the_agenda_skips_stale_astro(tree):
     assert items[0]["overdue"] is True
 
 
+def test_a_plain_timestamp_is_an_event_on_its_day(tree):
+    (tree / "astro.org").write_text(
+        "* Sun enters Virgo\n:PROPERTIES:\n:SIGN: Virgo\n:END:\n<2026-08-23 Sun 12:18>\n"
+        "* Sun enters Libra\n:PROPERTIES:\n:SIGN: Libra\n:END:\n<2026-09-23 Wed 10:05>\n")
+    items = [h for h in notes._agenda(dt.date(2026, 9, 22)) if h["path"] == "astro.org"]
+    assert [(h["title"], h["date"], h["overdue"]) for h in items] == [
+        ("Sun enters Libra", "2026-09-23", False)]
+    # The day after, it is gone rather than overdue.
+    assert not [h for h in notes._agenda(dt.date(2026, 9, 24)) if h["path"] == "astro.org"]
+
+
 def test_read_a_subtree_and_follow_id_links(tree, server):
     _, views = _call(server, "GET", "/notes/view?name=inbox")
     tv = next(h for h in views["items"] if h["title"] == "Fix the TV ssh")

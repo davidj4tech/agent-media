@@ -1655,12 +1655,14 @@ keywords is part of the title.
 
 `{"ok", "view", "items": [...]}`.
 - A file view returns its headings as `{path, at, level, state, priority,
-  title, tags, scheduled?, deadline?}`. `at` is the 1-based line of the
+  title, tags, scheduled?, deadline?, timestamp?}`. `at` is the 1-based line of the
   heading. DONE/CANCELLED headings are left out unless `done=1`.
 - `agenda` returns the headings scheduled or due within 7 days, plus
-  overdue ones, each with `date` and `overdue`. paragtd's agenda also reads
-  `astro.org`, and drops an astro alert more than 2 days past, matching
-  `paragtd-astro-skip-stale`. Repeaters are
+  overdue ones, each with `date` and `overdue`. A heading with a plain active
+  timestamp in its body (`timestamp`) is an event: listed on its day and up to
+  7 days ahead, never overdue, as Org shows it. paragtd's agenda also reads
+  `astro.org` (its alerts are such events now), and drops an older, scheduled
+  astro alert more than 2 days past, matching `paragtd-astro-skip-stale`. Repeaters are
   not expanded, so a routine not yet marked done shows as overdue from its
   first date.
 - A folder view returns `{path, title, modified}`, newest first, at most 300.

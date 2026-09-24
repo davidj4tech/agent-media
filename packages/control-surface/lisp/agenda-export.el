@@ -14,10 +14,12 @@
 (require 'json)
 
 (defun media-agenda--entry ()
-  "One agenda entry as an alist, or nil when the heading has no TODO state."
-  (let ((state (org-get-todo-state)))
-    (when state
-      (list (cons 'todo state)
+  "One agenda entry as an alist, or nil when the heading has neither a TODO
+state nor a plain active timestamp (an event on its day, as Org shows it)."
+  (let ((state (org-get-todo-state))
+        (stamp (org-entry-get nil "TIMESTAMP")))
+    (when (or state stamp)
+      (list (cons 'todo (or state ""))
             (cons 'done (and (member state org-done-keywords) t))
             (cons 'heading (or (nth 4 (org-heading-components)) ""))
             (cons 'priority (let ((p (nth 3 (org-heading-components))))
@@ -25,11 +27,13 @@
             (cons 'tags (or (org-get-tags) []))
             (cons 'scheduled (org-entry-get nil "SCHEDULED"))
             (cons 'deadline (org-entry-get nil "DEADLINE"))
+            (cons 'timestamp stamp)
             (cons 'file (file-name-nondirectory
                          (or (buffer-file-name) "")))))))
 
 (defun media-agenda-export (out)
-  "Write every TODO-stateful entry across `org-agenda-files' to OUT as JSON."
+  "Write every TODO-stateful or timestamped entry across `org-agenda-files'
+to OUT as JSON."
   (let ((entries '()))
     (dolist (f (org-agenda-files))
       (when (file-readable-p f)
