@@ -164,6 +164,22 @@ reply no longer moves the view — it stays where you put it, no pill — and
 the bold still marks the sentence (`lib/followOn.ts`, `test/follow.mjs` F6).
 chat-prototype `f85a2acf`, android-next `046fa5f7`, installed on p8a.
 
+A reply stops the reading (David, 25 Sep 2026): replying to a thread ends
+its reply being read at the close of the sentence playing, and drops what it
+had queued (the `read` cut; `/reply` and Claude Code's UserPromptSubmit hook).
+While the thread is read, the reply box carries a "Stops reading" chip; a tap
+makes it "Keep reading" for that one send (`keep_reading`, §6.3). Auto speak
+threads are never cut. agent-media `5518ac7`, chat-prototype `5c3f8d1a`,
+android-next `6861b775`, installed on p8a.
+
+Earcons (David, 25 Sep 2026): made in code, no audio assets
+(`earcons.py`) — a soft tick when a reply is cut short on purpose (a Stop, a
+reply, an answered question), a rising two-note before speech that barges in
+over another thread, a falling two-note when a reply is held behind a Play
+(never for Quiet). Only on an idle player, never inside a reply's playlist.
+`MEDIA_EARCONS=0`, or `MEDIA_EARCON_CUT` / `_INTERRUPT` / `_HELD`. Not yet
+heard on the phone.
+
 The assistant button talks into the thread on screen (David, 25 Sep 2026):
 pressed while a thread is showing, that thread's composer listens (same 3 s
 auto-send); from another app, the lock screen or a cold start it is a new
