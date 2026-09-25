@@ -1308,6 +1308,7 @@ def sessions_index(*, days: float = STORE_DAYS) -> list[dict]:
     lv, dflt = levels(), default_level()
     for row in out:
         row["speech"] = lv.get(row["session"], dflt)
+        row["speech_own"] = row["session"] in lv
         row["priority"] = row["speech"] in SPEAKS
     # Where each thread is: its directory and the project it is filed under,
     # for the small line under the title and the list's By-project order.

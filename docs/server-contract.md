@@ -286,7 +286,8 @@ Everything a message can be pointed at.
 - `speech` (every row, 24 Sep 2026): the thread's speech level —
   `"interrupt"`, `"auto"`, `"normal"` or `"quiet"` — set with
   `POST /session/priority` (§6.4) or `media priority`; a thread with none
-  of its own has the default (`/speech/default`). `priority` (same
+  of its own has the default (`/speech/default`), and `speech_own` (25 Sep
+  2026) says whether the level is its own. `priority` (same
   day) is true for interrupt and auto: its replies are never held by the
   desk toast and never silenced by a pane mute.
 - `harness` (every row, 23 Sep 2026): which agent holds the conversation —
@@ -1246,7 +1247,7 @@ Pinned by `packages/server/tests/test_reap.py`.
 
 #### `POST /session/priority` — gated (24 Sep 2026)
 
-`{"session", "level"}` → `{"ok": true, "session", "level", "priority"}`.
+`{"session", "level"}` → `{"ok": true, "session", "level", "own", "priority"}`.
 
 What happens to the thread's replies (a Claude Code Stop read-out; its
 questions are never touched):
@@ -1266,9 +1267,12 @@ questions are never touched):
   bare number is the older flag, read as auto), so the hooks read it without
   the server; `media priority [interrupt|auto|normal|quiet|status]` sets the
   same thing from a pane. Outlives the session, like a pin.
-- 400 `"level must be interrupt, auto, normal or quiet"`; the other
+- 400 `"level must be interrupt, auto, normal, quiet or default"`; the other
   refusals and CORS exactly as `/session/pin`.
 
+- `"level": "default"` (25 Sep 2026) clears the thread's own level, so it
+  follows the default. The answer's `level` is the one it now has, and
+  `own` whether that is its own.
 - A level equal to the default (`/speech/default`) clears the thread's own,
   so it follows the default from then on; any other is kept, normal
   included.

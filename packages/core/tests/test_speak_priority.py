@@ -140,6 +140,9 @@ def test_default_level_covers_every_conversation_without_its_own(tmp_path, monke
     assert speak_priority.set_level(SID, "quiet") is False
     assert speak_priority.set_level(SID, "normal") is True       # normal is its own now
     assert speak_priority.levels() == {SID: "normal"}
+    assert speak_priority.clear_level(SID) is True
+    assert speak_priority.clear_level(SID) is False
+    assert speak_priority.level_of(SID) == "quiet"
     speak_priority.set_default("normal")
     assert speak_priority.level_of("other") == "normal"
 

@@ -66,9 +66,10 @@ def session_pin(session: str, flag, bearer: str) -> tuple[bool, dict]:
 def session_priority(session: str, flag, bearer: str, level=None) -> tuple[bool, dict]:
     """`POST /session/priority {"session", "level"}`: the thread's speech
     level — `interrupt`, `auto`, `normal` or `quiet`
-    (`agent_media_core.speak_priority`). The older `{"priority": bool}` is
-    auto / normal and still accepted. Refused exactly as `/session/pin` is;
-    with neither given, auto."""
+    (`agent_media_core.speak_priority`), or `default` to clear its own so it
+    follows the default. The older `{"priority": bool}` is auto / normal and
+    still accepted. Refused exactly as `/session/pin` is; with neither given,
+    auto. Answers the level it now has, and `own`: whether that is its own."""
     from agent_media_core import speak_priority
 
     session = (session or "").strip()
@@ -80,8 +81,8 @@ def session_priority(session: str, flag, bearer: str, level=None) -> tuple[bool,
         if not isinstance(flag, bool):
             return False, {"error": "priority must be true or false", "status": 400}
         level = "auto" if flag else "normal"
-    if level not in speak_priority.LEVELS:
-        return False, {"error": "level must be interrupt, auto, normal or quiet",
+    if level not in speak_priority.LEVELS and level != "default":
+        return False, {"error": "level must be interrupt, auto, normal, quiet or default",
                        "status": 400}
     user, err = auth.gate(bearer)
     if not user:
@@ -90,10 +91,15 @@ def session_priority(session: str, flag, bearer: str, level=None) -> tuple[bool,
             or sessions._folder_for_session(session)):
         return False, {"error": f"no such session {session[:8]}", "status": 404}
     try:
-        speak_priority.set_level(session, level)
+        if level == "default":
+            speak_priority.clear_level(session)
+        else:
+            speak_priority.set_level(session, level)
     except OSError as e:
         return False, {"error": f"could not save the level ({e})", "status": 500}
+    level = speak_priority.level_of(session)
     return True, {"session": session, "level": level,
+                  "own": session in speak_priority.levels(),
                   "priority": level in speak_priority.SPEAKS}
 
 

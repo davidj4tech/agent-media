@@ -132,6 +132,25 @@ def set_level(session: str, level: str) -> bool:
     return True
 
 
+def clear_level(session: str) -> bool:
+    """Drop `session`'s own level, so it follows the default. True when it had one."""
+    if not session:
+        return False
+    path = _path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path.with_suffix(".lock"), "a") as lk:
+        fcntl.flock(lk.fileno(), fcntl.LOCK_EX)
+        try:
+            rows = _read()
+            if session not in rows:
+                return False
+            rows.pop(session)
+            _write(path, rows)
+        finally:
+            fcntl.flock(lk.fileno(), fcntl.LOCK_UN)
+    return True
+
+
 def set_default(level: str) -> bool:
     """Set the level of every conversation with none of its own. True when
     that changed anything."""

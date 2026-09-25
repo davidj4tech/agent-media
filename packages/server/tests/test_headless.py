@@ -581,7 +581,7 @@ def test_ask_new_starts_a_headless_session_and_it_is_listed(app_host, server, si
     st, body = req(server, "GET", "/targets", headers=AUTH)
     row = next(r for r in body["sessions"] if r["session"] == sid)
     assert row == {"session": sid, "title": "reply: hi there", "live": True, "pane": None,
-                   "recap": None, "archived": False, "rested": None, "pinned": False, "priority": False, "speech": "normal",
+                   "recap": None, "archived": False, "rested": None, "pinned": False, "priority": False, "speech": "normal", "speech_own": False,
                    "driver": "headless", "drivable": True, "harness": "claude",
                    "source": "sessiond", "project": "work", "cwd": row["cwd"]}
     # Its directory, from its transcript; outside ~/projects the directory's
