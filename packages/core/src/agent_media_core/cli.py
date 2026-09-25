@@ -3134,6 +3134,11 @@ def cmd_skip(a) -> int:
                        .get("extras") or {})
                 if ex2.get("clip_sentences"):
                     return cmd_skip(a)
+    if n == 1 and not idle and a.dir > 0 and getattr(a, "to", None) is None:
+        # One sentence: the next one is the end. A time-seek off its end
+        # looked like a Stop to a replayed question's follower, which then
+        # never went on to the answer.
+        return cmd_jump(argparse.Namespace(where="end"))
     if n <= 1 or idle:
         return _time_seek()
     if len(para_idx) != n:
@@ -3313,9 +3318,49 @@ def _do_replay(index: int, session: Optional[str] = None) -> int:
         if offset:
             print(f"media: skipped {offset} turn(s) that never rendered",
                   file=sys.stderr)
+        question = _question_before(row)
+        if question is not None:
+            # The question, then its answer: the question's follower starts
+            # the reply when the question has played out (`replay-track
+            # --then-id`), so a Stop in the question stops both.
+            return _replay_row(question, then_id=int(row["id"]))
         return _replay_row(row)
     print("media: no clip to replay", file=sys.stderr)
     return 1
+
+
+def _question_before(row: dict) -> Optional[dict]:
+    """The listener's own turn this reply answers, or None.
+
+    The traversal leaves the listener's turns out (`_speech_history`), but a
+    replay of a reply reads the question first (David, 2026-09-25: "I like
+    that it reads my message, but it should also read the reply that
+    follows"). It is the question only when it is the conversation's row
+    right before this one — a second reply to the same question is heard on
+    its own. A row with no per-clip durations gets no follower to chain from,
+    so it is not offered."""
+    rid = row.get("id")
+    session = (row.get("extras") or {}).get("source_session")
+    if rid is None or not session:
+        return None
+    rows = StateStore().recent_history(sink="speech", limit=400)
+    seen = False
+    for r in rows:                      # newest first
+        if not seen:
+            seen = r.get("id") == rid
+            continue
+        ex = r.get("extras") or {}
+        if not isinstance(ex, dict) or ex.get("source_session") != session:
+            continue
+        if ex.get("kind") == "notif":
+            continue
+        if r.get("source") != "listener" or not _row_has_audio(r):
+            return None
+        uris = ex.get("clip_uris") or [r.get("uri")]
+        if len(ex.get("clip_durations_s") or []) != len(uris):
+            return None
+        return r
+    return None
 
 
 def replay_sentence_map(row: dict) -> list[str]:
@@ -3345,7 +3390,8 @@ def replay_sentence_map(row: dict) -> list[str]:
     return []
 
 
-def _replay_row(row: dict, from_sentence: Optional[int] = None) -> int:
+def _replay_row(row: dict, from_sentence: Optional[int] = None,
+                then_id: Optional[int] = None) -> int:
     """Play one speech-history row: push its clips to the speech target and
     refresh now_playing (+ position follower). The traversal path addresses
     rows by index (`_do_replay`); the clip browser addresses them by history
@@ -3414,7 +3460,7 @@ def _replay_row(row: dict, from_sentence: Optional[int] = None) -> int:
     try:
         rc = _push_replay(row, ex, clip_uris, clip_durations, replay_text,
                           speech_target, pane, recorded, replay_lock,
-                          start=start)
+                          start=start, then_id=then_id)
         if rc == 0 and ex.get("held") and row.get("id"):
             # A held reply has now been heard: the transcript drops its
             # big Play (session_feed.Turn.unheard).
@@ -3501,7 +3547,8 @@ def _seek_when_loaded(sock, secs: float, tries: int = 20) -> bool:
 
 def _push_replay(row: dict, ex: dict, clip_uris: list, clip_durations: list,
                  replay_text: str, speech_target: Target, pane: str,
-                 recorded: bool, replay_lock, start: int = 0) -> int:
+                 recorded: bool, replay_lock, start: int = 0,
+                 then_id: Optional[int] = None) -> int:
     """The body of `_replay_row` once the token is settled: push the clips,
     label them, write now_playing and spawn the follower.
 
@@ -3692,7 +3739,8 @@ def _push_replay(row: dict, ex: dict, clip_uris: list, clip_durations: list,
              "--offsets", json.dumps(clip_offsets) if _hl else "",
              "--pane", pane,
              "--durations", json.dumps(clip_durations)]
-            + (["--lock-fd", str(lock_fd)] if lock_fd is not None else []),
+            + (["--lock-fd", str(lock_fd)] if lock_fd is not None else [])
+            + (["--then-id", str(then_id)] if then_id is not None else []),
             start_new_session=True,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
@@ -4270,12 +4318,50 @@ def cmd_replay_track(a) -> int:
             pass
         time.sleep(0.05)
 
+    then_id = getattr(a, "then_id", None)
+
+    def _then() -> int:
+        """Start the row queued behind this one (`--then-id`: the reply after
+        a replayed question), as its own replay with its own follower. The
+        token goes first, or that replay would wait on us for it."""
+        if token is not None:
+            try:
+                token.release()
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            subprocess.Popen([sys.executable, "-m", "agent_media_core.cli",
+                              "replay", "--id", str(then_id)],
+                             start_new_session=True, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+        except OSError:
+            pass
+        return 0
+
+    def _played_out(snap: dict) -> bool:
+        """Did the player go idle because the last clip ended, not a Stop?
+        The player says only "idle", so read the last position seen: on the
+        last clip, within a poll or two of its end."""
+        if not durations:
+            return False
+        pos = snap.get("playlist-pos")
+        clip = int(pos) if isinstance(pos, int) and pos >= 0 else 0
+        tp = snap.get("time-pos")
+        return (clip == len(durations) - 1 and tp is not None
+                and float(tp) >= float(durations[-1]) - 2.0)
+
     last_pos = -1
     fail_streak = 0
+    last_snap: dict = {}
     while True:
         time.sleep(0.15)
-        if _barged_in() or _ended_by_listener():
+        if _barged_in():
             return _step_aside()
+        if _ended_by_listener():
+            # End of the question moves on to its answer.
+            _step_aside()
+            return _then() if then_id is not None else 0
         try:
             # One batched snapshot per tick — over the phone bridge each hop
             # is slow, and this loop is per-tick anyway for the mirror.
@@ -4294,10 +4380,14 @@ def cmd_replay_track(a) -> int:
             time.sleep(0.15)
             try:
                 if bool(ipc.get_property(_sock(), "idle-active")):
-                    return _finish()
+                    _finish()
+                    if then_id is not None and _played_out(last_snap):
+                        return _then()
+                    return 0
             except Exception:  # noqa: BLE001
                 pass
             continue
+        last_snap = snap
         idx = _mirror(snap)
         if highlight and idx != last_pos and 0 <= idx < len(sentences):
             highlighter.show(sentences[idx], first=(idx == 0), force=False)
@@ -8167,6 +8257,9 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument("--durations", default="")
     # The playback token, taken by the replay and handed down (_replay_row).
     s.add_argument("--lock-fd", type=int, default=-1)
+    # A history row to replay once this one has played to its end (the
+    # reply after a replayed question). Not after a Stop or a barge-in.
+    s.add_argument("--then-id", type=int, default=None)
     s.set_defaults(func=cmd_replay_track)
 
     s = sub.add_parser("errors", help="recent errors from every component")

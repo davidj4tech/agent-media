@@ -189,3 +189,53 @@ def test_the_listeners_own_turn_is_never_replayed(env):
                     extras={"source_session": "aaa"})
     got = [r["text"] for r in cli._speech_history(10, session="aaa")]
     assert got[0] == "A3" and "You: why?" not in got
+
+
+def _listener(st, at, session, text="You: why?", durations=(2.0,)):
+    st.add_history(sink="speech", uri=f"/q{at}.mp3", started_at=at, ended_at=at,
+                   target="none", source="listener", text=text,
+                   extras={"source_session": session, "listener": True,
+                           "clip_uris": [f"/q{at}.mp3"],
+                           "clip_durations_s": list(durations)})
+
+
+def _reply(st, at, session, text):
+    st.add_history(sink="speech", uri=f"/r{at}.mp3", started_at=at, ended_at=at,
+                   text=text, extras={"source_session": session,
+                                      "clip_uris": [f"/r{at}.mp3"],
+                                      "clip_durations_s": [3.0]})
+
+
+def _row(text):
+    return next(r for r in StateStore().recent_history(sink="speech", limit=50)
+                if r["text"] == text)
+
+
+def test_a_reply_is_replayed_after_its_question(env, monkeypatch):
+    """David, 2026-09-25: hearing his message again is welcome — as long as
+    the reply that answered it follows."""
+    _listener(env, 10.0, "aaa")
+    _reply(env, 11.0, "bbb", "B3 in between")      # another conversation
+    _reply(env, 12.0, "aaa", "A4")
+    assert cli._question_before(_row("A4"))["text"] == "You: why?"
+
+    played = []
+    monkeypatch.setattr(cli, "_replay_row",
+                        lambda r, then_id=None: played.append((r["text"], then_id)) or 0)
+    assert cli._do_replay(1, session="aaa") == 0
+    assert played == [("You: why?", _row("A4")["id"])]
+
+
+def test_only_the_first_reply_to_a_question_gets_it(env):
+    _listener(env, 10.0, "aaa")
+    _reply(env, 11.0, "aaa", "A4")
+    _reply(env, 12.0, "aaa", "A5 a second reply")
+    assert cli._question_before(_row("A5 a second reply")) is None
+    # No question before it at all.
+    assert cli._question_before(_row("A3")) is None
+
+
+def test_a_question_with_no_timings_is_not_chained(env):
+    _listener(env, 10.0, "aaa", durations=())
+    _reply(env, 11.0, "aaa", "A4")
+    assert cli._question_before(_row("A4")) is None
