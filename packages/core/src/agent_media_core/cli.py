@@ -4276,6 +4276,38 @@ def cmd_replay_track(a) -> int:
             pass
         return _finish()
 
+    # A reply from the listener ends a replay too, at the close of the
+    # sentence it is on — as it does a reply playing for the first time
+    # (submit's `read` cut). Only a reply sent after this replay began: the
+    # stamp is per conversation, and an older one was for something else.
+    _np0 = state.get_now_playing("speech") or {}
+    replay_session = str((_np0.get("extras") or {}).get("source_session") or "")
+    follow_began = time.time()
+    read_idx: list = [None]
+
+    def _replied() -> bool:
+        if not replay_session:
+            return False
+        from .intake.submit import _read_speech_cut
+        at = _read_speech_cut(replay_session).get("read")
+        return isinstance(at, (int, float)) and at >= follow_began
+
+    def _read_check(idx: int) -> bool:
+        """True once the sentence the reply landed on has been heard out:
+        stop there, note where (the row's resume point), and tick."""
+        if read_idx[0] is None:
+            if _replied():
+                read_idx[0] = max(idx, 0)
+            return False
+        if idx <= read_idx[0]:
+            return False
+        from .sinks.speech import mark_speech_stopped
+        mark_speech_stopped(sentence=read_idx[0] + 1, tick=False)
+        target = _active_speech_target()
+        _step_aside()
+        _end_tick(target)
+        return True
+
     def _end_tick(target: Target) -> None:
         """End of reply on a replay ticks like a Stop (the `cut` earcon), on
         the player it was on, once that player has stopped. Not for a
@@ -4405,6 +4437,8 @@ def cmd_replay_track(a) -> int:
                     idx = i
                 else:
                     break
+            if _read_check(idx):
+                return 0
             if idx != last:
                 last = idx
                 _mirror_clock(state, _owns, sentences, offsets, idx, elapsed)
@@ -4513,7 +4547,10 @@ def cmd_replay_track(a) -> int:
             try:
                 if bool(ipc.get_property(_sock(), "idle-active")):
                     _finish()
-                    if then_id is not None and _heard_out(last_snap):
+                    # A question the listener answered while it played has
+                    # had its answer: the reply queued behind it is not due.
+                    if then_id is not None and read_idx[0] is None \
+                            and _heard_out(last_snap):
                         return _then()
                     return 0
             except Exception:  # noqa: BLE001
@@ -4521,6 +4558,8 @@ def cmd_replay_track(a) -> int:
             continue
         last_snap = snap
         idx = _mirror(snap)
+        if _read_check(idx):
+            return 0
         if highlight and idx != last_pos and 0 <= idx < len(sentences):
             highlighter.show(sentences[idx], first=(idx == 0), force=False)
         last_pos = idx

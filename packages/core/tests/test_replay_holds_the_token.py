@@ -592,3 +592,47 @@ def test_a_paused_reply_resumes_paused_after_a_replay(monkeypatch):
     after = sink.ops[sink.ops.index("stop"):]
     assert "play_playlist" in after and "pause" in after
     assert after.index("pause") > after.index("play_playlist")
+
+
+def test_a_reply_ends_a_replay_at_its_sentence(monkeypatch):
+    """Replying while a replay plays ends it as it ends a first playing: at
+    the close of the sentence it is on, with where it stopped kept on the
+    row for Resume (David, 25 Sep 2026: "it didn't")."""
+    state = StateStore()
+    rid = state.add_history(sink="speech", uri="/c.mp3", started_at=time.time() - 60,
+                            ended_at=time.time() - 50, target="app", source="cli",
+                            content_type="audio/mpeg", text="One. Two. Three.",
+                            extras={"source_session": "sess-r"})
+    state.set_now_playing("speech", uri="/c.mp3", started_at=time.time(),
+                          target="app", extras={"replay": True, "history_id": rid,
+                                                "source_session": "sess-r",
+                                                "writer_pid": os.getpid()})
+    stopped: list = []
+    monkeypatch.setattr(cli.ipc, "command",
+                        lambda sock, *args, **k: stopped.append((time.monotonic(), args)))
+    threading.Timer(0.15, lambda: S.session_reply_read("sess-r")).start()
+    began = time.monotonic()
+    rc = cli.cmd_replay_track(argparse.Namespace(
+        sentences=json.dumps(["One.", "Two.", "Three."]),
+        offsets=json.dumps([0.0, 0.5, 1.0]), pane="",
+        durations=json.dumps([30.0]), lock_fd=-1))
+    assert rc == 0
+    stops = [t for t, a in stopped if a == ("stop",)]
+    assert stops, "the replay played on after the reply"
+    assert 0.45 < stops[0] - began < 2.0, "not at the close of the first sentence"
+    assert state.history_row(rid)["extras"]["stopped_at"]["sentence"] == 1
+
+
+def test_an_older_reply_does_not_end_a_replay(monkeypatch):
+    state = StateStore()
+    S.session_reply_read("sess-r", at=time.time() - 30)
+    state.set_now_playing("speech", uri="/c.mp3", started_at=time.time(),
+                          target="app", extras={"replay": True, "source_session": "sess-r",
+                                                "writer_pid": os.getpid()})
+    stopped: list = []
+    monkeypatch.setattr(cli.ipc, "command",
+                        lambda sock, *args, **k: stopped.append(args))
+    cli.cmd_replay_track(argparse.Namespace(
+        sentences=json.dumps(["One.", "Two."]), offsets=json.dumps([0.0, 0.2]),
+        pane="", durations=json.dumps([0.6]), lock_fd=-1))
+    assert stopped == []
