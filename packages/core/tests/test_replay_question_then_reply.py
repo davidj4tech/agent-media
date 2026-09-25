@@ -102,3 +102,21 @@ def test_the_phones_player_says_it_played_out(spawned, monkeypatch):
     _player(monkeypatch, [_playing(1.0)], eof=True)
     assert _track() == 0
     assert spawned and spawned[-1][-3:] == ["replay", "--id", "42"]
+
+
+def test_media_stop_notes_what_it_stopped(tmp_path, monkeypatch):
+    """The stamp Replay resumes from: the row, the sentence, the reply queued
+    behind a question. The lanes' own stops (a newer reply, End of reply) go
+    straight to the sink and leave none."""
+    from agent_media_core.sinks import speech as sink
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    StateStore().set_now_playing("speech", uri="/q.mp3", started_at=5.0,
+                                 target="phone",
+                                 extras={"history_id": 7, "then_id": 8,
+                                         "current_sentence_idx": 0,
+                                         "source_session": "aaa"})
+    monkeypatch.setattr(cli, "_active_speech_target", lambda: None)
+    monkeypatch.setattr(cli.SinkSpeech, "stop", lambda self, t=None: None)
+    assert cli.cmd_stop(argparse.Namespace()) == 0
+    got = sink.last_stop()
+    assert (got["history_id"], got["then_id"], got["sentence"]) == (7, 8, 0)

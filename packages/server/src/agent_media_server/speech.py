@@ -103,8 +103,9 @@ def stop_speech() -> str:
     only after checking the clip is the thread's own (stop.py)."""
     try:
         from agent_media_core.cli import _active_speech_target
-        from agent_media_core.sinks.speech import SinkSpeech
+        from agent_media_core.sinks.speech import SinkSpeech, mark_speech_stopped
 
+        mark_speech_stopped()
         SinkSpeech().stop(_active_speech_target())
         return ""
     except Exception as e:  # noqa: BLE001 — reported, never raised into a route

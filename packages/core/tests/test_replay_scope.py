@@ -239,3 +239,76 @@ def test_a_question_with_no_timings_is_not_chained(env):
     _listener(env, 10.0, "aaa", durations=())
     _reply(env, 11.0, "aaa", "A4")
     assert cli._question_before(_row("A4")) is None
+
+
+def _reply_of(st, at, session, text, n=4):
+    st.add_history(sink="speech", uri=f"/r{at}-0.mp3", started_at=at, ended_at=at,
+                   text=text,
+                   extras={"source_session": session,
+                           "clip_uris": [f"/r{at}-{i}.mp3" for i in range(n)],
+                           "clip_sentences": [f"S{i}." for i in range(n)],
+                           "clip_durations_s": [1.0] * n})
+
+
+def _stopped(**kw):
+    import json
+    from agent_media_core.sinks import speech as sink
+    p = sink._stopped_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({"at": cli.time.time(), **kw}))
+
+
+@pytest.fixture
+def played(monkeypatch):
+    got = []
+    monkeypatch.setattr(cli, "_replay_row",
+                        lambda r, from_sentence=None, then_id=None:
+                        got.append((r["text"], from_sentence, then_id)) or 0)
+    return got
+
+
+def test_replay_soon_after_a_stop_picks_up_at_that_sentence(env, played):
+    """David, 2026-09-25: Replay within five minutes of a Stop goes on from
+    the sentence it was stopped on; the next Replay starts over."""
+    _listener(env, 10.0, "aaa")
+    _reply_of(env, 11.0, "aaa", "A4")
+    _stopped(history_id=_row("A4")["id"], sentence=2)
+    assert cli._do_replay(1, session="aaa") == 0
+    assert played[-1] == ("A4", 2, None)
+    assert cli._do_replay(1, session="aaa") == 0          # the stamp is spent
+    assert played[-1] == ("You: why?", None, _row("A4")["id"])
+
+
+def test_a_live_reply_is_known_by_its_start(env, played):
+    _reply_of(env, 11.0, "aaa", "A4")
+    _stopped(history_id=None, started_at=11.0, sentence=1)
+    cli._do_replay(1, session="aaa")
+    assert played[-1] == ("A4", 1, None)
+
+
+def test_long_after_a_stop_it_starts_over_with_the_question(env, played):
+    _listener(env, 10.0, "aaa")
+    _reply_of(env, 11.0, "aaa", "A4")
+    _stopped(history_id=_row("A4")["id"], sentence=2)
+    from agent_media_core.sinks import speech as sink
+    stamp = sink.last_stop()
+    stamp["at"] -= 301
+    sink._stopped_path().write_text(cli.json.dumps(stamp))
+    cli._do_replay(1, session="aaa")
+    assert played[-1] == ("You: why?", None, _row("A4")["id"])
+
+
+def test_stopped_in_the_question_starts_from_the_question(env, played):
+    _listener(env, 10.0, "aaa")
+    _reply_of(env, 11.0, "aaa", "A4")
+    _stopped(history_id=_row("You: why?")["id"], then_id=_row("A4")["id"],
+             sentence=0)
+    cli._do_replay(1, session="aaa")
+    assert played[-1] == ("You: why?", None, _row("A4")["id"])
+
+
+def test_a_stop_in_another_reply_is_not_this_ones(env, played):
+    _reply_of(env, 11.0, "aaa", "A4")
+    _stopped(history_id=_row("A3")["id"], sentence=2)
+    cli._do_replay(1, session="aaa")
+    assert played[-1] == ("A4", None, None)

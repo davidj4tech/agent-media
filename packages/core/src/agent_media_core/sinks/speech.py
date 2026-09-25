@@ -7,6 +7,7 @@ This class talks to the socket; it does not spawn mpv itself.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import socket as _socket
@@ -355,13 +356,55 @@ def _stopped_path() -> Path:
 
 
 def mark_speech_stopped() -> None:
-    """Stamp a listener's Stop. The player then only says "idle", the same as
-    at the natural end of a clip; a replayed question's follower reads this to
-    know the answer must not follow (`replay-track --then-id`)."""
+    """Stamp a listener's Stop — `media stop`, the app's Stop, a mute that
+    cuts the clip; not the lanes' own stops (a newer reply, End of reply).
+
+    Two readers. The player then says only "idle", as at the natural end of a
+    clip, so a replayed question's follower reads the stamp to know its
+    answer must not follow (`replay-track --then-id`). And Replay soon after
+    picks up where this left off (`cli._resume_point`), so the stamp names
+    what was playing: its history row (a replay's) or its start (a live
+    reply's, filed under the same `started_at`), and the sentence."""
+    stamp: dict = {"at": time.time()}
+    try:
+        from ..state import StateStore
+        np = StateStore().get_now_playing("speech") or {}
+        ex = np.get("extras") or {}
+        if isinstance(ex, dict):
+            stamp.update(history_id=ex.get("history_id"),
+                         started_at=np.get("started_at"),
+                         session=ex.get("source_session"),
+                         sentence=ex.get("current_sentence_idx"),
+                         then_id=ex.get("then_id"))
+    except Exception:  # noqa: BLE001 — the stop matters more than the note
+        pass
     try:
         p = _stopped_path()
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(f"{time.time():.3f}")
+        p.write_text(json.dumps(stamp))
+    except OSError:
+        pass
+
+
+def last_stop() -> dict:
+    """The last listener Stop's stamp, or {}."""
+    try:
+        raw = _stopped_path().read_text().strip()
+    except OSError:
+        return {}
+    try:
+        got = json.loads(raw)
+    except ValueError:
+        return {}
+    if isinstance(got, (int, float)):           # the bare-time stamp, before
+        return {"at": float(got)}
+    return got if isinstance(got, dict) else {}
+
+
+def forget_stop() -> None:
+    """Spend the stamp: a resumed reply is not resumed again."""
+    try:
+        _stopped_path().unlink()
     except OSError:
         pass
 
@@ -369,8 +412,8 @@ def mark_speech_stopped() -> None:
 def speech_stopped_since(t: float) -> bool:
     """Was speech stopped at or after `t` (epoch seconds)?"""
     try:
-        return float(_stopped_path().read_text().strip()) >= t
-    except (OSError, ValueError):
+        return float(last_stop().get("at") or 0) >= t
+    except (TypeError, ValueError):
         return False
 
 
@@ -649,7 +692,6 @@ class SinkSpeech:
         ipc.set_property(_socket_for(target), "pause", False, critical=True)
 
     def stop(self, target: Target = DEFAULT_TARGET) -> None:
-        mark_speech_stopped()
         ipc.command(_socket_for(target), "stop", critical=True)
 
     # ---- cross-host broker ownership -------------------------------------

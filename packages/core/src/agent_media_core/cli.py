@@ -2416,6 +2416,8 @@ def cmd_resume(a) -> int:
 
 
 def cmd_stop(a) -> int:
+    from .sinks.speech import mark_speech_stopped
+    mark_speech_stopped()
     SinkSpeech().stop(_active_speech_target())
     return 0
 
@@ -2633,6 +2635,8 @@ def _silence_current_if_covered(scope: str, key: str) -> bool:
                else ex.get("source_tmux_session") == key)
     if covered:
         try:
+            from .sinks.speech import mark_speech_stopped
+            mark_speech_stopped()
             SinkSpeech().stop(_active_speech_target())
         except Exception:  # noqa: BLE001 — a dead/absent broker mustn't fail the mute
             pass
@@ -3319,6 +3323,11 @@ def _do_replay(index: int, session: Optional[str] = None) -> int:
             print(f"media: skipped {offset} turn(s) that never rendered",
                   file=sys.stderr)
         question = _question_before(row)
+        resume = _resume_point(row, question) if index == 1 else None
+        if resume is not None:
+            print(f"media: picking up where it was stopped "
+                  f"(sentence {resume + 1})", file=sys.stderr)
+            return _replay_row(row, from_sentence=resume)
         if question is not None:
             # The question, then its answer: the question's follower starts
             # the reply when the question has played out (`replay-track
@@ -3327,6 +3336,53 @@ def _do_replay(index: int, session: Optional[str] = None) -> int:
         return _replay_row(row)
     print("media: no clip to replay", file=sys.stderr)
     return 1
+
+
+#: How long after a Stop Replay picks up where it stopped, rather than from
+#: the top (David, 2026-09-25: five minutes).
+_RESUME_WITHIN_S = 300.0
+
+
+def _resume_point(row: dict, question: Optional[dict]) -> Optional[int]:
+    """The sentence of `row` to replay from, when it was stopped part-way
+    within `_RESUME_WITHIN_S` — else None, and it plays from the top (the
+    question first). Stopped in the question: None too, since the top IS the
+    question. The stamp is spent here either way, once it names this reply:
+    a resumed reply is not resumed again, and a second Replay starts over."""
+    from .sinks.speech import forget_stop, last_stop
+    stop = last_stop()
+    try:
+        age = time.time() - float(stop.get("at") or 0)
+    except (TypeError, ValueError):
+        return None
+    if not stop or age > _RESUME_WITHIN_S:
+        return None
+    rid = row.get("id")
+    was = stop.get("history_id")
+    if was is not None:
+        mine = was == rid
+        in_question = (question is not None and was == question.get("id")
+                       and stop.get("then_id") == rid)
+    else:
+        # A live reply is filed under the start it was spoken with.
+        try:
+            mine = abs(float(stop.get("started_at")) - float(row.get("started_at"))) < 0.01
+        except (TypeError, ValueError):
+            mine = False
+        in_question = False
+    if not (mine or in_question):
+        return None
+    forget_stop()
+    if in_question:
+        return None
+    try:
+        idx = int(stop.get("sentence"))
+    except (TypeError, ValueError):
+        return None
+    smap = replay_sentence_map(row)
+    if not smap or idx < 0:
+        return None
+    return min(idx, len(smap) - 1)
 
 
 def _question_before(row: dict) -> Optional[dict]:
@@ -3642,6 +3698,10 @@ def _push_replay(row: dict, ex: dict, clip_uris: list, clip_durations: list,
     # the only handle on "where you are" is the text, and two turns can say the
     # same thing. Absent on a live readout, which is correct — the turn being
     # spoken for the first time is not a record yet.
+    if then_id is not None:
+        # The reply queued behind this question: a Stop records it, so Replay
+        # soon after goes back to the question and on to the same answer.
+        np_extras["then_id"] = then_id
     if recorded:
         np_extras["history_id"] = row["id"]
         # What the app's speech bar reads (`/speech/now` `replay`), and what
