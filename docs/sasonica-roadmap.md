@@ -182,6 +182,14 @@ reply ticks too (David wanted it). Replay replays the thread the bar names,
 or the one on screen — unscoped, it read out a reply held in another thread
 (agent-media `91d912f`, android-next `8250849d`, chat-prototype `17cb2aa4`).
 
+An interrupted reply can be resumed (David, 25 Sep 2026): a Stop, or a reply
+that ends the reading, leaves the reply's own resume point (`extras.stopped_at`,
+`spoken.resume`, no time limit). Its ▶ says Resume with "0:07 / 0:13" beside
+it, a small restart plays it from the top, and the part not heard is dimmed
+(mapped with the follow-along's sentences). Replay resumes it too; playing it
+again clears it. agent-media `21721da`, android-next `514b6587`, chat-prototype
+`3d36593e`, installed on p8a.
+
 The assistant button talks into the thread on screen (David, 25 Sep 2026):
 pressed while a thread is showing, that thread's composer listens (same 3 s
 auto-send); from another app, the lock screen or a cold start it is a new
