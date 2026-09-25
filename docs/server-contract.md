@@ -1453,9 +1453,11 @@ sentences a replay of that spoken reply can start at, in the order
 `replay-id` + `sentence` counts them (`cli.replay_sentence_map`). `[]` when
 it can only be replayed from the top. 400 for an id that is not a number,
 404 `"no such spoken reply"` for an id that is not a speech-history row.
-Same gate as `/speech/ctl`. Fetched on demand (the app asks when the
-listener picks "Read from here"), so the message log does not carry a
-second copy of every reply's words.
+Same gate as `/speech/ctl`. Fetched on demand, so the message log does not
+carry a second copy of every reply's words. (The app asked when the listener
+picked "Read from here" under a selection; that chip was removed 25 Sep
+2026 — a tap on the reply being said is the way in — and nothing in the app
+asks now.)
 - `ok: true` means the command ran, not that it did anything — read `out`.
 - `error` is added (and `out` starts `error: `) when the verb ran and could
   not do it — a replay whose audio was cleared from the cache, or was

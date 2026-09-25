@@ -66,9 +66,11 @@ the About page; seven text sizes (9–21 px, Default 15), and a pinch
 steps through them and saves the choice (24 Sep 2026); the digital-
 assistant slot in Next; the coding-agents installer in Settings; Sasonica
 Shell rename, named URLs and client labels; answered questions stop being
-read out; tap to read from here (tap a sentence while it is spoken;
-select a word in an older reply → "Read from here"; not yet tried on the
-phone with real audio); background notifications in Next (a `specialUse`
+read out; tap to read from here (tap a sentence while it is spoken; the
+selection chip on older replies was removed 25 Sep 2026 — they play from
+their ▶; not yet tried on the phone with real audio); tables, code blocks
+and links drawn as themselves in the chat, the described table one bold
+step (25 Sep 2026); background notifications in Next (a `specialUse`
 foreground service on `GET /sessions/events`, §6.13: "New reply" /
 "Needs you", Settings toggle; untested on the phone: Doze, reboot, cold-start
 tap, network handover); "From <name>" on another session's messages;
