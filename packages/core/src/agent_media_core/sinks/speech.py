@@ -366,9 +366,14 @@ def _stopped_path() -> Path:
     return state_dir() / "speech-stopped-at"
 
 
-def mark_speech_stopped() -> None:
+def mark_speech_stopped(sentence: Optional[int] = None, tick: bool = True) -> None:
     """Stamp a listener's Stop — `media stop`, the app's Stop, a mute that
-    cuts the clip; not the lanes' own stops (a newer reply, End of reply).
+    cuts the clip, a reply that ends the one being read (`read`); not the
+    lanes' own stops (a newer reply, End of reply).
+
+    `sentence` overrides where Replay picks up: a `read` cut ends a reply at
+    a sentence boundary, so it names the next one, not the one heard out.
+    `tick=False`: the caller plays the `cut` earcon itself.
 
     Two readers. The player then says only "idle", as at the natural end of a
     clip, so a replayed question's follower reads the stamp to know its
@@ -380,7 +385,7 @@ def mark_speech_stopped() -> None:
     try:
         from ..state import StateStore
         np = StateStore().get_now_playing("speech") or {}
-        if np:
+        if np and tick:
             # Something was speaking, so the stop about to follow ends it on
             # purpose: SinkSpeech.stop ticks (the `cut` earcon) once it has.
             _LISTENER_STOP["at"] = stamp["at"]
@@ -389,7 +394,8 @@ def mark_speech_stopped() -> None:
             stamp.update(history_id=ex.get("history_id"),
                          started_at=np.get("started_at"),
                          session=ex.get("source_session"),
-                         sentence=ex.get("current_sentence_idx"),
+                         sentence=(sentence if sentence is not None
+                                   else ex.get("current_sentence_idx")),
                          then_id=ex.get("then_id"))
     except Exception:  # noqa: BLE001 — the stop matters more than the note
         pass

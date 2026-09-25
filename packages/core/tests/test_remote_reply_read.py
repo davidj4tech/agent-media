@@ -64,3 +64,34 @@ def test_the_phone_finishes_the_sentence_then_stops(state_env, monkeypatch):  # 
         f"stopped on sentence {sink.stops[0] + 1}: it should finish the first "
         "(the one the reply landed on) and stop as the second begins")
     assert sink.ticks >= 8, "stopped mid-sentence, on the tick that saw the reply"
+
+
+def test_replay_soon_after_picks_up_where_the_reply_stopped(state_env, monkeypatch):  # noqa: F811
+    """The read cut is noted as a listener's Stop, naming the first sentence
+    not heard — so Replay within five minutes resumes there rather than
+    starting over (David, 25 Sep 2026)."""
+    from agent_media_core.sinks.speech import last_stop
+
+    monkeypatch.setattr(S, "render_text", _render)
+    state = StateStore()
+    S.submit_event(Event(text="First sentence here. Second sentence here. Third one too.",
+                         source=Source.CLAUDE_CODE, target=Target(name="phone"),
+                         metadata={"session": A}),
+                   state=state, sink=_PhoneSink(), coordinator=_RecordingCoord())
+    stop = last_stop()
+    assert stop.get("sentence") == 1, stop
+    row = state.recent_history(sink="speech", limit=1)[0]
+    assert abs(float(stop["started_at"]) - float(row["started_at"])) < 0.01
+
+
+def test_a_reply_that_is_not_read_leaves_no_stop(state_env, monkeypatch):  # noqa: F811
+    from agent_media_core.sinks.speech import last_stop
+
+    monkeypatch.setattr(S, "render_text", _render)
+    monkeypatch.setattr(S, "_speech_read", lambda *a: False)
+    sink = _PhoneSink()
+    sink.snapshot = lambda target=None: {"idle-active": True, "pause": False, "playlist-count": 3}
+    S.submit_event(Event(text="One. Two.", source=Source.CLAUDE_CODE, target=Target(name="phone"),
+                         metadata={"session": A}),
+                   state=StateStore(), sink=sink, coordinator=_RecordingCoord())
+    assert last_stop() == {}

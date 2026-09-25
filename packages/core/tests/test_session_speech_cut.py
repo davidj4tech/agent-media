@@ -390,3 +390,14 @@ def test_claude_codes_hook_cuts_and_records_nothing(monkeypatch):
         {"hook_event_name": "UserPromptSubmit", "prompt": "hi", "session_id": A})))
     assert H.main() == 0
     assert seen == [] and "read" in S.session_speech_cut(A)
+
+
+def test_a_read_reply_on_the_desk_notes_where_it_stopped():
+    """The desk's per-sentence lane: stopped before sentence 2, so that is
+    where Replay soon after picks up."""
+    from agent_media_core.sinks.speech import last_stop
+
+    state = StateStore()
+    sink = _Sink(on_play=lambda n: n == 1 and S.session_reply_read(A))
+    _say("First sentence here. Second sentence here. Third one too.", A, state, sink)
+    assert last_stop().get("sentence") == 1

@@ -1538,6 +1538,21 @@ def _speech_read(session: str, seq: float) -> bool:
     return isinstance(at, (int, float)) and seq <= at
 
 
+def _note_read_stop(session: str, seq: float, next_sentence: int) -> None:
+    """A `read` cut ended this reply at a sentence boundary: note it as a
+    listener's Stop, so Replay soon after picks up at `next_sentence` — the
+    first one not heard — instead of from the top (David, 25 Sep 2026). The
+    loop plays its own tick, so the stop that follows does not."""
+    if not _speech_read(session, seq):
+        return
+    try:
+        from ..sinks.speech import mark_speech_stopped
+
+        mark_speech_stopped(sentence=next_sentence, tick=False)
+    except Exception as e:  # noqa: BLE001 — the stop matters more than the note
+        log.info("intake: could not note the read stop (%s)", e)
+
+
 def session_speech_cut(session: str) -> dict:
     """The cut standing on `session`: `{"after": ts?, "all": ts?}` ({} none).
     An `after` past its TTL is reported as gone, as the checkpoint treats it."""
@@ -4511,6 +4526,7 @@ def _submit_event(event: Event,
                         mark_i = pos
                     if read_i is not None and pos > read_i:
                         highlighter.cancel_pending()
+                        _note_read_stop(source_session, started_at, read_i + 1)
                         sink.stop(target)
                         finished = True
                         why = f"read (the listener replied) after sentence {read_i + 1}"
@@ -4669,6 +4685,8 @@ def _submit_event(event: Event,
                         # Before the first sentence nothing was cut short:
                         # the reply simply never started.
                         ended_by_cut = played_any
+                        if played_any:
+                            _note_read_stop(source_session, started_at, i)
                         break
                     # Step aside between sentences if a higher-priority speaker
                     # (e.g. a notification) is waiting; resume it once that's done.
@@ -4997,6 +5015,8 @@ def submit_stream(sentences,
                 if _speech_cut(source_session, started_at, playing=i > 0,
                                ask=source_ask):
                     ended_by_cut = played_any
+                    if played_any:
+                        _note_read_stop(source_session, started_at, i)
                     break
                 # Step aside between sentences for a higher-priority speaker;
                 # resume this clip once it's done. Only after the first clip has
