@@ -125,3 +125,21 @@ def test_a_question_follows_the_level(tmp_path, monkeypatch):
     monkeypatch.setattr(toast, "_row_for", lambda key: None)
     toast.drop_asks(SID)
     assert toast.listing() == []
+
+
+def test_default_level_covers_every_conversation_without_its_own(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    assert speak_priority.default_level() == "normal"
+    speak_priority.set_level(SID, "auto")
+    assert speak_priority.set_default("quiet") is True
+    assert speak_priority.set_default("quiet") is False
+    assert speak_priority.level_of("other") == "quiet"
+    assert speak_priority.level_of(SID) == "auto"
+    assert speak_priority.set_level(SID, "quiet") is True        # back to the default
+    assert speak_priority.levels() == {}
+    assert speak_priority.set_level(SID, "quiet") is False
+    assert speak_priority.set_level(SID, "normal") is True       # normal is its own now
+    assert speak_priority.levels() == {SID: "normal"}
+    speak_priority.set_default("normal")
+    assert speak_priority.level_of("other") == "normal"
+

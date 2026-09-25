@@ -95,3 +95,23 @@ def session_priority(session: str, flag, bearer: str, level=None) -> tuple[bool,
         return False, {"error": f"could not save the level ({e})", "status": 500}
     return True, {"session": session, "level": level,
                   "priority": level in speak_priority.SPEAKS}
+
+
+def speech_default(bearer: str, level=None) -> tuple[bool, dict]:
+    """`GET /speech/default` and `POST /speech/default {"level"}`: the speech
+    level of every thread with none of its own (`speak_priority.default_level`).
+    The server's, so every device's. With `level` None, only read."""
+    from agent_media_core import speak_priority
+
+    if level is not None and level not in speak_priority.LEVELS:
+        return False, {"error": "level must be interrupt, auto, normal or quiet",
+                       "status": 400}
+    user, err = auth.gate(bearer)
+    if not user:
+        return False, err
+    if level is not None:
+        try:
+            speak_priority.set_default(level)
+        except OSError as e:
+            return False, {"error": f"could not save the default ({e})", "status": 500}
+    return True, {"level": speak_priority.default_level()}

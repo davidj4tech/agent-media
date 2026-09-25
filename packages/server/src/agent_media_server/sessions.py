@@ -1303,10 +1303,11 @@ def sessions_index(*, days: float = STORE_DAYS) -> list[dict]:
     out += _stored_rows(store, seen, flags, pinned, marks, days=days)
     # And `speech`, its level (interrupt | auto | normal | quiet), with
     # `priority` kept for older clients: its replies are never held or muted.
-    from agent_media_core.speak_priority import SPEAKS, levels
-    lv = levels()
+    # A thread with no level of its own has the default (/speech/default).
+    from agent_media_core.speak_priority import SPEAKS, default_level, levels
+    lv, dflt = levels(), default_level()
     for row in out:
-        row["speech"] = lv.get(row["session"], "normal")
+        row["speech"] = lv.get(row["session"], dflt)
         row["priority"] = row["speech"] in SPEAKS
     # Where each thread is: its directory and the project it is filed under,
     # for the small line under the title and the list's By-project order.

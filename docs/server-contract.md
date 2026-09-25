@@ -285,7 +285,8 @@ Everything a message can be pointed at.
   with `POST /session/pin` (§6.4). A pin affects the reaper only.
 - `speech` (every row, 24 Sep 2026): the thread's speech level —
   `"interrupt"`, `"auto"`, `"normal"` or `"quiet"` — set with
-  `POST /session/priority` (§6.4) or `media priority`. `priority` (same
+  `POST /session/priority` (§6.4) or `media priority`; a thread with none
+  of its own has the default (`/speech/default`). `priority` (same
   day) is true for interrupt and auto: its replies are never held by the
   desk toast and never silenced by a pane mute.
 - `harness` (every row, 23 Sep 2026): which agent holds the conversation —
@@ -1254,7 +1255,7 @@ questions are never touched):
 |---|---|
 | `interrupt` | plays at once, at HIGH priority: another thread's reply steps aside at its next sentence and resumes after |
 | `auto` | plays at once: the desk toast does not hold it and a pane or tmux-session mute does not silence it |
-| `normal` | the usual rules (the default; nothing stored) |
+| `normal` | the usual rules (the built-in default) |
 | `quiet` | rendered and archived unheard (`extras.held`, `unheard: true` on the transcript) and never played by itself |
 
 - `priority` in the answer, and on the rows, is true for interrupt and auto.
@@ -1267,6 +1268,22 @@ questions are never touched):
   same thing from a pane. Outlives the session, like a pin.
 - 400 `"level must be interrupt, auto, normal or quiet"`; the other
   refusals and CORS exactly as `/session/pin`.
+
+- A level equal to the default (`/speech/default`) clears the thread's own,
+  so it follows the default from then on; any other is kept, normal
+  included.
+
+Pinned by `packages/server/tests/test_reap.py` and
+`packages/core/tests/test_speak_priority.py`.
+
+#### `GET` / `POST /speech/default` — gated (25 Sep 2026)
+
+`GET` → `{"ok": true, "level"}`; `POST {"level"}` → the same, after
+setting it. The level (as `/session/priority`) of every thread with none of
+its own: normal until set. It is the server's, so it applies to every
+device paired with it (the app's Settings says so). Kept in
+`<state_dir>/speak-priority-default.json`. 400 as `/session/priority`; in
+`CORS_PATHS`. With accounts, it would be the account's.
 
 Pinned by `packages/server/tests/test_reap.py` and
 `packages/core/tests/test_speak_priority.py`.

@@ -678,6 +678,29 @@ def test_speech_level_is_set_and_shows_on_the_rows(server, shelf, signed_in, typ
     call(server, "POST", "/session/priority", {"session": SID2, "level": "normal"}, AUTH)
 
 
+def test_speech_default_is_every_thread_without_its_own(server, shelf, signed_in, typed):
+    from agent_media_core import speak_priority
+
+    res, obj = call(server, "GET", "/speech/default", headers=AUTH)
+    assert res.status == 200 and obj == {"ok": True, "level": "normal"}
+    call(server, "POST", "/session/priority", {"session": SID2, "level": "interrupt"}, AUTH)
+    res, obj = call(server, "POST", "/speech/default", {"level": "quiet"}, AUTH)
+    assert res.status == 200 and obj == {"ok": True, "level": "quiet"}
+    _, targets = call(server, "GET", "/targets", headers=AUTH)
+    by = {r["session"]: r["speech"] for r in targets["sessions"]}
+    assert by[SID] == "quiet" and by[SID2] == "interrupt"      # its own stays
+    # Normal is now a level of its own; picking the default clears it.
+    call(server, "POST", "/session/priority", {"session": SID, "level": "normal"}, AUTH)
+    assert speak_priority.levels() == {SID: "normal", SID2: "interrupt"}
+    call(server, "POST", "/session/priority", {"session": SID, "level": "quiet"}, AUTH)
+    assert speak_priority.levels() == {SID2: "interrupt"}
+    assert speak_priority.level_of(SID) == "quiet"
+    res, obj = call(server, "POST", "/speech/default", {"level": "loud"}, AUTH)
+    assert res.status == 400 and obj["error"] == "level must be interrupt, auto, normal or quiet"
+    assert "/speech/default" in app.CORS_PATHS
+    assert typed == []
+
+
 # --- the archive import ---------------------------------------------------------------------
 
 @pytest.fixture()

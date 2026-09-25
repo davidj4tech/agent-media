@@ -83,6 +83,8 @@ device gets its token):
   POST /session/priority {"session", "level"} → that thread's speech
                   level: interrupt | auto | normal | quiet
                   (agent_media_core/speak_priority.py, pins.py)
+  GET|POST /speech/default {"level"} → the level of every thread with none
+                  of its own; the server's, so every device's (pins.py)
   POST /session/move {"session", "project"|"cwd"} → move a conversation to
                   another project: file it there, move its transcript and its
                   library folder, and bring a live session back in that
@@ -165,7 +167,7 @@ CORS_PATHS = frozenset({
     "/reply", "/ask", "/focus", "/session/resume", "/session/close", "/draft",
     "/session/answer", "/session/archive", "/session/pin", "/session/priority", "/session/stop",
     "/session/move",
-    "/speech/now", "/speech/ctl", "/speech/sentences", "/sessions/state", "/commands", "/rename",
+    "/speech/now", "/speech/ctl", "/speech/sentences", "/speech/default", "/sessions/state", "/commands", "/rename",
     "/harnesses", "/harnesses/run", "/harnesses/screen",
     "/harnesses/keys", "/harnesses/close", "/harnesses/logout",
     "/harnesses/updates",
@@ -543,6 +545,10 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
             _json(h, 404, {"ok": False, "error": "no such spoken reply"})
             return True
         _json(h, 200, {"ok": True, "id": int(raw), "sentences": found})
+    elif path == "/speech/default":
+        # The level of a thread with none of its own (speak_priority.py).
+        ok, detail = pins.speech_default(_bearer(h))
+        _json(h, 200 if ok else detail.pop("status", 403), {"ok": ok, **detail})
     elif path == "/speech/now":
         # The app's speech bar: /speech's live bit, named — the session's
         # title and library item — and gated by the caller's ABS bearer.
@@ -940,6 +946,11 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         ok, detail = pins.session_priority(str(body.get("session") or ""),
                                            body.get("priority"), _bearer(h),
                                            level=body.get("level"))
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    elif path == "/speech/default":
+        # Settings' Default speech priority: every thread without its own.
+        body = _read_json(h) or {}
+        ok, detail = pins.speech_default(_bearer(h), level=str(body.get("level") or ""))
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path == "/session/answer":
         # Answering the dialog a session is stopped on — a permission
