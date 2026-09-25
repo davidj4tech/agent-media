@@ -350,6 +350,17 @@ def _device_for(target: Target) -> Optional[str]:
         f"{_env_key('MEDIA_SPEECH_DEVICE', target.name)}")
 
 
+#: A listener's Stop noted by mark_speech_stopped in this process and not yet
+#: carried out. Every caller (`media stop`, a mute, the app's Stop in the
+#: server) marks and then calls SinkSpeech.stop, and the tick belongs after
+#: the stop, on the player it stopped — which only stop() knows. Handing it
+#: over here keeps those callers (the server's among them) unchanged.
+_LISTENER_STOP: dict = {"at": 0.0}
+
+#: How long a mark waits for its stop. Only ever a moment in practice.
+_LISTENER_STOP_S = 10.0
+
+
 def _stopped_path() -> Path:
     from .._paths import state_dir
     return state_dir() / "speech-stopped-at"
@@ -369,6 +380,10 @@ def mark_speech_stopped() -> None:
     try:
         from ..state import StateStore
         np = StateStore().get_now_playing("speech") or {}
+        if np:
+            # Something was speaking, so the stop about to follow ends it on
+            # purpose: SinkSpeech.stop ticks (the `cut` earcon) once it has.
+            _LISTENER_STOP["at"] = stamp["at"]
         ex = np.get("extras") or {}
         if isinstance(ex, dict):
             stamp.update(history_id=ex.get("history_id"),
@@ -693,6 +708,57 @@ class SinkSpeech:
 
     def stop(self, target: Target = DEFAULT_TARGET) -> None:
         ipc.command(_socket_for(target), "stop", critical=True)
+        at, _LISTENER_STOP["at"] = _LISTENER_STOP["at"], 0.0
+        if at and time.time() - at <= _LISTENER_STOP_S:
+            # A listener's Stop (see mark_speech_stopped): tick. In a thread
+            # so the caller — an HTTP route, a keypress — is not held up by a
+            # prefetch to the phone; not a daemon, so a one-shot `media stop`
+            # still waits for it on the way out.
+            import threading
+
+            from .. import earcons
+            threading.Thread(target=earcons.play, args=("cut", target, self),
+                             name="earcon-cut").start()
+
+    def play_cue(self, uri: str, target: Target = DEFAULT_TARGET) -> bool:
+        """Play one short clip that is not speech (an earcon). True if sent.
+
+        The playlist recipe (stop, clear, append, start) rather than a
+        `loadfile replace`: it is the one both players take — the desk's mpv
+        and the phone's in-app player — and the reply lanes only ever use it
+        on a remote target. Unlike play_playlist, a failure here is not a
+        missed reply: nothing is recorded and nobody is notified.
+
+        Only on an idle player. The recipe starts with a stop and a clear, so
+        a cue sent to a player holding a reply — playing, or paused by the
+        listener — would wipe that reply and play a beep in its place. So the
+        player is asked first, and anything but a readable "idle" (a clip
+        loaded, paused or not; no answer at all) means no cue. Every caller
+        plays one only after the player was stopped or ran out; this is the
+        check that makes it true rather than assumed.
+
+        Unpaused, because a pause left from earlier on an idle player would
+        swallow it. The mute is left alone: a listener who muted the voice
+        did not ask to hear its punctuation.
+        """
+        sock = _socket_for(target)
+        try:
+            st = ipc.get_properties(sock, ["idle-active", "pause"], timeout=3.0)
+        except (ipc.MpvIpcError, OSError) as e:
+            log.info("sink-speech: cue skipped, player unreadable: %s", e)
+            return False
+        if st.get("idle-active") is not True:
+            log.info("sink-speech: cue skipped, player is not idle (%s)", st)
+            return False
+        cmds = self._load_cmds([uri], target, gapless=False)
+        cmds += [["set_property", "pause", False],
+                 ["set_property", "playlist-pos", 0]]
+        try:
+            ipc.command_batch(sock, cmds, critical=True)
+            return True
+        except (ipc.MpvIpcError, OSError) as e:
+            log.info("sink-speech: cue %s failed: %s", Path(uri).name, e)
+            return False
 
     # ---- cross-host broker ownership -------------------------------------
     #

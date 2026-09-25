@@ -176,3 +176,16 @@ def _not_headless(monkeypatch):
     """
     monkeypatch.delenv("MEDIA_SOURCE_KIND", raising=False)
     monkeypatch.delenv("MEDIA_SOURCE_WORKSPACE", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_earcons(monkeypatch):
+    """No tones from the suite (agent_media_core/earcons.py).
+
+    An earcon is a real clip sent to a real player: a test that stops speech
+    through the real SinkSpeech, or holds a reply behind the toast, would tick
+    or chime on whatever broker the developer's env points at — the phone in
+    his pocket, usually. Same hazard as the fixtures above. The earcon tests
+    turn them back on for themselves, against a recording sink.
+    """
+    monkeypatch.setenv("MEDIA_EARCONS", "0")

@@ -143,6 +143,56 @@ def remember(event: Event, ask: bool = False, *, key: str = "",
     show(record["where"])
     event.metadata["held"] = True
     event.metadata["dedup_key"] = key
+    chime_held(record["session"])
+
+
+def chime_held(session: str = "") -> bool:
+    """The `held` earcon: a reply is waiting behind a Play. True if played.
+
+    The toast only reaches someone at the desk; this reaches the room. But
+    only a quiet room. Speech that is live already has the listener's
+    attention (and the toast is up anyway), so a tone over it would be the
+    one thing a held reply exists not to do — talk over something. So the
+    voice's token is tried without waiting, and a tone that cannot have it
+    at once is simply skipped; held for the length of the tone and no more.
+
+    Never for a Quiet conversation — quiet means silent, question or not —
+    and never on a phone that has asked for quiet (its ringer verdict), the
+    same rule an unasked-for alert follows. Never raises.
+    """
+    try:
+        from .. import earcons, speak_priority
+
+        if not earcons.enabled("held"):
+            return False
+        if session and speak_priority.level_of(session) == "quiet":
+            return False
+        from .. import audio_targets
+        from ..sinks.speech import SinkSpeech, read_ringer
+        from ..state import StateStore
+        from ..types import Target
+        from .submit import (_PRIO_RANK, Priority, _SpeechPlaybackLock,
+                             _ringer_target)
+
+        if StateStore().get_now_playing("speech"):
+            return False
+        target = Target(name=audio_targets.speech_default())
+        if target.name == _ringer_target():
+            verdict = read_ringer(target)
+            if verdict and verdict.get("quiet"):
+                return False
+        lock = _SpeechPlaybackLock(kind="earcon")
+        took = lock.take_within(0.0, rank=_PRIO_RANK[Priority.LOW],
+                                session="earcon")
+        if not took and not lock._disabled():
+            return False        # someone is speaking, or about to
+        try:
+            return earcons.play("held", target, SinkSpeech(), wait=True)
+        finally:
+            lock.release()
+    except Exception as e:  # noqa: BLE001 — a tone must never cost the hold
+        log.info("toast: held earcon skipped: %s", e)
+        return False
 
 
 def hold(event: Event) -> None:

@@ -2404,6 +2404,7 @@ class _SpeechPlaybackLock:
         """
         if self._fd is None:
             return
+        note_displaced()
         try:
             fcntl.flock(self._fd, fcntl.LOCK_UN)
         except OSError:
@@ -2448,6 +2449,66 @@ class _SpeechPlaybackLock:
     def __exit__(self, *exc: object) -> bool:
         self.release()
         return False
+
+
+# A live reply (or a replay) just stepped aside for a higher speaker. Written
+# by the one displaced, taken — once — by the one that displaced it, which
+# then plays the `interrupt` earcon before its first clip. The two cannot
+# simply ask each other: the higher speaker only ever sees a free token, and
+# a free token looks the same whether someone stepped aside or had finished.
+
+def _displaced_path() -> Path:
+    state = Path(os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state"))
+    return state / "agent-media" / "speech-displaced"
+
+
+def note_displaced() -> None:
+    """Speech that was playing is stepping aside for a higher speaker."""
+    try:
+        p = _displaced_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(repr(time.time()))
+    except OSError:
+        pass
+
+
+def _take_displaced(since: float) -> bool:
+    """True, once, when something stepped aside at or after `since` (when
+    this reply started waiting for the token). Consumed by the unlink, so of
+    two speakers that queued behind one yield only the first sounds it."""
+    p = _displaced_path()
+    try:
+        at = float(p.read_text().strip())
+    except (OSError, ValueError):
+        return False
+    if at < since:
+        return False            # an old yield nobody claimed; not ours
+    try:
+        p.unlink()
+    except OSError:
+        return False            # someone else took it first
+    return True
+
+
+def _other_speaking(state: "StateStore", session: str, pane: str) -> bool:
+    """Is another conversation's speech playing now? (Our own lead-in before
+    a question is not an interruption: it is the same speaker, going on.)"""
+    try:
+        np = state.get_now_playing("speech") or {}
+    except Exception:  # noqa: BLE001
+        return False
+    if not np:
+        return False
+    ex = np.get("extras") or {}
+    if not isinstance(ex, dict):
+        return True
+    theirs_s = str(ex.get("source_session") or "")
+    theirs_p = str(ex.get("source_pane") or "")
+    if session and theirs_s == session:
+        return False
+    if pane and theirs_p == pane:
+        return False
+    return True
 
 
 def _replay_is_audible(extras: dict) -> bool:
@@ -3898,6 +3959,11 @@ def _submit_event(event: Event,
             playback_lock.announce(event.priority, session=order_session,
                                    seq=started_at)
 
+        # For the `interrupt` earcon: when we began to want the voice, and —
+        # for a question — whether another conversation had it then.
+        waited_from = time.time()
+        ask_over_live = source_ask and _other_speaking(state, source_session,
+                                                       source_pane)
         while True:
             _wait_speech_hold(refresh=_keep_our_place)
             playback_lock.acquire(
@@ -3928,6 +3994,15 @@ def _submit_event(event: Event,
         if _speech_flushed(started_at) or _speech_cut(source_session, started_at, ask=source_ask):
             playback_lock.release()
             return _archive(flushed=True)
+        # Barging in: something that was speaking stepped aside for us, or
+        # this is a question and another conversation was speaking when it
+        # arrived. Taken here, once the token is ours — the yield happens
+        # while we wait for it. A question into silence needs no warning.
+        barged_in = _take_displaced(waited_from) or ask_over_live
+        # Set on the ways out that end this reply on purpose — a per-session
+        # cut (`all`, `ask`, `read`), not a supersede, a skip, a natural end
+        # or a yield: those get the `cut` earcon once the player has stopped.
+        ended_by_cut = False
         # Cross-host: also claim the shared remote broker so another machine's
         # reply can't stop+clear our still-playing playlist. Waits out a healthy
         # remote holder, takes over an expired one. No-op for local/rooms.
@@ -3956,6 +4031,14 @@ def _submit_event(event: Event,
 
         def _claim_and_prefetch() -> None:
             _wait_and_claim_broker(sink, target)
+            if barged_in and not _abandon.is_set():
+                # Before anything of ours is loaded — loading starts with a
+                # stop, which would take the tone with it — and waited out
+                # for the same reason. Here rather than on the main thread
+                # because this thread already runs beside before_speech, so
+                # the tone costs the reply little or nothing in start time.
+                from .. import earcons
+                earcons.play("interrupt", target, sink, wait=True)
             # The lead, once it is in hand. Every way out sets this before
             # joining the thread, so the wait cannot outlive the reply.
             _lead_ready.wait()
@@ -4215,6 +4298,10 @@ def _submit_event(event: Event,
                         finished = True
                         why = ("superseded" if playback_lock.should_abort()
                                else "cut")
+                        if why == "cut":
+                            ended_by_cut = True
+                        else:
+                            note_displaced()    # the superseder barged in
                         break
                     # Read (the listener replied): the phone plays the list by
                     # itself, so there is no gap between sentences to stop in.
@@ -4345,6 +4432,9 @@ def _submit_event(event: Event,
                             # an underrun is the end, not a gap to restart.
                             finished = True
                             why = f"read (the listener replied) after sentence {read_i + 1}"
+                            # Cut short, unless that sentence was the last.
+                            ended_by_cut = (not rest_was_done
+                                            or read_i + 1 < len(clip_data))
                             break
                         if stream:
                             # The player ran out of clips. Neither the phone's
@@ -4420,6 +4510,7 @@ def _submit_event(event: Event,
                         sink.stop(target)
                         finished = True
                         why = f"read (the listener replied) after sentence {read_i + 1}"
+                        ended_by_cut = True
                         break
                     if 0 <= i < n:
                         # Every tick, not just on sentence change: keep the mirrored
@@ -4487,11 +4578,16 @@ def _submit_event(event: Event,
                         # hold sat out the rest of the reply ignoring every one
                         # of them: "I clicked End of reply and it is still
                         # playing". None of these need the player to answer.
-                        if playback_lock.should_abort() or _speech_cut(
-                                source_session, started_at, playing=True,
-                                ask=source_ask):
+                        if playback_lock.should_abort():
                             highlighter.cancel_pending()
                             sink.stop(target)
+                            note_displaced()
+                            break
+                        if _speech_cut(source_session, started_at,
+                                       playing=True, ask=source_ask):
+                            highlighter.cancel_pending()
+                            sink.stop(target)
+                            ended_by_cut = True
                             break
                         nav = _read_nav_request(target)
                         if nav is not None:
@@ -4559,9 +4655,15 @@ def _submit_event(event: Event,
                     # Superseded by a later URGENT in this session — drop the
                     # remaining sentences instead of yielding-and-resuming.
                     # Or stopped from the app (`all` cut): the same drop.
-                    if playback_lock.should_abort() or _speech_cut(
-                            source_session, started_at, playing=True,
-                            ask=source_ask):
+                    if playback_lock.should_abort():
+                        if played_any:
+                            note_displaced()    # the superseder barged in
+                        break
+                    if _speech_cut(source_session, started_at, playing=True,
+                                   ask=source_ask):
+                        # Before the first sentence nothing was cut short:
+                        # the reply simply never started.
+                        ended_by_cut = played_any
                         break
                     # Step aside between sentences if a higher-priority speaker
                     # (e.g. a notification) is waiting; resume it once that's done.
@@ -4596,6 +4698,12 @@ def _submit_event(event: Event,
                             break
                         i = max(0, nav)
                         nav_jump = True
+            if ended_by_cut:
+                # The player is stopped (or between clips); say so on it.
+                # Waited out while the token is still ours, or the next reply's
+                # load — which starts with a stop — would eat the tick.
+                from .. import earcons
+                earcons.play("cut", target, sink, wait=True)
         finally:
             highlighter.drain()
             coordinator.after_speech()
@@ -4848,10 +4956,17 @@ def submit_stream(sentences,
         # Serialize playback across sessions (rendering keeps streaming in
         # parallel via the producer thread while we wait our turn for the broker).
         playback_lock = _SpeechPlaybackLock(speaker=source_session)
+        waited_from = time.time()
+        ask_over_live = source_ask and _other_speaking(state, source_session,
+                                                       source_pane)
         playback_lock.acquire(
             event.priority, session=order_session,
             supersede=bool((event.metadata or {}).get("supersede")),
             seq=started_at)
+        # As submit_event: the `interrupt` earcon before a barge-in's first
+        # clip, the `cut` one after a per-session cut that ended it early.
+        barged_in = _take_displaced(waited_from) or ask_over_live
+        ended_by_cut = False
         i = 0
         nav_jump = False
         # When each sentence was sent to the player, on the reply's own clock
@@ -4869,9 +4984,13 @@ def submit_stream(sentences,
                 # (whether or not we've started) instead of resuming. Or cut
                 # by `/session/stop`: before the first clip either mode, after
                 # it only `all`.
-                if playback_lock.should_abort() or _speech_cut(
-                        source_session, started_at, playing=i > 0,
-                        ask=source_ask):
+                if playback_lock.should_abort():
+                    if played_any:
+                        note_displaced()        # the superseder barged in
+                    break
+                if _speech_cut(source_session, started_at, playing=i > 0,
+                               ask=source_ask):
+                    ended_by_cut = played_any
                     break
                 # Step aside between sentences for a higher-priority speaker;
                 # resume this clip once it's done. Only after the first clip has
@@ -4975,6 +5094,10 @@ def submit_stream(sentences,
                             "streaming": True,
                             **stream_extras,
                             "writer_pid": os.getpid()})
+                if barged_in and not played_any:
+                    from .. import earcons
+                    earcons.play("interrupt", target, sink, wait=True)
+                    barged_in = False
                 try:
                     sink.play(str(clip_path), target, reset_state=(i == 0))
                     played_any = True
@@ -5008,6 +5131,9 @@ def submit_stream(sentences,
                     else:
                         i = max(0, nav)
                         nav_jump = True
+            if ended_by_cut:
+                from .. import earcons
+                earcons.play("cut", target, sink, wait=True)
         finally:
             highlighter.drain()
             coordinator.after_speech()

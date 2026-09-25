@@ -4234,6 +4234,15 @@ def cmd_replay_track(a) -> int:
         except Exception:  # noqa: BLE001
             return False
 
+    def _note_displaced() -> None:
+        """Tell the speaker that barged in that it displaced a replay, so it
+        opens with the `interrupt` earcon (intake/submit.py `note_displaced`)."""
+        try:
+            from .intake.submit import note_displaced
+            note_displaced()
+        except Exception:  # noqa: BLE001
+            pass
+
     def _step_aside() -> int:
         """Stop the replay for the speaker that barged in, or for End of
         reply, and end. It is a
@@ -4341,7 +4350,10 @@ def cmd_replay_track(a) -> int:
         started = time.time()
         last = -1
         while True:
-            if _barged_in() or _ended_by_listener():
+            if _barged_in():
+                _note_displaced()
+                return _step_aside()
+            if _ended_by_listener():
                 return _step_aside()
             # The row owns the timeline: `media skip` re-stamps its origin and
             # a pause freezes it, so reading it back each tick is what keeps a
@@ -4437,6 +4449,7 @@ def cmd_replay_track(a) -> int:
     while True:
         time.sleep(0.15)
         if _barged_in():
+            _note_displaced()
             return _step_aside()
         if _ended_by_listener():
             # End of the question moves on to its answer.
