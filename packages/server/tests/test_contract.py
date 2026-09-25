@@ -711,3 +711,17 @@ def test_token_routes_are_refused_without_one(server, typed, path):
     res, obj = call(server, "POST", path, {})
     assert res.status == 401 and obj == {"error": "unauthorized"}
     assert typed == []
+
+
+def test_a_reply_marks_the_thread_read_unless_kept(server, shelf, signed_in, typed, monkeypatch):
+    """A reply ends the thread's reply being read (at its sentence); the reply
+    box's Keep reading chip sends `keep_reading` and leaves it playing."""
+    from agent_media_server import speech
+
+    seen = []
+    monkeypatch.setattr(speech, "reply_read", lambda s, keep=False: seen.append((s, keep)))
+    monkeypatch.setattr(sessions, "live_sessions", lambda: {SID: "%42"})
+    call(server, "POST", "/reply", {"session": SID, "text": "yes"}, AUTH)
+    call(server, "POST", "/reply", {"session": SID, "text": "and",
+                                    "keep_reading": True}, AUTH)
+    assert seen == [(SID, False), (SID, True)]

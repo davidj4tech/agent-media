@@ -1186,7 +1186,7 @@ def _handle_posttooluse(payload: dict) -> int:
     return _record_listener_text(session, text)
 
 
-def _handle_user_prompt(payload: dict) -> int:
+def _handle_user_prompt(payload: dict, record: bool = True) -> int:
     """UserPromptSubmit — the listener's own words, typed at the keyboard.
 
     A reply sent from the player is recorded as a listener turn by the canvas
@@ -1200,6 +1200,11 @@ def _handle_user_prompt(payload: dict) -> int:
     notifications and system reminders into the prompt stream, and those were
     being read aloud and shelved as the listener's turns. `strip_system_blocks`
     takes them out and keeps whatever the person actually typed.
+
+    Any turn someone said also ends the read-out of the reply it answers
+    (`_reply_read`). Claude Code's hook passes `record=False`: that is all it
+    is registered for (setup.CLAUDE_HOOK_SPEC) — its words reach the shelf
+    from the transcript, and a phone send records its own.
     """
     raw = str(payload.get("prompt") or "")
     session = payload.get("session_id") or ""
@@ -1222,14 +1227,33 @@ def _handle_user_prompt(payload: dict) -> int:
         cmd = slash.turn_for(raw, session)
         if cmd is None:
             return 0
+        _reply_read(session)
+        if not record:
+            return 0
         return _record_listener_text(session, cmd["text"], extras={"command": cmd})
     text = strip_system_blocks(raw)
     if not text:
+        return 0
+    _reply_read(session)
+    if not record:
         return 0
     if len(text) > PROMPT_RECORD_LIMIT:
         log.info("hook: prompt of %d chars not recorded (paste)", len(text))
         return 0
     return _record_listener_text(session, text)
+
+
+def _reply_read(session: str) -> None:
+    """The listener answered: stop reading them this thread's last reply, at
+    the end of the sentence (`session_reply_read`). Only for words someone
+    said — a settings command or a harness notice reads nothing. A send from
+    the phone's Keep reading has already told it not to."""
+    try:
+        from .submit import session_reply_read
+
+        session_reply_read(session)
+    except Exception as e:  # noqa: BLE001 — the prompt reached Claude either way
+        log.warning("hook: could not end the read reply (%s)", e)
 
 
 def _record_listener_text(session: str, text: str,
@@ -1312,7 +1336,7 @@ def main() -> int:
         if event_name == "Stop":
             return _handle_stop(payload)
         if event_name == "UserPromptSubmit":
-            return _handle_user_prompt(payload)
+            return _handle_user_prompt(payload, record=False)
     except Exception as e:  # noqa: BLE001
         log.warning("hook: %s handler failed: %s", event_name, e)
         try:

@@ -9,6 +9,7 @@ a whitelisted speech transport verb. This package never imports `visual`.
 
 from __future__ import annotations
 
+import sys
 import time
 from typing import Callable
 
@@ -124,6 +125,17 @@ def cut_session(session: str, mode: str, at: float) -> float | None:
     from agent_media_core.intake.submit import request_session_speech_cut
 
     return request_session_speech_cut(session, mode, at)
+
+
+def reply_read(session: str, keep: bool = False) -> None:
+    """The listener replied to this thread: stop reading its last reply at the
+    end of the sentence, or with `keep`, leave it and tell the prompt hook to."""
+    try:
+        from agent_media_core.intake.submit import session_reply_read
+
+        session_reply_read(session, keep=keep)
+    except Exception as e:  # noqa: BLE001 — the reply goes in either way
+        print(f"reply: could not mark the reply read ({e})", file=sys.stderr)
 
 
 def has_cutoff(session: str) -> bool:

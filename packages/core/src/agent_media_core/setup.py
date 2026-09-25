@@ -64,10 +64,12 @@ CLAUDE_HOOK_TIMEOUT = 30
 #:     whole reply; 30 s kills a long one halfway.
 #:   * **Every one is `async`.** A hook that speaks must not hold the turn
 #:     open while it does, or the agent waits on its own voice.
-#:   * **PreToolUse, not UserPromptSubmit.** PreToolUse is where a question
-#:     is spoken before it is asked (AskUserQuestion); the listener's own
-#:     words reach the shelf from the transcript, so no prompt hook is
-#:     needed for them.
+#:   * **PreToolUse is where a question is spoken** before it is asked
+#:     (AskUserQuestion).
+#:   * **UserPromptSubmit ends the reply being read** (25 Sep 2026): a reply
+#:     means the last one was read, so its speech stops at the end of the
+#:     sentence (`session_reply_read`). It records nothing — the listener's
+#:     words reach the shelf from the transcript.
 #:   * **PostToolUse is what ends a question.** `_handle_posttooluse` is the
 #:     only thing that cuts a question's read-out when it is answered
 #:     (`request_session_speech_cut(session, "ask")`), records the chosen
@@ -85,7 +87,8 @@ CLAUDE_HOOK_TIMEOUT = 30
 #: rewrites its own entries and removes nothing.
 CLAUDE_HOOK_SPEC = (("Stop", 120, True, None), ("Notification", 30, True, None),
                     ("PreToolUse", 30, True, "AskUserQuestion"),
-                    ("PostToolUse", 30, True, "AskUserQuestion"))
+                    ("PostToolUse", 30, True, "AskUserQuestion"),
+                    ("UserPromptSubmit", 10, True, None))
 CLAUDE_HOOK_EVENTS = tuple(event for event, _, _, _ in CLAUDE_HOOK_SPEC)
 
 

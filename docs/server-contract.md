@@ -953,7 +953,19 @@ Clients: S (`ReplyBox.vue`), POST debounced 800 ms.
 
 Type into the session behind a conversation, reviving it if it has ended.
 
-Request: `{"session": "<session>" | "item": "<item>", "text": "…", "quote"?: "…", "mode"?: "continue" | "branch", "refs"?: {"<title>": "<session>"}}`
+Request: `{"session": "<session>" | "item": "<item>", "text": "…", "quote"?: "…", "mode"?: "continue" | "branch", "refs"?: {"<title>": "<session>"}, "keep_reading"?: bool}`
+
+- **A reply ends the read-out** (25 Sep 2026). Replying means the thread's
+  last reply was read, so its speech is cut as `read`: queued replies of the
+  thread are dropped (archived, marked flushed) and the one playing ends at
+  the close of its sentence — on the phone, when the player moves past the
+  sentence it was on. The reply the message starts plays as usual. The
+  desk gets the same from Claude Code's UserPromptSubmit hook (it records
+  nothing; it only cuts). **`keep_reading: true`** is the reply box's chip
+  switched to Keep reading: nothing is cut, and the prompt hook that send
+  sets off is told to leave it too (a `keep` mark, 30 s, spent by the hook).
+  A thread at the Auto speak level is never cut by a reply. `branch` cuts
+  nothing. Show the chip only while the thread is being read (`/speech/now`).
 
 - **`refs`** (24 Sep 2026), on `/reply` and `/ask`: `{"<title>":
   "<session>"}` for the `@[<title>]` chips in `text` — another conversation

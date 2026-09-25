@@ -145,7 +145,7 @@ def test_the_prompt_hook_is_a_listener_turn(monkeypatch):
     S.request_session_speech_cut(A, "after")
     S.request_session_speech_cut(B, "after")
     H._handle_user_prompt({"prompt": "carry on", "session_id": A})
-    assert S.session_speech_cut(A) == {}
+    assert "after" not in S.session_speech_cut(A)
     assert "after" in S.session_speech_cut(B)      # its own session only
 
 
@@ -280,3 +280,113 @@ def test_a_later_question_is_read_out():
     S.request_session_speech_cut(A, "ask")
     rid = _ask("The next question. Option one.", A, state, sink)
     assert sink.played and not _row(state, rid)["extras"].get("flushed")
+
+
+# --- read: the listener replied -----------------------------------------------
+
+def test_a_reply_ends_the_reply_playing_at_its_sentence():
+    state = StateStore()
+    sink = _Sink(on_play=lambda n: n == 1 and S.session_reply_read(A))
+    rid = _say("First sentence here. Second sentence here. Third one too.", A, state, sink)
+    assert len(sink.played) == 1, "the reply kept reading after it was answered"
+    assert not _row(state, rid)["extras"].get("flushed")   # heard, in part
+
+
+def test_a_reply_drops_what_was_queued_and_spares_what_it_starts():
+    state, sink = StateStore(), _Sink()
+    S.session_reply_read(A, at=time.time() + 60)
+    old = _say("Queued before the reply.", A, state, sink)
+    assert sink.played == [] and _row(state, old)["extras"]["flushed"] is True
+    _say("Another thread entirely.", B, state, sink)
+    assert len(sink.played) == 1
+
+
+def test_the_reply_a_reply_starts_is_heard():
+    state, sink = StateStore(), _Sink()
+    S.session_reply_read(A)
+    new = _say("The answer to the reply.", A, state, sink)
+    assert len(sink.played) == 1 and not _row(state, new)["extras"].get("flushed")
+
+
+def test_keep_reading_leaves_it_and_holds_off_the_hook_once():
+    assert S.session_reply_read(A, keep=True) is None
+    assert S.session_speech_cut(A) == {}
+    # The prompt hook the same send sets off: left alone, and the keep is spent.
+    assert S.session_reply_read(A) is None
+    assert S.session_speech_cut(A) == {}
+    assert S.session_reply_read(A) is not None
+    assert "read" in S.session_speech_cut(A)
+
+
+def test_a_keep_from_long_ago_is_not_this_send(monkeypatch):
+    S.session_reply_read(A, keep=True)
+    monkeypatch.setattr(S.time, "time", lambda: 10 ** 10)
+    assert S.session_reply_read(A) is not None
+
+
+def test_auto_speak_is_never_cut_by_a_reply():
+    from agent_media_core import speak_priority
+
+    speak_priority.set_level(A, "auto")
+    assert S.session_reply_read(A) is None
+    assert S.session_speech_cut(A) == {}
+
+
+def test_the_read_check_can_be_left_to_the_caller():
+    S.session_reply_read(A, at=time.time() + 60)
+    now = time.time()
+    assert S._speech_cut(A, now, playing=True)
+    assert not S._speech_cut(A, now, playing=True, read=False)
+    assert S._speech_read(A, now) and not S._speech_read(B, now)
+
+
+def _hook_env(monkeypatch):
+    seen = []
+
+    class _BT:
+        @staticmethod
+        def record_listener_turn(session, text, extras=None):
+            seen.append(text)
+            return True
+
+    import sys
+
+    import agent_media_core
+    monkeypatch.setattr(agent_media_core, "book_tracks", _BT, raising=False)
+    monkeypatch.setitem(sys.modules, "agent_media_core.book_tracks", _BT)
+    monkeypatch.setenv("MEDIA_HOOK_NO_DETACH", "1")
+    return seen
+
+
+def test_a_typed_turn_marks_the_reply_read(monkeypatch):
+    from agent_media_core.intake import hook_claude_code as H
+
+    _hook_env(monkeypatch)
+    H._handle_user_prompt({"prompt": "got it, next", "session_id": A})
+    assert "read" in S.session_speech_cut(A)
+    assert S.session_speech_cut(B) == {}
+
+
+def test_a_notice_or_a_settings_command_reads_nothing(monkeypatch):
+    from agent_media_core.intake import hook_claude_code as H
+
+    _hook_env(monkeypatch)
+    H._handle_user_prompt({"prompt": "<command-name>/model</command-name>",
+                           "session_id": A})
+    H._handle_user_prompt({"prompt": "<task-notification>done</task-notification>",
+                           "session_id": A})
+    assert S.session_speech_cut(A) == {}
+
+
+def test_claude_codes_hook_cuts_and_records_nothing(monkeypatch):
+    import io
+    import json
+
+    from agent_media_core.intake import hook_claude_code as H
+
+    seen = _hook_env(monkeypatch)
+    monkeypatch.setattr(H, "load_env_file", lambda name: None)
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(
+        {"hook_event_name": "UserPromptSubmit", "prompt": "hi", "session_id": A})))
+    assert H.main() == 0
+    assert seen == [] and "read" in S.session_speech_cut(A)

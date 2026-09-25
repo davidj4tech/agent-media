@@ -182,6 +182,10 @@ def _capture_record(monkeypatch):
     monkeypatch.setattr(agent_media_core, "book_tracks", _BT, raising=False)
     monkeypatch.setitem(__import__("sys").modules, "agent_media_core.book_tracks", _BT)
     monkeypatch.setenv("MEDIA_HOOK_NO_DETACH", "1")
+    # A turn also marks the thread's last reply read; kept off the real state.
+    from agent_media_core.intake import submit
+    monkeypatch.setattr(submit, "session_reply_read", lambda *a, **k: None)
+    monkeypatch.setattr(submit, "end_session_speech_cut", lambda *a, **k: None)
     return seen
 
 
@@ -217,11 +221,17 @@ def test_a_paste_is_skipped_not_truncated(monkeypatch):
     assert seen == []
 
 
-def test_main_routes_the_event(monkeypatch):
+def test_main_routes_the_event_and_records_nothing(monkeypatch):
+    """Claude Code's prompt hook is registered to end the reply being read;
+    the words themselves reach the shelf from the transcript (and a phone send
+    records its own), so this route records nothing."""
     seen = _capture_record(monkeypatch)
     import io, json
+    from agent_media_core.intake import submit
+    read = []
+    monkeypatch.setattr(submit, "session_reply_read", lambda s, **k: read.append(s))
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(
         {"hook_event_name": "UserPromptSubmit", "prompt": "hi", "session_id": "s-2"})))
     monkeypatch.setattr(H, "load_env_file", lambda name: None)
     assert H.main() == 0
-    assert seen == [("s-2", "hi")]
+    assert seen == [] and read == ["s-2"]

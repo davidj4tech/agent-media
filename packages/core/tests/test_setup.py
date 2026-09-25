@@ -702,12 +702,14 @@ def test_the_speech_hook_goes_where_it_works(tmp_path, monkeypatch):
     """The three differences that matter, taken from a machine that works:
     Stop gets 120 s (it renders and hands over a whole reply), every entry is
     async (a hook that speaks must not hold the turn open), and the third
-    event is PreToolUse — where a question is spoken before it is asked."""
+    event is PreToolUse — where a question is spoken before it is asked.
+    UserPromptSubmit ends the reply being read when the listener answers it."""
     settings, changed = setup._merge_hooks({}, "media-hook-claude-code")
     assert changed
     got = {ev: [h for g in settings["hooks"][ev] for h in g["hooks"]]
            for ev in settings["hooks"]}
-    assert set(got) == {"Stop", "Notification", "PreToolUse", "PostToolUse"}
+    assert set(got) == {"Stop", "Notification", "PreToolUse", "PostToolUse",
+                        "UserPromptSubmit"}
     assert got["Stop"][0] == {"type": "command", "command": "media-hook-claude-code",
                               "timeout": 120, "async": True}
     assert got["Notification"][0]["timeout"] == 30

@@ -822,7 +822,8 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
             refs.expand(str(body.get("text") or ""), body.get("refs")), _bearer(h),
             quote=str(body.get("quote") or ""),
             mode=str(body.get("mode") or "continue"),
-            session=str(body.get("session") or ""))
+            session=str(body.get("session") or ""),
+            keep_reading=bool(body.get("keep_reading")))
         status = detail.pop("status", 400)
         if not ok:
             # Which thread too: a refusal that names only the reason

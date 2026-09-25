@@ -1404,12 +1404,23 @@ def _speech_flushed(seq: float) -> bool:
 #   "ask":   the question on screen was answered: drop this session's question
 #            read-outs submitted up to it, the one playing now included. Only
 #            the read-out — the lead-in before it and the reply after it play.
+#   "read":  the listener replied, so what was being read to them has been
+#            read: drop this session's replies submitted up to it, and end the
+#            one playing now at the close of its sentence rather than mid-word
+#            (`session_reply_read`). The reply the answer starts is later, so
+#            it plays.
 #
 # Checked where the global flush is (the last checkpoint before a reply's first
-# clip plays) and, for "all", between clips too. A dropped reply still writes
-# its history row, marked flushed, exactly as a flushed one does.
+# clip plays) and, for "all" and "read", between clips too. A dropped reply
+# still writes its history row, marked flushed, exactly as a flushed one does.
+#
+# Beside the stamps, "keep" (a time) is a reply sent with Keep reading: the
+# prompt hook that send sets off finds it and leaves the speech be.
 
-_CUT_MODES = ("after", "all", "ask")
+_CUT_MODES = ("after", "all", "ask", "read")
+
+#: How long a Keep reading send holds off the prompt hook it causes.
+_KEEP_READING_S = 30.0
 
 
 def _speech_cut_dir() -> Path:
@@ -1440,7 +1451,7 @@ def _write_speech_cut(session: str, rec: dict) -> None:
     path = _speech_cut_path(session)
     rec = {k: v for k, v in rec.items() if v is not None}
     try:
-        if not any(k in rec for k in _CUT_MODES):
+        if not any(k in rec for k in (*_CUT_MODES, "keep")):
             path.unlink(missing_ok=True)
             return
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1482,6 +1493,51 @@ def request_session_speech_cut(session: str, mode: str = "after",
     return at
 
 
+def session_reply_read(session: str, *, keep: bool = False,
+                       at: Optional[float] = None) -> Optional[float]:
+    """The listener replied to `session`: what it was reading them has been read.
+
+    Its speech submitted up to `at` is cut as `read` — queued replies dropped,
+    the one playing ended at the close of its sentence. `keep` is the reply
+    box's Keep reading: nothing is cut, and the prompt hook the same send sets
+    off is told to leave it too. Called by both (the phone's `/reply`, then the
+    hook; the desk, only the hook), so a cut made twice is one cut.
+
+    A thread set to Auto speak is never cut by a reply: that level is "always
+    heard". Returns the stamp, or None when nothing was cut.
+    """
+    session = (session or "").strip()
+    if not session:
+        return None
+    now = time.time()
+    rec = _read_speech_cut(session)
+    if keep:
+        rec["session"] = session
+        rec["keep"] = now
+        _write_speech_cut(session, rec)
+        return None
+    kept = rec.pop("keep", None)
+    if isinstance(kept, (int, float)) and now - kept <= _KEEP_READING_S:
+        _write_speech_cut(session, rec)
+        return None
+    try:
+        from .. import speak_priority
+
+        if speak_priority.level_of(session) == "auto":
+            return None
+    except Exception:  # noqa: BLE001 — no level known is Normal
+        pass
+    return request_session_speech_cut(session, "read", at)
+
+
+def _speech_read(session: str, seq: float) -> bool:
+    """True when a reply submitted at `seq` has been read (a `read` cut)."""
+    if not session:
+        return False
+    at = _read_speech_cut(session).get("read")
+    return isinstance(at, (int, float)) and seq <= at
+
+
 def session_speech_cut(session: str) -> dict:
     """The cut standing on `session`: `{"after": ts?, "all": ts?}` ({} none).
     An `after` past its TTL is reported as gone, as the checkpoint treats it."""
@@ -1509,12 +1565,14 @@ def end_session_speech_cut(session: str) -> None:
 
 
 def _speech_cut(session: str, seq: float, *, playing: bool = False,
-                ask: bool = False) -> bool:
+                ask: bool = False, read: bool = True) -> bool:
     """True when this session's reply submitted at `seq` has been cut.
 
     `playing`: asked between clips of a reply already speaking, where only an
-    `all` cut applies — the cutoff lets through what started before it.
-    `ask`: this is a question's read-out, which an answer (`ask`) also cuts."""
+    `all` or `read` cut applies — the cutoff lets through what started before it.
+    `ask`: this is a question's read-out, which an answer (`ask`) also cuts.
+    `read=False`: the caller is not at a sentence boundary and handles a `read`
+    cut itself (`_speech_read`), ending the sentence first."""
     if not session:
         return False
     rec = _read_speech_cut(session)
@@ -1525,6 +1583,9 @@ def _speech_cut(session: str, seq: float, *, playing: bool = False,
         return True
     all_at = rec.get("all")
     if isinstance(all_at, (int, float)) and seq <= all_at:
+        return True
+    read_at = rec.get("read")
+    if read and isinstance(read_at, (int, float)) and seq <= read_at:
         return True
     if playing:
         return False
@@ -4129,6 +4190,9 @@ def _submit_event(event: Event,
                 # one, and until this was recorded the only trace a lost
                 # follow-along left was the absence of a highlight.
                 why = "fell out"
+                # The sentence a `read` cut found playing (above): the reply
+                # ends when the player leaves it.
+                read_i: Optional[int] = None
                 while played_any:
                     # Streaming appends clips under us, so the reply's length
                     # and its last index are read fresh each tick rather than
@@ -4145,13 +4209,18 @@ def _submit_event(event: Event,
                     # Or stopped from the app (`all` cut): the same drop.
                     if playback_lock.should_abort() or _speech_cut(
                             source_session, started_at, playing=True,
-                            ask=source_ask):
+                            ask=source_ask, read=False):
                         highlighter.cancel_pending()
                         sink.stop(target)
                         finished = True
                         why = ("superseded" if playback_lock.should_abort()
                                else "cut")
                         break
+                    # Read (the listener replied): the phone plays the list by
+                    # itself, so there is no gap between sentences to stop in.
+                    # Note the sentence it is on, and stop when it moves past.
+                    if read_i is None and _speech_read(source_session, started_at):
+                        read_i = max(mark_i, 0)
                     # Step aside for a higher-priority speaker (e.g. a
                     # notification) waiting on the token, then resume this reply —
                     # the remote counterpart of the per-clip path's yield. The
@@ -4271,6 +4340,12 @@ def _submit_event(event: Event,
                         time.sleep(0.1)
                         continue
                     if snap.get("idle-active"):
+                        if stream and read_i is not None:
+                            # Read, and the sentence it was on has played:
+                            # an underrun is the end, not a gap to restart.
+                            finished = True
+                            why = f"read (the listener replied) after sentence {read_i + 1}"
+                            break
                         if stream:
                             # The player ran out of clips. Neither the phone's
                             # mpv nor Sasonica's player restarts itself when a
@@ -4340,6 +4415,12 @@ def _submit_event(event: Event,
                         stall = 0
                     if 0 <= pos < n:
                         mark_i = pos
+                    if read_i is not None and pos > read_i:
+                        highlighter.cancel_pending()
+                        sink.stop(target)
+                        finished = True
+                        why = f"read (the listener replied) after sentence {read_i + 1}"
+                        break
                     if 0 <= i < n:
                         # Every tick, not just on sentence change: keep the mirrored
                         # live position/pause/speed/mute fresh so the popup's redraw

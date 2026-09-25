@@ -916,7 +916,8 @@ def _record_turn(session: str, text: str, pane: str = "") -> None:
 
 
 def reply(item: str, text: str, bearer: str, *, quote: str = "",
-          mode: str = "continue", session: str = "") -> tuple[bool, dict]:
+          mode: str = "continue", session: str = "",
+          keep_reading: bool = False) -> tuple[bool, dict]:
     """Put `text` into `session`, or into the session behind ABS item `item`.
 
     `session` is the v1 form (server-contract.md §10) and wins when both are
@@ -929,6 +930,11 @@ def reply(item: str, text: str, bearer: str, *, quote: str = "",
     working directory, seeded with the quoted line — the cheap version of
     forking a conversation, which Claude Code cannot really do (see the
     proposal: a true fork means truncating an undocumented transcript format).
+
+    A reply means the thread's last reply was read: its speech ends at the
+    close of the sentence playing (`session_reply_read`), unless the box's
+    chip was switched to Keep reading. Marked before the words go in, so the
+    prompt hook they set off finds the choice already made.
     """
     text = (text or "").strip()
     if not text:
@@ -957,6 +963,10 @@ def reply(item: str, text: str, bearer: str, *, quote: str = "",
     # take them, `for_pane`); `text` is recorded with the breaks the reply box
     # had, so the transcript keeps them.
     body = compose(text, quote)
+    if mode != "branch":
+        from . import speech
+
+        speech.reply_read(session, keep=keep_reading)
 
     if mode == "branch" and driver.owned_headless(session):
         # A branch runs where the thread it came from ran (proposal §8): a
