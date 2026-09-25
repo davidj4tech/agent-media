@@ -177,8 +177,10 @@ Earcons (David, 25 Sep 2026): made in code, no audio assets
 reply, an answered question), a rising two-note before speech that barges in
 over another thread, a falling two-note when a reply is held behind a Play
 (never for Quiet). Only on an idle player, never inside a reply's playlist.
-`MEDIA_EARCONS=0`, or `MEDIA_EARCON_CUT` / `_INTERRUPT` / `_HELD`. Not yet
-heard on the phone.
+`MEDIA_EARCONS=0`, or `MEDIA_EARCON_CUT` / `_INTERRUPT` / `_HELD`. End of
+reply ticks too (David wanted it). Replay replays the thread the bar names,
+or the one on screen — unscoped, it read out a reply held in another thread
+(agent-media `91d912f`, android-next `8250849d`, chat-prototype `17cb2aa4`).
 
 The assistant button talks into the thread on screen (David, 25 Sep 2026):
 pressed while a thread is showing, that thread's composer listens (same 3 s
