@@ -162,6 +162,13 @@ reply no longer moves the view — it stays where you put it, no pill — and
 the bold still marks the sentence (`lib/followOn.ts`, `test/follow.mjs` F6).
 chat-prototype `f85a2acf`, android-next `046fa5f7`, installed on p8a.
 
+The assistant button talks into the thread on screen (David, 25 Sep 2026):
+pressed while a thread is showing, that thread's composer listens (same 3 s
+auto-send); from another app, the lock screen or a cold start it is a new
+chat as before, and a second press within 20 s opens a new chat instead
+(`AssistPlugin.java` `shown`, `NativeHooks.tsx`). A thread's title wraps to
+three lines, not two. android-next `5873fac6`, `d29db103`, installed on p8a.
+
 ## In flight
 
 **Next's own speech player.** Media3 (David, 23 Sep 2026: the reason
