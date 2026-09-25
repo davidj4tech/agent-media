@@ -262,8 +262,9 @@ ahead.
    still the digest pane). Next: the `alerts` event and the Home section.
    **Step 3 begun 25 Sep 2026** (David: "rather click a button to play
    it"): a digest reported with `spoken` is rendered held, never read out;
-   Home's Digests row plays it (`replay-id`). The org-agenda digest moved;
-   describe-digest and the landscape watch have not.
+   Home's Digests row plays it (`replay-id`). All three moved the same day:
+   org agenda, describe-digest (its tmux pane retired) and the landscape
+   watch (read-out = its "Worth stealing"; it still files its TODO).
 
 ## Loose ends
 

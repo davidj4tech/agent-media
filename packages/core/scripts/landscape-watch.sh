@@ -4,7 +4,8 @@
 #
 # Runs a headless Claude (web search + gh) over docs/landscape/watchlist.md,
 # writes docs/landscape/YYYY-MM-DD.md, commits ONLY that file (the tree is
-# shared with live sessions), and files a TODO in ~/org/inbox.org linking it.
+# shared with live sessions), files a TODO in ~/org/inbox.org linking it, and
+# reports it to the alert store as a digest whose read-out waits behind a Play.
 # Wired as a weekly user timer (deploy/systemd/landscape-watch.*).
 set -euo pipefail
 
@@ -56,5 +57,16 @@ lead="$(awk '/^## Worth stealing/{f=1;next} /^## /{f=0} f && /^[-*] /{sub(/^[-*]
   printf '\n* TODO Landscape watch %s: %s\n' "$TODAY" "${lead:-read the digest}"
   printf '  [[file:%s/%s][Digest]] — skim "Worth stealing"; move good suggested additions into the watch list.\n' "$REPO" "$OUT"
 } >> "$INBOX"
+
+# A digest in the alert store: its "Worth stealing" is the read-out, rendered
+# held — played from the app's Home or `prefix y`, never on its own (David,
+# 25 Sep 2026). The TODO above stays the record.
+if command -v agent-alert >/dev/null 2>&1; then
+  worth="$(awk '/^## Worth stealing/{f=1;next} /^## /{f=0} f' "$OUT" | sed -E 's/^[-*] +//; s/\*\*//g; s/\[([^]]*)\]\([^)]*\)/\1/g; s/<?https?:[^ )>]*>?//g' | grep -v '^[[:space:]]*$' || true)"
+  agent-alert report digest.landscape --kind digest --level info \
+    --title "Landscape watch $TODAY${lead:+: $lead}" \
+    --detail "$(printf '%s\n\nDigest: %s/%s' "$worth" "$REPO" "$OUT")" \
+    --spoken "${worth:+Landscape watch. Worth stealing. $worth}" || true
+fi
 
 echo "landscape-watch: wrote $OUT"
