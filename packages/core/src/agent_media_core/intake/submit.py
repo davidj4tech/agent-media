@@ -4000,8 +4000,9 @@ def _submit_event(event: Event,
         # while we wait for it. A question into silence needs no warning.
         barged_in = _take_displaced(waited_from) or ask_over_live
         # Set on the ways out that end this reply on purpose — a per-session
-        # cut (`all`, `ask`, `read`), not a supersede, a skip, a natural end
-        # or a yield: those get the `cut` earcon once the player has stopped.
+        # cut (`all`, `ask`, `read`) or End of reply — not a supersede, a
+        # sentence skip, a natural end or a yield: those get the `cut` earcon
+        # once the player has stopped.
         ended_by_cut = False
         # Cross-host: also claim the shared remote broker so another machine's
         # reply can't stop+clear our still-playing playlist. Waits out a healthy
@@ -4382,6 +4383,9 @@ def _submit_event(event: Event,
                             highlighter.cancel_pending()
                             sink.stop(target)
                             finished = True   # skip past last clip = intentional end
+                            # End of reply is the listener cutting it short:
+                            # it ticks like a Stop (David, 25 Sep 2026).
+                            ended_by_cut = True
                             why = f"skipped past the last clip (nav={nav})"
                             break
                         sink.set_playlist_pos(max(0, nav), target)
@@ -4594,6 +4598,7 @@ def _submit_event(event: Event,
                             if nav >= len(clip_data):
                                 highlighter.cancel_pending()
                                 sink.stop(target)
+                                ended_by_cut = True
                                 break          # End of reply
                             sink.set_playlist_pos(max(0, nav), target)
                             mark_i = max(0, nav)
@@ -4695,6 +4700,7 @@ def _submit_event(event: Event,
                         # Popup sentence/paragraph jump; past the last clip = end.
                         if nav >= n:
                             highlighter.cancel_pending()
+                            ended_by_cut = True
                             break
                         i = max(0, nav)
                         nav_jump = True
@@ -5125,6 +5131,7 @@ def submit_stream(sentences,
                         # otherwise fall through to whatever arrives next.
                         if done:
                             highlighter.cancel_pending()
+                            ended_by_cut = played_any
                             break
                         i = count
                         nav_jump = False

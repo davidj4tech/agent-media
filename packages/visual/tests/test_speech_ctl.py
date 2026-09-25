@@ -19,6 +19,10 @@ def test_the_player_gets_the_popups_listening_keys():
         assert action in canvas._APP_SPEECH_ACTIONS
     assert canvas.ctl_argv("speech", "prev", 3) == ["replay-prev", "--idx", "3"]
     assert canvas.ctl_argv("speech", "replay", 2) == ["replay", "2"]
+    # Inside a thread, `sarg` names it; anything not uuid-shaped is dropped.
+    sid = "9bce6871-1164-43c7-bb6f-6064758ccae8"
+    assert canvas.ctl_argv("speech", "replay", 1, sid) == ["replay", "1", "--session", sid]
+    assert canvas.ctl_argv("speech", "replay", 1, "--id 3") == ["replay", "1"]
     # A transcript line's own turn, by history id — not an index, not clamped.
     assert canvas.ctl_argv("speech", "replay-id", 48213) == ["replay", "--id", "48213"]
 

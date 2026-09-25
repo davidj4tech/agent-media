@@ -158,3 +158,26 @@ def test_sentences_needs_a_number_and_the_listener(server, shelf, signed_in):
 def test_sentences_is_gated(server, shelf):
     res, obj = call(server, "GET", "/speech/sentences?id=1")
     assert res.status in (401, 403) and obj["ok"] is False
+
+
+# --- replay inside a thread ------------------------------------------------------------
+
+def test_replay_in_a_thread_names_it(server, shelf, signed_in, replays):
+    """The bar's Replay inside a thread plays that thread's newest reply —
+    on 25 Sep 2026 it read David a reply held in another thread."""
+    sid = "9bce6871-1164-43c7-bb6f-6064758ccae8"
+    res, obj = call(server, "POST", "/speech/ctl",
+                    {"action": "replay", "arg": 1, "session": sid}, AUTH)
+    assert res.status == 200 and obj["ok"] is True
+    assert replays == [["replay", "1", "--session", sid]]
+
+
+def test_replay_without_a_thread_is_unchanged(server, shelf, signed_in, replays):
+    call(server, "POST", "/speech/ctl", {"action": "replay", "arg": 1}, AUTH)
+    assert replays == [["replay", "1"]]
+
+
+def test_replay_session_is_validated(server, shelf, signed_in, replays):
+    res, obj = call(server, "POST", "/speech/ctl",
+                    {"action": "replay", "arg": 1, "session": "../x"}, AUTH)
+    assert res.status == 400 and replays == []

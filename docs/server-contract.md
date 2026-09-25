@@ -1431,6 +1431,15 @@ Actions (`_APP_SPEECH_ACTIONS`): `toggle`, `skip-`, `skip+`, `para-`,
 `speed0`, `vol-`, `vol+`, `mute`, `goto-sentence`.
 - `arg` is the turn index for `prev` and `replay` (1 = latest, clamped
   1–999), or a history row id for `replay-id` (not clamped).
+- `session` on `replay` (25 Sep 2026): the thread the Replay was pressed
+  in — its own newest reply (and the question before it), never another
+  thread's. Without it, `replay` is the newest reply of all, as the desk
+  popup's `r`. Not uuid-shaped: 400 `"not a session id"`. Send it from
+  inside a thread; with replies held rather than spoken, "the newest of
+  all" is often a thread the listener is not in.
+- End of reply (`jump-end`) ticks like a Stop (the `cut` earcon), on the
+  live reply and on a replay; on a replayed question it moves to the answer
+  without one.
 - Anything else is 400 `"unknown action"`.
 
 **Read from here** (built 22 Sep 2026). Sentence indices are always the

@@ -151,3 +151,17 @@ def test_a_jump_in_a_playlist_replay_moves_its_clock(monkeypatch):
     n = len(rows)
     cli._restamp_replay_clock({"uri": "u"}, {"clip_durations_s": [1.0] * 4}, 2, 4)
     assert len(rows) == n
+
+
+def test_replay_inside_a_thread_stays_in_it(monkeypatch):
+    """`media replay --session` (the app's Replay inside a thread) replays
+    that thread's newest reply, whatever spoke last elsewhere."""
+    from agent_media_core import cli
+
+    seen = []
+    monkeypatch.setattr(cli, "_do_replay", lambda i, session=None: seen.append((i, session)) or 0)
+    monkeypatch.setattr(cli, "_anchor_session", lambda: "somewhere-else")
+    import argparse
+
+    assert cli.cmd_replay(argparse.Namespace(index=1, id=None, session="sess-x")) == 0
+    assert seen == [(1, "sess-x")]

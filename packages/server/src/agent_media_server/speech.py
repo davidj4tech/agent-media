@@ -52,13 +52,17 @@ def current_state() -> dict:
     return _STATE() if _STATE is not None else {"kind": "state", "speaking": False}
 
 
-def run_ctl(action: str, arg: int, sentence: int | None = None) -> str:
+def run_ctl(action: str, arg: int, sentence: int | None = None,
+            session: str = "") -> str:
     """Run one speech verb already checked against `_APP_SPEECH_ACTIONS`.
     `sentence` is the index for `goto-sentence` and `replay-id`'s "from
     here"; it rides as the canvas's `sarg` (its `arg` is clamped 1-999, and
-    sentence zero is the one most often asked for)."""
+    sentence zero is the one most often asked for). `session` is `replay`'s
+    thread, already checked, and rides the same way."""
     if _CTL is None:
         return ""
+    if session:
+        return _CTL(action, arg, session)
     if sentence is None:
         return _CTL(action, arg)
     return _CTL(action, arg, str(int(sentence)))

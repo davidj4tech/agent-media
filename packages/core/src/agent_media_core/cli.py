@@ -3840,6 +3840,11 @@ def cmd_replay(a) -> int:
                         else _replay_row(row, from_sentence=start))
         print(f"media replay: no clip with id {a.id}", file=sys.stderr)
         return 1
+    # A thread named by the caller (the app's Replay, inside that thread):
+    # its own newest reply, never another thread's. On 25 Sep 2026 the bar's
+    # Replay read David a reply held in a thread he was not in.
+    if getattr(a, "session", None):
+        return _do_replay(a.index, session=a.session)
     # Scope < / > / r traversal to the current tmux session's clips.
     return _do_replay(a.index, session=_anchor_session())
 
@@ -4255,6 +4260,17 @@ def cmd_replay_track(a) -> int:
             pass
         return _finish()
 
+    def _end_tick(target: Target) -> None:
+        """End of reply on a replay ticks like a Stop (the `cut` earcon), on
+        the player it was on, once that player has stopped. Not for a
+        question's End, which moves straight on to its answer."""
+        try:
+            from . import earcons
+            from .sinks.speech import SinkSpeech
+            earcons.play("cut", target, SinkSpeech(), wait=True)
+        except Exception:  # noqa: BLE001 — a tone must never cost the replay
+            pass
+
     from .intake.submit import _nav_flag_path
     n_items = max(len(sentences), len(durations), 1)
 
@@ -4354,7 +4370,10 @@ def cmd_replay_track(a) -> int:
                 _note_displaced()
                 return _step_aside()
             if _ended_by_listener():
-                return _step_aside()
+                target = _active_speech_target()
+                _step_aside()
+                _end_tick(target)
+                return 0
             # The row owns the timeline: `media skip` re-stamps its origin and
             # a pause freezes it, so reading it back each tick is what keeps a
             # replay in step with the audio instead of with the wall clock.
@@ -4453,8 +4472,12 @@ def cmd_replay_track(a) -> int:
             return _step_aside()
         if _ended_by_listener():
             # End of the question moves on to its answer.
+            target = _active_speech_target()
             _step_aside()
-            return _then() if then_id is not None else 0
+            if then_id is not None:
+                return _then()
+            _end_tick(target)
+            return 0
         try:
             # One batched snapshot per tick — over the phone bridge each hop
             # is slow, and this loop is per-tick anyway for the mirror.
@@ -8326,6 +8349,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("replay", help="replay the Nth most recent clip (1=latest)")
     s.add_argument("index", nargs="?", type=int, default=1)
+    s.add_argument("--session", default=None,
+                   help="the conversation (Claude session id) to replay from — "
+                        "the app's Replay inside a thread")
     s.add_argument("--id", type=int, default=None,
                    help="replay by stable history id instead (see "
                         "'history --lines'; used by the clip browser)")

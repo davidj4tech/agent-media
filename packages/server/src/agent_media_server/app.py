@@ -795,7 +795,13 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
                 if sentence is None:
                     _json(h, 400, {"ok": False, "error": "sentence must be a sentence index"})
                     return True
-        out = speech.run_ctl(action, arg, sentence)
+        # `replay` inside a thread names it: that thread's newest reply, not
+        # the newest of all (§6.5, 25 Sep 2026). Only a well-formed id rides.
+        session = str(body.get("session") or "") if action == "replay" else ""
+        if session and not sessions._SESSION.fullmatch(session):
+            _json(h, 400, {"ok": False, "error": "not a session id"})
+            return True
+        out = speech.run_ctl(action, arg, sentence, session)
         print(f"speech/ctl: {action} -> {out.strip()[:120]!r}", file=sys.stderr)
         reply = {"ok": True, "out": out}
         if out.startswith("error: "):

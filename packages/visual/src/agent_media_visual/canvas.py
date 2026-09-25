@@ -1371,6 +1371,10 @@ def _video_poller() -> None:
         time.sleep(5 if ev["vid"] else 3)
 
 
+#: A Claude session id as `sarg` may carry it (uuid-shaped, nothing else).
+_SESSION_ARG = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
 def ctl_argv(channel: str, action: str, arg: int,
              sarg: str = "") -> list[str] | None:
     """Whitelisted button/key → `media` argv. None = unknown/unsupported combo.
@@ -1386,7 +1390,10 @@ def ctl_argv(channel: str, action: str, arg: int,
             "bookmark-end": ["bookmark", "--channel", "speech", "--range-end"],
             "toggle": ["toggle"],
             "prev": ["replay-prev", "--idx", str(arg)],
-            "replay": ["replay", str(arg)],
+            # `sarg` is the thread when the app's Replay is pressed inside
+            # one: that thread's newest reply, not the newest of all.
+            "replay": ["replay", str(arg)]
+                      + (["--session", sarg] if _SESSION_ARG.fullmatch(sarg) else []),
             # A transcript line's own turn, by its history id (never clamped),
             # from one of its sentences when `sarg` names it ("read from
             # here" in the app: one command, so there is no replay-then-seek

@@ -456,3 +456,24 @@ def test_the_held_switch(desk, monkeypatch):
     monkeypatch.setenv("MEDIA_EARCON_HELD", "0")
     toast.remember(_held_event())
     assert desk == []
+
+
+def test_end_of_reply_on_the_phone_ticks(phone, monkeypatch):
+    """End of reply is the listener cutting it short: it ticks like a Stop
+    (David, 25 Sep 2026: "I'm not hearing the chime when I hit end reply")."""
+    sink = _PhoneSink(read_on=10 ** 6)
+    asks = iter([None] * 4 + [99])
+    monkeypatch.setattr(S, "_read_nav_request", lambda target: next(asks, None))
+    _phone_say(sink)
+    kinds = [e[0] for e in sink.log]
+    assert kinds.count("cue") == 1, sink.log
+    assert kinds.index("cue") == kinds.index("stop") + 1
+    assert sink.log[kinds.index("cue")] == ("cue", "cut", "phone")
+
+
+def test_a_sentence_step_does_not_tick(phone, monkeypatch):
+    sink = _PhoneSink(read_on=10 ** 6)
+    asks = iter([None] * 4 + [1])
+    monkeypatch.setattr(S, "_read_nav_request", lambda target: next(asks, None))
+    _phone_say(sink)
+    assert not [e for e in sink.log if e[0] == "cue"], sink.log
