@@ -108,6 +108,10 @@ class Turn:
     #: Held for the listener (the desk toast) and not played since: a reply
     #: that is waiting to be heard, not one that was silenced on purpose.
     unheard: bool = False
+    #: Where the listener interrupted it, when they did and have not heard
+    #: the rest since: `{sentence, at_s, dur_s}` — the first sentence not
+    #: heard, the seconds into the reply it starts at, and the reply's length.
+    resume: dict = field(default_factory=dict)
 
     @property
     def title(self) -> str:
@@ -189,9 +193,26 @@ def turns(session: str, *, store=None) -> list[Turn]:
                         command=(ex.get("command") if isinstance(ex.get("command"), dict) else {}),
                         workspace=(ex.get("source_tmux_session") or "").strip(),
                         id=int(row.get("id") or 0),
-                        unheard=bool(ex.get("held") and not ex.get("heard"))))
+                        unheard=bool(ex.get("held") and not ex.get("heard")),
+                        resume=_resume_of(ex)))
     out.sort(key=lambda t: t.at)
     return out
+
+
+def _resume_of(ex: dict) -> dict:
+    """`extras.stopped_at` as the app wants it (Turn.resume), or {}."""
+    stop = ex.get("stopped_at")
+    if not isinstance(stop, dict):
+        return {}
+    try:
+        n = int(stop.get("sentence"))
+    except (TypeError, ValueError):
+        return {}
+    durs = [float(d or 0) for d in (ex.get("clip_durations_s") or [])]
+    if not 0 < n < len(durs):
+        return {}
+    return {"sentence": n, "at_s": round(sum(durs[:n]), 1),
+            "dur_s": round(sum(durs), 1)}
 
 
 def workspace_for(session: str, ts: list[Turn]) -> str:

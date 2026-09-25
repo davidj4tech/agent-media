@@ -1081,6 +1081,26 @@ class StateStore:
                         (json.dumps(ex), int(row_id)))
         return True
 
+    def set_stopped_at(self, row_id: int, sentence: Optional[int]) -> bool:
+        """Where a reply was interrupted (`extras.stopped_at`), or None to
+        clear it: the first sentence not heard, so the app's ▶ on that
+        message resumes there. Never on a listener's own turn. True if it
+        wrote."""
+        row = self.history_row(row_id)
+        ex = (row or {}).get("extras")
+        if not isinstance(ex, dict) or ex.get("listener"):
+            return False
+        if sentence is None:
+            if "stopped_at" not in ex:
+                return False
+            ex.pop("stopped_at")
+        else:
+            ex["stopped_at"] = {"sentence": int(sentence), "at": time.time()}
+        with self._cursor() as cur:
+            cur.execute("UPDATE history SET extras = ? WHERE id = ?",
+                        (json.dumps(ex), int(row_id)))
+        return True
+
     def history_row(self, row_id: int) -> Optional[dict]:
         """One history row by its id (extras parsed), or None."""
         with self._cursor() as cur:

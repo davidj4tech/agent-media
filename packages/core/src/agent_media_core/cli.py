@@ -3351,6 +3351,16 @@ def _resume_point(row: dict, question: Optional[dict]) -> Optional[int]:
     a resumed reply is not resumed again, and a second Replay starts over."""
     from .sinks.speech import forget_stop, last_stop
     stop = last_stop()
+    # Kept on the row (`extras.stopped_at`, 25 Sep 2026): an interrupted reply
+    # resumes however long afterwards, and a later Stop elsewhere does not
+    # take its place. The stamp below is the fallback for a row from before.
+    kept = (row.get("extras") or {}).get("stopped_at")
+    if isinstance(kept, dict) and isinstance(kept.get("sentence"), int) \
+            and kept["sentence"] > 0:
+        if stop.get("history_id") == row.get("id"):
+            forget_stop()
+        smap = replay_sentence_map(row)
+        return min(kept["sentence"], len(smap) - 1) if smap else None
     try:
         age = time.time() - float(stop.get("at") or 0)
     except (TypeError, ValueError):
@@ -3704,6 +3714,12 @@ def _push_replay(row: dict, ex: dict, clip_uris: list, clip_durations: list,
         np_extras["then_id"] = then_id
     if recorded:
         np_extras["history_id"] = row["id"]
+        # Heard again, from the top or from where it stopped: it is no longer
+        # an interrupted reply. A Stop in this replay marks it again.
+        try:
+            StateStore().set_stopped_at(int(row["id"]), None)
+        except Exception:  # noqa: BLE001
+            pass
         # What the app's speech bar reads (`/speech/now` `replay`), and what
         # tells a live reply's follow loop that the row is not its to write
         # (submit._replay_is_audible).

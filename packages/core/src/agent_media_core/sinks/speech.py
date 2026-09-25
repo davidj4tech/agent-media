@@ -405,6 +405,30 @@ def mark_speech_stopped(sentence: Optional[int] = None, tick: bool = True) -> No
         p.write_text(json.dumps(stamp))
     except OSError:
         pass
+    # A replay stopped part-way: its row keeps where (`stopped_at`), so the
+    # message's ▶ resumes there however long afterwards. A live reply has no
+    # row yet; submit_event writes it on the way out (`stopped_here`).
+    rid, at = stamp.get("history_id"), stamp.get("sentence")
+    if isinstance(rid, int) and isinstance(at, int) and at > 0:
+        try:
+            from ..state import StateStore
+            StateStore().set_stopped_at(rid, at)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def stopped_here(started_at: float) -> Optional[int]:
+    """The sentence a listener's Stop left the live reply that began at
+    `started_at` on, or None — for its history row, written after the stop."""
+    stop = last_stop()
+    try:
+        if stop.get("history_id") is None and \
+                abs(float(stop.get("started_at")) - float(started_at)) < 0.01:
+            n = int(stop.get("sentence"))
+            return n if n > 0 else None
+    except (TypeError, ValueError):
+        pass
+    return None
 
 
 def last_stop() -> dict:

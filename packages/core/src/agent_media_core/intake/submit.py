@@ -3922,6 +3922,13 @@ def _submit_event(event: Event,
         if flushed:
             extras["flushed"] = True   # playback cancelled by speech-flush;
             #                            rendered and archived, never heard
+        else:
+            # Stopped part-way by the listener (a Stop, or a reply that ended
+            # the reading): where, so the message's ▶ resumes there.
+            from ..sinks.speech import stopped_here
+            stop_at = stopped_here(started_at)
+            if stop_at is not None:
+                extras["stopped_at"] = {"sentence": stop_at, "at": time.time()}
         row = state.add_history(
             sink="speech",
             uri=str(first_clip),
@@ -5191,6 +5198,11 @@ def submit_stream(sentences,
         extras["fallback"] = fallback_info
     if muted:
         extras["muted"] = True   # rendered but never played (popup can replay)
+    from ..sinks.speech import stopped_here
+    stop_at = stopped_here(started_at)
+    if stop_at is not None:
+        # Stopped part-way by the listener: where, for the message's ▶.
+        extras["stopped_at"] = {"sentence": stop_at, "at": time.time()}
     return state.add_history(
         sink="speech",
         uri=str(first_clip),

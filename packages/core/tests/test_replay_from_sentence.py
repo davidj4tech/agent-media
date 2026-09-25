@@ -165,3 +165,15 @@ def test_replay_inside_a_thread_stays_in_it(monkeypatch):
 
     assert cli.cmd_replay(argparse.Namespace(index=1, id=None, session="sess-x")) == 0
     assert seen == [(1, "sess-x")]
+
+
+def test_replay_resumes_a_kept_stop_however_old(monkeypatch):
+    """`extras.stopped_at` on the row wins over the five-minute stamp."""
+    from agent_media_core import cli
+    from agent_media_core.sinks import speech as SP
+
+    monkeypatch.setattr(SP, "last_stop", lambda: {})
+    monkeypatch.setattr(cli, "replay_sentence_map", lambda row: [0, 1, 2, 3])
+    row = {"id": 7, "extras": {"stopped_at": {"sentence": 2, "at": 0}}}
+    assert cli._resume_point(row, None) == 2
+    assert cli._resume_point({"id": 8, "extras": {}}, None) is None

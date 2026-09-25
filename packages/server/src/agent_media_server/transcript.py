@@ -1276,6 +1276,10 @@ def _spoken(line: dict) -> dict:
         # Held for the listener and never played (§6.2.2): the app makes its
         # play key the big one.
         out["unheard"] = True
+    if line.get("resume") and not line.get("live"):
+        # Interrupted part-way (§6.2.2): the ▶ resumes at `sentence`, and the
+        # app says where — `at_s` into `dur_s` — and marks what was not heard.
+        out["resume"] = line["resume"]
     if line.get("live"):
         out["live"] = {k: line.get(k) for k in LIVE_FIELDS}
     elif line.get("sentences"):

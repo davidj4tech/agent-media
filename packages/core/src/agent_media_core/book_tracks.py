@@ -911,7 +911,7 @@ def conversation_log(session: str, folder: Path, *, target=None,
                 log.warning("book-tracks: no track offsets for the log (%s)", e)
 
     def _line(who_listener, text, pos, at=None, key="", ask=None, command=None, rid=0,
-              unheard=False):
+              unheard=False, resume=None):
         text = (text or "").strip()
         who = "you" if who_listener else "agent"
         if who == "you" and text.startswith("You: "):
@@ -930,6 +930,8 @@ def conversation_log(session: str, folder: Path, *, target=None,
             line["id"] = rid
         if unheard:
             line["unheard"] = True
+        if resume:
+            line["resume"] = resume
         if ask:
             # The spoken sentence is "host / pane: Question. Option 1: …" —
             # right for a voice, wrong for a bubble. Hand over the structure
@@ -968,7 +970,8 @@ def conversation_log(session: str, folder: Path, *, target=None,
                          ask=(spoken.ask if spoken else None),
                          command=(spoken.command if spoken else None),
                          rid=(getattr(spoken, "id", 0) if spoken else 0),
-                         unheard=bool(spoken and getattr(spoken, "unheard", False))))
+                         unheard=bool(spoken and getattr(spoken, "unheard", False)),
+                         resume=(getattr(spoken, "resume", None) if spoken else None)))
 
     # The live tail: turns in speech history the manifest has not caught up to
     # yet. Shown at once, with no position — the audio item does not place them
@@ -980,7 +983,8 @@ def conversation_log(session: str, folder: Path, *, target=None,
         out.append(_line(said[at].listener, said[at].text, {}, at,
                          said[at].key, ask=said[at].ask,
                          command=said[at].command, rid=getattr(said[at], "id", 0),
-                         unheard=getattr(said[at], "unheard", False)))
+                         unheard=getattr(said[at], "unheard", False),
+                         resume=getattr(said[at], "resume", None)))
 
     # The turn speaking right now, if it has not already landed as an ended
     # row above. This is what puts a reply on screen *while* it is being

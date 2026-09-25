@@ -95,3 +95,25 @@ def test_a_reply_that_is_not_read_leaves_no_stop(state_env, monkeypatch):  # noq
                          metadata={"session": A}),
                    state=StateStore(), sink=sink, coordinator=_RecordingCoord())
     assert last_stop() == {}
+
+
+def test_the_interrupted_reply_keeps_where_it_stopped(state_env, monkeypatch):  # noqa: F811
+    """On its own row (`extras.stopped_at`), for the message's ▶ however
+    long afterwards; the feed hands the app the sentence and the time."""
+    from agent_media_core import session_feed
+
+    monkeypatch.setattr(S, "render_text", _render)
+    monkeypatch.setattr(S, "_clip_duration", lambda *_a, **_k: 2.0)
+    state = StateStore()
+    S.submit_event(Event(text="First sentence here. Second sentence here. Third one too.",
+                         source=Source.CLAUDE_CODE, target=Target(name="phone"),
+                         metadata={"session": A}),
+                   state=state, sink=_PhoneSink(), coordinator=_RecordingCoord())
+    row = state.recent_history(sink="speech", limit=1)[0]
+    assert row["extras"]["stopped_at"]["sentence"] == 1
+    n = len(row["extras"]["clip_durations_s"])
+    assert session_feed._resume_of(row["extras"]) == {"sentence": 1, "at_s": 2.0, "dur_s": 2.0 * n}
+
+    # Heard again: no longer interrupted.
+    assert state.set_stopped_at(row["id"], None)
+    assert "stopped_at" not in state.history_row(row["id"])["extras"]
