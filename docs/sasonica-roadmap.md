@@ -188,9 +188,10 @@ chat as before, and a second press within 20 s opens a new chat instead
 8 s or while the words wait: "New chat instead" (the words go along) and a
 chip per other assistant on the phone — those answering ASSIST that take
 shared text, browsers left out, the Google app handing to Gemini; with no
-words it opens that assistant. Unverified: whether each one sends or only
+words it opens that assistant. New chat shows those chips all the time.
+Unverified: whether each one sends or only
 fills its box. A thread's title wraps to three lines, not two. android-next
-`5873fac6`, `d29db103`, `858fbffc`, installed on p8a.
+`5873fac6`, `d29db103`, `858fbffc`, `1429cdea`, installed on p8a.
 
 ## In flight
 
