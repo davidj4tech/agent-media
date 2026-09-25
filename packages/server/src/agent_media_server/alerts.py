@@ -19,7 +19,11 @@ and this module decides what that *changes*:
                landscape) — kept as the latest per id, notify only at warn+.
                With `spoken`, its read-out is rendered **held**
                (`media say --hold`): nothing is said until someone presses
-               Play — the row's `speech` names the history row to replay
+               Play — the row's `speech` names the history row to replay.
+               Every digest is also kept in `digest_log` (DIGEST_KEEP_S), so
+               the app can browse and read past ones (`digests`, `digest`).
+               `view` names the Organiser view its lines are items of
+               (`agenda`): the app shows them as that view's live rows
 
 `confirm: N` holds a raise until the same level has been reported N times in
 a row (host-watch's "two misses before crying wolf"); a clear is never held.
@@ -56,6 +60,7 @@ RANK = {lv: i for i, lv in enumerate(LEVELS)}
 WARN = RANK["warn"]
 KINDS = ("status", "digest")
 ID_RE = re.compile(r"[a-z0-9][a-z0-9._:-]{0,119}")
+VIEW_RE = re.compile(r"[a-z0-9_-]{1,32}")
 #: A status alert unheard from for this many `every_s` is reported silent.
 STALE_FACTOR = 3
 #: How long a cleared alert or an old digest stays in the list.
@@ -63,6 +68,10 @@ KEEP_S = 14 * 86400
 _LIMITS = {"title": 200, "detail": 4000, "fix": 1000, "host": 64}
 #: A digest's read-out: the agenda's 20 items read aloud run to ~2,500.
 SPOKEN_MAX = 12000
+#: A digest's body is its whole report (the landscape watch's is ~5,000).
+DIGEST_DETAIL_MAX = 64000
+#: How long past digests stay readable.
+DIGEST_KEEP_S = 90 * 86400
 
 _LOCK = threading.Lock()
 
@@ -94,6 +103,17 @@ CREATE TABLE IF NOT EXISTS alert_log (
   title TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS alert_log_at ON alert_log(at);
+CREATE TABLE IF NOT EXISTS digest_log (
+  n INTEGER PRIMARY KEY AUTOINCREMENT,
+  at REAL NOT NULL,
+  id TEXT NOT NULL,
+  level TEXT NOT NULL,
+  title TEXT NOT NULL DEFAULT '',
+  detail TEXT NOT NULL DEFAULT '',
+  speech_key TEXT,
+  view TEXT
+);
+CREATE INDEX IF NOT EXISTS digest_log_id ON digest_log(id, at);
 """
 
 
@@ -113,6 +133,13 @@ def _connect() -> sqlite3.Connection:
     if "speech_key" not in cols:
         # Added 25 Sep 2026: the held read-out of a digest (`spoken`).
         con.execute("ALTER TABLE alerts ADD COLUMN speech_key TEXT")
+    if con.execute("SELECT 1 FROM digest_log LIMIT 1").fetchone() is None:
+        # digest_log is 25 Sep 2026's: seed it with the digests kept before.
+        with con:
+            con.execute("INSERT INTO digest_log (at, id, level, title, detail, speech_key, view)"
+                        " SELECT changed_at, id, level, title, detail, speech_key,"
+                        " CASE id WHEN 'digest.org-agenda' THEN 'agenda' END FROM alerts"
+                        " WHERE kind='digest' AND detail != '' ORDER BY changed_at")
     return con
 
 
@@ -200,6 +227,10 @@ def report(body: dict, *, now: float | None = None) -> tuple[bool, dict]:
     if kind not in KINDS:
         return False, {"error": "kind: status or digest", "status": 400}
     fields = {k: _clip(body, k) for k in _LIMITS}
+    if kind == "digest":
+        fields["detail"] = str(body.get("detail") or "").strip()[:DIGEST_DETAIL_MAX]
+    view = str(body.get("view") or "").strip()
+    view = view if kind == "digest" and VIEW_RE.fullmatch(view) else None
     step = _int(body.get("step"), 0, 1_000_000, 0) or 0
     confirm = _int(body.get("confirm"), 1, 10, 1) or 1
     every_s = _int(body.get("every_s"), 30, 30 * 86400, None)
@@ -217,6 +248,10 @@ def report(body: dict, *, now: float | None = None) -> tuple[bool, dict]:
                     # it when this one has none.
                     con.execute("UPDATE alerts SET speech_key=? WHERE id=?", (key, aid))
                     row["speech_key"] = key
+                    row["n"] = con.execute(
+                        "INSERT INTO digest_log (at, id, level, title, detail, speech_key, view)"
+                        " VALUES (?,?,?,?,?,?,?)",
+                        (now, aid, level, row["title"], row["detail"], key, view)).lastrowid
                 silent = _sweep(con, now)
         finally:
             con.close()
@@ -350,6 +385,7 @@ def listing(*, open_only: bool = False, now: float | None = None) -> dict:
             with con:
                 silent = _sweep(con, now)
                 con.execute("DELETE FROM alert_log WHERE at < ?", (now - KEEP_S,))
+                con.execute("DELETE FROM digest_log WHERE at < ?", (now - DIGEST_KEEP_S,))
             rows = [_public(r) for r in con.execute("SELECT * FROM alerts").fetchall()]
         finally:
             con.close()
@@ -376,10 +412,57 @@ def spoken_digests(*, within_s: float = 36 * 3600, now: float | None = None) -> 
             rows = con.execute(
                 "SELECT * FROM alerts WHERE kind='digest' AND speech_key IS NOT NULL"
                 " AND changed_at >= ? ORDER BY changed_at DESC", (now - within_s,)).fetchall()
+            latest = {r["id"]: r["n"] for r in con.execute(
+                "SELECT id, MAX(n) AS n FROM digest_log GROUP BY id")}
         finally:
             con.close()
     return [{k: r[k] for k in ("id", "title", "level", "changed_at", "speech")}
-            for r in map(_public, rows)]
+            | {"n": latest.get(r["id"])} for r in map(_public, rows)]
+
+
+def _entry(r: sqlite3.Row, with_detail: bool) -> dict:
+    out = {"n": r["n"], "id": r["id"], "at": r["at"], "level": r["level"],
+           "title": r["title"], "view": r["view"], "speech": _speech(r["speech_key"])}
+    if with_detail:
+        out["detail"] = r["detail"]
+    return out
+
+
+def digests(aid: str | None = None, *, before: int | None = None,
+            limit: int = 60) -> list[dict]:
+    """Past digests, newest first, without their bodies: every digest, or one
+    id's. `before` (an `n`) pages back."""
+    q, args = "SELECT * FROM digest_log WHERE 1=1", []
+    if aid:
+        q, args = q + " AND id=?", args + [aid]
+    if before:
+        q, args = q + " AND n<?", args + [before]
+    with _LOCK:
+        con = _connect()
+        try:
+            rows = con.execute(q + " ORDER BY n DESC LIMIT ?",
+                               args + [max(1, min(200, limit))]).fetchall()
+        finally:
+            con.close()
+    return [_entry(r, False) for r in rows]
+
+
+def digest(n: int) -> dict | None:
+    """One past digest with its body, and the `n` of its id's previous and
+    next ones (null at either end)."""
+    with _LOCK:
+        con = _connect()
+        try:
+            r = con.execute("SELECT * FROM digest_log WHERE n=?", (n,)).fetchone()
+            if r is None:
+                return None
+            prev = con.execute("SELECT MAX(n) FROM digest_log WHERE id=? AND n<?",
+                               (r["id"], n)).fetchone()[0]
+            nxt = con.execute("SELECT MIN(n) FROM digest_log WHERE id=? AND n>?",
+                              (r["id"], n)).fetchone()[0]
+        finally:
+            con.close()
+    return _entry(r, True) | {"prev": prev, "next": nxt}
 
 
 def ack(aid: str, *, now: float | None = None) -> tuple[bool, dict]:

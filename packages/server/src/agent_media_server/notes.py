@@ -201,17 +201,19 @@ def _folder_notes(folder: Path) -> list[dict]:
             for m, p in rows[:MAX_ITEMS]]
 
 
-def _agenda(today: dt.date | None = None) -> list[dict]:
+def _agenda(today: dt.date | None = None, *, done: bool = False) -> list[dict]:
     """What is scheduled or due in the next week, and what is overdue — the
     agenda Emacs would show, from the same files; the profile may drop some
     (paragtd ages past astro alerts out). A plain timestamp is an event on its
-    day: shown ahead like the rest, never overdue."""
+    day: shown ahead like the rest, never overdue. `done` keeps finished ones
+    (never overdue) — an agenda digest's items, ticked since it was sent."""
     today = today or dt.date.today()
     horizon = today + dt.timedelta(days=AGENDA_AHEAD_DAYS)
     prof = profile()
     items = []
     for name in prof.agenda_files(root()):
-        for h in _headings(root() / name, done=False):
+        finished = keywords_of(root() / name).done if done else ()
+        for h in _headings(root() / name, done=done):
             date = h.get("deadline") or h.get("scheduled") or h.get("timestamp")
             if not date:
                 continue
@@ -224,7 +226,8 @@ def _agenda(today: dt.date | None = None) -> list[dict]:
                 continue
             if not prof.agenda_keep(root(), name, (today - when).days):
                 continue
-            items.append({**h, "date": date, "overdue": when < today})
+            items.append({**h, "date": date,
+                          "overdue": when < today and h["state"] not in finished})
     items.sort(key=lambda h: (h["date"], h["path"], h["at"]))
     return items[:MAX_ITEMS]
 
@@ -302,7 +305,7 @@ def view(name: str, bearer: str, *, done: bool = False) -> tuple[bool, dict]:
     if not user:
         return False, err
     if name == "agenda":
-        return True, {"view": name, "items": _agenda()}
+        return True, {"view": name, "items": _agenda(done=done)}
     prof = profile()
     for vname, _, fname in prof.files(root()):
         if vname == name:

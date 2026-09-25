@@ -230,3 +230,50 @@ def test_list_and_ack_take_the_app_gate(server, signed_in, monkeypatch):
     assert res.status == 200 and d["alert"]["acked_at"]
     res, _ = call(server, "POST", "/alerts/ack", {"id": "nope"}, AUTH)
     assert res.status == 404
+
+
+def test_every_digest_is_kept_to_browse_and_read(monkeypatch):
+    monkeypatch.setattr(alerts, "_render_held", lambda *a: None)
+    body = "## Worth stealing\n\n" + "x" * 10000
+    a = rep(1, "digest.landscape", "info", kind="digest", title="Landscape 1", detail=body)
+    rep(2, "digest.agenda", "info", kind="digest", title="Agenda", detail="due",
+        spoken="Agenda.")
+    c = rep(3, "digest.landscape", "info", kind="digest", title="Landscape 2", detail="b")
+    # A digest's body is not cut to a status alert's 4,000.
+    assert a["alert"]["detail"] == body
+
+    listed = alerts.digests()
+    assert [d["title"] for d in listed] == ["Landscape 2", "Agenda", "Landscape 1"]
+    assert "detail" not in listed[0]
+    assert [d["title"] for d in alerts.digests("digest.landscape")] == [
+        "Landscape 2", "Landscape 1"]
+    assert [d["title"] for d in alerts.digests(before=listed[1]["n"])] == ["Landscape 1"]
+
+    first, last = listed[2]["n"], listed[0]["n"]
+    d = alerts.digest(first)
+    assert (d["detail"], d["prev"], d["next"]) == (body, None, last)
+    assert alerts.digest(last)["prev"] == first
+    assert alerts.digest(9999) is None
+    # Home's row opens the latest.
+    assert alerts.spoken_digests(now=4)[0]["n"] == listed[1]["n"]
+    assert c["alert"]["detail"] == "b"
+
+
+def test_digest_routes(server, signed_in, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(alerts, "_render_held", lambda *a: None)
+    rep(1, "digest.landscape", "info", kind="digest", title="L", detail="body")
+    res, got = call(server, "GET", "/alerts/digests", headers=AUTH)
+    assert res.status == 200 and [d["title"] for d in got["digests"]] == ["L"]
+    n = got["digests"][0]["n"]
+    res, got = call(server, "GET", f"/alerts/digest?n={n}", headers=AUTH)
+    assert res.status == 200 and got["digest"]["detail"] == "body"
+    res, _ = call(server, "GET", "/alerts/digest?n=999", headers=AUTH)
+    assert res.status == 404
+
+
+def test_a_digest_names_the_view_its_lines_are_items_of(monkeypatch):
+    monkeypatch.setattr(alerts, "_render_held", lambda *a: None)
+    rep(1, "digest.org-agenda", "info", kind="digest", title="A", detail="x", view="agenda")
+    rep(2, "digest.other", "info", kind="digest", title="B", detail="y", view="Not A View!")
+    assert [d["view"] for d in alerts.digests()] == [None, "agenda"]
+    assert alerts.digest(alerts.digests()[1]["n"])["view"] == "agenda"

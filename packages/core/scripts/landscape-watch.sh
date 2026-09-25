@@ -65,8 +65,8 @@ if command -v agent-alert >/dev/null 2>&1; then
   worth="$(awk '/^## Worth stealing/{f=1;next} /^## /{f=0} f' "$OUT" | sed -E 's/^[-*] +//; s/\*\*//g; s/\[([^]]*)\]\([^)]*\)/\1/g; s/<?https?:[^ )>]*>?//g' | grep -v '^[[:space:]]*$' || true)"
   agent-alert report digest.landscape --kind digest --level info \
     --title "Landscape watch $TODAY${lead:+: $lead}" \
-    --detail "$(printf '%s\n\nDigest: %s/%s' "$worth" "$REPO" "$OUT")" \
-    --spoken "${worth:+Landscape watch. Worth stealing. $worth}" || true
+    --detail - \
+    --spoken "${worth:+Landscape watch. Worth stealing. $worth}" <"$OUT" || true
 fi
 
 echo "landscape-watch: wrote $OUT"

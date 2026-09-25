@@ -274,6 +274,14 @@ ahead.
    Home's Digests row plays it (`replay-id`). All three moved the same day:
    org agenda, describe-digest (its tmux pane retired) and the landscape
    watch (read-out = its "Worth stealing"; it still files its TODO).
+   **Digests open to read, 25 Sep 2026** (David: "click on the digests to
+   browse and read them"): every digest is kept 90 days (`digest_log`,
+   `GET /alerts/digests`, `/alerts/digest?n=`); a Home row's title opens
+   it, ← Earlier / Later → step through, "All digests" lists them. The
+   landscape watch sends its whole file, drawn as a document. The agenda
+   digest names its view (`--view agenda`), so its page is the Organiser's
+   live rows for just those items (tickable; done since = DONE, gone =
+   struck through).
 
 ## Loose ends
 

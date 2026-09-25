@@ -1683,6 +1683,8 @@ keywords is part of the title.
   matching `paragtd-astro-skip-stale`. Repeaters are
   not expanded, so a routine not yet marked done shows as overdue from its
   first date.
+  `done=1` keeps finished ones there too, never overdue (25 Sep 2026): an
+  agenda digest's items, ticked since it was sent (§6.17 `view`).
 - A folder view returns `{path, title, modified}`, newest first, at most 300.
 - An unknown view is a 404.
 
@@ -1954,8 +1956,9 @@ machines are. Code: `agent_media_server/dashboard.py`. Pinned by
   installed on this host (a PATH lookup only — `/harnesses` has versions and
   sign-in).
 - `digests` (25 Sep 2026): the last 36 h of spoken digests (§6.17), newest
-  first — `[{"id", "title", "level", "changed_at", "speech": {"id", "heard"}}]`.
+  first — `[{"id", "title", "level", "changed_at", "speech": {"id", "heard"}, "n"}]`.
   Home shows each as a Play row; nothing is read out until it is pressed.
+  `n` opens it to read (`GET /alerts/digest`).
 - `hosts`: this host first, then `MEDIA_DASHBOARD_PEERS` (default `hpo`;
   empty for none). Local: `role` is its roles (`config.host_roles`), comma
   joined, `""` when none are declared; memory from `/proc/meminfo`
@@ -2398,6 +2401,25 @@ changed_at, cleared_at, acked_at, open, speech`. `speech` is null with no
 read-out; else `{"id", "heard"}`, `id` null while it renders (or if it never
 did), otherwise the history row `POST /speech/ctl {"action": "replay-id",
 "arg": id}` plays — which marks it heard.
+
+#### `GET /alerts/digests[?id=&before=n]` — gated (25 Sep 2026)
+
+`{"digests": [{"n", "id", "at", "level", "title", "view", "speech"}]}`: every digest
+reported in the last 90 days, newest first, 60 a page; `id` narrows to one
+digest, `before` (an `n`) pages back. A digest's `detail` may run to 64,000
+characters (markdown), so it is only in:
+
+#### `GET /alerts/digest?n=` — gated (25 Sep 2026)
+
+`{"digest": {"n", "id", "at", "level", "title", "view", "detail", "speech",
+"prev", "next"}}`, 404 for an unknown `n`. `prev`/`next` are the same id's neighbours
+(null at either end). `/dashboard`'s `digests` rows carry `n`, their latest.
+
+`view` (reported with the digest, `[a-z0-9_-]{1,32}`, else null) names the
+Organiser view (§6.10 `GET /notes/view?name=`) whose items the body's lines
+are: the org agenda digest reports `agenda`, one line per item. The app shows
+that view's live rows for the lines it can match by title — tickable, and
+opening their heading — and the rest as no longer on it.
 
 #### `POST /alerts/ack {"id"}` — gated
 

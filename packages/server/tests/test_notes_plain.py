@@ -54,6 +54,16 @@ def test_nothing_ages_off_the_agenda(org, monkeypatch):
     assert [i["title"] for i in items] == ["Full moon"] and items[0]["overdue"]
 
 
+def test_the_agenda_keeps_done_ones_when_asked(org):
+    (org / "inbox.org").write_text("* DONE Paid it\n  SCHEDULED: <2026-09-20 Sun>\n"
+                                   "* TODO Pay it\n  SCHEDULED: <2026-09-20 Sun>\n")
+    assert [i["title"] for i in notes._agenda(dt.date(2026, 9, 24))] == ["Full moon", "Pay it"]
+    kept = {i["title"]: i for i in notes._agenda(dt.date(2026, 9, 24), done=True)}
+    assert not kept["Paid it"]["overdue"] and kept["Pay it"]["overdue"]
+    ok, got = notes.view("agenda", "good", done=True)
+    assert ok and "Paid it" in {i["title"] for i in got["items"]}
+
+
 def test_the_paragtd_layout_is_detected(org):
     (org / "next-actions.org").write_text("#+title: Next actions\n\n* Inbox\n")
     views = _views(org)

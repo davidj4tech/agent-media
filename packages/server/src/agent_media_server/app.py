@@ -124,6 +124,8 @@ device gets its token):
                   or a paired device
   GET  /alerts[?open=1] → open alerts, then recent digests and clears
   POST /alerts/ack {"id"} → seen it: no re-notify, nothing cleared
+  GET  /alerts/digests[?id=&before=n] → past digests, newest first (no bodies)
+  GET  /alerts/digest?n= → one past digest with its body, and prev/next
   GET  /audio/targets  → where speech and music play, and where they could
   POST /audio/target   {"channel", "target"} → choose (null = the default);
                   see audio.py
@@ -181,7 +183,7 @@ NOTES_PATHS = frozenset({"/notes", "/notes/view", "/notes/read", "/notes/search"
 CORS_PATHS = CORS_PATHS | NOTES_PATHS
 
 # What the watchers report (alerts.py, §6.17). The same arrangement.
-ALERT_PATHS = frozenset({"/alerts", "/alerts/ack"})
+ALERT_PATHS = frozenset({"/alerts", "/alerts/ack", "/alerts/digests", "/alerts/digest"})
 CORS_PATHS = CORS_PATHS | ALERT_PATHS
 
 # Paths opened to other origins for POST (and its preflight) ONLY. `/pair` is
@@ -1013,6 +1015,18 @@ def _alerts(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
         body = _read_json(h) or {}
         ok, detail = alerts.ack(str(body.get("id") or ""))
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    elif method == "GET" and path == "/alerts/digests":
+        q = parse_qs(h.path.partition("?")[2])
+        before = q.get("before", [""])[0]
+        _json(h, 200, {"ok": True, "digests": alerts.digests(
+            q.get("id", [""])[0] or None, before=int(before) if before.isdigit() else None)})
+    elif method == "GET" and path == "/alerts/digest":
+        n = parse_qs(h.path.partition("?")[2]).get("n", [""])[0]
+        d = alerts.digest(int(n)) if n.isdigit() else None
+        if d is None:
+            _json(h, 404, {"ok": False, "error": "no such digest"})
+        else:
+            _json(h, 200, {"ok": True, "digest": d})
     else:
         return False
     return True
