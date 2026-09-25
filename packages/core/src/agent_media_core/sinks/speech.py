@@ -349,6 +349,31 @@ def _device_for(target: Target) -> Optional[str]:
         f"{_env_key('MEDIA_SPEECH_DEVICE', target.name)}")
 
 
+def _stopped_path() -> Path:
+    from .._paths import state_dir
+    return state_dir() / "speech-stopped-at"
+
+
+def mark_speech_stopped() -> None:
+    """Stamp a listener's Stop. The player then only says "idle", the same as
+    at the natural end of a clip; a replayed question's follower reads this to
+    know the answer must not follow (`replay-track --then-id`)."""
+    try:
+        p = _stopped_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(f"{time.time():.3f}")
+    except OSError:
+        pass
+
+
+def speech_stopped_since(t: float) -> bool:
+    """Was speech stopped at or after `t` (epoch seconds)?"""
+    try:
+        return float(_stopped_path().read_text().strip()) >= t
+    except (OSError, ValueError):
+        return False
+
+
 class SinkSpeech:
     """Sink protocol implementation for the speech broker."""
 
@@ -624,6 +649,7 @@ class SinkSpeech:
         ipc.set_property(_socket_for(target), "pause", False, critical=True)
 
     def stop(self, target: Target = DEFAULT_TARGET) -> None:
+        mark_speech_stopped()
         ipc.command(_socket_for(target), "stop", critical=True)
 
     # ---- cross-host broker ownership -------------------------------------

@@ -4339,10 +4339,30 @@ def cmd_replay_track(a) -> int:
             pass
         return 0
 
-    def _played_out(snap: dict) -> bool:
+    began = time.time()
+
+    def _heard_out(snap: dict) -> bool:
         """Did the player go idle because the last clip ended, not a Stop?
-        The player says only "idle", so read the last position seen: on the
-        last clip, within a poll or two of its end."""
+
+        A Stop through us (`SinkSpeech.stop`: the app, the canvas, the popup)
+        leaves a stamp. The phone's player also answers mpv's `eof-reached`
+        when idle — true only at a natural end — which catches a Stop from
+        its own notification too; a desktop mpv calls the property
+        unavailable once idle, and then only the last position is left."""
+        from .sinks.speech import speech_stopped_since
+        if speech_stopped_since(began):
+            return False
+        try:
+            eof = ipc.get_property(_sock(), "eof-reached")
+        except Exception:  # noqa: BLE001 — unavailable: not the phone's player
+            eof = None
+        if isinstance(eof, bool):
+            return eof
+        return _played_out(snap)
+
+    def _played_out(snap: dict) -> bool:
+        """The last position seen: on the last clip, within a poll or two of
+        its end. Only a guess — a Stop in those two seconds reads the same."""
         if not durations:
             return False
         pos = snap.get("playlist-pos")
@@ -4381,7 +4401,7 @@ def cmd_replay_track(a) -> int:
             try:
                 if bool(ipc.get_property(_sock(), "idle-active")):
                     _finish()
-                    if then_id is not None and _played_out(last_snap):
+                    if then_id is not None and _heard_out(last_snap):
                         return _then()
                     return 0
             except Exception:  # noqa: BLE001

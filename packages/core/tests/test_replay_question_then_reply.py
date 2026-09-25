@@ -30,13 +30,21 @@ def spawned(tmp_path, monkeypatch):
     return calls
 
 
-def _player(monkeypatch, snaps):
-    """The player reads `snaps` in turn, then stays idle."""
+def _player(monkeypatch, snaps, eof=None):
+    """The player reads `snaps` in turn, then stays idle. `eof` is its answer
+    to `eof-reached` once idle; None is a desktop mpv's "unavailable"."""
     it = iter(snaps)
     monkeypatch.setattr(cli.ipc, "get_properties",
                         lambda sock, props: next(it, {"idle-active": True}))
-    # Asked only for idle-active: the confirming read after an idle snapshot.
-    monkeypatch.setattr(cli.ipc, "get_property", lambda sock, prop: True)
+
+    def _get(sock, prop):
+        if prop == "eof-reached":
+            if eof is None:
+                raise cli.ipc.MpvIpcError("property unavailable")
+            return eof
+        return True                     # idle-active, confirmed
+
+    monkeypatch.setattr(cli.ipc, "get_property", _get)
 
 
 def _track():
@@ -60,3 +68,37 @@ def test_a_stop_mid_question_plays_nothing_more(spawned, monkeypatch):
     _player(monkeypatch, [_playing(0.5), _playing(1.2)])
     assert _track() == 0
     assert not spawned
+
+
+def test_a_stop_through_us_in_the_last_seconds_plays_nothing_more(spawned, monkeypatch):
+    """The weak spot the position alone left: a Stop two seconds from the end
+    looked heard out. `media stop` / the app's Stop stamp it."""
+    from agent_media_core.sinks import speech as sink
+
+    snaps = iter([_playing(1.0), _playing(4.2)])
+
+    def _props(sock, props):
+        snap = next(snaps, None)
+        if snap is None:
+            sink.mark_speech_stopped()
+            return {"idle-active": True}
+        return snap
+
+    _player(monkeypatch, [])
+    monkeypatch.setattr(cli.ipc, "get_properties", _props)
+    assert _track() == 0
+    assert not spawned
+
+
+def test_the_phones_player_says_it_was_stopped(spawned, monkeypatch):
+    """Its own notification's Stop never reaches us; its eof-reached does."""
+    _player(monkeypatch, [_playing(1.0), _playing(4.2)], eof=False)
+    assert _track() == 0
+    assert not spawned
+
+
+def test_the_phones_player_says_it_played_out(spawned, monkeypatch):
+    # Even when the last poll caught it well short of the end.
+    _player(monkeypatch, [_playing(1.0)], eof=True)
+    assert _track() == 0
+    assert spawned and spawned[-1][-3:] == ["replay", "--id", "42"]
