@@ -223,7 +223,7 @@ def workspace_for(session: str, ts: list[Turn]) -> str:
             from . import harnesses
 
             return layout.project_of_path(harnesses.cwd_of(session)) or name
-        return name
+        return layout.series_name(name)
 
     from .conversation import transcript
 

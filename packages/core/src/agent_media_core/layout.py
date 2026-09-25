@@ -259,6 +259,17 @@ def workspace_for(host: str, cwd: str) -> str:
     return project_of_path(cwd)
 
 
+def series_name(host: str) -> str:
+    """The series a tmux session's conversations are filed under. amux names
+    its session `amux-<registration>`, so a phone-started chat in the scratch
+    registration ran in `amux-scratch` while a pane opened in ~/scratch ran in
+    `scratch`: one folder, two shelves. The registration is the name."""
+    host = (host or "").strip()
+    if host.startswith("amux-") and len(host) > len("amux-"):
+        return host[len("amux-"):]
+    return host
+
+
 def encoded_project_label(tail: str) -> str:
     """The series for a transcript under ~/projects/<tail> that recorded no
     tmux session: `p-<tail>` on David's desk (what his tmux session for it is

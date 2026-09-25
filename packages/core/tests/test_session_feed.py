@@ -374,6 +374,13 @@ def test_the_commonest_workspace_wins_not_the_first():
     assert session_feed.workspace_for(SESSION, ts) == "p-agent-media"
 
 
+def test_an_amux_session_is_filed_under_its_registration():
+    """A phone-started chat runs in amux's `amux-scratch`; a pane in ~/scratch
+    runs in `scratch`. Same folder, one series."""
+    ts = [Turn(at=1, text="a", workspace="amux-scratch")]
+    assert session_feed.workspace_for(SESSION, ts) == "scratch"
+
+
 def test_a_history_with_no_tmux_name_falls_back_to_the_project(monkeypatch,
                                                                tmp_path):
     """Everything the phone rendered before 2026-07 recorded no tmux session.
