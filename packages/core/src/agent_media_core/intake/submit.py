@@ -2679,6 +2679,47 @@ def _unmuted_by_priority(muted: bool, event: Event, source_session: str) -> bool
     return not is_priority(source_session)
 
 
+#: How old the Stop hook's "someone is looking" may be before it is asked
+#: again at the moment a reply gets its turn to speak.
+_REWATCH_AFTER_S = 5.0
+
+
+def _unwatched_by_now(event: Event, source_session: str) -> bool:
+    """A Normal reply the Stop hook let play because its thread was on
+    screen (`watched_at`), whose turn came after the listener left it — it
+    waited behind another thread's speech, or rendered for a long time. True
+    after marking it held and putting up its toast (intake/toast.py), so the
+    caller archives it unplayed with a Play, and opening the thread plays it.
+
+    25 Sep 2026: a reply ready while David was in its thread waited behind
+    two others and was read out over the thread he had moved to. Never
+    raises: a failed check plays the reply, as before."""
+    md = event.metadata
+    if not isinstance(md, dict) or md.get("held"):
+        return False
+    try:
+        watched_at = float(md.get("watched_at") or 0)
+    except (TypeError, ValueError):
+        return False
+    if not watched_at or time.time() - watched_at < _REWATCH_AFTER_S:
+        return False
+    try:
+        from ..speak_priority import level_of
+        from . import toast
+
+        if level_of(source_session) != "normal" or not toast.should_hold(source_session):
+            return False
+        md["held"] = True
+        toast.remember(event)
+    except Exception as e:  # noqa: BLE001 — play it rather than lose it
+        log.info("rewatch: check failed, playing: %s", e)
+        md.pop("held", None)
+        return False
+    log.info("rewatch: %s no longer on screen after %.0fs; held",
+             source_session[:8], time.time() - watched_at)
+    return True
+
+
 def _source_session(metadata) -> str:
     """Which conversation this speech belongs to.
 
@@ -4016,6 +4057,12 @@ def _submit_event(event: Event,
         if _speech_flushed(started_at) or _speech_cut(source_session, started_at, ask=source_ask):
             playback_lock.release()
             return _archive(flushed=True)
+        # Nobody is looking any more: it waited its turn while the listener
+        # left the thread. Held like one that was never looked at.
+        if _unwatched_by_now(event, source_session):
+            playback_lock.release()
+            muted = True
+            return _archive()
         # Barging in: something that was speaking stepped aside for us, or
         # this is a question and another conversation was speaking when it
         # arrived. Taken here, once the token is ours — the yield happens

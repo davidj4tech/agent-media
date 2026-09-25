@@ -1088,6 +1088,11 @@ def _handle_stop(payload: dict) -> int:
     if level == "normal" and toast.should_hold(metadata["session"]):
         toast.hold(event)
         return 0
+    if level == "normal":
+        # Played because someone is looking — now. It may wait minutes behind
+        # another thread's speech, so the question is asked again when its
+        # turn comes (submit.py `_unwatched_by_now`).
+        metadata["watched_at"] = time.time()
     _play_detached(event)
     return 0
 

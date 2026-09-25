@@ -374,6 +374,10 @@ def subscribe(session: str) -> tuple[Watcher, Subscriber] | None:
             w = _WATCHERS[session] = Watcher(session)
         w.subs.append(sub)
         _publish()
+        # Which threads were on screen when: what decides whether a Normal
+        # reply plays or waits behind a Play, so the log can answer "why did
+        # that play?" afterwards.
+        log.info("thread %s open (%d)", session[:8], len(w.subs))
     if start:
         w.prime()
         w.start()
@@ -419,6 +423,7 @@ def unsubscribe(w: Watcher, sub: Subscriber) -> None:
             w.subs.remove(sub)
         except ValueError:
             pass
+        log.info("thread %s closed (%d)", w.session[:8], len(w.subs))
         if not w.subs:
             w.stop()
             if _WATCHERS.get(w.session) is w:
