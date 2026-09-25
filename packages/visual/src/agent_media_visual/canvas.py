@@ -1820,7 +1820,7 @@ class Handler(BaseHTTPRequestHandler):
             clen = int(self.headers.get("Content-Length", "0"))
         except ValueError:
             clen = 0
-        if clen > _MAX_BODY:
+        if clen > _app.body_limit(path):
             self._send(413, b"request body too large\n", "text/plain")
             return
         # Every state-changing POST needs the same auth as /input (#138):

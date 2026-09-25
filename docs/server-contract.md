@@ -136,7 +136,7 @@ The app routes: `/conversation`, `/conversation/log`, `/conversations`,
 `/session/close`, `/session/answer`, `/session/stop`, `/draft`, `/speech/now`, `/speech/ctl`,
 `/sessions/state`, `/commands`, `/rename`, `/harnesses`, `/harnesses/run`,
 `/harnesses/screen`, `/harnesses/keys`, `/harnesses/close`,
-`/harnesses/logout`, `/harnesses/updates` (23 Sep 2026), `/share`,
+`/harnesses/logout`, `/harnesses/updates` (23 Sep 2026), `/share`, `/upload` (25 Sep 2026),
 `/search` (23 Sep 2026), and (22 Sep 2026) `/threads/{session}/events` — matched as a pattern, not
 listed (`app.cors_path`), so its preflight and its answers, refusals
 included, carry the same headers.
@@ -2437,6 +2437,36 @@ unknown id. The next raise forgets the ack.
 
 Not yet: the `alerts` event on `/sessions/events` and Next's Home section
 (proposal step 2).
+
+### 6.18 Files shared to the app — gated (built 25 Sep 2026)
+
+The phone's share sheet hands the app text, a link or files (Next's
+`ShareInPlugin.java` → `routes/share.tsx`). The text needs no route of its
+own: it goes into a draft (§6.2), `/notes/capture` (§6.10) or `/share` (a
+link, §6.3). A file is sent here first and the app puts a line per file,
+`Shared file: <path>`, into the words it sends, so the assistant can open it.
+Code: `agent_media_server/uploads.py`; pinned by
+`packages/server/tests/test_uploads.py`.
+
+#### `POST /upload?name=<file name>` — the file as the raw body
+
+```
+Authorization: Bearer <device token>
+Content-Type: application/octet-stream
+Content-Length: 48213
+→ {"ok": true, "path": "/home/ryer/shared/2026-09-25/photo.jpg",
+   "name": "photo.jpg", "size": 48213}
+```
+
+- Kept under `~/shared/<YYYY-MM-DD>/` (`MEDIA_UPLOAD_DIR` moves the root),
+  never over another file: a second `photo.jpg` that day is `photo-2.jpg`.
+- The name is cut to its last path part, stripped of control and shell
+  characters and a leading dot, and capped at 120 characters; none is `shared`.
+- The only route past the 64 KiB body cap (#139): up to `MEDIA_UPLOAD_MAX_MB`
+  (512). Streamed to a `.part` file, renamed when whole; the bearer is checked
+  before a byte is read.
+- Refusals: 401/403 as `/reply` · 411 no `Content-Length` (or an empty file) ·
+  413 over the limit · 400 a body that ended short (nothing is kept).
 
 ## 7. `/events` (v0) — canvas-wide, not the app's stream
 

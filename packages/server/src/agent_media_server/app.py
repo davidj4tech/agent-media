@@ -102,6 +102,9 @@ device gets its token):
   POST /draft     {"session", "text", "at"?} → hold it (empty text drops it)
   POST /rename    {"item"|"session", "title"|"auto"} → rename a conversation
   POST /share     {"text", "channel"?} → play a shared link
+  POST /upload?name=<file name>  (the file as the raw body) → keep a file
+                  shared to the app on the host; answers its {"path", "name",
+                  "size"} (uploads.py)
   GET  /speech/now   → what is being said, named for the speech bar
   POST /speech/ctl   {"action", "arg"?, "sentence"?, "session"?} → a
                   listener's speech verb (goto-sentence / replay-id from a
@@ -142,7 +145,7 @@ from urllib.parse import parse_qs
 
 from . import (abs_item, archive, auth, devices, drafts, harnesses, pins, routing, send,
                sessions, share, speech, threads)
-from . import alerts, audio, notes, notes_chat, notes_edit, notes_setup, refs
+from . import alerts, audio, notes, notes_chat, notes_edit, notes_setup, refs, uploads
 
 # The endpoints a browser on another origin may reach. Everything here
 # carries its own credential — a paired device's token, or the caller's
@@ -166,7 +169,7 @@ CORS_PATHS = frozenset({
     "/harnesses", "/harnesses/run", "/harnesses/screen",
     "/harnesses/keys", "/harnesses/close", "/harnesses/logout",
     "/harnesses/updates",
-    "/share", "/dashboard",
+    "/share", "/upload", "/dashboard",
     "/sessions/events", "/search",
 })
 
@@ -220,6 +223,12 @@ CORS_MAX_AGE = "3600"
 # Cap request bodies: an unbounded Content-Length (e.g. 5 GB) would force a
 # multi-GB read/alloc — a trivial remote OOM on a RAM-tight host (#139).
 MAX_BODY = 64 * 1024
+
+
+def body_limit(path: str) -> int:
+    """The largest body `path` takes: MAX_BODY, except a shared file
+    (/upload), which is streamed to disk after the bearer is checked."""
+    return uploads.max_bytes() if path == "/upload" else MAX_BODY
 
 _SPEECH_NOW_SEEN: set[str] = set()
 
@@ -753,6 +762,18 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         ok, detail = share.share_from_app(str(body.get("text") or ""),
                                           str(body.get("channel") or ""), _bearer(h))
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    elif path == "/upload":
+        try:
+            length = int(h.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = 0
+        name = parse_qs(h.path.partition("?")[2]).get("name", [""])[0]
+        ok, detail = uploads.save(h.rfile, length, name, _bearer(h))
+        if not ok:
+            # Refused before the body was read: it is left unread, so the
+            # connection cannot carry another request.
+            h.close_connection = True
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path == "/speech/ctl":
         # The app's speech bar buttons. The caller's ABS bearer, like
         # /reply, and only the listener's verbs (_APP_SPEECH_ACTIONS).
@@ -1172,7 +1193,7 @@ class Handler(BaseHTTPRequestHandler):
             clen = int(self.headers.get("Content-Length", "0"))
         except ValueError:
             clen = 0
-        if clen > MAX_BODY:
+        if clen > body_limit(self.path.split("?", 1)[0]):
             _send(self, 413, b"request body too large\n", "text/plain")
             return
         if not dispatch(self, "POST", self.path.split("?", 1)[0]):

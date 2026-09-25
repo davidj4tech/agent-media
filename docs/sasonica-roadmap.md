@@ -195,6 +195,17 @@ Unverified: whether each one sends or only
 fills its box. A thread's title wraps to three lines, not two. android-next
 `5873fac6`, `d29db103`, `858fbffc`, `1429cdea`, installed on p8a.
 
+Share to Sasonica (David, 25 Sep 2026): Next is on the share sheet for text,
+links and files (SEND / SEND_MULTIPLE, any type; `ShareInPlugin.java`). The
+share screen (`routes/share.tsx`, also `/share?text=&title=&url=` on the
+web) shows the words, editable, and the files, and offers New chat, Into a
+thread… (by title, like Share into…), Organiser inbox (a TODO), Play it (a
+link only, `/share`) and Just keep them (files only). The words land at the
+end of that thread's draft and it opens. Files are streamed from native code
+to `POST /upload` (§6.18), kept in `~/shared/<day>/`, and a
+`Shared file: <path>` line per file goes with the words. Not yet: Android's
+direct-share icons for recent threads, and an attach button in the composer.
+
 ## In flight
 
 **Next's own speech player.** Media3 (David, 23 Sep 2026: the reason
