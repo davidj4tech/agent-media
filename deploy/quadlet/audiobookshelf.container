@@ -15,12 +15,8 @@ PublishPort=0.0.0.0:13378:80
 Volume=%h/.local/share/audiobookshelf/config:/config:Z
 Volume=%h/.local/share/audiobookshelf/metadata:/metadata:Z
 Volume=%h/audiobooks:/audiobooks:Z
-# Conversations, as books rather than podcast episodes: the Android app's
-# chapter navigation is first-class for books and second-class for podcast
-# episodes, and a conversation is nothing but chapters. Its own mount so it
-# is its own library — a subfolder of /audiobooks would be swept into the
-# audiobook one as well.
-Volume=%h/conversations:/conversations:Z
+# (2026-09-27: the Conversations library and its /conversations mount were
+# removed — speech is heard in Sasonica, not shelved in Audiobookshelf.)
 Environment=TZ=Australia/Melbourne
 Environment=PORT=80
 Environment=METADATA_PATH=/metadata
