@@ -1,0 +1,6 @@
+[Unit]
+Description=Natasha on the phone — does Microsoft still answer the app's request? (agent-alert edge-voice)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/projects/agent-media/packages/core/src/agent_media_core/entrypoints/edge_voice_watch.py
