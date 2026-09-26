@@ -384,8 +384,9 @@ ahead.
    the engine's own word positions (`UtteranceProgressListener.onRangeStart`)
    instead of `clip_starts_s` arithmetic. What stays on the server: the rooms
    and red5's canvas (they cannot hear the phone's voice), the Conversations
-   library and replay — either `synthesizeToFile` on the phone uploads the
-   clip, or the server renders a turn lazily the first time it is replayed.
+   library and replay — **decided (David, 26 Sep 2026): clips on demand** —
+   a phone-voiced turn has none until something needs one (a replay, the
+   rooms), and the server renders it then; nothing is uploaded.
    The server voice stays as a setting ("Voice: this phone / server").
    Shape: today Next's :6614 speaks the mpv vocabulary and only ever gets
    `loadfile <uri>`, so the server needs a text lane to it — a verb carrying
@@ -394,6 +395,15 @@ ahead.
    unchanged. To find out first: whether Google's voices hold up at 1.6x,
    and how a mixed history (some turns rendered, some not) reads in the
    library.
+   **Spike, 26 Sep 2026** (sasonica-app branch `phone-voice-spike`,
+   `PhoneVoice.java`; loopback `/say?text=&rate=&voice=`, `/say/log`,
+   `/voices`, `/say/stop` on :8774; installed on p8a from run 36246281165 —
+   the next main install drops it): Google's engine, 625 voices, offline
+   en-AU ones (`en-au-x-aua…aud-local`). Warm, **~180 ms from request to
+   sound** at 1.6x; the first request after a voice change ~2.1 s (engine
+   init 2.2 s at service start). `onRangeStart` fires for every word, and
+   sentence N+1 starts within 5 ms of N's done. Not wired to replies or
+   the holds. Waiting on David's ear for the voice at 1.6x.
 
 ## Loose ends
 
