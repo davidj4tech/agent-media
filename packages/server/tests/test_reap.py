@@ -722,7 +722,15 @@ def test_speech_voice_is_the_phones_or_the_servers(server, shelf, signed_in, typ
     assert res.status == 200 and obj["target"] == "sasonica"
     assert (obj["mode"], obj["voice"], obj["can_phone"]) == ("phone", "en-au-x-aua-network", True)
     assert obj["server_voice"] == "en-AU-NatashaNeural"
-    assert [v["label"] for v in obj["voices"]][:2] == ["A · online", "B · online"]
+    # Offline (conftest): the built-in Microsoft list, and Google's.
+    en = obj["languages"][0]
+    assert (en["code"], en["name"]) == ("en", "English") and len(obj["languages"]) == 1
+    au = en["accents"][0]
+    assert (au["locale"], au["name"]) == ("en-AU", "Australia")
+    assert [v["label"] for v in au["voices"]][:3] == ["Natasha", "William", "Google A · online"]
+    assert [a["name"] for a in en["accents"]][1:] == [
+        "Ireland", "New Zealand", "United Kingdom", "United States"]
+    assert len(obj["voices"]) == 17 and obj["voices"][0]["name"] == "edge:en-AU-NatashaNeural"
     res, obj = call(server, "POST", "/speech/voice", {"mode": "server"}, AUTH)
     assert res.status == 200 and obj["mode"] == "server"
     assert obj["voice"] == "en-au-x-aua-network", "the phone's voice is kept"
@@ -731,6 +739,15 @@ def test_speech_voice_is_the_phones_or_the_servers(server, shelf, signed_in, typ
                     {"mode": "phone", "voice": "en-au-x-aua-local"}, AUTH)
     assert (obj["mode"], obj["voice"]) == ("phone", "en-au-x-aua-local")
     assert device.voice_for("sasonica") == "en-au-x-aua-local"
+    # The server has only Microsoft's voices, and renders in the one chosen.
+    res, obj = call(server, "POST", "/speech/voice",
+                    {"mode": "server", "voice": "en-au-x-aua-network"}, AUTH)
+    assert res.status == 400 and "only on the phone" in obj["error"]
+    assert device.renders_on_device("sasonica"), "nothing changed"
+    res, obj = call(server, "POST", "/speech/voice",
+                    {"mode": "server", "voice": "edge:en-GB-RyanNeural"}, AUTH)
+    assert (obj["mode"], obj["voice"], obj["server_voice"]) == (
+        "server", "edge:en-GB-RyanNeural", "en-GB-RyanNeural")
     res, obj = call(server, "POST", "/speech/voice", {"mode": "loud"}, AUTH)
     assert res.status == 400 and obj["error"] == "mode must be phone or server"
     res, obj = call(server, "POST", "/speech/voice", {"mode": "phone", "voice": "x"}, AUTH)
@@ -743,6 +760,30 @@ def test_speech_voice_is_the_phones_or_the_servers(server, shelf, signed_in, typ
     assert res.status == 409
     assert "/speech/voice" in app.CORS_PATHS
     assert typed == []
+
+
+def test_the_language_is_the_servers(server, shelf, signed_in, monkeypatch):
+    res, obj = call(server, "GET", "/settings/language", headers=AUTH)
+    assert res.status == 200 and obj["language"] == "en"
+    codes = [lang["code"] for lang in obj["languages"]]
+    assert codes[0] == "en" and {"es", "fr", "zh", "de", "it", "sv", "ja"} <= set(codes)
+    assert {"code": "sv", "name": "Swedish"} in obj["languages"]
+    res, obj = call(server, "POST", "/settings/language", {"language": "xx"}, AUTH)
+    assert res.status == 400 and obj["error"] == "no such language"
+    from agent_media_core.render import device
+
+    # One Microsoft has voices for, and we have no name for.
+    monkeypatch.setattr(device, "_fetch_edge_voices", lambda: [
+        {"ShortName": "af-ZA-AdriNeural", "Gender": "Female", "Locale": "af-ZA",
+         "LocaleName": "Afrikaans (South Africa)"}])
+    monkeypatch.setattr(device, "_last_fetch_try", 0.0)
+    res, obj = call(server, "POST", "/settings/language", {"language": "af"}, AUTH)
+    assert res.status == 200 and obj["language"] == "af"
+    res, obj = call(server, "GET", "/settings/language", headers=AUTH)
+    assert obj["language"] == "af" and {"code": "af", "name": "Afrikaans"} in obj["languages"]
+    res, obj = call(server, "POST", "/settings/language", {"language": "sv"}, AUTH)
+    assert res.status == 200 and obj["language"] == "sv"
+    assert "/settings/language" in app.CORS_PATHS
 
 
 # --- the archive import ---------------------------------------------------------------------

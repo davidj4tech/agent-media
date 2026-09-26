@@ -16,8 +16,13 @@ renders it again.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import re
+import threading
+import time
+from collections import Counter
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
@@ -28,32 +33,48 @@ SUFFIX = ".tts"
 OVERRIDE_NAME = "speech-voice.json"
 MODES = ("phone", "server")
 
-#: Google's Australian voices, as the app's Settings offers them.
-VOICES = (
-    {"name": "en-au-x-aua-network", "label": "A · online"},
-    {"name": "en-au-x-aub-network", "label": "B · online"},
-    {"name": "en-au-x-auc-network", "label": "C · online"},
-    {"name": "en-au-x-aud-network", "label": "D · online"},
-    {"name": "en-au-x-aua-local", "label": "A · offline"},
-    # Microsoft's voice, the one red5 renders with, asked for by the phone
-    # itself from Australia (about 0.7 s to first audio against ~2 s through
-    # red5, 27 Sep 2026). Not an official service, so every clip also names
-    # a Google voice for the phone to fall back to (see tts_uri).
-    {"name": "edge:en-AU-NatashaNeural", "label": "Natasha · AU"},
-    # More of Microsoft's, the same way (David, 27 Sep 2026: Australian,
-    # British, the newest US ones, New Zealand and Irish).
-    {"name": "edge:en-AU-WilliamMultilingualNeural", "label": "William · AU"},
-    {"name": "edge:en-GB-SoniaNeural", "label": "Sonia · UK"},
-    {"name": "edge:en-GB-RyanNeural", "label": "Ryan · UK"},
-    {"name": "edge:en-US-AvaMultilingualNeural", "label": "Ava · US"},
-    {"name": "edge:en-US-AndrewMultilingualNeural", "label": "Andrew · US"},
-    {"name": "edge:en-US-EmmaMultilingualNeural", "label": "Emma · US"},
-    {"name": "edge:en-US-BrianMultilingualNeural", "label": "Brian · US"},
-    {"name": "edge:en-NZ-MollyNeural", "label": "Molly · NZ"},
-    {"name": "edge:en-NZ-MitchellNeural", "label": "Mitchell · NZ"},
-    {"name": "edge:en-IE-EmilyNeural", "label": "Emily · IE"},
-    {"name": "edge:en-IE-ConnorNeural", "label": "Connor · IE"},
+#: Google's Australian voices, which only the phone has (Android's
+#: TextToSpeech), as the app's Settings offers them.
+GOOGLE_VOICES = tuple(
+    {"name": name, "label": f"Google {label}", "gender": "", "locale": "en-AU",
+     "language": "English", "accent": "Australia", "where": ["phone"]}
+    for name, label in (("en-au-x-aua-network", "A · online"),
+                        ("en-au-x-aub-network", "B · online"),
+                        ("en-au-x-auc-network", "C · online"),
+                        ("en-au-x-aud-network", "D · online"),
+                        ("en-au-x-aua-local", "A · offline")))
+
+#: Microsoft's voices ("edge:<ShortName>") are its whole list, as edge_tts
+#: fetches it, kept here for a day; the phone asks Microsoft itself (about
+#: 0.7 s to first audio against ~2 s through red5, 27 Sep 2026) and red5
+#: renders them with the edge engine. Not an official service, so a
+#: phone-rendered clip also names a Google voice to fall back to (tts_uri).
+EDGE_CACHE_NAME = "edge-voices.json"
+EDGE_CACHE_TTL_S = 24 * 3600
+#: How long a failed fetch is left before the next try (the stale list, or
+#: the built-in one, serves meanwhile).
+EDGE_RETRY_S = 600
+EDGE_FETCH_TIMEOUT_S = 10.0
+
+#: The built-in list, when neither Microsoft nor the cache can say: the
+#: twelve offered before the whole list was (David, 27 Sep 2026: Australian,
+#: British, the newest US ones, New Zealand and Irish).
+_EDGE_BUILTIN = (
+    ("en-AU-NatashaNeural", "Female", "Australia"),
+    ("en-AU-WilliamMultilingualNeural", "Male", "Australia"),
+    ("en-GB-SoniaNeural", "Female", "United Kingdom"),
+    ("en-GB-RyanNeural", "Male", "United Kingdom"),
+    ("en-US-AvaMultilingualNeural", "Female", "United States"),
+    ("en-US-AndrewMultilingualNeural", "Male", "United States"),
+    ("en-US-EmmaMultilingualNeural", "Female", "United States"),
+    ("en-US-BrianMultilingualNeural", "Male", "United States"),
+    ("en-NZ-MollyNeural", "Female", "New Zealand"),
+    ("en-NZ-MitchellNeural", "Male", "New Zealand"),
+    ("en-IE-EmilyNeural", "Female", "Ireland"),
+    ("en-IE-ConnorNeural", "Male", "Ireland"),
 )
+
+_last_fetch_try = 0.0
 
 #: The Google voice a Microsoft-voiced clip falls back to on the phone.
 FALLBACK_VOICE = "en-au-x-aua-network"
@@ -63,6 +84,127 @@ FALLBACK_VOICE = "en-au-x-aua-network"
 #: measured starts (clip_starts_s) take over as each sentence plays.
 CHARS_PER_S = 15.0
 LEAD_S = 0.2
+
+
+def _edge_voice(raw: dict) -> Optional[dict]:
+    """One of edge_tts's voices as the app is sent it, or None."""
+    short = str(raw.get("ShortName") or "")
+    locale = str(raw.get("Locale") or "")
+    if not short or not locale:
+        return None
+    first = short.rsplit("-", 1)[-1]
+    first = re.sub(r"(Multilingual)?Neural$", "", first) or first
+    lang_code, _, region = locale.partition("-")
+    # LocaleName, "English (Australia)", is one name per locale; FriendlyName
+    # ("Microsoft Natasha Online (Natural) - English (Australia)") ends in
+    # one too, but not always the same ("Hongkong", "(Preview)").
+    named = str(raw.get("LocaleName") or "") or str(raw.get("FriendlyName") or "").rpartition(" - ")[2]
+    m = re.match(r"^(.*?) \((.*?)\)", named)
+    language, accent = (m.group(1), m.group(2)) if m else (lang_code, region or locale)
+    return {"name": f"edge:{short}", "label": first, "gender": str(raw.get("Gender") or ""),
+            "locale": locale, "language": language, "accent": accent,
+            "where": ["phone", "server"]}
+
+
+def _builtin_edge_voices() -> list[dict]:
+    return [_edge_voice({"ShortName": short, "Gender": gender, "Locale": short[:5],
+                         "LocaleName": f"English ({accent})"})
+            for short, gender, accent in _EDGE_BUILTIN]
+
+
+def _fetch_edge_voices() -> list[dict]:
+    """Microsoft's list, raw, through edge_tts; raises when it cannot. On a
+    thread of its own, so it runs whether or not the caller has a loop."""
+    import edge_tts
+
+    out: dict = {}
+
+    def run() -> None:
+        try:
+            out["voices"] = asyncio.run(asyncio.wait_for(
+                edge_tts.list_voices(), EDGE_FETCH_TIMEOUT_S))
+        except BaseException as e:  # noqa: BLE001 — handed to the caller
+            out["error"] = e
+
+    t = threading.Thread(target=run, name="edge-voices", daemon=True)
+    t.start()
+    t.join(EDGE_FETCH_TIMEOUT_S + 2)
+    if "voices" not in out:
+        raise OSError(f"no voice list from Microsoft ({out.get('error', 'timed out')})")
+    return out["voices"]
+
+
+def edge_voices() -> list[dict]:
+    """Microsoft's voices: the cached list while under a day old, else a
+    fresh one (and cached), else the stale cache, else the built-in twelve."""
+    global _last_fetch_try
+    path = state_dir() / EDGE_CACHE_NAME
+    try:
+        cached = json.loads(path.read_text())
+        stale = list(cached["voices"])
+        fetched = float(cached.get("fetched") or 0)
+    except (OSError, ValueError, KeyError, TypeError):
+        stale, fetched = [], 0.0
+    now = time.time()
+    if stale and now - fetched < EDGE_CACHE_TTL_S:
+        return stale
+    if now - _last_fetch_try >= EDGE_RETRY_S:
+        _last_fetch_try = now
+        try:
+            fresh = [v for v in map(_edge_voice, _fetch_edge_voices()) if v]
+        except Exception:  # noqa: BLE001 — offline, or edge_tts moved
+            fresh = []
+        if fresh:
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                tmp = path.with_suffix(f".tmp.{os.getpid()}")
+                tmp.write_text(json.dumps({"fetched": now, "voices": fresh}))
+                tmp.replace(path)
+            except OSError:
+                pass
+            return fresh
+    return stale or _builtin_edge_voices()
+
+
+def voices() -> list[dict]:
+    """Every voice on offer, grouped as `languages` orders them."""
+    return [v for lang in languages() for accent in lang["accents"] for v in accent["voices"]]
+
+
+def languages(all_voices: Optional[list] = None) -> list[dict]:
+    """The voices by language, then accent (locale): English first, then by
+    name; Australia first within English, the rest by name; Microsoft's
+    voices, by name, before Google's in an accent."""
+    if all_voices is None:
+        all_voices = edge_voices() + [dict(v) for v in GOOGLE_VOICES]
+    by_locale: dict[str, list] = {}
+    for v in all_voices:
+        by_locale.setdefault(v["locale"], []).append(v)
+    langs: dict[str, dict] = {}
+    for locale, vs in by_locale.items():
+        # Stable: Google's keep the order they are listed in.
+        vs.sort(key=lambda v: ((0, v["label"].lower()) if v["name"].startswith("edge:")
+                               else (1, "")))
+        code = locale.split("-")[0]
+        lang = langs.setdefault(code, {"code": code, "names": Counter(), "accents": []})
+        lang["names"].update(v["language"] for v in vs)
+        lang["accents"].append({"locale": locale,
+                                "name": Counter(v["accent"] for v in vs).most_common(1)[0][0],
+                                "voices": vs})
+    out = []
+    for lang in langs.values():
+        name = lang.pop("names").most_common(1)[0][0]
+        lang["accents"].sort(key=lambda a: (a["locale"] != "en-AU", a["name"].lower()))
+        out.append({"code": lang["code"], "name": name, "accents": lang["accents"]})
+    out.sort(key=lambda lang: (lang["code"] != "en", lang["name"].lower()))
+    return out
+
+
+def find_voice(name: str, all_voices: Optional[list] = None) -> Optional[dict]:
+    for v in all_voices if all_voices is not None else voices():
+        if v["name"] == name:
+            return v
+    return None
 
 
 def _key(prefix: str, target_name: str) -> str:
@@ -91,7 +233,8 @@ def override_for(target_name: str) -> Optional[dict]:
 
 def set_override(target_name: str, mode: str, voice: Optional[str] = None) -> None:
     """Render `target_name`'s replies on the device ("phone") or here
-    ("server"), in `voice` on the device when given."""
+    ("server"), in `voice` when given (here, only a Microsoft one is
+    honoured; see server_choice)."""
     if mode not in MODES:
         raise ValueError(f"not a voice mode: {mode!r}")
     data = overrides()
@@ -129,9 +272,23 @@ def can_render(target_name: str) -> bool:
             or override_for(target_name) is not None)
 
 
-def server_voice() -> str:
-    """The voice this host renders in, for display (the per-engine voice,
-    as intake/submit.py resolves it, else the engine's own default)."""
+def server_choice(target_name: str) -> Optional[tuple[str, str]]:
+    """(engine, voice) this host renders `target_name`'s replies in when the
+    app chose the server and a Microsoft voice, else None (the env's)."""
+    entry = override_for(target_name)
+    voice = (entry or {}).get("voice") or ""
+    if entry and entry["mode"] == "server" and voice.startswith("edge:"):
+        return "edge", voice[len("edge:"):]
+    return None
+
+
+def server_voice(target_name: Optional[str] = None) -> str:
+    """The voice this host renders in, for display: the app's choice for
+    `target_name` (server_choice), else the per-engine voice, as
+    intake/submit.py resolves it, else the engine's own default."""
+    chosen = server_choice(target_name) if target_name else None
+    if chosen:
+        return chosen[1]
     engine = (os.environ.get("MEDIA_RENDER_ENGINE")
               or os.environ.get("CLAUDE_TTS_ENGINE") or "edge")
     return (os.environ.get(f"MEDIA_RENDER_VOICE_{engine.upper().replace('-', '_')}")

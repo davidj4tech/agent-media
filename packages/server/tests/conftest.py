@@ -78,6 +78,15 @@ def _clean_media_env(monkeypatch, tmp_path):
     from agent_media_server import agents
 
     agents._reset_for_tests()
+    # Microsoft's voice list is fetched over the network: offline here, so
+    # the built-in list serves (render/device.py).
+    from agent_media_core.render import device
+
+    def offline():
+        raise OSError("offline in tests")
+
+    monkeypatch.setattr(device, "_fetch_edge_voices", offline)
+    monkeypatch.setattr(device, "_last_fetch_try", 0.0)
     # The search index lives under the state dir above; forget the last
     # test's connection and its short-lived caches.
     from agent_media_server import search

@@ -142,6 +142,20 @@ def _no_follow_pane(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_voice_list_fetch(monkeypatch):
+    """Microsoft's voice list is fetched over the network (render/device.py):
+    offline here, so the built-in list serves. Tests of the fetch put their
+    own in."""
+    from agent_media_core.render import device
+
+    def offline():
+        raise OSError("offline in tests")
+
+    monkeypatch.setattr(device, "_fetch_edge_voices", offline)
+    monkeypatch.setattr(device, "_last_fetch_try", 0.0)
+
+
+@pytest.fixture(autouse=True)
 def _no_listener_audio_choice(monkeypatch, tmp_path):
     """Keep the listener's own speech/music choice out of the suite.
 

@@ -89,8 +89,11 @@ device gets its token):
   GET|POST /speech/default {"level"} → the level of every thread with none
                   of its own; the server's, so every device's (pins.py)
   GET|POST /speech/voice {"mode", "voice"?} → the speech target's replies
-                  rendered on the phone (Android TTS) or by the server
-                  (render/device.py, pins.py)
+                  rendered on the phone (Android TTS) or by the server, and
+                  in which voice, by language and accent (render/device.py,
+                  pins.py)
+  GET|POST /settings/language {"language"} → the app's language, site-wide;
+                  Settings offers its voices (language.py, pins.py)
   POST /session/move {"session", "project"|"cwd"} → move a conversation to
                   another project: file it there, move its transcript and its
                   library folder, and bring a live session back in that
@@ -174,6 +177,7 @@ CORS_PATHS = frozenset({
     "/session/answer", "/session/archive", "/session/pin", "/session/priority", "/session/stop",
     "/session/retract", "/session/move", "/session/settings",
     "/speech/now", "/speech/ctl", "/speech/sentences", "/speech/default", "/speech/voice",
+    "/settings/language",
     "/sessions/state", "/commands", "/rename",
     "/harnesses", "/harnesses/run", "/harnesses/screen",
     "/harnesses/keys", "/harnesses/close", "/harnesses/logout",
@@ -567,6 +571,10 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
     elif path == "/speech/voice":
         # The phone's voice or the server's (render/device.py).
         ok, detail = pins.speech_voice(_bearer(h))
+        _json(h, 200 if ok else detail.pop("status", 403), {"ok": ok, **detail})
+    elif path == "/settings/language":
+        # The app's language, every device's (language.py).
+        ok, detail = pins.settings_language(_bearer(h))
         _json(h, 200 if ok else detail.pop("status", 403), {"ok": ok, **detail})
     elif path == "/speech/now":
         # The app's speech bar: /speech's live bit, named — the session's
@@ -1003,6 +1011,12 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         body = _read_json(h) or {}
         ok, detail = pins.speech_voice(_bearer(h), mode=str(body.get("mode") or ""),
                                        voice=body.get("voice") or None)
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    elif path == "/settings/language":
+        # Settings' Language: every device's.
+        body = _read_json(h) or {}
+        ok, detail = pins.settings_language(_bearer(h),
+                                            language=str(body.get("language") or ""))
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path == "/session/answer":
         # Answering the dialog a session is stopped on — a permission

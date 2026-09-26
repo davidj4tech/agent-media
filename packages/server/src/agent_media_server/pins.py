@@ -126,19 +126,25 @@ def speech_default(bearer: str, level=None) -> tuple[bool, dict]:
 def speech_voice(bearer: str, mode=None, voice=None) -> tuple[bool, dict]:
     """`GET /speech/voice` and `POST /speech/voice {"mode", "voice"?}`: whether
     the current speech target's replies are rendered on the phone, by
-    Android's TextToSpeech, or here (render/device.py). The server's, so
-    every device's. With `mode` None, only read."""
+    Android's TextToSpeech or Microsoft, or here (render/device.py), and in
+    which voice. The server's, so every device's. With `mode` None, only
+    read."""
     from agent_media_core import audio_targets
     from agent_media_core.render import device
 
-    names = [v["name"] for v in device.VOICES]
     if mode is not None and mode not in device.MODES:
         return False, {"error": "mode must be phone or server", "status": 400}
-    if voice is not None and voice not in names:
-        return False, {"error": "no such voice", "status": 400}
     user, err = auth.gate(bearer)
     if not user:
         return False, err
+    languages = device.languages()
+    voices = [v for lang in languages for a in lang["accents"] for v in a["voices"]]
+    chosen = device.find_voice(voice, voices) if voice is not None else None
+    if voice is not None and not chosen:
+        return False, {"error": "no such voice", "status": 400}
+    if chosen and mode is not None and mode not in chosen["where"]:
+        return False, {"error": f"{chosen['label']} is only on the phone: "
+                                "choose a Microsoft voice for the server", "status": 400}
     target = audio_targets.speech_default()
     if mode is not None:
         if not device.can_render(target):
@@ -151,5 +157,32 @@ def speech_voice(bearer: str, mode=None, voice=None) -> tuple[bool, dict]:
                   "mode": "phone" if device.renders_on_device(target) else "server",
                   "voice": device.voice_for(target),
                   "can_phone": device.can_render(target),
-                  "voices": [dict(v) for v in device.VOICES],
-                  "server_voice": device.server_voice()}
+                  "voices": voices,
+                  "languages": languages,
+                  "server_voice": device.server_voice(target)}
+
+
+def settings_language(bearer: str, language=None) -> tuple[bool, dict]:
+    """`GET /settings/language` and `POST /settings/language {"language"}`: the
+    app's language, site-wide (language.py): one the voices come in, or
+    one known by name. With `language` None, only read."""
+    from agent_media_core import language as site
+    from agent_media_core.render import device
+
+    user, err = auth.gate(bearer)
+    if not user:
+        return False, err
+    # Those the voices come in, and those known by name (offline, the
+    # built-in voices are English only), known names first.
+    names = {lang["code"]: lang["name"] for lang in device.languages()}
+    names.update(site.NAMES)
+    languages = [{"code": code, "name": name} for code, name in
+                 sorted(names.items(), key=lambda kv: (kv[0] != "en", kv[1].lower()))]
+    if language is not None:
+        if language not in {lang["code"] for lang in languages}:
+            return False, {"error": "no such language", "status": 400}
+        try:
+            site.set_language(language)
+        except OSError as e:
+            return False, {"error": f"could not save the language ({e})", "status": 500}
+    return True, {"language": site.current(), "languages": languages}

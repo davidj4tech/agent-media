@@ -141,4 +141,97 @@ def test_a_microsoft_voiced_clip_names_a_google_voice_to_fall_back_to(tmp_path, 
     assert "&voice=edge%3Aen-AU-NatashaNeural" in uri
     assert uri.endswith("&fallback=en-au-x-aua-network")
     assert "fallback" not in device_voice.tts_uri(clip, "en-au-x-aua-network")
-    assert any(v["name"] == "edge:en-AU-NatashaNeural" for v in device_voice.VOICES)
+    assert device_voice.find_voice("edge:en-AU-NatashaNeural")
+
+
+def _raw(short, gender, locale_name):
+    return {"ShortName": short, "Gender": gender, "Locale": short.rsplit("-", 1)[0],
+            "LocaleName": locale_name,
+            "FriendlyName": f"Microsoft X Online (Natural) - {locale_name}"}
+
+
+def test_the_voices_are_grouped_by_language_then_accent(monkeypatch):
+    raw = [_raw("fr-FR-DeniseNeural", "Female", "French (France)"),
+           _raw("en-US-AvaMultilingualNeural", "Female", "English (United States)"),
+           _raw("en-AU-WilliamMultilingualNeural", "Male", "English (Australia)"),
+           _raw("en-AU-NatashaNeural", "Female", "English (Australia)"),
+           _raw("de-DE-KatjaNeural", "Female", "German (Germany)"),
+           _raw("en-GB-RyanNeural", "Male", "English (United Kingdom)")]
+    monkeypatch.setattr(device_voice, "_fetch_edge_voices", lambda: raw)
+    langs = device_voice.languages()
+    # English first, then by name.
+    assert [(lang["code"], lang["name"]) for lang in langs] == [
+        ("en", "English"), ("fr", "French"), ("de", "German")]
+    en = langs[0]["accents"]
+    assert [a["name"] for a in en] == ["Australia", "United Kingdom", "United States"]
+    au = [(v["label"], v["where"]) for v in en[0]["voices"]]
+    # Microsoft's by name, then Google's, which only the phone has.
+    assert au[:2] == [("Natasha", ["phone", "server"]), ("William", ["phone", "server"])]
+    assert au[2:] == [(v["label"], ["phone"]) for v in device_voice.GOOGLE_VOICES]
+    ava = device_voice.find_voice("edge:en-US-AvaMultilingualNeural")
+    assert ava == {"name": "edge:en-US-AvaMultilingualNeural", "label": "Ava",
+                   "gender": "Female", "locale": "en-US", "language": "English",
+                   "accent": "United States", "where": ["phone", "server"]}
+
+
+def test_the_list_is_kept_a_day_and_the_stale_one_serves_offline(monkeypatch):
+    import json
+    import time
+
+    from agent_media_core._paths import state_dir
+
+    calls = []
+
+    def fetch():
+        calls.append(1)
+        return [_raw("fr-FR-DeniseNeural", "Female", "French (France)")]
+
+    monkeypatch.setattr(device_voice, "_fetch_edge_voices", fetch)
+    assert [v["label"] for v in device_voice.edge_voices()] == ["Denise"]
+    device_voice.edge_voices()
+    assert len(calls) == 1, "cached"
+    cache = state_dir() / device_voice.EDGE_CACHE_NAME
+    data = json.loads(cache.read_text())
+    data["fetched"] = time.time() - device_voice.EDGE_CACHE_TTL_S - 1
+    cache.write_text(json.dumps(data))
+    monkeypatch.setattr(device_voice, "_last_fetch_try", data["fetched"])
+
+    def offline():
+        calls.append(1)
+        raise OSError("down")
+
+    monkeypatch.setattr(device_voice, "_fetch_edge_voices", offline)
+    assert [v["label"] for v in device_voice.edge_voices()] == ["Denise"], "stale serves"
+    assert len(calls) == 2
+    device_voice.edge_voices()
+    assert len(calls) == 2, "a failed fetch is not retried at once"
+    # No cache and no Microsoft: the built-in twelve.
+    cache.unlink()
+    monkeypatch.setattr(device_voice, "_last_fetch_try", 0.0)
+    names = [v["name"] for v in device_voice.edge_voices()]
+    assert len(names) == 12 and names[0] == "edge:en-AU-NatashaNeural"
+
+
+def test_the_server_renders_in_the_chosen_microsoft_voice(monkeypatch):
+    from agent_media_core.intake import submit
+    from agent_media_core.types import Event, Source
+
+    monkeypatch.setenv("MEDIA_RENDER_VOICE_EDGE", "en-AU-NatashaNeural")
+    monkeypatch.delenv("MEDIA_RENDER_ENGINE", raising=False)
+    monkeypatch.delenv("CLAUDE_TTS_ENGINE", raising=False)
+    sas = Target(name="sasonica")
+    ev = Event(source=Source.CLAUDE_CODE, text="Hi.")
+    assert submit._engine_and_voice(ev, sas) == ("edge", "en-AU-NatashaNeural")
+    device_voice.set_override("sasonica", "server", "edge:en-GB-RyanNeural")
+    assert submit._engine_and_voice(ev, sas) == ("edge", "en-GB-RyanNeural")
+    assert device_voice.server_voice("sasonica") == "en-GB-RyanNeural"
+    assert device_voice.server_voice() == "en-AU-NatashaNeural"
+    # Another target, an event with its own voice, or a Google voice: as before.
+    assert submit._engine_and_voice(ev, Target(name="rooms")) == ("edge", "en-AU-NatashaNeural")
+    own = Event(source=Source.CLAUDE_CODE, text="Hi.", voice="en-US-AvaNeural")
+    assert submit._engine_and_voice(own, sas) == ("edge", "en-US-AvaNeural")
+    device_voice.set_override("sasonica", "server", "en-au-x-aua-network")
+    assert submit._engine_and_voice(ev, sas) == ("edge", "en-AU-NatashaNeural")
+    # On the phone, the phone's.
+    device_voice.set_override("sasonica", "phone", "edge:en-GB-RyanNeural")
+    assert device_voice.server_choice("sasonica") is None

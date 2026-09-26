@@ -1322,24 +1322,60 @@ Pinned by `packages/server/tests/test_reap.py` and
 #### `GET` / `POST /speech/voice` — gated (27 Sep 2026)
 
 `GET` → `{"ok": true, "target", "mode": "phone"|"server", "voice": str|null,
-"can_phone": bool, "voices": [{"name", "label"}], "server_voice"}`;
-`POST {"mode", "voice"?}` → the same, after setting it. Whether the current
-speech target's (`target`, the speech default) replies are rendered by the
-phone's own TextToSpeech (`phone`, in `voice`, one of `voices`) or by the
-server (`server`, in `server_voice` — the engine's configured voice, for
-display). `can_phone` is true for a player that can be handed words:
+"can_phone": bool, "voices": [<voice>], "languages": [<language>],
+"server_voice"}`; `POST {"mode", "voice"?}` → the same, after setting it.
+Whether the current speech target's (`target`, the speech default) replies
+are rendered by the phone (`phone`) or by the server (`server`), and in
+which `voice`. `can_phone` is true for a player that can be handed words:
 `sasonica`, or a target with `MEDIA_SPEECH_RENDER_<T>` set or a choice
 already made; the app hides the setting otherwise. A POST without `voice`
 keeps the one in use.
 
+A `<voice>` is `{"name", "label", "gender", "locale", "language", "accent",
+"where": ["phone", "server"] | ["phone"]}`:
+
+- Microsoft's, `name` `edge:<ShortName>` (`edge:en-AU-NatashaNeural`,
+  label `Natasha`): its whole list, fetched with edge_tts and kept a day in
+  `<state_dir>/edge-voices.json` (offline: the stale list, else a built-in
+  twelve English ones). Either side: the phone asks Microsoft itself,
+  falling back to a Google voice; the server renders with its edge engine.
+- Google's Australian five (`en-au-x-aua-network`, label `Google A ·
+  online`): the phone's Android TTS only.
+
+`languages` groups them: `[{"code": "en", "name": "English", "accents":
+[{"locale": "en-AU", "name": "Australia", "voices": [<voice>]}]}]` —
+English first, then by name; Australia first within English, the rest by
+name; Microsoft's voices (by name) before Google's. `voices` is the same,
+flat.
+
+`server_voice` is what the server renders in: the chosen voice when in
+`server` mode with a Microsoft one — a reply to the target that renders
+here then uses the edge engine in that voice, unless the event names its
+own engine or voice — else the engine's configured voice (for display).
+
 Kept per target in `<state_dir>/speech-voice.json` as `{"<target>":
 {"mode", "voice"}}`, read before the env (`MEDIA_SPEECH_RENDER_<T>`,
 `MEDIA_SPEECH_DEVICE_VOICE_<T>`) on every reply. The server's, so every
-device's. 400 on another mode or a voice not in `voices`; 409 when the
-target cannot render words; in `CORS_PATHS`.
+device's. 400 on another mode, a voice not in `voices`, or `server` with a
+phone-only voice (`"<label> is only on the phone: …"`); 409 when the target
+cannot render words; in `CORS_PATHS`.
 
 Pinned by `packages/server/tests/test_reap.py` and
 `packages/core/tests/test_device_voice.py`.
+
+#### `GET` / `POST /settings/language` — gated (27 Sep 2026)
+
+`GET` → `{"ok": true, "language": "en", "languages": [{"code", "name"}]}`;
+`POST {"language": "<code>"}` → the same, after setting it. The app's
+language, site-wide: every paired device's. Settings' Voice section offers
+that language's voices (`/speech/voice`'s `languages`); it does not change
+the app's own text. `languages` is every language Microsoft has voices for,
+plus those known by name (`agent_media_core/language.py` `NAMES`), English
+first, then by name. Kept in `<state_dir>/language.json` as `{"language"}`;
+`"en"` until set. 400 `"no such language"`; in `CORS_PATHS`.
+
+Pinned by `packages/server/tests/test_reap.py` and
+`packages/core/tests/test_language.py`.
 
 #### `POST /session/answer` — gated
 

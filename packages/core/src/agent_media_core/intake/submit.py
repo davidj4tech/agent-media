@@ -53,6 +53,17 @@ def _resolve_engine(event: Event) -> str:
     return event.engine or _default_engine()
 
 
+def _engine_and_voice(event: Event, target: Target) -> tuple[str, Optional[str]]:
+    """The engine and voice a reply to `target` renders in here: the app's
+    choice of a Microsoft voice for the server (render/device.py), unless
+    the event names its own engine or voice, else the configured ones."""
+    chosen = None if event.engine or event.voice else device_voice.server_choice(target.name)
+    if chosen:
+        return chosen
+    engine = _resolve_engine(event)
+    return engine, _resolve_voice(event, engine)
+
+
 def _resolve_voice(event: Event, engine: str) -> Optional[str]:
     """Resolve the voice for the *selected* engine.
 
@@ -3660,8 +3671,7 @@ def _submit_event(event: Event,
     if remote_say:
         return _submit_remote_say(text, remote_say, coordinator, state, event)
 
-    engine = _resolve_engine(event)
-    voice = _resolve_voice(event, engine)
+    engine, voice = _engine_and_voice(event, target)
     ext = _ext_for(engine)
     renderer = render_text
     if device_voice.renders_on_device(target.name):
@@ -5006,8 +5016,7 @@ def submit_stream(sentences,
     if remote_say:
         return _submit_remote_say(" ".join(sentences), remote_say, coordinator, state, event)
 
-    engine = _resolve_engine(event)
-    voice = _resolve_voice(event, engine)
+    engine, voice = _engine_and_voice(event, target)
     ext = _ext_for(engine)
     renderer = render_text
     if device_voice.renders_on_device(target.name):
