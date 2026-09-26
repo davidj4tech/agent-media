@@ -326,8 +326,10 @@ ahead.
    `PI_CODING_AGENT_DIR`, `XDG_DATA_HOME`, Hermes's own profiles) gives
    every harness multiple logins; pi first needs a login recipe at all.
    Also decided there: Next is **not** rebased on opencode-mobile, but its
-   diff viewer, tool-call approval, self-hosted F-Droid repo and demo mode
-   are queued as app work, in that order.
+   diff viewer, tool-call approval and demo mode are queued as app work, in
+   that order. Its self-hosted F-Droid repo is **parked until monetization
+   is decided** (David, 26 Sep 2026; `docs/proposals/2026-08-20-monetization.md`),
+   since where the app ships decides how it can be charged for.
 
 5. **Alerts and digests in Next** (David, 24 Sep 2026) —
    `docs/proposals/2026-09-24-alerts-and-digests.md`. The dozen red5

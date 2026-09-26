@@ -67,6 +67,19 @@ In the order they are worth doing:
    in dotfiles-secrets (see the Sasonica release-signing notes), so it is a
    CI job and a Pages branch. Users add one repo URL in F-Droid / Obtainium
    and get updates without `agent-phone-adb install`.
+
+   **Parked until monetization is decided** (David, 26 Sep 2026). Where the
+   app is distributed decides which ways of charging for it are open, so it
+   waits on `docs/proposals/2026-08-20-monetization.md`:
+   - F-Droid's **main** repository builds from source and will not ship
+     proprietary pieces (Play Billing included), so a store-billed paid tier
+     cannot be sold through it; a paid tier would be a licence key there,
+     which that proposal calls honour-system revenue.
+   - A **self-hosted** repo (the one proposed here) has no such rules, but it
+     also has no billing: it can only hand out an APK that checks a key
+     bought somewhere else.
+   - Once an APK is public it stays public, so shipping one before the
+     free/paid line is drawn gives away whatever it contains.
 4. **Demo mode.** The chat app's mock server (`chat/mock/server.mjs`) is
    already most of it. Bundling a scripted session into the app, reachable
    from the pairing screen as "Try it without a server", gives screenshots,
@@ -246,7 +259,8 @@ under-describing it (the dir holds settings and sessions, not only a login).
    together; Hermes wired to its existing profiles.
 4. **Diff viewer** (server route, then the screen).
 5. **Tool-call approval** on the waiting card.
-6. **F-Droid repo** on GitHub Pages from the release CI.
+6. **F-Droid repo** on GitHub Pages from the release CI — **parked** until
+   monetization is decided (item 3 above).
 7. **Demo mode** from the mock server.
 8. **`opencode serve` spike** — drive a harness over its API.
 
