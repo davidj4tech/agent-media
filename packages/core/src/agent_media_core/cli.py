@@ -3144,8 +3144,16 @@ def cmd_skip(a) -> int:
         # never went on to the answer.
         return cmd_jump(argparse.Namespace(where="end"))
     if n == 1 and not idle and a.dir < 0 and getattr(a, "to", None) is None:
-        # The only sentence is the first: nothing to go back to.
-        return 0
+        # The only sentence is the first: a lone press restarts it, a press
+        # chained onto it does nothing (rapid taps used to stutter it).
+        if _read_skip_cursor() is not None:
+            return 0
+        _write_skip_cursor(0)
+        try:
+            ipc.command(sock, "seek", 0.0, "absolute", critical=True)
+            return 0
+        except ipc.MpvIpcError:
+            return 1
     if n <= 1 or idle:
         return _time_seek()
     if len(para_idx) != n:
@@ -3166,7 +3174,8 @@ def cmd_skip(a) -> int:
     # A press within the chain window steps from the LAST press's target,
     # whatever the (possibly lagging) live read said.
     crumb = _read_skip_cursor()
-    if crumb is not None and 0 <= crumb < n:
+    chained = crumb is not None and 0 <= crumb < n
+    if chained:
         cur = crumb
 
     # An absolute jump — "play from this sentence" — reuses everything below
@@ -3185,9 +3194,10 @@ def cmd_skip(a) -> int:
             # heard — the speech bar's → sounded like a ←.
             return cmd_jump(argparse.Namespace(where="end"))
         target = max(target, 0)
-        if direction < 0 and target == cur:
-            # Back from the first sentence (or the first paragraph's start)
-            # does nothing. It used to restart the sentence being heard.
+        if direction < 0 and target == cur and chained:
+            # Back from the first sentence (or the first paragraph's start):
+            # the first press restarts it, but a press chained onto another
+            # does nothing — repeated restarts made rapid taps stutter.
             return 0
     _write_skip_cursor(target)
 

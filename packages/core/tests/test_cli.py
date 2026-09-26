@@ -617,7 +617,8 @@ def _skip_args(unit="sentence", direction=1, fallback=5.0):
     return A()
 
 
-def test_skip_falls_back_to_time_seek_without_sequence(monkeypatch):
+def test_skip_falls_back_to_time_seek_without_sequence(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     fake = _FakeIpc({"idle-active": False, "playlist-count": 1})
     monkeypatch.setattr(cli, "ipc", fake)
     monkeypatch.setattr(cli, "_sock", lambda: "/s")
@@ -627,7 +628,11 @@ def test_skip_falls_back_to_time_seek_without_sequence(monkeypatch):
             return {"extras": {"clip_sentences": ["only one sentence"]}}
 
     monkeypatch.setattr(cli, "StateStore", FakeStore)
-    # Back from the only sentence: it is the first, so nothing happens.
+    # Back from the only sentence: the first press restarts it...
+    assert cli.cmd_skip(_skip_args(direction=-1, fallback=-5.0)) == 0
+    assert ("command", "seek", 0.0, "absolute") in fake.calls
+    # ...and a press chained onto it does nothing.
+    fake.calls.clear()
     assert cli.cmd_skip(_skip_args(direction=-1, fallback=-5.0)) == 0
     assert not [c for c in fake.calls if c[0] in ("command", "set")]
     # Forward from the only sentence is past the last one: the end, as on a
@@ -667,8 +672,12 @@ def test_skip_live_writes_nav_request(monkeypatch, tmp_path):
     # sentence back chains from 2 → 1 (the mirror's stale 0 is ignored)
     assert cli.cmd_skip(_skip_args("sentence", -1)) == 0
     assert written["i"] == 1
-    # expired crumb → back from the mirror's 0, the first sentence: no-op
+    # expired crumb → back from the mirror's 0, the first sentence: the
+    # first press restarts it, presses chained onto that do nothing
     cli._skip_cursor_path().unlink()
+    written.clear()
+    assert cli.cmd_skip(_skip_args("sentence", -1)) == 0
+    assert written == {"i": 0}
     written.clear()
     assert cli.cmd_skip(_skip_args("sentence", -1)) == 0
     assert cli.cmd_skip(_skip_args("paragraph", -1)) == 0
