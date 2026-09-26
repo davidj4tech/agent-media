@@ -61,7 +61,7 @@ import threading
 import time
 import zlib
 
-from . import agents, driver, sessions, threads, transcript
+from . import agents, driver, retract, sessions, threads, transcript
 
 log = logging.getLogger("agent-media.server.thread_events")
 
@@ -290,6 +290,7 @@ class Watcher:
         msgs, _older = got
         transcript.join_speech(msgs, self._lines)
         transcript.strip_markers(msgs)
+        retract.mark(self.session, msgs)
         live = bool(self._last.get("state", {}).get("session_live"))
         if not live:
             for m in msgs:
@@ -299,7 +300,7 @@ class Watcher:
         # a live session whose last message is the listener's is pending
         # (the log's rule), and the phone should know now, not at the next
         # full read. Clearing is the full read's (it knows `working`).
-        if live and msgs and msgs[-1]["role"] == "user":
+        if live and msgs and msgs[-1]["role"] == "user" and not msgs[-1].get("retracted"):
             self._update("pending", {"pending": True}, emit=True)
 
     def _full(self, emit: bool) -> None:

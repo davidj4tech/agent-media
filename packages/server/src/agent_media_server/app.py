@@ -75,6 +75,9 @@ device gets its token):
                   is happening: interrupt the turn while it works (a headless
                   session's interrupt, or Escape into a working pane), else
                   stop this thread's speech (stop.py, §12)
+  POST /session/retract {"session", "id"?, "text"?} → take back your last
+                  message: interrupt the turn and its queue, mark the message,
+                  and the next one says so (retract.py, §6.19)
   POST /session/archive {"session", "archived": true|false} → file the
                   thread under Archived, or take it back out (a flag this
                   server keeps; see archive.py). Ends nothing
@@ -169,7 +172,7 @@ CORS_PATHS = frozenset({
     "/conversation", "/conversation/log", "/conversations", "/targets", "/item",
     "/reply", "/ask", "/focus", "/session/resume", "/session/close", "/draft",
     "/session/answer", "/session/archive", "/session/pin", "/session/priority", "/session/stop",
-    "/session/move", "/session/settings",
+    "/session/retract", "/session/move", "/session/settings",
     "/speech/now", "/speech/ctl", "/speech/sentences", "/speech/default", "/speech/voice",
     "/sessions/state", "/commands", "/rename",
     "/harnesses", "/harnesses/run", "/harnesses/screen",
@@ -927,6 +930,21 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
                                        str(body.get("speech") or "auto"), _bearer(h))
         if not ok:
             print(f"stop: refused ({detail.get('error')}) for "
+                  f"{str(body.get('session'))[:8]}", file=sys.stderr, flush=True)
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    elif path == "/session/retract":
+        # Tapping your own latest message in the app, then Cancel or Edit
+        # (server-contract.md §6.19): stop the turn and anything queued
+        # behind it, mark the message taken back, and tell the agent so with
+        # the next message. See retract.py.
+        from . import retract
+
+        body = _read_json(h) or {}
+        ok, detail = retract.session_retract(str(body.get("session") or ""),
+                                             str(body.get("id") or ""),
+                                             str(body.get("text") or ""), _bearer(h))
+        if not ok:
+            print(f"retract: refused ({detail.get('error')}) for "
                   f"{str(body.get('session'))[:8]}", file=sys.stderr, flush=True)
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path == "/session/archive":

@@ -64,6 +64,14 @@ Where things live:
 
 ## Done
 
+**Take back your last message** (David, 27 Sep 2026): tap your latest
+message for **Cancel it** or **Edit it**. Either stops the turn and anything
+queued behind it, and strikes the message through ("taken back"); Edit then
+puts its words in the reply box. A correction, not a rewind — the next
+message tells the agent to disregard the one taken back
+(`POST /session/retract`, server-contract §6.19). Latest message only. The
+app's Stop button now calls `/session/stop` too (it was still a stub).
+
 **The reply box's bottom row** (David, 26 Sep 2026): the words take the
 box's whole width, and one row under them holds attach, the thread's model
 chip (Opus / Sonnet / Haiku / Fable), a Plan chip, `/` (the slash menu from

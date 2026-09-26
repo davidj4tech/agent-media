@@ -965,6 +965,12 @@ def reply(item: str, text: str, bearer: str, *, quote: str = "",
         session, err = sessions.session_for_item(item, bearer)
         if not session:
             return False, {"error": err, "status": 404}
+    if mode != "branch":
+        # A message taken back since the last one (`/session/retract`): this
+        # one opens by saying so, since the agent may have read it already.
+        from . import retract
+
+        text = retract.with_note(session, text)
     # `body` is what a pane is typed (its breaks kept only where the pane can
     # take them, `for_pane`); `text` is recorded with the breaks the reply box
     # had, so the transcript keeps them.

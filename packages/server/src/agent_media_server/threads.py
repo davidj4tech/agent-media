@@ -332,6 +332,18 @@ MESSAGES_MAX = 500
 def messages_for(session: str, lines: list, *, working: bool, live: bool,
                  limit: int = MESSAGES_LIMIT, before: str = "", around: str = "",
                  jump: dict | None = None) -> tuple[list, bool]:
+    """`_messages_for`, with the messages taken back marked (retract.py)."""
+    from . import retract
+
+    msgs, older = _messages_for(session, lines, working=working, live=live, limit=limit,
+                                before=before, around=around, jump=jump)
+    retract.mark(session, msgs)
+    return msgs, older
+
+
+def _messages_for(session: str, lines: list, *, working: bool, live: bool,
+                  limit: int = MESSAGES_LIMIT, before: str = "", around: str = "",
+                  jump: dict | None = None) -> tuple[list, bool]:
     """`(messages, older)`: the thread as its transcript has it, with speech
     joined on (transcript.py). `older` is whether messages exist before the
     first one returned.
@@ -418,6 +430,10 @@ def _envelope(session: str, lines: list, *, limit: int = MESSAGES_LIMIT,
                                    limit=limit, before=before, around=around, jump=jump)
     if live and not before and messages and messages[-1]["role"] == "user":
         pending = True
+    if messages and messages[-1]["role"] == "user" and messages[-1].get("retracted") \
+            and not working:
+        # Taken back (retract.py): nothing is coming for it.
+        pending = False
     if hl is not None and hl["live"] and hl["state"] == "working":
         pending = True
     suggestion = ("" if pending else

@@ -315,8 +315,10 @@ class HeadlessDriver:
             return "the session host is too old to rename; the name is kept for its next resume"
         return str(r.get("error") or "not renamed")
 
-    def interrupt(self, session):
-        r = call("interrupt", session=session, timeout=15.0)
+    def interrupt(self, session, drop_queued=False, words=""):
+        # `drop_queued`: the messages waiting behind the turn go too
+        # (`cancel_queued`), instead of running as their own turn.
+        r = call("interrupt", session=session, cancel_queued=bool(drop_queued), timeout=15.0)
         if not r.get("ok"):
             return _failed(r, interrupted=False)
         return True, {"interrupted": bool(r.get("interrupted")), "why": r.get("why"),

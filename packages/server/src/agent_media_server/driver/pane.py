@@ -95,8 +95,14 @@ class PaneDriver:
         pane = sessions.live_sessions().get(session, "")
         return sessions.approval_for(pane, sessions._agent_of_pane(pane), session) if pane else None
 
-    def interrupt(self, session):
-        """Escape into a working pane, then watch it stop. Never on a dialog."""
+    def interrupt(self, session, drop_queued=False, words=""):
+        """Escape into a working pane, then watch it stop. Never on a dialog.
+
+        `drop_queued` (`/session/retract`): Escape alone lets a message typed
+        while the turn ran go in as the next turn (measured 27 Sep 2026,
+        Claude Code 2.1.283). So first Up, which takes the queue back into
+        the composer, then Ctrl-U until `words` (the message taken back) have
+        left it — Claude Code only; Codex and herdr panes get the Escape."""
         from .. import panes, sessions
 
         pane = sessions.live_sessions().get(session, "")
@@ -114,6 +120,8 @@ class PaneDriver:
         if panes.is_herdr(pane):
             panes._run(["herdr", "pane", "send-keys", panes.herdr_pane(pane), "escape"])
         else:
+            if drop_queued and agent == "claude":
+                _drop_queue(pane, words)
             panes._tmux(["send-keys", "-t", pane, "Escape"])
         deadline = time.monotonic() + INTERRUPT_WATCH_S
         while time.monotonic() < deadline:
@@ -123,3 +131,44 @@ class PaneDriver:
                 return True, {"interrupted": True, "why": None, "state": now, "pane": pane}
         return False, {"error": "still working after Escape", "status": 504,
                        "interrupted": False, "state": "working", "pane": pane}
+
+
+#: Claude Code's hint under a turn with messages queued behind it.
+_QUEUED_HINT = "Press up to edit queued messages"
+#: Ctrl-U deletes one line of the composer; a cap for a queue we cannot see.
+_CLEAR_MAX = 40
+
+
+def _composer(pane: str) -> str:
+    """The flattened screen from the composer's ❯ on ("" when there is none)."""
+    from .. import panes, sessions
+
+    flat = " ".join(panes.strip_ansi(sessions._capture_pane(pane)).split())
+    i = flat.rfind(sessions._PROMPT_GLYPH)
+    return flat[i + 1:] if i >= 0 else ""
+
+
+def _drop_queue(pane: str, words: str) -> None:
+    """Take a working Claude pane's queued messages back and delete them.
+
+    Only when the queue hint is on screen: Up in an empty composer with
+    nothing queued brings back the last prompt instead. The words are known
+    when the queue is the message taken back; each Ctrl-U is checked against
+    its first and last words, so a queue of several lines is cleared and an
+    empty box is not pressed forty times. Ctrl-U is Claude Code's kill, so
+    anything cleared by mistake is one Ctrl-Y from coming back."""
+    from .. import panes, sessions
+
+    if _QUEUED_HINT not in " ".join(panes.strip_ansi(sessions._capture_pane(pane)).split()):
+        return
+    panes._tmux(["send-keys", "-t", pane, "Up"])
+    w = " ".join((words or "").split())
+    marks = [m for m in (w[:24], w[-24:]) if m.strip()]
+    for _ in range(_CLEAR_MAX):
+        time.sleep(0.15)
+        box = _composer(pane)
+        if marks and not any(m in box for m in marks) and "[Pasted text" not in box:
+            return
+        panes._tmux(["send-keys", "-t", pane, "C-u"])
+        if not marks and not box.strip():
+            return

@@ -64,8 +64,11 @@ class Driver(Protocol):
     def resume(self, session: str) -> tuple[bool, dict]:
         """Bring an ended session back, saying nothing."""
 
-    def interrupt(self, session: str) -> tuple[bool, dict]:
-        """Stop the running turn. `{"interrupted": bool, "why", "state"}`."""
+    def interrupt(self, session: str, drop_queued: bool = False,
+                  words: str = "") -> tuple[bool, dict]:
+        """Stop the running turn. `{"interrupted": bool, "why", "state"}`.
+        `drop_queued`: messages sent while it ran go too, rather than running
+        next; `words` is the one being taken back (`/session/retract`)."""
 
     def answer(self, session: str, request: dict) -> tuple[bool, dict]:
         """Answer what the session is waiting on. `request` is the route's

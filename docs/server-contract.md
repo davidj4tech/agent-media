@@ -2546,6 +2546,38 @@ Content-Length: 48213
 - Refusals: 401/403 as `/reply` · 411 no `Content-Length` (or an empty file) ·
   413 over the limit · 400 a body that ended short (nothing is kept).
 
+### 6.19 Take back your last message — gated (built 27 Sep 2026)
+
+Code: `agent_media_server/retract.py`, the drivers' `interrupt(drop_queued=)`.
+Pinned by `packages/server/tests/test_retract.py`. The app's tap on your own
+latest message: **Cancel** takes it back; **Edit** takes it back and puts its
+words in the reply box, to be sent again changed. A correction, not a rewind
+(David, 27 Sep 2026): the original stays in the transcript, struck through.
+
+#### `POST /session/retract {"session", "id"?, "text"?}`
+
+`id` is the message's (a transcript uuid); absent for a message the app has
+sent but not yet seen come back, which is then matched by `text` (its words).
+One of the two is required.
+
+- **Working** → the turn is interrupted through its driver, with the stop's
+  `after` speech cutoff (§12), and the messages **queued behind it go too**:
+  a headless session's `interrupt` carries `cancel_queued`; a Claude pane
+  showing "Press up to edit queued messages" gets Up (the queue back into the
+  composer), Ctrl-U until the words have left it, then Escape — Escape alone
+  runs the queue as the next turn (measured, Claude Code 2.1.283). Codex and
+  herdr panes get the Escape only. A session on a dialog is not pressed.
+- Either way the message is **marked**: `retracted: true` on it in
+  `/conversation/log` and the thread stream, from then on
+  (`<state_dir>/retracted.json`).
+- The **next** `/reply` to the session opens with `(I took back my last
+  message, “<its first 80 characters>” — disregard it.)` and a blank line,
+  once; the bubble is shown without it.
+
+Response: `{"ok": true, "session", "retracted": {"id", "text"}, "interrupted":
+bool, "why", "state"}`. Refusals: 400 a bad id or neither `id` nor `text` ·
+401/403 as `/reply` · 404 a session nothing knows. In `CORS_PATHS`.
+
 ## 7. `/events` (v0) — canvas-wide, not the app's stream
 
 One SSE stream for every screen. The canvas page, the wake watcher and the
