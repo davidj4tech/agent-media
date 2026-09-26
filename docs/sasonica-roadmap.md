@@ -158,6 +158,16 @@ itself); a badge unless Normal. `POST /session/priority {level}`, rows carry
 android-next `35a2802a`; chat-prototype still has the older on/off toggle
 (another session had the same files open).
 
+Default speech priority (25 Sep 2026): the menu item is **Speech
+priority…**; Settings has **Default speech priority**, the level of every
+thread without its own, with a warning that it is the server's, so every
+device's (`GET/POST /speech/default`). The thread's sheet tags the default,
+links to Settings, and offers **Use the default** while the thread has its
+own (`{level: "default"}`, rows' `speech_own`). Next's player section is
+**Speech on this phone**. Per device was judged not worth it; with accounts
+it becomes the account's. agent-media `3f722af` `12bd56e`, android-next
+`006ccce9` `9e63029e`, chat-prototype `fa4aa8e3` `a2b7142b`.
+
 Normal is called **When open** in the app (David, 26 Sep 2026): it plays
 while the thread is open, or when you next open it. The level stays
 `normal` on the wire and at the desk. A reply let through because its thread
