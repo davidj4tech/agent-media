@@ -817,7 +817,10 @@ class SinkSpeech:
         if not self._is_remote(target):
             return None
         try:
-            cur = ipc.get_property(_socket_for(target), _BROKER_OWNER_KEY)
+            # Unset is an answer (nobody has claimed it since the player
+            # started), not a fault to retry: two round trips for nothing.
+            cur = ipc.get_property(_socket_for(target), _BROKER_OWNER_KEY,
+                                   retry_errors=False)
         except (ipc.MpvIpcError, OSError):
             return None
         if not isinstance(cur, dict):

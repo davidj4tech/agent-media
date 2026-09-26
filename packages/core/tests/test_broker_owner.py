@@ -20,7 +20,7 @@ class _FakeBroker:
     def __init__(self):
         self.store = {}
 
-    def get_property(self, sock, name, timeout=2.0):
+    def get_property(self, sock, name, timeout=2.0, retry_errors=True):
         if name not in self.store:
             raise MpvIpcError("get_property: property not found")
         return self.store[name]

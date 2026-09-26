@@ -25,6 +25,7 @@ keeps a single source of truth even as playback moves between backends.
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import os
 import threading
@@ -110,9 +111,16 @@ class SinkMusicRouter:
             return self._pinned
 
     def _resolve_observed(self):
-        if self._app_live():
-            return self.app
-        return self.local if self._local_live() else self.mopidy
+        # Both phone players asked at once: over the phone's link each probe
+        # is a connect and a request (~1.1s at 550ms RTT, 27 Sep), and asking
+        # them in turn put both on the path of every reply. The app still wins
+        # when both answer.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            app = pool.submit(self._app_live)
+            local = pool.submit(self._local_live)
+            if app.result():
+                return self.app
+            return self.local if local.result() else self.mopidy
 
     @contextmanager
     def one_resolution(self) -> Iterator[None]:

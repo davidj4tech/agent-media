@@ -421,7 +421,7 @@ def _send_inner(sock_path: str | Path, command: list[Any], timeout: float = 5.0)
 
 
 def command(sock_path: str | Path, *args: Any, timeout: float = 5.0,
-            critical: bool = False) -> Any:
+            critical: bool = False, retry_errors: bool = True) -> Any:
     """Send `command` with positional args. Returns `data` from the reply,
     or raises MpvIpcError on non-success.
 
@@ -431,6 +431,10 @@ def command(sock_path: str | Path, *args: Any, timeout: float = 5.0,
     drop a loadfile (clip skipped). So retry a few times for tcp endpoints. All
     the commands we send (loadfile replace / set_property / get_property) are
     idempotent, so a retry can't double-apply. Unix-socket calls stay single-shot.
+
+    ``retry_errors=False``: an error *answer* is final — for a read whose
+    "no such property" is itself the answer (an unclaimed broker), where each
+    retry was another round trip to the phone for the same reply.
     """
     attempts = 3 if str(sock_path).startswith(_TCP_PREFIX) else 1
     last: Exception = MpvIpcError("unreached")
@@ -439,13 +443,51 @@ def command(sock_path: str | Path, *args: Any, timeout: float = 5.0,
             reply = _send(sock_path, list(args), timeout=timeout,
                           critical=critical)
             if reply.get("error", "success") != "success":
-                raise MpvIpcError(f"{args[0]}: {reply.get('error')}")
+                err = MpvIpcError(f"{args[0]}: {reply.get('error')}")
+                if not retry_errors:
+                    raise _Final(err)
+                raise err
             return reply.get("data")
+        except _Final as f:
+            raise f.err
         except (MpvIpcError, OSError) as e:
             last = e
             if attempt + 1 < attempts:
                 time.sleep(0.04)
     raise last
+
+
+class _Final(Exception):
+    """An error answer `command` must not retry (see retry_errors)."""
+
+    def __init__(self, err: MpvIpcError):
+        super().__init__(str(err))
+        self.err = err
+
+
+def _batch_pooled(sock_path: str | Path, payload_for, timeout: float) -> bool:
+    """Send a batch on a pooled connection and lend it straight back. False
+    when this call cannot pool (outside `reuse_connections`, a local socket, an
+    endpoint that echoes no ids) — the caller then takes the one-shot path.
+
+    No wait for the answers: the connection stays open, so there is no close to
+    race (the reason the one-shot path drains), and the player reads a
+    connection's commands in order, so whatever this reply sends next on it
+    lands behind the batch. The answers carry request ids, which is what lets
+    the next call on this connection skip them as late replies."""
+    ep = str(sock_path)
+    if not _is_remote(ep) or ep in _no_ids:
+        return False
+    with _pool_lock:
+        if _reuse_depth == 0:
+            return False
+
+    def fire(s: socket.socket):
+        s.sendall(payload_for())
+        return None, True
+
+    _on_connection(sock_path, timeout, fire)
+    return True
 
 
 def command_batch(sock_path: str | Path, commands: list, timeout: float = 5.0,
@@ -466,6 +508,21 @@ def command_batch(sock_path: str | Path, commands: list, timeout: float = 5.0,
     payload = b"".join((json.dumps({"command": list(c)}) + "\n").encode()
                        for c in commands)
     t0 = time.monotonic()
+
+    def with_ids() -> bytes:
+        return b"".join((json.dumps({"command": list(c), "request_id": next(_ids)})
+                         + "\n").encode() for c in commands)
+
+    # Inside one reply: on the connection the reply already has open, which
+    # is a round trip (and a lost SYN's 1s) cheaper than a fresh one, and
+    # needs no drain before a close.
+    try:
+        if _batch_pooled(sock_path, with_ids, timeout):
+            _record(sock_path, time.monotonic() - t0, False,
+                    slow_s=0 if critical else None)
+            return
+    except (OSError, MpvIpcError):
+        pass    # the one-shot path below retries on a fresh connection
     for attempt in range(attempts):
         try:
             s = _open(sock_path, timeout)
@@ -634,7 +691,7 @@ def event_stream(sock_path: str | Path,
 
 
 def get_property(sock_path: str | Path, name: str, timeout: float = 2.0,
-                 critical: bool = False) -> Any:
+                 critical: bool = False, retry_errors: bool = True) -> Any:
     # `command` already retries transient failures for tcp:// (bridge) endpoints.
     #
     # `critical` is for a read a *control* depends on — the volume a nudge is
@@ -643,7 +700,7 @@ def get_property(sock_path: str | Path, name: str, timeout: float = 2.0,
     # (volume snapping to 100, a sentence skip degrading to a time-seek). Like
     # every critical call it never trips the breaker on latency, only failure.
     return command(sock_path, "get_property", name, timeout=timeout,
-                   critical=critical)
+                   critical=critical, retry_errors=retry_errors)
 
 
 def get_properties(sock_path: str | Path, names: list,

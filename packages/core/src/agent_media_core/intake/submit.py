@@ -4182,14 +4182,35 @@ def _submit_event(event: Event,
                                           source_pane)
         # Drop any stale jump request left by a previous response.
         _nav_flag_path(target).unlink(missing_ok=True)
+        # The lead is collected beside before_speech, not after it: the claim
+        # thread's load waits on it, and before_speech is round trips to the
+        # phone's music players (2.2s on 27 Sep) that the load then sat behind
+        # for nothing — the renders were long done, and a device-voiced reply
+        # has none to wait for.
+        _lead_thread = None
+        if stream:
+            def _lead() -> None:
+                try:
+                    _wait_lead()
+                except Exception:  # noqa: BLE001
+                    log.exception("intake: collecting the lead failed")
+                finally:
+                    _lead_ready.set()   # never leave the claim thread waiting
+
+            _lead_thread = threading.Thread(target=_lead,
+                                            name="speech-lead", daemon=True)
+            _lead_thread.start()
         try:
-            coordinator.before_speech(
-                title=source_window, priority=event.priority.value,
-                # The first sentence; the clip loop moves it on from there.
-                text=(clip_data[0][0] if clip_data
-                      else sentences[0] if sentences else text))
+            try:
+                coordinator.before_speech(
+                    title=source_window, priority=event.priority.value,
+                    # The first sentence; the clip loop moves it on from there.
+                    text=(clip_data[0][0] if clip_data
+                          else sentences[0] if sentences else text))
+            finally:
+                if _lead_thread is not None:
+                    _lead_thread.join()
             if stream:
-                _wait_lead()
                 total_duration_s = sum(durations)
                 if not clip_data:
                     # Nothing rendered at all. Unlike the path that waits

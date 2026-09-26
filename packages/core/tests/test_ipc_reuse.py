@@ -231,3 +231,42 @@ def test_a_socket_that_dies_in_use_is_retried_not_breakered(player, monkeypatch)
     assert got == [f"value-of-p{i}" for i in range(3)]
     assert _breaker.load("mpv") == {}, (
         "a dead pooled socket was reported as a failing endpoint")
+
+
+def test_a_batch_in_a_reply_rides_the_open_connection(player):
+    """The playlist load and start used to connect afresh each (a round trip,
+    and a lost SYN's second) and then wait 300ms before closing."""
+    import time
+    with ipc.reuse_connections():
+        assert ipc.get_property(player.endpoint, "a") == "value-of-a"
+        t0 = time.monotonic()
+        ipc.command_batch(player.endpoint, [["playlist-clear"],
+                                            ["loadfile", "tts:x?text=Hi.", "append"]])
+        assert time.monotonic() - t0 < 0.2, "no drain wait on a pooled batch"
+        # The batch's answers are still arriving on this connection; the next
+        # read must skip them and get its own.
+        assert ipc.get_property(player.endpoint, "b") == "value-of-b"
+    assert player.connects == 1
+
+
+def test_a_batch_outside_a_reply_still_connects_and_drains(player):
+    ipc.command_batch(player.endpoint, [["playlist-clear"]])
+    ipc.command_batch(player.endpoint, [["playlist-clear"]])
+    assert player.connects == 2
+
+
+def test_an_error_answer_is_final_when_asked(monkeypatch):
+    calls = []
+
+    def answer(*a, **k):
+        calls.append(1)
+        return {"error": "property not found"}
+
+    monkeypatch.setattr(ipc, "_send", answer)
+    with pytest.raises(ipc.MpvIpcError):
+        ipc.get_property("tcp://p8a:6614", "user-data/am-owner", retry_errors=False)
+    assert len(calls) == 1
+    calls.clear()
+    with pytest.raises(ipc.MpvIpcError):
+        ipc.get_property("tcp://p8a:6614", "user-data/am-owner")
+    assert len(calls) == 3, "the default still retries a tcp endpoint"
