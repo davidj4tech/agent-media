@@ -52,6 +52,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from .render import device as device_voice
 from . import feed as feedmod
 from .docs import _ffprobe_duration, _write_chapter_metadata
 
@@ -449,6 +450,8 @@ def build(ts: list[Turn], out: Path) -> Optional[Path]:
     are: other things replay them, and this is a copy of the conversation, not
     a move of it.
     """
+    # A turn said in the device's own voice has only words here.
+    ts = [t for t in ts if not any(device_voice.is_clip(c) for c in t.clips)]
     if not ts:
         return None
     chapters, clock = [], 0.0

@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from ..render import device as device_voice
 from ..types import Target
 from . import _mpv_ipc as ipc
 
@@ -309,8 +310,14 @@ def _clip_uri_for(uri: str, target: Target, prefer_url: bool = False) -> str:
     Already-URL uris and the all-unset case pass through, so local/rooms
     playback is unchanged.
     """
-    if uri.startswith(("http://", "https://", "rtsp://")):
+    if uri.startswith(("http://", "https://", "rtsp://", "tts:")):
         return uri
+    if device_voice.is_clip(uri):
+        # The device renders it in its own voice: hand it the words.
+        try:
+            return device_voice.tts_uri(uri, device_voice.voice_for(target.name))
+        except OSError:
+            return uri
     localdir = os.environ.get(_env_key("MEDIA_SPEECH_CLIP_LOCALDIR", target.name))
     base = os.environ.get(_env_key("MEDIA_SPEECH_CLIP_BASEURL", target.name))
     # prefer_url: the caller knows the localdir copy is unreliable (its

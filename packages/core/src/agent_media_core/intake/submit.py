@@ -29,6 +29,7 @@ from .. import _lock as fcntl
 from .. import audio_targets
 from .._notify import notify
 from ..render import render_text
+from ..render import device as device_voice
 from ..route import Coordinator
 from ..sinks.speech import SinkSpeech, _env_key
 from ..state import StateStore
@@ -2611,7 +2612,11 @@ def _audio_dir() -> Path:
 
 
 def _clip_duration(path: Path) -> float:
-    """Return audio duration in seconds via ffprobe, or 0.0 on failure."""
+    """Return audio duration in seconds via ffprobe, or 0.0 on failure.
+
+    A device-rendered clip has no audio here, so its length is estimated."""
+    if device_voice.is_clip(path):
+        return device_voice.estimate_duration(path)
     try:
         r = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration",
@@ -2621,6 +2626,41 @@ def _clip_duration(path: Path) -> float:
         return float(r.stdout.strip()) if r.returncode == 0 else 0.0
     except Exception:  # noqa: BLE001
         return 0.0
+
+
+def render_device_clips(clip_uris: list) -> tuple[list, list[float]]:
+    """Give a device-voiced turn's clips real audio, rendering what is missing.
+
+    For a replay on a player that cannot render words itself (the rooms, this
+    host): each ``.tts`` clip is rendered once, beside it, by the configured
+    engine, and kept — clips on demand, so a turn is rendered here only when
+    something needs its audio. Returns the uris to play and their durations;
+    a clip that will not render is left out, like a failed sentence.
+    """
+    engine = _default_engine()
+    voice = (os.environ.get(f"MEDIA_RENDER_VOICE_{engine.upper()}")
+             or None)
+    out: list = []
+    durs: list[float] = []
+    for u in clip_uris:
+        if not device_voice.is_clip(u):
+            out.append(u)
+            durs.append(_clip_duration(Path(str(u))))
+            continue
+        src = Path(str(u))
+        audio = src.with_suffix("." + _ext_for(engine))
+        if not (audio.is_file() and audio.stat().st_size > 0):
+            try:
+                text = src.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            ok, err = render_text(text, audio, engine=engine, voice=voice)
+            if not ok:
+                log.warning("replay: rendering %s failed: %s", src.name, err)
+                continue
+        out.append(str(audio))
+        durs.append(_clip_duration(audio))
+    return out, durs
 
 
 def _tmux_session_for_pane(pane: str) -> str:
@@ -3598,6 +3638,10 @@ def _submit_event(event: Event,
     engine = _resolve_engine(event)
     voice = _resolve_voice(event, engine)
     ext = _ext_for(engine)
+    renderer = render_text
+    if device_voice.renders_on_device(target.name):
+        # The device says it in its own voice: each clip is its sentence.
+        engine, ext, renderer = "device", device_voice.SUFFIX[1:], device_voice.write_clip
 
     audio_dir = _audio_dir()
     # Per-submission unique: second-resolution time is NOT enough — two
@@ -3701,7 +3745,7 @@ def _submit_event(event: Event,
     executor = concurrent.futures.ThreadPoolExecutor(
         max_workers=_render_workers(len(sentences)))
     futures = [
-        executor.submit(render_text, sentence, outfile,
+        executor.submit(renderer, sentence, outfile,
                         engine=engine, voice=voice, on_fallback=_on_fallback)
         for sentence, outfile in zip(sentences, outfiles)
     ]
@@ -4881,6 +4925,10 @@ def submit_stream(sentences,
     engine = _resolve_engine(event)
     voice = _resolve_voice(event, engine)
     ext = _ext_for(engine)
+    renderer = render_text
+    if device_voice.renders_on_device(target.name):
+        # The device says it in its own voice: each clip is its sentence.
+        engine, ext, renderer = "device", device_voice.SUFFIX[1:], device_voice.write_clip
 
     audio_dir = _audio_dir()
     # Per-submission unique: second-resolution time is NOT enough — two
@@ -4958,7 +5006,7 @@ def submit_stream(sentences,
                 if not s or not s.strip():
                     continue
                 outfile = audio_dir / f"{stamp}--{event.source.value}--{len(sents):03d}.{ext}"
-                fut = pool.submit(render_text, s, outfile,
+                fut = pool.submit(renderer, s, outfile,
                                   engine=engine, voice=voice, on_fallback=_on_fallback)
                 with cond:
                     sents.append(s)

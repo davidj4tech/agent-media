@@ -26,6 +26,7 @@ import threading
 import time
 from typing import Optional
 
+from .render import device as device_voice
 from . import _lock as fcntl
 from ._paths import state_dir
 from .sinks import _mpv_ipc as ipc
@@ -3515,6 +3516,15 @@ def _replay_row(row: dict, from_sentence: Optional[int] = None,
     if missing:
         print(f"media replay: {missing}", file=sys.stderr)
         return 1
+    if (any(device_voice.is_clip(u) for u in clip_uris)
+            and not device_voice.renders_on_device(speech_target.name)):
+        # Said in the phone's own voice, played again where words are not
+        # enough: render it here now, once (clips on demand).
+        from .intake.submit import render_device_clips
+        clip_uris, clip_durations = render_device_clips(clip_uris)
+        if not clip_uris:
+            print("media replay: that reply could not be rendered here", file=sys.stderr)
+            return 1
 
     # A recorded reply, played again: it takes the playback token like any
     # reply, so a reply arriving while it plays waits for it instead of

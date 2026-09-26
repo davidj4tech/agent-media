@@ -46,6 +46,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from .render import device as device_voice
 from . import session_feed
 from ._paths import state_dir
 
@@ -414,6 +415,9 @@ def export_session(session: str, *, store=None) -> tuple[Optional[Path], int]:
     for turn in turns:
         at = float(turn.at)
         if at in done:
+            continue
+        if any(device_voice.is_clip(c) for c in turn.clips):
+            # Said in the device's own voice: there is no audio to place.
             continue
         files = []
         for i, clip in enumerate(turn.clips):
