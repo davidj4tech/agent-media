@@ -722,15 +722,15 @@ def test_speech_voice_is_the_phones_or_the_servers(server, shelf, signed_in, typ
     assert res.status == 200 and obj["target"] == "sasonica"
     assert (obj["mode"], obj["voice"], obj["can_phone"]) == ("phone", "en-au-x-aua-network", True)
     assert obj["server_voice"] == "en-AU-NatashaNeural"
-    # Offline (conftest): the built-in Microsoft list, and Google's.
+    # Offline (conftest): the built-in Microsoft list; Google's not offered.
     en = obj["languages"][0]
     assert (en["code"], en["name"]) == ("en", "English") and len(obj["languages"]) == 1
     au = en["accents"][0]
     assert (au["locale"], au["name"]) == ("en-AU", "Australia")
-    assert [v["label"] for v in au["voices"]][:3] == ["Natasha", "William", "Google A · online"]
+    assert [v["label"] for v in au["voices"]] == ["Natasha", "William"]
     assert [a["name"] for a in en["accents"]][1:] == [
         "Ireland", "New Zealand", "United Kingdom", "United States"]
-    assert len(obj["voices"]) == 17 and obj["voices"][0]["name"] == "edge:en-AU-NatashaNeural"
+    assert len(obj["voices"]) == 12 and obj["voices"][0]["name"] == "edge:en-AU-NatashaNeural"
     res, obj = call(server, "POST", "/speech/voice", {"mode": "server"}, AUTH)
     assert res.status == 200 and obj["mode"] == "server"
     assert obj["voice"] == "en-au-x-aua-network", "the phone's voice is kept"

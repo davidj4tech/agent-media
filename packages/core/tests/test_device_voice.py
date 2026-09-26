@@ -165,9 +165,10 @@ def test_the_voices_are_grouped_by_language_then_accent(monkeypatch):
     en = langs[0]["accents"]
     assert [a["name"] for a in en] == ["Australia", "United Kingdom", "United States"]
     au = [(v["label"], v["where"]) for v in en[0]["voices"]]
-    # Microsoft's by name, then Google's, which only the phone has.
-    assert au[:2] == [("Natasha", ["phone", "server"]), ("William", ["phone", "server"])]
-    assert au[2:] == [(v["label"], ["phone"]) for v in device_voice.GOOGLE_VOICES]
+    # Microsoft's by name; Google's are not offered (David, 27 Sep 2026).
+    assert au == [("Natasha", ["phone", "server"]), ("William", ["phone", "server"])]
+    assert device_voice.find_voice("en-au-x-aua-network")["where"] == ["phone"], \
+        "a Google voice chosen before is still known"
     ava = device_voice.find_voice("edge:en-US-AvaMultilingualNeural")
     assert ava == {"name": "edge:en-US-AvaMultilingualNeural", "label": "Ava",
                    "gender": "Female", "locale": "en-US", "language": "English",

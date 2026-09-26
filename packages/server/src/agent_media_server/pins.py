@@ -139,7 +139,10 @@ def speech_voice(bearer: str, mode=None, voice=None) -> tuple[bool, dict]:
         return False, err
     languages = device.languages()
     voices = [v for lang in languages for a in lang["accents"] for v in a["voices"]]
-    chosen = device.find_voice(voice, voices) if voice is not None else None
+    # Google's aren't listed but are still taken (an app from before, a
+    # choice already made), so they are looked up among them too.
+    chosen = (device.find_voice(voice, voices + [dict(v) for v in device.GOOGLE_VOICES])
+              if voice is not None else None)
     if voice is not None and not chosen:
         return False, {"error": "no such voice", "status": 400}
     if chosen and mode is not None and mode not in chosen["where"]:

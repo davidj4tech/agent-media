@@ -174,9 +174,14 @@ def voices() -> list[dict]:
 def languages(all_voices: Optional[list] = None) -> list[dict]:
     """The voices by language, then accent (locale): English first, then by
     name; Australia first within English, the rest by name; Microsoft's
-    voices, by name, before Google's in an accent."""
+    voices, by name, before Google's in an accent.
+
+    Google's aren't offered (David, 27 Sep 2026: "leave off the Google ones
+    ... if they don't have names") — A to D mean nothing in a list of
+    people. They stay the phone's fallback (FALLBACK_VOICE), and a stored
+    choice of one still renders."""
     if all_voices is None:
-        all_voices = edge_voices() + [dict(v) for v in GOOGLE_VOICES]
+        all_voices = edge_voices()
     by_locale: dict[str, list] = {}
     for v in all_voices:
         by_locale.setdefault(v["locale"], []).append(v)
@@ -201,7 +206,11 @@ def languages(all_voices: Optional[list] = None) -> list[dict]:
 
 
 def find_voice(name: str, all_voices: Optional[list] = None) -> Optional[dict]:
-    for v in all_voices if all_voices is not None else voices():
+    """A voice by name: any on offer, or one of Google's — not offered, but a
+    choice made before they were taken off the list is still a choice."""
+    if all_voices is None:
+        all_voices = voices() + [dict(v) for v in GOOGLE_VOICES]
+    for v in all_voices:
         if v["name"] == name:
             return v
     return None
