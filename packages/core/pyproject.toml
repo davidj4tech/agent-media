@@ -44,6 +44,7 @@ media-speech-state     = "agent_media_core.entrypoints.speech_state:main"
 media-share            = "agent_media_core.entrypoints.share_listener:main"
 audiobook-fetch        = "agent_media_core.entrypoints.audiobook_fetch:main"
 media-feed             = "agent_media_core.entrypoints.feed_server:main"
+media-ipc-relay        = "agent_media_core.entrypoints.ipc_relay:main"
 # Optional intake adapters moved to their own packages (still installable,
 # same console-script names): agent-media-intake-matrix / -ha / -codex.
 

@@ -103,10 +103,40 @@ def _link_slow_s(endpoint: str | Path) -> float:
     Unmeasured (no tcp connect yet in this process), it is the default.
     """
     base = _slow_s()
-    samples = _connect_s.get(str(endpoint))
+    relayed = _relay_rtt_s(endpoint)
+    if relayed is not None:
+        # Through media-ipc-relay the connect is local and says nothing about
+        # the link; the relay measures the far side and says so.
+        samples = [relayed]
+    else:
+        samples = _connect_s.get(str(endpoint))
     if not samples:
         return base
     return min(max(base, _RTTS_PER_CALL * min(samples)), max(base, _slow_cap_s()))
+
+
+_relay_cache: dict[str, tuple[float, float | None]] = {}
+
+
+def _relay_rtt_s(endpoint: str | Path) -> float | None:
+    """The far side's round trip for a loopback endpoint that is a
+    media-ipc-relay, from the file the relay keeps; None for anything else."""
+    ep = str(endpoint)
+    if not ep.startswith(_TCP_PREFIX + "127.0.0.1:"):
+        return None
+    now = time.monotonic()
+    hit = _relay_cache.get(ep)
+    if hit and now - hit[0] < 30:
+        return hit[1]
+    rtt = None
+    try:
+        from ..entrypoints.ipc_relay import rtt_path
+        port = int(ep.rsplit(":", 1)[1])
+        rtt = float(json.loads(rtt_path(port).read_text())["rtt_s"])
+    except (OSError, ValueError, KeyError, TypeError):
+        rtt = None
+    _relay_cache[ep] = (now, rtt)
+    return rtt
 
 
 def _breaker_s() -> float:
