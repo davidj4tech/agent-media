@@ -435,6 +435,17 @@ ahead.
    claim-and-play message leaves 3–11 ms after the token, reaches the phone
    ~0.22 s later; then the first sentence's render (~0.2 s offline, ~0.5 s
    online voice).
+   **Rest of the list, 27 Sep 2026:** Conversations library removed (David:
+   "remove it all") — `MEDIA_CONVERSATIONS_LIBRARY=0` (`6e09e5b`), the ABS
+   library deleted, `~/conversations` emptied (9,702 clips had no other copy),
+   the container mount dropped (`af2a0ae`, takes effect at its next restart);
+   chat transcripts keep every message, old swept turns lose their spoken
+   lines. Settings → Voice: this phone / server + the voice (agent-media
+   `0dd44aa`, app `18d3794`). Word follow-along: the player answers the
+   word under its position (`Speech.word()`), lit with
+   `::highlight(speech-word)` (app `c175acb`); Google's voices report a range
+   per word but not usable positions (`[359, 0, 4]`), so words are spread by
+   characters over each clip's real length. Replay to the phone heard OK.
 
 ## Loose ends
 
