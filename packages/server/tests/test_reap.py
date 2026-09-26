@@ -708,6 +708,43 @@ def test_speech_default_is_every_thread_without_its_own(server, shelf, signed_in
     assert typed == []
 
 
+def test_speech_voice_is_the_phones_or_the_servers(server, shelf, signed_in, typed, monkeypatch):
+    from agent_media_core import audio_targets
+    from agent_media_core.render import device
+
+    target = ["sasonica"]
+    monkeypatch.setattr(audio_targets, "speech_default", lambda: target[0])
+    monkeypatch.setenv("MEDIA_SPEECH_RENDER_SASONICA", "device")
+    monkeypatch.setenv("MEDIA_SPEECH_DEVICE_VOICE_SASONICA", "en-au-x-aua-network")
+    monkeypatch.setenv("MEDIA_RENDER_VOICE_EDGE", "en-AU-NatashaNeural")
+    monkeypatch.delenv("MEDIA_RENDER_ENGINE", raising=False)
+    res, obj = call(server, "GET", "/speech/voice", headers=AUTH)
+    assert res.status == 200 and obj["target"] == "sasonica"
+    assert (obj["mode"], obj["voice"], obj["can_phone"]) == ("phone", "en-au-x-aua-network", True)
+    assert obj["server_voice"] == "en-AU-NatashaNeural"
+    assert [v["label"] for v in obj["voices"]][:2] == ["A · online", "B · online"]
+    res, obj = call(server, "POST", "/speech/voice", {"mode": "server"}, AUTH)
+    assert res.status == 200 and obj["mode"] == "server"
+    assert obj["voice"] == "en-au-x-aua-network", "the phone's voice is kept"
+    assert not device.renders_on_device("sasonica")
+    res, obj = call(server, "POST", "/speech/voice",
+                    {"mode": "phone", "voice": "en-au-x-aua-local"}, AUTH)
+    assert (obj["mode"], obj["voice"]) == ("phone", "en-au-x-aua-local")
+    assert device.voice_for("sasonica") == "en-au-x-aua-local"
+    res, obj = call(server, "POST", "/speech/voice", {"mode": "loud"}, AUTH)
+    assert res.status == 400 and obj["error"] == "mode must be phone or server"
+    res, obj = call(server, "POST", "/speech/voice", {"mode": "phone", "voice": "x"}, AUTH)
+    assert res.status == 400 and obj["error"] == "no such voice"
+    # A target whose player cannot be handed words has no choice.
+    target[0] = "rooms"
+    res, obj = call(server, "GET", "/speech/voice", headers=AUTH)
+    assert obj["can_phone"] is False and obj["mode"] == "server"
+    res, obj = call(server, "POST", "/speech/voice", {"mode": "phone"}, AUTH)
+    assert res.status == 409
+    assert "/speech/voice" in app.CORS_PATHS
+    assert typed == []
+
+
 # --- the archive import ---------------------------------------------------------------------
 
 @pytest.fixture()

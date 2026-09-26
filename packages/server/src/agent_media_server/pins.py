@@ -121,3 +121,35 @@ def speech_default(bearer: str, level=None) -> tuple[bool, dict]:
         except OSError as e:
             return False, {"error": f"could not save the default ({e})", "status": 500}
     return True, {"level": speak_priority.default_level()}
+
+
+def speech_voice(bearer: str, mode=None, voice=None) -> tuple[bool, dict]:
+    """`GET /speech/voice` and `POST /speech/voice {"mode", "voice"?}`: whether
+    the current speech target's replies are rendered on the phone, by
+    Android's TextToSpeech, or here (render/device.py). The server's, so
+    every device's. With `mode` None, only read."""
+    from agent_media_core import audio_targets
+    from agent_media_core.render import device
+
+    names = [v["name"] for v in device.VOICES]
+    if mode is not None and mode not in device.MODES:
+        return False, {"error": "mode must be phone or server", "status": 400}
+    if voice is not None and voice not in names:
+        return False, {"error": "no such voice", "status": 400}
+    user, err = auth.gate(bearer)
+    if not user:
+        return False, err
+    target = audio_targets.speech_default()
+    if mode is not None:
+        if not device.can_render(target):
+            return False, {"error": f"{target} cannot render words", "status": 409}
+        try:
+            device.set_override(target, mode, voice or device.voice_for(target))
+        except OSError as e:
+            return False, {"error": f"could not save the voice ({e})", "status": 500}
+    return True, {"target": target,
+                  "mode": "phone" if device.renders_on_device(target) else "server",
+                  "voice": device.voice_for(target),
+                  "can_phone": device.can_render(target),
+                  "voices": [dict(v) for v in device.VOICES],
+                  "server_voice": device.server_voice()}

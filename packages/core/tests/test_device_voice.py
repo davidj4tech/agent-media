@@ -100,3 +100,34 @@ def test_the_conversations_library_can_be_switched_off(monkeypatch):
     assert not book_tracks.enabled()
     assert not feed_debounce.enabled(), "no publish is armed for a turn"
     assert not feed_debounce.arm()
+
+
+def test_the_apps_choice_comes_before_the_env(monkeypatch):
+    monkeypatch.setenv("MEDIA_SPEECH_RENDER_SASONICA", "device")
+    monkeypatch.setenv("MEDIA_SPEECH_DEVICE_VOICE_SASONICA", "en-au-x-aua-network")
+    assert device_voice.override_for("sasonica") is None
+    device_voice.set_override("sasonica", "server")
+    assert not device_voice.renders_on_device("sasonica")
+    assert device_voice.voice_for("sasonica") == "en-au-x-aua-network", "no voice: the env's"
+    device_voice.set_override("sasonica", "phone", "en-au-x-auc-network")
+    assert device_voice.renders_on_device("sasonica")
+    assert device_voice.voice_for("sasonica") == "en-au-x-auc-network"
+    # Another target's choice is its own, and one without is the env's.
+    monkeypatch.delenv("MEDIA_SPEECH_RENDER_SASONICA")
+    device_voice.set_override("rooms", "phone")
+    assert device_voice.renders_on_device("sasonica")
+    assert device_voice.can_render("rooms") and not device_voice.can_render("local")
+    assert device_voice.overrides() == {
+        "sasonica": {"mode": "phone", "voice": "en-au-x-auc-network"},
+        "rooms": {"mode": "phone", "voice": None}}
+
+
+def test_the_server_voice_is_the_engines(monkeypatch):
+    for k in ("MEDIA_RENDER_ENGINE", "CLAUDE_TTS_ENGINE", "MEDIA_RENDER_VOICE",
+              "MEDIA_RENDER_VOICE_EDGE", "MEDIA_RENDER_VOICE_PIPER"):
+        monkeypatch.delenv(k, raising=False)
+    assert device_voice.server_voice() == "server default"
+    monkeypatch.setenv("MEDIA_RENDER_VOICE_EDGE", "en-AU-NatashaNeural")
+    assert device_voice.server_voice() == "en-AU-NatashaNeural"
+    monkeypatch.setenv("MEDIA_RENDER_ENGINE", "piper")
+    assert device_voice.server_voice() == "server default"

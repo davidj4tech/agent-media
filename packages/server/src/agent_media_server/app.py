@@ -85,6 +85,9 @@ device gets its token):
                   (agent_media_core/speak_priority.py, pins.py)
   GET|POST /speech/default {"level"} → the level of every thread with none
                   of its own; the server's, so every device's (pins.py)
+  GET|POST /speech/voice {"mode", "voice"?} → the speech target's replies
+                  rendered on the phone (Android TTS) or by the server
+                  (render/device.py, pins.py)
   POST /session/move {"session", "project"|"cwd"} → move a conversation to
                   another project: file it there, move its transcript and its
                   library folder, and bring a live session back in that
@@ -167,7 +170,8 @@ CORS_PATHS = frozenset({
     "/reply", "/ask", "/focus", "/session/resume", "/session/close", "/draft",
     "/session/answer", "/session/archive", "/session/pin", "/session/priority", "/session/stop",
     "/session/move", "/session/settings",
-    "/speech/now", "/speech/ctl", "/speech/sentences", "/speech/default", "/sessions/state", "/commands", "/rename",
+    "/speech/now", "/speech/ctl", "/speech/sentences", "/speech/default", "/speech/voice",
+    "/sessions/state", "/commands", "/rename",
     "/harnesses", "/harnesses/run", "/harnesses/screen",
     "/harnesses/keys", "/harnesses/close", "/harnesses/logout",
     "/harnesses/updates",
@@ -556,6 +560,10 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
     elif path == "/speech/default":
         # The level of a thread with none of its own (speak_priority.py).
         ok, detail = pins.speech_default(_bearer(h))
+        _json(h, 200 if ok else detail.pop("status", 403), {"ok": ok, **detail})
+    elif path == "/speech/voice":
+        # The phone's voice or the server's (render/device.py).
+        ok, detail = pins.speech_voice(_bearer(h))
         _json(h, 200 if ok else detail.pop("status", 403), {"ok": ok, **detail})
     elif path == "/speech/now":
         # The app's speech bar: /speech's live bit, named — the session's
@@ -971,6 +979,12 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         # Settings' Default speech priority: every thread without its own.
         body = _read_json(h) or {}
         ok, detail = pins.speech_default(_bearer(h), level=str(body.get("level") or ""))
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    elif path == "/speech/voice":
+        # Settings' Voice: this phone's or the server's.
+        body = _read_json(h) or {}
+        ok, detail = pins.speech_voice(_bearer(h), mode=str(body.get("mode") or ""),
+                                       voice=body.get("voice") or None)
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path == "/session/answer":
         # Answering the dialog a session is stopped on — a permission

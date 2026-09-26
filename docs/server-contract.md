@@ -1319,6 +1319,28 @@ device paired with it (the app's Settings says so). Kept in
 Pinned by `packages/server/tests/test_reap.py` and
 `packages/core/tests/test_speak_priority.py`.
 
+#### `GET` / `POST /speech/voice` — gated (27 Sep 2026)
+
+`GET` → `{"ok": true, "target", "mode": "phone"|"server", "voice": str|null,
+"can_phone": bool, "voices": [{"name", "label"}], "server_voice"}`;
+`POST {"mode", "voice"?}` → the same, after setting it. Whether the current
+speech target's (`target`, the speech default) replies are rendered by the
+phone's own TextToSpeech (`phone`, in `voice`, one of `voices`) or by the
+server (`server`, in `server_voice` — the engine's configured voice, for
+display). `can_phone` is true for a player that can be handed words:
+`sasonica`, or a target with `MEDIA_SPEECH_RENDER_<T>` set or a choice
+already made; the app hides the setting otherwise. A POST without `voice`
+keeps the one in use.
+
+Kept per target in `<state_dir>/speech-voice.json` as `{"<target>":
+{"mode", "voice"}}`, read before the env (`MEDIA_SPEECH_RENDER_<T>`,
+`MEDIA_SPEECH_DEVICE_VOICE_<T>`) on every reply. The server's, so every
+device's. 400 on another mode or a voice not in `voices`; 409 when the
+target cannot render words; in `CORS_PATHS`.
+
+Pinned by `packages/server/tests/test_reap.py` and
+`packages/core/tests/test_device_voice.py`.
+
 #### `POST /session/answer` — gated
 
 `{"session", "choice": <n>, "key": "<approval.key>"}`. Presses the number
