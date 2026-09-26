@@ -224,6 +224,12 @@ direct-share icons for recent threads. The reply box attaches too (David,
 the camera); each file goes to `/upload` from the page and the same line lands
 at the caret (`AttachButton.tsx`, android-next `a77132ec`).
 
+New chat is one line, not two chip walls (David, 26 Sep 2026): "agent-media ·
+Claude ▾" opens a sheet with the places (newest first) and the agents, so a
+message of several lines keeps the screen. The other assistants' chips show
+only while the box is empty (the assistant button's offer stays). android-next
+`581892e9`, installed on p8a.
+
 ## In flight
 
 **Next's own speech player.** Media3 (David, 23 Sep 2026: the reason
