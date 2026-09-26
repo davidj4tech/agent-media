@@ -33,6 +33,10 @@ Where things live:
 
 - App work lands on `main` of sasonica-app — one branch for the web and the
   Android shell; the browser preview is a fallback.
+- **A change the user will notice gets a What's new line** (27 Sep 2026):
+  add it to the top entry of sasonica-app `app/lib/whatsNew.ts` (a new entry,
+  id = the day, when the top one has shipped), in plain words — what they can
+  now do, not how. Internals and fixes nobody saw stay out.
 - **Sasonica ABS stays for books; Sasonica took its id** (David, 26 Sep 2026).
   Everything but the book is Sasonica's: speech (:6614), the holds, and the
   readouts `/mic` `/ringer` `/state` on loopback **:8774** (call_guard,
@@ -63,6 +67,12 @@ Where things live:
   what an ordinary install does without being asked.
 
 ## Done
+
+**What's new** (David, 27 Sep 2026): once after an update, a sheet lists
+what changed since the last one this install saw — hand-written entries in
+`app/lib/whatsNew.ts`, newest first. Got it, a tap outside or back closes it
+for good; an install updating from before the sheet sees the newest entry
+only, a new install none. About keeps the whole list. sasonica-app `f774f38`.
 
 **Take back your last message** (David, 27 Sep 2026): tap your latest
 message for **Cancel it** or **Edit it**. Either stops the turn and anything
