@@ -165,7 +165,7 @@ def speech_voice(bearer: str, mode=None, voice=None) -> tuple[bool, dict]:
                   "server_voice": device.server_voice(target)}
 
 
-def settings_language(bearer: str, language=None) -> tuple[bool, dict]:
+def settings_language(bearer: str, language=None, accents=None) -> tuple[bool, dict]:
     """`GET /settings/language` and `POST /settings/language {"language"}`: the
     app's language, site-wide (language.py): one the voices come in, or
     one known by name. With `language` None, only read."""
@@ -195,5 +195,19 @@ def settings_language(bearer: str, language=None) -> tuple[bool, dict]:
             site.set_language(want)
         except OSError as e:
             return False, {"error": f"could not save the language ({e})", "status": 500}
+    if accents is not None:
+        # Several of one language's accents, whose voices Voice offers
+        # together (David, 27 Sep 2026); the first is the locale.
+        if not isinstance(accents, list) or not accents:
+            return False, {"error": "accents: a list of at least one", "status": 400}
+        codes = [site.normalise(str(a)) for a in accents]
+        if any(c not in {loc["code"] for loc in locales} for c in codes):
+            return False, {"error": "no such accent", "status": 400}
+        try:
+            site.set_accents(codes)
+        except ValueError as e:
+            return False, {"error": str(e), "status": 400}
+        except OSError as e:
+            return False, {"error": f"could not save the accents ({e})", "status": 500}
     return True, {"language": site.current(), "locale": site.locale(),
-                  "languages": languages, "locales": locales}
+                  "accents": site.accents(), "languages": languages, "locales": locales}

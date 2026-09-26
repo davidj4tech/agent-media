@@ -770,6 +770,15 @@ def test_the_language_is_the_servers(server, shelf, signed_in, monkeypatch):
     assert {"code": "sv", "name": "Swedish"} in obj["languages"]
     res, obj = call(server, "POST", "/settings/language", {"language": "xx"}, AUTH)
     assert res.status == 400 and obj["error"] == "no such language"
+    # Several accents of one language (the built-in list offline: English's).
+    res, obj = call(server, "GET", "/settings/language", headers=AUTH)
+    assert obj["accents"] == ["en-AU"]
+    res, obj = call(server, "POST", "/settings/language", {"accents": ["en-AU", "en-GB"]}, AUTH)
+    assert res.status == 200 and obj["accents"] == ["en-AU", "en-GB"] and obj["locale"] == "en-AU"
+    res, obj = call(server, "POST", "/settings/language", {"accents": ["en-AU", "xx-YY"]}, AUTH)
+    assert res.status == 400 and obj["error"] == "no such accent"
+    res, obj = call(server, "POST", "/settings/language", {"accents": []}, AUTH)
+    assert res.status == 400
     from agent_media_core.render import device
 
     # One Microsoft has voices for, and we have no name for.

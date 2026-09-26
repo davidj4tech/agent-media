@@ -70,8 +70,39 @@ def set_language(code: str) -> None:
     lang = loc.split("-", 1)[0]
     if "-" not in loc:
         loc = DEFAULT_LOCALES.get(lang, lang)
+    _write({"language": lang, "locale": loc, "accents": [loc]})
+
+
+def accents() -> list[str]:
+    """The accents whose voices Settings offers, the chosen locale first
+    (David, 27 Sep 2026: more than one — Australia and the UK, say). Read
+    fresh; just the locale when none were chosen."""
+    loc = locale()
+    try:
+        data = json.loads((state_dir() / FILE_NAME).read_text())
+        got = data.get("accents") if isinstance(data, dict) else None
+    except Exception:  # noqa: BLE001 — never raises
+        got = None
+    lang = loc.split("-", 1)[0]
+    out = [normalise(a) for a in got if isinstance(a, str) and a.strip()] if isinstance(got, list) else []
+    out = [a for a in dict.fromkeys(out) if a.split("-", 1)[0] == lang]
+    return out or [loc]
+
+
+def set_accents(codes: list[str]) -> None:
+    """Choose the accents, all of one language; the first is the locale."""
+    out = list(dict.fromkeys(normalise(c) for c in codes if c and c.strip()))
+    if not out:
+        raise ValueError("at least one accent")
+    lang = out[0].split("-", 1)[0]
+    if any(a.split("-", 1)[0] != lang for a in out):
+        raise ValueError("accents of one language")
+    _write({"language": lang, "locale": out[0], "accents": out})
+
+
+def _write(data: dict) -> None:
     path = state_dir() / FILE_NAME
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(f".tmp.{os.getpid()}")
-    tmp.write_text(json.dumps({"language": lang, "locale": loc}))
+    tmp.write_text(json.dumps(data))
     tmp.replace(path)

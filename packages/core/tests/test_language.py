@@ -25,3 +25,19 @@ def test_a_language_is_chosen_with_its_country(tmp_path, monkeypatch):
     language.set_language("de")
     assert (language.current(), language.locale()) == ("de", "de-DE")
     assert language.normalise("ZH-cn") == "zh-CN"
+
+
+def test_several_accents_of_one_language(tmp_path, monkeypatch):
+    import pytest
+    from agent_media_core import language
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    assert language.accents() == ["en-AU"]
+    language.set_accents(["en-au", "en-GB"])
+    assert (language.locale(), language.accents()) == ("en-AU", ["en-AU", "en-GB"])
+    with pytest.raises(ValueError):
+        language.set_accents(["en-AU", "fr-FR"])
+    with pytest.raises(ValueError):
+        language.set_accents([])
+    language.set_language("fr")
+    assert language.accents() == ["fr-FR"], "a new language starts again with one"

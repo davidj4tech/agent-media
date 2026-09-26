@@ -1017,9 +1017,10 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
     elif path == "/settings/language":
         # Settings' Language: every device's.
         body = _read_json(h) or {}
-        ok, detail = pins.settings_language(_bearer(h),
-                                            language=str(body.get("locale")
-                                                         or body.get("language") or ""))
+        lang = body.get("locale") or body.get("language")
+        ok, detail = pins.settings_language(
+            _bearer(h), language=str(lang) if lang or "accents" not in body else None,
+            accents=body.get("accents"))
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path == "/session/answer":
         # Answering the dialog a session is stopped on — a permission

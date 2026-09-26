@@ -1384,6 +1384,12 @@ shown in. `locales` is every language-and-country Microsoft has voices for;
 `NAMES`). Kept in `<state_dir>/language.json` as `{"language", "locale"}`;
 `"en"`/`"en-AU"` until set. 400 `"no such language"`; in `CORS_PATHS`.
 
+**Several accents** (27 Sep 2026): the answer also carries `"accents":
+["en-AU", "en-GB"]` — the countries whose voices Voice offers together, the
+locale first — and `POST {"accents": [...]}` sets them (all one language,
+at least one; 400 `"no such accent"` otherwise). Choosing a language or a
+locale starts again with that one accent.
+
 Pinned by `packages/server/tests/test_reap.py` and
 `packages/core/tests/test_language.py`.
 
