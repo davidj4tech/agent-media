@@ -39,7 +39,20 @@ VOICES = (
     # itself from Australia (about 0.7 s to first audio against ~2 s through
     # red5, 27 Sep 2026). Not an official service, so every clip also names
     # a Google voice for the phone to fall back to (see tts_uri).
-    {"name": "edge:en-AU-NatashaNeural", "label": "Natasha · Microsoft"},
+    {"name": "edge:en-AU-NatashaNeural", "label": "Natasha · AU"},
+    # More of Microsoft's, the same way (David, 27 Sep 2026: Australian,
+    # British, the newest US ones, New Zealand and Irish).
+    {"name": "edge:en-AU-WilliamMultilingualNeural", "label": "William · AU"},
+    {"name": "edge:en-GB-SoniaNeural", "label": "Sonia · UK"},
+    {"name": "edge:en-GB-RyanNeural", "label": "Ryan · UK"},
+    {"name": "edge:en-US-AvaMultilingualNeural", "label": "Ava · US"},
+    {"name": "edge:en-US-AndrewMultilingualNeural", "label": "Andrew · US"},
+    {"name": "edge:en-US-EmmaMultilingualNeural", "label": "Emma · US"},
+    {"name": "edge:en-US-BrianMultilingualNeural", "label": "Brian · US"},
+    {"name": "edge:en-NZ-MollyNeural", "label": "Molly · NZ"},
+    {"name": "edge:en-NZ-MitchellNeural", "label": "Mitchell · NZ"},
+    {"name": "edge:en-IE-EmilyNeural", "label": "Emily · IE"},
+    {"name": "edge:en-IE-ConnorNeural", "label": "Connor · IE"},
 )
 
 #: The Google voice a Microsoft-voiced clip falls back to on the phone.
