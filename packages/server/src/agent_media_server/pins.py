@@ -178,11 +178,19 @@ def settings_language(bearer: str, language=None) -> tuple[bool, dict]:
     names.update(site.NAMES)
     languages = [{"code": code, "name": name} for code, name in
                  sorted(names.items(), key=lambda kv: (kv[0] != "en", kv[1].lower()))]
+    # Each language with each country it has voices for — what Settings
+    # picks, so Voice shows one country's voices, not a language's dozen.
+    locales = [{"code": acc["locale"], "language": lang["code"],
+                "name": f'{lang["name"]} ({acc["name"]})'}
+               for lang in device.languages() for acc in lang["accents"]]
     if language is not None:
-        if language not in {lang["code"] for lang in languages}:
+        want = site.normalise(str(language))
+        known = {loc["code"] for loc in locales} | {lang["code"] for lang in languages}
+        if want not in known:
             return False, {"error": "no such language", "status": 400}
         try:
-            site.set_language(language)
+            site.set_language(want)
         except OSError as e:
             return False, {"error": f"could not save the language ({e})", "status": 500}
-    return True, {"language": site.current(), "languages": languages}
+    return True, {"language": site.current(), "locale": site.locale(),
+                  "languages": languages, "locales": locales}

@@ -13,3 +13,15 @@ def test_the_language_is_english_until_set_and_never_raises():
     (state_dir() / language.FILE_NAME).write_text('["fr"]')
     assert language.current() == "en"
     assert language.NAMES["zh"] == "Chinese (Simplified)"
+
+
+def test_a_language_is_chosen_with_its_country(tmp_path, monkeypatch):
+    from agent_media_core import language
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    assert language.locale() == "en-AU", "English means Australia unless told"
+    language.set_language("fr_ca")
+    assert (language.current(), language.locale()) == ("fr", "fr-CA")
+    language.set_language("de")
+    assert (language.current(), language.locale()) == ("de", "de-DE")
+    assert language.normalise("ZH-cn") == "zh-CN"

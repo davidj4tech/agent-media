@@ -1365,14 +1365,20 @@ Pinned by `packages/server/tests/test_reap.py` and
 
 #### `GET` / `POST /settings/language` — gated (27 Sep 2026)
 
-`GET` → `{"ok": true, "language": "en", "languages": [{"code", "name"}]}`;
-`POST {"language": "<code>"}` → the same, after setting it. The app's
-language, site-wide: every paired device's. Settings' Voice section offers
-that language's voices (`/speech/voice`'s `languages`); it does not change
-the app's own text. `languages` is every language Microsoft has voices for,
-plus those known by name (`agent_media_core/language.py` `NAMES`), English
-first, then by name. Kept in `<state_dir>/language.json` as `{"language"}`;
-`"en"` until set. 400 `"no such language"`; in `CORS_PATHS`.
+`GET` → `{"ok": true, "language": "en", "locale": "en-AU", "languages":
+[{"code", "name"}], "locales": [{"code": "en-AU", "language": "en", "name":
+"English (Australia)"}]}`; `POST {"locale": "en-GB"}` (or `{"language":
+"fr"}`, which takes that language's usual country) → the same, after
+setting it. The app's language, site-wide: every paired device's. The
+**locale** is what Settings picks — a language with its country, since
+English alone has voices from ~14 countries (David, 27 Sep 2026: "really
+busy") — and Voice shows only that locale's voices (`/speech/voice`'s
+`languages[].accents[]` whose `locale` matches); the **language** is what
+replies are asked for in (`intake/heard.py`) and what the app's text is
+shown in. `locales` is every language-and-country Microsoft has voices for;
+`languages` adds those known by name (`agent_media_core/language.py`
+`NAMES`). Kept in `<state_dir>/language.json` as `{"language", "locale"}`;
+`"en"`/`"en-AU"` until set. 400 `"no such language"`; in `CORS_PATHS`.
 
 Pinned by `packages/server/tests/test_reap.py` and
 `packages/core/tests/test_language.py`.
