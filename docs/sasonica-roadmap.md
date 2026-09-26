@@ -212,7 +212,10 @@ link only, `/share`) and Just keep them (files only). The words land at the
 end of that thread's draft and it opens. Files are streamed from native code
 to `POST /upload` (§6.18), kept in `~/shared/<day>/`, and a
 `Shared file: <path>` line per file goes with the words. Not yet: Android's
-direct-share icons for recent threads, and an attach button in the composer.
+direct-share icons for recent threads. The reply box attaches too (David,
+26 Sep 2026): a paperclip opens the WebView's file chooser (Files, Photos,
+the camera); each file goes to `/upload` from the page and the same line lands
+at the caret (`AttachButton.tsx`, android-next `a77132ec`).
 
 ## In flight
 
