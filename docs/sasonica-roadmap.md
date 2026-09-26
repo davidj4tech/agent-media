@@ -449,6 +449,13 @@ ahead.
    **Word highlight withdrawn** the same day (David: "a little bit laggy and
    distracting"; app revert of `c175acb`) — the sentence bold is the
    follow-along. Audiobookshelf's container restarted without /conversations.
+   **Natasha from the phone, 27 Sep 2026** (agent-media `8444d96`, app
+   `2f02fc0`): Voice → "Natasha · Microsoft" (`edge:en-AU-NatashaNeural`);
+   the app speaks Edge's Read Aloud WebSocket itself (`EdgeVoice`, OkHttp,
+   the edge-tts protocol — unofficial, so every clip carries
+   `&fallback=<Google voice>`). Measured ~1.2 s per sentence cold; a
+   sentence with no audio in 3 s or not done in 10 s is rendered by Google
+   instead (tested). Chosen on red5 as the phone voice.
 
 ## Loose ends
 
