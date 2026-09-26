@@ -388,7 +388,11 @@ ahead.
    and inbox.org stays the record. **Step 1 DONE 24 Sep 2026**: the store
    (§6.17, `POST/GET /alerts`, `/alerts/ack`), `agent-alert` with an offline
    fallback, and disk-watch + host-watch reporting through it (delivery is
-   still the digest pane). Next: the `alerts` event and the Home section.
+   still the digest pane). **Alerts as notifications 27 Sep 2026** (David:
+   the disk warning should come through when the phone is on silent): the
+   `alerts` frame on `/sessions/events?alerts=<cursor>` (§6.13), posted by
+   the notifier on an "Alerts" channel, one per alert. Next: the Home
+   section (Fix it, Ack) and a per-level Settings toggle.
    **Step 3 begun 25 Sep 2026** (David: "rather click a button to play
    it"): a digest reported with `spoken` is rendered held, never read out;
    Home's Digests row plays it (`replay-id`). All three moved the same day:
