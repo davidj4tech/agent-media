@@ -229,6 +229,24 @@ def revoke(device_id: str) -> bool:
         return True
 
 
+def set_enrol(device_id: str, on: bool = True) -> bool:
+    """Give a paired device the enrol bit, or take it away, from the shell.
+
+    For a device paired before the bit existed, or without `--enrol`: the
+    alternative is pairing it again, which leaves the old row behind. Only
+    the desk does this; no route does, since a device cannot grant itself
+    the right (see `mint_code`). False for an unknown id.
+    """
+    with _LOCK:
+        rows = _load()
+        hit = next((d for d in rows if d.get("id") == device_id), None)
+        if hit is None:
+            return False
+        if bool(hit.get("enrol")) != on:
+            _save([{**d, "enrol": on} if d is hit else d for d in rows])
+        return True
+
+
 def may_enrol(device: dict | None) -> bool:
     """Whether this device may pair another one, list them, or revoke one.
 
@@ -347,13 +365,25 @@ def links(code: str, host: str, port: int) -> tuple[str, str]:
 
 
 def cli_devices(argv: list[str]) -> int:
-    """`media-visual-canvas devices [--revoke ID]` — list, or forget one."""
+    """`media-visual-canvas devices [--revoke ID | --enrol ID | --no-enrol ID]`
+    — list, forget one, or give one the enrol bit (or take it back)."""
     import argparse
 
     ap = argparse.ArgumentParser(prog="media-visual-canvas devices",
-                                 description="List paired devices, or revoke one.")
-    ap.add_argument("--revoke", metavar="ID", help="forget this device (its token stops working)")
+                                 description="List paired devices, revoke one, or let one pair others.")
+    act = ap.add_mutually_exclusive_group()
+    act.add_argument("--revoke", metavar="ID", help="forget this device (its token stops working)")
+    act.add_argument("--enrol", metavar="ID",
+                     help="let this device pair and revoke devices from the app (Settings → Devices)")
+    act.add_argument("--no-enrol", metavar="ID", help="take that right back")
     args = ap.parse_args(argv)
+    if args.enrol or args.no_enrol:
+        device_id, on = (args.enrol, True) if args.enrol else (args.no_enrol, False)
+        if set_enrol(device_id, on):
+            print(f"{device_id} {'may' if on else 'may no longer'} pair devices")
+            return 0
+        print(f"no device {device_id}", flush=True)
+        return 1
     if args.revoke:
         if revoke(args.revoke):
             print(f"revoked {args.revoke}")

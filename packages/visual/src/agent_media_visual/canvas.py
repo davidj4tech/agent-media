@@ -1989,7 +1989,7 @@ def main() -> None:
     load_env_file("visual-canvas")
     if sys.argv[1:2] == ["pair"]:            # `media-visual-canvas pair`
         raise SystemExit(_cmd_pair(sys.argv[2:]))
-    if sys.argv[1:2] == ["devices"]:         # `media-visual-canvas devices [--revoke ID]`
+    if sys.argv[1:2] == ["devices"]:         # `media-visual-canvas devices [--revoke|--enrol ID]`
         from agent_media_server import devices as _devices
         raise SystemExit(_devices.cli_devices(sys.argv[2:]))
     ap =argparse.ArgumentParser(description="agent-media visual canvas")

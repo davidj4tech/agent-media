@@ -2799,7 +2799,12 @@ shell does: list, mint, revoke.
 - `media-visual-canvas pair --device NAME --enrol` mints a code that grants
   it. Without `--enrol` nothing changes, so the shell stays the only way in
   until a device is deliberately given the bit. `devices` marks such a row
-  `[enrols]`.
+  `[enrols]`. A device already paired gets it with `devices --enrol ID`
+  (and loses it with `--no-enrol ID`), without pairing again (27 Sep 2026).
+  No route grants it.
+- The app keeps `enrol` from `POST /pair` and shows Settings → Devices only
+  when it is true. A device paired by a build that did not keep it asks
+  `GET /devices` once and records 200 or 403 (sasonica-app `devices.tsx`).
 - `POST /pair` now answers with `"enrol": true|false` — what this device
   may do, told to it once, so the app knows whether to offer the screen.
 

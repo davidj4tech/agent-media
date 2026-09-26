@@ -382,6 +382,26 @@ def test_devices_cli_lists_and_revokes(capsys):
     assert "no paired devices" in capsys.readouterr().out
 
 
+def test_devices_cli_grants_and_takes_the_enrol_bit(server, capsys):
+    """`devices --enrol ID`: a device paired without the bit gets it at the
+    desk, without pairing again; `--no-enrol` takes it back."""
+    code, _ = devices.mint_code("Pixel 8a")
+    res, obj = _pair(server, code)
+    token, device_id = obj["token"], obj["device_id"]
+    res, _ = call(server, "GET", "/devices", headers=_auth(token))
+    assert res.status == 403
+    assert devices.cli_devices(["--enrol", device_id]) == 0
+    capsys.readouterr()
+    assert devices.cli_devices([]) == 0
+    assert "[enrols]" in capsys.readouterr().out
+    res, obj = call(server, "GET", "/devices", headers=_auth(token))
+    assert res.status == 200 and obj["self"] == device_id
+    assert devices.cli_devices(["--no-enrol", device_id]) == 0
+    res, _ = call(server, "GET", "/devices", headers=_auth(token))
+    assert res.status == 403
+    assert devices.cli_devices(["--enrol", "d_nobody"]) == 1
+
+
 # --- the enrol bit: pairing another device from the app (§9) ----------------------
 
 @pytest.fixture()
