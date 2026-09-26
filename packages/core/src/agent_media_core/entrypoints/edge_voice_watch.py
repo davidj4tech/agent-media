@@ -13,8 +13,11 @@ phone talking, which is also why nobody would notice. So, every run:
    When they move, Microsoft has usually just changed something — `warn`,
    while the app still works, is the early warning.
 
-It reports every run through agent-alert (the alert store keeps the edges)
-and keeps no state of its own.
+The phone raises its own alarm the moment a sentence falls back (the app's
+VoiceAlerts, alert `edge-voice-phone`, David: "shouldn't the fallback be the
+trigger"). This daily check is the early warning that can't: edge-tts moving
+on before anything has broken. It reports every run through agent-alert (the
+alert store keeps the edges) and keeps no state of its own.
 
     media-edge-voice-watch [--app PATH] [--dry-run]
 """
@@ -176,7 +179,7 @@ def main(argv: list[str] | None = None) -> int:
     if a.dry_run:
         return 0
     cmd = [os.path.expanduser("~/.local/bin/agent-alert"), "report", ALERT_ID,
-           "--level", level, "--title", title, "--detail", detail, "--every", str(6 * 3600)]
+           "--level", level, "--title", title, "--detail", detail, "--every", str(86400)]
     if level != "ok":
         cmd += ["--fix", FIX]
     return subprocess.call(cmd)

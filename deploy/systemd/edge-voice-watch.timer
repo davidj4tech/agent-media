@@ -1,9 +1,9 @@
 [Unit]
-Description=Check Natasha's handshake with Microsoft every six hours
+Description=Check Natasha's handshake with Microsoft daily
 
 [Timer]
 OnBootSec=10min
-OnUnitActiveSec=6h
+OnUnitActiveSec=1d
 RandomizedDelaySec=10min
 Persistent=true
 
