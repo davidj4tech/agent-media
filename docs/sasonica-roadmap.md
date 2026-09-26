@@ -338,10 +338,15 @@ ahead.
 
 1. **Devices screen in the app** — the server half landed 23 Sep 2026
    (`GET /devices`, `POST /devices/code`, `POST /devices/revoke`,
-   contract §9 "Enrolling from the app"). What is left is the screen:
-   Settings → Devices, shown only when `POST /pair` said `enrol: true`, a
-   row per device with when it was last seen, "Pair a device" (a name, then
-   the code and its QR), and revoke behind a confirm. Steps 2–4 of
+   contract §9 "Enrolling from the app"). **The screen: DONE 27 Sep 2026**
+   (sasonica-app `1510b5e`): Settings → Devices, shown only when `POST /pair`
+   said `enrol: true` (an older pairing asks `GET /devices` once), a row per
+   device with when it was last seen, "Pair a device" (a name, then the code
+   as a QR of its `sasonica://pair` link; the new device appears as it
+   pairs), and revoke behind a confirm. `devices --enrol ID` (agent-media
+   `aed4572`) gives a device already paired the bit at the desk. Not yet on
+   p8a: none of its devices has the bit, and it needs the next CI build.
+   Steps 2–4 of
    `docs/proposals/2026-09-23-accounts-and-the-identity-seam.md` (OIDC, an
    issuer) stay parked until there is a second person.
 2. **Sasonica Shell OAuth** — the proposal is written, not built.
