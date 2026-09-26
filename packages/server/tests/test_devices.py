@@ -341,7 +341,7 @@ def test_pair_device_cli_prints_both_links(capsys, monkeypatch):
 
 
 def test_the_link_names_the_tailnet_ip_before_the_hostname(capsys, monkeypatch):
-    # A bare MagicDNS name (`red5`) is not reachable from Sasonica Next,
+    # A bare MagicDNS name (`red5`) is not reachable from Sasonica,
     # which allows cleartext only to tailnet addresses.
     from agent_media_core import setup
 

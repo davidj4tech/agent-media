@@ -40,7 +40,7 @@ elsewhere, `0` turns it off; a host with no ~/org files nothing.
 
 Delivery is the caller's for now: the answer says `notify` and the change, and
 `agent-alert` (agent-config) hands it to the digest pane as before. Step 2 of
-the proposal puts an `alerts` event on `/sessions/events` for Next.
+the proposal puts an `alerts` event on `/sessions/events` for Sasonica.
 """
 
 from __future__ import annotations

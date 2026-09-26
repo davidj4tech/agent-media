@@ -52,15 +52,33 @@ class ContentType(str, Enum):
     UNKNOWN = "unknown"
 
 
+#: Target names retired by a rename, and what they are called now (27 Sep
+#: 2026: `app` is Sasonica ABS, `next` is Sasonica). A name stored before the
+#: rename — a history row, a saved choice, an env value — still resolves;
+#: the per-target env keys (MEDIA_SPEECH_SOCKET_<TARGET> …) were renamed
+#: with it and are read under the new name only.
+RENAMED_TARGETS = {"app": "abs", "next": "sasonica"}
+
+
+def target_name(name: str) -> str:
+    """`name` as it is called now."""
+    return RENAMED_TARGETS.get(name, name)
+
+
 @dataclass(frozen=True)
 class Target:
     """Where to play audio. Resolved by sink implementations.
 
     `name` is a logical identifier (local, snapcast-<room>, bt-car,
-    matrix-room-<id>). Sinks know how to bind it.
+    matrix-room-<id>). Sinks know how to bind it. A retired name
+    (`RENAMED_TARGETS`) becomes the current one.
     """
 
     name: str
+
+    def __post_init__(self) -> None:
+        if self.name in RENAMED_TARGETS:
+            object.__setattr__(self, "name", RENAMED_TARGETS[self.name])
 
 
 @dataclass(frozen=True)

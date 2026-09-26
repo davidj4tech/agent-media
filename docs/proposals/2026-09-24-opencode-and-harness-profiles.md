@@ -11,7 +11,7 @@ page.
 
 David asked (24 Sep 2026) whether
 [dzianisv/opencode-mobile](https://github.com/dzianisv/opencode-mobile) is
-worth borrowing from or basing Sasonica Next on, and raised two wants: an
+worth borrowing from or basing Sasonica Next[^next-rename] on, and raised two wants: an
 installer, and multiple logins — for opencode, and for pi "if we go that
 route".
 
@@ -277,3 +277,9 @@ roadmap's queue behind what is already there.
   chip.
 - Headless sessions (§17) spawn harnesses directly; they need the profile
   env too. Check `headless` start paths when doing step 3.
+
+[^next-rename]: Renamed since this was written: Sasonica Next is Sasonica
+    (`com.sasonica.app`, 26 Sep 2026) and its speech target `next` is
+    `sasonica` (27 Sep); the older Sasonica app is Sasonica ABS
+    (`com.sasonica.abs`), target `abs` (was `app`). The text above keeps the
+    names it was written with.

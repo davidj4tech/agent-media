@@ -1267,8 +1267,8 @@ def search(channel: str, query: str = "") -> dict:
 
         # Merge connected-device cache files. These are playable directly when
         # the book target follows speech to `phone`.
-        target_name = (os.environ.get("MEDIA_BOOK_DEFAULT_TARGET")
-                       or os.environ.get("MEDIA_SPEECH_DEFAULT_TARGET") or "")
+        target_name = Target(name=os.environ.get("MEDIA_BOOK_DEFAULT_TARGET")
+                             or os.environ.get("MEDIA_SPEECH_DEFAULT_TARGET") or "").name
         if target_name:
             host = (os.environ.get(f"MEDIA_BOOK_CACHE_SSH_{target_name.upper().replace('-', '_')}")
                     or os.environ.get(f"MEDIA_SPEECH_CLIP_SSH_{target_name.upper().replace('-', '_')}")

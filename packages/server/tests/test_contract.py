@@ -565,9 +565,9 @@ def audio_host(monkeypatch):
         if k.startswith(("MEDIA_SPEECH_SOCKET_", "MEDIA_SPEECH_DEVICE_",
                          "MEDIA_REMOTE_SAY_CMD")):
             monkeypatch.delenv(k, raising=False)
-    monkeypatch.setenv("MEDIA_SPEECH_DEFAULT_TARGET", "app")
-    monkeypatch.setenv("MEDIA_SPEECH_SOCKET_APP", "tcp://127.0.0.1:1")
-    monkeypatch.setenv("MEDIA_SPEECH_DEVICE_APP", "")
+    monkeypatch.setenv("MEDIA_SPEECH_DEFAULT_TARGET", "abs")
+    monkeypatch.setenv("MEDIA_SPEECH_SOCKET_ABS", "tcp://127.0.0.1:1")
+    monkeypatch.setenv("MEDIA_SPEECH_DEVICE_ABS", "")
     audio._reset_cache()
     yield
     audio._reset_cache()
@@ -583,10 +583,10 @@ def test_audio_targets_shape(server, signed_in, audio_host):
     assert keys(obj["channels"]) == {"speech", "music"}
     sp, mu = obj["channels"]["speech"], obj["channels"]["music"]
     assert keys(sp) == {"current", "default", "overridden", "options"}
-    assert (sp["current"], sp["default"], sp["overridden"]) == ("app", "app", False)
-    assert [o["name"] for o in sp["options"]] == ["app", "rooms", "local"]
+    assert (sp["current"], sp["default"], sp["overridden"]) == ("abs", "abs", False)
+    assert [o["name"] for o in sp["options"]] == ["abs", "rooms", "local"]
     assert all(keys(o) == OPTION_KEYS for o in sp["options"])
-    assert sp["options"][0]["label"] == "Phone (Sasonica)"
+    assert sp["options"][0]["label"] == "Phone (Sasonica ABS)"
     assert keys(mu) == {"current", "next", "overridden", "options"}
     assert all(keys(o) == OPTION_KEYS for o in mu["options"])
     assert res.getheader("Access-Control-Allow-Origin") == "*"
@@ -604,8 +604,8 @@ def test_audio_target_sets_and_clears_speech(server, signed_in, audio_host):
     assert got["channels"]["speech"]["current"] == "rooms"   # the cache was dropped
     res, obj = call(server, "POST", "/audio/target",
                     {"channel": "speech", "target": None}, AUTH)
-    assert res.status == 200 and obj["current"] == "app" and obj["overridden"] is False
-    assert audio_targets.speech_default() == "app"
+    assert res.status == 200 and obj["current"] == "abs" and obj["overridden"] is False
+    assert audio_targets.speech_default() == "abs"
 
 
 @pytest.mark.parametrize("body", [
@@ -654,7 +654,7 @@ def test_a_paired_device_may_choose(server, audio_host):
 def test_speech_now_names_where_it_plays(server, shelf, signed_in, audio_host, monkeypatch):
     monkeypatch.setattr(canvas, "speech_state", lambda: {"kind": "state", "speaking": False})
     _, obj = call(server, "GET", "/speech/now", headers=AUTH)
-    assert obj["target"] == "app"                     # quiet: where the next one goes
+    assert obj["target"] == "abs"                     # quiet: where the next one goes
     from agent_media_core import audio_targets
     audio_targets.set_speech_override("rooms")
     _, obj = call(server, "GET", "/speech/now", headers=AUTH)
@@ -667,12 +667,12 @@ def test_speech_now_while_live_names_the_reply_s_own_target(server, shelf, signe
     from agent_media_core import audio_targets
     from agent_media_core.state import StateStore
     StateStore().set_now_playing("speech", uri="/tmp/x.mp3", started_at=1.0,
-                                 target="app", extras={})
+                                 target="abs", extras={})
     audio_targets.set_speech_override("rooms")
     monkeypatch.setattr(canvas, "speech_state",
                         lambda: {"kind": "state", "speaking": True, "session": SID})
     _, obj = call(server, "GET", "/speech/now", headers=AUTH)
-    assert obj["live"] is True and obj["target"] == "app"
+    assert obj["live"] is True and obj["target"] == "abs"
 
 
 # --- the stream ---------------------------------------------------------------------

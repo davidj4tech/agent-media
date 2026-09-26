@@ -35,15 +35,15 @@ from agent_media_core.types import Event, Priority, Source, Target
 
 OLD = "6c73498c-02c1-4846-8350-a82006973571"     # the replayed reply's session
 NEW = "5f8ca313-c85f-469e-afc7-f3068bc2bfda"     # the reply that arrives
-APP = Target(name="app")
+APP = Target(name="abs")
 
 
 @pytest.fixture(autouse=True)
 def state_env(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
-    monkeypatch.setenv("MEDIA_SPEECH_SOCKET_APP", "tcp://127.0.0.1:1")
-    monkeypatch.setenv("MEDIA_SPEECH_DEVICE_APP", "")
+    monkeypatch.setenv("MEDIA_SPEECH_SOCKET_ABS", "tcp://127.0.0.1:1")
+    monkeypatch.setenv("MEDIA_SPEECH_DEVICE_ABS", "")
     monkeypatch.setenv("MEDIA_RENDER_ENGINE", "edge")
     monkeypatch.setenv("MEDIA_RENDER_VOICE", "en-US-AriaNeural")
     monkeypatch.delenv("MEDIA_STREAM_CLIPS", raising=False)
@@ -67,7 +67,7 @@ def _replay_token() -> S._SpeechPlaybackLock:
 
 def _replay_row(state: StateStore, writer_pid: int) -> None:
     state.set_now_playing("speech", uri="/clips/old-000.mp3", started_at=1.0,
-                          target="app", extras={
+                          target="abs", extras={
                               "replay": True, "history_id": 9199,
                               "source_session": OLD, "writer_pid": writer_pid,
                               "current_sentence": "An older sentence.",
@@ -384,7 +384,7 @@ def replay_env(monkeypatch, tmp_path):
         c = tmp_path / f"old-{i:03d}.mp3"
         c.write_bytes(b"x")
         clips.append(str(c))
-    row = {"id": 9199, "uri": clips[0], "target": "app",
+    row = {"id": 9199, "uri": clips[0], "target": "abs",
            "text": "An older sentence. And another.",
            "extras": {"clip_uris": clips, "clip_durations_s": [1.0, 1.0],
                       "clip_sentences": ["An older sentence.", "And another."],
@@ -479,7 +479,7 @@ def test_the_follower_stops_the_replay_for_a_question(monkeypatch):
     fd = token.fileno
     state = StateStore()
     state.set_now_playing("speech", uri="/c.mp3", started_at=time.time(),
-                          target="app", extras={"replay": True,
+                          target="abs", extras={"replay": True,
                                                 "writer_pid": os.getpid()})
     stopped: list = []
     monkeypatch.setattr(cli.ipc, "command",
@@ -505,7 +505,7 @@ def test_the_follower_keeps_the_voice_from_an_ordinary_reply(monkeypatch):
     token = _replay_token()
     state = StateStore()
     state.set_now_playing("speech", uri="/c.mp3", started_at=time.time(),
-                          target="app", extras={"replay": True,
+                          target="abs", extras={"replay": True,
                                                 "writer_pid": os.getpid()})
     stopped: list = []
     monkeypatch.setattr(cli.ipc, "command",
@@ -528,7 +528,7 @@ def test_the_follower_stops_the_replay_for_end_of_reply(monkeypatch):
     it stops the replay and ends, as for a question."""
     state = StateStore()
     state.set_now_playing("speech", uri="/c.mp3", started_at=time.time(),
-                          target="app", extras={"replay": True,
+                          target="abs", extras={"replay": True,
                                                 "writer_pid": os.getpid()})
     stopped: list = []
     monkeypatch.setattr(cli.ipc, "command",
@@ -549,7 +549,7 @@ def test_the_follower_leaves_a_sentence_step_alone(monkeypatch):
     """A jump to a sentence is not End: the follower plays on and leaves it."""
     state = StateStore()
     state.set_now_playing("speech", uri="/c.mp3", started_at=time.time(),
-                          target="app", extras={"replay": True,
+                          target="abs", extras={"replay": True,
                                                 "writer_pid": os.getpid()})
     stopped: list = []
     monkeypatch.setattr(cli.ipc, "command",
@@ -600,11 +600,11 @@ def test_a_reply_ends_a_replay_at_its_sentence(monkeypatch):
     row for Resume (David, 25 Sep 2026: "it didn't")."""
     state = StateStore()
     rid = state.add_history(sink="speech", uri="/c.mp3", started_at=time.time() - 60,
-                            ended_at=time.time() - 50, target="app", source="cli",
+                            ended_at=time.time() - 50, target="abs", source="cli",
                             content_type="audio/mpeg", text="One. Two. Three.",
                             extras={"source_session": "sess-r"})
     state.set_now_playing("speech", uri="/c.mp3", started_at=time.time(),
-                          target="app", extras={"replay": True, "history_id": rid,
+                          target="abs", extras={"replay": True, "history_id": rid,
                                                 "source_session": "sess-r",
                                                 "writer_pid": os.getpid()})
     stopped: list = []
@@ -627,7 +627,7 @@ def test_an_older_reply_does_not_end_a_replay(monkeypatch):
     state = StateStore()
     S.session_reply_read("sess-r", at=time.time() - 30)
     state.set_now_playing("speech", uri="/c.mp3", started_at=time.time(),
-                          target="app", extras={"replay": True, "source_session": "sess-r",
+                          target="abs", extras={"replay": True, "source_session": "sess-r",
                                                 "writer_pid": os.getpid()})
     stopped: list = []
     monkeypatch.setattr(cli.ipc, "command",

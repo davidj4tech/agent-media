@@ -1,4 +1,4 @@
-"""The `app` music target: Sasonica on the phone, mpv when it declines.
+"""The `abs` music target (`app` before the rename): Sasonica ABS on the phone, mpv when it declines.
 
 `app` used to reach Mopidy, which does not implement it, so every untargeted
 music call raised "sink-music target 'app' not yet supported" once the speech
@@ -40,14 +40,14 @@ def _router(monkeypatch, *, app, local, mopidy=None, app_on=True, local_on=True)
 
 def test_app_target_plays_in_the_app(monkeypatch):
     app, local = _Fake(takes=True), _Fake()
-    _router(monkeypatch, app=app, local=local).play("yt:abc", Target("app"))
+    _router(monkeypatch, app=app, local=local).play("yt:abc", Target("abs"))
     assert app.calls == [("play", "yt:abc", True)]
     assert local.calls == []
 
 
 def test_app_declines_so_the_phone_mpv_plays(monkeypatch):
     app, local = _Fake(takes=False), _Fake()
-    _router(monkeypatch, app=app, local=local).play("yt:abc", Target("app"))
+    _router(monkeypatch, app=app, local=local).play("yt:abc", Target("abs"))
     assert ("play", "yt:abc", True) in local.calls
 
 
@@ -64,7 +64,7 @@ def test_app_target_reads_never_reach_mopidy(monkeypatch):
             raise NotImplementedError("sink-music target 'app' not yet supported")
     app, local = _Fake(loaded=False), _Fake(loaded=False, uri=None)
     r = _router(monkeypatch, app=app, local=local, mopidy=Mopidy())
-    assert r.now_playing_uri(Target("app")) is None
+    assert r.now_playing_uri(Target("abs")) is None
 
 
 def test_observe_prefers_the_app_holding_music(monkeypatch):

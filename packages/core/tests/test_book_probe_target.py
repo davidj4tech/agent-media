@@ -31,13 +31,13 @@ class _Music:
 @pytest.fixture(autouse=True)
 def _isolate(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-    monkeypatch.setenv("MEDIA_SPEECH_SOCKET_APP", "tcp://phone.example:6613")
-    monkeypatch.delenv("MEDIA_BOOK_SOCKET_APP", raising=False)
+    monkeypatch.setenv("MEDIA_SPEECH_SOCKET_ABS", "tcp://phone.example:6613")
+    monkeypatch.delenv("MEDIA_BOOK_SOCKET_ABS", raising=False)
 
 
 def _coord(book):
     return Coordinator(music=_Music(), state=StateStore(), book=book,
-                       book_target=Target(name="app"))
+                       book_target=Target(name="abs"))
 
 
 def test_a_book_that_is_only_the_speech_player_is_not_asked():
@@ -47,7 +47,7 @@ def test_a_book_that_is_only_the_speech_player_is_not_asked():
 
 
 def test_a_book_with_its_own_player_is_still_asked(monkeypatch):
-    monkeypatch.setenv("MEDIA_BOOK_SOCKET_APP", "tcp://phone.example:6603")
+    monkeypatch.setenv("MEDIA_BOOK_SOCKET_ABS", "tcp://phone.example:6603")
     book = _Book()
     assert _coord(book)._probe_book_active() is True
     assert book.asked == 1

@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Optional
 
 from ._paths import state_dir
+from .types import target_name
 
 SPEECH_FILE = "speech-target"
 MUSIC_FILE = "music-where"
@@ -51,26 +52,26 @@ MUSIC_LAST_FILE = "music-where-last"
 
 #: The speech targets the code knows by name, in the order a picker lists
 #: them. Any other name is offered only when the env configures it.
-KNOWN_SPEECH = ("app", "phone", "rooms", "local")
+KNOWN_SPEECH = ("abs", "phone", "rooms", "local")
 
 _SPEECH_LABELS = {
-    "app": "Phone (Sasonica)",
-    # Sasonica Next's own Media3 player, on its own port while the two run
-    # side by side. Offered only where the env configures it.
-    "next": "Phone (Sasonica Next)",
+    "abs": "Phone (Sasonica ABS)",
+    # Sasonica's own Media3 player, on its own port beside Sasonica ABS.
+    # Offered only where the env configures it.
+    "sasonica": "Phone (Sasonica)",
     "phone": "Phone (Termux player)",
     "rooms": "House speakers",
 }
 
 #: `media music play --where` values a preference may hold. `default` is the
 #: absence of one, and `local` is `rooms` under another name.
-MUSIC_WHERE = ("auto", "rooms", "phone", "app")
+MUSIC_WHERE = ("auto", "rooms", "phone", "abs")
 
 _MUSIC_LABELS = {
     "auto": "Automatic",
     "rooms": "House speakers",
     "phone": "Phone (Termux player)",
-    "app": "Phone (Sasonica)",
+    "abs": "Phone (Sasonica ABS)",
 }
 
 _NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
@@ -109,7 +110,7 @@ def _write(name: str, value: Optional[str]) -> None:
 
 def env_speech_default() -> str:
     """What the env file (or media-lane) says speech defaults to."""
-    return os.environ.get("MEDIA_SPEECH_DEFAULT_TARGET") or "local"
+    return target_name(os.environ.get("MEDIA_SPEECH_DEFAULT_TARGET") or "local")
 
 
 def _host() -> str:
@@ -136,7 +137,7 @@ def _configured_names() -> list[str]:
                 # MEDIA_REMOTE_SAY_CMD_ROOMS= (the `-` sentinel, emptied by
                 # the env loader) says "not by the lane", not "a target".
                 if _NAME.fullmatch(name) and (value or prefix != "MEDIA_REMOTE_SAY_CMD_"):
-                    found.add(name)
+                    found.add(target_name(name))
     return sorted(found)
 
 
@@ -184,7 +185,7 @@ def speech_configured(name: str) -> tuple[bool, Optional[str]]:
 
 def speech_override() -> Optional[str]:
     """The listener's choice, when there is one and this host can play it."""
-    name = _read(SPEECH_FILE)
+    name = target_name(_read(SPEECH_FILE))
     if not name:
         return None
     try:
@@ -212,7 +213,7 @@ def set_speech_override(name: Optional[str]) -> Optional[str]:
 
     Raises ValueError naming why a target was refused. Returns what was set.
     """
-    name = (name or "").strip().lower()
+    name = target_name((name or "").strip().lower())
     if not name:
         _write(SPEECH_FILE, None)
         return None
@@ -285,10 +286,10 @@ def speech_block() -> dict:
 def music_available(where: str) -> tuple[bool, Optional[str]]:
     if where not in MUSIC_WHERE:
         return False, f"unknown place {where!r}"
-    if where == "app":
+    if where == "abs":
         from .sinks.music_app import configured
         if not configured():
-            return False, "Sasonica's music player is not configured here"
+            return False, "Sasonica ABS's music player is not configured here"
     if where == "phone":
         from .sinks.music_local import configured
         if not configured():
@@ -298,12 +299,12 @@ def music_available(where: str) -> tuple[bool, Optional[str]]:
 
 def music_pref() -> Optional[str]:
     """The `--where` the next untargeted `media music play` uses, if set."""
-    where = _read(MUSIC_FILE)
+    where = target_name(_read(MUSIC_FILE))
     return where if where in MUSIC_WHERE else None
 
 
 def set_music_pref(where: Optional[str]) -> Optional[str]:
-    where = (where or "").strip().lower()
+    where = target_name((where or "").strip().lower())
     if where in ("", "default"):
         _write(MUSIC_FILE, None)
         return None
@@ -340,7 +341,7 @@ def music_now(intent: Optional[dict]) -> Optional[str]:
     except (OSError, ValueError):
         return None
     if isinstance(last, dict) and last.get("uri") == intent.get("uri"):
-        where = last.get("where")
+        where = target_name(last.get("where") or "")
         return where if where in MUSIC_WHERE else None
     return None
 

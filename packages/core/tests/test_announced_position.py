@@ -80,7 +80,7 @@ def test_a_pause_and_resume_does_not_lose_the_place(monkeypatch, tmp_path):
             self.written = None
 
         def get_now_playing(self, _sink):
-            return {"uri": "u", "started_at": 0.0, "target": "app",
+            return {"uri": "u", "started_at": 0.0, "target": "abs",
                     "extras": self.ex}
 
         def set_now_playing(self, _sink, **kw):

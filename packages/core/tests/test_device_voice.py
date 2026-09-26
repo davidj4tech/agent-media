@@ -16,10 +16,10 @@ from agent_media_core.types import Target
 
 
 def test_only_a_target_set_to_device_renders_on_it(monkeypatch):
-    monkeypatch.delenv("MEDIA_SPEECH_RENDER_NEXT", raising=False)
-    assert not device_voice.renders_on_device("next")
-    monkeypatch.setenv("MEDIA_SPEECH_RENDER_NEXT", "device")
-    assert device_voice.renders_on_device("next")
+    monkeypatch.delenv("MEDIA_SPEECH_RENDER_SASONICA", raising=False)
+    assert not device_voice.renders_on_device("sasonica")
+    monkeypatch.setenv("MEDIA_SPEECH_RENDER_SASONICA", "device")
+    assert device_voice.renders_on_device("sasonica")
     assert not device_voice.renders_on_device("rooms")
 
 
@@ -36,9 +36,9 @@ def test_the_clip_is_the_sentence_and_its_length_an_estimate(tmp_path):
 def test_the_player_is_handed_the_words(tmp_path, monkeypatch):
     clip = tmp_path / "20260927--claude--003.tts"
     clip.write_text("It's done, and 100% green & tested.")
-    monkeypatch.setenv("MEDIA_SPEECH_DEVICE_VOICE_NEXT", "en-au-x-aua-local")
-    monkeypatch.setenv("MEDIA_SPEECH_CLIP_BASEURL_NEXT", "http://red5:8780/audio")
-    uri = _clip_uri_for(str(clip), Target(name="next"))
+    monkeypatch.setenv("MEDIA_SPEECH_DEVICE_VOICE_SASONICA", "en-au-x-aua-local")
+    monkeypatch.setenv("MEDIA_SPEECH_CLIP_BASEURL_SASONICA", "http://red5:8780/audio")
+    uri = _clip_uri_for(str(clip), Target(name="sasonica"))
     assert uri.startswith("tts:20260927--claude--003?text=")
     head, _, voice = uri.partition("&voice=")
     assert unquote(head.split("text=", 1)[1]) == "It's done, and 100% green & tested."
@@ -46,9 +46,9 @@ def test_the_player_is_handed_the_words(tmp_path, monkeypatch):
 
 
 def test_a_tts_uri_passes_through_and_audio_clips_are_untouched(tmp_path, monkeypatch):
-    monkeypatch.setenv("MEDIA_SPEECH_CLIP_BASEURL_NEXT", "http://red5:8780/audio")
-    assert _clip_uri_for("tts:x?text=a", Target(name="next")) == "tts:x?text=a"
-    assert (_clip_uri_for(str(tmp_path / "a--000.mp3"), Target(name="next"))
+    monkeypatch.setenv("MEDIA_SPEECH_CLIP_BASEURL_SASONICA", "http://red5:8780/audio")
+    assert _clip_uri_for("tts:x?text=a", Target(name="sasonica")) == "tts:x?text=a"
+    assert (_clip_uri_for(str(tmp_path / "a--000.mp3"), Target(name="sasonica"))
             == "http://red5:8780/audio/a--000.mp3")
 
 

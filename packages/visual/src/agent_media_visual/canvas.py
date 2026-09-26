@@ -513,7 +513,7 @@ def _pair_host() -> str:
     machine's tailnet IP, else its hostname.
 
     Not the bare hostname first: a short MagicDNS name (`red5`) resolves only
-    where the tailnet's DNS is in use, and Sasonica Next allows cleartext only
+    where the tailnet's DNS is in use, and Sasonica allows cleartext only
     to tailnet addresses — a link naming `red5` failed to pair with "Could not
     reach http://red5:8781" (22 Sep 2026). The tailnet IP reaches it anywhere
     on the tailnet.

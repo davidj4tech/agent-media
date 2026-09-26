@@ -1,7 +1,7 @@
-"""sink-music-app: music played by Sasonica's ExoPlayer on the phone.
+"""sink-music-app: music played by Sasonica ABS's ExoPlayer on the phone.
 
-The `app` target means "the phone, played by an app rather than Termux". For
-speech that app is the companion; for music it is Sasonica, which already
+The `abs` target (called `app` before 27 Sep 2026) means "the phone, played
+by an app rather than Termux": Sasonica ABS, which already
 plays books from red5 through its control endpoint (``phone_player``) and
 since the URL route (``/play?url=``) plays any http URL as a one-track,
 unsynced session. Music gets the app's focus handling, lock-screen controls
@@ -40,14 +40,14 @@ from . import music_fetch
 
 log = logging.getLogger(__name__)
 
-APP_TARGET = Target(name="app")
+ABS_TARGET = Target(name="abs")
 #: /state is asked before every duck and on every routed read, so it must be
 #: quick to give up: a frozen app is "not playing music", not a stall.
 _STATE_TIMEOUT = 3.0
 
 
 def configured() -> bool:
-    return phone_player.enabled() and bool(phone_player.direct_url(APP_TARGET))
+    return phone_player.enabled() and bool(phone_player.direct_url(ABS_TARGET))
 
 
 def _served_url(path: str) -> Optional[str]:
@@ -101,7 +101,7 @@ class SinkMusicApp:
     def _state(self) -> Optional[dict]:
         if not configured():
             return None
-        return phone_player.request(APP_TARGET, "/state", timeout=_STATE_TIMEOUT)
+        return phone_player.request(ABS_TARGET, "/state", timeout=_STATE_TIMEOUT)
 
     def _music(self) -> Optional[dict]:
         """The app's state while it holds a music session, else None."""
@@ -112,11 +112,11 @@ class SinkMusicApp:
 
     def _send(self, route: str, params: Optional[dict] = None) -> None:
         if self._music() is not None:
-            phone_player.request(APP_TARGET, route, params, timeout=10.0)
+            phone_player.request(ABS_TARGET, route, params, timeout=10.0)
 
     # ---- playback -----------------------------------------------------------
 
-    def play(self, uri: str, target: Target = APP_TARGET,
+    def play(self, uri: str, target: Target = ABS_TARGET,
              replace: bool = True, **_: object) -> bool:
         """Start `uri` in the app. False = not taken; the caller falls back.
 
@@ -129,7 +129,7 @@ class SinkMusicApp:
         if not url:
             log.info("sink-music-app: nothing the app can play for %s", uri)
             return False
-        s = phone_player.request(APP_TARGET, "/play",
+        s = phone_player.request(ABS_TARGET, "/play",
                                  {"url": url, "title": title or None, "rate": 1.0})
         if s is None:
             return False
@@ -140,61 +140,61 @@ class SinkMusicApp:
 
     # ---- transport ------------------------------------------------------------
 
-    def pause(self, target: Target = APP_TARGET) -> None:
+    def pause(self, target: Target = ABS_TARGET) -> None:
         self._send("/pause")
 
-    def resume(self, target: Target = APP_TARGET) -> None:
+    def resume(self, target: Target = ABS_TARGET) -> None:
         self._send("/resume")
 
-    def toggle(self, target: Target = APP_TARGET) -> None:
+    def toggle(self, target: Target = ABS_TARGET) -> None:
         self._send("/toggle")
 
-    def stop(self, target: Target = APP_TARGET) -> None:
+    def stop(self, target: Target = ABS_TARGET) -> None:
         self._send("/stop")
 
-    def seek_cur(self, target: Target = APP_TARGET, position_ms: int = 0) -> None:
+    def seek_cur(self, target: Target = ABS_TARGET, position_ms: int = 0) -> None:
         self._send("/seek", {"t": max(0, position_ms) / 1000.0})
 
-    def seek_relative(self, secs: float, target: Target = APP_TARGET) -> None:
+    def seek_relative(self, secs: float, target: Target = ABS_TARGET) -> None:
         self._send("/jump", {"by": float(secs)})
 
-    def set_speed(self, rate: float, target: Target = APP_TARGET) -> bool:
+    def set_speed(self, rate: float, target: Target = ABS_TARGET) -> bool:
         if self._music() is None:
             return False
-        return phone_player.request(APP_TARGET, "/speed",
+        return phone_player.request(ABS_TARGET, "/speed",
                                     {"rate": float(min(4.0, max(0.25, rate)))}) is not None
 
-    def current_speed(self, target: Target = APP_TARGET) -> Optional[float]:
+    def current_speed(self, target: Target = ABS_TARGET) -> Optional[float]:
         s = self._music()
         return float(s["rate"]) if s and s.get("rate") is not None else None
 
     # Android's audio focus ducks the app for the companion's speech; see the
     # module docstring. Nothing to turn down, and nothing to restore.
-    def duck(self, target: Target = APP_TARGET, level: int = 15) -> None:
+    def duck(self, target: Target = ABS_TARGET, level: int = 15) -> None:
         return None
 
-    def unduck(self, target: Target = APP_TARGET, restore: int = 100) -> None:
+    def unduck(self, target: Target = ABS_TARGET, restore: int = 100) -> None:
         return None
 
-    def current_volume(self, target: Target = APP_TARGET) -> Optional[int]:
+    def current_volume(self, target: Target = ABS_TARGET) -> Optional[int]:
         return None
 
-    def nominal_volume(self, target: Target = APP_TARGET) -> Optional[int]:
+    def nominal_volume(self, target: Target = ABS_TARGET) -> Optional[int]:
         return None
 
     # ---- observation ----------------------------------------------------------
 
-    def position(self, target: Target = APP_TARGET) -> Optional[int]:
+    def position(self, target: Target = ABS_TARGET) -> Optional[int]:
         s = self._music()
         return int(float(s.get("t") or 0) * 1000) if s else None
 
-    def now_playing_uri(self, target: Target = APP_TARGET) -> Optional[str]:
+    def now_playing_uri(self, target: Target = ABS_TARGET) -> Optional[str]:
         s = self._music()
         return s.get("url") if s else None
 
-    def active(self, target: Target = APP_TARGET) -> bool:
+    def active(self, target: Target = ABS_TARGET) -> bool:
         s = self._music()
         return bool(s and not s.get("paused"))
 
-    def loaded(self, target: Target = APP_TARGET) -> bool:
+    def loaded(self, target: Target = ABS_TARGET) -> bool:
         return self._music() is not None

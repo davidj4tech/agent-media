@@ -101,7 +101,7 @@ def test_a_spoken_digest_is_rendered_held_and_played_by_its_row(monkeypatch):
 
     from agent_media_core.state import StateStore
     rid = StateStore().add_history(sink="speech", uri="/tmp/x.mp3", started_at=1,
-                                   ended_at=1, target="next", source="cli",
+                                   ended_at=1, target="sasonica", source="cli",
                                    text=spoken, extras={"held": True, "dedup_key": key})
     listed = alerts.spoken_digests(now=2)
     assert [(r["id"], r["speech"]) for r in listed] == [

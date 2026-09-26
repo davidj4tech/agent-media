@@ -1,7 +1,7 @@
 # Sasonica roadmap
 
 What is built, in flight and queued for Sasonica: the chat app and its
-Android shell (Sasonica Next), the server here in agent-media, and
+Android shell (Sasonica, once Sasonica Next[^next-rename]), the server here in agent-media, and
 Sasonica Shell. One list, so any session (or David) can see where things
 stand. Update it when an item lands or a decision is made.
 
@@ -23,7 +23,7 @@ Where things live:
   `com.sasonica.abs`, branch `sasonica`, `agent-phone-adb sasonica-abs`. Book
   control on :8772 (loopback) and :8773 (tokened).
 - **Sasonica Shell:** `~/projects/sasonica-shell` (formerly Runlet).
-- **Licences:** agent-media, the chat app + Next, and Sasonica Shell are
+- **Licences:** agent-media, the chat app + its Android shell, and Sasonica Shell are
   Apache-2.0, copyright South Pen Labs. The Audiobookshelf forks (the old
   Sasonica app, sasonica-web) stay GPL v3; never copy their code into
   `chat/`.
@@ -84,7 +84,7 @@ new chat there, 23 Sep 2026); project
 line under titles; menus that close on an outside tap; the brand and icons;
 the About page; seven text sizes (9–21 px, Default 15), and a pinch
 steps through them and saves the choice (24 Sep 2026); the digital-
-assistant slot in Next; the coding-agents installer in Settings; Sasonica
+assistant slot in Next[^next-rename]; the coding-agents installer in Settings; Sasonica
 Shell rename, named URLs and client labels; answered questions stop being
 read out; tap to read from here (tap a sentence while it is spoken; the
 selection chip on older replies was removed 25 Sep 2026 — they play from
@@ -264,27 +264,27 @@ chat instead stays a chip; opening it stops the send countdown). android-next
 
 ## In flight
 
-**Next's own speech player.** Media3 (David, 23 Sep 2026: the reason
+**Sasonica's own speech player.** Media3 (David, 23 Sep 2026: the reason
 MediaPlayer was chosen — the companion had no Gradle build — is gone). Built:
 `com.sasonica.next.speech` — `MpvServer`, `Json` and `ClipCache` carried over
 from the old app unchanged (companion-origin, Apache-2.0), a new
 `Media3Speech` on ExoPlayer behind the same `MpvServer.Player` interface, and
 `SpeechService`, a `mediaPlayback` foreground service that binds the phone's
 tailnet address on **6614** (the old app keeps 6613, so both run). A Settings
-toggle, off until turned on; `MEDIA_SPEECH_SOCKET_NEXT=tcp://p8a:6614` and
-`media speech-target next` point red5 at it. The protocol test came across to
+toggle, off until turned on; `MEDIA_SPEECH_SOCKET_SASONICA=tcp://p8a:6614` and
+`media speech-target sasonica` point red5 at it. The protocol test came across to
 JUnit and runs in CI. Next: build it on CI, sideload beside the old app, and
 listen — the speed at 1.6x and the gap between sentences are the two things
 Media3 has to prove. **First reply through it played on p8a, 23 Sep 2026**:
 two clips, the join fired on its own and volunteered `playlist-pos`, and
 `idle-active` went true at the end.
 
-**The hold tier in Next** (23 Sep 2026). `Holds.java` — dictation pauses a
+**The hold tier in Sasonica** (23 Sep 2026). `Holds.java` — dictation pauses a
 reply and it carries on; a voice session or a call holds every reply until it
 is over, with the Speak now / Later card; urgent takes the room. `MicWatch`,
 `MicSteady`, `MicSource`, `BargeIn`, `DictationHold`, `HoldRate` and
 `RingerState` came across unchanged, with their tests as JUnit. No `BookHold`
-(Next has no book). Served on loopback :8774 since 26 Sep 2026
+(Sasonica has no book). Served on loopback :8774 since 26 Sep 2026
 (`Readouts.java`), and agent-media reads them there.
 
 The Organiser on plain Org, paragtd as a package (24 Sep 2026,
@@ -296,7 +296,7 @@ once from Emacs by setup's `agenda` row), and paragtd's GTD files from
 Closing a sequenced step from the phone follows Org's dependency blocking and
 runs paragtd's next-step trigger, and the Organiser says which step is next.
 The app takes its keywords and refile targets from `GET /org`. On the red5
-server and preview; in Next at the next CI build. Then **More…** beside the
+server and preview; in the app at the next CI build. Then **More…** beside the
 capture box: your capture templates (the manifest's, site ones too) filled
 and filed as org-capture would, prompts drawn above the box; templates that
 call Emacs functions (morning/midday/evening/visioning) stay in Emacs. And
@@ -344,18 +344,18 @@ ahead.
    harness plus its config dir: `CLAUDE_CONFIG_DIR`, `CODEX_HOME`,
    `PI_CODING_AGENT_DIR`, `XDG_DATA_HOME`, Hermes's own profiles) gives
    every harness multiple logins; pi first needs a login recipe at all.
-   Also decided there: Next is **not** rebased on opencode-mobile, but its
+   Also decided there: Sasonica is **not** rebased on opencode-mobile, but its
    diff viewer, tool-call approval and demo mode are queued as app work, in
    that order. Its self-hosted F-Droid repo is **parked until monetization
    is decided** (David, 26 Sep 2026; `docs/proposals/2026-08-20-monetization.md`),
    since where the app ships decides how it can be charged for.
 
-5. **Alerts and digests in Next** (David, 24 Sep 2026) —
+5. **Alerts and digests in Sasonica** (David, 24 Sep 2026) —
    `docs/proposals/2026-09-24-alerts-and-digests.md`. The dozen red5
    watchers (disk, host, login, mcp, memory health, issue watches) and the
    digests (describe, agenda, landscape) report status through one
    `agent-alert` helper to a server-side store; the store does the edge
-   detection, the `alerts` event rides `/sessions/events` to Next's
+   detection, the `alerts` event rides `/sessions/events` to Sasonica's
    notifier, cards get **Fix it** (a session via `POST /ask`) and **Ack**,
    and inbox.org stays the record. **Step 1 DONE 24 Sep 2026**: the store
    (§6.17, `POST/GET /alerts`, `/alerts/ack`), `agent-alert` with an offline
@@ -389,7 +389,7 @@ ahead.
    a phone-voiced turn has none until something needs one (a replay, the
    rooms), and the server renders it then; nothing is uploaded.
    The server voice stays as a setting ("Voice: this phone / server").
-   Shape: today Next's :6614 speaks the mpv vocabulary and only ever gets
+   Shape: today Sasonica's :6614 speaks the mpv vocabulary and only ever gets
    `loadfile <uri>`, so the server needs a text lane to it — a verb carrying
    the sentences (and the turn/clip ids the follow-along already keys on),
    with the holds, barge-in, priority and speed (`setSpeechRate`) applying
@@ -407,8 +407,8 @@ ahead.
    the holds. **David: "that sounded great"** (en-au-x-aua-local, 1.6x) —
    go ahead with the text lane.
    **Built and ON, 27 Sep 2026** (agent-media `3fca516`, sasonica-app
-   `f0686c3`): `MEDIA_SPEECH_RENDER_NEXT=device` +
-   `MEDIA_SPEECH_DEVICE_VOICE_NEXT` in red5's env. Each sentence is filed as a
+   `f0686c3`): `MEDIA_SPEECH_RENDER_SASONICA=device` +
+   `MEDIA_SPEECH_DEVICE_VOICE_SASONICA` in red5's env. Each sentence is filed as a
    `.tts` clip (its words) and the player gets `tts:<clip>?text=…&voice=…`;
    `ClipCache` renders it with `synthesizeToFile` at 1.0 (player speed does
    the rest). Durations estimated at 15 chars/s until measured. Replay on a
@@ -578,10 +578,17 @@ ahead.
 - The Windows install test leaves stray PATH entries.
 - A stale saved question for a session may not clear after it's answered
   (the PostToolUse clear may not fire).
-- Next's speech service starts after a reboot or an update as `specialUse`
+- Sasonica's speech service starts after a reboot or an update as `specialUse`
   (Android 15 will not start `mediaPlayback` from `BOOT_COMPLETED`), since
   26 Sep 2026 — not yet seen through a real reboot.
-- Next's speech takes audio focus (it is the app's only player), so while
+- Sasonica's speech takes audio focus (it is the app's only player), so while
   both apps are installed a reply pauses the old app's book through Android
   rather than in process. That is the intended behaviour, but it is the
   arbitration the old app does more carefully, and it has not been heard yet.
+
+[^next-rename]: Sasonica Next became Sasonica (`com.sasonica.app`) on 26 Sep
+    2026, and the older Sasonica app became Sasonica ABS (`com.sasonica.abs`).
+    Their speech targets followed on 27 Sep: `next` → `sasonica`, `app` → `abs`
+    (`MEDIA_SPEECH_*_NEXT` → `*_SASONICA`, `*_APP` → `*_ABS`). The Done list
+    keeps the names it was written with; `android-next` is the frozen fork
+    branch.

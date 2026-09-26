@@ -35,7 +35,7 @@ from .sinks.music_router import SinkMusicRouter
 from .sinks import speech as _speech_sink
 from .sinks.speech import SinkSpeech, _broker_max_volume, _socket_for
 from .state import StateStore
-from .types import Event, Priority, Source, Target
+from .types import Event, Priority, Source, Target, target_name
 
 POPUP_CHANNELS = ("speech", "music", "book")
 
@@ -5367,11 +5367,11 @@ def cmd_speech_target(a) -> int:
 
 
 def _resolve_music_where(where: str) -> str:
-    """Resolve a `--where` value to a concrete backend: 'app', 'phone' or 'rooms'.
+    """Resolve a `--where` value to a concrete backend: 'abs', 'phone' or 'rooms'.
 
     ``default`` follows MEDIA_MUSIC_DEFAULT_TARGET, then the speech default
-    device. Explicit ``auto`` keeps the old listener-aware routing. ``app`` is
-    the phone played by Sasonica, and needs its remote-control URL; without
+    device. Explicit ``auto`` keeps the old listener-aware routing. ``abs`` is
+    the phone played by Sasonica ABS, and needs its remote-control URL; without
     one it means the phone's mpv, as it would if the app refused the track.
 
     A listener's stored choice (`audio_targets.music_pref`, set from the app's
@@ -5388,15 +5388,17 @@ def _resolve_music_where(where: str) -> str:
         return "phone"
     from .sinks.music_app import configured as _app_configured
     from .sinks.music_local import configured as _local_configured
-    if where == "app":
-        return "app" if _app_configured() else "phone"
+    where = target_name(where)
+    if where == "abs":
+        return "abs" if _app_configured() else "phone"
     if where in ("", "default"):
         default_target = (os.environ.get("MEDIA_MUSIC_DEFAULT_TARGET")
                           or os.environ.get("MEDIA_SPEECH_DEFAULT_TARGET")
                           or "")
-        if default_target == "app" and _app_configured():
-            return "app"
-        if default_target == "app" and _local_configured():
+        default_target = target_name(default_target)
+        if default_target == "abs" and _app_configured():
+            return "abs"
+        if default_target == "abs" and _local_configured():
             return "phone"
         if default_target in ("phone", "local-phone", "phone-local") and _local_configured():
             return "phone"
@@ -5649,9 +5651,9 @@ def _resume_bookmark(bm: dict) -> int:
         m = SinkMusic()
         where = _resolve_music_where("auto")
         try:
-            if where == "app":
+            if where == "abs":
                 from .sinks.music_router import SinkMusicRouter
-                SinkMusicRouter(mopidy=m).play(uri, Target(name="app"), replace=True)
+                SinkMusicRouter(mopidy=m).play(uri, Target(name="abs"), replace=True)
             elif where == "phone":
                 from .sinks.music_local import SinkMusicLocal, configured
                 if not configured():
@@ -5787,15 +5789,15 @@ def cmd_music(a) -> int:
             return 2
         where = _resolve_music_where(getattr(a, "where", "auto"))
         ct = coerce_content_type(getattr(a, "as_type", None)) or detect_content_type(a.uri)
-        if where == "app":
+        if where == "abs":
             try:
-                m.play(a.uri, Target(name="app"), replace=not a.add)
+                m.play(a.uri, Target(name="abs"), replace=not a.add)
             except Exception as e:  # noqa: BLE001
-                print(f"media music play (app) failed: {e}", file=sys.stderr)
+                print(f"media music play (abs) failed: {e}", file=sys.stderr)
                 return 1
             StateStore().set_music_intent(a.uri, ct.value,
                                           getattr(a, "title", "") or None)
-            _note_music_where("app", a.uri)
+            _note_music_where("abs", a.uri)
             print(f"playing on phone ({ct.value}): {a.uri}")
             return 0
         if where == "phone":
@@ -8573,7 +8575,8 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument("--slot", default="",
                    help="for 'bookmark': named register (e.g. 1, 2) for overlapping ranges")
     s.add_argument("--title", default="", help=argparse.SUPPRESS)
-    s.add_argument("--where", choices=("default", "auto", "local", "rooms", "phone", "app"),
+    s.add_argument("--where", type=target_name,
+                   choices=("default", "auto", "local", "rooms", "phone", "abs"),
                    default="default",
                    help="for 'play': where to play — 'phone' downloads on the "
                         "phone (residential IP, dodges 403, offline) and plays "
@@ -8718,8 +8721,8 @@ def _build_parser() -> argparse.ArgumentParser:
                     choices=("music", "audiobook", "podcast", "dj-set",
                              "ambient"),
                     help="override the interruption content type")
-    sh.add_argument("--where", choices=("default", "auto", "local", "rooms",
-                                        "phone", "app"),
+    sh.add_argument("--where", type=target_name,
+                    choices=("default", "auto", "local", "rooms", "phone", "abs"),
                     default="", help="where to play it (as `media music play`)")
     sh.add_argument("--no-probe", action="store_true",
                     help="skip the yt-dlp metadata fetch and classify on the "

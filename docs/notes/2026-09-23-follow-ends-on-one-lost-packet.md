@@ -24,7 +24,7 @@ the rest of a reply, and (until 965f409) End of reply doing nothing.
 
 ## The link is fine. The budget is not
 
-The `next` target is Sasonica Next's own player on `tcp://p8a:6614`. Fifteen
+The `next` target[^next-rename] is Sasonica Next's own player on `tcp://p8a:6614`. Fifteen
 consecutive snapshots from red5, just now:
 
 ```
@@ -70,3 +70,9 @@ None of this is urgent now that the blind hold follows what it can read
 (23efc2d) and obeys the listener (965f409) — the failure is degraded rather
 than broken. But the loop is giving up roughly half the time, and it should
 not be giving up at all.
+
+[^next-rename]: Renamed since this was written: Sasonica Next is Sasonica
+    (`com.sasonica.app`, 26 Sep 2026) and its speech target `next` is
+    `sasonica` (27 Sep); the older Sasonica app is Sasonica ABS
+    (`com.sasonica.abs`), target `abs` (was `app`). The text above keeps the
+    names it was written with.

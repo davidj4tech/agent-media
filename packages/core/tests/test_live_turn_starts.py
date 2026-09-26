@@ -19,7 +19,7 @@ SID = "6c73498c-02c1-4846-8350-a82006973571"
 def _row(monkeypatch, extras, started_at):
     class Fake:
         def get_now_playing(self, sink):
-            return {"started_at": started_at, "target": "app",
+            return {"started_at": started_at, "target": "abs",
                     "extras": {"source_session": SID, "text": "One. Two.",
                                "writer_pid": os.getpid(), **extras}}
     monkeypatch.setattr(store_mod, "StateStore", Fake)

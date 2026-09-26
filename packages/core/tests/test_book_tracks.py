@@ -703,7 +703,7 @@ def test_live_turn_starts_its_clock_at_the_first_word(monkeypatch):
           "clip_sentences": ["One.", "Two.", "Three."],
           "clip_starts_s": [123.7, 132.9], "clip_durations_s": [9.1, 6.8, 6.4],
           "play_started_at": now - 173.5}
-    row = {"started_at": 100.0, "target": "next", "extras": json.dumps(ex)}
+    row = {"started_at": 100.0, "target": "sasonica", "extras": json.dumps(ex)}
 
     class Store:
         def get_now_playing(self, sink):

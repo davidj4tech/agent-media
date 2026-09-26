@@ -1,7 +1,7 @@
 # Proposal: voice chat with barge-in (22 Sep 2026)
 
 Status: **plan; step 0 (spike) measured 22 Sep 2026, see §3a.** Decided
-22 Sep: Sasonica Next, Haiku by default, speaker first (earbuds tested too). The goal David asked for is "full duplex
+22 Sep: Sasonica Next[^next-rename], Haiku by default, speaker first (earbuds tested too). The goal David asked for is "full duplex
 chat". What this delivers is the practical version of it: the phone listens
 the whole time a voice chat is open, the reply starts speaking within a
 couple of seconds of him stopping, and talking over it cuts it off at once
@@ -152,3 +152,9 @@ first-clause split.
 - Which app: Next (recommended; the old app is retiring) or the old app?
 - Model for voice chats: haiku by default for speed, or the session's model?
 - Speaker or earbuds, mostly? It decides how much echo work step 3 carries.
+
+[^next-rename]: Renamed since this was written: Sasonica Next is Sasonica
+    (`com.sasonica.app`, 26 Sep 2026) and its speech target `next` is
+    `sasonica` (27 Sep); the older Sasonica app is Sasonica ABS
+    (`com.sasonica.abs`), target `abs` (was `app`). The text above keeps the
+    names it was written with.

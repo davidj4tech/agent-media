@@ -207,7 +207,7 @@ def test_the_resume_correction_works_again_end_to_end():
             self.ex = ex
 
         def get_now_playing(self, _sink):
-            return {"uri": "u", "started_at": origin, "target": "app",
+            return {"uri": "u", "started_at": origin, "target": "abs",
                     "extras": self.ex}
 
         def set_now_playing(self, _sink, **kw):

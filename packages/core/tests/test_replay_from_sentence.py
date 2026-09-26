@@ -139,7 +139,7 @@ def test_a_jump_in_a_playlist_replay_moves_its_clock(monkeypatch):
                         lambda self, sink, **kw: rows.append(kw))
     ex = {"history_id": 9, "clip_durations_s": [1.0, 2.0, 3.0, 4.0],
           "clip_sentences": SENTENCES, "play_started_at": 0.0}
-    cli._restamp_replay_clock({"uri": "u", "target": "app"}, ex, 3, 4)
+    cli._restamp_replay_clock({"uri": "u", "target": "abs"}, ex, 3, 4)
     got = rows[-1]["extras"]
     assert got["current_sentence_idx"] == 3 and got["current_sentence"] == "Four."
     assert abs((time.time() - got["play_started_at"]) - 6.0) < 0.5

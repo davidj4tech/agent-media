@@ -7,7 +7,7 @@ new `packages/notes-paragtd`, and adds one export command to paragtd.
 
 ## What prompted it
 
-David (24 Sep 2026): could paragtd be included in Next or agent-media "as a
+David (24 Sep 2026): could paragtd be included in Next[^next-rename] or agent-media "as a
 package rather than a plug-in", because "I'd like to be conscious of someone
 using the app without the paraGTD setup. I think I'd also like it to work for
 org-agenda without paraGTD … with the paraGTD functionality being an extra."
@@ -211,3 +211,9 @@ it can go second if the phone matters more this week.
 3. **The other org-edna triggers.** Leave them to Emacs (as above), or
    implement a larger subset. Recommended: **leave them**. paragtd writes only
    the one form, and anyone writing their own edna triggers has Emacs open.
+
+[^next-rename]: Renamed since this was written: Sasonica Next is Sasonica
+    (`com.sasonica.app`, 26 Sep 2026) and its speech target `next` is
+    `sasonica` (27 Sep); the older Sasonica app is Sasonica ABS
+    (`com.sasonica.abs`), target `abs` (was `app`). The text above keeps the
+    names it was written with.

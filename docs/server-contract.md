@@ -1423,7 +1423,7 @@ The speech bar.
 ```json
 {"ok": true, "live": true, "speaking": true, "paused": false,
  "sentence": "…", "session": "6c73…" | null, "title": "…", "item": "li_…" | null,
- "pos": 12.0, "dur": 40.0, "speed": 1.6, "muted": false, "target": "app" | null,
+ "pos": 12.0, "dur": 40.0, "speed": 1.6, "muted": false, "target": "sasonica" | null,
  "replay": false, "turn": {"at": 1790031449.7, "id": 91},
  "queued": [{"session": "5f8c…" | null, "title": "…", "urgent": false, "at": 1790031449.7}]}
 ```
@@ -1607,20 +1607,26 @@ Where speech and music play, chosen from the app. The choice is kept in
 core (`agent_media_core/audio_targets.py`) and is the same one
 `media speech-target [NAME | --clear]` shows and sets at the desk.
 
+Target names changed on 27 Sep 2026: `sasonica` was `next` and `abs` was
+`app`[^next-rename]. A name from before (a history row's `target`, a saved
+choice, an env value) still resolves to the new one; the per-target env
+keys moved with it (`MEDIA_SPEECH_SOCKET_SASONICA`, `…_ABS`).
+
 #### `GET /audio/targets` — gated (`auth.gate`)
 
 ```json
 {"ok": true, "channels": {
-  "speech": {"current": "app", "default": "app", "overridden": false,
-             "options": [{"name": "app",   "label": "Phone (Sasonica)",      "available": true,  "why": null},
+  "speech": {"current": "sasonica", "default": "sasonica", "overridden": false,
+             "options": [{"name": "abs",   "label": "Phone (Sasonica ABS)",  "available": true,  "why": null},
                          {"name": "phone", "label": "Phone (Termux player)", "available": true,  "why": "was slow or unreachable a moment ago"},
                          {"name": "rooms", "label": "House speakers",        "available": true,  "why": null},
-                         {"name": "local", "label": "red5",                  "available": false, "why": "no speech player running on red5"}]},
+                         {"name": "local", "label": "red5",                  "available": false, "why": "no speech player running on red5"},
+                         {"name": "sasonica", "label": "Phone (Sasonica)",   "available": true,  "why": null}]},
   "music":  {"current": "phone" | null, "next": "default", "overridden": false,
              "options": [{"name": "auto",  "label": "Automatic", …},
                          {"name": "rooms", "label": "House speakers", …},
                          {"name": "phone", "label": "Phone (Termux player)", …},
-                         {"name": "app",   "label": "Phone (Sasonica)", …}]}}}
+                         {"name": "abs",   "label": "Phone (Sasonica ABS)", …}]}}}
 ```
 
 Speech:
@@ -1966,7 +1972,7 @@ machines are. Code: `agent_media_server/dashboard.py`. Pinned by
  "working": [{"session": "01a0…", "title": "Set up websites on red4",
               "current": "cloudflare api execute", "since": 1790045840.684, "count": 15}],
  "speech": {"now": {"live": false, "speaking": false, "paused": false, "session": null,
-                    "title": "", "sentence": "", "target": "app", "replay": false},
+                    "title": "", "sentence": "", "target": "sasonica", "replay": false},
             "queued": [{"session": "5f8c…", "title": "…", "urgent": false, "at": 1790031449.7}]},
  "recent": [{"session": "5f8c…", "title": "…", "live": true, "at": 1790053201.164, "rested": null,
              "recap": {"text": "…", "at": 1790052694.779, "source": "claude"}}],
@@ -2148,7 +2154,7 @@ read-only agent view.
 #### `GET /sessions/events[?ping=<s>]` — gated (`auth.may_control_speech`, like `/sessions/state`)
 
 What a phone's background notifier holds open while the app is closed
-(Sasonica Next's `NotifyService`): one connection that says when any live
+(Sasonica's `NotifyService`): one connection that says when any live
 session changes state, so it can post "New reply · <title>" (`working` →
 `waiting`) and "Needs you · <title>" (→ `approval`) without polling. Code:
 `agent_media_server/session_events.py`. Pinned by
@@ -2485,12 +2491,12 @@ opening their heading — and the rest as no longer on it.
 Seen it: kept open, not re-notified; a clear leaves its TODO open. 404 for an
 unknown id. The next raise forgets the ack.
 
-Not yet: the `alerts` event on `/sessions/events` and Next's Home section
+Not yet: the `alerts` event on `/sessions/events` and Sasonica's Home section
 (proposal step 2).
 
 ### 6.18 Files shared to the app — gated (built 25 Sep 2026)
 
-The phone's share sheet hands the app text, a link or files (Next's
+The phone's share sheet hands the app text, a link or files (Sasonica's
 `ShareInPlugin.java` → `routes/share.tsx`). The text needs no route of its
 own: it goes into a draft (§6.2), `/org/capture` (§6.10) or `/share` (a
 link, §6.3). A file is sent here first and the app puts a line per file,
@@ -2580,7 +2586,7 @@ Pinned by `packages/server/tests/test_devices.py`.
    `--host` and `--port` set the base, as they do for the amux link.
    Default host (22 Sep 2026): `MEDIA_VISUAL_PAIR_HOST`, else this
    machine's **tailnet IP** (`tailscale ip -4`), else its hostname — a bare
-   MagicDNS name (`red5`) is not reachable from Sasonica Next, whose
+   MagicDNS name (`red5`) is not reachable from Sasonica, whose
    network security config allows cleartext only to tailnet addresses
    ("Could not reach http://red5:8781"). Default port `MEDIA_VISUAL_PORT`/8781.
    The app link is printed first, on a line of its own, then the QR; the
@@ -3445,7 +3451,7 @@ What ships today, and the shape to offer **first** to anyone who already has
 a mesh (David, 23 Sep 2026): it is the least work and the least exposure.
 It is simply not one a stranger can adopt, so it cannot be the only one.
 
-**Correction to §9 (23 Sep 2026).** §9 says Sasonica Next's network security
+**Correction to §9 (23 Sep 2026).** §9 says Sasonica Next's[^next-rename] network security
 config "allows cleartext only to tailnet addresses". It does not:
 `android/app/src/main/res/xml/network_security_config.xml` is
 `<base-config cleartextTrafficPermitted="true">` with no domain rules — in
@@ -3604,3 +3610,8 @@ That is a later decision, not part of this contract.
   collisions and cross-suite isolation faults only show up that way.
 - When a shape changes, change this file and the test in the same commit.
 - When a v1 section is built, move it into §6 and pin it the same way.
+
+[^next-rename]: Sasonica Next became Sasonica (`com.sasonica.app`) on 26 Sep
+    2026, and the older Sasonica app became Sasonica ABS (`com.sasonica.abs`).
+    Their speech targets followed on 27 Sep: `next` → `sasonica`, `app` → `abs`.
+    Dated text keeps the names it was written with.

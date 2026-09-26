@@ -81,8 +81,8 @@ def test_a_known_target_this_host_cannot_play_is_refused():
 
 
 def test_a_per_target_lane_makes_a_target_playable(monkeypatch):
-    monkeypatch.setenv("MEDIA_REMOTE_SAY_CMD_APP", "ssh p8a media say")
-    assert audio_targets.set_speech_override("app") == "app"
+    monkeypatch.setenv("MEDIA_REMOTE_SAY_CMD_ABS", "ssh p8a media say")
+    assert audio_targets.set_speech_override("app") == "abs"   # the name before the rename still resolves
 
 
 def test_a_target_named_only_by_env_is_offered(monkeypatch):
@@ -277,5 +277,14 @@ def test_music_now_is_known_only_for_the_track_we_sent():
 def test_music_block_shape():
     b = audio_targets.music_block(None)
     assert set(b) == {"current", "next", "overridden", "options"}
-    assert [o["name"] for o in b["options"]] == ["auto", "rooms", "phone", "app"]
+    assert [o["name"] for o in b["options"]] == ["auto", "rooms", "phone", "abs"]
     assert b["current"] is None and b["next"] == "default" and b["overridden"] is False
+
+
+def test_a_name_from_before_the_rename_resolves(monkeypatch):
+    # 27 Sep 2026: `app` became `abs` and `next` became `sasonica`. History
+    # rows, a saved choice and an env value written before still resolve.
+    assert Target("app").name == "abs" and Target("next").name == "sasonica"
+    monkeypatch.setenv("MEDIA_SPEECH_DEFAULT_TARGET", "next")
+    assert audio_targets.env_speech_default() == "sasonica"
+    assert cli._resolve_music_where("app") in ("abs", "phone")

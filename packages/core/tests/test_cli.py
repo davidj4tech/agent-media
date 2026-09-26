@@ -316,14 +316,14 @@ def test_jump_end_on_phone_hands_the_turn_to_its_follower(monkeypatch, extras):
     monkeypatch.setattr(cli, "_sock", lambda: "tcp://phone.example:6613")
     monkeypatch.setattr(cli, "_speech_in_flight", lambda: True)
     monkeypatch.setattr(cli, "_now_speaking",
-                        lambda: {"target": "app", "extras": extras})
+                        lambda: {"target": "abs", "extras": extras})
     monkeypatch.setattr(cli, "_write_nav_request",
                         lambda idx, target: navs.append((idx, target)))
 
     class A:
         where = "end"
     assert cli.cmd_jump(A()) == 0
-    assert navs == [(cli.sys.maxsize, "app")]
+    assert navs == [(cli.sys.maxsize, "abs")]
     assert fake.calls == []
 
 
@@ -334,7 +334,7 @@ def test_jump_end_on_phone_without_a_follower_drives_the_player(monkeypatch):
     monkeypatch.setattr(cli, "_sock", lambda: "tcp://phone.example:6613")
     monkeypatch.setattr(cli, "_speech_in_flight", lambda: True)
     monkeypatch.setattr(cli, "_now_speaking",
-                        lambda: {"target": "app", "extras": {"replay": True}})
+                        lambda: {"target": "abs", "extras": {"replay": True}})
     monkeypatch.setattr(cli, "StateStore", lambda: type(
         "S", (), {"get_now_playing": lambda self, ch: None})())
     monkeypatch.setattr(cli, "_write_nav_request", lambda *a, **k: None)

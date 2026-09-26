@@ -16,7 +16,7 @@ them there (deployed on p8a, call_guard logs `mic source: …:8772/mic`); the
 waiting card and the share sheet moved; the mic revive knocks on Sasonica.
 Step 5 (2026-09-22): the companion is uninstalled from p8a and its three
 loopback bridges (mpv-*-bridge-local) are down with a `down` file; the tailnet
-bridges stay. Decided the same day: Sasonica Next takes this speech and holds
+bridges stay. Decided the same day: Sasonica Next[^next-rename] takes this speech and holds
 code as it is (companion-origin, Apache-2.0, not ABS code) and swaps only the
 player for Media3. Proposal written 2026-09-19. Written the day music moved to
 Sasonica's player (agent-media 9b4b13e, sasonica ced15c0c). That left the phone
@@ -178,3 +178,9 @@ which GPL-3.0 doesn't reach.
 - Does the Termux mpv stay as the fallback for everything, or only for
   audiobooks that aren't in the app's library (13379 still has only
   Conversations)?
+
+[^next-rename]: Renamed since this was written: Sasonica Next is Sasonica
+    (`com.sasonica.app`, 26 Sep 2026) and its speech target `next` is
+    `sasonica` (27 Sep); the older Sasonica app is Sasonica ABS
+    (`com.sasonica.abs`), target `abs` (was `app`). The text above keeps the
+    names it was written with.

@@ -266,7 +266,7 @@ _DEFAULT_FLAG_POLL_S = 0.3
 # release (so the flag flicking off between utterances doesn't drop the hold).
 # The phone app's mic probe, which is the successor to the Automate flow that
 # wrote the flag file. Loopback only, like every other bridge on the phone.
-# Sasonica Next's readout port since 2026-09-26 (the old app's 8772 from
+# Sasonica's readout port since 2026-09-26 (Sasonica ABS's 8772 from
 # 2026-09-21, the companion's 8770 before that; same line format throughout).
 _DEFAULT_MIC_URL = "http://127.0.0.1:8774/mic"
 _DEFAULT_MIC_POLL_S = 0.25

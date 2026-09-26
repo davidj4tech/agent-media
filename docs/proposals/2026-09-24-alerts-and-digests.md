@@ -4,7 +4,7 @@ Status: **decided 24 Sep 2026; step 1 built the same day** (store, routes,
 `agent-alert`, disk-watch and host-watch ported). Adds an alert store and routes to the
 server (a new §6.x in `server-contract.md`), one event type to
 `GET /sessions/events` (§6.13), a producer helper in `agent-config`, and an
-Alerts view in Next.
+Alerts view in Next[^next-rename].
 
 ## What prompted it
 
@@ -146,3 +146,9 @@ In order, each step useful on its own:
 3. **red5 is the one store.** Other hosts (p8a, sp4, pn) report over the
    tailnet with a device token (`may_report`); `agent-alert`'s fallback
    covers red5 being down.
+
+[^next-rename]: Renamed since this was written: Sasonica Next is Sasonica
+    (`com.sasonica.app`, 26 Sep 2026) and its speech target `next` is
+    `sasonica` (27 Sep); the older Sasonica app is Sasonica ABS
+    (`com.sasonica.abs`), target `abs` (was `app`). The text above keeps the
+    names it was written with.

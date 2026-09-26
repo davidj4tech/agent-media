@@ -43,9 +43,9 @@ log = logging.getLogger(__name__)
 # Target names that mean "play on the phone-local backend". Everything else
 # (local, rooms, snapcast-*) is Mopidy's job.
 _PHONE_TARGETS = {"phone", "local-phone", "phone-local"}
-# The phone too, but played by an app (Sasonica) rather than Termux's mpv. The
-# speech lane's `app` is the companion; music's is Sasonica. See music_app.
-_APP_TARGETS = {"app"}
+# The phone too, but played by an app (Sasonica ABS) rather than Termux's mpv.
+# See music_app.
+_ABS_TARGETS = {"abs"}
 
 
 def default_target() -> Target:
@@ -168,7 +168,7 @@ class SinkMusicRouter:
         # Only a caller that NAMED a phone target gets deterministic routing.
         if target.name in _PHONE_TARGETS:
             return self.local
-        if target.name in _APP_TARGETS:
+        if target.name in _ABS_TARGETS:
             # The app when it holds music, else the mpv it fell back to.
             return self.app if self._app_live() else self.local
         return self._observe_backend()
@@ -178,7 +178,7 @@ class SinkMusicRouter:
     def play(self, uri: str, target: Target = Target(name="local"),
              replace: bool = True, **opts) -> None:
         target = _resolve_target(target)
-        if target.name in _APP_TARGETS:
+        if target.name in _ABS_TARGETS:
             if self.app.play(uri, target, replace=replace, **opts):
                 return
             log.info("sink-music-router: the app did not take %s; phone mpv instead", uri)

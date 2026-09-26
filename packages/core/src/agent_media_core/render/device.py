@@ -1,6 +1,6 @@
 """Speech the listening device renders in its own voice.
 
-A target with ``MEDIA_SPEECH_RENDER_<TARGET>=device`` (Sasonica Next, whose
+A target with ``MEDIA_SPEECH_RENDER_<TARGET>=device`` (Sasonica, whose
 player has Android's TextToSpeech behind it) is sent the words instead of
 audio. Each sentence still becomes a clip *file* here — a ``.tts`` file
 holding the sentence — so everything that follows a reply by its clip paths
