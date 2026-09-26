@@ -42,6 +42,34 @@ months:
 What is missing is a path someone else could follow. Today it is our setup,
 not an install.
 
+## Where the server lives: a Debian proot (tested 27 Sep 2026)
+
+In plain Termux the server's Python dependencies don't install:
+`pydantic-core` and `rpds-py` (via `mcp`) have no Android wheels, and
+building them needs Termux's Rust (131 MB download, 596 MB installed), then a
+long compile. p8a has Rust for exactly that reason. Termux ships
+`python-rpds-py`, but no `pydantic-core`.
+
+Since Claude Code and opencode need a glibc proot anyway, the server lives
+there too. **Termux is only the host:** runit, `am`, adb. A Debian
+proot-distro holds agent-media and the agents, and every Python package
+comes as a ready wheel. Debian plus the server is ~425 MB.
+
+`deploy/phone/install.sh` does this. Run in a clean Termux (the
+`termux/termux-docker` image under podman on red5), it:
+- installed Debian, agent-media and opencode;
+- started the canvas on 127.0.0.1:8781 and sessiond, as Termux runit
+  services that log into Debian;
+- minted a `sasonica://pair` link, whose code `POST /pair` redeemed;
+- took an `/ask` with `agent: opencode`, which started a real opencode
+  session in tmux. Its reply was not read back.
+
+**opencode is the default agent** (David, 27 Sep 2026): its free models need
+no sign-in or paid plan. Claude Code is an option (`SASONICA_AGENTS="opencode
+claude"`). The Sasonica Shell runner is plain Node, so it can run on the
+phone too. Then the claude.ai connector reaches the phone from any chat app,
+with no tailnet.
+
 ## The flow
 
 1. **Welcome → Run it on this phone.** The app probes
@@ -53,10 +81,12 @@ not an install.
 3. **One line, pasted into Termux.** The app shows it with a Copy key:
    `curl -fsSL https://sasonica.com/phone | bash` (host to be decided). The
    installer:
-   - runs `pkg install python tmux nodejs git termux-services android-tools`
-     (native wheels come from `pkg`, memory `termux-native-wheels-from-pkg`);
-   - installs agent-media and runs `media-setup profile` with a phone role:
-     the canvas, speech and the hooks, as runit services;
+   - installs `proot-distro` and `termux-services`, then Debian with
+     Python, git, tmux and Node;
+   - clones agent-media into Debian's `~/projects/agent-media` (a venv) and
+     installs opencode;
+   - writes two Termux runit services, `sasonica-canvas` (loopback :8781)
+     and `sasonica-sessiond`, each started inside Debian;
    - sets `allow-external-apps = true` so the app can drive Termux from then
      on;
    - takes `termux-wake-lock`.
