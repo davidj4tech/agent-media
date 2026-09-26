@@ -28,6 +28,7 @@ last reply is remembered here (`_CHOSEN`) until a reply carries it.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import threading
@@ -35,9 +36,16 @@ import time
 
 from . import auth, driver, sessions
 
-#: The chip's sheet, in order: alias (what `--model` and `/model` take) and label.
+log = logging.getLogger(__name__)
+
+#: The chip's sheet, in order: alias (what `--model` and `/model` take) and the
+#: label kept for when Claude Code cannot be asked for its own (`models()`).
 MODELS = (("opus", "Opus"), ("sonnet", "Sonnet"), ("haiku", "Haiku"), ("fable", "Fable"))
 _ALIASES = {a for a, _ in MODELS}
+
+#: Claude Code's list for a few minutes, so a sheet opened twice does not ask twice.
+_MODELS_TTL_S = 300
+_models_memo: tuple[float, list] = (0.0, [])
 
 #: session -> (alias, when) for a pane told `/model` that has not replied since.
 _CHOSEN: dict[str, tuple[str, float]] = {}
@@ -143,13 +151,63 @@ def state(session: str) -> dict:
             "can": {"model": bool(pane), "plan": bool(pane) and not herdr}}
 
 
+def _offered() -> list:
+    """Claude Code's own `/model` list (claude_models.py), or [] without one."""
+    global _models_memo
+    at, memo = _models_memo
+    if memo and time.time() - at < _MODELS_TTL_S:
+        return memo
+    from agent_media_core import claude_models
+
+    try:
+        offered = claude_models.models()
+    except Exception as e:  # noqa: BLE001 — the names still make a sheet
+        log.warning("session-settings: no model list from claude (%s)", e)
+        offered = []
+    if offered:
+        _models_memo = (time.time(), offered)
+    return offered
+
+
+def models() -> list:
+    """The sheet: `[{id, label, note}]`, one per alias, in MODELS' order.
+
+    The label and note are Claude Code's own, from its `/model` list —
+    "Haiku 4.5", "Fastest for quick answers" — so they follow its releases
+    without an edit here. An alias Claude Code lists by full id only (Fable)
+    takes its first, newest entry. Without an answer the sheet is the bare
+    names.
+    """
+    offered = _offered()
+
+    def entry(alias: str) -> dict:
+        for m in offered:
+            if m.get("value") == alias:
+                return m
+        return next((m for m in offered if f"-{alias}-" in str(m.get("value") or "")), {})
+
+    return [{"id": alias, "label": str(entry(alias).get("displayName") or label),
+             "note": str(entry(alias).get("description") or "")}
+            for alias, label in MODELS]
+
+
+def default_note() -> str:
+    """What the host's default is, in Claude Code's words ("Opus 5.5 · Best
+    for everyday, complex tasks"), for a new chat's "Default" row; or ""."""
+    return next((str(m.get("description") or "") for m in _offered()
+                 if m.get("value") == "default"), "")
+
+
 def _answer(session: str, **extra) -> dict:
-    return {"session": session, "models": [{"id": a, "label": l} for a, l in MODELS],
-            **state(session), **extra}
+    return {"session": session, "models": models(), **state(session), **extra}
 
 
 def get(session: str, bearer: str) -> tuple[bool, dict]:
+    """A thread's settings; with no session, only the sheet (a new chat's)."""
     session = (session or "").strip()
+    if not session:
+        user, err = auth.gate(bearer)
+        return (True, {"models": models(), "default": default_note()}) if user else (False, err)
     if not sessions._SESSION.fullmatch(session):
         return False, {"error": "not a session id", "status": 400}
     user, err = auth.gate(bearer)

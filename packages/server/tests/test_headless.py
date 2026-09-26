@@ -853,6 +853,27 @@ def test_leaving_plan_mode_by_itself_clears_the_choice(host):
     assert host.sup.get(sid)["mode"] == ""
 
 
+def test_the_model_sheet_is_claude_codes_own(monkeypatch):
+    from agent_media_core import claude_models
+    from agent_media_server import auth, session_settings
+
+    monkeypatch.setattr(auth, "gate", lambda b: ({"id": "u"}, {}))
+    monkeypatch.setattr(claude_models, "models", lambda **_: [
+        {"value": "default", "displayName": "Default (recommended)", "description": "Opus 5.5 · Best"},
+        {"value": "opus", "displayName": "Opus 5.5", "description": "Most capable for ambitious work"},
+        {"value": "claude-fable-5-1", "displayName": "Fable 5.1", "description": "For your toughest challenges"},
+        {"value": "claude-fable-5", "displayName": "Fable 5", "description": "Older"},
+        {"value": "haiku", "displayName": "Haiku 4.5", "description": "Fastest for quick answers"},
+    ])
+    ok, d = session_settings.get("", "t")
+    assert ok and d == {"models": [
+        {"id": "opus", "label": "Opus 5.5", "note": "Most capable for ambitious work"},
+        {"id": "sonnet", "label": "Sonnet", "note": ""},
+        {"id": "haiku", "label": "Haiku 4.5", "note": "Fastest for quick answers"},
+        {"id": "fable", "label": "Fable 5.1", "note": "For your toughest challenges"},
+    ], "default": "Opus 5.5 · Best"}
+
+
 def test_the_settings_route_reads_and_changes_a_headless_thread(host, monkeypatch):
     from agent_media_server import auth, session_settings
 

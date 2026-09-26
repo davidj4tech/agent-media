@@ -1286,8 +1286,12 @@ Pinned by `packages/server/tests/test_reap.py` and
 
 The reply box's model and plan chips. `GET ?session=` → `{"ok": true,
 "session", "agent", "live", "model", "model_id", "plan", "can": {"model",
-"plan"}, "models": [{"id", "label"}]}`; `POST {"session", "model"?,
-"plan"?}` → the same after the change, plus `told` (a live session was told
+"plan"}, "models": [{"id", "label", "note"}]}` — the label and note are
+Claude Code's own (`Haiku 4.5`, `Fastest for quick answers`, from its
+`/model` list, cached per version; the bare name and no note when it cannot
+be asked). `GET` with no `session` → `{"ok": true, "models", "default"}`, a new
+chat's sheet (`default`: Claude Code's line for its default model, or "").
+`POST {"session", "model"?, "plan"?}` → the same after the change, plus `told` (a live session was told
 now; a parked headless one takes it at its resume).
 
 - `model` is an id from `models` (opus, sonnet, haiku, fable), or `""` when
