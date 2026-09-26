@@ -158,6 +158,22 @@ The cost is sync and trust: each base holds a credential for the others.
 Start with (1), read-only (a base lists its siblings' sessions and nothing
 more), then capabilities (2), because routing needs them.
 
+### Home Assistant as the map of the house
+
+Much of (2) is already known to Home Assistant: the TVs, speakers and
+tablets as entities, the room each is in, and who is home. So rather than
+build a device registry, a base asks HA: *speak in the room David is in*,
+*put this figure on the lounge TV*. The other direction makes the bases
+visible to HA: sessions, open alerts and *speaking now* as sensors, so
+automations can use them (dim the lights while a long reply plays, pause
+speech when the doorbell rings).
+
+HA → bases (where to speak, where to show) is the one worth building first.
+It is (2) for a house without us keeping the list. There is a start to
+extend: `packages/voice-bridge/homeassistant` is already an HA integration
+(the Assist conversation agent), so the sensors and a routing call can go
+into it rather than a new one.
+
 ## What this does not solve
 
 - **Multi-tenancy.** Everything here still hands out tokens that stand for
