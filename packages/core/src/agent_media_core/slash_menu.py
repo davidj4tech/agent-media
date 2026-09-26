@@ -159,7 +159,19 @@ def descriptions(cwd: Optional[Path] = None) -> dict:
     winning — which is the order Claude Code itself resolves them in.
     """
     out: dict = {}
-    roots = [Path.home() / ".claude"]
+    # Lowest first, each overwriting the last: plugins' and claude.ai's
+    # synced skills (`skills/synced/<id>/<name>`) only fill a name nothing
+    # nearer has.
+    home = Path.home() / ".claude"
+    for f in sorted(home.glob("plugins/**/skills/*/SKILL.md")) + sorted(home.glob("skills/synced/*/*/SKILL.md")):
+        described = _describe(f)
+        if described:
+            out[f.parent.name] = described
+    for f in sorted(home.glob("plugins/**/commands/*.md")):
+        described = _describe(f)
+        if described:
+            out[f.stem] = described
+    roots = [home]
     if cwd:
         roots.append(Path(cwd) / ".claude")
     for root in roots:
@@ -170,8 +182,26 @@ def descriptions(cwd: Optional[Path] = None) -> dict:
     return out
 
 
+#: Claude Code's own skills and commands have no file to read and the bundle
+#: does not always give up their words: a line each, for the ones whose job
+#: is plain. Only used when nothing else describes them.
+BUILTIN_SUMMARIES = {
+    "claude-api": "Reference for the Claude API and Anthropic SDKs: models, pricing, parameters, tools.",
+    "code-review": "Review the current changes for bugs.",
+    "dataviz": "Make charts and dashboards that read well.",
+    "fewer-permission-prompts": "Add the commands you keep approving to the allow list.",
+    "loop": "Run a prompt or command again and again, on an interval.",
+    "run": "Start the project's app and check a change works in it.",
+    "schedule": "Create and manage scheduled agents.",
+    "simplify": "Tidy the changed code: reuse, simplify, make it efficient.",
+    "update-config": "Change Claude Code's settings: permissions, hooks, environment.",
+    "workflow-authoring": "Reference for writing multi-agent workflow scripts.",
+    "doctor": "Check the Claude Code install for problems.",
+}
+
+
 #: Bumped when a menu entry gains a field, so an older cache is rebuilt.
-SCHEMA = 2
+SCHEMA = 3
 
 
 def _pack_label(name: str) -> str:
@@ -296,7 +326,8 @@ def build(cwd: str) -> list:
     bundle = bundle_commands(set(offered))
     menu = [{"name": name,
              "description": (described.get(name.rpartition(":")[2])
-                             or (bundle.get(name) or {}).get("description", "")),
+                             or (bundle.get(name) or {}).get("description", "")
+                             or BUILTIN_SUMMARIES.get(name, "")),
              "aliases": (bundle.get(name) or {}).get("aliases") or [],
              "group": group_of(name, found)}
             for name in offered]
