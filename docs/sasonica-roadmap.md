@@ -471,7 +471,7 @@ ahead.
    asks every agent to reply in it (the heard hook's language line,
    `e4ac427`, silent for English), and (c) **next:** translates the app's
    own text — every string into translation files, English plus Spanish,
-   French, Chinese (Simplified) and German.
+   French, Chinese (Simplified), German, Italian, Swedish and Japanese.
 
 ## Loose ends
 
