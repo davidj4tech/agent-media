@@ -403,7 +403,8 @@ ahead.
    sound** at 1.6x; the first request after a voice change ~2.1 s (engine
    init 2.2 s at service start). `onRangeStart` fires for every word, and
    sentence N+1 starts within 5 ms of N's done. Not wired to replies or
-   the holds. Waiting on David's ear for the voice at 1.6x.
+   the holds. **David: "that sounded great"** (en-au-x-aua-local, 1.6x) —
+   go ahead with the text lane.
 
 ## Loose ends
 
