@@ -1673,7 +1673,7 @@ Clients: S (planned — the speech bar's picker, §14).
 
 ### 6.10 The Organiser (org) — gated (built 22 Sep 2026)
 
-Renamed from Notes on 26 Sep 2026: the routes are `/org/…`, and every `/notes/…` route still answers exactly as its `/org` twin for an app installed before then; `MEDIA_NOTES_*` and a `[notes]` table in config.toml still count where the `org` names are unset.
+Renamed from Notes on 26 Sep 2026 (routes `/notes/…`, `MEDIA_NOTES_*`, `[notes]`); the old names were retired the same day, once the app calling `/org` was installed.
 
 The Org tree (`~/org`, `MEDIA_ORG_DIR` to move it), browsed, searched and
 captured into with no Emacs involved (`org.py`). The layout comes from the

@@ -15,7 +15,6 @@ pip install -e packages/org-paragtd
 It registers under the `agent_media.org_profiles` entry point. To choose a
 profile rather than rely on detection, set `[org] profile = "paragtd"` (or
 `"none"`) in `~/.config/agent-media/config.toml`, or `MEDIA_ORG_PROFILE`.
-(`[notes]` and `MEDIA_NOTES_PROFILE`, the names until 26 Sep 2026, still work.)
 
 When the tree has a `.paragtd.json` (paragtd writes it from Emacs; see
 paragtd's README, "Outside Emacs"), the file list, TODO keywords and astro

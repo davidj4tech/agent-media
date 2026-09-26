@@ -131,8 +131,7 @@ def setup_run(root: Path, action: str) -> dict:
 
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    root = Path(os.environ.get("MEDIA_ORG_DIR") or os.environ.get("MEDIA_NOTES_DIR")
-                or "~/org").expanduser()
+    root = Path(os.environ.get("MEDIA_ORG_DIR") or "~/org").expanduser()
     try:
         added = ensure(root)
     except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:

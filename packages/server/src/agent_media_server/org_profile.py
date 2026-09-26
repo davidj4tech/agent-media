@@ -152,26 +152,18 @@ def _view_name(root: Path, p: Path) -> str:
 
 
 def _org_config() -> dict:
-    """config.toml's `[org]` table — over `[org]`, its name until 26 Sep
-    2026, whose keys still count where `[org]` does not set them."""
+    """config.toml's `[org]` table."""
     try:
         from agent_media_core import config
-        loaded = config.load()
+        got = config.load().get("org")
     except Exception:  # noqa: BLE001 — a bad config file means "nothing set"
         return {}
-    out: dict = {}
-    for name in ("notes", "org"):
-        got = loaded.get(name)
-        if isinstance(got, dict):
-            out.update(got)
-    return out
+    return got if isinstance(got, dict) else {}
 
 
 def env(name: str) -> str:
-    """`MEDIA_ORG_<name>`, else `MEDIA_NOTES_<name>` (the name until 26 Sep
-    2026, still honoured)."""
-    return (os.environ.get(f"MEDIA_ORG_{name}")
-            or os.environ.get(f"MEDIA_NOTES_{name}") or "").strip()
+    """`MEDIA_ORG_<name>`."""
+    return os.environ.get(f"MEDIA_ORG_{name}", "").strip()
 
 
 def configured_files(root: Path) -> list[Path] | None:

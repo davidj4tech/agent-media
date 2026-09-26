@@ -22,7 +22,7 @@ def org(tmp_path, monkeypatch):
     (root / "work.org").write_text("#+title: Work things\n\n* TODO Ship it\n* Reference\n")
     (root / "astro.org").write_text("* Full moon\n  SCHEDULED: <2026-09-01 Tue>\n")
     monkeypatch.setenv("MEDIA_ORG_DIR", str(root))
-    # No `[notes] profile` from this machine's config.toml either.
+    # No `[org] profile` from this machine's config.toml either.
     monkeypatch.setenv("MEDIA_CONFIG", str(tmp_path / "no-config.toml"))
     monkeypatch.setattr(auth, "gate", lambda b: ({"username": "david"}, {}) if b == "good"
                         else (None, {"error": "no", "status": 401}))
@@ -134,7 +134,7 @@ def test_without_a_declaration_org_has_todo_and_done(org):
 
 def test_config_names_the_keywords(org, tmp_path, monkeypatch):
     (tmp_path / "no-config.toml").write_text(
-        '[notes]\ntodo_keywords = ["TODO", "NEXT", "|", "DONE"]\n')
+        '[org]\ntodo_keywords = ["TODO", "NEXT", "|", "DONE"]\n')
     (org / "work.org").write_text("* NEXT Ship it\n* DONE Old\n")
     items = org_mod.view("work", "good")[1]["items"]
     assert [(h["state"], h["title"]) for h in items] == [("NEXT", "Ship it")]
@@ -148,7 +148,7 @@ def test_config_names_the_agenda_files(org, tmp_path, monkeypatch):
     (org / "projects" / "house.org").write_text(
         "#+title: House\n* TODO Paint\n  SCHEDULED: <2026-09-24 Thu>\n")
     (tmp_path / "no-config.toml").write_text(
-        f'[notes]\nagenda_files = ["work.org", "projects", "{tmp_path}/elsewhere.org"]\n')
+        f'[org]\nagenda_files = ["work.org", "projects", "{tmp_path}/elsewhere.org"]\n')
     (tmp_path / "elsewhere.org").write_text("* TODO outside\n")
     views = _views(org)
     assert [v for v in views if views[v]["kind"] == "file"] == ["work", "projects-house"]
@@ -188,12 +188,12 @@ def test_paragtd_says_so_too(org, monkeypatch):
 
 def test_the_config_writer_keeps_the_rest(tmp_path):
     p = tmp_path / "c.toml"
-    p.write_text('# mine\n[host]\nroles = ["render"]\n\n[notes]\nprofile = "none"\n'
+    p.write_text('# mine\n[host]\nroles = ["render"]\n\n[org]\nprofile = "none"\n'
                  'agenda_files = ["old.org"]\n\n[peers.phone]\nhost = "p"\n')
     org_setup._set_org_config({"agenda_files": ["a.org"], "todo_keywords": ["TODO", "|", "DONE"]}, p)
     import tomllib
     got = tomllib.loads(p.read_text())
-    assert got["notes"] == {"profile": "none", "agenda_files": ["a.org"],
+    assert got["org"] == {"profile": "none", "agenda_files": ["a.org"],
                             "todo_keywords": ["TODO", "|", "DONE"]}
     assert got["host"] == {"roles": ["render"]} and got["peers"]["phone"]["host"] == "p"
     assert p.read_text().startswith("# mine\n")

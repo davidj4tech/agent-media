@@ -186,10 +186,7 @@ ORG_PATHS = frozenset({"/org", "/org/view", "/org/read", "/org/search",
                          "/org/capture", "/org/setup", "/org/say",
                          "/org/state", "/org/refile", "/org/date",
                          "/org/priority", "/org/ask"})
-# The same routes under their first name, /notes (until 26 Sep 2026), for an
-# app installed before the rename. Answered exactly as /org.
-LEGACY_NOTES_PATHS = frozenset("/notes" + p[len("/org"):] for p in ORG_PATHS)
-CORS_PATHS = CORS_PATHS | ORG_PATHS | LEGACY_NOTES_PATHS
+CORS_PATHS = CORS_PATHS | ORG_PATHS
 
 # What the watchers report (alerts.py, §6.17). The same arrangement.
 ALERT_PATHS = frozenset({"/alerts", "/alerts/ack", "/alerts/digests", "/alerts/digest"})
@@ -342,8 +339,6 @@ def dispatch(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
     auth.set_client_ip(h.client_address[0] if h.client_address else "")
     if path in AUDIO_PATHS and method in ("GET", "POST"):
         return _audio(h, method, path)
-    if path in LEGACY_NOTES_PATHS:
-        path = "/org" + path[len("/notes"):]
     if path in ORG_PATHS and method in ("GET", "POST"):
         return _org(h, method, path)
     if path in ALERT_PATHS and method in ("GET", "POST"):

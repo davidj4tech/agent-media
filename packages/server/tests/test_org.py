@@ -340,15 +340,3 @@ def test_say_hands_the_note_to_media_say(tree, server, monkeypatch):
     assert started[0][-1] == "say" and started[1] == "telly money"
     assert _call(server, "POST", "/org/say", {"path": "nope.org"})[0] == 404
 
-
-def test_the_old_notes_routes_still_answer(tree, server):
-    # An app installed before the rename (26 Sep 2026) still asks for /notes.
-    status, got = _call(server, "GET", "/notes")
-    assert status == 200 and {v["name"] for v in got["views"]} == \
-        {v["name"] for v in _call(server, "GET", "/org")[1]["views"]}
-
-
-def test_the_old_notes_dir_still_names_the_tree(tmp_path, monkeypatch):
-    monkeypatch.delenv("MEDIA_ORG_DIR", raising=False)
-    monkeypatch.setenv("MEDIA_NOTES_DIR", str(tmp_path))
-    assert org.root() == tmp_path

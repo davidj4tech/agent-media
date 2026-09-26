@@ -74,7 +74,7 @@ def _git(*args: str) -> str:
 def _org() -> dict:
     root = org.root()
     prof = org.profile()
-    row = {"name": "org", "label": "Notes folder", "optional": False,
+    row = {"name": "org", "label": "Org folder", "optional": False,
            "detail": str(root), "why": None, "actions": []}
     missing = [f for f in prof.skeleton if not (root / f).is_file()]
     if root.is_dir() and (root / prof.capture_file).is_file():
@@ -192,8 +192,7 @@ def _from_emacs() -> dict:
 
 
 def _set_org_config(values: dict, path: Path | None = None) -> None:
-    """Set keys in config.toml's `[org]` table (or `[org]`, its old name,
-    where a file already has that and not `[org]`), leaving the rest of the
+    """Set keys in config.toml's `[org]` table, leaving the rest of the
     file as it is. Values are lists of strings or booleans, written as JSON
     (which TOML reads the same)."""
     from agent_media_core import config
@@ -204,8 +203,6 @@ def _set_org_config(values: dict, path: Path | None = None) -> None:
     except FileNotFoundError:
         lines = []
     head = next((i for i, ln in enumerate(lines) if ln.strip() == "[org]"), None)
-    if head is None:
-        head = next((i for i, ln in enumerate(lines) if ln.strip() == "[notes]"), None)
     if head is None:
         while lines and not lines[-1].strip():
             lines.pop()

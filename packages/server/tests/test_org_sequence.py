@@ -119,6 +119,6 @@ def test_plain_org_blocks_only_when_asked(org, tmp_path, monkeypatch):
     # Off, as in Org: it closes, and no trigger runs (that is paragtd's).
     ok, got = _close(org, "Fill in the form")
     assert ok and "trigger" not in got
-    (tmp_path / "c.toml").write_text("[notes]\nenforce_todo_dependencies = true\n")
+    (tmp_path / "c.toml").write_text("[org]\nenforce_todo_dependencies = true\n")
     ok, got = _close(org, "Post it")
     assert not ok and "Get photos taken" in got["error"]
