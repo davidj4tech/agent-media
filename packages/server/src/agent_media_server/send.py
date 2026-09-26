@@ -647,7 +647,8 @@ def _agent_unready(agent: str) -> str:
 
 
 def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
-        agent: str = "", cwd: str = "", cwd_trusted: bool = False) -> tuple[bool, dict]:
+        agent: str = "", cwd: str = "", cwd_trusted: bool = False,
+        model: str = "", mode: str = "") -> tuple[bool, dict]:
     """Start a fresh session with `text` as its first message.
 
     What the phone's assistant button does. Nothing to resume and no item yet:
@@ -659,6 +660,8 @@ def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
     and `cwd` (a directory, as `/targets` hands them out) says the same thing
     without the library's naming convention in the middle.
     `agent` picks Claude Code (the default, or MEDIA_ASK_AGENT), Codex or pi.
+    `model` (an alias from session_settings.MODELS) and `mode` ("plan")
+    are Claude's, from the reply box's bottom row; other agents ignore them.
     `cwd_trusted` is for the server's own callers (a chat about a note opens
     in the notes tree), never for a directory the phone named.
     """
@@ -709,8 +712,11 @@ def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
         # No pane, so no tmux session to be filed under: the layout says what
         # it would have been (David's: the session itself; default: the folder).
         host = layout.workspace_for(host, cwd)
+    from . import session_settings
+
+    model, mode = session_settings.clean_new(agent, model, mode)
     return chosen.start(agent=agent, cwd=cwd, text=text, host=host,
-                        flags=flags, quote=quote)
+                        flags=flags, quote=quote, model=model, mode=mode)
 
 
 def _ask_pane(text: str, *, agent: str, cwd: str, host: str, flags: list[str],

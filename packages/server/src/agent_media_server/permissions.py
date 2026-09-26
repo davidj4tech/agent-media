@@ -96,6 +96,23 @@ def strict_settings(cwd: str) -> dict:
     return {"permissions": {"defaultMode": "default", "allow": list(SAFE_TOOLS), "ask": ask}}
 
 
+def base_mode(profile: str, cwd: str = "") -> str:
+    """The permission mode a session goes back to when plan mode is turned
+    off: strict's `default`; under normal, the user's own `defaultMode`."""
+    if mode(profile) != NORMAL:
+        return "default"
+    for f in ([Path(cwd) / ".claude" / "settings.local.json",
+               Path(cwd) / ".claude" / "settings.json"] if cwd else []) + [
+            _claude_dir() / "settings.local.json", _claude_dir() / "settings.json"]:
+        try:
+            m = ((json.loads(f.read_text()) or {}).get("permissions") or {}).get("defaultMode")
+        except (OSError, ValueError, AttributeError):
+            continue
+        if isinstance(m, str) and m in ("default", "acceptEdits", "auto", "bypassPermissions"):
+            return m
+    return "default"
+
+
 def cli_args(profile: str, cwd: str, session: str, root: Path) -> list[str]:
     """The `claude` arguments for `profile`. Strict writes the overlay first."""
     if mode(profile) == NORMAL:

@@ -25,11 +25,28 @@ class PaneDriver:
     kind = PANE
     caps = Caps(interrupt=True)
 
-    def start(self, *, agent, cwd, text, host="", flags=(), quote=""):
+    def start(self, *, agent, cwd, text, host="", flags=(), quote="", model="", mode=""):
         from .. import send
 
-        return send._ask_pane(text, agent=agent, cwd=cwd, host=host, flags=list(flags),
+        flags = list(flags)
+        if agent == "claude":
+            # Flags, so a new window starts that way before its first word.
+            if model:
+                flags += ["--model", model]
+            if mode == "plan":
+                # `--dangerously-skip-permissions` would win over it (measured
+                # 26 Sep 2026); the allow- form keeps bypass one shift+tab away.
+                flags = ["--allow-dangerously-skip-permissions" if f == "--dangerously-skip-permissions"
+                         else f for f in flags] + ["--permission-mode", "plan"]
+        return send._ask_pane(text, agent=agent, cwd=cwd, host=host, flags=flags,
                               quote=quote)
+
+    def configure(self, session, *, model=None, mode=None):
+        """`/model <alias>` typed in, and shift+tab round to plan mode or off
+        it (session_settings.py)."""
+        from .. import session_settings
+
+        return session_settings.configure_pane(session, model=model, mode=mode)
 
     def send(self, session, body, text, *, quote=""):
         from .. import send

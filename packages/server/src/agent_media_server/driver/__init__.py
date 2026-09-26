@@ -46,8 +46,15 @@ class Driver(Protocol):
     caps: Caps
 
     def start(self, *, agent: str, cwd: str, text: str, host: str = "",
-              flags: list[str] | tuple[str, ...] = (), quote: str = "") -> tuple[bool, dict]:
-        """A fresh session with `text` as its first message."""
+              flags: list[str] | tuple[str, ...] = (), quote: str = "",
+              model: str = "", mode: str = "") -> tuple[bool, dict]:
+        """A fresh session with `text` as its first message, on `model` (an
+        alias, "" for the default) and in plan mode when `mode` is "plan"."""
+
+    def configure(self, session: str, *, model: str | None = None,
+                  mode: str | None = None) -> tuple[bool, dict]:
+        """Change a live or parked session's model or plan mode; None leaves
+        that one alone."""
 
     def send(self, session: str, body: str, text: str, *, quote: str = "") -> tuple[bool, dict]:
         """`body` into the session (reviving it if it has ended). `text` is the

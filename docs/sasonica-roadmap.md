@@ -63,6 +63,14 @@ Where things live:
 
 ## Done
 
+**The reply box's bottom row** (David, 26 Sep 2026): the words take the
+box's whole width, and one row under them holds attach, the thread's model
+chip (Opus / Sonnet / Haiku / Fable), a Plan chip, `/` (the slash menu from
+`/commands`, as a sheet with a filter), then stop, mic, New chat and send.
+The new chat's "where · agent" chip joined the row; its model and plan go
+with `/ask`. Claude only; `GET`/`POST /session/settings` (server-contract
+§6.4). Panes change between turns only (typed `/model`, shift+tab).
+
 Pairing and device tokens; threads by session; transcript messages and
 per-thread SSE; speech bar with full controls; follow-along; recaps; exit
 and archive; idle closer; audio destination picker and Android output

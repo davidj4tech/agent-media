@@ -1066,6 +1066,8 @@ Request:
 | `agent` | `claude` \| `codex` \| `pi` \| `hermes` for a fresh session (default `MEDIA_ASK_AGENT`, else claude) |
 | `project` | open a fresh session in that project's directory: a series (`p-agent-media`) on David's desk, a folder basename (`agent-media`) in the default layout (§18) |
 | `cwd` | open a fresh session in that directory — must be a `/targets` place |
+| `model` | Claude only (26 Sep 2026): `opus` \| `sonnet` \| `haiku` \| `fable` for a fresh session — `--model` in a pane, sessiond's `start` headless. Anything else is dropped, not refused; ignored when the words land in an existing thread |
+| `plan` | Claude only: `true` starts the fresh session in plan mode (`--permission-mode plan`; a pane's `--dangerously-skip-permissions` becomes `--allow-dangerously-skip-permissions`, which would otherwise win) |
 
 Routing, first match wins:
 1. `target`: a session id (`how: "picked"`), or `"new"` (`how: "asked"`).
@@ -1279,6 +1281,31 @@ questions are never touched):
 
 Pinned by `packages/server/tests/test_reap.py` and
 `packages/core/tests/test_speak_priority.py`.
+
+#### `GET` / `POST /session/settings` — gated (26 Sep 2026)
+
+The reply box's model and plan chips. `GET ?session=` → `{"ok": true,
+"session", "agent", "live", "model", "model_id", "plan", "can": {"model",
+"plan"}, "models": [{"id", "label"}]}`; `POST {"session", "model"?,
+"plan"?}` → the same after the change, plus `told` (a live session was told
+now; a parked headless one takes it at its resume).
+
+- `model` is an id from `models` (opus, sonnet, haiku, fable), or `""` when
+  not known yet; `model_id` is the full id the session last reported.
+- Headless: sessiond's `configure` op sends the CLI's `set_model` /
+  `set_permission_mode` control requests, at any time, and keeps the choice
+  for `--resume`. `plan` reads the latest `system/init` while the process
+  runs (an approved plan leaves plan mode by itself).
+- Pane: `/model <id>` typed in, and shift+tab pressed until the footer
+  says (or stops saying) "plan mode on"; only between turns — 409 `"wait
+  for the turn to finish, then change it"` otherwise, 409 when the session
+  is not running. The model is read from the transcript's last assistant
+  message. herdr panes: `can.plan` false.
+- Codex, pi, Hermes: `can` both false; the app shows neither chip.
+- 400 on a model not in the list, a non-boolean `plan`, or neither given.
+
+Pinned by `packages/server/tests/test_session_settings.py` and
+`packages/server/tests/test_headless.py`.
 
 #### `GET` / `POST /speech/default` — gated (25 Sep 2026)
 

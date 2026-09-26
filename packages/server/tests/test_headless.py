@@ -798,3 +798,73 @@ def test_naming_is_skipped_when_it_is_off_or_the_gateway_says_nothing(monkeypatc
     monkeypatch.setattr(threads, "auto_title", lambda s: "A name")
     monkeypatch.setenv("MEDIA_AUTO_TITLE", "0")
     assert threads.name_unnamed("s1") == ""
+
+
+# --- model and plan mode (session_settings.py) ----------------------------------------
+
+def test_a_new_chat_starts_on_its_model_and_in_plan_mode(host):
+    sid = start(host, "reply: a", model="sonnet", mode="plan")
+    wait_for(lambda: state(host, sid) == "waiting")
+    argv = starts(host)[0]["argv"]
+    assert argv[argv.index("--model") + 1] == "sonnet"
+    # Strict's own `default` gives way: one --permission-mode, and it is plan.
+    assert argv.count("--permission-mode") == 1
+    assert argv[argv.index("--permission-mode") + 1] == "plan"
+    rec = host.sup.get(sid)
+    assert (rec["init_model"], rec["init_mode"]) == ("sonnet", "plan")
+
+
+def test_configure_tells_a_live_session_and_its_next_turn_runs_on_it(host):
+    sid = start(host, "reply: a")
+    wait_for(lambda: state(host, sid) == "waiting")
+    ok, d = driver.headless_driver().configure(sid, model="haiku", mode="plan")
+    assert ok and d["told"] is True and (d["model"], d["mode"]) == ("haiku", "plan")
+    driver.headless_driver().send(sid, "", "reply: b")
+    wait_for(lambda: last_text(host, sid) == "b")
+    assert (host.sup.get(sid)["init_model"], host.sup.get(sid)["init_mode"]) == ("haiku", "plan")
+    ok, d = driver.headless_driver().configure(sid, mode="")
+    assert ok and d["mode"] == ""
+    assert host.sup.get(sid)["init_mode"] == "default"
+
+
+def test_a_parked_session_keeps_its_choice_for_the_resume(host, monkeypatch):
+    sid = start(host, "reply: a")
+    wait_for(lambda: state(host, sid) == "waiting")
+    monkeypatch.setenv("MEDIA_SESSIOND_IDLE", "0")
+    host.sup.park_idle(time.time() + 5)
+    wait_for(lambda: state(host, sid) == "parked")
+    ok, d = driver.headless_driver().configure(sid, model="fable", mode="plan")
+    assert ok and d["told"] is False
+    driver.headless_driver().send(sid, "", "reply: b")
+    wait_for(lambda: last_text(host, sid) == "b")
+    argv = starts(host)[-1]["argv"]
+    assert argv[argv.index("--model") + 1] == "fable"
+    assert argv[argv.index("--permission-mode") + 1] == "plan"
+
+
+def test_leaving_plan_mode_by_itself_clears_the_choice(host):
+    sid = start(host, "reply: a", mode="plan")
+    wait_for(lambda: state(host, sid) == "waiting")
+    s = host.sup.sessions[sid]
+    host.sup._write(s, {"type": "control_request", "request_id": "x1",
+                        "request": {"subtype": "set_permission_mode", "mode": "default"}})
+    driver.headless_driver().send(sid, "", "reply: b")
+    wait_for(lambda: last_text(host, sid) == "b")
+    assert host.sup.get(sid)["mode"] == ""
+
+
+def test_the_settings_route_reads_and_changes_a_headless_thread(host, monkeypatch):
+    from agent_media_server import auth, session_settings
+
+    monkeypatch.setattr(auth, "gate", lambda b: ({"id": "u"}, {}))
+    sid = start(host, "reply: a")
+    wait_for(lambda: state(host, sid) == "waiting")
+    ok, d = session_settings.get(sid, "t")
+    assert ok and d["can"] == {"model": True, "plan": True} and d["plan"] is False
+    assert [m["id"] for m in d["models"]] == ["opus", "sonnet", "haiku", "fable"]
+    ok, d = session_settings.post(sid, {"model": "sonnet", "plan": True}, "t")
+    assert ok and d["model"] == "sonnet" and d["plan"] is True and d["told"] is True
+    ok, d = session_settings.post(sid, {"model": "gpt-9"}, "t")
+    assert not ok and d["status"] == 400
+    ok, d = session_settings.post(sid, {"plan": "yes"}, "t")
+    assert not ok and d["status"] == 400

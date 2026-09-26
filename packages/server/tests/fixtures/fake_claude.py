@@ -99,6 +99,12 @@ class Fake:
         self.interrupted = threading.Event()
         self.cancel_queued = False
         self.eof = threading.Event()
+        # `--model` / `--permission-mode`, then whatever set_model and
+        # set_permission_mode say; each turn's init reports them.
+        argv = sys.argv[1:]
+        self.model = argv[argv.index("--model") + 1] if "--model" in argv else "fake"
+        self.mode = (argv[len(argv) - 1 - argv[::-1].index("--permission-mode") + 1]
+                     if "--permission-mode" in argv else "default")
 
     # -- stdin -----------------------------------------------------------------
 
@@ -151,6 +157,15 @@ class Fake:
             self.interrupted.set()
             for q in list(self.responses.values()):
                 q.put({"subtype": "interrupted"})
+        elif sub == "set_model":
+            self.model = req.get("model") or "fake"
+            emit({"type": "control_response",
+                  "response": {"subtype": "success", "request_id": rid}})
+        elif sub == "set_permission_mode":
+            self.mode = req.get("mode") or "default"
+            emit({"type": "control_response",
+                  "response": {"subtype": "success", "request_id": rid,
+                               "response": {"mode": self.mode}}})
         elif sub == "initialize":
             emit({"type": "control_response",
                   "response": {"subtype": "success", "request_id": rid,
@@ -232,8 +247,8 @@ class Fake:
             self.lifecycle(msg, "started")
             record("user", text)
             time.sleep(TICK)
-            emit({"type": "system", "subtype": "init", "cwd": CWD, "model": "fake",
-                  "permissionMode": "default", "apiKeySource": "none",
+            emit({"type": "system", "subtype": "init", "cwd": CWD, "model": self.model,
+                  "permissionMode": self.mode, "apiKeySource": "none",
                   "capabilities": ["interrupt_receipt_v1", "interrupt_cancel_queued_v1",
                                    "msg_lifecycle_v1"]})
             time.sleep(TICK)

@@ -243,7 +243,7 @@ class HeadlessDriver:
 
     # -- acting --
 
-    def start(self, *, agent, cwd, text, host="", flags=(), quote=""):
+    def start(self, *, agent, cwd, text, host="", flags=(), quote="", model="", mode=""):
         """A fresh headless session. `host` (the tmux session a pane would
         have opened in) becomes its workspace — what speech is filed and
         voiced under. `flags` are amux's pane flags and are not used: the
@@ -251,7 +251,7 @@ class HeadlessDriver:
         from .. import send
 
         r = call("start", cwd=cwd, text=compose(text, quote), agent=agent, workspace=host,
-                 timeout=30.0)
+                 model=model, mode=mode, timeout=30.0)
         if not r.get("ok"):
             return _failed(r, pane=None)
         session = str(r.get("session") or "")
@@ -291,6 +291,16 @@ class HeadlessDriver:
             return _failed(r)
         return True, {"session": session, "pane": None, "live": False,
                       "closed": bool(r.get("closed")), "driver": HEADLESS}
+
+    def configure(self, session, *, model=None, mode=None):
+        """The model and plan mode (session_settings.py)."""
+        kw = {k: v for k, v in (("model", model), ("mode", mode)) if v is not None}
+        r = call("configure", session=session, timeout=15.0, **kw)
+        if not r.get("ok"):
+            return _failed(r, session=session, pane=None)
+        return True, {"session": session, "model": r.get("model") or "",
+                      "mode": r.get("mode") or "", "told": bool(r.get("told")),
+                      "driver": HEADLESS}
 
     def rename(self, session: str, title: str) -> str:
         """Tell the session its new name. "" when it was told, else why not

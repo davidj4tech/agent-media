@@ -1134,7 +1134,7 @@ def test_routed_ask_passes_the_project_to_a_fresh_session(_router, monkeypatch):
     seen = {}
     monkeypatch.setattr(send, "ask", lambda text, bearer, **k: seen.update(k) or (True, {"session": "new-1"}))
     ok, d = routing.ask_routed("hi", "tok", target="new", project="p-x")
-    assert ok and d["mode"] == "new" and seen == {"project": "p-x", "agent": "", "cwd": ""}
+    assert ok and d["mode"] == "new" and seen == {"project": "p-x", "agent": "", "cwd": "", "model": "", "mode": ""}
 
 
 def test_routed_ask_passes_a_directory_to_a_fresh_session(_router, monkeypatch):

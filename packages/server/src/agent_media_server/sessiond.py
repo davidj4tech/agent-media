@@ -57,7 +57,8 @@ never has two writers.
 
 Ops (request `{"op", …}` → `{"ok": true, …}` or `{"ok": false, "error",
 "code"}`): `ping`, `list`, `get`, `start`, `send`, `resume`, `interrupt`,
-`answer`, `close`, `park`, `events`.
+`answer`, `close`, `park`, `events`, `configure` (model and plan mode;
+session_settings.py).
 
 Config (env): MEDIA_SESSIOND_SOCKET, MEDIA_SESSIOND_IDLE, MEDIA_SESSIOND_MAX,
 MEDIA_SESSIOND_MIN_FREE_MB,
@@ -219,12 +220,21 @@ class Refused(Exception):
 
 class Session:
     def __init__(self, session: str, cwd: str, *, agent: str = "claude",
-                 workspace: str = "", permissions: str = "strict") -> None:
+                 workspace: str = "", permissions: str = "strict",
+                 model: str = "", mode: str = "") -> None:
         self.id = session
         self.cwd = cwd
         self.agent = agent
         self.workspace = workspace
         self.permissions = permissions
+        #: Chosen from the phone (session_settings.py): a model alias, and
+        #: "plan" or "" — passed again at every resume, since a respawned
+        #: process starts from its flags, not from what it was told.
+        self.model = model
+        self.mode = mode
+        #: What the process last said it runs (`system/init`).
+        self.init_model = ""
+        self.init_mode = ""
         self.proc: subprocess.Popen | None = None
         self.state = "parked"
         self.since = time.time()
@@ -265,6 +275,8 @@ class Session:
     def record(self) -> dict:
         return {"session": self.id, "agent": self.agent, "cwd": self.cwd,
                 "workspace": self.workspace, "permissions": self.permissions,
+                "model": self.model, "mode": self.mode,
+                "init_model": self.init_model, "init_mode": self.init_mode,
                 "driver": "headless", "state": self.state, "since": round(self.since, 3),
                 "created": round(self.created, 3),
                 "last_event_at": round(self.last_event_at, 3),
@@ -281,7 +293,10 @@ class Session:
         s = cls(str(rec["session"]), str(rec.get("cwd") or ""),
                 agent=str(rec.get("agent") or "claude"),
                 workspace=str(rec.get("workspace") or ""),
-                permissions=str(rec.get("permissions") or "strict"))
+                permissions=str(rec.get("permissions") or "strict"),
+                model=str(rec.get("model") or ""), mode=str(rec.get("mode") or ""))
+        s.init_model = str(rec.get("init_model") or "")
+        s.init_mode = str(rec.get("init_mode") or "")
         s.state = str(rec.get("state") or "parked")
         s.since = float(rec.get("since") or time.time())
         s.created = float(rec.get("created") or s.since)
@@ -451,9 +466,15 @@ class Supervisor:
         argv = [exe, "-p", "--input-format", "stream-json", "--output-format", "stream-json",
                 "--verbose", "--permission-prompt-tool", "stdio"]
         argv += permissions.cli_args(s.permissions, s.cwd, s.id, self.root)
-        model = (os.environ.get("MEDIA_HEADLESS_MODEL") or "").strip()
+        model = s.model or (os.environ.get("MEDIA_HEADLESS_MODEL") or "").strip()
         if model:
             argv += ["--model", model]
+        if s.mode == "plan":
+            # Strict's own `--permission-mode default` gives way to it.
+            if "--permission-mode" in argv:
+                i = argv.index("--permission-mode")
+                del argv[i:i + 2]
+            argv += ["--permission-mode", "plan"]
         # More `claude` flags, for debugging and smoke runs — e.g.
         # `--setting-sources project,local` keeps the user's hooks (and
         # speech) out of a test session.
@@ -564,6 +585,10 @@ class Supervisor:
             s.last_event_at = now
             before = (s.state, len(s.pending))
             if t == "system" and sub == "init":
+                s.init_model = str(obj.get("model") or s.init_model)
+                s.init_mode = str(obj.get("permissionMode") or s.init_mode)
+                if s.mode == "plan" and s.init_mode and s.init_mode != "plan":
+                    s.mode = ""       # out of plan mode by itself: an approved plan
                 s.set_state("approval" if s.pending else "working")
             elif t == "command_lifecycle":
                 cid = str(obj.get("command_uuid") or "")
@@ -702,7 +727,8 @@ class Supervisor:
     # -- ops ---------------------------------------------------------------------
 
     def start(self, cwd: str, text: str, *, session: str = "", agent: str = "claude",
-              workspace: str = "", permissions: str = "") -> dict:
+              workspace: str = "", permissions: str = "", model: str = "",
+              mode: str = "") -> dict:
         from . import permissions as perms
 
         if agent != "claude":
@@ -715,7 +741,8 @@ class Supervisor:
                 raise Refused(f"session {session[:8]} already exists", "exists")
             self._ensure_room()
             s = Session(session, cwd, agent=agent, workspace=workspace,
-                        permissions=perms.mode(permissions))
+                        permissions=perms.mode(permissions), model=model,
+                        mode="plan" if mode == "plan" else "")
             s.first_text = " ".join(text.split())[:200]
             self._spawn(s, resume=False)
             self.sessions[session] = s
@@ -792,6 +819,46 @@ class Supervisor:
                                                      "text": f"/rename {title}"}]},
                             "parent_tool_use_id": None})
         return {"session": session, "renamed": True, "queued": busy, "uuid": uid}
+
+    def configure(self, session: str, *, model: str | None = None,
+                  mode: str | None = None) -> dict:
+        """Change the model (`set_model`) or plan mode (`set_permission_mode`)
+        of a session. Kept on the session either way, so a parked one wakes
+        with it; a live one is told at once, even mid-turn — the CLI answers
+        the control request between steps (measured 26 Sep 2026)."""
+        from . import permissions as perms
+
+        with self.lock:
+            s = self._get(session)
+            reqs: list[dict] = []
+            if model is not None:
+                s.model = model
+                reqs.append({"subtype": "set_model", "model": model or None})
+            if mode is not None:
+                s.mode = "plan" if mode == "plan" else ""
+                reqs.append({"subtype": "set_permission_mode",
+                             "mode": "plan" if s.mode else perms.base_mode(s.permissions,
+                                                                           s.cwd)})
+            self._save(s)
+            told = False
+            if s.running and reqs:
+                rids = []
+                for req in reqs:
+                    rid = "req_" + uuid.uuid4().hex[:12]
+                    rids.append(rid)
+                    self._write(s, {"type": "control_request", "request_id": rid,
+                                    "request": req})
+                self.cond.wait_for(lambda: all(r in s.responses for r in rids) or not s.live,
+                                   RECEIPT_S)
+                answers = [s.responses.pop(r, None) or {} for r in rids]
+                bad = [a.get("error") for a in answers if a.get("subtype") == "error"]
+                if bad:
+                    raise Refused(str(bad[0] or "the session refused it"), "refused")
+                told = all(answers)
+                if told and mode is not None:
+                    s.init_mode = "plan" if s.mode else perms.base_mode(s.permissions, s.cwd)
+            return {"session": session, "model": s.model, "mode": s.mode, "told": told,
+                    **self._brief(s)}
 
     def resume(self, session: str) -> dict:
         with self.lock:
@@ -911,7 +978,12 @@ class Supervisor:
                     str(req.get("cwd") or ""), str(req.get("text") or ""), session=sid,
                     agent=str(req.get("agent") or "claude"),
                     workspace=str(req.get("workspace") or ""),
-                    permissions=str(req.get("permissions") or ""))}
+                    permissions=str(req.get("permissions") or ""),
+                    model=str(req.get("model") or ""), mode=str(req.get("mode") or ""))}
+            if op == "configure":
+                return {"ok": True, **self.configure(
+                    sid, model=req.get("model") if isinstance(req.get("model"), str) else None,
+                    mode=req.get("mode") if isinstance(req.get("mode"), str) else None)}
             if op == "send":
                 return {"ok": True, **self.send(sid, str(req.get("text") or ""),
                                                 uid=str(req.get("uuid") or ""))}

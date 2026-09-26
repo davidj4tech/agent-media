@@ -98,7 +98,8 @@ def _title_of(session: str, index: list[dict] | None = None) -> str:
 def ask_routed(text: str, bearer: str, *, target: str = "", player_item: str = "",
                sticky: str = "", parse: bool = True, dry: bool = False,
                project: str = "", agent: str = "", cwd: str = "",
-               player_session: str = "") -> tuple[bool, dict]:
+               player_session: str = "", model: str = "",
+               plan: bool = False) -> tuple[bool, dict]:
     """The assistant button's words, sent where they belong.
 
     In order: a target the app names outright (`target`, a session uuid from
@@ -112,7 +113,9 @@ def ask_routed(text: str, bearer: str, *, target: str = "", player_item: str = "
     nothing: the app confirms a guess (a spoken name, the player, the last
     thread) with the listener before committing with an explicit `target`.
     A fresh session opens in `project` when one is named, and runs `agent`
-    (claude, codex, pi, hermes) when one is named or spoken (see `ask`).
+    (claude, codex, pi, hermes) when one is named or spoken (see `ask`),
+    on `model` and in plan mode when `plan` — a fresh session's only; words
+    that land in an existing one leave its settings alone.
     """
     text = " ".join((text or "").split())
     if not text:
@@ -167,7 +170,8 @@ def ask_routed(text: str, bearer: str, *, target: str = "", player_item: str = "
                       "session": session or None, "title": _title_of(session, index) if session else "",
                       "item": item if ready else None, "text": text, "dry": True}
     if not session:
-        ok, detail = send.ask(text, bearer, project=project, agent=agent, cwd=cwd)
+        ok, detail = send.ask(text, bearer, project=project, agent=agent, cwd=cwd,
+                              model=model, mode="plan" if plan else "")
         if ok:
             detail.update({"mode": "new", "how": how or "default", "title": "", "text": text})
         return ok, detail

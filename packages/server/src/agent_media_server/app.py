@@ -166,7 +166,7 @@ CORS_PATHS = frozenset({
     "/conversation", "/conversation/log", "/conversations", "/targets", "/item",
     "/reply", "/ask", "/focus", "/session/resume", "/session/close", "/draft",
     "/session/answer", "/session/archive", "/session/pin", "/session/priority", "/session/stop",
-    "/session/move",
+    "/session/move", "/session/settings",
     "/speech/now", "/speech/ctl", "/speech/sentences", "/speech/default", "/sessions/state", "/commands", "/rename",
     "/harnesses", "/harnesses/run", "/harnesses/screen",
     "/harnesses/keys", "/harnesses/close", "/harnesses/logout",
@@ -415,6 +415,13 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
         else:
             ok, detail = threads.conversation(item, bearer)
         _json(h, 200 if ok else detail.pop("status", 404), {"ok": ok, **detail})
+    elif path == "/session/settings":
+        # The reply box's model and plan chips: what this thread runs now,
+        # and whether it can be changed from here (session_settings.py).
+        from . import session_settings
+
+        ok, detail = session_settings.get(parse_qs(query).get("session", [""])[0], _bearer(h))
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path == "/commands":
         # The slash menu for the reply box: what this session's terminal
         # would offer. `?item=`, `?session=`, `?project=` or `?cwd=` (a
@@ -890,7 +897,9 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
             dry=body.get("dry") is True,
             agent=str(body.get("agent") or ""),
             project=str(body.get("project") or ""),
-            cwd=str(body.get("cwd") or ""))
+            cwd=str(body.get("cwd") or ""),
+            model=str(body.get("model") or ""),
+            plan=body.get("plan") is True)
         status = detail.pop("status", 400)
         if not ok:
             print(f"ask: refused {status} ({detail.get('error')}) "
@@ -945,6 +954,16 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         body = _read_json(h) or {}
         ok, detail = pins.session_pin(str(body.get("session") or ""),
                                       body.get("pinned"), _bearer(h))
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    elif path == "/session/settings":
+        # A chip pressed: `{session, model?, plan?}` (session_settings.py).
+        from . import session_settings
+
+        body = _read_json(h) or {}
+        ok, detail = session_settings.post(str(body.get("session") or ""), body, _bearer(h))
+        if not ok:
+            print(f"settings: refused ({detail.get('error')}) for "
+                  f"{str(body.get('session'))[:8]}", file=sys.stderr, flush=True)
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path == "/session/priority":
         # Always speak this thread (agent_media_core.speak_priority).
