@@ -259,6 +259,15 @@ def test_every_digest_is_kept_to_browse_and_read(monkeypatch):
     assert c["alert"]["detail"] == "b"
 
 
+
+def test_old_digests_go_after_a_year_but_the_landscape_watch_stays(monkeypatch):
+    monkeypatch.setattr(alerts, "_render_held", lambda *a: None)
+    rep(1, "digest.landscape", "info", kind="digest", title="Landscape", detail="l")
+    rep(2, "digest.agenda", "info", kind="digest", title="Old agenda", detail="a")
+    rep(1 + 300 * 86400, "digest.agenda", "info", kind="digest", title="Agenda", detail="b")
+    alerts.listing(now=3 + alerts.DIGEST_KEEP_S)
+    assert [d["title"] for d in alerts.digests()] == ["Agenda", "Landscape"]
+
 def test_digest_routes(server, signed_in, monkeypatch):  # noqa: F811
     monkeypatch.setattr(alerts, "_render_held", lambda *a: None)
     rep(1, "digest.landscape", "info", kind="digest", title="L", detail="body")

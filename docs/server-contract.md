@@ -2464,7 +2464,7 @@ did), otherwise the history row `POST /speech/ctl {"action": "replay-id",
 #### `GET /alerts/digests[?id=&before=n]` — gated (25 Sep 2026)
 
 `{"digests": [{"n", "id", "at", "level", "title", "view", "speech"}]}`: every digest
-reported in the last 90 days, newest first, 60 a page; `id` narrows to one
+reported in the last year (the landscape watch's for good), newest first, 60 a page; `id` narrows to one
 digest, `before` (an `n`) pages back. A digest's `detail` may run to 64,000
 characters (markdown), so it is only in:
 

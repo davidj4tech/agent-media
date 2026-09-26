@@ -367,7 +367,8 @@ ahead.
    org agenda, describe-digest (its tmux pane retired) and the landscape
    watch (read-out = its "Worth stealing"; it still files its TODO).
    **Digests open to read, 25 Sep 2026** (David: "click on the digests to
-   browse and read them"): every digest is kept 90 days (`digest_log`,
+   browse and read them"): every digest is kept a year, the landscape
+   watch's for good (27 Sep 2026; was 90 days) (`digest_log`,
    `GET /alerts/digests`, `/alerts/digest?n=`); a Home row's title opens
    it, ← Earlier / Later → step through, "All digests" lists them. The
    landscape watch sends its whole file, drawn as a document. The agenda

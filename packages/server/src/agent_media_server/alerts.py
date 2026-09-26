@@ -20,7 +20,8 @@ and this module decides what that *changes*:
                With `spoken`, its read-out is rendered **held**
                (`media say --hold`): nothing is said until someone presses
                Play — the row's `speech` names the history row to replay.
-               Every digest is also kept in `digest_log` (DIGEST_KEEP_S), so
+               Every digest is also kept in `digest_log` (DIGEST_KEEP_S; the
+               landscape watch's for good), so
                the app can browse and read past ones (`digests`, `digest`).
                `view` names the Organiser view its lines are items of
                (`agenda`): the app shows them as that view's live rows
@@ -70,8 +71,11 @@ _LIMITS = {"title": 200, "detail": 4000, "fix": 1000, "host": 64}
 SPOKEN_MAX = 12000
 #: A digest's body is its whole report (the landscape watch's is ~5,000).
 DIGEST_DETAIL_MAX = 64000
-#: How long past digests stay readable.
-DIGEST_KEEP_S = 90 * 86400
+#: How long past digests stay readable (they run to ~2 KB a day in all).
+DIGEST_KEEP_S = 365 * 86400
+#: Digests kept for good: the landscape watch is weekly and its reports are
+#: the ones read back months later.
+DIGEST_KEEP_FOREVER = ("digest.landscape",)
 
 _LOCK = threading.Lock()
 
@@ -385,7 +389,10 @@ def listing(*, open_only: bool = False, now: float | None = None) -> dict:
             with con:
                 silent = _sweep(con, now)
                 con.execute("DELETE FROM alert_log WHERE at < ?", (now - KEEP_S,))
-                con.execute("DELETE FROM digest_log WHERE at < ?", (now - DIGEST_KEEP_S,))
+                con.execute(
+                    "DELETE FROM digest_log WHERE at < ? AND id NOT IN (%s)"
+                    % ",".join("?" * len(DIGEST_KEEP_FOREVER)),
+                    (now - DIGEST_KEEP_S, *DIGEST_KEEP_FOREVER))
             rows = [_public(r) for r in con.execute("SELECT * FROM alerts").fetchall()]
         finally:
             con.close()
