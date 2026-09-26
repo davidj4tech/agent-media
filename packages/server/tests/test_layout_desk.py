@@ -6,6 +6,7 @@ it. All fakes: no tmux, no amux, no panes.
 """
 
 import json
+import os
 
 import pytest
 
@@ -158,3 +159,31 @@ def test_davids_headless_chat_keeps_the_tmux_name(tmp_path, monkeypatch):
     monkeypatch.setattr(driver, "for_new", lambda agent="claude": hl)
     assert send.ask("hi", "tok")[0]
     assert hl.started[-1]["host"] == "amux-scratch"
+
+
+def test_davids_project_from_claude_history_when_nothing_is_shelved(tmp_path, monkeypatch):
+    # The shelf is empty since the Conversations library came out: Claude's
+    # own transcripts name the places, and a project's own directory beats a
+    # worktree inside it.
+    monkeypatch.setenv("MEDIA_LAYOUT", "projects-per-tmux-session")
+    d = tmp_path / "book-tracks"
+    d.mkdir()
+    monkeypatch.setattr(sessions, "_manifest_dir", lambda: d)
+    home = tmp_path / "home"
+    proj = home / "projects" / "runlet"
+    tree = proj / ".claude" / "worktrees" / "spike"
+    tree.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    root = tmp_path / "claude-projects"
+    cwds = {"a": str(proj), "b": str(tree)}
+    for i, sid in enumerate(cwds):
+        (root / sid).mkdir(parents=True)
+        f = root / sid / f"{sid}.jsonl"
+        f.write_text("{}\n")
+        os.utime(f, (100 + i, 100 + i))
+    from agent_media_server import moves
+    monkeypatch.setattr(moves, "claude_root", lambda: root)
+    monkeypatch.setattr(sessions, "transcript_cwd", lambda s: cwds.get(s, ""))
+    monkeypatch.setattr(sessions, "live_sessions", lambda: {})
+    assert sessions.project_target("p-runlet") == ("p-runlet", str(proj))
+    assert [p["path"] for p in sessions.places()] == [str(tree), str(proj)]

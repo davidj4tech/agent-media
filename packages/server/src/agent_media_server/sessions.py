@@ -727,7 +727,33 @@ def project_target(project: str) -> tuple[str, str]:
         cwd = transcript_cwd(sid)
         if cwd and os.path.isdir(cwd):
             return layout.project_host(project), cwd
+    # Nothing shelved: the shelf stopped filling when the Conversations
+    # library came out (MEDIA_CONVERSATIONS_LIBRARY=0), so Claude's own
+    # history answers — the project's own directory rather than a worktree
+    # or subfolder inside it, else its newest.
+    found = [cwd for _at, sid in _history()
+             if (cwd := transcript_cwd(sid)) and os.path.isdir(cwd)
+             and project_of(cwd) == project]
+    if found:
+        return layout.project_host(project), min(found, key=len)
     return "", ""
+
+
+def _history() -> list[tuple[float, str]]:
+    """`[(at, session)]`, newest first: each directory's newest Claude
+    transcript under `~/.claude/projects` — one per place a session has run,
+    whether or not the shelf ever filed it."""
+    from . import moves
+
+    out = []
+    for d in moves.claude_root().glob("*"):
+        try:
+            newest = max(((f.stat().st_mtime, f.stem) for f in d.glob("*.jsonl")), default=None)
+        except OSError:
+            continue
+        if newest:
+            out.append(newest)
+    return sorted(out, reverse=True)
 
 
 def places(limit: int = 6) -> list[dict]:
@@ -766,8 +792,10 @@ def places(limit: int = 6) -> list[dict]:
             rows.append((f.stat().st_mtime, json.loads(f.read_text())))
         except (OSError, ValueError):
             continue
-    for at, data in sorted(rows, key=lambda r: -r[0]):
-        sid = str(data.get("session") or "")
+    # Then the shelf and Claude's own history, newest first between them —
+    # the shelf alone stopped growing with the Conversations library.
+    rows = [(at, str(data.get("session") or "")) for at, data in rows] + _history()
+    for at, sid in sorted(rows, key=lambda r: -r[0]):
         if sid and not take(sid, at):
             break
     return [{"name": os.path.basename(path) or path, "path": path, "at": round(at, 3)}
