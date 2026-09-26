@@ -41,7 +41,7 @@ log = logging.getLogger(__name__)
 PORT_DEFAULT = 8772
 #: The app's exported media-button receiver; a broadcast to it thaws a frozen
 #: process for a few seconds without bringing anything to the screen.
-THAW_CMD = ("am broadcast -n com.sasonica.app/androidx.media.session.MediaButtonReceiver "
+THAW_CMD = ("am broadcast -n com.sasonica.abs/androidx.media.session.MediaButtonReceiver "
             "-a android.intent.action.MEDIA_BUTTON >/dev/null 2>&1")
 
 

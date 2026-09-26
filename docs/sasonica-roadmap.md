@@ -12,10 +12,15 @@ Where things live:
 - **Chat app:** `~/projects/sasonica-chat/chat`, branch `chat-prototype`
   (React Router + assistant-ui). Preview on red5 `:8795`
   (`sasonica-chat-preview`).
-- **Sasonica Next:** the Capacitor shell, repo `davidj4tech/Sasonica`,
-  branch `android-next` (checkout `~/projects/sasonica-next`), rebased onto
-  `chat-prototype`. CI builds `sasonica-next-apk`; install with
-  `agent-phone-adb install`.
+- **Sasonica** (the app, built as Sasonica Next until 26 Sep 2026): the
+  Capacitor shell, applicationId **`com.sasonica.app`** (Java package still
+  `com.sasonica.next`), repo `davidj4tech/Sasonica`, branch `android-next`
+  (checkout `~/projects/sasonica-next`), rebased onto `chat-prototype`. CI
+  builds `sasonica-apk` (release key) and `sasonica-debug-apk`
+  (`com.sasonica.app.debug`, beside it); install with `agent-phone-adb sasonica`.
+- **Sasonica ABS:** the Audiobookshelf app fork, kept for books —
+  `com.sasonica.abs`, branch `sasonica`, `agent-phone-adb sasonica-abs`. Book
+  control on :8772 (loopback) and :8773 (tokened).
 - **Sasonica Shell:** `~/projects/sasonica-shell` (formerly Runlet).
 - **Licences:** agent-media, the chat app + Next, and Sasonica Shell are
   Apache-2.0, copyright South Pen Labs. The Audiobookshelf forks (the old
@@ -25,7 +30,12 @@ Where things live:
 ## Standing decisions
 
 - New app work lands in **Next first**; the browser preview is a fallback.
-- Keep publishing conversations to Audiobookshelf until the old app retires.
+- **Sasonica ABS stays for books; Sasonica took its id** (David, 26 Sep 2026).
+  Everything but the book is Sasonica's: speech (:6614), the holds, and the
+  readouts `/mic` `/ringer` `/state` on loopback **:8774** (call_guard,
+  ringer.py and `media doctor` read them there; the old app's :8772 is book
+  control only). Keep publishing conversations to Audiobookshelf while the
+  books app plays them.
 - Idle sessions close after 12 h (6 h when memory is tight); closed is not
   archived.
 - Headless sessions are on, with normal permissions.
@@ -264,9 +274,8 @@ reply and it carries on; a voice session or a call holds every reply until it
 is over, with the Speak now / Later card; urgent takes the room. `MicWatch`,
 `MicSteady`, `MicSource`, `BargeIn`, `DictationHold`, `HoldRate` and
 `RingerState` came across unchanged, with their tests as JUnit. No `BookHold`
-(Next has no book). Still to do: serve `/mic`, `/ringer` and the hold rate on
-a port of Next's own, so `call_guard`, `ringer.py` and `media doctor` can
-read them from Next instead of the old app's :8772.
+(Next has no book). Served on loopback :8774 since 26 Sep 2026
+(`Readouts.java`), and agent-media reads them there.
 
 The Organiser on plain Org, paragtd as a package (24 Sep 2026,
 `docs/proposals/2026-09-24-notes-core-and-paragtd.md`): the layout is a notes
@@ -512,11 +521,11 @@ ahead.
 - The Windows install test leaves stray PATH entries.
 - A stale saved question for a session may not clear after it's answered
   (the PostToolUse clear may not fire).
-- Once the old app retires, move Next into its own repository so the
-  licence split is clean.
-- Next's speech service cannot start itself after a reboot: Android 15 will
-  not start a `mediaPlayback` service from `BOOT_COMPLETED`. Opening the app
-  starts it. Worth solving before Next's player becomes the default.
+- Move Sasonica (the chat app) into its own repository so the licence split
+  is clean — after the id swap, separately (David, 26 Sep 2026).
+- Next's speech service starts after a reboot or an update as `specialUse`
+  (Android 15 will not start `mediaPlayback` from `BOOT_COMPLETED`), since
+  26 Sep 2026 — not yet seen through a real reboot.
 - Next's speech takes audio focus (it is the app's only player), so while
   both apps are installed a reply pauses the old app's book through Android
   rather than in process. That is the intended behaviour, but it is the

@@ -253,12 +253,13 @@ def pause_for_speech(host: str) -> bool:
 
 
 def companion_port() -> int:
-    """Loopback port of the phone app's status server: Sasonica's control
-    port since 2026-09-21, which took the companion's place (8770)."""
+    """Loopback port of the phone app's status server: Sasonica Next's
+    readouts since 2026-09-26 (the old app's 8772 before, which stays the book
+    player's; the companion's 8770 before that)."""
     try:
-        return int(os.environ.get("MEDIA_ANDROID_COMPANION_PORT", "8772"))
+        return int(os.environ.get("MEDIA_ANDROID_COMPANION_PORT", "8774"))
     except (TypeError, ValueError):
-        return 8772
+        return 8774
 
 
 def _pause_for_speech_script() -> str:

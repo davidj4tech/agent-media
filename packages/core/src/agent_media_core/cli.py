@@ -7260,10 +7260,8 @@ def _dictation_rate_facts() -> "dict[str, str]":
     """
     import urllib.request
 
-    try:
-        port = int(os.environ.get("MEDIA_ANDROID_COMPANION_PORT", "8772"))
-    except ValueError:
-        port = 8772
+    from .route._android import companion_port
+    port = companion_port()
     try:
         with urllib.request.urlopen(
                 f"http://127.0.0.1:{port}/state", timeout=5) as resp:

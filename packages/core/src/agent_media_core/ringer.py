@@ -58,9 +58,10 @@ from ._paths import state_dir
 
 log = logging.getLogger(__name__)
 
-#: Where the phone app answers — Sasonica's control port since 2026-09-21 (the
-#: companion's 8770 before). Same port as ``/mic``, same loopback bind.
-DEFAULT_URL = "http://127.0.0.1:8772/ringer"
+#: Where the phone app answers — Sasonica Next's readout port since 2026-09-26
+#: (the old app's 8772 before, the companion's 8770 before that). Same port as
+#: ``/mic``, same loopback bind.
+DEFAULT_URL = "http://127.0.0.1:8774/ringer"
 
 #: How often to ask.
 #:
