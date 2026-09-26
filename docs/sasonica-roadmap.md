@@ -237,8 +237,10 @@ at the caret (`AttachButton.tsx`, android-next `a77132ec`).
 New chat is one line, not two chip walls (David, 26 Sep 2026): "agent-media ·
 Claude ▾" opens a sheet with the places (newest first) and the agents, so a
 message of several lines keeps the screen. The other assistants' chips show
-only while the box is empty (the assistant button's offer stays). android-next
-`581892e9`, installed on p8a.
+only while the box is empty (the assistant button's offer stays), and fold
+into one "Other assistants ▾" chip with a sheet (one alone keeps its chip; New
+chat instead stays a chip; opening it stops the send countdown). android-next
+`581892e9`, `fa6937dd`, installed on p8a.
 
 ## In flight
 
