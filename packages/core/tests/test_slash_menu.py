@@ -53,9 +53,38 @@ def test_a_skills_own_description_is_what_it_shows(monkeypatch):
     monkeypatch.setattr(slash_menu, "ask_claude",
                         lambda cwd, timeout=60.0: (["speak"], ["speak"], "2.1.1"))
     monkeypatch.setattr(slash_menu, "descriptions", lambda cwd=None: {"speak": "Out loud"})
+    monkeypatch.setattr(slash_menu, "groups", lambda cwd=None: {"speak": "Yours"})
     monkeypatch.setattr(slash_menu, "bundle_commands", lambda names: {})
     assert slash_menu.build("/proj") == [
-        {"name": "speak", "description": "Out loud", "aliases": []}]
+        {"name": "speak", "description": "Out loud", "aliases": [], "group": "Yours"}]
+
+
+def test_the_sheet_groups_by_where_a_command_lives(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setattr(slash_menu.Path, "home", staticmethod(lambda: home))
+    _skill(home, "speak", "Say it")
+    _skill(tmp_path / "proj", "deploy", "Ship it")
+    # A skill pack linked in from elsewhere: grouped by the pack's name.
+    pack = tmp_path / "share" / "cloudflare-skills" / "skills" / "wrangler"
+    pack.mkdir(parents=True)
+    (pack / "SKILL.md").write_text("---\ndescription: Deploy\n---\n")
+    (home / ".claude" / "skills" / "wrangler").symlink_to(pack)
+    found = slash_menu.groups(tmp_path / "proj")
+    assert found == {"speak": "Yours", "wrangler": "Cloudflare", "deploy": "This project"}
+    # No file: a plugin's prefix, else Claude Code's own.
+    assert slash_menu.group_of("anthropic-skills:pdf", found) == "Anthropic"
+    assert slash_menu.group_of("code-review", found) == "Claude Code"
+
+
+def test_an_older_cache_is_rebuilt_for_the_groups(monkeypatch):
+    calls = []
+    monkeypatch.setattr(slash_menu, "build", lambda cwd: calls.append(cwd) or [{"name": "a"}])
+    monkeypatch.setattr(slash_menu, "claude_version", lambda: "2.1.1")
+    path = slash_menu._cache_path("/proj")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    import json, time
+    path.write_text(json.dumps({"at": time.time(), "version": "2.1.1", "commands": [{"name": "old"}]}))
+    assert slash_menu.menu("/proj") == [{"name": "a"}] and calls == ["/proj"]
 
 
 def test_the_menu_is_cached_until_the_version_changes(monkeypatch):

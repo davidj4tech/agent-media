@@ -170,6 +170,55 @@ def descriptions(cwd: Optional[Path] = None) -> dict:
     return out
 
 
+#: Bumped when a menu entry gains a field, so an older cache is rebuilt.
+SCHEMA = 2
+
+
+def _pack_label(name: str) -> str:
+    """`cloudflare-skills` → `Cloudflare`, `anthropic-skills` → `Anthropic`."""
+    base = re.sub(r"[-_ ]?skills?$", "", name, flags=re.I) or name
+    return " ".join(w.capitalize() for w in re.split(r"[-_ ]+", base) if w)
+
+
+def groups(cwd: Optional[Path] = None) -> dict:
+    """`{command name: group}` for the skills and commands on disk — the
+    headings of the phone's slash sheet.
+
+    "This project" for the project's own `.claude`; "Yours" for the user's,
+    unless the skill is a link into a skill pack somewhere else on disk (a
+    `<pack>/skills/<name>` tree, like the Cloudflare skills), which is
+    grouped by the pack's name. The user's own agent-config links count as
+    theirs.
+    """
+    out: dict = {}
+    roots = [(Path.home() / ".claude", "Yours")]
+    if cwd:
+        roots.append((Path(cwd) / ".claude", "This project"))
+    for root, label in roots:
+        for skill in sorted(root.glob("skills/*/SKILL.md")):
+            group = label
+            if label == "Yours":
+                real = skill.parent.resolve()
+                if (real.parent.name == "skills" and "agent-config" not in real.parts
+                        and not str(real).startswith(str((Path.home() / ".claude").resolve()))):
+                    group = _pack_label(real.parent.parent.name)
+            out[skill.parent.name] = group
+        for cmd in sorted(root.glob("commands/*.md")):
+            out[cmd.stem] = label
+    return out
+
+
+def group_of(name: str, found: dict) -> str:
+    """A command's heading: from its file (`groups`), else a plugin's
+    `prefix:` (`anthropic-skills:docx` → Anthropic), else Claude Code's own."""
+    if name in found:
+        return found[name]
+    prefix, sep, rest = name.partition(":")
+    if sep:
+        return found.get(rest) or _pack_label(prefix)
+    return "Claude Code"
+
+
 def _cache_path(cwd: str) -> Path:
     from .book_tracks import safe_name
 
@@ -229,7 +278,7 @@ def ask_claude(cwd: str, timeout: float = 60.0) -> tuple[list, list, str]:
 
 
 def build(cwd: str) -> list:
-    """The menu for a session in `cwd`: `[{name, description, aliases}]`.
+    """The menu for a session in `cwd`: `[{name, description, aliases, group}]`.
 
     Skills and the user's or project's own commands, and nothing else.
     Claude Code's built-ins are left out on purpose: typed from the phone,
@@ -240,6 +289,7 @@ def build(cwd: str) -> list:
     """
     names, skills, _version = ask_claude(cwd)
     described = descriptions(Path(cwd) if cwd else None)
+    found = groups(Path(cwd) if cwd else None)
     offered = [n for n in names
                if not n.startswith(("__", "mcp__"))
                and (n in set(skills) or n.rpartition(":")[2] in described)]
@@ -247,7 +297,8 @@ def build(cwd: str) -> list:
     menu = [{"name": name,
              "description": (described.get(name.rpartition(":")[2])
                              or (bundle.get(name) or {}).get("description", "")),
-             "aliases": (bundle.get(name) or {}).get("aliases") or []}
+             "aliases": (bundle.get(name) or {}).get("aliases") or [],
+             "group": group_of(name, found)}
             for name in offered]
     menu.sort(key=lambda c: c["name"])
     return menu
@@ -264,6 +315,7 @@ def menu(cwd: str, *, refresh: bool = False) -> list:
         except (OSError, ValueError):
             cached = None
         if (cached and cached.get("commands")
+                and cached.get("schema") == SCHEMA
                 and (not version or cached.get("version") == version)
                 and time.time() - float(cached.get("at") or 0) < CACHE_TTL_S):
             return cached["commands"]
@@ -273,7 +325,7 @@ def menu(cwd: str, *, refresh: bool = False) -> list:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(
-            {"at": time.time(), "version": version or claude_version(),
+            {"at": time.time(), "schema": SCHEMA, "version": version or claude_version(),
              "cwd": cwd, "commands": commands}, indent=1))
     except OSError as e:  # noqa: BLE001 — a menu that cannot be cached is
         log.debug("slash-menu: cannot cache %s (%s)", path, e)
