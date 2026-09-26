@@ -820,6 +820,18 @@ def _live_turn(session: str) -> Optional[dict]:
             offsets.append(acc)
             acc += float(d or 0)
     base = float(ex.get("play_started_at") or at)
+    if ex.get("clip_starts_s") and not ex.get("clip_offsets_s") and offsets and offsets[0] > 0:
+        # The clock starts when the voice does. A reply can be claimed long
+        # before its first word — held for "When open" until the thread is
+        # opened, or behind a hold — and the measured starts count from the
+        # claim, so the first sentence began 123 s in (p8a, 26 Sep 2026).
+        # Consistent on its own, but the app corrects `elapsed` against the
+        # player's `pos`, which counts from the first word: it took the wait
+        # for lag, took it off, and landed before sentence one on every
+        # sample — the bold kept jumping back to the top.
+        lead = offsets[0]
+        offsets = [round(o - lead, 3) for o in offsets]
+        base += lead
     paused_at = ex.get("paused_at")
     now = float(paused_at) if paused_at else time.time()
     # How long after the clock starts the audio is actually heard — the bridge
@@ -1031,6 +1043,12 @@ def conversation_log(session: str, folder: Path, *, target=None,
                 turn = said[newest]
                 offsets = [round(float(x), 3)
                            for x in (getattr(turn, "starts", None) or [])]
+                if offsets and offsets[0] > 0:
+                    # From the first word, as `pos` counts (see _live_turn):
+                    # the app bolds this timeline against the player's own
+                    # position, and a wait before the voice would put every
+                    # sentence that far past it.
+                    offsets = [round(o - offsets[0], 3) for o in offsets]
                 if not offsets:
                     acc, offsets = 0.0, []
                     for d in (getattr(turn, "durations", None) or []):

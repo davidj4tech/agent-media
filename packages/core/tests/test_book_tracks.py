@@ -689,3 +689,27 @@ def test_a_live_newest_turn_keeps_the_live_fields(tmp_path, monkeypatch):
     line = bt.conversation_log("sess-1", folder)[-1]
     assert line["live"] is True
     assert line["offsets"] == [0.0, 1.4] and line["elapsed"] == 2.0
+
+
+def test_live_turn_starts_its_clock_at_the_first_word(monkeypatch):
+    # A reply claimed two minutes before it was heard (held for "When open"):
+    # the measured starts count from the claim. `elapsed` and the offsets must
+    # both count from the first word, as the player's `pos` does, or the app's
+    # skew correction takes the wait off and bolds sentence one forever.
+    import json, time
+    from agent_media_core import book_tracks as b
+    now = time.time()
+    ex = {"source_session": "s1", "text": "One. Two. Three.",
+          "clip_sentences": ["One.", "Two.", "Three."],
+          "clip_starts_s": [123.7, 132.9], "clip_durations_s": [9.1, 6.8, 6.4],
+          "play_started_at": now - 173.5}
+    row = {"started_at": 100.0, "target": "next", "extras": json.dumps(ex)}
+
+    class Store:
+        def get_now_playing(self, sink):
+            return row
+
+    monkeypatch.setattr("agent_media_core.state.store.StateStore", lambda: Store())
+    turn = b._live_turn("s1")
+    assert turn["offsets"] == [0.0, 9.2, 16.0]
+    assert 49.5 < turn["elapsed"] < 50.2
