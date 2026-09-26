@@ -88,3 +88,15 @@ def test_a_clip_that_will_not_render_is_left_out(tmp_path, monkeypatch):
     a = tmp_path / "r--claude--000.tts"
     a.write_text("First.")
     assert submit.render_device_clips([str(a)]) == ([], [])
+
+
+def test_the_conversations_library_can_be_switched_off(monkeypatch):
+    from agent_media_core import book_tracks, feed_debounce
+
+    monkeypatch.setenv("MEDIA_FEED_BASE_URL", "http://red5:8782")
+    monkeypatch.delenv("MEDIA_CONVERSATIONS_LIBRARY", raising=False)
+    assert book_tracks.enabled()
+    monkeypatch.setenv("MEDIA_CONVERSATIONS_LIBRARY", "0")
+    assert not book_tracks.enabled()
+    assert not feed_debounce.enabled(), "no publish is armed for a turn"
+    assert not feed_debounce.arm()

@@ -72,6 +72,17 @@ def safe_name(text: str, limit: int = 110) -> str:
     return name or UNFILED
 
 
+def enabled() -> bool:
+    """Whether conversations are published to Audiobookshelf at all.
+
+    Off with MEDIA_CONVERSATIONS_LIBRARY=0 (David, 27 Sep 2026: the
+    Conversations library came out of Sasonica ABS — speech is heard in
+    Sasonica, and a phone-voiced turn has no audio to shelve). The turns,
+    their words and replay are the speech history's, not the library's."""
+    return (os.environ.get("MEDIA_CONVERSATIONS_LIBRARY", "1").strip().lower()
+            not in ("0", "false", "no", "off"))
+
+
 def root() -> Path:
     """Where the library lives. `MEDIA_BOOK_TRACKS_ROOT` overrides, and
     `MEDIA_BOOK_EXPORT_ROOT` still does too — it named this tree first, and a

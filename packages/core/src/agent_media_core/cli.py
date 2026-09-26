@@ -6492,6 +6492,10 @@ def cmd_feed(a) -> int:
         # authors, so running this changes nothing about the other.
         from . import book_tracks
 
+        if not book_tracks.enabled():
+            print("media feed tracks: the Conversations library is off "
+                  "(MEDIA_CONVERSATIONS_LIBRARY=0)")
+            return 0
         sess = (getattr(a, "session", "") or "").strip()
         rows = ([(sess, *book_tracks.export_session(sess))] if sess
                 else book_tracks.export_all(

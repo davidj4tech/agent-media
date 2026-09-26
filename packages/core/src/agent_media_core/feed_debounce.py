@@ -78,6 +78,9 @@ def enabled() -> bool:
     """Only where a feed is served and systemd can hold the timer."""
     if not (os.environ.get("MEDIA_FEED_BASE_URL") or "").strip():
         return False
+    from . import book_tracks
+    if not book_tracks.enabled():
+        return False        # nothing left for the publish to do
     return bool(shutil.which("systemd-run") and shutil.which("systemctl"))
 
 
