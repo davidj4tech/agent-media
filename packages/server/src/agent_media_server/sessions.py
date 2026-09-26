@@ -771,12 +771,17 @@ def places(limit: int = 6) -> list[dict]:
     """
     seen: dict[str, float] = {}
 
-    def take(sid: str, at: float) -> bool:
-        """Keep that session's directory. False when the list is full."""
+    def take(sid: str, at: float, live: bool = False) -> bool:
+        """Keep that session's directory. False when the list is full.
+
+        A hidden directory (`~/.meridian`: a tool's, not a project) is left
+        out of the history, but not while a session runs there — one that
+        is live stays in sight."""
         if limit and len(seen) >= limit:
             return False
         cwd = transcript_cwd(sid)
-        if cwd and cwd not in seen and os.path.isdir(cwd):
+        hidden = any(part.startswith(".") for part in Path(cwd).parts[1:]) if cwd else False
+        if cwd and cwd not in seen and os.path.isdir(cwd) and (live or not hidden):
             seen[cwd] = at
         return True
 
@@ -784,7 +789,7 @@ def places(limit: int = 6) -> list[dict]:
     # it beats the shelf whatever the shelf's timestamps say.
     now = time.time()
     for sid in live_sessions():
-        if not take(sid, now):
+        if not take(sid, now, live=True):
             break
     rows = []
     for f in _manifest_dir().glob("*.json"):

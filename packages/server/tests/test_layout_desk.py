@@ -186,4 +186,8 @@ def test_davids_project_from_claude_history_when_nothing_is_shelved(tmp_path, mo
     monkeypatch.setattr(sessions, "transcript_cwd", lambda s: cwds.get(s, ""))
     monkeypatch.setattr(sessions, "live_sessions", lambda: {})
     assert sessions.project_target("p-runlet") == ("p-runlet", str(proj))
+    # The worktree sits under a hidden directory: out of the list, until a
+    # session is live there.
+    assert [p["path"] for p in sessions.places()] == [str(proj)]
+    monkeypatch.setattr(sessions, "live_sessions", lambda: {"b": "%1"})
     assert [p["path"] for p in sessions.places()] == [str(tree), str(proj)]
