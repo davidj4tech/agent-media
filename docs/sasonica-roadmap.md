@@ -349,7 +349,16 @@ ahead.
    Steps 2–4 of
    `docs/proposals/2026-09-23-accounts-and-the-identity-seam.md` (OIDC, an
    issuer) stay parked until there is a second person.
-2. **Sasonica Shell OAuth** — the proposal is written, not built.
+2. **Sasonica Shell OAuth** — **the Worker half is built, off until
+   configured** (sasonica-shell `aeeeae3`, 27 Sep 2026): OAuth on `/mcp`
+   with Cloudflare Access (an Access for SaaS OIDC app) as the sign-in and
+   an owner-email check; the secret URLs keep working beside it. Left: the
+   installer creating the KV namespace, the Access app and its owner-only
+   policy (needs a Zero Trust organization with one-time PIN, and a token
+   with Workers KV Storage: Edit and Access: Apps and Policies: Edit);
+   `sasonica client` listing and revoking grants; deploying on red5 and
+   adding the connectors again as plain `…/mcp` URLs. Then the phone as the
+   sign-in instead of Access, once approvals exist.
 3. **One setup for a machine, from the Coding agents page** (David, 23 Sep
    2026). A working machine needs three installers today: `media-setup`
    (agent-media's own hooks and services), Sasonica Shell's `install.mjs`
