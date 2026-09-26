@@ -89,6 +89,18 @@ for agent in $AGENTS; do
     *) echo "  unknown agent '$agent', skipped" ;;
   esac
 done
+# How the server hears the agents' replies: opencode loads every script in
+# its plugins folder; Claude Code takes hooks in settings.json. (Not
+# `media-setup profile`: inside the proot it would also try to install
+# services, which Termux's runit holds here.)
+in_debian 'export PATH=~/projects/agent-media/.venv/bin:$PATH
+  mkdir -p ~/.config/opencode/plugins
+  ln -sf ~/projects/agent-media/packages/core/opencode/agent-media.js ~/.config/opencode/plugins/agent-media.js
+  # opencode installs a plugin'"'"'s dependencies on its first start (~1 min in
+  # a proot), past the server'"'"'s 45 s wait for a new chat'"'"'s pane: do it now.
+  # `debug config` loads the plugins without asking any model.
+  if [ -x ~/.opencode/bin/opencode ]; then ~/.opencode/bin/opencode debug config >/dev/null 2>&1 || true; fi
+  if command -v claude >/dev/null; then media-setup install-hooks >/dev/null; fi'
 
 step "This phone's config"
 in_debian 'export PATH=~/projects/agent-media/.venv/bin:$PATH
