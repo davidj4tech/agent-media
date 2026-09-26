@@ -331,7 +331,7 @@ _DEFAULT_MIC_MAX_S = 120.0
 # 2026-09-21 it was the Audiobookshelf app's media-button receiver (that app is
 # Sasonica ABS now, com.sasonica.abs, and keeps only the book).
 _DEFAULT_MIC_REVIVE_CMD = (
-    "am broadcast -n com.sasonica.app/com.sasonica.next.speech.WakeReceiver")
+    "am broadcast -n com.sasonica.app/.speech.WakeReceiver")
 # ...and the activity is still here, because since Android 12 a background app
 # may not start a foreground service unless an exemption applies (an activity in
 # a task on Recents, a battery-optimisation exemption — this app has neither
@@ -346,7 +346,7 @@ _DEFAULT_MIC_REVIVE_CMD = (
 # deaths this revives from that evening were that timeout, so the old door was
 # helping to close itself.
 _DEFAULT_MIC_REVIVE_FALLBACK_CMD = (
-    "am start -n com.sasonica.app/com.sasonica.next.MainActivity")
+    "am start -n com.sasonica.app/.MainActivity")
 # How long the quiet knock gets to work before the loud one follows. The next
 # failing poll after this is what fires it, and during a backoff those are
 # `_MIC_BACKOFF_S` apart — so anything below that simply means "the next one".
