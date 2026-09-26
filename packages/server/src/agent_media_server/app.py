@@ -627,19 +627,21 @@ def _thread_events(h: BaseHTTPRequestHandler, session: str, query: str) -> bool:
 
 
 def _session_events(h: BaseHTTPRequestHandler, query: str) -> None:
-    """`GET /sessions/events[?ping=]` — the session list as a stream (§6.13,
+    """`GET /sessions/events[?ping=][&alerts=]` — the session list as a stream (§6.13,
     session_events.py). Gated like `/sessions/state`; `?access_token=` is
     accepted for a plain `EventSource` and, like the thread stream's, never
     logged."""
     from . import session_events
 
-    qs = parse_qs(query)
+    qs = parse_qs(query, keep_blank_values=True)
     bearer = _bearer(h) or (qs.get("access_token") or [""])[0].strip()
     ok, err = auth.may_control_speech(bearer)
     if not ok:
         _json(h, err.pop("status", 401), {"ok": False, **err})
         return
-    session_events.serve(h, bearer, ping_s=session_events.ping_of((qs.get("ping") or [""])[0]))
+    session_events.serve(h, bearer, ping_s=session_events.ping_of((qs.get("ping") or [""])[0]),
+                         alerts_after=session_events.alerts_of(
+                             qs["alerts"][0] if "alerts" in qs else None))
 
 
 def _thread_agents(h: BaseHTTPRequestHandler, session: str, agent_id: str | None,

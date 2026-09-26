@@ -2215,7 +2215,7 @@ read-only agent view.
 
 ### 6.13 The session list as a stream — gated (built 22 Sep 2026)
 
-#### `GET /sessions/events[?ping=<s>]` — gated (`auth.may_control_speech`, like `/sessions/state`)
+#### `GET /sessions/events[?ping=<s>][&alerts=<n>]` — gated (`auth.may_control_speech`, like `/sessions/state`)
 
 What a phone's background notifier holds open while the app is closed
 (Sasonica's `NotifyService`): one connection that says when any live
@@ -2249,6 +2249,19 @@ data: {}
   client diffs against what it held; the server keeps nothing per client, so
   a reconnect's first frame is the catch-up (a client that remembers the
   last list across a reconnect sees what changed while it was away).
+- `alerts` (27 Sep 2026; only with `?alerts=`): the alert store's
+  **notices** (§6.17) after cursor `n` —
+  `{"last": 57, "notices": [{"n", "id", "change", "level", "title", "detail",
+  "fix", "host", "at"}]}`. Sent after the first `sessions` frame, then
+  whenever the store's log moves. A notice is a `raised` or `escalated` status
+  alert that is still open, or a digest at `warn`+; the latest per alert
+  (a raise then an escalation is one), at most 5, none older than 24 h.
+  The client keeps `last` and sends it as `?alerts=` next time, so a
+  reconnect catches up without repeats; `?alerts=` empty (a first
+  connection) is handed only `last`, never the backlog. A cursor past `last`
+  (the log was emptied) is answered with `last`. Sasonica posts each notice
+  as an "Alerts" notification — how a disk warning reaches a phone whose
+  ringer is holding the spoken one.
 - `ping`: `{}` after `?ping=` seconds of silence — 15 to 300, default 15,
   clamped. A phone asks for a long one so an idle connection wakes the radio
   only for real changes.
@@ -2555,8 +2568,9 @@ opening their heading — and the rest as no longer on it.
 Seen it: kept open, not re-notified; a clear leaves its TODO open. 404 for an
 unknown id. The next raise forgets the ack.
 
-Not yet: the `alerts` event on `/sessions/events` and Sasonica's Home section
-(proposal step 2).
+The `alerts` frame on `/sessions/events` (§6.13, 27 Sep 2026) carries the
+notifying changes to the phone. Not yet: Sasonica's Home section for open
+alerts, with Fix it and Ack (proposal step 2).
 
 ### 6.18 Files shared to the app — gated (built 25 Sep 2026)
 

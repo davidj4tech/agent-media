@@ -286,3 +286,54 @@ def test_a_digest_names_the_view_its_lines_are_items_of(monkeypatch):
     rep(2, "digest.other", "info", kind="digest", title="B", detail="y", view="Not A View!")
     assert [d["view"] for d in alerts.digests()] == [None, "agenda"]
     assert alerts.digest(alerts.digests()[1]["n"])["view"] == "agenda"
+
+
+# --- notices: what the phone posts ---------------------------------------------------
+
+def test_a_first_connection_gets_only_the_head():
+    rep(1, level="warn", title="red5: / at 90%", step=90)
+    head = alerts.last_seq()
+    assert head > 0
+    assert alerts.notices(None, now=2) == {"last": head, "notices": []}
+    assert alerts.notices(head, now=2) == {"last": head, "notices": []}
+
+
+def test_notices_after_the_cursor_are_raises_and_escalations():
+    rep(1, level="ok")
+    start = alerts.last_seq()
+    rep(2, level="warn", title="red5: / at 90%", step=90, detail="df line", fix="clean")
+    rep(3, level="warn", step=90, detail="df line", fix="clean")  # same: nothing
+    got = alerts.notices(start, now=4)
+    assert [(n["change"], n["level"], n["title"], n["detail"], n["fix"])
+            for n in got["notices"]] == [("raised", "warn", "red5: / at 90%", "df line", "clean")]
+    assert got["last"] == alerts.last_seq()
+
+
+def test_a_raise_then_an_escalation_is_one_notice():
+    start = alerts.last_seq()
+    rep(1, level="warn", title="at 90%", step=90)
+    rep(2, level="warn", title="at 95%", step=95)
+    got = alerts.notices(start, now=3)["notices"]
+    assert [(n["change"], n["title"]) for n in got] == [("escalated", "at 95%")]
+
+
+def test_a_cleared_alert_is_no_notice_and_old_ones_are_not_news():
+    start = alerts.last_seq()
+    rep(1, level="warn", title="t", step=90)
+    rep(2, level="ok")
+    assert alerts.notices(start, now=3)["notices"] == []
+    rep(10, aid="host.red3", level="needs", title="red3 down")
+    assert alerts.notices(start, now=10 + alerts.NOTICE_MAX_AGE_S + 1)["notices"] == []
+
+
+def test_a_digest_is_a_notice_only_at_warn():
+    start = alerts.last_seq()
+    rep(1, aid="digest.a", kind="digest", level="info", title="quiet", detail="x")
+    rep(2, aid="digest.b", kind="digest", level="warn", title="loud", detail="y")
+    assert [n["id"] for n in alerts.notices(start, now=3)["notices"]] == ["digest.b"]
+
+
+def test_a_cursor_past_the_head_is_reset_to_it():
+    rep(1, level="warn", title="t", step=90)
+    head = alerts.last_seq()
+    assert alerts.notices(head + 50, now=2) == {"last": head, "notices": []}

@@ -9,6 +9,12 @@ thread's one word.
     sessions   {"sessions": [{"session", "title", "state"}], "at"}
                — first frame on every connection, then whenever a row's
                session, state or title changes (the whole list: it is small)
+    alerts     {"last", "notices": [...]} — only when asked, `?alerts=<n>`:
+               the alert store's notices after cursor n (alerts.notices),
+               first on connecting, then whenever there are new ones. The
+               client keeps `last` and sends it on its next connection, so a
+               reconnect catches up without repeats; `?alerts=` empty is a
+               first connection: just the head, no backlog
     ping       {} after `?ping=` seconds of silence (15–300, default 15)
 
 `state` is `/sessions/state`'s (§6.1): `working` | `waiting` | `approval`.
@@ -38,7 +44,7 @@ import logging
 import threading
 import time
 
-from . import auth, sessions
+from . import alerts, auth, sessions
 
 log = logging.getLogger("agent-media.server.session_events")
 
@@ -68,6 +74,7 @@ class _Watcher:
         self.cond = threading.Condition()
         self.subs = 0
         self.rows: list[dict] | None = None
+        self.alerts_head = 0
         self.version = 0
         self.thread: threading.Thread | None = None
 
@@ -77,9 +84,11 @@ class _Watcher:
         except Exception:  # noqa: BLE001 — a failed sweep is not a change
             log.exception("session events: sweep failed")
             return
+        head = alerts.last_seq()
         with self.cond:
-            if rows != self.rows:
+            if rows != self.rows or head != self.alerts_head:
                 self.rows = rows
+                self.alerts_head = head
                 self.version += 1
                 self.cond.notify_all()
 
@@ -133,7 +142,23 @@ def ping_of(raw: str) -> float:
     return min(PING_MAX_S, max(PING_MIN_S, v))
 
 
-def serve(h, bearer: str, *, ping_s: float = PING_DEFAULT_S) -> bool:
+#: `alerts_of("")`: a first connection, which is handed only the head.
+FIRST = -1
+
+
+def alerts_of(raw: str | None) -> int | None:
+    """`?alerts=` as a cursor: None when not asked, FIRST when empty or not a
+    number, else n ≥ 0."""
+    if raw is None:
+        return None
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return FIRST
+
+
+def serve(h, bearer: str, *, ping_s: float = PING_DEFAULT_S,
+          alerts_after: int | None = None) -> bool:
     """Hold the connection and stream the session list until it goes. Auth
     is the caller's (app.py), done before this. Always True: the request was
     answered, however the stream ended."""
@@ -163,17 +188,28 @@ def serve(h, bearer: str, *, ping_s: float = PING_DEFAULT_S) -> bool:
             h.wfile.flush()
 
         seen = -1
+        seen_rows = None
+        cursor = alerts_after
         last_sent = time.monotonic()
         checked = time.monotonic()
         while True:
             with _W.cond:
                 _W.cond.wait_for(lambda: _W.version != seen and _W.rows is not None,
                                  timeout=max(0.01, ping_s - (time.monotonic() - last_sent)))
-                version, rows = _W.version, _W.rows
+                version, rows, head = _W.version, _W.rows, _W.alerts_head
             if version != seen and rows is not None:
+                first = seen == -1
                 seen = version
-                send("sessions", {"sessions": rows, "at": round(time.time(), 3)})
-                last_sent = time.monotonic()
+                if first or rows != seen_rows:
+                    seen_rows = rows
+                    send("sessions", {"sessions": rows, "at": round(time.time(), 3)})
+                    last_sent = time.monotonic()
+                if cursor is not None and (first or head != cursor):
+                    got = alerts.notices(None if cursor == FIRST else cursor)
+                    if first or got["notices"] or got["last"] != cursor:
+                        send("alerts", got)
+                        last_sent = time.monotonic()
+                    cursor = got["last"]
             elif time.monotonic() - last_sent >= ping_s:
                 send("ping", {})
                 last_sent = time.monotonic()

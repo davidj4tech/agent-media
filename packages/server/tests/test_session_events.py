@@ -11,7 +11,7 @@ import time
 
 import pytest
 
-from agent_media_server import auth_abs, panes, session_events, sessions
+from agent_media_server import alerts, auth_abs, panes, session_events, sessions
 
 from test_contract import AUTH, SID2, server, shelf, signed_in, typed  # noqa: F401
 from test_thread_events import Stream, _wait
@@ -48,6 +48,7 @@ def _idle_watcher(deadline: float = 5.0) -> None:
         time.sleep(0.02)
     with w.cond:
         w.rows = None
+        w.alerts_head = 0
 
 
 def test_refused_without_a_credential(server, screen, monkeypatch):
@@ -157,3 +158,65 @@ def test_rows_carry_three_fields_in_a_stable_order():
     assert session_events.rows_of(rows) == [
         {"session": "a", "title": "", "state": "waiting"},
         {"session": "b", "title": "B", "state": "working"}]
+
+
+# --- alerts ---------------------------------------------------------------------------
+
+def _raise(title="red5: / at 91% (7G free)", level="warn", step=90):
+    ok, d = alerts.report({"id": "disk.red5.root", "level": level, "title": title,
+                           "step": step})
+    assert ok, d
+
+
+def test_alerts_only_when_asked(server, screen):
+    _raise()
+    st = Stream(server, "/sessions/events?ping=0.2", AUTH)
+    try:
+        assert st.event()[0] == "sessions"
+        assert st.event(2.0) == ("ping", {})
+    finally:
+        st.close()
+
+
+def test_a_first_connection_is_handed_the_head_not_the_backlog(server, screen):
+    _raise()
+    st = Stream(server, "/sessions/events?ping=0.3&alerts=", AUTH)
+    try:
+        assert st.event()[0] == "sessions"
+        assert st.next("alerts") == {"last": alerts.last_seq(), "notices": []}
+    finally:
+        st.close()
+
+
+def test_a_raise_while_connected_is_a_notice(server, screen):
+    st = Stream(server, "/sessions/events?ping=0.3&alerts=0", AUTH)
+    try:
+        assert st.next("alerts") == {"last": 0, "notices": []}
+        _raise()
+        got = st.next("alerts")
+        assert [(n["id"], n["change"], n["title"]) for n in got["notices"]] == [
+            ("disk.red5.root", "raised", "red5: / at 91% (7G free)")]
+        assert got["last"] == alerts.last_seq()
+    finally:
+        st.close()
+
+
+def test_a_reconnect_catches_up_from_its_cursor(server, screen):
+    _raise()
+    cursor = alerts.last_seq()
+    _raise(title="red5: / at 96%", step=95)
+    st = Stream(server, "/sessions/events?ping=0.3&alerts=%d" % cursor, AUTH)
+    try:
+        got = st.next("alerts")
+        assert [(n["change"], n["title"]) for n in got["notices"]] == [
+            ("escalated", "red5: / at 96%")]
+    finally:
+        st.close()
+
+
+def test_alerts_cursor_parsing():
+    assert session_events.alerts_of(None) is None
+    assert session_events.alerts_of("") == session_events.FIRST
+    assert session_events.alerts_of("x") == session_events.FIRST
+    assert session_events.alerts_of("-3") == 0
+    assert session_events.alerts_of("42") == 42

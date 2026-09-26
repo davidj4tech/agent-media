@@ -38,9 +38,12 @@ appends `Cleared <time>` and, for a routine alert — never acked, never at
 `needs` — marks it DONE (decided 24 Sep 2026). `MEDIA_ALERTS_INBOX` points it
 elsewhere, `0` turns it off; a host with no ~/org files nothing.
 
-Delivery is the caller's for now: the answer says `notify` and the change, and
-`agent-alert` (agent-config) hands it to the digest pane as before. Step 2 of
-the proposal puts an `alerts` event on `/sessions/events` for Sasonica.
+Delivery: the answer says `notify` and the change, and `agent-alert`
+(agent-config) hands it to the digest pane as before. Every change that
+notifies is also a **notice** (`notices`): `alert_log`'s rowid is the cursor,
+and `/sessions/events?alerts=<n>` streams the ones after it as `alerts`
+frames, which Sasonica posts as phone notifications — the way an alert still
+reaches a phone whose ringer holds its speech (David, 27 Sep 2026).
 """
 
 from __future__ import annotations
@@ -406,6 +409,73 @@ def listing(*, open_only: bool = False, now: float | None = None) -> dict:
                    and (r["kind"] == "digest" or r["cleared_at"])),
                   key=lambda r: -r["changed_at"])
     return {"alerts": open_ + rest, "at": now}
+
+
+# --- notices: what a phone posts ---------------------------------------------------
+
+#: A notice older than this is not posted on a reconnect: news, not history.
+NOTICE_MAX_AGE_S = 24 * 3600
+#: At most this many notices in one frame (a long-parked phone's catch-up).
+NOTICE_MAX = 5
+
+
+def last_seq() -> int:
+    """The newest `alert_log` rowid, 0 for none: the cursor's head. A plain
+    read, no schema work — the session stream asks every few seconds."""
+    path = _db_path()
+    if not path.exists():
+        return 0
+    try:
+        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2)
+        try:
+            return int(con.execute("SELECT max(rowid) FROM alert_log").fetchone()[0] or 0)
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return 0
+
+
+def notices(after: int | None, *, now: float | None = None) -> dict:
+    """The notifying changes after the cursor `after`, oldest first:
+    `{"last", "notices": [{"n", "id", "change", "level", "title", "detail",
+    "fix", "host", "at"}]}`. A raise or escalation of a status alert that is
+    still open, or a digest at warn+; `after` None (a first connection) is
+    only the head, so a new phone is not handed the backlog."""
+    now = time.time() if now is None else now
+    head = last_seq()
+    if after is None or after >= head:
+        return {"last": head, "notices": []}
+    with _LOCK:
+        con = _connect()
+        try:
+            logged = con.execute(
+                "SELECT rowid AS n, at, id, change, level FROM alert_log"
+                " WHERE rowid > ? AND rowid <= ? AND at >= ?"
+                " AND (change IN ('raised', 'escalated')"
+                "      OR (change = 'digest' AND level IN ('warn', 'needs')))"
+                " ORDER BY rowid", (after, head, now - NOTICE_MAX_AGE_S)).fetchall()
+            rows = {r["id"]: dict(r) for r in con.execute(
+                "SELECT * FROM alerts WHERE id IN (%s)" % ",".join("?" * len(logged)),
+                [r["id"] for r in logged]).fetchall()} if logged else {}
+        finally:
+            con.close()
+    out = []
+    for lg in logged:
+        row = rows.get(lg["id"])
+        if row is None:
+            continue
+        if row["kind"] == "status" and RANK.get(row["level"], 0) < WARN:
+            continue  # cleared since: nothing to tell
+        out.append({"n": lg["n"], "id": lg["id"], "change": lg["change"],
+                    "level": lg["level"], "title": row["title"],
+                    "detail": row["detail"][:500], "fix": row["fix"][:300],
+                    "host": row["host"], "at": lg["at"]})
+    # The latest per alert (a raise then an escalation is one notification),
+    # and only the newest few.
+    latest = {}
+    for o in out:
+        latest[o["id"]] = o
+    return {"last": head, "notices": sorted(latest.values(), key=lambda o: o["n"])[-NOTICE_MAX:]}
 
 
 def spoken_digests(*, within_s: float = 36 * 3600, now: float | None = None) -> list[dict]:
