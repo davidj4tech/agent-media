@@ -508,10 +508,18 @@ ahead.
 
 7. **Sibling bases, and Home Assistant as the map of the house** (David,
    27 Sep 2026) — the "Sibling bases" section of
-   `docs/proposals/2026-09-23-accounts-and-the-identity-seam.md`. **Waits
-   for accounts**: an account must be able to hold more than one base.
-   Then, in order: (a) a base lists its siblings' sessions, read-only, so
-   the app sees every base's chats; (b) each base says what it can do
+   `docs/proposals/2026-09-23-accounts-and-the-identity-seam.md`.
+   **First step, needs no accounts** (David, 27 Sep 2026): the app pairs
+   with more than one base and does the joining itself. It keeps a list of
+   pairings instead of one (today changing server wipes the other's
+   threads, `forgetSnapshots` in `app/lib/snapshots.ts`), asks each base
+   for `/targets`, merges them with each row tagged by base, and sends a
+   thread's opens and replies to the base that owns it. The server only
+   adds a name for itself to `/pair` or `/targets` ("red5", "Pixel"). No
+   base trusts another; the phone already holds a token for each.
+   The rest waits for base-to-base links, in order: (a) a base lists its
+   siblings' sessions (for clients that paired with only one); (b) each
+   base says what it can do
    (phone: mic, ringer, alerts; tablet: reading, canvas; TV: big screen,
    room speakers; server: harnesses, uptime) and jobs route by that;
    (c) Home Assistant answers *where*: which room David is in, which TV or
