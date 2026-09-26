@@ -1,5 +1,10 @@
 # The server on the phone: Sasonica with nothing else to set up
 
+(Any Android device, not only a phone: a tablet, a TV box or a Chromebook
+runs Termux just as well. The app says "this device", the installer is
+`deploy/android/install.sh`, and it pairs under the device's model name.
+David, 27 Sep 2026.)
+
 Status: proposal, nothing built.
 Date: 2026-09-27
 
@@ -12,7 +17,7 @@ get-go"*.
 
 ## Recommendation in one line
 
-A third way in on the welcome screen, **Run it on this phone**. The app looks
+A third way in on the welcome screen, **Run it on this device**. The app looks
 for a server on `127.0.0.1:8781`. If there is none, it walks the user through
 Termux and a one-line installer. The installer ends by handing the app a
 pairing link, so pairing happens without typing. An optional **ADB power-up**
@@ -55,7 +60,7 @@ there too. **Termux is only the host:** runit, `am`, adb. A Debian
 proot-distro holds agent-media and the agents, and every Python package
 comes as a ready wheel. Debian plus the server is ~425 MB.
 
-`deploy/phone/install.sh` does this. Run in a clean Termux (the
+`deploy/android/install.sh` does this. Run in a clean Termux (the
 `termux/termux-docker` image under podman on red5), it:
 - installed Debian, agent-media and opencode;
 - started the canvas on 127.0.0.1:8781 and sessiond, as Termux runit
@@ -72,14 +77,14 @@ with no tailnet.
 
 ## The flow
 
-1. **Welcome → Run it on this phone.** The app probes
+1. **Welcome → Run it on this device.** The app probes
    `http://127.0.0.1:8781/healthz`. If a server answers, the app skips to
    step 4 and asks that server for a code (below).
 2. **No server: install Termux.** The app explains that Termux comes from
    F-Droid or GitHub, because the Play Store build is years stale, and links
    there. We cannot install it for them.
 3. **One line, pasted into Termux.** The app shows it with a Copy key:
-   `curl -fsSL https://sasonica.com/phone | bash` (host to be decided). The
+   `curl -fsSL https://sasonica.com/android | bash` (host to be decided). The
    installer:
    - installs `proot-distro` and `termux-services`, then Debian with
      Python, git, tmux and Node;
@@ -91,7 +96,7 @@ with no tailnet.
      on;
    - takes `termux-wake-lock`.
 4. **The handoff: pairing with no typing.** The installer mints a code
-   (`media-visual-canvas pair --device "This phone" --host 127.0.0.1`) and
+   (`media-visual-canvas pair --device "<the model, e.g. Pixel 8a>" --host 127.0.0.1`) and
    opens `sasonica://pair?server=http://127.0.0.1:8781&code=…` with
    `am start` (which works from the Termux uid). The app pairs as it would
    from a pasted link.
@@ -201,7 +206,7 @@ anything is switched on:
 
 ## Open questions
 
-- Where the installer lives: `sasonica.com/phone`? And pip or a git clone for
+- Where the installer lives: `sasonica.com/android`? And pip or a git clone for
   agent-media on the phone?
 - Battery: what an idle canvas plus runit costs over a day, measured on p8a
   before we promise anything.

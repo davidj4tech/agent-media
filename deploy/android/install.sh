@@ -1,5 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# Sasonica's server on this phone: one line in Termux, then the app pairs.
+# Sasonica's server on this Android device (phone, tablet, TV box, Chromebook):
+# one line in Termux, then the app pairs.
 #
 #   curl -fsSL <where this is served> | bash
 #
@@ -31,7 +32,8 @@
 #   AGENT_MEDIA_REF   branch (default: main)
 #   AGENT_MEDIA_SRC   a tarball of a checkout to install instead (tests)
 #   SASONICA_DISTRO   the proot-distro alias (default: debian)
-#   SASONICA_DEVICE   the name the app is paired as (default: This phone)
+#   SASONICA_DEVICE   the name the app is paired as (default: the device's
+#                     model, as Android names it, e.g. "Pixel 8a")
 #   SASONICA_AGENTS   agents to install in Debian (default: opencode;
 #                     also: claude)
 set -euo pipefail
@@ -39,7 +41,8 @@ set -euo pipefail
 REPO=${AGENT_MEDIA_REPO:-https://github.com/davidj4tech/agent-media.git}
 REF=${AGENT_MEDIA_REF:-main}
 DISTRO=${SASONICA_DISTRO:-debian}
-DEVICE=${SASONICA_DEVICE:-This phone}
+DEVICE=${SASONICA_DEVICE:-$(getprop ro.product.model 2>/dev/null || true)}
+DEVICE=${DEVICE:-This device}
 AGENTS=${SASONICA_AGENTS:-opencode}
 PORT=8781
 SV=$PREFIX/var/service
@@ -102,7 +105,7 @@ in_debian 'export PATH=~/projects/agent-media/.venv/bin:$PATH
   if [ -x ~/.opencode/bin/opencode ]; then ~/.opencode/bin/opencode debug config >/dev/null 2>&1 || true; fi
   if command -v claude >/dev/null; then media-setup install-hooks >/dev/null; fi'
 
-step "This phone's config"
+step "This device's config"
 in_debian 'export PATH=~/projects/agent-media/.venv/bin:$PATH
   [ -f ~/.config/agent-media/config.toml ] || media-setup init --roles origin >/dev/null
   touch ~/.config/agent-media.env
@@ -120,7 +123,7 @@ service() { # name, command inside Debian
   mkdir -p "$SV/$1/log"
   cat >"$SV/$1/run" <<EOF
 #!$PREFIX/bin/sh
-# Written by deploy/phone/install.sh (agent-media): Sasonica's server on this phone.
+# Written by deploy/android/install.sh (agent-media): Sasonica's server on this device.
 exec 2>&1
 exec proot-distro login $DISTRO --shared-tmp -- bash -lc '
   export PATH=~/projects/agent-media/.venv/bin:~/.opencode/bin:\$PATH

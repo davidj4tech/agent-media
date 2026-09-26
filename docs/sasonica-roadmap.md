@@ -76,7 +76,7 @@ working steps, nothing sent anywhere) under a banner whose Connect my server
 leads to pairing from any screen. Pairing ends it and forgets its snapshots.
 This is the demo mode queued under item 4. Still open: scanning a pairing QR,
 and reaching the server off the tailnet (contract §19). sasonica-app `afff1c2`.
-Next proposed: **the server on the phone** — Run it on this phone, Termux and
+Next proposed: **the server on the phone** — Run it on this device, Termux and
 a one-line installer that hands the app its pairing link, and an optional ADB
 power-up (`docs/proposals/2026-09-27-server-on-the-phone.md`).
 
