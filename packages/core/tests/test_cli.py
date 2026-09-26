@@ -627,8 +627,9 @@ def test_skip_falls_back_to_time_seek_without_sequence(monkeypatch):
             return {"extras": {"clip_sentences": ["only one sentence"]}}
 
     monkeypatch.setattr(cli, "StateStore", FakeStore)
+    # Back from the only sentence: it is the first, so nothing happens.
     assert cli.cmd_skip(_skip_args(direction=-1, fallback=-5.0)) == 0
-    assert ("command", "seek", -5.0, "relative") in fake.calls
+    assert not [c for c in fake.calls if c[0] in ("command", "set")]
     # Forward from the only sentence is past the last one: the end, as on a
     # longer reply — a replayed question then goes on to its answer.
     ended = []
@@ -666,10 +667,12 @@ def test_skip_live_writes_nav_request(monkeypatch, tmp_path):
     # sentence back chains from 2 → 1 (the mirror's stale 0 is ignored)
     assert cli.cmd_skip(_skip_args("sentence", -1)) == 0
     assert written["i"] == 1
-    # expired crumb → back from the mirror's 0 clamps to 0 (restart first)
+    # expired crumb → back from the mirror's 0, the first sentence: no-op
     cli._skip_cursor_path().unlink()
+    written.clear()
     assert cli.cmd_skip(_skip_args("sentence", -1)) == 0
-    assert written["i"] == 0
+    assert cli.cmd_skip(_skip_args("paragraph", -1)) == 0
+    assert written == {}
 
 
 def test_skip_playlist_sets_playlist_pos_and_highlights(monkeypatch, tmp_path):

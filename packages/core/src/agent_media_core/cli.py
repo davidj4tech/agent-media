@@ -2979,7 +2979,7 @@ def _nav_target(cur: int, n: int, para_idx: list, unit: str,
     """Resolve the sentence index to jump to for `media skip`.
 
     A return >= n means "past the last section" → finish the response; a
-    negative return is clamped to 0 by the caller (restart the first section).
+    return that lands back on `cur` (or below 0) is a no-op for the caller.
     """
     if unit == "sentence":
         return cur + (1 if direction > 0 else -1)
@@ -3143,6 +3143,9 @@ def cmd_skip(a) -> int:
         # looked like a Stop to a replayed question's follower, which then
         # never went on to the answer.
         return cmd_jump(argparse.Namespace(where="end"))
+    if n == 1 and not idle and a.dir < 0 and getattr(a, "to", None) is None:
+        # The only sentence is the first: nothing to go back to.
+        return 0
     if n <= 1 or idle:
         return _time_seek()
     if len(para_idx) != n:
@@ -3182,6 +3185,10 @@ def cmd_skip(a) -> int:
             # heard — the speech bar's → sounded like a ←.
             return cmd_jump(argparse.Namespace(where="end"))
         target = max(target, 0)
+        if direction < 0 and target == cur:
+            # Back from the first sentence (or the first paragraph's start)
+            # does nothing. It used to restart the sentence being heard.
+            return 0
     _write_skip_cursor(target)
 
     if playlist:
