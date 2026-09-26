@@ -4200,16 +4200,32 @@ def _submit_event(event: Event,
             _lead_thread = threading.Thread(target=_lead,
                                             name="speech-lead", daemon=True)
             _lead_thread.start()
-        try:
+        # before_speech pauses the music — and over the phone's link that is
+        # a probe of two players and a pause, 1-2s of round trips (27 Sep)
+        # that every reply waited for even with nothing playing. It runs
+        # beside the start now (David, 27 Sep 2026: "start at once, pause
+        # alongside"): the phone's own player takes audio focus, which pauses
+        # most apps at once, so the cost is at most a moment of overlap with
+        # music the focus does not reach. Joined before after_speech, which
+        # restores what it paused.
+        _before_text = (clip_data[0][0] if clip_data
+                        else sentences[0] if sentences else text)
+
+        def _before() -> None:
             try:
                 coordinator.before_speech(
                     title=source_window, priority=event.priority.value,
                     # The first sentence; the clip loop moves it on from there.
-                    text=(clip_data[0][0] if clip_data
-                          else sentences[0] if sentences else text))
-            finally:
-                if _lead_thread is not None:
-                    _lead_thread.join()
+                    text=_before_text)
+            except Exception:  # noqa: BLE001
+                log.exception("intake: before_speech failed")
+
+        _before_thread = threading.Thread(target=_before, name="speech-before",
+                                          daemon=True)
+        _before_thread.start()
+        try:
+            if _lead_thread is not None:
+                _lead_thread.join()
             if stream:
                 total_duration_s = sum(durations)
                 if not clip_data:
@@ -4864,6 +4880,9 @@ def _submit_event(event: Event,
                 earcons.play("cut", target, sink, wait=True)
         finally:
             highlighter.drain()
+            # What before_speech paused is what after_speech restores; a
+            # restore that ran first would leave the music paused for good.
+            _before_thread.join()
             coordinator.after_speech()
             _speech_event("end", text=text[:160], session=source_session,
                           pane=source_pane, source=event.source.value,

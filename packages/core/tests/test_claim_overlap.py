@@ -132,15 +132,15 @@ def test_nothing_is_played_before_the_claim_lands():
     assert sink.events.index("prefetched") < sink.events.index("played")
 
 
-def test_a_claim_in_flight_is_never_released_before_it_lands():
-    """before_speech raising skips playback; the claim still finishes first,
-    or it would land after the release and hold the broker for its TTL."""
+def test_a_music_player_failing_does_not_stop_the_reply():
+    """before_speech runs beside the start (27 Sep 2026), so a music player
+    that fails costs the pause, not the reply — and the claim still lands
+    before the release, or it would hold the broker for its TTL."""
     started = threading.Event()
     sink = _Sink(started)
-    with pytest.raises(RuntimeError):
-        _say(sink, _Coord(started, fail=True))
+    _say(sink, _Coord(started, fail=True))
 
-    assert "played" not in sink.events
+    assert "played" in sink.events
     assert sink.events.index("claimed") < sink.events.index("released")
 
 
@@ -217,7 +217,7 @@ def test_before_speech_failing_cannot_strand_the_claim_thread(monkeypatch):
     t.start()
     t.join(timeout=10)
     assert not t.is_alive(), "the reply deadlocked joining the claim thread"
-    assert raised
+    assert not raised, "a music player failing is logged, not the reply's end"
     assert sink.events.index("claimed") < sink.events.index("released")
 
 
