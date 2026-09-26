@@ -35,7 +35,15 @@ VOICES = (
     {"name": "en-au-x-auc-network", "label": "C · online"},
     {"name": "en-au-x-aud-network", "label": "D · online"},
     {"name": "en-au-x-aua-local", "label": "A · offline"},
+    # Microsoft's voice, the one red5 renders with, asked for by the phone
+    # itself from Australia (about 0.7 s to first audio against ~2 s through
+    # red5, 27 Sep 2026). Not an official service, so every clip also names
+    # a Google voice for the phone to fall back to (see tts_uri).
+    {"name": "edge:en-AU-NatashaNeural", "label": "Natasha · Microsoft"},
 )
+
+#: The Google voice a Microsoft-voiced clip falls back to on the phone.
+FALLBACK_VOICE = "en-au-x-aua-network"
 
 #: Characters per second of Google's voices at 1.0, measured on p8a
 #: (26 Sep 2026: 14.2-16.0 across three sentences). An estimate only — the
@@ -147,4 +155,7 @@ def tts_uri(path: "str | Path", voice: Optional[str] = None) -> str:
     uri = f"tts:{p.stem}?text={quote(text, safe='')}"
     if voice:
         uri += f"&voice={quote(voice, safe='')}"
+        if voice.startswith("edge:"):
+            fallback = os.environ.get("MEDIA_SPEECH_DEVICE_FALLBACK_VOICE") or FALLBACK_VOICE
+            uri += f"&fallback={quote(fallback, safe='')}"
     return uri

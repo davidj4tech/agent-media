@@ -131,3 +131,14 @@ def test_the_server_voice_is_the_engines(monkeypatch):
     assert device_voice.server_voice() == "en-AU-NatashaNeural"
     monkeypatch.setenv("MEDIA_RENDER_ENGINE", "piper")
     assert device_voice.server_voice() == "server default"
+
+
+def test_a_microsoft_voiced_clip_names_a_google_voice_to_fall_back_to(tmp_path, monkeypatch):
+    monkeypatch.delenv("MEDIA_SPEECH_DEVICE_FALLBACK_VOICE", raising=False)
+    clip = tmp_path / "r--claude--000.tts"
+    clip.write_text("Hello there.")
+    uri = device_voice.tts_uri(clip, "edge:en-AU-NatashaNeural")
+    assert "&voice=edge%3Aen-AU-NatashaNeural" in uri
+    assert uri.endswith("&fallback=en-au-x-aua-network")
+    assert "fallback" not in device_voice.tts_uri(clip, "en-au-x-aua-network")
+    assert any(v["name"] == "edge:en-AU-NatashaNeural" for v in device_voice.VOICES)
