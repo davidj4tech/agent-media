@@ -90,3 +90,53 @@ def test_main_is_silent_when_off_or_broken(monkeypatch, capsys):
     monkeypatch.setattr("sys.stdin", io.StringIO("not json"))
     assert H.main() == 0
     assert capsys.readouterr().out == ""
+
+
+# --- the listener's language ------------------------------------------------
+
+
+def _with_language(monkeypatch, code):
+    import sys
+    import types
+
+    fake = types.ModuleType("agent_media_core.language")
+    fake.current = lambda: code
+    fake.NAMES = {"en": "English", "fr": "French", "zh": "Chinese (Simplified)"}
+    monkeypatch.setitem(sys.modules, "agent_media_core.language", fake)
+    import agent_media_core
+    monkeypatch.setattr(agent_media_core, "language", fake, raising=False)
+
+
+def test_a_language_other_than_english_asks_for_the_reply_in_it(monkeypatch):
+    from agent_media_core.intake import heard
+
+    _with_language(monkeypatch, "fr")
+    line = heard.language_note({"prompt": "what's next?"})
+    assert "French" in line and "reply" in line
+    _with_language(monkeypatch, "zh")
+    assert "Chinese (Simplified)" in heard.language_note({"prompt": "go on"})
+
+
+def test_english_and_settings_commands_say_nothing(monkeypatch):
+    from agent_media_core.intake import heard
+
+    _with_language(monkeypatch, "en")
+    assert heard.language_note({"prompt": "what's next?"}) == ""
+    _with_language(monkeypatch, "fr")
+    assert heard.language_note({"prompt": "/model sonnet"}) == ""
+    monkeypatch.setenv("MEDIA_REPLY_LANGUAGE", "0")
+    assert heard.language_note({"prompt": "what's next?"}) == ""
+
+
+def test_the_hook_prints_the_language_line_without_a_heard_note(monkeypatch, capsys):
+    import io
+    import json
+
+    from agent_media_core.intake import heard
+
+    _with_language(monkeypatch, "fr")
+    monkeypatch.setattr(heard, "note_for", lambda p: "")
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"session_id": "s", "prompt": "hi"})))
+    assert heard.main() == 0
+    out = json.loads(capsys.readouterr().out)
+    assert "French" in out["hookSpecificOutput"]["additionalContext"]

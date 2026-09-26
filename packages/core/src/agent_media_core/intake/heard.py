@@ -18,6 +18,11 @@ it reads one row and prints, ~150 ms. It says nothing when there is nothing to
 say — no reply of this session playing, the last sentence already under way,
 a settings command, a harness notice — and never fails the prompt.
 `MEDIA_HEARD_NOTE=0` turns it off.
+
+It also carries the listener's language (Sasonica's site-wide Language
+setting, `language.current()`): anything but English adds one line asking
+for the reply in it, so every agent answers in the language the app is in
+(David, 27 Sep 2026). `MEDIA_REPLY_LANGUAGE=0` turns that part off.
 """
 
 from __future__ import annotations
@@ -103,12 +108,32 @@ def note_for(payload: dict) -> str:
     return note(_live_turn(session))
 
 
+def language_note(payload: dict) -> str:
+    """'Reply in French.' when the listener's language is not English."""
+    if os.environ.get("MEDIA_REPLY_LANGUAGE", "1") == "0":
+        return ""
+    if not _worth_a_note(str(payload.get("prompt") or "")):
+        return ""
+    try:
+        from .. import language
+    except ImportError:
+        return ""
+    code = (language.current() or "en").lower()
+    if code == "en" or code.startswith("en-"):
+        return ""
+    name = language.NAMES.get(code, code)
+    return (f"The listener's language is {name}: write your reply in {name} "
+            "(code, commands and file names stay as they are).")
+
+
 def main() -> int:
-    if os.environ.get("MEDIA_HEARD_NOTE", "1") == "0":
-        return 0
     try:
         payload = json.loads(sys.stdin.read() or "{}")
-        text = note_for(payload) if isinstance(payload, dict) else ""
+        if not isinstance(payload, dict):
+            return 0
+        notes = [] if os.environ.get("MEDIA_HEARD_NOTE", "1") == "0" else [note_for(payload)]
+        notes.append(language_note(payload))
+        text = "\n\n".join(n for n in notes if n)
     except Exception:  # noqa: BLE001 — a missing note never costs the prompt
         return 0
     if text:
