@@ -30,6 +30,7 @@ covers = [
 [project.scripts]
 media                  = "agent_media_core.cli:main"
 media-hook-claude-code = "agent_media_core.intake.hook_claude_code:main"
+media-hook-heard       = "agent_media_core.intake.heard:main"
 media-hook-pi          = "agent_media_core.intake.hook_pi:main"
 media-hook-pi-stream   = "agent_media_core.intake.hook_pi_stream:main"
 media-hook-opencode    = "agent_media_core.intake.hook_opencode:main"

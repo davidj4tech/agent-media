@@ -1420,7 +1420,7 @@ def _hook_installed(path: Path, match: str) -> bool:
     return False
 
 
-def hook_command() -> str:
+def hook_command(name: str = CLAUDE_HOOK_COMMAND) -> str:
     """The speech hook as a path a hook can actually run.
 
     A bare name needs the login shell's PATH to have this install on it, and
@@ -1430,10 +1430,10 @@ def hook_command() -> str:
     prefer that; fall back to the bare name for an install that has none
     (which is also what the tests read).
     """
-    beside = Path(sys.executable).with_name(CLAUDE_HOOK_COMMAND)
-    found = str(beside) if beside.exists() else shutil.which(CLAUDE_HOOK_COMMAND)
+    beside = Path(sys.executable).with_name(name)
+    found = str(beside) if beside.exists() else shutil.which(name)
     if not found:
-        return CLAUDE_HOOK_COMMAND
+        return name
     # `$HOME/...`, not this user's expanded path: hooks run through a shell,
     # and the same settings file is read on machines whose home is elsewhere.
     home = str(Path.home())
@@ -1447,6 +1447,27 @@ def _row_speech(args, *, check_only: bool):
     if check_only:
         return ("ok" if have else "missing"), str(path)
     merged, changed = _merge_hooks(_load_json(path), hook_command())
+    if changed:
+        _write_settings(path, merged, dry_run=args.dry_run)
+    return ("installed" if changed else "ok"), str(path)
+
+
+#: The one agent-media hook that is *not* async: it adds to the prompt how far
+#: the last reply had been read aloud when it was sent (`intake.heard`), and
+#: only a hook that holds the prompt can do that. Its own command, so the
+#: speech hook's merge (HOOK_MATCH_SUBSTRINGS) never mistakes it for its own.
+HEARD_HOOK_COMMAND = "media-hook-heard"
+
+
+def _row_heard(args, *, check_only: bool):
+    """The heard note: where the voice was when the listener answered."""
+    path = _settings_path(args)
+    if check_only:
+        return ("ok" if _hook_installed(path, HEARD_HOOK_COMMAND)
+                else "missing"), str(path)
+    merged, changed = _merge_hook_entry(
+        _load_json(path), "UserPromptSubmit", hook_command(HEARD_HOOK_COMMAND),
+        HEARD_HOOK_COMMAND, 5, False)
     if changed:
         _write_settings(path, merged, dry_run=args.dry_run)
     return ("installed" if changed else "ok"), str(path)
@@ -1537,6 +1558,8 @@ def _row_opencode(args, *, check_only: bool):
 #: name, one line for a person, kind, and the function that checks or installs.
 PROFILE_ROWS = (
     ("speech", "the hooks that speak a reply and record the turn", "core", _row_speech),
+    ("heard", "how far a reply had been read aloud, told to the next turn",
+     "core", _row_heard),
     ("services", "this host's services, by its roles", "core", _row_services),
     ("shell", "the tmux popup and control surface on PATH", "core", _row_shell),
     ("mail", "agent mail announced at the top of a turn", "extra",

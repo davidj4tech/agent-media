@@ -13,7 +13,8 @@ Where things live:
   2026): repo **`davidj4tech/sasonica-app`** (private), branch `main`,
   checkout `~/projects/sasonica-app` (the old `chat/` is the root). React
   Router + assistant-ui; applicationId **`com.sasonica.app`** (Java package
-  still `com.sasonica.next`). CI builds `sasonica-apk` (release key) and
+  too since 27 Sep 2026; the launcher entry keeps `com.sasonica.next.MainActivity`
+  as an alias). CI builds `sasonica-apk` (release key) and
   `sasonica-debug-apk` (`com.sasonica.app.debug`, beside it); install with
   `agent-phone-adb sasonica`. Browser preview on red5 `:8795`
   (`sasonica-chat-preview`, from that checkout's `build/`). Its history came
