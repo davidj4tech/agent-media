@@ -472,6 +472,8 @@ def speech_stopped_since(t: float) -> bool:
 #: Speech sockets that answered am-claim with an error (plain mpv, the old
 #: app): claimed the old way from then on, without asking again.
 _no_atomic_claim: set = set()
+#: ...and those that refused am-claim-play (an app from before it).
+_no_claim_play: set = set()
 
 
 class SinkSpeech:
@@ -881,6 +883,34 @@ class SinkSpeech:
         except (ipc.MpvIpcError, OSError):
             return True
         return isinstance(cur, dict) and cur.get("owner") == me
+
+    def claim_and_play(self, uris: "list", target: Target = DEFAULT_TARGET,
+                       ttl: float = BROKER_TTL_S, gapless: bool = True) -> "bool | None":
+        """Claim the broker and, only if that succeeded, load and start
+        `uris` — one message (Sasonica's am-claim-play), one round trip.
+
+        True: ours, and playing. False: someone else holds it and nothing was
+        run. None: this player cannot do it (plain mpv, an older app) or could
+        not be reached — claim and load the usual way."""
+        if not self._is_remote(target):
+            return None
+        sock = _socket_for(target)
+        if sock in _no_claim_play:
+            return None
+        me = _broker_owner_id()
+        cmds = self._load_cmds(uris, target, gapless) + self._start_cmds()
+        try:
+            held = ipc.command(sock, "am-claim-play", _BROKER_OWNER_KEY,
+                               {"owner": me, "deadline": time.time() + ttl},
+                               time.time(), cmds, timeout=5.0, critical=True,
+                               retry_errors=False)
+        except ipc.MpvIpcError as e:
+            if "invalid parameter" in str(e):
+                _no_claim_play.add(sock)
+            return None
+        except OSError:
+            return None
+        return isinstance(held, dict) and held.get("owner") == me
 
     def refresh_broker(self, target: Target = DEFAULT_TARGET,
                        ttl: float = BROKER_TTL_S) -> None:

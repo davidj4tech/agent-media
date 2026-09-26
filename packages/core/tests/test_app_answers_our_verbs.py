@@ -45,7 +45,7 @@ _VIA_HELPERS = {"get_property", "set_property", "observe_property"}
 #: Asked of a player that may not have it, with a fallback that works: the
 #: broker claim in one command, which Sasonica answers and anything else
 #: refuses (then the claim is read, written and read back as before).
-_OPTIONAL = {"am-claim"}
+_OPTIONAL = {"am-claim", "am-claim-play"}
 
 
 def _sent_verbs() -> set[str]:

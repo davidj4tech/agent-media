@@ -20,15 +20,25 @@ class _FakeBroker:
     def __init__(self):
         self.store = {}
         self.atomic = False     # plain mpv: no am-claim
+        self.plays = False      # an app from before am-claim-play
         self.claims = 0
+        self.ran = []
 
     def command(self, sock, verb, *args, timeout=5.0, critical=False,
                 retry_errors=True):
-        assert verb == "am-claim"
+        assert verb in ("am-claim", "am-claim-play")
         self.claims += 1
-        if not self.atomic:
-            raise MpvIpcError("am-claim: invalid parameter")
-        key, mine, now = args
+        if not self.atomic or (verb == "am-claim-play" and not self.plays):
+            raise MpvIpcError(f"{verb}: invalid parameter")
+        key, mine, now = args[:3]
+        cur = self.store.get(key)
+        if (isinstance(cur, dict) and cur.get("owner")
+                and cur["owner"] != mine["owner"] and cur["deadline"] > now):
+            return cur
+        self.store[key] = mine
+        if verb == "am-claim-play":
+            self.ran.extend(args[3])
+        return mine
         cur = self.store.get(key)
         if (isinstance(cur, dict) and cur.get("owner")
                 and cur["owner"] != mine["owner"] and cur["deadline"] > now):
@@ -177,3 +187,30 @@ def test_a_player_without_it_is_asked_once_then_claimed_the_old_way(broker):
     assert sink.claim_broker(PHONE) is True
     assert broker.claims == 1, "am-claim is not asked again of a player that refused it"
     assert broker.store[SP._BROKER_OWNER_KEY]["owner"] == SP._broker_owner_id()
+
+
+# --- claim and play in one message -----------------------------------------
+
+
+def test_claim_and_play_runs_the_reply_only_when_the_claim_is_ours(broker, monkeypatch):
+    monkeypatch.setenv("MEDIA_SPEECH_DEVICE_PHONE", "default")
+    broker.atomic = broker.plays = True
+    sink = SP.SinkSpeech()
+    assert sink.claim_and_play(["tts:a?text=Hi."], PHONE) is True
+    verbs = [c[0] for c in broker.ran]
+    assert "loadfile" in verbs and verbs[-1] == "set_property"
+    assert broker.ran[-1][1] == "playlist-pos"
+
+    broker.ran.clear()
+    broker.store[SP._BROKER_OWNER_KEY] = {"owner": "otherhost:42", "deadline": 1005.0}
+    assert sink.claim_and_play(["tts:b?text=Hi."], PHONE) is False
+    assert broker.ran == []
+
+
+def test_an_app_without_claim_and_play_is_told_to_do_it_the_usual_way(broker, monkeypatch):
+    monkeypatch.setenv("MEDIA_SPEECH_DEVICE_PHONE", "default")
+    broker.atomic = True
+    sink = SP.SinkSpeech()
+    assert sink.claim_and_play(["tts:a?text=Hi."], PHONE) is None
+    assert sink.claim_and_play(["tts:a?text=Hi."], PHONE) is None
+    assert broker.claims == 1, "asked once per process"

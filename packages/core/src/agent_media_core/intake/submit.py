@@ -4137,13 +4137,30 @@ def _submit_event(event: Event,
         # way out so a late claim can never outlive our release of it.
         # Whether the claim thread loaded the playlist, leaving only the start
         # to the main thread.
-        _preloaded = {"ok": False}
+        _preloaded = {"ok": False, "started": False}
         # Set on the way out, so a claim thread still waiting for the lead
         # when the reply ends loads nothing. (One that already loaded leaves
         # an unstarted playlist; the next reply's load clears it.)
         _abandon = threading.Event()
 
         def _claim_and_prefetch() -> None:
+            # Claim and play in one message (am-claim-play): a device-voiced
+            # reply has nothing to render, so its lead is in hand at once, and
+            # the claim, the load and the start can travel together — one
+            # round trip to the phone before it talks, where claim, load and
+            # start were three (27 Sep 2026). Not when an interrupt tone has
+            # to sound first (the load's stop would take it). Refused (someone
+            # else holds the player) or not understood (an older app, mpv):
+            # the usual way below.
+            fast = getattr(sink, "claim_and_play", None)
+            if (fast is not None and not barged_in and _remote_playlist(target)
+                    and device_voice.renders_on_device(target.name)
+                    and _lead_ready.wait(timeout=1.0) and not _abandon.is_set()):
+                with _clip_lock:
+                    lead = [p for _, p in clip_data]
+                if lead and fast(lead, target):
+                    _preloaded["ok"] = _preloaded["started"] = True
+                    return
             _wait_and_claim_broker(sink, target)
             if barged_in and not _abandon.is_set():
                 # Before anything of ours is loaded — loading starts with a
@@ -4372,7 +4389,9 @@ def _submit_event(event: Event,
                 # playlist-pos to move the popup/highlight; a dropped poll lags
                 # the follow-along, it never cuts the audio.
                 try:
-                    if _preloaded["ok"]:
+                    if _preloaded["started"]:
+                        pass        # the claim carried the start
+                    elif _preloaded["ok"]:
                         sink.start_playlist(target)
                     else:
                         sink.play_playlist([p for _, p in clip_data], target)
