@@ -19,6 +19,22 @@ class _FakeBroker:
 
     def __init__(self):
         self.store = {}
+        self.atomic = False     # plain mpv: no am-claim
+        self.claims = 0
+
+    def command(self, sock, verb, *args, timeout=5.0, critical=False,
+                retry_errors=True):
+        assert verb == "am-claim"
+        self.claims += 1
+        if not self.atomic:
+            raise MpvIpcError("am-claim: invalid parameter")
+        key, mine, now = args
+        cur = self.store.get(key)
+        if (isinstance(cur, dict) and cur.get("owner")
+                and cur["owner"] != mine["owner"] and cur["deadline"] > now):
+            return cur
+        self.store[key] = mine
+        return mine
 
     def get_property(self, sock, name, timeout=2.0, retry_errors=True):
         if name not in self.store:
@@ -34,6 +50,8 @@ def broker(monkeypatch):
     fb = _FakeBroker()
     monkeypatch.setattr(SP.ipc, "get_property", fb.get_property)
     monkeypatch.setattr(SP.ipc, "set_property", fb.set_property)
+    monkeypatch.setattr(SP.ipc, "command", fb.command)
+    monkeypatch.setattr(SP, "_no_atomic_claim", set())
     # A tcp:// endpoint makes the target "remote" (owner token active).
     monkeypatch.setenv("MEDIA_SPEECH_SOCKET_PHONE", "tcp://127.0.0.1:6602")
     # No real desync sleep in claim_broker.
@@ -131,3 +149,31 @@ def test_unreachable_broker_does_not_wedge(broker, monkeypatch):
     monkeypatch.setattr(SP.ipc, "set_property", boom)
     assert sink.active_other_owner(PHONE) is None
     assert sink.claim_broker(PHONE) is True
+
+
+# --- Sasonica's one-command claim ------------------------------------------
+
+
+def test_a_player_with_am_claim_is_claimed_in_one_command(broker):
+    broker.atomic = True
+    sink = SP.SinkSpeech()
+    assert sink.claim_broker(PHONE) is True
+    assert broker.store[SP._BROKER_OWNER_KEY]["owner"] == SP._broker_owner_id()
+    assert broker.claims == 1
+
+
+def test_am_claim_respects_a_live_holder_and_takes_an_expired_one(broker):
+    broker.atomic = True
+    sink = SP.SinkSpeech()
+    broker.store[SP._BROKER_OWNER_KEY] = {"owner": "otherhost:42", "deadline": 1005.0}
+    assert sink.claim_broker(PHONE) is False
+    broker.store[SP._BROKER_OWNER_KEY] = {"owner": "otherhost:42", "deadline": 999.0}
+    assert sink.claim_broker(PHONE) is True
+
+
+def test_a_player_without_it_is_asked_once_then_claimed_the_old_way(broker):
+    sink = SP.SinkSpeech()
+    assert sink.claim_broker(PHONE) is True
+    assert sink.claim_broker(PHONE) is True
+    assert broker.claims == 1, "am-claim is not asked again of a player that refused it"
+    assert broker.store[SP._BROKER_OWNER_KEY]["owner"] == SP._broker_owner_id()

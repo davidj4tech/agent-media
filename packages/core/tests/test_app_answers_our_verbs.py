@@ -42,6 +42,11 @@ _IMPLEMENTED = re.compile(r'"([a-z][a-z_-]*)"\.equals\(verb\)')
 #: Sent through helpers the app implements by name, not as raw verbs.
 _VIA_HELPERS = {"get_property", "set_property", "observe_property"}
 
+#: Asked of a player that may not have it, with a fallback that works: the
+#: broker claim in one command, which Sasonica answers and anything else
+#: refuses (then the claim is read, written and read back as before).
+_OPTIONAL = {"am-claim"}
+
 
 def _sent_verbs() -> set[str]:
     found = set()
@@ -51,7 +56,7 @@ def _sent_verbs() -> set[str]:
             pytest.fail(f"{rel} is gone — this test is looking in the wrong "
                         "place and would pass by finding nothing")
         found |= set(_SENT.findall(path.read_text()))
-    return found - _VIA_HELPERS
+    return found - _VIA_HELPERS - _OPTIONAL
 
 
 def _implemented_verbs() -> set[str]:

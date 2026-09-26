@@ -469,6 +469,11 @@ def speech_stopped_since(t: float) -> bool:
         return False
 
 
+#: Speech sockets that answered am-claim with an error (plain mpv, the old
+#: app): claimed the old way from then on, without asking again.
+_no_atomic_claim: set = set()
+
+
 class SinkSpeech:
     """Sink protocol implementation for the speech broker."""
 
@@ -842,10 +847,26 @@ class SinkSpeech:
         (never block a reply on the token machinery itself)."""
         if not self._is_remote(target):
             return True
-        if self.active_other_owner(target) is not None:
-            return False  # someone else actively holds it
         sock = _socket_for(target)
         me = _broker_owner_id()
+        # Sasonica takes the claim in one command (am-claim): check and take
+        # together, one round trip where the read, write and read-back below
+        # are three (1.8s of a reply's start over the phone's link, 27 Sep).
+        # A player without it — mpv, the old app — answers with an error, and
+        # is remembered for the life of this process.
+        if sock not in _no_atomic_claim:
+            try:
+                held = ipc.command(sock, "am-claim", _BROKER_OWNER_KEY,
+                                   {"owner": me, "deadline": time.time() + ttl},
+                                   time.time(), timeout=2.0, retry_errors=False)
+            except ipc.MpvIpcError:
+                _no_atomic_claim.add(sock)
+            except OSError:
+                return True  # can't reach broker to claim → play anyway
+            else:
+                return isinstance(held, dict) and held.get("owner") == me
+        if self.active_other_owner(target) is not None:
+            return False  # someone else actively holds it
         try:
             ipc.set_property(sock, _BROKER_OWNER_KEY,
                              {"owner": me, "deadline": time.time() + ttl})
