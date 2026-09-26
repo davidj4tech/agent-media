@@ -130,6 +130,34 @@ happens to the rest.
 
 Steps 2–4 are dead weight for one person on a tailnet. Step 1 is not.
 
+## Sibling bases (David, 27 Sep 2026)
+
+Once an account can hold more than one base (red5, hpo, a base on the
+phone), the bases know about each other. What that buys, in order of worth:
+
+1. **One list of sessions.** The app sees every base's sessions, not only
+   the one it paired with; a chat started on red5 is picked up from the
+   phone's base on the move.
+2. **Each device does what it is good at.** Bases on different kinds of
+   device have different strengths: a phone has the mic, the ringer,
+   notifications and is always with you; a tablet is a reading and canvas
+   surface; a TV is the big shared screen and the room's speakers; a server
+   has the harnesses, the disk and the uptime. A job goes to the base that
+   suits it: a figure to the TV, an alert to the phone, a Claude Code run
+   to red5. Each base says what it can do, and the others route by that,
+   not by host name.
+3. **Pair once.** A base that joins the account learns its siblings; the
+   app is not handed a pairing link per base.
+4. **Fallback.** red5 down, the phone's base still speaks and alerts; a
+   job a base cannot do (a harness Termux will not run) is handed to one
+   that can.
+5. **State follows the account.** Speech settings, voice, heard notes,
+   alert cursors belong to the account rather than the machine.
+
+The cost is sync and trust: each base holds a credential for the others.
+Start with (1), read-only (a base lists its siblings' sessions and nothing
+more), then capabilities (2), because routing needs them.
+
 ## What this does not solve
 
 - **Multi-tenancy.** Everything here still hands out tokens that stand for
