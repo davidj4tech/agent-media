@@ -3235,15 +3235,38 @@ def _remote_say_cmd(target: Target) -> str:
     return os.environ.get("MEDIA_REMOTE_SAY_CMD", "")
 
 
-def _ringer_target() -> str:
-    """Which target the phone's ringer has anything to say about.
+def _ringer_targets() -> "set[str]":
+    """Which targets the phone's ringer has anything to say about.
 
     The phone being on silent is a fact about the phone. It is not a fact about
     the lounge speakers, and a `--target local` reply must be unaffected by it —
     otherwise "silence my phone" quietly becomes "silence the house", which
     nobody asked for and which would take a while to attribute.
+
+    Both of the phone's players: Termux's (`phone`) and Sasonica's in-app one
+    (`sasonica`), which answers the verdict itself. The default was `phone`
+    alone, so once speech moved into the app nothing it played — alerts or
+    chimes — ever asked (David, 27 Sep 2026). `MEDIA_RINGER_TARGET` is a
+    comma-separated list; a retired name counts as its new one.
     """
-    return os.environ.get("MEDIA_RINGER_TARGET", "phone").strip()
+    from ..types import target_name
+
+    raw = os.environ.get("MEDIA_RINGER_TARGET", "phone,sasonica")
+    return {target_name(n.strip()) for n in raw.split(",") if n.strip()}
+
+
+def ringer_quiet(target: Target) -> "dict | None":
+    """The fresh verdict saying `target`'s device wants quiet, or None.
+
+    None for a target the ringer says nothing about, and for every verdict that
+    is missing, stale or audible — see `_ringer_hold` for why unknown speaks.
+    """
+    if target.name not in _ringer_targets():
+        return None
+    from ..sinks import speech as _speech
+
+    verdict = _speech.read_ringer(target)
+    return verdict if verdict and verdict.get("quiet") else None
 
 
 def _ringer_hold(target: Target, event: Event) -> "dict | None":
@@ -3270,13 +3293,8 @@ def _ringer_hold(target: Target, event: Event) -> "dict | None":
     """
     if not (event.metadata or {}).get("alert"):
         return None
-    wanted = _ringer_target()
-    if not wanted or target.name != wanted:
-        return None
-    from ..sinks import speech as _speech
-
-    verdict = _speech.read_ringer(target)
-    if not verdict or not verdict.get("quiet"):
+    verdict = ringer_quiet(target)
+    if verdict is None:
         return None
     log.info("intake: alert held — %s is quiet (mode=%s dnd=%s)",
              target.name, verdict.get("mode"), verdict.get("dnd"))

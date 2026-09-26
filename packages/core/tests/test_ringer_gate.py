@@ -25,6 +25,12 @@ from agent_media_core.types import Event, Source, Target
 PHONE = Target(name="phone")
 
 
+@pytest.fixture(autouse=True)
+def _default_ringer_targets(monkeypatch):
+    """The shipped default, which conftest blanks for every other suite."""
+    monkeypatch.delenv("MEDIA_RINGER_TARGET", raising=False)
+
+
 def _alert(**meta) -> Event:
     return Event(text="the agenda", source=Source.CLI, target=PHONE,
                  metadata={"alert": True, **meta})
@@ -223,3 +229,41 @@ def test_publish_survives_a_broker_that_is_down(monkeypatch, tmp_path):
     # The file still landed even though the broker did not.
     assert json.loads(ringer.state_path().read_text())["quiet"] is True
     assert snap["quiet"] is True
+
+
+# --- Sasonica and the tones --------------------------------------------------
+
+def test_sasonica_is_gated_by_default(monkeypatch):
+    """Speech moved into the app; the gate still named only Termux's player,
+    so an alert on the `sasonica` target never asked (27 Sep 2026). A retired
+    name (`next`) is the same target."""
+    monkeypatch.setattr(speech, "read_ringer", lambda *a, **k: _quiet())
+    for name in ("sasonica", "next"):
+        t = Target(name=name)
+        ev = Event(text="the agenda", source=Source.CLI, target=t,
+                   metadata={"alert": True})
+        assert submit._ringer_hold(t, ev) is not None
+    monkeypatch.setenv("MEDIA_RINGER_TARGET", "next")
+    assert submit._ringer_targets() == {"sasonica"}
+
+
+def test_a_tone_is_not_played_into_a_quiet_phone(monkeypatch):
+    """Every earcon — cut, interrupt, held — asks, not only the held one."""
+    from agent_media_core import earcons
+
+    monkeypatch.setenv("MEDIA_EARCONS", "1")
+    played = []
+
+    class _Sink:
+        def play_cue(self, uri, target):
+            played.append(uri)
+            return True
+
+    monkeypatch.setattr(speech, "read_ringer", lambda *a, **k: _quiet())
+    for name in earcons.NAMES:
+        assert earcons.play(name, Target(name="sasonica"), _Sink()) is False
+    assert played == []
+
+    monkeypatch.setattr(speech, "read_ringer", lambda *a, **k: None)
+    assert earcons.play("cut", Target(name="sasonica"), _Sink()) is True
+    assert len(played) == 1

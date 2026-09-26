@@ -264,6 +264,14 @@ def play(name: str, target=None, sink=None, *, wait: bool = False) -> bool:
         cue = getattr(sink, "play_cue", None)
         if cue is None:
             return False
+        # A phone on silent or in Do Not Disturb gets no tones — the same rule
+        # an unasked-for alert follows (David, 27 Sep 2026: it chimed anyway).
+        from .intake.submit import ringer_quiet
+
+        if ringer_quiet(target) is not None:
+            log.info("earcon: %s skipped — %s is quiet", name,
+                     getattr(target, "name", target))
+            return False
         if not _first_within(name):
             return False
         p = path(name)

@@ -116,6 +116,18 @@ def _no_live_speech_token(monkeypatch, tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def _no_ringer_reads(monkeypatch):
+    """Keep the suite from asking the real phone whether it is on silent.
+
+    Every earcon now reads the ringer verdict for a phone target, over the
+    broker socket the shell's config names — a real round trip to p8a from a
+    test about tones, and a flaky one on a phone that happens to be silenced.
+    No target is ringer-gated unless a test says so (test_ringer_gate does).
+    """
+    monkeypatch.setenv("MEDIA_RINGER_TARGET", "")
+
+
+@pytest.fixture(autouse=True)
 def _no_follow_pane(monkeypatch):
     """Keep the suite out of the developer's terminal.
 

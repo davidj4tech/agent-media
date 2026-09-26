@@ -168,19 +168,14 @@ def chime_held(session: str = "") -> bool:
         if session and speak_priority.level_of(session) == "quiet":
             return False
         from .. import audio_targets
-        from ..sinks.speech import SinkSpeech, read_ringer
+        from ..sinks.speech import SinkSpeech
         from ..state import StateStore
         from ..types import Target
-        from .submit import (_PRIO_RANK, Priority, _SpeechPlaybackLock,
-                             _ringer_target)
+        from .submit import _PRIO_RANK, Priority, _SpeechPlaybackLock
 
         if StateStore().get_now_playing("speech"):
             return False
         target = Target(name=audio_targets.speech_default())
-        if target.name == _ringer_target():
-            verdict = read_ringer(target)
-            if verdict and verdict.get("quiet"):
-                return False
         lock = _SpeechPlaybackLock(kind="earcon")
         took = lock.take_within(0.0, rank=_PRIO_RANK[Priority.LOW],
                                 session="earcon")
