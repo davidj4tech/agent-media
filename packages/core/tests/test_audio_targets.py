@@ -288,3 +288,10 @@ def test_a_name_from_before_the_rename_resolves(monkeypatch):
     monkeypatch.setenv("MEDIA_SPEECH_DEFAULT_TARGET", "next")
     assert audio_targets.env_speech_default() == "sasonica"
     assert cli._resolve_music_where("app") in ("abs", "phone")
+
+
+def test_a_device_voice_is_not_a_target(monkeypatch):
+    monkeypatch.setenv("MEDIA_SPEECH_SOCKET_SASONICA", "tcp://p8a:6614")
+    monkeypatch.setenv("MEDIA_SPEECH_DEVICE_VOICE_SASONICA", "en-au-x-aua-network")
+    names = audio_targets._configured_names()
+    assert "sasonica" in names and "voice-sasonica" not in names

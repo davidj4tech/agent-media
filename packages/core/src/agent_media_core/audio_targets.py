@@ -131,6 +131,10 @@ def _configured_names() -> list[str]:
     `sinks.speech._env_key` upper-cases them."""
     found: set[str] = set()
     for key, value in os.environ.items():
+        # MEDIA_SPEECH_DEVICE_VOICE_<T> is the device's voice, not a device
+        # for a target called voice-<t>.
+        if key.startswith("MEDIA_SPEECH_DEVICE_VOICE_"):
+            continue
         for prefix in _PER_TARGET_PREFIXES:
             if key.startswith(prefix) and len(key) > len(prefix):
                 name = key[len(prefix):].lower().replace("_", "-")
