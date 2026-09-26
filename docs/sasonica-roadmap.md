@@ -405,6 +405,21 @@ ahead.
    sentence N+1 starts within 5 ms of N's done. Not wired to replies or
    the holds. **David: "that sounded great"** (en-au-x-aua-local, 1.6x) —
    go ahead with the text lane.
+   **Built and ON, 27 Sep 2026** (agent-media `3fca516`, sasonica-app
+   `f0686c3`): `MEDIA_SPEECH_RENDER_NEXT=device` +
+   `MEDIA_SPEECH_DEVICE_VOICE_NEXT` in red5's env. Each sentence is filed as a
+   `.tts` clip (its words) and the player gets `tts:<clip>?text=…&voice=…`;
+   `ClipCache` renders it with `synthesizeToFile` at 1.0 (player speed does
+   the rest). Durations estimated at 15 chars/s until measured. Replay on a
+   player that can't render words (rooms) renders the audio on red5 then and
+   keeps it; the ABS export and the feed skip device turns; history, line ids
+   and replay to the phone are unchanged. Measured: 330 ms per sentence warm,
+   ~2.2 s cold (voice load after the app restarts). **Left:** ~4 s from
+   `media say` to the phone's request is the pipeline/bridge, now the
+   biggest part of the wait; drop Conversations from Sasonica ABS (agreed, ask
+   before deleting); a Voice setting in the app (phone / server); word-level
+   follow-along (`onRangeStart` is lost once the sentence is a file);
+   replay to the phone not yet heard.
 
 ## Loose ends
 
