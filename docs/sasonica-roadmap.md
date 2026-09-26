@@ -375,6 +375,26 @@ ahead.
    live rows for just those items (tickable; done since = DONE, gone =
    struck through).
 
+6. **The phone's own voice as the default** (David, 26 Sep 2026: "that
+   sounds awesome"). Live speech on the phone renders on the device with
+   Android's `TextToSpeech` instead of fetching server clips: first audio
+   without the bridge's round trips (the latency is the bridge, not the
+   render), speech offline, and a fresh install talks with no TTS key or
+   server engine — which suits the free app + hosted tier. Follow-along gets
+   the engine's own word positions (`UtteranceProgressListener.onRangeStart`)
+   instead of `clip_starts_s` arithmetic. What stays on the server: the rooms
+   and red5's canvas (they cannot hear the phone's voice), the Conversations
+   library and replay — either `synthesizeToFile` on the phone uploads the
+   clip, or the server renders a turn lazily the first time it is replayed.
+   The server voice stays as a setting ("Voice: this phone / server").
+   Shape: today Next's :6614 speaks the mpv vocabulary and only ever gets
+   `loadfile <uri>`, so the server needs a text lane to it — a verb carrying
+   the sentences (and the turn/clip ids the follow-along already keys on),
+   with the holds, barge-in, priority and speed (`setSpeechRate`) applying
+   unchanged. To find out first: whether Google's voices hold up at 1.6x,
+   and how a mixed history (some turns rendered, some not) reads in the
+   library.
+
 ## Loose ends
 
 - **A reply with a figure had no follow-along at all** (David, 23 Sep 2026)
