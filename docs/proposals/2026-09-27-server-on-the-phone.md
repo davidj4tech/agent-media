@@ -26,10 +26,13 @@ months:
 
 - Termux runit services: `canvas-local` among ~40 others. The canvas answers
   `http://127.0.0.1:8781/healthz` with 200.
-- Agents present natively: Claude Code, Codex (`codex-cli 0.121.0`) and pi
-  (`0.81.1`), plus tmux, Python 3.14, Node 26 and `adb` (android-tools).
-- **opencode is the exception.** It runs only inside a proot Arch (TermuxArch),
-  because its binary is not built for Bionic.
+- Agents that run natively: Codex (`codex-cli 0.121.0`) and pi (`0.81.1`),
+  both Node launchers, plus tmux, Python 3.14, Node 26 and `adb`
+  (android-tools).
+- **Claude Code and opencode do not.** Their binaries are built for glibc, not
+  Android's Bionic. `~/bin/claude` is a wrapper that runs Claude Code in a
+  Debian proot, and opencode runs in a proot Arch (TermuxArch). Corrected
+  27 Sep 2026: the first draft listed Claude Code as native.
 - `allow-external-apps = true` is set in `~/.termux/termux.properties`, so
   another app can already run commands in Termux (the `RUN_COMMAND` intent).
 - ADB over loopback works: Termux's own adb pairs to `127.0.0.1`. It is how
@@ -65,8 +68,12 @@ not an install.
    - **Needs in the app:** a `VIEW` intent filter for `sasonica://pair`. The
      manifest has none today; `parsePairLink` already reads the link.
 5. **An agent.** The Coding agents page (§6.6) already installs and signs in
-   harnesses. Pointed at the phone's own server, it installs Claude Code,
-   Codex or pi into Termux. opencode waits until it runs without proot.
+   harnesses. Pointed at the phone's own server, it installs Codex or pi
+   into Termux directly. Claude Code and opencode need a proot distro first
+   (`proot-distro install debian`, a few hundred MB) and a wrapper like
+   p8a's `~/bin/claude`. That is heavier, but it is the agent most people
+   will ask for, so the installer should offer it as its own step, not
+   leave it out.
 
 **Why not simply trust loopback?** Every app on the phone can reach
 `127.0.0.1`. A server that paired anything asking from loopback would hand a
@@ -158,8 +165,9 @@ anything is switched on:
 3. **Staying alive:** the checks and the Settings shortcuts, without ADB.
 4. **The ADB power-up:** `NsdManager` discovery, the notification-reply
    pairing, `RUN_COMMAND`, and the named actions.
-5. **Agents on the phone server:** the Coding agents page against it;
-   opencode once it runs outside proot.
+5. **Agents on the phone server:** the Coding agents page against it.
+   Codex and pi natively; Claude Code and opencode through a proot distro,
+   with the wrapper written from p8a's.
 
 ## Open questions
 
