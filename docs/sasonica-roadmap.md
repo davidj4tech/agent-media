@@ -158,6 +158,13 @@ itself); a badge unless Normal. `POST /session/priority {level}`, rows carry
 android-next `35a2802a`; chat-prototype still has the older on/off toggle
 (another session had the same files open).
 
+Normal is called **When open** in the app (David, 26 Sep 2026): it plays
+while the thread is open, or when you next open it. The level stays
+`normal` on the wire and at the desk. A reply let through because its thread
+was open is asked again when its turn to speak comes, and held if you have
+left (agent-media `896ebdb`); the server logs each thread stream open and
+close. chat-prototype `468e9cd3`, installed on p8a.
+
 Follow along can be turned off (David, 25 Sep 2026): Settings → Follow
 along → "Scroll with the voice", on by default, per device. Off, a spoken
 reply no longer moves the view — it stays where you put it, no pill — and
