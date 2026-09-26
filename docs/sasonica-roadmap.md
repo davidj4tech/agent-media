@@ -446,6 +446,9 @@ ahead.
    `::highlight(speech-word)` (app `c175acb`); Google's voices report a range
    per word but not usable positions (`[359, 0, 4]`), so words are spread by
    characters over each clip's real length. Replay to the phone heard OK.
+   **Word highlight withdrawn** the same day (David: "a little bit laggy and
+   distracting"; app revert of `c175acb`) — the sentence bold is the
+   follow-along. Audiobookshelf's container restarted without /conversations.
 
 ## Loose ends
 
