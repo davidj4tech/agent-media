@@ -237,3 +237,30 @@ def test_strip_markdown_handles_all_three():
     assert "docs" in out and "x.io" not in out
     assert "table," in out
     assert "python code block" in out
+
+
+# ---- numbered lists: the marker opens its item ----------------------------
+
+_LIST = ("Send anything once you have heard the first sentences.\n"
+         "1. The first item is the one you heard for sure.\n"
+         "2. The second item is still in your ears.\n")
+
+
+def test_split_keeps_a_list_marker_with_its_item():
+    from agent_media_core.intake.submit import _split_sentences
+
+    assert _split_sentences(_LIST) == [
+        "Send anything once you have heard the first sentences.",
+        "1. The first item is the one you heard for sure.",
+        "2. The second item is still in your ears."]
+
+
+def test_the_stream_keeps_a_list_marker_with_its_item():
+    from agent_media_core.intake._text import IncrementalSentencer
+
+    s = IncrementalSentencer()
+    out = [x for ch in _LIST for x in s.feed(ch)] + s.close()
+    assert out == [
+        "Send anything once you have heard the first sentences.",
+        "1. The first item is the one you heard for sure.",
+        "2. The second item is still in your ears."]

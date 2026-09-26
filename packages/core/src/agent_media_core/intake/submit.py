@@ -115,8 +115,15 @@ def _split_sentences_with_paragraphs(text: str) -> tuple[list[str], list[int]]:
         r'Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec|[A-Z])\.'
     )
 
+    # A numbered list's marker ("1." at a line's start) opens its item: split
+    # there and "1." became a fragment of its own, merged onto the sentence
+    # *before* it — the item read "…for sure. 2." and the follow-along and
+    # the heard note quoted it so (27 Sep 2026).
+    _LIST_MARK = re.compile(r'(?m)^(\s*\d{1,3})\.(?=\s)')
+
     def _sentences_in(para: str) -> list[str]:
-        masked = _ABBREV.sub(lambda m: m.group(0)[:-1] + '\x00', para)
+        masked = _LIST_MARK.sub('\\1\x00', para)
+        masked = _ABBREV.sub(lambda m: m.group(0)[:-1] + '\x00', masked)
         parts = re.split(r'(?<=[.!?])\s+', masked.strip())
         return [p.replace('\x00', '.').strip() for p in parts if p.strip()]
 

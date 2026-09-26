@@ -413,6 +413,10 @@ _ABBREV_TAIL = re.compile(
 
 _WS_RE = re.compile(r'\s+')
 
+# A numbered list's marker ("1." at a line's start) opens an item; it does not
+# end a sentence (submit._split_sentences_with_paragraphs, the same rule).
+_LIST_MARK_TAIL = re.compile(r'(?:^|\n)[ \t]*\d{1,3}\.$')
+
 # A line that opens/closes a fenced code block. The streaming sentencer must NOT
 # split a sentence boundary that falls inside an open fence (or on a table row):
 # the whole block has to reach strip_markdown intact to be suppressed as a unit —
@@ -476,7 +480,7 @@ class IncrementalSentencer:
                 # Text up to and including the first punctuation char of the
                 # boundary; skip if it ends in an abbreviation/initial.
                 head = self._buf[: m.start() + 1]
-                if _ABBREV_TAIL.search(head):
+                if _ABBREV_TAIL.search(head) or _LIST_MARK_TAIL.search(head):
                     continue
                 # Don't split inside a code fence or on a table row: let the
                 # whole block accumulate so strip_markdown suppresses it as a
