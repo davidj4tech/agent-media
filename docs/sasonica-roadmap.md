@@ -421,6 +421,19 @@ ahead.
    before deleting); a Voice setting in the app (phone / server); word-level
    follow-along (`onRangeStart` is lost once the sentence is a file);
    replay to the phone not yet heard.
+   **Voice, 27 Sep 2026:** David found the offline voice flat; Kokoro was
+   measured and ruled out (p8a CPU RTF 2.1–4.6, red5 0.85 — too slow at
+   1.6x); Google's online voice A (`en-au-x-aua-network`) chosen.
+   **Start latency, 27 Sep 2026** (token → start at the phone, was ~4 s):
+   batches ride the reply's open connection (`8fdb530`), music is paused
+   alongside instead of first (`ba126e4`, David's call), the claim is one
+   message (`56bc86c`, app `am-claim`), claim + load + start travel together
+   (`cab0356`, app `am-claim-play`), and `media-ipc-relay`
+   (`agent-media-speech-relay.service`, loopback 16614 → p8a:6614, spares
+   kept open, `51fd5c1`) takes the connect off the path. Measured: the
+   claim-and-play message leaves 3–11 ms after the token, reaches the phone
+   ~0.22 s later; then the first sentence's render (~0.2 s offline, ~0.5 s
+   online voice).
 
 ## Loose ends
 

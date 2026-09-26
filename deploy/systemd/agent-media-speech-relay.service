@@ -1,0 +1,14 @@
+[Unit]
+Description=agent-media speech relay — loopback 16614 to Sasonica's player on p8a:6614, connections kept open (media-ipc-relay)
+After=network-online.target tailscaled.service
+
+[Service]
+# Replies connect here (MEDIA_SPEECH_SOCKET_SASONICA=tcp://127.0.0.1:16614)
+# and ride a connection to the phone that is already open: no connect round
+# trip (430 ms, or a second and a half on a lost SYN) before a reply can start.
+ExecStart=/usr/bin/python3 /home/ryer/projects/agent-media/packages/core/src/agent_media_core/entrypoints/ipc_relay.py --listen 127.0.0.1:16614 --upstream p8a:6614 --spares 3 --max-age 45
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target
