@@ -93,6 +93,11 @@ class Profile:
         past (negative = ahead), belongs on the agenda."""
         return True
 
+    def view_also(self, root: Path, fname: str) -> tuple[tuple[str, int], ...]:
+        """(file, days ahead) for each file whose dated events a file view
+        shows after its own headings: those from today to that many days on."""
+        return ()
+
     def roam_folders(self, root: Path) -> tuple[tuple[str, str, str], ...]:
         """(view name, label, folder) for each shelf of notes."""
         base = root / "roam"

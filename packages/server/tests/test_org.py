@@ -340,3 +340,19 @@ def test_say_hands_the_note_to_media_say(tree, server, monkeypatch):
     assert started[0][-1] == "say" and started[1] == "telly money"
     assert _call(server, "POST", "/org/say", {"path": "nope.org"})[0] == 404
 
+
+
+def test_routines_shows_the_coming_moons(tree, monkeypatch):
+    (tree / "routines.org").write_text("#+title: Routines\n* TODO Weekly review\n")
+    (tree / "lunar.org").write_text(
+        "* Full moon routine\n<2026-08-28 Fri>\n* New moon routine\n<2026-09-11 Fri>\n"
+        "* Full moon routine\n<2026-09-27 Sun>\n* New moon routine\n<2026-10-11 Sun>\n"
+        "* Full moon routine\n<2026-10-26 Mon>\n* New moon routine\n<2026-11-09 Mon>\n")
+    prof = org.profile()
+    got = org._events_also(prof, "routines.org", dt.date(2026, 9, 27))
+    assert [(h["title"], h["date"], h["path"]) for h in got] == [
+        ("Full moon routine", "2026-09-27", "lunar.org"),
+        ("New moon routine", "2026-10-11", "lunar.org"),
+        ("Full moon routine", "2026-10-26", "lunar.org")]
+    # Other views take nothing from lunar.org.
+    assert org._events_also(prof, "inbox.org", dt.date(2026, 9, 27)) == []

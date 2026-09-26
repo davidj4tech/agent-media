@@ -79,6 +79,9 @@ SKELETON = {
 #: paragtd-astro-stale-days: a past astro alert older than this is not agenda.
 ASTRO_STALE_DAYS = 2
 
+#: How far ahead the Routines view shows lunar.org's moons: a lunar month.
+LUNAR_AHEAD_DAYS = 29
+
 #: paragtd-core-files: the agenda, when there is no manifest.
 CORE_FILES = ("inbox.org", "next-actions.org", "waiting-for.org", "someday.org",
               "tickler.org", "areas.org", "journal.org", "projects.org",
@@ -197,6 +200,13 @@ class Paragtd(Profile):
         # age out, as in paragtd-astro-skip-stale.
         stale = (manifest(root).get("astro") or {}).get("stale_days")
         return fname != "astro.org" or days_ago <= (stale if isinstance(stale, int) else ASTRO_STALE_DAYS)
+
+    def view_also(self, root: Path, fname: str):
+        # Routines shows the coming new and full moon from lunar.org — a
+        # lunar month ahead, not the year's list.
+        if fname == "routines.org" and "lunar.org" in self._core(root):
+            return (("lunar.org", LUNAR_AHEAD_DAYS),)
+        return ()
 
     def roam_folders(self, root: Path):
         return ROAM_FOLDERS

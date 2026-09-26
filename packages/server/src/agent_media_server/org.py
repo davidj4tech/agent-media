@@ -233,6 +233,25 @@ def _agenda(today: dt.date | None = None, *, done: bool = False) -> list[dict]:
     return items[:MAX_ITEMS]
 
 
+def _events_also(prof, fname: str, today: dt.date | None = None) -> list[dict]:
+    """The dated events the profile adds to `fname`'s view (paragtd: the
+    coming moons in Routines), soonest first, each with its `date`."""
+    today = today or dt.date.today()
+    items = []
+    for other, ahead in prof.view_also(root(), fname):
+        horizon = today + dt.timedelta(days=ahead)
+        for h in _headings(root() / other, done=False):
+            date = h.get("deadline") or h.get("scheduled") or h.get("timestamp")
+            try:
+                when = dt.date.fromisoformat(date or "")
+            except ValueError:
+                continue
+            if today <= when <= horizon:
+                items.append({**h, "date": date})
+    items.sort(key=lambda h: (h["date"], h["path"], h["at"]))
+    return items
+
+
 def _id_index() -> dict[str, str]:
     """org-roam `:ID:` → path, for following `[[id:...]]` links. The IDs sit
     in each note's first property drawer, so only the head is read."""
@@ -310,7 +329,8 @@ def view(name: str, bearer: str, *, done: bool = False) -> tuple[bool, dict]:
     prof = profile()
     for vname, _, fname in prof.files(root()):
         if vname == name:
-            return True, {"view": name, "items": _headings(root() / fname, done=done)}
+            return True, {"view": name, "items": _headings(root() / fname, done=done)
+                          + _events_also(prof, fname)}
     for vname, _, folder in prof.roam_folders(root()):
         if vname == name:
             return True, {"view": name, "items": _folder_notes(root() / folder)}
