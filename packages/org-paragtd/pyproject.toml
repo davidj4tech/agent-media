@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "agent-media-notes-paragtd"
+name = "agent-media-org-paragtd"
 version = "0.1.0"
 description = "The paragtd layout for agent-media's Notes: GTD views, refile targets, the fresh tree."
 readme = "README.md"
@@ -13,8 +13,8 @@ requires-python = ">=3.11"
 # writes and runs its commands as their own processes. Keep it that way.
 dependencies = ["agent-media-server"]
 
-[project.entry-points."agent_media.notes_profiles"]
-paragtd = "agent_media_notes_paragtd:profile"
+[project.entry-points."agent_media.org_profiles"]
+paragtd = "agent_media_org_paragtd:profile"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/agent_media_notes_paragtd"]
+packages = ["src/agent_media_org_paragtd"]

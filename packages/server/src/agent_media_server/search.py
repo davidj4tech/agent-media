@@ -973,9 +973,9 @@ def memory_available() -> bool:
                      or os.environ.get("HIPPOCAMPUS_URL"))
     ok = False
     if installed:
-        from . import notes
+        from . import org
 
-        got = notes._memory_call("GET", "/health", timeout=1.5)
+        got = org._memory_call("GET", "/health", timeout=1.5)
         ok = bool(got) and str(got.get("status", "ok")).lower() == "ok"
     _MEMORY[0] = (time.monotonic(), ok)
     return ok
@@ -984,9 +984,9 @@ def memory_available() -> bool:
 def _memory_section(q: str, limit: int = 8) -> dict:
     if not memory_available():
         return {"available": False}
-    from . import notes
+    from . import org
 
-    return {"available": True, "items": notes._memories(q, limit)}
+    return {"available": True, "items": org._memories(q, limit)}
 
 
 # --- the route ------------------------------------------------------------------

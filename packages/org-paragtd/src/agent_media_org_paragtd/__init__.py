@@ -23,7 +23,7 @@ import logging
 import threading
 from pathlib import Path
 
-from agent_media_server.notes_profile import Profile, _title, split_keywords
+from agent_media_server.org_profile import Profile, _title, split_keywords
 
 from . import sequence
 

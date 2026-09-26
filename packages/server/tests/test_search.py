@@ -4,7 +4,7 @@ and the log's `around=` jump.
 Every transcript is a synthetic file under the throwaway CLAUDE_CONFIG_DIR /
 CODEX_HOME / PI_CODING_AGENT_DIR / HERMES_HOME the fixture points at; the
 index lives under the throwaway XDG_STATE_HOME (conftest). The memory store is
-never called: `notes._memory_call` and `notes._memories` are fakes.
+never called: `org._memory_call` and `org._memories` are fakes.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import sqlite3
 
 import pytest
 
-from agent_media_server import notes, search, sessions, transcript
+from agent_media_server import org, search, sessions, transcript
 from test_contract import AUTH, SID, SID2, call, server, signed_in, typed  # noqa: F401
 from test_transcript import Script, iso
 
@@ -44,8 +44,8 @@ def home(tmp_path, monkeypatch):
                      ("HERMES_HOME", "hermes")):
         monkeypatch.setenv(var, str(tmp_path / sub))
     monkeypatch.setattr(sessions, "sessions_index", lambda: [])
-    monkeypatch.setattr(notes, "_memory_call", lambda *a, **k: None)
-    monkeypatch.setattr(notes, "_memories", lambda q, n: [])
+    monkeypatch.setattr(org, "_memory_call", lambda *a, **k: None)
+    monkeypatch.setattr(org, "_memories", lambda q, n: [])
     monkeypatch.setattr(search, "memory_available", lambda: False)
     return tmp_path
 
@@ -283,7 +283,7 @@ def test_memory_section_only_when_available(home, gate, monkeypatch):
     claude(home, SID).prompt("tea")
     assert ask("tea")["memory"] == {"available": False}
     monkeypatch.setattr(search, "memory_available", lambda: True)
-    monkeypatch.setattr(notes, "_memories", lambda q, n: [
+    monkeypatch.setattr(org, "_memories", lambda q, n: [
         {"id": "m1", "user": "ryer", "score": 0.9, "text": "David drinks tea"}])
     assert ask("tea")["memory"] == {"available": True, "items": [
         {"id": "m1", "user": "ryer", "score": 0.9, "text": "David drinks tea"}]}
@@ -297,14 +297,14 @@ def test_memory_detection(monkeypatch, tmp_path):
     for k in ("AGENT_MEMORY_HIPPOCAMPUS_URL", "HIPPOCAMPUS_URL"):
         monkeypatch.delenv(k, raising=False)
     calls = []
-    monkeypatch.setattr(notes, "_memory_call", lambda *a, **k: calls.append(a) or {"status": "ok"})
+    monkeypatch.setattr(org, "_memory_call", lambda *a, **k: calls.append(a) or {"status": "ok"})
     search._MEMORY[0] = (0.0, False)
     assert search.memory_available() is False and calls == []   # not installed: never asked
     monkeypatch.setenv("HIPPOCAMPUS_URL", "http://127.0.0.1:9")
     search._MEMORY[0] = (0.0, False)
     assert search.memory_available() is True and calls == [("GET", "/health")]
     search._MEMORY[0] = (0.0, False)
-    monkeypatch.setattr(notes, "_memory_call", lambda *a, **k: None)
+    monkeypatch.setattr(org, "_memory_call", lambda *a, **k: None)
     assert search.memory_available() is False
 
 

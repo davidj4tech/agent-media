@@ -147,7 +147,7 @@ from urllib.parse import parse_qs
 
 from . import (abs_item, archive, auth, devices, drafts, harnesses, pins, routing, send,
                sessions, share, speech, threads)
-from . import alerts, audio, notes, notes_chat, notes_edit, notes_setup, refs, uploads
+from . import alerts, audio, org, org_chat, org_edit, org_setup, refs, uploads
 
 # The endpoints a browser on another origin may reach. Everything here
 # carries its own credential — a paired device's token, or the caller's
@@ -180,12 +180,16 @@ CORS_PATHS = frozenset({
 AUDIO_PATHS = frozenset({"/audio/targets", "/audio/target"})
 CORS_PATHS = CORS_PATHS | AUDIO_PATHS
 
-# Browsing and capturing notes (notes.py). The same arrangement.
-NOTES_PATHS = frozenset({"/notes", "/notes/view", "/notes/read", "/notes/search",
-                         "/notes/capture", "/notes/setup", "/notes/say",
-                         "/notes/state", "/notes/refile", "/notes/date",
-                         "/notes/priority", "/notes/ask"})
-CORS_PATHS = CORS_PATHS | NOTES_PATHS
+# The Organiser: browsing and capturing in the Org tree (org.py). The same
+# arrangement.
+ORG_PATHS = frozenset({"/org", "/org/view", "/org/read", "/org/search",
+                         "/org/capture", "/org/setup", "/org/say",
+                         "/org/state", "/org/refile", "/org/date",
+                         "/org/priority", "/org/ask"})
+# The same routes under their first name, /notes (until 26 Sep 2026), for an
+# app installed before the rename. Answered exactly as /org.
+LEGACY_NOTES_PATHS = frozenset("/notes" + p[len("/org"):] for p in ORG_PATHS)
+CORS_PATHS = CORS_PATHS | ORG_PATHS | LEGACY_NOTES_PATHS
 
 # What the watchers report (alerts.py, §6.17). The same arrangement.
 ALERT_PATHS = frozenset({"/alerts", "/alerts/ack", "/alerts/digests", "/alerts/digest"})
@@ -338,8 +342,10 @@ def dispatch(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
     auth.set_client_ip(h.client_address[0] if h.client_address else "")
     if path in AUDIO_PATHS and method in ("GET", "POST"):
         return _audio(h, method, path)
-    if path in NOTES_PATHS and method in ("GET", "POST"):
-        return _notes(h, method, path)
+    if path in LEGACY_NOTES_PATHS:
+        path = "/org" + path[len("/notes"):]
+    if path in ORG_PATHS and method in ("GET", "POST"):
+        return _org(h, method, path)
     if path in ALERT_PATHS and method in ("GET", "POST"):
         return _alerts(h, method, path)
     if method == "GET":
@@ -1088,44 +1094,44 @@ def _audio(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
     return True
 
 
-# --- notes -----------------------------------------------------------------------
+# --- the Organiser (org) -----------------------------------------------------------
 
-def _notes(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
-    """The Org tree, browsed and captured into without Emacs (notes.py).
+def _org(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
+    """The Org tree, browsed and captured into without Emacs (org.py).
     GETs for reading, one POST for capture; the wrong method falls through."""
     qs = parse_qs(h.path.partition("?")[2])
     arg = lambda k: (qs.get(k) or [""])[0]  # noqa: E731
     bearer = _bearer(h)
-    if method == "GET" and path == "/notes":
-        ok, detail = notes.views(bearer)
-    elif method == "GET" and path == "/notes/view":
-        ok, detail = notes.view(arg("name"), bearer, done=arg("done") == "1")
-    elif method == "GET" and path == "/notes/read":
+    if method == "GET" and path == "/org":
+        ok, detail = org.views(bearer)
+    elif method == "GET" and path == "/org/view":
+        ok, detail = org.view(arg("name"), bearer, done=arg("done") == "1")
+    elif method == "GET" and path == "/org/read":
         try:
             at = max(0, int(arg("at") or 0))
         except ValueError:
             at = 0
-        ok, detail = notes.read(arg("path"), at, bearer)
+        ok, detail = org.read(arg("path"), at, bearer)
         if ok:
-            detail["chats"] = notes_chat.chats(detail["path"], detail["title"])
-    elif method == "GET" and path == "/notes/search":
-        ok, detail = notes.search(arg("q"), bearer, everything=arg("all") == "1",
+            detail["chats"] = org_chat.chats(detail["path"], detail["title"])
+    elif method == "GET" and path == "/org/search":
+        ok, detail = org.search(arg("q"), bearer, everything=arg("all") == "1",
                                   memory=arg("memory") != "0")
-    elif method == "GET" and path == "/notes/setup":
-        ok, detail = notes_setup.status(bearer)
-    elif method == "POST" and path == "/notes/setup":
+    elif method == "GET" and path == "/org/setup":
+        ok, detail = org_setup.status(bearer)
+    elif method == "POST" and path == "/org/setup":
         # A long action answers with a pane, watched through /harnesses/screen.
         body = _read_json(h) or {}
-        ok, detail = notes_setup.run(str(body.get("component") or ""),
+        ok, detail = org_setup.run(str(body.get("component") or ""),
                                      str(body.get("action") or ""), bearer)
         if not ok:
-            print(f"notes/setup: refused ({detail.get('error')}) "
+            print(f"org/setup: refused ({detail.get('error')}) "
                   f"from {h.client_address[0]}", file=sys.stderr)
-    elif method == "POST" and path in ("/notes/state", "/notes/refile", "/notes/date",
-                                       "/notes/priority"):
+    elif method == "POST" and path in ("/org/state", "/org/refile", "/org/date",
+                                       "/org/priority"):
         # Marking a heading done (or any state), moving it to another GTD
         # file, and changing its date. Line and title together find it
-        # (notes_edit.py).
+        # (org_edit.py).
         body = _read_json(h) or {}
         try:
             at = max(0, int(body.get("at") or 0))
@@ -1133,44 +1139,44 @@ def _notes(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
             at = 0
         if path.endswith("date"):
             time_ = body.get("time")
-            ok, detail = notes_edit.set_date(str(body.get("path") or ""), at,
+            ok, detail = org_edit.set_date(str(body.get("path") or ""), at,
                                              str(body.get("title") or ""),
                                              str(body.get("kind") or "scheduled"),
                                              str(body.get("date") or ""), bearer,
                                              time=None if time_ is None else str(time_))
         elif path.endswith("priority"):
-            ok, detail = notes_edit.set_priority(str(body.get("path") or ""), at,
+            ok, detail = org_edit.set_priority(str(body.get("path") or ""), at,
                                                  str(body.get("title") or ""),
                                                  str(body.get("priority") or ""), bearer)
         elif path.endswith("state"):
-            ok, detail = notes_edit.set_state(str(body.get("path") or ""), at,
+            ok, detail = org_edit.set_state(str(body.get("path") or ""), at,
                                               str(body.get("title") or ""),
                                               str(body.get("state") or ""), bearer)
         else:
-            ok, detail = notes_edit.refile(str(body.get("path") or ""), at,
+            ok, detail = org_edit.refile(str(body.get("path") or ""), at,
                                            str(body.get("title") or ""),
                                            str(body.get("to") or ""), bearer,
                                            date=str(body.get("date") or ""))
-    elif method == "POST" and path == "/notes/say":
+    elif method == "POST" and path == "/org/say":
         body = _read_json(h) or {}
         try:
             at = max(0, int(body.get("at") or 0))
         except (TypeError, ValueError):
             at = 0
-        ok, detail = notes.say(str(body.get("path") or ""), at, bearer)
-    elif method == "POST" and path == "/notes/ask":
-        # A chat about this item: a fresh session in the notes tree (notes_chat.py).
+        ok, detail = org.say(str(body.get("path") or ""), at, bearer)
+    elif method == "POST" and path == "/org/ask":
+        # A chat about this item: a fresh session in the notes tree (org_chat.py).
         body = _read_json(h) or {}
         try:
             at = max(0, int(body.get("at") or 0))
         except (TypeError, ValueError):
             at = 0
-        ok, detail = notes_chat.ask(str(body.get("path") or ""), at,
+        ok, detail = org_chat.ask(str(body.get("path") or ""), at,
                                     str(body.get("text") or ""), bearer,
                                     agent=str(body.get("agent") or ""))
-    elif method == "POST" and path == "/notes/capture":
+    elif method == "POST" and path == "/org/capture":
         body = _read_json(h) or {}
-        ok, detail = notes.capture(str(body.get("text") or ""),
+        ok, detail = org.capture(str(body.get("text") or ""),
                                    str(body.get("kind") or "todo"), bearer,
                                    remember=body.get("memory", True) is not False,
                                    fields=body.get("fields") if isinstance(body.get("fields"), dict) else None)

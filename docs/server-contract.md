@@ -1644,15 +1644,17 @@ on a host that never originates speech, it changes nothing audible.
 
 Clients: S (planned — the speech bar's picker, §14).
 
-### 6.10 Notes — gated (built 22 Sep 2026)
+### 6.10 The Organiser (org) — gated (built 22 Sep 2026)
 
-The Org tree (`~/org`, `MEDIA_NOTES_DIR` to move it), browsed, searched and
-captured into with no Emacs involved (`notes.py`). The layout comes from the
-**notes profile** (`notes_profile.py`, docs/reference/extensions.md §1c). By
+Renamed from Notes on 26 Sep 2026: the routes are `/org/…`, and every `/notes/…` route still answers exactly as its `/org` twin for an app installed before then; `MEDIA_NOTES_*` and a `[notes]` table in config.toml still count where the `org` names are unset.
+
+The Org tree (`~/org`, `MEDIA_ORG_DIR` to move it), browsed, searched and
+captured into with no Emacs involved (`org.py`). The layout comes from the
+**org profile** (`org_profile.py`, docs/reference/extensions.md §1c). By
 default it is plain Org: every top-level `.org` file is a view, captures go to
 `inbox.org`, and the roam shelves are the folders under `roam/`. With the
-`notes-paragtd` package installed, and a tree that has `next-actions.org` (or
-`[notes] profile = "paragtd"`, `MEDIA_NOTES_PROFILE`), it is paragtd's: the
+`org-paragtd` package installed, and a tree that has `next-actions.org` (or
+`[org] profile = "paragtd"`, `MEDIA_ORG_PROFILE`), it is paragtd's: the
 GTD files at the top, and the refile targets and fresh tree below. paragtd
 describes its setup in `.paragtd.json` at the top of the tree (written by
 Emacs at startup, synced with the tree). When it is there, its files are the
@@ -1661,7 +1663,7 @@ the default keywords, and its astro `stale_days` ages alerts out. Where a rule
 below is the profile's, it says so. Commits are not the server's job: `org-autosync` commits and pushes the tree from every host.
 All five routes use `auth.gate`. GETs are gzipped when the client accepts it.
 
-#### `GET /notes`
+#### `GET /org`
 
 `{"ok", "root", "views": [{"name", "label", "kind": "agenda"|"file"|"folder",
 "path"?, "count"?, "states"?}], "profile", "capture_file", "states",
@@ -1682,7 +1684,7 @@ its own gets), and `refile_targets` (a target with `needs_date` asks for a
 date, as the tickler does). `capture_kinds` are the profile's capture
 templates the phone can fill (below); plain Org has none.
 
-**Agenda files (plain Org).** `[notes] agenda_files` in config.toml, else
+**Agenda files (plain Org).** `[org] agenda_files` in config.toml, else
 `MEDIA_AGENDA_FILES` (colon-separated, the list `media agenda` reads): paths
 relative to the notes root or absolute, a directory meaning the `.org` files
 in it, as in Org. Files outside the root are left out, since nothing outside
@@ -1691,13 +1693,13 @@ it is served. With neither set, every top-level `.org` file is used. Setup's
 
 **TODO keywords.** A file's `#+TODO:` / `#+SEQ_TODO:` / `#+TYP_TODO:` lines
 (several join up; `(w@/!)` keys are dropped; with no `|` the last word is the
-done state), else `[notes] todo_keywords` in config.toml (`["TODO", "NEXT",
+done state), else `[org] todo_keywords` in config.toml (`["TODO", "NEXT",
 "|", "DONE"]`), else the profile's: paragtd's are the manifest's, or without
 one `paragtd-todo-keywords` (TODO NEXT WAITING | DONE CANCELLED); plain Org's
 are Org's TODO | DONE. A word that is not one of the file's
 keywords is part of the title.
 
-#### `GET /notes/view?name=<view>[&done=1]`
+#### `GET /org/view?name=<view>[&done=1]`
 
 `{"ok", "view", "items": [...]}`.
 - A file view returns its headings as `{path, at, level, state, priority,
@@ -1718,20 +1720,20 @@ keywords is part of the title.
 - A folder view returns `{path, title, modified}`, newest first, at most 300.
 - An unknown view is a 404.
 
-#### `GET /notes/read?path=<rel>[&at=<line>]`
+#### `GET /org/read?path=<rel>[&at=<line>]`
 
 `{"ok", "path", "at", "title", "text", "links": [{label, path}], "chats":
 [{session, title, at}], "state", "states"}`. `state` is the heading's keyword
 (`""` for none, or for a whole note), `states` the file's keywords. `text` is raw Org, capped at 256 KB. With `at`,
 only the subtree under that heading is returned. `links` resolves the text's
 `[[id:…]]` links to paths. `chats` lists the chats started about this item
-with `POST /notes/ask`, newest first (at most 20).
+with `POST /org/ask`, newest first (at most 20).
 - 404 for anything outside the tree, in a dot-dir, a directory, or a file that
   is not `.org`/`.md`/`.txt`.
 - 409 when the line at `at` is no longer a heading, meaning the file changed
   under the client. Refetch the view.
 
-#### `GET /notes/search?q=<text>[&all=1][&memory=0]`
+#### `GET /org/search?q=<text>[&all=1][&memory=0]`
 
 `{"ok", "q", "notes": [{path, line, text}], "memories": [{id, user, score,
 text}]}`.
@@ -1743,7 +1745,7 @@ text}]}`.
   store is down, the list comes back empty and the notes half still answers.
   `memory=0` skips the store.
 
-#### `POST /notes/capture`
+#### `POST /org/capture`
 
 `{"text", "kind": "todo"|"note", "memory": bool}` → `{"ok", "path", "at",
 "kind", "remembered"}`.
@@ -1756,7 +1758,7 @@ text}]}`.
   the background, as best effort.
 - 400 when the text is empty, 413 when it is over 8 KB.
 
-**Capture templates** (`notes_capture.py`). With `"kind": "<template key>"`
+**Capture templates** (`org_capture.py`). With `"kind": "<template key>"`
 and `"fields": {id: value}`, the body is filled from that template and filed
 where it says, as org-capture would. Answer: `{"path", "at", "kind",
 "remembered"}`. The templates are the profile's: paragtd's come from its
@@ -1780,7 +1782,7 @@ The targets are:
 The file must be an `.org` file inside the tree. 400 for an unknown key, a
 missing field or a bad date. `needs_text` false means the text may be empty.
 
-#### `POST /notes/say` — `auth.may_control_speech`, like `/speech/ctl`
+#### `POST /org/say` — `auth.may_control_speech`, like `/speech/ctl`
 
 `{"path", "at"?}` → `{"ok", "path", "at", "title", "chars"}`.
 - The note, or with `at` its subtree, is spoken through `media say`, the same
@@ -1789,24 +1791,24 @@ missing field or a bad date. `needs_text` false means the text may be empty.
   keywords and dates are dropped, links become their labels, and each
   heading becomes a sentence ("Todo: Call the bank.").
 - It is capped at 6,000 characters.
-- 404 and 409 as for `/notes/read`; 422 when nothing readable is left.
+- 404 and 409 as for `/org/read`; 422 when nothing readable is left.
 
-#### `POST /notes/ask` — gated (`auth.gate`), like `/ask`
+#### `POST /org/ask` — gated (`auth.gate`), like `/ask`
 
 `{"path", "at"?, "text", "agent"?}` → `/ask`'s answer for a new session
 (§6.3: `session`, `pane`, `opened`, `fresh`, …) plus `path` and `at`.
-- The Organiser's chat box (`notes_chat.py`). A fresh session opens in the
+- The Organiser's chat box (`org_chat.py`). A fresh session opens in the
   notes tree itself, so the agent can read and edit the file. No session need
   have run there before: the server chose the directory, not the client.
 - Its first message names the item, then the words:
   `About "<title>" in my Org notes (~/org/<path>, line <at>, <STATE>): <text>`.
   A whole note (no `at`) leaves out the line and the state.
 - The session is recorded against the item's file and title (not its line,
-  which moves), for `/notes/read`'s `chats`. A refile to another file starts
+  which moves), for `/org/read`'s `chats`. A refile to another file starts
   that list afresh.
-- 400 when the text is empty; 404 and 409 as for `/notes/read`.
+- 400 when the text is empty; 404 and 409 as for `/org/read`.
 
-#### `POST /notes/state` · `POST /notes/refile` · `POST /notes/date` · `POST /notes/priority` — gated (`auth.gate`)
+#### `POST /org/state` · `POST /org/refile` · `POST /org/date` · `POST /org/priority` — gated (`auth.gate`)
 
 These change a heading in one of the profile's files: for paragtd, inbox,
 next-actions, waiting-for, tickler, someday, projects, areas and routines; for
@@ -1821,7 +1823,7 @@ the app last saw it) plus `title` (its text).
 - If there are none, or more than one, the answer is 409. The app should
   refresh and ask again; the server never guesses.
 
-`/notes/state {"path", "at", "title", "state"}` → `{"ok", "path", "at",
+`/org/state {"path", "at", "title", "state"}` → `{"ok", "path", "at",
 "state", "repeated", "next"?}`
 - `state` is one of the file's keywords, or `""` (no keyword); anything else
   is a 400. Closing means moving to one of its done keywords.
@@ -1835,7 +1837,7 @@ the app last saw it) plus `title` (its text).
 
   The heading keeps its state, and the answer says `repeated: true` with
   `next`, the new date.
-- **Dependencies.** Under paragtd, or plain Org with `[notes]
+- **Dependencies.** Under paragtd, or plain Org with `[org]
   enforce_todo_dependencies = true`, closing follows
   `org-enforce-todo-dependencies`: a heading with an open child, or one
   under an `:ORDERED:` parent with an open heading before it (asked again of
@@ -1850,7 +1852,7 @@ the app last saw it) plus `title` (its text).
   last step says `"trigger": "no next step"`.
 - `at` in the answer is where the heading is now.
 
-`/notes/refile {"path", "at", "title", "to", "date"?}` → `{"ok", "path",
+`/org/refile {"path", "at", "title", "to", "date"?}` → `{"ok", "path",
 "at", "to"}`
 - `to` is one of the profile's refile targets. The whole subtree moves, with
   its heading levels shifted to fit.
@@ -1867,7 +1869,7 @@ the app last saw it) plus `title` (its text).
 - A missing file or headline is created.
 - 400 when the heading is already in the target file.
 
-`/notes/date {"path", "at", "title", "kind", "date", "time"?}` → `{"ok",
+`/org/date {"path", "at", "title", "kind", "date", "time"?}` → `{"ok",
 "path", "at", "kind", "date", "time"}`
 - `kind` is `scheduled` (the default) or `deadline`.
 - `date` (YYYY-MM-DD) replaces that stamp's date in place. A repeater on it
@@ -1880,24 +1882,24 @@ the app last saw it) plus `title` (its text).
 - `time` in the answer is the time the stamp now has (`""` for none).
 - 400 for a malformed date, time or kind.
 
-`/notes/priority {"path", "at", "title", "priority"}` → `{"ok", "path",
+`/org/priority {"path", "at", "title", "priority"}` → `{"ok", "path",
 "at", "priority"}` (24 Sep 2026)
 - `priority` is `"A"`, `"B"`, `"C"` or `""` (take the cookie off); it is
   written as Org's `[#A]` after the state. 400 for anything else.
 - An `[#A]` TODO whose SCHEDULED or DEADLINE has a clock time is read aloud
   at that time (`media agenda-alarm`, agent_media_core `agenda_alarm.py`).
 
-#### `GET /notes/setup` · `POST /notes/setup` — `auth.may_control_speech`, like `/harnesses`
+#### `GET /org/setup` · `POST /org/setup` — `auth.may_control_speech`, like `/harnesses`
 
 This is the Notes tab's checklist for a host that has no notes yet
-(`notes_setup.py`). GET returns `{"ok", "components": [{name, label, state:
+(`org_setup.py`). GET returns `{"ok", "components": [{name, label, state:
 "ok"|"missing"|"off"|"down", detail, why, actions, optional}], "search":
 "ripgrep"|"built-in"}`. It lists these components:
 
 | name | what it checks | actions |
 |---|---|---|
-| `org` | the tree, with the profile's files (it is `ok` once the capture file exists) | `clone` (only when `MEDIA_NOTES_REPO` is set and the folder is empty); `create` (writes any missing profile files and roam folders: paragtd's set, or for plain Org only `inbox.org`; never overwrites; runs `git init` if the folder is not a repo) |
-| `agenda` | plain Org only: whether `[notes] agenda_files` is set | `import` (when `emacsclient` is on the host): asks the running Emacs for `org-agenda-files` and `org-todo-keywords` once and writes them into `[notes]` in config.toml, leaving the rest of the file as it is; answers `{"files", "outside", "keywords", "enforce_todo_dependencies"}` (it copies `org-enforce-todo-dependencies` too), 502 when Emacs does not answer |
+| `org` | the tree, with the profile's files (it is `ok` once the capture file exists) | `clone` (only when `MEDIA_ORG_REPO` is set and the folder is empty); `create` (writes any missing profile files and roam folders: paragtd's set, or for plain Org only `inbox.org`; never overwrites; runs `git init` if the folder is not a repo) |
+| `agenda` | plain Org only: whether `[org] agenda_files` is set | `import` (when `emacsclient` is on the host): asks the running Emacs for `org-agenda-files` and `org-todo-keywords` once and writes them into `[org]` in config.toml, leaving the rest of the file as it is; answers `{"files", "outside", "keywords", "enforce_todo_dependencies"}` (it copies `org-enforce-todo-dependencies` too), 502 when Emacs does not answer |
 | `astro` | paragtd only: whether the monthly `paragtd-astro.timer` is on, and which years `astro.org` has | `enable` (writes the user unit and timer, enables it, and fills in any missing year now); `run` (this year and next, where missing, with paragtd's generator and `--append`); 502 when the generator fails |
 | `sync` | that `org-autosync.timer` is enabled; needs a git repo with a remote | `enable` |
 | `memory` | that the store answers `/health` | none. It runs on the hub and is optional. |
@@ -2222,7 +2224,7 @@ memory as its own section when this host has agent-memory. Code:
 - **`memory`**: only on the first page and unless `memory=0`.
   `{"available": false}` when agent-memory is not installed here or does
   not answer; otherwise `{"available": true, "items": [...]}`, the same
-  items as `/notes/search`'s `memories` (Hippocampus, the `ryer` and `sam`
+  items as `/org/search`'s `memories` (Hippocampus, the `ryer` and `sam`
   namespaces). Installed means `agent-memory-search` on PATH or in
   `~/.local/bin`, `~/.config/hippocampus.env` (or `sacred-brain.env`), or
   `HIPPOCAMPUS_URL` / `AGENT_MEMORY_HIPPOCAMPUS_URL` set; answering means
@@ -2446,7 +2448,7 @@ characters (markdown), so it is only in:
 (null at either end). `/dashboard`'s `digests` rows carry `n`, their latest.
 
 `view` (reported with the digest, `[a-z0-9_-]{1,32}`, else null) names the
-Organiser view (§6.10 `GET /notes/view?name=`) whose items the body's lines
+Organiser view (§6.10 `GET /org/view?name=`) whose items the body's lines
 are: the org agenda digest reports `agenda`, one line per item. The app shows
 that view's live rows for the lines it can match by title — tickable, and
 opening their heading — and the rest as no longer on it.
@@ -2463,7 +2465,7 @@ Not yet: the `alerts` event on `/sessions/events` and Next's Home section
 
 The phone's share sheet hands the app text, a link or files (Next's
 `ShareInPlugin.java` → `routes/share.tsx`). The text needs no route of its
-own: it goes into a draft (§6.2), `/notes/capture` (§6.10) or `/share` (a
+own: it goes into a draft (§6.2), `/org/capture` (§6.10) or `/share` (a
 link, §6.3). A file is sent here first and the app puts a line per file,
 `Shared file: <path>`, into the words it sends, so the assistant can open it.
 Code: `agent_media_server/uploads.py`; pinned by

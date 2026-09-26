@@ -5,11 +5,11 @@ the words start a fresh session, opened in the notes tree so the agent can
 read and edit the file, with the item named up front. Which chats were about
 which item is remembered, so the note's page can list them.
 
-  POST /notes/ask {"path", "at"?, "text", "agent"?} → /ask's answer (+ "path", "at")
-  GET  /notes/read also answers "chats": [{session, title, at}], newest first
+  POST /org/ask {"path", "at"?, "text", "agent"?} → /ask's answer (+ "path", "at")
+  GET  /org/read also answers "chats": [{session, title, at}], newest first
 
 The item is keyed by its file and title, not its line: lines move as the file
-is edited above it, and a title is how notes_edit finds a heading again too.
+is edited above it, and a title is how org_edit finds a heading again too.
 A refile to another file starts the list afresh; the chats themselves live on.
 """
 
@@ -22,7 +22,7 @@ from pathlib import Path
 
 from agent_media_core._paths import state_dir
 
-from . import notes, send
+from . import org, send
 
 #: How many chats a single item keeps a record of.
 KEEP = 20
@@ -77,11 +77,11 @@ def ask(rel: str, at: int, text: str, bearer: str, *, agent: str = "") -> tuple[
     """Start a session about the note at `rel` (the heading on line `at`)."""
     if not (text or "").strip():
         return False, {"error": "empty message"}
-    ok, got = notes.read(rel, at, bearer)
+    ok, got = org.read(rel, at, bearer)
     if not ok:
         return False, got
     ok, detail = send.ask(prompt(got, text), bearer, agent=agent,
-                          cwd=str(notes.root()), cwd_trusted=True)
+                          cwd=str(org.root()), cwd_trusted=True)
     if ok and detail.get("session"):
         _remember(got["path"], got["title"], {
             "session": detail["session"], "title": " ".join(text.split())[:80],

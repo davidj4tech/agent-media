@@ -148,7 +148,7 @@ harness's own sign-in screen and never answers.
 
 The Organiser's own Show and Sort menus (chat `lib/noteSort.ts`, per device):
 Show keeps or hides done and cancelled items (the view is asked again,
-`/notes/view?done=1`), waiting and someday ones, and plain notes with their
+`/org/view?done=1`), waiting and someday ones, and plain notes with their
 section headings; Sort is File order, Date, Priority, Title or Recently
 changed — anything but File order flattens the list, since a section heading
 only means something where the file put it, and in the agenda it orders the
@@ -283,11 +283,11 @@ The Organiser on plain Org, paragtd as a package (24 Sep 2026,
 `docs/proposals/2026-09-24-notes-core-and-paragtd.md`): the layout is a notes
 profile. Plain Org by default (your agenda files and `#+TODO` keywords, copied
 once from Emacs by setup's `agenda` row), and paragtd's GTD files from
-`packages/notes-paragtd`, found by the tree. paragtd writes `.paragtd.json`
+`packages/org-paragtd`, found by the tree. paragtd writes `.paragtd.json`
 (paragtd `c2af9ea`), and the profile reads its files and keywords from it.
 Closing a sequenced step from the phone follows Org's dependency blocking and
 runs paragtd's next-step trigger, and the Organiser says which step is next.
-The app takes its keywords and refile targets from `GET /notes`. On the red5
+The app takes its keywords and refile targets from `GET /org`. On the red5
 server and preview; in Next at the next CI build. Then **More…** beside the
 capture box: your capture templates (the manifest's, site ones too) filled
 and filed as org-capture would, prompts drawn above the box; templates that

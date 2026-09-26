@@ -51,10 +51,10 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Install core + server + visual + notes-paragtd + pytest
+      - name: Install core + server + visual + org-paragtd + pytest
         run: |
           python -m pip install --upgrade pip
-          pip install -e packages/core -e packages/server -e packages/visual -e packages/notes-paragtd
+          pip install -e packages/core -e packages/server -e packages/visual -e packages/org-paragtd
           pip install pytest
 
       - name: Run tests

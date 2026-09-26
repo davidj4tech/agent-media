@@ -1,4 +1,4 @@
-# agent-media-notes-paragtd
+# agent-media-org-paragtd
 
 The [paragtd](https://github.com/davidj4tech/paragtd) layout for agent-media's
 Notes tab. Without it, Notes reads plain Org: every top-level `.org` file is a
@@ -9,12 +9,13 @@ heading the way paragtd's capture templates do, and past astro alerts drop off
 the agenda.
 
 ```sh
-pip install -e packages/notes-paragtd
+pip install -e packages/org-paragtd
 ```
 
-It registers under the `agent_media.notes_profiles` entry point. To choose a
-profile rather than rely on detection, set `[notes] profile = "paragtd"` (or
-`"none"`) in `~/.config/agent-media/config.toml`, or `MEDIA_NOTES_PROFILE`.
+It registers under the `agent_media.org_profiles` entry point. To choose a
+profile rather than rely on detection, set `[org] profile = "paragtd"` (or
+`"none"`) in `~/.config/agent-media/config.toml`, or `MEDIA_ORG_PROFILE`.
+(`[notes]` and `MEDIA_NOTES_PROFILE`, the names until 26 Sep 2026, still work.)
 
 When the tree has a `.paragtd.json` (paragtd writes it from Emacs; see
 paragtd's README, "Outside Emacs"), the file list, TODO keywords and astro

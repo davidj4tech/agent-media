@@ -1,5 +1,5 @@
 """Notes: the Org tree browsed, searched and captured into over HTTP, with no
-Emacs anywhere (notes.py). Each test builds its own tree; the memory store is
+Emacs anywhere (org.py). Each test builds its own tree; the memory store is
 stubbed so nothing reaches David's real one."""
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from http.server import ThreadingHTTPServer
 
 import pytest
 
-from agent_media_server import app, auth, notes
+from agent_media_server import app, auth, org
 
 INBOX = """\
 #+title: Inbox
@@ -32,9 +32,9 @@ INBOX = """\
 @pytest.fixture(autouse=True)
 def _paragtd(monkeypatch):
     """These trees are laid out the paragtd way, and the tests were written
-    against its views and refile targets (the notes-paragtd package; plain
-    Org is test_notes_plain.py)."""
-    monkeypatch.setenv("MEDIA_NOTES_PROFILE", "paragtd")
+    against its views and refile targets (the org-paragtd package; plain
+    Org is test_org_plain.py)."""
+    monkeypatch.setenv("MEDIA_ORG_PROFILE", "paragtd")
 
 
 #: What the stubbed store was asked to remember, this test.
@@ -58,16 +58,16 @@ def tree(tmp_path, monkeypatch):
     (root / "roam" / "projects" / "bank.org").write_text(
         ":PROPERTIES:\n:ID: bank-id\n:END:\n#+title: Bank\n\ntelly money\n")
     (root / "roam" / "sessions" / "inbox" / "s1.org").write_text("#+title: s1\ntelly session\n")
-    monkeypatch.setenv("MEDIA_NOTES_DIR", str(root))
+    monkeypatch.setenv("MEDIA_ORG_DIR", str(root))
     monkeypatch.setattr(auth, "gate", lambda bearer: (
         ({"username": "david"}, {}) if bearer == "good"
         else (None, {"error": "not allowed", "status": 401})))
     remembered = REMEMBERED
     remembered.clear()
-    monkeypatch.setattr(notes, "_memory_call", lambda m, p, body=None, timeout=6.0: (
+    monkeypatch.setattr(org, "_memory_call", lambda m, p, body=None, timeout=6.0: (
         remembered.append(body) or {} if m == "POST"
         else {"memories": [{"id": "m1", "text": "telly memory", "score": 0.8}]}))
-    monkeypatch.setattr(notes, "_IDS", {"at": 0.0, "map": {}})
+    monkeypatch.setattr(org, "_IDS", {"at": 0.0, "map": {}})
     return root
 
 
@@ -95,7 +95,7 @@ def _call(addr, method, path, body=None, bearer="good"):
 
 
 def test_views_list_the_files_and_folders(tree, server):
-    status, got = _call(server, "GET", "/notes")
+    status, got = _call(server, "GET", "/org")
     assert status == 200
     names = {v["name"]: v for v in got["views"]}
     assert names["inbox"]["count"] == 3          # TODO, NEXT, WAITING — not DONE
@@ -104,73 +104,73 @@ def test_views_list_the_files_and_folders(tree, server):
 
 
 def test_everything_is_gated(tree, server):
-    for path in ("/notes", "/notes/view?name=inbox", "/notes/read?path=inbox.org",
-                 "/notes/search?q=telly"):
+    for path in ("/org", "/org/view?name=inbox", "/org/read?path=inbox.org",
+                 "/org/search?q=telly"):
         assert _call(server, "GET", path, bearer="bad")[0] == 401
-    assert _call(server, "POST", "/notes/capture", {"text": "x"}, bearer="bad")[0] == 401
+    assert _call(server, "POST", "/org/capture", {"text": "x"}, bearer="bad")[0] == 401
     assert "HIGH" in (tree / "inbox.org").read_text() and "* TODO x" not in (
         tree / "inbox.org").read_text()
 
 
 def test_a_file_view_reads_states_and_dates(tree, server):
-    _, got = _call(server, "GET", "/notes/view?name=inbox")
+    _, got = _call(server, "GET", "/org/view?name=inbox")
     by_title = {h["title"]: h for h in got["items"]}
     assert "Old thing" not in by_title
     assert by_title["Fix the TV ssh"]["scheduled"] == "2026-09-20"
     bank = by_title["Call the bank"]
     assert (bank["state"], bank["priority"], bank["tags"], bank["deadline"]) == (
         "NEXT", "A", ["phone"], "2026-09-24")
-    _, done = _call(server, "GET", "/notes/view?name=inbox&done=1")
+    _, done = _call(server, "GET", "/org/view?name=inbox&done=1")
     assert "Old thing" in {h["title"] for h in done["items"]}
 
 
 def test_the_agenda_has_the_lunar_routines_not_the_astro_alerts(tree):
-    items = notes._agenda(dt.date(2026, 9, 22))
+    items = org._agenda(dt.date(2026, 9, 22))
     titles = [h["title"] for h in items]
     assert titles == ["Fix the TV ssh", "New moon routine", "Call the bank"]
     assert items[0]["overdue"] is True
 
 
 def test_a_plain_timestamp_is_an_event_on_its_day(tree):
-    items = [h for h in notes._agenda(dt.date(2026, 9, 22)) if h["path"] == "lunar.org"]
+    items = [h for h in org._agenda(dt.date(2026, 9, 22)) if h["path"] == "lunar.org"]
     # The full moon three weeks back is over, not overdue.
     assert [(h["title"], h["date"], h["overdue"]) for h in items] == [
         ("New moon routine", "2026-09-23", False)]
     # The day after, it is gone too.
-    assert not [h for h in notes._agenda(dt.date(2026, 9, 24)) if h["path"] == "lunar.org"]
+    assert not [h for h in org._agenda(dt.date(2026, 9, 24)) if h["path"] == "lunar.org"]
 
 
 def test_read_a_subtree_and_follow_id_links(tree, server):
-    _, views = _call(server, "GET", "/notes/view?name=inbox")
+    _, views = _call(server, "GET", "/org/view?name=inbox")
     tv = next(h for h in views["items"] if h["title"] == "Fix the TV ssh")
-    status, got = _call(server, "GET", f"/notes/read?path=inbox.org&at={tv['at']}")
+    status, got = _call(server, "GET", f"/org/read?path=inbox.org&at={tv['at']}")
     assert status == 200
     assert got["title"] == "Fix the TV ssh"
     assert "telly" in got["text"] and "Old thing" not in got["text"]
-    _, note = _call(server, "GET", "/notes/read?path=roam/projects/yoga.org")
+    _, note = _call(server, "GET", "/org/read?path=roam/projects/yoga.org")
     assert note["title"] == "agent-yoga"
     assert note["links"] == [{"label": "bank", "path": "roam/projects/bank.org"}]
 
 
 def test_read_refuses_outside_the_tree(tree, server):
     for bad in ("../etc/passwd", ".git/config.org", "/etc/hostname", "roam"):
-        assert _call(server, "GET", f"/notes/read?path={bad}")[0] == 404
+        assert _call(server, "GET", f"/org/read?path={bad}")[0] == 404
     # A line that is not a heading any more: the file moved under the app.
-    assert _call(server, "GET", "/notes/read?path=inbox.org&at=2")[0] == 409
+    assert _call(server, "GET", "/org/read?path=inbox.org&at=2")[0] == 409
 
 
 def test_search_notes_and_memory(tree, server):
-    _, got = _call(server, "GET", "/notes/search?q=TELLY")
+    _, got = _call(server, "GET", "/org/search?q=TELLY")
     paths = {h["path"] for h in got["notes"]}
     assert paths == {"inbox.org", "roam/projects/bank.org"}   # sessions left out
     assert got["memories"][0]["text"] == "telly memory"
-    _, every = _call(server, "GET", "/notes/search?q=telly&all=1&memory=0")
+    _, every = _call(server, "GET", "/org/search?q=telly&all=1&memory=0")
     assert "roam/sessions/inbox/s1.org" in {h["path"] for h in every["notes"]}
     assert every["memories"] == []
 
 
 def test_capture_appends_one_entry_and_remembers(tree, server):
-    status, got = _call(server, "POST", "/notes/capture",
+    status, got = _call(server, "POST", "/org/capture",
                         {"text": "Buy milk\n* not a heading\nsecond line"})
     assert status == 200 and got["path"] == "inbox.org"
     text = (tree / "inbox.org").read_text()
@@ -178,7 +178,7 @@ def test_capture_appends_one_entry_and_remembers(tree, server):
     tail = text[len(INBOX):]
     assert tail.startswith("* TODO Buy milk\n:PROPERTIES:\n:CREATED: [")
     assert tail.endswith(":END:\n * not a heading\nsecond line\n")
-    _, sub = _call(server, "GET", f"/notes/read?path=inbox.org&at={got['at']}")
+    _, sub = _call(server, "GET", f"/org/read?path=inbox.org&at={got['at']}")
     assert sub["title"] == "Buy milk"
     for _ in range(50):
         if REMEMBERED:
@@ -189,43 +189,43 @@ def test_capture_appends_one_entry_and_remembers(tree, server):
 
 def test_capture_a_note_without_memory(tree, server):
     (tree / "inbox.org").write_text("* x")          # no trailing newline
-    _, got = _call(server, "POST", "/notes/capture",
+    _, got = _call(server, "POST", "/org/capture",
                    {"text": "idea", "kind": "note", "memory": False})
     assert (tree / "inbox.org").read_text().startswith("* x\n* idea\n:PROPERTIES:")
     assert got["at"] == 2 and got["remembered"] is False
     threading.Event().wait(0.1)
     assert REMEMBERED == []
-    assert _call(server, "POST", "/notes/capture", {"text": "  "})[0] == 400
+    assert _call(server, "POST", "/org/capture", {"text": "  "})[0] == 400
 
 
 # --- search without ripgrep -------------------------------------------------------
 
 def test_the_built_in_search_finds_what_ripgrep_does(tree, monkeypatch):
-    rg = notes._rg("telly", everything=False, limit=30)
-    monkeypatch.setattr(notes.shutil, "which", lambda name: None)
-    scan = notes._rg("telly", everything=False, limit=30)
+    rg = org._rg("telly", everything=False, limit=30)
+    monkeypatch.setattr(org.shutil, "which", lambda name: None)
+    scan = org._rg("telly", everything=False, limit=30)
     assert {(h["path"], h["line"]) for h in scan} == {(h["path"], h["line"]) for h in rg}
-    every = notes._rg("telly", everything=True, limit=30)
+    every = org._rg("telly", everything=True, limit=30)
     assert "roam/sessions/inbox/s1.org" in {h["path"] for h in every}
 
 
 # --- setting it up -----------------------------------------------------------------
 
-from agent_media_server import harnesses as setup_windows, notes_setup  # noqa: E402
+from agent_media_server import harnesses as setup_windows, org_setup  # noqa: E402
 
 
 @pytest.fixture()
 def fresh(tmp_path, monkeypatch):
     """A host with no notes yet, and a caller allowed to set them up."""
     root = tmp_path / "org"
-    monkeypatch.setenv("MEDIA_NOTES_DIR", str(root))
+    monkeypatch.setenv("MEDIA_ORG_DIR", str(root))
     monkeypatch.setenv("MEDIA_PARAGTD_DIR", str(tmp_path / "paragtd"))
-    monkeypatch.delenv("MEDIA_NOTES_REPO", raising=False)
+    monkeypatch.delenv("MEDIA_ORG_REPO", raising=False)
     monkeypatch.setattr(auth, "may_control_speech", lambda bearer: (
         (True, {}) if bearer == "good" else (False, {"error": "no", "status": 403})))
-    monkeypatch.setattr(notes, "_memory_call", lambda *a, **k: None)
+    monkeypatch.setattr(org, "_memory_call", lambda *a, **k: None)
     calls: list[tuple] = []
-    monkeypatch.setattr(notes_setup, "_systemctl", lambda *a: (
+    monkeypatch.setattr(org_setup, "_systemctl", lambda *a: (
         calls.append(a) or ((0, "") if a[0] == "enable" else (1, "disabled"))))
     windows: list[list[str]] = []
     monkeypatch.setattr(setup_windows, "_window",
@@ -235,14 +235,14 @@ def fresh(tmp_path, monkeypatch):
 
 
 def _states(addr):
-    status, got = _call(addr, "GET", "/notes/setup")
+    status, got = _call(addr, "GET", "/org/setup")
     assert status == 200
     return {c["name"]: c for c in got["components"]}
 
 
 def test_setup_is_gated(fresh, server):
-    assert _call(server, "GET", "/notes/setup", bearer="bad")[0] == 403
-    assert _call(server, "POST", "/notes/setup", {"component": "org", "action": "create"},
+    assert _call(server, "GET", "/org/setup", bearer="bad")[0] == 403
+    assert _call(server, "POST", "/org/setup", {"component": "org", "action": "create"},
                  bearer="bad")[0] == 403
     assert not fresh[0].exists()
 
@@ -253,14 +253,14 @@ def test_a_fresh_host_can_start_a_set_of_notes(fresh, server, monkeypatch):
     assert rows["org"]["state"] == "missing" and rows["org"]["actions"] == ["create"]
     assert rows["sync"]["state"] == "off"
     assert rows["memory"]["state"] == "down" and rows["memory"]["optional"]
-    status, got = _call(server, "POST", "/notes/setup", {"component": "org", "action": "create"})
+    status, got = _call(server, "POST", "/org/setup", {"component": "org", "action": "create"})
     assert status == 200 and got["done"] and "inbox.org" in got["created"]
     assert (root / "tickler.org").read_text().endswith("* Tickler\n")
     assert (root / "roam" / "projects").is_dir()
     assert _states(server)["org"]["state"] == "ok"
     # And the notes routes work on it straight away.
     monkeypatch.setattr(auth, "gate", lambda bearer: ({"username": "david"}, {}))
-    assert _call(server, "POST", "/notes/capture", {"text": "first"})[0] == 200
+    assert _call(server, "POST", "/org/capture", {"text": "first"})[0] == 200
     assert "* TODO first" in (root / "inbox.org").read_text()
 
 
@@ -270,48 +270,48 @@ def test_create_never_overwrites(fresh, server):
     (root / "inbox.org").write_text("* mine\n")
     rows = _states(server)
     assert rows["org"]["state"] == "ok" and "create" in rows["org"]["actions"]
-    _call(server, "POST", "/notes/setup", {"component": "org", "action": "create"})
+    _call(server, "POST", "/org/setup", {"component": "org", "action": "create"})
     assert (root / "inbox.org").read_text() == "* mine\n"
     assert (root / "someday.org").is_file()
 
 
 def test_clone_needs_a_repo_and_runs_in_a_window(fresh, server, monkeypatch):
     root, _, windows = fresh
-    assert _call(server, "POST", "/notes/setup",
+    assert _call(server, "POST", "/org/setup",
                  {"component": "org", "action": "clone"})[0] == 409
-    monkeypatch.setenv("MEDIA_NOTES_REPO", "git@example:me/org.git")
+    monkeypatch.setenv("MEDIA_ORG_REPO", "git@example:me/org.git")
     assert _states(server)["org"]["actions"] == ["clone", "create"]
-    status, got = _call(server, "POST", "/notes/setup", {"component": "org", "action": "clone"})
+    status, got = _call(server, "POST", "/org/setup", {"component": "org", "action": "clone"})
     assert status == 200 and got["pane"] == "%99"
     assert windows == [["git", "clone", "git@example:me/org.git", str(root)]]
 
 
 def test_sync_enables_the_timer_on_a_repo_with_a_remote(fresh, server):
     root, calls, _ = fresh
-    _call(server, "POST", "/notes/setup", {"component": "org", "action": "create"})
+    _call(server, "POST", "/org/setup", {"component": "org", "action": "create"})
     assert "no remote" in _states(server)["sync"]["why"]
     subprocess.run(["git", "-C", str(root), "remote", "add", "origin", "x:y"], check=True)
     row = _states(server)["sync"]
     assert row["state"] == "off" and row["actions"] == ["enable"]
-    status, got = _call(server, "POST", "/notes/setup", {"component": "sync", "action": "enable"})
+    status, got = _call(server, "POST", "/org/setup", {"component": "sync", "action": "enable"})
     assert status == 200 and ("enable", "--now", "org-autosync.timer") in calls
 
 
 def test_paragtd_installs_in_a_window(fresh, server, tmp_path):
     _, _, windows = fresh
     assert _states(server)["paragtd"]["actions"] == ["install"]
-    status, got = _call(server, "POST", "/notes/setup",
+    status, got = _call(server, "POST", "/org/setup",
                         {"component": "paragtd", "action": "install"})
     assert status == 200 and got["pane"] == "%99"
     assert "bin/bootstrap" in windows[0][-1] and str(tmp_path / "paragtd") in windows[0][-1]
-    assert _call(server, "POST", "/notes/setup",
+    assert _call(server, "POST", "/org/setup",
                  {"component": "memory", "action": "install"})[0] == 400
 
 
 # --- reading aloud -----------------------------------------------------------------
 
 def test_spoken_drops_the_org_furniture():
-    text = notes.spoken(":PROPERTIES:\n:ID: x\n:END:\n#+title: T\n* TODO Call the bank :phone:\n"
+    text = org.spoken(":PROPERTIES:\n:ID: x\n:END:\n#+title: T\n* TODO Call the bank :phone:\n"
                         "  SCHEDULED: <2026-09-20 Sun>\n- [ ] ask about [[id:abc][the loan]]\nPlain.\n")
     assert text == "Todo: Call the bank.\nask about the loan\nPlain."
 
@@ -333,9 +333,22 @@ def test_say_hands_the_note_to_media_say(tree, server, monkeypatch):
         def close(self):
             pass
 
-    monkeypatch.setattr(notes.subprocess, "Popen", FakePopen)
-    assert _call(server, "POST", "/notes/say", {"path": "inbox.org"}, bearer="bad")[0] == 403
-    status, got = _call(server, "POST", "/notes/say", {"path": "roam/projects/bank.org"})
+    monkeypatch.setattr(org.subprocess, "Popen", FakePopen)
+    assert _call(server, "POST", "/org/say", {"path": "inbox.org"}, bearer="bad")[0] == 403
+    status, got = _call(server, "POST", "/org/say", {"path": "roam/projects/bank.org"})
     assert status == 200 and got["title"] == "Bank"
     assert started[0][-1] == "say" and started[1] == "telly money"
-    assert _call(server, "POST", "/notes/say", {"path": "nope.org"})[0] == 404
+    assert _call(server, "POST", "/org/say", {"path": "nope.org"})[0] == 404
+
+
+def test_the_old_notes_routes_still_answer(tree, server):
+    # An app installed before the rename (26 Sep 2026) still asks for /notes.
+    status, got = _call(server, "GET", "/notes")
+    assert status == 200 and {v["name"] for v in got["views"]} == \
+        {v["name"] for v in _call(server, "GET", "/org")[1]["views"]}
+
+
+def test_the_old_notes_dir_still_names_the_tree(tmp_path, monkeypatch):
+    monkeypatch.delenv("MEDIA_ORG_DIR", raising=False)
+    monkeypatch.setenv("MEDIA_NOTES_DIR", str(tmp_path))
+    assert org.root() == tmp_path

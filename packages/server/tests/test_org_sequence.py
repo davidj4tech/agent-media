@@ -1,6 +1,6 @@
 """Sequenced projects closed from the phone: Org's blocking
-(`org-enforce-todo-dependencies`, notes_edit.blocked_by) and paragtd's one
-org-edna trigger (notes-paragtd's sequence.py), as `paragtd-sequence-subtree`
+(`org-enforce-todo-dependencies`, org_edit.blocked_by) and paragtd's one
+org-edna trigger (org-paragtd's sequence.py), as `paragtd-sequence-subtree`
 writes them."""
 
 from __future__ import annotations
@@ -9,7 +9,7 @@ import datetime as dt
 
 import pytest
 
-from agent_media_server import auth, notes_edit, notes_profile
+from agent_media_server import auth, org_edit, org_profile
 
 NOW = dt.datetime(2026, 9, 24, 10, 0)
 TRIGGER = 'next-sibling todo!(NEXT) scheduled!("++2d")'
@@ -43,11 +43,11 @@ def org(tmp_path, monkeypatch):
     (root / "inbox.org").write_text("#+title: Inbox\n")
     (root / "next-actions.org").write_text("#+title: Next actions\n\n* Inbox\n")
     (root / "projects.org").write_text(PROJECT)
-    monkeypatch.setenv("MEDIA_NOTES_DIR", str(root))
-    monkeypatch.setenv("MEDIA_NOTES_PROFILE", "paragtd")
+    monkeypatch.setenv("MEDIA_ORG_DIR", str(root))
+    monkeypatch.setenv("MEDIA_ORG_PROFILE", "paragtd")
     monkeypatch.setenv("MEDIA_CONFIG", str(tmp_path / "no-config.toml"))
     monkeypatch.setattr(auth, "gate", lambda b: ({"username": "david"}, {}))
-    notes_profile._reset_for_tests()
+    org_profile._reset_for_tests()
     return root
 
 
@@ -57,7 +57,7 @@ def _at(org, title: str) -> int:
 
 
 def _close(org, title: str, state: str = "DONE"):
-    return notes_edit.set_state("projects.org", _at(org, title), title, state, "good", now=NOW)
+    return org_edit.set_state("projects.org", _at(org, title), title, state, "good", now=NOW)
 
 
 def test_a_later_step_waits_for_an_earlier_one(org):
@@ -113,7 +113,7 @@ def test_another_trigger_is_left_for_emacs(org):
 
 
 def test_plain_org_blocks_only_when_asked(org, tmp_path, monkeypatch):
-    monkeypatch.setenv("MEDIA_NOTES_PROFILE", "none")
+    monkeypatch.setenv("MEDIA_ORG_PROFILE", "none")
     monkeypatch.setenv("MEDIA_CONFIG", str(tmp_path / "c.toml"))
     (org / "projects.org").write_text("#+TODO: TODO NEXT | DONE\n" + PROJECT)
     # Off, as in Org: it closes, and no trigger runs (that is paragtd's).

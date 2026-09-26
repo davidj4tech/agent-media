@@ -1,8 +1,8 @@
 """Setting up notes on a host, from the app's Notes tab.
 
-What `notes.py` stands on, as a checklist the phone can read and fix:
+What `org.py` stands on, as a checklist the phone can read and fix:
 
-  org      the tree itself — cloned from MEDIA_NOTES_REPO, or started fresh
+  org      the tree itself — cloned from MEDIA_ORG_REPO, or started fresh
            with the notes profile's files (paragtd's, when it is installed)
   sync     org-autosync's timer, which commits and pushes the tree (the
            script and units come with the dotfiles `bin` package)
@@ -10,12 +10,12 @@ What `notes.py` stands on, as a checklist the phone can read and fix:
            check only; it is run on the hub, not installed from a phone
   agenda   plain Org only: which files are the agenda, and the TODO keywords,
            copied once from Emacs (`org-agenda-files`, `org-todo-keywords`)
-           into `[notes]` in config.toml, so the server never needs Emacs
+           into `[org]` in config.toml, so the server never needs Emacs
   paragtd  optional: the Emacs package and the astro-alert generator
 
-  GET  /notes/setup → {"components": [{name, label, state, detail, why,
+  GET  /org/setup → {"components": [{name, label, state, detail, why,
                        actions, optional}]}
-  POST /notes/setup {"component", "action"} → {"component", "action", "done"}
+  POST /org/setup {"component", "action"} → {"component", "action", "done"}
                     or, for a long one, {"pane", "cmd"}
 
 A long action (a clone, an install) runs in a background tmux window the way
@@ -37,12 +37,13 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from . import auth, harnesses, notes, notes_profile
+from . import auth, harnesses, org, org_profile
 
 PARAGTD_REPO_DEFAULT = "https://github.com/davidj4tech/paragtd.git"
 
-def _notes_repo() -> str:
-    return os.environ.get("MEDIA_NOTES_REPO", "").strip()
+def _org_repo() -> str:
+    from .org_profile import env
+    return env("REPO")
 
 
 def _paragtd_dir() -> Path:
@@ -62,7 +63,7 @@ def _systemctl(*args: str) -> tuple[int, str]:
 
 def _git(*args: str) -> str:
     try:
-        return subprocess.run(["git", "-C", str(notes.root()), *args], capture_output=True,
+        return subprocess.run(["git", "-C", str(org.root()), *args], capture_output=True,
                               text=True, timeout=10).stdout.strip()
     except (OSError, subprocess.TimeoutExpired):
         return ""
@@ -71,8 +72,8 @@ def _git(*args: str) -> str:
 # --- the checks -----------------------------------------------------------------
 
 def _org() -> dict:
-    root = notes.root()
-    prof = notes.profile()
+    root = org.root()
+    prof = org.profile()
     row = {"name": "org", "label": "Notes folder", "optional": False,
            "detail": str(root), "why": None, "actions": []}
     missing = [f for f in prof.skeleton if not (root / f).is_file()]
@@ -85,11 +86,11 @@ def _org() -> dict:
         return row
     row["state"] = "missing"
     if not root.exists() or (root.is_dir() and not any(root.iterdir())):
-        if _notes_repo():
+        if _org_repo():
             row["actions"].append("clone")
         row["actions"].append("create")
-        row["why"] = ("clone your notes, or start a fresh set" if _notes_repo()
-                      else "no notes here; start a fresh set (or set MEDIA_NOTES_REPO to clone yours)")
+        row["why"] = ("clone your notes, or start a fresh set" if _org_repo()
+                      else "no notes here; start a fresh set (or set MEDIA_ORG_REPO to clone yours)")
     else:
         row["actions"].append("create")
         row["why"] = f"the folder is here but has no {prof.capture_file}"
@@ -100,7 +101,7 @@ def _sync() -> dict:
     row = {"name": "sync", "label": "Sync (org-autosync)", "optional": False,
            "detail": "commits and pushes the notes every 5 minutes",
            "why": None, "actions": []}
-    root = notes.root()
+    root = org.root()
     if not (root / ".git").is_dir():
         row.update(state="off", why="the notes folder is not a git repository, so there is nothing to sync")
         return row
@@ -125,7 +126,7 @@ def _memory() -> dict:
     row = {"name": "memory", "label": "Memory store", "optional": True,
            "detail": "search reads it, captures are remembered in it",
            "why": None, "actions": []}
-    got = notes._memory_call("GET", "/health", timeout=3.0)
+    got = org._memory_call("GET", "/health", timeout=3.0)
     if got and got.get("status") == "ok":
         row["state"] = "ok"
     else:
@@ -160,11 +161,11 @@ _EMACS_ASK = """(progn (require 'org-agenda) (require 'json)
 def _agenda() -> dict | None:
     """Plain Org's agenda: every top-level file until Emacs' list is
     copied in. Not shown under a profile, which knows its own files."""
-    if notes.profile().name:
+    if org.profile().name:
         return None
     row = {"name": "agenda", "label": "Agenda files", "optional": True,
            "why": None, "actions": []}
-    files = notes_profile.configured_files(notes.root())
+    files = org_profile.configured_files(org.root())
     if files is not None:
         row.update(state="ok", detail=f"{len(files)} files, from config.toml")
     else:
@@ -190,8 +191,9 @@ def _from_emacs() -> dict:
         raise RuntimeError(f"could not read Emacs' answer ({e})") from e
 
 
-def _set_notes_config(values: dict, path: Path | None = None) -> None:
-    """Set keys in config.toml's `[notes]` table, leaving the rest of the
+def _set_org_config(values: dict, path: Path | None = None) -> None:
+    """Set keys in config.toml's `[org]` table (or `[org]`, its old name,
+    where a file already has that and not `[org]`), leaving the rest of the
     file as it is. Values are lists of strings or booleans, written as JSON
     (which TOML reads the same)."""
     from agent_media_core import config
@@ -201,11 +203,13 @@ def _set_notes_config(values: dict, path: Path | None = None) -> None:
         lines = p.read_text().splitlines()
     except FileNotFoundError:
         lines = []
-    head = next((i for i, ln in enumerate(lines) if ln.strip() == "[notes]"), None)
+    head = next((i for i, ln in enumerate(lines) if ln.strip() == "[org]"), None)
+    if head is None:
+        head = next((i for i, ln in enumerate(lines) if ln.strip() == "[notes]"), None)
     if head is None:
         while lines and not lines[-1].strip():
             lines.pop()
-        lines += ([""] if lines else []) + ["[notes]"]
+        lines += ([""] if lines else []) + ["[org]"]
         head = len(lines) - 1
     end = next((i for i in range(head + 1, len(lines)) if lines[i].lstrip().startswith("[")),
                len(lines))
@@ -226,7 +230,7 @@ def _set_notes_config(values: dict, path: Path | None = None) -> None:
 
 def _import_from_emacs() -> dict:
     got = _from_emacs()
-    base = notes.root().resolve()
+    base = org.root().resolve()
     files, outside = [], 0
     for f in got.get("files") or []:
         try:
@@ -236,7 +240,7 @@ def _import_from_emacs() -> dict:
     opens: list[str] = []
     dones: list[str] = []
     for seq in got.get("keywords") or []:
-        o, d = notes_profile.split_keywords([str(w) for w in seq])
+        o, d = org_profile.split_keywords([str(w) for w in seq])
         opens += [w for w in o if w not in opens]
         dones += [w for w in d if w not in dones]
     values: dict = {"agenda_files": files}
@@ -244,7 +248,7 @@ def _import_from_emacs() -> dict:
         values["todo_keywords"] = opens + ["|"] + dones
     if isinstance(got.get("enforce"), bool):
         values["enforce_todo_dependencies"] = got["enforce"]
-    _set_notes_config(values)
+    _set_org_config(values)
     return {"files": len(files), "outside": outside,
             "keywords": values.get("todo_keywords", []),
             "enforce_todo_dependencies": values.get("enforce_todo_dependencies", False)}
@@ -255,7 +259,7 @@ def status(bearer: str) -> tuple[bool, dict]:
     if not ok:
         return False, detail
     rows = [r for r in (_org(), _agenda(), _sync(), _memory(), _paragtd()) if r]
-    rows += notes.profile().setup_rows(notes.root())
+    rows += org.profile().setup_rows(org.root())
     return True, {"components": rows,
                   "search": "ripgrep" if shutil.which("rg") else "built-in"}
 
@@ -265,8 +269,8 @@ def status(bearer: str) -> tuple[bool, dict]:
 def _create() -> dict:
     """The profile's files and roam folders, where they are missing. Never
     overwrites a file that is there."""
-    root = notes.root()
-    prof = notes.profile()
+    root = org.root()
+    prof = org.profile()
     made = []
     root.mkdir(parents=True, exist_ok=True)
     for name, head in {prof.capture_file: "", **prof.skeleton}.items():
@@ -283,11 +287,11 @@ def _create() -> dict:
 
 
 def _windowed(component: str, action: str, argv: list[str]) -> tuple[bool, dict]:
-    pane, err = harnesses._window(argv, f"notes-{component}")
+    pane, err = harnesses._window(argv, f"org-{component}")
     if err:
         return False, {"error": err, "status": 503}
     cmd = shlex.join(argv)
-    harnesses._remember(pane, f"notes-{component}", action, cmd)
+    harnesses._remember(pane, f"org-{component}", action, cmd)
     return True, {"component": component, "action": action, "pane": pane, "cmd": cmd}
 
 
@@ -295,8 +299,8 @@ def run(component: str, action: str, bearer: str) -> tuple[bool, dict]:
     ok, detail = auth.may_control_speech(bearer)
     if not ok:
         return False, detail
-    prof = notes.profile()
-    extra = {r["name"]: r for r in prof.setup_rows(notes.root())}
+    prof = org.profile()
+    extra = {r["name"]: r for r in prof.setup_rows(org.root())}
     rows = {r["name"]: r for r in (_org(), _agenda(), _sync(), _paragtd()) if r} | extra
     row = rows.get(component)
     if not row:
@@ -312,7 +316,7 @@ def run(component: str, action: str, bearer: str) -> tuple[bool, dict]:
             return False, {"error": f"could not create the notes ({e})", "status": 500}
     if component in extra:
         try:
-            got = prof.setup_run(notes.root(), component, action) or {}
+            got = prof.setup_run(org.root(), component, action) or {}
         except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
             return False, {"error": str(e), "status": 502}
         return True, {"component": component, "action": action, "done": True, **got}
@@ -324,7 +328,7 @@ def run(component: str, action: str, bearer: str) -> tuple[bool, dict]:
             return False, {"error": str(e), "status": 502}
     if (component, action) == ("org", "clone"):
         return _windowed(component, action,
-                         ["git", "clone", _notes_repo(), str(notes.root())])
+                         ["git", "clone", _org_repo(), str(org.root())])
     if (component, action) == ("sync", "enable"):
         code, out = _systemctl("enable", "--now", "org-autosync.timer")
         if code:

@@ -1,13 +1,13 @@
 """Changing notes from the app: a heading's TODO state, and moving it to
 another GTD file — the two things an inbox needs besides capture.
 
-  POST /notes/state  {"path", "at", "title", "state"}
+  POST /org/state  {"path", "at", "title", "state"}
       → {"path", "at", "state", "repeated", "next"?}
-  POST /notes/refile {"path", "at", "title", "to", "date"?}
+  POST /org/refile {"path", "at", "title", "to", "date"?}
       → {"path", "at", "to"}
-  POST /notes/date   {"path", "at", "title", "kind", "date", "time"?}
+  POST /org/date   {"path", "at", "title", "kind", "date", "time"?}
       → {"path", "at", "kind", "date", "time"}
-  POST /notes/priority {"path", "at", "title", "priority": "A"|"B"|"C"|""}
+  POST /org/priority {"path", "at", "title", "priority": "A"|"B"|"C"|""}
       → {"path", "at", "priority"}
 
 `at` is the heading's line as the app last saw it and `title` its text. The
@@ -21,7 +21,7 @@ Marking done does what Org does:
 - a heading with a repeater (`<2026-07-20 Mon +1d>`, `++1w`, `.+1m`) is not
   closed at all — its dates move to the next occurrence and it stays open.
 
-Where a heading can be refiled to is the notes profile's (notes_profile.py):
+Where a heading can be refiled to is the notes profile's (org_profile.py):
 each target is a file, the headline it goes under (or the top level), and
 the state it takes. paragtd's follow its capture templates: next actions
 under "* Inbox" in next-actions.org (as NEXT), the tickler under "* Tickler"
@@ -47,7 +47,7 @@ from contextlib import ExitStack
 from pathlib import Path
 
 from . import auth
-from .notes import _STARS, Keywords, _rel, _safe_path, keywords, profile, root
+from .org import _STARS, Keywords, _rel, _safe_path, keywords, profile, root
 
 
 _PLANNING = re.compile(r"^\s*(?:SCHEDULED|DEADLINE|CLOSED):")

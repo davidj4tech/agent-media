@@ -1,5 +1,5 @@
-"""Capture templates filled and filed without Emacs (notes_capture.py), and
-offered by /notes and taken by /notes/capture under paragtd's profile."""
+"""Capture templates filled and filed without Emacs (org_capture.py), and
+offered by /org and taken by /org/capture under paragtd's profile."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import json
 
 import pytest
 
-from agent_media_server import auth, notes, notes_capture as nc, notes_profile
+from agent_media_server import auth, org as org_mod, org_capture as nc, org_profile
 
 NOW = dt.datetime(2026, 9, 24, 17, 5)
 
@@ -104,32 +104,32 @@ def org(tmp_path, monkeypatch):
     root.mkdir()
     (root / "inbox.org").write_text("#+title: Inbox\n")
     (root / "next-actions.org").write_text("#+title: Next actions\n\n* Inbox\n")
-    monkeypatch.setenv("MEDIA_NOTES_DIR", str(root))
-    monkeypatch.setenv("MEDIA_NOTES_PROFILE", "paragtd")
+    monkeypatch.setenv("MEDIA_ORG_DIR", str(root))
+    monkeypatch.setenv("MEDIA_ORG_PROFILE", "paragtd")
     monkeypatch.setenv("MEDIA_CONFIG", str(tmp_path / "no-config.toml"))
     monkeypatch.setattr(auth, "gate", lambda b: ({"username": "david"}, {}))
-    monkeypatch.setattr(notes, "_memory_call", lambda *a, **k: None)
-    notes_profile._reset_for_tests()
+    monkeypatch.setattr(org_mod, "_memory_call", lambda *a, **k: None)
+    org_profile._reset_for_tests()
     return root
 
 
 def test_paragtd_offers_its_templates(org):
-    kinds = {k["name"]: k for k in notes.views("good")[1]["capture_kinds"]}
+    kinds = {k["name"]: k for k in org_mod.views("good")[1]["capture_kinds"]}
     assert list(kinds) == ["t", "n", "w", "k", "p", "j"]
     assert kinds["k"]["fields"] == [{"id": "f0", "label": "Date and time", "type": "datetime", "active": True}]
-    ok, got = notes.capture("Water the fern", "n", "good")
+    ok, got = org_mod.capture("Water the fern", "n", "good")
     assert ok and got["path"] == "next-actions.org" and got["at"] == 4
     assert "* Inbox\n** NEXT Water the fern\n:PROPERTIES:\n:CREATED: [" in (org / "next-actions.org").read_text()
-    ok, got = notes.capture("Renew passport", "p", "good")
+    ok, got = org_mod.capture("Renew passport", "p", "good")
     text = (org / "projects.org").read_text()
     assert ok and "* TODO Renew passport\n" in text and '** NEXT First step\n:PROPERTIES:\n:TRIGGER: next-sibling' in text
-    ok, got = notes.capture("Library book", "k", "good")
+    ok, got = org_mod.capture("Library book", "k", "good")
     assert not ok and got["status"] == 400 and "Date and time" in got["error"]
-    ok, got = notes.capture("Library book", "k", "good", fields={"f0": "2026-10-01T10:00"})
+    ok, got = org_mod.capture("Library book", "k", "good", fields={"f0": "2026-10-01T10:00"})
     assert ok and "SCHEDULED: <2026-10-01 Thu 10:00>" in (org / "tickler.org").read_text()
     # The plain to-do is still there, and an unknown key is refused.
-    assert notes.capture("plain", "todo", "good")[0]
-    assert notes.capture("x", "zz", "good")[1]["status"] == 400
+    assert org_mod.capture("plain", "todo", "good")[0]
+    assert org_mod.capture("x", "zz", "good")[1]["status"] == 400
 
 
 def test_the_manifest_brings_site_templates(org):
@@ -138,14 +138,14 @@ def test_the_manifest_brings_site_templates(org):
          "file": "roleplay/inbox.org", "headline": "Partners", "template": "* %^{Name}\n\n** Basics\n"},
         {"key": "jm", "label": "Morning", "type": "entry", "target": "file+olp+datetree",
          "file": "journal.org", "template": "* %(ryer/prompt-topics)\n"}]}))
-    kinds = notes.views("good")[1]["capture_kinds"]
+    kinds = org_mod.views("good")[1]["capture_kinds"]
     assert [k["name"] for k in kinds] == ["rp"] and kinds[0]["needs_text"] is False
-    ok, got = notes.capture("", "rp", "good", fields={"f0": "Sam"})
+    ok, got = org_mod.capture("", "rp", "good", fields={"f0": "Sam"})
     assert ok and got == {"path": "roleplay/inbox.org", "at": 2, "kind": "rp", "remembered": False}
     assert (org / "roleplay" / "inbox.org").read_text() == "* Partners\n** Sam\n\n*** Basics\n"
-    assert notes.capture("", "jm", "good")[1]["status"] == 400
+    assert org_mod.capture("", "jm", "good")[1]["status"] == 400
 
 
 def test_plain_org_has_none(org, monkeypatch):
-    monkeypatch.setenv("MEDIA_NOTES_PROFILE", "none")
-    assert notes.views("good")[1]["capture_kinds"] == []
+    monkeypatch.setenv("MEDIA_ORG_PROFILE", "none")
+    assert org_mod.views("good")[1]["capture_kinds"] == []

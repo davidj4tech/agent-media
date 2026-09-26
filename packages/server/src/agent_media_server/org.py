@@ -1,23 +1,23 @@
 """Notes: browse, search and capture into the Org tree, without Emacs.
 
-The tree is `~/org` (MEDIA_NOTES_DIR to move it). Which files are the views,
+The tree is `~/org` (MEDIA_ORG_DIR to move it). Which files are the views,
 where a capture lands and the rest of the layout come from the notes profile
-(notes_profile.py): plain Org by default, or a method's own, such as the
+(org_profile.py): plain Org by default, or a method's own, such as the
 paragtd package's. Everything here reads and appends plain text; Emacs is
 one editor of the same files, never a dependency. Commits are not ours
 either: `org-autosync` commits and pushes the tree from every host, so a
 capture only has to land in the capture file.
 
-  GET  /notes                  → {"views": [{name, label, kind, count}]}
-  GET  /notes/view?name=       → {"view", "items": [...]}   (&done=1 keeps DONE)
-  GET  /notes/read?path=[&at=] → {"path", "title", "text", "links"}
-  GET  /notes/search?q=        → {"notes": [...], "memories": [...]}
+  GET  /org                  → {"views": [{name, label, kind, count}]}
+  GET  /org/view?name=       → {"view", "items": [...]}   (&done=1 keeps DONE)
+  GET  /org/read?path=[&at=] → {"path", "title", "text", "links"}
+  GET  /org/search?q=        → {"notes": [...], "memories": [...]}
                                  (&all=1 takes in session notes; &memory=0 skips memory)
-  POST /notes/capture {"text", "kind": "todo"|"note", "memory": bool}
-  POST /notes/say {"path", "at"?}  → read a note (or one heading) aloud
-  POST /notes/ask {"path", "at"?, "text"} → a chat about it (notes_chat.py)
+  POST /org/capture {"text", "kind": "todo"|"note", "memory": bool}
+  POST /org/say {"path", "at"?}  → read a note (or one heading) aloud
+  POST /org/ask {"path", "at"?, "text"} → a chat about it (org_chat.py)
 
-Setting all this up on a host is notes_setup.py (/notes/setup).
+Setting all this up on a host is org_setup.py (/org/setup).
 
 Search asks the memory store (agent-memory's Hippocampus) beside ripgrep, and
 a capture is remembered there too, so a note surfaces in later recall. Both
@@ -43,7 +43,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import auth, notes_profile
+from . import auth, org_profile
 
 NOTE_SUFFIXES = (".org", ".md", ".txt")
 
@@ -64,11 +64,12 @@ _ID_LINK = re.compile(r"\[\[id:([^\]]+)\](?:\[([^\]]*)\])?\]")
 
 
 def root() -> Path:
-    return Path(os.environ.get("MEDIA_NOTES_DIR") or "~/org").expanduser()
+    from .org_profile import env
+    return Path(env("DIR") or "~/org").expanduser()
 
 
-def profile() -> notes_profile.Profile:
-    return notes_profile.active(root())
+def profile() -> org_profile.Profile:
+    return org_profile.active(root())
 
 
 # --- TODO keywords --------------------------------------------------------------------
@@ -100,7 +101,7 @@ def _heading_re(words: tuple[str, ...]) -> re.Pattern:
 
 def keywords(lines: list[str] | None = None) -> Keywords:
     """The keywords for a file: its own `#+TODO:` lines (`#+SEQ_TODO:`,
-    `#+TYP_TODO:`, several of them joining up), else `[notes] todo_keywords`
+    `#+TYP_TODO:`, several of them joining up), else `[org] todo_keywords`
     in config.toml, else the profile's."""
     open_: list[str] = []
     done: list[str] = []
@@ -108,12 +109,12 @@ def keywords(lines: list[str] | None = None) -> Keywords:
         if line.startswith("#+"):
             m = _TODO_LINE.match(line)
             if m:
-                o, d = notes_profile.split_keywords(m.group(1).split())
+                o, d = org_profile.split_keywords(m.group(1).split())
                 open_ += [w for w in o if w not in open_]
                 done += [w for w in d if w not in done]
     if open_ or done:
         return Keywords(tuple(open_), tuple(done))
-    o, d = notes_profile.configured_keywords() or profile().todo_keywords(root())
+    o, d = org_profile.configured_keywords() or profile().todo_keywords(root())
     return Keywords(tuple(o), tuple(d))
 
 
@@ -151,7 +152,7 @@ def _safe_path(rel: str) -> Path | None:
 
 def _headings(path: Path, *, done: bool) -> list[dict]:
     """The headings of one Org file, each with its state and dates. The
-    line (`at`, 1-based) is how /notes/read finds it again."""
+    line (`at`, 1-based) is how /org/read finds it again."""
     try:
         lines = path.read_text(errors="replace").splitlines()
     except OSError:
@@ -285,15 +286,15 @@ def views(bearer: str) -> tuple[bool, dict]:
     targets = [{"name": to, "label": labels.get(fname) or to.capitalize(),
                 "path": fname, **({"needs_date": True} if dated else {})}
                for to, (fname, _h, _s, dated) in prof.refile_targets(root()).items()]
-    from . import notes_capture
+    from . import org_capture
 
     kinds = []
     for c in prof.capture_kinds(root()):
-        spec = notes_capture.fields(c["template"])
+        spec = org_capture.fields(c["template"])
         if spec is not None:
             kinds.append({"name": c["key"], "label": c.get("label") or c["key"],
                           "path": c["file"], "fields": spec,
-                          "needs_text": notes_capture.needs_text(c["template"])})
+                          "needs_text": org_capture.needs_text(c["template"])})
     return True, {"root": str(root()), "views": out, "profile": prof.name,
                   "capture_file": prof.capture_file, "capture_kinds": kinds,
                   "states": {"open": list(kw.open), "done": list(kw.done)},
@@ -505,7 +506,7 @@ def entry(text: str, kind: str, now: dt.datetime | None = None) -> str:
 def capture(text: str, kind: str, bearer: str, *, remember: bool = True,
             fields: dict | None = None) -> tuple[bool, dict]:
     """Append a to-do or a note to the profile's capture file, or file one
-    of its capture templates (`kind` = the template's key, notes_capture.py);
+    of its capture templates (`kind` = the template's key, org_capture.py);
     and (unless told not to) remember it."""
     user, err = auth.gate(bearer)
     if not user:
@@ -528,7 +529,7 @@ def capture(text: str, kind: str, bearer: str, *, remember: bool = True,
             before = f.read()
             if before and not before.endswith("\n"):
                 block = "\n" + block
-            # The line the heading lands on, for /notes/read?at=.
+            # The line the heading lands on, for /org/read?at=.
             at = before.count("\n") + 1 + (block[0] == "\n")
             f.write(block)
             f.flush()
@@ -543,14 +544,14 @@ def capture(text: str, kind: str, bearer: str, *, remember: bool = True,
 
 def _capture_template(text: str, kind: str, values: dict, user: dict,
                       remember: bool) -> tuple[bool, dict]:
-    from . import notes_capture
+    from . import org_capture
 
     tpl = next((c for c in profile().capture_kinds(root()) if c.get("key") == kind), None)
     if tpl is None:
         return False, {"error": f"no capture template {kind!r}", "status": 400}
     try:
-        got = notes_capture.capture(root(), tpl, text, values)
-    except notes_capture.CaptureError as e:
+        got = org_capture.capture(root(), tpl, text, values)
+    except org_capture.CaptureError as e:
         return False, e.detail
     except OSError as e:
         return False, {"error": f"could not write {tpl['file']} ({e})", "status": 500}

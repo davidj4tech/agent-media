@@ -19,7 +19,7 @@ the top with `:prepend`), `file+headline` (under it, made if missing) and
 `file+olp+datetree` (the day's heading in a year/month/day tree, or
 year/ISO-week/day with `:tree-type week`, made in date order).
 
-  POST /notes/capture {"text", "kind": "<template key>", "fields": {id: value}}
+  POST /org/capture {"text", "kind": "<template key>", "fields": {id: value}}
 
 docs/proposals/2026-09-24-notes-core-and-paragtd.md.
 """
@@ -255,7 +255,7 @@ def target_path(root: Path, rel: str) -> Path:
 def capture(root: Path, tpl: dict, text: str, values: dict,
             now: dt.datetime | None = None) -> dict:
     """Fill `tpl` and file it. `{path, at}` — `at` the entry's line."""
-    from .notes_edit import _Locked
+    from .org_edit import _Locked
 
     now = now or dt.datetime.now()
     if needs_text(tpl["template"]) and not text.strip():

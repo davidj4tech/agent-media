@@ -11,7 +11,7 @@ Organiser does the same here. This is the one trigger form paragtd writes,
 done again from its README's description, not org-edna itself; any other
 trigger is left for Emacs, and the answer says so (`"trigger": "skipped"`).
 The blocking half (`:ORDERED:`) is Org's own and lives in core
-(`notes_edit.blocked_by`).
+(`org_edit.blocked_by`).
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from __future__ import annotations
 import datetime as dt
 import re
 
-from agent_media_server.notes_edit import _level, _subtree_end, _with_state, properties, set_stamp
+from agent_media_server.org_edit import _level, _subtree_end, _with_state, properties, set_stamp
 
 _TRIGGER = re.compile(
     r'^next-sibling\s+todo!\((?P<state>[^)\s]+)\)'

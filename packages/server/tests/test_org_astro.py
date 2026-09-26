@@ -1,4 +1,4 @@
-"""astro.org kept a year ahead (notes-paragtd's astro.py): which years are
+"""astro.org kept a year ahead (org-paragtd's astro.py): which years are
 missing, the generator run for them, and the setup row that turns the monthly
 timer on. The generator and systemd are stubbed: nothing here runs either."""
 
@@ -9,8 +9,8 @@ import subprocess
 
 import pytest
 
-from agent_media_notes_paragtd import astro
-from agent_media_server import auth, notes, notes_profile, notes_setup
+from agent_media_org_paragtd import astro
+from agent_media_server import auth, org as org_mod, org_profile, org_setup
 
 
 @pytest.fixture()
@@ -23,15 +23,15 @@ def org(tmp_path, monkeypatch):
     gen.parent.mkdir(parents=True)
     gen.write_text("#!/bin/sh\n")
     monkeypatch.setenv("MEDIA_PARAGTD_DIR", str(tmp_path / "paragtd"))
-    monkeypatch.setenv("MEDIA_NOTES_DIR", str(root))
-    monkeypatch.setenv("MEDIA_NOTES_PROFILE", "paragtd")
+    monkeypatch.setenv("MEDIA_ORG_DIR", str(root))
+    monkeypatch.setenv("MEDIA_ORG_PROFILE", "paragtd")
     monkeypatch.setenv("MEDIA_CONFIG", str(tmp_path / "no-config.toml"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(auth, "gate", lambda b: ({"username": "david"}, {}))
     monkeypatch.setattr(auth, "may_control_speech", lambda b: (True, {}))
-    monkeypatch.setattr(notes, "_memory_call", lambda *a, **k: None)
-    monkeypatch.setattr(notes_setup, "_systemctl", lambda *a: (127, "no systemctl here"))
-    notes_profile._reset_for_tests()
+    monkeypatch.setattr(org_mod, "_memory_call", lambda *a, **k: None)
+    monkeypatch.setattr(org_setup, "_systemctl", lambda *a: (127, "no systemctl here"))
+    org_profile._reset_for_tests()
     return root
 
 
@@ -74,18 +74,18 @@ def test_setup_turns_the_timer_on(org, tmp_path, monkeypatch):
     monkeypatch.setattr(astro, "_systemctl", lambda *a: (
         enabled.append(a) or (0, "enabled") if a[0] != "is-enabled" or enabled else (1, "disabled")))
     monkeypatch.setattr(astro, "ensure", lambda root: [2027])
-    rows = {r["name"]: r for r in notes_setup.status("good")[1]["components"]}
+    rows = {r["name"]: r for r in org_setup.status("good")[1]["components"]}
     assert rows["astro"]["state"] == "off" and rows["astro"]["actions"] == ["enable", "run"]
     assert rows["astro"]["detail"].startswith("astro.org has 2026")
-    ok, got = notes_setup.run("astro", "enable", "good")
+    ok, got = org_setup.run("astro", "enable", "good")
     assert ok and got["added"] == [2027]
     unit = (tmp_path / "config" / "systemd" / "user" / "paragtd-astro.service").read_text()
-    assert f"MEDIA_NOTES_DIR={org}" in unit and "-m agent_media_notes_paragtd.astro" in unit
+    assert f"MEDIA_ORG_DIR={org}" in unit and "-m agent_media_org_paragtd.astro" in unit
     assert "OnCalendar=monthly" in (tmp_path / "config" / "systemd" / "user" / "paragtd-astro.timer").read_text()
     assert ("enable", "--now", "paragtd-astro.timer") in enabled
 
 
 def test_no_generator_no_timer(org, tmp_path):
     (tmp_path / "paragtd" / "bin" / "paragtd-astro-generate").unlink()
-    rows = {r["name"]: r for r in notes_setup.status("good")[1]["components"]}
+    rows = {r["name"]: r for r in org_setup.status("good")[1]["components"]}
     assert rows["astro"]["state"] == "missing" and rows["astro"]["actions"] == []

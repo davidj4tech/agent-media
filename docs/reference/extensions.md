@@ -140,7 +140,7 @@ cached) — see `agent_media_visual/engines.py`.
 
 ## 1c. Notes profiles — a method's Org layout, owned by `agent-media-server`
 
-The Notes tab (`notes.py`) reads plain Org: every top-level `.org` file in the
+The Notes tab (`org.py`) reads plain Org: every top-level `.org` file in the
 notes root is a view, captures go to `inbox.org`, a heading can move to the
 top level of another file, and the roam shelves are the folders under `roam/`.
 A method with its own layout, such as paragtd's GTD files, ships that layout as
@@ -156,15 +156,15 @@ excludes, and what a fresh tree starts with (`skeleton`, `roam_dirs`).
 **Register it:**
 
 ```toml
-[project.entry-points."agent_media.notes_profiles"]
-paragtd = "agent_media_notes_paragtd:profile"
+[project.entry-points."agent_media.org_profiles"]
+paragtd = "agent_media_org_paragtd:profile"
 ```
 
-**Choosing one:** `MEDIA_NOTES_PROFILE`, or `[notes] profile` in
+**Choosing one:** `MEDIA_ORG_PROFILE`, or `[org] profile` in
 `config.toml`, names a profile (`none` means plain Org). With neither set, the
 first installed profile whose `detect` says yes is used. A profile that fails
 to load is skipped, and notes carry on as plain Org. The one that exists is
-`packages/notes-paragtd`.
+`packages/org-paragtd`.
 
 ---
 

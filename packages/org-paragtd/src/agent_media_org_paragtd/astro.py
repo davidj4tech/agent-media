@@ -5,7 +5,7 @@ generate --year Y --append`), each year a set of `* <Y> …` headings in
 `astro.org`, and the new and full moon routines in `lunar.org`. Nothing runs it on its own, so the alerts simply stop at the end
 of the last year someone remembered. `ensure` adds this year and next when
 either is missing; a monthly user timer runs it (`python -m
-agent_media_notes_paragtd.astro`), and the Organiser's setup screen turns the
+agent_media_org_paragtd.astro`), and the Organiser's setup screen turns the
 timer on (`setup_row`, `enable`).
 
 The generator is paragtd's (GPL) and runs as its own process with its own
@@ -114,10 +114,10 @@ def setup_run(root: Path, action: str) -> dict:
     d = _unit_dir()
     d.mkdir(parents=True, exist_ok=True)
     (d / f"{UNIT}.service").write_text(
-        "[Unit]\nDescription=paragtd: keep astro.org a year ahead (agent-media notes-paragtd)\n\n"
+        "[Unit]\nDescription=paragtd: keep astro.org a year ahead (agent-media org-paragtd)\n\n"
         "[Service]\nType=oneshot\n"
-        f"Environment=MEDIA_NOTES_DIR={root}\n"
-        f"ExecStart={sys.executable} -m agent_media_notes_paragtd.astro\n")
+        f"Environment=MEDIA_ORG_DIR={root}\n"
+        f"ExecStart={sys.executable} -m agent_media_org_paragtd.astro\n")
     (d / f"{UNIT}.timer").write_text(
         "[Unit]\nDescription=paragtd: keep astro.org a year ahead, monthly\n\n"
         "[Timer]\nOnCalendar=monthly\nPersistent=true\nRandomizedDelaySec=1h\n\n"
@@ -131,7 +131,8 @@ def setup_run(root: Path, action: str) -> dict:
 
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    root = Path(os.environ.get("MEDIA_NOTES_DIR") or "~/org").expanduser()
+    root = Path(os.environ.get("MEDIA_ORG_DIR") or os.environ.get("MEDIA_NOTES_DIR")
+                or "~/org").expanduser()
     try:
         added = ensure(root)
     except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:

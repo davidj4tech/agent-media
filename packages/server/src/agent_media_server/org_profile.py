@@ -1,6 +1,6 @@
 """Notes profiles: how a method lays the Org tree out.
 
-Core (`notes.py`, `notes_edit.py`, `notes_setup.py`) reads and edits plain
+Core (`org.py`, `org_edit.py`, `org_setup.py`) reads and edits plain
 Org. What a method adds on top — which files are the views and what they are
 called, where a capture lands, the places a heading can be moved to, what a
 fresh tree starts with — comes from a profile. `Profile` below is the one for
@@ -9,10 +9,10 @@ plain Org, and what every hook falls back to.
 A method ships its profile as a package, registered under an entry point
 (the render engines' arrangement, `agent_media_core.extensions`):
 
-    [project.entry-points."agent_media.notes_profiles"]
-    paragtd = "agent_media_notes_paragtd:profile"
+    [project.entry-points."agent_media.org_profiles"]
+    paragtd = "agent_media_org_paragtd:profile"
 
-Which one is used: MEDIA_NOTES_PROFILE, else `[notes] profile` in config.toml,
+Which one is used: MEDIA_ORG_PROFILE, else `[org] profile` in config.toml,
 naming one (`none` = plain Org); else the first installed profile whose
 `detect(root)` says the tree is laid out its way; else plain Org.
 
@@ -29,7 +29,7 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-ENTRY_GROUP = "agent_media.notes_profiles"
+ENTRY_GROUP = "agent_media.org_profiles"
 
 _TITLE = re.compile(r"^#\+title:\s*(.+)$", re.I | re.M)
 
@@ -113,12 +113,12 @@ class Profile:
     def capture_kinds(self, root: Path) -> list[dict]:
         """Capture templates beyond the plain to-do and note:
         `{key, label, target, file, headline?, tree_type?, prepend?,
-        template}`, as org-capture-templates has them (notes_capture.py
+        template}`, as org-capture-templates has them (org_capture.py
         fills them). Plain Org has none."""
         return []
 
     def setup_rows(self, root: Path) -> list[dict]:
-        """Extra rows for the setup checklist (notes_setup.py's shape)."""
+        """Extra rows for the setup checklist (org_setup.py's shape)."""
         return []
 
     def setup_run(self, root: Path, component: str, action: str) -> dict | None:
@@ -130,15 +130,15 @@ class Profile:
     def enforces_dependencies(self) -> bool:
         """Whether a heading may not close while a child, or under an
         `:ORDERED:` parent an earlier sibling, is open — Org's
-        `org-enforce-todo-dependencies`. Plain Org: `[notes]
+        `org-enforce-todo-dependencies`. Plain Org: `[org]
         enforce_todo_dependencies` in config.toml, off by default as in Org."""
-        return _notes_config().get("enforce_todo_dependencies") is True
+        return _org_config().get("enforce_todo_dependencies") is True
 
     def after_state(self, lines: list[str], i: int, old: str, new: str, kw, now) -> dict | None:
         """Further edits to the same file once the heading on line index `i`
         has gone from `old` to `new` (a repeater that moved on instead is not
         a change). Made in place, under the file's lock; what it returns is
-        added to /notes/state's answer."""
+        added to /org/state's answer."""
         return None
 
     def editable(self, root: Path, rel: str) -> bool:
@@ -151,22 +151,36 @@ def _view_name(root: Path, p: Path) -> str:
     return p.relative_to(root).with_suffix("").as_posix().replace("/", "-")
 
 
-def _notes_config() -> dict:
+def _org_config() -> dict:
+    """config.toml's `[org]` table — over `[org]`, its name until 26 Sep
+    2026, whose keys still count where `[org]` does not set them."""
     try:
         from agent_media_core import config
-        got = config.load().get("notes")
+        loaded = config.load()
     except Exception:  # noqa: BLE001 — a bad config file means "nothing set"
         return {}
-    return got if isinstance(got, dict) else {}
+    out: dict = {}
+    for name in ("notes", "org"):
+        got = loaded.get(name)
+        if isinstance(got, dict):
+            out.update(got)
+    return out
+
+
+def env(name: str) -> str:
+    """`MEDIA_ORG_<name>`, else `MEDIA_NOTES_<name>` (the name until 26 Sep
+    2026, still honoured)."""
+    return (os.environ.get(f"MEDIA_ORG_{name}")
+            or os.environ.get(f"MEDIA_NOTES_{name}") or "").strip()
 
 
 def configured_files(root: Path) -> list[Path] | None:
-    """The agenda files config names — `[notes] agenda_files` in
+    """The agenda files config names — `[org] agenda_files` in
     config.toml, else MEDIA_AGENDA_FILES (colon-separated, what `media
     agenda` reads) — as `.org` files under the root, a directory meaning
     the `.org` files in it, as in Org. None when neither is set. A file
     outside the notes root is left out: the app can only reach the tree."""
-    raw = _notes_config().get("agenda_files")
+    raw = _org_config().get("agenda_files")
     if isinstance(raw, str):
         raw = [raw]
     if not raw:
@@ -195,9 +209,9 @@ def configured_files(root: Path) -> list[Path] | None:
 
 
 def configured_keywords() -> tuple[tuple[str, ...], tuple[str, ...]] | None:
-    """`[notes] todo_keywords` in config.toml, Org's way: `["TODO", "NEXT",
+    """`[org] todo_keywords` in config.toml, Org's way: `["TODO", "NEXT",
     "|", "DONE"]` (no bar: the last one is done). None when unset."""
-    raw = _notes_config().get("todo_keywords")
+    raw = _org_config().get("todo_keywords")
     if not isinstance(raw, list) or not raw:
         return None
     return split_keywords([str(x) for x in raw])
@@ -241,14 +255,10 @@ def _installed() -> dict[str, Profile]:
 
 
 def _named() -> str:
-    got = os.environ.get("MEDIA_NOTES_PROFILE", "").strip()
+    got = env("PROFILE")
     if got:
         return got
-    try:
-        from agent_media_core import config
-        return str((config.load().get("notes") or {}).get("profile") or "").strip()
-    except Exception:  # noqa: BLE001 — a bad config file means "not named"
-        return ""
+    return str(_org_config().get("profile") or "").strip()
 
 
 def active(root: Path) -> Profile:
