@@ -506,6 +506,21 @@ ahead.
    (`b87405d`). Left English: server/agent text, What's new entries, demo
    content. Installed on p8a (run 36274279961).
 
+7. **Sibling bases, and Home Assistant as the map of the house** (David,
+   27 Sep 2026) — the "Sibling bases" section of
+   `docs/proposals/2026-09-23-accounts-and-the-identity-seam.md`. **Waits
+   for accounts**: an account must be able to hold more than one base.
+   Then, in order: (a) a base lists its siblings' sessions, read-only, so
+   the app sees every base's chats; (b) each base says what it can do
+   (phone: mic, ringer, alerts; tablet: reading, canvas; TV: big screen,
+   room speakers; server: harnesses, uptime) and jobs route by that;
+   (c) Home Assistant answers *where*: which room David is in, which TV or
+   speaker is there, so a base speaks and shows in the right place without
+   our own device list; (d) the bases appear in HA as sensors (sessions,
+   open alerts, speaking now) for automations. (c) and (d) extend
+   `packages/voice-bridge/homeassistant` rather than adding another
+   integration.
+
 ## Loose ends
 
 - **A reply with a figure had no follow-along at all** (David, 23 Sep 2026)
