@@ -464,6 +464,14 @@ ahead.
    `&fallback=<Google voice>`). Measured ~1.2 s per sentence cold; a
    sentence with no audio in 3 s or not done in 10 s is rendered by Google
    instead (tested). Chosen on red5 as the phone voice.
+   **Language, site-wide (David, 27 Sep 2026):** one Language setting in
+   Sasonica, saved on the server (`language.current()`), that (a) filters
+   Settings → Voice to its accents and voices (phone/server radio for every
+   voice, Microsoft's full list cached daily on red5 — in progress), (b)
+   asks every agent to reply in it (the heard hook's language line,
+   `e4ac427`, silent for English), and (c) **next:** translates the app's
+   own text — every string into translation files, English plus Spanish,
+   French, Chinese (Simplified) and German.
 
 ## Loose ends
 
