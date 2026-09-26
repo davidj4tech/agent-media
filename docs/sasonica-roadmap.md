@@ -9,15 +9,16 @@ Where things live:
 
 - **Server:** agent-media `packages/server`, contract in
   [server-contract.md](server-contract.md). Python, and staying Python.
-- **Chat app:** `~/projects/sasonica-chat/chat`, branch `chat-prototype`
-  (React Router + assistant-ui). Preview on red5 `:8795`
-  (`sasonica-chat-preview`).
-- **Sasonica** (the app, built as Sasonica Next until 26 Sep 2026): the
-  Capacitor shell, applicationId **`com.sasonica.app`** (Java package still
-  `com.sasonica.next`), repo `davidj4tech/Sasonica`, branch `android-next`
-  (checkout `~/projects/sasonica-next`), rebased onto `chat-prototype`. CI
-  builds `sasonica-apk` (release key) and `sasonica-debug-apk`
-  (`com.sasonica.app.debug`, beside it); install with `agent-phone-adb sasonica`.
+- **Sasonica, the app** (chat app + its Android shell, one tree since 26 Sep
+  2026): repo **`davidj4tech/sasonica-app`** (private), branch `main`,
+  checkout `~/projects/sasonica-app` (the old `chat/` is the root). React
+  Router + assistant-ui; applicationId **`com.sasonica.app`** (Java package
+  still `com.sasonica.next`). CI builds `sasonica-apk` (release key) and
+  `sasonica-debug-apk` (`com.sasonica.app.debug`, beside it); install with
+  `agent-phone-adb sasonica`. Browser preview on red5 `:8795`
+  (`sasonica-chat-preview`, from that checkout's `build/`). Its history came
+  across from the fork's `chat-prototype`/`android-next`, which are frozen —
+  commit hashes below that name them are from there.
 - **Sasonica ABS:** the Audiobookshelf app fork, kept for books —
   `com.sasonica.abs`, branch `sasonica`, `agent-phone-adb sasonica-abs`. Book
   control on :8772 (loopback) and :8773 (tokened).
@@ -29,7 +30,8 @@ Where things live:
 
 ## Standing decisions
 
-- New app work lands in **Next first**; the browser preview is a fallback.
+- App work lands on `main` of sasonica-app — one branch for the web and the
+  Android shell; the browser preview is a fallback.
 - **Sasonica ABS stays for books; Sasonica took its id** (David, 26 Sep 2026).
   Everything but the book is Sasonica's: speech (:6614), the holds, and the
   readouts `/mic` `/ringer` `/state` on loopback **:8774** (call_guard,
@@ -521,8 +523,6 @@ ahead.
 - The Windows install test leaves stray PATH entries.
 - A stale saved question for a session may not clear after it's answered
   (the PostToolUse clear may not fire).
-- Move Sasonica (the chat app) into its own repository so the licence split
-  is clean — after the id swap, separately (David, 26 Sep 2026).
 - Next's speech service starts after a reboot or an update as `specialUse`
   (Android 15 will not start `mediaPlayback` from `BOOT_COMPLETED`), since
   26 Sep 2026 — not yet seen through a real reboot.
