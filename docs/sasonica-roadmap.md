@@ -68,6 +68,15 @@ Where things live:
 
 ## Done
 
+**A welcome, and Just look around** (David, 27 Sep 2026): a fresh install
+opens on Welcome, which says what Sasonica is and offers **Connect to my
+server** (Pair this device) or **Just look around**: a demo served inside the
+page (`app/demo/server.ts`, four invented threads, a reply answered after
+working steps, nothing sent anywhere) under a banner whose Connect my server
+leads to pairing from any screen. Pairing ends it and forgets its snapshots.
+This is the demo mode queued under item 4. Still open: scanning a pairing QR,
+and reaching the server off the tailnet (contract §19). sasonica-app `afff1c2`.
+
 **What's new** (David, 27 Sep 2026): once after an update, a sheet lists
 what changed since the last one this install saw — hand-written entries in
 `app/lib/whatsNew.ts`, newest first. Got it, a tap outside or back closes it
@@ -364,7 +373,7 @@ ahead.
    `PI_CODING_AGENT_DIR`, `XDG_DATA_HOME`, Hermes's own profiles) gives
    every harness multiple logins; pi first needs a login recipe at all.
    Also decided there: Sasonica is **not** rebased on opencode-mobile, but its
-   diff viewer, tool-call approval and demo mode are queued as app work, in
+   diff viewer, tool-call approval and demo mode (done 27 Sep 2026) are queued as app work, in
    that order. Its self-hosted F-Droid repo is **parked until monetization
    is decided** (David, 26 Sep 2026; `docs/proposals/2026-08-20-monetization.md`),
    since where the app ships decides how it can be charged for.
