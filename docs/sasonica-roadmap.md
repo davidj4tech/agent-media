@@ -495,9 +495,16 @@ ahead.
    Settings → Voice to its accents and voices (phone/server radio for every
    voice, Microsoft's full list cached daily on red5 — in progress), (b)
    asks every agent to reply in it (the heard hook's language line,
-   `e4ac427`, silent for English), and (c) **next:** translates the app's
-   own text — every string into translation files, English plus Spanish,
-   French, Chinese (Simplified), German, Italian, Swedish and Japanese.
+   `e4ac427`, silent for English), and (c) translates the app's own text —
+   **done 27 Sep 2026** (sasonica-app `aa1ae4f`…`47989a5`): `app/i18n/`
+   (en source by area, ~800 keys; es, fr, zh, de, it, sv, ja typed against
+   it; `t()`/`useT()`, Intl dates, `<html lang>`), native strings in
+   `res/values-*` applied by the app's language (`Lang.java`), every screen
+   checked at 390 px / 1.5 text scale. The language is now **with its
+   country** (`49ddeda`, locale en-AU): Voice shows only that country's
+   voices, Google's not offered (`e001941`), tap a voice to hear it
+   (`b87405d`). Left English: server/agent text, What's new entries, demo
+   content. Installed on p8a (run 36274279961).
 
 ## Loose ends
 
