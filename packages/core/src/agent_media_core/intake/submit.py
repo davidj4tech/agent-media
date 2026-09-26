@@ -4199,6 +4199,21 @@ def _submit_event(event: Event,
                     del starts[idx:]
                     starts.extend([at] * (idx + 1 - len(starts)))
                     mark_clock["last"] = idx
+                elif idx == 0 and starts and len(starts) == 1:
+                    # The first sentence is stamped 0 when the reply is handed
+                    # over, before the phone has fetched and started the clip —
+                    # 1.1–1.8 s early on p8a (26 Sep 2026), so the bold ran
+                    # ahead until the reader's skew caught up. Once the player
+                    # says how far in it is, the sentence began that long ago.
+                    tp = (live or {}).get("time-pos")
+                    if tp is not None and float(tp) > 0.2:
+                        at = elapsed_from_row(prior, mark_clock["origin"])
+                        read_at = (live or {}).get("_read_at")
+                        if read_at:
+                            at -= max(0.0, now - float(read_at))
+                        at -= float(tp)
+                        if at > starts[0] + 0.05:
+                            starts[0] = at
                 extras["play_started_at"] = mark_clock["origin"]
                 extras["clip_starts_s"] = list(starts)
 

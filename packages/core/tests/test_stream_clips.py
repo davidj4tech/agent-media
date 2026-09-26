@@ -332,3 +332,35 @@ def test_a_reply_stopped_at_the_phone_stays_stopped(monkeypatch):
     assert player.played == [0]
     ex = (_row(state) or {}).get("extras") or {}
     assert len(ex.get("clip_uris") or []) == 4, "still archived whole"
+
+
+def test_the_first_sentence_starts_when_the_player_does(monkeypatch):
+    """The first start is stamped when the reply is handed over, before the
+    phone has fetched the clip; the player's own position moves it to when
+    the voice began (p8a, 26 Sep 2026: 1.1-1.8 s, and the bold ran ahead)."""
+    monkeypatch.setattr(S, "render_text", _render)
+    clock = [1000.0]
+    monkeypatch.setattr(S.time, "time", lambda: clock[0])
+
+    class _Fetching(_Sink):
+        # 2 s fetching (position 0), then clip 0 plays, then clip 1, then idle.
+        def snapshot(self, target=None):
+            self.snapshots += 1
+            clock[0] += 0.5
+            n = self.snapshots
+            if n <= 4:
+                return {"idle-active": False, "pause": False, "playlist-pos": 0, "time-pos": 0.0}
+            if n <= 8:
+                return {"idle-active": False, "pause": False, "playlist-pos": 0, "time-pos": (n - 4) * 0.5}
+            if n <= 10:
+                return {"idle-active": False, "pause": False, "playlist-pos": 1, "time-pos": (n - 8) * 0.5}
+            return {"idle-active": True, "pause": False}
+
+    state = StateStore()
+    S.submit_event(Event(text=FOUR, source=Source.CLI, target=PHONE,
+                         metadata={"pane": "%7"}),
+                   state=state, sink=_Fetching(), coordinator=_Coord())
+    starts = ((_row(state) or {}).get("extras") or {}).get("clip_starts_s") or []
+    assert starts, "the reply measured no starts"
+    assert 1.5 <= starts[0] <= 2.5, f"sentence one began when the player did, not at 0: {starts}"
+    assert len(starts) < 2 or 1.5 <= starts[1] - starts[0] <= 2.5, f"and sentence two a clip later: {starts}"
