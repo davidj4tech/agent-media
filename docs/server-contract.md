@@ -2150,6 +2150,8 @@ machines are. Code: `agent_media_server/dashboard.py`. Pinned by
 - `places`: `/targets.places`. `agents`: every harness (five since opencode, 24 Sep 2026), `present` =
   installed on this host (a PATH lookup only — `/harnesses` has versions and
   sign-in).
+- `signins` (27 Sep 2026): Sasonica Shell sign-ins waiting for Approve
+  (§6.17a), `[{"id", "code", "client", "host", "at"}]`, `[]` without a shell.
 - `alerts` (27 Sep 2026): the open alerts (§6.17, warn and up), worst then
   newest, at most 20: `{"id", "level", "title", "detail" (≤600 chars), "fix",
   "host", "first_seen", "changed_at", "acked_at"}`. Home's Alerts section:
@@ -2642,6 +2644,31 @@ unknown id. The next raise forgets the ack.
 The `alerts` frame on `/sessions/events` (§6.13, 27 Sep 2026) carries the
 notifying changes to the phone; Home's Alerts section (27 Sep 2026) reads
 `/dashboard`'s `alerts` (§6.11), with Fix it and Ack.
+
+### 6.17a Sasonica Shell sign-ins — approved on the phone (built 27 Sep 2026)
+
+When this machine's Sasonica Shell runs with `SASONICA_SIGNIN=app`, adding it
+as a connector shows a six-character code on the sign-in page, which waits
+for the owner. Code: `agent_media_server/shell_signin.py`; the shell's side in
+sasonica-shell `docs/tools-and-approvals.md` §6. Pinned by
+`packages/server/tests/test_shell_signin.py`.
+
+```
+GET  /shell/signins            gated (may_control_speech)
+  → {"ok", "signins": [{"id", "code", "client", "host", "at"}], "shell": bool}
+POST /shell/signin {"id", "approve": bool}     a device with the enrol bit (§9)
+  → {"ok", "id", "status": "approved"|"denied"}
+  → 400 not an id · 403 not_enrolled · 409 no shell here · 404 not waiting (expired)
+```
+
+`/dashboard` carries the same list as `signins` (cached 5 s). The server
+reads the shell's own config (`~/.config/sasonica/env`, `SASONICA_CONF`), signs
+the decision with its relay key (`HMAC-SHA256(key, "signin\n<id>\n<approve|deny>")`)
+and passes it to the Worker's runner API with the runner token; the Worker
+checks both. The shell's runner raises a `needs` alert,
+`shell.signin.<runner>`, while any wait, so the phone is notified. `client`
+is what the assistant calls itself (unverified); `host` is where its access
+goes. The app shows the code so it can be matched against the page.
 
 ### 6.18 Files shared to the app — gated (built 25 Sep 2026)
 

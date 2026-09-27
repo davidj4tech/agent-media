@@ -377,7 +377,19 @@ def build(bearer: str) -> dict:
             "speech": {"now": {k: now.get(k) for k in _SPEECH_KEYS},
                        "queued": list(now.get("queued") or [])},
             "recent": _recent(index), "places": sessions.places(),
-            "agents": agents, "hosts": hosts, "digests": _digests(), "alerts": _alerts()}
+            "agents": agents, "hosts": hosts, "digests": _digests(), "alerts": _alerts(),
+            "signins": _signins()}
+
+
+def _signins() -> list[dict]:
+    """Sasonica Shell sign-ins waiting for Approve (shell_signin.py), cached."""
+    try:
+        from . import shell_signin
+
+        return shell_signin.waiting()
+    except Exception as e:  # noqa: BLE001 — Home without them, not a 500
+        print(f"dashboard: signins: {e}", file=sys.stderr)
+        return []
 
 
 def _alerts() -> list[dict]:

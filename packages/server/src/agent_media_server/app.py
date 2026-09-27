@@ -185,7 +185,7 @@ CORS_PATHS = frozenset({
     "/harnesses", "/harnesses/run", "/harnesses/screen",
     "/harnesses/keys", "/harnesses/close", "/harnesses/logout",
     "/harnesses/updates", "/harnesses/profiles", "/harnesses/profiles/remove",
-    "/setup", "/setup/run",
+    "/setup", "/setup/run", "/shell/signins", "/shell/signin",
     "/share", "/upload", "/dashboard",
     "/sessions/events", "/search",
 })
@@ -513,6 +513,12 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
         # Every harness and what each needs — is it installed, is it
         # signed in — so the app can offer the buttons that would fix it.
         ok, detail = harnesses.agents(_bearer(h))
+        _json(h, 200 if ok else detail.pop("status", 403), {"ok": ok, **detail})
+    elif path == "/shell/signins":
+        # Sasonica Shell sign-ins waiting for the phone (shell_signin.py).
+        from . import shell_signin
+
+        ok, detail = shell_signin.listing(_bearer(h))
         _json(h, 200 if ok else detail.pop("status", 403), {"ok": ok, **detail})
     elif path == "/setup":
         # This machine's wiring: `media-setup status --json`, row by row,
@@ -1065,6 +1071,14 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
             ok, detail = harnesses.add_profile(str(body.get("agent") or ""),
                                                str(body.get("name") or ""),
                                                str(body.get("path") or ""), _bearer(h))
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    elif path == "/shell/signin":
+        # The owner's Approve or Deny, signed with the relay key and passed to
+        # the shell's Worker (shell_signin.py).
+        from . import shell_signin
+
+        body = _read_json(h) or {}
+        ok, detail = shell_signin.decide(str(body.get("id") or ""), body.get("approve") is True, _bearer(h))
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path == "/setup/run":
         # `media-setup profile [--only NAME]` in a window, watched like an

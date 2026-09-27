@@ -21,6 +21,9 @@ def _clean_media_env(monkeypatch, tmp_path):
     for k in list(os.environ):
         if k.startswith("MEDIA_"):
             monkeypatch.delenv(k, raising=False)
+    # Sasonica Shell's config (shell_signin.py): an empty one, so /dashboard
+    # never reads red5's real runner token or calls its live Worker.
+    monkeypatch.setenv("SASONICA_CONF", str(tmp_path / "sasonica-conf"))
     # The layout (agent_media_core/layout.py) is pinned to David's, which is
     # what these tests were written against: detection reads the real HOME
     # (~/.amux, ~/.claude/settings.json), so unpinned they would pass on red5
