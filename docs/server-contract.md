@@ -2661,6 +2661,15 @@ POST /shell/signin {"id", "approve": bool}     a device with the enrol bit (§9)
   → 400 not an id · 403 not_enrolled · 409 no shell here · 404 not waiting (expired)
 ```
 
+```
+GET  /shell                    gated (may_control_speech)
+  → {"ok", "shell": bool, "url": "https://<worker>/mcp" | null, "signin": "app"|"access"|null}
+```
+
+`url` is the plain sign-in URL (no secret), only when OAuth is on; the
+app's Settings → Connect an assistant copies it and opens the assistant's
+connector page (27 Sep 2026).
+
 `/dashboard` carries the same list as `signins` (cached 5 s). The server
 reads the shell's own config (`~/.config/sasonica/env`, `SASONICA_CONF`), signs
 the decision with its relay key (`HMAC-SHA256(key, "signin\n<id>\n<approve|deny>")`)

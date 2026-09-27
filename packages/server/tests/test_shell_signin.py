@@ -63,3 +63,12 @@ def test_refusals(shell, monkeypatch, tmp_path):
     shell_signin._reset_for_tests()
     assert shell_signin.waiting() == [], "no shell here: nothing waiting"
     assert shell_signin.decide(SID, True, "b")[1]["status"] == 409
+
+
+def test_connect_info_is_the_plain_url_only_with_signin_on(shell, tmp_path):
+    ok, d = shell_signin.connect_info("b")
+    assert ok and d == {"shell": True, "url": None, "signin": None}, "OAuth off: no URL to hand out"
+    with open(tmp_path / "env", "a") as fh:
+        fh.write("SASONICA_SIGNIN=app\n")
+    ok, d = shell_signin.connect_info("b")
+    assert d == {"shell": True, "url": "https://w.example.workers.dev/mcp", "signin": "app"}

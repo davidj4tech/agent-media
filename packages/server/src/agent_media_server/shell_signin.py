@@ -108,6 +108,24 @@ def waiting(*, fresh: bool = False) -> list[dict]:
     return list(rows)
 
 
+def connect_info(bearer: str) -> tuple[bool, dict]:
+    """`GET /shell`: what an assistant needs to connect to this machine's
+    shell — the plain sign-in URL (`<worker>/mcp`, no secret in it) and how
+    sign-in is approved — for the app's "Connect an assistant" (David, 27 Sep
+    2026). `url` is null without a shell here or with OAuth off (then only a
+    secret URL works, and that is not handed to a phone)."""
+    ok, detail = auth.may_control_speech(bearer)
+    if not ok:
+        return False, detail
+    env = _read_env(_conf_dir() / "env")
+    base = env.get("SASONICA_WORKER_URL", "").rstrip("/")
+    signin = "app" if env.get("SASONICA_SIGNIN") == "app" else (
+        "access" if env.get("SASONICA_OWNER_EMAIL") else "")
+    on = bool(base.startswith("https://") and signin)
+    return True, {"shell": bool(base), "url": f"{base}/mcp" if on else None,
+                  "signin": signin or None}
+
+
 def listing(bearer: str) -> tuple[bool, dict]:
     """`GET /shell/signins`."""
     ok, detail = auth.may_control_speech(bearer)

@@ -185,7 +185,7 @@ CORS_PATHS = frozenset({
     "/harnesses", "/harnesses/run", "/harnesses/screen",
     "/harnesses/keys", "/harnesses/close", "/harnesses/logout",
     "/harnesses/updates", "/harnesses/profiles", "/harnesses/profiles/remove",
-    "/setup", "/setup/run", "/shell/signins", "/shell/signin",
+    "/setup", "/setup/run", "/shell", "/shell/signins", "/shell/signin",
     "/share", "/upload", "/dashboard",
     "/sessions/events", "/search",
 })
@@ -513,6 +513,12 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
         # Every harness and what each needs — is it installed, is it
         # signed in — so the app can offer the buttons that would fix it.
         ok, detail = harnesses.agents(_bearer(h))
+        _json(h, 200 if ok else detail.pop("status", 403), {"ok": ok, **detail})
+    elif path == "/shell":
+        # This machine's shell connector URL, for "Connect an assistant".
+        from . import shell_signin
+
+        ok, detail = shell_signin.connect_info(_bearer(h))
         _json(h, 200 if ok else detail.pop("status", 403), {"ok": ok, **detail})
     elif path == "/shell/signins":
         # Sasonica Shell sign-ins waiting for the phone (shell_signin.py).
