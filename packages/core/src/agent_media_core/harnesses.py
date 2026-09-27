@@ -181,6 +181,36 @@ def is_opencode(session: str) -> bool:
 _OPENCODE_UNNAMED = re.compile(r"^New session - \d{4}-\d\d-\d\dT")
 
 
+def opencode_error_text(error) -> str:
+    """What a turn opencode gave up on says in the thread and aloud, or "".
+
+    opencode keeps a failed step's error on its message (`APIError` with the
+    provider's `statusCode` and words, after five retries over ~70 s) and
+    says nothing else, so without this the turn just ends. The common one on
+    free models is 429, a limit used up. A stop (`MessageAbortedError`) says
+    nothing: the person did it.
+    """
+    if not isinstance(error, dict):
+        return ""
+    name = str(error.get("name") or "")
+    if name == "MessageAbortedError":
+        return ""
+    data = error.get("data") if isinstance(error.get("data"), dict) else {}
+    said = " ".join(str(data.get("message") or "").split())[:300]
+    why = f" ({said.rstrip('.')})" if said else ""
+    code = data.get("statusCode")
+    if code == 429:
+        return (f"This model's limit is used up for now{why}. Start a new chat on "
+                "another free model, or try again later.")
+    if code == 402:
+        return f"The model's provider is out of credit{why}."
+    if name == "ProviderAuthError" or code in (401, 403):
+        return f"The model's provider refused the key or sign-in{why}. Check it under Coding agents."
+    if name == "ContextOverflowError":
+        return "This conversation is too long for the model. Start a new chat."
+    return f"The model could not answer{why}."
+
+
 def opencode_last_reply(session: str) -> tuple[str, str]:
     """`(message id, text)` of what the agent said since the last prompt —
     every assistant step's text, in order — or ("", "") when it said nothing.
@@ -190,18 +220,23 @@ def opencode_last_reply(session: str) -> tuple[str, str]:
     last step's, which is what a repeat of the same idle is told apart by.
     """
     rows = opencode_rows(
-        "select m.id, json_extract(m.data, '$.role'), p.data from message m "
-        "left join part p on p.message_id = m.id where m.session_id = ? "
+        "select m.id, json_extract(m.data, '$.role'), p.data, json_extract(m.data, '$.error') "
+        "from message m left join part p on p.message_id = m.id where m.session_id = ? "
         "order by m.time_created, m.id, p.id", (session,))
     said: list[str] = []
-    last = ""
-    for mid, role, pdata in rows:
+    last = failed = ""
+    for mid, role, pdata, error in rows:
         if role == "user":
-            said, last = [], ""
+            said, last, failed = [], "", ""
             continue
         if role != "assistant":
             continue
         last = str(mid)
+        try:
+            # A step that failed says why (opencode_error_text), once.
+            failed = opencode_error_text(json.loads(error)) if error else ""
+        except ValueError:
+            failed = ""
         try:
             p = json.loads(pdata) if pdata else {}
         except ValueError:
@@ -210,6 +245,8 @@ def opencode_last_reply(session: str) -> tuple[str, str]:
             text = str(p.get("text") or "").strip()
             if text:
                 said.append(text)
+    if failed:
+        said.append(failed)
     return (last, "\n\n".join(said)) if said else ("", "")
 
 

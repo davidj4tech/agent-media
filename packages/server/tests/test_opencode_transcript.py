@@ -127,3 +127,20 @@ def test_its_screen_says_working_or_waiting():
     assert panes.classify("   ⬝■■■■⬝  esc interrupt        ctrl+p commands", "opencode") == "working"
     assert panes.classify("   /p                    14.8K (7%)  ctrl+p commands", "opencode") == "input"
     assert panes.classify("", "opencode") is None
+
+
+def test_a_turn_given_up_on_ends_with_why(db):
+    put(db, 0, "user", [{"type": "text", "text": "hello"}])
+    put(db, 1, "assistant", [], error={"name": "APIError", "data": {
+        "message": "Rate limit exceeded: free-models-per-day.", "statusCode": 429}})
+    last = T.messages(OC)[0][-1]
+    assert last["role"] == "assistant"
+    assert last["parts"][-1]["text"].startswith("This model's limit is used up for now")
+    assert not last["turn"]["running"]
+
+
+def test_a_stop_adds_no_words(db):
+    put(db, 0, "user", [{"type": "text", "text": "go"}])
+    put(db, 1, "assistant", [{"type": "text", "text": "Starting."}],
+        error={"name": "MessageAbortedError", "data": {"message": "Aborted"}})
+    assert [p.get("text") for p in T.messages(OC)[0][-1]["parts"]] == ["Starting."]

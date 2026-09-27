@@ -6,6 +6,9 @@
  * `media-hook-opencode`:
  *   chat.message        → UserPromptSubmit: your words, as a "You:" turn
  *   tool.execute.before → PreToolUse: a step in the phone's list
+ *   session.status      → a retry (a model busy or out of its limit; opencode
+ *                         tries five times over ~70 s) as a step, so the
+ *                         phone says why it is waiting
  *   session.idle        → Stop, then the reply is spoken. opencode says the
  *                         session went idle, not what it said, so the hook
  *                         reads the reply back from opencode's database.
@@ -63,6 +66,15 @@ export const AgentMedia = async () => ({
   },
 
   event: async ({ event: e }) => {
+    const status = e?.type === "session.status" ? e.properties?.status : null;
+    if (status?.type === "retry") {
+      const why = /limit|rate|429|quota/i.test(status.message || "") ? "Model limit reached" : "Model busy";
+      event("PreToolUse", e.properties?.sessionID, {
+        tool_name: "Retry",
+        tool_input: { description: `${why}, retrying (try ${(status.attempt || 0) + 1})` },
+      });
+      return;
+    }
     if (e?.type !== "session.idle") return;
     const session = e.properties?.sessionID;
     if (!session) return;

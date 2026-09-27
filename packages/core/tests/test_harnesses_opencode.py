@@ -164,3 +164,49 @@ def test_a_subagents_idle_is_not_spoken(spoken, store):
     hook.main(["--session", "ses_" + "e" * 26])
     hook.main(["--session", "not-an-id"])
     assert said == []
+
+
+LIMIT = {"name": "APIError", "data": {
+    "message": "Rate limit exceeded: free-models-per-day. Add 10 credits to unlock 1000 free model requests per day",
+    "statusCode": 429, "isRetryable": True}}
+
+
+def test_a_turn_opencode_gave_up_on_says_why(store):
+    # What opencode stored after five 429s from a free model (measured
+    # 28 Sep 2026 against a stand-in provider): an assistant message with
+    # no parts and the error on it.
+    sid = "ses_" + "e" * 26
+    add(store, sid, messages=[
+        ("user", {}, [{"type": "text", "text": "hello"}]),
+        ("assistant", {"error": LIMIT}, []),
+    ])
+    mid, text = harnesses.opencode_last_reply(sid)
+    assert mid.endswith("001")
+    assert text.startswith("This model's limit is used up for now (Rate limit exceeded: free-models-per-day.")
+    assert "another free model" in text
+
+
+def test_a_stop_says_nothing_and_a_later_step_clears_it(store):
+    stopped = "ses_" + "f" * 26
+    add(store, stopped, messages=[
+        ("user", {}, [{"type": "text", "text": "go"}]),
+        ("assistant", {"error": {"name": "MessageAbortedError", "data": {"message": "Aborted"}}},
+         [{"type": "text", "text": "Starting."}]),
+    ])
+    assert harnesses.opencode_last_reply(stopped)[1] == "Starting."
+    recovered = "ses_" + "g" * 26
+    add(store, recovered, messages=[
+        ("user", {}, [{"type": "text", "text": "go"}]),
+        ("assistant", {"error": LIMIT}, []),
+        ("assistant", {"finish": "stop"}, [{"type": "text", "text": "Done."}]),
+    ])
+    assert harnesses.opencode_last_reply(recovered)[1] == "Done."
+
+
+def test_error_text_per_kind():
+    e = harnesses.opencode_error_text
+    assert e(None) == "" and e({"name": "MessageAbortedError"}) == ""
+    assert "out of credit" in e({"name": "APIError", "data": {"statusCode": 402}})
+    assert "Coding agents" in e({"name": "ProviderAuthError", "data": {"message": "bad key"}})
+    assert "too long" in e({"name": "ContextOverflowError", "data": {}})
+    assert e({"name": "UnknownError", "data": {"message": "boom."}}) == "The model could not answer (boom)."

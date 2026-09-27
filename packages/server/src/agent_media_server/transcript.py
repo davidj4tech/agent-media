@@ -785,6 +785,13 @@ class OpencodeBuilder(_HarnessBuilder):
                 elif st.get("status") == "error":
                     self._finish_tool(tid, str(st.get("error") or ""), error=True)
         if rec.get("finish") == "stop" or rec.get("error"):
+            # A turn opencode gave up on ends with why, as Claude Code's API
+            # errors do; a stop says nothing (harnesses.opencode_error_text).
+            from agent_media_core import harnesses
+
+            failed = harnesses.opencode_error_text(rec.get("error"))
+            if failed:
+                msg["parts"].append({"type": "text", "text": failed})
             self._close(interrupted=bool(rec.get("error")))
 
 
