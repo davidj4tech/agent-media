@@ -391,6 +391,13 @@ ahead.
       already that list).
 4. **opencode, and more than one account per harness** (David, 24 Sep
    2026) — `docs/proposals/2026-09-24-opencode-and-harness-profiles.md`.
+   **27 Sep 2026: pi's sign-in and harness profiles built** (agent-media
+   `97437a1`, `786e971`; sasonica-app `38aef50`): Add login on Coding agents,
+   a row and a sign-in per login, New chat's Login choice, every session
+   reader over each login's folder. Not yet: headless (sessiond) chats in a
+   login (they open as panes), and the modules that still read `~/.claude`
+   directly for Claude's own extras (recaps, search, slash menu).
+   As first written:
    opencode becomes a fifth row in `RECIPES`; a *harness profile* (a
    harness plus its config dir: `CLAUDE_CONFIG_DIR`, `CODEX_HOME`,
    `PI_CODING_AGENT_DIR`, `XDG_DATA_HOME`, Hermes's own profiles) gives
