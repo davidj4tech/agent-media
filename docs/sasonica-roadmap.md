@@ -421,8 +421,11 @@ ahead.
    still the digest pane). **Alerts as notifications 27 Sep 2026** (David:
    the disk warning should come through when the phone is on silent): the
    `alerts` frame on `/sessions/events?alerts=<cursor>` (§6.13), posted by
-   the notifier on an "Alerts" channel, one per alert. Next: the Home
-   section (Fix it, Ack) and a per-level Settings toggle.
+   the notifier on an "Alerts" channel, one per alert. **Home's Alerts
+   section and the per-level toggle DONE 27 Sep 2026** (agent-media
+   `1863a8c`, sasonica-app `c6c6882`): open alerts worst first with Fix it
+   (a new chat with the alert as its words) and Ack; Settings →
+   Notifications, Needs you and Warnings, held by the Android notifier.
    **Step 3 begun 25 Sep 2026** (David: "rather click a button to play
    it"): a digest reported with `spoken` is rendered held, never read out;
    Home's Digests row plays it (`replay-id`). All three moved the same day:
