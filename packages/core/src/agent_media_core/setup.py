@@ -1588,9 +1588,17 @@ def profile_status(args: argparse.Namespace) -> list[dict]:
 def cmd_profile(args: argparse.Namespace) -> int:
     """Install the profile: every core row, and every extra whose tool is here."""
     where = _settings_path(args)
-    print(f"media-setup profile: wiring this machine ({where})")
+    only = getattr(args, "only", None)
+    if only and only not in {r[0] for r in PROFILE_ROWS}:
+        print(f"media-setup profile: no row {only!r} (one of: "
+              f"{', '.join(r[0] for r in PROFILE_ROWS)})", file=sys.stderr)
+        return 2
+    print(f"media-setup profile: wiring this machine ({where})"
+          + (f", only {only}" if only else ""))
     failed = 0
     for name, what, kind, fn in PROFILE_ROWS:
+        if only and name != only:
+            continue
         try:
             state, detail = fn(args, check_only=False)
         except SystemExit:
@@ -1726,6 +1734,9 @@ def _build_parser() -> argparse.ArgumentParser:
                     "CLAUDE_CONFIG_DIR in agent-media.env")
     sp.add_argument("--backend", choices=("auto", "systemd", "runit"),
                     default="auto")
+    sp.add_argument("--only", metavar="ROW",
+                    help="wire just this row (a name from `status`), as the "
+                         "app's setup page does for one Fix button")
     sp.add_argument("--dry-run", action="store_true")
     sp.set_defaults(func=cmd_profile)
 

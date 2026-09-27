@@ -64,6 +64,9 @@ device gets its token):
                   (no window: it deletes a file and exits)
   GET  /harnesses/updates[?refresh=1] → which of them something newer exists
                   for; goes to the network, so it is its own route
+  GET  /setup     → this machine's wiring: `media-setup status --json`'s rows
+  POST /setup/run {"name"?} → `media-setup profile [--only name]` in a
+                  window, watched with /harnesses/screen like an install
   GET  /sessions/events → the same, as a stream of changes, for a phone's
                   background notifier (session_events.py, §6.13)
   GET  /sessions/state  → every live session's working / waiting / approval,
@@ -181,7 +184,7 @@ CORS_PATHS = frozenset({
     "/sessions/state", "/commands", "/rename",
     "/harnesses", "/harnesses/run", "/harnesses/screen",
     "/harnesses/keys", "/harnesses/close", "/harnesses/logout",
-    "/harnesses/updates",
+    "/harnesses/updates", "/setup", "/setup/run",
     "/share", "/upload", "/dashboard",
     "/sessions/events", "/search",
 })
@@ -509,6 +512,11 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
         # Every harness and what each needs — is it installed, is it
         # signed in — so the app can offer the buttons that would fix it.
         ok, detail = harnesses.agents(_bearer(h))
+        _json(h, 200 if ok else detail.pop("status", 403), {"ok": ok, **detail})
+    elif path == "/setup":
+        # This machine's wiring: `media-setup status --json`, row by row,
+        # so the Coding agents page can offer what would fix it.
+        ok, detail = harnesses.wiring(_bearer(h))
         _json(h, 200 if ok else detail.pop("status", 403), {"ok": ok, **detail})
     elif path == "/harnesses/updates":
         # Is any of them out of date? The slow half of /harnesses, asked
@@ -1043,6 +1051,12 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         if not ok:
             print(f"answer: refused ({detail.get('error')}) for "
                   f"{str(body.get('session'))[:8]}", file=sys.stderr, flush=True)
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    elif path == "/setup/run":
+        # `media-setup profile [--only NAME]` in a window, watched like an
+        # install (/harnesses/screen, /keys, /close take its pane).
+        body = _read_json(h) or {}
+        ok, detail = harnesses.wire(str(body.get("name") or ""), _bearer(h))
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path in ("/harnesses/run", "/harnesses/keys", "/harnesses/close",
                   "/harnesses/logout"):

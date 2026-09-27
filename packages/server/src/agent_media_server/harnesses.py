@@ -33,6 +33,9 @@ import json
 import os
 import re
 import shlex
+import shutil
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -192,6 +195,62 @@ def run(agent: str, action: str, bearer: str) -> tuple[bool, dict]:
     cmd = shlex.join(argv)
     _remember(pane, agent, action, cmd)
     return True, {"pane": pane, "agent": agent, "action": action, "cmd": cmd}
+
+
+# --- this machine's wiring --------------------------------------------------------
+#
+# The same page, one level down: not the agents but what makes them part of
+# Sasonica here — the speech hooks, the services, the mail and catch-up
+# hooks. `media-setup status --json` is that list and `media-setup profile`
+# is what fixes it; this runs them and never reimplements a row (roadmap
+# item 3, "One setup for a machine").
+
+def _media_setup() -> str:
+    """media-setup beside this server's own Python, else on PATH."""
+    here = Path(sys.executable).parent / "media-setup"
+    return str(here) if here.exists() else (shutil.which("media-setup") or "")
+
+
+def wiring(bearer: str, timeout: float = 30.0) -> tuple[bool, dict]:
+    """`/setup`: each row of `media-setup status --json` — name, what it
+    is for, core or extra, and its state (ok, missing, absent, unknown)."""
+    ok, detail = auth.may_control_speech(bearer)
+    if not ok:
+        return False, detail
+    exe = _media_setup()
+    if not exe:
+        return False, {"error": "media-setup is not installed here", "status": 409}
+    try:
+        out = subprocess.run([exe, "status", "--json"], capture_output=True, text=True,
+                             timeout=timeout, env={**os.environ, "PATH": harnesses.bin_path()})
+        rows = json.loads(out.stdout or "{}").get("rows")
+    except (OSError, subprocess.TimeoutExpired, ValueError) as e:
+        return False, {"error": f"media-setup status failed: {e}", "status": 502}
+    if not isinstance(rows, list):
+        return False, {"error": "media-setup status said nothing", "status": 502}
+    return True, {"rows": rows}
+
+
+def wire(name: str, bearer: str) -> tuple[bool, dict]:
+    """`/setup/run {name?}`: `media-setup profile [--only NAME]` in a window,
+    watched with the same screen/keys/close as an install. No name wires
+    every row (the profile is idempotent: what is already right stays)."""
+    ok, detail = auth.may_control_speech(bearer)
+    if not ok:
+        return False, detail
+    name = (name or "").strip()
+    if name and not re.fullmatch(r"[a-z][a-z0-9-]{0,31}", name):
+        return False, {"error": f"not a setup row: {name!r}", "status": 400}
+    exe = _media_setup()
+    if not exe:
+        return False, {"error": "media-setup is not installed here", "status": 409}
+    argv = [exe, "profile"] + (["--only", name] if name else [])
+    pane, err = _window(argv, f"setup-{name or 'all'}")
+    if err:
+        return False, {"error": err, "status": 503}
+    cmd = shlex.join(argv)
+    _remember(pane, "setup", name or "all", cmd)
+    return True, {"pane": pane, "name": name, "cmd": cmd}
 
 
 #: `name -> (checked_at, (latest, behind, line))`. Asked at most this often,

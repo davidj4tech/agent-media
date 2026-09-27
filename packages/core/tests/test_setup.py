@@ -647,6 +647,20 @@ def test_an_extra_that_is_not_here_is_skipped_with_a_reason(tmp_path, monkeypatc
     assert not any("agent-mail-inbox-hook" in c for c in cmds)
 
 
+def test_profile_only_wires_one_row(tmp_path, monkeypatch, capsys):
+    """`--only mail`: the app's Fix button for one row touches that row alone."""
+    _only_hook_rows(monkeypatch)
+    monkeypatch.setattr(setup.shutil, "which", lambda name: f"/usr/bin/{name}")
+    assert setup.cmd_profile(_profile_args(tmp_path, only="mail")) == 0
+    data = json.loads((tmp_path / "settings.json").read_text())
+    cmds = [h.get("command") for groups in data["hooks"].values()
+            for g in groups for h in (g.get("hooks") or [])]
+    assert any("agent-mail-inbox-hook" in c for c in cmds)
+    assert not any(setup.CLAUDE_HOOK_COMMAND in c for c in cmds), "speech was not asked for"
+    assert setup.cmd_profile(_profile_args(tmp_path, only="nope")) == 2
+    assert "no row 'nope'" in capsys.readouterr().err
+
+
 def test_profile_keeps_what_was_already_in_settings(tmp_path, monkeypatch):
     _only_hook_rows(monkeypatch)
     monkeypatch.setattr(setup.shutil, "which", lambda name: f"/usr/bin/{name}")

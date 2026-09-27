@@ -275,3 +275,47 @@ def test_the_network_is_asked_once_an_hour_unless_told_otherwise(monkeypatch):
     assert calls == ["codex"]
     agents.updates("bearer", refresh=True)
     assert calls == ["codex", "codex"]
+
+
+# --- this machine's wiring (roadmap item 3) -------------------------------------
+
+def test_wiring_is_media_setup_status(monkeypatch, tmp_path):
+    exe = tmp_path / "media-setup"
+    exe.write_text("#!/bin/sh\necho '{\"rows\": [{\"name\": \"mail\", \"state\": \"missing\"}]}'\n")
+    exe.chmod(0o755)
+    monkeypatch.setattr(agents, "_media_setup", lambda: str(exe))
+    ok, detail = agents.wiring("bearer")
+    assert ok and detail["rows"] == [{"name": "mail", "state": "missing"}]
+
+
+def test_wiring_says_when_media_setup_is_not_here(monkeypatch):
+    monkeypatch.setattr(agents, "_media_setup", lambda: "")
+    ok, detail = agents.wiring("bearer")
+    assert not ok and detail["status"] == 409
+
+
+def test_wire_runs_the_profile_in_a_window_it_can_watch(monkeypatch):
+    seen = []
+    _tmux(monkeypatch, record=seen)
+    monkeypatch.setattr(agents, "_media_setup", lambda: "/venv/bin/media-setup")
+    ok, detail = agents.wire("mail", "bearer")
+    assert ok and detail["pane"] == "%7"
+    assert detail["cmd"] == "/venv/bin/media-setup profile --only mail"
+    assert "media-setup profile --only mail" in seen[0][-1]
+    # The window is one of ours, so the page can read it like an install's.
+    assert agents._row("%7")["agent"] == "setup"
+    ok, detail = agents.wire("", "bearer")
+    assert ok and detail["cmd"] == "/venv/bin/media-setup profile"
+
+
+def test_wire_refuses_a_row_that_is_not_a_name(monkeypatch):
+    monkeypatch.setattr(agents, "_media_setup", lambda: "/venv/bin/media-setup")
+    ok, detail = agents.wire("mail; rm -rf ~", "bearer")
+    assert not ok and detail["status"] == 400
+
+
+def test_setup_is_gated(monkeypatch):
+    monkeypatch.setattr(auth_abs, "may_control_speech",
+                        lambda bearer: (False, {"error": "not allowed", "status": 403}))
+    assert agents.wiring("")[0] is False
+    assert agents.wire("mail", "")[0] is False

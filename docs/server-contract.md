@@ -1660,6 +1660,26 @@ already running. `unknown` is let through.
 
 Clients: S (`utils/sasonicaAgents.js`, `AgentSetup.vue`), screen **polled 1.5 s**.
 
+**This machine's wiring — BUILT 27 Sep 2026** (roadmap item 3). The same
+page, one level down: what makes the agents part of Sasonica on this host.
+
+```
+GET  /setup
+  → {"ok": true, "rows": [{"name": "mail", "what": "agent mail announced at
+     the top of a turn", "kind": "core"|"extra", "state": "ok"|"missing"|
+     "absent"|"unknown", "detail": "…"}, …]}
+  → 409 when media-setup is not installed here; 502 when it said nothing
+POST /setup/run {"name"?: "mail"}
+  → {"ok": true, "pane": "%23", "name": "mail", "cmd": "…/media-setup profile --only mail"}
+```
+
+`/setup` is `media-setup status --json`, verbatim; `/setup/run` opens
+`media-setup profile [--only NAME]` in a window like an install, and
+`/harnesses/screen`, `/keys` and `/close` take its pane. No name wires every
+row; the profile is idempotent, so a row already right stays. The server
+runs the installer that owns the rows and never reimplements one. `absent`
+is an extra whose tool is not on this host: nothing to fix from here.
+
 ### 6.7 Share — gated
 
 `POST /share {"text", "channel"?: "music" | "book"}` → `{"ok", "url",
