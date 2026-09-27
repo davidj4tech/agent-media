@@ -2663,8 +2663,12 @@ POST /shell/signin {"id", "approve": bool}     a device with the enrol bit (§9)
 
 ```
 GET  /shell                    gated (may_control_speech)
-  → {"ok", "shell": bool, "url": "https://<worker>/mcp" | null, "signin": "app"|"access"|null}
+  → {"ok", "shell": bool, "url": "https://<worker>/mcp" | null, "signin": "app"|"access"|null,
+     "secret_url": "https://<worker>/<secret>/mcp" | null}
 ```
+
+`secret_url` is the shared secret URL (a password for the shell), given only
+to a device with the enrol bit (§9) and null for any other.
 
 `url` is the plain sign-in URL (no secret), only when OAuth is on; the
 app's Settings → Connect an assistant copies it and opens the assistant's

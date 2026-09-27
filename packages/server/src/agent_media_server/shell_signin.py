@@ -110,10 +110,10 @@ def waiting(*, fresh: bool = False) -> list[dict]:
 
 def connect_info(bearer: str) -> tuple[bool, dict]:
     """`GET /shell`: what an assistant needs to connect to this machine's
-    shell — the plain sign-in URL (`<worker>/mcp`, no secret in it) and how
-    sign-in is approved — for the app's "Connect an assistant" (David, 27 Sep
-    2026). `url` is null without a shell here or with OAuth off (then only a
-    secret URL works, and that is not handed to a phone)."""
+    shell, for the app's "Connect an assistant" (David, 27 Sep 2026): the
+    plain sign-in URL (`<worker>/mcp`, null with OAuth off) and how sign-in is
+    approved, and — to a device with the enrol bit only — the shared secret
+    URL, which needs no sign-in."""
     ok, detail = auth.may_control_speech(bearer)
     if not ok:
         return False, detail
@@ -122,8 +122,16 @@ def connect_info(bearer: str) -> tuple[bool, dict]:
     signin = "app" if env.get("SASONICA_SIGNIN") == "app" else (
         "access" if env.get("SASONICA_OWNER_EMAIL") else "")
     on = bool(base.startswith("https://") and signin)
-    return True, {"shell": bool(base), "url": f"{base}/mcp" if on else None,
-                  "signin": signin or None}
+    out = {"shell": bool(base), "url": f"{base}/mcp" if on else None,
+           "signin": signin or None, "secret_url": None}
+    # The shared secret URL (David, 27 Sep 2026: "I wanted the secret URL
+    # method") — a password for the shell, so only to a device that may pair
+    # others (the owner's), and never logged.
+    secret = env.get("SASONICA_URL_SECRET", "")
+    enrol_ok, _e = auth.may_enrol(bearer)
+    if enrol_ok and secret and base.startswith("https://"):
+        out["secret_url"] = f"{base}/{secret}/mcp"
+    return True, out
 
 
 def listing(bearer: str) -> tuple[bool, dict]:

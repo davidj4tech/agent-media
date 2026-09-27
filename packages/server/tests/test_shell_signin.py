@@ -67,8 +67,17 @@ def test_refusals(shell, monkeypatch, tmp_path):
 
 def test_connect_info_is_the_plain_url_only_with_signin_on(shell, tmp_path):
     ok, d = shell_signin.connect_info("b")
-    assert ok and d == {"shell": True, "url": None, "signin": None}, "OAuth off: no URL to hand out"
+    assert ok and d == {"shell": True, "url": None, "signin": None, "secret_url": None}, "OAuth off, no secret"
     with open(tmp_path / "env", "a") as fh:
-        fh.write("SASONICA_SIGNIN=app\n")
+        fh.write("SASONICA_SIGNIN=app\nSASONICA_URL_SECRET=five-word-secret\n")
     ok, d = shell_signin.connect_info("b")
-    assert d == {"shell": True, "url": "https://w.example.workers.dev/mcp", "signin": "app"}
+    assert d == {"shell": True, "url": "https://w.example.workers.dev/mcp", "signin": "app",
+                 "secret_url": "https://w.example.workers.dev/five-word-secret/mcp"}
+
+
+def test_the_secret_url_goes_only_to_a_device_that_may_enrol(shell, tmp_path, monkeypatch):
+    with open(tmp_path / "env", "a") as fh:
+        fh.write("SASONICA_URL_SECRET=five-word-secret\n")
+    monkeypatch.setattr(auth, "may_enrol", lambda b: (None, {"error": "not_enrolled", "status": 403}))
+    ok, d = shell_signin.connect_info("b")
+    assert ok and d["secret_url"] is None
