@@ -162,6 +162,17 @@ def test_describe_telemetry_silent_when_unset(tmp_path, monkeypatch):
     assert not (tmp_path / "describe.jsonl").exists()
 
 
+def test_describe_model_overrides_summary_model(monkeypatch):
+    import agent_media_core.intake._summary as summary
+    seen = []
+    monkeypatch.setattr(summary, "_chat", lambda *a, **k: seen.append(k.get("model")) or "x")
+    monkeypatch.setenv("MEDIA_DESCRIBE_MODEL", "claude-haiku-4-5")
+    summary.describe_table("| a | b |")
+    monkeypatch.delenv("MEDIA_DESCRIBE_MODEL")
+    summary.describe_table("| a | b |")
+    assert seen == ["claude-haiku-4-5", None]
+
+
 # --- urls ---------------------------------------------------------------
 
 def test_bare_url_reduced_to_host_link():

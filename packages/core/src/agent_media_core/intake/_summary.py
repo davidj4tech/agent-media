@@ -33,7 +33,8 @@ Config (env / ~/.config/agent-media.env):
 Per-block description (independent of the whole-reply summary above):
   MEDIA_SPEECH_DESCRIBE    "1" to describe un-readable code blocks / tables in
                            one spoken sentence instead of a placeholder (default
-                           off). Reuses MEDIA_SUMMARY_MODEL / _BASE_URL / key.
+                           off). Reuses MEDIA_SUMMARY_BASE_URL / key.
+  MEDIA_DESCRIBE_MODEL     chat model for descriptions (default: the summary's)
   MEDIA_DESCRIBE_TIMEOUT   per-block request timeout seconds (default 8)
   MEDIA_DESCRIBE_CODE_PROMPT / MEDIA_DESCRIBE_TABLE_PROMPT   prompt overrides
 """
@@ -192,7 +193,8 @@ def _log_describe(kind: str, in_chars: int, secs: float, out: "str | None") -> N
 def _timed_describe(kind: str, prompt: str, text: str) -> str | None:
     import time as _time
     t0 = _time.perf_counter()
-    out = _chat(prompt, text, _int_env("MEDIA_DESCRIBE_TIMEOUT", DEFAULT_DESCRIBE_TIMEOUT))
+    out = _chat(prompt, text, _int_env("MEDIA_DESCRIBE_TIMEOUT", DEFAULT_DESCRIBE_TIMEOUT),
+                model=os.environ.get("MEDIA_DESCRIBE_MODEL") or None)
     _log_describe(kind, len(text or ""), _time.perf_counter() - t0, out)
     return out
 
