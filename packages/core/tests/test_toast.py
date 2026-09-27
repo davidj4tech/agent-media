@@ -208,3 +208,26 @@ def test_opening_the_conversation_plays_its_newest_unplayed_reply(monkeypatch):
     row("now quiet")
     speak_priority.set_level("s1", "quiet")
     assert toast.take_for_opened("s1") is None
+
+
+def test_a_screen_off_lease_plays_until_it_runs_out(monkeypatch):
+    import json
+    from agent_media_core import watching
+
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    _fake_tmux(monkeypatch)
+    watching.publish({})
+    assert toast.should_hold("s1")
+    watching.pocket("s1", True)                       # screen off on s1
+    assert not toast.should_hold("s1")
+    assert toast.should_hold("s2")
+    watching.pocket("s1", False)                      # the page shows again
+    assert toast.should_hold("s1")
+
+    watching.pocket("s1", True)
+    path = watching.state_dir() / watching.POCKET_NAME
+    path.write_text(json.dumps({"s1": 1.0}))          # long run out
+    assert toast.should_hold("s1")
+    monkeypatch.setenv("MEDIA_POCKET_S", "0")         # leases off
+    assert watching.pocket("s1", True) == 0
+    assert toast.should_hold("s1")

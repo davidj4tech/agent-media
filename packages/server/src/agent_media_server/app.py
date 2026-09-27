@@ -89,6 +89,10 @@ device gets its token):
   POST /session/priority {"session", "level"} → that thread's speech
                   level: interrupt | auto | normal | quiet
                   (agent_media_core/speak_priority.py, pins.py)
+  POST /session/pocket {"session", "pocketed": true|false} → the screen went
+                  off on that thread (true), or it shows again (false): a
+                  When open reply plays for MEDIA_POCKET_S after
+                  (agent_media_core/watching.py, pins.py)
   GET|POST /speech/default {"level"} → the level of every thread with none
                   of its own; the server's, so every device's (pins.py)
   GET|POST /speech/voice {"mode", "voice"?} → the speech target's replies
@@ -177,7 +181,8 @@ from . import alerts, audio, org, org_chat, org_edit, org_setup, refs, uploads
 CORS_PATHS = frozenset({
     "/conversation", "/conversation/log", "/conversations", "/targets", "/item",
     "/reply", "/ask", "/focus", "/session/resume", "/session/close", "/draft",
-    "/session/answer", "/session/archive", "/session/pin", "/session/priority", "/session/stop",
+    "/session/answer", "/session/archive", "/session/pin", "/session/priority", "/session/pocket",
+    "/session/stop",
     "/session/retract", "/session/move", "/session/settings",
     "/speech/now", "/speech/ctl", "/speech/sentences", "/speech/default", "/speech/voice",
     "/settings/language",
@@ -1024,6 +1029,12 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         ok, detail = pins.session_priority(str(body.get("session") or ""),
                                            body.get("priority"), _bearer(h),
                                            level=body.get("level"))
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    elif path == "/session/pocket":
+        # The screen went off on this thread: keep playing its replies.
+        body = _read_json(h) or {}
+        ok, detail = pins.session_pocket(str(body.get("session") or ""),
+                                         body.get("pocketed"), _bearer(h))
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path == "/speech/default":
         # Settings' Default speech priority: every thread without its own.

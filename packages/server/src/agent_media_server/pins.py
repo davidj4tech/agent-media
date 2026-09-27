@@ -103,6 +103,29 @@ def session_priority(session: str, flag, bearer: str, level=None) -> tuple[bool,
                   "priority": level in speak_priority.SPEAKS}
 
 
+def session_pocket(session: str, flag, bearer: str) -> tuple[bool, dict]:
+    """`POST /session/pocket {"session", "pocketed"}`: the app's page hid
+    with the screen off while this thread was open (true), or showed again
+    (false). A When open reply from it plays until the lease runs out
+    (`agent_media_core.watching.pocket`). Refused as `/session/priority` is;
+    answers `until`, the lease's end in epoch seconds, 0 for none."""
+    from agent_media_core import watching
+
+    session = (session or "").strip()
+    if not sessions._SESSION.fullmatch(session):
+        return False, {"error": "not a session id", "status": 400}
+    if not isinstance(flag, bool):
+        return False, {"error": "pocketed must be true or false", "status": 400}
+    user, err = auth.gate(bearer)
+    if not user:
+        return False, err
+    try:
+        until = watching.pocket(session, flag)
+    except OSError as e:
+        return False, {"error": f"could not save the lease ({e})", "status": 500}
+    return True, {"session": session, "until": until}
+
+
 def speech_default(bearer: str, level=None) -> tuple[bool, dict]:
     """`GET /speech/default` and `POST /speech/default {"level"}`: the speech
     level of every thread with none of its own (`speak_priority.default_level`).

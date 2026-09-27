@@ -1282,6 +1282,29 @@ questions are never touched):
 Pinned by `packages/server/tests/test_reap.py` and
 `packages/core/tests/test_speak_priority.py`.
 
+#### `POST /session/pocket` — gated (28 Sep 2026)
+
+`{"session", "pocketed": true|false}` → `{"ok": true, "session", "until"}`.
+
+A `normal` (When open) reply plays at once while its thread is open in the
+app, which the server reads off the thread's event stream (§11). The page
+closes that stream when it hides, and it hides when the screen goes off too,
+but a locked phone is not a look away. So the app, when its page hides
+with the screen off (not for another app), sends `true` for the open
+thread, and `false` when the page shows again. While that lease lasts the
+thread counts as open: its When open replies play.
+
+- `until`: the lease's end, epoch seconds; 0 after `false`. A lease runs
+  out after `MEDIA_POCKET_S` (default 1800; 0 turns leases off), so a thread
+  left open overnight does not start talking hours later.
+- Kept in core (`agent_media_core/watching.py`,
+  `<state_dir>/thread-pocketed.json`), where the Stop hook reads it.
+- The session need not exist. 400 `"pocketed must be true or false"`; the
+  other refusals and CORS exactly as `/session/pin`.
+
+Pinned by `packages/server/tests/test_reap.py` and
+`packages/core/tests/test_toast.py`.
+
 #### `GET` / `POST /session/settings` — gated (26 Sep 2026)
 
 The reply box's model and plan chips. `GET ?session=` → `{"ok": true,

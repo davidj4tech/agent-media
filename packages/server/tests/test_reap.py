@@ -666,6 +666,30 @@ def test_priority_toggles_and_shows_on_the_rows(server, shelf, signed_in, typed)
     assert "/session/priority" in app.CORS_PATHS
 
 
+def test_pocket_leases_the_thread_open(server, shelf, signed_in, typed):
+    from agent_media_core import watching
+
+    res, obj = call(server, "POST", "/session/pocket", {"session": SID2, "pocketed": True}, AUTH)
+    assert res.status == 200 and obj["ok"] and obj["until"] > time.time()
+    assert watching.is_open(SID2) and not watching.is_open(SID)
+    res, obj = call(server, "POST", "/session/pocket", {"session": SID2, "pocketed": False}, AUTH)
+    assert obj == {"ok": True, "session": SID2, "until": 0}
+    assert not watching.is_open(SID2)
+    res, obj = call(server, "POST", "/session/pocket", {"session": SID2}, AUTH)
+    assert res.status == 400 and obj["error"] == "pocketed must be true or false"
+    assert "/session/pocket" in app.CORS_PATHS
+
+
+def test_pocket_is_gated(server, shelf, monkeypatch):
+    from agent_media_core import watching
+    from agent_media_server import auth_abs
+
+    monkeypatch.setattr(auth_abs, "abs_urls", lambda: ["http://abs"])
+    monkeypatch.setattr(auth_abs, "_abs_get", lambda *a, **k: (None, 401))
+    res, _ = call(server, "POST", "/session/pocket", {"session": SID2, "pocketed": True})
+    assert res.status == 401 and not watching.is_open(SID2)
+
+
 def test_speech_level_is_set_and_shows_on_the_rows(server, shelf, signed_in, typed):
     for level, prio in (("interrupt", True), ("quiet", False), ("auto", True)):
         res, obj = call(server, "POST", "/session/priority", {"session": SID2, "level": level}, AUTH)
