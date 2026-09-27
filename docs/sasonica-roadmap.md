@@ -380,7 +380,10 @@ ahead.
       which caught the drift that made it worth doing: its timeouts were
       right and agent-media's installer still wrote an older set (Stop at
       30 s instead of 120, no `async`, the wrong third event).
-   2. **The page**: the app already installs and signs in harnesses (§6.6),
+   2. **The page** — **DONE 27 Sep 2026** (agent-media `37f7ca7`,
+      sasonica-app `2551b29`): Coding agents → This machine, `GET /setup`
+      and `POST /setup/run` (`media-setup profile --only ROW`). Sasonica
+      Shell's installer is not a row yet. As first planned: the app already installs and signs in harnesses (§6.6),
       so the same page shows *this machine's wiring* — hooks, services,
       skills, mailbox, catch-up — each with what is missing and a button
       that runs the installer that owns it. The server calls the existing
