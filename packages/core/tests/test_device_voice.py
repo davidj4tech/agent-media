@@ -236,3 +236,13 @@ def test_the_server_renders_in_the_chosen_microsoft_voice(monkeypatch):
     # On the phone, the phone's.
     device_voice.set_override("sasonica", "phone", "edge:en-GB-RyanNeural")
     assert device_voice.server_choice("sasonica") is None
+
+
+def test_one_voice_per_speaker_the_multilingual_kept(monkeypatch):
+    raw = [_raw("en-US-AvaNeural", "Female", "English (United States)"),
+           _raw("en-US-AvaMultilingualNeural", "Female", "English (United States)"),
+           _raw("en-US-GuyNeural", "Male", "English (United States)")]
+    monkeypatch.setattr(device_voice, "_fetch_edge_voices", lambda: raw)
+    us = device_voice.languages()[0]["accents"][0]["voices"]
+    assert [v["name"] for v in us] == ["edge:en-US-AvaMultilingualNeural", "edge:en-US-GuyNeural"]
+    assert device_voice.find_voice("edge:en-US-AvaNeural"), "one chosen before is still known"

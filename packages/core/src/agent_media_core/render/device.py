@@ -94,6 +94,8 @@ def _edge_voice(raw: dict) -> Optional[dict]:
         return None
     first = short.rsplit("-", 1)[-1]
     first = re.sub(r"(Multilingual)?Neural$", "", first) or first
+    # A style of a speaker, run together ("NeerjaExpressive"): spaced.
+    first = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", first)
     lang_code, _, region = locale.partition("-")
     # LocaleName, "English (Australia)", is one name per locale; FriendlyName
     # ("Microsoft Natasha Online (Natural) - English (Australia)") ends in
@@ -166,6 +168,23 @@ def edge_voices() -> list[dict]:
     return stale or _builtin_edge_voices()
 
 
+def _one_per_speaker(all_voices: list) -> list:
+    """One voice per speaker in a country. Microsoft publishes some twice —
+    en-US-AvaNeural and en-US-AvaMultilingualNeural, the same person — and
+    both were "Ava" in the list (David, 27 Sep 2026: "double ups which sound
+    mostly alike but with a slight twist"). The multilingual one is the
+    newer model, so it is the one kept; the other stays renderable
+    (find_voice looks at everything) for anyone who had chosen it."""
+    best: dict = {}
+    for v in all_voices:
+        key = (v["locale"], v["label"])
+        have = best.get(key)
+        if have is None or ("Multilingual" in v["name"] and "Multilingual" not in have["name"]):
+            best[key] = v
+    keep = {id(v) for v in best.values()}
+    return [v for v in all_voices if id(v) in keep]
+
+
 def voices() -> list[dict]:
     """Every voice on offer, grouped as `languages` orders them."""
     return [v for lang in languages() for accent in lang["accents"] for v in accent["voices"]]
@@ -183,7 +202,7 @@ def languages(all_voices: Optional[list] = None) -> list[dict]:
     if all_voices is None:
         all_voices = edge_voices()
     by_locale: dict[str, list] = {}
-    for v in all_voices:
+    for v in _one_per_speaker(all_voices):
         by_locale.setdefault(v["locale"], []).append(v)
     langs: dict[str, dict] = {}
     for locale, vs in by_locale.items():
@@ -209,7 +228,7 @@ def find_voice(name: str, all_voices: Optional[list] = None) -> Optional[dict]:
     """A voice by name: any on offer, or one of Google's — not offered, but a
     choice made before they were taken off the list is still a choice."""
     if all_voices is None:
-        all_voices = voices() + [dict(v) for v in GOOGLE_VOICES]
+        all_voices = voices() + edge_voices() + [dict(v) for v in GOOGLE_VOICES]
     for v in all_voices:
         if v["name"] == name:
             return v
