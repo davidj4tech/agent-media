@@ -90,6 +90,14 @@ Plausible free/paid line, to be argued rather than assumed:
 
 ### 2. Hosted service tier
 
+**Tiers, as David put them (27 Sep 2026):** self-hosting is the **free**
+tier (the Sasonica Shell relay in the user's own free Cloudflare account,
+which costs us nothing) and is what we build and support first; a **hosted
+relay** for people with no Cloudflare account is a **middle** tier, a small
+fee against its running cost (one Worker on the $5/month plan with a Durable
+Object per user — sasonica-shell `docs/hosted-relay.md`); a Sasonica
+account's **premium** features sit above it.
+
 We run what costs money and cannot be forked: TTS voices beyond `edge`, canvas
 image generation, and the relay. Needs accounts, tokens, and metering — the
 largest build of the three, and the only one that puts us on the hook for a
