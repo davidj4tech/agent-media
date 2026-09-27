@@ -2150,6 +2150,11 @@ machines are. Code: `agent_media_server/dashboard.py`. Pinned by
 - `places`: `/targets.places`. `agents`: every harness (five since opencode, 24 Sep 2026), `present` =
   installed on this host (a PATH lookup only — `/harnesses` has versions and
   sign-in).
+- `alerts` (27 Sep 2026): the open alerts (§6.17, warn and up), worst then
+  newest, at most 20: `{"id", "level", "title", "detail" (≤600 chars), "fix",
+  "host", "first_seen", "changed_at", "acked_at"}`. Home's Alerts section:
+  **Fix it** opens a new chat (`POST /ask`) with the title, detail and fix as
+  its words; **Ack** is `POST /alerts/ack`. `[]` when the store will not answer.
 - `digests` (25 Sep 2026): the last 36 h of spoken digests (§6.17), newest
   first — `[{"id", "title", "level", "changed_at", "speech": {"id", "heard"}, "n"}]`.
   Home shows each as a Play row; nothing is read out until it is pressed.
@@ -2635,8 +2640,8 @@ Seen it: kept open, not re-notified; a clear leaves its TODO open. 404 for an
 unknown id. The next raise forgets the ack.
 
 The `alerts` frame on `/sessions/events` (§6.13, 27 Sep 2026) carries the
-notifying changes to the phone. Not yet: Sasonica's Home section for open
-alerts, with Fix it and Ack (proposal step 2).
+notifying changes to the phone; Home's Alerts section (27 Sep 2026) reads
+`/dashboard`'s `alerts` (§6.11), with Fix it and Ack.
 
 ### 6.18 Files shared to the app — gated (built 25 Sep 2026)
 

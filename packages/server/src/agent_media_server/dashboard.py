@@ -377,7 +377,20 @@ def build(bearer: str) -> dict:
             "speech": {"now": {k: now.get(k) for k in _SPEECH_KEYS},
                        "queued": list(now.get("queued") or [])},
             "recent": _recent(index), "places": sessions.places(),
-            "agents": agents, "hosts": hosts, "digests": _digests()}
+            "agents": agents, "hosts": hosts, "digests": _digests(), "alerts": _alerts()}
+
+
+def _alerts() -> list[dict]:
+    """Open alerts (warn and up), worst first, for Home's section with Fix it
+    and Ack (alerts.listing). The detail is cut: Home shows a line."""
+    try:
+        rows = alerts.listing(open_only=True)["alerts"]
+    except Exception as e:  # noqa: BLE001 — Home without the section, not a 500
+        print(f"dashboard: alerts: {e}", file=sys.stderr)
+        return []
+    return [{k: r.get(k) for k in ("id", "level", "title", "fix", "host", "first_seen",
+                                   "changed_at", "acked_at")}
+            | {"detail": str(r.get("detail") or "")[:600]} for r in rows[:20]]
 
 
 def _digests() -> list[dict]:

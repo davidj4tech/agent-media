@@ -18,7 +18,7 @@ from agent_media_server import asks, dashboard, panes, reap, sessions, speech
 from test_contract import (AUTH, SID, SID2, call, keys, server, shelf,  # noqa: F401
                            signed_in, typed)
 
-TOP = {"ok", "at", "needs_you", "working", "speech", "recent", "places", "agents", "hosts", "digests"}
+TOP = {"ok", "at", "needs_you", "working", "speech", "recent", "places", "agents", "hosts", "digests", "alerts"}
 HOST = {"name", "role", "local", "online", "last_seen", "sessions", "mem_used_mb",
         "mem_total_mb", "mem_available_mb", "sessions_mem_mb", "tight", "reaper",
         "shell", "sessiond"}
@@ -237,3 +237,20 @@ def test_speech_snapshot_is_served_stale_while_it_is_read_again(monkeypatch):
     assert len(reads) == 2
     assert dashboard._speech_state() == {"speaking": True}
     dashboard._reset_for_tests()
+
+
+def test_open_alerts_are_on_home_worst_first(monkeypatch):
+    from agent_media_server import alerts
+    monkeypatch.setattr(alerts, "listing", lambda open_only=False: {"alerts": [
+        {"id": "disk.red5.root", "level": "needs", "title": "red5 / full", "detail": "x" * 900,
+         "fix": "free space", "host": "red5", "first_seen": 1.0, "changed_at": 2.0, "acked_at": None,
+         "kind": "status", "open": True},
+        {"id": "host.hpo", "level": "warn", "title": "hpo offline", "detail": "", "fix": "",
+         "host": "red5", "first_seen": 1.0, "changed_at": 1.5, "acked_at": 1.6,
+         "kind": "status", "open": True}]})
+    rows = dashboard._alerts()
+    assert [r["id"] for r in rows] == ["disk.red5.root", "host.hpo"]
+    assert len(rows[0]["detail"]) == 600, "Home shows a line, not the whole detail"
+    assert rows[1]["acked_at"] == 1.6
+    monkeypatch.setattr(alerts, "listing", lambda open_only=False: (_ for _ in ()).throw(OSError("no db")))
+    assert dashboard._alerts() == []
