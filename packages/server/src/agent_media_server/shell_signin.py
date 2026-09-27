@@ -113,7 +113,8 @@ def listing(bearer: str) -> tuple[bool, dict]:
     ok, detail = auth.may_control_speech(bearer)
     if not ok:
         return False, detail
-    return True, {"signins": waiting(fresh=True), "shell": _shell() is not None}
+    # Cached a few seconds: every screen of the app asks while it is open.
+    return True, {"signins": waiting(), "shell": _shell() is not None}
 
 
 def decide(sid: str, approve: bool, bearer: str) -> tuple[bool, dict]:
