@@ -221,7 +221,11 @@ def transcript(session: str) -> Optional[Path]:
             return path
     except OSError as e:  # noqa: BLE001 — a surface renders what it got
         log.debug("transcript lookup failed: %s", e)
-    return None
+    # A harness profile's directory (harness_profiles): a second Claude login.
+    from . import harnesses
+
+    found = harnesses.transcript(session)
+    return found[1] if found and found[0] == harnesses.CLAUDE else None
 
 
 def pane_alive(pane: str) -> bool:

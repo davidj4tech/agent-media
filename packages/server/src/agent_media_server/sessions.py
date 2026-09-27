@@ -247,7 +247,7 @@ def transcript_cwd(session: str) -> str:
         return panes.cwd(pane) if pane else ""
     if harnesses.harness_of(session) in (harnesses.CODEX, harnesses.PI, harnesses.OPENCODE):
         return harnesses.cwd_of(session)
-    for f in glob.glob(os.path.expanduser(f"~/.claude/projects/*/{session}.jsonl")):
+    for f in _claude_files(session):
         try:
             with open(f) as fh:
                 for line in fh:
@@ -1015,6 +1015,19 @@ def _live_title(session: str) -> str:
 #: the phone sits under this for its first turns, and in a list of threads it
 #: reads as nothing at all — David started one and could not find it.
 _GENERIC_TITLES = {"claude code"}
+def _claude_files(session: str) -> list[str]:
+    """A Claude session's transcript: under ~/.claude, else in a harness
+    profile's directory (a second Claude login)."""
+    hits = glob.glob(os.path.expanduser(f"~/.claude/projects/*/{session}.jsonl"))
+    if not hits:
+        from agent_media_core import harnesses
+
+        found = harnesses.transcript(session)
+        if found and found[0] == harnesses.CLAUDE:
+            hits = [str(found[1])]
+    return hits
+
+
 _FIRST_PROMPT: dict[str, str] = {}
 
 
@@ -1023,7 +1036,7 @@ def _claude_first_prompt(session: str) -> str:
     if there is none yet. Remembered once found: it never changes."""
     if session in _FIRST_PROMPT:
         return _FIRST_PROMPT[session]
-    for f in glob.glob(os.path.expanduser(f"~/.claude/projects/*/{session}.jsonl")):
+    for f in _claude_files(session):
         try:
             with open(f) as fh:
                 for n, line in enumerate(fh):
