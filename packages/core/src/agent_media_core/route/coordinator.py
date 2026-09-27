@@ -274,6 +274,36 @@ class Coordinator:
 
         threading.Thread(target=_work, daemon=True).start()
 
+    def cancel_pre_pause(self) -> None:
+        """Undo pre_pause_remote for a reply that will not play after all.
+
+        A reply may start the pause and then never speak: held because the
+        listener left its thread while it waited its turn, flushed, cut,
+        superseded, or with nothing rendered. None of those reach
+        before_speech / after_speech, so without this the phone's media stays
+        paused for good (David, 28 Sep 2026: a When open reply, not open,
+        paused his audio "indefinitely"). Only what the pre-pause did is
+        undone — not after_speech, whose music restore would act on another
+        reply's duck.
+        """
+        done = self._remote_pause_done
+        if done is not None:
+            done.wait(timeout=14)
+            self._remote_pause_done = None
+        self._speaking(False)
+        for host, names in self._mpris_remote_paused.items():
+            try:
+                _mpris.resume_remote(host, names)
+            except Exception:  # noqa: BLE001
+                pass
+        self._mpris_remote_paused = {}
+        for host in self._android_paused:
+            try:
+                _android.resume(host)
+            except Exception:  # noqa: BLE001
+                pass
+        self._android_paused = []
+
     # ---- source-agnostic rooms (Snapcast) duck ------------------------
 
     def _rooms_duck(self, level: int) -> None:

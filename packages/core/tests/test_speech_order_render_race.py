@@ -32,6 +32,8 @@ def state_env(tmp_path, monkeypatch):
 
 
 class _Coord:
+    def cancel_pre_pause(self): pass
+
     def pre_pause_remote(self):
         pass
 

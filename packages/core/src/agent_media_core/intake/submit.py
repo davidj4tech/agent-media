@@ -3933,6 +3933,8 @@ def _submit_event(event: Event,
 
     if not clip_data and not stream:
         playback_lock.release()   # nothing to say; stop holding our queue slot
+        if not muted:
+            coordinator.cancel_pre_pause()
         return None
 
     total_duration_s = sum(durations)
@@ -4117,6 +4119,7 @@ def _submit_event(event: Event,
             # entirely — no broker claim, no music duck, no history row.
             if playback_lock.should_abort():
                 playback_lock.release()
+                coordinator.cancel_pre_pause()
                 return None
             if speech_hold_until() <= 0.0:
                 break
@@ -4135,11 +4138,13 @@ def _submit_event(event: Event,
         # skip, for this session only.
         if _speech_flushed(started_at) or _speech_cut(source_session, started_at, ask=source_ask):
             playback_lock.release()
+            coordinator.cancel_pre_pause()
             return _archive(flushed=True)
         # Nobody is looking any more: it waited its turn while the listener
         # left the thread. Held like one that was never looked at.
         if _unwatched_by_now(event, source_session):
             playback_lock.release()
+            coordinator.cancel_pre_pause()
             muted = True
             return _archive()
         # Barging in: something that was speaking stepped aside for us, or

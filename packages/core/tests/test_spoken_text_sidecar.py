@@ -53,6 +53,8 @@ def test_sidecar_and_now_playing_lifecycle(state_env, monkeypatch):
     during = {}
 
     class _Coord:
+        def cancel_pre_pause(self): pass
+
         def pre_pause_remote(self):
             pass
 

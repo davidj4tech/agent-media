@@ -44,6 +44,8 @@ class _Coord:
         self._started = started
         self._fail = fail
 
+    def cancel_pre_pause(self): pass
+
     def pre_pause_remote(self):
         pass
 

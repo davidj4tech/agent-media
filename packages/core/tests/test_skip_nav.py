@@ -111,6 +111,8 @@ def test_reader_loop_honors_midresponse_sentence_jump(tmp_path, monkeypatch):
     sink = _Sink()
 
     class _Coord:
+        def cancel_pre_pause(self): pass
+
         def pre_pause_remote(self): pass
         def before_speech(self, title="", priority="", defer_music=False,
                           text=""): pass

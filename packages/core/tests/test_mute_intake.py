@@ -35,6 +35,8 @@ class _RecordingCoord:
         self.before = 0
         self.after = 0
 
+    def cancel_pre_pause(self): pass
+
     def pre_pause_remote(self):
         self.pre_pause += 1
 
