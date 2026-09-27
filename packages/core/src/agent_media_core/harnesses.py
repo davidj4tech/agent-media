@@ -895,6 +895,10 @@ class Recipe:
     #: …or the agent's own way of answering that, for one that is not a
     #: package: Hermes is a checkout, and only it knows about its remote.
     check: tuple[str, ...] = ()
+    #: Typed into the window once the agent is up, for a sign-in that only
+    #: exists inside its own prompt: pi's `/login` refuses to run from the
+    #: command line ("isn't available in this environment") but works typed.
+    login_keys: tuple[str, ...] = ()
 
 
 #: One row per harness. The install channels are the ones these agents are
@@ -922,9 +926,15 @@ RECIPES: dict[str, Recipe] = {
         status=("login", "status"),
         package="@openai/codex",
     ),
+    # Sign-in is pi's own `/login` (an account, or an API key, per
+    # provider), typed into a pi started for nothing else; its status is
+    # `auth check` on the provider its settings default to.
     PI: Recipe(
         install=("npm", "install", "-g", "@earendil-works/pi-coding-agent"),
         update=("pi", "update", "self"),
+        login=("--no-session",),
+        login_keys=("/login",),
+        status=("auth", "check", "--json", "--no-refresh"),
         package="@earendil-works/pi-coding-agent",
     ),
     HERMES: Recipe(
@@ -1088,12 +1098,19 @@ def auth_state(harness: str, timeout: float = 15.0) -> tuple[str, str]:
     exe = program(harness)
     if not r or not r.status or not exe:
         return "unknown", ""
+    argv = [exe, *r.status]
+    provider = ""
+    if harness == PI:
+        provider = pi_default_provider()
+        argv += ["--provider", provider]
     try:
-        done = subprocess.run([exe, *r.status], capture_output=True, text=True,
+        done = subprocess.run(argv, capture_output=True, text=True,
                               timeout=timeout, check=False)
     except (OSError, subprocess.SubprocessError):
         return "unknown", ""
     out = (done.stdout or "") + (done.stderr or "")
+    if harness == PI:
+        return _pi_auth(done.stdout, provider)
     if harness == CLAUDE:
         try:
             data = json.loads(done.stdout)
@@ -1105,6 +1122,37 @@ def auth_state(harness: str, timeout: float = 15.0) -> tuple[str, str]:
         return _opencode_auth(out)
     line = " ".join(out.split())[:200]
     return ("in" if done.returncode == 0 and "logged in" in out.lower() else "out"), line
+
+
+def pi_default_provider() -> str:
+    """The provider pi uses when none is named: its settings', else its own
+    default (google)."""
+    try:
+        data = json.loads((_pi_dir() / "settings.json").read_text())
+        return str(data.get("defaultProvider") or "google")
+    except (OSError, ValueError, AttributeError):
+        return "google"
+
+
+def _pi_auth(said: str, provider: str) -> tuple[str, str]:
+    """`pi auth check --json` as a sign-in state. `ready` is in (a stored
+    login or a key in the environment). A provider it cannot find is one an
+    extension adds (Meridian on red5): the check does not load extensions,
+    so that is "can't tell", never "out" — "out" would have /ask refuse a
+    chat that works."""
+    try:
+        data = json.loads(said or "{}")
+    except ValueError:
+        return "unknown", ""
+    status, reason = data.get("status"), str(data.get("reason") or "")
+    if status == "ready":
+        how = {"api_key": "API key", "oauth": "signed in"}.get(str(data.get("authType")), "")
+        return "in", f"{provider}{f' ({how})' if how else ''}"
+    if reason == "provider_not_found":
+        return "unknown", f"{provider}: from an extension"
+    if status == "not_ready":
+        return "out", f"{provider}: {reason.replace('_', ' ') or 'not ready'}"
+    return "unknown", ""
 
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")

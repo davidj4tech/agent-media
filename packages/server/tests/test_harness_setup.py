@@ -47,13 +47,14 @@ def test_a_missing_agent_offers_install_and_not_login(monkeypatch):
     assert "logout" not in rows["codex"]["actions"]
 
 
-def test_pi_is_honest_about_having_no_sign_in(monkeypatch):
+def test_pi_signs_in_inside_its_own_prompt(monkeypatch):
     monkeypatch.setattr(harnesses, "program", lambda name: "/x/" + name)
     monkeypatch.setattr(harnesses, "auth_state", lambda name, **k: ("unknown", ""))
     monkeypatch.setattr(harnesses, "version_of", lambda name, **k: "")
     _ok, detail = agents.agents("bearer")
     rows = {r["name"]: r for r in detail["agents"]}
-    assert "login" not in rows["pi"]["actions"]        # API keys, not a login
+    assert "login" in rows["pi"]["actions"]            # its /login, typed into it
+    assert "logout" not in rows["pi"]["actions"]
     assert rows["pi"]["auth"] == "unknown"
     # Hermes present: it updates itself, and its wizard is the sign-in.
     assert rows["hermes"]["actions"] == ["install", "login"]
@@ -319,3 +320,40 @@ def test_setup_is_gated(monkeypatch):
                         lambda bearer: (False, {"error": "not allowed", "status": 403}))
     assert agents.wiring("")[0] is False
     assert agents.wire("mail", "")[0] is False
+
+
+# --- pi: a sign-in that exists only inside its prompt ----------------------------
+
+def test_pi_login_starts_pi_and_types_login_once_it_is_up(monkeypatch):
+    from agent_media_core import harnesses as core
+    monkeypatch.setattr(core, "program", lambda name: "/x/" + name)
+    sent = []
+    screens = iter(["", "pi v0.87 · / commands · ! bash"])
+
+    def fake(argv, timeout=10):
+        sent.append(argv)
+        if argv[0] == "new-window":
+            return "%7"
+        if argv[0] == "capture-pane":
+            return next(screens, "pi v0.87 · / commands")
+        if argv[0] == "display":
+            return "%7"
+        return ""
+    monkeypatch.setattr(panes, "_tmux", fake)
+    started = []
+    monkeypatch.setattr("threading.Thread", lambda target, args, daemon: type(
+        "T", (), {"start": lambda self: started.append((target, args))})())
+    ok, detail = agents.run("pi", "login", "bearer")
+    assert ok and detail["cmd"] == "/x/pi --no-session"
+    target, args = started[0]
+    target(*args, wait=2, step=0.01)
+    typed = [a for a in sent if a[0] == "send-keys"]
+    assert typed == [["send-keys", "-t", "%7", "-l", "/login"], ["send-keys", "-t", "%7", "Enter"]]
+
+
+def test_pi_auth_reads_the_check(monkeypatch):
+    from agent_media_core import harnesses as core
+    assert core._pi_auth('{"status":"ready","provider":"anthropic","authType":"api_key"}', "anthropic") == ("in", "anthropic (API key)")
+    assert core._pi_auth('{"status":"not_ready","reason":"provider_not_found"}', "meridian")[0] == "unknown"
+    assert core._pi_auth('{"status":"not_ready","reason":"no_credentials"}', "openai") == ("out", "openai: no credentials")
+    assert core._pi_auth("not json", "x") == ("unknown", "")

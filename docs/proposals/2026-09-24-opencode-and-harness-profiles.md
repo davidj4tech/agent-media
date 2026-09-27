@@ -252,7 +252,9 @@ under-describing it (the dir holds settings and sessions, not only a login).
 1. **opencode row** — **built 24 Sep 2026** (above). Shows up on the Coding
    agents page with no app change once the canvas is restarted. Its speech
    plugin: built 24 Sep 2026. Left: search/recaps, approval.
-2. **pi login recipe + auth status** — so pi stops answering `unknown`.
+2. **pi login recipe + auth status** — **built 27 Sep 2026**: `/login` typed
+   into a pi started for it, status from `pi auth check`. red5's pi still
+   answers `unknown`, honestly: its default provider is Meridian's extension.
    Prerequisite for pi profiles meaning anything.
 3. **Profiles** — `profiles.json`, the `profile` parameter on §6.6, per-dir
    session readers, the app's grouped rows. Claude, Codex, pi, opencode

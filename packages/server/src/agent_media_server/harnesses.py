@@ -194,7 +194,37 @@ def run(agent: str, action: str, bearer: str) -> tuple[bool, dict]:
         return False, {"error": err, "status": 503}
     cmd = shlex.join(argv)
     _remember(pane, agent, action, cmd)
+    keys_ = harnesses.RECIPES[agent].login_keys if action == "login" else ()
+    if keys_:
+        import threading
+
+        threading.Thread(target=_type_when_ready, args=(pane, keys_), daemon=True).start()
     return True, {"pane": pane, "agent": agent, "action": action, "cmd": cmd}
+
+
+#: What an agent's prompt shows once it will take a slash command (pi's
+#: startup help), and how long to wait for it before typing anyway.
+READY = re.compile(r"/ commands|Select authentication|›|❯")
+READY_WAIT_S = 20.0
+
+
+def _type_when_ready(pane: str, lines: tuple[str, ...], wait: float = READY_WAIT_S,
+                     step: float = 0.5) -> None:
+    """Type `lines` into `pane` once its prompt is up: a sign-in that exists
+    only inside the agent (pi's `/login`). Each is typed literally, then
+    Enter. Gives up quietly if the window goes away first."""
+    deadline = time.monotonic() + wait
+    while time.monotonic() < deadline:
+        screen = panes._tmux(["capture-pane", "-p", "-t", pane]) or ""
+        if READY.search(screen):
+            break
+        if not _alive(pane):
+            return
+        time.sleep(step)
+    time.sleep(0.5)          # the prompt draws before it listens
+    for line in lines:
+        panes._tmux(["send-keys", "-t", pane, "-l", line])
+        panes._tmux(["send-keys", "-t", pane, "Enter"])
 
 
 # --- this machine's wiring --------------------------------------------------------

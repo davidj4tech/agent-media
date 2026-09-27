@@ -1630,6 +1630,16 @@ Getting an agent onto the host and signed in, from the phone.
 
 Only windows `/harnesses/run` opened can be read or typed into.
 
+**pi (27 Sep 2026).** Its sign-in exists only inside its prompt: `login`
+opens `pi --no-session` and the server types `/login` once the prompt is up
+(`Recipe.login_keys`; pi refuses `/login` given on its command line). The
+window is then pi's own picker (an account or an API key, per provider),
+driven with `/keys` like any sign-in; it stays in pi afterwards, so the
+client closes it. `auth` is `pi auth check --json --no-refresh` on the
+provider its settings default to: `ready` is `in`; a provider only an
+extension adds (Meridian on red5) is `unknown`, since the check loads no
+extensions, never `out`, which would make `/ask` refuse a working chat.
+
 `logout` is in `actions` only where `auth` is already `in`: on `out` it would
 do nothing, and on the two that answer `unknown` its effect would be
 invisible. It opens no window — `claude auth logout` and `codex logout`
