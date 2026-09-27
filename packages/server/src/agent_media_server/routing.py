@@ -99,7 +99,7 @@ def ask_routed(text: str, bearer: str, *, target: str = "", player_item: str = "
                sticky: str = "", parse: bool = True, dry: bool = False,
                project: str = "", agent: str = "", cwd: str = "",
                player_session: str = "", model: str = "",
-               plan: bool = False) -> tuple[bool, dict]:
+               plan: bool = False, profile: str = "") -> tuple[bool, dict]:
     """The assistant button's words, sent where they belong.
 
     In order: a target the app names outright (`target`, a session uuid from
@@ -171,7 +171,8 @@ def ask_routed(text: str, bearer: str, *, target: str = "", player_item: str = "
                       "item": item if ready else None, "text": text, "dry": True}
     if not session:
         ok, detail = send.ask(text, bearer, project=project, agent=agent, cwd=cwd,
-                              model=model, mode="plan" if plan else "")
+                              model=model, mode="plan" if plan else "",
+                              **({"profile": profile} if profile else {}))
         if ok:
             detail.update({"mode": "new", "how": how or "default", "title": "", "text": text})
         return ok, detail

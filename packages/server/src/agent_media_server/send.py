@@ -367,7 +367,7 @@ def _claude_bin(name: str = "claude") -> str:
 
 def open_window(session: str, cwd: str, *, resume: bool, host: str = "",
                 flags: tuple[str, ...] | list[str] = (),
-                agent: str = "claude") -> tuple[str, str]:
+                agent: str = "claude", profile: str | None = None) -> tuple[str, str]:
     """Open a background tmux window running an agent. `(pane, error)`.
 
     `agent` is "claude", "codex" or "pi". A fresh pi is started with
@@ -429,6 +429,14 @@ def open_window(session: str, cwd: str, *, resume: bool, host: str = "",
     cmd = "exec env -u ANTHROPIC_API_KEY"
     if os.path.isabs(exe):
         cmd += f" PATH={shlex.quote(os.path.dirname(exe))}:\"$PATH\""
+    # A harness profile: its directory, by the variable that moves it. A
+    # resumed session runs in the profile it was found in.
+    from agent_media_core import harness_profiles
+
+    if profile is None:
+        profile = harnesses.profile_of(session) if resume and session else ""
+    for key, value in harness_profiles.env(agent, profile).items():
+        cmd += f" {key}={shlex.quote(value)}"
     cmd += f" {shlex.quote(exe)}"
     args = (harnesses.resume_argv(agent, session) if resume
             else harnesses.fresh_argv(agent, session))
@@ -627,7 +635,7 @@ def _send_to_pane(pane: str, text: str) -> str:
 
 
 
-def _agent_unready(agent: str) -> str:
+def _agent_unready(agent: str, profile: str = "") -> str:
     """Why a fresh `agent` chat would not answer, or "" if it should.
 
     Only the two that can be asked are asked (`harnesses.auth_state`): pi and
@@ -635,20 +643,22 @@ def _agent_unready(agent: str) -> str:
     a chat that works. A resumed session is not checked — it is already
     running, whatever the credentials on disk now say.
     """
-    from agent_media_core import harnesses
+    from agent_media_core import harness_profiles, harnesses
 
     if not harnesses.program(agent):
         return f"{agent} is not installed on this host"
     try:
-        state, _who = harnesses.auth_state(agent, timeout=5.0)
+        state, _who = harnesses.auth_state(agent, timeout=5.0,
+                                           env=harness_profiles.env(agent, profile))
     except Exception:          # noqa: BLE001 - a check that fails is not a refusal
         return ""
-    return f"{agent} is signed out on this host" if state == "out" else ""
+    return (f"{agent}{f' ({profile})' if profile else ''} is signed out on this host"
+            if state == "out" else "")
 
 
 def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
         agent: str = "", cwd: str = "", cwd_trusted: bool = False,
-        model: str = "", mode: str = "") -> tuple[bool, dict]:
+        model: str = "", mode: str = "", profile: str = "") -> tuple[bool, dict]:
     """Start a fresh session with `text` as its first message.
 
     What the phone's assistant button does. Nothing to resume and no item yet:
@@ -674,7 +684,13 @@ def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
     agent = (agent or os.environ.get("MEDIA_ASK_AGENT") or "claude").strip().lower()
     if agent not in panes.AGENT_COMMANDS:
         return False, {"error": f"unknown agent {agent!r}", "status": 400}
-    why = _agent_unready(agent)
+    profile = (profile or "").strip()
+    if profile:
+        from agent_media_core import harness_profiles
+
+        if not harness_profiles.get(agent, profile):
+            return False, {"error": f"{agent} has no profile {profile!r}", "status": 404}
+    why = _agent_unready(agent, profile) if profile else _agent_unready(agent)
     if why:
         # Without this the window opens and the harness sits on its own
         # sign-in screen: a thread that appears in the app, is typed into,
@@ -707,7 +723,8 @@ def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
 
     from . import driver
 
-    chosen = driver.for_new(agent)
+    # sessiond does not know harness profiles yet: a chat in one is a pane.
+    chosen = driver.for_new(agent) if not profile else driver.pane_driver()
     if chosen.kind == driver.HEADLESS:
         # No pane, so no tmux session to be filed under: the layout says what
         # it would have been (David's: the session itself; default: the folder).
@@ -716,16 +733,18 @@ def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
 
     model, mode = session_settings.clean_new(agent, model, mode)
     return chosen.start(agent=agent, cwd=cwd, text=text, host=host,
-                        flags=flags, quote=quote, model=model, mode=mode)
+                        flags=flags, quote=quote, model=model, mode=mode,
+                        **({"profile": profile} if profile else {}))
 
 
 def _ask_pane(text: str, *, agent: str, cwd: str, host: str, flags: list[str],
-              quote: str = "") -> tuple[bool, dict]:
+              quote: str = "", profile: str = "") -> tuple[bool, dict]:
     """The pane driver's fresh session: a background tmux window in `host`,
     the words typed in, the listener's turn shelved against its uuid."""
     # pi takes its id up front; the others are asked for theirs.
     fixed = str(uuid.uuid4()) if agent == "pi" else ""
-    pane, err = open_window(fixed, cwd, resume=False, host=host, flags=flags, agent=agent)
+    pane, err = open_window(fixed, cwd, resume=False, host=host, flags=flags, agent=agent,
+                            **({"profile": profile} if profile else {}))
     if err:
         return False, {"error": err, "pane": pane or None}
     # A codex has no session until its first message is in, so it is asked
@@ -744,7 +763,8 @@ def _ask_pane(text: str, *, agent: str, cwd: str, host: str, flags: list[str],
     if session:
         _record_turn(session, text, pane)
     return True, {"session": session or None, "pane": pane, "opened": True,
-                  "fresh": True, "tmux": host, "agent": agent, "submitted": True}
+                  "fresh": True, "tmux": host, "agent": agent, "submitted": True,
+                  **({"profile": profile} if profile else {})}
 
 
 # --- managing the session behind a conversation ---------------------------------

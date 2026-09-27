@@ -114,33 +114,87 @@ def agents(bearer: str) -> tuple[bool, dict]:
     ok, detail = auth.may_control_speech(bearer)
     if not ok:
         return False, detail
+    from agent_media_core import harness_profiles
+
     rows = []
     for name in harnesses.HARNESSES:
         here = harnesses.program(name)
-        state, who = harnesses.auth_state(name) if here else ("unknown", "")
-        actions = []
-        if harnesses.install_argv(name):
-            actions.append("install")
-        if here and harnesses.login_argv(name):
-            actions.append("login")
-        # Signing out is offered only where the page can already say the
-        # agent is signed in: on "out" it would do nothing, and on the
-        # "unknown" two it would be a button whose effect nobody can see.
-        if here and state == "in" and harnesses.logout_argv(name):
-            actions.append("logout")
-        rows.append({
-            "name": name,
-            "present": bool(here),
-            "path": here,
-            "version": harnesses.version_of(name) if here else "",
-            "auth": state,
-            "account": who,
-            "actions": actions,
-            # An install of something already here is an update, and the
-            # button should say so rather than pretending otherwise.
-            "installed_action": "update" if here else "install",
-        })
+        version = harnesses.version_of(name) if here else ""
+        # The default login, then one row per harness profile: each is its
+        # own sign-in (and its own sessions) with the same program.
+        for profile in ["", *(p.name for p in harness_profiles.of(name))]:
+            env = harness_profiles.env(name, profile)
+            state, who = harnesses.auth_state(name, env=env) if here else ("unknown", "")
+            actions = []
+            # Installing is the program's, so it lives on the default row.
+            if not profile and harnesses.install_argv(name):
+                actions.append("install")
+            if here and harnesses.login_argv(name):
+                actions.append("login")
+            # Signing out is offered only where the page can already say the
+            # agent is signed in: on "out" it would do nothing, and on the
+            # "unknown" two it would be a button whose effect nobody can see.
+            if here and state == "in" and harnesses.logout_argv(name):
+                actions.append("logout")
+            rows.append({
+                "name": name,
+                "profile": profile,
+                # Whether "Add account" can make another profile of it.
+                "profiles": name in harness_profiles.VARS,
+                "present": bool(here),
+                "path": here,
+                "version": version,
+                "auth": state,
+                "account": who,
+                "actions": actions,
+                # An install of something already here is an update, and the
+                # button should say so rather than pretending otherwise.
+                "installed_action": "update" if here else "install",
+            })
     return True, {"agents": rows}
+
+
+def _in_profile(agent: str, profile: str, argv: list[str]) -> tuple[list[str], str]:
+    """`argv` run in harness profile `profile` (`env VAR=dir …`), or an error
+    when there is no such profile. "" is the default, unchanged."""
+    from agent_media_core import harness_profiles
+
+    if not profile:
+        return argv, ""
+    env = harness_profiles.env(agent, profile)
+    if not env:
+        return [], f"{agent} has no profile {profile!r}"
+    return ["env", *(f"{k}={v}" for k, v in env.items()), *argv], ""
+
+
+def add_profile(agent: str, name: str, adopt: str, bearer: str) -> tuple[bool, dict]:
+    """`/harnesses/profiles`: another login for `agent` — a directory made
+    under agent-media's state dir, or `adopt` an existing one."""
+    from agent_media_core import harness_profiles
+
+    ok, detail = auth.may_control_speech(bearer)
+    if not ok:
+        return False, detail
+    try:
+        p = harness_profiles.create((agent or "").strip(), (name or "").strip(), adopt=(adopt or "").strip())
+    except harness_profiles.ProfileError as e:
+        return False, {"error": str(e), "status": 400}
+    except OSError as e:
+        return False, {"error": f"could not make it: {e}", "status": 503}
+    return True, {"agent": p.harness, "profile": p.name, "dir": p.dir, "adopted": p.adopted}
+
+
+def remove_profile(agent: str, name: str, delete: bool, bearer: str) -> tuple[bool, dict]:
+    """`/harnesses/profiles/remove`: forget a login; `delete` also removes
+    its directory (its sign-in and its sessions) when it was made here."""
+    from agent_media_core import harness_profiles
+
+    ok, detail = auth.may_control_speech(bearer)
+    if not ok:
+        return False, detail
+    if not harness_profiles.remove((agent or "").strip(), (name or "").strip(), delete=bool(delete)):
+        return False, {"error": f"{agent} has no profile {name!r}", "status": 404}
+    return True, {"agent": agent, "profile": name, "deleted": bool(delete)}
 
 
 # --- doing it --------------------------------------------------------------------
@@ -167,7 +221,7 @@ def _window(argv: list[str], title: str) -> tuple[str, str]:
     return (pane, "") if pane else ("", "tmux could not open a window")
 
 
-def run(agent: str, action: str, bearer: str) -> tuple[bool, dict]:
+def run(agent: str, action: str, bearer: str, profile: str = "") -> tuple[bool, dict]:
     """`/agents/run`: install (or update) an agent, or sign into it.
 
     Answers with the pane it opened and the command it is running; the phone
@@ -189,7 +243,13 @@ def run(agent: str, action: str, bearer: str) -> tuple[bool, dict]:
                else f"{agent} has no sign-in to run"
                + ("" if harnesses.installed(agent) else f" ({agent} is not installed)"))
         return False, {"error": why, "status": 409}
-    pane, err = _window(argv, f"{agent}-{action}")
+    # A sign-in is a profile's; an install is the program's, whichever row.
+    if action == "login":
+        argv, why = _in_profile(agent, (profile or "").strip(), argv)
+        if why:
+            return False, {"error": why, "status": 404}
+    pane, err = _window(argv, f"{agent}-{profile}-{action}" if profile and action == "login"
+                        else f"{agent}-{action}")
     if err:
         return False, {"error": err, "status": 503}
     cmd = shlex.join(argv)
@@ -340,7 +400,7 @@ def _ask_about(name: str) -> tuple[str, bool | None, str]:
     return harnesses.latest_of(name), None, ""
 
 
-def sign_out(agent: str, bearer: str, timeout: float = 30.0) -> tuple[bool, dict]:
+def sign_out(agent: str, bearer: str, timeout: float = 30.0, profile: str = "") -> tuple[bool, dict]:
     """`/harnesses/logout`: forget this host's credentials for `agent`.
 
     No window: `claude auth logout` and `codex logout` delete a file and
@@ -363,10 +423,16 @@ def sign_out(agent: str, bearer: str, timeout: float = 30.0) -> tuple[bool, dict
     argv = harnesses.logout_argv(agent)
     if not argv:
         return False, {"error": f"{agent} has no sign-out to run", "status": 409}
+    from agent_media_core import harness_profiles
+
+    profile = (profile or "").strip()
+    env = harness_profiles.env(agent, profile)
+    if profile and not env:
+        return False, {"error": f"{agent} has no profile {profile!r}", "status": 404}
     try:
         done = subprocess.run(argv, capture_output=True, text=True,
                               timeout=timeout, check=False,
-                              env={**os.environ, "PATH": harnesses.bin_path()})
+                              env={**os.environ, "PATH": harnesses.bin_path(), **env})
     except OSError as exc:
         return False, {"error": f"could not run {agent} logout: {exc}", "status": 503}
     except subprocess.TimeoutExpired:
@@ -374,7 +440,8 @@ def sign_out(agent: str, bearer: str, timeout: float = 30.0) -> tuple[bool, dict
     said = [ln.rstrip() for ln in
             ((done.stdout or "") + (done.stderr or "")).splitlines() if ln.strip()]
     return True, {"agent": agent, "cmd": shlex.join(argv), "exit": done.returncode,
-                  "lines": said[-10:], "auth": harnesses.auth_state(agent)[0]}
+                  "lines": said[-10:], "auth": harnesses.auth_state(agent, env=env)[0],
+                  "profile": profile}
 
 
 def screen(pane: str, bearer: str, lines: int = 60) -> tuple[bool, dict]:

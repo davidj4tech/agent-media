@@ -1630,6 +1630,32 @@ Getting an agent onto the host and signed in, from the phone.
 
 Only windows `/harnesses/run` opened can be read or typed into.
 
+**Harness profiles — more than one login per agent (27 Sep 2026).** A
+profile is a harness plus the directory its sign-in, settings and sessions
+live in (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `PI_CODING_AGENT_DIR`,
+`XDG_DATA_HOME` for opencode; Hermes keeps its own). `GET /harnesses` has a
+row per profile: the default one with `"profile": ""`, then each added
+one, every row with its own `auth`/`account`/`actions` (`install` only on the
+default row: it is the program's). `"profiles": true` on a harness that can
+have more.
+
+```
+POST /harnesses/profiles {"agent", "name", "path"?}
+  → {"ok", "agent", "profile", "dir", "adopted"}   400 bad name / Hermes / taken
+POST /harnesses/profiles/remove {"agent", "name", "delete"?: bool}
+  → {"ok", "agent", "profile", "deleted"}           404 no such profile
+```
+
+`name` is `[a-z0-9][a-z0-9-]{0,23}`, not `default`. Without `path` the
+directory is made under agent-media's state dir (`harness-profiles/<agent>-<name>`,
+mode 700), and `delete` may remove it; with `path` an existing directory is
+adopted and never deleted. `/harnesses/run` (a `login`) and
+`/harnesses/logout` take `"profile"`; `POST /ask` takes `"profile"` too (404
+when there is none), and a chat in a profile always opens in a pane — sessiond
+does not know profiles yet. Every session reader lists each profile's
+directory as well as the default, and a resumed session runs in the profile
+it was found in (`harnesses.profile_of`).
+
 **pi (27 Sep 2026).** Its sign-in exists only inside its prompt: `login`
 opens `pi --no-session` and the server types `/login` once the prompt is up
 (`Recipe.login_keys`; pi refuses `/login` given on its command line). The

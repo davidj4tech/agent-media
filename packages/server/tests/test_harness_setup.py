@@ -357,3 +357,74 @@ def test_pi_auth_reads_the_check(monkeypatch):
     assert core._pi_auth('{"status":"not_ready","reason":"provider_not_found"}', "meridian")[0] == "unknown"
     assert core._pi_auth('{"status":"not_ready","reason":"no_credentials"}', "openai") == ("out", "openai: no credentials")
     assert core._pi_auth("not json", "x") == ("unknown", "")
+
+
+# --- harness profiles: another login for an agent -----------------------------
+
+@pytest.fixture()
+def profiles(tmp_path, monkeypatch):
+    from agent_media_core import harness_profiles as hp
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    hp._CACHE = (-1.0, [])
+    return hp
+
+
+def test_a_profile_is_its_own_row_with_its_own_sign_in(monkeypatch, profiles):
+    monkeypatch.setattr(harnesses, "program", lambda name: "/x/" + name)
+    monkeypatch.setattr(harnesses, "version_of", lambda name, **k: "1.0")
+    seen = []
+
+    def auth(name, env=None, **k):
+        seen.append((name, dict(env or {})))
+        return ("in", "work@example") if env else ("out", "")
+    monkeypatch.setattr(harnesses, "auth_state", auth)
+    ok, detail = agents.add_profile("codex", "work", "", "bearer")
+    assert ok and detail["dir"].endswith("harness-profiles/codex-work")
+    _ok, detail = agents.agents("bearer")
+    codex = [r for r in detail["agents"] if r["name"] == "codex"]
+    assert [r["profile"] for r in codex] == ["", "work"]
+    assert codex[1]["auth"] == "in" and codex[1]["account"] == "work@example"
+    assert "install" in codex[0]["actions"] and "install" not in codex[1]["actions"]
+    assert ("codex", {"CODEX_HOME": profiles.get("codex", "work").dir}) in seen, "asked in its own directory"
+    hermes = [r for r in detail["agents"] if r["name"] == "hermes"]
+    assert hermes[0]["profiles"] is False, "Hermes keeps its own profiles"
+
+
+def test_sign_in_runs_in_the_profiles_directory(monkeypatch, profiles):
+    monkeypatch.setattr(harnesses, "program", lambda name: "/x/" + name)
+    seen = []
+    _tmux(monkeypatch, record=seen)
+    agents.add_profile("codex", "work", "", "bearer")
+    ok, detail = agents.run("codex", "login", "bearer", profile="work")
+    assert ok
+    assert detail["cmd"].startswith("env CODEX_HOME=") and detail["cmd"].endswith("/x/codex login --device-auth")
+    ok, detail = agents.run("codex", "login", "bearer", profile="nope")
+    assert not ok and detail["status"] == 404
+
+
+def test_profiles_can_be_removed_and_hermes_cannot_have_one(monkeypatch, profiles):
+    assert agents.add_profile("hermes", "x", "", "bearer")[1]["status"] == 400
+    agents.add_profile("pi", "home", "", "bearer")
+    ok, detail = agents.remove_profile("pi", "home", True, "bearer")
+    assert ok and detail["deleted"]
+    assert agents.remove_profile("pi", "home", False, "bearer")[1]["status"] == 404
+
+
+def test_a_chat_in_a_profile_opens_with_its_directory(monkeypatch, profiles):
+    from agent_media_server import send
+    p = profiles.create("codex", "work")
+    seen = []
+    _tmux(monkeypatch, record=seen)
+    monkeypatch.setattr(harnesses, "program", lambda name: "/x/" + name)
+    monkeypatch.setattr(send, "pane_ready", lambda pane, agent: True)
+    pane, err = send.open_window("", "/tmp", resume=False, host="scratch", agent="codex", profile="work")
+    assert not err
+    cmd = seen[-1][-1]
+    assert f"CODEX_HOME={p.dir}" in cmd and "/x/codex" in cmd
+    # Resumed: the profile it was found in.
+    monkeypatch.setattr(harnesses, "profile_of", lambda session: "work")
+    monkeypatch.setattr(harnesses, "running", lambda: [])
+    import agent_media_core.claude_sessions as cs
+    monkeypatch.setattr(cs, "running", lambda: [])
+    send.open_window("0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0", "/tmp", resume=True, host="scratch", agent="codex")
+    assert f"CODEX_HOME={p.dir}" in seen[-1][-1]

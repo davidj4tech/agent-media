@@ -25,7 +25,8 @@ class PaneDriver:
     kind = PANE
     caps = Caps(interrupt=True)
 
-    def start(self, *, agent, cwd, text, host="", flags=(), quote="", model="", mode=""):
+    def start(self, *, agent, cwd, text, host="", flags=(), quote="", model="", mode="",
+              profile=""):
         from .. import send
 
         flags = list(flags)
@@ -39,7 +40,7 @@ class PaneDriver:
                 flags = ["--allow-dangerously-skip-permissions" if f == "--dangerously-skip-permissions"
                          else f for f in flags] + ["--permission-mode", "plan"]
         return send._ask_pane(text, agent=agent, cwd=cwd, host=host, flags=flags,
-                              quote=quote)
+                              quote=quote, **({"profile": profile} if profile else {}))
 
     def configure(self, session, *, model=None, mode=None):
         """`/model <alias>` typed in, and shift+tab round to plan mode or off

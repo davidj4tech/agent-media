@@ -73,6 +73,13 @@ SESSION_ID = re.compile(f"(?:{_UUID}|{_HERMES_ID}|{_OPENCODE_ID})")
 _ROLLOUT = re.compile(r"rollout-.*-(" + _UUID + r")\.jsonl$")
 
 
+def _profile_dirs(harness: str, default: Path) -> list[tuple[str, Path]]:
+    """`(profile, dir)`: `default`, then each harness profile's (harness_profiles)."""
+    from . import harness_profiles
+
+    return harness_profiles.dirs(harness, default)
+
+
 def _claude_dir() -> Path:
     return Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude").expanduser()
 
@@ -89,18 +96,26 @@ def _hermes_dir() -> Path:
     return Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes").expanduser()
 
 
-def opencode_db() -> Path:
-    """opencode's one database: every project's sessions, and its sign-ins."""
-    base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
-    return Path(base).expanduser() / "opencode" / "opencode.db"
+def _xdg_data() -> Path:
+    return Path(os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")).expanduser()
 
 
-def opencode_rows(sql: str, args: tuple = ()) -> list[tuple]:
-    """`sql` against opencode's database, read-only. [] when it is not there
-    or will not answer — a schema opencode has moved on from included."""
+def opencode_db(data_home: Path | None = None) -> Path:
+    """opencode's database under `data_home` (default: this process's
+    XDG_DATA_HOME): every project's sessions there, and its sign-ins."""
+    return (data_home or _xdg_data()) / "opencode" / "opencode.db"
+
+
+def opencode_dbs() -> list[tuple[str, Path]]:
+    """`(profile, database)`: the default one, then each harness profile's."""
+    from . import harness_profiles
+
+    return [(name, opencode_db(d)) for name, d in harness_profiles.dirs(OPENCODE, _xdg_data())]
+
+
+def _opencode_query(db: Path, sql: str, args: tuple) -> list[tuple]:
     import sqlite3
 
-    db = opencode_db()
     if not db.exists():
         return []
     try:
@@ -108,6 +123,18 @@ def opencode_rows(sql: str, args: tuple = ()) -> list[tuple]:
             return c.execute(sql, args).fetchall()
     except sqlite3.Error:
         return []
+
+
+def opencode_rows(sql: str, args: tuple = (), *, db: Path | None = None) -> list[tuple]:
+    """`sql` against opencode's databases, read-only: `db` alone when given,
+    else the first (default, then each profile's) with an answer — the rule
+    for a lookup by id. [] when none is there or will answer — a schema
+    opencode has moved on from included."""
+    for _profile, path in ([("", db)] if db else opencode_dbs()):
+        rows = _opencode_query(path, sql, args)
+        if rows:
+            return rows
+    return []
 
 
 def hermes_stores() -> list[Path]:
@@ -199,14 +226,36 @@ def transcript(session: str) -> Optional[tuple[str, Path]]:
     """`(harness, path)` of the file this session is written to, or None."""
     if not _safe(session):
         return None
-    for harness, pattern in (
-            (CLAUDE, _claude_dir() / "projects" / "*" / f"{session}.jsonl"),
-            (CODEX, _codex_dir() / "sessions" / "*" / "*" / "*" / f"rollout-*-{session}.jsonl"),
-            (PI, _pi_dir() / "sessions" / "*" / f"*_{session}.jsonl")):
-        hits = glob.glob(str(pattern))
-        if hits:
-            return harness, Path(max(hits, key=lambda p: os.path.getmtime(p)))
+    found = _transcript(session)
+    return found[:2] if found else None
+
+
+def _transcript(session: str) -> Optional[tuple[str, Path, str]]:
+    """`(harness, path, profile)`: `transcript` and the harness profile whose
+    directory holds it ("" for the default one)."""
+    if not _safe(session):
+        return None
+    for harness, default, pattern in (
+            (CLAUDE, _claude_dir(), f"projects/*/{session}.jsonl"),
+            (CODEX, _codex_dir(), f"sessions/*/*/*/rollout-*-{session}.jsonl"),
+            (PI, _pi_dir(), f"sessions/*/*_{session}.jsonl")):
+        for profile, base in _profile_dirs(harness, default):
+            hits = glob.glob(str(base / pattern))
+            if hits:
+                return harness, Path(max(hits, key=lambda p: os.path.getmtime(p))), profile
     return None
+
+
+def profile_of(session: str) -> str:
+    """The harness profile a conversation belongs to, "" for the default —
+    so resuming it runs with that profile's directory."""
+    if is_opencode(session):
+        for profile, db in opencode_dbs():
+            if _opencode_query(db, "select 1 from session where id = ?", (session,)):
+                return profile
+        return ""
+    found = _transcript(session)
+    return found[2] if found else ""
 
 
 def harness_of(session: str) -> str:
@@ -497,10 +546,14 @@ def _opencode_live_session(pid: str, argv: list[str]) -> str:
         cwd = os.readlink(f"/proc/{pid}/cwd")
     except OSError:
         return ""
+    # The database this process writes to: its own XDG_DATA_HOME (a harness
+    # profile's, when it was started in one).
+    data = _env_of(pid, "XDG_DATA_HOME")
     rows = opencode_rows(
         "select id from session where directory = ? and parent_id is null "
         "and time_created >= ? order by time_created desc limit 1",
-        (cwd, int((_started_at(pid) - 5.0) * 1000)))
+        (cwd, int((_started_at(pid) - 5.0) * 1000)),
+        db=opencode_db(Path(data)) if data else None)
     return str(rows[0][0]) if rows else ""
 
 
@@ -522,6 +575,8 @@ class Stored:
     #: The store's own name for the directory it ran in ("" when the store
     #: does not say, as Codex's does not).
     folder: str = ""
+    #: The harness profile whose directory it is in ("" for the default).
+    profile: str = ""
 
 
 def _folder_of(harness: str, cwd: str) -> str:
@@ -595,12 +650,14 @@ def _hermes_stored() -> list[Stored]:
 
 
 def _opencode_stored() -> list[Stored]:
-    """Every opencode conversation. A subagent's session (it has a parent) is
-    part of its parent's, not one of its own; an archived one was put away."""
-    return [Stored(str(sid), OPENCODE, float(at or 0) / 1000.0)
-            for sid, at in opencode_rows(
+    """Every opencode conversation, in every profile's database. A
+    subagent's session (it has a parent) is part of its parent's, not one of
+    its own; an archived one was put away."""
+    return [Stored(str(sid), OPENCODE, float(at or 0) / 1000.0, profile=profile)
+            for profile, db in opencode_dbs()
+            for sid, at in _opencode_query(db,
                 "select id, time_updated from session "
-                "where parent_id is null and time_archived is null")
+                "where parent_id is null and time_archived is null", ())
             if is_opencode(str(sid or ""))]
 
 
@@ -673,12 +730,21 @@ def stored(*, since: float = 0.0, limit: int = 0,
     An id written twice — the same conversation under two project
     directories — is listed once, at its newest.
     """
+    from dataclasses import replace
+
     skip = {h: [_folder_of(h, d) for d in exclude if d.strip()] for h in (CLAUDE, PI)}
-    found = _scan(_claude_dir() / "projects", 1, re.compile(f"({_UUID})\\.jsonl"), CLAUDE)
-    found += [r for r in _scan(_codex_dir() / "sessions", 3,
-                               re.compile(f"rollout-.*-({_UUID})\\.jsonl"), CODEX)
-              if not codex_subagent(r.path) and not codex_scripted(r.path)]
-    found += _scan(_pi_dir() / "sessions", 1, re.compile(f".*_({_UUID})\\.jsonl"), PI)
+    found: list[Stored] = []
+    # Each harness profile's directory as well as the default one.
+    for profile, base in _profile_dirs(CLAUDE, _claude_dir()):
+        found += [replace(r, profile=profile) for r in
+                  _scan(base / "projects", 1, re.compile(f"({_UUID})\\.jsonl"), CLAUDE)]
+    for profile, base in _profile_dirs(CODEX, _codex_dir()):
+        found += [replace(r, profile=profile) for r in
+                  _scan(base / "sessions", 3, re.compile(f"rollout-.*-({_UUID})\\.jsonl"), CODEX)
+                  if not codex_subagent(r.path) and not codex_scripted(r.path)]
+    for profile, base in _profile_dirs(PI, _pi_dir()):
+        found += [replace(r, profile=profile) for r in
+                  _scan(base / "sessions", 1, re.compile(f".*_({_UUID})\\.jsonl"), PI)]
     found += _hermes_stored()
     found += _opencode_stored()
     from .deleted import deleted
@@ -1084,7 +1150,7 @@ def update_check(harness: str, timeout: float = 90.0) -> tuple[bool | None, str]
     return behind, line[:120]
 
 
-def auth_state(harness: str, timeout: float = 15.0) -> tuple[str, str]:
+def auth_state(harness: str, timeout: float = 15.0, env: dict | None = None) -> tuple[str, str]:
     """`(state, detail)` — "in", "out" or "unknown", and a line to show.
 
     Three of the five can be asked without opening a terminal: Claude
@@ -1101,11 +1167,14 @@ def auth_state(harness: str, timeout: float = 15.0) -> tuple[str, str]:
     argv = [exe, *r.status]
     provider = ""
     if harness == PI:
-        provider = pi_default_provider()
+        provider = pi_default_provider(
+            Path((env or {}).get("PI_CODING_AGENT_DIR") or _pi_dir()))
         argv += ["--provider", provider]
     try:
+        # `env`: a harness profile's directory (harness_profiles.env).
         done = subprocess.run(argv, capture_output=True, text=True,
-                              timeout=timeout, check=False)
+                              timeout=timeout, check=False,
+                              env={**os.environ, **env} if env else None)
     except (OSError, subprocess.SubprocessError):
         return "unknown", ""
     out = (done.stdout or "") + (done.stderr or "")
@@ -1124,11 +1193,11 @@ def auth_state(harness: str, timeout: float = 15.0) -> tuple[str, str]:
     return ("in" if done.returncode == 0 and "logged in" in out.lower() else "out"), line
 
 
-def pi_default_provider() -> str:
+def pi_default_provider(pi_dir: Path | None = None) -> str:
     """The provider pi uses when none is named: its settings', else its own
     default (google)."""
     try:
-        data = json.loads((_pi_dir() / "settings.json").read_text())
+        data = json.loads(((pi_dir or _pi_dir()) / "settings.json").read_text())
         return str(data.get("defaultProvider") or "google")
     except (OSError, ValueError, AttributeError):
         return "google"

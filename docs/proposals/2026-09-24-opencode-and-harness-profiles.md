@@ -256,7 +256,9 @@ under-describing it (the dir holds settings and sessions, not only a login).
    into a pi started for it, status from `pi auth check`. red5's pi still
    answers `unknown`, honestly: its default provider is Meridian's extension.
    Prerequisite for pi profiles meaning anything.
-3. **Profiles** — `profiles.json`, the `profile` parameter on §6.6, per-dir
+3. **Profiles** — **server built 27 Sep 2026** (`harness_profiles.py`, §6.6 of the
+   contract): made or adopted, a row per profile, sign-in/out and `/ask` in one,
+   every reader over every profile's dir; headless (sessiond) not yet. As planned: `profiles.json`, the `profile` parameter on §6.6, per-dir
    session readers, the app's grouped rows. Claude, Codex, pi, opencode
    together; Hermes wired to its existing profiles.
 4. **Diff viewer** (server route, then the screen).

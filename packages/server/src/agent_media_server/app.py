@@ -184,7 +184,8 @@ CORS_PATHS = frozenset({
     "/sessions/state", "/commands", "/rename",
     "/harnesses", "/harnesses/run", "/harnesses/screen",
     "/harnesses/keys", "/harnesses/close", "/harnesses/logout",
-    "/harnesses/updates", "/setup", "/setup/run",
+    "/harnesses/updates", "/harnesses/profiles", "/harnesses/profiles/remove",
+    "/setup", "/setup/run",
     "/share", "/upload", "/dashboard",
     "/sessions/events", "/search",
 })
@@ -923,7 +924,8 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
             project=str(body.get("project") or ""),
             cwd=str(body.get("cwd") or ""),
             model=str(body.get("model") or ""),
-            plan=body.get("plan") is True)
+            plan=body.get("plan") is True,
+            profile=str(body.get("profile") or ""))
         status = detail.pop("status", 400)
         if not ok:
             print(f"ask: refused {status} ({detail.get('error')}) "
@@ -1052,6 +1054,18 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
             print(f"answer: refused ({detail.get('error')}) for "
                   f"{str(body.get('session'))[:8]}", file=sys.stderr, flush=True)
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    elif path in ("/harnesses/profiles", "/harnesses/profiles/remove"):
+        # Another login for an agent (a harness profile), or one taken away.
+        body = _read_json(h) or {}
+        if path.endswith("remove"):
+            ok, detail = harnesses.remove_profile(str(body.get("agent") or ""),
+                                                  str(body.get("name") or ""),
+                                                  body.get("delete") is True, _bearer(h))
+        else:
+            ok, detail = harnesses.add_profile(str(body.get("agent") or ""),
+                                               str(body.get("name") or ""),
+                                               str(body.get("path") or ""), _bearer(h))
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path == "/setup/run":
         # `media-setup profile [--only NAME]` in a window, watched like an
         # install (/harnesses/screen, /keys, /close take its pane).
@@ -1068,9 +1082,11 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         bearer = _bearer(h)
         if path.endswith("run"):
             ok, detail = harnesses.run(str(body.get("agent") or ""),
-                                       str(body.get("action") or ""), bearer)
+                                       str(body.get("action") or ""), bearer,
+                                       profile=str(body.get("profile") or ""))
         elif path.endswith("logout"):
-            ok, detail = harnesses.sign_out(str(body.get("agent") or ""), bearer)
+            ok, detail = harnesses.sign_out(str(body.get("agent") or ""), bearer,
+                                            profile=str(body.get("profile") or ""))
         elif path.endswith("keys"):
             ok, detail = harnesses.keys(str(body.get("pane") or ""),
                                         str(body.get("text") or ""),
