@@ -1,4 +1,4 @@
-"""A conversation's speech level: interrupt, auto, normal or quiet.
+"""A conversation's speech level: interrupt, auto, pocket, normal or quiet.
 
 What happens to a reply when it is ready:
 
@@ -11,6 +11,9 @@ What happens to a reply when it is ready:
   conversation (its thread open in the app, or its pane at the desk);
   otherwise it waits unheard with a Play, and a toast at the desk if someone
   is there (intake/toast.py). The built-in default.
+- **pocket** — as *normal*, but the thread still counts as open for a while
+  after the phone's screen went off on it (watching.py's lease, `POST
+  /session/pocket`): the app's "When open or locked" (David, 28 Sep 2026).
 - **quiet** — it is rendered and archived but never played by itself, and
   gets no toast: it waits in the transcript unheard (`extras.held`), with a
   Play in the app.
@@ -48,9 +51,11 @@ from ._paths import state_dir
 
 NAME = "speak-priority.json"
 DEFAULT_NAME = "speak-priority-default.json"
-LEVELS = ("interrupt", "auto", "normal", "quiet")
+LEVELS = ("interrupt", "auto", "pocket", "normal", "quiet")
 #: The levels whose replies are never held or muted.
 SPEAKS = ("interrupt", "auto")
+#: The levels whose replies wait for a Play unless someone is looking.
+HOLDS = ("pocket", "normal")
 
 
 def _path() -> Path:

@@ -1258,6 +1258,7 @@ questions are never touched):
 |---|---|
 | `interrupt` | plays at once, at HIGH priority: another thread's reply steps aside at its next sentence and resumes after |
 | `auto` | plays at once: the desk toast does not hold it and a pane or tmux-session mute does not silence it |
+| `pocket` | as `normal`, and the thread still counts as open for a while after the phone's screen went off on it (`POST /session/pocket`); the app's "When open or locked" (28 Sep 2026) |
 | `normal` | the usual rules (the built-in default) |
 | `quiet` | rendered and archived unheard (`extras.held`, `unheard: true` on the transcript) and never played by itself |
 
@@ -1267,9 +1268,9 @@ questions are never touched):
 - Kept in core (`agent_media_core/speak_priority.py`), per session, in
   `<state_dir>/speak-priority.json` (`{"<session>": {"level", "at"}}`; a
   bare number is the older flag, read as auto), so the hooks read it without
-  the server; `media priority [interrupt|auto|normal|quiet|status]` sets the
+  the server; `media priority [interrupt|auto|pocket|normal|quiet|status]` sets the
   same thing from a pane. Outlives the session, like a pin.
-- 400 `"level must be interrupt, auto, normal, quiet or default"`; the other
+- 400 `"level must be interrupt, auto, pocket, normal, quiet or default"`; the other
   refusals and CORS exactly as `/session/pin`.
 
 - `"level": "default"` (25 Sep 2026) clears the thread's own level, so it
@@ -1286,13 +1287,14 @@ Pinned by `packages/server/tests/test_reap.py` and
 
 `{"session", "pocketed": true|false}` → `{"ok": true, "session", "until"}`.
 
-A `normal` (When open) reply plays at once while its thread is open in the
+A `normal` or `pocket` reply plays at once while its thread is open in the
 app, which the server reads off the thread's event stream (§11). The page
 closes that stream when it hides, and it hides when the screen goes off too,
 but a locked phone is not a look away. So the app, when its page hides
 with the screen off (not for another app), sends `true` for the open
-thread, and `false` when the page shows again. While that lease lasts the
-thread counts as open: its When open replies play.
+thread, and `false` when the page shows again; it sends it whatever the
+thread's level. While that lease lasts a `pocket` thread counts as open: its
+replies play. A `normal` one ignores it (screen-on only).
 
 - `until`: the lease's end, epoch seconds; 0 after `false`. A lease runs
   out after `MEDIA_POCKET_S` (default 1800; 0 turns leases off), so a thread

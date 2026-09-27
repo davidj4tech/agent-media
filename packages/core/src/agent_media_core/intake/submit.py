@@ -2762,10 +2762,10 @@ def _unwatched_by_now(event: Event, source_session: str) -> bool:
     if not watched_at or time.time() - watched_at < _REWATCH_AFTER_S:
         return False
     try:
-        from ..speak_priority import level_of
+        from ..speak_priority import HOLDS, level_of
         from . import toast
 
-        if level_of(source_session) != "normal" or not toast.should_hold(source_session):
+        if level_of(source_session) not in HOLDS or not toast.should_hold(source_session):
             return False
         md["held"] = True
         toast.remember(event)

@@ -87,11 +87,11 @@ device gets its token):
   POST /session/pin {"session", "pinned": true|false} → keep that session
                   open against the idle reaper (pins.py, reap.py)
   POST /session/priority {"session", "level"} → that thread's speech
-                  level: interrupt | auto | normal | quiet
+                  level: interrupt | auto | pocket | normal | quiet
                   (agent_media_core/speak_priority.py, pins.py)
   POST /session/pocket {"session", "pocketed": true|false} → the screen went
                   off on that thread (true), or it shows again (false): a
-                  When open reply plays for MEDIA_POCKET_S after
+                  pocket-level reply plays for MEDIA_POCKET_S after
                   (agent_media_core/watching.py, pins.py)
   GET|POST /speech/default {"level"} → the level of every thread with none
                   of its own; the server's, so every device's (pins.py)

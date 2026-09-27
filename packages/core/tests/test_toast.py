@@ -212,13 +212,16 @@ def test_opening_the_conversation_plays_its_newest_unplayed_reply(monkeypatch):
 
 def test_a_screen_off_lease_plays_until_it_runs_out(monkeypatch):
     import json
-    from agent_media_core import watching
+    from agent_media_core import speak_priority, watching
 
     monkeypatch.delenv("TMUX_PANE", raising=False)
     _fake_tmux(monkeypatch)
     watching.publish({})
     assert toast.should_hold("s1")
     watching.pocket("s1", True)                       # screen off on s1
+    assert toast.should_hold("s1")                    # normal: screen-on only
+    speak_priority.set_level("s1", "pocket")
+    speak_priority.set_level("s2", "pocket")
     assert not toast.should_hold("s1")
     assert toast.should_hold("s2")
     watching.pocket("s1", False)                      # the page shows again

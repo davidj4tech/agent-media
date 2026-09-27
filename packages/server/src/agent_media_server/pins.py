@@ -65,7 +65,7 @@ def session_pin(session: str, flag, bearer: str) -> tuple[bool, dict]:
 
 def session_priority(session: str, flag, bearer: str, level=None) -> tuple[bool, dict]:
     """`POST /session/priority {"session", "level"}`: the thread's speech
-    level — `interrupt`, `auto`, `normal` or `quiet`
+    level — `interrupt`, `auto`, `pocket`, `normal` or `quiet`
     (`agent_media_core.speak_priority`), or `default` to clear its own so it
     follows the default. The older `{"priority": bool}` is auto / normal and
     still accepted. Refused exactly as `/session/pin` is; with neither given,
@@ -82,7 +82,7 @@ def session_priority(session: str, flag, bearer: str, level=None) -> tuple[bool,
             return False, {"error": "priority must be true or false", "status": 400}
         level = "auto" if flag else "normal"
     if level not in speak_priority.LEVELS and level != "default":
-        return False, {"error": "level must be interrupt, auto, normal, quiet or default",
+        return False, {"error": "level must be interrupt, auto, pocket, normal, quiet or default",
                        "status": 400}
     user, err = auth.gate(bearer)
     if not user:
@@ -106,7 +106,7 @@ def session_priority(session: str, flag, bearer: str, level=None) -> tuple[bool,
 def session_pocket(session: str, flag, bearer: str) -> tuple[bool, dict]:
     """`POST /session/pocket {"session", "pocketed"}`: the app's page hid
     with the screen off while this thread was open (true), or showed again
-    (false). A When open reply from it plays until the lease runs out
+    (false). A reply from it at the pocket level plays until the lease runs out
     (`agent_media_core.watching.pocket`). Refused as `/session/priority` is;
     answers `until`, the lease's end in epoch seconds, 0 for none."""
     from agent_media_core import watching

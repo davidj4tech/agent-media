@@ -2706,7 +2706,7 @@ def cmd_agenda_alarm(a) -> int:
 
 def cmd_priority(a) -> int:
     """A conversation's speech level (speak_priority.py): interrupt, auto,
-    normal or quiet. Default: this pane's conversation; `on`/`off` are auto
+    pocket, normal or quiet. Default: this pane's conversation; `on`/`off` are auto
     and normal, `toggle` flips auto. `status` lists every one."""
     from . import speak_priority
     action = getattr(a, "state", None) or "toggle"
@@ -8375,11 +8375,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p_aa.add_argument("--dry-run", action="store_true", help="print, speak nothing")
     p_aa.set_defaults(func=cmd_agenda_alarm)
     p_pr = sub.add_parser("priority",
-                          help="a conversation's speech level: interrupt, auto, normal, quiet")
+                          help="a conversation's speech level: interrupt, auto, pocket, normal, quiet")
     p_pr.add_argument("--session", help="agent session id (default: this pane's)")
     p_pr.add_argument("--pane", help="tmux pane id (default: $TMUX_PANE)")
     p_pr.add_argument("state", nargs="?",
-                      choices=["interrupt", "auto", "normal", "quiet",
+                      choices=["interrupt", "auto", "pocket", "normal", "quiet",
                                "on", "off", "toggle", "status"],
                       default="toggle")
     p_pr.set_defaults(func=cmd_priority)

@@ -676,7 +676,7 @@ def _emit_ask(ask: str, payload: dict, lead: str = "", structure: list | None = 
     from . import toast
     from ..speak_priority import level_of
 
-    held = level_of(session) in ("normal", "quiet") and toast.should_hold(session)
+    held = level_of(session) in ("pocket", "normal", "quiet") and toast.should_hold(session)
     event = Event(text=msg, source=Source.CLAUDE_CODE,
                   priority=Priority.NORMAL if held else priority,
                   voice=voice_for_session(sess),
@@ -1076,7 +1076,7 @@ def _handle_stop(payload: dict) -> int:
     # conversation, normal waits for a tap unless someone is looking at the
     # conversation, quiet is archived unheard with no toast.
     from . import toast
-    from ..speak_priority import level_of
+    from ..speak_priority import HOLDS, level_of
     level = level_of(metadata["session"])
     if level == "quiet":
         metadata["held"] = True
@@ -1085,10 +1085,10 @@ def _handle_stop(payload: dict) -> int:
                   voice=voice_for_session(_session_name()),
                   metadata=metadata)
     # Nobody looking at this conversation: toast it, play on request.
-    if level == "normal" and toast.should_hold(metadata["session"]):
+    if level in HOLDS and toast.should_hold(metadata["session"]):
         toast.hold(event)
         return 0
-    if level == "normal":
+    if level in HOLDS:
         # Played because someone is looking — now. It may wait minutes behind
         # another thread's speech, so the question is asked again when its
         # turn comes (submit.py `_unwatched_by_now`).

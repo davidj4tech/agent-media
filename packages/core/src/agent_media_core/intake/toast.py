@@ -102,8 +102,9 @@ def should_hold(session: str = "") -> bool:
     for MEDIA_TOAST_LOOKING_S (default 1800), longer than presence: a long
     turn is watched without a keystroke."""
     from .. import watching
+    from ..speak_priority import level_of
 
-    if watching.is_open(session):
+    if watching.is_open(session, pocketed=level_of(session) == "pocket"):
         return False
     pane = os.environ.get("TMUX_PANE")
     desk = _desk(_looking_s()) if pane else None
@@ -315,7 +316,7 @@ def take_for_opened(session: str) -> Optional[int]:
     held Normal reply that has never been played, as a history row id to
     replay, or None. All of the session's waiting toasts are taken, so
     opening it again plays nothing twice; older replies keep their Play."""
-    from ..speak_priority import level_of
+    from ..speak_priority import HOLDS, level_of
     from ..state import StateStore
 
     if not session:
@@ -336,7 +337,7 @@ def take_for_opened(session: str) -> Optional[int]:
         except OSError:
             pass
     _after_take()
-    if level_of(session) != "normal":
+    if level_of(session) not in HOLDS:
         return None
     rid = _wait_for_row(mine[-1][1]) if mine[-1][1] else None
     if rid is None:

@@ -671,10 +671,11 @@ def test_pocket_leases_the_thread_open(server, shelf, signed_in, typed):
 
     res, obj = call(server, "POST", "/session/pocket", {"session": SID2, "pocketed": True}, AUTH)
     assert res.status == 200 and obj["ok"] and obj["until"] > time.time()
-    assert watching.is_open(SID2) and not watching.is_open(SID)
+    assert watching.is_open(SID2, pocketed=True) and not watching.is_open(SID2)
+    assert not watching.is_open(SID, pocketed=True)
     res, obj = call(server, "POST", "/session/pocket", {"session": SID2, "pocketed": False}, AUTH)
     assert obj == {"ok": True, "session": SID2, "until": 0}
-    assert not watching.is_open(SID2)
+    assert not watching.is_open(SID2, pocketed=True)
     res, obj = call(server, "POST", "/session/pocket", {"session": SID2}, AUTH)
     assert res.status == 400 and obj["error"] == "pocketed must be true or false"
     assert "/session/pocket" in app.CORS_PATHS
@@ -687,11 +688,11 @@ def test_pocket_is_gated(server, shelf, monkeypatch):
     monkeypatch.setattr(auth_abs, "abs_urls", lambda: ["http://abs"])
     monkeypatch.setattr(auth_abs, "_abs_get", lambda *a, **k: (None, 401))
     res, _ = call(server, "POST", "/session/pocket", {"session": SID2, "pocketed": True})
-    assert res.status == 401 and not watching.is_open(SID2)
+    assert res.status == 401 and not watching.is_open(SID2, pocketed=True)
 
 
 def test_speech_level_is_set_and_shows_on_the_rows(server, shelf, signed_in, typed):
-    for level, prio in (("interrupt", True), ("quiet", False), ("auto", True)):
+    for level, prio in (("interrupt", True), ("quiet", False), ("pocket", False), ("auto", True)):
         res, obj = call(server, "POST", "/session/priority", {"session": SID2, "level": level}, AUTH)
         assert res.status == 200 and obj == {"ok": True, "session": SID2, "level": level,
                                              "own": True, "priority": prio}
@@ -699,7 +700,7 @@ def test_speech_level_is_set_and_shows_on_the_rows(server, shelf, signed_in, typ
         row = next(r for r in targets["sessions"] if r["session"] == SID2)
         assert row["speech"] == level and row["priority"] is prio
     res, obj = call(server, "POST", "/session/priority", {"session": SID2, "level": "loud"}, AUTH)
-    assert res.status == 400 and obj["error"] == "level must be interrupt, auto, normal, quiet or default"
+    assert res.status == 400 and obj["error"] == "level must be interrupt, auto, pocket, normal, quiet or default"
     call(server, "POST", "/session/priority", {"session": SID2, "level": "normal"}, AUTH)
 
 

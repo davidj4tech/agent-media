@@ -12,7 +12,8 @@ Stop hook, another process, reads it. The pid is the server's: a server that
 died with streams open left a table nobody is watching, so a dead pid reads as
 nothing open.
 
-A screen turned off counts as still looking, for a while. The page is hidden
+A screen turned off counts as still looking, for a while, for a thread at
+the pocket level (speak_priority.py; a normal one is screen-on only). The page is hidden
 then too, so the stream closes, but a locked phone is not a look away: you
 sent a message, pocketed the phone, and want the answer spoken. So the app,
 when its page hides with the screen off (not for another app), leases the
@@ -100,12 +101,12 @@ def pocket(session: str, on: bool) -> float:
     return until
 
 
-def is_open(session: str) -> bool:
-    """Whether `session` is on screen in the app, or was when the screen
-    went off, not long ago."""
+def is_open(session: str, pocketed: bool = False) -> bool:
+    """Whether `session` is on screen in the app; with `pocketed`, also
+    whether it was when the screen went off, not long ago."""
     if not session:
         return False
-    if session in _pockets():
+    if pocketed and session in _pockets():
         return True
     try:
         data = json.loads(_path().read_text())
