@@ -588,6 +588,10 @@ def _entry_span(lines: list[str], aid: str) -> tuple[int, int] | None:
     return None
 
 
+#: Alerts that are requests, not problems: notified, never filed in the inbox.
+NO_RECORD = ("shell.signin.",)
+
+
 def _org(r: dict, change: str) -> None:
     """File the TODO on a raise; note (and for a routine one, close) on a clear.
 
@@ -595,6 +599,10 @@ def _org(r: dict, change: str) -> None:
     also Emacs's and org-autosync's, so the window for a lost edit is the
     width of this function. A failure here never fails the report.
     """
+    # A request waiting on the owner (a shell sign-in to approve on Home) is
+    # not a problem to keep a record of: no TODO for it.
+    if any(str(r.get("id") or "").startswith(p) for p in NO_RECORD):
+        return
     path = _inbox()
     if not path:
         return

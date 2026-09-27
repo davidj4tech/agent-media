@@ -178,6 +178,15 @@ def test_a_raise_files_one_todo_with_the_alert_id(inbox):
     assert "* TODO Something else" in text
 
 
+def test_a_shell_signin_request_files_no_todo(inbox):
+    """A sign-in waiting on Approve is a request, not a problem: notified, not filed."""
+    before = inbox.read_text()
+    res = rep(1, aid="shell.signin.red5", level="needs", title="Approve a sign-in in Sasonica")
+    assert res["notify"] is True
+    rep(2, aid="shell.signin.red5", level="ok")
+    assert inbox.read_text() == before
+
+
 def test_a_routine_clear_closes_the_todo(inbox):
     rep(1, level="warn", title="red5 root is 91% full")
     rep(2, level="ok")

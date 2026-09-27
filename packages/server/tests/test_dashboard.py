@@ -250,6 +250,10 @@ def test_open_alerts_are_on_home_worst_first(monkeypatch):
          "kind": "status", "open": True}]})
     rows = dashboard._alerts()
     assert [r["id"] for r in rows] == ["disk.red5.root", "host.hpo"]
+    real = alerts.listing
+    monkeypatch.setattr(alerts, "listing", lambda open_only=False: {"alerts": [
+        {**real_row, "id": "shell.signin.red5"} for real_row in [{"level": "needs", "title": "t"}]]})
+    assert dashboard._alerts() == [], "a sign-in request is its own card, not an alert"
     assert len(rows[0]["detail"]) == 600, "Home shows a line, not the whole detail"
     assert rows[1]["acked_at"] == 1.6
     monkeypatch.setattr(alerts, "listing", lambda open_only=False: (_ for _ in ()).throw(OSError("no db")))

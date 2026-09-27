@@ -402,7 +402,9 @@ def _alerts() -> list[dict]:
         return []
     return [{k: r.get(k) for k in ("id", "level", "title", "fix", "host", "first_seen",
                                    "changed_at", "acked_at")}
-            | {"detail": str(r.get("detail") or "")[:600]} for r in rows[:20]]
+            | {"detail": str(r.get("detail") or "")[:600]}
+            # A shell sign-in has its own card (signins), with Approve.
+            for r in rows if not str(r.get("id") or "").startswith("shell.signin.")][:20]
 
 
 def _digests() -> list[dict]:
