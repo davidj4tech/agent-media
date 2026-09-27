@@ -6,7 +6,9 @@ be changed from the phone; `POST /session/settings {session, model?, plan?}`
 changes it; `/ask` takes the same two for a new chat (`send.ask`).
 
 Claude Code only: Codex, pi and Hermes answer `can: {model: false, plan:
-false}` and the app hides the chips.
+false}` and the app hides the chips. A new opencode chat has a model sheet
+of its own (`new_sheet`, opencode_models.py: its free models), and `/ask`
+starts it with `-m`; an opencode thread's model is not changed from here.
 
 How, per driver (driver/):
 
@@ -66,8 +68,13 @@ def alias_of(model_id: str) -> str:
 
 
 def clean_new(agent: str, model: str, mode: str) -> tuple[str, str]:
-    """A new chat's model and mode as `ask` passes them on: Claude's only,
-    and only an alias from the sheet (anything else is dropped, not guessed)."""
+    """A new chat's model and mode as `ask` passes them on: Claude's, an alias
+    from the sheet; opencode's, a `provider/model` id (opencode_models.py) and
+    no plan mode. Anything else is dropped, not guessed."""
+    if agent == "opencode":
+        from agent_media_core import opencode_models
+
+        return opencode_models.allowed(model), ""
     if agent != "claude":
         return "", ""
     model = (model or "").strip().lower()
@@ -202,12 +209,26 @@ def _answer(session: str, **extra) -> dict:
     return {"session": session, "models": models(), **state(session), **extra}
 
 
-def get(session: str, bearer: str) -> tuple[bool, dict]:
-    """A thread's settings; with no session, only the sheet (a new chat's)."""
+def new_sheet(agent: str = "claude") -> dict:
+    """A new chat's sheet: Claude Code's aliases, or opencode's free models
+    with what its "Default" runs; {} for an agent with no chip."""
+    if agent == "opencode":
+        from agent_media_core import opencode_models
+
+        offered, default = opencode_models.models()
+        return {"models": offered, "default": opencode_models.default_note(offered, default)}
+    if agent != "claude":
+        return {"models": []}
+    return {"models": models(), "default": default_note()}
+
+
+def get(session: str, bearer: str, agent: str = "claude") -> tuple[bool, dict]:
+    """A thread's settings; with no session, only the sheet (a new chat's,
+    for `agent`)."""
     session = (session or "").strip()
     if not session:
         user, err = auth.gate(bearer)
-        return (True, {"models": models(), "default": default_note()}) if user else (False, err)
+        return (True, new_sheet((agent or "claude").strip().lower())) if user else (False, err)
     if not sessions._SESSION.fullmatch(session):
         return False, {"error": "not a session id", "status": 400}
     user, err = auth.gate(bearer)

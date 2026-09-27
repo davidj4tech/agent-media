@@ -1314,6 +1314,14 @@ Claude Code's own (`Haiku 4.5`, `Fastest for quick answers`, from its
 `/model` list, cached per version; the bare name and no note when it cannot
 be asked). `GET` with no `session` → `{"ok": true, "models", "default"}`, a new
 chat's sheet (`default`: Claude Code's line for its default model, or "").
+`GET ?agent=opencode` (no session, 28 Sep 2026) → opencode's sheet: its free
+models that can call tools — its own `opencode/…` at no cost, and
+OpenRouter's `…:free` when the host has a key — `note: "Free"`, opencode's
+own first; `default` names what opencode's config starts on ("Big Pickle ·
+Free" on a bare install). Paid models are not listed. Any other agent →
+`{"models": []}`. `/ask`'s `model` for opencode is a `provider/model` id
+(checked by pattern, then `-m <id>` on its command line); anything else is
+dropped.
 `POST {"session", "model"?, "plan"?}` → the same after the change, plus `told` (a live session was told
 now; a parked headless one takes it at its resume).
 

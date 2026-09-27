@@ -671,7 +671,9 @@ def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
     without the library's naming convention in the middle.
     `agent` picks Claude Code (the default, or MEDIA_ASK_AGENT), Codex or pi.
     `model` (an alias from session_settings.MODELS) and `mode` ("plan")
-    are Claude's, from the reply box's bottom row; other agents ignore them.
+    are Claude's, from the reply box's bottom row; opencode takes a
+    `provider/model` id as its model (a free one from its sheet); other
+    agents ignore them.
     `cwd_trusted` is for the server's own callers (a chat about a note opens
     in the notes tree), never for a directory the phone named.
     """

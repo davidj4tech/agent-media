@@ -39,6 +39,8 @@ class PaneDriver:
                 # 26 Sep 2026); the allow- form keeps bypass one shift+tab away.
                 flags = ["--allow-dangerously-skip-permissions" if f == "--dangerously-skip-permissions"
                          else f for f in flags] + ["--permission-mode", "plan"]
+        elif agent == "opencode" and model:
+            flags += ["-m", model]
         return send._ask_pane(text, agent=agent, cwd=cwd, host=host, flags=flags,
                               quote=quote, **({"profile": profile} if profile else {}))
 

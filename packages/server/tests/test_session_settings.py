@@ -104,3 +104,63 @@ def test_a_new_pane_chat_gets_the_flags(monkeypatch):
     # Bypass would win over plan; the allow- form keeps it in the cycle.
     assert seen["flags"] == ["--allow-dangerously-skip-permissions", "--model", "opus",
                              "--permission-mode", "plan"]
+
+
+LISTING = """opencode/big-pickle
+{"id": "big-pickle", "name": "Big Pickle", "cost": {"input": 0, "output": 0},
+ "capabilities": {"toolcall": true}, "status": "active"}
+opencode/claude-opus-5
+{"id": "claude-opus-5", "name": "Claude Opus 5", "cost": {"input": 5, "output": 25},
+ "capabilities": {"toolcall": true}}
+openrouter/qwen/qwen3.8-27b:free
+{"id": "qwen/qwen3.8-27b:free", "name": "Qwen3.8 27B (free)", "cost": {"input": 0, "output": 0},
+ "capabilities": {"toolcall": true}}
+openrouter/liquid/lfm-2.5-2.6b:free
+{"id": "liquid/lfm-2.5-2.6b:free", "name": "LFM 2.5", "cost": {"input": 0, "output": 0},
+ "capabilities": {"toolcall": false}}
+gateway/claude-opus-4-8-liberated
+{"id": "claude-opus-4-8-liberated", "name": "Opus via the gateway",
+ "capabilities": {"toolcall": true}}
+"""
+
+
+def test_opencode_sheet_is_the_free_tool_users_its_own_first():
+    from agent_media_core import opencode_models as om
+
+    # A custom provider has no prices (reads 0) and is not "free"; a model
+    # that cannot call tools is no agent; a paid Zen model is not listed.
+    assert om.sheet(LISTING) == [
+        {"id": "opencode/big-pickle", "label": "Big Pickle", "note": "Free"},
+        {"id": "openrouter/qwen/qwen3.8-27b:free", "label": "Qwen3.8 27B (free)", "note": "Free"},
+    ]
+    assert om.default_note(om.sheet(LISTING), "opencode/big-pickle") == "Big Pickle · Free"
+    assert om.default_note(om.sheet(LISTING), "gateway/x") == "gateway/x"
+
+
+def test_an_opencode_chat_takes_a_model_id_and_nothing_else():
+    assert ss.clean_new("opencode", "opencode/big-pickle", "plan") == ("opencode/big-pickle", "")
+    assert ss.clean_new("opencode", "openrouter/qwen/qwen3.8-27b:free", "") == (
+        "openrouter/qwen/qwen3.8-27b:free", "")
+    for bad in ("--help", "big-pickle", "opencode/x; rm -rf ~", "opencode/$(id)", "a/-b"):
+        assert ss.clean_new("opencode", bad, "") == ("", "")
+
+
+def test_a_new_opencode_pane_chat_starts_on_the_model(monkeypatch):
+    from agent_media_server import send
+
+    seen = {}
+    monkeypatch.setattr(send, "_ask_pane", lambda text, **kw: seen.update(kw) or (True, {}))
+    driver.pane_driver().start(agent="opencode", cwd="/x", text="hi", model="opencode/big-pickle")
+    assert seen["flags"] == ["-m", "opencode/big-pickle"]
+    driver.pane_driver().start(agent="opencode", cwd="/x", text="hi")
+    assert seen["flags"] == []
+
+
+def test_a_new_chat_sheet_per_agent(monkeypatch):
+    from agent_media_core import opencode_models as om
+
+    monkeypatch.setattr(om, "models", lambda: (om.sheet(LISTING), "opencode/big-pickle"))
+    oc = ss.new_sheet("opencode")
+    assert [m["id"] for m in oc["models"]][0] == "opencode/big-pickle"
+    assert oc["default"] == "Big Pickle · Free"
+    assert ss.new_sheet("codex") == {"models": []}
