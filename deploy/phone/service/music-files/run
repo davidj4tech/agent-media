@@ -1,0 +1,11 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# The phone's music cache, read-only on 127.0.0.1:6616, so Sasonica's media
+# player plays a track play-local already downloaded here instead of waiting
+# for it to go to red5 and back. The script lives beside this file, so
+# installing is copying this directory into $PREFIX/var/service.
+exec 2>&1
+export HOME=/data/data/com.termux/files/home
+export PREFIX=/data/data/com.termux/files/usr
+[ -f "$HOME/.config/agent-media.env" ] && . "$HOME/.config/agent-media.env"
+export MEDIA_MUSIC_FILES_PORT MEDIA_MUSIC_LOCAL_CACHE
+exec python3 ./music-files.py

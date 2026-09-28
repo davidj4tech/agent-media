@@ -4884,25 +4884,27 @@ def _phone_music_props(patient: bool = False) -> Optional[dict]:
     reading Mopidy would show an idle rooms queue while the track is audibly
     playing. One `get_properties` batch = one bridge round-trip (a per-property
     read would cost several hundred ms each from this host to the phone).
+
+    Sasonica's own media player is asked first when it is configured (the
+    `sasonica` target, 28 Sep 2026): it answers the same properties, and a
+    track playing there must not read as Mopidy idle.
     """
-    from .sinks import music_local
+    from .sinks import music_local, music_sasonica
     from .sinks import _mpv_ipc as ipc
-    if not music_local.configured():
-        return None
-    ep = music_local.endpoint()
-    attempts = 5 if (patient and str(ep).startswith("tcp://")) else 1
-    try:
-        props = ipc.display_properties(
-            ep,
-            ["idle-active", "pause", "time-pos", "duration", "speed",
-             "media-title", "chapter-metadata/by-key/title", "volume",
-             "path"],
-            timeout=1.5, attempts=attempts)
-    except (ipc.MpvIpcError, OSError):
-        return None
-    if props.get("idle-active") is not False:
-        return None       # idle (or unknown) ⇒ the phone isn't the live backend
-    return props
+    for ep in [e for e in (music_sasonica.endpoint(), music_local.endpoint()) if e]:
+        attempts = 5 if (patient and str(ep).startswith("tcp://")) else 1
+        try:
+            props = ipc.display_properties(
+                ep,
+                ["idle-active", "pause", "time-pos", "duration", "speed",
+                 "media-title", "chapter-metadata/by-key/title", "volume",
+                 "path"],
+                timeout=1.5, attempts=attempts)
+        except (ipc.MpvIpcError, OSError):
+            continue
+        if props.get("idle-active") is False:
+            return props
+    return None       # idle (or unknown) ⇒ the phone isn't the live backend
 
 
 def _mpv_music_label(props: dict) -> str:
@@ -5166,7 +5168,16 @@ def _music_live_backend(m: "SinkMusic"):
     (playing or paused), else Mopidy. Mirrors
     SinkMusicRouter._observe_backend, which already makes the speech
     coordinator's duck follow the live backend — without this the popup's
-    transport keys would drive an idle Mopidy while the phone plays."""
+    transport keys would drive an idle Mopidy while the phone plays.
+    Sasonica's own media player (the `sasonica` target) comes first of all."""
+    from .sinks.music_sasonica import SinkMusicSasonica, configured as _sas_configured
+    if _sas_configured():
+        sas = SinkMusicSasonica()
+        try:
+            if sas.loaded():
+                return sas
+        except Exception:  # noqa: BLE001 — app unreachable ⇒ not live
+            pass
     from .sinks.music_app import SinkMusicApp, configured as _app_configured
     if _app_configured():
         app = SinkMusicApp()

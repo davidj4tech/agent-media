@@ -77,7 +77,7 @@ def _wire(monkeypatch):
 
 def test_play_hands_the_app_a_served_url(monkeypatch):
     sent = _wire(monkeypatch)
-    monkeypatch.setattr(music_sasonica.music_app, "resolve",
+    monkeypatch.setattr(music_sasonica, "resolve",
                         lambda uri: ("http://red5:8780/audio/music/x.mka", "A Song"))
     assert SinkMusicSasonica("tcp://p8a:6615").play("yt:https://youtu.be/aaaaaaaaaaa")
     assert sent == [
@@ -89,20 +89,20 @@ def test_play_hands_the_app_a_served_url(monkeypatch):
 
 def test_add_appends_and_leaves_pause_alone(monkeypatch):
     sent = _wire(monkeypatch)
-    monkeypatch.setattr(music_sasonica.music_app, "resolve", lambda uri: ("http://x/a.mka", ""))
+    monkeypatch.setattr(music_sasonica, "resolve", lambda uri: ("http://x/a.mka", ""))
     assert SinkMusicSasonica("tcp://p8a:6615").play("http://x/a.mka", replace=False)
     assert sent == [("tcp://p8a:6615", "cmd", "loadfile", "http://x/a.mka", "append-play")]
 
 
 def test_nothing_playable_declines(monkeypatch):
     sent = _wire(monkeypatch)
-    monkeypatch.setattr(music_sasonica.music_app, "resolve", lambda uri: (None, ""))
+    monkeypatch.setattr(music_sasonica, "resolve", lambda uri: (None, ""))
     assert SinkMusicSasonica("tcp://p8a:6615").play("spotify:track:x") is False
     assert sent == []
 
 
 def test_an_unreachable_app_declines(monkeypatch):
-    monkeypatch.setattr(music_sasonica.music_app, "resolve", lambda uri: ("http://x/a.mka", ""))
+    monkeypatch.setattr(music_sasonica, "resolve", lambda uri: ("http://x/a.mka", ""))
 
     def refuse(*a):
         raise OSError("connection refused")
@@ -123,3 +123,59 @@ def test_offered_in_the_picker_only_when_configured(monkeypatch):
     names = {o["name"]: o for o in audio_targets.music_options()}
     assert names["sasonica"] == {"name": "sasonica", "label": "Phone (Sasonica)",
                                  "available": True, "why": None}
+
+
+# ---- where the app reads the track from ------------------------------------
+
+YT = "yt:https://www.youtube.com/watch?v=ogn-z3GJzeA"
+
+
+def _phone(monkeypatch, cached=None, fetched=None, title="A Mix"):
+    fetches = []
+    monkeypatch.setattr(music_sasonica.music_local, "_phone_cached_path", lambda vid: cached)
+    monkeypatch.setattr(music_sasonica.music_local, "_phone_title", lambda vid: title)
+
+    def fetch(uri):
+        fetches.append(uri)
+        return fetched
+    monkeypatch.setattr(music_sasonica, "_phone_fetch", fetch)
+    monkeypatch.setattr(music_sasonica.music_app, "resolve", lambda uri: ("http://red5/x.mka", "red5"))
+    return fetches
+
+
+def test_a_track_the_phone_has_is_read_from_the_phone(monkeypatch):
+    fetches = _phone(monkeypatch, cached="/data/home/.cache/music-offline/ogn-z3GJzeA.mka")
+    assert music_sasonica.resolve(YT) == ("http://localhost:6616/ogn-z3GJzeA.mka", "A Mix")
+    assert fetches == []
+
+
+def test_a_track_it_lacks_is_fetched_on_the_phone_not_red5(monkeypatch):
+    fetches = _phone(monkeypatch, fetched="/data/home/.cache/music-offline/ogn-z3GJzeA.mka")
+    assert music_sasonica.resolve(YT)[0] == "http://localhost:6616/ogn-z3GJzeA.mka"
+    assert fetches == ["https://www.youtube.com/watch?v=ogn-z3GJzeA"]
+
+
+def test_a_failed_phone_fetch_takes_the_red5_route(monkeypatch):
+    _phone(monkeypatch)
+    assert music_sasonica.resolve(YT) == ("http://red5/x.mka", "red5")
+
+
+def test_files_off_takes_the_red5_route(monkeypatch):
+    fetches = _phone(monkeypatch, cached="/x/ogn-z3GJzeA.mka")
+    monkeypatch.setenv("MEDIA_MUSIC_SASONICA_FILES", "off")
+    assert music_sasonica.resolve(YT) == ("http://red5/x.mka", "red5")
+    assert fetches == []
+
+
+def test_a_plain_url_is_not_looked_for_on_the_phone(monkeypatch):
+    fetches = _phone(monkeypatch)
+    monkeypatch.setattr(music_sasonica.music_app, "resolve", lambda uri: (uri, ""))
+    assert music_sasonica.resolve("https://example.com/a.mp3") == ("https://example.com/a.mp3", "")
+    assert fetches == []
+
+
+def test_a_jump_is_the_seek_command(monkeypatch):
+    # The app's socket takes `seek`; a write to time-pos is refused.
+    sent = _wire(monkeypatch)
+    SinkMusicSasonica("tcp://p8a:6615").seek_cur(position_ms=600_000)
+    assert sent == [("tcp://p8a:6615", "cmd", "seek", 600.0, "absolute")]
