@@ -561,7 +561,9 @@ ahead.
    companion app, because speech and music share the phone's player and its
    handoff already lives here. Music plays in the app's own ExoPlayer (a
    second channel beside speech, the same mpv-style IPC), so it works with no
-   Termux setup. Music comes first, then books, podcasts and replays. It covers now playing and transport, where it
+   Termux setup. Music comes first, then books (in full: position synced to
+   Audiobookshelf, chapters, sleep timer, offline, which retires Sasonica
+   ABS for playback), then podcasts. Replays stay on their threads. It covers now playing and transport, where it
    plays (the existing `/targets` picker), the queue, likes, and search last.
    The server gains `GET/POST /music`. Fork-only files, with one
    `// Sasonica:` line in `Nav.tsx`. Sketch and order:
