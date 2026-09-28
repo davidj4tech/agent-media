@@ -103,6 +103,43 @@ def _forget(pane: str) -> None:
 
 # --- what is here ----------------------------------------------------------------
 
+def api_key(agent: str, provider: str, key: str, bearer: str) -> tuple[bool, dict]:
+    """`POST /harnesses/apikey`: a provider's API key for opencode, checked
+    with the provider and kept in opencode's auth.json; `key: ""` removes it.
+
+    The way to more free models than opencode's own (opencode_keys.py). The
+    key is never echoed back, and never logged."""
+    ok, detail = auth.may_control_speech(bearer)
+    if not ok:
+        return False, detail
+    from agent_media_core import opencode_keys, opencode_models
+
+    if agent != harnesses.OPENCODE:
+        return False, {"error": "API keys are for opencode here", "status": 400}
+    if provider not in opencode_keys.PROVIDERS:
+        return False, {"error": f"unknown provider {provider!r}", "status": 400}
+    name = opencode_keys.PROVIDERS[provider]["name"]
+    key = (key or "").strip()
+    if not key:
+        removed = opencode_keys.remove(provider)
+        opencode_models.forget()
+        return True, {"provider": provider, "set": False,
+                      "note": f"{name} key removed" if removed else f"no {name} key was set",
+                      "keys": opencode_keys.providers()}
+    if not opencode_keys.well_formed(key):
+        return False, {"error": f"that does not look like a {name} key", "status": 400}
+    good, note = opencode_keys.check(provider, key)
+    if good is False:
+        return False, {"error": note, "status": 400}
+    if good is None:
+        # Kept anyway: the provider is the one that could not be reached.
+        note = f"Kept, not checked: {note}"
+    opencode_keys.save(provider, key)
+    opencode_models.forget()
+    return True, {"provider": provider, "set": True, "note": note,
+                  "keys": opencode_keys.providers()}
+
+
 def agents(bearer: str) -> tuple[bool, dict]:
     """`/agents`: the four harnesses, and what each of them needs.
 
@@ -151,6 +188,11 @@ def agents(bearer: str) -> tuple[bool, dict]:
                 # button should say so rather than pretending otherwise.
                 "installed_action": "update" if here else "install",
             })
+            if name == harnesses.OPENCODE and not profile:
+                # Providers whose key adds free models (POST /harnesses/apikey).
+                from agent_media_core import opencode_keys
+
+                rows[-1]["api_keys"] = opencode_keys.providers()
     return True, {"agents": rows}
 
 

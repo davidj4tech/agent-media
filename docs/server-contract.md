@@ -135,7 +135,7 @@ The app routes: `/conversation`, `/conversation/log`, `/conversations`,
 `/targets`, `/item`, `/reply`, `/ask`, `/focus`, `/session/resume`,
 `/session/close`, `/session/answer`, `/session/stop`, `/draft`, `/speech/now`, `/speech/ctl`,
 `/sessions/state`, `/commands`, `/rename`, `/harnesses`, `/harnesses/run`,
-`/harnesses/screen`, `/harnesses/keys`, `/harnesses/close`,
+`/harnesses/screen`, `/harnesses/keys`, `/harnesses/apikey` (28 Sep 2026), `/harnesses/close`,
 `/harnesses/logout`, `/harnesses/updates` (23 Sep 2026), `/share`, `/upload` (25 Sep 2026),
 `/search` (23 Sep 2026), and (22 Sep 2026) `/threads/{session}/events` — matched as a pattern, not
 listed (`app.cors_path`), so its preflight and its answers, refusals
@@ -1667,6 +1667,7 @@ Getting an agent onto the host and signed in, from the phone.
 | `POST /harnesses/keys` | `{"pane", "text"?, "key"?}` | `{"ok", "pane"}` · 400 bad key / nothing to type, 404, 410 |
 | `POST /harnesses/close` | `{"pane"}` | `{"ok", "pane"}` · 404 |
 | `POST /harnesses/logout` (23 Sep 2026) | `{"agent"}` | `{"ok", "agent", "cmd", "exit", "lines", "auth"}` · 400 unknown agent, 409 no sign-out, 503/504 it would not run |
+| `POST /harnesses/apikey` (28 Sep 2026) | `{"agent": "opencode", "provider": "openrouter", "key"}` (`key: ""` removes it) | `{"ok", "provider", "set", "note", "keys": [{"id", "name", "signup", "set"}]}` · 400 not opencode / unknown provider / not key-shaped / the provider refused it. Checked with the provider first (a provider that cannot be reached: kept, the note says not checked); kept in opencode's `auth.json`, 0600; never echoed. opencode's default row in `GET /harnesses` carries the same `api_keys`. Its free models join the new-chat sheet at once. |
 | `GET /harnesses/updates[?refresh=1]` (23 Sep 2026) | – | `{"ok", "updates": [{"name", "installed", "latest", "behind": bool\|null, "line", "checked_at"}]}` |
 
 Only windows `/harnesses/run` opened can be read or typed into.

@@ -254,3 +254,30 @@ def test_opencode_refuses_mid_turn_plan_and_strangers(oc_pane):
     assert ss.post(OC, {"model": "--help"}, "t")[1]["status"] == 400
     ok, d = ss.post(OC, {"model": "opencode/not-on-the-sheet"}, "t")
     assert not ok and d["status"] == 400 and not oc_pane.typed
+
+
+def test_an_opencode_key_is_checked_kept_and_never_echoed(monkeypatch, tmp_path):
+    from agent_media_core import opencode_keys, opencode_models
+
+    from agent_media_server import harnesses as H
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    monkeypatch.setattr(auth, "may_control_speech", lambda b: (True, {}))
+    forgot = []
+    monkeypatch.setattr(opencode_models, "forget", lambda: forgot.append(1))
+    key = "sk-or-v1-" + "b" * 64
+    monkeypatch.setattr(opencode_keys, "check", lambda p, k: (False, "OpenRouter refused this key"))
+    ok, d = H.api_key("opencode", "openrouter", key, "t")
+    assert not ok and d["status"] == 400 and not (tmp_path / "opencode" / "auth.json").exists()
+    monkeypatch.setattr(opencode_keys, "check", lambda p, k: (True, "Free account"))
+    ok, d = H.api_key("opencode", "openrouter", key, "t")
+    assert ok and d["set"] and key not in json.dumps(d) and forgot
+    assert d["keys"][0]["set"] is True
+    monkeypatch.setattr(opencode_keys, "check", lambda p, k: (None, "could not reach OpenRouter"))
+    ok, d = H.api_key("opencode", "openrouter", key, "t")
+    assert ok and d["note"].startswith("Kept, not checked")
+    ok, d = H.api_key("opencode", "openrouter", "", "t")
+    assert ok and not d["set"] and d["keys"][0]["set"] is False
+    assert H.api_key("codex", "openrouter", key, "t")[1]["status"] == 400
+    assert H.api_key("opencode", "acme", key, "t")[1]["status"] == 400
+    assert H.api_key("opencode", "openrouter", "not a key", "t")[1]["status"] == 400

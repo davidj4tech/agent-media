@@ -169,3 +169,10 @@ def current(session: str) -> str:
 def label_of(model: str, offered: list[dict]) -> str:
     """The name opencode's picker lists `model` under, if the sheet has it."""
     return next((m["label"] for m in offered if m["id"] == model), "")
+
+
+def forget() -> None:
+    """Drop the cached sheet: a key was added or removed, so the list moves."""
+    global _memo
+    with _LOCK:
+        _memo = (0.0, [], "")

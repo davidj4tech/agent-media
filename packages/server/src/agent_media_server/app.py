@@ -188,7 +188,7 @@ CORS_PATHS = frozenset({
     "/settings/language",
     "/sessions/state", "/commands", "/rename",
     "/harnesses", "/harnesses/run", "/harnesses/screen",
-    "/harnesses/keys", "/harnesses/close", "/harnesses/logout",
+    "/harnesses/keys", "/harnesses/apikey", "/harnesses/close", "/harnesses/logout",
     "/harnesses/updates", "/harnesses/profiles", "/harnesses/profiles/remove",
     "/setup", "/setup/run", "/shell", "/shell/signins", "/shell/signin",
     "/share", "/upload", "/dashboard",
@@ -1098,6 +1098,12 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
 
         body = _read_json(h) or {}
         ok, detail = shell_signin.decide(str(body.get("id") or ""), body.get("approve") is True, _bearer(h))
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    elif path == "/harnesses/apikey":
+        # A provider's API key for opencode: more free models (harnesses.api_key).
+        body = _read_json(h) or {}
+        ok, detail = harnesses.api_key(str(body.get("agent") or ""), str(body.get("provider") or ""),
+                                       str(body.get("key") or ""), _bearer(h))
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path == "/setup/run":
         # `media-setup profile [--only NAME]` in a window, watched like an
