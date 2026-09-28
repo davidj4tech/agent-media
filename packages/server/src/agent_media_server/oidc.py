@@ -138,7 +138,8 @@ def verify(token: str, *, now: float | None = None) -> dict:
     kid = header.get("kid")
 
     def matching(keys):
-        return [k for k in keys if k.get("kty") == "RSA" and (not kid or k.get("kid") == kid)]
+        # A key with no kid (Simple OAuth publishes one) matches any token.
+        return [k for k in keys if k.get("kty") == "RSA" and (not kid or k.get("kid") in (kid, None))]
 
     keys = matching(_keys(iss))
     if not keys and kid:

@@ -88,6 +88,17 @@ def test_refusals(bad, why):
     assert e.value.code == "bad_id_token" and why in str(e.value)
 
 
+def test_a_key_with_no_kid_matches(monkeypatch):
+    """Simple OAuth's JWKS has one key and no kid."""
+    jwk = _jwk(KEY)
+    del jwk["kid"]
+    monkeypatch.setattr(oidc, "_fetch_json", lambda url, timeout=8.0: (
+        {"issuer": ISS, "jwks_uri": f"{ISS}/.well-known/jwks.json"} if "openid-configuration" in url
+        else {"keys": [jwk]}))
+    oidc._reset_for_tests()
+    assert oidc.verify(token(kid="whatever"))["sub"] == "42"
+
+
 def test_a_tampered_payload_fails_the_signature():
     h, p, s = token().split(".")
     claims = json.loads(base64.urlsafe_b64decode(p + "=="))
