@@ -30,9 +30,9 @@ def player(monkeypatch):
     ran: list = []
     monkeypatch.setattr(music, "_status", lambda: dict(NOW))
     monkeypatch.setattr(music, "_run", lambda argv: (ran.append(argv), (True, ""))[1])
-    music._reset_cache()
+    music._reset_cache(forget=True)
     yield ran
-    music._reset_cache()
+    music._reset_cache(forget=True)
 
 
 def test_now_is_the_status_and_the_picker(server, signed_in, audio_host, player):
@@ -105,3 +105,26 @@ def test_a_mix_lists_its_tracks(server, signed_in, audio_host, player, monkeypat
     _, obj = call(server, "GET", "/music", headers=AUTH)
     assert obj["chapters"] == [{"title": "Sun Salutation", "start_ms": 0},
                                {"title": "Trance Life", "start_ms": 674500}]
+
+
+def test_a_failed_read_after_a_track_keeps_the_track(server, signed_in, audio_host, monkeypatch):
+    reads = [dict(NOW), {"backend": "mopidy", "pos_ms": None}]
+    monkeypatch.setattr(music, "_status", lambda: reads.pop(0) if len(reads) > 1 else reads[0])
+    music._reset_cache(forget=True)
+    _, first = call(server, "GET", "/music", headers=AUTH)
+    music._reset_cache()
+    _, second = call(server, "GET", "/music", headers=AUTH)
+    assert first["now"] == NOW and second["now"] == NOW
+    music._reset_cache(forget=True)
+
+
+def test_a_stop_is_believed_at_once(server, signed_in, audio_host, monkeypatch):
+    monkeypatch.setattr(music, "_run", lambda argv: (True, ""))
+    states = [dict(NOW)]
+    monkeypatch.setattr(music, "_status", lambda: states[0])
+    music._reset_cache(forget=True)
+    call(server, "GET", "/music", headers=AUTH)
+    states[0] = {"backend": "mopidy", "pos_ms": None}
+    _, obj = call(server, "POST", "/music", {"action": "stop"}, AUTH)
+    assert obj["now"]["pos_ms"] is None
+    music._reset_cache(forget=True)

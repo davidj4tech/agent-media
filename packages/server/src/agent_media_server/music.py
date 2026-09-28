@@ -36,10 +36,17 @@ ACTIONS = {
     "seek": "seek", "seek-by": "seek",
 }
 
-_CACHE_TTL_S = 1.5
+_CACHE_TTL_S = 2.5
+#: A read that finds nothing right after one that found a track is believed
+#: only this long later: over the phone's link (~0.5 s each way on mobile) a
+#: read can fail, and a failed read looks like "nothing playing" — the tab
+#: flickered between the two (David, 28 Sep 2026).
+_STICKY_S = 12.0
 _CMD_TIMEOUT_S = 30.0
 _LOCK = threading.Lock()
 _CACHE: list = [0.0, None]
+#: The last answer that found a track: `(at, (now, chapters))`.
+_LAST: list = [None]
 
 
 def _status() -> dict:
@@ -61,9 +68,11 @@ def _run(argv: list[str]) -> tuple[bool, str]:
     return r.returncode == 0, (r.stderr or r.stdout or "").strip()[-300:]
 
 
-def _reset_cache() -> None:
+def _reset_cache(forget: bool = False) -> None:
     with _LOCK:
         _CACHE[:] = [0.0, None]
+        if forget:
+            _LAST[0] = None
 
 
 def _now() -> tuple[dict, list[dict]]:
@@ -79,6 +88,11 @@ def _now() -> tuple[dict, list[dict]]:
         now = {"backend": None}
     got = (now, _chapters(now))
     with _LOCK:
+        last = _LAST[0]
+        if now.get("pos_ms") is None and last and time.monotonic() - last[0] < _STICKY_S:
+            got = last[1]
+        elif now.get("pos_ms") is not None:
+            _LAST[0] = (time.monotonic(), got)
         _CACHE[:] = [time.monotonic(), got]
     return got
 
@@ -137,7 +151,7 @@ def control(body: dict, bearer: str) -> tuple[bool, dict]:
     elif action == "prev":
         argv.append("--restart-first")
     done, said = _run(argv)
-    _reset_cache()
+    _reset_cache(forget=action == "stop")
     if not done:
         print(f"music: {' '.join(argv)} failed: {said}", file=sys.stderr)
         return False, {"error": said or f"{action} failed", "status": 502, **_answer()}

@@ -202,6 +202,12 @@ class SinkMusicRouter:
         target = _resolve_target(target)
         if target.name in _SASONICA_TARGETS:
             if self.sasonica.play(uri, target, replace=replace, **opts):
+                if replace:
+                    # One player at a time: a track left paused in the Termux
+                    # mpv read as "what is playing" once the app's ended, and
+                    # the Media tab's controls went to it (28 Sep 2026).
+                    threading.Thread(target=self._quiet_local, daemon=True,
+                                     name="music-quiet-local").start()
                 return
             log.info("sink-music-router: Sasonica did not take %s; phone mpv instead", uri)
             self.local.play(uri, target, replace=replace, **opts)
@@ -214,6 +220,15 @@ class SinkMusicRouter:
             self.local.play(uri, target, replace=replace, **opts)
         else:
             self.mopidy.play(uri, target, replace=replace, **opts)
+
+    def _quiet_local(self) -> None:
+        if not _local_configured():
+            return
+        try:
+            if self.local.loaded():
+                self.local.stop()
+        except Exception:  # noqa: BLE001 — best-effort tidying
+            pass
 
     # ---- coordinator-facing control: follows the live backend -----------
 
