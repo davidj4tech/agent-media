@@ -3112,6 +3112,11 @@ The app's flow: `GET /enrol` (open) → `{"accounts": [{"issuer",
 code for the ID token at the issuer's token endpoint (a public client, no
 secret) and then goes on as for an `id_token`.
 
+`GET /me` (a device token) → `{"ok", "device_id", "name", "enrol",
+"account", "issuer"}`: this device as the server knows it, `account` the
+email of the account that enrolled it (null for a code-paired device) — the
+app's "Signed in as" (29 Sep 2026). 401 for anything but a device token.
+
 Configuration: `MEDIA_OIDC_ISSUERS` (exact `iss`, comma-separated),
 `MEDIA_OIDC_CLIENTS` (the `aud` an ID token must carry), `MEDIA_OIDC_ALLOW`
 (`<iss>|<sub>` or `<iss>|email=<addr>`, a verified email only: who may have a

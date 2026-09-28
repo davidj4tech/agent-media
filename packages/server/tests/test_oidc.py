@@ -187,3 +187,12 @@ def test_enrol_with_a_code_swaps_it_at_the_issuer(server, monkeypatch):
     assert seen["url"] == f"{ISS}/oauth/token"
     assert "code_verifier=" + "v" * 43 in seen["body"] and "client_id=sasonica-app" in seen["body"]
     assert "client_secret" not in seen["body"], "a public client"
+
+
+def test_me_says_which_account_a_device_is(server):
+    res, obj = call(server, "POST", "/enrol", {"id_token": token(), "device": "phone"})
+    res, me = call(server, "GET", "/me", headers={"Authorization": f"Bearer {obj['token']}"})
+    assert res.status == 200
+    assert me["account"] == "owner@example.com" and me["issuer"] == ISS and me["enrol"] is True
+    res, _ = call(server, "GET", "/me", headers={"Authorization": "Bearer nope"})
+    assert res.status == 401

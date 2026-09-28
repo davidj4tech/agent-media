@@ -190,7 +190,7 @@ CORS_PATHS = frozenset({
     "/harnesses", "/harnesses/run", "/harnesses/screen",
     "/harnesses/keys", "/harnesses/apikey", "/harnesses/close", "/harnesses/logout",
     "/harnesses/updates", "/harnesses/profiles", "/harnesses/profiles/remove",
-    "/setup", "/setup/run", "/shell", "/shell/signins", "/shell/signin", "/enrol",
+    "/setup", "/setup/run", "/shell", "/shell/signins", "/shell/signin", "/enrol", "/me",
     "/share", "/upload", "/dashboard",
     "/sessions/events", "/search",
 })
@@ -528,6 +528,18 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
         # signed in — so the app can offer the buttons that would fix it.
         ok, detail = harnesses.agents(_bearer(h))
         _json(h, 200 if ok else detail.pop("status", 403), {"ok": ok, **detail})
+    elif path == "/me":
+        # This device as the server knows it: its name, whether it may pair
+        # others, and the account that enrolled it (null for a paired one) —
+        # the app's "Signed in as …" (David, 29 Sep 2026).
+        dev = devices.lookup(_bearer(h))
+        if not dev:
+            _json(h, 401, {"ok": False, "error": "not a device of this server"})
+        else:
+            _json(h, 200, {"ok": True, "device_id": dev.get("id"), "name": dev.get("name"),
+                           "enrol": devices.may_enrol(dev),
+                           "account": dev.get("account") or None,
+                           "issuer": dev.get("iss") or None})
     elif path == "/enrol":
         # Where the app signs in with an account (oidc.py): open, like /pair.
         from . import oidc
