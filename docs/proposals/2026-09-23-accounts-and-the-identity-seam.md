@@ -4,6 +4,16 @@ Status: **proposal, nothing built.** Extends `server-contract.md` §9 (device
 tokens, built 22 Sep 2026). Touches `agent_media_server/auth.py`,
 `devices.py`, `app.py`.
 
+
+**Decided (David, 29 Sep 2026): the split.** Drupal (cms.sasonica.com, behind
+sasonica.com) owns the account: sign-up, roles, invitations, billing, and it
+is the OIDC issuer. A **Sasonica Matrix homeserver of its own** (sasonica.com,
+not ryer.org, which stays personal: David's family and his bridged messages)
+owns devices, rooms-as-threads and push, signing in through Drupal's issuer.
+The homeserver is set up when rooms-as-threads is built, not before; the
+issuer comes first. Personal rooms and gateways stay on ryer.org and reach the
+app through the canvas (`2026-09-23-matrix-in-the-app.md`).
+
 ## Why
 
 Pairing today is one-directional. The app can redeem a code; nothing in it
