@@ -8,6 +8,8 @@
 # device's adbd over loopback.
 #
 #   sasonica-adb setup PAIR_PORT CODE CONNECT_PORT   pair, connect, apply
+#   sasonica-adb reapply CONNECT_PORT              connect, apply: no code, once
+#                                                   paired (the key stays trusted)
 #   sasonica-adb pair PORT CODE
 #   sasonica-adb connect PORT
 #   sasonica-adb apply        the named fixes below, and nothing else
@@ -97,9 +99,13 @@ case "${1:-}" in
     [ $# -eq 4 ] || { say "fail setup: usage: sasonica-adb setup PAIR_PORT CODE CONNECT_PORT"; exit 2; }
     cmd_pair "$2" "$3" && cmd_connect "$4" && cmd_apply
     ;;
+  reapply)
+    [ $# -eq 2 ] || { say "fail reapply: usage: sasonica-adb reapply CONNECT_PORT"; exit 2; }
+    cmd_connect "$2" && cmd_apply
+    ;;
   pair) [ $# -eq 3 ] || exit 2; cmd_pair "$2" "$3" ;;
   connect) [ $# -eq 2 ] || exit 2; cmd_connect "$2" ;;
   apply) cmd_apply ;;
   status) cmd_status ;;
-  *) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac
