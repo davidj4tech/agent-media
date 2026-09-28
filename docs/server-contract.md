@@ -3136,6 +3136,11 @@ refusal leaves the details as they were; it does not sign the device out.
 Allow accounts by `sub` (the issuer's user id, which does not change) rather
 than by email.
 
+`POST /me/signout` (a device token) → `{"ok", "id"}`: sign out — this device
+forgets itself, as `devices --revoke` would (its token stops working, its
+row and any account refresh token go). Any device may; 401 for anything
+but a device token. The app's profile menu → Sign out.
+
 Configuration: `MEDIA_OIDC_ISSUERS` (exact `iss`, comma-separated),
 `MEDIA_OIDC_CLIENTS` (the `aud` an ID token must carry), `MEDIA_OIDC_ALLOW`
 (`<iss>|<sub>` or `<iss>|email=<addr>`, a verified email only: who may have a

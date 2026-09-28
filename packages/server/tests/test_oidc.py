@@ -242,3 +242,15 @@ def test_enrol_carries_the_picture(server):
     assert res.status == 200 and obj["picture"] == "https://cms.sasonica.test/p.png"
     res, me = call(server, "GET", "/me", headers={"Authorization": f"Bearer {obj['token']}"})
     assert me["picture"] == "https://cms.sasonica.test/p.png"
+
+
+def test_sign_out_forgets_this_device(server):
+    res, obj = call(server, "POST", "/enrol", {"id_token": token(), "device": "phone"})
+    auth_h = {"Authorization": f"Bearer {obj['token']}"}
+    res, out = call(server, "POST", "/me/signout", {}, headers=auth_h)
+    assert res.status == 200 and out["id"] == obj["device_id"]
+    assert all(d["id"] != obj["device_id"] for d in devices.list_devices())
+    res, _ = call(server, "GET", "/me", headers=auth_h)
+    assert res.status == 401, "the token no longer works"
+    res, _ = call(server, "POST", "/me/signout", {}, headers=auth_h)
+    assert res.status == 401

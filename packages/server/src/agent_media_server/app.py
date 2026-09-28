@@ -192,7 +192,7 @@ CORS_PATHS = frozenset({
     "/harnesses", "/harnesses/run", "/harnesses/screen",
     "/harnesses/keys", "/harnesses/apikey", "/harnesses/close", "/harnesses/logout",
     "/harnesses/updates", "/harnesses/profiles", "/harnesses/profiles/remove",
-    "/setup", "/setup/run", "/shell", "/shell/signins", "/shell/signin", "/enrol", "/me",
+    "/setup", "/setup/run", "/shell", "/shell/signins", "/shell/signin", "/enrol", "/me", "/me/signout",
     "/share", "/upload", "/dashboard",
     "/sessions/events", "/search",
 })
@@ -939,6 +939,17 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         _devices_code(h)
     elif path == "/devices/revoke":
         _devices_revoke(h)
+    elif path == "/me/signout":
+        # Sign out: this device forgets itself — its token stops working here
+        # and the row (with any account refresh token) is dropped. Any device
+        # may, enrol bit or not (David, 29 Sep 2026: the profile menu).
+        dev = devices.lookup(_bearer(h))
+        if not dev:
+            _json(h, 401, {"ok": False, "error": "not a device of this server"})
+        else:
+            devices.revoke(str(dev.get("id") or ""))
+            print(f"devices: {dev.get('id')} ({dev.get('name')!r}) signed out", file=sys.stderr)
+            _json(h, 200, {"ok": True, "id": dev.get("id")})
     elif path == "/share":
         # "Play with agent-media" from the app's share sheet: media-share's
         # /share, with the caller's ABS bearer instead of a token of its own.
