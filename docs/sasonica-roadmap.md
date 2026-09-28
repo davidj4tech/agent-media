@@ -563,7 +563,13 @@ ahead.
    second channel beside speech, the same mpv-style IPC), so it works with no
    Termux setup. Music comes first, then books (in full: position synced to
    Audiobookshelf, chapters, sleep timer, offline, which retires Sasonica
-   ABS for playback), then podcasts. Replays stay on their threads. It covers now playing and transport, where it
+   ABS for playback), then podcasts. Replays stay on their threads.
+   **Step 0 built 28 Sep 2026, not yet heard:** the app's media player
+   (sasonica-app `5372c64`, `Media3Music` on 6615) and the server's
+   `sasonica` music target (agent-media `f8e380a`,
+   `MEDIA_MUSIC_SASONICA_ENDPOINT=tcp://p8a:6615` set on red5). The target is
+   offered in the picker, not the default. Next: install on p8a, play a track
+   there, then make it the default. It covers now playing and transport, where it
    plays (the existing `/targets` picker), the queue, likes, and search last.
    The server gains `GET/POST /music`. Fork-only files, with one
    `// Sasonica:` line in `Nav.tsx`. Sketch and order:
