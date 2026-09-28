@@ -3601,6 +3601,24 @@ def _replay_audio_missing(row: dict, clip_uris: list, target: Target) -> str:
     return ""
 
 
+#: A sentence the phone voices itself (engine "device") has only an estimated
+#: length, and heard it runs longer: 841 sentences with measured starts
+#: (28 Sep 2026) fit start-to-start = 0.972 × estimate + 0.943 s, the gap
+#: while the phone makes the next one included. Summing bare estimates put a
+#: replay's bold ~0.8 s further ahead per sentence (David: "jumps to the next
+#: sentence a little too early").
+_DEVICE_LENGTH_SCALE = 0.972
+_DEVICE_LENGTH_GAP_S = 0.943
+
+
+def _heard_length(estimate: float, ex: dict) -> float:
+    """Start-to-start seconds of one clip: exact for rendered audio, fitted
+    for a sentence the phone voices itself."""
+    if ex.get("engine") == "device":
+        return _DEVICE_LENGTH_SCALE * estimate + _DEVICE_LENGTH_GAP_S
+    return estimate
+
+
 def _replay_track_pidfile():
     """Where the replay follower's pid is kept. One, not one per pane as it
     was (/tmp/media-replay-track-<pane>.pid): there is one speech player, so
@@ -3807,7 +3825,7 @@ def _push_replay(row: dict, ex: dict, clip_uris: list, clip_durations: list,
                 starts, _acc = [], 0.0
                 for d in clip_durations:
                     starts.append(_acc)
-                    _acc += float(d)
+                    _acc += _heard_length(float(d), ex)
             clip_offsets = [float(s) for s in starts]
             np_extras["clip_offsets_s"] = clip_offsets
             np_extras["play_started_at"] = time.time() - clip_offsets[start]
