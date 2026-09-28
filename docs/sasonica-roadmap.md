@@ -585,8 +585,15 @@ ahead.
    installed on p8a): `MusicSession`, a Media3 MediaSession and media
    notification over the music player; its next/prev move by the mix's
    chapters, which the server hands over at the load (agent-media
-   `86b675c`); a tap opens the Media tab. Next: the queue (step 2), then
-   likes and recent, then search. Sketch and order:
+   `86b675c`); a tap opens the Media tab. Since then (28 Sep 2026):
+   Recently played as a shelf with each track's thread (`GET /music/recent`),
+   thumbnails (now playing, the shelf, the lock screen), a mix's tracks
+   folding away, a chat box at the tab's foot. **Queued:** a **video or
+   audio only** choice (David, 28 Sep 2026: "an option for video or audio
+   only") — a YouTube track's video in the Media tab (and full screen) as
+   well as its sound, with audio only kept as the default for the lock
+   screen and the pocket; then the queue (step 2), then search. Sketch and
+   order:
    [proposals/2026-09-28-music-tab.md](proposals/2026-09-28-music-tab.md).
 9. **Hands-free: hold the mic** (David, 28 Sep 2026) — holding the mic key
    (as Send is held for New chat) turns on a conversation loop: after each
