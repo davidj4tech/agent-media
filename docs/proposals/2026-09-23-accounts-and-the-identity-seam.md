@@ -11,7 +11,11 @@ is the OIDC issuer. A **Sasonica Matrix homeserver of its own** (sasonica.com,
 not ryer.org, which stays personal: David's family and his bridged messages)
 owns devices, rooms-as-threads and push, signing in through Drupal's issuer.
 The homeserver is set up when rooms-as-threads is built, not before; the
-issuer comes first. Personal rooms and gateways stay on ryer.org and reach the
+issuer comes first. **Built 29 Sep 2026:** steps 2–4 — `oidc.py` and
+`POST /enrol` (agent-media `206173c`, `19db1c7`), Drupal on cms.sasonica.com
+as the issuer (websites `4cb8f03`: Simple OAuth's OpenID Connect, a discovery
+module, the public PKCE client `sasonica-app`), and the app's "Sign in with a
+Sasonica account" (sasonica-app `3b5fd9f`). red5 allows David's account. Personal rooms and gateways stay on ryer.org and reach the
 app through the canvas (`2026-09-23-matrix-in-the-app.md`).
 
 ## Why
