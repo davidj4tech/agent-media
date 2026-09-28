@@ -68,3 +68,12 @@ def test_a_youtube_play_has_its_picture(st):
     got = {r["uri"]: r["art"] for r in music_recent.recent(store=st)}
     assert got == {"yt:https://www.youtube.com/watch?v=AAAAAAAAAAA": "https://i.ytimg.com/vi/AAAAAAAAAAA/hqdefault.jpg",
                    "https://example.com/a.mp3": None}
+
+
+def test_player_rows_do_not_crowd_out_older_plays(st):
+    """A player writes a row per file it loads; hundreds of those must not
+    push an older request out of the scan."""
+    st.add_history(sink="music", uri="yt:https://www.youtube.com/watch?v=AAAAAAAAAAA", started_at=1)
+    for i in range(500):
+        st.add_history(sink="music", uri=f"/sdcard/cache/{i}.mka", started_at=10 + i)
+    assert [r["uri"][-11:] for r in music_recent.recent(store=st)] == ["AAAAAAAAAAA"]

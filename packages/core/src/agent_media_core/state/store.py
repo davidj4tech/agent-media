@@ -1126,13 +1126,22 @@ class StateStore:
         return row
 
     def recent_history(self, *, sink: Optional[str] = None,
-                       limit: int = 20) -> list[dict]:
+                       limit: int = 20, requested: bool = False) -> list[dict]:
+        """Newest first. `requested` leaves out the rows a player wrote for
+        a local file it loaded (a path or loopback URL), keeping the things
+        someone asked for — so `limit` counts only those."""
         q = ("SELECT id, sink, uri, started_at, ended_at, target, source, "
              "content_type, text, extras FROM history")
-        args: tuple = ()
+        where, args = [], ()
         if sink is not None:
-            q += " WHERE sink = ?"
+            where.append("sink = ?")
             args = (sink,)
+        if requested:
+            where.append("uri NOT LIKE '/%' AND uri NOT LIKE 'file:%'"
+                         " AND uri NOT LIKE 'http://localhost%'"
+                         " AND uri NOT LIKE 'http://127.0.0.1%'")
+        if where:
+            q += " WHERE " + " AND ".join(where)
         q += " ORDER BY started_at DESC LIMIT ?"
         args = args + (limit,)
         with self._cursor() as cur:
@@ -1153,7 +1162,8 @@ class StateStore:
 
     # ---- retention -------------------------------------------------------
 
-    def gc(self, *, errors_days: float = 30.0, other_days: float = 90.0,
+    def gc(self, *, errors_days: float = 30.0,
+           other_days: Optional[float] = None,
            clip_days: float = 30.0, dry_run: bool = False) -> dict:
         """Apply the retention policy; return what was (or would be) freed.
 
@@ -1161,9 +1171,11 @@ class StateStore:
 
         * `errors` older than `errors_days` go. Nothing reads an old one; the
           table exists so `media errors` can show what just broke.
-        * history rows for every sink EXCEPT speech go after `other_days`.
-          They are play records for music and books — a row nothing can
-          replay and nothing displays once it has scrolled out of `recent`.
+        * history rows are kept. Music and book rows are small play records
+          (a URI, a title, the conversation that put it on — ~140 bytes
+          each) and Recently played reads them back; David, 29 Sep 2026:
+          "the metadata should stay indefinitely". `other_days` still
+          deletes non-speech rows older than that, but only when asked.
         * speech rows are never deleted. They are the transcript: Sasonica
           shows a conversation by reading them back, and a conversation in
           the library outlives any window we would pick here. What does go
@@ -1180,10 +1192,11 @@ class StateStore:
             cur.execute("SELECT count(*) FROM errors WHERE at < ?",
                         (now - errors_days * 86400,))
             out["errors"] = cur.fetchone()[0]
-            cur.execute("SELECT count(*) FROM history"
-                        " WHERE sink != 'speech' AND started_at < ?",
-                        (now - other_days * 86400,))
-            out["history"] = cur.fetchone()[0]
+            if other_days is not None:
+                cur.execute("SELECT count(*) FROM history"
+                            " WHERE sink != 'speech' AND started_at < ?",
+                            (now - other_days * 86400,))
+                out["history"] = cur.fetchone()[0]
 
             # Speech rows whose clips have left the cache: strip the arrays,
             # keep the row. Checked file by file because a partly-swept row
@@ -1218,9 +1231,10 @@ class StateStore:
                 return out
             cur.execute("DELETE FROM errors WHERE at < ?",
                         (now - errors_days * 86400,))
-            cur.execute("DELETE FROM history"
-                        " WHERE sink != 'speech' AND started_at < ?",
-                        (now - other_days * 86400,))
+            if other_days is not None:
+                cur.execute("DELETE FROM history"
+                            " WHERE sink != 'speech' AND started_at < ?",
+                            (now - other_days * 86400,))
             cur.executemany("UPDATE history SET extras = ? WHERE id = ?",
                             stripped)
         return out

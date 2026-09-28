@@ -8719,9 +8719,10 @@ def _build_parser() -> argparse.ArgumentParser:
     sg = sub.add_parser("state-gc",
                         help="apply the state DB's retention policy "
                              "(old errors and play rows, dead clip lists)")
-    sg.add_argument("--days", type=float, default=90.0,
+    sg.add_argument("--days", type=float, default=None,
                     help="delete non-speech play rows older than this "
-                         "(default 90); speech rows are never deleted")
+                         "(default: keep them all); speech rows are never "
+                         "deleted")
     sg.add_argument("--errors-days", type=float, default=30.0,
                     help="delete errors older than this (default 30)")
     sg.add_argument("--clip-days", type=float, default=30.0,

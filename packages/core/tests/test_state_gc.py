@@ -52,11 +52,22 @@ def test_old_errors_go_recent_ones_stay(store):
     assert [e["message"] for e in store.recent_errors()] == ["today"]
 
 
-def test_music_rows_expire_speech_never(store):
+def test_play_rows_are_kept_speech_too(store):
+    """Music and book rows are small and Recently played reads them back
+    (David, 29 Sep 2026: "the metadata should stay indefinitely")."""
+    now = time.time()
+    _row(store, "music", "spotify:old", now - 400 * DAY)
+    _speech(store, at=now - 400 * DAY, clips=[])
+    assert store.gc()["history"] == 0
+    assert len(store.recent_history(sink="music", limit=10)) == 1
+    assert len(store.recent_history(sink="speech", limit=10)) == 1
+
+
+def test_play_rows_expire_only_when_asked(store):
     now = time.time()
     _row(store, "music", "spotify:old", now - 120 * DAY)
     _speech(store, at=now - 120 * DAY, clips=[])
-    res = store.gc()
+    res = store.gc(other_days=90)
     assert res["history"] == 1
     assert store.recent_history(sink="music", limit=10) == []
     assert len(store.recent_history(sink="speech", limit=10)) == 1
@@ -102,12 +113,12 @@ def test_dry_run_counts_and_changes_nothing(store, tmp_path):
     store.log_error("intake", "ancient", at=now - 60 * DAY)
     _row(store, "music", "spotify:old", now - 120 * DAY)
     _speech(store, at=now - 60 * DAY, clips=[str(tmp_path / "swept.mp3")])
-    dry = store.gc(dry_run=True)
+    dry = store.gc(other_days=90, dry_run=True)
     assert (dry["errors"], dry["history"], dry["clips"]) == (1, 1, 1)
     assert dry["bytes"] > 0
     assert len(store.recent_errors()) == 1
     assert len(store.recent_history(sink="music", limit=10)) == 1
-    assert store.gc() == dry
+    assert store.gc(other_days=90) == dry
 
 
 def test_a_row_without_clips_is_not_rewritten(store):

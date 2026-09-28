@@ -138,7 +138,8 @@ def recent(limit: int = 40, store: Optional[StateStore] = None) -> list[dict]:
     """``[{"id", "uri", "title", "art", "at", "session", "inferred"}]``, newest
     first, one row per URI (its latest play)."""
     store = store or StateStore()
-    rows = [r for r in store.recent_history(sink="music", limit=400) if _asked(r)]
+    rows = [r for r in store.recent_history(sink="music", limit=400, requested=True)
+            if _asked(r)]
     # A name any row learned for a video names all its rows.
     named: dict[str, str] = {}
     for r in rows:
