@@ -158,6 +158,23 @@ def test_send_keeps_newlines_and_puts_a_quote_in_its_own_paragraph(host):
     wait_for(lambda: "b\nsecond line" in (last_text(host, sid) or ""))
 
 
+def test_a_bang_runs_here_and_sends_its_output_in(host):
+    # `claude -p` would hand a `!` to the model (shell.py): the server runs it.
+    from agent_media_server import transcript
+
+    sid = start(host, "reply: a")
+    wait_for(lambda: state(host, sid) == "waiting")
+    ok, d = driver.headless_driver().send(sid, "!pwd", "!pwd")
+    assert ok and d["shell"] is True
+
+    def shell_msg():
+        return next((m for m in transcript.messages(sid)[0] if m.get("shell")), None)
+
+    wait_for(shell_msg)
+    assert shell_msg()["shell"] == {"command": "pwd", "stdout": str(host.work), "stderr": ""}
+    assert shell_msg()["parts"][0]["text"] == "!pwd"
+
+
 def test_a_message_mid_turn_is_queued_and_joins_the_turn(host):
     sid = start(host, "slow: 1.2")
     wait_for(lambda: any(e.get("subtype") == "task_started" for e in host.sup.sessions[sid].events))

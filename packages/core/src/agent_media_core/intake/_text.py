@@ -7,12 +7,13 @@ import re
 
 
 #: Blocks the harness writes into a user prompt that the listener never said:
-#: a finished background task, a system reminder, the echo of a slash command.
+#: a finished background task, a system reminder, the echo of a slash command,
+#: a `!` command and its output (bash mode).
 #: They arrived in the transcript as listener turns and were read aloud — one
 #: task notification rendered 230KB of somebody spelling out a tool-use id.
 _SYSTEM_BLOCKS = re.compile(
     r"<(task-notification|system-reminder|local-command-caveat|local-command-stdout"
-    r"|command-name|command-message|command-args)\b.*?</\1>",
+    r"|command-name|command-message|command-args|bash-input|bash-stdout|bash-stderr)\b.*?</\1>",
     re.DOTALL | re.IGNORECASE)
 _SYSTEM_BANNER = re.compile(
     r"\[SYSTEM NOTIFICATION - NOT USER INPUT\].*?(?=\n\s*\n|\Z)",

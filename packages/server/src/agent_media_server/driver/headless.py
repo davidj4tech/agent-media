@@ -261,8 +261,26 @@ class HeadlessDriver:
                       "driver": HEADLESS, "acked": bool(r.get("acked"))}
 
     def send(self, session, body, text, *, quote=""):
-        from .. import archive, rest, send
+        from .. import archive, rest, send, shell
 
+        command = shell.command_of(text)
+        if command:
+            # `claude -p` takes a `!` as words (shell.py): the server runs it
+            # and sends the command and its output in, as a pane would have.
+            if not self.owns(session):
+                return False, {"error": f"no such session {session[:8]}", "status": 404}
+
+            def deliver(msg: str) -> None:
+                r = call("send", session=session, text=msg, timeout=30.0)
+                if not r.get("ok"):
+                    raise RuntimeError(r.get("error") or r.get("code") or "not sent")
+
+            shell.run_then_send(session, command, self.cwd_of(session), deliver)
+            send._record_turn(session, text)
+            archive.unarchive_quietly(session)
+            rest.clear_quietly(session)
+            return True, {"session": session, "pane": None, "opened": False,
+                          "submitted": True, "driver": HEADLESS, "shell": True}
         r = call("send", session=session, text=compose(text, quote), timeout=30.0)
         if not r.get("ok"):
             return _failed(r, session=session, pane=None)

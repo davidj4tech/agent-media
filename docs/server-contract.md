@@ -810,6 +810,7 @@ written, with its steps and narration. Messages are read from the same file.
 | `turn.running` | the turn is still going: the last record asked for a tool, or a tool has no result yet. Always `false` when the session is not live |
 | `command` | user messages that are a slash command only: `{name, args, text}`, the line's chip (`slash.py`); settings commands are never messages |
 | `peer` | user messages another session delivered into this one (a `<cross-session-message>`): `{name}`; the text is only the message body. Not the listener's words — the app shows a small "From <name>" and never counts it as a send of its own |
+| `shell` | user messages that are a `!` command (29 Sep 2026, `shell.py`): `{command, stdout?, stderr?}`, each stream at most 8 KB; the text is `!<command>`. The output keys come once the command has finished (a pane writes it as a record of its own) |
 
 **Parts.**
 - `text` — the words, **as Markdown** (Claude writes Markdown; the client
@@ -977,6 +978,15 @@ Request: `{"session": "<session>" | "item": "<item>", "text": "…", "quote"?: "
   can read it; the chip itself stays as written. A chip with no entry in
   `refs` is matched by title among the threads, used only when exactly one
   has it; one that names nothing gets no line (`refs.py`).
+- **`!` runs a shell command** (29 Sep 2026, `shell.py`), as Claude Code's
+  bash mode: `text` starting with `!` is a command, run in the session's
+  directory, and the command and its output go into the conversation for the
+  agent, which answers them. A pane is typed it as is (its terminal runs it);
+  a headless session's is run by the server (`bash -c`, 120 s, each stream
+  cut at 30 000 characters) and sent in as the same tagged message, and the
+  answer comes at once, with `shell: true`, before the command has finished.
+  No quote goes in front and a taken-back note waits for the next message:
+  the `!` has to stay first. The thread shows it as a `shell` message (§6.2.2).
 - `session` (22 Sep 2026, §10) wins when both are given. 400 `"not a
   session id"`; 404 `"no such session <8 chars>"` when it has no pane and
   no transcript. `branch` works from either form.

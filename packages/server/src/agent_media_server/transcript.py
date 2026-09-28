@@ -17,7 +17,8 @@ hands the phone *messages*:
                {"type": "ask", "ask": [...], "status", "answer", "tool_use_id"}],
      "spoken": null | {"id", "key", "at", ...},     # joined in `join_speech`
      "turn": {"running": bool},
-     "command": {"name", "args", "text"}}           # user slash commands only
+     "command": {"name", "args", "text"},           # user slash commands only
+     "shell": {"command", "stdout"?, "stderr"?}}    # a `!` command (shell.py)
 
 Speech is joined on afterwards (`join_speech`): the spoken row's id (for
 replay), its dedup key (for its pictures) and, while it plays, the
@@ -90,6 +91,8 @@ SUMMARY_MAX = 300
 TEXT_MAX = 32 * 1024
 #: Narration longer than this is cut.
 REASONING_MAX = 8 * 1024
+#: Each stream of a `!` command's output, as the thread shows it.
+SHELL_MAX = 8 * 1024
 #: A file seen for the first time is read back this many prompts from its end.
 TAIL_PROMPTS = 60
 #: Read size when walking backwards.
@@ -442,6 +445,8 @@ class Builder:
         if _INTERRUPTED.match(stripped):
             self._close(interrupted=True)
             return
+        if "<bash-" in stripped and self._shell(rec, stripped):
+            return
         cmd = slash.parse(stripped) if ("<command-name>" in stripped
                                         or stripped.startswith("/")) else None
         if cmd:
@@ -468,6 +473,32 @@ class Builder:
             self._close()
             return
         self._user(rec, words)
+
+    def _shell(self, rec: dict, text: str) -> bool:
+        """A `!` command (shell.py): the message is what was typed, with a
+        `shell` field; its output, a record of its own in a pane's transcript
+        and in the same one from a headless session, joins it. False when
+        `text` is not bash mode's."""
+        from . import shell
+
+        got = shell.parse(text)
+        if got is None:
+            return False
+        if "command" in got:
+            self._close()
+            msg = {"id": str(rec.get("uuid") or ""), "role": "user",
+                   "at": epoch(rec.get("timestamp")) or 0.0,
+                   "parts": [{"type": "text", "text": _cut("!" + got["command"], TEXT_MAX)}],
+                   "spoken": None, "turn": {"running": False},
+                   "shell": {"command": got["command"]}}
+            self.messages.append(msg)
+        last = self.messages[-1] if self.messages else None
+        sh = last.get("shell") if last and last["role"] == "user" else None
+        if sh is not None and "stdout" not in sh:
+            for key in ("stdout", "stderr"):
+                if key in got:
+                    sh[key] = _cut(got[key], SHELL_MAX)
+        return True
 
     # -- the answer --
 

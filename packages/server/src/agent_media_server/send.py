@@ -987,7 +987,14 @@ def reply(item: str, text: str, bearer: str, *, quote: str = "",
         session, err = sessions.session_for_item(item, bearer)
         if not session:
             return False, {"error": err, "status": 404}
-    if mode != "branch":
+    from . import shell
+
+    if mode != "branch" and shell.command_of(text):
+        # `!` is a shell command (shell.py): it has to stay first, so no quote
+        # goes in front of it, and a note owed for a message taken back waits
+        # for the next words.
+        quote = ""
+    elif mode != "branch":
         # A message taken back since the last one (`/session/retract`): this
         # one opens by saying so, since the agent may have read it already.
         from . import retract
