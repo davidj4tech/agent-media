@@ -3136,6 +3136,21 @@ refusal leaves the details as they were; it does not sign the device out.
 Allow accounts by `sub` (the issuer's user id, which does not change) rather
 than by email.
 
+`GET /me/account` and `POST /me/account {"action", …}` (a device token) — the
+app's profile sheet: the account that enrolled this device as its issuer has
+it (`{"ok", "username", "email", "picture", "edit"}`), and changes to it —
+`username {username}`, `picture {data: base64}` (the body cap is 64 KB: the
+app sends a small JPEG), `remove_picture`, `email {email}` (a confirmation
+link to the new address; nothing changes until it is used; the old address
+then gets an undo link), `password {current, password}`, `password_link`
+(the issuer's set-password email). Passed to the issuer's `/api/account`
+with the account's own access token, got through the refresh token kept at
+sign-in (one refresh at a time, the access token reused while it lasts);
+the issuer's answer and status come back as they are, and the device row
+follows a change. 409 `sign_in_again` for a device without an account
+token (paired by code, or signed in before this); 502 when the issuer
+cannot be reached.
+
 `POST /me/signout` (a device token) → `{"ok", "id"}`: sign out — this device
 forgets itself, as `devices --revoke` would (its token stops working, its
 row and any account refresh token go). Any device may; 401 for anything

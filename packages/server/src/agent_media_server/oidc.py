@@ -32,6 +32,7 @@ import json
 import os
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -237,6 +238,46 @@ def profile(iss: str, refresh_token: str) -> tuple[dict, str]:
         raise OidcError("bad_id_token", f"the issuer would not refresh: {e}") from e
     return ({k: info.get(k) for k in ("sub", "email", "name", "preferred_username", "picture")},
             str(got.get("refresh_token") or refresh_token))
+
+
+def access_token(iss: str, refresh_token: str) -> tuple[str, str, float]:
+    """A fresh access token for the account — `(access, new refresh token,
+    seconds it lasts)` — through the refresh token kept at sign-in. Raises
+    OidcError when the issuer will not."""
+    iss = iss.rstrip("/")
+    if iss not in issuers() or not refresh_token:
+        raise OidcError("sign_in_again", "nothing to refresh with")
+    try:
+        got = _token_request(iss, {"grant_type": "refresh_token", "refresh_token": refresh_token,
+                                   "scope": "openid email profile"})
+    except Exception as e:  # noqa: BLE001 — a refusal, never a 500
+        raise OidcError("sign_in_again", f"the issuer would not refresh: {e}") from e
+    access = str(got.get("access_token") or "")
+    if not access:
+        raise OidcError("sign_in_again", "the issuer gave no access token")
+    return access, str(got.get("refresh_token") or refresh_token), float(got.get("expires_in") or 300)
+
+
+def account_call(iss: str, access: str, body: dict | None = None) -> tuple[int, dict]:
+    """GET (body None) or POST the issuer's `/api/account` — the account's
+    own profile, for the app's profile sheet (sasonica.com's sasonica_oidc
+    module) — as `(status, JSON)`. A non-JSON answer (a login page for a
+    refused token) comes back as its status and an empty dict."""
+    req = urllib.request.Request(f"{iss.rstrip('/')}/api/account",
+                                 data=None if body is None else json.dumps(body).encode(),
+                                 method="GET" if body is None else "POST",
+                                 headers={"Authorization": f"Bearer {access}", "Accept": "application/json",
+                                          "Content-Type": "application/json", "User-Agent": "agent-media oidc"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            status, raw = r.status, r.read()
+    except urllib.error.HTTPError as e:
+        status, raw = e.code, e.read()
+    try:
+        out = json.loads(raw)
+    except ValueError:
+        out = {}
+    return status, out if isinstance(out, dict) else {}
 
 
 def username_of(claims: dict) -> str:

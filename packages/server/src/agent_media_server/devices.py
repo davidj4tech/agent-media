@@ -352,6 +352,17 @@ def refresh_token_of(device_id: str) -> tuple[str, str]:
     return (str(d.get("iss") or ""), str(d.get("rt") or "")) if d else ("", "")
 
 
+def set_refresh_token(device_id: str, rt: str) -> bool:
+    """Keep a rotated refresh token on its device's row."""
+    with _LOCK:
+        rows = _load()
+        d = next((x for x in rows if x.get("id") == device_id), None)
+        if d is None or not rt:
+            return False
+        _save([{**d, "rt": rt} if x is d else x for x in rows])
+    return True
+
+
 def update_profile(device_id: str, email: str, username: str, rt: str, picture: str = "") -> bool:
     """The account's current email, username and picture, and the rotated
     refresh token, on its device's row. A picture gone at the issuer goes here."""

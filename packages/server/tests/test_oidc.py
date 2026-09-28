@@ -254,3 +254,50 @@ def test_sign_out_forgets_this_device(server):
     assert res.status == 401, "the token no longer works"
     res, _ = call(server, "POST", "/me/signout", {}, headers=auth_h)
     assert res.status == 401
+
+
+# --- /me/account: the profile sheet, through the account's own token --------------
+
+def test_me_account_passes_through_with_the_accounts_token(server, monkeypatch):
+    from agent_media_server import app as app_mod
+    app_mod._ACCESS.clear()
+    got = devices.enrol_account({"iss": ISS, "sub": "1", "email": "old@example.com"}, "phone",
+                                refresh_token="rt-1", username="david")
+    refreshes, calls = [], []
+    monkeypatch.setattr(oidc, "access_token", lambda iss, rt: (refreshes.append(rt) or ("at-1", "rt-2", 300.0)))
+
+    def fake_call(iss, access, body=None):
+        calls.append((access, body))
+        if body and body.get("action") == "username":
+            return 200, {"ok": True, "username": body["username"], "email": "old@example.com",
+                         "picture": "https://cms.sasonica.test/p.png"}
+        return 200, {"ok": True, "username": "david", "email": "old@example.com", "picture": None}
+    monkeypatch.setattr(oidc, "account_call", fake_call)
+    auth_h = {"Authorization": f"Bearer {got['token']}"}
+    res, out = call(server, "GET", "/me/account", headers=auth_h)
+    assert res.status == 200 and out["username"] == "david"
+    res, out = call(server, "POST", "/me/account", {"action": "username", "username": "dj"}, headers=auth_h)
+    assert res.status == 200 and out["username"] == "dj"
+    assert refreshes == ["rt-1"], "one refresh; the access token is reused"
+    assert [c[0] for c in calls] == ["at-1", "at-1"]
+    assert devices.refresh_token_of(got["device_id"])[1] == "rt-2", "the rotated refresh token kept"
+    res, me = call(server, "GET", "/me", headers=auth_h)
+    assert me["username"] == "dj" and me["picture"] == "https://cms.sasonica.test/p.png", "the row follows the change"
+
+
+def test_me_account_errors(server, monkeypatch):
+    from agent_media_server import app as app_mod
+    app_mod._ACCESS.clear()
+    got = devices.enrol_account({"iss": ISS, "sub": "1", "email": "a@example.com"}, "phone")  # no refresh token
+    res, out = call(server, "GET", "/me/account", headers={"Authorization": f"Bearer {got['token']}"})
+    assert res.status == 409 and out["code"] == "sign_in_again"
+    # The issuer's own refusal passes through.
+    got2 = devices.enrol_account({"iss": ISS, "sub": "1", "email": "a@example.com"}, "phone", refresh_token="rt")
+    monkeypatch.setattr(oidc, "access_token", lambda iss, rt: ("at", "rt", 300.0))
+    monkeypatch.setattr(oidc, "account_call", lambda iss, access, body=None:
+                        (403, {"ok": False, "code": "wrong_password", "error": "the current password is not right"}))
+    res, out = call(server, "POST", "/me/account", {"action": "password", "current": "x", "password": "y" * 9},
+                    headers={"Authorization": f"Bearer {got2['token']}"})
+    assert res.status == 403 and out["code"] == "wrong_password"
+    res, _ = call(server, "GET", "/me/account", headers={"Authorization": "Bearer nope"})
+    assert res.status == 401

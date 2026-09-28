@@ -192,7 +192,7 @@ CORS_PATHS = frozenset({
     "/harnesses", "/harnesses/run", "/harnesses/screen",
     "/harnesses/keys", "/harnesses/apikey", "/harnesses/close", "/harnesses/logout",
     "/harnesses/updates", "/harnesses/profiles", "/harnesses/profiles/remove",
-    "/setup", "/setup/run", "/shell", "/shell/signins", "/shell/signin", "/enrol", "/me", "/me/signout",
+    "/setup", "/setup/run", "/shell", "/shell/signins", "/shell/signin", "/enrol", "/me", "/me/signout", "/me/account",
     "/share", "/upload", "/dashboard",
     "/sessions/events", "/search",
 })
@@ -530,6 +530,8 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
         # signed in — so the app can offer the buttons that would fix it.
         ok, detail = harnesses.agents(_bearer(h))
         _json(h, 200 if ok else detail.pop("status", 403), {"ok": ok, **detail})
+    elif path == "/me/account":
+        _me_account(h, None)
     elif path == "/me":
         # This device as the server knows it: its name, whether it may pair
         # others, and the account that enrolled it (null for a paired one) —
@@ -785,6 +787,69 @@ def _pair(h: BaseHTTPRequestHandler) -> None:
 #: How old an account's name and email may get before /me asks the issuer again.
 PROFILE_MAX_AGE_S = 3600.0
 _REFRESHING: set[str] = set()
+#: One refresh at a time: each rotates the account's refresh token, so two
+#: at once would leave one holding a spent token.
+_TOKEN_LOCK = threading.Lock()
+#: device id → (access token, expires at): the issuer's access tokens last
+#: five minutes; the profile sheet makes several calls in that time.
+_ACCESS: dict[str, tuple[str, float]] = {}
+
+
+def _account_access(did: str, iss: str, *, fresh: bool = False) -> str:
+    """An access token for the account that enrolled this device."""
+    from . import oidc
+
+    with _TOKEN_LOCK:
+        got = _ACCESS.get(did)
+        if got and not fresh and got[1] - 30 > time.time():
+            return got[0]
+        _iss, rt = devices.refresh_token_of(did)
+        if not rt:
+            raise oidc.OidcError("sign_in_again", "this device's sign-in predates account editing")
+        access, new_rt, ttl = oidc.access_token(iss, rt)
+        devices.set_refresh_token(did, new_rt)
+        _ACCESS[did] = (access, time.time() + ttl)
+        return access
+
+
+def _me_account(h: BaseHTTPRequestHandler, body: dict | None) -> None:
+    """`GET /me/account` and `POST /me/account {action, …}` — the account
+    that enrolled this device, as its issuer has it, and changes to it (the
+    app's profile sheet): passed to the issuer's `/api/account` with the
+    account's own access token. The device row is brought up to date after a
+    change. 409 `sign_in_again` for a device with no account token (a code
+    pairing, or a sign-in from before this)."""
+    from . import oidc
+
+    dev = devices.lookup(_bearer(h))
+    if not dev:
+        _json(h, 401, {"ok": False, "error": "not a device of this server"})
+        return
+    did, iss = str(dev.get("id") or ""), str(dev.get("iss") or "")
+    if not iss:
+        _json(h, 409, {"ok": False, "code": "sign_in_again",
+                       "error": "this device is not signed in with an account"})
+        return
+    try:
+        status, out = oidc.account_call(iss, _account_access(did, iss), body)
+        if status in (401, 403) and not out:
+            # A token the issuer no longer takes: once more with a fresh one.
+            status, out = oidc.account_call(iss, _account_access(did, iss, fresh=True), body)
+    except oidc.OidcError as e:
+        _json(h, 409, {"ok": False, "code": "sign_in_again",
+                       "error": "sign in with your account again to edit it here", "detail": str(e)})
+        return
+    except OSError as e:
+        _json(h, 502, {"ok": False, "code": "issuer_unreachable", "error": f"could not reach the account: {e}"})
+        return
+    if not out:
+        _json(h, 502, {"ok": False, "code": "issuer_error", "error": f"the account answered {status}"})
+        return
+    if status == 200 and out.get("ok"):
+        _iss, rt = devices.refresh_token_of(did)
+        devices.update_profile(did, str(out.get("email") or ""), str(out.get("username") or ""), rt,
+                               oidc.picture_of(out))
+    _json(h, status, out)
 
 
 def _refresh_profile_soon(dev: dict) -> None:
@@ -805,9 +870,12 @@ def _refresh_profile_soon(dev: dict) -> None:
 
     def run():
         try:
-            info, new_rt = oidc.profile(iss, rt)
-            devices.update_profile(did, str(info.get("email") or ""), oidc.username_of(info), new_rt,
-                                   oidc.picture_of(info))
+            with _TOKEN_LOCK:
+                # Read again under the lock: an account call may have rotated it.
+                _iss, rt_now = devices.refresh_token_of(did)
+                info, new_rt = oidc.profile(iss, rt_now or rt)
+                devices.update_profile(did, str(info.get("email") or ""), oidc.username_of(info), new_rt,
+                                       oidc.picture_of(info))
         except oidc.OidcError as e:
             print(f"me: profile refresh for {did} refused: {e}", file=sys.stderr)
         finally:
@@ -939,6 +1007,12 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         _devices_code(h)
     elif path == "/devices/revoke":
         _devices_revoke(h)
+    elif path == "/me/account":
+        body = _read_json(h)
+        if not isinstance(body, dict):
+            _json(h, 400, {"ok": False, "error": "expected JSON"})
+        else:
+            _me_account(h, body)
     elif path == "/me/signout":
         # Sign out: this device forgets itself — its token stops working here
         # and the row (with any account refresh token) is dropped. Any device
