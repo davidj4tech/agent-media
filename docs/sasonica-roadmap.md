@@ -111,7 +111,9 @@ dashboard; background agents in a thread; thread-list sorting and filter
 number of states — Needs you / Working / Your turn; `/targets`
 now lists every archived thread, past the 40-row cap; By project's
 headings fold, kept per device; filtered to one project, the + starts the
-new chat there, 23 Sep 2026); project
+new chat there, 23 Sep 2026; the project is a strip of chips across the
+top, like the Organiser's views, each counting what needs you, 28 Sep
+2026, sasonica-app d2de765); project
 line under titles; menus that close on an outside tap; the brand and icons;
 the About page; seven text sizes (9–21 px, Default 15), and a pinch
 steps through them and saves the choice (24 Sep 2026); the digital-
