@@ -1797,6 +1797,7 @@ keys moved with it (`MEDIA_SPEECH_SOCKET_SASONICA`, `…_ABS`).
   "music":  {"current": "phone" | null, "next": "default", "overridden": false,
              "options": [{"name": "auto",  "label": "Automatic", …},
                          {"name": "rooms", "label": "House speakers", …},
+                         {"name": "sasonica", "label": "Phone (Sasonica)", …},
                          {"name": "phone", "label": "Phone (Termux player)", …},
                          {"name": "abs",   "label": "Phone (Sasonica ABS)", …}]}}}
 ```
@@ -1824,6 +1825,12 @@ Music:
   last routed. Anything else (the MCP tool, a play started elsewhere) is
   `null`. `next` is the stored `--where` for the next untargeted play, or
   `"default"`.
+- `sasonica` (28 Sep 2026) is Sasonica's own media player, a second Media3
+  player beside its speech one that answers mpv's IPC on the phone's port
+  6615 (`MEDIA_MUSIC_SASONICA_ENDPOINT`, unavailable when unset). A YouTube
+  track is fetched on the phone, copied to this host and handed to the app
+  as a clip-server URL, as `abs` does. When the app declines it, the Termux
+  mpv plays it. docs/proposals/2026-09-28-music-tab.md.
 
 #### `POST /audio/target` — gated (`auth.may_control_speech`, like `/speech/ctl`)
 

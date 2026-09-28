@@ -277,7 +277,7 @@ def test_music_now_is_known_only_for_the_track_we_sent():
 def test_music_block_shape():
     b = audio_targets.music_block(None)
     assert set(b) == {"current", "next", "overridden", "options"}
-    assert [o["name"] for o in b["options"]] == ["auto", "rooms", "phone", "abs"]
+    assert [o["name"] for o in b["options"]] == ["auto", "rooms", "sasonica", "phone", "abs"]
     assert b["current"] is None and b["next"] == "default" and b["overridden"] is False
 
 

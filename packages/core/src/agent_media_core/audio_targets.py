@@ -65,11 +65,13 @@ _SPEECH_LABELS = {
 
 #: `media music play --where` values a preference may hold. `default` is the
 #: absence of one, and `local` is `rooms` under another name.
-MUSIC_WHERE = ("auto", "rooms", "phone", "abs")
+MUSIC_WHERE = ("auto", "rooms", "sasonica", "phone", "abs")
 
 _MUSIC_LABELS = {
     "auto": "Automatic",
     "rooms": "House speakers",
+    # Sasonica's own media player (sinks/music_sasonica), 28 Sep 2026.
+    "sasonica": "Phone (Sasonica)",
     "phone": "Phone (Termux player)",
     "abs": "Phone (Sasonica ABS)",
 }
@@ -294,6 +296,10 @@ def music_available(where: str) -> tuple[bool, Optional[str]]:
         from .sinks.music_app import configured
         if not configured():
             return False, "Sasonica ABS's music player is not configured here"
+    if where == "sasonica":
+        from .sinks.music_sasonica import configured
+        if not configured():
+            return False, "Sasonica's media player is not configured here"
     if where == "phone":
         from .sinks.music_local import configured
         if not configured():

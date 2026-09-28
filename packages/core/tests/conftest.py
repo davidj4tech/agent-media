@@ -21,8 +21,11 @@ def _no_live_phone_backend(monkeypatch):
     while passing in CI, which is what an inherited-config hazard looks
     like from the outside. Scrubbed by prefix so a per-target key
     (..._URL_APP) goes too; a test that wants a player sets its own.
+    Sasonica's own media player (the `sasonica` target) is probed first of
+    all, so its endpoint goes as well.
     """
     monkeypatch.delenv("MEDIA_MUSIC_LOCAL_ENDPOINT", raising=False)
+    monkeypatch.delenv("MEDIA_MUSIC_SASONICA_ENDPOINT", raising=False)
     for key in [k for k in os.environ if k.startswith("MEDIA_PHONE_PLAYER_URL")]:
         monkeypatch.delenv(key, raising=False)
 

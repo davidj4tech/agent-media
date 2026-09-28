@@ -5417,11 +5417,18 @@ def _resolve_music_where(where: str) -> str:
     where = target_name(where)
     if where == "abs":
         return "abs" if _app_configured() else "phone"
+    if where == "sasonica":
+        from .sinks.music_sasonica import configured as _sasonica_configured
+        return "sasonica" if _sasonica_configured() else "phone"
     if where in ("", "default"):
         default_target = (os.environ.get("MEDIA_MUSIC_DEFAULT_TARGET")
                           or os.environ.get("MEDIA_SPEECH_DEFAULT_TARGET")
                           or "")
         default_target = target_name(default_target)
+        if default_target == "sasonica":
+            from .sinks.music_sasonica import configured as _sasonica_configured
+            if _sasonica_configured():
+                return "sasonica"
         if default_target == "abs" and _app_configured():
             return "abs"
         if default_target == "abs" and _local_configured():
@@ -5677,9 +5684,9 @@ def _resume_bookmark(bm: dict) -> int:
         m = SinkMusic()
         where = _resolve_music_where("auto")
         try:
-            if where == "abs":
+            if where in ("abs", "sasonica"):
                 from .sinks.music_router import SinkMusicRouter
-                SinkMusicRouter(mopidy=m).play(uri, Target(name="abs"), replace=True)
+                SinkMusicRouter(mopidy=m).play(uri, Target(name=where), replace=True)
             elif where == "phone":
                 from .sinks.music_local import SinkMusicLocal, configured
                 if not configured():
@@ -5815,15 +5822,15 @@ def cmd_music(a) -> int:
             return 2
         where = _resolve_music_where(getattr(a, "where", "auto"))
         ct = coerce_content_type(getattr(a, "as_type", None)) or detect_content_type(a.uri)
-        if where == "abs":
+        if where in ("abs", "sasonica"):
             try:
-                m.play(a.uri, Target(name="abs"), replace=not a.add)
+                m.play(a.uri, Target(name=where), replace=not a.add)
             except Exception as e:  # noqa: BLE001
-                print(f"media music play (abs) failed: {e}", file=sys.stderr)
+                print(f"media music play ({where}) failed: {e}", file=sys.stderr)
                 return 1
             StateStore().set_music_intent(a.uri, ct.value,
                                           getattr(a, "title", "") or None)
-            _note_music_where("abs", a.uri)
+            _note_music_where(where, a.uri)
             print(f"playing on phone ({ct.value}): {a.uri}")
             return 0
         if where == "phone":
@@ -8606,7 +8613,7 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="for 'bookmark': named register (e.g. 1, 2) for overlapping ranges")
     s.add_argument("--title", default="", help=argparse.SUPPRESS)
     s.add_argument("--where", type=target_name,
-                   choices=("default", "auto", "local", "rooms", "phone", "abs"),
+                   choices=("default", "auto", "local", "rooms", "phone", "abs", "sasonica"),
                    default="default",
                    help="for 'play': where to play — 'phone' downloads on the "
                         "phone (residential IP, dodges 403, offline) and plays "
@@ -8752,7 +8759,7 @@ def _build_parser() -> argparse.ArgumentParser:
                              "ambient"),
                     help="override the interruption content type")
     sh.add_argument("--where", type=target_name,
-                    choices=("default", "auto", "local", "rooms", "phone", "abs"),
+                    choices=("default", "auto", "local", "rooms", "phone", "abs", "sasonica"),
                     default="", help="where to play it (as `media music play`)")
     sh.add_argument("--no-probe", action="store_true",
                     help="skip the yt-dlp metadata fetch and classify on the "
