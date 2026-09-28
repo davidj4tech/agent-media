@@ -3088,6 +3088,13 @@ POST /enrol {"id_token": "<jwt>", "device": "Pixel 8a"}     no credential, like 
   → 429 {"code": "rate_limited"}   as /pair (failures count the same way)
 ```
 
+The app's flow: `GET /enrol` (open) → `{"accounts": [{"issuer",
+"authorization_endpoint", "client_id", "scopes"}]}` says where to sign in
+(`[]` when off); the app signs in there with PKCE, and sends `POST /enrol
+{"code", "code_verifier", "redirect_uri", "device"}` — the server swaps the
+code for the ID token at the issuer's token endpoint (a public client, no
+secret) and then goes on as for an `id_token`.
+
 Configuration: `MEDIA_OIDC_ISSUERS` (exact `iss`, comma-separated),
 `MEDIA_OIDC_CLIENTS` (the `aud` an ID token must carry), `MEDIA_OIDC_ALLOW`
 (`<iss>|<sub>` or `<iss>|email=<addr>`, a verified email only: who may have a

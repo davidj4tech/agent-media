@@ -190,7 +190,7 @@ CORS_PATHS = frozenset({
     "/harnesses", "/harnesses/run", "/harnesses/screen",
     "/harnesses/keys", "/harnesses/apikey", "/harnesses/close", "/harnesses/logout",
     "/harnesses/updates", "/harnesses/profiles", "/harnesses/profiles/remove",
-    "/setup", "/setup/run", "/shell", "/shell/signins", "/shell/signin",
+    "/setup", "/setup/run", "/shell", "/shell/signins", "/shell/signin", "/enrol",
     "/share", "/upload", "/dashboard",
     "/sessions/events", "/search",
 })
@@ -528,6 +528,11 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
         # signed in — so the app can offer the buttons that would fix it.
         ok, detail = harnesses.agents(_bearer(h))
         _json(h, 200 if ok else detail.pop("status", 403), {"ok": ok, **detail})
+    elif path == "/enrol":
+        # Where the app signs in with an account (oidc.py): open, like /pair.
+        from . import oidc
+
+        _json(h, 200, {"ok": True, "accounts": oidc.public_info() if oidc.configured() else []})
     elif path == "/shell":
         # This machine's shell connector URL, for "Connect an assistant".
         from . import shell_signin
@@ -781,7 +786,13 @@ def _enrol(h: BaseHTTPRequestHandler) -> None:
         return
     body = _read_json(h) or {}
     try:
-        claims = oidc.verify(str(body.get("id_token") or ""))
+        id_token = str(body.get("id_token") or "")
+        if not id_token and body.get("code"):
+            # The app's sign-in, finished here: its code and PKCE verifier
+            # swapped for the ID token at the issuer.
+            id_token = oidc.exchange_code(str(body.get("code")), str(body.get("code_verifier") or ""),
+                                          str(body.get("redirect_uri") or ""), str(body.get("issuer") or ""))
+        claims = oidc.verify(id_token)
     except oidc.OidcError as e:
         devices._note_failure(ip)
         print(f"enrol: refused from {ip}: {e}", file=sys.stderr)

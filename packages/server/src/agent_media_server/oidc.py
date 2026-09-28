@@ -32,6 +32,7 @@ import json
 import os
 import threading
 import time
+import urllib.parse
 import urllib.request
 
 #: DER prefix of a SHA-256 DigestInfo (PKCS#1 v1.5, RFC 8017 §9.2).
@@ -42,6 +43,7 @@ LEEWAY_S = 60
 
 _LOCK = threading.Lock()
 _JWKS: dict[str, tuple[float, list[dict]]] = {}
+_DISC: dict[str, tuple[float, dict]] = {}
 
 
 class OidcError(Exception):
@@ -75,6 +77,24 @@ def _fetch_json(url: str, timeout: float = 8.0) -> dict:
         return json.loads(r.read())
 
 
+def discovery(iss: str) -> dict:
+    """The issuer's discovery document, cached an hour."""
+    now = time.time()
+    with _LOCK:
+        got = _DISC.get(iss)
+        if got and now - got[0] < CACHE_S:
+            return got[1]
+    try:
+        disc = _fetch_json(f"{iss}/.well-known/openid-configuration")
+    except Exception as e:  # noqa: BLE001 — an unreachable issuer is a refusal
+        raise OidcError("bad_id_token", f"could not reach the issuer: {e}") from e
+    if str(disc.get("issuer") or "").rstrip("/") != iss:
+        raise OidcError("bad_id_token", "the issuer's discovery document names another issuer")
+    with _LOCK:
+        _DISC[iss] = (now, disc)
+    return disc
+
+
 def _keys(iss: str, *, refresh: bool = False) -> list[dict]:
     """The issuer's signing keys, through its discovery document, cached."""
     now = time.time()
@@ -83,9 +103,7 @@ def _keys(iss: str, *, refresh: bool = False) -> list[dict]:
         if got and not refresh and now - got[0] < CACHE_S:
             return got[1]
     try:
-        disc = _fetch_json(f"{iss}/.well-known/openid-configuration")
-        if str(disc.get("issuer") or "").rstrip("/") != iss:
-            raise OidcError("bad_id_token", "the issuer's discovery document names another issuer")
+        disc = discovery(iss)
         keys = _fetch_json(str(disc["jwks_uri"])).get("keys") or []
     except OidcError:
         raise
@@ -149,6 +167,49 @@ def verify(token: str, *, now: float | None = None) -> dict:
     return claims | {"iss": iss}
 
 
+def public_info() -> list[dict]:
+    """For `GET /enrol`: where the app signs in — each trusted issuer with its
+    authorization endpoint and this server's client id. [] when off."""
+    out = []
+    clients = _list("MEDIA_OIDC_CLIENTS")
+    for iss in issuers():
+        try:
+            disc = discovery(iss)
+        except OidcError:
+            continue
+        out.append({"issuer": iss, "authorization_endpoint": disc.get("authorization_endpoint"),
+                    "client_id": clients[0] if clients else "",
+                    "scopes": "openid email profile"})
+    return out
+
+
+def exchange_code(code: str, verifier: str, redirect_uri: str, iss: str = "") -> str:
+    """Swap a sign-in's authorization code for its ID token at the issuer (a
+    public client with PKCE: no secret), so the app need not reach the
+    issuer's token endpoint across origins. Returns the ID token, unchecked:
+    `verify` is still what decides."""
+    iss = (iss or (issuers() or [""])[0]).rstrip("/")
+    if iss not in issuers():
+        raise OidcError("bad_id_token", "not a trusted issuer")
+    token_url = str(discovery(iss).get("token_endpoint") or "")
+    body = urllib.parse.urlencode({
+        "grant_type": "authorization_code", "code": code, "code_verifier": verifier,
+        "redirect_uri": redirect_uri, "client_id": (_list("MEDIA_OIDC_CLIENTS") or [""])[0],
+    }).encode()
+    req = urllib.request.Request(token_url, data=body, method="POST", headers={
+        "Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json",
+        "User-Agent": "agent-media oidc"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            got = json.loads(r.read())
+    except Exception as e:  # noqa: BLE001 — a refused code is a refusal
+        raise OidcError("bad_id_token", f"the issuer refused the code: {e}") from e
+    idt = str(got.get("id_token") or "")
+    if not idt:
+        raise OidcError("bad_id_token", "the issuer gave no ID token (was openid asked for?)")
+    return idt
+
+
 def _matches(claims: dict, rules: list[str]) -> bool:
     iss, sub = claims.get("iss"), str(claims.get("sub") or "")
     email = str(claims.get("email") or "").lower()
@@ -178,3 +239,4 @@ def may_enrol(claims: dict) -> bool:
 def _reset_for_tests() -> None:
     with _LOCK:
         _JWKS.clear()
+        _DISC.clear()

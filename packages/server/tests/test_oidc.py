@@ -150,3 +150,40 @@ def test_revoking_an_account_drops_its_devices(server):
     call(server, "POST", "/enrol", {"id_token": token(), "device": "tablet"})
     assert devices.revoke_account("owner@example.com") == 2
     assert devices.cli_devices(["--revoke-account", "42"]) == 1, "nothing left"
+
+
+def test_get_enrol_says_where_to_sign_in(server, monkeypatch):
+    real = oidc._fetch_json
+    monkeypatch.setattr(oidc, "_fetch_json", lambda url, timeout=8.0: (
+        {"issuer": ISS, "jwks_uri": f"{ISS}/oauth/jwks", "authorization_endpoint": f"{ISS}/oauth/authorize",
+         "token_endpoint": f"{ISS}/oauth/token"} if "openid-configuration" in url else real(url, timeout)))
+    oidc._reset_for_tests()
+    res, obj = call(server, "GET", "/enrol")
+    assert res.status == 200
+    assert obj["accounts"] == [{"issuer": ISS, "authorization_endpoint": f"{ISS}/oauth/authorize",
+                                "client_id": "sasonica-app", "scopes": "openid email profile"}]
+
+
+def test_enrol_with_a_code_swaps_it_at_the_issuer(server, monkeypatch):
+    seen = {}
+
+    class Resp:
+        def __init__(self, body): self.body = body
+        def read(self): return self.body
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def fake_urlopen(req, timeout=10):
+        seen["url"], seen["body"] = req.full_url, req.data.decode()
+        return Resp(json.dumps({"id_token": token(), "access_token": "x"}).encode())
+    monkeypatch.setattr(oidc, "_fetch_json", lambda url, timeout=8.0: (
+        {"issuer": ISS, "jwks_uri": f"{ISS}/oauth/jwks", "token_endpoint": f"{ISS}/oauth/token"}
+        if "openid-configuration" in url else {"keys": [_jwk(KEY)]}))
+    monkeypatch.setattr(oidc.urllib.request, "urlopen", fake_urlopen)
+    oidc._reset_for_tests()
+    res, obj = call(server, "POST", "/enrol", {"code": "abc", "code_verifier": "v" * 43,
+                                              "redirect_uri": "sasonica://auth", "device": "phone"})
+    assert res.status == 200, obj
+    assert seen["url"] == f"{ISS}/oauth/token"
+    assert "code_verifier=" + "v" * 43 in seen["body"] and "client_id=sasonica-app" in seen["body"]
+    assert "client_secret" not in seen["body"], "a public client"
