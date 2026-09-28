@@ -22,7 +22,8 @@
 #   4. two Termux runit services that start the canvas (loopback :8781) and
 #      the session holder inside Debian; a wake lock; Termux open to the
 #      app's commands (allow-external-apps);
-#   5. a pairing code, handed to the app as a sasonica://pair link.
+#   5. the Sasonica app, from sasonica.com/app, when it is not installed;
+#   6. a pairing code, handed to the app as a sasonica://pair link.
 #
 # Safe to run again: it pulls, reinstalls and re-pairs, and never overwrites
 # a config it finds.
@@ -173,6 +174,31 @@ for _ in $(seq 1 45); do
   sleep 1
 done
 [ -n "$up" ] || die "the server did not answer on 127.0.0.1:$PORT — see ~/.local/state/sv-log/sasonica-canvas/current"
+
+step "The Sasonica app"
+# Someone who found sasonica.com/install before the app: fetch it from
+# sasonica.com/app (checked against its version.json) and open Android's own
+# install screen. Android asks once to allow installs from Termux.
+PM=${SASONICA_PM:-/system/bin/pm}  # tests: a stand-in
+has_app() { "$PM" path com.sasonica.app >/dev/null 2>&1; }
+if [ ! -x "$PM" ]; then
+  echo "  (not on Android: skipped)"
+elif has_app; then
+  echo "  installed"
+else
+  apk=$HOME/Sasonica.apk
+  want=$(curl -fsSL -m 20 https://sasonica.com/app/version.json | sed -n 's/.*"sha256": *"\([0-9a-f]*\)".*/\1/p' || true)
+  if curl -fsSL -m 300 https://sasonica.com/app -o "$apk" &&
+     [ -n "$want" ] && [ "$(sha256sum "$apk" | cut -d' ' -f1)" = "$want" ]; then
+    echo "  Tap Install when Android asks. (The first time, allow Termux to install apps.)"
+    termux-open "$apk" 2>/dev/null || true
+    for _ in $(seq 1 60); do has_app && break; sleep 3; done
+    if has_app; then echo "  installed"; rm -f "$apk"; else echo "  not installed yet: it is at $apk, or https://sasonica.com/app"; fi
+  else
+    rm -f "$apk"
+    echo "  could not fetch it: get it from https://sasonica.com/app"
+  fi
+fi
 
 step "Pairing"
 link=$(in_debian "~/projects/agent-media/.venv/bin/media-visual-canvas pair --device '$DEVICE' --host 127.0.0.1 --port $PORT" |
