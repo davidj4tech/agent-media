@@ -3793,6 +3793,24 @@ def _push_replay(row: dict, ex: dict, clip_uris: list, clip_durations: list,
             # before it would have begun.
             np_extras["play_started_at"] = time.time() - sum(clip_durations[:start])
         clip_offsets = []            # positions, not offsets, drive this one
+        if have_durations and str(_socket_for(speech_target)).startswith("tcp://"):
+            # Unless the player is the phone's, across the tailnet: a read
+            # there costs 0.6-2.4s, a few slow ones trip the endpoint's breaker
+            # for 45s, and the follower took the refusals for the end — it
+            # cleared the row while the phone read on, so the app had no
+            # player and no bold (David, 28 Sep 2026: a held reply, ▶ from
+            # the app). Follow the clock instead, as the live lane does: each
+            # clip starts where the ones before it end (or where they were
+            # measured to, when the reply has played before).
+            starts = ex.get("clip_starts_s") or []
+            if len(starts) != len(clip_uris):
+                starts, _acc = [], 0.0
+                for d in clip_durations:
+                    starts.append(_acc)
+                    _acc += float(d)
+            clip_offsets = [float(s) for s in starts]
+            np_extras["clip_offsets_s"] = clip_offsets
+            np_extras["play_started_at"] = time.time() - clip_offsets[start]
     elif (clip_sentences and len(clip_uris) == 1
             and len(clip_offsets) == len(clip_sentences)):
         # One clip holding every sentence (the phone lane, which renders the
@@ -3828,7 +3846,11 @@ def _push_replay(row: dict, ex: dict, clip_uris: list, clip_durations: list,
         # all of them (the offsets do). A single-clip turn never followed
         # before, which is every phone-lane reply — the lane most replies now
         # take. The position mirror runs regardless.
-        _hl = bool(pane and clip_sentences
+        # With or without a pane: the sentences are what moves the row's
+        # sentence (the app's bold follows it), and the offsets are what keep
+        # a far player off the polling path. Only the tmux highlight needs
+        # the pane, and the follower asks for that itself.
+        _hl = bool(clip_sentences
                    and (len(clip_sentences) == len(clip_uris) > 1
                         or clip_offsets))
         # The playback token goes with it: the follower is what lasts as long
@@ -4438,6 +4460,10 @@ def cmd_replay_track(a) -> int:
         # it is steadier than the reading it replaced.
         from .intake.submit import elapsed_from_row
         total = sum(durations) or (offsets[-1] + 3.0)
+        if len(offsets) == len(durations) > 1:
+            # A clip per sentence: the last start plus its clip, since
+            # measured starts carry the gaps a plain sum leaves out.
+            total = max(total, offsets[-1] + float(durations[-1]))
         started = time.time()
         last = -1
         while True:
