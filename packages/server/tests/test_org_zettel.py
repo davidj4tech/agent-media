@@ -79,3 +79,16 @@ def test_refusals(tree):
     assert org_zettel.review(D, "burn", "good")[1]["status"] == 400
     assert org_zettel.review("roam/sessions/s.org", "keep", "good")[1]["status"] == 400
     assert org_zettel.review("roam/notes/../../x.org", "keep", "good")[1]["status"] == 404
+
+
+def test_every_org_route_is_let_through():
+    """The dispatcher (`app._org`) only sees paths in ORG_PATHS: a route added
+    to one and not the other answers "not found" on the live server."""
+    import inspect
+    import re as _re
+
+    from agent_media_server import app
+
+    handled = set(_re.findall(r'"(/org[a-z/]*)"', inspect.getsource(app._org)))
+    assert "/org/zettel" in handled
+    assert handled <= app.ORG_PATHS

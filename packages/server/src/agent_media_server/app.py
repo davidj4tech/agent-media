@@ -210,7 +210,7 @@ CORS_PATHS = CORS_PATHS | MUSIC_PATHS
 ORG_PATHS = frozenset({"/org", "/org/view", "/org/read", "/org/search",
                          "/org/capture", "/org/setup", "/org/say",
                          "/org/state", "/org/refile", "/org/date",
-                         "/org/priority", "/org/ask"})
+                         "/org/priority", "/org/ask", "/org/zettel"})
 CORS_PATHS = CORS_PATHS | ORG_PATHS
 
 # What the watchers report (alerts.py, §6.17). The same arrangement.
