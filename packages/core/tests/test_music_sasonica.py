@@ -179,3 +179,48 @@ def test_a_jump_is_the_seek_command(monkeypatch):
     sent = _wire(monkeypatch)
     SinkMusicSasonica("tcp://p8a:6615").seek_cur(position_ms=600_000)
     assert sent == [("tcp://p8a:6615", "cmd", "seek", 600.0, "absolute")]
+
+
+# ---- a mix's chapters -------------------------------------------------------
+
+CHS = [{"title": "A", "start": 0.0, "end": 100.0},
+       {"title": "B", "start": 100.0, "end": 200.0},
+       {"title": "C", "start": 200.0, "end": 300.0}]
+
+
+def _at(monkeypatch, t):
+    sent = _wire(monkeypatch)
+    monkeypatch.setattr(music_sasonica.ipc, "get_properties",
+                        lambda ep, names: {"path": "http://localhost:6616/m.mka", "time-pos": t})
+    monkeypatch.setattr(music_sasonica, "chapters", lambda url: CHS)
+    return sent
+
+
+def test_next_is_the_next_chapter(monkeypatch):
+    sent = _at(monkeypatch, 150.0)
+    SinkMusicSasonica("tcp://p8a:6615").next()
+    assert sent == [("tcp://p8a:6615", "cmd", "seek", 200.0, "absolute")]
+
+
+def test_next_after_the_last_chapter_is_the_playlists(monkeypatch):
+    sent = _at(monkeypatch, 250.0)
+    SinkMusicSasonica("tcp://p8a:6615").next()
+    assert sent == [("tcp://p8a:6615", "cmd", "playlist-next", "weak")]
+
+
+def test_prev_restarts_the_chapter_past_its_start(monkeypatch):
+    sent = _at(monkeypatch, 150.0)
+    SinkMusicSasonica("tcp://p8a:6615").previous()
+    assert sent == [("tcp://p8a:6615", "cmd", "seek", 100.0, "absolute")]
+
+
+def test_prev_at_a_chapters_start_is_the_one_before(monkeypatch):
+    sent = _at(monkeypatch, 101.0)
+    SinkMusicSasonica("tcp://p8a:6615").previous()
+    assert sent == [("tcp://p8a:6615", "cmd", "seek", 0.0, "absolute")]
+
+
+def test_only_music_files_urls_have_a_phone_path():
+    assert music_sasonica.phone_path("http://localhost:6616/a%20b.mka") == "$HOME/.cache/music-offline/a b.mka"
+    assert music_sasonica.phone_path("http://localhost:6616/.x.part") is None
+    assert music_sasonica.phone_path("http://red5:8780/music/a.mka") is None

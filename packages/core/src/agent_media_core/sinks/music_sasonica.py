@@ -13,8 +13,13 @@ and one different verb:
     127.0.0.1:6616). The ``abs`` route (copy it to red5, serve it back) is
     the fallback: over the phone's link it moved ~8 KB/s on 28 Sep 2026, so
     a 52 MB mix would have taken an hour to start.
-  - **everything else** (pause, seek, speed, volume, next, the observation
-    reads the coordinator follows) is the mpv IPC it inherits.
+  - **next / previous** move by chapter inside a mix (a DJ set is one file
+    of many tracks): ExoPlayer does not read Matroska chapters, so they are
+    read on the phone (``ffprobe``, over the same ssh as its titles) and
+    kept per file. Past the last chapter, or in a file without any, they are
+    the playlist's.
+  - **everything else** (pause, seek, speed, volume, the observation reads
+    the coordinator follows) is the mpv IPC it inherits.
 
 The app takes ordinary media audio focus, and its speech takes transient
 focus, so a reply pauses the music inside the phone with no round trip here.
@@ -33,6 +38,7 @@ use the red5 route only.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shlex
@@ -62,6 +68,59 @@ def configured() -> bool:
 def files_base() -> Optional[str]:
     base = os.environ.get("MEDIA_MUSIC_SASONICA_FILES", "http://localhost:6616").strip()
     return None if base.lower() in ("", "off", "0", "no") else base.rstrip("/")
+
+
+_CHAPTERS: dict[str, list[dict]] = {}
+
+
+def phone_path(url: str) -> Optional[str]:
+    """The phone's own path for a music-files URL, else None."""
+    base = files_base()
+    if not base or not url or not url.startswith(base + "/"):
+        return None
+    name = urllib.parse.unquote(url[len(base) + 1:])
+    if not name or "/" in name or name.startswith("."):
+        return None
+    return f"$HOME/{music_local.cache_dir()}/{name}"
+
+
+def chapters(url: str) -> list[dict]:
+    """``[{"title", "start", "end"}]`` (seconds) of a file played from the
+    phone's cache; [] when it has none or they cannot be read. Kept per URL:
+    a file's chapters do not change."""
+    if url in _CHAPTERS:
+        return _CHAPTERS[url]
+    path = phone_path(url)
+    if not path:
+        return []
+    remote = f"ffprobe -v quiet -print_format json -show_chapters \"{path}\""
+    try:
+        r = subprocess.run(music_local.phone_argv(remote),
+                           capture_output=True, text=True, timeout=15)
+        raw = json.loads(r.stdout or "{}").get("chapters") or []
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        return []
+    out = []
+    for c in raw:
+        try:
+            out.append({"title": str((c.get("tags") or {}).get("title") or "").strip(),
+                        "start": float(c["start_time"]), "end": float(c["end_time"])})
+        except (KeyError, TypeError, ValueError):
+            continue
+    if r.returncode == 0:
+        _CHAPTERS[url] = out
+    return out
+
+
+def chapter_at(chs: list[dict], t: Optional[float]) -> int:
+    """Index of the chapter playing at `t` seconds, or -1."""
+    if t is None:
+        return -1
+    at = -1
+    for i, c in enumerate(chs):
+        if c["start"] <= t + 0.5:
+            at = i
+    return at
 
 
 def _phone_fetch(uri: str) -> Optional[str]:
@@ -140,6 +199,40 @@ class SinkMusicSasonica(SinkMusicLocal):
             ipc.command(self._endpoint(), "seek", max(0.0, position_ms / 1000.0), "absolute")
         except (ipc.MpvIpcError, OSError):
             pass
+
+    def _where(self) -> tuple[Optional[str], Optional[float]]:
+        p = ipc.get_properties(self._endpoint(), ["path", "time-pos"])
+        t = p.get("time-pos")
+        return p.get("path"), (float(t) if isinstance(t, (int, float)) else None)
+
+    def next(self, target: Target = SASONICA_TARGET) -> None:
+        try:
+            path, t = self._where()
+            chs = chapters(path or "")
+            i = chapter_at(chs, t)
+            if chs and i + 1 < len(chs):
+                self.seek_cur(position_ms=int(chs[i + 1]["start"] * 1000))
+                return
+        except (ipc.MpvIpcError, OSError):
+            return
+        super().next(target)
+
+    def previous(self, target: Target = SASONICA_TARGET) -> None:
+        """The chapter before, or this one's start when past its first
+        seconds (a ⏮ that restarts first, as the popup's does)."""
+        try:
+            path, t = self._where()
+            chs = chapters(path or "")
+            i = chapter_at(chs, t)
+            if chs and i >= 0:
+                if t is not None and t - chs[i]["start"] > 3 or i == 0:
+                    self.seek_cur(position_ms=int(chs[i]["start"] * 1000))
+                else:
+                    self.seek_cur(position_ms=int(chs[i - 1]["start"] * 1000))
+                return
+        except (ipc.MpvIpcError, OSError):
+            return
+        super().previous(target)
 
     # The app's volume is ExoPlayer's 0-100, not the Termux mpv's 0-170.
     def nominal_volume(self, target: Target = SASONICA_TARGET) -> int:

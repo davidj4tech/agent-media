@@ -1862,7 +1862,7 @@ The app's Media tab (docs/proposals/2026-09-28-music-tab.md, step 1).
 
 #### `GET /music` — gated (like `/speech/now`)
 
-`{"ok": true, "now": {…}, "where": {…}}`.
+`{"ok": true, "now": {…}, "chapters": [{"title", "start_ms"}], "where": {…}}`.
 
 - `now` is `media music status --json` for whichever player is live
   (Sasonica's own, the Termux mpv, Mopidy), so the tab and the desk popup
@@ -1870,6 +1870,12 @@ The app's Media tab (docs/proposals/2026-09-28-music-tab.md, step 1).
   "pos_ms", "dur_ms", "paused", "speed", "volume", "held"}`, every field
   nullable. A phone player is `"backend": "phone"`; nothing playing is
   `"backend": "mopidy"` with the rest null.
+- `chapters` are a mix's tracks (one file, many tracks) when the live file
+  is played by Sasonica from the phone's cache, read on the phone with
+  ffprobe and kept per file; `[]` otherwise. `now.chapter` names the one
+  playing. For such a file `next`/`prev` move by chapter (`prev` restarts
+  the chapter when past its first 3 s), and a tap on a track is
+  `seek` to its `start_ms`.
 - `where` is the `music` block of `GET /audio/targets` (§6.9), for the
   tab's picker; a choice is `POST /audio/target` as before.
 - Reading asks the phone, so an answer is kept 1.5 s.

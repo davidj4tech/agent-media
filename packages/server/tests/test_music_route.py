@@ -18,6 +18,13 @@ NOW = {"backend": "phone", "uri": "yt:x", "media_id": "x", "path": "http://local
        "paused": False, "speed": 1.0, "volume": 100, "held": False}
 
 
+@pytest.fixture(autouse=True)
+def _no_phone(monkeypatch):
+    """A track's chapters are read on the phone over ssh; never here."""
+    from agent_media_core.sinks import music_sasonica
+    monkeypatch.setattr(music_sasonica, "chapters", lambda url: [])
+
+
 @pytest.fixture()
 def player(monkeypatch):
     ran: list = []
@@ -31,8 +38,8 @@ def player(monkeypatch):
 def test_now_is_the_status_and_the_picker(server, signed_in, audio_host, player):
     res, obj = call(server, "GET", "/music", headers=AUTH)
     assert res.status == 200, obj
-    assert keys(obj) == {"ok", "now", "where"}
-    assert obj["now"] == NOW
+    assert keys(obj) == {"ok", "now", "chapters", "where"}
+    assert obj["now"] == NOW and obj["chapters"] == []
     assert keys(obj["where"]) == {"current", "next", "overridden", "options"}
 
 
@@ -87,3 +94,14 @@ def test_reading_is_kept_a_moment(server, signed_in, audio_host, monkeypatch):
     call(server, "GET", "/music", headers=AUTH)
     assert len(reads) == 1
     music._reset_cache()
+
+
+def test_a_mix_lists_its_tracks(server, signed_in, audio_host, player, monkeypatch):
+    from agent_media_core.sinks import music_sasonica
+    monkeypatch.setattr(music_sasonica, "phone_path", lambda url: "/x.mka" if url.startswith("http://localhost:6616/") else None)
+    monkeypatch.setattr(music_sasonica, "chapters", lambda url: [
+        {"title": "Sun Salutation", "start": 0.0, "end": 264.0},
+        {"title": "Trance Life", "start": 674.5, "end": 800.0}])
+    _, obj = call(server, "GET", "/music", headers=AUTH)
+    assert obj["chapters"] == [{"title": "Sun Salutation", "start_ms": 0},
+                               {"title": "Trance Life", "start_ms": 674500}]

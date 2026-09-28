@@ -5081,6 +5081,13 @@ def _music_status_json(m: "SinkMusic", patient: bool = False,
         chap = str(props.get("chapter-metadata/by-key/title") or "").strip()
         vol = props.get("volume")
         path = str(props.get("path") or "")
+        if not chap:
+            # Sasonica's player does not read a mix's chapters; its sink does.
+            from .sinks import music_sasonica
+            if music_sasonica.phone_path(path):
+                chs = music_sasonica.chapters(path)
+                i = music_sasonica.chapter_at(chs, props.get("time-pos"))
+                chap = chs[i]["title"] if i >= 0 else ""
         media_id = _music_media_id(path)
         asked, named = _music_asked(media_id, path)
         label = _mpv_music_label(props)
@@ -5916,6 +5923,12 @@ def cmd_music(a) -> int:
         return 0
     if a.action == "volume":
         b.volume_delta(int(float(a.uri or 0)))
+        return 0
+    from .sinks.music_sasonica import SinkMusicSasonica
+    if a.action == "prev" and isinstance(b, SinkMusicSasonica):
+        # Sasonica's player restarts by chapter itself: a mix is one file,
+        # and restarting "the track" would go back to the start of the set.
+        b.previous()
         return 0
     if a.action == "prev" and getattr(a, "restart_first", False):
         # Popup `<`: ⏮ semantics — restart the track if we're past its start.

@@ -3,7 +3,7 @@
 server-contract.md §6.9a. Step 1 of docs/proposals/2026-09-28-music-tab.md
 (David, 28 Sep 2026: "Let's build the Media tab UI").
 
-  GET  /music                → {"ok", "now": {...}, "where": {...}}
+  GET  /music                → {"ok", "now": {...}, "chapters": [...], "where": {...}}
   POST /music {"action", …}  → the same, after doing it
 
 `now` is `media music status --json`: the live player's track, position and
@@ -66,23 +66,41 @@ def _reset_cache() -> None:
         _CACHE[:] = [0.0, None]
 
 
-def _now(fresh: bool = False) -> dict:
+def _now() -> tuple[dict, list[dict]]:
+    """The status and the live file's chapters, kept together a moment."""
     t = time.monotonic()
     with _LOCK:
-        if not fresh and _CACHE[1] is not None and t - _CACHE[0] < _CACHE_TTL_S:
+        if _CACHE[1] is not None and t - _CACHE[0] < _CACHE_TTL_S:
             return _CACHE[1]
     try:
         now = _status()
     except Exception as e:  # noqa: BLE001 — the tab must answer without it
         print(f"music: status failed: {e}", file=sys.stderr)
         now = {"backend": None}
+    got = (now, _chapters(now))
     with _LOCK:
-        _CACHE[:] = [time.monotonic(), now]
-    return now
+        _CACHE[:] = [time.monotonic(), got]
+    return got
+
+
+def _chapters(now: dict) -> list[dict]:
+    """A mix's tracks, when the live file is one the phone can read chapters
+    from: ``[{"title", "start_ms"}]``, else []."""
+    try:
+        from agent_media_core.sinks import music_sasonica
+
+        path = now.get("path") or ""
+        if not music_sasonica.phone_path(path):
+            return []
+        return [{"title": c["title"], "start_ms": int(c["start"] * 1000)}
+                for c in music_sasonica.chapters(path)]
+    except Exception:  # noqa: BLE001 — a list the tab can do without
+        return []
 
 
 def _answer() -> dict:
-    return {"now": _now(), "where": audio.channel_block("music")}
+    now, chapters = _now()
+    return {"now": now, "chapters": chapters, "where": audio.channel_block("music")}
 
 
 def now(bearer: str) -> tuple[bool, dict]:
