@@ -1296,7 +1296,8 @@ def _music(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
     if path == "/music/recent":
         if method != "GET":
             return False
-        ok, detail = music.recent(_bearer(h))
+        kind = (parse_qs(h.path.partition("?")[2]).get("kind") or ["music"])[0]
+        ok, detail = music.recent(_bearer(h), kind)
     elif method == "GET":
         ok, detail = music.now(_bearer(h))
     else:

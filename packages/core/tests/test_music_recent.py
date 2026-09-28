@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent_media_core import music_recent
+from agent_media_core import media_meta, music_recent
 from agent_media_core.state import StateStore
 
 
@@ -14,6 +14,9 @@ def st(tmp_path, monkeypatch):
     monkeypatch.setattr(music_recent, "state_dir", lambda: tmp_path)
     monkeypatch.setattr(music_recent, "_oembed", lambda vid: f"Named {vid}")
     monkeypatch.setattr(music_recent, "_cached_title", lambda vid: "")
+    monkeypatch.setattr(media_meta, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(media_meta, "fill", lambda wanted: None)
+    monkeypatch.setattr(music_recent, "_abs_by_file", lambda: {})
     for k in ("MEDIA_SOURCE_SESSION", "CLAUDE_CODE_SESSION_ID", "MEDIA_SESSIOND_SESSION"):
         monkeypatch.delenv(k, raising=False)
     return StateStore(tmp_path / "state.db")
@@ -77,3 +80,53 @@ def test_player_rows_do_not_crowd_out_older_plays(st):
     for i in range(500):
         st.add_history(sink="music", uri=f"/sdcard/cache/{i}.mka", started_at=10 + i)
     assert [r["uri"][-11:] for r in music_recent.recent(store=st)] == ["AAAAAAAAAAA"]
+
+
+def test_a_track_says_what_its_title_says_until_looked_up(st):
+    st.add_history(sink="music", uri="yt:https://www.youtube.com/watch?v=AAAAAAAAAAA",
+                   started_at=1, text="Sunshower — Chris Cornell - Topic")
+    got = music_recent.recent(store=st)[0]
+    assert (got["kind"], got["artist"], got["song"], got["album"]) == ("music", "Chris Cornell", "Sunshower", None)
+    media_meta._save({"yt:AAAAAAAAAAA": {"artist": "Chris Cornell", "song": "Sunshower",
+                                          "album": "Songbook", "genre": "rock", "found": True}})
+    got = music_recent.recent(store=st)[0]
+    assert (got["album"], got["genre"]) == ("Songbook", "rock")
+
+
+@pytest.mark.parametrize("title,channel,want", [
+    ("Sunshower", "Chris Cornell - Topic", ("Chris Cornell", "Sunshower", True)),
+    ("O.A.R. - Crazy Game of Poker (STUDIO VERSION) w/ Lyrics in Description!!!", "popgarbage94",
+     ("O.A.R.", "Crazy Game of Poker (STUDIO VERSION)", True)),
+    ("Blackjack (2005 Remaster)", "", (None, "Blackjack", False)),
+    ("Spiritual Morning Mix | Yoga", "Some Channel", ("Some Channel", "Spiritual Morning Mix", False)),
+])
+def test_split_title(title, channel, want):
+    assert media_meta.split_title(title, channel) == want
+
+
+@pytest.mark.parametrize("title,want", [
+    ("Hounded: The Iron Druid Chronicles, Book 1 (Unabridged)", "The Iron Druid Chronicles"),
+    ("The Great Big Bear and Other Stories of the Iron Druid Chronicles", "The Iron Druid Chronicles"),
+    ("The Dark Age: The Ancient Future Trilogy, Book 1 (Unabridged)", "The Ancient Future Trilogy"),
+    ("Blood Scent (Unabridged)", None),
+])
+def test_series_from_a_title(title, want):
+    assert media_meta.series_of(title) == want
+
+
+def test_books_and_podcasts_are_their_own_lists(st, monkeypatch):
+    item = {"id": "i1", "relPath": "Hounded.m4b", "media": {"metadata": {
+        "title": "Hounded: The Iron Druid Chronicles, Book 1 (Unabridged)", "authorName": "Kevin Hearne",
+        "genres": ["Audiobook"], "narratorName": "Luke Daniels"}}}
+    monkeypatch.setattr(music_recent, "_abs_by_file", lambda: {"Hounded.m4b": item, "id:i1": item})
+    st.add_history(sink="book", uri="/home/u/audiobooks/Hounded.m4b", started_at=1)
+    st.add_history(sink="book", uri="https://traffic.libsyn.com/show/ep205.mp3", started_at=2,
+                   extras={"title": "Episode 205"})
+    st.add_history(sink="book", uri="/home/u/conversations/p-x/reply.mp3", started_at=3)
+    st.add_history(sink="book", uri="http://127.0.0.1:13378/api/items/0000/download?token=secret", started_at=4)
+    books = music_recent.recent(store=st, kind="book")
+    assert [(b["title"][:7], b["author"], b["series"], b["narrator"], b["genre"]) for b in books] == \
+        [("Hounded", "Kevin Hearne", "The Iron Druid Chronicles", "Luke Daniels", None)]
+    pods = music_recent.recent(store=st, kind="podcast")
+    assert [(p["title"], p["author"]) for p in pods] == [("Episode 205", "traffic.libsyn.com")]
+    assert not any("token" in r["uri"] for r in books + pods)

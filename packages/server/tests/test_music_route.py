@@ -141,9 +141,26 @@ def test_recent_is_the_played_list(server, signed_in, audio_host, monkeypatch):
     from agent_media_core import music_recent
     items = [{"id": 3, "uri": "yt:https://www.youtube.com/watch?v=Gkl8blLusFc", "title": "As Hope",
               "at": 1790596000.0, "session": "ed0469b8", "inferred": True}]
-    monkeypatch.setattr(music_recent, "recent", lambda: items)
+    monkeypatch.setattr(music_recent, "recent", lambda kind="music", **_: items if kind == "music" else [])
     res, obj = call(server, "GET", "/music/recent", headers=AUTH)
-    assert res.status == 200 and obj == {"ok": True, "items": items}
+    assert res.status == 200 and obj == {"ok": True, "kind": "music", "items": items}
+    res, obj = call(server, "GET", "/music/recent?kind=book", headers=AUTH)
+    assert res.status == 200 and obj == {"ok": True, "kind": "book", "items": []}
+    res, obj = call(server, "GET", "/music/recent?kind=video", headers=AUTH)
+    assert res.status == 400 and obj["ok"] is False
+
+
+def test_a_book_is_played_only_from_the_list(server, signed_in, audio_host, monkeypatch):
+    from agent_media_core import music_recent
+    books = [{"uri": "/home/u/audiobooks/Hounded.m4b", "kind": "book"}]
+    monkeypatch.setattr(music_recent, "recent", lambda kind="music", **_: books if kind == "book" else [])
+    ran = []
+    monkeypatch.setattr(music, "_run_book", lambda uri: (ran.append(uri), (True, ""))[1])
+    monkeypatch.setattr(music, "_answer", lambda: {"now": None})
+    res, obj = call(server, "POST", "/music", {"action": "book", "uri": "/etc/passwd"}, headers=AUTH)
+    assert res.status == 400 and ran == []
+    res, obj = call(server, "POST", "/music", {"action": "book", "uri": "/home/u/audiobooks/Hounded.m4b"}, headers=AUTH)
+    assert res.status == 200 and ran == ["/home/u/audiobooks/Hounded.m4b"]
 
 
 def test_recent_is_gated(server, monkeypatch, audio_host):

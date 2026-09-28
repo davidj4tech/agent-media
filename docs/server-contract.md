@@ -1909,6 +1909,23 @@ else null. `title` is the name the play history learned, else the one
 YouTube gives for the video (looked up once and kept), else null. Only
 things someone asked for: a player loading a file is not listed.
 
+`?kind=music|book|podcast` (29 Sep 2026; default `music`, anything else
+400) picks the list, and the answer says which (`"kind"`). Every item has
+`kind`. A music item adds `artist`, `album`, `song`, `genre`; a book or
+podcast item adds `author`, `series`, `narrator`, `genre` — any of them null
+until known. Music's come from the YouTube channel and title and the iTunes
+catalogue; books' and podcasts' from the Audiobookshelf item the file is,
+a book's genre from iTunes' audiobooks. Lookups run in the background and
+are kept (`media-meta.json`), so a later visit knows more. Books and
+podcasts are the book player's history less what Threads already holds (a
+conversation read back, the agenda, a note sent to the phone); a link to an
+Audiobookshelf item is never handed on — its file on the host stands in.
+
+`POST /music {"action": "book", "uri"}` (29 Sep 2026) plays a book or
+podcast again (`media book play`, resumed where it was left). Only a `uri`
+the book or podcast list holds is accepted (400 otherwise), so this is not
+a way to play any file on the host.
+
 Pinned by `packages/server/tests/test_music_route.py`.
 
 Clients: S (the Media tab).

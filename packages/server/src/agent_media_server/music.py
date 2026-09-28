@@ -4,7 +4,8 @@ server-contract.md §6.9a. Step 1 of docs/proposals/2026-09-28-music-tab.md
 (David, 28 Sep 2026: "Let's build the Media tab UI").
 
   GET  /music                → {"ok", "now": {...}, "chapters": [...], "where": {...}}
-  GET  /music/recent         → {"ok", "items": [{"uri", "title", "at", "session", …}]}
+  GET  /music/recent[?kind=music|book|podcast]
+                             → {"ok", "kind", "items": [{"uri", "title", "at", "session", …}]}
   POST /music {"action", …}  → the same, after doing it
 
 `now` is `media music status --json`: the live player's track, position and
@@ -37,6 +38,8 @@ ACTIONS = {
     "seek": "seek", "seek-by": "seek",
     # Recently played: put one on again, now or after what is playing.
     "play": "play", "add": "play",
+    # A book or podcast from Recently played: `media book play`, resumed.
+    "book": "book",
 }
 
 _CACHE_TTL_S = 2.5
@@ -65,6 +68,16 @@ def _run(argv: list[str]) -> tuple[bool, str]:
     """`media music <argv>`, as the desk runs it."""
     try:
         r = subprocess.run([sys.executable, "-m", "agent_media_core.cli", "music", *argv],
+                           capture_output=True, text=True, timeout=_CMD_TIMEOUT_S)
+    except (subprocess.TimeoutExpired, OSError) as e:
+        return False, str(e)
+    return r.returncode == 0, (r.stderr or r.stdout or "").strip()[-300:]
+
+
+def _run_book(uri: str) -> tuple[bool, str]:
+    """`media book play <uri>` (resumes where it was left)."""
+    try:
+        r = subprocess.run([sys.executable, "-m", "agent_media_core.cli", "book", "play", "--", uri],
                            capture_output=True, text=True, timeout=_CMD_TIMEOUT_S)
     except (subprocess.TimeoutExpired, OSError) as e:
         return False, str(e)
@@ -134,21 +147,32 @@ def now(bearer: str) -> tuple[bool, dict]:
     return True, _answer()
 
 
-def recent(bearer: str) -> tuple[bool, dict]:
+def recent(bearer: str, kind: str = "music") -> tuple[bool, dict]:
     """`GET /music/recent` — gated like /speech/now: what was played, newest
     first, one per track, with the conversation that put it on
-    (agent_media_core.music_recent)."""
+    (agent_media_core.music_recent). `kind` is music, book or podcast."""
     user, err = auth.gate(bearer)
     if not user:
         return False, err
     from agent_media_core import music_recent
 
+    if kind not in music_recent.KINDS:
+        return False, {"error": "kind must be music, book or podcast", "status": 400}
     try:
-        items = music_recent.recent()
+        items = music_recent.recent(kind=kind)
     except Exception as e:  # noqa: BLE001 — an empty list, not a 500
         print(f"music: recent failed: {e}", file=sys.stderr)
         items = []
-    return True, {"items": items}
+    return True, {"kind": kind, "items": items}
+
+
+def _played_book(uri: str) -> bool:
+    """Whether `uri` is one Recently played lists — the only books this
+    route will start, so it is not a way to play any file on the host."""
+    from agent_media_core import music_recent
+
+    return any(i.get("uri") == uri for k in ("book", "podcast")
+               for i in music_recent.recent(kind=k, limit=200))
 
 
 def _clock(seconds: float) -> str:
@@ -176,6 +200,16 @@ def control(body: dict, bearer: str) -> tuple[bool, dict]:
             argv.append(f"{'+' if v >= 0 else '-'}{abs(int(round(v)))}")
     elif action == "prev":
         argv.append("--restart-first")
+    elif action == "book":
+        uri = body.get("uri")
+        if not isinstance(uri, str) or not uri.strip() or not _played_book(uri.strip()):
+            return False, {"error": "uri must be a book or podcast from Recently played", "status": 400}
+        done, said = _run_book(uri.strip())
+        _reset_cache()
+        if not done:
+            print(f"music: book play failed: {said}", file=sys.stderr)
+            return False, {"error": said or "book failed", "status": 502, **_answer()}
+        return True, _answer()
     elif action in ("play", "add"):
         uri = body.get("uri")
         # A name the CLI would read as an option is not a track.
