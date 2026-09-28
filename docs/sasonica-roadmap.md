@@ -568,6 +568,19 @@ ahead.
    The server gains `GET/POST /music`. Fork-only files, with one
    `// Sasonica:` line in `Nav.tsx`. Sketch and order:
    [proposals/2026-09-28-music-tab.md](proposals/2026-09-28-music-tab.md).
+9. **Hands-free: hold the mic** (David, 28 Sep 2026) — holding the mic key
+   (as Send is held for New chat) turns on a conversation loop: after each
+   reply the mic listens again, then the dictated words send after the
+   3 s countdown (the mic key's since 28 Sep), so a misheard word can still
+   be caught. Listening starts when the reply's *speech* ends, not its text,
+   so the mic does not hear the phone. A chime marks each listen. The loop
+   ends after two silent listens, on a tap, or on "stop". Spoken commands
+   ("cancel", "stop", "new chat") are handled on the phone, never sent.
+   Later: the headset button as the mic, for use with the phone pocketed.
+   The one real piece of engineering is the listener: `dictate()` opens the
+   platform recogniser's own screen each time, so the loop needs a quiet
+   in-app `SpeechRecognizer` in the Android shell, with its own "listening"
+   state in the composer.
 
 ## Loose ends
 
