@@ -84,7 +84,7 @@ with no tailnet.
    F-Droid or GitHub, because the Play Store build is years stale, and links
    there. We cannot install it for them.
 3. **One line, pasted into Termux.** The app shows it with a Copy key:
-   `curl -fsSL https://sasonica.com/android | bash` (host to be decided). The
+   `curl -fsSL https://sasonica.com/install | bash` (live 28 Sep 2026: `deploy/install.sh` sees Termux and runs `deploy/android/install.sh`; `sasonica.com/android` goes straight there). The
    installer:
    - installs `proot-distro` and `termux-services`, then Debian with
      Python, git, tmux and Node;
@@ -212,8 +212,8 @@ anything is switched on:
 
 ## Open questions
 
-- Where the installer lives: `sasonica.com/android`? And pip or a git clone for
-  agent-media on the phone?
+- Where the installer lives: settled, `sasonica.com/install` (David, 28 Sep
+  2026). Pip or a git clone for agent-media on the phone: a clone, for now.
 - Battery: what an idle canvas plus runit costs over a day, measured on p8a
   before we promise anything.
 - Store policy: an app whose setup sends people to Termux on F-Droid is
