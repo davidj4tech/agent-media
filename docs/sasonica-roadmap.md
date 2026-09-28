@@ -68,6 +68,18 @@ Where things live:
 
 ## Done
 
+**The server as one file** (David, 29 Sep 2026: "let's do that"):
+`deploy/binary/build.sh` makes `sasonica-linux-<arch>`, a PyApp launcher with
+Python and core/server/visual inside (57 MB, 65 ms to start after its first
+run). `sasonica serve` / `sessiond` / `install` / `<any console script>`;
+CI publishes x86_64 and aarch64 to the rolling `server-latest` release, and
+`sasonica.com/install` on Linux now installs it and shows a pairing QR.
+Headless first: no multiplexer needed. agent-media `43281af`,
+`docs/proposals/2026-09-29-single-binary.md`. **Next:** the phone installer
+onto the arm64 binary (no git, pip or venv in its Debian); a headless
+**opencode** driver through `opencode serve`, so opencode needs no tmux
+either; then Mac and Windows (launchd / a Windows service in `sasonica install`).
+
 **A welcome, and Just look around** (David, 27 Sep 2026): a fresh install
 opens on Welcome, which says what Sasonica is and offers **Connect to my
 server** (Pair this device) or **Just look around**: a demo served inside the
