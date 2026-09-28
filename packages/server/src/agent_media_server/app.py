@@ -157,6 +157,8 @@ from __future__ import annotations
 import json
 import re
 import sys
+import threading
+import time
 from http.server import BaseHTTPRequestHandler
 from typing import Callable
 from urllib.parse import parse_qs
@@ -536,9 +538,11 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
         if not dev:
             _json(h, 401, {"ok": False, "error": "not a device of this server"})
         else:
+            _refresh_profile_soon(dev)
             _json(h, 200, {"ok": True, "device_id": dev.get("id"), "name": dev.get("name"),
                            "enrol": devices.may_enrol(dev),
                            "account": dev.get("account") or None,
+                           "username": dev.get("username") or None,
                            "issuer": dev.get("iss") or None})
     elif path == "/enrol":
         # Where the app signs in with an account (oidc.py): open, like /pair.
@@ -777,6 +781,42 @@ def _pair(h: BaseHTTPRequestHandler) -> None:
                    "server": {"name": socket.gethostname(), "base": _base_url(h)}})
 
 
+#: How old an account's name and email may get before /me asks the issuer again.
+PROFILE_MAX_AGE_S = 3600.0
+_REFRESHING: set[str] = set()
+
+
+def _refresh_profile_soon(dev: dict) -> None:
+    """An account-enrolled device whose details are over an hour old: ask the
+    issuer again, in the background (the answer shows on the next /me). A
+    refusal leaves what is there — it does not sign the device out."""
+    from . import oidc
+
+    did = str(dev.get("id") or "")
+    if not dev.get("iss") or not did or did in _REFRESHING:
+        return
+    if time.time() - float(dev.get("profile_at") or 0) < PROFILE_MAX_AGE_S:
+        return
+    iss, rt = devices.refresh_token_of(did)
+    if not rt:
+        return
+    _REFRESHING.add(did)
+
+    def run():
+        try:
+            info, new_rt = oidc.profile(iss, rt)
+            devices.update_profile(did, str(info.get("email") or ""), oidc.username_of(info), new_rt)
+        except oidc.OidcError as e:
+            print(f"me: profile refresh for {did} refused: {e}", file=sys.stderr)
+        finally:
+            _REFRESHING.discard(did)
+    _in_background(run)
+
+
+def _in_background(fn) -> None:
+    threading.Thread(target=fn, daemon=True).start()
+
+
 def _enrol(h: BaseHTTPRequestHandler) -> None:
     """`POST /enrol {"id_token", "device"}` — a signed-in account for a device
     token (accounts proposal, step 3). `POST /pair` with a different proof:
@@ -799,11 +839,14 @@ def _enrol(h: BaseHTTPRequestHandler) -> None:
     body = _read_json(h) or {}
     try:
         id_token = str(body.get("id_token") or "")
+        refresh_token = ""
         if not id_token and body.get("code"):
             # The app's sign-in, finished here: its code and PKCE verifier
-            # swapped for the ID token at the issuer.
-            id_token = oidc.exchange_code(str(body.get("code")), str(body.get("code_verifier") or ""),
-                                          str(body.get("redirect_uri") or ""), str(body.get("issuer") or ""))
+            # swapped for the ID token at the issuer (and a refresh token,
+            # kept so the account's name and email stay current).
+            id_token, refresh_token = oidc.exchange_code(
+                str(body.get("code")), str(body.get("code_verifier") or ""),
+                str(body.get("redirect_uri") or ""), str(body.get("issuer") or ""))
         claims = oidc.verify(id_token)
     except oidc.OidcError as e:
         devices._note_failure(ip)
@@ -816,12 +859,13 @@ def _enrol(h: BaseHTTPRequestHandler) -> None:
                        "error": "that account has no access to this server"})
         return
     got = devices.enrol_account(claims, str(body.get("device") or ""), ip,
-                                enrol=oidc.may_enrol(claims))
+                                enrol=oidc.may_enrol(claims), refresh_token=refresh_token,
+                                username=oidc.username_of(claims))
     print(f"enrol: {got['device_id']} ({got['name']!r}) for "
           f"{claims.get('email') or claims.get('sub')} from {ip}", file=sys.stderr)
     _json(h, 200, {"ok": True, "token": got["token"], "device_id": got["device_id"],
                    "name": got["name"], "enrol": got["enrol"],
-                   "account": str(claims.get("email") or ""),
+                   "account": str(claims.get("email") or ""), "username": got["username"],
                    "server": {"name": socket.gethostname(), "base": _base_url(h)}})
 
 

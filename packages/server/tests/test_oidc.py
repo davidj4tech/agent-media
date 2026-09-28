@@ -175,7 +175,8 @@ def test_enrol_with_a_code_swaps_it_at_the_issuer(server, monkeypatch):
 
     def fake_urlopen(req, timeout=10):
         seen["url"], seen["body"] = req.full_url, req.data.decode()
-        return Resp(json.dumps({"id_token": token(), "access_token": "x"}).encode())
+        return Resp(json.dumps({"id_token": token(preferred_username="david"), "access_token": "x",
+                                "refresh_token": "rt-1"}).encode())
     monkeypatch.setattr(oidc, "_fetch_json", lambda url, timeout=8.0: (
         {"issuer": ISS, "jwks_uri": f"{ISS}/oauth/jwks", "token_endpoint": f"{ISS}/oauth/token"}
         if "openid-configuration" in url else {"keys": [_jwk(KEY)]}))
@@ -187,6 +188,9 @@ def test_enrol_with_a_code_swaps_it_at_the_issuer(server, monkeypatch):
     assert seen["url"] == f"{ISS}/oauth/token"
     assert "code_verifier=" + "v" * 43 in seen["body"] and "client_id=sasonica-app" in seen["body"]
     assert "client_secret" not in seen["body"], "a public client"
+    assert obj["username"] == "david"
+    assert devices.refresh_token_of(obj["device_id"])[1] == "rt-1", "kept, privately"
+    assert all("rt" not in d for d in devices.list_devices()), "never listed"
 
 
 def test_me_says_which_account_a_device_is(server):
@@ -196,3 +200,28 @@ def test_me_says_which_account_a_device_is(server):
     assert me["account"] == "owner@example.com" and me["issuer"] == ISS and me["enrol"] is True
     res, _ = call(server, "GET", "/me", headers={"Authorization": "Bearer nope"})
     assert res.status == 401
+
+
+def test_me_refreshes_an_old_profile_from_the_issuer(server, monkeypatch):
+    """An email or name changed at the issuer shows on the next /me."""
+    import time as _t
+    from agent_media_server import app as app_mod
+    got = devices.enrol_account({"iss": ISS, "sub": "1", "email": "old@example.com"}, "phone",
+                                refresh_token="rt-1", username="david")
+    devices.update_profile(got["device_id"], "old@example.com", "david", "rt-1")
+    # Make it old.
+    rows = devices._load()
+    for d in rows:
+        if d["id"] == got["device_id"]:
+            d["profile_at"] = _t.time() - 7200
+    devices._save(rows)
+    calls = []
+    monkeypatch.setattr(oidc, "profile", lambda iss, rt: (calls.append(rt) or
+                        ({"sub": "1", "email": "new@example.com", "preferred_username": "david2"}, "rt-2")))
+    monkeypatch.setattr(app_mod, "_in_background", lambda fn: fn())
+    res, me = call(server, "GET", "/me", headers={"Authorization": f"Bearer {got['token']}"})
+    assert res.status == 200 and me["account"] == "old@example.com", "this answer is what was there"
+    res, me = call(server, "GET", "/me", headers={"Authorization": f"Bearer {got['token']}"})
+    assert me["account"] == "new@example.com" and me["username"] == "david2"
+    assert calls == ["rt-1"], "asked once; fresh now"
+    assert devices.refresh_token_of(got["device_id"])[1] == "rt-2", "the rotated refresh token kept"

@@ -183,31 +183,66 @@ def public_info() -> list[dict]:
     return out
 
 
-def exchange_code(code: str, verifier: str, redirect_uri: str, iss: str = "") -> str:
-    """Swap a sign-in's authorization code for its ID token at the issuer (a
-    public client with PKCE: no secret), so the app need not reach the
-    issuer's token endpoint across origins. Returns the ID token, unchecked:
-    `verify` is still what decides."""
-    iss = (iss or (issuers() or [""])[0]).rstrip("/")
-    if iss not in issuers():
-        raise OidcError("bad_id_token", "not a trusted issuer")
+def _token_request(iss: str, params: dict) -> dict:
+    """A POST to the issuer's token endpoint as the public client (no secret)."""
     token_url = str(discovery(iss).get("token_endpoint") or "")
-    body = urllib.parse.urlencode({
-        "grant_type": "authorization_code", "code": code, "code_verifier": verifier,
-        "redirect_uri": redirect_uri, "client_id": (_list("MEDIA_OIDC_CLIENTS") or [""])[0],
-    }).encode()
+    body = urllib.parse.urlencode({**params, "client_id": (_list("MEDIA_OIDC_CLIENTS") or [""])[0]}).encode()
     req = urllib.request.Request(token_url, data=body, method="POST", headers={
         "Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json",
         "User-Agent": "agent-media oidc"})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.loads(r.read())
+
+
+def exchange_code(code: str, verifier: str, redirect_uri: str, iss: str = "") -> tuple[str, str]:
+    """Swap a sign-in's authorization code for `(id_token, refresh_token)` at
+    the issuer (a public client with PKCE: no secret), so the app need not
+    reach the issuer's token endpoint across origins. The ID token is
+    unchecked here: `verify` is still what decides. The refresh token (may be
+    "") is what keeps the account's name and email current (`profile`)."""
+    iss = (iss or (issuers() or [""])[0]).rstrip("/")
+    if iss not in issuers():
+        raise OidcError("bad_id_token", "not a trusted issuer")
     try:
-        with urllib.request.urlopen(req, timeout=10) as r:
-            got = json.loads(r.read())
+        got = _token_request(iss, {"grant_type": "authorization_code", "code": code,
+                                   "code_verifier": verifier, "redirect_uri": redirect_uri})
     except Exception as e:  # noqa: BLE001 — a refused code is a refusal
         raise OidcError("bad_id_token", f"the issuer refused the code: {e}") from e
     idt = str(got.get("id_token") or "")
     if not idt:
         raise OidcError("bad_id_token", "the issuer gave no ID token (was openid asked for?)")
-    return idt
+    return idt, str(got.get("refresh_token") or "")
+
+
+def profile(iss: str, refresh_token: str) -> tuple[dict, str]:
+    """The account as the issuer has it now — `({sub, email, name,
+    preferred_username}, new refresh token)` — through the refresh token kept
+    at sign-in and the userinfo endpoint. A name or email changed at the
+    issuer shows here. Raises OidcError when the issuer will not (the account
+    signed out everywhere, or the refresh token expired)."""
+    iss = iss.rstrip("/")
+    if iss not in issuers() or not refresh_token:
+        raise OidcError("bad_id_token", "nothing to refresh with")
+    try:
+        got = _token_request(iss, {"grant_type": "refresh_token", "refresh_token": refresh_token,
+                                   "scope": "openid email profile"})
+        access = str(got.get("access_token") or "")
+        url = str(discovery(iss).get("userinfo_endpoint") or "")
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {access}",
+                                                   "Accept": "application/json",
+                                                   "User-Agent": "agent-media oidc"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            info = json.loads(r.read())
+    except Exception as e:  # noqa: BLE001 — a refusal, never a 500
+        raise OidcError("bad_id_token", f"the issuer would not refresh: {e}") from e
+    return ({k: info.get(k) for k in ("sub", "email", "name", "preferred_username")},
+            str(got.get("refresh_token") or refresh_token))
+
+
+def username_of(claims: dict) -> str:
+    """What to call an account: its username, else its name, else its email's local part."""
+    return str(claims.get("preferred_username") or claims.get("name")
+               or str(claims.get("email") or "").split("@")[0] or "")
 
 
 def _matches(claims: dict, rules: list[str]) -> bool:
