@@ -564,12 +564,15 @@ ahead.
    Termux setup. Music comes first, then books (in full: position synced to
    Audiobookshelf, chapters, sleep timer, offline, which retires Sasonica
    ABS for playback), then podcasts. Replays stay on their threads.
-   **Step 0 built 28 Sep 2026, not yet heard:** the app's media player
-   (sasonica-app `5372c64`, `Media3Music` on 6615) and the server's
-   `sasonica` music target (agent-media `f8e380a`,
-   `MEDIA_MUSIC_SASONICA_ENDPOINT=tcp://p8a:6615` set on red5). The target is
-   offered in the picker, not the default. Next: install on p8a, play a track
-   there, then make it the default. It covers now playing and transport, where it
+   **Step 0 done 28 Sep 2026:** the app's media player (sasonica-app
+   `5372c64`, `Media3Music` on 6615, installed on p8a) and the server's
+   `sasonica` music target (agent-media `f8e380a`, `e4cce51`;
+   `MEDIA_MUSIC_SASONICA_ENDPOINT=tcp://p8a:6615` on red5). A YouTube track
+   plays from the phone's own cache through Termux's new `music-files`
+   service (localhost:6616), not via red5. Heard on p8a: play (7 s to
+   start), pause, resume, seek, stop. Not yet checked: a reply pausing it
+   and it resuming after. It is offered in the picker (after a canvas
+   restart) but is not the default. It covers now playing and transport, where it
    plays (the existing `/targets` picker), the queue, likes, and search last.
    The server gains `GET/POST /music`. Fork-only files, with one
    `// Sasonica:` line in `Nav.tsx`. Sketch and order:
