@@ -1,0 +1,80 @@
+name: Server binary
+
+# Sasonica's server as one file per architecture (deploy/binary/build.sh),
+# published to the rolling `server-latest` release that sasonica.com/install
+# downloads from. Rebuilt when anything the binary carries changes on main.
+# docs/proposals/2026-09-29-single-binary.md.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - packages/core/**
+      - packages/server/**
+      - packages/visual/**
+      - packages/sasonica/**
+      - deploy/binary/**
+      - .github/workflows/binary.yml
+  workflow_dispatch:
+
+concurrency:
+  group: binary
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    # Bullseye's glibc (2.31) is the oldest the launcher will need.
+    container: docker.io/library/rust:1-bullseye
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          deploy/binary/build.sh
+
+      - name: Smoke test
+        run: |
+          b=build/binary/sasonica-linux-${{ matrix.arch }}
+          HOME=$(mktemp -d) "$b" version
+          HOME=$(mktemp -d) "$b" commands | grep -qx media
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sasonica-linux-${{ matrix.arch }}
+          path: build/binary/sasonica-linux-${{ matrix.arch }}
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+
+      - name: Publish to server-latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          cd out
+          sha256sum sasonica-linux-* >SHA256SUMS
+          gh release view server-latest >/dev/null 2>&1 ||
+            gh release create server-latest --prerelease --target "$GITHUB_SHA" \
+              --title "Sasonica server (latest)" \
+              --notes "Built from main on every change to the server. Install: curl -fsSL https://sasonica.com/install | bash"
+          gh release upload server-latest sasonica-linux-* SHA256SUMS --clobber
+          gh release edit server-latest --notes "Built from main at $GITHUB_SHA. Install: curl -fsSL https://sasonica.com/install | bash"

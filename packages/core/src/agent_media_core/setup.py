@@ -1528,8 +1528,9 @@ def _row_shell(args, *, check_only: bool):
 
 
 def opencode_plugin_source() -> Path:
-    """The agent-media plugin for opencode, as this checkout ships it."""
-    return Path(__file__).resolve().parents[2] / "opencode" / "agent-media.js"
+    """The agent-media plugin for opencode, as this install ships it (inside
+    the wheel, or beside the package in a checkout)."""
+    return _data_dir("opencode") / "agent-media.js"
 
 
 def opencode_plugin_dest() -> Path:

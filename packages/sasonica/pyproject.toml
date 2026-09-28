@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sasonica"
+version = "0.0.1"
+description = "Sasonica's server as one command: the canvas, the session holder and every media command behind `sasonica <command>`."
+license = { text = "Apache-2.0" }
+requires-python = ">=3.11"
+# What the single binary carries (deploy/binary/build.sh). The three packages
+# a server needs, as deploy/android/install.sh installs them; nothing here is
+# imported by them.
+dependencies = ["agent-media-core", "agent-media-server", "agent-media-visual"]
+
+[project.scripts]
+sasonica = "sasonica.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sasonica"]

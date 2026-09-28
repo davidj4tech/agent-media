@@ -36,6 +36,9 @@ TEMPLATE_DIRS = (
     # the same reason as the other two: a wheel that does not carry it leaves
     # an entrypoint pointing at a file that does not exist.
     ("bin", "agent_media_core/bin"),
+    # opencode's plugin (setup.opencode_plugin_source): the single binary has
+    # no checkout to link it from.
+    ("opencode", "agent_media_core/opencode"),
 )
 
 # Directory names never worth shipping: runit's live state, and the log

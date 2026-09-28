@@ -51,14 +51,14 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Install core + server + visual + org-paragtd + pytest
+      - name: Install core + server + visual + org-paragtd + sasonica + pytest
         run: |
           python -m pip install --upgrade pip
-          pip install -e packages/core -e packages/server -e packages/visual -e packages/org-paragtd
+          pip install -e packages/core -e packages/server -e packages/visual -e packages/org-paragtd -e packages/sasonica
           pip install pytest
 
       - name: Run tests
-        run: pytest -q packages/server/tests
+        run: pytest -q packages/server/tests packages/sasonica/tests
 
   abs-bridge:
     # The Audiobookshelf bridges spent months as untracked files on one host,
