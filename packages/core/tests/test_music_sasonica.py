@@ -77,6 +77,7 @@ def _wire(monkeypatch):
 
 def test_play_hands_the_app_a_served_url(monkeypatch):
     sent = _wire(monkeypatch)
+    monkeypatch.setattr(music_sasonica, "chapters", lambda url: [])
     monkeypatch.setattr(music_sasonica, "resolve",
                         lambda uri: ("http://red5:8780/audio/music/x.mka", "A Song"))
     assert SinkMusicSasonica("tcp://p8a:6615").play("yt:https://youtu.be/aaaaaaaaaaa")
@@ -224,3 +225,12 @@ def test_only_music_files_urls_have_a_phone_path():
     assert music_sasonica.phone_path("http://localhost:6616/a%20b.mka") == "$HOME/.cache/music-offline/a b.mka"
     assert music_sasonica.phone_path("http://localhost:6616/.x.part") is None
     assert music_sasonica.phone_path("http://red5:8780/music/a.mka") is None
+
+
+def test_a_mix_hands_the_app_its_chapters(monkeypatch):
+    sent = _wire(monkeypatch)
+    monkeypatch.setattr(music_sasonica, "resolve", lambda uri: ("http://localhost:6616/m.mka", "Mix"))
+    monkeypatch.setattr(music_sasonica, "chapters", lambda url: CHS)
+    assert SinkMusicSasonica("tcp://p8a:6615").play("yt:m")
+    assert ("tcp://p8a:6615", "set", "user-data/agent-media/chapters",
+            [[0.0, "A"], [100.0, "B"], [200.0, "C"]]) in sent

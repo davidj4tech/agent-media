@@ -184,6 +184,13 @@ class SinkMusicSasonica(SinkMusicLocal):
                         "replace" if replace else "append-play")
             if title and replace:
                 self._set("force-media-title", title)
+            if replace:
+                # The app's lock-screen next/prev move by these (sasonica-app
+                # MusicSession); it forgets the last track's at the load.
+                chs = chapters(url)
+                if chs:
+                    self._set("user-data/agent-media/chapters",
+                              [[c["start"], c["title"]] for c in chs])
         except (ipc.MpvIpcError, OSError) as e:
             log.info("sink-music-sasonica: the app did not take %s: %s", uri, e)
             return False
