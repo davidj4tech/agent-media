@@ -148,6 +148,18 @@ if ! pgrep -x runsvdir >/dev/null; then
 fi
 for s in sasonica-canvas sasonica-sessiond; do sv up "$s" 2>/dev/null || true; done
 command -v termux-wake-lock >/dev/null && termux-wake-lock 2>/dev/null || true
+# After a restart nothing starts Termux's services until Termux itself is
+# opened. Termux:Boot (a separate app, from the same place as Termux) runs
+# ~/.termux/boot/ at boot; this is what it runs. The app's "Keep it running"
+# says whether Termux:Boot is there.
+mkdir -p "$HOME/.termux/boot"
+cat >"$HOME/.termux/boot/sasonica" <<EOF
+#!$PREFIX/bin/sh
+# Written by deploy/android/install.sh (agent-media): the server after a restart.
+termux-wake-lock
+. $PREFIX/etc/profile.d/start-services.sh
+EOF
+chmod +x "$HOME/.termux/boot/sasonica"
 
 step "Waiting for the server"
 up=
@@ -168,4 +180,5 @@ else
 fi
 echo "  $link"
 echo
-echo "The server runs in Termux. Keep Termux out of battery optimisation so Android leaves it running."
+echo "The server runs in Termux. In Sasonica, Run it on this device → Keep it running"
+echo "shows what Android needs so it leaves the server running."

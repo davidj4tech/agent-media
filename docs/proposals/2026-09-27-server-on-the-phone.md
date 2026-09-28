@@ -201,6 +201,9 @@ anything is switched on:
    this device: routes/device.tsx; the install line fetches the script from
    GitHub's raw URL until it has a home of its own).
 3. **Staying alive:** the checks and the Settings shortcuts, without ADB.
+   **Done 28 Sep 2026:** Run it on this device → Keep it running (battery,
+   Termux:Boot, the child-process limit; DeviceServerPlugin), and the
+   installer writes `~/.termux/boot/sasonica` for Termux:Boot to run.
 4. **The ADB power-up:** `NsdManager` discovery, the notification-reply
    pairing, `RUN_COMMAND`, and the named actions.
 5. **Agents on the phone server:** the Coding agents page against it.
