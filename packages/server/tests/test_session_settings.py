@@ -164,3 +164,93 @@ def test_a_new_chat_sheet_per_agent(monkeypatch):
     assert [m["id"] for m in oc["models"]][0] == "opencode/big-pickle"
     assert oc["default"] == "Big Pickle · Free"
     assert ss.new_sheet("codex") == {"models": []}
+
+
+OC = "ses_" + "a" * 26
+
+
+@pytest.fixture()
+def oc_pane(monkeypatch):
+    """A running opencode whose picker does what the desk's does: `/models`,
+    the name typed, Enter — and the composer's footer says the pick."""
+    from agent_media_core import opencode_models as om
+
+    driver._reset_for_tests()
+    ss._CHOSEN.clear()
+    ns = type("Pane", (), {})()
+    ns.typed, ns.keys, ns.on, ns.state, ns.picker = [], [], "Big Pickle", "waiting", False
+    ns.takes = True
+    monkeypatch.setattr(auth, "gate", lambda b: ({"id": "u"}, {}))
+    monkeypatch.setattr(sessions, "live_sessions", lambda: {OC: "%9"})
+    monkeypatch.setattr(sessions, "_agent_of_pane", lambda p: "opencode")
+    monkeypatch.setattr(sessions, "agent_of", lambda s: "opencode")
+    monkeypatch.setattr(sessions, "activity_of", lambda s, p, **k: {"state": ns.state})
+    monkeypatch.setattr(panes, "alive", lambda p: True)
+    monkeypatch.setattr(panes, "is_herdr", lambda p: False)
+
+    def send(p, t):
+        ns.typed.append(t)
+        ns.picker = t == "/models"
+        return ""
+
+    def typed(p, t):
+        ns.typed.append(t)
+        ns.search = t
+
+    def tmux(argv):
+        ns.keys.append(argv[-1])
+        if argv[-1] == "Enter" and ns.picker and ns.takes:
+            ns.on = ns.search
+        ns.picker = False
+        return ""
+    monkeypatch.setattr(panes, "send", send)
+    monkeypatch.setattr(panes, "_type_tmux", typed)
+    monkeypatch.setattr(panes, "_tmux", tmux)
+    monkeypatch.setattr(panes, "capture", lambda p, lines=40, ansi=True: (
+        "     ▣  Build · Big Pickle · 5.2s\n  ┃\n"
+        f"  ┃  Build · {ns.on} OpenCode Zen                          ~/work\n  ╹▀▀▀\n"))
+    monkeypatch.setattr(ss.time, "sleep", lambda s: None)
+    monkeypatch.setattr(om, "models", lambda: (om.sheet(LISTING), "opencode/big-pickle"))
+    monkeypatch.setattr(om, "current", lambda s: "opencode/big-pickle")
+    monkeypatch.setattr(ss, "_opencode_at", lambda s: 0.0)
+    return ns
+
+
+def test_a_running_opencode_says_its_model_and_offers_the_free_ones(oc_pane):
+    ok, d = ss.get(OC, "t")
+    assert ok and d["agent"] == "opencode" and d["model"] == "opencode/big-pickle"
+    assert d["can"] == {"model": True, "plan": False}
+    assert [m["id"] for m in d["models"]] == ["opencode/big-pickle", "openrouter/qwen/qwen3.8-27b:free"]
+
+
+def test_a_model_not_free_here_heads_the_sheet(oc_pane, monkeypatch):
+    from agent_media_core import opencode_models as om
+
+    monkeypatch.setattr(om, "current", lambda s: "gateway/claude-opus-4-8")
+    ok, d = ss.get(OC, "t")
+    assert d["models"][0] == {"id": "gateway/claude-opus-4-8", "label": "claude-opus-4-8", "note": ""}
+
+
+def test_opencode_is_switched_through_its_picker(oc_pane):
+    ok, d = ss.post(OC, {"model": "openrouter/qwen/qwen3.8-27b:free"}, "t")
+    assert ok, d
+    assert oc_pane.typed == ["/models", "Qwen3.8 27B (free)"] and oc_pane.keys == ["Enter"]
+    assert d["model"] == "openrouter/qwen/qwen3.8-27b:free" and d["told"]
+
+
+def test_opencode_that_does_not_take_it_is_left_as_it_was(oc_pane):
+    oc_pane.takes = False
+    ok, d = ss.post(OC, {"model": "openrouter/qwen/qwen3.8-27b:free"}, "t")
+    assert not ok and d["status"] == 502 and "did not take" in d["error"]
+    assert oc_pane.keys == ["Enter", "Escape"]
+    assert ss.get(OC, "t")[1]["model"] == "opencode/big-pickle"
+
+
+def test_opencode_refuses_mid_turn_plan_and_strangers(oc_pane):
+    oc_pane.state = "working"
+    assert ss.post(OC, {"model": "opencode/big-pickle"}, "t")[1]["status"] == 409
+    oc_pane.state = "waiting"
+    assert ss.post(OC, {"plan": True}, "t")[1]["status"] == 400
+    assert ss.post(OC, {"model": "--help"}, "t")[1]["status"] == 400
+    ok, d = ss.post(OC, {"model": "opencode/not-on-the-sheet"}, "t")
+    assert not ok and d["status"] == 400 and not oc_pane.typed

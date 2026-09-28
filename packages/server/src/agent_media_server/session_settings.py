@@ -6,9 +6,10 @@ be changed from the phone; `POST /session/settings {session, model?, plan?}`
 changes it; `/ask` takes the same two for a new chat (`send.ask`).
 
 Claude Code only: Codex, pi and Hermes answer `can: {model: false, plan:
-false}` and the app hides the chips. A new opencode chat has a model sheet
-of its own (`new_sheet`, opencode_models.py: its free models), and `/ask`
-starts it with `-m`; an opencode thread's model is not changed from here.
+false}` and the app hides the chips. opencode has a model chip too: a new
+chat's sheet is its free models (`new_sheet`, opencode_models.py) and `/ask`
+starts it with `-m`; a running one is switched through its own picker (the
+opencode section below). No plan mode for it.
 
 How, per driver (driver/):
 
@@ -141,6 +142,8 @@ def state(session: str) -> dict:
                 "can": {"model": True, "plan": True}}
     pane = sessions.live_sessions().get(session, "")
     agent = sessions._agent_of_pane(pane) if pane else sessions.agent_of(session)
+    if agent == "opencode":
+        return _opencode_state(session, pane)
     if agent != "claude":
         return {"agent": agent, "live": bool(pane), "model": "", "model_id": "",
                 "plan": False, "driver": driver.PANE, "can": {"model": False, "plan": False}}
@@ -206,7 +209,95 @@ def default_note() -> str:
 
 
 def _answer(session: str, **extra) -> dict:
-    return {"session": session, "models": models(), **state(session), **extra}
+    st = state(session)
+    return {"session": session, "models": _opencode_sheet(st["model"]) if st["agent"] == "opencode"
+            else models(), **st, **extra}
+
+
+# --- opencode ----------------------------------------------------------------
+#
+# A running opencode's model is changed the way it is at the desk: `/models`
+# opens its picker, the model's name typed into the picker's search, Enter.
+# Its footer then says `Build · <name>`, which is checked; opencode keeps the
+# choice for the session's next turn (measured 28 Sep 2026, 1.18.32: the
+# next message went to the picked model). Between turns only, as Claude's.
+
+
+def _opencode_sheet(current: str) -> list:
+    """A running opencode thread's sheet: the free models, and the one it is
+    on if that is not one of them (a gateway's, a paid one)."""
+    from agent_media_core import opencode_models
+
+    offered, _ = opencode_models.models()
+    if current and not any(m["id"] == current for m in offered):
+        offered = [{"id": current, "label": current.split("/", 1)[-1], "note": ""}, *offered]
+    return offered
+
+
+def _opencode_state(session: str, pane: str) -> dict:
+    from agent_media_core import opencode_models
+
+    from . import panes
+
+    model = opencode_models.current(session)
+    with _LOCK:
+        chosen = _CHOSEN.get(session)
+    if chosen and chosen[1] > _opencode_at(session):
+        model = chosen[0]
+    herdr = bool(pane) and panes.is_herdr(pane)
+    return {"agent": "opencode", "live": bool(pane), "model": model, "model_id": model,
+            "plan": False, "driver": driver.PANE,
+            "can": {"model": bool(pane) and not herdr, "plan": False}}
+
+
+def _opencode_at(session: str) -> float:
+    """When the session's last message was written, in seconds."""
+    from agent_media_core import harnesses
+
+    rows = harnesses.opencode_rows("select max(time_created) from message where session_id = ?",
+                                   (session,))
+    return (rows[0][0] or 0) / 1000.0 if rows else 0.0
+
+
+def _opencode_footer(screen: str) -> str:
+    """What the composer's footer names after `Build · ` — the model and its
+    provider — or "". Only the composer's line: a reply's header above it
+    (`▣  Build · Big Pickle · 5.2s`) names the model that reply ran on."""
+    for line in reversed(screen.splitlines()):
+        m = re.match(r"\s*┃\s+\S+ · (.+?)\s*$", line)
+        if m:
+            return m.group(1).split("  ")[0] + " "
+    return ""
+
+
+def _configure_opencode(session: str, pane: str, model: str) -> tuple[bool, dict]:
+    from agent_media_core import opencode_models
+
+    from . import panes
+
+    if panes.is_herdr(pane):
+        return False, {"error": "an opencode model is not switchable in a herdr pane yet",
+                       "status": 400}
+    label = opencode_models.label_of(model, _opencode_sheet(""))
+    if not label:
+        return False, {"error": f"{model} is not one of this host's free models", "status": 400}
+    err = panes.send(pane, "/models")
+    if err:
+        return False, {"error": err, "status": 502}
+    time.sleep(1.2)
+    try:
+        panes._type_tmux(pane, label)
+        time.sleep(1.0)
+        panes._tmux(["send-keys", "-t", pane, "Enter"])
+    except Exception as e:  # noqa: BLE001
+        return False, {"error": f"send: {e}", "status": 502}
+    time.sleep(1.0)
+    if not _opencode_footer(panes.capture(pane, lines=12, ansi=False)).startswith(label + " "):
+        panes._tmux(["send-keys", "-t", pane, "Escape"])
+        return False, {"error": f"opencode did not take {label}", "status": 502}
+    with _LOCK:
+        _CHOSEN[session] = (model, time.time())
+    return True, {"told": True}
 
 
 def new_sheet(agent: str = "claude") -> dict:
@@ -245,7 +336,14 @@ def post(session: str, body: dict, bearer: str) -> tuple[bool, dict]:
     if not user:
         return False, err
     model = body.get("model")
-    if model is not None:
+    opencode = sessions.agent_of(session) == "opencode"
+    if model is not None and opencode:
+        from agent_media_core import opencode_models
+
+        model = opencode_models.allowed(str(model))
+        if not model:
+            return False, {"error": "model must be a provider/model id", "status": 400}
+    elif model is not None:
         model = str(model).strip().lower()
         if model not in _ALIASES:
             return False, {"error": f"model must be one of {', '.join(a for a, _ in MODELS)}",
@@ -270,13 +368,19 @@ def configure_pane(session: str, *, model: str | None = None,
     pane = sessions.live_sessions().get(session, "")
     if not pane or not panes.alive(pane):
         return False, {"error": "the session is not running; resume it first", "status": 409}
-    if sessions._agent_of_pane(pane) != "claude":
-        return False, {"error": "only Claude Code sessions change model here", "status": 400}
+    agent = sessions._agent_of_pane(pane)
+    if agent not in ("claude", "opencode"):
+        return False, {"error": "only Claude Code and opencode sessions change model here",
+                       "status": 400}
     st = sessions.activity_of(session, pane).get("state") or "waiting"
     if st != "waiting":
         why = "a question" if st == "approval" else "the turn"
         return False, {"error": f"wait for {why} to finish, then change it", "status": 409,
                        "state": st}
+    if agent == "opencode":
+        if mode:
+            return False, {"error": "opencode has no plan mode here", "status": 400}
+        return _configure_opencode(session, pane, model) if model else (True, {"told": True})
     told = True
     if model is not None:
         err = panes.send(pane, f"/model {model}")

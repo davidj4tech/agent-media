@@ -1338,6 +1338,14 @@ now; a parked headless one takes it at its resume).
   for the turn to finish, then change it"` otherwise, 409 when the session
   is not running. The model is read from the transcript's last assistant
   message. herdr panes: `can.plan` false.
+- opencode (28 Sep 2026): `model` and `model_id` are the `provider/model`
+  its last message went to (or the one picked since); `models` is its free
+  sheet, with the current one first when it is not free; `can.plan` false,
+  `can.model` while it runs in a tmux pane. A POST's `model` must be on that
+  sheet (400 otherwise): its picker is driven as at the desk — `/models`,
+  the model's name typed into the search, Enter — and the composer's footer
+  checked; 502 `"opencode did not take <name>"` (after Escape) when it does
+  not say the pick. Between turns only, as Claude's. `plan` → 400.
 - Codex, pi, Hermes: `can` both false; the app shows neither chip.
 - 400 on a model not in the list, a non-boolean `plan`, or neither given.
 

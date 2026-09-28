@@ -140,3 +140,32 @@ def allowed(model: str) -> str:
     name a paid one (the sheet does not list them, the chat can still ask)."""
     model = (model or "").strip()
     return model if MODEL_ID.fullmatch(model) else ""
+
+
+def current(session: str) -> str:
+    """The `provider/model` an opencode session's last message went to, or "".
+
+    opencode keeps it on every message (a user message's `model`, an
+    assistant's `providerID`/`modelID`), so the latest says what the next
+    turn runs unless it was changed since (session_settings keeps that).
+    """
+    from . import harnesses
+
+    rows = harnesses.opencode_rows(
+        "select data from message where session_id = ? order by time_created desc, id desc limit 8",
+        (session,))
+    for (data,) in rows:
+        try:
+            m = json.loads(data)
+        except ValueError:
+            continue
+        pick = m.get("model") if isinstance(m.get("model"), dict) else m
+        provider, model = pick.get("providerID"), pick.get("modelID")
+        if provider and model:
+            return f"{provider}/{model}"
+    return ""
+
+
+def label_of(model: str, offered: list[dict]) -> str:
+    """The name opencode's picker lists `model` under, if the sheet has it."""
+    return next((m["label"] for m in offered if m["id"] == model), "")
