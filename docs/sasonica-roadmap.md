@@ -557,6 +557,13 @@ ahead.
    open alerts, speaking now) for automations. (c) and (d) extend
    `packages/voice-bridge/homeassistant` rather than adding another
    integration.
+8. **A Music tab** (David, 28 Sep 2026) — a fourth tab in the app, not a
+   companion app, because speech and music share the phone's player and its
+   handoff already lives here. It covers now playing and transport, where it
+   plays (the existing `/targets` picker), the queue, likes, and search last.
+   The server gains `GET/POST /music`. Fork-only files, with one
+   `// Sasonica:` line in `Nav.tsx`. Sketch and order:
+   [proposals/2026-09-28-music-tab.md](proposals/2026-09-28-music-tab.md).
 
 ## Loose ends
 
