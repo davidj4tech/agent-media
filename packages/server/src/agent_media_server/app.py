@@ -163,7 +163,7 @@ from urllib.parse import parse_qs
 
 from . import (abs_item, archive, auth, devices, drafts, harnesses, pins, routing, send,
                sessions, share, speech, threads)
-from . import alerts, audio, music, org, org_chat, org_edit, org_setup, refs, uploads
+from . import alerts, audio, music, org, org_chat, org_edit, org_setup, org_zettel, refs, uploads
 
 # The endpoints a browser on another origin may reach. Everything here
 # carries its own credential — a paired device's token, or the caller's
@@ -1309,6 +1309,11 @@ def _org(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
                                            str(body.get("title") or ""),
                                            str(body.get("to") or ""), bearer,
                                            date=str(body.get("date") or ""))
+    elif method == "POST" and path == "/org/zettel":
+        # Keeping or discarding a draft note (org_zettel.py).
+        body = _read_json(h) or {}
+        ok, detail = org_zettel.review(str(body.get("path") or ""),
+                                       str(body.get("action") or ""), bearer)
     elif method == "POST" and path == "/org/say":
         body = _read_json(h) or {}
         try:

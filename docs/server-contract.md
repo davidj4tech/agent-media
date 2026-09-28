@@ -1980,7 +1980,10 @@ keywords is part of the title.
 (`""` for none, or for a whole note), `states` the file's keywords. `text` is raw Org, capped at 256 KB. With `at`,
 only the subtree under that heading is returned. `links` resolves the text's
 `[[id:…]]` links to paths. `chats` lists the chats started about this item
-with `POST /org/ask`, newest first (at most 20).
+with `POST /org/ask`, newest first (at most 20). `draft: true` (whole notes
+only, and absent otherwise) marks a zettel waiting for review: a note in
+`roam/notes/` still tagged `inbox` (`POST /org/zettel`). A folder view's items
+carry the same flag.
 - 404 for anything outside the tree, in a dot-dir, a directory, or a file that
   is not `.org`/`.md`/`.txt`.
 - 409 when the line at `at` is no longer a heading, meaning the file changed
@@ -2141,6 +2144,19 @@ the app last saw it) plus `title` (its text).
   written as Org's `[#A]` after the state. 400 for anything else.
 - An `[#A]` TODO whose SCHEDULED or DEADLINE has a clock time is read aloud
   at that time (`media agenda-alarm`, agent_media_core `agenda_alarm.py`).
+
+#### `POST /org/zettel` — gated (`auth.gate`)
+
+`{"path", "action": "keep"|"discard"}` → `{"ok", "path", "action", "title"}`
+(28 Sep 2026, `org_zettel.py`). This reviews a draft zettel, as paragtd's
+`paragtd-zettel-promote` / `-discard` do in Emacs.
+- `keep` takes `inbox` out of the filetags, sets `:ZK_STATUS:` (if the note has
+  one) to `permanent`, and drops a Denote name's `_inbox` keyword. `path` is
+  the note's new path.
+- `discard` deletes the file. A note distilled by `agent-sessions zk` is not
+  written again.
+- 400 for another action or a note outside `roam/notes/`, 404 as for
+  `/org/read`, 409 when it is no longer a draft.
 
 #### `GET /org/setup` · `POST /org/setup` — `auth.may_control_speech`, like `/harnesses`
 

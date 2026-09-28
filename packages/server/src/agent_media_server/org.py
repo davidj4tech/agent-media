@@ -198,7 +198,10 @@ def _folder_notes(folder: Path) -> list[dict]:
                 continue
             rows.append((mtime, p))
     rows.sort(key=lambda r: r[0], reverse=True)
-    return [{"path": _rel(p), "title": _title_of(p), "modified": round(m)}
+    from . import org_zettel
+
+    return [{"path": _rel(p), "title": _title_of(p), "modified": round(m),
+             **({"draft": True} if org_zettel.is_draft(p) else {})}
             for m, p in rows[:MAX_ITEMS]]
 
 
@@ -369,9 +372,12 @@ def read(rel: str, at: int, bearer: str) -> tuple[bool, dict]:
     ids = _id_index() if "[[id:" in text else {}
     links = [{"label": label or ids.get(i, i), "path": ids[i]}
              for i, label in _ID_LINK.findall(text) if i in ids]
+    from . import org_zettel
+
     return True, {"path": _rel(p), "at": at, "title": title, "text": text,
                   "links": links, "state": state,
-                  "states": {"open": list(kw.open), "done": list(kw.done)}}
+                  "states": {"open": list(kw.open), "done": list(kw.done)},
+                  **({"draft": True} if not at and org_zettel.is_draft(p, text) else {})}
 
 
 def _scan(q: str, *, everything: bool, limit: int) -> list[dict]:
