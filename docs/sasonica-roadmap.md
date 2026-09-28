@@ -572,9 +572,14 @@ ahead.
    service (localhost:6616), not via red5. Heard on p8a: play (7 s to
    start), pause, resume, seek, stop, and a reply pausing it and it
    resuming after (David: "perfecto"). The music default since 28 Sep 2026
-   (`MEDIA_MUSIC_DEFAULT_TARGET=sasonica` on red5). Next: step 1, the tab's
-   now playing and transport, and a lock-screen player (Media3
-   MediaSession) so it can be stopped without asking. It covers now playing and transport, where it
+   (`MEDIA_MUSIC_DEFAULT_TARGET=sasonica` on red5).
+   **Step 1 done 28 Sep 2026:** the Media tab (sasonica-app `8ef310e`,
+   installed on p8a): now playing with the chapter, a scrubber, play/pause,
+   −15/+30, previous/next, Like, Stop, a mix's tracks (tap to jump), and
+   "Plays on" for the next play; `GET/POST /music` (agent-media `d4f1d13`),
+   a mix's chapters read on the phone with ffprobe so next/prev move by
+   track (`b37108b`). Next: a lock-screen player (Media3 MediaSession) and
+   the queue (step 2), then likes and recent, then search. It covers now playing and transport, where it
    plays (the existing `/targets` picker), the queue, likes, and search last.
    The server gains `GET/POST /music`. Fork-only files, with one
    `// Sasonica:` line in `Nav.tsx`. Sketch and order:
