@@ -1880,8 +1880,11 @@ TODO-like headings, `states` = that file's keywords as `{"open": [...],
 labels; for plain Org, the agenda files (below) labelled with their
 `#+title:`, a file in a folder named `folder-file`. Then there is one
 `folder` view per roam shelf (`count` = notes). `roam-sessions` holds the
-agents' own notes, close to a thousand of them. Under paragtd the shelves are
-its six fixed folders; under plain Org they are whatever is under `roam/`.
+agents' own notes, close to a thousand of them; `roam-notes` the zettels,
+`roam-concepts` the concept nodes they link to and `roam-memory` a read-only
+mirror of the assistants' memory files (agent-sessions `zk`). Under paragtd the
+shelves are its fixed folders, shown when they exist; under plain Org they are
+whatever is under `roam/`.
 
 The rest is what the app offers rather than hard-codes: `profile` (`"paragtd"`
 or null), `capture_file`, `states` (the keywords a file with no declaration of

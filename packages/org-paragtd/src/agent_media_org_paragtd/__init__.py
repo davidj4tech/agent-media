@@ -41,12 +41,16 @@ GTD_FILES = (
 
 #: org-roam folders, as shelves of notes. Sessions are the agents' notes —
 #: hundreds of them — so they are a view of their own and left out of search
-#: unless asked for.
+#: unless asked for. Notes are the zettels (one idea each, some distilled from
+#: sessions by `agent-sessions zk`), concepts the nodes they link to, and
+#: agent memory a read-only mirror of the assistants' memory files.
 ROAM_FOLDERS = (
     ("roam-projects", "Project notes", "roam/projects"),
     ("roam-people", "People", "roam/people"),
     ("roam-refs", "References", "roam/refs"),
     ("roam-notes", "Notes", "roam/notes"),
+    ("roam-concepts", "Concepts", "roam/concepts"),
+    ("roam-memory", "Agent memory", "roam/memory"),
     ("roam-journal", "Journal", "roam/journal"),
     ("roam-sessions", "Agent sessions", "roam/sessions"),
 )
