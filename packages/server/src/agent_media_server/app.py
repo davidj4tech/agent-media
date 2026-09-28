@@ -202,7 +202,7 @@ CORS_PATHS = CORS_PATHS | AUDIO_PATHS
 
 # What is playing, and its controls: the Media tab (music.py). The same
 # arrangement.
-MUSIC_PATHS = frozenset({"/music"})
+MUSIC_PATHS = frozenset({"/music", "/music/recent"})
 CORS_PATHS = CORS_PATHS | MUSIC_PATHS
 
 # The Organiser: browsing and capturing in the Org tree (org.py). The same
@@ -365,7 +365,7 @@ def dispatch(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
     if path in AUDIO_PATHS and method in ("GET", "POST"):
         return _audio(h, method, path)
     if path in MUSIC_PATHS and method in ("GET", "POST"):
-        return _music(h, method)
+        return _music(h, method, path)
     if path in ORG_PATHS and method in ("GET", "POST"):
         return _org(h, method, path)
     if path in ALERT_PATHS and method in ("GET", "POST"):
@@ -1236,9 +1236,13 @@ def _audio(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
 
 # --- what is playing ------------------------------------------------------------
 
-def _music(h: BaseHTTPRequestHandler, method: str) -> bool:
-    """`GET /music` and `POST /music` (§6.9a): the Media tab."""
-    if method == "GET":
+def _music(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
+    """`GET /music`, `POST /music` and `GET /music/recent` (§6.9a): the Media tab."""
+    if path == "/music/recent":
+        if method != "GET":
+            return False
+        ok, detail = music.recent(_bearer(h))
+    elif method == "GET":
         ok, detail = music.now(_bearer(h))
     else:
         ok, detail = music.control(_read_json(h) or {}, _bearer(h))

@@ -1890,6 +1890,21 @@ takes `to` (absolute), `seek-by` takes `by` (±). 400 for an unknown action
 or a missing/non-number `to`/`by` (nothing is run); 502 with `error` (and
 the state) when the verb failed.
 
+`"play"` and `"add"` take a `uri` (`yt:`, `http://` or `https://`) and put
+it on now or after what is playing (`media music play [--add]`, to the
+default place): Recently played's tap.
+
+#### `GET /music/recent` — gated (like `/speech/now`) (28 Sep 2026)
+
+`{"ok": true, "items": [{"id", "uri", "title", "at", "session", "inferred"}]}`:
+what was played, newest first, one entry per track (a `yt:` and a link to
+the same video are one), at most 40. `session` is the conversation that
+put it on — recorded with the play since 28 Sep 2026, and for older plays
+the conversation that spoke in the five minutes before (`inferred: true`),
+else null. `title` is the name the play history learned, else the one
+YouTube gives for the video (looked up once and kept), else null. Only
+things someone asked for: a player loading a file is not listed.
+
 Pinned by `packages/server/tests/test_music_route.py`.
 
 Clients: S (the Media tab).

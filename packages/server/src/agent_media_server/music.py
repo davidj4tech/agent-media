@@ -4,6 +4,7 @@ server-contract.md §6.9a. Step 1 of docs/proposals/2026-09-28-music-tab.md
 (David, 28 Sep 2026: "Let's build the Media tab UI").
 
   GET  /music                → {"ok", "now": {...}, "chapters": [...], "where": {...}}
+  GET  /music/recent         → {"ok", "items": [{"uri", "title", "at", "session", …}]}
   POST /music {"action", …}  → the same, after doing it
 
 `now` is `media music status --json`: the live player's track, position and
@@ -34,6 +35,8 @@ ACTIONS = {
     "pause": "pause", "resume": "resume", "toggle": "toggle",
     "next": "next", "prev": "prev", "stop": "stop", "like": "like",
     "seek": "seek", "seek-by": "seek",
+    # Recently played: put one on again, now or after what is playing.
+    "play": "play", "add": "play",
 }
 
 _CACHE_TTL_S = 2.5
@@ -125,6 +128,23 @@ def now(bearer: str) -> tuple[bool, dict]:
     return True, _answer()
 
 
+def recent(bearer: str) -> tuple[bool, dict]:
+    """`GET /music/recent` — gated like /speech/now: what was played, newest
+    first, one per track, with the conversation that put it on
+    (agent_media_core.music_recent)."""
+    user, err = auth.gate(bearer)
+    if not user:
+        return False, err
+    from agent_media_core import music_recent
+
+    try:
+        items = music_recent.recent()
+    except Exception as e:  # noqa: BLE001 — an empty list, not a 500
+        print(f"music: recent failed: {e}", file=sys.stderr)
+        items = []
+    return True, {"items": items}
+
+
 def _clock(seconds: float) -> str:
     s = max(0, int(round(seconds)))
     return f"{s // 3600}:{s % 3600 // 60:02d}:{s % 60:02d}"
@@ -150,6 +170,15 @@ def control(body: dict, bearer: str) -> tuple[bool, dict]:
             argv.append(f"{'+' if v >= 0 else '-'}{abs(int(round(v)))}")
     elif action == "prev":
         argv.append("--restart-first")
+    elif action in ("play", "add"):
+        uri = body.get("uri")
+        # A name the CLI would read as an option is not a track.
+        if not isinstance(uri, str) or not uri.strip() or uri.lstrip().startswith("-") \
+                or not uri.strip().startswith(("yt:", "http://", "https://")):
+            return False, {"error": "uri must be a yt: or web address", "status": 400}
+        argv.append(uri.strip())
+        if action == "add":
+            argv.append("--add")
     done, said = _run(argv)
     _reset_cache(forget=action == "stop")
     if not done:

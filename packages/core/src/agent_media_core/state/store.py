@@ -1018,9 +1018,15 @@ class StateStore:
                 row = cur.fetchone()
             if row and row[0] == uri:
                 return None
+            # Which conversation put it on, when an agent did: the Media
+            # tab's Recently played links back to it (music_recent.py).
+            sid = (os.environ.get("MEDIA_SOURCE_SESSION")
+                   or os.environ.get("CLAUDE_CODE_SESSION_ID")
+                   or os.environ.get("MEDIA_SESSIOND_SESSION") or "").strip()
             return self.add_history(sink=sink, uri=uri, started_at=time.time(),
                                     target=target or "", source=source,
-                                    content_type=content_type, text=title)
+                                    content_type=content_type, text=title,
+                                    extras={"source_session": sid} if sid else None)
         except Exception:  # noqa: BLE001 — see the docstring
             return None
 

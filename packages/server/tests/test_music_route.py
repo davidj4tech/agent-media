@@ -55,6 +55,10 @@ def test_now_is_the_status_and_the_picker(server, signed_in, audio_host, player)
     ({"action": "seek", "to": 3725.4}, ["seek", "1:02:05"]),
     ({"action": "seek-by", "by": 30}, ["seek", "+30"]),
     ({"action": "seek-by", "by": -15}, ["seek", "-15"]),
+    ({"action": "play", "uri": "yt:https://www.youtube.com/watch?v=Gkl8blLusFc"},
+     ["play", "yt:https://www.youtube.com/watch?v=Gkl8blLusFc"]),
+    ({"action": "add", "uri": "https://www.youtube.com/watch?v=Gkl8blLusFc"},
+     ["play", "https://www.youtube.com/watch?v=Gkl8blLusFc", "--add"]),
 ])
 def test_controls_are_the_cli_verbs(server, signed_in, audio_host, player, body, argv):
     res, obj = call(server, "POST", "/music", body, AUTH)
@@ -64,6 +68,8 @@ def test_controls_are_the_cli_verbs(server, signed_in, audio_host, player, body,
 
 
 @pytest.mark.parametrize("body", [{}, {"action": "quit"}, {"action": "seek"},
+                                  {"action": "play"}, {"action": "play", "uri": "--where rooms"},
+                                  {"action": "add", "uri": "/etc/passwd"},
                                   {"action": "seek", "to": "10:00"}, {"action": "seek-by", "by": True}])
 def test_a_bad_control_is_400_and_runs_nothing(server, signed_in, audio_host, player, body):
     res, obj = call(server, "POST", "/music", body, AUTH)
@@ -128,3 +134,18 @@ def test_a_stop_is_believed_at_once(server, signed_in, audio_host, monkeypatch):
     _, obj = call(server, "POST", "/music", {"action": "stop"}, AUTH)
     assert obj["now"]["pos_ms"] is None
     music._reset_cache(forget=True)
+
+
+def test_recent_is_the_played_list(server, signed_in, audio_host, monkeypatch):
+    from agent_media_core import music_recent
+    items = [{"id": 3, "uri": "yt:https://www.youtube.com/watch?v=Gkl8blLusFc", "title": "As Hope",
+              "at": 1790596000.0, "session": "ed0469b8", "inferred": True}]
+    monkeypatch.setattr(music_recent, "recent", lambda: items)
+    res, obj = call(server, "GET", "/music/recent", headers=AUTH)
+    assert res.status == 200 and obj == {"ok": True, "items": items}
+
+
+def test_recent_is_gated(server, monkeypatch, audio_host):
+    monkeypatch.setattr(auth_abs, "abs_identity", lambda bearer: (None, 401))
+    res, obj = call(server, "GET", "/music/recent", headers=AUTH)
+    assert res.status == 401 and obj["ok"] is False
