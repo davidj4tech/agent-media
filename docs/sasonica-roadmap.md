@@ -597,6 +597,15 @@ ahead.
    platform recogniser's own screen each time, so the loop needs a quiet
    in-app `SpeechRecognizer` in the Android shell, with its own "listening"
    state in the composer.
+   Replies in the loop (David, 28 Sep 2026: "much shorter replies so they're
+   easier to reply to on the fly"): the app says the loop is on, and the
+   server adds a voice-mode note to each message: one to three spoken
+   sentences, the detail left in the thread; a decision ends the reply as its
+   question, yes/no or two options. "More" or "go on" reads the rest.
+   Speaking over a reply stops it and listens (barge-in). Anything hard to undo
+   (a push, a delete, a send) is asked aloud and waits for a spoken yes. A
+   long job is said as started ("running the tests, I'll tell you") and
+   spoken again when it ends.
 
 ## Loose ends
 
