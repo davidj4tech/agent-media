@@ -1856,6 +1856,38 @@ on a host that never originates speech, it changes nothing audible.
 
 Clients: S (planned — the speech bar's picker, §14).
 
+### 6.9a What is playing: `/music` (28 Sep 2026)
+
+The app's Media tab (docs/proposals/2026-09-28-music-tab.md, step 1).
+
+#### `GET /music` — gated (like `/speech/now`)
+
+`{"ok": true, "now": {…}, "where": {…}}`.
+
+- `now` is `media music status --json` for whichever player is live
+  (Sasonica's own, the Termux mpv, Mopidy), so the tab and the desk popup
+  agree: `{"backend", "uri", "media_id", "path", "title", "chapter",
+  "pos_ms", "dur_ms", "paused", "speed", "volume", "held"}`, every field
+  nullable. A phone player is `"backend": "phone"`; nothing playing is
+  `"backend": "mopidy"` with the rest null.
+- `where` is the `music` block of `GET /audio/targets` (§6.9), for the
+  tab's picker; a choice is `POST /audio/target` as before.
+- Reading asks the phone, so an answer is kept 1.5 s.
+
+#### `POST /music` — gated (like `/speech/ctl`)
+
+`{"action": "pause" | "resume" | "toggle" | "next" | "prev" | "stop" |
+"like" | "seek" | "seek-by", "to"?: seconds, "by"?: seconds}` → the `GET`
+answer, read afresh after the action. The `media music` verbs, run as the
+desk runs them: `prev` restarts the track when it is past its start, `seek`
+takes `to` (absolute), `seek-by` takes `by` (±). 400 for an unknown action
+or a missing/non-number `to`/`by` (nothing is run); 502 with `error` (and
+the state) when the verb failed.
+
+Pinned by `packages/server/tests/test_music_route.py`.
+
+Clients: S (the Media tab).
+
 ### 6.10 The Organiser (org) — gated (built 22 Sep 2026)
 
 Renamed from Notes on 26 Sep 2026 (routes `/notes/…`, `MEDIA_NOTES_*`, `[notes]`); the old names were retired the same day, once the app calling `/org` was installed.

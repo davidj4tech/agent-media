@@ -163,7 +163,7 @@ from urllib.parse import parse_qs
 
 from . import (abs_item, archive, auth, devices, drafts, harnesses, pins, routing, send,
                sessions, share, speech, threads)
-from . import alerts, audio, org, org_chat, org_edit, org_setup, refs, uploads
+from . import alerts, audio, music, org, org_chat, org_edit, org_setup, refs, uploads
 
 # The endpoints a browser on another origin may reach. Everything here
 # carries its own credential — a paired device's token, or the caller's
@@ -199,6 +199,11 @@ CORS_PATHS = frozenset({
 # below stays self-contained.
 AUDIO_PATHS = frozenset({"/audio/targets", "/audio/target"})
 CORS_PATHS = CORS_PATHS | AUDIO_PATHS
+
+# What is playing, and its controls: the Media tab (music.py). The same
+# arrangement.
+MUSIC_PATHS = frozenset({"/music"})
+CORS_PATHS = CORS_PATHS | MUSIC_PATHS
 
 # The Organiser: browsing and capturing in the Org tree (org.py). The same
 # arrangement.
@@ -359,6 +364,8 @@ def dispatch(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
     auth.set_client_ip(h.client_address[0] if h.client_address else "")
     if path in AUDIO_PATHS and method in ("GET", "POST"):
         return _audio(h, method, path)
+    if path in MUSIC_PATHS and method in ("GET", "POST"):
+        return _music(h, method)
     if path in ORG_PATHS and method in ("GET", "POST"):
         return _org(h, method, path)
     if path in ALERT_PATHS and method in ("GET", "POST"):
@@ -1223,6 +1230,18 @@ def _audio(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
                   f"from {h.client_address[0]}", file=sys.stderr)
     else:
         return False
+    _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    return True
+
+
+# --- what is playing ------------------------------------------------------------
+
+def _music(h: BaseHTTPRequestHandler, method: str) -> bool:
+    """`GET /music` and `POST /music` (§6.9a): the Media tab."""
+    if method == "GET":
+        ok, detail = music.now(_bearer(h))
+    else:
+        ok, detail = music.control(_read_json(h) or {}, _bearer(h))
     _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     return True
 

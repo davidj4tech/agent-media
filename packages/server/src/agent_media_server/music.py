@@ -1,0 +1,126 @@
+"""What is playing, and its controls: the app's Media tab.
+
+server-contract.md §6.9a. Step 1 of docs/proposals/2026-09-28-music-tab.md
+(David, 28 Sep 2026: "Let's build the Media tab UI").
+
+  GET  /music                → {"ok", "now": {...}, "where": {...}}
+  POST /music {"action", …}  → the same, after doing it
+
+`now` is `media music status --json`: the live player's track, position and
+state, whichever player that is (Sasonica's own, the Termux mpv, Mopidy), so
+the tab and the desk popup can never disagree. `where` is the music block of
+`GET /audio/targets`, for the tab's picker.
+
+The controls are the `media music` verbs, run as the CLI runs them rather
+than re-implemented here: they already follow the live player, keep the play
+history and likes, and know each player's quirks (the app's socket takes
+`seek`, not a time-pos write). Nothing here knows which player that is.
+
+Reading asks the phone over the tailnet (two players, ~0.5-1 s each at
+worst), so an answer is kept for a moment: the tab polls while it is open.
+"""
+
+from __future__ import annotations
+
+import subprocess
+import sys
+import threading
+import time
+
+from . import audio, auth
+
+#: `action` → the `media music` verb. `seek` and `seek-by` take a number.
+ACTIONS = {
+    "pause": "pause", "resume": "resume", "toggle": "toggle",
+    "next": "next", "prev": "prev", "stop": "stop", "like": "like",
+    "seek": "seek", "seek-by": "seek",
+}
+
+_CACHE_TTL_S = 1.5
+_CMD_TIMEOUT_S = 30.0
+_LOCK = threading.Lock()
+_CACHE: list = [0.0, None]
+
+
+def _status() -> dict:
+    """`media music status --json`, in-process."""
+    from agent_media_core import cli
+    from agent_media_core.sinks.music import SinkMusic
+    from agent_media_core.sinks.music_router import SinkMusicRouter
+
+    return cli._music_status_json(SinkMusicRouter(SinkMusic()))
+
+
+def _run(argv: list[str]) -> tuple[bool, str]:
+    """`media music <argv>`, as the desk runs it."""
+    try:
+        r = subprocess.run([sys.executable, "-m", "agent_media_core.cli", "music", *argv],
+                           capture_output=True, text=True, timeout=_CMD_TIMEOUT_S)
+    except (subprocess.TimeoutExpired, OSError) as e:
+        return False, str(e)
+    return r.returncode == 0, (r.stderr or r.stdout or "").strip()[-300:]
+
+
+def _reset_cache() -> None:
+    with _LOCK:
+        _CACHE[:] = [0.0, None]
+
+
+def _now(fresh: bool = False) -> dict:
+    t = time.monotonic()
+    with _LOCK:
+        if not fresh and _CACHE[1] is not None and t - _CACHE[0] < _CACHE_TTL_S:
+            return _CACHE[1]
+    try:
+        now = _status()
+    except Exception as e:  # noqa: BLE001 — the tab must answer without it
+        print(f"music: status failed: {e}", file=sys.stderr)
+        now = {"backend": None}
+    with _LOCK:
+        _CACHE[:] = [time.monotonic(), now]
+    return now
+
+
+def _answer() -> dict:
+    return {"now": _now(), "where": audio.channel_block("music")}
+
+
+def now(bearer: str) -> tuple[bool, dict]:
+    """`GET /music` — gated like /speech/now."""
+    user, err = auth.gate(bearer)
+    if not user:
+        return False, err
+    return True, _answer()
+
+
+def _clock(seconds: float) -> str:
+    s = max(0, int(round(seconds)))
+    return f"{s // 3600}:{s % 3600 // 60:02d}:{s % 60:02d}"
+
+
+def control(body: dict, bearer: str) -> tuple[bool, dict]:
+    """`POST /music` — gated like /speech/ctl: the listener's controls."""
+    ok, err = auth.may_control_speech(bearer)
+    if not ok:
+        return False, err
+    action = str(body.get("action") or "")
+    if action not in ACTIONS:
+        return False, {"error": "unknown action", "status": 400}
+    argv = [ACTIONS[action]]
+    if action in ("seek", "seek-by"):
+        key = "to" if action == "seek" else "by"
+        v = body.get(key)
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            return False, {"error": f"{key} must be a number of seconds", "status": 400}
+        if action == "seek":
+            argv.append(_clock(v))
+        else:
+            argv.append(f"{'+' if v >= 0 else '-'}{abs(int(round(v)))}")
+    elif action == "prev":
+        argv.append("--restart-first")
+    done, said = _run(argv)
+    _reset_cache()
+    if not done:
+        print(f"music: {' '.join(argv)} failed: {said}", file=sys.stderr)
+        return False, {"error": said or f"{action} failed", "status": 502, **_answer()}
+    return True, _answer()
