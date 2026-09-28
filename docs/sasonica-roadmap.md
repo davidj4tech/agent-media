@@ -578,11 +578,13 @@ ahead.
    −15/+30, previous/next, Like, Stop, a mix's tracks (tap to jump), and
    "Plays on" for the next play; `GET/POST /music` (agent-media `d4f1d13`),
    a mix's chapters read on the phone with ffprobe so next/prev move by
-   track (`b37108b`). Next: a lock-screen player (Media3 MediaSession) and
-   the queue (step 2), then likes and recent, then search. It covers now playing and transport, where it
-   plays (the existing `/targets` picker), the queue, likes, and search last.
-   The server gains `GET/POST /music`. Fork-only files, with one
-   `// Sasonica:` line in `Nav.tsx`. Sketch and order:
+   track (`b37108b`).
+   **Lock-screen player done 28 Sep 2026** (sasonica-app `77a0cdc`,
+   installed on p8a): `MusicSession`, a Media3 MediaSession and media
+   notification over the music player; its next/prev move by the mix's
+   chapters, which the server hands over at the load (agent-media
+   `86b675c`); a tap opens the Media tab. Next: the queue (step 2), then
+   likes and recent, then search. Sketch and order:
    [proposals/2026-09-28-music-tab.md](proposals/2026-09-28-music-tab.md).
 9. **Hands-free: hold the mic** (David, 28 Sep 2026) — holding the mic key
    (as Send is held for New chat) turns on a conversation loop: after each
