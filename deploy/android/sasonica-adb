@@ -1,0 +1,105 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# sasonica-adb — the ADB power-up for Sasonica's server on this device
+# (docs/proposals/2026-09-27-server-on-the-phone.md, "The ADB power-up").
+#
+# The Sasonica app runs this through Termux's RUN_COMMAND intent once the
+# user has typed Wireless debugging's pairing code into its notification;
+# it can be run by hand just the same. Termux's own adb talks to this
+# device's adbd over loopback.
+#
+#   sasonica-adb setup PAIR_PORT CODE CONNECT_PORT   pair, connect, apply
+#   sasonica-adb pair PORT CODE
+#   sasonica-adb connect PORT
+#   sasonica-adb apply        the named fixes below, and nothing else
+#   sasonica-adb status       one line per fix: ok|todo|unknown NAME
+#
+# The fixes are a short, named list on purpose: ADB can do anything to the
+# device, and this does only what keeps the server running.
+#   child-limit  Android 12+'s phantom-process killer off (the global switch,
+#                and on 12 itself the device_config limit)
+#   battery      Termux exempt from Doze and allowed to run in the background
+# Both outlast ADB: Wireless debugging can be switched off again after.
+#
+# Output: lines "ok NAME", "fail NAME: why", "info: ..." — the app shows them.
+set -u
+
+say() { printf '%s\n' "$*"; }
+
+serial() {
+  adb devices 2>/dev/null | awk '$1 ~ /^127\.0\.0\.1:[0-9]+$/ && $2 == "device" { print $1; exit }'
+}
+
+cmd_pair() {
+  local out
+  out=$(adb pair "127.0.0.1:$1" "$2" 2>&1)
+  if grep -q "Successfully paired" <<<"$out"; then say "ok pair"; return 0; fi
+  say "fail pair: ${out//$'\n'/ }"
+  return 1
+}
+
+cmd_connect() {
+  local out
+  # Rows left from earlier ports answer "offline" and make adb ask which one.
+  adb devices 2>/dev/null | awk '$2 == "offline" { print $1 }' | while read -r d; do adb disconnect "$d" >/dev/null 2>&1; done
+  out=$(adb connect "127.0.0.1:$1" 2>&1)
+  if grep -q "connected to" <<<"$out"; then say "ok connect"; return 0; fi
+  # A stale adb server refuses everything until it is restarted.
+  adb kill-server >/dev/null 2>&1
+  out=$(adb connect "127.0.0.1:$1" 2>&1)
+  if grep -q "connected to" <<<"$out"; then say "ok connect"; return 0; fi
+  say "fail connect: ${out//$'\n'/ }"
+  return 1
+}
+
+sh_() { adb -s "$S" shell "$@" 2>&1; }
+
+cmd_apply() {
+  S=$(serial)
+  [ -n "$S" ] || { say "fail apply: not connected (sasonica-adb connect PORT first)"; return 1; }
+  local sdk rc=0
+  sdk=$(sh_ getprop ro.build.version.sdk | tr -dc 0-9)
+  say "info: Android SDK ${sdk:-?}"
+  if [ "${sdk:-0}" -ge 31 ]; then
+    sh_ settings put global settings_enable_monitor_phantom_procs false >/dev/null
+    sh_ device_config set_sync_disabled_for_tests persistent >/dev/null
+    sh_ device_config put activity_manager max_phantom_processes 2147483647 >/dev/null
+    if [ "$(sh_ settings get global settings_enable_monitor_phantom_procs | tr -d '\r')" = "false" ] ||
+       [ "$(sh_ device_config get activity_manager max_phantom_processes | tr -d '\r')" = "2147483647" ]; then
+      say "ok child-limit"
+    else
+      say "fail child-limit: the settings did not take"; rc=1
+    fi
+  else
+    say "ok child-limit"
+  fi
+  sh_ dumpsys deviceidle whitelist +com.termux >/dev/null
+  sh_ cmd appops set com.termux RUN_ANY_IN_BACKGROUND allow >/dev/null
+  if sh_ dumpsys deviceidle whitelist | grep -q "com.termux,"; then
+    say "ok battery"
+  else
+    say "fail battery: Termux is not on the Doze whitelist"; rc=1
+  fi
+  return $rc
+}
+
+cmd_status() {
+  S=$(serial)
+  if [ -z "$S" ]; then say "unknown child-limit"; say "unknown battery"; return 0; fi
+  local p m
+  p=$(sh_ settings get global settings_enable_monitor_phantom_procs | tr -d '\r')
+  m=$(sh_ device_config get activity_manager max_phantom_processes | tr -d '\r')
+  if [ "$p" = "false" ] || [ "$m" = "2147483647" ]; then say "ok child-limit"; else say "todo child-limit"; fi
+  if sh_ dumpsys deviceidle whitelist | grep -q "com.termux,"; then say "ok battery"; else say "todo battery"; fi
+}
+
+case "${1:-}" in
+  setup)
+    [ $# -eq 4 ] || { say "fail setup: usage: sasonica-adb setup PAIR_PORT CODE CONNECT_PORT"; exit 2; }
+    cmd_pair "$2" "$3" && cmd_connect "$4" && cmd_apply
+    ;;
+  pair) [ $# -eq 3 ] || exit 2; cmd_pair "$2" "$3" ;;
+  connect) [ $# -eq 2 ] || exit 2; cmd_connect "$2" ;;
+  apply) cmd_apply ;;
+  status) cmd_status ;;
+  *) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

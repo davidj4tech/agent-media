@@ -206,6 +206,11 @@ anything is switched on:
    installer writes `~/.termux/boot/sasonica` for Termux:Boot to run.
 4. **The ADB power-up:** `NsdManager` discovery, the notification-reply
    pairing, `RUN_COMMAND`, and the named actions.
+   **Built 28 Sep 2026, not yet run on a device:** `deploy/android/sasonica-adb`
+   (setup/pair/connect/apply/status; fixes: child-limit, battery), linked
+   onto Termux's PATH by the installer; the app's AdbSetup (NsdManager for
+   both ports, a reply-field notification, RUN_COMMAND with a result
+   PendingIntent). `status` checked on p8a (read-only).
 5. **Agents on the phone server:** the Coding agents page against it.
    Codex and pi natively; Claude Code and opencode through a proot distro,
    with the wrapper written from p8a's.

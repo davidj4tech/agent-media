@@ -6,9 +6,9 @@
 #
 # docs/proposals/2026-09-27-server-on-the-phone.md, step 1.
 #
-# Termux is only the host: the services, `am`, adb. The server and the
-# agents live in a Debian proot (proot-distro), because what they are built
-# for is glibc Linux: Claude Code and opencode do not run on Android's own
+# Termux is only the host: the services, `am`, adb (sasonica-adb). The
+# server and the agents live in a Debian proot (proot-distro), because what
+# they are built for is glibc Linux: Claude Code and opencode do not run on Android's own
 # libc, and the server's Python dependencies (pydantic-core, rpds-py) have
 # ready wheels for glibc but need a Rust toolchain in plain Termux (596 MB,
 # then a long compile). Debian with the server is ~425 MB and compiles
@@ -59,7 +59,7 @@ esac
 
 step "Termux packages"
 yes | pkg update >/dev/null 2>&1 || true
-pkg install -y proot-distro termux-services termux-tools curl >/dev/null
+pkg install -y proot-distro termux-services termux-tools curl android-tools >/dev/null
 
 step "Debian (proot)"
 if [ ! -d "$PREFIX/var/lib/proot-distro/installed-rootfs/$DISTRO" ]; then
@@ -104,6 +104,11 @@ in_debian 'export PATH=~/projects/agent-media/.venv/bin:$PATH
   # `debug config` loads the plugins without asking any model.
   if [ -x ~/.opencode/bin/opencode ]; then ~/.opencode/bin/opencode debug config >/dev/null 2>&1 || true; fi
   if command -v claude >/dev/null; then media-setup install-hooks >/dev/null; fi'
+
+# The ADB power-up's helper (the app runs it through RUN_COMMAND), on
+# Termux's PATH straight from the checkout, so a pull updates it.
+ROOTFS=$PREFIX/var/lib/proot-distro/installed-rootfs/$DISTRO
+ln -sf "$ROOTFS/root/projects/agent-media/deploy/android/sasonica-adb" "$PREFIX/bin/sasonica-adb"
 
 step "This device's config"
 in_debian 'export PATH=~/projects/agent-media/.venv/bin:$PATH
