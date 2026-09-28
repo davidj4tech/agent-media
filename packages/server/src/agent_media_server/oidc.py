@@ -216,7 +216,7 @@ def exchange_code(code: str, verifier: str, redirect_uri: str, iss: str = "") ->
 
 def profile(iss: str, refresh_token: str) -> tuple[dict, str]:
     """The account as the issuer has it now — `({sub, email, name,
-    preferred_username}, new refresh token)` — through the refresh token kept
+    preferred_username, picture}, new refresh token)` — through the refresh token kept
     at sign-in and the userinfo endpoint. A name or email changed at the
     issuer shows here. Raises OidcError when the issuer will not (the account
     signed out everywhere, or the refresh token expired)."""
@@ -235,7 +235,7 @@ def profile(iss: str, refresh_token: str) -> tuple[dict, str]:
             info = json.loads(r.read())
     except Exception as e:  # noqa: BLE001 — a refusal, never a 500
         raise OidcError("bad_id_token", f"the issuer would not refresh: {e}") from e
-    return ({k: info.get(k) for k in ("sub", "email", "name", "preferred_username")},
+    return ({k: info.get(k) for k in ("sub", "email", "name", "preferred_username", "picture")},
             str(got.get("refresh_token") or refresh_token))
 
 
@@ -243,6 +243,12 @@ def username_of(claims: dict) -> str:
     """What to call an account: its username, else its name, else its email's local part."""
     return str(claims.get("preferred_username") or claims.get("name")
                or str(claims.get("email") or "").split("@")[0] or "")
+
+
+def picture_of(claims: dict) -> str:
+    """The account's picture: an https URL, else "" (the app shows an initial)."""
+    url = str(claims.get("picture") or "").strip()
+    return url if url.startswith("https://") and len(url) <= 2048 else ""
 
 
 def _matches(claims: dict, rules: list[str]) -> bool:

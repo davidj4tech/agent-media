@@ -352,22 +352,22 @@ def refresh_token_of(device_id: str) -> tuple[str, str]:
     return (str(d.get("iss") or ""), str(d.get("rt") or "")) if d else ("", "")
 
 
-def update_profile(device_id: str, email: str, username: str, rt: str) -> bool:
-    """The account's current email and username, and the rotated refresh
-    token, on its device's row."""
+def update_profile(device_id: str, email: str, username: str, rt: str, picture: str = "") -> bool:
+    """The account's current email, username and picture, and the rotated
+    refresh token, on its device's row. A picture gone at the issuer goes here."""
     with _LOCK:
         rows = _load()
         d = next((x for x in rows if x.get("id") == device_id), None)
         if d is None:
             return False
         fresh = {**d, "account": email or d.get("account", ""), "username": username or d.get("username", ""),
-                 "rt": rt or d.get("rt", ""), "profile_at": round(time.time(), 3)}
+                 "picture": picture, "rt": rt or d.get("rt", ""), "profile_at": round(time.time(), 3)}
         _save([fresh if x is d else x for x in rows])
     return True
 
 
 def enrol_account(claims: dict, device: str, ip: str = "", *, enrol: bool = False,
-                  refresh_token: str = "", username: str = "") -> dict:
+                  refresh_token: str = "", username: str = "", picture: str = "") -> dict:
     """A device token for a signed-in account (`POST /enrol`, accounts
     proposal step 3): the same token and row `redeem` makes, plus who
     enrolled it (`iss`, `sub`, and the email as a label), so revoking the
@@ -380,7 +380,7 @@ def enrol_account(claims: dict, device: str, ip: str = "", *, enrol: bool = Fals
            "created": round(now, 3), "last_seen": round(now, 3), "last_ip": ip or "",
            "enrol": bool(enrol), "iss": str(claims.get("iss") or ""),
            "sub": str(claims.get("sub") or ""), "account": str(claims.get("email") or ""),
-           "username": username, "profile_at": round(now, 3),
+           "username": username, "picture": picture, "profile_at": round(now, 3),
            **({"rt": refresh_token} if refresh_token else {})}
     with _LOCK:
         _save(list(_load()) + [row])

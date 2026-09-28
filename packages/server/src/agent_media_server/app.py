@@ -543,6 +543,7 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
                            "enrol": devices.may_enrol(dev),
                            "account": dev.get("account") or None,
                            "username": dev.get("username") or None,
+                           "picture": dev.get("picture") or None,
                            "issuer": dev.get("iss") or None})
     elif path == "/enrol":
         # Where the app signs in with an account (oidc.py): open, like /pair.
@@ -805,7 +806,8 @@ def _refresh_profile_soon(dev: dict) -> None:
     def run():
         try:
             info, new_rt = oidc.profile(iss, rt)
-            devices.update_profile(did, str(info.get("email") or ""), oidc.username_of(info), new_rt)
+            devices.update_profile(did, str(info.get("email") or ""), oidc.username_of(info), new_rt,
+                                   oidc.picture_of(info))
         except oidc.OidcError as e:
             print(f"me: profile refresh for {did} refused: {e}", file=sys.stderr)
         finally:
@@ -860,12 +862,13 @@ def _enrol(h: BaseHTTPRequestHandler) -> None:
         return
     got = devices.enrol_account(claims, str(body.get("device") or ""), ip,
                                 enrol=oidc.may_enrol(claims), refresh_token=refresh_token,
-                                username=oidc.username_of(claims))
+                                username=oidc.username_of(claims), picture=oidc.picture_of(claims))
     print(f"enrol: {got['device_id']} ({got['name']!r}) for "
           f"{claims.get('email') or claims.get('sub')} from {ip}", file=sys.stderr)
     _json(h, 200, {"ok": True, "token": got["token"], "device_id": got["device_id"],
                    "name": got["name"], "enrol": got["enrol"],
                    "account": str(claims.get("email") or ""), "username": got["username"],
+                   "picture": oidc.picture_of(claims) or None,
                    "server": {"name": socket.gethostname(), "base": _base_url(h)}})
 
 

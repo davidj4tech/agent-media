@@ -217,11 +217,28 @@ def test_me_refreshes_an_old_profile_from_the_issuer(server, monkeypatch):
     devices._save(rows)
     calls = []
     monkeypatch.setattr(oidc, "profile", lambda iss, rt: (calls.append(rt) or
-                        ({"sub": "1", "email": "new@example.com", "preferred_username": "david2"}, "rt-2")))
+                        ({"sub": "1", "email": "new@example.com", "preferred_username": "david2",
+                          "picture": "https://cms.sasonica.test/files/d.png"}, "rt-2")))
     monkeypatch.setattr(app_mod, "_in_background", lambda fn: fn())
     res, me = call(server, "GET", "/me", headers={"Authorization": f"Bearer {got['token']}"})
     assert res.status == 200 and me["account"] == "old@example.com", "this answer is what was there"
     res, me = call(server, "GET", "/me", headers={"Authorization": f"Bearer {got['token']}"})
     assert me["account"] == "new@example.com" and me["username"] == "david2"
+    assert me["picture"] == "https://cms.sasonica.test/files/d.png"
     assert calls == ["rt-1"], "asked once; fresh now"
     assert devices.refresh_token_of(got["device_id"])[1] == "rt-2", "the rotated refresh token kept"
+
+
+def test_a_picture_is_an_https_url_or_nothing():
+    assert oidc.picture_of({"picture": "https://cms.example/p.png"}) == "https://cms.example/p.png"
+    assert oidc.picture_of({"picture": "javascript:alert(1)"}) == ""
+    assert oidc.picture_of({"picture": "http://cms.example/p.png"}) == ""
+    assert oidc.picture_of({}) == ""
+
+
+def test_enrol_carries_the_picture(server):
+    res, obj = call(server, "POST", "/enrol", {"id_token": token(picture="https://cms.sasonica.test/p.png"),
+                                              "device": "phone"})
+    assert res.status == 200 and obj["picture"] == "https://cms.sasonica.test/p.png"
+    res, me = call(server, "GET", "/me", headers={"Authorization": f"Bearer {obj['token']}"})
+    assert me["picture"] == "https://cms.sasonica.test/p.png"
