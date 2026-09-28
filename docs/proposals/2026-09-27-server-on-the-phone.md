@@ -197,6 +197,9 @@ anything is switched on:
    setup grew by hand, so this step finds what is only there by accident.
 2. **The app:** the third welcome button, the localhost probe, the Termux
    steps, and the `sasonica://pair` intent filter.
+   **Done 28 Sep 2026** (sasonica-app `c8be1d2` the link, then Run it on
+   this device: routes/device.tsx; the install line fetches the script from
+   GitHub's raw URL until it has a home of its own).
 3. **Staying alive:** the checks and the Settings shortcuts, without ADB.
 4. **The ADB power-up:** `NsdManager` discovery, the notification-reply
    pairing, `RUN_COMMAND`, and the named actions.
