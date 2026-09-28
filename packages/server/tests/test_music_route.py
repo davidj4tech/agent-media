@@ -13,7 +13,7 @@ from agent_media_server import auth_abs, music
 
 from test_contract import AUTH, audio_host, call, keys, server, signed_in, typed  # noqa: F401
 
-NOW = {"backend": "phone", "uri": "yt:x", "media_id": "x", "path": "http://localhost:6616/x.mka",
+NOW = {"backend": "phone", "uri": "yt:https://www.youtube.com/watch?v=nMDHjVVj3bA", "media_id": "nMDHjVVj3bA", "path": "http://localhost:6616/nMDHjVVj3bA.mka",
        "title": "A Mix", "chapter": None, "pos_ms": 7000, "dur_ms": 3019000,
        "paused": False, "speed": 1.0, "volume": 100, "held": False}
 
@@ -38,7 +38,8 @@ def player(monkeypatch):
 def test_now_is_the_status_and_the_picker(server, signed_in, audio_host, player):
     res, obj = call(server, "GET", "/music", headers=AUTH)
     assert res.status == 200, obj
-    assert keys(obj) == {"ok", "now", "chapters", "where"}
+    assert keys(obj) == {"ok", "now", "art", "chapters", "where"}
+    assert obj["art"] == "https://i.ytimg.com/vi/nMDHjVVj3bA/hqdefault.jpg"
     assert obj["now"] == NOW and obj["chapters"] == []
     assert keys(obj["where"]) == {"current", "next", "overridden", "options"}
 

@@ -46,6 +46,17 @@ def _vid(uri: str) -> Optional[str]:
     return music_fetch.watch_id(uri[3:] if uri.startswith("yt:") else uri)
 
 
+def art(uri_or_id: str) -> Optional[str]:
+    """A picture for a YouTube track: its thumbnail on YouTube's image host
+    (public, and reachable from anywhere the video itself is not)."""
+    if not uri_or_id:
+        return None
+    vid = _vid(uri_or_id)
+    if not vid and len(uri_or_id) == 11 and all(c.isalnum() or c in "-_" for c in uri_or_id):
+        vid = uri_or_id
+    return f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg" if vid else None
+
+
 def _key(uri: str) -> str:
     """One entry per video, whether it was asked for as `yt:` or a link."""
     return _vid(uri) or uri
@@ -124,7 +135,7 @@ def _inferred(speakers: list[tuple[float, str]], at: float) -> Optional[str]:
 
 
 def recent(limit: int = 40, store: Optional[StateStore] = None) -> list[dict]:
-    """``[{"id", "uri", "title", "at", "session", "inferred"}]``, newest
+    """``[{"id", "uri", "title", "art", "at", "session", "inferred"}]``, newest
     first, one row per URI (its latest play)."""
     store = store or StateStore()
     rows = [r for r in store.recent_history(sink="music", limit=400) if _asked(r)]
@@ -172,6 +183,6 @@ def recent(limit: int = 40, store: Optional[StateStore] = None) -> list[dict]:
             sid = _inferred(speakers, float(r["started_at"]))
             inferred = sid is not None
         out.append({"id": r["id"], "uri": r["uri"],
-                    "title": named.get(_key(r["uri"])) or None,
+                    "title": named.get(_key(r["uri"])) or None, "art": art(r["uri"]),
                     "at": r["started_at"], "session": sid or None, "inferred": inferred})
     return out

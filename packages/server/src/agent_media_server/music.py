@@ -115,9 +115,15 @@ def _chapters(now: dict) -> list[dict]:
         return []
 
 
+def _art(now: dict) -> str | None:
+    from agent_media_core.music_recent import art
+
+    return art(now.get("uri") or "") or art(now.get("media_id") or "")
+
+
 def _answer() -> dict:
     now, chapters = _now()
-    return {"now": now, "chapters": chapters, "where": audio.channel_block("music")}
+    return {"now": now, "art": _art(now), "chapters": chapters, "where": audio.channel_block("music")}
 
 
 def now(bearer: str) -> tuple[bool, dict]:

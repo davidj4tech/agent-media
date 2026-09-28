@@ -1862,7 +1862,11 @@ The app's Media tab (docs/proposals/2026-09-28-music-tab.md, step 1).
 
 #### `GET /music` — gated (like `/speech/now`)
 
-`{"ok": true, "now": {…}, "chapters": [{"title", "start_ms"}], "where": {…}}`.
+`{"ok": true, "now": {…}, "art": url | null, "chapters": [{"title", "start_ms"}], "where": {…}}`.
+
+- `art` (28 Sep 2026): a picture for the track — a YouTube one's thumbnail
+  on `i.ytimg.com` — or null. Sasonica's player is handed it too
+  (`user-data/agent-media/art`) for the lock screen.
 
 - `now` is `media music status --json` for whichever player is live
   (Sasonica's own, the Termux mpv, Mopidy), so the tab and the desk popup
@@ -1896,7 +1900,7 @@ default place): Recently played's tap.
 
 #### `GET /music/recent` — gated (like `/speech/now`) (28 Sep 2026)
 
-`{"ok": true, "items": [{"id", "uri", "title", "at", "session", "inferred"}]}`:
+`{"ok": true, "items": [{"id", "uri", "title", "art", "at", "session", "inferred"}]}`:
 what was played, newest first, one entry per track (a `yt:` and a link to
 the same video are one), at most 40. `session` is the conversation that
 put it on — recorded with the play since 28 Sep 2026, and for older plays

@@ -185,6 +185,11 @@ class SinkMusicSasonica(SinkMusicLocal):
             if title and replace:
                 self._set("force-media-title", title)
             if replace:
+                from ..music_recent import art
+                picture = art(uri)
+                if picture:
+                    # The lock screen's picture (sasonica-app MusicSession).
+                    self._set("user-data/agent-media/art", picture)
                 # The app's lock-screen next/prev move by these (sasonica-app
                 # MusicSession); it forgets the last track's at the load.
                 chs = chapters(url)

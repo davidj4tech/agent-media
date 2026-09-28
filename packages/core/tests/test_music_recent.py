@@ -60,3 +60,11 @@ def test_names_are_looked_up_once(st, monkeypatch):
     music_recent.recent(store=st)
     music_recent.recent(store=st)
     assert calls == ["AAAAAAAAAAA"]
+
+
+def test_a_youtube_play_has_its_picture(st):
+    st.add_history(sink="music", uri="yt:https://www.youtube.com/watch?v=AAAAAAAAAAA", started_at=1)
+    st.add_history(sink="music", uri="https://example.com/a.mp3", started_at=2)
+    got = {r["uri"]: r["art"] for r in music_recent.recent(store=st)}
+    assert got == {"yt:https://www.youtube.com/watch?v=AAAAAAAAAAA": "https://i.ytimg.com/vi/AAAAAAAAAAA/hqdefault.jpg",
+                   "https://example.com/a.mp3": None}
