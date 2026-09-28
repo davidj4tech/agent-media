@@ -339,6 +339,39 @@ def redeem(code: str, device: str, ip: str = "") -> dict | None:
             "enrol": bool(row["enrol"])}
 
 
+def enrol_account(claims: dict, device: str, ip: str = "", *, enrol: bool = False) -> dict:
+    """A device token for a signed-in account (`POST /enrol`, accounts
+    proposal step 3): the same token and row `redeem` makes, plus who
+    enrolled it (`iss`, `sub`, and the email as a label), so revoking the
+    account can drop its devices. The account's word is the device's name
+    only when the device sent none."""
+    now = time.time()
+    token = secrets.token_urlsafe(32)
+    name = " ".join((device or "").split())[:80] or str(claims.get("email") or "device")
+    row = {"id": "d_" + secrets.token_hex(6), "name": name, "sha256": _hash(token),
+           "created": round(now, 3), "last_seen": round(now, 3), "last_ip": ip or "",
+           "enrol": bool(enrol), "iss": str(claims.get("iss") or ""),
+           "sub": str(claims.get("sub") or ""), "account": str(claims.get("email") or "")}
+    with _LOCK:
+        _save(list(_load()) + [row])
+    return {"token": token, "device_id": row["id"], "name": name, "enrol": bool(enrol)}
+
+
+def revoke_account(who: str) -> int:
+    """Forget every device an account enrolled — by `sub`, or by its email.
+    How many went."""
+    who = (who or "").strip()
+    if not who:
+        return 0
+    with _LOCK:
+        rows = _load()
+        keep = [d for d in rows if not (d.get("sub") == who or
+                                        (d.get("account") and d.get("account", "").lower() == who.lower()))]
+        if len(keep) != len(rows):
+            _save(keep)
+        return len(rows) - len(keep)
+
+
 def _reset_for_tests() -> None:
     global _CACHE
     with _LOCK:
@@ -376,7 +409,13 @@ def cli_devices(argv: list[str]) -> int:
     act.add_argument("--enrol", metavar="ID",
                      help="let this device pair and revoke devices from the app (Settings → Devices)")
     act.add_argument("--no-enrol", metavar="ID", help="take that right back")
+    act.add_argument("--revoke-account", metavar="WHO",
+                     help="forget every device an account enrolled (its sub, or its email)")
     args = ap.parse_args(argv)
+    if args.revoke_account:
+        n = revoke_account(args.revoke_account)
+        print(f"revoked {n} device(s) of {args.revoke_account}" if n else f"no devices of {args.revoke_account}")
+        return 0 if n else 1
     if args.enrol or args.no_enrol:
         device_id, on = (args.enrol, True) if args.enrol else (args.no_enrol, False)
         if set_enrol(device_id, on):
@@ -401,5 +440,6 @@ def cli_devices(argv: list[str]) -> int:
     for d in rows:
         print(f"{d.get('id'):<16} {d.get('name', ''):<24} paired {when(d.get('created'))}"
               f"  seen {when(d.get('last_seen'))} from {d.get('last_ip') or '-'}"
-              f"{'  [enrols]' if may_enrol(d) else ''}")
+              f"{'  [enrols]' if may_enrol(d) else ''}"
+              f"{'  account ' + d['account'] if d.get('account') else ''}")
     return 0

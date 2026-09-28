@@ -3073,6 +3073,31 @@ A device may revoke itself, and the last enrolled device may throw itself
 out. That is not a lockout: `media-visual-canvas devices --revoke` is the
 floor under all of this, and the desk can always mint again.
 
+### Enrolling with an account — BUILT 29 Sep 2026
+
+The accounts proposal, steps 2 and 3. An account enrols a device; it does not
+authenticate requests. Code: `agent_media_server/oidc.py`,
+`devices.enrol_account`; pinned by `packages/server/tests/test_oidc.py`.
+
+```
+POST /enrol {"id_token": "<jwt>", "device": "Pixel 8a"}     no credential, like /pair
+  → {"ok", "token", "device_id", "name", "enrol", "account", "server": {"name", "base"}}
+  → 403 {"code": "bad_id_token"}   untrusted issuer, wrong audience, expired, bad signature
+  → 403 {"code": "not_enrolled"}   a valid sign-in for an account not allowed here
+  → 404 {"code": "no_accounts"}    this server takes no account sign-ins
+  → 429 {"code": "rate_limited"}   as /pair (failures count the same way)
+```
+
+Configuration: `MEDIA_OIDC_ISSUERS` (exact `iss`, comma-separated),
+`MEDIA_OIDC_CLIENTS` (the `aud` an ID token must carry), `MEDIA_OIDC_ALLOW`
+(`<iss>|<sub>` or `<iss>|email=<addr>`, a verified email only: who may have a
+device here; nothing by default) and `MEDIA_OIDC_ENROL` (the same form: whose
+device gets the enrol bit). RS256 only, checked with the standard library; the
+discovery document and JWKS are cached an hour and an unreachable issuer is a
+refusal. The device row gains `iss`, `sub` and `account` (the email);
+`media-visual-canvas devices --revoke-account <sub|email>` drops every device
+an account enrolled. The issuer decided on is Drupal (cms.sasonica.com).
+
 ### Migration
 
 The gate is "a known device token, **or** an ABS bearer that passes §4.1".

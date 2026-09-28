@@ -226,7 +226,7 @@ CORS_PATHS = CORS_PATHS | ALERT_PATHS
 # read the amux token out of it, so the GET must stay same-origin — which is
 # why this is a separate set, keyed on the method, and NOT in `CORS_PATHS`
 # (the canvas's own `_cors` reads that set for every answer it sends).
-CORS_POST_PATHS = frozenset({"/pair"})
+CORS_POST_PATHS = frozenset({"/pair", "/enrol"})
 
 # The per-thread event stream (§11), `/threads/<session>/events`: an app route
 # like the ones above, but a path with the thread in it, so it is matched
@@ -760,6 +760,48 @@ def _pair(h: BaseHTTPRequestHandler) -> None:
                    "server": {"name": socket.gethostname(), "base": _base_url(h)}})
 
 
+def _enrol(h: BaseHTTPRequestHandler) -> None:
+    """`POST /enrol {"id_token", "device"}` — a signed-in account for a device
+    token (accounts proposal, step 3). `POST /pair` with a different proof:
+    an ID token from a trusted issuer (oidc.py) for an account allowed here
+    (MEDIA_OIDC_ALLOW). No credential otherwise; failures count against the
+    source address like a wrong pairing code."""
+    import socket
+
+    from . import oidc
+
+    ip = h.client_address[0] if h.client_address else ""
+    if devices.rate_limited(ip):
+        _json(h, 429, {"ok": False, "code": "rate_limited",
+                       "error": "too many attempts; try again in a few minutes"})
+        return
+    if not oidc.configured():
+        _json(h, 404, {"ok": False, "code": "no_accounts",
+                       "error": "this server does not take account sign-ins"})
+        return
+    body = _read_json(h) or {}
+    try:
+        claims = oidc.verify(str(body.get("id_token") or ""))
+    except oidc.OidcError as e:
+        devices._note_failure(ip)
+        print(f"enrol: refused from {ip}: {e}", file=sys.stderr)
+        _json(h, 403, {"ok": False, "code": e.code, "error": "that sign-in was not accepted"})
+        return
+    if not oidc.allowed(claims):
+        print(f"enrol: {claims.get('email') or claims.get('sub')} is not allowed here", file=sys.stderr)
+        _json(h, 403, {"ok": False, "code": "not_enrolled",
+                       "error": "that account has no access to this server"})
+        return
+    got = devices.enrol_account(claims, str(body.get("device") or ""), ip,
+                                enrol=oidc.may_enrol(claims))
+    print(f"enrol: {got['device_id']} ({got['name']!r}) for "
+          f"{claims.get('email') or claims.get('sub')} from {ip}", file=sys.stderr)
+    _json(h, 200, {"ok": True, "token": got["token"], "device_id": got["device_id"],
+                   "name": got["name"], "enrol": got["enrol"],
+                   "account": str(claims.get("email") or ""),
+                   "server": {"name": socket.gethostname(), "base": _base_url(h)}})
+
+
 def _devices_code(h: BaseHTTPRequestHandler) -> None:
     """`POST /devices/code {"device", "enrol"}` — mint a pairing code (§9).
 
@@ -821,6 +863,8 @@ def _devices_revoke(h: BaseHTTPRequestHandler) -> None:
 def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
     if path == "/pair":
         _pair(h)
+    elif path == "/enrol":
+        _enrol(h)
     elif path == "/devices/code":
         _devices_code(h)
     elif path == "/devices/revoke":
