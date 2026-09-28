@@ -200,8 +200,8 @@ def opencode_error_text(error) -> str:
     why = f" ({said.rstrip('.')})" if said else ""
     code = data.get("statusCode")
     if code == 429:
-        return (f"This model's limit is used up for now{why}. Start a new chat on "
-                "another free model, or try again later.")
+        return (f"This model's limit is used up for now{why}. Pick another free "
+                "model from the model chip, or try again later.")
     if code == 402:
         return f"The model's provider is out of credit{why}."
     if name == "ProviderAuthError" or code in (401, 403):

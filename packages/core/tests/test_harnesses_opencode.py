@@ -183,7 +183,7 @@ def test_a_turn_opencode_gave_up_on_says_why(store):
     mid, text = harnesses.opencode_last_reply(sid)
     assert mid.endswith("001")
     assert text.startswith("This model's limit is used up for now (Rate limit exceeded: free-models-per-day.")
-    assert "another free model" in text
+    assert "another free model from the model chip" in text
 
 
 def test_a_stop_says_nothing_and_a_later_step_clears_it(store):
