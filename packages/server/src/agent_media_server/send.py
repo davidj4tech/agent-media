@@ -1013,7 +1013,8 @@ def reply(item: str, text: str, bearer: str, *, quote: str = "",
         # A branch runs where the thread it came from ran (proposal §8): a
         # fresh headless session in the same directory, seeded the same way.
         ok, detail = driver.headless_driver().start(
-            agent="claude", cwd=sessions.transcript_cwd(session) or driver.headless_driver().cwd_of(session),
+            agent=str((driver.headless_driver().record(session) or {}).get("agent") or "claude"),
+            cwd=sessions.transcript_cwd(session) or driver.headless_driver().cwd_of(session),
             text=text, quote=quote)
         if ok:
             detail["branched"] = True

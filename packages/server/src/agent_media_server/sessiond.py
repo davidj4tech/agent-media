@@ -44,6 +44,11 @@ What it does per session:
 It writes nothing to tmux. Transcripts land where Claude Code puts them
 (`~/.claude/projects/…`), so the canvas's transcript reader works unchanged.
 
+**opencode** sessions are held here too, but not as a process each: they are
+sessions of one shared `opencode serve` (sessiond_opencode.py), whose events
+drive the same states and pending requests, so everything past this module
+treats them alike.
+
 **A restart of this service** ends every child (systemd's cgroup kill, or the
 SIGTERM handler here, which closes each stdin and waits `CLOSE_GRACE_S`). A
 permission request that was pending then is **not** re-sent by the CLI on
@@ -344,6 +349,10 @@ class Supervisor:
         self.lock = threading.RLock()
         self.cond = threading.Condition(self.lock)
         self.sessions: dict[str, Session] = {}
+        from .sessiond_opencode import Host
+
+        #: The shared `opencode serve` (sessiond_opencode.py).
+        self.oc = Host(self)
 
     # -- start-up and shut-down --
 
@@ -369,7 +378,10 @@ class Supervisor:
 
     def _kill_orphans(self, ours: set[str]) -> None:
         """Terminate agent processes a crashed instance left running for one of
-        our sessions: two writers on one session interleave its transcript."""
+        our sessions: two writers on one session interleave its transcript.
+        An opencode server one left is ended too: its sessions are ours."""
+        from .sessiond_opencode import HOST_MARK
+
         me = os.getpid()
         for d in Path("/proc").iterdir() if Path("/proc").is_dir() else []:
             if not d.name.isdigit() or int(d.name) == me:
@@ -379,6 +391,13 @@ class Supervisor:
             except OSError:
                 continue
             for e in env:
+                if e == f"{HOST_MARK}=1".encode():
+                    log.warning("sessiond: ending orphan opencode server %s", d.name)
+                    try:
+                        os.kill(int(d.name), signal.SIGTERM)
+                    except OSError:
+                        pass
+                    break
                 if e.startswith(b"MEDIA_SESSIOND_SESSION="):
                     sid = e.split(b"=", 1)[1].decode(errors="replace")
                     if sid in ours:
@@ -392,10 +411,14 @@ class Supervisor:
     def shutdown(self) -> None:
         """Park everything live, as gently as a close: stdin, then signals."""
         with self.lock:
+            for s in self.sessions.values():
+                if s.agent == "opencode" and s.live:
+                    self._oc_detach(s, "parked")
             live = [s for s in self.sessions.values() if s.live]
             for s in live:
                 s.parking = True
                 self._close_stdin(s)
+        self.oc.stop()
         deadline = time.monotonic() + close_grace_s()
         for s in live:
             proc = s.proc
@@ -445,7 +468,9 @@ class Supervisor:
 
         return harnesses.program("claude") or "claude"
 
-    def _env(self, s: Session, exe: str) -> dict:
+    def _base_env(self, exe: str) -> dict:
+        """An agent process's environment: scrubbed, the harnesses on PATH,
+        marked headless for the speech hooks."""
         env = {k: v for k, v in os.environ.items()
                if k in KEEP or not k.startswith(DROP_PREFIXES)}
         from agent_media_core import harnesses
@@ -455,6 +480,10 @@ class Supervisor:
             path = os.path.dirname(exe) + os.pathsep + path
         env["PATH"] = path
         env["MEDIA_SOURCE_KIND"] = "headless"
+        return env
+
+    def _env(self, s: Session, exe: str) -> dict:
+        env = self._base_env(exe)
         env["MEDIA_SESSIOND_SESSION"] = s.id
         if s.workspace:
             env["MEDIA_SOURCE_WORKSPACE"] = s.workspace
@@ -577,12 +606,7 @@ class Supervisor:
         if t == "stream_event":
             return
         with self.cond:
-            now = time.time()
-            s.seq += 1
-            ev = {"seq": s.seq, "t": round(now, 3), **_compact(obj)}
-            s.events.append(ev)
-            self._log_event(s, ev)
-            s.last_event_at = now
+            now = self._append(s, _compact(obj))
             before = (s.state, len(s.pending))
             if t == "system" and sub == "init":
                 s.init_model = str(obj.get("model") or s.init_model)
@@ -628,6 +652,16 @@ class Supervisor:
             if (s.state, len(s.pending)) != before or t in ("result", "control_request"):
                 self._save(s)
             self.cond.notify_all()
+
+    def _append(self, s: Session, obj: dict) -> float:
+        """Count and keep one event of `s` (under the lock); its time."""
+        now = time.time()
+        s.seq += 1
+        ev = {"seq": s.seq, "t": round(now, 3), **obj}
+        s.events.append(ev)
+        self._log_event(s, ev)
+        s.last_event_at = now
+        return now
 
     def _auto_title(self, s: Session) -> None:
         """Name a thread nobody has named, its first turn done (threads.py).
@@ -684,7 +718,9 @@ class Supervisor:
         """Make room for one more live process, parking the least recently
         used idle one if the cap is reached or memory is short; refuse when
         none is idle."""
-        live = [x for x in self.sessions.values() if x.running and x is not exclude]
+        # An opencode chat is a row in the shared server, not a process.
+        live = [x for x in self.sessions.values()
+                if x.running and x is not exclude and x.agent != "opencode"]
         # Memory counts only once one of ours runs: with none, the shortage
         # is someone else's, and refusing would only lock the phone out.
         free = mem_available_mb()
@@ -703,6 +739,9 @@ class Supervisor:
         self._park(idle[0])
 
     def _park(self, s: Session) -> None:
+        if s.agent == "opencode":
+            self._oc_detach(s, "parked")
+            return
         proc = s.proc
         if proc is None:
             return
@@ -722,6 +761,7 @@ class Supervisor:
                         and now - s.last_event_at >= idle_s()):
                     self._park(s)
                     parked.append(s.id)
+            self._oc_stop_if_unused()
         return parked
 
     # -- ops ---------------------------------------------------------------------
@@ -731,10 +771,13 @@ class Supervisor:
               mode: str = "") -> dict:
         from . import permissions as perms
 
-        if agent != "claude":
+        if agent not in ("claude", "opencode"):
             raise Refused(f"no headless adapter for {agent}", "unsupported")
         if not (text or "").strip():
             raise Refused("empty message", "empty_text")
+        if agent == "opencode":
+            return self._oc_start(cwd, text, workspace=workspace,
+                                  permissions=perms.mode(permissions), model=model)
         session = session or str(uuid.uuid4())
         with self.lock:
             if session in self.sessions:
@@ -760,6 +803,8 @@ class Supervisor:
         if not (text or "").strip():
             raise Refused("empty message", "empty_text")
         uid = uid or str(uuid.uuid4())
+        if self._agent(session) == "opencode":
+            return self._oc_send(session, text, _fresh=_fresh)
         with self.lock:
             s = self._get(session)
             self._await_exit(s)
@@ -806,6 +851,8 @@ class Supervisor:
         title = " ".join((title or "").split())
         if not title:
             raise Refused("no title", "empty_text")
+        if self._agent(session) == "opencode":
+            return self._oc_rename(session, title)
         with self.lock:
             s = self._get(session)
             if not s.live:
@@ -830,6 +877,13 @@ class Supervisor:
 
         with self.lock:
             s = self._get(session)
+            if s.agent == "opencode":
+                # Its model rides on every prompt; it has no plan mode here.
+                if model is not None:
+                    s.model = model
+                self._save(s)
+                return {"session": session, "model": s.model, "mode": "",
+                        "told": model is not None, **self._brief(s)}
             reqs: list[dict] = []
             if model is not None:
                 s.model = model
@@ -861,6 +915,13 @@ class Supervisor:
                     **self._brief(s)}
 
     def resume(self, session: str) -> dict:
+        if self._agent(session) == "opencode":
+            proc = self.oc.ensure()
+            with self.lock:
+                s = self._get(session)
+                opened = not s.live
+                self._oc_attach(s, proc)
+                return {"session": session, "opened": opened, **self._brief(s)}
         with self.lock:
             s = self._get(session)
             self._await_exit(s)
@@ -873,6 +934,8 @@ class Supervisor:
     def interrupt(self, session: str, cancel_queued: bool = False) -> dict:
         """Interrupt the running turn, with a receipt. Only while working:
         a pending permission request is answered, never interrupted (§12)."""
+        if self._agent(session) == "opencode":
+            return self._oc_interrupt(session)
         with self.lock:
             s = self._get(session)
             if not s.live:
@@ -906,18 +969,32 @@ class Supervisor:
                                   "send a message to carry on", "lost", request=lost)
                 raise Refused("that request is not pending", "not_pending",
                               pending=list(s.pending.values()))
-            self._write(s, {"type": "control_response",
-                            "response": {"subtype": "success", "request_id": request_id,
-                                         "response": response}})
-            del s.pending[request_id]
-            if not s.pending and s.state == "approval":
-                s.set_state("working")
-            self._save(s)
-            self.cond.notify_all()
-            return {"session": session, "answered": request_id,
-                    "pending": list(s.pending.values()), **self._brief(s)}
+            if s.agent == "opencode":
+                entry = s.pending[request_id]
+            else:
+                self._write(s, {"type": "control_response",
+                                "response": {"subtype": "success", "request_id": request_id,
+                                             "response": response}})
+                del s.pending[request_id]
+                if not s.pending and s.state == "approval":
+                    s.set_state("working")
+                self._save(s)
+                self.cond.notify_all()
+                return {"session": session, "answered": request_id,
+                        "pending": list(s.pending.values()), **self._brief(s)}
+        # Over HTTP, outside the lock.
+        return self._oc_answer(session, request_id, entry, response)
 
     def close(self, session: str) -> dict:
+        if self._agent(session) == "opencode":
+            with self.lock:
+                s = self._get(session)
+                was = s.live
+                if was and s.state == "working":
+                    self._oc_call_quiet("POST", f"/session/{s.id}/abort", directory=s.cwd)
+                self._oc_detach(s, "closed")
+                self._oc_stop_if_unused()
+                return {"session": session, "closed": was, **self._brief(s)}
         with self.lock:
             s = self._get(session)
             proc = s.proc
@@ -938,6 +1015,7 @@ class Supervisor:
                 if s.pending:
                     raise Refused("it is waiting on an approval", "busy")
                 self._park(s)
+                self._oc_stop_if_unused()
             return {"session": session, **self._brief(s)}
 
     def get(self, session: str) -> dict:
@@ -955,6 +1033,263 @@ class Supervisor:
                 self.cond.wait_for(lambda: s.seq > since, min(wait, 30.0))
             evs = [e for e in s.events if e["seq"] > since][-200:]
             return {"session": session, "seq": s.seq, "events": evs, **self._brief(s)}
+
+    # -- opencode (sessiond_opencode.py) --
+
+    def _agent(self, session: str) -> str:
+        with self.lock:
+            s = self.sessions.get(session)
+            return s.agent if s else ""
+
+    def _oc_attach(self, s: Session, proc: subprocess.Popen) -> None:
+        """Under the lock: `s` is served by the running server."""
+        if s.proc is not proc:
+            s.proc = proc
+            s.closing = s.parking = False
+            s.exit_code = None
+            s.set_state("approval" if s.pending else "waiting")
+            self._save(s)
+
+    def _oc_detach(self, s: Session, state: str) -> None:
+        """Under the lock: `s` stops being served (parked or closed). A
+        request still pending is lost, as a Claude session's is."""
+        if s.pending:
+            now = time.time()
+            why = "the session was closed" if state == "closed" else "the session was parked"
+            s.lost.extend({**p, "lost_at": round(now, 3), "why": why} for p in s.pending.values())
+            s.pending.clear()
+        s.proc = None
+        s.queued.clear()
+        s.set_state(state)
+        self._save(s)
+        self.cond.notify_all()
+
+    def _oc_stop_if_unused(self) -> None:
+        """Stop the server when no opencode session is attached to it."""
+        if self.oc.up and not any(x.agent == "opencode" and x.live
+                                  for x in self.sessions.values()):
+            self.oc.stop()
+
+    def _oc_call_quiet(self, method: str, path: str, **kw) -> None:
+        try:
+            self.oc.call(method, path, **kw)
+        except Refused as e:
+            log.info("sessiond: opencode %s %s: %s", method, path, e.error)
+
+    def _oc_host_exited(self, proc: subprocess.Popen, rc: int) -> None:
+        """The server ended: its sessions are no longer live — parked when it
+        was stopped here, ended when it went by itself."""
+        with self.cond:
+            for s in self.sessions.values():
+                if s.agent == "opencode" and s.proc is proc:
+                    s.exit_code = rc
+                    self._oc_detach(s, "parked" if self.oc.stopping else "ended")
+        log.info("sessiond: opencode serve exited %s", rc)
+
+    def _oc_start(self, cwd: str, text: str, *, workspace: str, permissions: str,
+                  model: str) -> dict:
+        from . import sessiond_opencode as oc
+
+        if not os.path.isdir(cwd):
+            raise Refused(f"no such directory {cwd!r}", "bad_cwd")
+        proc = self.oc.ensure()
+        body: dict = {}
+        rules = oc.ruleset(permissions)
+        if rules:
+            body["permission"] = rules
+        info = self.oc.call("POST", "/session", body, directory=cwd)
+        sid = str((info or {}).get("id") or "")
+        if not sid:
+            raise Refused("opencode did not make a session", "spawn_failed")
+        with self.lock:
+            s = Session(sid, cwd, agent="opencode", workspace=workspace,
+                        permissions=permissions, model=model)
+            s.first_text = " ".join(text.split())[:200]
+            self.sessions[sid] = s
+            self._oc_attach(s, proc)
+        log.info("sessiond: started opencode %s in %s", sid[:12], cwd)
+        return self._oc_send(sid, text, _fresh=True)
+
+    def _oc_send(self, session: str, text: str, *, _fresh: bool = False) -> dict:
+        from . import sessiond_opencode as oc
+
+        with self.lock:
+            s = self._get(session)
+            resumed = not s.live
+        proc = self.oc.ensure()
+        with self.lock:
+            s = self._get(session)
+            self._oc_attach(s, proc)
+            pending = list(s.pending.values())
+        # A message typed while a question or permission is up answers it,
+        # as for Claude: each is declined, saying the reply follows.
+        for p in pending:
+            try:
+                self._oc_reply(s, p, {"behavior": "deny", "message": TYPED_INSTEAD})
+            except Refused as e:
+                log.info("sessiond: opencode %s: %s", p.get("request_id"), e.error)
+        with self.lock:
+            for p in pending:
+                s.pending.pop(str(p.get("request_id")), None)
+            busy = s.state in ("working", "approval")
+            seq = s.seq
+        body: dict = {"parts": [{"type": "text", "text": text}]}
+        ref = oc.model_ref(s.model)
+        if ref:
+            body["model"] = ref
+        self.oc.call("POST", f"/session/{s.id}/prompt_async", body, directory=s.cwd)
+        with self.lock:
+            s.turns += 1
+            if not s.first_text:
+                s.first_text = " ".join(text.split())[:200]
+            # Its own status event follows at once; say so already, so a
+            # stream that reads now does not see the idle before it — unless
+            # its events got here first (a permission, even the idle).
+            if s.seq == seq:
+                s.set_state("working")
+            self._save(s)
+            self.cond.notify_all()
+        return {"session": session, "uuid": "", "fresh": _fresh, "resumed": resumed,
+                "queued": busy, "acked": True, "state": s.state, "live": s.live,
+                "pid": s.proc.pid if s.live else None}
+
+    def _oc_rename(self, session: str, title: str) -> dict:
+        with self.lock:
+            s = self._get(session)
+            live = s.live
+        if not live:
+            return {"session": session, "renamed": False,
+                    "why": "the name is kept here; opencode is told when the chat is next open"}
+        self.oc.call("PATCH", f"/session/{s.id}", {"title": title}, directory=s.cwd)
+        return {"session": session, "renamed": True, "queued": False, "uuid": ""}
+
+    def _oc_interrupt(self, session: str) -> dict:
+        with self.lock:
+            s = self._get(session)
+            if not s.live:
+                return {"session": session, "interrupted": False, "why": "not live",
+                        **self._brief(s)}
+            if s.state == "approval":
+                return {"session": session, "interrupted": False,
+                        "why": "waiting on a question", **self._brief(s)}
+            if s.state not in ("working", "starting"):
+                return {"session": session, "interrupted": False, "why": "not working",
+                        **self._brief(s)}
+        out = self.oc.call("POST", f"/session/{s.id}/abort", directory=s.cwd)
+        with self.cond:
+            self.cond.wait_for(lambda: s.state not in ("working", "starting") or not s.live,
+                               SETTLE_S)
+            return {"session": session, "interrupted": True, "why": None,
+                    "receipt": out, **self._brief(s)}
+
+    def _oc_reply(self, s: Session, entry: dict, response: dict) -> None:
+        """Claude's answer shape, as opencode's reply to a permission or a
+        question."""
+        from . import sessiond_opencode as oc
+
+        rid = str(entry.get("request_id") or "")
+        deny = response.get("behavior") == "deny"
+        if entry.get("oc") == "question":
+            if deny:
+                self.oc.call("POST", f"/question/{rid}/reject", directory=s.cwd)
+                return
+            inp = (entry.get("request") or {}).get("input") or {}
+            answers = ((response.get("updatedInput") or {}).get("answers")) or {}
+            self.oc.call("POST", f"/question/{rid}/reply",
+                         {"answers": oc.question_answers(inp.get("questions") or [], answers)},
+                         directory=s.cwd)
+            return
+        body = {"reply": "reject" if deny else "once"}
+        if deny and response.get("message"):
+            body["message"] = str(response["message"])
+        self.oc.call("POST", f"/permission/{rid}/reply", body, directory=s.cwd)
+
+    def _oc_answer(self, session: str, request_id: str, entry: dict, response: dict) -> dict:
+        with self.lock:
+            s = self._get(session)
+        self._oc_reply(s, entry, response)
+        with self.cond:
+            s.pending.pop(request_id, None)
+            if not s.pending and s.state == "approval":
+                s.set_state("working")
+            self._save(s)
+            self.cond.notify_all()
+            return {"session": session, "answered": request_id,
+                    "pending": list(s.pending.values()), **self._brief(s)}
+
+    def _oc_reconcile(self) -> None:
+        """The attached sessions' status and requests as the server has them
+        now — for the moments its event stream was not being read."""
+        with self.lock:
+            attached = [s for s in self.sessions.values() if s.agent == "opencode" and s.live]
+        for cwd in {s.cwd for s in attached}:
+            try:
+                status = self.oc.call("GET", "/session/status", directory=cwd, timeout=10) or {}
+                asked = [("permission", p) for p in
+                         self.oc.call("GET", "/permission", directory=cwd, timeout=10) or []]
+                asked += [("question", q) for q in
+                          self.oc.call("GET", "/question", directory=cwd, timeout=10) or []]
+            except Refused as e:
+                log.info("sessiond: opencode reconcile in %s: %s", cwd, e.error)
+                continue
+            for s in attached:
+                if s.cwd != cwd:
+                    continue
+                for kind, props in asked:
+                    if isinstance(props, dict) and props.get("sessionID") == s.id \
+                            and str(props.get("id") or "") not in s.pending:
+                        self._on_oc_event({"type": f"{kind}.asked", "properties": props})
+                busy = str(((status.get(s.id) if isinstance(status, dict) else None)
+                            or {}).get("type") or "idle")
+                if busy == "idle" and s.state == "working":
+                    self._on_oc_event({"type": "session.status",
+                                       "properties": {"sessionID": s.id,
+                                                      "status": {"type": "idle"}}})
+
+    def _on_oc_event(self, payload: dict) -> None:
+        """One of opencode's state events (sessiond_opencode._TRACKED)."""
+        from . import sessiond_opencode as oc
+
+        t = str(payload.get("type") or "")
+        props = payload.get("properties") if isinstance(payload.get("properties"), dict) else {}
+        sid = str(props.get("sessionID") or "")
+        with self.cond:
+            s = self.sessions.get(sid)
+            if s is None or s.agent != "opencode" or not s.live:
+                return
+            now = self._append(s, {"type": t, "properties": props})
+            before = (s.state, len(s.pending))
+            if t == "session.status":
+                kind = str((props.get("status") or {}).get("type") or "")
+                if kind in ("busy", "retry"):
+                    s.set_state("approval" if s.pending else "working")
+                elif kind == "idle":
+                    s.set_state("approval" if s.pending else "waiting")
+            elif t == "session.idle":
+                s.set_state("approval" if s.pending else "waiting")
+                s.last_result = {"subtype": "success", "is_error": False}
+                if s.turns >= 1 and not s.auto_titled:
+                    s.auto_titled = True
+                    threading.Thread(target=self._auto_title, args=(s,), daemon=True,
+                                     name="auto-title").start()
+            elif t == "session.error":
+                err = props.get("error") if isinstance(props.get("error"), dict) else {}
+                s.last_result = {"subtype": "error", "is_error": True,
+                                 "error": str(err.get("name") or "error")}
+            elif t in ("permission.asked", "question.asked"):
+                rid = str(props.get("id") or "")
+                kind = t.split(".")[0]
+                if rid:
+                    s.pending[rid] = {"request_id": rid, "oc": kind, "at": round(now, 3),
+                                      "request": oc.request_of(kind, props)}
+                    s.set_state("approval")
+            elif t in ("permission.replied", "question.replied", "question.rejected"):
+                s.pending.pop(str(props.get("requestID") or ""), None)
+                if not s.pending and s.state == "approval":
+                    s.set_state("working")
+            if (s.state, len(s.pending)) != before or t in ("session.idle", "session.error"):
+                self._save(s)
+            self.cond.notify_all()
 
     @staticmethod
     def _brief(s: Session) -> dict:

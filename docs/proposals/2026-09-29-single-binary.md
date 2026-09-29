@@ -75,9 +75,21 @@ No, and headless-first is the decision (David, 29 Sep). A headless session is
 `claude -p --input-format stream-json` held by `sessiond` — no terminal, no
 tmux (2026-09-22-headless-sessions.md). tmux is left only where:
 
-- **opencode** runs in a pane on the phone. The way round is its own server,
-  `opencode serve` (HTTP), as a second headless driver beside Claude Code's.
-  Next after this.
+- ~~**opencode** runs in a pane on the phone.~~ **Built 29 Sep 2026:** a
+  headless opencode chat is a session of **one shared `opencode serve`**
+  that sessiond holds (`sessiond_opencode.py`) — one server, not one per
+  chat, because each takes ~480 MB. Its events (`/global/event`) drive the
+  same states; its permission and question requests become the same
+  approval card, and the answer goes back as opencode's `once`/`reject` or
+  question labels; interrupt is `abort`, rename a `PATCH`, the model rides on
+  each prompt. Strict permissions are an opencode ruleset (ask for all but
+  reading). The server is loopback-only with its own password, stops when no
+  chat is attached, and starts again on the next message. The transcript is
+  opencode's database, read as before, and speech is its plugin (the hook
+  finds the chat's workspace in sessiond's record). Tested against real
+  opencode 1.18.33 on a free model — approval, allow, deny, interrupt, park
+  and resume, close — and in CI against a fake server
+  (`tests/test_headless_opencode.py`).
 - **Attaching from a desk** to watch a live session. That stays an optional
   mode through `panes.py` (tmux, herdr; WezTerm's headless mux-server builds
   for Windows — 2026-09-23-cross-platform.md), used when one is installed,

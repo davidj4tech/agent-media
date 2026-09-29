@@ -8,8 +8,9 @@ changes it; `/ask` takes the same two for a new chat (`send.ask`).
 Claude Code only: Codex, pi and Hermes answer `can: {model: false, plan:
 false}` and the app hides the chips. opencode has a model chip too: a new
 chat's sheet is its free models (`new_sheet`, opencode_models.py) and `/ask`
-starts it with `-m`; a running one is switched through its own picker (the
-opencode section below). No plan mode for it.
+starts it with `-m`; a running one in a pane is switched through its own
+picker (the opencode section below), a headless one sends the new model with
+its next prompt (sessiond_opencode.py). No plan mode for it.
 
 How, per driver (driver/):
 
@@ -130,6 +131,15 @@ def state(session: str) -> dict:
     drv = driver.for_session(session)
     if drv.kind == driver.HEADLESS:
         v = drv._get(session)
+        if v.get("agent") == "opencode":
+            # Its model rides on each prompt (sessiond_opencode.py): the one
+            # chosen, else what its last reply ran on. No plan mode.
+            from agent_media_core import opencode_models
+
+            model = str(v.get("model") or "") or opencode_models.current(session)
+            return {"agent": "opencode", "live": bool(v.get("live")), "model": model,
+                    "model_id": model, "plan": False, "driver": driver.HEADLESS,
+                    "can": {"model": True, "plan": False}}
         mid = str(v.get("init_model") or "")
         model = str(v.get("model") or "") or alias_of(mid)
         # What the process last said wins while it runs (approving a plan

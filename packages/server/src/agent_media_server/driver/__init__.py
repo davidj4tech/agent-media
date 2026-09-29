@@ -132,7 +132,7 @@ def for_session(session: str) -> Driver:
 
 def for_new(agent: str = "claude") -> Driver:
     """The driver a fresh chat from the app starts in: headless when the flag
-    is on and the agent has a headless adapter (Claude, for now), else pane."""
+    is on and the agent has a headless adapter (Claude, opencode), else pane."""
     if headless_enabled() and agent in headless_driver().agents:
         return headless_driver()
     return pane_driver()

@@ -42,6 +42,30 @@ def _already_spoken(session: str, message: str) -> bool:
     return False
 
 
+def _headless_workspace(session: str) -> None:
+    """A headless opencode chat runs in the one `opencode serve` sessiond
+    holds for all of them (agent_media_server/sessiond_opencode.py), so the
+    server's environment cannot say whose workspace a reply belongs to, as a
+    `claude -p`'s does. sessiond's record of the session can: its workspace is
+    put where the submitter looks (`MEDIA_SOURCE_WORKSPACE`), for the
+    conversation's own voice and mute. Only under the server's
+    `MEDIA_SOURCE_KIND=headless`."""
+    import json
+    import os
+
+    from .._paths import state_dir
+
+    if os.environ.get("MEDIA_SOURCE_KIND") != "headless" or os.environ.get("MEDIA_SOURCE_WORKSPACE"):
+        return
+    try:
+        rec = json.loads((state_dir() / "sessiond" / f"{session}.json").read_text())
+    except (OSError, ValueError):
+        return
+    workspace = str(rec.get("workspace") or "").strip() if isinstance(rec, dict) else ""
+    if workspace:
+        os.environ["MEDIA_SOURCE_WORKSPACE"] = workspace
+
+
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     if args and args[0] == "event":
@@ -62,6 +86,7 @@ def main(argv: list[str] | None = None) -> int:
     message, text = harnesses.opencode_last_reply(session)
     if not text or _already_spoken(session, message):
         return 0
+    _headless_workspace(session)
     return run(Source.OPENCODE, "OPENCODE", text=text, metadata={"session": session})
 
 

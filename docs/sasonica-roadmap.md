@@ -77,9 +77,11 @@ CI publishes x86_64 and aarch64 to the rolling `server-latest` release, and
 Headless first: no multiplexer needed. agent-media `43281af`,
 `docs/proposals/2026-09-29-single-binary.md`. **The phone installer too**
 (same day): the binary in its Debian, no git, pip, Python or venv, Node only
-for Claude Code; `SASONICA_FROM=source` for the old way. **Next:** a headless
-**opencode** driver through `opencode serve`, so opencode needs no tmux
-either; then Mac and Windows (launchd / a Windows service in `sasonica install`).
+for Claude Code; `SASONICA_FROM=source` for the old way. **And opencode
+headless** (same day): one shared `opencode serve` held by sessiond, the same
+approval cards, interrupt, model chip and park/resume — no tmux for any
+agent the phone starts. **Next:** Mac and Windows (launchd / a Windows
+service in `sasonica install`).
 
 **A welcome, and Just look around** (David, 27 Sep 2026): a fresh install
 opens on Welcome, which says what Sasonica is and offers **Connect to my

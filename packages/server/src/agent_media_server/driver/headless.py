@@ -127,7 +127,8 @@ def approval_of(entry: dict) -> dict:
            "tool_use_id": req.get("tool_use_id") or "",
            "suggestions": req.get("permission_suggestions") or [],
            "at": entry.get("at"), "partial": False,
-           "key": hashlib.sha1(rid.encode()).hexdigest()[:12], "agent": "claude"}
+           "key": hashlib.sha1(rid.encode()).hexdigest()[:12],
+           "agent": "opencode" if entry.get("oc") else "claude"}
     if tool == "AskUserQuestion":
         qs = []
         for q in inp.get("questions") or []:
@@ -190,8 +191,9 @@ class HeadlessDriver:
     kind = HEADLESS
     caps = Caps(interrupt=True, structured_approvals=True, multi_select=True,
                 free_text_answers=True, live_events=True)
-    #: Harnesses with a headless adapter.
-    agents = ("claude",)
+    #: Harnesses with a headless adapter: Claude Code's stream-json, and
+    #: opencode's own server (sessiond_opencode.py).
+    agents = ("claude", "opencode")
 
     # -- ownership and reading --
 
@@ -252,6 +254,14 @@ class HeadlessDriver:
 
         r = call("start", cwd=cwd, text=compose(text, quote), agent=agent, workspace=host,
                  model=model, mode=mode, timeout=30.0)
+        if not r.get("ok") and r.get("code") == "unsupported" and agent != "claude":
+            # A sessiond older than this canvas (it restarts only when its own
+            # code changes, and a restart ends its chats): the chat opens in a
+            # pane, as before it had an adapter for this agent.
+            from . import pane_driver
+
+            return pane_driver().start(agent=agent, cwd=cwd, text=text, host=host,
+                                       flags=flags, quote=quote, model=model, mode=mode)
         if not r.get("ok"):
             return _failed(r, pane=None)
         session = str(r.get("session") or "")
