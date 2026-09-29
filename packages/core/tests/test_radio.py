@@ -362,3 +362,27 @@ def test_the_dj_reads_its_lines(station, monkeypatch):
     finally:
         s._chat = real
     assert lines == ["Eagles - Take It Easy", "The Band - The Weight"] and note == "an easy afternoon"
+
+
+def test_a_load_whose_answer_was_lost_is_not_sent_again(monkeypatch, tmp_path):
+    """The player got the song; the answer timed out. Taken, once."""
+    from agent_media_core.sinks import _mpv_ipc as ipc
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    loads: list = []
+
+    class Sink:
+        def _endpoint(self):
+            return "x"
+
+        def play(self, uri, target, replace=False):
+            loads.append(uri)
+            raise ipc.MpvIpcError("timed out")
+
+    monkeypatch.setattr(radio, "_sink", lambda where: Sink())
+    monkeypatch.setattr(ipc, "get_property", lambda ep, name, **k:
+                        [{"filename": "http://localhost:6616/_XC2mqcMMGQ.mka"}])
+    assert radio._send("sasonica", {"id": "_XC2mqcMMGQ"}) is True
+    assert len(loads) == 1
+    monkeypatch.setattr(ipc, "get_property", lambda ep, name, **k: [])
+    assert radio._send("sasonica", {"id": "_XC2mqcMMGQ"}) is False

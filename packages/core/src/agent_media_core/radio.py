@@ -238,12 +238,29 @@ def _send(where: str, song: dict, replace: bool = False) -> bool:
         took = sink.play(_uri(song["id"]), Target(name=where), replace=replace)
     except Exception as e:  # noqa: BLE001 — a song that will not come is skipped
         log.info("radio: %s did not play: %s", song["id"], e)
-        return False
+        took = False
     # SinkMusicSasonica says False when it could not; the Termux mpv raises.
+    # Over a slow link the load can land and its answer time out: the first
+    # DJ station queued A-Punk three times that way, then forgot it
+    # (29 Sep 2026). The player's own list says whether it was taken.
+    if took is False and _in_player(where, song["id"]):
+        log.info("radio: %s was taken after all", song["id"])
+        took = True
     if took is not False and replace:
         threading.Thread(target=_quiet_other, args=(where,), daemon=True,
                          name="radio-quiet-other").start()
     return took is not False
+
+
+def _in_player(where: str, vid: str) -> bool:
+    """Whether `vid` is in the player's list (a load whose answer was lost)."""
+    from .sinks import _mpv_ipc as ipc
+
+    try:
+        entries = ipc.get_property(_sink(where)._endpoint(), "playlist") or []
+    except (ipc.MpvIpcError, OSError):
+        return False
+    return any(_vid(str((e or {}).get("filename") or "")) == vid for e in entries)
 
 
 def _quiet_other(where: str) -> None:
