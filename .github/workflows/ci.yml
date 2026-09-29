@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -82,3 +83,25 @@ jobs:
 
       - name: Run tests
         run: pytest -q packages/abs-bridge/tests
+
+  server-macos:
+    # The server on a Mac (docs/proposals/2026-09-29-single-binary.md): the
+    # same tests as on Linux, on macOS's own Python.
+    name: pytest (server, macOS)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install core + server + visual + org-paragtd + sasonica + pytest
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e packages/core -e packages/server -e packages/visual -e packages/org-paragtd -e packages/sasonica
+          pip install pytest
+
+      - name: Run tests
+        run: pytest -q packages/server/tests packages/sasonica/tests

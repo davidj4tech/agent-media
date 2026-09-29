@@ -11,9 +11,11 @@ has the binary instead of a checkout:
   2. this host's config when it has none: role `origin`, headless sessions on;
   3. the agents' hooks: Claude Code's settings, opencode's plugin, for those
      installed;
-  4. two systemd --user services, sasonica-canvas (`sasonica serve`) and
-     sasonica-sessiond (`sasonica sessiond`). Not when the host already runs a
-     canvas from a checkout (agent-media-visual-canvas.service), unless --force.
+  4. two services, sasonica-canvas (`sasonica serve`) and sasonica-sessiond
+     (`sasonica sessiond`): systemd --user units on Linux, launchd agents on
+     a Mac (~/Library/LaunchAgents/com.sasonica.*.plist, logs in
+     ~/Library/Logs/sasonica). Not when the host already runs a canvas from a
+     checkout (agent-media-visual-canvas.service), unless --force.
 
 Safe to run again, and run again after replacing the binary: shims point at
 the binary's path, not at a version.
@@ -96,6 +98,57 @@ WantedBy=default.target
 """
 
 
+#: launchd's label for each service (a Mac).
+LABELS = {name: "com.sasonica." + name.removeprefix("sasonica-") for name in UNITS}
+
+
+def launch_agents() -> Path:
+    return Path.home() / "Library" / "LaunchAgents"
+
+
+def plist_text(label: str, binary: str, word: str, bind: str, port: int) -> str:
+    """A launchd agent that runs `sasonica <word>` at login and keeps it up.
+    launchd has no EnvironmentFile: the server reads ~/.config/agent-media.env
+    itself (load_env_file); PATH is set here, as the systemd unit does."""
+    import plistlib
+
+    args = [binary, word] + (["--bind", bind, "--port", str(port)] if word == "serve" else [])
+    home = Path.home()
+    logs = home / "Library" / "Logs" / "sasonica"
+    path = ":".join([str(home / ".local" / "bin"), str(home / ".opencode" / "bin"),
+                     "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"])
+    return plistlib.dumps({
+        "Label": label, "ProgramArguments": args, "RunAtLoad": True, "KeepAlive": True,
+        "EnvironmentVariables": {"PATH": path},
+        "WorkingDirectory": str(home),
+        "StandardOutPath": str(logs / f"{label}.log"),
+        "StandardErrorPath": str(logs / f"{label}.log"),
+    }).decode()
+
+
+def _launchd(binary: str, a) -> int:
+    """The two services as launchd agents in the login session (`gui/<uid>`),
+    replaced if they are there already, so a new binary starts."""
+    domain = f"gui/{os.getuid()}"
+    agents = launch_agents()
+    rc = 0
+    for name, (word, _what) in UNITS.items():
+        label = LABELS[name]
+        plist = agents / f"{label}.plist"
+        print(f"  {plist}")
+        if not a.dry_run:
+            agents.mkdir(parents=True, exist_ok=True)
+            (Path.home() / "Library" / "Logs" / "sasonica").mkdir(parents=True, exist_ok=True)
+            plist.write_text(plist_text(label, binary, word, a.bind, a.port))
+        # bootout fails when it is not loaded; that is fine.
+        if not a.dry_run:
+            subprocess.run(["launchctl", "bootout", f"{domain}/{label}"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        rc = _run(["launchctl", "bootstrap", domain, str(plist)], dry_run=a.dry_run) or rc
+    print("  (they start at login; logs in ~/Library/Logs/sasonica)")
+    return rc
+
+
 def _run(argv: list[str], *, dry_run: bool) -> int:
     print("  $ " + " ".join(argv))
     if dry_run:
@@ -163,6 +216,8 @@ def main(argv: list[str] | None = None) -> int:
     if a.no_services:
         return 0
     print("== Services")
+    if sys.platform == "darwin":
+        return _launchd(binary, a)
     # A container, or an ssh login with no user manager, has systemctl but no
     # --user bus to reach.
     if shutil.which("systemctl") is None or subprocess.run(

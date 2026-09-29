@@ -10,7 +10,8 @@
 #     release (deploy/binary/build.sh), put at ~/.local/bin/sasonica; then
 #     `sasonica install` (shims, config, the agents' hooks, two systemd --user
 #     services) and a pairing QR code for the app;
-#   - a Mac → not yet: says so, and where the manual setup is.
+#   - a Mac (Apple silicon) → the same, as sasonica-macos-aarch64, with
+#     launchd agents for the services.
 #
 # The platform installer is fetched to a file and run from there with the
 # terminal as its stdin (when there is one), not the pipe this came in on.
@@ -33,22 +34,28 @@ case "${PREFIX:-}" in
     ;;
 esac
 
-# Linux: the binary. Its launcher needs glibc (2.31+), not musl.
-linux() {
+sha256() { if command -v sha256sum >/dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi; }
+
+# Linux or a Mac: the binary. On Linux its launcher needs glibc (2.31+), not musl.
+unix() {
+  os=$1
   case "$(uname -m)" in
     x86_64 | amd64) arch=x86_64 ;;
     aarch64 | arm64) arch=aarch64 ;;
     *) echo "Sasonica's server is not built for $(uname -m) yet." >&2; exit 1 ;;
   esac
-  if ldd --version 2>&1 | grep -qi musl; then
+  if [ "$os" = macos ] && [ "$arch" != aarch64 ]; then
+    echo "Sasonica's server is built for Apple silicon Macs only so far." >&2; exit 1
+  fi
+  if [ "$os" = linux ] && ldd --version 2>&1 | grep -qi musl; then
     echo "Sasonica's server needs glibc; this system uses musl (Alpine?)." >&2; exit 1
   fi
   bin="$HOME/.local/bin"
   mkdir -p "$bin"
   printf '\n\033[1m== %s\033[0m\n' "Sasonica's server ($arch)"
-  curl -fL --progress-bar "$BINARY_BASE/sasonica-linux-$arch" -o "$bin/sasonica.new"
-  want=$(curl -fsSL "$BINARY_BASE/SHA256SUMS" | awk -v f="sasonica-linux-$arch" '$2 == f {print $1}')
-  got=$(sha256sum "$bin/sasonica.new" | cut -d' ' -f1)
+  curl -fL --progress-bar "$BINARY_BASE/sasonica-$os-$arch" -o "$bin/sasonica.new"
+  want=$(curl -fsSL "$BINARY_BASE/SHA256SUMS" | awk -v f="sasonica-$os-$arch" '$2 == f {print $1}')
+  got=$(sha256 "$bin/sasonica.new" | cut -d' ' -f1)
   if [ -z "$want" ] || [ "$got" != "$want" ]; then
     rm -f "$bin/sasonica.new"
     echo "install: the download does not match its checksum; nothing was changed." >&2; exit 1
@@ -77,16 +84,10 @@ linux() {
 
 case "$(uname -s 2>/dev/null)" in
   Linux)
-    linux
+    unix linux
     ;;
   Darwin)
-    cat <<'EOF'
-Sasonica's one-line install is for Android and Linux so far.
-
-On a Mac, set up agent-media by hand for now:
-  https://github.com/davidj4tech/agent-media#readme
-EOF
-    exit 1
+    unix macos
     ;;
   *)
     echo "Sasonica does not install on $(uname -s 2>/dev/null || echo this system) yet." >&2

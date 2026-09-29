@@ -18,7 +18,8 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: binary
+  # Per branch: a trial run elsewhere must not cancel main's.
+  group: binary-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -54,8 +55,54 @@ jobs:
           name: sasonica-linux-${{ matrix.arch }}
           path: build/binary/sasonica-linux-${{ matrix.arch }}
 
+  build-macos:
+    # Apple silicon. No container: the launcher is compiled with the runner's
+    # cargo, against the macOS it runs on (and later).
+    name: build (macos aarch64)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build
+        run: deploy/binary/build.sh
+
+      - name: Smoke test
+        run: |
+          b=$PWD/build/binary/sasonica-macos-aarch64
+          export HOME=$(mktemp -d)
+          "$b" version
+          "$b" commands | grep -qx media
+          # The server and the session holder start and answer.
+          "$b" serve --bind 127.0.0.1 --port 18781 >serve.log 2>&1 &
+          "$b" sessiond >sessiond.log 2>&1 &
+          for i in $(seq 1 60); do curl -fsS http://127.0.0.1:18781/healthz >/dev/null && break; sleep 1; done
+          curl -fsS http://127.0.0.1:18781/healthz
+          sleep 2
+          ls "$HOME/.local/state/agent-media/sessiond/sessiond.sock"
+          # install writes launchd agents; lint them, bootstrap nothing.
+          "$b" install --dry-run --no-services
+          python3 - "$b" <<'PY'
+          import plistlib, sys
+          sys.path.insert(0, "packages/sasonica/src")
+          from sasonica import install
+          p = install.plist_text("com.sasonica.canvas", sys.argv[1], "serve", "0.0.0.0", 8781)
+          d = plistlib.loads(p.encode())
+          assert d["ProgramArguments"][1] == "serve" and d["KeepAlive"], d
+          open("canvas.plist", "w").write(p)
+          PY
+          plutil -lint canvas.plist
+          kill %1 %2 || true
+          cat serve.log sessiond.log | tail -20
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sasonica-macos-aarch64
+          path: build/binary/sasonica-macos-aarch64
+
   publish:
-    needs: build
+    needs: [build, build-macos]
+    # Only main's builds are the release; a trial run on a branch is not.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -71,10 +118,10 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           cd out
-          sha256sum sasonica-linux-* >SHA256SUMS
+          sha256sum sasonica-* >SHA256SUMS
           gh release view server-latest >/dev/null 2>&1 ||
             gh release create server-latest --prerelease --target "$GITHUB_SHA" \
               --title "Sasonica server (latest)" \
               --notes "Built from main on every change to the server. Install: curl -fsSL https://sasonica.com/install | bash"
-          gh release upload server-latest sasonica-linux-* SHA256SUMS --clobber
+          gh release upload server-latest sasonica-linux-* sasonica-macos-* SHA256SUMS --clobber
           gh release edit server-latest --notes "Built from main at $GITHUB_SHA. Install: curl -fsSL https://sasonica.com/install | bash"

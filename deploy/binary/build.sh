@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Build Sasonica's server as one file: build/binary/sasonica-linux-<arch>.
+# Build Sasonica's server as one file: build/binary/sasonica-<os>-<arch>
+# (linux or macos; x86_64 or aarch64).
 #
 #   deploy/binary/build.sh            # this machine's architecture
 #
@@ -13,10 +14,10 @@
 # Native only: the Python packages are installed by the Python they will run
 # under, so an arm64 binary is built on arm64 (CI: ubuntu-24.04-arm).
 #
-# The launcher is compiled in Debian bullseye (rust:1-bullseye), so it needs
-# glibc 2.31 or newer: Debian 11+, Ubuntu 20.04+, the phone's Debian proot.
-# With cargo on PATH it is compiled here instead (CI runs this inside that
-# image); without, in podman or docker.
+# On Linux the launcher is compiled in Debian bullseye (rust:1-bullseye), so
+# it needs glibc 2.31 or newer: Debian 11+, Ubuntu 20.04+, the phone's Debian
+# proot. With cargo on PATH it is compiled here instead (CI runs this inside
+# that image); without, in podman or docker. On a Mac, with its own cargo.
 #
 # Settings (environment):
 #   SASONICA_VERSION   the version (default: <UTC date>+<commit>); PyApp keeps
@@ -36,17 +37,22 @@ case $ARCH in
   arm64) ARCH=aarch64 ;;
   *) echo "build: no python-build-standalone for $ARCH" >&2; exit 1 ;;
 esac
+case $(uname -s) in
+  Linux) OS=linux TRIPLE=$ARCH-unknown-linux-gnu ;;
+  Darwin) OS=macos TRIPLE=$ARCH-apple-darwin ;;
+  *) echo "build: not built on $(uname -s)" >&2; exit 1 ;;
+esac
 VERSION=${SASONICA_VERSION:-$(date -u +%Y.%m.%d)+$(git -C "$ROOT" rev-parse --short HEAD)}
 PY_MINOR=${PY_VERSION%.*}
 WORK=$ROOT/build/binary/$ARCH
-OUT=$ROOT/build/binary/sasonica-linux-$ARCH
+OUT=$ROOT/build/binary/sasonica-$OS-$ARCH
 
 step() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 
 rm -rf "$WORK" && mkdir -p "$WORK/dist"
 
-step "Python $PY_VERSION ($ARCH)"
-pbs=cpython-$PY_VERSION+$PBS_TAG-$ARCH-unknown-linux-gnu-install_only_stripped.tar.gz
+step "Python $PY_VERSION ($OS $ARCH)"
+pbs=cpython-$PY_VERSION+$PBS_TAG-$TRIPLE-install_only_stripped.tar.gz
 curl -fsSL "https://github.com/astral-sh/python-build-standalone/releases/download/$PBS_TAG/$pbs" |
   tar -xz -C "$WORK/dist"
 PY=$WORK/dist/python/bin/python3
@@ -70,7 +76,7 @@ for f in "$WORK"/dist/python/bin/*; do
         printf "'''exec' \"\$(dirname -- \"\$(realpath -- \"\$0\")\")/python3\" \"\$0\" \"\$@\"\n"
         printf "' '''\n"
         tail -n +2 "$f"; } >"$f.new"
-      chmod --reference="$f" "$f.new" && mv "$f.new" "$f" ;;
+      chmod 755 "$f.new" && mv "$f.new" "$f" ;;
   esac
 done
 "$PY" -m compileall -q -j 0 "$SITE" >/dev/null || true
@@ -93,15 +99,15 @@ PYAPP_SKIP_INSTALL=1
 PYAPP_EXEC_MODULE=sasonica
 PYAPP_PASS_LOCATION=1
 EOF
-compile='set -a; . /work/pyapp.env; set +a; cd /work/pyapp && cargo build --release -q && cp target/release/pyapp /work/sasonica'
+compile='set -a; . "$W/pyapp.env"; set +a; cd "$W/pyapp" && cargo build --release -q && cp target/release/pyapp "$W/sasonica"'
 if command -v cargo >/dev/null && [ -z "${SASONICA_BUILD_IN_CONTAINER:-}" ]; then
-  # CI: already in rust:1-bullseye. /work is where this build's files are.
-  ln -sfn "$WORK" /work 2>/dev/null || { echo "build: cannot link /work" >&2; exit 1; }
-  bash -c "$compile"
+  # CI (in rust:1-bullseye, or a Mac): compiled where the files are.
+  sed -i.bak "s|^PYAPP_DISTRIBUTION_PATH=.*|PYAPP_DISTRIBUTION_PATH=$WORK/python.tar.gz|" "$WORK/pyapp.env"
+  W=$WORK bash -c "$compile"
 else
   engine=$(command -v podman || command -v docker) || { echo "build: needs cargo, podman or docker" >&2; exit 1; }
   "$engine" run --rm -v "$WORK:/work:Z" -v sasonica-cargo:/usr/local/cargo/registry \
-    docker.io/library/rust:1-bullseye bash -c "$compile"
+    -e W=/work docker.io/library/rust:1-bullseye bash -c "$compile"
 fi
 cp "$WORK/sasonica" "$OUT"
 chmod +x "$OUT"

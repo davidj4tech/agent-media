@@ -44,7 +44,7 @@ def asset() -> str:
             "arm64": "aarch64"}.get(platform.machine().lower(), "")
     if not arch:
         raise SystemExit(f"sasonica update: no build for {platform.machine()}")
-    return f"sasonica-linux-{arch}"
+    return f"sasonica-{'macos' if sys.platform == 'darwin' else 'linux'}-{arch}"
 
 
 def sha256(path: Path) -> str:
@@ -72,18 +72,30 @@ def wanted_sum(sums: str, name: str) -> str:
     return ""
 
 
-def in_use(root: Path) -> set[Path]:
-    """The version directories under `root` a running process executes from
-    (its /proc/<pid>/exe is inside one)."""
-    used = set()
+def _executables() -> list[Path]:
+    """Every running process's executable: /proc on Linux, `ps` where there
+    is none (a Mac, whose `comm` is the full path)."""
     proc = Path("/proc")
-    for d in proc.iterdir() if proc.is_dir() else []:
-        if not d.name.isdigit():
-            continue
-        try:
-            exe = Path(os.readlink(d / "exe"))
-        except OSError:
-            continue
+    if proc.is_dir():
+        out = []
+        for d in proc.iterdir():
+            if d.name.isdigit():
+                try:
+                    out.append(Path(os.readlink(d / "exe")))
+                except OSError:
+                    pass
+        return out
+    try:
+        ps = subprocess.run(["ps", "-axo", "comm="], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [Path(line.strip()) for line in ps.stdout.splitlines() if line.strip().startswith("/")]
+
+
+def in_use(root: Path) -> set[Path]:
+    """The version directories under `root` a running process executes from."""
+    used = set()
+    for exe in _executables():
         try:
             rel = exe.relative_to(root)
         except ValueError:
@@ -124,9 +136,29 @@ def _live_chats() -> int:
     return sum(1 for s in r.get("sessions") or [] if s.get("live")) if r.get("ok") else 0
 
 
+def _restart_launchd(force_sessiond: bool) -> None:
+    """A Mac's two launchd agents (install.LABELS), the session holder only
+    with no chat live in it, as on Linux."""
+    from sasonica.install import LABELS
+
+    domain = f"gui/{os.getuid()}"
+    labels = [LABELS["sasonica-canvas"]]
+    live = _live_chats()
+    if live and not force_sessiond:
+        print(f"  the session holder has {live} live chat(s): left on the old version until "
+              "you run `sasonica update --restart-sessiond` (that ends them)")
+    else:
+        labels.append(LABELS["sasonica-sessiond"])
+    for label in labels:
+        subprocess.run(["launchctl", "kickstart", "-k", f"{domain}/{label}"])
+    print("  restarted " + ", ".join(labels))
+
+
 def pyapp_root() -> Path:
-    """Where PyApp unpacks this binary's versions (its default, or
-    PYAPP_INSTALL_DIR_SASONICA's parent layout)."""
+    """Where PyApp unpacks this binary's versions: its platform's data
+    directory (the `directories` crate's)."""
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "pyapp" / "sasonica"
     data = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
     return data / "pyapp" / "sasonica"
 
@@ -182,19 +214,22 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  now {out.stdout.strip() or 'installed'}")
 
     print("== Services")
-    if not _systemd():
+    if sys.platform == "darwin":
+        _restart_launchd(a.restart_sessiond)
+    elif not _systemd():
         print("  no systemd --user here: restart the server and the session holder yourself "
               "(on the phone: sv restart sasonica-canvas sasonica-sessiond, in Termux)")
         return 0
-    units = [CANVAS]
-    live = _live_chats()
-    if live and not a.restart_sessiond:
-        print(f"  the session holder has {live} live chat(s): left on the old version until "
-              "you run `sasonica update --restart-sessiond` (that ends them)")
     else:
-        units.append(SESSIOND)
-    subprocess.run(["systemctl", "--user", "restart", *units])
-    print("  restarted " + ", ".join(u.removesuffix(".service") for u in units))
+        units = [CANVAS]
+        live = _live_chats()
+        if live and not a.restart_sessiond:
+            print(f"  the session holder has {live} live chat(s): left on the old version until "
+                  "you run `sasonica update --restart-sessiond` (that ends them)")
+        else:
+            units.append(SESSIOND)
+        subprocess.run(["systemctl", "--user", "restart", *units])
+        print("  restarted " + ", ".join(u.removesuffix(".service") for u in units))
 
     print("== Old versions")
     # The newest unpacked is the one just installed, whatever runs it yet.
