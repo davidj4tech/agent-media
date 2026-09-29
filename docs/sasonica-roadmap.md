@@ -641,7 +641,7 @@ ahead.
    screen and the pocket; then the queue (step 2), then search. Sketch and
    order:
    [proposals/2026-09-28-music-tab.md](proposals/2026-09-28-music-tab.md).
-9. **Hands-free: hold the mic** (David, 28 Sep 2026) — holding the mic key
+9. **Hands-free: hold the mic** (David, 28 Sep 2026) — **First version built 29 Sep 2026** (sasonica-app `881dd91`, agent-media voice mode): the hold, the in-app listener with a chime, the countdown, sends marked `voice` (short spoken answers via the prompt hook, `voice_mode.py`), the next listen after the reply finishes speaking, two silences / "stop" / the bar's Stop end it, "cancel" listens again. Still to come: barge-in (speaking over a reply), "new chat" by voice, the headset button, and a spoken yes wait enforced by the app rather than only asked of the agent. The original plan: holding the mic key
    (as Send is held for New chat) turns on a conversation loop: after each
    reply the mic listens again, then the dictated words send after the
    3 s countdown (the mic key's since 28 Sep), so a misheard word can still
