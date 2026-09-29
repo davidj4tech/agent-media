@@ -79,11 +79,16 @@ _last_fetch_try = 0.0
 #: The Google voice a Microsoft-voiced clip falls back to on the phone.
 FALLBACK_VOICE = "en-au-x-aua-network"
 
-#: Characters per second of Google's voices at 1.0, measured on p8a
-#: (26 Sep 2026: 14.2-16.0 across three sentences). An estimate only — the
-#: measured starts (clip_starts_s) take over as each sentence plays.
-CHARS_PER_S = 15.0
-LEAD_S = 0.2
+#: A sentence takes LEAD_S + its characters / CHARS_PER_S, start to start.
+#: Fitted to 1207 measured sentence starts on p8a (29 Sep 2026, Molly):
+#: 1.23 s + len/15.7. The rate had been right all along (15, from Google's
+#: voices on 26 Sep); the step between clips had been taken for 0.2 s, so
+#: every sentence still to come was predicted a second early and the bold
+#: ran ahead of the voice at each one (David: "follow along is still a
+#: little bit off"). An estimate only — the measured starts (clip_starts_s)
+#: take over as each sentence plays.
+CHARS_PER_S = 15.7
+LEAD_S = 1.2
 
 
 def _edge_voice(raw: dict) -> Optional[dict]:

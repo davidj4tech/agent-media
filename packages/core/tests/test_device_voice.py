@@ -30,7 +30,7 @@ def test_the_clip_is_the_sentence_and_its_length_an_estimate(tmp_path):
     assert clip.read_text() == "It's done."
     assert device_voice.is_clip(clip)
     # 10 characters at 15/s, plus the lead in.
-    assert abs(device_voice.estimate_duration(clip) - (0.2 + 10 / 15)) < 1e-9
+    assert abs(device_voice.estimate_duration(clip) - (device_voice.LEAD_S + 10 / device_voice.CHARS_PER_S)) < 1e-9
 
 
 def test_the_player_is_handed_the_words(tmp_path, monkeypatch):
