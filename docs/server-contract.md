@@ -3159,7 +3159,8 @@ it (`{"ok", "username", "email", "picture", "edit"}`), and changes to it —
 app sends a small JPEG), `remove_picture`, `email {email}` (a confirmation
 link to the new address; nothing changes until it is used; the old address
 then gets an undo link), `password {current, password}`, `password_link`
-(the issuer's set-password email). Passed to the issuer's `/api/account`
+(the issuer's set-password email), `delete` (an emailed link that deletes
+the account after a button press; refused for the site owner, `site_owner`). Passed to the issuer's `/api/account`
 with the account's own access token, got through the refresh token kept at
 sign-in (one refresh at a time, the access token reused while it lasts);
 the issuer's answer and status come back as they are, and the device row
