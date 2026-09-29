@@ -136,7 +136,7 @@ The app routes: `/conversation`, `/conversation/log`, `/conversations`,
 `/session/close`, `/session/answer`, `/session/stop`, `/draft`, `/speech/now`, `/speech/ctl`,
 `/sessions/state`, `/commands`, `/rename`, `/harnesses`, `/harnesses/run`,
 `/harnesses/screen`, `/harnesses/keys`, `/harnesses/apikey` (28 Sep 2026), `/harnesses/close`,
-`/harnesses/logout`, `/harnesses/updates` (23 Sep 2026), `/share`, `/upload` (25 Sep 2026),
+`/harnesses/logout`, `/harnesses/updates` (23 Sep 2026), `/share`, `/upload` (25 Sep 2026; its GET 29 Sep 2026),
 `/search` (23 Sep 2026), and (22 Sep 2026) `/threads/{session}/events` — matched as a pattern, not
 listed (`app.cors_path`), so its preflight and its answers, refusals
 included, carry the same headers.
@@ -2864,6 +2864,22 @@ Content-Length: 48213
   before a byte is read.
 - Refusals: 401/403 as `/reply` · 411 no `Content-Length` (or an empty file) ·
   413 over the limit · 400 a body that ended short (nothing is kept).
+
+#### `GET /upload?path=<its path>` — the file back (29 Sep 2026)
+
+```
+Authorization: Bearer <device token>
+→ 200, the file's bytes; Content-Type from its name (image/png, …;
+  application/octet-stream when unknown), Cache-Control: private, max-age=86400
+```
+
+- What the app's file chips draw a photo from, in the reply box and in the
+  thread: the `Shared file:` lines stay in the words, and the app shows each
+  as a chip (a thumbnail, or the file's name) instead of the line.
+- Only a file under the upload root: the path is resolved, symlinks included,
+  before it is checked. Outside it, a folder, a `.part` still being written
+  or a file that is not there is the same 404. 401/403 as `/reply`.
+- Streamed a chunk at a time; open cross-origin like the POST.
 
 ### 6.19 Take back your last message — gated (built 27 Sep 2026)
 

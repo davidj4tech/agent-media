@@ -9,11 +9,17 @@ moves it), never over another: a second `photo.jpg` that day is `photo-2.jpg`.
 The body is streamed to disk, never held in memory, and only after the
 bearer has been checked: the 64 KiB cap on every other route (#139) is lifted
 for this one path, to MEDIA_UPLOAD_MAX_MB (512 by default).
+
+`GET /upload?path=` hands one back, so the app can draw a shared photo as a
+thumbnail in the reply box and in the thread. Only a file under the upload
+root is served — the path is resolved, symlinks and all, before it is checked
+— and anything else is a 404, the same answer as a file that is not there.
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import mimetypes
 import os
 import re
 from pathlib import Path
@@ -98,3 +104,26 @@ def save(body: BinaryIO, length: int, name: str, bearer: str,
         part.unlink(missing_ok=True)
         return False, {"error": str(e), "status": 400}
     return True, {"path": str(final), "name": final.name, "size": length}
+
+
+def find(path: str, bearer: str) -> tuple[bool, dict]:
+    """The shared file at `path`, if it is one: its resolved path, size and
+    Content-Type. Anything outside the upload root, a folder, a `.part`
+    still being written, or a file that is not there is the same 404."""
+    user, err = auth.gate(bearer)
+    if not user:
+        return False, err
+    missing = {"error": "no such shared file", "status": 404}
+    if not path or "\x00" in path:
+        return False, missing
+    try:
+        top = root().resolve()
+        p = Path(os.path.expanduser(path)).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False, missing
+    if not p.is_relative_to(top) or p == top or not p.is_file() or p.name.startswith("."):
+        return False, missing
+    ctype = mimetypes.guess_type(p.name)[0] or "application/octet-stream"
+    if ctype.startswith("text/"):
+        ctype += "; charset=utf-8"
+    return True, {"file": p, "size": p.stat().st_size, "type": ctype}

@@ -123,6 +123,8 @@ device gets its token):
   POST /upload?name=<file name>  (the file as the raw body) → keep a file
                   shared to the app on the host; answers its {"path", "name",
                   "size"} (uploads.py)
+  GET  /upload?path=<its path>  → that file back, as itself (a thumbnail in
+                  the reply box and the thread); only under the upload root
   GET  /speech/now   → what is being said, named for the speech bar
   POST /speech/ctl   {"action", "arg"?, "sentence"?, "session"?} → a
                   listener's speech verb (goto-sentence / replay-id from a
@@ -307,6 +309,27 @@ def _send(h: BaseHTTPRequestHandler, code: int, body: bytes, ctype: str) -> None
     _cors(h)
     h.end_headers()
     h.wfile.write(body)
+
+
+def _send_file(h: BaseHTTPRequestHandler, file, size: int, ctype: str) -> None:
+    """A file as the answer, read and written a chunk at a time — a shared
+    video is not held in memory. It never changes once kept, so the caller
+    may keep it for a day; `private`, as it came with a bearer."""
+    h.send_response(200)
+    h.send_header("Content-Type", ctype)
+    h.send_header("Content-Length", str(size))
+    h.send_header("Cache-Control", "private, max-age=86400")
+    h.send_header("X-Content-Type-Options", "nosniff")
+    _cors(h)
+    h.end_headers()
+    left = size
+    with open(file, "rb") as f:
+        while left > 0:
+            chunk = f.read(min(uploads.CHUNK, left))
+            if not chunk:
+                break
+            h.wfile.write(chunk)
+            left -= len(chunk)
 
 
 def _json(h: BaseHTTPRequestHandler, code: int, obj: dict) -> None:
@@ -602,6 +625,14 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
     elif path == "/sessions/state":
         ok, detail = sessions.session_states(_bearer(h))
         _json(h, 200 if ok else detail.pop("status", 403), {"ok": ok, **detail})
+    elif path == "/upload":
+        # A file shared earlier, back as itself: the app's chip draws a
+        # photo from it. Only under the upload root (uploads.find).
+        ok, detail = uploads.find((parse_qs(query).get("path") or [""])[0], _bearer(h))
+        if not ok:
+            _json(h, detail.pop("status", 404), {"ok": False, **detail})
+            return True
+        _send_file(h, detail["file"], detail["size"], detail["type"])
     elif path == "/draft":
         # What the app's reply box was left holding for this session.
         ok, detail = drafts.draft_read((parse_qs(query).get("session") or [""])[0], _bearer(h))

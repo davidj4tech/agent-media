@@ -96,3 +96,46 @@ def test_the_route_takes_more_than_the_json_cap(server, shared):
 def test_the_route_refuses_a_stranger(server):
     status, got = _post(server, "/upload?name=a.txt", b"hello", bearer="bad")
     assert status == 401 and got["ok"] is False
+
+
+def _get(addr, path, bearer="good"):
+    conn = http.client.HTTPConnection(*addr, timeout=5)
+    conn.request("GET", path, headers={"Authorization": f"Bearer {bearer}"})
+    res = conn.getresponse()
+    out = res.status, dict(res.getheaders()), res.read()
+    conn.close()
+    return out
+
+
+def test_a_shared_file_comes_back_as_itself(server, shared):
+    from urllib.parse import quote
+
+    png = b"\x89PNG\r\n\x1a\n" + b"p" * (uploads.CHUNK + 5)
+    _, got = _post(server, "/upload?name=shot.png", png)
+    status, headers, body = _get(server, "/upload?path=" + quote(got["path"]))
+    assert status == 200 and body == png
+    assert headers["Content-Type"] == "image/png"
+    assert headers["Content-Length"] == str(len(png))
+    assert headers["Access-Control-Allow-Origin"] == "*"
+    _, got = _post(server, "/upload?name=notes.txt", b"hi")
+    status, headers, _ = _get(server, "/upload?path=" + quote(got["path"]))
+    assert headers["Content-Type"] == "text/plain; charset=utf-8"
+    _, got = _post(server, "/upload?name=blob", b"hi")
+    assert _get(server, "/upload?path=" + quote(got["path"]))[1]["Content-Type"] == "application/octet-stream"
+    assert _get(server, "/upload?path=" + quote(got["path"]), bearer="bad")[0] == 401
+
+
+def test_nothing_outside_the_shared_folder(server, shared, tmp_path):
+    from urllib.parse import quote
+
+    secret = tmp_path / "secret.txt"
+    secret.write_text("no")
+    day = shared / "2026-09-25"
+    day.mkdir(parents=True)
+    (day / "link.txt").symlink_to(secret)
+    (day / ".x.jpg.part").write_bytes(b"half")
+    for path in (str(secret), str(day / ".." / ".." / "secret.txt"), str(day / "link.txt"),
+                 str(day), str(shared), str(day / "gone.jpg"), str(day / ".x.jpg.part"), ""):
+        status, _, body = _get(server, "/upload?path=" + quote(path))
+        assert status == 404, path
+        assert json.loads(body)["ok"] is False
