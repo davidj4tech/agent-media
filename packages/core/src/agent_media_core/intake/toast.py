@@ -139,7 +139,7 @@ def remember(event: Event, ask: bool = False, *, key: str = "",
     path = _pending_dir() / f"{time.time_ns()}.json"
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(record))
-    tmp.rename(path)
+    tmp.replace(path)  # rename refuses an existing file on Windows
     log.info("toast: held a %s from %s", "question" if ask else "reply", record["where"])
     show(record["where"])
     event.metadata["held"] = True

@@ -49,7 +49,7 @@ def publish(sessions: dict[str, int]) -> None:
         tmp = path.with_suffix(f".{os.getpid()}.tmp")
         tmp.write_text(json.dumps({"pid": os.getpid(),
                                    "sessions": {s: n for s, n in sessions.items() if n}}))
-        tmp.rename(path)
+        tmp.replace(path)  # rename refuses an existing file on Windows
     except OSError:
         pass
 
@@ -93,7 +93,7 @@ def pocket(session: str, on: bool) -> float:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(f".{os.getpid()}.tmp")
     tmp.write_text(json.dumps(leases))
-    tmp.rename(path)
+    tmp.replace(path)  # rename refuses an existing file on Windows
     return until
 
 
