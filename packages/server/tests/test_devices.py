@@ -292,7 +292,8 @@ def test_the_store_has_no_token_and_is_owner_only(server, device):
                         "enrol"}
     assert row["last_ip"] == "127.0.0.1"
     for p in (devices.devices_path(), devices.codes_path()):
-        assert stat.S_IMODE(os.stat(p).st_mode) == 0o600, p
+        if os.name != "nt":      # Windows has ACLs, not modes: the profile is private
+            assert stat.S_IMODE(os.stat(p).st_mode) == 0o600, p
     # No temp files left beside it.
     assert sorted(x.name for x in devices.devices_path().parent.iterdir()
                   if x.name.startswith(".")) == []

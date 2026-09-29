@@ -44,10 +44,12 @@ def asker(monkeypatch):
     return opened
 
 
+@pytest.mark.skipif(os.name == "nt", reason="the desk's tmux layout: not on Windows, whose chats are headless")
 def test_default_ask_target_is_home_in_sasonica_without_amux(default_desk):
     assert send.ask_target() == ("sasonica", str(default_desk / "home"), [])
 
 
+@pytest.mark.skipif(os.name == "nt", reason="the desk's tmux layout: not on Windows, whose chats are headless")
 def test_default_fresh_chat_opens_a_window_in_sasonica(default_desk, asker):
     ok, detail = send.ask("hi", "tok")
     assert ok and detail["tmux"] == "sasonica"
@@ -161,6 +163,7 @@ def test_davids_headless_chat_keeps_the_tmux_name(tmp_path, monkeypatch):
     assert hl.started[-1]["host"] == "amux-scratch"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="the desk's tmux layout: not on Windows, whose chats are headless")
 def test_davids_project_from_claude_history_when_nothing_is_shelved(tmp_path, monkeypatch):
     # The shelf is empty since the Conversations library came out: Claude's
     # own transcripts name the places, and a project's own directory beats a

@@ -185,7 +185,10 @@ def test_a_bang_runs_here_and_sends_its_output_in(host):
         return next((m for m in transcript.messages(sid)[0] if m.get("shell")), None)
 
     wait_for(shell_msg)
-    assert shell_msg()["shell"] == {"command": "pwd", "stdout": str(host.work), "stderr": ""}
+    if os.name == "nt":      # Git Bash's pwd is /d/…, not D:\…
+        assert shell_msg()["shell"]["command"] == "pwd" and shell_msg()["shell"]["stdout"]
+    else:
+        assert shell_msg()["shell"] == {"command": "pwd", "stdout": str(host.work), "stderr": ""}
     assert shell_msg()["parts"][0]["text"] == "!pwd"
 
 
@@ -477,6 +480,7 @@ def test_a_restart_with_a_pending_approval_loses_it_explicitly(host):
         sessiond.stop(srv2)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows ends orphans by pid (the test below)")
 def test_a_crashed_instance_leaves_pending_requests_lost_and_orphans_are_ended(host, tmp_path):
     sid = "5751a7c1-bd97-4c75-888c-440aad61bfd2"
     root = sessiond.state_root()
@@ -558,6 +562,7 @@ def test_an_unknown_profile_is_strict(monkeypatch):
 
 # --- the socket --------------------------------------------------------------------------
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows has ACLs, not modes")
 def test_the_socket_is_private(host):
     assert (host.sock.stat().st_mode & 0o777) == 0o600
     assert hd.call("ping")["ok"] is True
@@ -964,7 +969,8 @@ def test_over_tcp_a_request_without_the_token_is_refused(monkeypatch, tmp_path):
     srv, _t = sessiond.serve(addr_file, sessiond.Supervisor(root=tmp_path / "sd"), tick=3600)
     try:
         addr = json.loads(addr_file.read_text())
-        assert oct(addr_file.stat().st_mode & 0o777) == "0o600"
+        if os.name != "nt":      # Windows has ACLs, not modes
+            assert oct(addr_file.stat().st_mode & 0o777) == "0o600"
         for token in ("", "wrong"):
             with _socket.create_connection(("127.0.0.1", addr["port"]), 5) as s:
                 s.sendall((json.dumps({"op": "list", "token": token}) + "\n").encode())
@@ -974,3 +980,30 @@ def test_over_tcp_a_request_without_the_token_is_refused(monkeypatch, tmp_path):
     finally:
         sessiond.stop(srv)
     assert not addr_file.exists()
+
+
+def test_on_windows_an_orphan_is_ended_by_its_recorded_pid_only_while_an_agent(
+        host, monkeypatch):
+    """No other process's environment to read there: the pid the record kept,
+    and only while that pid is still an agent's program."""
+    from agent_media_core import procinfo
+
+    monkeypatch.setenv("MEDIA_SESSIOND_ORPHANS_BY_PID", "1")   # Windows's path, here
+    root = sessiond.state_root()
+    root.mkdir(parents=True, exist_ok=True)
+    agent = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    names = {agent.pid: "claude.exe", other.pid: "notepad.exe"}
+    monkeypatch.setattr(procinfo, "image", lambda pid: names.get(pid, ""))
+    for sid, pid in (("5751a7c1-bd97-4c75-888c-440aad61bfd3", agent.pid),
+                     ("5751a7c1-bd97-4c75-888c-440aad61bfd4", other.pid)):
+        (root / f"{sid}.json").write_text(json.dumps(
+            {"session": sid, "cwd": str(host.work), "state": "working", "pid": pid}))
+    try:
+        sessiond.Supervisor().load()
+        agent.wait(5)
+        assert other.poll() is None          # a reused pid is someone else's
+    finally:
+        for p in (agent, other):
+            if p.poll() is None:
+                p.kill()

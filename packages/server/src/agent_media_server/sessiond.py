@@ -408,6 +408,22 @@ class Supervisor:
         from .sessiond_opencode import HOST_MARK
 
         me = os.getpid()
+        if os.name == "nt" or os.environ.get("MEDIA_SESSIOND_ORPHANS_BY_PID"):
+            # No other process's environment to read: the pid each record
+            # kept, ended only while it is still an agent (a reused pid is
+            # someone else's program).
+            for rec in records(self.root):
+                pid = rec.get("pid")
+                if rec.get("session") in ours and isinstance(pid, int) and pid != me:
+                    name = procinfo.image(pid)
+                    if any(a in name for a in ("claude", "opencode", "node")):
+                        log.warning("sessiond: ending orphan %s (%s) for %s", pid, name,
+                                    str(rec["session"])[:8])
+                        try:
+                            os.kill(pid, signal.SIGTERM)
+                        except OSError:
+                            pass
+            return
         for pid, env in procinfo.environs().items():
             if pid == me:
                 continue

@@ -148,7 +148,7 @@ def test_config_names_the_agenda_files(org, tmp_path, monkeypatch):
     (org / "projects" / "house.org").write_text(
         "#+title: House\n* TODO Paint\n  SCHEDULED: <2026-09-24 Thu>\n")
     (tmp_path / "no-config.toml").write_text(
-        f'[org]\nagenda_files = ["work.org", "projects", "{tmp_path}/elsewhere.org"]\n')
+        f'[org]\nagenda_files = ["work.org", "projects", "{tmp_path.as_posix()}/elsewhere.org"]\n')
     (tmp_path / "elsewhere.org").write_text("* TODO outside\n")
     views = _views(org)
     assert [v for v in views if views[v]["kind"] == "file"] == ["work", "projects-house"]

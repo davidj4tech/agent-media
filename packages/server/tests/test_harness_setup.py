@@ -1,5 +1,6 @@
 """Installing an agent, and signing into it, from the app."""
 
+import os
 import pytest
 
 from agent_media_core import harnesses
@@ -280,6 +281,7 @@ def test_the_network_is_asked_once_an_hour_unless_told_otherwise(monkeypatch):
 
 # --- this machine's wiring (roadmap item 3) -------------------------------------
 
+@pytest.mark.skipif(os.name == "nt", reason="tmux panes: not on Windows, whose chats are headless")
 def test_wiring_is_media_setup_status(monkeypatch, tmp_path):
     exe = tmp_path / "media-setup"
     exe.write_text("#!/bin/sh\necho '{\"rows\": [{\"name\": \"mail\", \"state\": \"missing\"}]}'\n")
@@ -369,6 +371,7 @@ def profiles(tmp_path, monkeypatch):
     return hp
 
 
+@pytest.mark.skipif(os.name == "nt", reason="tmux panes: not on Windows, whose chats are headless")
 def test_a_profile_is_its_own_row_with_its_own_sign_in(monkeypatch, profiles):
     monkeypatch.setattr(harnesses, "program", lambda name: "/x/" + name)
     monkeypatch.setattr(harnesses, "version_of", lambda name, **k: "1.0")
@@ -390,6 +393,7 @@ def test_a_profile_is_its_own_row_with_its_own_sign_in(monkeypatch, profiles):
     assert hermes[0]["profiles"] is False, "Hermes keeps its own profiles"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="tmux panes: not on Windows, whose chats are headless")
 def test_sign_in_runs_in_the_profiles_directory(monkeypatch, profiles):
     monkeypatch.setattr(harnesses, "program", lambda name: "/x/" + name)
     seen = []
@@ -410,6 +414,7 @@ def test_profiles_can_be_removed_and_hermes_cannot_have_one(monkeypatch, profile
     assert agents.remove_profile("pi", "home", False, "bearer")[1]["status"] == 404
 
 
+@pytest.mark.skipif(os.name == "nt", reason="tmux panes: not on Windows, whose chats are headless")
 def test_a_chat_in_a_profile_opens_with_its_directory(monkeypatch, profiles):
     from agent_media_server import send
     p = profiles.create("codex", "work")

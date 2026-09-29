@@ -93,13 +93,16 @@ def review(rel: str, action: str, bearer: str) -> tuple[bool, dict]:
                 return False, {"error": "it is not a draft (already kept?)", "status": 409}
             title_m = re.search(r"^#\+title:[ \t]*(.*)$", text, re.M | re.I)
             title = title_m.group(1).strip() if title_m else p.stem
-            if action == "discard":
-                p.unlink()
-                return True, {"path": _rel(p), "action": action, "title": title}
-            f.seek(0)
-            f.truncate()
-            f.write(promote_text(text))
-            f.flush()
+            discard = action == "discard"
+            if not discard:
+                f.seek(0)
+                f.truncate()
+                f.write(promote_text(text))
+                f.flush()
+        if discard:
+            # Closed first: Windows will not delete a file that is open.
+            p.unlink()
+            return True, {"path": _rel(p), "action": action, "title": title}
         new = p.with_name(kept_name(p.name))
         if new != p and not new.exists():
             p.rename(new)

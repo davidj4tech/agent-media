@@ -28,6 +28,7 @@ the way it finds a real one. Every start is logged as one JSON line to
 from __future__ import annotations
 
 import json
+import re
 import os
 import queue
 import signal
@@ -63,7 +64,8 @@ def now_iso() -> str:
 
 def transcript_path() -> str:
     base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
-    slug = CWD.replace("/", "-").replace(".", "-")
+    # As Claude Code names it on every platform (agent_media_server/moves.py).
+    slug = re.sub(r"[^A-Za-z0-9]", "-", CWD)
     d = os.path.join(base, "projects", slug)
     os.makedirs(d, exist_ok=True)
     return os.path.join(d, f"{SESSION}.jsonl")

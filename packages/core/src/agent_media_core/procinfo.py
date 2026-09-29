@@ -94,6 +94,24 @@ def environs() -> dict[int, dict[str, str]]:
     return out
 
 
+def image(pid: int) -> str:
+    """The process's executable name, lower-case ("claude.exe"); "" when it is
+    not running or cannot be read. Windows only needs it (`tasklist`); other
+    systems answer from `processes`."""
+    if os.name != "nt":
+        for p, argv in processes():
+            if p == pid and argv:
+                return os.path.basename(argv[0]).lower()
+        return ""
+    try:
+        out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                             capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    line = out.strip().splitlines()[0] if out.strip() else ""
+    return line.split('","')[0].strip('"').lower() if line.startswith('"') else ""
+
+
 def cwd(pid: int) -> str:
     """The process's working directory, resolved; "" when it cannot be read."""
     if has_proc():
