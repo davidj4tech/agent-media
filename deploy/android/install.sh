@@ -16,8 +16,9 @@
 #
 # What it does:
 #   1. Termux: proot-distro, termux-services; Debian inside it;
-#   2. Debian: Python, git, tmux, Node; agent-media cloned to
-#      ~/projects/agent-media in a venv; opencode (free models, no sign-in);
+#   2. Debian: tmux (Node too when Claude Code is chosen); Sasonica's server as one file (the server-latest
+#      release, deploy/binary/build.sh) at ~/.local/bin/sasonica, checked
+#      against its SHA256SUMS; opencode (free models, no sign-in);
 #   3. this host's config: role `origin`, headless sessions on;
 #   4. two Termux runit services that start the canvas (loopback :8781) and
 #      the session holder inside Debian; a wake lock; Termux open to the
@@ -25,13 +26,19 @@
 #   5. the Sasonica app, from sasonica.com/app, when it is not installed;
 #   6. a pairing code, handed to the app as a sasonica://pair link.
 #
-# Safe to run again: it pulls, reinstalls and re-pairs, and never overwrites
-# a config it finds.
+# Safe to run again: it fetches the latest binary, reinstalls and re-pairs,
+# and never overwrites a config it finds.
 #
 # Settings (environment):
-#   AGENT_MEDIA_REPO  git URL (default: the public repo)
-#   AGENT_MEDIA_REF   branch (default: main)
-#   AGENT_MEDIA_SRC   a tarball of a checkout to install instead (tests)
+#   SASONICA_FROM     binary (default) | source: a git checkout in a venv at
+#                     ~/projects/agent-media, as before the binary (for
+#                     working on the server on the phone)
+#   SASONICA_BINARY_BASE  where the binary is (default: the server-latest
+#                     release; tests: a file:// directory)
+#   SASONICA_INSTALL_BASE where sasonica-adb is fetched from (default: main)
+#   AGENT_MEDIA_REPO  git URL, source only (default: the public repo)
+#   AGENT_MEDIA_REF   branch, source only (default: main)
+#   AGENT_MEDIA_SRC   a tarball of a checkout to install instead (source; tests)
 #   SASONICA_DISTRO   the proot-distro alias (default: debian)
 #   SASONICA_DEVICE   the name the app is paired as (default: the device's
 #                     model, as Android names it, e.g. "Pixel 8a")
@@ -39,6 +46,9 @@
 #                     also: claude)
 set -euo pipefail
 
+FROM=${SASONICA_FROM:-binary}
+BINARY_BASE=${SASONICA_BINARY_BASE:-https://github.com/davidj4tech/agent-media/releases/download/server-latest}
+INSTALL_BASE=${SASONICA_INSTALL_BASE:-https://raw.githubusercontent.com/davidj4tech/agent-media/main/deploy}
 REPO=${AGENT_MEDIA_REPO:-https://github.com/davidj4tech/agent-media.git}
 REF=${AGENT_MEDIA_REF:-main}
 DISTRO=${SASONICA_DISTRO:-debian}
@@ -57,6 +67,10 @@ case "${PREFIX:-}" in
   /data/data/com.termux/*) ;;
   *) die "run this in Termux (PREFIX is '${PREFIX:-unset}')." ;;
 esac
+case $FROM in binary | source) ;; *) die "SASONICA_FROM is binary or source, not '$FROM'." ;; esac
+# Where the server's commands are inside Debian: the binary's shims, or the
+# checkout's venv.
+if [ "$FROM" = binary ]; then SBIN='~/.local/bin'; else SBIN='~/projects/agent-media/.venv/bin'; fi
 
 step "Termux packages"
 yes | pkg update >/dev/null 2>&1 || true
@@ -68,9 +82,28 @@ if [ ! -d "$PREFIX/var/lib/proot-distro/installed-rootfs/$DISTRO" ]; then
 fi
 in_debian 'export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq >/dev/null
-  apt-get install -y -qq python3-venv git curl unzip tmux nodejs npm ca-certificates >/dev/null'
+  pkgs="curl unzip tmux ca-certificates"
+  [ '"$FROM"' = source ] && pkgs="$pkgs python3-venv git"
+  # Node only for Claude Code (npm installs it); opencode brings its own runtime.
+  case " '"$AGENTS"' " in *" claude "*) pkgs="$pkgs nodejs npm" ;; esac
+  apt-get install -y -qq $pkgs >/dev/null'
 
-step "agent-media"
+if [ "$FROM" = binary ]; then
+step "Sasonica's server"
+# Debian's own architecture (arm64 on a phone), into its ~/.local/bin; a
+# rename, so a running server keeps the file it started from.
+in_debian "set -e; mkdir -p ~/.local/bin
+  case \$(uname -m) in aarch64 | arm64) arch=aarch64 ;; x86_64) arch=x86_64 ;;
+    *) echo \"no Sasonica server for \$(uname -m)\" >&2; exit 1 ;; esac
+  curl -fsSL '$BINARY_BASE/sasonica-linux-'\$arch -o ~/.local/bin/sasonica.new
+  want=\$(curl -fsSL '$BINARY_BASE/SHA256SUMS' | awk -v f=sasonica-linux-\$arch '\$2 == f {print \$1}')
+  got=\$(sha256sum ~/.local/bin/sasonica.new | cut -d' ' -f1)
+  if [ -z \"\$want\" ] || [ \"\$got\" != \"\$want\" ]; then
+    rm -f ~/.local/bin/sasonica.new; echo 'the download does not match its checksum' >&2; exit 1; fi
+  chmod +x ~/.local/bin/sasonica.new && mv -f ~/.local/bin/sasonica.new ~/.local/bin/sasonica
+  ~/.local/bin/sasonica version" || die "could not install Sasonica's server."
+else
+step "agent-media (source)"
 if [ -n "${AGENT_MEDIA_SRC:-}" ]; then
   cp "$AGENT_MEDIA_SRC" "$PREFIX/tmp/agent-media.tgz"
   in_debian 'rm -rf ~/projects/agent-media && mkdir -p ~/projects/agent-media &&
@@ -83,6 +116,7 @@ in_debian 'cd ~/projects/agent-media
   [ -x .venv/bin/python ] || python3 -m venv .venv
   .venv/bin/pip install -q --upgrade pip
   .venv/bin/pip install -q -e packages/core -e packages/server -e packages/visual'
+fi
 
 step "Agents: $AGENTS"
 for agent in $AGENTS; do
@@ -94,25 +128,39 @@ for agent in $AGENTS; do
   esac
 done
 # How the server hears the agents' replies: opencode loads every script in
-# its plugins folder; Claude Code takes hooks in settings.json. (Not
-# `media-setup profile`: inside the proot it would also try to install
-# services, which Termux's runit holds here.)
-in_debian 'export PATH=~/projects/agent-media/.venv/bin:$PATH
-  mkdir -p ~/.config/opencode/plugins
-  ln -sf ~/projects/agent-media/packages/core/opencode/agent-media.js ~/.config/opencode/plugins/agent-media.js
-  # opencode installs a plugin'"'"'s dependencies on its first start (~1 min in
+# its plugins folder; Claude Code takes hooks in settings.json. The binary's
+# `sasonica install` does both, with the shims they call and this host's
+# config (role `origin`, headless sessions on); its services are Termux's
+# runit here, below. (Not `media-setup profile`: inside the proot it would
+# also try to install services.)
+if [ "$FROM" = binary ]; then
+  in_debian 'export PATH=~/.local/bin:~/.opencode/bin:$PATH
+    sasonica install --no-services' || die "sasonica install failed."
+else
+  in_debian 'export PATH=~/projects/agent-media/.venv/bin:$PATH
+    mkdir -p ~/.config/opencode/plugins
+    ln -sf ~/projects/agent-media/packages/core/opencode/agent-media.js ~/.config/opencode/plugins/agent-media.js
+    if command -v claude >/dev/null; then media-setup install-hooks >/dev/null; fi'
+fi
+in_debian '# opencode installs a plugin'"'"'s dependencies on its first start (~1 min in
   # a proot), past the server'"'"'s 45 s wait for a new chat'"'"'s pane: do it now.
   # `debug config` loads the plugins without asking any model.
-  if [ -x ~/.opencode/bin/opencode ]; then ~/.opencode/bin/opencode debug config >/dev/null 2>&1 || true; fi
-  if command -v claude >/dev/null; then media-setup install-hooks >/dev/null; fi'
+  if [ -x ~/.opencode/bin/opencode ]; then ~/.opencode/bin/opencode debug config >/dev/null 2>&1 || true; fi'
 
 # The ADB power-up's helper (the app runs it through RUN_COMMAND), on
-# Termux's PATH straight from the checkout, so a pull updates it.
+# Termux's PATH: fetched with the binary (a rerun updates it), or straight
+# from the checkout, so a pull updates it.
 ROOTFS=$PREFIX/var/lib/proot-distro/installed-rootfs/$DISTRO
-ln -sf "$ROOTFS/root/projects/agent-media/deploy/android/sasonica-adb" "$PREFIX/bin/sasonica-adb"
+if [ "$FROM" = binary ]; then
+  rm -f "$PREFIX/bin/sasonica-adb"
+  curl -fsSL "$INSTALL_BASE/android/sasonica-adb" -o "$PREFIX/bin/sasonica-adb" &&
+    chmod +x "$PREFIX/bin/sasonica-adb" || echo "  (sasonica-adb not fetched: the ADB power-up will say so)"
+else
+  ln -sf "$ROOTFS/root/projects/agent-media/deploy/android/sasonica-adb" "$PREFIX/bin/sasonica-adb"
+fi
 
 step "This device's config"
-in_debian 'export PATH=~/projects/agent-media/.venv/bin:$PATH
+[ "$FROM" = binary ] || in_debian 'export PATH=~/projects/agent-media/.venv/bin:$PATH
   [ -f ~/.config/agent-media/config.toml ] || media-setup init --roles origin >/dev/null
   touch ~/.config/agent-media.env
   grep -q "^MEDIA_HEADLESS=" ~/.config/agent-media.env || echo MEDIA_HEADLESS=1 >>~/.config/agent-media.env'
@@ -132,7 +180,7 @@ service() { # name, command inside Debian
 # Written by deploy/android/install.sh (agent-media): Sasonica's server on this device.
 exec 2>&1
 exec proot-distro login $DISTRO --shared-tmp -- bash -lc '
-  export PATH=~/projects/agent-media/.venv/bin:~/.opencode/bin:\$PATH
+  export PATH=$SBIN:~/.opencode/bin:\$PATH
   [ -f ~/.config/agent-media.env ] && set -a && . ~/.config/agent-media.env && set +a
   exec $2'
 EOF
@@ -143,8 +191,13 @@ exec svlogd -tt "\$HOME/.local/state/sv-log/$1"
 EOF
   chmod +x "$SV/$1/run" "$SV/$1/log/run"
 }
-service sasonica-canvas "media-visual-canvas --bind 127.0.0.1 --port $PORT"
-service sasonica-sessiond "media sessiond"
+if [ "$FROM" = binary ]; then
+  service sasonica-canvas "sasonica serve --bind 127.0.0.1 --port $PORT"
+  service sasonica-sessiond "sasonica sessiond"
+else
+  service sasonica-canvas "media-visual-canvas --bind 127.0.0.1 --port $PORT"
+  service sasonica-sessiond "media sessiond"
+fi
 # termux-services starts runsvdir from a login shell; a first install has
 # not had one since the package arrived.
 if ! pgrep -x runsvdir >/dev/null; then
@@ -201,7 +254,7 @@ else
 fi
 
 step "Pairing"
-link=$(in_debian "~/projects/agent-media/.venv/bin/media-visual-canvas pair --device '$DEVICE' --host 127.0.0.1 --port $PORT" |
+link=$(in_debian "$SBIN/media-visual-canvas pair --device '$DEVICE' --host 127.0.0.1 --port $PORT" |
   grep -o 'sasonica://pair?[^[:space:]]*' | head -1)
 [ -n "$link" ] || die "could not mint a pairing code."
 if command -v am >/dev/null && am start -a android.intent.action.VIEW -d "$link" >/dev/null 2>&1; then

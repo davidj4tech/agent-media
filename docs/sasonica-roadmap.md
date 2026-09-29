@@ -75,8 +75,9 @@ run). `sasonica serve` / `sessiond` / `install` / `<any console script>`;
 CI publishes x86_64 and aarch64 to the rolling `server-latest` release, and
 `sasonica.com/install` on Linux now installs it and shows a pairing QR.
 Headless first: no multiplexer needed. agent-media `43281af`,
-`docs/proposals/2026-09-29-single-binary.md`. **Next:** the phone installer
-onto the arm64 binary (no git, pip or venv in its Debian); a headless
+`docs/proposals/2026-09-29-single-binary.md`. **The phone installer too**
+(same day): the binary in its Debian, no git, pip, Python or venv, Node only
+for Claude Code; `SASONICA_FROM=source` for the old way. **Next:** a headless
 **opencode** driver through `opencode serve`, so opencode needs no tmux
 either; then Mac and Windows (launchd / a Windows service in `sasonica install`).
 

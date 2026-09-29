@@ -57,9 +57,17 @@ installed, `sasonica-canvas` and `sasonica-sessiond` as systemd --user units —
 and prints a pairing QR code. Running it again updates. Tested end to end on
 red5 with a scratch HOME and a `file://` release.
 
-The phone still installs from a checkout; moving `deploy/android/install.sh`
-onto the arm64 binary (inside the same Debian proot, which the agents need
-anyway) drops git, pip and the venv from it. Next step, not this one.
+**The phone too** (29 Sep 2026): `deploy/android/install.sh` puts the
+binary for Debian's architecture into the proot's `~/.local/bin`, checked the
+same way, and `sasonica install --no-services` does its config and hooks;
+Termux's runit runs `sasonica serve` and `sasonica sessiond`. No git, pip,
+Python or venv in Debian, and Node only when Claude Code is chosen (opencode
+brings its own runtime). `sasonica-adb` is fetched beside it.
+`SASONICA_FROM=source` keeps the checkout install for working on the server
+on the phone. Tested in a clean Termux (`termux/termux-docker` under podman):
+the binary, opencode, both services up, a pairing code redeemed. The server
+is ~237 MB there (the file and its unpacked copy), opencode 240 MB; the
+whole Debian 871 MB, where it was 2.0 GB with Node.
 
 ## Does it need a multiplexer?
 
