@@ -1152,7 +1152,8 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
             quote=str(body.get("quote") or ""),
             mode=str(body.get("mode") or "continue"),
             session=str(body.get("session") or ""),
-            keep_reading=bool(body.get("keep_reading")))
+            keep_reading=bool(body.get("keep_reading")),
+                           voice=bool(body.get("voice")))
         status = detail.pop("status", 400)
         if not ok:
             # Which thread too: a refusal that names only the reason

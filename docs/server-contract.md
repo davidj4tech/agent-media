@@ -956,7 +956,15 @@ Clients: S (`ReplyBox.vue`), POST debounced 800 ms.
 
 Type into the session behind a conversation, reviving it if it has ended.
 
-Request: `{"session": "<session>" | "item": "<item>", "text": "…", "quote"?: "…", "mode"?: "continue" | "branch", "refs"?: {"<title>": "<session>"}, "keep_reading"?: bool}`
+Request: `{"session": "<session>" | "item": "<item>", "text": "…", "quote"?: "…", "mode"?: "continue" | "branch", "refs"?: {"<title>": "<session>"}, "keep_reading"?: bool, "voice"?: bool}`
+
+`voice` is the app's hands-free loop (David, 29 Sep 2026): the session is
+marked for 15 minutes (`agent_media_core.voice_mode`) and the prompt hook the
+words set off (`intake/heard.py`) adds a note asking for one to three short
+spoken sentences, a decision as one closing question, and a spoken yes before
+anything hard to undo. It is context, not text: the message and transcript
+are unchanged. A reply without `voice` clears the mark; a `!` command leaves
+it as it was.
 
 - **A reply ends the read-out** (25 Sep 2026). Replying means the thread's
   last reply was read, so its speech is cut as `read`: queued replies of the

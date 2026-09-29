@@ -126,6 +126,16 @@ def language_note(payload: dict) -> str:
             "(code, commands and file names stay as they are).")
 
 
+def voice_note(payload: dict) -> str:
+    """The hands-free loop's note: short, spoken answers (voice_mode.py)."""
+    session = str(payload.get("session_id") or "")
+    if not session or not _worth_a_note(str(payload.get("prompt") or "")):
+        return ""
+    from .. import voice_mode
+
+    return voice_mode.NOTE if voice_mode.active(session) else ""
+
+
 def main() -> int:
     try:
         payload = json.loads(sys.stdin.read() or "{}")
@@ -133,6 +143,7 @@ def main() -> int:
             return 0
         notes = [] if os.environ.get("MEDIA_HEARD_NOTE", "1") == "0" else [note_for(payload)]
         notes.append(language_note(payload))
+        notes.append(voice_note(payload))
         text = "\n\n".join(n for n in notes if n)
     except Exception:  # noqa: BLE001 — a missing note never costs the prompt
         return 0

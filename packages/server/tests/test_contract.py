@@ -725,3 +725,30 @@ def test_a_reply_marks_the_thread_read_unless_kept(server, shelf, signed_in, typ
     call(server, "POST", "/reply", {"session": SID, "text": "and",
                                     "keep_reading": True}, AUTH)
     assert seen == [(SID, False), (SID, True)]
+
+
+def test_a_voice_reply_marks_the_thread_for_short_answers(server, shelf, signed_in, typed, monkeypatch, tmp_path):
+    """The app's hands-free loop sends `voice`: the session is marked, and the
+    prompt hook's note asks for a short spoken answer; a plain reply clears it."""
+    from agent_media_core import voice_mode
+    from agent_media_core.intake import heard
+    from agent_media_server import speech
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.setattr(speech, "reply_read", lambda s, keep=False: None)
+    monkeypatch.setattr(sessions, "live_sessions", lambda: {SID: "%42"})
+    call(server, "POST", "/reply", {"session": SID, "text": "what's next", "voice": True}, AUTH)
+    assert voice_mode.active(SID)
+    assert "short spoken sentences" in heard.voice_note({"session_id": SID, "prompt": "what's next"})
+    call(server, "POST", "/reply", {"session": SID, "text": "typed this time"}, AUTH)
+    assert not voice_mode.active(SID)
+    assert heard.voice_note({"session_id": SID, "prompt": "x"}) == ""
+
+
+def test_voice_mode_goes_stale(tmp_path, monkeypatch):
+    from agent_media_core import voice_mode
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    voice_mode.mark(SID, True, now=1000.0)
+    assert voice_mode.active(SID, now=1000.0 + voice_mode.TTL_S - 1)
+    assert not voice_mode.active(SID, now=1000.0 + voice_mode.TTL_S + 1)

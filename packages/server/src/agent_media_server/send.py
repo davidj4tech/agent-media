@@ -945,7 +945,7 @@ def _record_turn(session: str, text: str, pane: str = "") -> None:
 
 def reply(item: str, text: str, bearer: str, *, quote: str = "",
           mode: str = "continue", session: str = "",
-          keep_reading: bool = False) -> tuple[bool, dict]:
+          keep_reading: bool = False, voice: bool = False) -> tuple[bool, dict]:
     """Put `text` into `session`, or into the session behind ABS item `item`.
 
     `session` is the v1 form (server-contract.md §10) and wins when both are
@@ -962,7 +962,9 @@ def reply(item: str, text: str, bearer: str, *, quote: str = "",
     A reply means the thread's last reply was read: its speech ends at the
     close of the sentence playing (`session_reply_read`), unless the box's
     chip was switched to Keep reading. Marked before the words go in, so the
-    prompt hook they set off finds the choice already made.
+    prompt hook they set off finds the choice already made. `voice` is the
+    app's hands-free loop: the session is marked (voice_mode.py) and the hook
+    asks for a short spoken answer; a reply without it clears the mark.
     """
     text = (text or "").strip()
     if not text:
@@ -1008,6 +1010,10 @@ def reply(item: str, text: str, bearer: str, *, quote: str = "",
         from . import speech
 
         speech.reply_read(session, keep=keep_reading)
+        if not shell.command_of(text):
+            from agent_media_core import voice_mode
+
+            voice_mode.mark(session, voice)
 
     if mode == "branch" and driver.owned_headless(session):
         # A branch runs where the thread it came from ran (proposal §8): a
