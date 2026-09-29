@@ -26,9 +26,10 @@ Media tab start and stop the same station.
 with ``loadfile … append-play`` and report ``playlist-pos``. Mopidy has its
 own YouTube radio, and is not this.
 
-**Off by itself** when something else is put on: ``media music play``
-without ``--add`` stops the station (cli), and a tick that finds a track it
-did not queue playing takes that as the same word.
+**Off** when something else is put on: ``media music play`` without
+``--add``, and ``stop``, end the station (cli), which is how the Media tab,
+a chat and the share sheet all play. A song the station has no record of
+coming up is played on: it is not a guess at what the listener meant.
 """
 
 from __future__ import annotations
@@ -421,13 +422,12 @@ def tick() -> None:
         if not st["on"]:
             return
         if cur and cur != st.get("current"):
-            ours = {s["id"] for s in st["sent"] + st["queue"]} | {(st.get("seed") or {}).get("id")}
-            if cur not in ours:
-                # Something the station did not queue is playing: the
-                # listener chose it, and the station steps aside.
-                log.info("radio: %s is not the station's; off", cur)
-                st["on"] = False
-                return
+            # A song it has no record of is played on, not taken for the
+            # listener's: a play of something else ends the station where
+            # it is asked for (cli: play, stop), and a canvas restarted in
+            # the middle of a queueing loses the record of a song the player
+            # got — twice the station turned itself off on its own songs
+            # (29 Sep 2026).
             # One of the list's own that the player had after all (a resume
             # took the player for empty): heard, not to come.
             for s in [s for s in st["queue"] if s["id"] == cur]:

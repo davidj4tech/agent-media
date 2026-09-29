@@ -112,13 +112,32 @@ def test_a_song_that_comes_up_is_labelled_and_the_next_queued(station):
     assert sent[-1] == (MIX[2]["id"], False)
 
 
-def test_a_track_it_did_not_queue_turns_it_off(station):
-    player, _, _, _ = station
+def test_a_song_it_has_no_record_of_is_played_on(station):
+    """A canvas restarted mid-queueing loses the record of a song the player
+    got; the station turned itself off on it (29 Sep 2026). It plays on."""
+    player, sent, _, _ = station
     radio.start(SEED["id"], "sasonica", playing=True)
-    player.items, player.pos = ["someoneelse"], 0
+    player.items, player.pos = ["aVtOLfGT3_8"], 0
     radio.tick()
+    assert radio.is_on() and radio.read()["current"] == "aVtOLfGT3_8"
+    assert sent[-1] == (MIX[1]["id"], False)
+
+
+def test_a_play_of_something_else_ends_it(station, monkeypatch):
+    from agent_media_core import cli
+
+    radio.start(SEED["id"], "sasonica", playing=True)
+    monkeypatch.setattr(cli, "_resolve_music_where", lambda w: "rooms")
+    monkeypatch.setattr(cli.StateStore, "set_music_intent", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_note_music_where", lambda *a: None)
+
+    played: list = []
+    monkeypatch.setattr(cli, "SinkMusicRouter", lambda m: type("M", (), {
+        "play": lambda self, uri, *a, **k: played.append(uri)})())
+    cli.cmd_music(type("A", (), {"action": "play", "uri": "yt:abc", "add": False,
+                                 "where": "rooms", "as_type": None, "title": ""})())
+    assert played == ["yt:abc"]
     assert radio.is_on() is False
-    assert radio.snapshot() == {"on": False, "seed": None, "next": []}
 
 
 def test_dislike_skips_and_keeps_the_song_off(station):
