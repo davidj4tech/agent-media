@@ -37,6 +37,16 @@ def store(tmp_path, monkeypatch):
     return s
 
 
+@pytest.fixture(autouse=True)
+def quiet_player(monkeypatch):
+    """No test asks a real player (the shell's config names the phone); one
+    that wants an answer sets its own."""
+    monkeypatch.setattr(cli, "_player_says_idle", lambda target: None)
+
+
+_READ_IDLE = cli._player_says_idle
+
+
 def _track(**kw):
     return cli.cmd_replay_track(argparse.Namespace(
         **{"sentences": cli.json.dumps(SENTS), "offsets": cli.json.dumps(OFFS),
@@ -92,3 +102,65 @@ def test_a_row_taken_over_is_left_alone(store):
     cli._mirror_clock(store, lambda ex: False, SENTS, OFFS, 2, 0.4)
     ex = (store.get_now_playing("speech") or {}).get("extras") or {}
     assert "current_sentence" not in ex
+
+
+def _slow_track(monkeypatch, answers):
+    """A replay long enough for the player to be asked, fast."""
+    said = iter(answers)
+    monkeypatch.setattr(cli, "_REPLAY_ALIVE_EVERY_S", 0.05)
+    monkeypatch.setattr(cli, "_player_says_idle",
+                        lambda target: next(said, answers[-1]))
+    started = time.time()
+    cli.cmd_replay_track(argparse.Namespace(
+        sentences=cli.json.dumps(SENTS), offsets=cli.json.dumps([0.0, 0.1, 30.0]),
+        pane="", durations=cli.json.dumps([60.0])))
+    return time.time() - started
+
+
+def test_a_player_that_went_away_ends_the_replay(store, monkeypatch):
+    """An install restarts the app, and its player comes back empty. The clock
+    alone read on in silence to the end of the reply (David, 29 Sep 2026)."""
+    stops: list = []
+    monkeypatch.setattr("agent_media_core.sinks.speech.mark_speech_stopped",
+                        lambda sentence=None, tick=True: stops.append(sentence))
+    took = _slow_track(monkeypatch, [False, False, True, True])
+    assert took < 5, "the bold read on after the player went"
+    assert store.get_now_playing("speech") is None
+    # Where it had got to, so ▶ picks up there.
+    assert stops and stops[-1] >= 1
+
+
+def test_one_idle_answer_is_not_the_end(store, monkeypatch):
+    stops: list = []
+    monkeypatch.setattr("agent_media_core.sinks.speech.mark_speech_stopped",
+                        lambda sentence=None, tick=True: stops.append(sentence))
+    monkeypatch.setattr(cli, "_REPLAY_ALIVE_EVERY_S", 0.05)
+    said = iter([True, False, None, True, False])
+    monkeypatch.setattr(cli, "_player_says_idle",
+                        lambda target: next(said, False))
+    _track()
+    assert stops == []
+
+
+def test_no_answer_is_not_the_end(store, monkeypatch):
+    """Refusals are this lane's weather: only an answer ends a replay."""
+    monkeypatch.setattr(cli, "_REPLAY_ALIVE_EVERY_S", 0.05)
+    monkeypatch.setattr(cli, "_player_says_idle", lambda target: None)
+    started = time.time()
+    _track()
+    assert time.time() - started > 0.4, "the replay was cut short"
+
+
+def test_the_player_is_read_for_idle(monkeypatch):
+    class _Sink:
+        def __init__(self, snap):
+            self.snap = snap
+
+        def snapshot(self, target):
+            return self.snap
+
+    for snap, want in (({"idle-active": True, "pause": False}, True),
+                       ({"idle-active": False}, False),
+                       ({"pause": False}, None), ({}, None)):
+        monkeypatch.setattr(cli, "SinkSpeech", lambda s=snap: _Sink(s))
+        assert _READ_IDLE(cli.Target(name="phone")) is want

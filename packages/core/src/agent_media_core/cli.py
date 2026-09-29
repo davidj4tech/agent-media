@@ -4254,6 +4254,19 @@ def _mirror_clock(state, owns, sentences: list, offsets: list,
         pass
 
 
+#: How often a replay followed on the clock asks whether its player is still
+#: there, in seconds; the first ask is one interval in.
+_REPLAY_ALIVE_EVERY_S = 3.0
+
+
+def _player_says_idle(target: Target) -> Optional[bool]:
+    """One read of the speech player: True idle, False not, None no answer."""
+    snap = getattr(SinkSpeech(), "snapshot", lambda t: {})(target)
+    if not snap or "idle-active" not in snap:
+        return None
+    return bool(snap["idle-active"])
+
+
 def cmd_replay_track(a) -> int:
     """Internal: follow a replay the way the live intake path follows a reply.
 
@@ -4454,7 +4467,12 @@ def cmd_replay_track(a) -> int:
             pass
         return idx
 
+    # Set on every way out (all of them come through _finish), so the clock
+    # lane's player watch stops asking.
+    done = threading.Event()
+
     def _finish() -> int:
+        done.set()
         highlighter.drain()    # fires the tail, then releases the status rows
         try:
             np = state.get_now_playing("speech")
@@ -4484,7 +4502,39 @@ def cmd_replay_track(a) -> int:
             total = max(total, offsets[-1] + float(durations[-1]))
         started = time.time()
         last = -1
+        # The clock cannot tell that the player went away: an install
+        # restarts the app and its player with it, and the bold read on in
+        # silence to the end of the reply (David, 29 Sep 2026: "if the app
+        # reloads mid play, the follow along continues but without audio").
+        # So the player is asked now and then, off this loop — a read takes
+        # up to 3s — and only an answer counts: a refusal or a timeout is
+        # this lane's normal weather, and reading those as the end is the
+        # bug the clock replaced.
+        gone = threading.Event()
+
+        def _watch_player() -> None:
+            target = _active_speech_target()
+            idle_reads = 0
+            while not done.wait(_REPLAY_ALIVE_EVERY_S):
+                said = _player_says_idle(target)
+                if said is None:
+                    continue
+                # Twice running, a few seconds apart: one idle answer can be
+                # a clip being fetched.
+                idle_reads = idle_reads + 1 if said else 0
+                if idle_reads >= 2:
+                    gone.set()
+                    return
+
+        threading.Thread(target=_watch_player, name="replay-watch",
+                         daemon=True).start()
         while True:
+            if gone.is_set():
+                # Nothing is playing it any more. Stamp where it had got to,
+                # as a Stop does, so ▶ picks up there instead of the top.
+                from .sinks.speech import mark_speech_stopped
+                mark_speech_stopped(sentence=max(last, 0), tick=False)
+                return _finish()
             if _barged_in():
                 _note_displaced()
                 return _step_aside()
