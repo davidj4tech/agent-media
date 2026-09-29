@@ -1426,6 +1426,7 @@ def test_ask_refuses_a_signed_out_agent_instead_of_opening_a_dead_chat(monkeypat
     assert "signed out" in detail["error"] and detail["fix"] == "harnesses"
 
 
+@pytest.mark.real_agent_check
 def test_what_makes_an_agent_unready(monkeypatch):
     """Missing or signed out; pi and Hermes say "unknown" and are let through."""
     from agent_media_core import harnesses as core
@@ -1438,6 +1439,7 @@ def test_what_makes_an_agent_unready(monkeypatch):
     assert send._agent_unready("pi") == ""
 
 
+@pytest.mark.real_agent_check
 def test_an_auth_check_that_blows_up_is_not_a_refusal(monkeypatch):
     from agent_media_core import harnesses as core
 

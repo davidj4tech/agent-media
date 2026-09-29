@@ -141,7 +141,10 @@ def abs_identity(bearer: str) -> tuple[dict | None, int]:
             return hit[1], 200
     urls = abs_urls()
     if not urls:
-        return None, 0
+        # No Audiobookshelf here (a fresh install's server): nobody could have
+        # issued this, so it is nobody — 401, which the app answers by
+        # pairing again, not 503, which it would wait out forever.
+        return None, 401
     # Asked of each server until one recognises the token. A refusal from a
     # server that did not issue it is not news, so a 401 is only the answer
     # once every one of them has said it.

@@ -17,10 +17,18 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def _clean_media_env(monkeypatch, tmp_path):
+def _clean_media_env(monkeypatch, tmp_path, request):
     for k in list(os.environ):
         if k.startswith("MEDIA_"):
             monkeypatch.delenv(k, raising=False)
+    # A fresh chat asks whether its agent is installed and signed in *on this
+    # machine* (send._agent_unready) — which made the /ask tests pass on a
+    # desk with Claude Code signed in and fail everywhere else (CI, a scratch
+    # HOME). Ready, unless a test is about that check (`real_agent_check`).
+    if request.node.get_closest_marker("real_agent_check") is None:
+        from agent_media_server import send
+
+        monkeypatch.setattr(send, "_agent_unready", lambda agent, profile="": "")
     # Sasonica Shell's config (shell_signin.py): an empty one, so /dashboard
     # never reads red5's real runner token or calls its live Worker.
     monkeypatch.setenv("SASONICA_CONF", str(tmp_path / "sasonica-conf"))
@@ -102,3 +110,8 @@ def _clean_media_env(monkeypatch, tmp_path):
 
     monkeypatch.setattr(claude_models, "models", lambda **_: [])
     monkeypatch.setattr(session_settings, "_models_memo", (0.0, []))
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "real_agent_check: use the real send._agent_unready "
+                            "(the machine's harnesses), not the conftest's ready stub")

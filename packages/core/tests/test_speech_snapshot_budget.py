@@ -9,6 +9,7 @@ token for the reply's whole duration. That is how replies came to be spoken ten
 minutes late on a phone that was idle most of the hour.
 """
 
+import threading
 import time
 from unittest import mock
 
@@ -48,8 +49,13 @@ def test_an_honest_slow_endpoint_is_still_readable_next_tick(monkeypatch):
     latency twice in a row and the second read must still happen."""
     calls = []
 
+    me = threading.get_ident()
+
     def slow_once(sock_path, names, timeout):
-        calls.append(time.monotonic())
+        # This test's own reads: on a busy runner something else in the
+        # process polled in the same seconds (CI saw a third, overlapping call).
+        if threading.get_ident() == me:
+            calls.append(time.monotonic())
         time.sleep(1.3)                      # p8a's measured answer
         return {n: 0 for n in names}, len(names)
 
