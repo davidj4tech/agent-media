@@ -27,12 +27,16 @@ class Player:
     def __init__(self, first: str):
         self.items = [first]
         self.pos = 0
+        self.t = 30.0
         self.labels: list = []
+        self.seeks: list = []
 
     def props(self, where):
+        if not self.items:
+            return {"playlist-pos": -1, "playlist-count": 0, "idle-active": True}
         return {"path": f"http://localhost:6616/{self.items[self.pos]}.mka",
                 "playlist-pos": self.pos, "playlist-count": len(self.items),
-                "idle-active": False}
+                "idle-active": False, "time-pos": self.t, "duration": 200.0}
 
 
 @pytest.fixture()
@@ -51,8 +55,12 @@ def station(tmp_path, monkeypatch):
     monkeypatch.setattr(radio, "mix", mix)
     monkeypatch.setattr(radio, "_props", player.props)
 
+    refuse: list = []
+
     def send(where, song, replace=False):
         sent.append((song["id"], replace))
+        if song["id"] in refuse:
+            return False
         if replace:
             player.items, player.pos = [song["id"]], 0
         else:
@@ -66,7 +74,10 @@ def station(tmp_path, monkeypatch):
     monkeypatch.setattr(radio, "_liked_ids", lambda: set())
     import agent_media_core.sinks._mpv_ipc as ipc
     monkeypatch.setattr(ipc, "command", lambda *a, **k: None)
-    monkeypatch.setattr(radio, "_sink", lambda where: type("S", (), {"_endpoint": lambda self: "x"})())
+    monkeypatch.setattr(radio, "_sink", lambda where: type("S", (), {
+        "_endpoint": lambda self: "x",
+        "seek_cur": lambda self, position_ms=0: player.seeks.append(position_ms)})())
+    player.refuse = refuse
     return player, sent, fetched, mixes
 
 
@@ -151,3 +162,41 @@ def test_only_a_youtube_track_on_the_phone(station):
         radio.start("/storage/music/song.mp3", "sasonica", playing=True)
     with pytest.raises(ValueError):
         radio.start(SEED["id"], "rooms", playing=True)
+
+
+def test_a_song_cut_off_is_put_on_again_where_it_was(station):
+    """An app update restarts its player empty (David, 29 Sep 2026: "It got
+    interrupted towards the end with an update... continue from where it
+    was at please")."""
+    player, sent, _, _ = station
+    radio.start(SEED["id"], "sasonica", playing=True)
+    player.t = 150.0
+    radio.tick()                   # seen at 2:30, the next queued
+    player.items, player.pos = [], 0
+    radio.tick()
+    assert sent[-1] == (SEED["id"], True)
+    assert player.seeks == [150000] and player.labels[-1] == SEED["id"]
+    radio.tick()                   # and the station goes on from there
+    assert sent[-1] == (MIX[1]["id"], False)
+
+
+def test_a_song_played_out_is_not_put_on_again(station):
+    player, sent, _, _ = station
+    radio.start(SEED["id"], "sasonica", playing=True)
+    player.t = 196.0
+    radio.tick()
+    player.items, player.pos = [], 0
+    radio.tick()
+    assert (SEED["id"], True) not in sent and player.seeks == []
+
+
+def test_a_refused_song_is_tried_again_then_dropped(station):
+    player, sent, _, _ = station
+    radio.start(SEED["id"], "sasonica", playing=True)
+    player.refuse.append(MIX[1]["id"])
+    for _ in range(3):
+        radio.tick()
+    assert [x for x in sent if x[0] == MIX[1]["id"]] == [(MIX[1]["id"], False)] * 3
+    radio.tick()
+    assert sent[-1] == (MIX[2]["id"], False)
+    assert MIX[1]["id"] not in [r["id"] for r in radio.snapshot()["next"]]

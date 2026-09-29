@@ -1965,7 +1965,9 @@ past those. Off is `{"on": false, "seed": null, "next": []}`.
   👎 on the same channel keeps the channel off) and the next song plays.
   With no station it is `next`.
 - A `play` (not `add`) of something else ends the station, from here or
-  `media music play`; so does a track the station did not queue coming up.
+  `media music play`; so does `stop`, and a track the station did not queue
+  coming up. A song the player lost part-way (the app restarted) is put on
+  again where it was.
 
 Pinned by `packages/server/tests/test_music_route.py` and
 `packages/core/tests/test_radio.py`.

@@ -6126,6 +6126,10 @@ def cmd_music(a) -> int:
     # control what's actually audible (phone mpv or Mopidy).
     b = _music_live_backend(m)
     if a.action == "stop":
+        # Stop is the end of a radio station too, or it would put the
+        # song back on (radio._resume).
+        from . import radio
+        radio.stop()
         b.stop()
         StateStore().clear_music_intent()
         return 0

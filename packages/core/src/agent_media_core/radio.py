@@ -59,6 +59,10 @@ _MIX_LEN = 40
 _CHANNEL_STRIKES = 2
 #: How many songs the Media tab is shown.
 _SHOWN = 10
+#: A song the player would not take is tried this many times, then dropped.
+_TRIES = 3
+#: A song cut off further than this from its end is picked up again.
+_RESUME_BEFORE_END_S = 8.0
 
 _ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
 
@@ -70,11 +74,14 @@ def _path() -> Path:
 def _blank() -> dict:
     return {"on": False, "where": "", "seed": None, "started": 0.0,
             "queue": [], "sent": [], "played": [], "banned": [],
-            "strikes": {}, "ready": [], "fetching": None, "current": None, "mixed": []}
+            "strikes": {}, "ready": [], "fetching": None, "current": None, "mixed": [],
+            "at": None, "tries": {}}
     # queue: songs to come, in order; sent: queued in the player; played: ids
     # heard; ready: queue ids already in the phone's cache; fetching: the
     # song downloading now; strikes: 👎 per channel; mixed: ids whose Mix
-    # has been listed (each once, or a dry station lists one every pass).
+    # has been listed (each once, or a dry station lists one every pass);
+    # at: {id, pos, dur} of the song playing, last seen; tries: failed
+    # queueings per id.
 
 
 @contextlib.contextmanager
@@ -361,6 +368,10 @@ def tick() -> None:
     cur = None if p.get("idle-active") else _vid(str(p.get("path") or ""))
     pos, count = p.get("playlist-pos"), p.get("playlist-count")
     ahead = count - pos - 1 if isinstance(pos, int) and isinstance(count, int) and pos >= 0 else 0
+    t, dur = p.get("time-pos"), p.get("duration")
+
+    if cur is None and _resume(where):
+        return
 
     came_up = None
     with _station() as st:
@@ -378,6 +389,9 @@ def tick() -> None:
             if cur not in st["played"]:
                 st["played"].append(cur)
             came_up = next((s for s in st["sent"] if s["id"] == cur), None)
+        if cur and isinstance(t, (int, float)) and t > 0:
+            st["at"] = {"id": cur, "pos": round(float(t), 1),
+                        "dur": float(dur) if isinstance(dur, (int, float)) else None}
     if came_up:
         _label(where, came_up)
         _note(came_up)
@@ -396,8 +410,14 @@ def tick() -> None:
                 st["fetching"] = None
                 if took:
                     st["sent"].append(song)
-                if song["id"] in st["ready"]:
-                    st["ready"].remove(song["id"])
+                    if song["id"] in st["ready"]:
+                        st["ready"].remove(song["id"])
+                else:
+                    # A slow phone refuses a command as readily as YouTube
+                    # refuses a download: try again before giving it up.
+                    n = st["tries"][song["id"]] = st["tries"].get(song["id"], 0) + 1
+                    if n < _TRIES:
+                        st["queue"].insert(0, song)
             return
 
     with _station() as st:
@@ -417,6 +437,42 @@ def tick() -> None:
         return
     if low:
         _refill()
+
+
+def _resume(where: str) -> bool:
+    """The player lost the song it was playing part-way (the app updated or
+    restarted, and its player came back empty): put it on again where it
+    was. False when it had played out, or cannot be."""
+    with _station() as st:
+        at, cur = st.get("at") or {}, st.get("current")
+        if not st["on"] or not cur or at.get("id") != cur:
+            return False
+        if at.get("dur") and at["pos"] > at["dur"] - _RESUME_BEFORE_END_S:
+            return False
+        song = next((s for s in st["sent"] + [st.get("seed") or {}] if s.get("id") == cur), None)
+        st["at"] = None
+        # The player's queue went with it: what was queued behind the song
+        # comes back to the front of the list (downloaded already).
+        ids = [s["id"] for s in st["sent"]]
+        if song and cur in ids:
+            lost = st["sent"][ids.index(cur) + 1:]
+            del st["sent"][ids.index(cur) + 1:]
+            st["queue"][:0] = lost
+            st["ready"].extend(s["id"] for s in lost if s["id"] not in st["ready"])
+        elif song:
+            lost = [s for s in st["sent"] if s["id"] not in st["played"]]
+            st["sent"] = [s for s in st["sent"] if s["id"] in st["played"]]
+            st["queue"][:0] = lost
+            st["ready"].extend(s["id"] for s in lost if s["id"] not in st["ready"])
+    if not song:
+        return False
+    log.info("radio: %s was cut off at %.0fs; on again", cur, at["pos"])
+    if not _send(where, song, replace=True):
+        return False
+    _label(where, song)
+    with contextlib.suppress(Exception):
+        _sink(where).seek_cur(position_ms=int(at["pos"] * 1000))
+    return True
 
 
 def _refill() -> None:
