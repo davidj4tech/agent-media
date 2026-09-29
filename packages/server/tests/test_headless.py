@@ -622,7 +622,7 @@ def test_ask_new_starts_a_headless_session_and_it_is_listed(app_host, server, si
                    "source": "sessiond", "project": "work", "cwd": row["cwd"]}
     # Its directory, from its transcript; outside ~/projects the directory's
     # own name is its project on David's layout.
-    assert row["cwd"].endswith("/work")
+    assert Path(row["cwd"]).name == "work"
     st, body = req(server, "GET", "/sessions/state", headers=AUTH)
     row = next(r for r in body["sessions"] if r["session"] == sid)
     assert row["state"] == "waiting" and row["driver"] == "headless"

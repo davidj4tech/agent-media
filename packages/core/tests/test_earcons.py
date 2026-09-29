@@ -306,6 +306,10 @@ def test_a_reply_the_phone_plays_out_does_not_tick(phone):
 def test_a_listeners_stop_ticks_on_the_player_it_stopped(monkeypatch):
     from agent_media_core.sinks import speech as SP
 
+    # An earlier test's tick still on its way would land in this one's list
+    # once play_cue is patched below (CI, 3.12: a cut before any speech).
+    for t in [th for th in threading.enumerate() if th.name == "earcon-cut"]:
+        t.join(timeout=5)
     sent = []
     monkeypatch.setattr(SP.ipc, "command", lambda sock, *a, **k: sent.append(a))
     cued = []
