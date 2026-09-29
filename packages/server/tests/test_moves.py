@@ -245,6 +245,13 @@ def test_a_thread_with_no_files_still_moves(claude, dest, library):
     assert moves.move_folder(SID2, "p-agent-mail") == ("", "")       # no manifest
 
 
+def test_a_manifest_with_no_folder_yet_moves_nothing(claude, dest, library):
+    """`"folder": ""` is not `.`: the server's own directory was once moved into itself."""
+    path = sessions._manifest_dir() / f"{SID}.json"
+    path.write_text(json.dumps({**json.loads(path.read_text()), "folder": ""}))
+    assert moves.move_folder(SID, "p-agent-mail") == ("", "")
+
+
 def test_the_move_takes_the_folder_with_it(server, shelf, signed_in, claude, dest,
                                            library, windows):
     _res, obj = call(server, "POST", "/session/move",

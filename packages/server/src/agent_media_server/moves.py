@@ -169,8 +169,11 @@ def move_folder(session: str, project: str) -> tuple[str, str]:
         data = json.loads(path.read_text())
     except (OSError, ValueError):
         return "", ""
-    folder = Path(str(data.get("folder") or ""))
-    if not str(folder) or not folder.is_dir():
+    raw = str(data.get("folder") or "").strip()
+    if not raw:
+        return "", ""                   # Path("") is ".", the server's own cwd
+    folder = Path(raw)
+    if not folder.is_absolute() or not folder.is_dir():
         return "", ""
     dest = book_tracks.root() / book_tracks.safe_name(project) / folder.name
     if dest == folder:
