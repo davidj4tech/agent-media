@@ -68,6 +68,37 @@ Where things live:
 
 ## Done
 
+**Sasonica accounts** (David, 29 Sep 2026: the split — Drupal on
+cms.sasonica.com owns accounts and is the OIDC issuer; a Sasonica Matrix
+homeserver comes later). Accounts enrol devices, they do not authenticate
+requests (`docs/proposals/2026-09-23-accounts-and-the-identity-seam.md`).
+Built the same day:
+- **Sign-in:** "Sign in with a Sasonica account" on the pairing screen
+  (PKCE, `sasonica://auth`); `POST /enrol` swaps the code for the ID token
+  server-side and mints a device token; RS256 checked in stdlib (`oidc.py`).
+  The device is named after the phone. red5 allows David's account by `sub`.
+- **Staying current:** the refresh token is kept on the device row (never
+  listed); `/me` over an hour old re-reads userinfo (email, username,
+  picture).
+- **In the app:** the profile button top right on every tab (it replaced
+  ⚙): picture and name, a menu (Edit profile, Settings, About, Sign out —
+  `POST /me/signout`). Edit profile is a sheet: photo, username, email (a
+  confirmation link to the new address, an undo link to the old), password
+  (the current one, or an emailed link), Delete account (an emailed link that
+  opens a page with a button). `GET/POST /me/account` passes these to
+  cms.sasonica.com's `/api/account` with the account's own access token.
+- **Social sign-in:** Google live (project `sasonica`, still in Testing:
+  publishing waits for the privacy policy, a draft at websites
+  `sites/sasonica/content/privacy-policy.md`); GitHub and Facebook modules
+  installed, each needs its OAuth app (`bin/social-secret`). A social
+  sign-in fills an empty profile picture.
+- **Email:** sasonica.com sends through Cloudflare Email Sending (South Pen
+  Labs account, Workers Paid; only sasonica.com onboarded — southpenlabs.com
+  would get `p=reject` DMARC over its forwarding), HTML in a Sasonica frame
+  with a preview line; SPF, DKIM and DMARC pass at Gmail.
+Commits: agent-media `206173c`…`16ffd70`; websites `4cb8f03`…; sasonica-app
+`3b5fd9f`…`3ff0c8a`.
+
 **The server as one file** (David, 29 Sep 2026: "let's do that"):
 `deploy/binary/build.sh` makes `sasonica-linux-<arch>`, a PyApp launcher with
 Python and core/server/visual inside (57 MB, 65 ms to start after its first
