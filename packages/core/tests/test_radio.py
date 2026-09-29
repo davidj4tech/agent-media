@@ -180,7 +180,21 @@ def test_only_a_youtube_track_on_the_phone(station):
     with pytest.raises(ValueError):
         radio.start("/storage/music/song.mp3", "sasonica", playing=True)
     with pytest.raises(ValueError):
-        radio.start(SEED["id"], "rooms", playing=True)
+        radio.start(SEED["id"], "rooms", playing=False)
+
+
+def test_a_station_runs_on_the_player_its_seed_is_on(station, monkeypatch):
+    """Plush played in the Termux mpv (the app had not taken it), and the
+    station went to the app's player behind it (David, 29 Sep 2026)."""
+    player, _, _, _ = station
+    real = player.props
+    monkeypatch.setattr(radio, "_props", lambda where: real(where) if where == "phone"
+                        else {"playlist-pos": -1, "playlist-count": 0, "idle-active": True})
+    radio.start(SEED["id"], "sasonica", playing=True)
+    assert radio.read()["where"] == "phone"
+    monkeypatch.setattr(radio, "_props", lambda where: None)
+    radio.start(SEED["id"], "sasonica", playing=True)
+    assert radio.read()["where"] == "sasonica"       # neither says: the default
 
 
 def test_a_song_cut_off_is_put_on_again_where_it_was(station):

@@ -41,6 +41,7 @@ import os
 import re
 import shlex
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Iterator, Optional
@@ -239,7 +240,31 @@ def _send(where: str, song: dict, replace: bool = False) -> bool:
         log.info("radio: %s did not play: %s", song["id"], e)
         return False
     # SinkMusicSasonica says False when it could not; the Termux mpv raises.
+    if took is not False and replace:
+        threading.Thread(target=_quiet_other, args=(where,), daemon=True,
+                         name="radio-quiet-other").start()
     return took is not False
+
+
+def _quiet_other(where: str) -> None:
+    """One player at a time, as music_router's play keeps it: a song put on
+    in one phone player stops what the other was playing."""
+    other = "phone" if where == "sasonica" else "sasonica"
+    try:
+        sink = _sink(other)
+        if sink.loaded():
+            sink.stop()
+    except Exception:  # noqa: BLE001 — best-effort tidying
+        log.debug("radio: could not quiet %s", other, exc_info=True)
+
+
+def _playing_on(vid: str) -> Optional[str]:
+    """Which phone player has `vid` loaded, if either."""
+    for where in WHERES:
+        p = _props(where)
+        if p and not p.get("idle-active") and _vid(str(p.get("path") or "")) == vid:
+            return where
+    return None
 
 
 def _prefetch(song: dict) -> bool:
@@ -291,6 +316,13 @@ def start(uri: str, where: str, playing: bool) -> dict:
     vid = _vid(uri)
     if not vid:
         raise ValueError("radio needs a YouTube track")
+    if playing:
+        # The station runs on the player the seed is on, not the default:
+        # Plush fell back to the Termux mpv (the app was restarting), the
+        # station went to the app's player behind it, and the two played
+        # apart — the controls and the ducking on one, the music on the
+        # other (David, 29 Sep 2026).
+        where = _playing_on(vid) or where
     if where not in WHERES:
         raise ValueError("radio plays on the phone")
     songs = mix(vid)
