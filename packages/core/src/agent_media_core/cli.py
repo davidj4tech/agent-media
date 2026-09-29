@@ -4254,17 +4254,84 @@ def _mirror_clock(state, owns, sentences: list, offsets: list,
         pass
 
 
-#: How often a replay followed on the clock asks whether its player is still
-#: there, in seconds; the first ask is one interval in.
-_REPLAY_ALIVE_EVERY_S = 3.0
+#: How often a replay followed on the clock reads its player, in seconds;
+#: the first read is one interval in. The live lane reads without a pause.
+_REPLAY_ALIVE_EVERY_S = 1.5
 
 
-def _player_says_idle(target: Target) -> Optional[bool]:
-    """One read of the speech player: True idle, False not, None no answer."""
-    snap = getattr(SinkSpeech(), "snapshot", lambda t: {})(target)
+def _replay_read_player(target: Target) -> dict:
+    """One snapshot of the speech player, `_read_at` stamped; {} for none.
+
+    The read takes a round trip to the phone, so it is dated to the middle
+    of it, as the live lane dates its own (_stamp_start)."""
+    asked = time.time()
+    snap = getattr(SinkSpeech(), "snapshot", lambda t: {})(target) or {}
+    if snap:
+        snap["_read_at"] = (asked + time.time()) / 2
+    return snap
+
+
+def _player_says_idle(snap: dict) -> Optional[bool]:
+    """What a snapshot says: True idle, False not, None no answer."""
     if not snap or "idle-active" not in snap:
         return None
     return bool(snap["idle-active"])
+
+
+def _replay_anchor(offsets: list, durations: list, snap: dict, base: float,
+                   seen: dict) -> Optional[list]:
+    """A replay's timeline, corrected by one reading of its player, or None.
+
+    A replay on the phone started on the clock alone: the first clip was
+    dated to the push, before the phone had fetched it, and every sentence
+    after it to the character guess — so the bold ran off the voice by a
+    second or more either way, and nothing ever pulled it back (David, 29 Sep
+    2026: "timing is still off" — "late", on a reply played with ▶). The
+    player says which clip it is on and how far in, and how long that clip
+    is. So the clip it is on started `time-pos` before the reading, and the
+    next one starts that clip's length later, plus the step between clips
+    this replay has shown.
+
+    `offsets` are clip starts when there is a clip per sentence (as many as
+    `durations`), else sentence starts inside one clip, which only moves as a
+    whole. `base` is the row's `play_started_at`; `seen` carries what earlier
+    readings measured.
+    """
+    p, tp, read_at = (snap.get("playlist-pos"), snap.get("time-pos"),
+                      snap.get("_read_at"))
+    if (snap.get("pause") or snap.get("idle-active")
+            or not isinstance(p, int) or p < 0
+            or not isinstance(tp, (int, float)) or read_at is None):
+        return None
+    speed = max(0.1, float(snap.get("speed") or 1.0))
+    at = float(read_at) - base - float(tp) / speed
+    orig = seen.setdefault("orig", list(offsets))
+    if not (len(offsets) == len(durations) > 1):
+        if p != 0:
+            return None
+        return [round(o + at, 3) for o in orig]
+    if p >= len(offsets):
+        return None
+    starts, audio = seen.setdefault("starts", {}), seen.setdefault("audio", {})
+    starts[p] = at
+    d = snap.get("duration")
+    if isinstance(d, (int, float)) and d > 0:
+        audio[p] = float(d) / speed
+    from .intake.submit import CLIP_GAP_S
+    gaps = sorted(starts[i + 1] - starts[i] - a
+                  for i, a in audio.items() if i + 1 in starts)
+    gap = min(2.0, max(0.0, gaps[len(gaps) // 2])) if gaps else CLIP_GAP_S
+    out = [float(o) for o in offsets]
+    for i in range(len(out)):
+        if i <= p and i in starts:
+            out[i] = starts[i]
+        elif i > p:
+            step = (audio[i - 1] + gap if (i - 1) in audio
+                    else float(durations[i - 1] or 0))
+            out[i] = out[i - 1] + step
+        if i and out[i] < out[i - 1]:
+            out[i] = out[i - 1]
+    return [round(o, 3) for o in out]
 
 
 def cmd_replay_track(a) -> int:
@@ -4502,6 +4569,9 @@ def cmd_replay_track(a) -> int:
             total = max(total, offsets[-1] + float(durations[-1]))
         started = time.time()
         last = -1
+        # The timeline the loop reads; the player watch corrects it.
+        timeline = {"offsets": list(offsets)}
+        first0 = float(offsets[0])
         # The clock cannot tell that the player went away: an install
         # restarts the app and its player with it, and the bold read on in
         # silence to the end of the reply (David, 29 Sep 2026: "if the app
@@ -4512,13 +4582,55 @@ def cmd_replay_track(a) -> int:
         # bug the clock replaced.
         gone = threading.Event()
 
+        seen: dict = {}
+
+        def _correct(snap: dict) -> None:
+            """Bring the row's timeline (and its pause) in line with the
+            player: a pause the listener made elsewhere, or another app
+            taking the output, is silence the clock must not run through."""
+            try:
+                row = state.get_now_playing("speech")
+                ex = (row or {}).get("extras") or {}
+                if not row or not _owns(ex):
+                    return
+                base = float(ex.get("play_started_at") or started)
+                read_at = float(snap.get("_read_at") or time.time())
+                if snap.get("pause") and not ex.get("paused_at"):
+                    ex["paused_at"] = read_at
+                    ex["paused_by"] = "replay-watch"
+                elif (not snap.get("pause") and ex.get("paused_at")
+                      and ex.get("paused_by") == "replay-watch"):
+                    base += read_at - float(ex.pop("paused_at"))
+                    ex.pop("paused_by", None)
+                    ex["play_started_at"] = base
+                elif not ex.get("paused_at"):
+                    fixed = _replay_anchor(timeline["offsets"], durations,
+                                           snap, base, seen)
+                    if not fixed:
+                        return
+                    timeline["offsets"] = fixed
+                    ex["clip_offsets_s"] = fixed
+                else:
+                    return
+                ex["writer_pid"] = os.getpid()
+                state.set_now_playing(
+                    "speech", uri=row.get("uri") or "",
+                    started_at=row.get("started_at") or started,
+                    target=row.get("target") or _speech_target().name,
+                    extras=ex)
+            except Exception:  # noqa: BLE001 — a correction is never worth the replay
+                pass
+
         def _watch_player() -> None:
             target = _active_speech_target()
             idle_reads = 0
             while not done.wait(_REPLAY_ALIVE_EVERY_S):
-                said = _player_says_idle(target)
+                snap = _replay_read_player(target)
+                said = _player_says_idle(snap)
                 if said is None:
                     continue
+                if not said:
+                    _correct(snap)
                 # Twice running, a few seconds apart: one idle answer can be
                 # a clip being fetched.
                 idle_reads = idle_reads + 1 if said else 0
@@ -4532,8 +4644,11 @@ def cmd_replay_track(a) -> int:
             if gone.is_set():
                 # Nothing is playing it any more. Stamp where it had got to,
                 # as a Stop does, so ▶ picks up there instead of the top.
-                from .sinks.speech import mark_speech_stopped
-                mark_speech_stopped(sentence=max(last, 0), tick=False)
+                # On its last sentence, the player going idle is just the
+                # end: nothing to pick up.
+                if last < len(timeline["offsets"]) - 1:
+                    from .sinks.speech import mark_speech_stopped
+                    mark_speech_stopped(sentence=max(last, 0), tick=False)
                 return _finish()
             if _barged_in():
                 _note_displaced()
@@ -4550,7 +4665,15 @@ def cmd_replay_track(a) -> int:
             if not row or not _owns(row.get("extras") or {}):
                 return _finish()
             elapsed = elapsed_from_row(row.get("extras") or {}, started)
-            if elapsed > total + 0.5:
+            offsets = timeline["offsets"]
+            if len(offsets) == len(durations) > 1:
+                known = seen.get("audio", {}).get(len(offsets) - 1)
+                total = max(total, offsets[-1] + float(
+                    known if known is not None else durations[-1]))
+            # A reply whose first clip began late ends late by as much —
+            # within reason: a player stuck on its first clip would push the
+            # end on for ever, holding the voice.
+            if elapsed > total + min(30.0, max(0.0, offsets[0] - first0)) + 0.5:
                 return _finish()
             idx = 0
             for i, off in enumerate(offsets):
