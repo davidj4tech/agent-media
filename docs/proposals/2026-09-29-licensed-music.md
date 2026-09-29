@@ -1,6 +1,6 @@
 # Music that is licensed: the radio beyond yt-dlp
 
-Status: proposal, nothing built.
+Status: proposal; step 1 built 29 Sep 2026.
 Date: 2026-09-29
 
 David, 29 Sep 2026, with the first DJ station playing: *"So how do we get
@@ -90,7 +90,13 @@ exactly what a play-from-search takes.
 ## Order
 
 1. **Seam** in `radio.py`: source and player as two small interfaces; today's
-   behaviour becomes `youtube` + `phone-player`, unchanged.
+   behaviour becomes `youtube` + `phone-player`, unchanged. **Done 29 Sep
+   2026:** `radio_io.py` holds the YouTube path (`youtube_mix`, `parse`,
+   `PhonePlayer` for `sasonica`/`phone`, `personal = True`) and the player
+   registry `PLAYERS`; `radio.py` reaches a player only through
+   `_props`/`_send`/`_prefetch`/`_label`/`_clear`/`_next`/`_seek`. A new player
+   is a class with those methods, registered in `PLAYERS`
+   (test_radio.py::test_a_player_is_one_class_behind_the_seam).
 2. **Gate** the YouTube path: a server setting (`MEDIA_RADIO_YOUTUBE=1` on
    red5, off by default), and the app hides 📻 from a YouTube track when the
    server says it is off.

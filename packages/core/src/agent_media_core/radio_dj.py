@@ -144,7 +144,7 @@ def ask(st: dict, n: int = PICKS) -> tuple[list[str], str]:
 
 def search(lines: list[str]) -> list[dict]:
     """The first YouTube result for each line, found on the phone."""
-    from . import radio
+    from . import radio_io
     from .sinks import music_local
 
     if not lines:
@@ -158,7 +158,7 @@ def search(lines: list[str]) -> list[dict]:
     except (subprocess.TimeoutExpired, OSError) as e:
         log.warning("radio-dj: searching failed: %s", e)
         return []
-    return radio._parse(r.stdout or "")
+    return radio_io.parse(r.stdout or "")
 
 
 def picks(st: dict, n: int = PICKS) -> tuple[list[dict], str]:

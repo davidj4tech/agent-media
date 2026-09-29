@@ -68,15 +68,13 @@ def station(tmp_path, monkeypatch):
         return True
 
     monkeypatch.setattr(radio, "_send", send)
-    monkeypatch.setattr(radio, "_prefetch", lambda song: (fetched.append(song["id"]), True)[1])
+    monkeypatch.setattr(radio, "_prefetch", lambda where, song: (fetched.append(song["id"]), True)[1])
     monkeypatch.setattr(radio, "_label", lambda where, song: player.labels.append(song["id"]))
     monkeypatch.setattr(radio, "_note", lambda song: None)
     monkeypatch.setattr(radio, "_liked_ids", lambda: set())
-    import agent_media_core.sinks._mpv_ipc as ipc
-    monkeypatch.setattr(ipc, "command", lambda *a, **k: None)
-    monkeypatch.setattr(radio, "_sink", lambda where: type("S", (), {
-        "_endpoint": lambda self: "x",
-        "seek_cur": lambda self, position_ms=0: player.seeks.append(position_ms)})())
+    monkeypatch.setattr(radio, "_clear", lambda where: None)
+    monkeypatch.setattr(radio, "_next", lambda where: None)
+    monkeypatch.setattr(radio, "_seek", lambda where, ms: player.seeks.append(ms))
     player.refuse = refuse
     return player, sent, fetched, mixes
 
@@ -379,10 +377,60 @@ def test_a_load_whose_answer_was_lost_is_not_sent_again(monkeypatch, tmp_path):
             loads.append(uri)
             raise ipc.MpvIpcError("timed out")
 
-    monkeypatch.setattr(radio, "_sink", lambda where: Sink())
+    from agent_media_core import radio_io
+    monkeypatch.setattr(radio_io.PhonePlayer, "_sink", lambda self: Sink())
     monkeypatch.setattr(ipc, "get_property", lambda ep, name, **k:
                         [{"filename": "http://localhost:6616/_XC2mqcMMGQ.mka"}])
     assert radio._send("sasonica", {"id": "_XC2mqcMMGQ"}) is True
     assert len(loads) == 1
     monkeypatch.setattr(ipc, "get_property", lambda ep, name, **k: [])
     assert radio._send("sasonica", {"id": "_XC2mqcMMGQ"}) is False
+
+
+def test_a_player_is_one_class_behind_the_seam(monkeypatch, tmp_path):
+    """radio_io's seam (licensed-music proposal, step 1): a player registered
+    there runs a station, and the station's code is not patched at all."""
+    from agent_media_core import radio_io
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.setattr(radio_io, "youtube_mix", lambda vid: list(MIX))
+    monkeypatch.setattr(radio, "_note", lambda song: None)
+
+    class Handoff:
+        items: list = [SEED["id"]]
+
+        def __init__(self, where):
+            pass
+
+        def props(self):
+            return {"path": self.items[-1], "playlist-pos": len(self.items) - 1,
+                    "playlist-count": len(self.items), "idle-active": False, "time-pos": 5.0}
+
+        def send(self, song, replace=False):
+            Handoff.items.append(song["id"])
+            return True
+
+        def prefetch(self, song):
+            return True
+
+        def label(self, song):
+            pass
+
+        def clear(self):
+            pass
+
+        def next(self):
+            pass
+
+        def seek(self, ms):
+            pass
+
+    monkeypatch.setitem(radio_io.PLAYERS, "handoff", Handoff)
+    monkeypatch.setattr(radio, "_playing_on", lambda vid: None)
+    radio.start(SEED["id"], "handoff", playing=True)
+    radio.tick()                   # one queued behind the seed
+    radio.tick()                   # it comes up; the next is queued
+    assert Handoff.items == [SEED["id"], MIX[1]["id"], MIX[2]["id"]]
+    assert radio.read()["current"] == MIX[1]["id"]
+    with pytest.raises(ValueError):
+        radio_io.player("nowhere")

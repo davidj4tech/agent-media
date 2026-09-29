@@ -22,9 +22,13 @@ phone's cache. A track that will not download is dropped and the next tried.
 read and written under a lock, so ``media music radio`` from a shell and the
 Media tab start and stop the same station.
 
-**Only the phone's players** (Sasonica's own and the Termux mpv): both queue
-with ``loadfile … append-play`` and report ``playlist-pos``. Mopidy has its
-own YouTube radio, and is not this.
+**Where songs come from, and what plays them,** are radio_io's: today the
+YouTube path — the Mix or the DJ's picks, found on YouTube and played by the
+phone's own players (Sasonica's and the Termux mpv), which queue with
+``loadfile … append-play`` and report ``playlist-pos``. The station calls them
+only through ``_props``/``_send``/``_prefetch``/``_label``/``_clear``/``_next``/
+``_seek`` and ``mix``, so another player (the listener's own music app,
+docs/proposals/2026-09-29-licensed-music.md) is one more class there.
 
 **Off** when something else is put on: ``media music play`` without
 ``--add``, and ``stop``, end the station (cli), which is how the Media tab,
@@ -39,24 +43,20 @@ import json
 import logging
 import os
 import re
-import shlex
-import subprocess
-import threading
 import time
 from pathlib import Path
 from typing import Iterator, Optional
 
 from . import _lock as fcntl
+from . import radio_io
 from ._paths import state_dir
 
 log = logging.getLogger(__name__)
 
 #: Players a station can run on (`_resolve_music_where` names).
-WHERES = ("sasonica", "phone")
+WHERES = tuple(radio_io.PLAYERS)
 #: Songs left before the list is topped up from another Mix.
 _LOW_WATER = 5
-#: How many songs of a Mix to list (YouTube's run to ~50).
-_MIX_LEN = 40
 #: Thumbs down on this many songs by one channel keep the channel off.
 _CHANNEL_STRIKES = 2
 #: How many songs the Media tab is shown.
@@ -124,59 +124,21 @@ def is_on() -> bool:
 
 
 def _vid(s: str) -> Optional[str]:
-    """The YouTube id in a URI, a URL or a cache path (`…/<id>.mka`)."""
-    if not s:
-        return None
-    from .sinks.music_fetch import watch_id
-
-    vid = watch_id(s)
-    if vid:
-        return vid
-    stem = os.path.basename(s.split("?", 1)[0]).split(".", 1)[0]
-    return stem if _ID.match(stem) else None
+    return radio_io.vid_of(s)
 
 
 def _uri(vid: str) -> str:
-    return f"yt:https://www.youtube.com/watch?v={vid}"
+    return radio_io.yt_uri(vid)
 
 
-# ---- the Mix -----------------------------------------------------------------
+# ---- the source ----------------------------------------------------------------
 
 def mix(vid: str) -> list[dict]:
-    """YouTube's Mix for `vid`, listed on the phone: ``[{id, title, channel, dur}]``."""
-    from .sinks import music_local
-
-    url = f"https://www.youtube.com/watch?v={vid}&list=RD{vid}"
-    remote = ("yt-dlp --no-warnings --flat-playlist --playlist-end "
-              f"{_MIX_LEN} --print '%(id)s\t%(title)s\t%(channel)s\t%(duration)s' "
-              f"{shlex.quote(url)}")
-    try:
-        r = subprocess.run(music_local.phone_argv(remote), capture_output=True,
-                           text=True, timeout=float(os.environ.get("MEDIA_RADIO_MIX_TIMEOUT", "60")))
-    except (subprocess.TimeoutExpired, OSError) as e:
-        log.warning("radio: listing the Mix of %s failed: %s", vid, e)
-        return []
-    out = _parse(r.stdout or "")
-    if not out:
-        log.warning("radio: the Mix of %s listed nothing: %s", vid, (r.stderr or "").strip()[-200:])
-    return out
+    """YouTube's Mix for `vid` (radio_io)."""
+    return radio_io.youtube_mix(vid)
 
 
-def _parse(text: str) -> list[dict]:
-    """yt-dlp's `id<TAB>title<TAB>channel<TAB>duration` lines, as songs."""
-    out = []
-    for line in text.splitlines():
-        parts = line.split("\t")
-        if len(parts) < 2 or not _ID.match(parts[0]):
-            continue
-        try:
-            dur = int(float(parts[3])) if len(parts) > 3 and parts[3] not in ("", "NA") else None
-        except ValueError:
-            dur = None
-        out.append({"id": parts[0], "title": parts[1].strip(),
-                    "channel": (parts[2].strip() if len(parts) > 2 and parts[2] != "NA" else ""),
-                    "dur": dur})
-    return out
+_parse = radio_io.parse
 
 
 def _norm(title: str) -> str:
@@ -208,110 +170,44 @@ def _merge(st: dict, songs: list[dict]) -> int:
     return added
 
 
-# ---- the player ----------------------------------------------------------------
-
-def _sink(where: str):
-    if where == "sasonica":
-        from .sinks.music_sasonica import SinkMusicSasonica
-        return SinkMusicSasonica()
-    from .sinks.music_local import SinkMusicLocal
-    return SinkMusicLocal()
-
+# ---- the player (radio_io: one seam, so a player can be swapped) ----------------
 
 def _props(where: str) -> Optional[dict]:
-    from .sinks import _mpv_ipc as ipc
-
-    sink = _sink(where)
-    try:
-        return ipc.get_properties(sink._endpoint(), ["path", "playlist-pos", "playlist-count",
-                                                     "idle-active", "time-pos", "duration"])
-    except (ipc.MpvIpcError, OSError):
-        return None
+    return radio_io.player(where).props()
 
 
 def _send(where: str, song: dict, replace: bool = False) -> bool:
-    """Queue (or play) `song` in the player; this is its download."""
-    from .types import Target
-
-    sink = _sink(where)
-    try:
-        took = sink.play(_uri(song["id"]), Target(name=where), replace=replace)
-    except Exception as e:  # noqa: BLE001 — a song that will not come is skipped
-        log.info("radio: %s did not play: %s", song["id"], e)
-        took = False
-    # SinkMusicSasonica says False when it could not; the Termux mpv raises.
-    # Over a slow link the load can land and its answer time out: the first
-    # DJ station queued A-Punk three times that way, then forgot it
-    # (29 Sep 2026). The player's own list says whether it was taken.
-    if took is False and _in_player(where, song["id"]):
-        log.info("radio: %s was taken after all", song["id"])
-        took = True
-    if took is not False and replace:
-        threading.Thread(target=_quiet_other, args=(where,), daemon=True,
-                         name="radio-quiet-other").start()
-    return took is not False
+    """Queue (or play) `song`; with the phone's players, its download."""
+    return radio_io.player(where).send(song, replace=replace)
 
 
-def _in_player(where: str, vid: str) -> bool:
-    """Whether `vid` is in the player's list (a load whose answer was lost)."""
-    from .sinks import _mpv_ipc as ipc
-
-    try:
-        entries = ipc.get_property(_sink(where)._endpoint(), "playlist") or []
-    except (ipc.MpvIpcError, OSError):
-        return False
-    return any(_vid(str((e or {}).get("filename") or "")) == vid for e in entries)
+def _prefetch(where: str, song: dict) -> bool:
+    return radio_io.player(where).prefetch(song)
 
 
-def _quiet_other(where: str) -> None:
-    """One player at a time, as music_router's play keeps it: a song put on
-    in one phone player stops what the other was playing."""
-    other = "phone" if where == "sasonica" else "sasonica"
-    try:
-        sink = _sink(other)
-        if sink.loaded():
-            sink.stop()
-    except Exception:  # noqa: BLE001 — best-effort tidying
-        log.debug("radio: could not quiet %s", other, exc_info=True)
+def _label(where: str, song: dict) -> None:
+    radio_io.player(where).label(song)
+
+
+def _clear(where: str) -> None:
+    radio_io.player(where).clear()
+
+
+def _next(where: str) -> None:
+    radio_io.player(where).next()
+
+
+def _seek(where: str, ms: int) -> None:
+    radio_io.player(where).seek(ms)
 
 
 def _playing_on(vid: str) -> Optional[str]:
-    """Which phone player has `vid` loaded, if either."""
-    for where in WHERES:
+    """Which player has `vid` loaded, if any."""
+    for where in radio_io.PLAYERS:
         p = _props(where)
         if p and not p.get("idle-active") and _vid(str(p.get("path") or "")) == vid:
             return where
     return None
-
-
-def _prefetch(song: dict) -> bool:
-    """Download `song` into the phone's cache without playing it."""
-    from .sinks import music_local, music_sasonica
-
-    if music_local._phone_cached_path(song["id"]):
-        return True
-    return music_sasonica._phone_fetch(_uri(song["id"]).removeprefix("yt:")) is not None
-
-
-def _label(where: str, song: dict) -> None:
-    """The app's player keeps one title, art and chapter list, and clears
-    them only on a replace; a queued song that comes up is given its own."""
-    if where != "sasonica":
-        return
-    from .music_recent import art
-    from .sinks import music_sasonica
-    from .sinks import _mpv_ipc as ipc
-
-    sink = music_sasonica.SinkMusicSasonica()
-    try:
-        if song.get("title"):
-            sink._set("force-media-title", song["title"])
-        picture = art(song["id"])
-        if picture:
-            sink._set("user-data/agent-media/art", picture)
-        sink._set("user-data/agent-media/chapters", [])
-    except (ipc.MpvIpcError, OSError):
-        pass
 
 
 def _note(song: dict) -> None:
@@ -340,7 +236,7 @@ def start(uri: str, where: str, playing: bool) -> dict:
         # apart — the controls and the ducking on one, the music on the
         # other (David, 29 Sep 2026).
         where = _playing_on(vid) or where
-    if where not in WHERES:
+    if where not in radio_io.PLAYERS:
         raise ValueError("radio plays on the phone")
     songs = mix(vid)
     if not songs:
@@ -354,9 +250,7 @@ def start(uri: str, where: str, playing: bool) -> dict:
         _merge(st, songs)
     if playing:
         # What else was queued behind the seed makes way for the station.
-        from .sinks import _mpv_ipc as ipc
-        with contextlib.suppress(ipc.MpvIpcError, OSError):
-            ipc.command(_sink(where)._endpoint(), "playlist-clear")
+        _clear(where)
     return snapshot()
 
 
@@ -364,7 +258,7 @@ def start_dj(where: str) -> dict:
     """A DJ station on `where` (radio_dj). What is playing plays on until the
     DJ's first song is found and downloaded (the loop does it: a minute, give
     or take), then that replaces it."""
-    if where not in WHERES:
+    if where not in radio_io.PLAYERS:
         raise ValueError("radio plays on the phone")
     with _station() as st:
         st.clear()
@@ -474,13 +368,10 @@ def play(vid: str) -> Optional[dict]:
 
 def _skip(where: str) -> None:
     """To the next song: the queued one, else the next on the list, now."""
-    from .sinks import _mpv_ipc as ipc
-
     p = _props(where) or {}
     pos, count = p.get("playlist-pos"), p.get("playlist-count")
     if isinstance(pos, int) and isinstance(count, int) and pos + 1 < count:
-        with contextlib.suppress(ipc.MpvIpcError, OSError):
-            ipc.command(_sink(where)._endpoint(), "playlist-next", "weak")
+        _next(where)
         return
     for _ in range(3):
         with _station() as st:
@@ -583,7 +474,7 @@ def tick() -> None:
     if nxt and not ready:
         with _station() as st:
             st["fetching"] = nxt
-        ok = _prefetch(nxt)
+        ok = _prefetch(where, nxt)
         with _station() as st:
             st["fetching"] = None
             if ok:
@@ -626,8 +517,7 @@ def _resume(where: str) -> bool:
     if not _send(where, song, replace=True):
         return False
     _label(where, song)
-    with contextlib.suppress(Exception):
-        _sink(where).seek_cur(position_ms=int(at["pos"] * 1000))
+    _seek(where, int(at["pos"] * 1000))
     return True
 
 
