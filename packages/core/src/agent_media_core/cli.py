@@ -610,9 +610,9 @@ def _speech_in_flight() -> bool:
         return False
     wp = (np.get("extras") or {}).get("writer_pid")
     if wp:
-        try:
-            os.kill(int(wp), 0)
-        except (OSError, ValueError):
+        from . import procinfo
+
+        if not procinfo.alive(wp):
             return False
     return True
 
@@ -653,9 +653,9 @@ def _announced_timeline():
     # Both playback paths stamp their pid.
     wp = ex.get("writer_pid")
     if wp:
-        try:
-            os.kill(int(wp), 0)
-        except (OSError, ValueError):
+        from . import procinfo
+
+        if not procinfo.alive(wp):
             return (True, None, None, False, False, None, False)
     # Heard to the end, its cleanup still running (intake/submit.py
     # _mark_speech_ended): nothing is playing, whatever the row says.

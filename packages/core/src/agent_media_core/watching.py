@@ -55,13 +55,9 @@ def publish(sessions: dict[str, int]) -> None:
 
 
 def _alive(pid) -> bool:
-    try:
-        os.kill(int(pid), 0)
-    except PermissionError:
-        return True
-    except (OSError, TypeError, ValueError):
-        return False
-    return True
+    from . import procinfo
+
+    return procinfo.alive(pid)
 
 
 def pocket_s() -> int:

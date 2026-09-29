@@ -94,6 +94,41 @@ def environs() -> dict[int, dict[str, str]]:
     return out
 
 
+def alive(pid: int) -> bool:
+    """Whether process `pid` exists (someone else's counts).
+
+    Not `os.kill(pid, 0)` on Windows: there signal 0 is CTRL_C_EVENT, and
+    os.kill sends Ctrl+C to every process on the console — it ended CI's
+    test run with a KeyboardInterrupt, and would end the server's own
+    processes. There the process is opened and its exit code read instead.
+    """
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+
+        k32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        h = k32.OpenProcess(0x1000, False, pid)   # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return ctypes.GetLastError() == 5      # ERROR_ACCESS_DENIED: there, not ours
+        try:
+            code = ctypes.c_ulong()
+            return bool(k32.GetExitCodeProcess(h, ctypes.byref(code))) and code.value == 259
+        finally:
+            k32.CloseHandle(h)                     # 259: STILL_ACTIVE
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True        # EPERM: alive, someone else's
+    return True
+
+
 def image(pid: int) -> str:
     """The process's executable name, lower-case ("claude.exe"); "" when it is
     not running or cannot be read. Windows only needs it (`tasklist`); other

@@ -1869,13 +1869,9 @@ def _pending_ttl_s() -> float:
 
 def _pid_alive(pid: int) -> bool:
     """Best-effort liveness check used to reap stale waiter entries."""
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except OSError:
-        return True  # e.g. EPERM — alive but not ours
-    return True
+    from .. import procinfo
+
+    return procinfo.alive(pid)
 
 
 class _SpeechPlaybackLock:

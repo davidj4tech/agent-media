@@ -45,10 +45,10 @@ def _pidfile() -> Path:
 
 
 def _notifier_running() -> bool:
+    from .. import procinfo
+
     try:
-        pid = int(_pidfile().read_text().strip())
-        os.kill(pid, 0)
-        return True
+        return procinfo.alive(int(_pidfile().read_text().strip()))
     except (OSError, ValueError):
         return False
 

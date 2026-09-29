@@ -795,9 +795,9 @@ def _live_turn(session: str) -> Optional[dict]:
         return None
     wp = ex.get("writer_pid")
     if wp:
-        try:
-            _os.kill(int(wp), 0)
-        except (OSError, ValueError):
+        from . import procinfo
+
+        if not procinfo.alive(wp):
             return None
     at, text = np.get("started_at"), (ex.get("text") or "")
     if at is None or not text.strip():
