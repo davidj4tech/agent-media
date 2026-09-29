@@ -111,8 +111,10 @@ Headless first: no multiplexer needed. agent-media `43281af`,
 for Claude Code; `SASONICA_FROM=source` for the old way. **And opencode
 headless** (same day): one shared `opencode serve` held by sessiond, the same
 approval cards, interrupt, model chip and park/resume — no tmux for any
-agent the phone starts. **Next:** Mac and Windows (launchd / a Windows
-service in `sasonica install`).
+agent the phone starts. **The Mac too** (same day): `sasonica-macos-aarch64`,
+launchd agents from `sasonica install`, procinfo.py for other processes;
+checked in CI (docs/proposals/2026-09-29-single-binary.md). **Next:**
+Windows (a loopback socket for sessiond, a logon task, no fcntl).
 
 **A welcome, and Just look around** (David, 27 Sep 2026): a fresh install
 opens on Welcome, which says what Sasonica is and offers **Connect to my

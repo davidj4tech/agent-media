@@ -99,9 +99,31 @@ The alternative of holding a PTY per session in the server (and showing it in
 the app as a terminal) is its own small multiplexer, with ConPTY on Windows;
 not needed while every agent has a structured protocol.
 
-## Mac and Windows, later
+## The Mac (built 29 Sep 2026)
 
-The binary is the easy part: PyApp and python-build-standalone both build for
-both. What each still lacks is 2026-09-23-cross-platform.md's list — launchd
-(and a Windows service) for `sasonica install`, `/proc/<pid>/environ` reads,
-the audio calls. Headless-first takes the pane layer off that list.
+`sasonica-macos-aarch64` (Apple silicon), built on a `macos-14` runner with
+its own cargo and python-build-standalone's `aarch64-apple-darwin`, published
+beside the Linux ones; `curl -fsSL https://sasonica.com/install | bash` on a
+Mac installs it the same way. `sasonica install` writes two launchd agents
+(`~/Library/LaunchAgents/com.sasonica.{canvas,sessiond}.plist`, `RunAtLoad`,
+`KeepAlive`, logs in `~/Library/Logs/sasonica`) and bootstraps them in the
+login session; `sasonica update` kickstarts them and finds what runs from an
+old version with `ps`. Reading other processes moved behind
+`agent_media_core/procinfo.py` — /proc on Linux, `ps -E` and `lsof` on a Mac
+— for the live sweep, the machinery check and sessiond's orphans (the
+cross-platform proposal's step 1). A sessiond socket path past the Mac's
+104-byte limit falls back to `/tmp/agent-media-<uid>/`.
+
+Checked in CI, not on a Mac in hand: the binary's smoke test (the server
+answers, sessiond listens, the plists lint) and the server's tests on macOS,
+which fail only where Linux's do. Not done: an Intel Mac build, signing and
+notarising (a curl download is not quarantined, a browser one would be), the
+audio calls (`pactl`/`playerctl`; a Mac server speaks through the phone).
+
+## Windows, later
+
+PyApp and python-build-standalone build for it too. What it lacks beyond the
+Mac: sessiond's unix socket (Python on Windows has none: a loopback port and
+a token instead), `fcntl` (four org modules lock files with it), `!` commands
+through `bash`, and a service (a logon task). Headless-first took the pane
+layer off the list.
