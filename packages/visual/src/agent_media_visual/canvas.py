@@ -2007,6 +2007,9 @@ def main() -> None:
     # priority, then kept up; MEDIA_SEARCH_INDEX=0 leaves it to the queries.
     from agent_media_server import search as _search
     _search.start()
+    # The radio's loop (agent_media_server.radio): idle until a station is on.
+    from agent_media_server import radio as _radio
+    _radio.start()
     print(f"canvas on http://{args.bind}:{args.port}/  spool={spool_dir()}")
     srv.serve_forever()
 

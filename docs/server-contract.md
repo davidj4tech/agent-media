@@ -1944,7 +1944,31 @@ podcast again (`media book play`, resumed where it was left). Only a `uri`
 the book or podcast list holds is accepted (400 otherwise), so this is not
 a way to play any file on the host.
 
-Pinned by `packages/server/tests/test_music_route.py`.
+#### Radio (29 Sep 2026)
+
+Songs like one track, one after another, until turned off
+(docs/proposals/2026-09-29-radio.md). The `GET` answer (and every `POST`
+answer) carries `"radio": {"on", "seed": {"id", "title"} | null, "next":
+[{"id", "title", "channel", "state"}], "more"?}`: `next` is at most ten
+songs to come, `state` `"ready"` (queued in the player or in the phone's
+cache), `"fetching"` (downloading now) or null; `more` how many are listed
+past those. Off is `{"on": false, "seed": null, "next": []}`.
+
+- `{"action": "radio"}` starts a station from what is playing;
+  `{"action": "radio", "uri"}` plays `uri` and starts one from it. A
+  station is YouTube's Mix for the track, listed on the phone, so only a
+  YouTube track (400 otherwise) on a phone player — Sasonica's own or the
+  Termux mpv (409 when music plays elsewhere; 502 when the Mix could not
+  be listed).
+- `{"action": "radio", "off": true}` ends it; what is playing plays on.
+- `{"action": "dislike"}` is 👎: the song is kept off the station (a second
+  👎 on the same channel keeps the channel off) and the next song plays.
+  With no station it is `next`.
+- A `play` (not `add`) of something else ends the station, from here or
+  `media music play`; so does a track the station did not queue coming up.
+
+Pinned by `packages/server/tests/test_music_route.py` and
+`packages/core/tests/test_radio.py`.
 
 Clients: S (the Media tab).
 

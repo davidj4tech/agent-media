@@ -5808,6 +5808,54 @@ def _music_snapshot(m: "SinkMusic", where: str = "") -> Optional[dict]:
     return snap
 
 
+def _cmd_music_radio(m: "SinkMusic", a) -> int:
+    """`media music radio [URI|off]` and `media music dislike`.
+
+    A station of songs like URI (or what is playing), from YouTube's Mix;
+    the canvas's loop keeps it going (agent_media_core.radio). With a
+    station on and no URI, `radio` prints it. `dislike` is 👎: the song off
+    the station and the next one on, or a plain skip with no station.
+    """
+    from . import radio
+
+    if a.action == "dislike":
+        if radio.dislike() is None:
+            _music_live_backend(m).next()
+        return 0
+    arg = (a.uri or "").strip()
+    if arg == "off":
+        radio.stop()
+        print("radio off")
+        return 0
+    if not arg and radio.is_on():
+        snap = radio.snapshot()
+        print(f"📻 radio from {snap['seed'].get('title') or snap['seed'].get('id')}")
+        for r in snap["next"]:
+            mark = {"ready": "✓", "fetching": "…"}.get(r["state"] or "", " ")
+            print(f"  {mark} {r['title']}" + (f" — {r['channel']}" if r["channel"] else ""))
+        return 0
+    where = _resolve_music_where(getattr(a, "where", "") or "default")
+    playing = not arg
+    if playing:
+        snap = _music_status_json(m, patient=True)
+        arg = snap.get("uri") or snap.get("media_id") or ""
+        if not arg:
+            print("media music radio: nothing playing; give a YouTube URI", file=sys.stderr)
+            return 2
+    try:
+        if not playing:
+            radio.stop()
+            m.play(arg, Target(name=where))
+            StateStore().set_music_intent(arg, "music", None)
+            _note_music_where(where, arg)
+        snap = radio.start(arg, where, playing=True)
+    except (ValueError, RuntimeError) as e:
+        print(f"media music radio: {e}", file=sys.stderr)
+        return 1
+    print(f"📻 radio from {snap['seed'].get('title') or arg}: {len(snap['next'])}+ songs to come")
+    return 0
+
+
 def _music_like(m: "SinkMusic", note: str = "", where: str = "") -> int:
     """Keep what is playing, because it was good.
 
@@ -6029,10 +6077,16 @@ def cmd_music(a) -> int:
     if a.action == "likes":
         return _cmd_likes(a.uri or "", channel="music",
                           json_out=bool(getattr(a, "json", False)))
+    if a.action in ("radio", "dislike"):
+        return _cmd_music_radio(m, a)
     if a.action == "play":
         if not a.uri:
             print("media music play: a URI is required", file=sys.stderr)
             return 2
+        if not a.add:
+            # Something else put on is the end of a radio station.
+            from . import radio
+            radio.stop()
         where = _resolve_music_where(getattr(a, "where", "auto"))
         ct = coerce_content_type(getattr(a, "as_type", None)) or detect_content_type(a.uri)
         if where in ("abs", "sasonica"):
@@ -8791,7 +8845,7 @@ def _build_parser() -> argparse.ArgumentParser:
                             "next", "prev", "status", "now", "now-status",
                             "seek", "volume", "speed", "bookmark",
                             "bookmarks", "like", "likes",
-                            "chapters", "chapter"))
+                            "chapters", "chapter", "radio", "dislike"))
     s.add_argument("uri", nargs="?",
                    help="for 'play': Mopidy URI (e.g. yt:https://...); "
                         "for 'seek': time H:MM:SS (absolute) or +90/-5:00 "

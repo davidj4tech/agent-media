@@ -38,7 +38,8 @@ def player(monkeypatch):
 def test_now_is_the_status_and_the_picker(server, signed_in, audio_host, player):
     res, obj = call(server, "GET", "/music", headers=AUTH)
     assert res.status == 200, obj
-    assert keys(obj) == {"ok", "now", "art", "chapters", "where"}
+    assert keys(obj) == {"ok", "now", "art", "chapters", "where", "radio"}
+    assert obj["radio"] == {"on": False, "seed": None, "next": []}
     assert obj["art"] == "https://i.ytimg.com/vi/nMDHjVVj3bA/hqdefault.jpg"
     assert obj["now"] == NOW and obj["chapters"] == []
     assert keys(obj["where"]) == {"current", "next", "overridden", "options"}
@@ -167,3 +168,54 @@ def test_recent_is_gated(server, monkeypatch, audio_host):
     monkeypatch.setattr(auth_abs, "abs_identity", lambda bearer: (None, 401))
     res, obj = call(server, "GET", "/music/recent", headers=AUTH)
     assert res.status == 401 and obj["ok"] is False
+
+
+@pytest.fixture()
+def station(monkeypatch, tmp_path):
+    """The radio with its Mix and player faked (agent_media_core.radio)."""
+    from agent_media_core import cli, radio
+    from agent_media_server import radio as loop
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    started: list = []
+
+    def start(uri, where, playing):
+        started.append((uri, where, playing))
+        with radio._station() as st:
+            st.update(on=True, where=where, seed={"id": "nMDHjVVj3bA", "title": "A Mix"},
+                      queue=[{"id": "Gkl8blLusFc", "title": "Next", "channel": "Them"}])
+        return radio.snapshot()
+
+    monkeypatch.setattr(radio, "start", start)
+    monkeypatch.setattr(radio, "_skip", lambda where: None)
+    monkeypatch.setattr(cli, "_resolve_music_where", lambda w: "sasonica")
+    monkeypatch.setattr(loop, "wake", lambda: None)
+    return started
+
+
+def test_radio_starts_from_what_is_playing(server, signed_in, audio_host, player, station):
+    res, obj = call(server, "POST", "/music", {"action": "radio"}, AUTH)
+    assert res.status == 200, obj
+    assert station == [(NOW["uri"], "sasonica", True)] and player == []
+    assert obj["radio"]["on"] is True
+    assert obj["radio"]["next"] == [{"id": "Gkl8blLusFc", "title": "Next", "channel": "Them", "state": None}]
+
+
+def test_radio_from_a_uri_plays_it_first(server, signed_in, audio_host, player, station):
+    uri = "yt:https://www.youtube.com/watch?v=Gkl8blLusFc"
+    res, obj = call(server, "POST", "/music", {"action": "radio", "uri": uri}, AUTH)
+    assert res.status == 200, obj
+    assert player == [["play", uri]] and station == [(uri, "sasonica", True)]
+
+
+def test_radio_off_and_dislike(server, signed_in, audio_host, player, station):
+    call(server, "POST", "/music", {"action": "radio"}, AUTH)
+    res, obj = call(server, "POST", "/music", {"action": "dislike"}, AUTH)
+    assert res.status == 200 and obj["radio"]["on"] is True
+    res, obj = call(server, "POST", "/music", {"action": "radio", "off": True}, AUTH)
+    assert res.status == 200 and obj["radio"]["on"] is False and player == []
+
+
+def test_dislike_with_no_station_is_a_skip(server, signed_in, audio_host, player, station):
+    res, obj = call(server, "POST", "/music", {"action": "dislike"}, AUTH)
+    assert res.status == 200 and player == [["next"]]

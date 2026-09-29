@@ -8,6 +8,12 @@ server-contract.md §6.9a. Step 1 of docs/proposals/2026-09-28-music-tab.md
                              → {"ok", "kind", "items": [{"uri", "title", "at", "session", …}]}
   POST /music {"action", …}  → the same, after doing it
 
+`radio` is the station (agent_media_core.radio; docs/proposals/
+2026-09-29-radio.md): `{"on", "seed", "next": [{id, title, channel, state}],
+"more"}`. `{"action": "radio"}` starts one from what is playing (or `uri`),
+`{"action": "radio", "off": true}` ends it, and `{"action": "dislike"}` is 👎:
+that song off the station, and the next one on.
+
 `now` is `media music status --json`: the live player's track, position and
 state, whichever player that is (Sasonica's own, the Termux mpv, Mopidy), so
 the tab and the desk popup can never disagree. `where` is the music block of
@@ -40,6 +46,8 @@ ACTIONS = {
     "play": "play", "add": "play",
     # A book or podcast from Recently played: `media book play`, resumed.
     "book": "book",
+    # The station, run here rather than by the CLI (radio.py).
+    "radio": "radio", "dislike": "dislike",
 }
 
 _CACHE_TTL_S = 2.5
@@ -134,9 +142,63 @@ def _art(now: dict) -> str | None:
     return art(now.get("uri") or "") or art(now.get("media_id") or "")
 
 
+def _radio() -> dict:
+    from agent_media_core import radio
+
+    try:
+        return radio.snapshot()
+    except Exception as e:  # noqa: BLE001 — the tab can do without it
+        print(f"music: radio snapshot failed: {e}", file=sys.stderr)
+        return {"on": False, "seed": None, "next": []}
+
+
 def _answer() -> dict:
     now, chapters = _now()
-    return {"now": now, "art": _art(now), "chapters": chapters, "where": audio.channel_block("music")}
+    return {"now": now, "art": _art(now), "chapters": chapters,
+            "where": audio.channel_block("music"), "radio": _radio()}
+
+
+def _radio_control(body: dict) -> tuple[bool, dict]:
+    """`radio` (start, or `off`) and `dislike`."""
+    from agent_media_core import radio
+    from agent_media_core.cli import _resolve_music_where
+
+    from . import radio as loop
+
+    if body.get("action") == "dislike":
+        if radio.dislike() is None:
+            # No station: 👎 is a skip.
+            _run(["next"])
+        _reset_cache()
+        loop.wake()
+        return True, _answer()
+    if body.get("off"):
+        radio.stop()
+        return True, _answer()
+    uri = body.get("uri")
+    playing = False
+    if uri is None:
+        now, _ = _now()
+        uri = now.get("uri") or now.get("media_id") or ""
+        playing = True
+    if not isinstance(uri, str) or not uri.strip() or uri.lstrip().startswith("-"):
+        return False, {"error": "uri must be a YouTube track", "status": 400}
+    where = _resolve_music_where("default")
+    if where not in radio.WHERES:
+        return False, {"error": "radio plays on the phone", "status": 409, **_answer()}
+    if not playing:
+        done, said = _run(["play", uri.strip()])
+        if not done:
+            return False, {"error": said or "play failed", "status": 502, **_answer()}
+    try:
+        radio.start(uri.strip(), where, playing=True)
+    except ValueError as e:
+        return False, {"error": str(e), "status": 400, **_answer()}
+    except RuntimeError as e:
+        return False, {"error": str(e), "status": 502, **_answer()}
+    _reset_cache()
+    loop.wake()
+    return True, _answer()
 
 
 def now(bearer: str) -> tuple[bool, dict]:
@@ -188,6 +250,8 @@ def control(body: dict, bearer: str) -> tuple[bool, dict]:
     action = str(body.get("action") or "")
     if action not in ACTIONS:
         return False, {"error": "unknown action", "status": 400}
+    if action in ("radio", "dislike"):
+        return _radio_control(body)
     argv = [ACTIONS[action]]
     if action in ("seek", "seek-by"):
         key = "to" if action == "seek" else "by"
