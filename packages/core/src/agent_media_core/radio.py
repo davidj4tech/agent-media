@@ -327,6 +327,48 @@ def dislike() -> Optional[dict]:
     return snapshot()
 
 
+def play(vid: str) -> Optional[dict]:
+    """A song from the list, now (a tap on Up next): the songs before it stay
+    to come. None when no station is on; ValueError when `vid` is not on the
+    list, RuntimeError when the player would not take it."""
+    with _station() as st:
+        if not st["on"]:
+            return None
+        where, cur = st["where"], st.get("current")
+        if not any(s["id"] == vid for s in st["sent"] + st["queue"]
+                   if s["id"] not in st["played"]):
+            raise ValueError("that song is not on the station's list")
+        # A replace clears the player's queue: what was queued behind the
+        # song playing goes back to the front of the list (downloaded).
+        ids = [s["id"] for s in st["sent"]]
+        after = st["sent"][ids.index(cur) + 1:] if cur in ids else \
+            [s for s in st["sent"] if s["id"] not in st["played"]]
+        st["sent"] = [s for s in st["sent"] if s not in after]
+        st["queue"][:0] = after
+        st["ready"].extend(s["id"] for s in after if s["id"] not in st["ready"])
+        song = next(s for s in st["queue"] if s["id"] == vid)
+        at = st["queue"].index(song)
+        st["queue"].remove(song)
+        st["fetching"] = song
+    took = _send(where, song, replace=True)
+    with _station() as st:
+        st["fetching"] = None
+        if took:
+            st["sent"].append(song)
+            st["current"] = song["id"]
+            st["played"].append(song["id"])
+            st["at"] = None
+            if song["id"] in st["ready"]:
+                st["ready"].remove(song["id"])
+        else:
+            st["queue"].insert(min(at, len(st["queue"])), song)
+    if not took:
+        raise RuntimeError("the player would not take that song")
+    _label(where, song)
+    _note(song)
+    return snapshot()
+
+
 def _skip(where: str) -> None:
     """To the next song: the queued one, else the next on the list, now."""
     from .sinks import _mpv_ipc as ipc

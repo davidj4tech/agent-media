@@ -11,7 +11,8 @@ server-contract.md §6.9a. Step 1 of docs/proposals/2026-09-28-music-tab.md
 `radio` is the station (agent_media_core.radio; docs/proposals/
 2026-09-29-radio.md): `{"on", "seed", "next": [{id, title, channel, state}],
 "more"}`. `{"action": "radio"}` starts one from what is playing (or `uri`),
-`{"action": "radio", "off": true}` ends it, and `{"action": "dislike"}` is 👎:
+`{"action": "radio", "off": true}` ends it, `{"action": "radio", "play": id}`
+plays a song from its list now, and `{"action": "dislike"}` is 👎:
 that song off the station, and the next one on.
 
 `now` is `media music status --json`: the live player's track, position and
@@ -174,6 +175,21 @@ def _radio_control(body: dict) -> tuple[bool, dict]:
         return True, _answer()
     if body.get("off"):
         radio.stop()
+        return True, _answer()
+    if "play" in body:
+        # A song from Up next, now.
+        vid = body.get("play")
+        if not isinstance(vid, str) or not radio._ID.match(vid):
+            return False, {"error": "play must be a song id from the station's list", "status": 400}
+        try:
+            if radio.play(vid) is None:
+                return False, {"error": "no station is on", "status": 409, **_answer()}
+        except ValueError as e:
+            return False, {"error": str(e), "status": 400, **_answer()}
+        except RuntimeError as e:
+            return False, {"error": str(e), "status": 502, **_answer()}
+        _reset_cache()
+        loop.wake()
         return True, _answer()
     uri = body.get("uri")
     playing = False

@@ -216,6 +216,20 @@ def test_radio_off_and_dislike(server, signed_in, audio_host, player, station):
     assert res.status == 200 and obj["radio"]["on"] is False and player == []
 
 
+def test_radio_plays_a_song_from_up_next(server, signed_in, audio_host, player, station, monkeypatch):
+    from agent_media_core import radio
+
+    tapped: list = []
+    monkeypatch.setattr(radio, "play", lambda vid: (tapped.append(vid), radio.snapshot())[1] if radio.is_on() else None)
+    res, obj = call(server, "POST", "/music", {"action": "radio", "play": "Gkl8blLusFc"}, AUTH)
+    assert res.status == 409 and tapped == []
+    call(server, "POST", "/music", {"action": "radio"}, AUTH)
+    res, obj = call(server, "POST", "/music", {"action": "radio", "play": "Gkl8blLusFc"}, AUTH)
+    assert res.status == 200 and tapped == ["Gkl8blLusFc"] and obj["radio"]["on"] is True
+    res, obj = call(server, "POST", "/music", {"action": "radio", "play": "; rm -rf"}, AUTH)
+    assert res.status == 400 and tapped == ["Gkl8blLusFc"]
+
+
 def test_dislike_with_no_station_is_a_skip(server, signed_in, audio_host, player, station):
     res, obj = call(server, "POST", "/music", {"action": "dislike"}, AUTH)
     assert res.status == 200 and player == [["next"]]

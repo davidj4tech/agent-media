@@ -222,3 +222,39 @@ def test_its_own_song_from_the_list_does_not_turn_it_off(station):
     radio.tick()
     assert radio.is_on() and radio.read()["current"] == MIX[3]["id"]
     assert MIX[3]["id"] not in [s["id"] for s in radio.read()["queue"]]
+
+
+def test_a_song_tapped_on_the_list_plays_now(station):
+    """A tap on Up next (David, 29 Sep 2026: "I'd like to be able to click on
+    things on the up next list")."""
+    player, sent, _, _ = station
+    radio.start(SEED["id"], "sasonica", playing=True)
+    radio.tick()                   # MIX[1] queued in the player
+    radio.play(MIX[4]["id"])
+    assert sent[-1] == (MIX[4]["id"], True) and player.labels[-1] == MIX[4]["id"]
+    st = radio.read()
+    assert st["current"] == MIX[4]["id"]
+    # The songs before it stay to come, the one the replace cleared first.
+    assert [r["id"] for r in radio.snapshot()["next"][:4]] == [s["id"] for s in (MIX[1], MIX[2], MIX[3], MIX[5])]
+    radio.tick()                   # and the station goes on from there
+    assert sent[-1] == (MIX[1]["id"], False) and radio.is_on()
+
+
+def test_only_a_song_on_the_list_can_be_tapped(station):
+    radio.start(SEED["id"], "sasonica", playing=True)
+    with pytest.raises(ValueError):
+        radio.play(SEED["id"])     # heard already
+    with pytest.raises(ValueError):
+        radio.play("notonthelst")
+    radio.stop()
+    assert radio.play(MIX[2]["id"]) is None
+
+
+def test_a_tapped_song_the_player_refuses_stays_on_the_list(station):
+    player, _, _, _ = station
+    radio.start(SEED["id"], "sasonica", playing=True)
+    player.refuse.append(MIX[3]["id"])
+    with pytest.raises(RuntimeError):
+        radio.play(MIX[3]["id"])
+    assert [s["id"] for s in radio.read()["queue"]][:3] == [MIX[1]["id"], MIX[2]["id"], MIX[3]["id"]]
+    assert radio.read()["current"] == SEED["id"]

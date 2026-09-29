@@ -1961,6 +1961,10 @@ past those. Off is `{"on": false, "seed": null, "next": []}`.
   Termux mpv (409 when music plays elsewhere; 502 when the Mix could not
   be listed).
 - `{"action": "radio", "off": true}` ends it; what is playing plays on.
+- `{"action": "radio", "play": "<id>"}` plays a song from `next` now (a
+  tap on Up next); the songs before it stay to come. 400 when the id is
+  not on the list, 409 with no station, 502 when the player would not take
+  it.
 - `{"action": "dislike"}` is 👎: the song is kept off the station (a second
   👎 on the same channel keeps the channel off) and the next song plays.
   With no station it is `next`.
