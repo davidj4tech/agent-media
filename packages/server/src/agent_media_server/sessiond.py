@@ -380,33 +380,28 @@ class Supervisor:
         """Terminate agent processes a crashed instance left running for one of
         our sessions: two writers on one session interleave its transcript.
         An opencode server one left is ended too: its sessions are ours."""
+        from agent_media_core import procinfo
+
         from .sessiond_opencode import HOST_MARK
 
         me = os.getpid()
-        for d in Path("/proc").iterdir() if Path("/proc").is_dir() else []:
-            if not d.name.isdigit() or int(d.name) == me:
+        for pid, env in procinfo.environs().items():
+            if pid == me:
                 continue
-            try:
-                env = (d / "environ").read_bytes().split(b"\0")
-            except OSError:
+            if env.get(HOST_MARK) == "1":
+                log.warning("sessiond: ending orphan opencode server %s", pid)
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except OSError:
+                    pass
                 continue
-            for e in env:
-                if e == f"{HOST_MARK}=1".encode():
-                    log.warning("sessiond: ending orphan opencode server %s", d.name)
-                    try:
-                        os.kill(int(d.name), signal.SIGTERM)
-                    except OSError:
-                        pass
-                    break
-                if e.startswith(b"MEDIA_SESSIOND_SESSION="):
-                    sid = e.split(b"=", 1)[1].decode(errors="replace")
-                    if sid in ours:
-                        log.warning("sessiond: ending orphan %s for %s", d.name, sid[:8])
-                        try:
-                            os.kill(int(d.name), signal.SIGTERM)
-                        except OSError:
-                            pass
-                    break
+            sid = env.get("MEDIA_SESSIOND_SESSION")
+            if sid is not None and sid in ours:
+                log.warning("sessiond: ending orphan %s for %s", pid, sid[:8])
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except OSError:
+                    pass
 
     def shutdown(self) -> None:
         """Park everything live, as gently as a close: stdin, then signals."""

@@ -117,16 +117,26 @@ _EXCLUDE_DEFAULT = "~/.meridian"
 def _excluded_dirs() -> list[str]:
     raw = os.environ.get("MEDIA_SESSIONS_EXCLUDE_CWD")
     raw = _EXCLUDE_DEFAULT if raw is None else raw
-    return [os.path.realpath(os.path.expanduser(p.strip())) for p in raw.split(",") if p.strip()]
+    out: list[str] = []
+    for p in raw.split(","):
+        if p.strip():
+            # As written and resolved: a Mac's /home is a link into
+            # /System/Volumes/Data, and a stored cwd may be either.
+            for form in (os.path.normpath(os.path.expanduser(p.strip())),
+                         os.path.realpath(os.path.expanduser(p.strip()))):
+                if form not in out:
+                    out.append(form)
+    return out
 
 
 def _is_machinery(pid: int, excluded: list[str]) -> bool:
     """Is this agent process running in an excluded folder?"""
     if not excluded:
         return False
-    try:
-        cwd = os.path.realpath(os.readlink(f"/proc/{pid}/cwd"))
-    except OSError:
+    from agent_media_core import procinfo
+
+    cwd = procinfo.cwd(pid)
+    if not cwd:
         return False
     return any(cwd == d or cwd.startswith(d + os.sep) for d in excluded)
 
@@ -148,24 +158,25 @@ def live_sessions() -> dict[str, str]:
     live: dict[str, str] = {}
     pids: dict[str, int] = {}
     excluded = _excluded_dirs()
-    for d in glob.glob("/proc/[0-9]*"):
-        try:
-            cmd = Path(d, "cmdline").read_bytes().split(b"\0")
-            if not cmd or not cmd[0] or os.path.basename(cmd[0].decode(errors="replace")) != "claude":
-                continue
-            env = Path(d, "environ").read_bytes().split(b"\0")
-        except OSError:
+    from agent_media_core import procinfo
+
+    for pid, argv in procinfo.processes():
+        if not argv or os.path.basename(argv[0]) != "claude":
             continue
-        pane = panes.addr_of_env(dict(e.split(b"=", 1) for e in env if b"=" in e))
+        env = procinfo.environ(pid)
+        if not env:
+            continue
+        pane = panes.addr_of_env({k.encode(): v.encode() for k, v in env.items()})
         if not pane:
             continue
-        if _is_machinery(int(os.path.basename(d)), excluded):
+        if _is_machinery(pid, excluded):
             continue
+        cmd = [a.encode() for a in argv]
         # Claude's own record first: it follows /resume and /clear, and it is
         # there when our pane registry lost the entry (claude_sessions).
         from agent_media_core import claude_sessions
 
-        sid = claude_sessions.session_for_pid(int(os.path.basename(d))) or ""
+        sid = claude_sessions.session_for_pid(pid) or ""
         if not sid:
             m = _UUID.search(b" ".join(cmd).decode(errors="replace"))
             sid = m.group(0) if m else ""
@@ -176,11 +187,11 @@ def live_sessions() -> dict[str, str]:
                 parts = []
             # Trust the entry only if it names THIS claude's pid (or no pid at
             # all — legacy rows, kept so long-running sessions aren't dropped).
-            if parts and (len(parts) < 2 or parts[1] == os.path.basename(d)):
+            if parts and (len(parts) < 2 or parts[1] == str(pid)):
                 sid = parts[0]
         if sid:
             live[sid] = pane
-            pids[sid] = int(os.path.basename(d))
+            pids[sid] = pid
     # Codex and pi, each found its own way (see agent_media_core.harnesses).
     from agent_media_core import harnesses
 

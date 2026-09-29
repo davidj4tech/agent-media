@@ -77,8 +77,11 @@ jobs:
           "$b" sessiond >sessiond.log 2>&1 &
           for i in $(seq 1 60); do curl -fsS http://127.0.0.1:18781/healthz >/dev/null && break; sleep 1; done
           curl -fsS http://127.0.0.1:18781/healthz
-          sleep 2
-          ls "$HOME/.local/state/agent-media/sessiond/sessiond.sock"
+          # sessiond says where its socket is; it must be there.
+          for i in $(seq 1 30); do grep -q "listening on" sessiond.log && break; sleep 1; done
+          cat sessiond.log
+          sock=$(sed -n 's/.*listening on \([^ ]*\).*/\1/p' sessiond.log | head -1)
+          test -S "$sock"
           # install writes launchd agents; lint them, bootstrap nothing.
           "$b" install --dry-run --no-services
           python3 - "$b" <<'PY'
