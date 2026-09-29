@@ -172,7 +172,13 @@ def socket_path() -> Path:
     run = (os.environ.get("XDG_RUNTIME_DIR") or "").strip()
     if run:
         return Path(run) / "agent-media" / "sessiond.sock"
-    return state_root() / "sessiond.sock"
+    path = state_root() / "sessiond.sock"
+    # A unix socket's path has a limit (104 bytes on a Mac, 108 on Linux); a
+    # long home puts the state dir past it. Then a short one of this user's
+    # own (Server makes the directory 0700).
+    if len(str(path).encode()) > 100:
+        path = Path("/tmp") / f"agent-media-{os.getuid()}" / "sessiond.sock"
+    return path
 
 
 def record_path(session: str, root: Path | None = None) -> Path:
@@ -1370,6 +1376,10 @@ class Server(socketserver.ThreadingUnixStreamServer):
 
     def __init__(self, path: Path, supervisor: Supervisor) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
+        # The mode is the socket's whole auth: a directory someone else owns
+        # (made first in /tmp, say) is refused rather than used.
+        if path.parent.stat().st_uid != os.getuid():
+            raise OSError(f"{path.parent} is not this user's; not serving there")
         try:
             os.chmod(path.parent, 0o700)
         except OSError:

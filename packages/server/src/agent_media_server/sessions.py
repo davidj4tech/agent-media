@@ -114,19 +114,23 @@ def session_for_path(path: str) -> tuple[str | None, str]:
 _EXCLUDE_DEFAULT = "~/.meridian"
 
 
-def _excluded_dirs() -> list[str]:
-    raw = os.environ.get("MEDIA_SESSIONS_EXCLUDE_CWD")
-    raw = _EXCLUDE_DEFAULT if raw is None else raw
+def _dir_forms(raw: str) -> list[str]:
+    """Comma-separated folders, `~` expanded, each as written and resolved: a
+    Mac's /home is a link into /System/Volumes/Data, and a cwd kept in a
+    transcript may be either."""
     out: list[str] = []
     for p in raw.split(","):
         if p.strip():
-            # As written and resolved: a Mac's /home is a link into
-            # /System/Volumes/Data, and a stored cwd may be either.
             for form in (os.path.normpath(os.path.expanduser(p.strip())),
                          os.path.realpath(os.path.expanduser(p.strip()))):
                 if form not in out:
                     out.append(form)
     return out
+
+
+def _excluded_dirs() -> list[str]:
+    raw = os.environ.get("MEDIA_SESSIONS_EXCLUDE_CWD")
+    return _dir_forms(_EXCLUDE_DEFAULT if raw is None else raw)
 
 
 def _is_machinery(pid: int, excluded: list[str]) -> bool:
@@ -1201,10 +1205,7 @@ def _store_excluded_dirs() -> list[str]:
     it printed. A session David opens there himself is still live, still
     reaped, still listed.
     """
-    raw = os.environ.get("MEDIA_SESSIONS_STORE_EXCLUDE_CWD") or ""
-    extra = [os.path.realpath(os.path.expanduser(p.strip()))
-             for p in raw.split(",") if p.strip()]
-    return _excluded_dirs() + extra
+    return _excluded_dirs() + _dir_forms(os.environ.get("MEDIA_SESSIONS_STORE_EXCLUDE_CWD") or "")
 
 
 def _stored_index() -> list:
