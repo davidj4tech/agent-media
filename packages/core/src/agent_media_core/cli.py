@@ -657,6 +657,10 @@ def _announced_timeline():
             os.kill(int(wp), 0)
         except (OSError, ValueError):
             return (True, None, None, False, False, None, False)
+    # Heard to the end, its cleanup still running (intake/submit.py
+    # _mark_speech_ended): nothing is playing, whatever the row says.
+    if ex.get("ended_at"):
+        return (True, None, None, False, False, None, False)
     ps = ex.get("play_started_at")
     lp = ex.get("live_pos_s")
     # The reply's length on the clock `live_pos_s` is on: `total_wall_s` when

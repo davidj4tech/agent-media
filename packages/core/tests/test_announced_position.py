@@ -123,3 +123,24 @@ def test_without_measured_starts_the_summed_audio_is_still_the_end(monkeypatch):
     _row(monkeypatch, live_pos_s=3.3, live_pos_at=time.time())
     _idle, _pos, dur, *_ = cli._announced_timeline()
     assert dur == TOTAL
+
+
+def test_heard_to_the_end_is_idle_while_cleanup_runs(monkeypatch):
+    """The reply's last clip finished; the row stays for its cleanup (rooms,
+    music, book) but the display says idle at once (submit._mark_speech_ended)."""
+    import time
+    _row(monkeypatch, live_pos_s=11.0, live_pos_at=time.time(), ended_at=time.time())
+    idle, *_ = cli._announced_timeline()
+    assert idle
+
+
+def test_mark_speech_ended_stamps_the_row(tmp_path):
+    from agent_media_core.intake import submit
+    from agent_media_core.state import StateStore
+
+    st = StateStore(tmp_path / "state.db")
+    st.set_now_playing("speech", "speech:x", 1.0, target="sasonica", extras={"total_duration_s": 3.0})
+    submit._mark_speech_ended(st)
+    np = st.get_now_playing("speech")
+    assert np["extras"]["ended_at"] > 0 and np["extras"]["total_duration_s"] == 3.0
+    assert np["target"] == "sasonica"

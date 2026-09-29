@@ -1538,6 +1538,26 @@ def request_session_speech_cut(session: str, mode: str = "after",
     return at
 
 
+def _mark_speech_ended(state: "StateStore") -> None:
+    """Stamp `ended_at` on the speech row: the reply has been heard to its end.
+
+    Only the display reads it (cli._announced_timeline shows idle): the row
+    itself stays until the reply's cleanup is done, because controls and the
+    queue treat it as "a reply is in flight" and the cleanup still owns the
+    rooms, the music and the book."""
+    try:
+        np = state.get_now_playing("speech")
+        if not np:
+            return
+        extras = dict(np.get("extras") or {})
+        extras["ended_at"] = time.time()
+        state.set_now_playing("speech", np["uri"], np["started_at"],
+                              target=np.get("target") or "local",
+                              content_type=np.get("content_type"), extras=extras)
+    except Exception:  # noqa: BLE001 — the display is a nicety; never cost the reply
+        pass
+
+
 def session_reply_read(session: str, *, keep: bool = False,
                        at: Optional[float] = None) -> Optional[float]:
     """The listener replied to `session`: what it was reading them has been read.
@@ -4762,6 +4782,11 @@ def _submit_event(event: Event,
                         else:
                             why = "playlist finished"
                         finished = True
+                        # Heard to the end: say so on the row now, not after
+                        # the cleanup below (the rooms, music and book put back,
+                        # a settle), which kept the app's bar on "playing" for
+                        # seconds after the voice stopped (David, 29 Sep 2026).
+                        _mark_speech_ended(state)
                         break  # playlist finished
                     pos = snap.get("playlist-pos")
                     if pos is None or pos < 0:
