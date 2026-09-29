@@ -113,8 +113,10 @@ headless** (same day): one shared `opencode serve` held by sessiond, the same
 approval cards, interrupt, model chip and park/resume — no tmux for any
 agent the phone starts. **The Mac too** (same day): `sasonica-macos-aarch64`,
 launchd agents from `sasonica install`, procinfo.py for other processes;
-checked in CI (docs/proposals/2026-09-29-single-binary.md). **Next:**
-Windows (a loopback socket for sessiond, a logon task, no fcntl).
+checked in CI (docs/proposals/2026-09-29-single-binary.md). **And Windows**
+(same day): `sasonica-windows-x86_64.exe`, `deploy/install.ps1`, sessiond
+over loopback TCP with a token, logon tasks; checked in CI. **Next:** try both
+on real machines; signing; a sasonica.com address for install.ps1.
 
 **A welcome, and Just look around** (David, 27 Sep 2026): a fresh install
 opens on Welcome, which says what Sasonica is and offers **Connect to my

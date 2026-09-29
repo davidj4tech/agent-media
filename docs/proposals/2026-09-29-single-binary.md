@@ -120,10 +120,42 @@ which fail only where Linux's do. Not done: an Intel Mac build, signing and
 notarising (a curl download is not quarantined, a browser one would be), the
 audio calls (`pactl`/`playerctl`; a Mac server speaks through the phone).
 
-## Windows, later
+## Windows (built 29 Sep 2026)
 
-PyApp and python-build-standalone build for it too. What it lacks beyond the
-Mac: sessiond's unix socket (Python on Windows has none: a loopback port and
-a token instead), `fcntl` (four org modules lock files with it), `!` commands
-through `bash`, and a service (a logon task). Headless-first took the pane
-layer off the list.
+`sasonica-windows-x86_64.exe`, built on `windows-latest` from Git Bash with
+python-build-standalone's MSVC build, published beside the others. Install in
+PowerShell:
+
+    irm https://raw.githubusercontent.com/davidj4tech/agent-media/main/deploy/install.ps1 | iex
+
+(`deploy/install.ps1`: the .exe to `%USERPROFILE%\.local\bin`, checked
+against SHA256SUMS, that folder on the user's PATH, `sasonica install`, a
+pairing QR). What it took:
+
+* **sessiond over loopback TCP** — Python on Windows has no unix sockets. It
+  listens on 127.0.0.1 at a port of the system's choosing and writes the port
+  and a fresh token to `sessiond.endpoint.json` in its state folder (private
+  by the profile's ACL); every request carries the token, and one without it
+  is refused. `MEDIA_SESSIOND_TRANSPORT=tcp` forces it anywhere, and the
+  headless tests run both transports on Linux.
+* **UTF-8 mode** — Windows reads text in its code page; the binary runs itself
+  again with `-X utf8` (PyApp's `-I` ignores PYTHONUTF8).
+* **locks** through core's `_lock.py` (msvcrt there); a discarded note is
+  closed before it is deleted, which Windows insists on.
+* **`!` commands** through Git for Windows's bash (Claude Code needs it there
+  anyway), else `cmd /c`.
+* **`sasonica install`** writes a `.cmd` shim beside each sh one (Git Bash,
+  where Claude Code runs hooks, finds the sh one) and two Task Scheduler
+  logon tasks (`Sasonica\canvas`, `Sasonica\sessiond`) run under
+  `conhost --headless`, so no console window opens. `sasonica update` renames
+  the running .exe aside to put the new one in.
+* **orphans** are ended by the pid each record kept, and only while it is
+  still an agent's program (`tasklist`): no other process's environment can
+  be read there.
+
+Checked in CI, not on a Windows machine in hand: the binary's smoke test (the
+server answers, sessiond listens on its port) and the server's tests on
+Windows, which fail only where Linux's do; tmux-pane and file-mode tests skip
+there. Not done: an ARM64 build, code signing (SmartScreen will warn on a
+browser download), a short sasonica.com address for install.ps1, and the
+logon tasks and hooks exercised on a real desktop.
