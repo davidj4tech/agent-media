@@ -105,6 +105,7 @@ def test_a_directory_can_be_left_out_of_the_list_alone(stores, monkeypatch):
     session opened there by hand is live, and the reaper still has it."""
     monkeypatch.setenv("MEDIA_SESSIONS_STORE_EXCLUDE_CWD", "~/scratch")
     monkeypatch.setenv("HOME", "/home/x")
+    monkeypatch.setenv("USERPROFILE", "/home/x")     # what ~ is on Windows
     assert set(_rows()) == {CX}
     # Not the live sweep's list, which is what the reaper reads.
     assert "/home/x/scratch" not in sessions._excluded_dirs()
