@@ -277,3 +277,74 @@ def test_a_tapped_song_the_player_refuses_stays_on_the_list(station):
         radio.play(MIX[3]["id"])
     assert [s["id"] for s in radio.read()["queue"]][:3] == [MIX[1]["id"], MIX[2]["id"], MIX[3]["id"]]
     assert radio.read()["current"] == SEED["id"]
+
+
+@pytest.fixture()
+def dj(station, monkeypatch):
+    """The DJ's picks faked: six songs a call, and what it was shown."""
+    from agent_media_core import radio_dj
+
+    asked: list = []
+
+    def picks(st, n=6):
+        k = len(asked)
+        asked.append(st)
+        return [{"id": f"dj{k}{i:02d}xxxxxx"[:11], "title": f"Pick {k}.{i}",
+                 "channel": f"Artist {k}{i}", "dur": 200} for i in range(n)], f"mood {k}"
+
+    monkeypatch.setattr(radio_dj, "picks", picks)
+    return station, asked
+
+
+def test_a_dj_station_puts_its_first_pick_on_in_place_of_what_plays(dj):
+    (player, sent, _, _), asked = dj
+    snap = radio.start_dj("sasonica")
+    assert snap["on"] and snap["kind"] == "dj" and snap["seed"]["title"] == "Claude DJ"
+    assert sent == []              # what was playing plays on until then
+    radio.tick()
+    assert len(asked) == 1 and sent == [("dj000xxxxxx", True)]
+    assert radio.read()["current"] == "dj000xxxxxx" and player.labels[-1] == "dj000xxxxxx"
+    snap = radio.snapshot()
+    assert snap["note"] == "mood 0" and [r["title"] for r in snap["next"]][:2] == ["Pick 0.1", "Pick 0.2"]
+    radio.tick()                   # then as any station: one queued behind
+    assert sent[-1] == ("dj001xxxxxx", False)
+
+
+def test_the_dj_is_asked_again_when_the_list_runs_low(dj, monkeypatch):
+    (player, _, _, _), asked = dj
+    radio.start_dj("sasonica")
+    for _ in range(40):
+        radio.tick()
+        with radio._station() as st:
+            st["refilled"] = 0     # no minute to wait in a test
+        if player.pos + 1 < len(player.items):
+            player.pos += 1
+    assert len(asked) >= 2
+    assert asked[-1]["played"], "it is shown what has played"
+
+
+def test_a_dj_that_finds_nothing_gives_up(station, monkeypatch):
+    from agent_media_core import radio_dj
+
+    monkeypatch.setattr(radio_dj, "picks", lambda st, n=6: ([], ""))
+    radio.start_dj("sasonica")
+    for _ in range(3):
+        radio.tick()
+        with radio._station() as st:
+            st["refilled"] = 0
+    assert radio.is_on() is False
+
+
+def test_the_dj_reads_its_lines(station, monkeypatch):
+    from agent_media_core import radio_dj
+
+    monkeypatch.setattr(radio_dj, "moment", lambda: {"time_of_day": "afternoon"})
+    monkeypatch.setattr(radio_dj, "_likes", lambda: [])
+    import agent_media_core.intake._summary as s
+    real = s._chat
+    s._chat = lambda *a, **k: "1. Eagles - Take It Easy\n- The Band - The Weight\nnonsense\n\nNOTE: an easy afternoon"
+    try:
+        lines, note = radio_dj.ask(radio._blank())
+    finally:
+        s._chat = real
+    assert lines == ["Eagles - Take It Easy", "The Band - The Weight"] and note == "an easy afternoon"

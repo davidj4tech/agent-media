@@ -233,3 +233,12 @@ def test_radio_plays_a_song_from_up_next(server, signed_in, audio_host, player, 
 def test_dislike_with_no_station_is_a_skip(server, signed_in, audio_host, player, station):
     res, obj = call(server, "POST", "/music", {"action": "dislike"}, AUTH)
     assert res.status == 200 and player == [["next"]]
+
+
+def test_radio_dj_starts_the_djs_station(server, signed_in, audio_host, player, station, monkeypatch):
+    from agent_media_core import radio
+
+    monkeypatch.setattr(radio, "start_dj", lambda where: station.append(("dj", where)))
+    res, obj = call(server, "POST", "/music", {"action": "radio", "dj": True}, AUTH)
+    assert res.status == 200, obj
+    assert station == [("dj", "sasonica")] and player == []

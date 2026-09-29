@@ -76,13 +76,16 @@ def _blank() -> dict:
     return {"on": False, "where": "", "seed": None, "started": 0.0,
             "queue": [], "sent": [], "played": [], "banned": [],
             "strikes": {}, "ready": [], "fetching": None, "current": None, "mixed": [],
-            "at": None, "tries": {}}
+            "at": None, "tries": {}, "kind": "mix", "note": "", "fresh": False,
+            "refilled": 0.0}
     # queue: songs to come, in order; sent: queued in the player; played: ids
     # heard; ready: queue ids already in the phone's cache; fetching: the
     # song downloading now; strikes: 👎 per channel; mixed: ids whose Mix
     # has been listed (each once, or a dry station lists one every pass);
     # at: {id, pos, dur} of the song playing, last seen; tries: failed
-    # queueings per id.
+    # queueings per id; kind: "mix" (YouTube's) or "dj" (radio_dj); note:
+    # the DJ's word on the mood; fresh: a DJ station whose first song is
+    # still to be picked and put on; refilled: when the DJ was last asked.
 
 
 @contextlib.contextmanager
@@ -152,8 +155,16 @@ def mix(vid: str) -> list[dict]:
     except (subprocess.TimeoutExpired, OSError) as e:
         log.warning("radio: listing the Mix of %s failed: %s", vid, e)
         return []
+    out = _parse(r.stdout or "")
+    if not out:
+        log.warning("radio: the Mix of %s listed nothing: %s", vid, (r.stderr or "").strip()[-200:])
+    return out
+
+
+def _parse(text: str) -> list[dict]:
+    """yt-dlp's `id<TAB>title<TAB>channel<TAB>duration` lines, as songs."""
     out = []
-    for line in (r.stdout or "").splitlines():
+    for line in text.splitlines():
         parts = line.split("\t")
         if len(parts) < 2 or not _ID.match(parts[0]):
             continue
@@ -164,8 +175,6 @@ def mix(vid: str) -> list[dict]:
         out.append({"id": parts[0], "title": parts[1].strip(),
                     "channel": (parts[2].strip() if len(parts) > 2 and parts[2] != "NA" else ""),
                     "dur": dur})
-    if not out:
-        log.warning("radio: the Mix of %s listed nothing: %s", vid, (r.stderr or "").strip()[-200:])
     return out
 
 
@@ -302,6 +311,50 @@ def start(uri: str, where: str, playing: bool) -> dict:
     return snapshot()
 
 
+def start_dj(where: str) -> dict:
+    """A DJ station on `where` (radio_dj). What is playing plays on until the
+    DJ's first song is found and downloaded (the loop does it: a minute, give
+    or take), then that replaces it."""
+    if where not in WHERES:
+        raise ValueError("radio plays on the phone")
+    with _station() as st:
+        st.clear()
+        st.update(_blank())
+        st.update(on=True, where=where, kind="dj", fresh=True, started=time.time(),
+                  seed={"id": None, "title": "Claude DJ", "channel": ""})
+    return snapshot()
+
+
+def _begin(where: str) -> None:
+    """A fresh DJ station: pick, then put the first song on in place of
+    whatever was playing."""
+    with _station() as st:
+        empty = not st["queue"]
+    if empty:
+        _refill()
+    with _station() as st:
+        if not st["on"] or not st.get("fresh"):
+            return
+        if not st["queue"]:
+            st["tries"]["_dj"] = st["tries"].get("_dj", 0) + 1
+            if st["tries"]["_dj"] >= _TRIES:
+                log.warning("radio: the DJ found nothing; off")
+                st["on"] = False
+            return
+        song = st["queue"].pop(0)
+        st["fetching"] = song
+    took = _send(where, song, replace=True)
+    with _station() as st:
+        st["fetching"] = None
+        if took:
+            st.update(fresh=False, current=song["id"])
+            st["sent"].append(song)
+            st["played"].append(song["id"])
+    if took:
+        _label(where, song)
+        _note(song)
+
+
 def stop() -> None:
     """Turn the station off; what is playing plays on."""
     with _station() as st:
@@ -412,6 +465,12 @@ def tick() -> None:
     pos, count = p.get("playlist-pos"), p.get("playlist-count")
     ahead = count - pos - 1 if isinstance(pos, int) and isinstance(count, int) and pos >= 0 else 0
     t, dur = p.get("time-pos"), p.get("duration")
+
+    with _station() as st:
+        fresh = st["on"] and st.get("fresh")
+    if fresh:
+        _begin(where)
+        return
 
     # Only an empty player lost its song: idle with a queue is between two.
     if cur is None and not count and _resume(where):
@@ -527,6 +586,29 @@ def _refill() -> None:
     with _station() as st:
         if not st["on"]:
             return
+        if st.get("kind") == "dj":
+            # A model call and a search: not more than once a minute, if a
+            # pick comes back empty.
+            if time.time() - st.get("refilled", 0) < 60:
+                return
+            st["refilled"] = time.time()
+            view = json.loads(json.dumps(st))
+        else:
+            view = None
+    if view is not None:
+        from . import radio_dj
+
+        songs, note = radio_dj.picks(view)
+        with _station() as st:
+            if st["on"]:
+                n = _merge(st, songs)
+                if note:
+                    st["note"] = note
+                log.info("radio: +%d from the DJ", n)
+        return
+    with _station() as st:
+        if not st["on"]:
+            return
         played = [v for v in st["played"] if v not in st["mixed"] and v not in st["banned"]]
         if not played:
             return
@@ -570,6 +652,7 @@ def snapshot() -> dict:
         rows.append({**_row(s), "state": state})
     seed = st.get("seed") or {}
     return {"on": True, "seed": {"id": seed.get("id"), "title": seed.get("title") or ""},
+            "kind": st.get("kind") or "mix", "note": st.get("note") or "",
             "next": rows[:_SHOWN], "more": max(0, len(rows) - _SHOWN)}
 
 

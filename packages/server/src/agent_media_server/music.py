@@ -11,7 +11,7 @@ server-contract.md §6.9a. Step 1 of docs/proposals/2026-09-28-music-tab.md
 `radio` is the station (agent_media_core.radio; docs/proposals/
 2026-09-29-radio.md): `{"on", "seed", "next": [{id, title, channel, state}],
 "more"}`. `{"action": "radio"}` starts one from what is playing (or `uri`),
-`{"action": "radio", "off": true}` ends it, `{"action": "radio", "play": id}`
+`{"action": "radio", "dj": true}` starts the DJ's station (radio_dj), `{"action": "radio", "off": true}` ends it, `{"action": "radio", "play": id}`
 plays a song from its list now, and `{"action": "dislike"}` is 👎:
 that song off the station, and the next one on.
 
@@ -189,6 +189,15 @@ def _radio_control(body: dict) -> tuple[bool, dict]:
         except RuntimeError as e:
             return False, {"error": str(e), "status": 502, **_answer()}
         _reset_cache()
+        loop.wake()
+        return True, _answer()
+    if body.get("dj"):
+        # The DJ's station: what plays now plays on until its first pick.
+        where = _resolve_music_where("default")
+        try:
+            radio.start_dj(where)
+        except ValueError as e:
+            return False, {"error": str(e), "status": 409, **_answer()}
         loop.wake()
         return True, _answer()
     uri = body.get("uri")

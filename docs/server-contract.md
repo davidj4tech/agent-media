@@ -1960,6 +1960,12 @@ past those. Off is `{"on": false, "seed": null, "next": []}`.
   YouTube track (400 otherwise) on a phone player — Sasonica's own or the
   Termux mpv (409 when music plays elsewhere; 502 when the Mix could not
   be listed).
+- `{"action": "radio", "dj": true}` (29 Sep 2026) starts the DJ's station: a
+  model picks songs for the moment (radio_dj). What is playing plays on until
+  the first pick is found and downloaded (about a minute), then it replaces
+  it. `radio` gains `"kind": "mix" | "dj"` and `"note"`, the DJ's sentence on
+  the mood (`""` for a Mix station); a DJ station's `seed` is
+  `{"id": null, "title": "Claude DJ"}`.
 - `{"action": "radio", "off": true}` ends it; what is playing plays on.
 - `{"action": "radio", "play": "<id>"}` plays a song from `next` now (a
   tap on Up next); the songs before it stay to come. 400 when the id is
