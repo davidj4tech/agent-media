@@ -709,8 +709,10 @@ class SinkSpeech:
                 # playlist-count tells a streamed reply's underrun (the
                 # player ran out of clips; its list is intact) from a stop at
                 # the phone (both players clear the list) — see submit.py.
+                # duration: how long the clip playing is, which the phone
+                # alone knows for a clip it voices (heard_durations).
                 ["playlist-pos", "idle-active", "pause", "time-pos", "mute",
-                 "speed", "playlist-count"],
+                 "speed", "playlist-count", "duration"],
                 # Above the 1.28s the app really takes, so a tick under load
                 # returns a whole snapshot rather than one missing the very
                 # field (idle-active) the loop ends on.

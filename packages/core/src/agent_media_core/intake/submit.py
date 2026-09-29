@@ -1095,6 +1095,32 @@ def elapsed_from_row(extras: dict, origin: float) -> float:
     return max(0.0, now - base)
 
 
+#: Seconds from one clip's audio ending to the next one's starting, until a
+#: reply has measured its own.
+CLIP_GAP_S = 0.3
+
+
+def heard_durations(durations: Sequence[float], audio: dict,
+                    starts: Sequence[float]) -> list[float]:
+    """Each clip's length start to start, from the player's own word where
+    it has given it.
+
+    A clip the phone voices itself has no audio here, so its length is a
+    guess from its characters, and every sentence still to come is predicted
+    from those guesses: off by a second either way on a real reply (David,
+    29 Sep 2026: "follow along is still a little bit off"). Once the phone
+    is playing a clip it knows how long that clip is (`audio`, wall seconds
+    by index), so the next sentence starts that long after this one did,
+    plus the step between clips — learned from this reply's own measured
+    starts, as the median over the clips already heard out.
+    """
+    gaps = sorted(float(starts[i + 1]) - float(starts[i]) - a
+                  for i, a in audio.items() if i + 1 < len(starts))
+    gap = (min(2.0, max(0.0, gaps[len(gaps) // 2])) if gaps else CLIP_GAP_S)
+    return [round(audio[i] + gap, 3) if i in audio else float(d or 0)
+            for i, d in enumerate(durations)]
+
+
 def wall_position(idx: int, live: Optional[dict], extras: dict,
                   durations: Sequence[float]) -> None:
     """Put `live_pos_s` on the same clock as the live frame's `elapsed`, and
@@ -4007,7 +4033,10 @@ def _submit_event(event: Event,
     # that has already happened. Declared out here, above `_archive`, because
     # the ended row wants the measured starts too: a reader that has lost the
     # live row can only apportion the timeline otherwise.
-    mark_clock: dict = {"origin": None, "starts": [], "last": None}
+    mark_clock: dict = {"origin": None, "starts": [], "last": None,
+                        # Each clip's audio length, as the player reported
+                        # it while playing it (heard_durations).
+                        "audio": {}}
 
     def _archive(*, flushed: bool = False) -> Optional[int]:
         """The one history write, shared by every path that records this reply
@@ -4037,6 +4066,9 @@ def _submit_event(event: Event,
         if mark_clock["starts"]:
             extras["clip_starts_s"] = [round(float(x), 3)
                                        for x in mark_clock["starts"]]
+        if mark_clock["audio"]:
+            extras["clip_audio_s"] = {str(i): round(a, 3) for i, a
+                                      in sorted(mark_clock["audio"].items())}
         if fallback_info:
             extras["fallback"] = fallback_info
         if muted:
@@ -4413,7 +4445,17 @@ def _submit_event(event: Event,
                     # reply must not write its own sentences over it.
                     return
                 _stamp_start(idx, live, prior, extras)
-                wall_position(idx, live, extras, durations)
+                if live is not None:
+                    d, at = live.get("duration"), live.get("playlist-pos")
+                    if isinstance(d, (int, float)) and d > 0 and at == idx:
+                        mark_clock["audio"][idx] = float(d) / max(
+                            0.1, float(live.get("speed") or 1.0))
+                heard = durations
+                if mark_clock["audio"]:
+                    heard = heard_durations(durations, mark_clock["audio"],
+                                            mark_clock["starts"])
+                    extras["clip_durations_s"] = heard
+                wall_position(idx, live, extras, heard)
                 carry_pause_stamp(prior, extras, live is not None)
                 state.set_now_playing(
                     "speech", uri=str(clip_i), started_at=started_at,
