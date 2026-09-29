@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from agent_media_server import shell
 from agent_media_server import transcript as T
 from agent_media_core.intake._text import strip_system_blocks
@@ -27,7 +29,10 @@ def test_command_of():
 
 
 def test_run_in_cwd_and_errors(tmp_path):
-    assert shell.run("pwd", str(tmp_path)) == (str(tmp_path), "")
+    if os.name == "nt":       # Git Bash's pwd is /c/…, not C:\…
+        assert shell.run("pwd", str(tmp_path))[0].endswith(tmp_path.name)
+    else:
+        assert shell.run("pwd", str(tmp_path)) == (str(tmp_path), "")
     out, err = shell.run("echo a; echo b >&2; exit 3", str(tmp_path))
     assert (out, err) == ("a", "b")
     assert shell.run("exit 4", str(tmp_path)) == ("", "Exit code 4")

@@ -149,8 +149,13 @@ def test_snapshot_first_then_appends_as_the_transcript_grows(server, signed_in, 
     assert reply["op"] == "append" and reply["message"]["turn"]["running"] is True
     s.result("t1", "built")
     s.text("Built it.", msgid="m1b")
-    changed = st.next("message")
-    assert changed["op"] == "replace" and changed["message"]["id"] == reply["message"]["id"]
+    # The result and the text are two writes; a slow file system (Windows,
+    # CI) can show them to the watcher as two replaces rather than one.
+    for _ in range(3):
+        changed = st.next("message")
+        assert changed["op"] == "replace" and changed["message"]["id"] == reply["message"]["id"]
+        if changed["message"]["parts"][-1].get("type") == "text":
+            break
     assert changed["message"]["parts"][0]["status"] == "done"
     assert changed["message"]["parts"][-1] == {"type": "text", "text": "Built it."}
     st.close()

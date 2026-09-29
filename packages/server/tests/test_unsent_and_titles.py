@@ -50,6 +50,7 @@ def test_an_unnamed_claude_session_takes_its_first_message(monkeypatch, tmp_path
         '{"type":"user","isMeta":true,"message":{"content":"<command-name>/x</command-name>"}}\n'
         '{"type":"user","message":{"content":"Build a feature that uses the paragtd repo"}}\n')
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))     # Windows's home
     sessions._FIRST_PROMPT.clear()
     assert sessions._display_title(sid, "Claude Code") == "Build a feature that uses the paragtd repo"
     assert sessions._display_title(sid, "A real name") == "A real name"

@@ -238,8 +238,11 @@ def main(argv: list[str] | None = None) -> int:
         os.replace(binary_p, old)
     os.replace(new, binary_p)
     # Unpacked now, so the restart below starts at once.
-    out = subprocess.run([str(binary_p), "version"], capture_output=True, text=True)
-    print(f"  now {out.stdout.strip() or 'installed'}")
+    try:
+        out = subprocess.run([str(binary_p), "version"], capture_output=True, text=True).stdout
+    except OSError as e:             # not runnable here: say so, it is installed
+        out = f"installed (it did not start: {e})"
+    print(f"  now {out.strip() or 'installed'}")
 
     print("== Services")
     if os.name == "nt":

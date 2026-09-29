@@ -121,7 +121,10 @@ def _dir_forms(raw: str) -> list[str]:
     out: list[str] = []
     for p in raw.split(","):
         if p.strip():
-            for form in (os.path.normpath(os.path.expanduser(p.strip())),
+            # And exactly as written: on Windows normpath turns a stored
+            # cwd's forward slashes to backslashes.
+            for form in (os.path.expanduser(p.strip()).rstrip("/\\") or "/",
+                         os.path.normpath(os.path.expanduser(p.strip())),
                          os.path.realpath(os.path.expanduser(p.strip()))):
                 if form not in out:
                     out.append(form)

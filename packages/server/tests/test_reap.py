@@ -956,6 +956,7 @@ def test_the_timer_template_runs_the_reaper():
     assert "requires: origin" in (src / "roles").read_text()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="no other process's cwd to read on Windows")
 def test_gateway_sessions_are_machinery_not_threads(monkeypatch, tmp_path):
     """Meridian's pool lives in ~/.meridian; its agents are never threads and
     never reaped. The check is on the agent process's own working folder."""
