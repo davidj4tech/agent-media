@@ -47,7 +47,15 @@ def _config_home() -> Path:
 
 
 def shim_text(binary: str, name: str) -> str:
+    # Forward slashes: Git Bash (a Windows shell's shim) takes C:/… as it is.
+    binary = binary.replace("\\", "/")
     return f'#!/bin/sh\n{SHIM_MARK}\nexec "{binary}" {name} "$@"\n'
+
+
+def cmd_shim_text(binary: str, name: str) -> str:
+    """Windows: the same shim for cmd and PowerShell, beside the sh one (which
+    Git Bash, where Claude Code runs its hooks, finds without an extension)."""
+    return f'@echo off\r\nrem sasonica shim\r\n"{binary}" {name} %*\r\n'
 
 
 def is_shim(path: Path) -> bool:
@@ -74,6 +82,8 @@ def write_shims(binary: str, bin_dir: Path, *, force: bool, dry_run: bool) -> tu
             dest.unlink()
         dest.write_text(shim_text(binary, name))
         dest.chmod(0o755)
+        if os.name == "nt":
+            dest.with_name(name + ".cmd").write_text(cmd_shim_text(binary, name))
     return written, kept
 
 
@@ -149,6 +159,33 @@ def _launchd(binary: str, a) -> int:
     return rc
 
 
+#: Task Scheduler's name for each service (Windows).
+TASKS = {name: "Sasonica\\" + name.removeprefix("sasonica-") for name in UNITS}
+
+
+def task_command(binary: str, word: str, bind: str, port: int) -> str:
+    """What a logon task runs: the binary under `conhost --headless`, so no
+    console window opens at login (Windows 10 1809 and later)."""
+    args = f" --bind {bind} --port {port}" if word == "serve" else ""
+    return f'conhost.exe --headless "{binary}" {word}{args}'
+
+
+def _schtasks(binary: str, a) -> int:
+    """The two services as Task Scheduler tasks that start at logon, replaced
+    if they are there (/F), then started now."""
+    rc = 0
+    for name, (word, _what) in UNITS.items():
+        task = TASKS[name]
+        print(f"  task {task}")
+        rc = _run(["schtasks", "/Create", "/F", "/SC", "ONLOGON", "/RL", "LIMITED",
+                   "/TN", task, "/TR", task_command(binary, word, a.bind, a.port)],
+                  dry_run=a.dry_run) or rc
+        _run(["schtasks", "/End", "/TN", task], dry_run=a.dry_run)
+        rc = _run(["schtasks", "/Run", "/TN", task], dry_run=a.dry_run) or rc
+    print("  (they start at logon; Task Scheduler → Sasonica)")
+    return rc
+
+
 def _run(argv: list[str], *, dry_run: bool) -> int:
     print("  $ " + " ".join(argv))
     if dry_run:
@@ -218,6 +255,8 @@ def main(argv: list[str] | None = None) -> int:
     print("== Services")
     if sys.platform == "darwin":
         return _launchd(binary, a)
+    if os.name == "nt":
+        return _schtasks(binary, a)
     # A container, or an ssh login with no user manager, has systemctl but no
     # --user bus to reach.
     if shutil.which("systemctl") is None or subprocess.run(

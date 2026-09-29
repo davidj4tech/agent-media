@@ -117,7 +117,8 @@ jobs:
       - name: Smoke test
         run: |
           b=$PWD/build/binary/sasonica-windows-x86_64.exe
-          export HOME=$(mktemp -d) USERPROFILE=$(cygpath -w "$(mktemp -d)")
+          # The runner's own profile: PyApp finds its folders through Windows
+          # (known folders), which a made-up USERPROFILE breaks.
           "$b" version
           "$b" commands | tr -d '\r' | grep -qx media
           "$b" serve --bind 127.0.0.1 --port 18781 >serve.log 2>&1 &

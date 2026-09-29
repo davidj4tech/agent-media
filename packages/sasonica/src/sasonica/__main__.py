@@ -77,8 +77,24 @@ def run_script(name: str, args: list[str]) -> int:
     return rc if isinstance(rc, int) else (0 if rc is None else 1)
 
 
+def _utf8_on_windows(args: list[str]) -> int | None:
+    """Windows reads and writes text in its code page (cp1252) unless Python
+    is in UTF-8 mode, and everything here is UTF-8. PyApp starts Python
+    isolated (-I, so PYTHONUTF8 is ignored); run again with `-X utf8`. None
+    when nothing needs doing."""
+    if os.name != "nt" or sys.flags.utf8_mode or os.environ.get("SASONICA_NO_REEXEC"):
+        return None
+    import subprocess
+
+    return subprocess.call([sys.executable, "-X", "utf8", "-I", "-m", "sasonica", *args])
+
+
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else list(argv)
+    if argv is None:
+        rc = _utf8_on_windows(args)
+        if rc is not None:
+            return rc
     if not args or args[0] in ("-h", "--help", "help"):
         print(__doc__.strip())
         return 0

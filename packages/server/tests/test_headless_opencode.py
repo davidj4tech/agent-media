@@ -9,6 +9,8 @@ opencode 1.18.33 did in the spike. Nothing here starts a real opencode.
 from __future__ import annotations
 
 import json
+import sys
+import os
 import shutil
 import tempfile
 import time
@@ -23,6 +25,16 @@ from agent_media_server.driver import headless as hd
 FAKE = Path(__file__).parent / "fixtures" / "fake_opencode.py"
 
 
+def runnable(script: Path, where: Path) -> str:
+    """The fake as a program: itself on POSIX (its #!), a .cmd that runs it
+    with this Python on Windows, which cannot run a .py by name."""
+    if os.name != "nt":
+        return str(script)
+    wrapper = where / (script.stem + ".cmd")
+    wrapper.write_text(f'@"{sys.executable}" "{script}" %*\r\n')
+    return str(wrapper)
+
+
 def wait_for(pred, timeout: float = 8.0, step: float = 0.02):
     end = time.monotonic() + timeout
     while time.monotonic() < end:
@@ -33,9 +45,11 @@ def wait_for(pred, timeout: float = 8.0, step: float = 0.02):
     raise AssertionError("timed out waiting")
 
 
-@pytest.fixture(params=["unix", "tcp"])
+@pytest.fixture(params=[pytest.param("unix", marks=pytest.mark.skipif(
+    os.name == "nt", reason="no unix sockets on Windows")), "tcp"])
 def host(request, monkeypatch, tmp_path):
-    sockdir = tempfile.mkdtemp(prefix="sdo", dir="/tmp")     # AF_UNIX paths are short
+    # AF_UNIX paths are short: /tmp, where there is one.
+    sockdir = tempfile.mkdtemp(prefix="sdo", dir=None if os.name == "nt" else "/tmp")
     sock = Path(sockdir) / "s.sock"
     work = tmp_path / "work"
     work.mkdir()
@@ -43,7 +57,7 @@ def host(request, monkeypatch, tmp_path):
     # Both transports: a unix socket, and Windows's loopback port + token.
     monkeypatch.setenv("MEDIA_SESSIOND_TRANSPORT", request.param)
     monkeypatch.setenv("MEDIA_SESSIOND_SOCKET", str(sock))
-    monkeypatch.setenv("MEDIA_SESSIOND_OPENCODE", str(FAKE))
+    monkeypatch.setenv("MEDIA_SESSIOND_OPENCODE", runnable(FAKE, tmp_path))
     monkeypatch.setenv("MEDIA_SESSIOND_OPENCODE_START", "15")
     monkeypatch.setenv("FAKE_OPENCODE_LOG", str(tmp_path / "fake.log"))
     monkeypatch.setenv("MEDIA_AUTO_TITLE", "0")

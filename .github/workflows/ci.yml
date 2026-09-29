@@ -110,6 +110,10 @@ jobs:
     # The server on Windows (docs/proposals/2026-09-29-single-binary.md).
     name: pytest (server, Windows)
     runs-on: windows-latest
+    env:
+      # UTF-8 mode, as the binary runs on Windows (sasonica/__main__.py):
+      # files and pipes are UTF-8, not the console's code page.
+      PYTHONUTF8: "1"
     steps:
       - uses: actions/checkout@v7
 

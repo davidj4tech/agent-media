@@ -68,12 +68,13 @@ def test_wanted_sum_reads_sha256sums():
 
 
 def test_prune_keeps_what_runs_and_what_is_kept(tmp_path, monkeypatch):
+    root = tmp_path / "pyapp"       # its own: other fixtures write into tmp_path
     for v in ("1", "2", "3", "4"):
-        (tmp_path / "d1" / v).mkdir(parents=True)
-    monkeypatch.setattr(update, "in_use", lambda root: {root / "d1" / "2"})
-    gone = update.prune(tmp_path, {tmp_path / "d1" / "4"})
+        (root / "d1" / v).mkdir(parents=True)
+    monkeypatch.setattr(update, "in_use", lambda r: {r / "d1" / "2"})
+    gone = update.prune(root, {root / "d1" / "4"})
     assert sorted(p.name for p in gone) == ["1", "3"]
-    assert sorted(p.name for p in (tmp_path / "d1").iterdir()) == ["2", "4"]
+    assert sorted(p.name for p in (root / "d1").iterdir()) == ["2", "4"]
 
 
 def _release(tmp_path, content: bytes):

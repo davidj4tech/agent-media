@@ -44,6 +44,8 @@ def asset() -> str:
             "arm64": "aarch64"}.get(platform.machine().lower(), "")
     if not arch:
         raise SystemExit(f"sasonica update: no build for {platform.machine()}")
+    if os.name == "nt":
+        return f"sasonica-windows-{arch}.exe"
     return f"sasonica-{'macos' if sys.platform == 'darwin' else 'linux'}-{arch}"
 
 
@@ -136,6 +138,23 @@ def _live_chats() -> int:
     return sum(1 for s in r.get("sessions") or [] if s.get("live")) if r.get("ok") else 0
 
 
+def _restart_tasks(force_sessiond: bool) -> None:
+    """Windows's two logon tasks (install.TASKS), ended and run again."""
+    from sasonica.install import TASKS
+
+    tasks = [TASKS["sasonica-canvas"]]
+    live = _live_chats()
+    if live and not force_sessiond:
+        print(f"  the session holder has {live} live chat(s): left on the old version until "
+              "you run `sasonica update --restart-sessiond` (that ends them)")
+    else:
+        tasks.append(TASKS["sasonica-sessiond"])
+    for task in tasks:
+        subprocess.run(["schtasks", "/End", "/TN", task], capture_output=True)
+        subprocess.run(["schtasks", "/Run", "/TN", task], capture_output=True)
+    print("  restarted " + ", ".join(tasks))
+
+
 def _restart_launchd(force_sessiond: bool) -> None:
     """A Mac's two launchd agents (install.LABELS), the session holder only
     with no chat live in it, as on Linux."""
@@ -208,12 +227,26 @@ def main(argv: list[str] | None = None) -> int:
               file=sys.stderr)
         return 1
     new.chmod(0o755)
+    if os.name == "nt":
+        # A running .exe cannot be replaced, but it can be renamed: the old
+        # one steps aside (removed next time, when nothing runs it).
+        old = binary_p.with_name(binary_p.name + ".old")
+        try:
+            old.unlink(missing_ok=True)
+        except OSError:
+            pass
+        os.replace(binary_p, old)
     os.replace(new, binary_p)
     # Unpacked now, so the restart below starts at once.
     out = subprocess.run([str(binary_p), "version"], capture_output=True, text=True)
     print(f"  now {out.stdout.strip() or 'installed'}")
 
     print("== Services")
+    if os.name == "nt":
+        _restart_tasks(a.restart_sessiond)
+        # Unpacked versions stay: Windows gives no simple way to see which a
+        # running process uses. They are under %LOCALAPPDATA%\pyapp\data.
+        return 0
     if sys.platform == "darwin":
         _restart_launchd(a.restart_sessiond)
     elif not _systemd():

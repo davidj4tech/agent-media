@@ -48,11 +48,30 @@ def _cap(s: str) -> str:
     return s[:OUTPUT_MAX] + f"\n… ({len(s) - OUTPUT_MAX} more characters cut)"
 
 
+def _shell() -> list[str]:
+    """What runs a command: bash, as Claude Code's bash mode does — on Windows
+    the one Git for Windows brings (Claude Code needs it there too), else
+    `cmd /c`."""
+    import shutil
+
+    if os.name != "nt":
+        return ["bash", "-c"]
+    bash = shutil.which("bash")
+    if not bash:
+        for root in (os.environ.get("ProgramFiles", r"C:\Program Files"),
+                     os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs")):
+            cand = os.path.join(root, "Git", "bin", "bash.exe") if root else ""
+            if cand and os.path.exists(cand):
+                bash = cand
+                break
+    return [bash, "-c"] if bash else ["cmd", "/c"]
+
+
 def run(command: str, cwd: str, timeout: float = TIMEOUT_S) -> tuple[str, str]:
     """(stdout, stderr) of `command` in `cwd`, by bash, as Claude Code runs it.
     A timeout or a failure to start is said in stderr."""
     try:
-        p = subprocess.run(["bash", "-c", command], cwd=cwd or None, capture_output=True,
+        p = subprocess.run([*_shell(), command], cwd=cwd or None, capture_output=True,
                            text=True, errors="replace", timeout=timeout,
                            stdin=subprocess.DEVNULL, env=os.environ.copy())
     except subprocess.TimeoutExpired as e:
