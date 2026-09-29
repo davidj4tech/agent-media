@@ -906,3 +906,34 @@ def test_the_settings_route_reads_and_changes_a_headless_thread(host, monkeypatc
     assert not ok and d["status"] == 400
     ok, d = session_settings.post(sid, {"plan": "yes"}, "t")
     assert not ok and d["status"] == 400
+
+
+def test_a_bang_waits_for_a_restarting_sessiond_to_deliver_its_output(monkeypatch):
+    """`! systemctl --user restart agent-media-sessiond` from the chat itself:
+    the output is ready while the host is down, and waits for it to return."""
+    from agent_media_server import shell
+
+    answers = iter([{"ok": False, "code": "down"}, {"ok": False, "code": "down"},
+                    {"ok": True}])
+    sent = []
+
+    def fake_call(op, **kw):
+        if op == "send":
+            sent.append(kw["text"])
+            return next(answers)
+        return {"ok": True}
+
+    monkeypatch.setattr(hd, "call", fake_call)
+    monkeypatch.setattr(hd.time, "sleep", lambda s: None)
+    monkeypatch.setattr(hd.HeadlessDriver, "owns", lambda self, s: True)
+    monkeypatch.setattr(hd.HeadlessDriver, "cwd_of", lambda self, s: "/tmp")
+    monkeypatch.setattr(shell, "run", lambda c, cwd: ("restarted", ""))
+    monkeypatch.setattr(shell, "run_then_send", lambda s, c, cwd, send: send(shell.message(c, *shell.run(c, cwd))))
+    from agent_media_server import archive, rest, send as send_mod
+
+    monkeypatch.setattr(send_mod, "_record_turn", lambda *a, **k: None)
+    monkeypatch.setattr(archive, "unarchive_quietly", lambda s: None)
+    monkeypatch.setattr(rest, "clear_quietly", lambda s: None)
+    ok, d = hd.HeadlessDriver().send("s1", "! restart", "! restart")
+    assert ok and d["shell"]
+    assert len(sent) == 3 and "restarted" in sent[-1]

@@ -19,6 +19,7 @@ import hashlib
 import json
 import socket
 import sys
+import time
 
 from . import HEADLESS, Caps
 
@@ -40,6 +41,9 @@ _TOOL_OPTIONS = [{"n": _ALLOW, "label": "Allow", "detail": ""},
 DENY_MESSAGE = "The user declined this from the phone. Do not retry it; ask what to do instead."
 #: Longest string kept in an approval's `input`.
 _INPUT_MAX = 300
+#: How long a `!` command's output waits for a sessiond that is down (one
+#: restarting takes a few seconds; its own restart is a command like any).
+DELIVER_WAIT_S = 30.0
 
 
 def call(op: str, *, timeout: float = 30.0, **kw) -> dict:
@@ -281,9 +285,17 @@ class HeadlessDriver:
                 return False, {"error": f"no such session {session[:8]}", "status": 404}
 
             def deliver(msg: str) -> None:
-                r = call("send", session=session, text=msg, timeout=30.0)
-                if not r.get("ok"):
-                    raise RuntimeError(r.get("error") or r.get("code") or "not sent")
+                # The command may have been the host's own restart (`!
+                # systemctl --user restart agent-media-sessiond`, David, 29 Sep
+                # 2026): wait for it to come back rather than drop the output.
+                deadline = time.monotonic() + DELIVER_WAIT_S
+                while True:
+                    r = call("send", session=session, text=msg, timeout=30.0)
+                    if r.get("ok"):
+                        return
+                    if r.get("code") != "down" or time.monotonic() >= deadline:
+                        raise RuntimeError(r.get("error") or r.get("code") or "not sent")
+                    time.sleep(1.0)
 
             shell.run_then_send(session, command, self.cwd_of(session), deliver)
             send._record_turn(session, text)
