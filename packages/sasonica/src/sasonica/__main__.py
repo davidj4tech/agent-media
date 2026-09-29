@@ -3,6 +3,7 @@
     sasonica serve        the canvas, which serves the app's API (media-visual-canvas)
     sasonica sessiond     the session holder for headless chats (media sessiond)
     sasonica install      shims on PATH, the two services, this host's config
+    sasonica update       the newest release in place of this binary
     sasonica commands     every command it can run
     sasonica version
     sasonica <script> …   any console script of agent-media's packages or
@@ -92,6 +93,9 @@ def main(argv: list[str] | None = None) -> int:
     if cmd == "install":
         from sasonica import install
         return install.main(rest)
+    if cmd == "update":
+        from sasonica import update
+        return update.main(rest)
     if cmd in ALIASES:
         script, pre = ALIASES[cmd]
         return run_script(script, [*pre, *rest])

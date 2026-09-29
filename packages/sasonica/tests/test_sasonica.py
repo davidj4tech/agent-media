@@ -1,6 +1,8 @@
 """The `sasonica` command: dispatch by console-script name, and the shims
 `sasonica install` writes (never over a file that is not one of its own)."""
 
+import os
+
 from sasonica import __main__ as sas
 from sasonica import install
 
@@ -52,3 +54,57 @@ def test_shims_keep_foreign_files(tmp_path, monkeypatch):
     written, kept = install.write_shims("/new/sasonica", tmp_path, force=True, dry_run=False)
     assert sorted(written) == ["media", "media-setup"] and not kept
     assert install.is_shim(tmp_path / "media")
+
+
+# --- update ------------------------------------------------------------------
+
+from sasonica import update  # noqa: E402
+
+
+def test_wanted_sum_reads_sha256sums():
+    sums = "aaa  sasonica-linux-x86_64\nbbb *sasonica-linux-aarch64\n"
+    assert update.wanted_sum(sums, "sasonica-linux-aarch64") == "bbb"
+    assert update.wanted_sum(sums, "sasonica-linux-riscv") == ""
+
+
+def test_prune_keeps_what_runs_and_what_is_kept(tmp_path, monkeypatch):
+    for v in ("1", "2", "3", "4"):
+        (tmp_path / "d1" / v).mkdir(parents=True)
+    monkeypatch.setattr(update, "in_use", lambda root: {root / "d1" / "2"})
+    gone = update.prune(tmp_path, {tmp_path / "d1" / "4"})
+    assert sorted(p.name for p in gone) == ["1", "3"]
+    assert sorted(p.name for p in (tmp_path / "d1").iterdir()) == ["2", "4"]
+
+
+def _release(tmp_path, content: bytes):
+    rel = tmp_path / "rel"
+    rel.mkdir()
+    (rel / update.asset()).write_bytes(content)
+    import hashlib
+
+    (rel / "SHA256SUMS").write_text(f"{hashlib.sha256(content).hexdigest()}  {update.asset()}\n")
+    return rel
+
+
+def test_update_replaces_the_binary_when_the_release_differs(tmp_path, monkeypatch):
+    new = b"#!/bin/sh\necho 'sasonica 2'\n"
+    rel = _release(tmp_path, new)
+    binary = tmp_path / "sasonica"
+    binary.write_bytes(b"#!/bin/sh\necho 'sasonica 1'\n")
+    binary.chmod(0o755)
+    monkeypatch.setenv("SASONICA_BINARY_BASE", rel.as_uri())
+    monkeypatch.setattr(update, "_systemd", lambda: False)
+    assert update.main(["--binary", str(binary)]) == 0
+    assert binary.read_bytes() == new and os.access(binary, os.X_OK)
+    # The same again is up to date.
+    assert update.main(["--binary", str(binary)]) == 0
+
+
+def test_a_bad_download_changes_nothing(tmp_path, monkeypatch):
+    rel = _release(tmp_path, b"good")
+    (rel / update.asset()).write_bytes(b"tampered")
+    binary = tmp_path / "sasonica"
+    binary.write_bytes(b"old")
+    monkeypatch.setenv("SASONICA_BINARY_BASE", rel.as_uri())
+    assert update.main(["--binary", str(binary)]) == 1
+    assert binary.read_bytes() == b"old" and not (tmp_path / "sasonica.new").exists()

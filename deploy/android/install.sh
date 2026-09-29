@@ -16,7 +16,8 @@
 #
 # What it does:
 #   1. Termux: proot-distro, termux-services; Debian inside it;
-#   2. Debian: tmux (Node too when Claude Code is chosen); Sasonica's server as one file (the server-latest
+#   2. Debian: Node only when Claude Code is chosen (no tmux: the chats the
+#      app starts are headless); Sasonica's server as one file (the server-latest
 #      release, deploy/binary/build.sh) at ~/.local/bin/sasonica, checked
 #      against its SHA256SUMS; opencode (free models, no sign-in);
 #   3. this host's config: role `origin`, headless sessions on;
@@ -82,8 +83,11 @@ if [ ! -d "$PREFIX/var/lib/proot-distro/installed-rootfs/$DISTRO" ]; then
 fi
 in_debian 'export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq >/dev/null
-  pkgs="curl unzip tmux ca-certificates"
-  [ '"$FROM"' = source ] && pkgs="$pkgs python3-venv git"
+  pkgs="curl unzip ca-certificates"
+  # No tmux for the binary: Claude Code and opencode both run headless
+  # (sessiond), so nothing the app starts opens a pane. A source install
+  # keeps it, for working on the server at a terminal.
+  [ '"$FROM"' = source ] && pkgs="$pkgs python3-venv git tmux"
   # Node only for Claude Code (npm installs it); opencode brings its own runtime.
   case " '"$AGENTS"' " in *" claude "*) pkgs="$pkgs nodejs npm" ;; esac
   apt-get install -y -qq $pkgs >/dev/null'
@@ -143,7 +147,7 @@ else
     if command -v claude >/dev/null; then media-setup install-hooks >/dev/null; fi'
 fi
 in_debian '# opencode installs a plugin'"'"'s dependencies on its first start (~1 min in
-  # a proot), past the server'"'"'s 45 s wait for a new chat'"'"'s pane: do it now.
+  # a proot), close to sessiond'"'"'s 60 s wait for its server to answer: do it now.
   # `debug config` loads the plugins without asking any model.
   if [ -x ~/.opencode/bin/opencode ]; then ~/.opencode/bin/opencode debug config >/dev/null 2>&1 || true; fi'
 
