@@ -1393,7 +1393,12 @@ class _Handler(socketserver.StreamRequestHandler):
                 return
 
 
-class Server(socketserver.ThreadingUnixStreamServer):
+#: Windows's Python has no unix-socket server; `Server` is never made there
+#: (`use_tcp`), but the class must still import.
+_UnixServer = getattr(socketserver, "ThreadingUnixStreamServer", object)
+
+
+class Server(_UnixServer):  # type: ignore[misc,valid-type]
     daemon_threads = True
 
     def __init__(self, path: Path, supervisor: Supervisor) -> None:

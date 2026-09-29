@@ -102,8 +102,42 @@ jobs:
           name: sasonica-macos-aarch64
           path: build/binary/sasonica-macos-aarch64
 
+  build-windows:
+    name: build (windows x86_64)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build
+        run: deploy/binary/build.sh
+
+      - name: Smoke test
+        run: |
+          b=$PWD/build/binary/sasonica-windows-x86_64.exe
+          export HOME=$(mktemp -d) USERPROFILE=$(cygpath -w "$(mktemp -d)")
+          "$b" version
+          "$b" commands | tr -d '\r' | grep -qx media
+          "$b" serve --bind 127.0.0.1 --port 18781 >serve.log 2>&1 &
+          "$b" sessiond >sessiond.log 2>&1 &
+          for i in $(seq 1 90); do curl -fsS http://127.0.0.1:18781/healthz >/dev/null && break; sleep 1; done
+          curl -fsS http://127.0.0.1:18781/healthz
+          # sessiond over loopback TCP: its address file, and it answers.
+          for i in $(seq 1 30); do grep -q "listening on" sessiond.log && break; sleep 1; done
+          cat sessiond.log
+          grep -q "listening on 127.0.0.1:" sessiond.log
+          "$b" install --dry-run --no-services
+          kill %1 %2 || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sasonica-windows-x86_64
+          path: build/binary/sasonica-windows-x86_64.exe
+
   publish:
-    needs: [build, build-macos]
+    needs: [build, build-macos, build-windows]
     # Only main's builds are the release; a trial run on a branch is not.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
@@ -126,5 +160,5 @@ jobs:
             gh release create server-latest --prerelease --target "$GITHUB_SHA" \
               --title "Sasonica server (latest)" \
               --notes "Built from main on every change to the server. Install: curl -fsSL https://sasonica.com/install | bash"
-          gh release upload server-latest sasonica-linux-* sasonica-macos-* SHA256SUMS --clobber
+          gh release upload server-latest sasonica-linux-* sasonica-macos-* sasonica-windows-* SHA256SUMS --clobber
           gh release edit server-latest --notes "Built from main at $GITHUB_SHA. Install: curl -fsSL https://sasonica.com/install | bash"

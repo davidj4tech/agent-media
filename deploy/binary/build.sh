@@ -40,12 +40,15 @@ esac
 case $(uname -s) in
   Linux) OS=linux TRIPLE=$ARCH-unknown-linux-gnu ;;
   Darwin) OS=macos TRIPLE=$ARCH-apple-darwin ;;
+  # Git Bash on a Windows runner (CI): python-build-standalone's MSVC build.
+  MINGW* | MSYS* | CYGWIN*) OS=windows TRIPLE=$ARCH-pc-windows-msvc ;;
   *) echo "build: not built on $(uname -s)" >&2; exit 1 ;;
 esac
 VERSION=${SASONICA_VERSION:-$(date -u +%Y.%m.%d)+$(git -C "$ROOT" rev-parse --short HEAD)}
 PY_MINOR=${PY_VERSION%.*}
 WORK=$ROOT/build/binary/$ARCH
-OUT=$ROOT/build/binary/sasonica-$OS-$ARCH
+EXE=; [ "$OS" = windows ] && EXE=.exe
+OUT=$ROOT/build/binary/sasonica-$OS-$ARCH$EXE
 
 step() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 
@@ -55,17 +58,23 @@ step "Python $PY_VERSION ($OS $ARCH)"
 pbs=cpython-$PY_VERSION+$PBS_TAG-$TRIPLE-install_only_stripped.tar.gz
 curl -fsSL "https://github.com/astral-sh/python-build-standalone/releases/download/$PBS_TAG/$pbs" |
   tar -xz -C "$WORK/dist"
-PY=$WORK/dist/python/bin/python3
+if [ "$OS" = windows ]; then
+  PY=$WORK/dist/python/python.exe PY_REL=python/python.exe SITE_REL=python/Lib/site-packages
+else
+  PY=$WORK/dist/python/bin/python3 PY_REL=python/bin/python3 SITE_REL=python/lib/python$PY_MINOR/site-packages
+fi
 
 step "Packages"
 "$PY" -m pip install -q --no-cache-dir --no-warn-script-location \
   "$ROOT/packages/core" "$ROOT/packages/server" "$ROOT/packages/visual" "$ROOT/packages/sasonica"
-SITE=$WORK/dist/python/lib/python$PY_MINOR/site-packages
+SITE=$WORK/dist/$SITE_REL
 echo "$VERSION" >"$SITE/sasonica/BUILD"
 # pip wrote each console script with this build directory in its #! line.
 # Make them find the Python beside them instead, wherever it is unpacked:
 # pip's own trick for a #! too long for the kernel, a shell line Python reads
 # as a string.
+# (Windows's are .exe launchers in Scripts\, which nothing here runs: every
+# command goes through `sasonica <name>`.)
 for f in "$WORK"/dist/python/bin/*; do
   [ -f "$f" ] && [ ! -L "$f" ] || continue
   head -c 2 "$f" | grep -q '#!' || continue
@@ -92,24 +101,27 @@ cat >"$WORK/pyapp.env" <<EOF
 PYAPP_PROJECT_NAME=sasonica
 PYAPP_PROJECT_VERSION=$VERSION
 PYAPP_DISTRIBUTION_PATH=/work/python.tar.gz
-PYAPP_DISTRIBUTION_PYTHON_PATH=python/bin/python3
-PYAPP_DISTRIBUTION_SITE_PACKAGES_PATH=python/lib/python$PY_MINOR/site-packages
+PYAPP_DISTRIBUTION_PYTHON_PATH=$PY_REL
+PYAPP_DISTRIBUTION_SITE_PACKAGES_PATH=$SITE_REL
 PYAPP_FULL_ISOLATION=1
 PYAPP_SKIP_INSTALL=1
 PYAPP_EXEC_MODULE=sasonica
 PYAPP_PASS_LOCATION=1
 EOF
-compile='set -a; . "$W/pyapp.env"; set +a; cd "$W/pyapp" && cargo build --release -q && cp target/release/pyapp "$W/sasonica"'
+compile='set -a; . "$W/pyapp.env"; set +a; cd "$W/pyapp" && cargo build --release -q && cp target/release/pyapp$EXE "$W/sasonica$EXE"'
 if command -v cargo >/dev/null && [ -z "${SASONICA_BUILD_IN_CONTAINER:-}" ]; then
   # CI (in rust:1-bullseye, or a Mac): compiled where the files are.
-  sed -i.bak "s|^PYAPP_DISTRIBUTION_PATH=.*|PYAPP_DISTRIBUTION_PATH=$WORK/python.tar.gz|" "$WORK/pyapp.env"
-  W=$WORK bash -c "$compile"
+  dist=$WORK/python.tar.gz
+  # cargo on Windows wants C:/…, not Git Bash's /c/….
+  [ "$OS" = windows ] && dist=$(cygpath -m "$dist")
+  sed -i.bak "s|^PYAPP_DISTRIBUTION_PATH=.*|PYAPP_DISTRIBUTION_PATH=$dist|" "$WORK/pyapp.env"
+  W=$WORK EXE=$EXE bash -c "$compile"
 else
   engine=$(command -v podman || command -v docker) || { echo "build: needs cargo, podman or docker" >&2; exit 1; }
   "$engine" run --rm -v "$WORK:/work:Z" -v sasonica-cargo:/usr/local/cargo/registry \
     -e W=/work docker.io/library/rust:1-bullseye bash -c "$compile"
 fi
-cp "$WORK/sasonica" "$OUT"
+cp "$WORK/sasonica$EXE" "$OUT"
 chmod +x "$OUT"
 
 step "Done"
