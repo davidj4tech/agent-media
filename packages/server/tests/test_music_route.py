@@ -35,11 +35,12 @@ def player(monkeypatch):
     music._reset_cache(forget=True)
 
 
-def test_now_is_the_status_and_the_picker(server, signed_in, audio_host, player):
+def test_now_is_the_status_and_the_picker(server, signed_in, audio_host, player, monkeypatch):
+    monkeypatch.delenv("MEDIA_RADIO_YOUTUBE", raising=False)
     res, obj = call(server, "GET", "/music", headers=AUTH)
     assert res.status == 200, obj
     assert keys(obj) == {"ok", "now", "art", "chapters", "where", "radio"}
-    assert obj["radio"] == {"on": False, "seed": None, "next": []}
+    assert obj["radio"] == {"on": False, "seed": None, "next": [], "available": False}
     assert obj["art"] == "https://i.ytimg.com/vi/nMDHjVVj3bA/hqdefault.jpg"
     assert obj["now"] == NOW and obj["chapters"] == []
     assert keys(obj["where"]) == {"current", "next", "overridden", "options"}
@@ -177,6 +178,7 @@ def station(monkeypatch, tmp_path):
     from agent_media_server import radio as loop
 
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.setenv("MEDIA_RADIO_YOUTUBE", "1")
     started: list = []
 
     def start(uri, where, playing):
@@ -242,3 +244,15 @@ def test_radio_dj_starts_the_djs_station(server, signed_in, audio_host, player, 
     res, obj = call(server, "POST", "/music", {"action": "radio", "dj": True}, AUTH)
     assert res.status == 200, obj
     assert station == [("dj", "sasonica")] and player == []
+
+
+def test_radio_is_409_on_a_server_that_has_not_turned_it_on(server, signed_in, audio_host, player, station, monkeypatch):
+    monkeypatch.delenv("MEDIA_RADIO_YOUTUBE")
+    for body in ({"action": "radio"}, {"action": "radio", "dj": True},
+                 {"action": "radio", "uri": "yt:https://www.youtube.com/watch?v=Gkl8blLusFc"}):
+        res, obj = call(server, "POST", "/music", body, AUTH)
+        assert res.status == 409 and "MEDIA_RADIO_YOUTUBE" in obj["error"], obj
+        assert obj["radio"]["available"] is False
+    assert station == [] and player == []
+    res, obj = call(server, "POST", "/music", {"action": "radio", "off": True}, AUTH)
+    assert res.status == 200

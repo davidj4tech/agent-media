@@ -39,6 +39,13 @@ class Player:
                 "idle-active": False, "time-pos": self.t, "duration": 200.0}
 
 
+@pytest.fixture(autouse=True)
+def _youtube_on(monkeypatch):
+    """The YouTube path is off unless a server turns it on; these are about
+    a server that has."""
+    monkeypatch.setenv("MEDIA_RADIO_YOUTUBE", "1")
+
+
 @pytest.fixture()
 def station(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
@@ -434,3 +441,22 @@ def test_a_player_is_one_class_behind_the_seam(monkeypatch, tmp_path):
     assert radio.read()["current"] == MIX[1]["id"]
     with pytest.raises(ValueError):
         radio_io.player("nowhere")
+
+
+def test_youtube_radio_is_off_unless_the_server_turns_it_on(station, monkeypatch):
+    """Licensing proposal step 2: no station on a server that has not said so,
+    and a station on when it is switched off ends, the song playing on."""
+    player, sent, _, _ = station
+    monkeypatch.delenv("MEDIA_RADIO_YOUTUBE")
+    assert radio.available() is False
+    assert radio.snapshot()["available"] is False
+    with pytest.raises(ValueError):
+        radio.start(SEED["id"], "sasonica", playing=True)
+    with pytest.raises(ValueError):
+        radio.start_dj("sasonica")
+    monkeypatch.setenv("MEDIA_RADIO_YOUTUBE", "1")
+    radio.start(SEED["id"], "sasonica", playing=True)
+    assert radio.snapshot()["available"] is True
+    monkeypatch.setenv("MEDIA_RADIO_YOUTUBE", "0")
+    radio.tick()
+    assert radio.is_on() is False and sent == []

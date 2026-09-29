@@ -1,6 +1,6 @@
 # Music that is licensed: the radio beyond yt-dlp
 
-Status: proposal; step 1 built 29 Sep 2026.
+Status: proposal; steps 1 and 2 built 29 Sep 2026.
 Date: 2026-09-29
 
 David, 29 Sep 2026, with the first DJ station playing: *"So how do we get
@@ -76,6 +76,24 @@ player (`_send`, `_props`) sit behind a new seam:
 The DJ is the natural fit: it already thinks in "Artist - Title", which is
 exactly what a play-from-search takes.
 
+### YouTube in the listener's browser (David, 29 Sep 2026)
+
+*"One interesting way to avoid the copyright issues without ads would be for
+users to use Firefox with an ad blocker... and maybe even the background fix
+extension."* Streaming in one's own browser is not keeping copies; what the
+listener installs in it (an ad blocker, a background-play extension) is
+between them and YouTube's terms. So **"YouTube in your browser" is one more
+hand-off target**: Sasonica opens each song's watch link in the browser the
+listener picked (an `ACTION_VIEW` to its package), and follows it by the
+browser's media session, as it follows Spotify — Firefox for Android shows
+one for a playing video. When the song ends, the next link. The line for
+Sasonica: it opens links; it does not ship, bundle, recommend or depend on
+ad blocking or background-play workarounds (YouTube fights both, and Google
+Play's policy is against apps that interfere with other apps' ads). The
+DJ's lines would need a YouTube search to become links — the one piece that
+is still YouTube's API (its Data API search, with a key and its quota) or
+the phone's yt-dlp for a listener who has switched the YouTube path on.
+
 ### Costs of the hand-off
 
 - A song starts ~1-2 s after the last ends (no gapless queue in someone
@@ -100,6 +118,10 @@ exactly what a play-from-search takes.
 2. **Gate** the YouTube path: a server setting (`MEDIA_RADIO_YOUTUBE=1` on
    red5, off by default), and the app hides 📻 from a YouTube track when the
    server says it is off.
+   **Done 29 Sep 2026:** `radio_io.youtube_on()` / `available()`; the
+   station will not start (409 from `/music`), and one on ends, unless the
+   server sets `MEDIA_RADIO_YOUTUBE=1` (red5 does, in its own
+   ~/.config/agent-media.env); `radio.available` in `GET /music` for the app.
 3. **Hand-off player** in the app (Kotlin/Java beside `Media3Music`): send a
    play-from-search, follow the controller, report to the server over the same
    IPC the station already reads (`path` → the other app's media id,

@@ -150,7 +150,7 @@ def _radio() -> dict:
         return radio.snapshot()
     except Exception as e:  # noqa: BLE001 — the tab can do without it
         print(f"music: radio snapshot failed: {e}", file=sys.stderr)
-        return {"on": False, "seed": None, "next": []}
+        return {"on": False, "seed": None, "next": [], "available": False}
 
 
 def _answer() -> dict:
@@ -191,6 +191,8 @@ def _radio_control(body: dict) -> tuple[bool, dict]:
         _reset_cache()
         loop.wake()
         return True, _answer()
+    if not radio.available():
+        return False, {"error": radio.OFF_HERE, "status": 409, **_answer()}
     if body.get("dj"):
         # The DJ's station: what plays now plays on until its first pick.
         where = _resolve_music_where("default")

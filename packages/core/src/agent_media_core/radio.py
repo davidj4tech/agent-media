@@ -223,9 +223,18 @@ def _note(song: dict) -> None:
 
 # ---- the verbs -----------------------------------------------------------------
 
+OFF_HERE = "radio is off on this server (MEDIA_RADIO_YOUTUBE)"
+
+
+def available() -> bool:
+    return radio_io.available()
+
+
 def start(uri: str, where: str, playing: bool) -> dict:
     """A station from `uri`'s Mix, on `where`. `playing`: `uri` is already on
     (the station is built behind it), else the caller puts it on first."""
+    if not radio_io.youtube_on():
+        raise ValueError(OFF_HERE)
     vid = _vid(uri)
     if not vid:
         raise ValueError("radio needs a YouTube track")
@@ -258,6 +267,9 @@ def start_dj(where: str) -> dict:
     """A DJ station on `where` (radio_dj). What is playing plays on until the
     DJ's first song is found and downloaded (the loop does it: a minute, give
     or take), then that replaces it."""
+    if not radio_io.youtube_on():
+        # The DJ picks by name, and finds each on YouTube until the hand-off.
+        raise ValueError(OFF_HERE)
     if where not in radio_io.PLAYERS:
         raise ValueError("radio plays on the phone")
     with _station() as st:
@@ -396,6 +408,11 @@ def tick() -> None:
     top the list up. Blocks while a song downloads."""
     with _station() as st:
         if not st["on"]:
+            return
+        if not radio_io.youtube_on():
+            # Switched off while a station was on: it ends, the song plays on.
+            log.info("radio: %s", OFF_HERE)
+            st["on"] = False
             return
         where = st["where"]
     p = _props(where)
@@ -576,7 +593,7 @@ def snapshot() -> dict:
     `state` "ready" (queued or downloaded), "fetching", or null."""
     st = read()
     if not st["on"]:
-        return {"on": False, "seed": None, "next": []}
+        return {"on": False, "seed": None, "next": [], "available": available()}
     cur = st.get("current")
     ids = [s["id"] for s in st["sent"]]
     after = st["sent"][ids.index(cur) + 1:] if cur in ids else \
@@ -592,6 +609,7 @@ def snapshot() -> dict:
     seed = st.get("seed") or {}
     return {"on": True, "seed": {"id": seed.get("id"), "title": seed.get("title") or ""},
             "kind": st.get("kind") or "mix", "note": st.get("note") or "",
+            "available": available(),
             "next": rows[:_SHOWN], "more": max(0, len(rows) - _SHOWN)}
 
 

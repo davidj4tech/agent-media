@@ -21,7 +21,8 @@ playlist-count, idle-active, time-pos, duration), ``send(song, replace)``,
   the Termux mpv), each song downloaded from YouTube by yt-dlp on the phone.
 
 Everything here today is the **YouTube path**, which the licensing proposal
-keeps for a listener's own server only (``personal``). The hand-off player —
+keeps for a listener's own server only (``personal``): off unless
+MEDIA_RADIO_YOUTUBE=1 (:func:`youtube_on`). The hand-off player —
 the listener's own music app, by Android's play-from-search — will be one
 more player beside these.
 """
@@ -230,6 +231,22 @@ class PhonePlayer:
 
 #: Players a station can run on (`_resolve_music_where` names).
 PLAYERS = {"sasonica": PhonePlayer, "phone": PhonePlayer}
+
+
+def youtube_on() -> bool:
+    """Whether the YouTube path may run here: MEDIA_RADIO_YOUTUBE=1.
+
+    Off unless a server's owner turns it on for themselves (licensing
+    proposal, step 2): downloading from YouTube is theirs to decide on their
+    own server, and not something Sasonica offers anyone by default.
+    """
+    return (os.environ.get("MEDIA_RADIO_YOUTUBE") or "").strip() == "1"
+
+
+def available() -> bool:
+    """Whether any station can play here. The YouTube path only, until the
+    hand-off player (which needs no switch)."""
+    return youtube_on()
 
 
 def player(where: str):

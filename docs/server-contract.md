@@ -1081,10 +1081,10 @@ Request:
 | `sticky` | the session this device last spoke to (S keeps it in `sasonica.askLast`) |
 | `parse` | default `true`: read a target from the words ("reply to drones, …", "new codex chat, …") |
 | `dry` | `true`: say where it would go, send nothing |
-| `agent` | `claude` \| `codex` \| `pi` \| `hermes` for a fresh session (default `MEDIA_ASK_AGENT`, else claude) |
+| `agent` | `claude` \| `codex` \| `pi` \| `hermes` \| `opencode` for a fresh session (default `MEDIA_ASK_AGENT`, else claude). With `MEDIA_HEADLESS` on, `claude` and `opencode` start headless (sessiond; opencode as a session of its one shared `opencode serve`, 29 Sep 2026), the rest in a pane |
 | `project` | open a fresh session in that project's directory: a series (`p-agent-media`) on David's desk, a folder basename (`agent-media`) in the default layout (§18) |
 | `cwd` | open a fresh session in that directory — must be a `/targets` place |
-| `model` | Claude only (26 Sep 2026): `opus` \| `sonnet` \| `haiku` \| `fable` for a fresh session — `--model` in a pane, sessiond's `start` headless. Anything else is dropped, not refused; ignored when the words land in an existing thread |
+| `model` | Claude (26 Sep 2026): `opus` \| `sonnet` \| `haiku` \| `fable` for a fresh session — `--model` in a pane, sessiond's `start` headless. opencode: a `provider/model` id from its sheet, sent with each prompt when headless. Anything else is dropped, not refused; ignored when the words land in an existing thread |
 | `plan` | Claude only: `true` starts the fresh session in plan mode (`--permission-mode plan`; a pane's `--dangerously-skip-permissions` becomes `--allow-dangerously-skip-permissions`, which would otherwise win) |
 
 Routing, first match wins:
@@ -1952,7 +1952,7 @@ answer) carries `"radio": {"on", "seed": {"id", "title"} | null, "next":
 [{"id", "title", "channel", "state"}], "more"?}`: `next` is at most ten
 songs to come, `state` `"ready"` (queued in the player or in the phone's
 cache), `"fetching"` (downloading now) or null; `more` how many are listed
-past those. Off is `{"on": false, "seed": null, "next": []}`.
+past those. Off is `{"on": false, "seed": null, "next": [], "available"}`.
 
 - `{"action": "radio"}` starts a station from what is playing;
   `{"action": "radio", "uri"}` plays `uri` and starts one from it. A
@@ -1967,6 +1967,12 @@ past those. Off is `{"on": false, "seed": null, "next": []}`.
   the mood (`""` for a Mix station); a DJ station's `seed` is
   `{"id": null, "title": "Claude DJ"}`.
 - `{"action": "radio", "off": true}` ends it; what is playing plays on.
+- The YouTube path is **off unless the server sets `MEDIA_RADIO_YOUTUBE=1`**
+  (29 Sep 2026, licensed-music proposal): `radio.available` says whether a
+  station can start here (the app hides 📻 when it is false); starting one
+  (`radio`, `uri`, `dj`) is 409 when it cannot, and a station on when the
+  switch goes off ends at the next tick. `off`, `dislike` and `play` answer
+  as before.
 - `{"action": "radio", "play": "<id>"}` plays a song from `next` now (a
   tap on Up next); the songs before it stay to come. 400 when the id is
   not on the list, 409 with no station, 502 when the player would not take
