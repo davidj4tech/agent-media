@@ -370,7 +370,8 @@ def tick() -> None:
     ahead = count - pos - 1 if isinstance(pos, int) and isinstance(count, int) and pos >= 0 else 0
     t, dur = p.get("time-pos"), p.get("duration")
 
-    if cur is None and _resume(where):
+    # Only an empty player lost its song: idle with a queue is between two.
+    if cur is None and not count and _resume(where):
         return
 
     came_up = None
@@ -378,13 +379,18 @@ def tick() -> None:
         if not st["on"]:
             return
         if cur and cur != st.get("current"):
-            ours = {s["id"] for s in st["sent"]} | {(st.get("seed") or {}).get("id")}
+            ours = {s["id"] for s in st["sent"] + st["queue"]} | {(st.get("seed") or {}).get("id")}
             if cur not in ours:
                 # Something the station did not queue is playing: the
                 # listener chose it, and the station steps aside.
                 log.info("radio: %s is not the station's; off", cur)
                 st["on"] = False
                 return
+            # One of the list's own that the player had after all (a resume
+            # took the player for empty): heard, not to come.
+            for s in [s for s in st["queue"] if s["id"] == cur]:
+                st["queue"].remove(s)
+                st["sent"].append(s)
             st["current"] = cur
             if cur not in st["played"]:
                 st["played"].append(cur)

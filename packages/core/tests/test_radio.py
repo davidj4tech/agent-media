@@ -53,7 +53,7 @@ def station(tmp_path, monkeypatch):
             [{**_song(i, f"Artist {i}"), "id": f"{vid[:5]}{i:02d}more"} for i in range(10)]
 
     monkeypatch.setattr(radio, "mix", mix)
-    monkeypatch.setattr(radio, "_props", player.props)
+    monkeypatch.setattr(radio, "_props", lambda where: player.props(where))
 
     refuse: list = []
 
@@ -200,3 +200,25 @@ def test_a_refused_song_is_tried_again_then_dropped(station):
     radio.tick()
     assert sent[-1] == (MIX[2]["id"], False)
     assert MIX[1]["id"] not in [r["id"] for r in radio.snapshot()["next"]]
+
+
+def test_idle_with_a_queue_is_between_two_songs(station):
+    """The app's player can say idle between two songs with the next still
+    queued; that is not a lost song, and the next one is the station's."""
+    player, sent, _, _ = station
+    radio.start(SEED["id"], "sasonica", playing=True)
+    radio.tick()                   # MIX[1] queued
+    real = player.props
+    player.props = lambda where: {"playlist-pos": 0, "playlist-count": 2, "idle-active": True}
+    radio.tick()
+    assert (SEED["id"], True) not in sent
+    player.props = real
+
+
+def test_its_own_song_from_the_list_does_not_turn_it_off(station):
+    player, _, _, _ = station
+    radio.start(SEED["id"], "sasonica", playing=True)
+    player.items, player.pos = [MIX[3]["id"]], 0     # still on the list
+    radio.tick()
+    assert radio.is_on() and radio.read()["current"] == MIX[3]["id"]
+    assert MIX[3]["id"] not in [s["id"] for s in radio.read()["queue"]]
