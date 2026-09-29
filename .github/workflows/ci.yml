@@ -105,3 +105,24 @@ jobs:
 
       - name: Run tests
         run: pytest -q packages/server/tests packages/sasonica/tests
+
+  server-windows:
+    # The server on Windows (docs/proposals/2026-09-29-single-binary.md).
+    name: pytest (server, Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install core + server + visual + org-paragtd + sasonica + pytest
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e packages/core -e packages/server -e packages/visual -e packages/org-paragtd -e packages/sasonica
+          pip install pytest
+
+      - name: Run tests
+        run: pytest -q -p no:cacheprovider packages/server/tests packages/sasonica/tests

@@ -38,14 +38,16 @@ def wait_for(pred, timeout: float = 8.0, step: float = 0.02):
     raise AssertionError("timed out waiting")
 
 
-@pytest.fixture()
-def host(monkeypatch, tmp_path):
+@pytest.fixture(params=["unix", "tcp"])
+def host(request, monkeypatch, tmp_path):
     """A running sessiond with the fake claude, and the flag on."""
     sockdir = tempfile.mkdtemp(prefix="sd", dir="/tmp")     # AF_UNIX paths are short
     sock = Path(sockdir) / "s.sock"
     work = tmp_path / "work"
     work.mkdir()
     monkeypatch.setenv("MEDIA_HEADLESS", "1")
+    # Both transports: a unix socket, and Windows's loopback port + token.
+    monkeypatch.setenv("MEDIA_SESSIOND_TRANSPORT", request.param)
     monkeypatch.setenv("MEDIA_SESSIOND_SOCKET", str(sock))
     monkeypatch.setenv("MEDIA_SESSIOND_CLAUDE", str(FAKE))
     monkeypatch.setenv("MEDIA_SESSIOND_CLOSE_GRACE", "3")
@@ -937,3 +939,26 @@ def test_a_bang_waits_for_a_restarting_sessiond_to_deliver_its_output(monkeypatc
     ok, d = hd.HeadlessDriver().send("s1", "! restart", "! restart")
     assert ok and d["shell"]
     assert len(sent) == 3 and "restarted" in sent[-1]
+
+
+def test_over_tcp_a_request_without_the_token_is_refused(monkeypatch, tmp_path):
+    """Windows's transport: anything on the machine can reach a loopback
+    port, so the token sessiond wrote is the auth."""
+    import socket as _socket
+
+    monkeypatch.setenv("MEDIA_SESSIOND_TRANSPORT", "tcp")
+    addr_file = tmp_path / "sessiond.endpoint.json"
+    monkeypatch.setenv("MEDIA_SESSIOND_SOCKET", str(addr_file))
+    srv, _t = sessiond.serve(addr_file, sessiond.Supervisor(root=tmp_path / "sd"), tick=3600)
+    try:
+        addr = json.loads(addr_file.read_text())
+        assert oct(addr_file.stat().st_mode & 0o777) == "0o600"
+        for token in ("", "wrong"):
+            with _socket.create_connection(("127.0.0.1", addr["port"]), 5) as s:
+                s.sendall((json.dumps({"op": "list", "token": token}) + "\n").encode())
+                got = json.loads(s.makefile().readline())
+            assert got["code"] == "unauthorized"
+        assert hd.call("list")["ok"] is True        # the client reads the token
+    finally:
+        sessiond.stop(srv)
+    assert not addr_file.exists()

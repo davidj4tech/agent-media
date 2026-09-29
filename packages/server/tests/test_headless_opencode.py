@@ -33,13 +33,15 @@ def wait_for(pred, timeout: float = 8.0, step: float = 0.02):
     raise AssertionError("timed out waiting")
 
 
-@pytest.fixture()
-def host(monkeypatch, tmp_path):
+@pytest.fixture(params=["unix", "tcp"])
+def host(request, monkeypatch, tmp_path):
     sockdir = tempfile.mkdtemp(prefix="sdo", dir="/tmp")     # AF_UNIX paths are short
     sock = Path(sockdir) / "s.sock"
     work = tmp_path / "work"
     work.mkdir()
     monkeypatch.setenv("MEDIA_HEADLESS", "1")
+    # Both transports: a unix socket, and Windows's loopback port + token.
+    monkeypatch.setenv("MEDIA_SESSIOND_TRANSPORT", request.param)
     monkeypatch.setenv("MEDIA_SESSIOND_SOCKET", str(sock))
     monkeypatch.setenv("MEDIA_SESSIOND_OPENCODE", str(FAKE))
     monkeypatch.setenv("MEDIA_SESSIOND_OPENCODE_START", "15")

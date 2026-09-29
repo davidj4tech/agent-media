@@ -20,7 +20,7 @@ its drafts the same way, so the app can offer the two keys.
 
 from __future__ import annotations
 
-import fcntl
+from agent_media_core import _lock as fcntl  # flock, or msvcrt on Windows
 import re
 from pathlib import Path
 

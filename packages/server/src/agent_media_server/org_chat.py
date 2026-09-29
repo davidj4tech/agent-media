@@ -15,7 +15,7 @@ A refile to another file starts the list afresh; the chats themselves live on.
 
 from __future__ import annotations
 
-import fcntl
+from agent_media_core import _lock as fcntl  # flock, or msvcrt on Windows
 import json
 import time
 from pathlib import Path

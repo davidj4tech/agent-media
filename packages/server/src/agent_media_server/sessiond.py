@@ -80,7 +80,10 @@ import collections
 import json
 import logging
 import os
+import hmac
+import secrets
 import signal
+import socket
 import socketserver
 import subprocess
 import sys
@@ -163,12 +166,26 @@ def state_root() -> Path:
     return state_dir() / "sessiond"
 
 
+def use_tcp() -> bool:
+    """Whether sessiond is reached over loopback TCP instead of a unix socket:
+    on Windows, whose Python has no AF_UNIX, or when
+    `MEDIA_SESSIOND_TRANSPORT=tcp` says so (the tests run it on Linux)."""
+    forced = (os.environ.get("MEDIA_SESSIOND_TRANSPORT") or "").strip().lower()
+    if forced in ("tcp", "unix"):
+        return forced == "tcp"
+    return os.name == "nt" or not hasattr(socket, "AF_UNIX")
+
+
 def socket_path() -> Path:
     """`MEDIA_SESSIOND_SOCKET`, else `$XDG_RUNTIME_DIR/agent-media/sessiond.sock`,
-    else the state dir (a host with no runtime dir)."""
+    else the state dir (a host with no runtime dir). Over TCP (`use_tcp`) the
+    same setting names the *address file* instead — the port and the token
+    sessiond wrote, `<state>/sessiond/sessiond.endpoint.json` by default."""
     env = (os.environ.get("MEDIA_SESSIOND_SOCKET") or "").strip()
     if env:
         return Path(env).expanduser()
+    if use_tcp():
+        return state_root() / "sessiond.endpoint.json"
     run = (os.environ.get("XDG_RUNTIME_DIR") or "").strip()
     if run:
         return Path(run) / "agent-media" / "sessiond.sock"
@@ -1356,8 +1373,13 @@ class _Handler(socketserver.StreamRequestHandler):
                 req = json.loads(raw)
             except ValueError:
                 req = None
+            token = getattr(self.server, "token", "")
             if not isinstance(req, dict):
                 out = {"ok": False, "error": "not a JSON object", "code": "bad_request"}
+            elif token and not hmac.compare_digest(str(req.get("token") or ""), token):
+                # Over TCP the token is the auth (anything on this machine can
+                # connect to a loopback port); a unix socket's mode is.
+                out = {"ok": False, "error": "wrong or missing token", "code": "unauthorized"}
             else:
                 try:
                     out = sup.handle(req)
@@ -1398,12 +1420,36 @@ class Server(socketserver.ThreadingUnixStreamServer):
         self.path = path
 
 
+class TcpServer(socketserver.ThreadingTCPServer):
+    """sessiond on 127.0.0.1, for a host with no unix sockets (Windows): a
+    port of the system's choosing and a fresh token, both written to the
+    address file (`socket_path()`), which only this user can read."""
+    daemon_threads = True
+
+    def __init__(self, path: Path, supervisor: Supervisor) -> None:
+        super().__init__(("127.0.0.1", 0), _Handler)
+        self.supervisor = supervisor
+        self.path = path
+        self.token = secrets.token_urlsafe(32)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(path.parent, 0o700)
+        except OSError:
+            pass
+        tmp = path.with_name(f".{path.name}.{os.getpid()}")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump({"host": "127.0.0.1", "port": self.server_address[1],
+                       "token": self.token, "pid": os.getpid()}, f)
+        os.replace(tmp, path)
+
+
 def serve(path: Path | None = None, supervisor: Supervisor | None = None,
           *, tick: float = 30.0) -> tuple[Server, threading.Thread]:
     """Start sessiond in this process (for tests and for `main`): the socket
     served on a thread, and the idle-parking tick on another."""
     sup = supervisor or Supervisor()
-    srv = Server(path or socket_path(), sup)
+    srv = (TcpServer if use_tcp() else Server)(path or socket_path(), sup)
     t = threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.2},
                          daemon=True, name="sessiond-socket")
     t.start()
@@ -1440,7 +1486,9 @@ def main(argv: list[str] | None = None) -> int:
     sup = Supervisor()
     sup.load()
     srv, _t = serve(Path(a.socket) if a.socket else None, sup)
-    log.info("sessiond: listening on %s (%d records)", srv.path, len(sup.sessions))
+    where = (f"127.0.0.1:{srv.server_address[1]} (address in {srv.path})"
+             if isinstance(srv, TcpServer) else str(srv.path))
+    log.info("sessiond: listening on %s (%d records)", where, len(sup.sessions))
     done = threading.Event()
 
     def on_term(*_a) -> None:

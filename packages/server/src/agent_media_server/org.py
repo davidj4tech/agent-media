@@ -27,7 +27,7 @@ are best-effort: the store being down costs the memory half, never the notes.
 from __future__ import annotations
 
 import datetime as dt
-import fcntl
+from agent_media_core import _lock as fcntl  # flock, or msvcrt on Windows
 import functools
 import json
 import os

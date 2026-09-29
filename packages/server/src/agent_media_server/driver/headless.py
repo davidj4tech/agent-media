@@ -53,9 +53,21 @@ def call(op: str, *, timeout: float = 30.0, **kw) -> dict:
 
     path = sessiond.socket_path()
     try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        if sessiond.use_tcp():
+            # Windows: the port and token sessiond wrote (sessiond.TcpServer).
+            addr = json.loads(path.read_text())
+            sock = socket.create_connection((addr["host"], int(addr["port"])), timeout)
+            kw = {**kw, "token": addr["token"]}
+        else:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                sock.settimeout(timeout)
+                sock.connect(str(path))
+            except OSError:
+                sock.close()
+                raise
+        with sock:
             sock.settimeout(timeout)
-            sock.connect(str(path))
             sock.sendall((json.dumps({"op": op, **kw}) + "\n").encode())
             buf = b""
             while not buf.endswith(b"\n"):
@@ -64,7 +76,7 @@ def call(op: str, *, timeout: float = 30.0, **kw) -> dict:
                     break
                 buf += chunk
         out = json.loads(buf or b"{}")
-    except (OSError, ValueError) as e:
+    except (OSError, ValueError, KeyError) as e:
         print(f"headless: sessiond {op} failed ({e})", file=sys.stderr)
         return {"ok": False, "code": "down",
                 "error": "the session host (media-sessiond) is not running"}

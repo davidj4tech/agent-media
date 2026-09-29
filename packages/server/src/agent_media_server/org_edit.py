@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import calendar
 import datetime as dt
-import fcntl
+from agent_media_core import _lock as fcntl  # flock, or msvcrt on Windows
 import re
 from contextlib import ExitStack
 from pathlib import Path
