@@ -11,9 +11,10 @@ import time
 
 import pytest
 
-from agent_media_server import alerts, auth_abs, panes, session_events, sessions
+from agent_media_server import alerts, auth_abs, mic, panes, session_events, sessions
 
-from test_contract import AUTH, SID2, server, shelf, signed_in, typed  # noqa: F401
+from test_contract import AUTH, SID2, call, server, shelf, signed_in, typed  # noqa: F401
+from test_mic import _device
 from test_thread_events import Stream, _wait
 
 
@@ -49,6 +50,7 @@ def _idle_watcher(deadline: float = 5.0) -> None:
     with w.cond:
         w.rows = None
         w.alerts_head = 0
+        w.mic_head = 0
 
 
 def test_refused_without_a_credential(server, screen, monkeypatch):
@@ -220,3 +222,84 @@ def test_alerts_cursor_parsing():
     assert session_events.alerts_of("x") == session_events.FIRST
     assert session_events.alerts_of("-3") == 0
     assert session_events.alerts_of("42") == 42
+
+
+# --- mic: asks to speak for another device (§6.20) ----------------------------------
+
+def test_mic_only_when_asked(server, screen):
+    tv, _ = _device("Living room TV")
+    assert call(server, "POST", "/mic/ask", {}, tv)[0].status == 200
+    st = Stream(server, "/sessions/events?ping=0.2", AUTH)
+    try:
+        assert st.event()[0] == "sessions"
+        assert st.event(2.0) == ("ping", {})
+    finally:
+        st.close()
+
+
+def test_an_open_ask_follows_the_first_list(server, screen):
+    tv, tv_id = _device("Living room TV")
+    phone, _ = _device("Pixel 8a")
+    a = call(server, "POST", "/mic/ask", {"session": SID2}, tv)[1]["ask"]
+    st = Stream(server, "/sessions/events?ping=0.3&mic=1", phone)
+    try:
+        assert st.event()[0] == "sessions"
+        ev, data = st.event()
+        assert ev == "mic"
+        assert data == {"asks": [a]}
+        assert a["device_id"] == tv_id and a["title"] == "Sasonica web"
+    finally:
+        st.close()
+
+
+def test_no_asks_on_connecting_sends_no_mic_frame(server, screen):
+    phone, _ = _device("Pixel 8a")
+    st = Stream(server, "/sessions/events?ping=0.2&mic=1", phone)
+    try:
+        assert st.event()[0] == "sessions"
+        assert st.event(2.0) == ("ping", {})
+    finally:
+        st.close()
+
+
+def test_an_ask_reaches_the_phone_at_once_and_a_cancel_takes_it_down(server, screen,
+                                                                     monkeypatch):
+    tv, _ = _device("Living room TV")
+    phone, _ = _device("Pixel 8a")
+    st = Stream(server, "/sessions/events?ping=0.3&mic=1", phone)
+    try:
+        assert st.event()[0] == "sessions"
+        # The watcher's tick is now far off: only the ask's own poke can
+        # bring the frame in time.
+        monkeypatch.setattr(session_events, "POLL_S", 30.0)
+        a = call(server, "POST", "/mic/ask", {}, tv)[1]["ask"]
+        assert st.next("mic", 2.0) == {"asks": [a]}
+        assert call(server, "POST", "/mic/cancel", {"id": a["id"]}, phone)[0].status == 200
+        assert st.next("mic", 2.0) == {"asks": []}
+    finally:
+        st.close()
+
+
+def test_a_devices_own_ask_is_not_sent_to_it(server, screen):
+    tv, _ = _device("Living room TV")
+    st = Stream(server, "/sessions/events?ping=0.2&mic=1", tv)
+    try:
+        assert st.event()[0] == "sessions"
+        assert call(server, "POST", "/mic/ask", {}, tv)[0].status == 200
+        assert st.event(2.0) == ("ping", {})
+    finally:
+        st.close()
+
+
+def test_an_expiry_is_noticed_by_the_watcher(server, screen, monkeypatch):
+    tv, _ = _device("Living room TV")
+    phone, _ = _device("Pixel 8a")
+    a = call(server, "POST", "/mic/ask", {}, tv)[1]["ask"]
+    st = Stream(server, "/sessions/events?ping=0.3&mic=1", phone)
+    try:
+        assert st.next("mic") == {"asks": [a]}
+        later = a["expires"] + 1
+        monkeypatch.setattr(mic.time, "time", lambda: later)
+        assert st.next("mic", 2.0) == {"asks": []}
+    finally:
+        st.close()

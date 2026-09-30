@@ -97,6 +97,13 @@ def is_device(bearer: str) -> bool:
     return _device(bearer) is not None
 
 
+def device_id(bearer: str) -> str:
+    """The id of the device this bearer is, "" for anything else (an ABS
+    login) — the `mic` frame leaves out a device's own asks (§6.20)."""
+    dev = _device(bearer)
+    return str(dev.get("id") or "") if dev else ""
+
+
 def may_enrol(bearer: str) -> tuple[dict | None, dict]:
     """`gate`, and then the enrol bit: `(user, {})` for a device that may pair
     another, else `(None, error)` with a status.

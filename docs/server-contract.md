@@ -2497,7 +2497,7 @@ read-only agent view.
 
 ### 6.13 The session list as a stream — gated (built 22 Sep 2026)
 
-#### `GET /sessions/events[?ping=<s>][&alerts=<n>]` — gated (`auth.may_control_speech`, like `/sessions/state`)
+#### `GET /sessions/events[?ping=<s>][&alerts=<n>][&mic=1]` — gated (`auth.may_control_speech`, like `/sessions/state`)
 
 What a phone's background notifier holds open while the app is closed
 (Sasonica's `NotifyService`): one connection that says when any live
@@ -2544,6 +2544,12 @@ data: {}
   (the log was emptied) is answered with `last`. Sasonica posts each notice
   as an "Alerts" notification — how a disk warning reaches a phone whose
   ringer is holding the spoken one.
+- `mic` (30 Sep 2026; only with `?mic=1`): `{"asks": [ask, …]}` — every
+  open, unexpired ask to speak for another device (§6.20), oldest first,
+  **leaving out the connecting device's own** (a phone that has a mic asks;
+  a TV does not). Sent after the first `sessions` frame only if there are
+  any, then whenever the set changes — an ask, a cancel, an expiry. The
+  client diffs by `id`: a new one is a notification, a gone one takes it down.
 - `ping`: `{}` after `?ping=` seconds of silence — 15 to 300, default 15,
   clamped. A phone asks for a long one so an idle connection wakes the radio
   only for real changes.
@@ -2969,6 +2975,59 @@ One of the two is required.
 Response: `{"ok": true, "session", "retracted": {"id", "text"}, "interrupted":
 bool, "why", "state"}`. Refusals: 400 a bad id or neither `id` nor `text` ·
 401/403 as `/reply` · 404 a session nothing knows. In `CORS_PATHS`.
+
+### 6.20 The phone as the TV's mic — gated (built 30 Sep 2026)
+
+A TV with no microphone of its own (the living-room Google TV: no
+`android.hardware.microphone`; its remote's mic is kept by Google for its own
+search) borrows the phone's. Its mic key asks here instead of dictating; every
+phone on `/sessions/events?mic=1` (§6.13) gets the ask in a `mic` frame and
+posts a heads-up notification, "Speak for <device>"; a tap opens the same
+thread on the phone already listening, and the words are **sent from the
+phone** (`/reply`) — the TV just sees them arrive. Only a TV that cannot hear
+(TV ui mode and no `FEATURE_MICROPHONE`) does this; phones, tablets and a TV
+with its own mic keep the mic key as it was. Code:
+`agent_media_server/mic.py`. Pinned by `packages/server/tests/test_mic.py`
+and the `mic` tests in `test_session_events.py`.
+
+An **ask**:
+
+```
+{"id": "3f9a01c2", "device": "Living room TV", "device_id": "d_1a2b3c4d5e6f",
+ "session": "0f1e…" | null, "title": "Sasonica web" | null,
+ "at": 1790053383.513, "expires": 1790053473.513}
+```
+
+- `id`: 8 hex. `device` / `device_id`: the asking device's name and id (§9);
+  an ABS login (not a device) asks as its username with `device_id` null.
+- `session`: the thread the TV is showing; null is a new chat. `title`: that
+  thread's title when a live session has one (the `/sessions/state` sweep),
+  else null.
+- `expires` = `at` + 90 s. Kept in memory: a server restart drops open asks.
+
+#### `POST /mic/ask {"session"?}` — gated like `/reply`
+
+```
+{"session": "0f1e…"}          → {"ok": true, "ask": {…}}
+{}  or  {"session": null}      → a new chat
+```
+
+- One open ask per asking device: a new ask from the same device replaces
+  its old one (the old id is gone from the next `mic` frame).
+- Wakes the session stream at once — the phones hear it without waiting for
+  the watcher's 3 s tick.
+- Refusals: 400 `not a session id` · 401/403 as `/reply`.
+
+#### `POST /mic/cancel {"id"}` — gated the same
+
+The TV's Cancel, its words arriving in the thread, or the phone saying it
+took the ask. Any gated caller may cancel any ask.
+
+- → `{"ok": true, "id"}` · 404 `no such open ask` (unknown, cancelled or
+  expired). Also wakes the stream.
+
+Expiry is noticed by the stream's watcher on its tick (≤ 3 s late), and a
+`mic` frame without the ask follows. Both routes are in `CORS_PATHS`.
 
 ## 7. `/events` (v0) — canvas-wide, not the app's stream
 

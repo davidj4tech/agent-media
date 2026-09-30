@@ -147,6 +147,9 @@ device gets its token):
                   or a paired device
   GET  /alerts[?open=1] → open alerts, then recent digests and clears
   POST /alerts/ack {"id"} → seen it: no re-notify, nothing cleared
+  POST /mic/ask   {"session"?} → a TV with no mic asks the phones to speak
+                  for it; POST /mic/cancel {"id"} → the ask is gone. Phones on
+                  /sessions/events?mic=1 get a `mic` frame (mic.py, §6.20)
   GET  /alerts/digests[?id=&before=n] → past digests, newest first (no bodies)
   GET  /alerts/digest?n= → one past digest with its body, and prev/next
   GET  /audio/targets  → where speech and music play, and where they could
@@ -197,6 +200,7 @@ CORS_PATHS = frozenset({
     "/setup", "/setup/run", "/shell", "/shell/signins", "/shell/signin", "/enrol", "/me", "/me/signout", "/me/account",
     "/share", "/upload", "/dashboard",
     "/sessions/events", "/search",
+    "/mic/ask", "/mic/cancel",
 })
 
 # Where the audio goes (audio.py). Its own set, joined here, so the block
@@ -717,7 +721,7 @@ def _thread_events(h: BaseHTTPRequestHandler, session: str, query: str) -> bool:
 
 
 def _session_events(h: BaseHTTPRequestHandler, query: str) -> None:
-    """`GET /sessions/events[?ping=][&alerts=]` — the session list as a stream (§6.13,
+    """`GET /sessions/events[?ping=][&alerts=][&mic=1]` — the session list as a stream (§6.13,
     session_events.py). Gated like `/sessions/state`; `?access_token=` is
     accepted for a plain `EventSource` and, like the thread stream's, never
     logged."""
@@ -729,9 +733,13 @@ def _session_events(h: BaseHTTPRequestHandler, query: str) -> None:
     if not ok:
         _json(h, err.pop("status", 401), {"ok": False, **err})
         return
+    # `?mic=1`: a phone that has a mic, handed the asks to speak for
+    # another device (§6.20) — every one but its own.
+    wants_mic = (qs.get("mic") or [""])[0] in ("1", "true")
     session_events.serve(h, bearer, ping_s=session_events.ping_of((qs.get("ping") or [""])[0]),
                          alerts_after=session_events.alerts_of(
-                             qs["alerts"][0] if "alerts" in qs else None))
+                             qs["alerts"][0] if "alerts" in qs else None),
+                         mic_for=auth.device_id(bearer) if wants_mic else None)
 
 
 def _thread_agents(h: BaseHTTPRequestHandler, session: str, agent_id: str | None,
@@ -1208,6 +1216,26 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         if not ok:
             print(f"stop: refused ({detail.get('error')}) for "
                   f"{str(body.get('session'))[:8]}", file=sys.stderr, flush=True)
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    elif path in ("/mic/ask", "/mic/cancel"):
+        # The phone as the TV's mic (server-contract.md §6.20, mic.py; David,
+        # 30 Sep 2026): a TV with no mic asks, every phone on the session
+        # stream with `?mic=1` is told at once; the TV's Cancel, its words
+        # arriving, or the phone taking it, cancels.
+        from . import mic
+
+        body = _read_json(h)
+        if not isinstance(body, dict):
+            body = {}
+        if path == "/mic/ask":
+            ok, detail = mic.ask(body.get("session"), _bearer(h))
+        else:
+            ok, detail = mic.cancel(body.get("id"), _bearer(h))
+        if ok and path == "/mic/ask":
+            a = detail["ask"]
+            print(f"mic: {a['device']!r} asks {a['id']} for "
+                  f"{a['session'][:8] if a['session'] else 'a new chat'}",
+                  file=sys.stderr, flush=True)
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path == "/session/retract":
         # Tapping your own latest message in the app, then Cancel or Edit

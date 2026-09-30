@@ -15,6 +15,11 @@ thread's one word.
                client keeps `last` and sends it on its next connection, so a
                reconnect catches up without repeats; `?alerts=` empty is a
                first connection: just the head, no backlog
+    mic        {"asks": [...]} — only when asked, `?mic=1` (a phone that has a
+               mic; §6.20, mic.py): every open ask to speak for another
+               device, but the connecting device's own. After the first
+               `sessions` frame if there are any, then whenever the set
+               changes (an ask, a cancel, an expiry)
     ping       {} after `?ping=` seconds of silence (15–300, default 15)
 
 `state` is `/sessions/state`'s (§6.1): `working` | `waiting` | `approval`.
@@ -44,7 +49,7 @@ import logging
 import threading
 import time
 
-from . import alerts, auth, sessions
+from . import alerts, auth, mic, sessions
 
 log = logging.getLogger("agent-media.server.session_events")
 
@@ -75,6 +80,7 @@ class _Watcher:
         self.subs = 0
         self.rows: list[dict] | None = None
         self.alerts_head = 0
+        self.mic_head = 0
         self.version = 0
         self.thread: threading.Thread | None = None
 
@@ -85,10 +91,13 @@ class _Watcher:
             log.exception("session events: sweep failed")
             return
         head = alerts.last_seq()
+        # Read every tick: an ask expiring is a change, noticed here (≤ POLL_S late).
+        mic_head = mic.version()
         with self.cond:
-            if rows != self.rows or head != self.alerts_head:
+            if rows != self.rows or head != self.alerts_head or mic_head != self.mic_head:
                 self.rows = rows
                 self.alerts_head = head
+                self.mic_head = mic_head
                 self.version += 1
                 self.cond.notify_all()
 
@@ -131,6 +140,20 @@ class _Watcher:
 _W = _Watcher()
 
 
+def poke() -> None:
+    """The asks changed (mic.py): wake every stream now rather than at the
+    watcher's next tick, so the phone hears the TV's ask at once. Nothing to
+    do with no stream open — the first subscriber reads afresh."""
+    w = _W
+    head = mic.version()
+    with w.cond:
+        if w.rows is None:
+            return
+        w.mic_head = head
+        w.version += 1
+        w.cond.notify_all()
+
+
 def ping_of(raw: str) -> float:
     """`?ping=` in seconds, clamped; the default when absent or not a number."""
     try:
@@ -158,10 +181,12 @@ def alerts_of(raw: str | None) -> int | None:
 
 
 def serve(h, bearer: str, *, ping_s: float = PING_DEFAULT_S,
-          alerts_after: int | None = None) -> bool:
+          alerts_after: int | None = None, mic_for: str | None = None) -> bool:
     """Hold the connection and stream the session list until it goes. Auth
-    is the caller's (app.py), done before this. Always True: the request was
-    answered, however the stream ended."""
+    is the caller's (app.py), done before this. `mic_for` is None when the
+    client did not ask for `mic` frames, else the connecting device's id
+    ("" for a login that is not a device), whose own asks it is not sent.
+    Always True: the request was answered, however the stream ended."""
     from .app import _cors, _json
 
     if not _W.subscribe():
@@ -190,6 +215,8 @@ def serve(h, bearer: str, *, ping_s: float = PING_DEFAULT_S,
         seen = -1
         seen_rows = None
         cursor = alerts_after
+        # An empty set on connecting is not sent: the phone has nothing to show.
+        seen_asks: list[dict] = []
         last_sent = time.monotonic()
         checked = time.monotonic()
         while True:
@@ -210,6 +237,12 @@ def serve(h, bearer: str, *, ping_s: float = PING_DEFAULT_S,
                         send("alerts", got)
                         last_sent = time.monotonic()
                     cursor = got["last"]
+                if mic_for is not None:
+                    asks = mic.open_asks(mic_for)
+                    if asks != seen_asks:
+                        seen_asks = asks
+                        send("mic", {"asks": asks})
+                        last_sent = time.monotonic()
             elif time.monotonic() - last_sent >= ping_s:
                 send("ping", {})
                 last_sent = time.monotonic()
