@@ -201,6 +201,10 @@ def _seek(where: str, ms: int) -> None:
     radio_io.player(where).seek(ms)
 
 
+def _pause(where: str) -> None:
+    radio_io.player(where).pause()
+
+
 def _playing_on(vid: str) -> Optional[str]:
     """Which player has `vid` loaded, if any."""
     for where in radio_io.PLAYERS:
@@ -459,7 +463,8 @@ def tick() -> None:
             came_up = next((s for s in st["sent"] if s["id"] == cur), None)
         if cur and isinstance(t, (int, float)) and t > 0:
             st["at"] = {"id": cur, "pos": round(float(t), 1),
-                        "dur": float(dur) if isinstance(dur, (int, float)) else None}
+                        "dur": float(dur) if isinstance(dur, (int, float)) else None,
+                        "paused": bool(p.get("pause"))}
     if came_up:
         _label(where, came_up)
         _note(came_up)
@@ -539,6 +544,10 @@ def _resume(where: str) -> bool:
         return False
     _label(where, song)
     _seek(where, int(at["pos"] * 1000))
+    if at.get("paused"):
+        # It was paused when the app restarted (an update): back, not playing
+        # (David, 30 Sep 2026 — an install put a paused song on again).
+        _pause(where)
     return True
 
 

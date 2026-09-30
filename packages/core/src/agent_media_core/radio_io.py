@@ -161,7 +161,7 @@ class PhonePlayer:
         try:
             return ipc.get_properties(self._sink()._endpoint(),
                                       ["path", "playlist-pos", "playlist-count",
-                                       "idle-active", "time-pos", "duration"])
+                                       "idle-active", "time-pos", "duration", "pause"])
         except (ipc.MpvIpcError, OSError):
             return None
 
@@ -266,6 +266,10 @@ class PhonePlayer:
         with contextlib.suppress(Exception):
             self._sink().seek_cur(position_ms=int(ms))
 
+    def pause(self) -> None:
+        with contextlib.suppress(Exception):
+            self._sink().pause()
+
 
 class HandoffPlayer:
     """The listener's own music app, by Sasonica's hand-off player
@@ -300,7 +304,7 @@ class HandoffPlayer:
 
         try:
             return ipc.get_properties(self._ep(), ["path", "playlist-pos", "playlist-count",
-                                                   "idle-active", "time-pos", "duration"])
+                                                   "idle-active", "time-pos", "duration", "pause"])
         except (ipc.MpvIpcError, OSError):
             return None
 
@@ -309,8 +313,13 @@ class HandoffPlayer:
         import urllib.parse
 
         q, artist, title = query(song)
-        return f"handoff/{song['id']}?" + urllib.parse.urlencode(
-            {"q": q, "artist": artist, "title": title})
+        fields = {"q": q, "artist": artist, "title": title}
+        # The app to ask, when the server names one (else the listener's
+        # choice in Settings): MEDIA_RADIO_HANDOFF_APP, a package name.
+        app = (os.environ.get("MEDIA_RADIO_HANDOFF_APP") or "").strip()
+        if app:
+            fields["app"] = app
+        return f"handoff/{song['id']}?" + urllib.parse.urlencode(fields)
 
     def send(self, song: dict, replace: bool = False) -> bool:
         from .sinks import _mpv_ipc as ipc
@@ -361,6 +370,12 @@ class HandoffPlayer:
 
     def seek(self, ms: int) -> None:
         self._command("seek", max(0.0, ms / 1000.0), "absolute")
+
+    def pause(self) -> None:
+        from .sinks import _mpv_ipc as ipc
+
+        with contextlib.suppress(ipc.MpvIpcError, OSError):
+            ipc.set_property(self._ep(), "pause", True)
 
 
 #: Players a station can run on (`_resolve_music_where` names, and `handoff`).

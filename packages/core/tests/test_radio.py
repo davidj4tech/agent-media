@@ -82,6 +82,8 @@ def station(tmp_path, monkeypatch):
     monkeypatch.setattr(radio, "_clear", lambda where: None)
     monkeypatch.setattr(radio, "_next", lambda where: None)
     monkeypatch.setattr(radio, "_seek", lambda where, ms: player.seeks.append(ms))
+    player.paused_at: list = []
+    monkeypatch.setattr(radio, "_pause", lambda where: player.paused_at.append(where))
     player.refuse = refuse
     return player, sent, fetched, mixes
 
@@ -520,3 +522,19 @@ def test_a_dj_on_the_hand_off_player_needs_no_youtube(station, monkeypatch):
     assert q["q"] == "The Band - The Weight" and q["channel"] == "The Band"
     radio.tick()
     assert radio.is_on()                        # no switch turns it off
+
+
+def test_a_paused_song_cut_off_comes_back_paused(station):
+    """An install restarted the app while a song sat paused; the station put
+    it on again playing (30 Sep 2026)."""
+    player, sent, _, _ = station
+    radio.start(SEED["id"], "sasonica", playing=True)
+    player.t = 100.0
+    real = player.props
+    player.props = lambda where: {**real(where), "pause": True}
+    radio.tick()
+    player.props = real
+    player.items, player.pos = [], 0
+    radio.tick()
+    assert sent[-1] == (SEED["id"], True) and player.seeks == [100000]
+    assert player.paused_at == ["sasonica"]
