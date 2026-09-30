@@ -674,7 +674,7 @@ ahead.
    included; a tool's Allow asks for the unlock first. The server adds a
    trimmed `approval` to `/sessions/events`' rows. Anything multi-select or
    free text still opens the thread. **Built 1 Oct 2026** (agent-media
-   session_events `brief`, sasonica-app `daba707`, `AnswerReceiver`); not
+   session_events `brief`, sasonica-app `dc74d5d`, `AnswerReceiver`); not
    yet on p8a (next CI build, and a server restart on red5). Still to come:
    the Settings switch that asks for the unlock on every answer.
    [proposals/2026-10-01-answer-from-the-notification.md](proposals/2026-10-01-answer-from-the-notification.md).
