@@ -88,6 +88,41 @@ def test_a_state_change_sends_the_list_again(server, screen):
         st.close()
 
 
+def test_a_waiting_row_carries_its_question(server, screen, monkeypatch):
+    """Needs you with the answers: the dialog, trimmed, rides the row; a
+    new question (a new key) sends the list again though the state stays."""
+    from agent_media_server import dashboard
+
+    dialog = {"question": "Run the tests?", "key": "k1", "agent": "claude",
+              "options": [{"n": 1, "label": "Yes", "detail": ""},
+                          {"n": 2, "label": "No", "detail": "tell Claude"}]}
+    monkeypatch.setattr(dashboard, "_approval",
+                        lambda sid, live, headless: dict(dialog) if sid == SID2 else None)
+    st = Stream(server, "/sessions/events?ping=0.3", AUTH)
+    try:
+        assert "approval" not in st.next("sessions")["sessions"][0]
+        screen["cls"] = "approval"
+        row = st.next("sessions")["sessions"][0]
+        assert row["approval"] == {
+            "key": "k1", "kind": "tool", "question": "Run the tests?",
+            "options": [{"n": 1, "label": "Yes"}, {"n": 2, "label": "No"}],
+            "multiSelect": False, "partial": False, "several": False}
+        dialog["key"] = "k2"
+        assert st.next("sessions")["sessions"][0]["approval"]["key"] == "k2"
+    finally:
+        st.close()
+
+
+def test_brief_marks_what_one_tap_cannot_answer():
+    ap = {"id": "r1", "kind": "question", "key": "abc", "question": "Which?",
+          "options": [], "partial": True, "multiSelect": True,
+          "questions": [{"question": "Which?"}, {"question": "And?"}]}
+    b = session_events.brief(ap)
+    assert (b["kind"], b["several"], b["multiSelect"], b["partial"]) == \
+        ("question", True, True, True)
+    assert b["options"] == []
+
+
 def test_nothing_changed_sends_only_pings(server, screen):
     st = Stream(server, "/sessions/events?ping=0.2", AUTH)
     try:

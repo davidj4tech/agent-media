@@ -2531,6 +2531,15 @@ data: {}
   client diffs against what it held; the server keeps nothing per client, so
   a reconnect's first frame is the catch-up (a client that remembers the
   last list across a reconnect sees what changed while it was away).
+  **A row in `approval` carries what it asks** (1 Oct 2026), so a
+  notification can offer the answers: `approval: {key, kind, question,
+  options: [{n, label}], multiSelect, partial, several}` — §6.2.1's approval
+  trimmed; `kind` is `question` (AskUserQuestion) or `tool` (any permission
+  prompt, a pane's or a headless one's); `several` means more than one
+  question. One tap answers it with `POST /session/answer {session, choice:
+  n, key}` (§6.4) only when it is not `multiSelect`, `partial` or `several`
+  and has options. A new question is a new `key`, which sends the list again
+  though the state has not changed. Absent when the dialog could not be read.
 - `alerts` (27 Sep 2026; only with `?alerts=`): the alert store's
   **notices** (§6.17) after cursor `n` —
   `{"last": 57, "notices": [{"n", "id", "change", "level", "title", "detail",

@@ -6,9 +6,12 @@ connection that says when any live session changes state — a turn ended
 you"). The per-thread stream (§11) is one thread's detail; this is every
 thread's one word.
 
-    sessions   {"sessions": [{"session", "title", "state"}], "at"}
+    sessions   {"sessions": [{"session", "title", "state", "approval"?}], "at"}
                — first frame on every connection, then whenever a row's
-               session, state or title changes (the whole list: it is small)
+               session, state or title changes (the whole list: it is small).
+               A row in `approval` carries what it asks, trimmed (`brief`),
+               so a notification can offer the answers; a new question is a
+               new `key`, so a change of question sends the list again
     alerts     {"last", "notices": [...]} — only when asked, `?alerts=<n>`:
                the alert store's notices after cursor n (alerts.notices),
                first on connecting, then whenever there are new ones. The
@@ -72,6 +75,47 @@ def rows_of(rows: list[dict]) -> list[dict]:
     return sorted(out, key=lambda r: r["session"])
 
 
+def brief(ap: dict) -> dict:
+    """The part of an `approval` (§6.2.1) a notification answers from: the
+    question, its numbered options and the `key` an answer echoes. `kind` is
+    `question` (AskUserQuestion) or `tool` (a permission prompt, a pane's or
+    a headless one's). `several`: more than one question, so no one tap
+    answers it; nor does `multiSelect` or `partial`."""
+    return {"key": str(ap.get("key") or ""),
+            "kind": "question" if ap.get("kind") == "question" else "tool",
+            "question": str(ap.get("question") or ""),
+            "options": [{"n": o.get("n"), "label": str(o.get("label") or "")}
+                        for o in ap.get("options") or [] if isinstance(o, dict)],
+            "multiSelect": bool(ap.get("multiSelect")),
+            "partial": bool(ap.get("partial")),
+            "several": len(ap.get("questions") or []) > 1}
+
+
+def with_approvals(rows: list[dict], raw: list[dict]) -> list[dict]:
+    """`rows` (rows_of's) with a `brief` of each waiting row's dialog. Read
+    only for rows in `approval` — rarely more than one or two a sweep. A
+    dialog that cannot be read leaves the row as it was."""
+    from . import dashboard
+
+    waiting = {str(r["session"]) for r in rows if r["state"] == "approval"}
+    if not waiting:
+        return rows
+    headless = {str(r.get("session")) for r in raw if r.get("driver") == "headless"}
+    live = sessions.live_sessions()
+    out = []
+    for r in rows:
+        if r["session"] in waiting:
+            try:
+                ap = dashboard._approval(r["session"], live, r["session"] in headless)
+            except Exception:  # noqa: BLE001 — the state still goes out
+                log.exception("session events: approval of %s", r["session"])
+                ap = None
+            if ap:
+                r = {**r, "approval": brief(ap)}
+        out.append(r)
+    return out
+
+
 class _Watcher:
     """The shared sweep reader. `version` goes up when the list changes."""
 
@@ -86,7 +130,8 @@ class _Watcher:
 
     def _read(self) -> None:
         try:
-            rows = rows_of(sessions.cached_states()[0])
+            raw = sessions.cached_states()[0]
+            rows = with_approvals(rows_of(raw), raw)
         except Exception:  # noqa: BLE001 — a failed sweep is not a change
             log.exception("session events: sweep failed")
             return

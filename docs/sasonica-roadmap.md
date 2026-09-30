@@ -667,6 +667,24 @@ ahead.
    (a push, a delete, a send) is asked aloud and waits for a spoken yes. A
    long job is said as started ("running the tests, I'll tell you") and
    spoken again when it ends.
+10. **Answer from the notification** (David, 1 Oct 2026) — "Needs you"
+   carries the question's options as buttons (Allow / Deny, or one
+   single-select question's options), answered by a native receiver through
+   `POST /session/answer` with the question's `key`, the lock screen
+   included; a tool's Allow asks for the unlock first. The server adds a
+   trimmed `approval` to `/sessions/events`' rows. Anything multi-select or
+   free text still opens the thread. **Built 1 Oct 2026** (agent-media
+   session_events `brief`, sasonica-app `daba707`, `AnswerReceiver`); not
+   yet on p8a (next CI build, and a server restart on red5). Still to come:
+   the Settings switch that asks for the unlock on every answer.
+   [proposals/2026-10-01-answer-from-the-notification.md](proposals/2026-10-01-answer-from-the-notification.md).
+11. **Routines from the phone** (David, 1 Oct 2026: "look good too") — a
+   prompt on a schedule ("every weekday at 8, check X and tell me"), made
+   and listed in the app, run as a headless session; its result arrives as
+   a thread plus a digest or alert through the alert store (§6.17), so it
+   plays from Home like the other digests. Proposal to write.
+   (The third idea from the same list, share sheet and camera into a thread,
+   was already built 25–26 Sep; only direct-share icons remain.)
 
 ## Loose ends
 
