@@ -5086,7 +5086,10 @@ def _phone_music_props(patient: bool = False) -> Optional[dict]:
     """
     from .sinks import music_local, music_sasonica
     from .sinks import _mpv_ipc as ipc
-    for ep in [e for e in (music_sasonica.endpoint(), music_local.endpoint()) if e]:
+    # The radio's hand-off player last: a song the listener's own music app
+    # plays for a station (radio_io.HandoffPlayer), named by the station.
+    handoff = (os.environ.get("MEDIA_RADIO_HANDOFF_ENDPOINT") or "").strip() or None
+    for ep in [e for e in (music_sasonica.endpoint(), music_local.endpoint(), handoff) if e]:
         attempts = 5 if (patient and str(ep).startswith("tcp://")) else 1
         try:
             props = ipc.display_properties(
