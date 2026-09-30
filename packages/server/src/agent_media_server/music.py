@@ -195,7 +195,10 @@ def _radio_control(body: dict) -> tuple[bool, dict]:
         return False, {"error": radio.OFF_HERE, "status": 409, **_answer()}
     if body.get("dj"):
         # The DJ's station: what plays now plays on until its first pick.
-        where = _resolve_music_where("default")
+        # On the named player, else the default (the hand-off player where
+        # YouTube is off; MEDIA_RADIO_PLAYER).
+        where = body.get("player") if body.get("player") in radio.radio_io.PLAYERS \
+            else radio.radio_io.default_player(_resolve_music_where("default"))
         try:
             radio.start_dj(where)
         except ValueError as e:

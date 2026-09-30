@@ -5829,7 +5829,9 @@ def _cmd_music_radio(m: "SinkMusic", a) -> int:
         return 0
     if arg == "dj":
         try:
-            radio.start_dj(_resolve_music_where(getattr(a, "where", "") or "default"))
+            named = getattr(a, "where", "") or ""
+            radio.start_dj(named if named == "handoff" else
+                           radio.radio_io.default_player(_resolve_music_where(named or "default")))
         except ValueError as e:
             print(f"media music radio: {e}", file=sys.stderr)
             return 1

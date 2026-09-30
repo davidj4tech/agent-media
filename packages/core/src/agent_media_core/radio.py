@@ -266,12 +266,15 @@ def start(uri: str, where: str, playing: bool) -> dict:
 def start_dj(where: str) -> dict:
     """A DJ station on `where` (radio_dj). What is playing plays on until the
     DJ's first song is found and downloaded (the loop does it: a minute, give
-    or take), then that replaces it."""
-    if not radio_io.youtube_on():
-        # The DJ picks by name, and finds each on YouTube until the hand-off.
-        raise ValueError(OFF_HERE)
+    or take), then that replaces it. On the hand-off player the DJ's picks
+    go to the listener's music app by name, and YouTube is never asked."""
     if where not in radio_io.PLAYERS:
         raise ValueError("radio plays on the phone")
+    if getattr(radio_io.PLAYERS[where], "personal", False) and not radio_io.youtube_on():
+        # The phone's players are fed from YouTube, which is off here.
+        raise ValueError(OFF_HERE)
+    if where == "handoff" and not radio_io.handoff_on():
+        raise ValueError("no hand-off player here (MEDIA_RADIO_HANDOFF_ENDPOINT)")
     with _station() as st:
         st.clear()
         st.update(_blank())
@@ -409,12 +412,13 @@ def tick() -> None:
     with _station() as st:
         if not st["on"]:
             return
-        if not radio_io.youtube_on():
-            # Switched off while a station was on: it ends, the song plays on.
+        where = st["where"]
+        if getattr(radio_io.PLAYERS.get(where, radio_io.PhonePlayer), "personal", False) and not radio_io.youtube_on():
+            # Switched off while a YouTube station was on: it ends, the song
+            # plays on. A hand-off station needs no switch.
             log.info("radio: %s", OFF_HERE)
             st["on"] = False
             return
-        where = st["where"]
     p = _props(where)
     if p is None:
         return

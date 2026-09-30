@@ -1966,6 +1966,13 @@ past those. Off is `{"on": false, "seed": null, "next": [], "available"}`.
   it. `radio` gains `"kind": "mix" | "dj"` and `"note"`, the DJ's sentence on
   the mood (`""` for a Mix station); a DJ station's `seed` is
   `{"id": null, "title": "Claude DJ"}`.
+- `{"action": "radio", "dj": true, "player"?: "handoff" | "sasonica" | "phone"}`
+  (30 Sep 2026): `handoff` is the Sasonica app's hand-off player — each pick
+  asked of the listener's own music app by name (licensed-music proposal,
+  step 3; needs MEDIA_RADIO_HANDOFF_ENDPOINT, and no YouTube). Without
+  `player`: MEDIA_RADIO_PLAYER, else `handoff` where the YouTube path is
+  off, else the music's own place. `radio.available` is true where either
+  path is on.
 - `{"action": "radio", "off": true}` ends it; what is playing plays on.
 - The YouTube path is **off unless the server sets `MEDIA_RADIO_YOUTUBE=1`**
   (29 Sep 2026, licensed-music proposal): `radio.available` says whether a

@@ -460,3 +460,63 @@ def test_youtube_radio_is_off_unless_the_server_turns_it_on(station, monkeypatch
     monkeypatch.setenv("MEDIA_RADIO_YOUTUBE", "0")
     radio.tick()
     assert radio.is_on() is False and sent == []
+
+
+# ---- the hand-off player (licensed-music proposal, step 3) --------------------
+
+def test_a_songs_query_is_the_djs_line_or_its_cleaned_title():
+    from agent_media_core import radio_io
+
+    assert radio_io.query({"q": "Eagles - Take It Easy", "title": "x"}) == \
+        ("Eagles - Take It Easy", "Eagles", "Take It Easy")
+    assert radio_io.query({"title": "Fleetwood Mac - Dreams (Official Music Video) [4K]",
+                           "channel": "Fleetwood Mac"})[0] == "Fleetwood Mac - Dreams"
+    assert radio_io.query({"title": "Lean on Me", "channel": "Bill Withers - Topic"}) == \
+        ("Bill Withers - Lean on Me", "Bill Withers", "Lean on Me")
+    assert radio_io.query({"title": "Lucille", "channel": ""}) == ("Lucille", "", "Lucille")
+
+
+def test_a_search_result_keeps_the_line_it_answered():
+    from agent_media_core import radio_io
+
+    songs = radio_io.parse("5igDtWadYms\tEagles - Take it Easy (Official Audio)\tEagles\t213\tEagles - Take It Easy\n")
+    assert songs[0]["q"] == "Eagles - Take It Easy" and songs[0]["dur"] == 213
+
+
+def test_the_hand_off_player_asks_by_name(monkeypatch):
+    from agent_media_core import radio_io
+    from agent_media_core.sinks import _mpv_ipc as ipc
+
+    monkeypatch.setenv("MEDIA_RADIO_HANDOFF_ENDPOINT", "tcp://phone:6617")
+    sent: list = []
+    monkeypatch.setattr(ipc, "command", lambda ep, *a, **k: sent.append((ep, *a)))
+    p = radio_io.player("handoff")
+    assert p.send({"id": "5igDtWadYms", "q": "Eagles - Take It Easy"}) is True
+    ep, verb, uri, mode = sent[0]
+    assert (ep, verb, mode) == ("tcp://phone:6617", "loadfile", "append-play")
+    assert uri == "handoff/5igDtWadYms?q=Eagles+-+Take+It+Easy&artist=Eagles&title=Take+It+Easy"
+    assert radio_io.vid_of(uri) == "5igDtWadYms"
+    assert p.prefetch({"id": "x"}) is True and p.personal is False
+
+
+def test_a_dj_on_the_hand_off_player_needs_no_youtube(station, monkeypatch):
+    """No MEDIA_RADIO_YOUTUBE: the DJ's lines go to the music app by name."""
+    from agent_media_core import radio_dj, radio_io
+
+    player, sent, _, _ = station
+    monkeypatch.delenv("MEDIA_RADIO_YOUTUBE")
+    monkeypatch.setenv("MEDIA_RADIO_HANDOFF_ENDPOINT", "tcp://phone:6617")
+    assert radio.available() is True
+    assert radio_io.default_player("sasonica") == "handoff"
+    monkeypatch.setattr(radio_dj, "ask", lambda st, n=6: (["Eagles - Take It Easy", "The Band - The Weight"], "easy"))
+    monkeypatch.setattr(radio_dj, "search", lambda lines: (_ for _ in ()).throw(AssertionError("YouTube asked")))
+    with pytest.raises(ValueError):
+        radio.start_dj("sasonica")             # the phone's players need YouTube
+    radio.start_dj("handoff")
+    radio.tick()
+    first = radio_io.synthetic_id("Eagles - Take It Easy")
+    assert sent == [(first, True)]
+    q = radio.read()["queue"][0]
+    assert q["q"] == "The Band - The Weight" and q["channel"] == "The Band"
+    radio.tick()
+    assert radio.is_on()                        # no switch turns it off

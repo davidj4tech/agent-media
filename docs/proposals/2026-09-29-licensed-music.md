@@ -1,6 +1,6 @@
 # Music that is licensed: the radio beyond yt-dlp
 
-Status: proposal; steps 1 and 2 built 29 Sep 2026.
+Status: proposal; steps 1 and 2 built 29 Sep 2026, step 3's first version 30 Sep.
 Date: 2026-09-29
 
 David, 29 Sep 2026, with the first DJ station playing: *"So how do we get
@@ -126,6 +126,17 @@ the phone's yt-dlp for a listener who has switched the YouTube path on.
    play-from-search, follow the controller, report to the server over the same
    IPC the station already reads (`path` → the other app's media id,
    `time-pos`, `duration`, `idle-active`), so `tick()` is unchanged.
+   **Built 30 Sep 2026, first version:** sasonica-app `HandoffMusic` (port
+   6617, the app's mpv verbs; `playFromSearch` on the chosen app's media
+   session, found with the notification access `MediaAccessService` holds;
+   the Assistant's intent while Sasonica is on screen; the next song asked
+   for 1.5 s before this one ends or when the app moves on by itself) and
+   Settings → Music app for the radio; agent-media `radio_io.HandoffPlayer`
+   (`handoff/<id>?q=Artist - Title`, `MEDIA_RADIO_HANDOFF_ENDPOINT`). A DJ
+   station on it asks the model and nothing else: the lines go by name
+   (`radio_dj.by_name`), so it runs with the YouTube path off. A Mix station
+   still needs YouTube to list its songs. Not yet: the Media tab's now
+   playing for a hand-off song, and YouTube in the browser.
 4. **Settings → Music app**: which installed app plays (the ones that answer
    play-from-search), and the permission.
 5. **Spotify for David** (optional): App Remote in development mode, David

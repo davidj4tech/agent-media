@@ -151,7 +151,7 @@ def search(lines: list[str]) -> list[dict]:
         return []
     urls = " ".join(shlex.quote(f"ytsearch1:{q}") for q in lines)
     remote = ("yt-dlp --no-warnings --flat-playlist --ignore-errors "
-              f"--print '%(id)s\t%(title)s\t%(channel)s\t%(duration)s' {urls}")
+              f"--print '%(id)s\t%(title)s\t%(channel)s\t%(duration)s\t%(playlist)s' {urls}")
     try:
         r = subprocess.run(music_local.phone_argv(remote), capture_output=True, text=True,
                            timeout=float(os.environ.get("MEDIA_RADIO_MIX_TIMEOUT", "60")) + 10 * len(lines))
@@ -161,9 +161,27 @@ def search(lines: list[str]) -> list[dict]:
     return radio_io.parse(r.stdout or "")
 
 
+def by_name(lines: list[str]) -> list[dict]:
+    """The DJ's lines as songs for the hand-off player: the listener's music
+    app finds each by name, so YouTube is not asked (licensed-music
+    proposal); the id is the line's own."""
+    from . import radio_io
+
+    out = []
+    for line in lines:
+        artist, _, title = line.partition(" - ")
+        out.append({"id": radio_io.synthetic_id(line), "title": title.strip() or line,
+                    "channel": artist.strip() if title else "", "dur": None, "q": line})
+    return out
+
+
 def picks(st: dict, n: int = PICKS) -> tuple[list[dict], str]:
+    from . import radio_io
+
     lines, note = ask(st, n)
-    songs = search(lines)
+    player = radio_io.PLAYERS.get(st.get("where") or "", radio_io.PhonePlayer)
+    # Each song carries the DJ's line (q): what the hand-off player asks for.
+    songs = search(lines) if getattr(player, "personal", False) else by_name(lines)
     log.info("radio-dj: %d of %d found (%s)", len(songs), len(lines), note)
     return songs, note
 

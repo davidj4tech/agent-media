@@ -64,7 +64,8 @@ def yt_uri(vid: str) -> str:
 
 
 def parse(text: str) -> list[dict]:
-    """yt-dlp's `id<TAB>title<TAB>channel<TAB>duration` lines, as songs."""
+    """yt-dlp's `id<TAB>title<TAB>channel<TAB>duration[<TAB>query]` lines, as
+    songs; a fifth field is the search it answered (``q``, the DJ's line)."""
     out = []
     for line in text.splitlines():
         parts = line.split("\t")
@@ -74,10 +75,39 @@ def parse(text: str) -> list[dict]:
             dur = int(float(parts[3])) if len(parts) > 3 and parts[3] not in ("", "NA") else None
         except ValueError:
             dur = None
-        out.append({"id": parts[0], "title": parts[1].strip(),
-                    "channel": (parts[2].strip() if len(parts) > 2 and parts[2] != "NA" else ""),
-                    "dur": dur})
+        song = {"id": parts[0], "title": parts[1].strip(),
+                "channel": (parts[2].strip() if len(parts) > 2 and parts[2] != "NA" else ""),
+                "dur": dur}
+        if len(parts) > 4 and parts[4].strip() not in ("", "NA"):
+            song["q"] = parts[4].strip()
+        out.append(song)
     return out
+
+
+def synthetic_id(line: str) -> str:
+    """An id for a song known only by name (a DJ's line, no YouTube): eleven
+    characters of its hash, so it passes where a YouTube id does."""
+    import base64
+    import hashlib
+
+    return base64.urlsafe_b64encode(hashlib.sha1(line.lower().encode()).digest()).decode()[:11]
+
+
+def query(song: dict) -> tuple[str, str, str]:
+    """``(q, artist, title)`` to ask a music app for `song`: the DJ's own
+    line when there is one, else its YouTube title with the uploader's
+    trimmings ("(Official Audio)", "[4K]", "- Topic") off."""
+    line = (song.get("q") or "").strip()
+    if not line:
+        line = re.sub(r"\s*[\(\[][^\)\]]*[\)\]]", "", song.get("title") or "").strip()
+        if " - " not in line:
+            ch = re.sub(r"\s*(- Topic|VEVO|Official)$", "", song.get("channel") or "").strip()
+            if ch:
+                line = f"{ch} - {line}"
+    artist, _, title = line.partition(" - ")
+    if not title:
+        artist, title = "", line
+    return line, artist.strip(), title.strip()
 
 
 # ---- sources -------------------------------------------------------------------
@@ -173,6 +203,14 @@ class PhonePlayer:
             return False
         return any(vid_of(str((e or {}).get("filename") or "")) == vid for e in entries)
 
+    def _quiet_self(self) -> None:
+        try:
+            sink = self._sink()
+            if sink.loaded():
+                sink.stop()
+        except Exception:  # noqa: BLE001 — best-effort tidying
+            log.debug("radio: could not quiet %s", self.where, exc_info=True)
+
     def _quiet_other(self) -> None:
         """One player at a time, as music_router's play keeps it: a song put on
         in one phone player stops what the other was playing."""
@@ -229,8 +267,121 @@ class PhonePlayer:
             self._sink().seek_cur(position_ms=int(ms))
 
 
-#: Players a station can run on (`_resolve_music_where` names).
-PLAYERS = {"sasonica": PhonePlayer, "phone": PhonePlayer}
+class HandoffPlayer:
+    """The listener's own music app, by Sasonica's hand-off player
+    (sasonica-app speech/HandoffMusic.java, port 6617): each song is asked of
+    Spotify, YouTube Music or whichever app the listener chose, by name,
+    under their subscription. Nothing is downloaded here or on the phone, so
+    it needs no switch (licensed-music proposal, step 3).
+
+    The app answers the same mpv verbs as the phone's players; a queue entry
+    is ``handoff/<id>?q=Artist - Title&artist=…&title=…``.
+    """
+
+    personal = False
+
+    def __init__(self, where: str = "handoff") -> None:
+        self.where = where
+
+    @staticmethod
+    def endpoint() -> Optional[str]:
+        return (os.environ.get("MEDIA_RADIO_HANDOFF_ENDPOINT") or "").strip() or None
+
+    def _ep(self) -> str:
+        from .sinks import _mpv_ipc as ipc
+
+        ep = self.endpoint()
+        if not ep:
+            raise ipc.MpvIpcError("MEDIA_RADIO_HANDOFF_ENDPOINT unset")
+        return ep
+
+    def props(self) -> Optional[dict]:
+        from .sinks import _mpv_ipc as ipc
+
+        try:
+            return ipc.get_properties(self._ep(), ["path", "playlist-pos", "playlist-count",
+                                                   "idle-active", "time-pos", "duration"])
+        except (ipc.MpvIpcError, OSError):
+            return None
+
+    @staticmethod
+    def entry(song: dict) -> str:
+        import urllib.parse
+
+        q, artist, title = query(song)
+        return f"handoff/{song['id']}?" + urllib.parse.urlencode(
+            {"q": q, "artist": artist, "title": title})
+
+    def send(self, song: dict, replace: bool = False) -> bool:
+        from .sinks import _mpv_ipc as ipc
+
+        try:
+            ipc.command(self._ep(), "loadfile", self.entry(song),
+                        "replace" if replace else "append-play")
+            if replace:
+                # One player at a time: the phone's own stop for the app's.
+                for where in ("sasonica", "phone"):
+                    threading.Thread(target=PhonePlayer(where)._quiet_self, daemon=True,
+                                     name="radio-quiet-phone").start()
+            return True
+        except (ipc.MpvIpcError, OSError) as e:
+            log.info("radio: the hand-off player did not take %s: %s", song["id"], e)
+            return self.holds(song["id"])
+
+    def holds(self, vid: str) -> bool:
+        from .sinks import _mpv_ipc as ipc
+
+        try:
+            entries = ipc.get_property(self._ep(), "playlist") or []
+        except (ipc.MpvIpcError, OSError):
+            return False
+        return any(vid_of(str((e or {}).get("filename") or "")) == vid for e in entries)
+
+    def prefetch(self, song: dict) -> bool:
+        return True                # the music app fetches its own
+
+    def label(self, song: dict) -> None:
+        """The name the station knows it by, for the Media tab's now playing."""
+        from .sinks import _mpv_ipc as ipc
+
+        with contextlib.suppress(ipc.MpvIpcError, OSError):
+            ipc.set_property(self._ep(), "force-media-title", query(song)[0])
+
+    def _command(self, *args) -> None:
+        from .sinks import _mpv_ipc as ipc
+
+        with contextlib.suppress(ipc.MpvIpcError, OSError):
+            ipc.command(self._ep(), *args)
+
+    def clear(self) -> None:
+        self._command("playlist-clear")
+
+    def next(self) -> None:
+        self._command("playlist-next", "weak")
+
+    def seek(self, ms: int) -> None:
+        self._command("seek", max(0.0, ms / 1000.0), "absolute")
+
+
+#: Players a station can run on (`_resolve_music_where` names, and `handoff`).
+PLAYERS = {"sasonica": PhonePlayer, "phone": PhonePlayer, "handoff": HandoffPlayer}
+
+
+def handoff_on() -> bool:
+    """Whether the hand-off player is configured (MEDIA_RADIO_HANDOFF_ENDPOINT)."""
+    return HandoffPlayer.endpoint() is not None
+
+
+def default_player(where: str) -> str:
+    """The player a station goes to when none was named: MEDIA_RADIO_PLAYER,
+    else the hand-off player where the YouTube path is off, else `where`
+    (the music's own place)."""
+    named = (os.environ.get("MEDIA_RADIO_PLAYER") or "").strip()
+    if named in PLAYERS and (named != "handoff" or handoff_on()):
+        return named
+    if not youtube_on() and handoff_on():
+        return "handoff"
+    return where
 
 
 def youtube_on() -> bool:
@@ -244,9 +395,9 @@ def youtube_on() -> bool:
 
 
 def available() -> bool:
-    """Whether any station can play here. The YouTube path only, until the
-    hand-off player (which needs no switch)."""
-    return youtube_on()
+    """Whether any station can play here: the YouTube path, or the hand-off
+    player (a DJ station; a Mix needs YouTube to list it)."""
+    return youtube_on() or handoff_on()
 
 
 def player(where: str):
