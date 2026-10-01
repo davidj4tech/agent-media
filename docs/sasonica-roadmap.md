@@ -706,6 +706,10 @@ ahead.
    non-urgent speech waits, and on becoming free one short spoken catch-up
    ("While you were busy…") replaces the replay.
    [proposals/2026-10-01-speaks-when-youre-free.md](proposals/2026-10-01-speaks-when-youre-free.md).
+   Add-on, proposed: Jev (TypeSafe's typed-decision model) answers the
+   soft half (is this event really busy, should this break through, is
+   the catch-up worth a voice), with the rule as its fallback.
+   [proposals/2026-10-01-jev-for-free-now.md](proposals/2026-10-01-jev-for-free-now.md).
 
 ## Loose ends
 
