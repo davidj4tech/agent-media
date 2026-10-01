@@ -609,6 +609,12 @@ ahead.
    open alerts, speaking now) for automations. (c) and (d) extend
    `packages/voice-bridge/homeassistant` rather than adding another
    integration.
+   **Where it leads: work that follows you** (David, 1 Oct 2026, picked from
+   "what can it do that other chat apps can't"): with (b) and (c) in place,
+   a conversation moves with David — the phone in the car, the TV and the
+   room's speakers at home, the e-ink canvas at the desk — the voice and the
+   figures going where he is, the thread the same everywhere. Not a step of
+   its own; the test that (b)–(c) are done.
 8. **A Media tab** (David, 28 Sep 2026) — a fourth tab in the app, not a
    companion app, because speech and music share the phone's player and its
    handoff already lives here. Music plays in the app's own ExoPlayer (a
@@ -685,6 +691,21 @@ ahead.
    plays from Home like the other digests. Proposal to write.
    (The third idea from the same list, share sheet and camera into a thread,
    was already built 25–26 Sep; only direct-share icons remain.)
+12. **See what it's building** (David, 1 Oct 2026) — a dev server or HTML
+   page an agent starts shows as a card in its thread; Open is a full-screen
+   panel, through a per-preview tailnet port behind the device token, with
+   hot reload passing through.
+   [proposals/2026-10-01-see-what-its-building.md](proposals/2026-10-01-see-what-its-building.md).
+13. **The phone as eyes and hands** (David, 1 Oct 2026) — an agent asks the
+   phone for a photo, Do Not Disturb until a time, or its rough location
+   (`phone_ask`, modelled on the mic asks §6.20); every ask needs David's
+   yes, Allow through the unlock, and is kept in an audit list. Photo first.
+   [proposals/2026-10-01-the-phone-as-eyes-and-hands.md](proposals/2026-10-01-the-phone-as-eyes-and-hands.md).
+14. **Speaks when you're free** (David, 1 Oct 2026) — one "free now?" signal
+   on the server (call, quiet ringer, meeting, manual); while busy,
+   non-urgent speech waits, and on becoming free one short spoken catch-up
+   ("While you were busy…") replaces the replay.
+   [proposals/2026-10-01-speaks-when-youre-free.md](proposals/2026-10-01-speaks-when-youre-free.md).
 
 ## Loose ends
 
