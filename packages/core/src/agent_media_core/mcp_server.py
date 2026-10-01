@@ -317,6 +317,34 @@ def converse(text: str,
     return {"reply": reply}
 
 
+@mcp.tool()
+def phone_ask(why: str, kind: str = "photo", timeout_s: float = 300.0) -> dict:
+    """Ask David's phone for something only it has, and wait for his answer.
+
+    `kind="photo"`: David gets a notification with your `why`, and if he
+    allows it, takes the photo himself; you get back a file path you can
+    open with your own Read tool. Use it when the task needs to SEE
+    something in the room — a device's lights, a label, a screen — not for
+    anything you can find out another way.
+
+    Every ask needs his yes. Ask only for what the task needs, say why in one
+    plain sentence ("show me the router's lights, to see whether the WAN
+    light is on"), and if he says no, do not ask again for the same thing.
+
+    Args:
+        why: One sentence, shown to David as-is.
+        kind: "photo" (location and Do Not Disturb are to come).
+        timeout_s: How long to wait (the phone gives up after 5 minutes).
+
+    Returns {"status": "ok", "result": {"path", "width", "height"}} — or
+    status "denied", "timeout", "no_phone" (no phone connected that can),
+    "failed" (with "error"), "gone" or "error".
+    """
+    from . import phone_ask as _phone
+
+    return _phone.ask(kind, why, timeout_s)
+
+
 def _await_quiet(target: Target, max_wait_s: float = 120.0) -> None:
     """Block until the spoken prompt has actually left the speakers.
 
@@ -1400,6 +1428,7 @@ def main() -> None:
 # via the full media-mcp entrypoint.
 NARROW_TOOLS = (
     "converse",            # genuinely interactive; awkward to drive from a CLI
+    "phone_ask",           # the same: it waits on David's yes on the phone
     "errors",              # lets an agent see what just went wrong
     "music_play",
     "music_pause",

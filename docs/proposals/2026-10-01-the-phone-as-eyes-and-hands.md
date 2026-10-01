@@ -1,7 +1,8 @@
 # Proposal: the phone as an agent's eyes and hands (1 Oct 2026)
 
-Status: **proposed 1 Oct 2026, nothing built** (David picked it from a list
-of new directions). Adds a phone-ask store and routes to the server (a new
+Status: **proposed 1 Oct 2026; decided the same day: photo first, and
+location precise as well as rough** (David picked it from a list of new
+directions, and chose it to build first). Adds a phone-ask store and routes to the server (a new
 §6.21 in `server-contract.md`), one frame to `GET /sessions/events` (§6.13),
 an MCP tool and a `media phone` command in core, and an ask notification,
 an Ask screen and the capabilities themselves to Sasonica's Android shell.
@@ -165,8 +166,9 @@ Two buttons: **Allow…** and **Deny**.
 
 1. **Photo first?** Recommended: it is the one David named, needs no new
    permission, and has the clearest value.
-2. **Location precision**: coarse only (a few hundred metres, enough for
-   "is David home"), or fine as well?
+2. **Location precision** — decided 1 Oct 2026: **precise too** (David).
+   `ACCESS_FINE_LOCATION` with coarse; still one fix per ask, never
+   background location.
 3. **Which phones**: every phone with the capability (recommended, first
    answer wins), or only one chosen device?
 4. **Long waits**: does Claude Code's MCP call allow a five-minute block,

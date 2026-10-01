@@ -150,6 +150,11 @@ device gets its token):
   POST /mic/ask   {"session"?} → a TV with no mic asks the phones to speak
                   for it; POST /mic/cancel {"id"} → the ask is gone. Phones on
                   /sessions/events?mic=1 get a `mic` frame (mic.py, §6.20)
+  POST /phone/ask {kind, why, session?} (host token) → an agent asks the
+                  phone for a photo, …; GET /phone/ask?id=&wait= its outcome;
+                  POST /phone/answer {id, decision, result?} (a device);
+                  POST /phone/cancel {id} (host). Phones on
+                  /sessions/events?phone=<kinds> get a `phone` frame (phone.py, §6.21)
   GET  /alerts/digests[?id=&before=n] → past digests, newest first (no bodies)
   GET  /alerts/digest?n= → one past digest with its body, and prev/next
   GET  /audio/targets  → where speech and music play, and where they could
@@ -201,6 +206,7 @@ CORS_PATHS = frozenset({
     "/share", "/upload", "/dashboard",
     "/sessions/events", "/search",
     "/mic/ask", "/mic/cancel",
+    "/phone/ask", "/phone/answer", "/phone/cancel",
 })
 
 # Where the audio goes (audio.py). Its own set, joined here, so the block
@@ -435,6 +441,22 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
         # Every session's state as a stream (§6.13): the phone's background
         # notifier. Answers the request however it ends.
         _session_events(h, query)
+        return True
+    if path == "/phone/ask":
+        # An agent's tool waiting on the phone's answer (§6.21): the host's
+        # token, a long poll of up to a minute.
+        from . import phone
+
+        if not (_TOKEN_OK is not None and _TOKEN_OK(h)):
+            _json(h, 401, {"ok": False, "error": "unauthorized"})
+            return True
+        qs = parse_qs(query)
+        try:
+            wait_s = float((qs.get("wait") or ["0"])[0])
+        except ValueError:
+            wait_s = 0.0
+        ok, detail = phone.wait((qs.get("id") or [""])[0], wait_s)
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
         return True
     agents_m = THREAD_AGENTS.fullmatch(path)
     log_m = AGENT_LOG.fullmatch(path)
@@ -736,10 +758,14 @@ def _session_events(h: BaseHTTPRequestHandler, query: str) -> None:
     # `?mic=1`: a phone that has a mic, handed the asks to speak for
     # another device (§6.20) — every one but its own.
     wants_mic = (qs.get("mic") or [""])[0] in ("1", "true")
+    # `?phone=photo,…`: what an agent may ask this phone for (§6.21).
+    from . import phone
+
     session_events.serve(h, bearer, ping_s=session_events.ping_of((qs.get("ping") or [""])[0]),
                          alerts_after=session_events.alerts_of(
                              qs["alerts"][0] if "alerts" in qs else None),
-                         mic_for=auth.device_id(bearer) if wants_mic else None)
+                         mic_for=auth.device_id(bearer) if wants_mic else None,
+                         phone_kinds=phone.kinds_of(qs["phone"][0] if "phone" in qs else None))
 
 
 def _thread_agents(h: BaseHTTPRequestHandler, session: str, agent_id: str | None,
@@ -1236,6 +1262,30 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
             print(f"mic: {a['device']!r} asks {a['id']} for "
                   f"{a['session'][:8] if a['session'] else 'a new chat'}",
                   file=sys.stderr, flush=True)
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    elif path in ("/phone/ask", "/phone/answer", "/phone/cancel"):
+        # The phone as an agent's eyes and hands (server-contract.md §6.21,
+        # phone.py; David, 1 Oct 2026): an agent on this host asks — the
+        # host's own token, never a device's — and a paired phone answers.
+        from . import phone
+
+        body = _read_json(h)
+        if not isinstance(body, dict):
+            body = {}
+        if path == "/phone/answer":
+            ok, detail = phone.answer(body.get("id"), body.get("decision"),
+                                      body.get("result"), _bearer(h))
+        elif not (_TOKEN_OK is not None and _TOKEN_OK(h)):
+            ok, detail = False, {"status": 401, "error": "unauthorized"}
+        elif path == "/phone/ask":
+            ok, detail = phone.ask(body.get("kind"), body.get("why"), body.get("session"))
+            if ok:
+                a = detail["ask"]
+                print(f"phone: ask {a['id']} {a['kind']} for "
+                      f"{(a.get('session') or '-')[:8]} → {a['status']}",
+                      file=sys.stderr, flush=True)
+        else:
+            ok, detail = phone.cancel(body.get("id"))
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path == "/session/retract":
         # Tapping your own latest message in the app, then Cancel or Edit

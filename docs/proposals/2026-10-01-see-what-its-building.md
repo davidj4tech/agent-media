@@ -1,6 +1,7 @@
 # Proposal: see what it's building, live in the thread (1 Oct 2026)
 
-Status: **proposed, nothing built** (David picked it from a list of new
+Status: **proposed, nothing built; tailnet only, decided 1 Oct 2026** — no
+wildcard address off the tailnet (David picked it from a list of new
 directions, 1 Oct 2026). Adds a `previews` event to the per-thread stream
 (§11), `POST /preview/open`, and a small authenticated proxy in the server;
 an inline card and a native preview panel in Sasonica.

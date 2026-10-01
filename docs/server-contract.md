@@ -2497,7 +2497,7 @@ read-only agent view.
 
 ### 6.13 The session list as a stream — gated (built 22 Sep 2026)
 
-#### `GET /sessions/events[?ping=<s>][&alerts=<n>][&mic=1]` — gated (`auth.may_control_speech`, like `/sessions/state`)
+#### `GET /sessions/events[?ping=<s>][&alerts=<n>][&mic=1][&phone=<kinds>]` — gated (`auth.may_control_speech`, like `/sessions/state`)
 
 What a phone's background notifier holds open while the app is closed
 (Sasonica's `NotifyService`): one connection that says when any live
@@ -3037,6 +3037,54 @@ took the ask. Any gated caller may cancel any ask.
 
 Expiry is noticed by the stream's watcher on its tick (≤ 3 s late), and a
 `mic` frame without the ask follows. Both routes are in `CORS_PATHS`.
+
+### 6.21 The phone as an agent's eyes and hands — host asks, device answers (built 1 Oct 2026)
+
+An agent on this host asks David's phone for something only it has — a
+photo first (location and Do Not Disturb to come); David allows or denies
+on the phone, and the agent's tool gets the outcome. Every ask needs a yes;
+nothing is standing. Code: `agent_media_server/phone.py`, the tool
+`agent_media_core/phone_ask.py` (MCP `phone_ask`, in the narrow set).
+Pinned by `packages/server/tests/test_phone.py`; the frame by
+`test_session_events.py`. Proposal:
+`docs/proposals/2026-10-01-the-phone-as-eyes-and-hands.md`.
+
+- `POST /phone/ask {kind, why, session?}` — **the host's own token only**
+  (`X-Auth-Token` or `Authorization: Bearer`, `~/.amux/auth_token`), never
+  a device's: an agent asks, a phone does not. `kind`: `photo` | `location`
+  | `dnd`; `why`: one sentence, shown as-is, ≤ 200 characters, 400 when
+  empty; `session` names the thread (the tool finds its own). → `{ask}`.
+  When no stream that can do `kind` is connected, the ask is settled
+  `no_phone` at once. One open ask per session: a second one settles the
+  first `cancelled`.
+- `GET /phone/ask?id=&wait=<s>` — host token. Long-polls up to `wait`
+  (≤ 60 s) for the ask to settle; → `{ask}`, 404 when unknown (a restart).
+- `POST /phone/answer {id, decision: "allow"|"deny", result?}` — a paired
+  device (the app's gate). Allowed with `result: {error}` is `failed`; a
+  photo allowed with no `result.path` is `failed`. 409 `{ask}` when it is no
+  longer open (another phone answered, it timed out or was cancelled).
+- `POST /phone/cancel {id}` — host token: the tool gave up.
+
+An ask: `{id, kind, why, session, title, at, expires, status, result?,
+error?}`. `status`: `open` → `ok` | `denied` | `failed` | `timeout` |
+`cancelled` | `no_phone`. Open for 5 min (photo) or 2 min (the others);
+kept 2 min after settling for the tool's last poll. A photo's `result` is
+`{path, width, height}`: the phone uploads it first (§6.18) and answers with
+the path the upload returned.
+
+**The `phone` frame.** `GET /sessions/events?phone=photo[,location,dnd]`
+(§6.13) says what this phone can be asked for (unknown kinds dropped) —
+and, while the stream is up, makes asks of those kinds wait for it. Frame:
+`{"asks": [ask…]}`, every open ask of those kinds, oldest first; after the
+first `sessions` frame if there are any, then whenever the set changes (an
+ask, an answer from any phone, a cancel, an expiry). A stream that died is
+only noticed at its next write (the ping), so an ask made in that window
+waits and times out rather than saying `no_phone`.
+
+**Audit.** Every settled ask is a line in
+`$XDG_STATE_HOME/agent-media/phone-asks.jsonl`: id, kind, why, session,
+title, at, status, device, settled_at, a photo's path, an error. No
+coordinates.
 
 ## 7. `/events` (v0) — canvas-wide, not the app's stream
 

@@ -23,6 +23,10 @@ thread's one word.
                device, but the connecting device's own. After the first
                `sessions` frame if there are any, then whenever the set
                changes (an ask, a cancel, an expiry)
+    phone      {"asks": [...]} — only when asked, `?phone=<kinds>` (a phone
+               that can take a photo, …; §6.21, phone.py): every open ask an
+               agent made of the phone, of those kinds. Like `mic`: after the
+               first frame if there are any, then whenever the set changes
     ping       {} after `?ping=` seconds of silence (15–300, default 15)
 
 `state` is `/sessions/state`'s (§6.1): `working` | `waiting` | `approval`.
@@ -52,7 +56,7 @@ import logging
 import threading
 import time
 
-from . import alerts, auth, mic, sessions
+from . import alerts, auth, mic, phone, sessions
 
 log = logging.getLogger("agent-media.server.session_events")
 
@@ -125,6 +129,7 @@ class _Watcher:
         self.rows: list[dict] | None = None
         self.alerts_head = 0
         self.mic_head = 0
+        self.phone_head = 0
         self.version = 0
         self.thread: threading.Thread | None = None
 
@@ -138,11 +143,14 @@ class _Watcher:
         head = alerts.last_seq()
         # Read every tick: an ask expiring is a change, noticed here (≤ POLL_S late).
         mic_head = mic.version()
+        phone_head = phone.version()
         with self.cond:
-            if rows != self.rows or head != self.alerts_head or mic_head != self.mic_head:
+            if (rows != self.rows or head != self.alerts_head or mic_head != self.mic_head
+                    or phone_head != self.phone_head):
                 self.rows = rows
                 self.alerts_head = head
                 self.mic_head = mic_head
+                self.phone_head = phone_head
                 self.version += 1
                 self.cond.notify_all()
 
@@ -186,15 +194,17 @@ _W = _Watcher()
 
 
 def poke() -> None:
-    """The asks changed (mic.py): wake every stream now rather than at the
-    watcher's next tick, so the phone hears the TV's ask at once. Nothing to
-    do with no stream open — the first subscriber reads afresh."""
+    """The asks changed (mic.py, phone.py): wake every stream now rather than
+    at the watcher's next tick, so the phone hears the TV's ask at once.
+    Nothing to do with no stream open — the first subscriber reads afresh."""
     w = _W
     head = mic.version()
+    phone_head = phone.version()
     with w.cond:
         if w.rows is None:
             return
         w.mic_head = head
+        w.phone_head = phone_head
         w.version += 1
         w.cond.notify_all()
 
@@ -226,11 +236,14 @@ def alerts_of(raw: str | None) -> int | None:
 
 
 def serve(h, bearer: str, *, ping_s: float = PING_DEFAULT_S,
-          alerts_after: int | None = None, mic_for: str | None = None) -> bool:
+          alerts_after: int | None = None, mic_for: str | None = None,
+          phone_kinds: tuple[str, ...] | None = None) -> bool:
     """Hold the connection and stream the session list until it goes. Auth
     is the caller's (app.py), done before this. `mic_for` is None when the
     client did not ask for `mic` frames, else the connecting device's id
     ("" for a login that is not a device), whose own asks it is not sent.
+    `phone_kinds`: what this phone can be asked for (None: not asked); while
+    the stream is up an agent's ask of those kinds waits for it.
     Always True: the request was answered, however the stream ended."""
     from .app import _cors, _json
 
@@ -238,6 +251,7 @@ def serve(h, bearer: str, *, ping_s: float = PING_DEFAULT_S,
         _json(h, 503, {"ok": False, "error": "too many open streams"})
         return True
     h.close_connection = True
+    phone.listening(phone_kinds, True)
     try:
         h.send_response(200)
         h.send_header("Content-Type", "text/event-stream")
@@ -262,6 +276,7 @@ def serve(h, bearer: str, *, ping_s: float = PING_DEFAULT_S,
         cursor = alerts_after
         # An empty set on connecting is not sent: the phone has nothing to show.
         seen_asks: list[dict] = []
+        seen_phone: list[dict] = []
         last_sent = time.monotonic()
         checked = time.monotonic()
         while True:
@@ -288,6 +303,12 @@ def serve(h, bearer: str, *, ping_s: float = PING_DEFAULT_S,
                         seen_asks = asks
                         send("mic", {"asks": asks})
                         last_sent = time.monotonic()
+                if phone_kinds is not None:
+                    asks = phone.open_asks(phone_kinds)
+                    if asks != seen_phone:
+                        seen_phone = asks
+                        send("phone", {"asks": asks})
+                        last_sent = time.monotonic()
             elif time.monotonic() - last_sent >= ping_s:
                 send("ping", {})
                 last_sent = time.monotonic()
@@ -301,6 +322,7 @@ def serve(h, bearer: str, *, ping_s: float = PING_DEFAULT_S,
     except Exception:  # noqa: BLE001 — the headers are out; nothing else may be
         log.exception("session events: stream failed")
     finally:
+        phone.listening(phone_kinds, False)
         _W.unsubscribe()
     return True
 

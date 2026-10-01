@@ -338,3 +338,27 @@ def test_an_expiry_is_noticed_by_the_watcher(server, screen, monkeypatch):
         assert st.next("mic", 2.0) == {"asks": []}
     finally:
         st.close()
+
+
+def test_an_agents_ask_of_the_phone_reaches_a_phone_that_can(server, screen, monkeypatch):
+    """`?phone=photo`: the stream is what lets an agent's ask wait for an
+    answer (none open: `no_phone`), and the ask arrives at once (§6.21)."""
+    from agent_media_server import phone as phone_asks
+
+    monkeypatch.setenv("AMUX_AUTH_TOKEN", "hosttok")
+    host = {"X-Auth-Token": "hosttok"}
+    pixel, _ = _device("Pixel 8a")
+    body = {"kind": "photo", "why": "show me the router lights"}
+    assert call(server, "POST", "/phone/ask", body, host)[1]["ask"]["status"] == "no_phone"
+    st = Stream(server, "/sessions/events?ping=0.3&phone=photo,bogus", pixel)
+    try:
+        assert st.event()[0] == "sessions"
+        monkeypatch.setattr(session_events, "POLL_S", 30.0)
+        a = call(server, "POST", "/phone/ask", body, host)[1]["ask"]
+        assert a["status"] == "open"
+        assert st.next("phone", 2.0) == {"asks": [a]}
+        call(server, "POST", "/phone/answer", {"id": a["id"], "decision": "deny"}, pixel)
+        assert st.next("phone", 2.0) == {"asks": []}
+    finally:
+        st.close()
+    assert phone_asks.open_asks(("photo",)) == []

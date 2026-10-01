@@ -1,6 +1,7 @@
 # Proposal: Sasonica speaks when you're free (1 Oct 2026)
 
-Status: **proposed 1 Oct 2026, nothing built** (David picked it from a list
+Status: **proposed 1 Oct 2026, nothing built; meetings come from the phone's
+own calendar, not red5's khal, decided the same day** (David picked it from a list
 of new directions). Adds one "can David be spoken to now?" answer on the
 server, a device-state report from the phone, and one spoken catch-up when
 the answer turns back to yes. A new §6.x in `server-contract.md`; one more
