@@ -2,7 +2,8 @@
 
 Status: **step 1 built 2 Oct 2026** (server: `free.py`, `POST
 /device/state`, `GET /free`, the gate in `submit`; server-contract §6.22).
-It does nothing until the app reports (step 2): no report reads free.
+**Step 2 built 2 Oct** (sasonica-app 3d7de7f, installed on p8a): `Holds`
+reports call, voice and quiet on change and every 2 min while busy.
 Meetings come from the phone's own calendar, not red5's khal, decided
 1 Oct. `night` is not in step 1 (open question 3). The gate holds below
 HIGH priority rather than by speech level: an interrupt-level reply is HIGH

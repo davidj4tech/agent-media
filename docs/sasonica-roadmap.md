@@ -711,9 +711,9 @@ ahead.
    the catch-up worth a voice), with the rule as its fallback.
    [proposals/2026-10-01-jev-for-free-now.md](proposals/2026-10-01-jev-for-free-now.md).
    **Step 1 built 2 Oct 2026** (server side: `free.py`, `/device/state`,
-   `/free`, the gate; contract §6.22), with Jev in shadow. Next: step 2, the
-   app's report from `Holds` (call, voice, quiet); nothing is held until it
-   reports.
+   `/free`, the gate; contract §6.22), with Jev in shadow. **Step 2 built
+   2 Oct** (sasonica-app 3d7de7f, on p8a): `Holds` reports call, voice and
+   quiet. Next: step 3, the catch-up on the busy → free edge.
 
 ## Loose ends
 
