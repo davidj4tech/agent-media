@@ -721,9 +721,11 @@ ahead.
    and title only); Jev's `event_busy` asked in shadow. **Step 5, part 1
    built 2 Oct**: the morning digest joins the catch-up; "catch me up" on
    demand (`POST /catchup`, `media catchup`); the "While you were busy"
-   notification (`catchup` frame). Left: a Catch me up button in the app,
-   the extended card, the "When you're busy" Settings section, and night
-   (open question 3).
+   notification (`catchup` frame). **Part 2 built 2 Oct**: Settings → "When
+   you're busy" (silent holds replies or only alerts; the calendar; Catch
+   me up), the "Holding 2 for later" card (Catch me up / Speak as it comes
+   / Later; `free` frame, `POST /free`). Night: the ringer only (David,
+   2 Oct). Item 14 is done; Jev stays in shadow until its log is reviewed.
 
 ## Loose ends
 

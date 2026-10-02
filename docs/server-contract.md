@@ -3155,6 +3155,19 @@ held (the morning agenda) in the spell joins it: `kind: digest`.
   at, text, how, why, replies, alerts, digests}` (`why` empty on demand).
   The app posts it once per `id` on a quiet "Catch-ups" channel, "While you
   were busy · 2 replies, 1 alert", the words below, a tap opening Home.
+- `quiet_replies: false` in a report (Settings' "Hold replies while on
+  silent" off): when `quiet` is the only reason, replies speak and only
+  alerts wait. Absent means on. The answer carries `quiet_replies`.
+- `POST /free {speak: true}` — the app's gate or the host token. "Speak as
+  it comes": speech goes through for the rest of this busy spell (the
+  answer's `speaking: true`); the next spell holds again. 400 without
+  `speak: true`.
+- `GET /sessions/events?free=1` — a `free` frame on connecting and on every
+  change: the answer without `age_s`, plus `held` (held this spell; 0 when
+  free). The server polls the held count every 15 s. The app shows a quiet
+  card while busy with `held > 0` and not `speaking`: "Holding 2 for
+  later", Catch me up (`POST /catchup`), Speak as it comes, Later (down
+  until more is held).
 
 ## 7. `/events` (v0) — canvas-wide, not the app's stream
 

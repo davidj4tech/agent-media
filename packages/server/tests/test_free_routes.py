@@ -70,3 +70,11 @@ def test_catch_me_up_takes_the_host_or_a_device(server, host, pixel, monkeypatch
         res, obj = call(server, "POST", "/catchup", {}, who)
         assert res.status == 200 and obj == {"ok": True, "items": 3}
     assert len(asked) == 2
+
+
+def test_speak_as_it_comes(server, host, pixel):
+    assert call(server, "POST", "/free", {"speak": True})[0].status != 200
+    assert call(server, "POST", "/free", {}, pixel)[0].status == 400
+    call(server, "POST", "/device/state", {"call": True}, pixel)
+    res, obj = call(server, "POST", "/free", {"speak": True}, pixel)
+    assert res.status == 200 and obj["speaking"] is True and obj["free"] is False

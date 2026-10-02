@@ -286,6 +286,14 @@ def on_made(fn: "Callable[[], None]") -> None:
     _listeners.append(fn)
 
 
+def _tell() -> None:
+    for fn in list(_listeners):
+        try:
+            fn()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def deliver(items: "list[dict]", why, since: float) -> Optional[dict]:
     """Compose the catch-up, record it, tell the listeners, and have it
     said. Returns the record, or None when there was nothing to say."""
@@ -304,11 +312,7 @@ def deliver(items: "list[dict]", why, since: float) -> Optional[dict]:
         _LAST = {"id": f"{int(time.time())}-{_SEQ}", "at": round(time.time(), 3),
                  "text": text, "how": how, "why": sorted(why), **counts(items)}
         rec = dict(_LAST)
-    for fn in list(_listeners):
-        try:
-            fn()
-        except Exception:  # noqa: BLE001
-            pass
+    _tell()
     _say({"text": text, "how": how, "items": [i["id"] for i in items],
           "why": sorted(why), "since": since})
     print(f"catchup: {len(items)} item(s), {how}"
@@ -379,9 +383,16 @@ def _loop(title_of) -> None:
     from .state import StateStore
 
     w = Watcher()
+    seen_state = None
     while True:
         try:
             now = time.time()
+            # A reply held since the last tick changes the `free` frame's
+            # count, and nothing else would wake the stream for it.
+            st = free.state(now=now)
+            if seen_state is not None and st != seen_state:
+                _tell()
+            seen_state = st
             due = w.tick(free.answer(now=now), now)
             if due is not None:
                 items = collect(StateStore(), due.since, now, title_of)

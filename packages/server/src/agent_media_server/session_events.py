@@ -239,7 +239,8 @@ def alerts_of(raw: str | None) -> int | None:
 
 def serve(h, bearer: str, *, ping_s: float = PING_DEFAULT_S,
           alerts_after: int | None = None, mic_for: str | None = None,
-          phone_kinds: tuple[str, ...] | None = None, catchup: bool = False) -> bool:
+          phone_kinds: tuple[str, ...] | None = None, catchup: bool = False,
+          free_frame: bool = False) -> bool:
     """Hold the connection and stream the session list until it goes. Auth
     is the caller's (app.py), done before this. `mic_for` is None when the
     client did not ask for `mic` frames, else the connecting device's id
@@ -248,6 +249,8 @@ def serve(h, bearer: str, *, ping_s: float = PING_DEFAULT_S,
     the stream is up an agent's ask of those kinds waits for it.
     `catchup`: send a `catchup` frame for each new catch-up (core
     catchup.py), and on connecting the latest if it is under 10 min old.
+    `free_frame`: a `free` frame (core free.state) on connecting and
+    whenever it changes.
     Always True: the request was answered, however the stream ended."""
     from .app import _cors, _json
 
@@ -284,6 +287,7 @@ def serve(h, bearer: str, *, ping_s: float = PING_DEFAULT_S,
         from agent_media_core import catchup as _catchup
         latest = _catchup.last() if catchup else None
         # Only a recent one on connecting: the phone keeps the last id it posted.
+        seen_free = None
         seen_catchup = (latest or {}).get("id") if (
             latest and time.time() - float(latest["at"]) > CATCHUP_FRESH_S) else None
         last_sent = time.monotonic()
@@ -311,6 +315,13 @@ def serve(h, bearer: str, *, ping_s: float = PING_DEFAULT_S,
                     if asks != seen_asks:
                         seen_asks = asks
                         send("mic", {"asks": asks})
+                        last_sent = time.monotonic()
+                if free_frame:
+                    from agent_media_core import free as _free
+                    fs = _free.state()
+                    if fs != seen_free:
+                        seen_free = fs
+                        send("free", fs)
                         last_sent = time.monotonic()
                 if catchup:
                     c = _catchup.last()

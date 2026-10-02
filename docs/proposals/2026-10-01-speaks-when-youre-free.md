@@ -14,6 +14,9 @@ Diagnostics row is the Settings hold line ("told red5: meeting — ok").
 **Step 5, part 1 built 2 Oct**: morning digests join the catch-up; "catch
 me up" on demand (`POST /catchup`, `media catchup`, "Here's what's
 waiting"); the notification, as a `catchup` frame on the session stream.
+**Step 5, part 2 built 2 Oct**: the Settings section, the card. Decided
+2 Oct: night is the ringer only (open question 3), and silent holds
+replies too, with a switch to make it alerts only.
 Meetings come from the phone's own calendar, not red5's khal, decided
 1 Oct. `night` is not in step 1 (open question 3). The gate holds below
 HIGH priority rather than by speech level: an interrupt-level reply is HIGH

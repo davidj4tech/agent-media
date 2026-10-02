@@ -159,7 +159,9 @@ device gets its token):
                   manual_until} (a device) → what only the phone sees;
                   GET /free → {free, why, since, until, age_s, held} (core free.py, §6.22);
                   POST /catchup → "catch me up" now, {items}; ?catchup=1 on
-                  /sessions/events → a `catchup` frame per catch-up
+                  /sessions/events → a `catchup` frame per catch-up;
+                  POST /free {speak: true} → speak as it comes this spell;
+                  ?free=1 → a `free` frame {free, why, …, held} on change
   GET  /alerts/digests[?id=&before=n] → past digests, newest first (no bodies)
   GET  /alerts/digest?n= → one past digest with its body, and prev/next
   GET  /audio/targets  → where speech and music play, and where they could
@@ -774,12 +776,14 @@ def _session_events(h: BaseHTTPRequestHandler, query: str) -> None:
 
     # `?catchup=1`: a `catchup` frame for each spoken catch-up (§6.22).
     wants_catchup = (qs.get("catchup") or [""])[0] in ("1", "true")
+    # `?free=1`: a `free` frame whenever busy, its reasons or the held count change.
+    wants_free = (qs.get("free") or [""])[0] in ("1", "true")
     session_events.serve(h, bearer, ping_s=session_events.ping_of((qs.get("ping") or [""])[0]),
                          alerts_after=session_events.alerts_of(
                              qs["alerts"][0] if "alerts" in qs else None),
                          mic_for=auth.device_id(bearer) if wants_mic else None,
                          phone_kinds=phone.kinds_of(qs["phone"][0] if "phone" in qs else None),
-                         catchup=wants_catchup)
+                         catchup=wants_catchup, free_frame=wants_free)
 
 
 def _thread_agents(h: BaseHTTPRequestHandler, session: str, agent_id: str | None,
@@ -1562,6 +1566,8 @@ def _free(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
             return True
         was = free.answer()["free"]
         a = free.report(device, body)
+        from . import session_events
+        session_events.poke()
         if a["free"] != was:
             print(f"free: {'free' if a['free'] else 'busy (' + ','.join(a['why']) + ')'}"
                   f" from {device[:8]}", file=sys.stderr, flush=True)
@@ -1575,6 +1581,22 @@ def _free(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
                 return True
         a = free.answer()
         _json(h, 200, {"ok": True, **a, "held": free.held_count(a["since"])})
+        return True
+    if method == "POST" and path == "/free":
+        # The card's "Speak as it comes": speech through for this busy spell.
+        if not (_TOKEN_OK is not None and _TOKEN_OK(h)):
+            ok, err = auth.may_control_speech(bearer)
+            if not ok:
+                _json(h, err.pop("status", 401), {"ok": False, **err})
+                return True
+        body = _read_json(h)
+        if not (isinstance(body, dict) and body.get("speak") is True):
+            _json(h, 400, {"ok": False, "error": "send {\"speak\": true}"})
+            return True
+        a = free.speak()
+        from . import session_events
+        session_events.poke()
+        _json(h, 200, {"ok": True, **a})
         return True
     if method == "POST" and path == "/catchup":
         # "Catch me up", on demand: what is waiting, said in the background.

@@ -33,7 +33,7 @@ def _isolated(monkeypatch, tmp_path):
 def test_no_report_is_free():
     a = free.answer()
     assert a == {"free": True, "why": [], "since": None, "until": None,
-                 "age_s": None}
+                 "age_s": None, "speaking": False, "quiet_replies": True}
 
 
 @pytest.mark.parametrize("fields,why", [
@@ -208,3 +208,31 @@ def test_a_new_meeting_is_put_to_jev_once(monkeypatch):
     assert len(asked) == 1
     ev, rule = asked[0]
     assert ev["title"] == "1:1" and rule == "hold" and 28 <= ev["minutes"] <= 30
+
+
+def test_speak_as_it_comes_lasts_the_spell():
+    t = time.time()
+    free.report("p8a", {"call": True}, now=t)
+    assert free.answer(now=t)["speaking"] is False
+    assert free.speak(now=t + 1)["speaking"] is True
+    assert submit._busy_hold(PHONE, _reply()) is None
+    free.report("p8a", {"call": True, "quiet": True}, now=t + 2)
+    assert free.answer(now=t + 2)["speaking"] is True, "the same spell"
+    free.report("p8a", {}, now=t + 3)
+    a = free.report("p8a", {"call": True}, now=t + 4)
+    assert a["speaking"] is False, "a new spell holds again"
+    assert free.speak(now=time.time())["speaking"] is True
+    free.report("p8a", {})
+    assert free.speak()["speaking"] is False
+
+
+def test_silent_can_hold_alerts_only():
+    free.report("p8a", {"quiet": True, "quiet_replies": False})
+    a = free.answer()
+    assert a["why"] == ["quiet"] and a["quiet_replies"] is False
+    assert submit._busy_hold(PHONE, _reply()) is None
+    assert submit._busy_hold(PHONE, _reply(alert=True)) is not None
+    free.report("p8a", {"quiet": True, "quiet_replies": False, "call": True})
+    assert submit._busy_hold(PHONE, _reply()) is not None, "a call still holds"
+    free.report("p8a", {"quiet": True})
+    assert free.answer()["quiet_replies"] is True, "absent means on"

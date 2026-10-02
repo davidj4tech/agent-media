@@ -384,3 +384,17 @@ def test_a_catchup_reaches_a_phone_that_asked(server, screen, monkeypatch):
         assert got == rec and got["replies"] == 1 and got["why"] == ["call"]
     finally:
         st.close()
+
+
+def test_the_free_frame_follows_busy(server, screen, monkeypatch):
+    """`?free=1`: the answer on connecting, and again when the phone reports busy."""
+    pixel, _ = _device("Pixel 8a")
+    st = Stream(server, "/sessions/events?ping=0.3&free=1", pixel)
+    try:
+        assert st.next("free", 2.0)["free"] is True
+        monkeypatch.setattr(session_events, "POLL_S", 30.0)
+        call(server, "POST", "/device/state", {"quiet": True}, pixel)
+        got = st.next("free", 2.0)
+        assert got["free"] is False and got["why"] == ["quiet"] and got["held"] == 0
+    finally:
+        st.close()

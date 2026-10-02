@@ -17,6 +17,11 @@ The phone sends what only it can see — `POST /device/state` (server-contract
     meeting_until  the end of a busy calendar event under way (epoch s)
     meeting_title  its title, for the catch-up and for Jev
     manual_until   "busy for an hour" (epoch s)
+    quiet_replies  Settings' "Hold replies while on silent" (absent: on).
+                   Off, a quiet ringer alone holds only alerts.
+
+"Speak as it comes" (:func:`speak`, the card's button) lets speech through
+for the rest of this busy spell; the next spell holds again.
 
 Each report replaces that device's last one, in ``device-state.json`` under
 the state dir. The server writes it; every speech producer reads it.
@@ -49,7 +54,7 @@ STALE_S = 300.0
 #: The reasons, in the order `why` lists them.
 REASONS = ("call", "quiet", "meeting", "manual")
 #: What a report may carry; anything else is dropped.
-_BOOLS = ("call", "voice", "quiet")
+_BOOLS = ("call", "voice", "quiet", "quiet_replies")
 _UNTILS = ("meeting_until", "manual_until")
 TITLE_MAX = 120
 
@@ -123,6 +128,7 @@ def report(device: str, fields: dict, now: Optional[float] = None) -> dict:
         data["busy_since"] = now
     elif after["free"]:
         data.pop("busy_since", None)
+        data.pop("speak_spell", None)
     _save(data)
     return answer(now=now, data=data)
 
@@ -147,9 +153,12 @@ def _ask_jev(rep: dict, now: float) -> None:
 
 
 def answer(now: Optional[float] = None, data: Optional[dict] = None) -> dict:
-    """``{"free", "why", "since", "until", "age_s"}``. ``until`` is the latest
-    end among the reasons that have one (a call or a quiet ringer has none:
-    null). ``age_s`` is the freshest report's age, null with none."""
+    """``{"free", "why", "since", "until", "age_s", "speaking",
+    "quiet_replies"}``. ``until`` is the latest end among the reasons that
+    have one (a call or a quiet ringer has none: null). ``age_s`` is the
+    freshest report's age, null with none. ``speaking``: "speak as it
+    comes" for this spell. ``quiet_replies``: a quiet ringer holds replies
+    too (false only when every quiet device has turned that off)."""
     now = time.time() if now is None else now
     data = _load() if data is None else data
     devices = data.get("devices") if isinstance(data.get("devices"), dict) else {}
@@ -157,6 +166,8 @@ def answer(now: Optional[float] = None, data: Optional[dict] = None) -> dict:
     until: Optional[float] = None
     open_ended = False
     freshest: Optional[float] = None
+    quiet_replies = False
+    any_quiet = False
     for rep in devices.values():
         if not isinstance(rep, dict):
             continue
@@ -171,14 +182,32 @@ def answer(now: Optional[float] = None, data: Optional[dict] = None) -> dict:
                 until = max(until or 0.0, float(rep[key]))
         if "call" in r or "quiet" in r:
             open_ended = True
+        if "quiet" in r:
+            any_quiet = True
+            quiet_replies = quiet_replies or rep.get("quiet_replies", True) is not False
     ordered = [r for r in REASONS if r in why]
+    since = data.get("busy_since") if ordered else None
     return {
         "free": not ordered,
         "why": ordered,
-        "since": data.get("busy_since") if ordered else None,
+        "since": since,
         "until": None if (not ordered or open_ended) else until,
         "age_s": None if freshest is None else int(max(0.0, now - freshest)),
+        "speaking": bool(ordered) and "speak_spell" in data
+                    and data["speak_spell"] == since,
+        "quiet_replies": quiet_replies or not any_quiet,
     }
+
+
+def speak(now: Optional[float] = None) -> dict:
+    """"Speak as it comes": let speech through for the rest of this busy
+    spell. Nothing to do when free."""
+    now = time.time() if now is None else now
+    data = _load()
+    if not answer(now=now, data=data)["free"]:
+        data["speak_spell"] = data.get("busy_since")
+        _save(data)
+    return answer(now=now, data=data)
 
 
 def meeting_title(now: Optional[float] = None) -> str:
@@ -189,6 +218,15 @@ def meeting_title(now: Optional[float] = None) -> str:
                 and float(rep.get("meeting_until") or 0) > now):
             return str(rep.get("meeting_title") or "")
     return ""
+
+
+def state(now: Optional[float] = None) -> dict:
+    """The `free` frame: the answer without its report age, plus ``held``
+    (speech held so far this spell; 0 when free)."""
+    a = answer(now=now)
+    a.pop("age_s", None)
+    a["held"] = 0 if a["free"] else held_count(a["since"])
+    return a
 
 
 def held_count(since: Optional[float], store=None) -> int:

@@ -3381,7 +3381,10 @@ def _busy_hold(target: Target, event: Event, text: str = "") -> "dict | None":
         a = free.answer()
     except Exception:  # noqa: BLE001 — fail towards sound
         return None
-    if a["free"]:
+    if a["free"] or a.get("speaking"):
+        return None
+    # Settings' "Hold replies while on silent" off: silent alone holds alerts only.
+    if a["why"] == ["quiet"] and not a.get("quiet_replies", True) and not md.get("alert"):
         return None
     session = _source_session(md)
     if session:
