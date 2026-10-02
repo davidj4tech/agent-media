@@ -110,8 +110,13 @@ def report(device: str, fields: dict, now: Optional[float] = None) -> dict:
     data = _load()
     devices = data.get("devices") if isinstance(data.get("devices"), dict) else {}
     was = answer(now=now, data=data)
-    devices[str(device or "device")] = {**_clean(fields if isinstance(fields, dict)
-                                                 else {}), "at": now}
+    prev = devices.get(str(device or "device")) or {}
+    rep = {**_clean(fields if isinstance(fields, dict) else {}), "at": now}
+    devices[str(device or "device")] = rep
+    if (float(rep.get("meeting_until") or 0) > now
+            and (rep.get("meeting_until"), rep.get("meeting_title"))
+            != (prev.get("meeting_until"), prev.get("meeting_title"))):
+        _ask_jev(rep, now)
     data["devices"] = devices
     after = answer(now=now, data=data)
     if not after["free"] and was["free"]:
@@ -120,6 +125,25 @@ def report(device: str, fields: dict, now: Optional[float] = None) -> dict:
         data.pop("busy_since", None)
     _save(data)
     return answer(now=now, data=data)
+
+
+def _ask_jev(rep: dict, now: float) -> None:
+    """Jev's "is this meeting really busy?" (jev.event_busy), once per new
+    meeting, in the background. Shadow only for now: logged beside the
+    rule ("hold"), never deciding."""
+    try:
+        from . import jev
+        if jev._mode() == "off" or not jev._key():
+            return
+        import threading
+        until = float(rep["meeting_until"])
+        event = {"id": f"{rep.get('meeting_title', '')}@{int(until)}",
+                 "title": rep.get("meeting_title", ""),
+                 "minutes": max(0, int((until - now) / 60))}
+        threading.Thread(target=jev.event_busy, args=(event, "hold"),
+                         daemon=True, name="jev-event").start()
+    except Exception:  # noqa: BLE001 — shadow only
+        pass
 
 
 def answer(now: Optional[float] = None, data: Optional[dict] = None) -> dict:

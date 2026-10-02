@@ -191,3 +191,20 @@ def test_jev_in_shadow_never_decides(monkeypatch):
         time.sleep(0.02)
     assert asked and asked[0]["item"]["text"] == "prod is down"
     assert asked[0]["busy_because"] == "quiet"
+
+
+def test_a_new_meeting_is_put_to_jev_once(monkeypatch):
+    monkeypatch.setenv("TYPESAFE_API_KEY", "k")
+    asked = []
+    monkeypatch.setattr(jev, "event_busy", lambda ev, rule: asked.append((ev, rule)))
+    end = time.time() + 1800
+    free.report("p8a", {"meeting_until": end, "meeting_title": "1:1"})
+    free.report("p8a", {"meeting_until": end, "meeting_title": "1:1", "quiet": True})
+    for _ in range(50):
+        if asked:
+            break
+        time.sleep(0.02)
+    time.sleep(0.05)
+    assert len(asked) == 1
+    ev, rule = asked[0]
+    assert ev["title"] == "1:1" and rule == "hold" and 28 <= ev["minutes"] <= 30

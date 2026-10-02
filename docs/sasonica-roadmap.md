@@ -716,7 +716,10 @@ ahead.
    quiet. **Step 3 built 2 Oct**: the spoken catch-up on busy → free
    (`catchup.py`; the gateway summary, the template on failure). Its
    notification ("While you were busy · 2 replies, 1 alert") is not built.
-   Next: step 4, the calendar.
+   **Step 4 built 2 Oct**: Settings → "Hold replies during meetings" reads
+   the phone's calendar (meeting under way, chained back-to-back, its end
+   and title only); Jev's `event_busy` asked in shadow. Next: step 5,
+   morning, the Settings section, the extended card, and the notification.
 
 ## Loose ends
 

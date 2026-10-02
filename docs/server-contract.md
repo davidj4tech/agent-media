@@ -3101,7 +3101,12 @@ routes in `agent_media_server/app.py` `_free`. Pinned by
   anything else, the host's token included). Booleans: a phone call, a voice
   session, `RingerState.quiet()`. `*_until` are epoch seconds; a meeting
   under way that is busy, timed and not declined; "busy for an hour".
-  `meeting_title` ≤ 120 characters. Unknown fields are dropped. Each report
+  `meeting_title` ≤ 120 characters. The app reads meetings from the phone's
+own calendar once Settings turns it on ("Hold replies during meetings",
+`READ_CALENDAR`): a timed, busy, not-declined event under way, with
+back-to-back events 10 min apart or less chained into one `meeting_until`.
+A new meeting is put to Jev (`event_busy`) in shadow, logged only.
+Unknown fields are dropped. Each report
   **replaces** that device's last one. Send on every change, and every 2 min
   while any field says busy. → the answer below.
 - `GET /free` — the app's gate, or the host's own token. → `{free, why,
