@@ -1,7 +1,11 @@
 # Proposal: Jev answers the soft half of "free now?" (1 Oct 2026)
 
-Status: **proposed 1 Oct 2026, nothing built, the Jev API not yet tried
-from red5.** An addition to roadmap item 14
+Status: **steps 1–2 built 2 Oct 2026** (`core/jev.py`, `python -m
+agent_media_core.jev trial`, `media doctor` lines), shadow by default;
+**not yet run against Jev: red5 has no `TYPESAFE_API_KEY`**. It calls
+TypeSafe's own `/v1/systemone`, not OpenRouter: the typed questions are that
+API's, and at $0.042 per million input tokens the cost question is settled.
+Step 3 waits for item 14's gate, which does not exist yet. An addition to roadmap item 14
 ([speaks-when-youre-free](2026-10-01-speaks-when-youre-free.md)), not a
 replacement. David asked how Sasonica might use Jev and picked this one
 first.
