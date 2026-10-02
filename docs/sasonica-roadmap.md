@@ -713,7 +713,10 @@ ahead.
    **Step 1 built 2 Oct 2026** (server side: `free.py`, `/device/state`,
    `/free`, the gate; contract §6.22), with Jev in shadow. **Step 2 built
    2 Oct** (sasonica-app 3d7de7f, on p8a): `Holds` reports call, voice and
-   quiet. Next: step 3, the catch-up on the busy → free edge.
+   quiet. **Step 3 built 2 Oct**: the spoken catch-up on busy → free
+   (`catchup.py`; the gateway summary, the template on failure). Its
+   notification ("While you were busy · 2 replies, 1 alert") is not built.
+   Next: step 4, the calendar.
 
 ## Loose ends
 

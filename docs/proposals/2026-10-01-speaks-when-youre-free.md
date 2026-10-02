@@ -4,6 +4,10 @@ Status: **step 1 built 2 Oct 2026** (server: `free.py`, `POST
 /device/state`, `GET /free`, the gate in `submit`; server-contract §6.22).
 **Step 2 built 2 Oct** (sasonica-app 3d7de7f, installed on p8a): `Holds`
 reports call, voice and quiet on change and every 2 min while busy.
+**Step 3 built 2 Oct**: `agent_media_core/catchup.py`, watched from the
+canvas server; the summary uses the recaps' model (Haiku through the
+gateway, about 8 s), not the local speech-summary model, which timed out.
+The notification is left for later.
 Meetings come from the phone's own calendar, not red5's khal, decided
 1 Oct. `night` is not in step 1 (open question 3). The gate holds below
 HIGH priority rather than by speech level: an interrupt-level reply is HIGH

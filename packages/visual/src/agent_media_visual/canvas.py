@@ -2010,6 +2010,11 @@ def main() -> None:
     # The radio's loop (agent_media_server.radio): idle until a station is on.
     from agent_media_server import radio as _radio
     _radio.start()
+    # One spoken catch-up when David is free again (agent_media_core.catchup,
+    # roadmap item 14): watches free.answer(); MEDIA_CATCHUP=0 leaves it off.
+    from agent_media_core import catchup as _catchup
+    from agent_media_server import phone as _phone
+    _catchup.start(_phone._title_of)
     print(f"canvas on http://{args.bind}:{args.port}/  spool={spool_dir()}")
     srv.serve_forever()
 

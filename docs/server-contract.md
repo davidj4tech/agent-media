@@ -3127,6 +3127,18 @@ prompt, `media say --urgent`), and a quiet-level thread is untouched.
 held item should break through: logged only by default
 (`MEDIA_JEV_MODE=shadow`); with `on`, a sure yes speaks it.
 
+**The catch-up** (`agent_media_core/catchup.py`, built 2 Oct 2026). The
+canvas server watches the answer every 15 s; on busy → free, after a
+settle (30 s after a call, 60 s after quiet, none after a meeting or
+manual), it says one clip if anything was held in that spell: held
+replies not yet heard and alerts recorded unspoken, summarised by the
+gateway (`MEDIA_CATCHUP_MODEL`, else `MEDIA_FOLLOWUP_MODEL`; about 120
+words, the decisions first), or on failure a template with counts and
+thread names. Spoken at HIGH, `extras.kind = "catchup"`, with
+`catchup_items` (the history ids it covers), `catchup_how` (`summary` |
+`template`), `busy_since`, `busy_why`. Busy again within the settle
+continues the spell. `MEDIA_CATCHUP=0` turns it off. No notification yet.
+
 ## 7. `/events` (v0) — canvas-wide, not the app's stream
 
 One SSE stream for every screen. The canvas page, the wake watcher and the
