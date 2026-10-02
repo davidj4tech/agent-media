@@ -2014,6 +2014,8 @@ def main() -> None:
     # roadmap item 14): watches free.answer(); MEDIA_CATCHUP=0 leaves it off.
     from agent_media_core import catchup as _catchup
     from agent_media_server import phone as _phone
+    from agent_media_server import session_events as _session_events
+    _catchup.on_made(_session_events.poke)
     _catchup.start(_phone._title_of)
     print(f"canvas on http://{args.bind}:{args.port}/  spool={spool_dir()}")
     srv.serve_forever()

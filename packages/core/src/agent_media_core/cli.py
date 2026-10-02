@@ -5020,6 +5020,25 @@ def cmd_say(a) -> int:
     return 0
 
 
+def cmd_catchup(a) -> int:
+    """`media catchup`: the canvas server's "catch me up" (POST /catchup,
+    core catchup.py): what is waiting since the last catch-up or 12 hours,
+    summarised and said on the phone."""
+    from .phone_ask import _call
+
+    try:
+        status, got = _call("POST", "/catchup", {})
+    except OSError as e:
+        print(f"media catchup: the server is not reachable ({e})", file=sys.stderr)
+        return 1
+    if status != 200:
+        print(f"media catchup: {got.get('error') or status}", file=sys.stderr)
+        return 1
+    n = int(got.get("items") or 0)
+    print(f"catching up on {n} item{'s' if n != 1 else ''}" if n else "nothing waiting")
+    return 0
+
+
 # --- music subcommands -----------------------------------------------------
 
 def _music_status_line(m: "SinkMusic", width: int, hide_idle: bool,
@@ -8841,6 +8860,10 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument("--label", help="with --hold: the toast's name for it")
     s.add_argument("--digest", help="with --hold: the alert-store digest id it reads out")
     s.set_defaults(func=cmd_say)
+
+    s = sub.add_parser("catchup", help="catch me up: say what is waiting (held replies, "
+                       "digests, alerts held back) in one short clip")
+    s.set_defaults(func=cmd_catchup)
 
     s = sub.add_parser("bookmark", help="bookmark current media position")
     s.add_argument("note", nargs="?", help="optional note")

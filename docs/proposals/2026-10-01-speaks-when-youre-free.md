@@ -11,6 +11,9 @@ The notification is left for later.
 **Step 4 built 2 Oct**: the calendar on the phone behind a Settings switch
 and `READ_CALENDAR`; meetings 10 min apart or less are one. The
 Diagnostics row is the Settings hold line ("told red5: meeting — ok").
+**Step 5, part 1 built 2 Oct**: morning digests join the catch-up; "catch
+me up" on demand (`POST /catchup`, `media catchup`, "Here's what's
+waiting"); the notification, as a `catchup` frame on the session stream.
 Meetings come from the phone's own calendar, not red5's khal, decided
 1 Oct. `night` is not in step 1 (open question 3). The gate holds below
 HIGH priority rather than by speech level: an interrupt-level reply is HIGH

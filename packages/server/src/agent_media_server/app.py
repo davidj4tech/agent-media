@@ -157,7 +157,9 @@ device gets its token):
                   /sessions/events?phone=<kinds> get a `phone` frame (phone.py, §6.21)
   POST /device/state {call, voice, quiet, meeting_until, meeting_title,
                   manual_until} (a device) → what only the phone sees;
-                  GET /free → {free, why, since, until, age_s, held} (core free.py, §6.22)
+                  GET /free → {free, why, since, until, age_s, held} (core free.py, §6.22);
+                  POST /catchup → "catch me up" now, {items}; ?catchup=1 on
+                  /sessions/events → a `catchup` frame per catch-up
   GET  /alerts/digests[?id=&before=n] → past digests, newest first (no bodies)
   GET  /alerts/digest?n= → one past digest with its body, and prev/next
   GET  /audio/targets  → where speech and music play, and where they could
@@ -235,7 +237,7 @@ ALERT_PATHS = frozenset({"/alerts", "/alerts/ack", "/alerts/digests", "/alerts/d
 CORS_PATHS = CORS_PATHS | ALERT_PATHS
 
 # Can David be spoken to now (core free.py, §6.22). The same arrangement.
-FREE_PATHS = frozenset({"/device/state", "/free"})
+FREE_PATHS = frozenset({"/device/state", "/free", "/catchup"})
 CORS_PATHS = CORS_PATHS | FREE_PATHS
 
 # Paths opened to other origins for POST (and its preflight) ONLY. `/pair` is
@@ -770,11 +772,14 @@ def _session_events(h: BaseHTTPRequestHandler, query: str) -> None:
     # `?phone=photo,…`: what an agent may ask this phone for (§6.21).
     from . import phone
 
+    # `?catchup=1`: a `catchup` frame for each spoken catch-up (§6.22).
+    wants_catchup = (qs.get("catchup") or [""])[0] in ("1", "true")
     session_events.serve(h, bearer, ping_s=session_events.ping_of((qs.get("ping") or [""])[0]),
                          alerts_after=session_events.alerts_of(
                              qs["alerts"][0] if "alerts" in qs else None),
                          mic_for=auth.device_id(bearer) if wants_mic else None,
-                         phone_kinds=phone.kinds_of(qs["phone"][0] if "phone" in qs else None))
+                         phone_kinds=phone.kinds_of(qs["phone"][0] if "phone" in qs else None),
+                         catchup=wants_catchup)
 
 
 def _thread_agents(h: BaseHTTPRequestHandler, session: str, agent_id: str | None,
@@ -1570,6 +1575,18 @@ def _free(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
                 return True
         a = free.answer()
         _json(h, 200, {"ok": True, **a, "held": free.held_count(a["since"])})
+        return True
+    if method == "POST" and path == "/catchup":
+        # "Catch me up", on demand: what is waiting, said in the background.
+        if not (_TOKEN_OK is not None and _TOKEN_OK(h)):
+            ok, err = auth.may_control_speech(bearer)
+            if not ok:
+                _json(h, err.pop("status", 401), {"ok": False, **err})
+                return True
+        from agent_media_core import catchup
+        from . import phone
+        n = catchup.request(phone._title_of)
+        _json(h, 200, {"ok": True, "items": n})
         return True
     return False
 

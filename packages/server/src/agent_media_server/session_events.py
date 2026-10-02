@@ -68,6 +68,8 @@ PING_MAX_S = 300.0
 PING_DEFAULT_S = 15.0
 #: The bearer is asked again this often.
 AUTH_RECHECK_S = 300.0
+#: A catch-up older than this is not sent to a phone that connects after it.
+CATCHUP_FRESH_S = 600.0
 #: Streams at once.
 MAX_TOTAL = 16
 
@@ -237,13 +239,15 @@ def alerts_of(raw: str | None) -> int | None:
 
 def serve(h, bearer: str, *, ping_s: float = PING_DEFAULT_S,
           alerts_after: int | None = None, mic_for: str | None = None,
-          phone_kinds: tuple[str, ...] | None = None) -> bool:
+          phone_kinds: tuple[str, ...] | None = None, catchup: bool = False) -> bool:
     """Hold the connection and stream the session list until it goes. Auth
     is the caller's (app.py), done before this. `mic_for` is None when the
     client did not ask for `mic` frames, else the connecting device's id
     ("" for a login that is not a device), whose own asks it is not sent.
     `phone_kinds`: what this phone can be asked for (None: not asked); while
     the stream is up an agent's ask of those kinds waits for it.
+    `catchup`: send a `catchup` frame for each new catch-up (core
+    catchup.py), and on connecting the latest if it is under 10 min old.
     Always True: the request was answered, however the stream ended."""
     from .app import _cors, _json
 
@@ -277,6 +281,11 @@ def serve(h, bearer: str, *, ping_s: float = PING_DEFAULT_S,
         # An empty set on connecting is not sent: the phone has nothing to show.
         seen_asks: list[dict] = []
         seen_phone: list[dict] = []
+        from agent_media_core import catchup as _catchup
+        latest = _catchup.last() if catchup else None
+        # Only a recent one on connecting: the phone keeps the last id it posted.
+        seen_catchup = (latest or {}).get("id") if (
+            latest and time.time() - float(latest["at"]) > CATCHUP_FRESH_S) else None
         last_sent = time.monotonic()
         checked = time.monotonic()
         while True:
@@ -302,6 +311,12 @@ def serve(h, bearer: str, *, ping_s: float = PING_DEFAULT_S,
                     if asks != seen_asks:
                         seen_asks = asks
                         send("mic", {"asks": asks})
+                        last_sent = time.monotonic()
+                if catchup:
+                    c = _catchup.last()
+                    if c and c["id"] != seen_catchup:
+                        seen_catchup = c["id"]
+                        send("catchup", c)
                         last_sent = time.monotonic()
                 if phone_kinds is not None:
                     asks = phone.open_asks(phone_kinds)

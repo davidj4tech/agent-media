@@ -12,6 +12,14 @@ from agent_media_core.state import StateStore
 T = 1_800_000_000.0
 
 
+@pytest.fixture(autouse=True)
+def _fresh(monkeypatch):
+    monkeypatch.setattr(catchup, "_LAST", None)
+    monkeypatch.setattr(catchup, "_listeners", [])
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", "/nonexistent")
+
+
 def _busy(*why, since=T):
     return {"free": False, "why": list(why), "since": since}
 
@@ -129,18 +137,65 @@ def test_compose_uses_the_summary(monkeypatch):
     assert "While you were on a call" in seen["prompt"]
 
 
-def test_speak_says_it_at_high(monkeypatch):
-    from agent_media_core.intake import _summary, submit
-    from agent_media_core.types import Priority
+def test_deliver_records_tells_and_says(monkeypatch):
+    from agent_media_core.intake import _summary
     monkeypatch.setattr(_summary, "_chat", lambda *a, **k: None)
-    said = []
-    monkeypatch.setattr(submit, "submit_event", lambda ev: said.append(ev) or 7)
-    items = [{"id": 3, "kind": "reply", "thread": "radio", "text": "a"}]
-    assert catchup.speak(items, {"quiet"}, T) == 7
-    ev = said[0]
-    assert ev.priority is Priority.HIGH
-    assert ev.metadata["kind"] == "catchup" and ev.metadata["catchup_items"] == [3]
-    assert catchup.speak([], {"quiet"}, T) is None and len(said) == 1
+    said, poked = [], []
+    monkeypatch.setattr(catchup, "_say", said.append)
+    catchup.on_made(lambda: poked.append(1))
+    items = [{"id": 3, "kind": "reply", "thread": "radio", "text": "a"},
+             {"id": 4, "kind": "alert", "thread": "", "text": "disk"},
+             {"id": 5, "kind": "digest", "thread": "", "text": "agenda"}]
+    rec = catchup.deliver(items, {"quiet"}, T)
+    assert rec == catchup.last()
+    assert (rec["replies"], rec["alerts"], rec["digests"]) == (1, 1, 1)
+    assert rec["how"] == "template" and rec["why"] == ["quiet"]
+    assert rec["text"].startswith("While you were away: one reply from radio; one alert")
+    assert "one digest to play" in rec["text"]
+    assert poked and said[0]["items"] == [3, 4, 5] and said[0]["text"] == rec["text"]
+    assert catchup.deliver([], {"quiet"}, T) is None and len(said) == 1
+
+
+def test_say_speaks_at_high(monkeypatch):
+    from agent_media_core.intake import submit
+    from agent_media_core.types import Priority
+    got = []
+    monkeypatch.setattr(submit, "submit_event", lambda ev: got.append(ev) or 7)
+    assert catchup.say({"text": "While you were away…", "items": [3], "how": "summary"}) == 7
+    ev = got[0]
+    assert ev.priority is Priority.HIGH and ev.metadata["kind"] == "catchup"
+    assert ev.metadata["catchup_items"] == [3]
+    assert catchup.say({"text": " "}) is None
+
+
+def test_a_digest_held_in_the_spell_joins_it(tmp_path):
+    s = _store(tmp_path)
+    _row(s, T + 1, "Agenda for today", held=True, digest="agenda")
+    _row(s, T + 2, "heard digest", held=True, digest="x", heard=True)
+    assert [i["kind"] for i in catchup.collect(s, T, T + 9)] == ["digest"]
+
+
+def test_on_demand_takes_whatever_waits(tmp_path, monkeypatch):
+    s = _store(tmp_path)
+    now = time.time()
+    _row(s, now - 13 * 3600, "too old", held=True)
+    _row(s, now - 60, "unwatched", held=True, session="a")
+    _row(s, now - 50, "ringer alert", silenced="ringer", alert=True)
+    _row(s, now - 40, "heard", held=True, heard=True)
+    _row(s, now - 30, "spoken", session="a")
+    started = []
+    monkeypatch.setattr(catchup.threading, "Thread",
+                        lambda target, args, **k: type("T", (), {
+                            "start": lambda self: started.append(args)})())
+    assert catchup.request({"a": "radio"}.get, store=s, now=now) == 2
+    items, why, since = started[0]
+    assert [i["text"] for i in items] == ["unwatched", "ringer alert"]
+    assert why == set()
+
+
+def test_on_demand_begins_with_what_waits():
+    t = catchup.template([{"kind": "reply", "thread": "radio", "text": "a"}], set())
+    assert t.startswith("Here's what's waiting: one reply from radio.")
 
 
 def test_a_catchup_passes_the_busy_gate(monkeypatch):

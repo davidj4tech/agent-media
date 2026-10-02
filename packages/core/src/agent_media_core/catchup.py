@@ -30,6 +30,22 @@ in history and replays like any clip, and each held reply keeps its own
 Play.
 
 Jev is asked ``catchup_worth`` in shadow (jev.py); it does not decide yet.
+
+## The morning, and on demand
+
+A digest rendered held (the 08:45 agenda, ``media say --hold``) that lands
+in a busy spell joins its catch-up, so a morning off a silent phone is one
+clip, not two. "Catch me up" any time (``POST /catchup``, ``media
+catchup``) reads what is waiting instead: every held reply and digest not
+yet heard and every alert recorded unspoken, since the last catch-up or the
+last 12 hours.
+
+## The notification
+
+The server keeps the latest catch-up (:func:`last`) and pokes the session
+stream; a phone on ``/sessions/events?catchup=1`` gets a ``catchup`` frame
+and posts "While you were busy · 2 replies, 1 alert" (server-contract
+§6.22).
 """
 
 from __future__ import annotations
@@ -61,7 +77,7 @@ PROMPT = (
     "{words} words, most important first: anything that needs a decision "
     "from him, then failures or things that recovered, then what finished. "
     "Name threads by their title. Group several replies from one thread. "
-    "Begin with \"While you were {busy}\". No markdown, no lists, no "
+    "Begin with \"{lead}\". No markdown, no lists, no "
     "greetings, nothing that is not in the material."
 )
 
@@ -107,11 +123,30 @@ class Watcher:
 
 # --- what -----------------------------------------------------------------------
 
+#: How far back "catch me up" looks when there was no catch-up since.
+WAITING_S = 12 * 3600.0
+
+
+def _kind(ex: dict, waiting: bool) -> Optional[str]:
+    """What this history row is to a catch-up, or None. ``waiting``: any held
+    or silenced row (on demand), else only what a busy spell held."""
+    if ex.get("held") and not ex.get("heard"):
+        if ex.get("digest"):
+            return "digest"
+        if waiting or ex.get("held_why") == "busy":
+            return "reply"
+        return None
+    if ex.get("silenced") and (waiting or ex.get("silenced") == "busy"):
+        return "alert"
+    return None
+
+
 def collect(store, since: float, until: float,
-            title_of: Optional[Callable[[str], Optional[str]]] = None
-            ) -> "list[dict]":
-    """The busy spell's held items, oldest first: ``{kind, thread, text,
-    id}``. A held reply already heard (played from its Play) is left out."""
+            title_of: Optional[Callable[[str], Optional[str]]] = None,
+            waiting: bool = False) -> "list[dict]":
+    """The held items, oldest first: ``{id, at, kind, thread, text}``, kind
+    reply | alert | digest. A reply or digest already heard (played from its
+    Play) is left out."""
     items = []
     for r in store.recent_history(sink="speech", limit=500):
         ex = r.get("extras")
@@ -123,11 +158,8 @@ def collect(store, since: float, until: float,
             continue
         if not since <= at <= until:
             continue
-        if ex.get("held_why") == "busy" and not ex.get("heard"):
-            kind = "reply"
-        elif ex.get("silenced") == "busy":
-            kind = "alert"
-        else:
+        kind = _kind(ex, waiting)
+        if kind is None:
             continue
         session = str(ex.get("session") or ex.get("source_session") or "")
         thread = ""
@@ -136,7 +168,7 @@ def collect(store, since: float, until: float,
                 thread = title_of(session) or ""
             except Exception:  # noqa: BLE001 — a name, never a reason to fail
                 thread = ""
-        if not thread:
+        if not thread and kind == "reply":
             thread = str(ex.get("source_tmux_session") or "")
         items.append({"id": r.get("id"), "at": at, "kind": kind,
                       "thread": thread,
@@ -152,14 +184,27 @@ def _busy_phrase(why) -> str:
     return "busy"
 
 
+def _lead(why) -> str:
+    """How it begins: the busy spell, or (on demand, no spell) what waits."""
+    return f"While you were {_busy_phrase(why)}" if why else "Here's what's waiting"
+
+
 def _count(n: int, one: str, many: str) -> str:
     return f"{'one' if n == 1 else n} {one if n == 1 else many}"
+
+
+def counts(items: "list[dict]") -> dict:
+    """``{replies, alerts, digests}``: the notification's line."""
+    return {"replies": sum(1 for i in items if i["kind"] == "reply"),
+            "alerts": sum(1 for i in items if i["kind"] == "alert"),
+            "digests": sum(1 for i in items if i["kind"] == "digest")}
 
 
 def template(items: "list[dict]", why) -> str:
     """The catch-up with no model: counts and thread names."""
     replies = [i for i in items if i["kind"] == "reply"]
     alerts = [i for i in items if i["kind"] == "alert"]
+    digests = [i for i in items if i["kind"] == "digest"]
     parts = []
     if replies:
         threads = []
@@ -181,7 +226,9 @@ def template(items: "list[dict]", why) -> str:
         if first:
             s += f", the first: {first}"
         parts.append(s)
-    return (f"While you were {_busy_phrase(why)}: " + "; ".join(parts) + ". "
+    if digests:
+        parts.append(_count(len(digests), "digest", "digests") + " to play")
+    return (f"{_lead(why)}: " + "; ".join(parts) + ". "
             "They're in the app, each with its Play.")
 
 
@@ -192,7 +239,7 @@ def summarise(items: "list[dict]", why) -> Optional[str]:
     material = "\n\n".join(
         f"[{i['kind']}{' — ' + i['thread'] if i['thread'] else ''}]\n{i['text']}"
         for i in items)
-    prompt = PROMPT.format(words=MAX_WORDS, busy=_busy_phrase(why))
+    prompt = PROMPT.format(words=MAX_WORDS, lead=_lead(why))
     try:
         timeout = int(os.environ.get("MEDIA_CATCHUP_TIMEOUT_S") or 30)
     except ValueError:
@@ -219,9 +266,30 @@ def compose(items: "list[dict]", why) -> "tuple[str, str]":
     return template(items, why), "template"
 
 
-def speak(items: "list[dict]", why, since: float) -> Optional[int]:
-    """Compose and say the catch-up. Returns the history id, or None when
-    there was nothing to say."""
+# --- the latest, for the frame ----------------------------------------------------
+
+_LOCK = threading.Lock()
+_LAST: Optional[dict] = None
+_SEQ = 0
+_listeners: "list[Callable[[], None]]" = []
+
+
+def last() -> Optional[dict]:
+    """The latest catch-up made here: ``{id, at, text, how, why, replies,
+    alerts, digests}``, or None."""
+    with _LOCK:
+        return dict(_LAST) if _LAST else None
+
+
+def on_made(fn: "Callable[[], None]") -> None:
+    """Call ``fn`` after each catch-up is made (the stream's poke)."""
+    _listeners.append(fn)
+
+
+def deliver(items: "list[dict]", why, since: float) -> Optional[dict]:
+    """Compose the catch-up, record it, tell the listeners, and have it
+    said. Returns the record, or None when there was nothing to say."""
+    global _LAST, _SEQ
     if not items:
         return None
     try:
@@ -231,15 +299,64 @@ def speak(items: "list[dict]", why, since: float) -> Optional[int]:
     except Exception:  # noqa: BLE001 — shadow only
         pass
     text, how = compose(items, why)
+    with _LOCK:
+        _SEQ += 1
+        _LAST = {"id": f"{int(time.time())}-{_SEQ}", "at": round(time.time(), 3),
+                 "text": text, "how": how, "why": sorted(why), **counts(items)}
+        rec = dict(_LAST)
+    for fn in list(_listeners):
+        try:
+            fn()
+        except Exception:  # noqa: BLE001
+            pass
+    _say({"text": text, "how": how, "items": [i["id"] for i in items],
+          "why": sorted(why), "since": since})
+    print(f"catchup: {len(items)} item(s), {how}"
+          + (f" after {','.join(sorted(why))}" if why else " on demand"),
+          file=sys.stderr, flush=True)
+    return rec
+
+
+def _say(payload: dict) -> None:
+    """Speak it from a child: rendering and playing never hold the server."""
+    p = subprocess.Popen([sys.executable, "-m", "agent_media_core.catchup", "say"],
+                         stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+    p.stdin.write(json.dumps(payload).encode())
+    p.stdin.close()
+
+
+def say(payload: dict) -> Optional[int]:
+    """The child's half: one HIGH clip, kind catchup."""
+    text = str(payload.get("text") or "").strip()
+    if not text:
+        return None
     from .intake.submit import submit_event
     from .types import Event, Priority, Source
 
-    event = Event(text=text, source=Source.WATCHER, priority=Priority.HIGH,
-                  metadata={"kind": "catchup", "catchup_how": how,
-                            "catchup_items": [i["id"] for i in items],
-                            "busy_since": since, "busy_why": sorted(why)})
-    log.info("catchup: %d item(s), %s", len(items), how)
-    return submit_event(event)
+    return submit_event(Event(
+        text=text, source=Source.WATCHER, priority=Priority.HIGH,
+        metadata={"kind": "catchup", "catchup_how": payload.get("how"),
+                  "catchup_items": list(payload.get("items") or []),
+                  "busy_since": payload.get("since"),
+                  "busy_why": list(payload.get("why") or [])}))
+
+
+def request(title_of: Optional[Callable[[str], Optional[str]]] = None,
+            store=None, now: Optional[float] = None) -> int:
+    """"Catch me up", on demand: what is waiting since the last catch-up or
+    the last 12 hours. Composed and said in the background; returns how many
+    items it covers (0: nothing is said)."""
+    from .state import StateStore
+
+    now = time.time() if now is None else now
+    prev = last()
+    since = max(now - WAITING_S, float(prev["at"]) if prev else 0.0)
+    items = collect(store or StateStore(), since, now, title_of, waiting=True)
+    if items:
+        threading.Thread(target=deliver, args=(items, set(), since),
+                         daemon=True, name="catchup-now").start()
+    return len(items)
 
 
 # --- the loop, in the canvas server -------------------------------------------
@@ -269,7 +386,7 @@ def _loop(title_of) -> None:
             if due is not None:
                 items = collect(StateStore(), due.since, now, title_of)
                 if items:
-                    _hand_off(items, due)
+                    deliver(items, due.why, due.since)
                 else:
                     log.info("catchup: free again, nothing held")
         except Exception as e:  # noqa: BLE001 — the loop must outlive a bad tick
@@ -277,30 +394,17 @@ def _loop(title_of) -> None:
         time.sleep(TICK_S)
 
 
-def _hand_off(items: "list[dict]", spell: Spell) -> None:
-    payload = json.dumps({"items": items, "why": sorted(spell.why),
-                          "since": spell.since})
-    p = subprocess.Popen([sys.executable, "-m", "agent_media_core.catchup", "speak"],
-                         stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, start_new_session=True)
-    p.stdin.write(payload.encode())
-    p.stdin.close()
-    print(f"catchup: {len(items)} item(s) after {','.join(sorted(spell.why))}",
-          file=sys.stderr, flush=True)
-
-
 def main(argv: "Optional[list[str]]" = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
-    if args[:1] != ["speak"]:
-        print("usage: python -m agent_media_core.catchup speak  < {items, why, since}")
-        return 2
-    try:
-        data = json.loads(sys.stdin.read())
-    except ValueError:
-        return 2
-    speak(list(data.get("items") or []), set(data.get("why") or ()),
-          float(data.get("since") or 0))
-    return 0
+    if args[:1] == ["say"]:
+        try:
+            data = json.loads(sys.stdin.read())
+        except ValueError:
+            return 2
+        say(data if isinstance(data, dict) else {})
+        return 0
+    print("usage: python -m agent_media_core.catchup say  < {text, how, items, why, since}")
+    return 2
 
 
 if __name__ == "__main__":

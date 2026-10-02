@@ -362,3 +362,25 @@ def test_an_agents_ask_of_the_phone_reaches_a_phone_that_can(server, screen, mon
     finally:
         st.close()
     assert phone_asks.open_asks(("photo",)) == []
+
+
+def test_a_catchup_reaches_a_phone_that_asked(server, screen, monkeypatch):
+    """`?catchup=1`: each catch-up made is a `catchup` frame, at once (§6.22)."""
+    from agent_media_core import catchup
+    from agent_media_core.intake import _summary
+
+    monkeypatch.setattr(catchup, "_LAST", None)
+    monkeypatch.setattr(catchup, "_listeners", [session_events.poke])
+    monkeypatch.setattr(catchup, "_say", lambda payload: None)
+    monkeypatch.setattr(_summary, "_chat", lambda *a, **k: None)
+    pixel, _ = _device("Pixel 8a")
+    st = Stream(server, "/sessions/events?ping=0.3&catchup=1", pixel)
+    try:
+        assert st.event()[0] == "sessions"
+        monkeypatch.setattr(session_events, "POLL_S", 30.0)
+        rec = catchup.deliver([{"id": 1, "kind": "reply", "thread": "radio", "text": "a"}],
+                              {"call"}, time.time())
+        got = st.next("catchup", 2.0)
+        assert got == rec and got["replies"] == 1 and got["why"] == ["call"]
+    finally:
+        st.close()

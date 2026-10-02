@@ -59,3 +59,14 @@ def test_free_again(server, host, pixel):
     call(server, "POST", "/device/state", {"call": True}, pixel)
     res, obj = call(server, "POST", "/device/state", {"call": False}, pixel)
     assert obj["free"] is True and obj["why"] == [] and obj["since"] is None
+
+
+def test_catch_me_up_takes_the_host_or_a_device(server, host, pixel, monkeypatch):
+    from agent_media_core import catchup
+    asked = []
+    monkeypatch.setattr(catchup, "request", lambda title_of=None: asked.append(1) or 3)
+    assert call(server, "POST", "/catchup", {})[0].status != 200
+    for who in (host, pixel):
+        res, obj = call(server, "POST", "/catchup", {}, who)
+        assert res.status == 200 and obj == {"ok": True, "items": 3}
+    assert len(asked) == 2

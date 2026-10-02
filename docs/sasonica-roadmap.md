@@ -718,8 +718,12 @@ ahead.
    notification ("While you were busy · 2 replies, 1 alert") is not built.
    **Step 4 built 2 Oct**: Settings → "Hold replies during meetings" reads
    the phone's calendar (meeting under way, chained back-to-back, its end
-   and title only); Jev's `event_busy` asked in shadow. Next: step 5,
-   morning, the Settings section, the extended card, and the notification.
+   and title only); Jev's `event_busy` asked in shadow. **Step 5, part 1
+   built 2 Oct**: the morning digest joins the catch-up; "catch me up" on
+   demand (`POST /catchup`, `media catchup`); the "While you were busy"
+   notification (`catchup` frame). Left: a Catch me up button in the app,
+   the extended card, the "When you're busy" Settings section, and night
+   (open question 3).
 
 ## Loose ends
 

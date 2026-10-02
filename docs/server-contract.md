@@ -3142,7 +3142,19 @@ words, the decisions first), or on failure a template with counts and
 thread names. Spoken at HIGH, `extras.kind = "catchup"`, with
 `catchup_items` (the history ids it covers), `catchup_how` (`summary` |
 `template`), `busy_since`, `busy_why`. Busy again within the settle
-continues the spell. `MEDIA_CATCHUP=0` turns it off. No notification yet.
+continues the spell. `MEDIA_CATCHUP=0` turns it off. A digest rendered
+held (the morning agenda) in the spell joins it: `kind: digest`.
+
+- `POST /catchup` — the app's gate (`may_control_speech`) or the host's
+  token. "Catch me up" now: every held reply and digest not yet heard and
+  every alert recorded unspoken (any reason), since the last catch-up or
+  the last 12 h; composed and said in the background, beginning "Here's
+  what's waiting". → `{items}` (0: nothing is said). `media catchup` calls it.
+- `GET /sessions/events?catchup=1` (§6.13) — a `catchup` frame for each
+  catch-up made, and on connecting the latest if under 10 min old: `{id,
+  at, text, how, why, replies, alerts, digests}` (`why` empty on demand).
+  The app posts it once per `id` on a quiet "Catch-ups" channel, "While you
+  were busy · 2 replies, 1 alert", the words below, a tap opening Home.
 
 ## 7. `/events` (v0) — canvas-wide, not the app's stream
 
