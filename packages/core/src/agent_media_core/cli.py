@@ -7382,7 +7382,8 @@ def selfcheck_facts() -> "dict[str, str]":
     facts.update(_dictation_rate_facts())
     facts.update(_mic_block_facts())
     facts.update(_ringer_facts())
-    from . import jev
+    from . import free, jev
+    facts.update(free.facts())
     facts.update(jev.facts())
     facts.update(_package_facts())
     facts.update(_layout_facts())

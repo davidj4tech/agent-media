@@ -12,7 +12,8 @@ from agent_media_core import jev
 
 
 @pytest.fixture(autouse=True)
-def _fresh(monkeypatch):
+def _fresh(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setenv("TYPESAFE_API_KEY", "test-key")
     monkeypatch.delenv("MEDIA_JEV_MODE", raising=False)
     monkeypatch.delenv("MEDIA_JEV_THRESHOLD", raising=False)
@@ -89,6 +90,13 @@ def test_no_key_is_the_rule(monkeypatch):
     monkeypatch.delenv("TYPESAFE_API_KEY")
     d = jev.event_busy({"title": "Lunch"}, "hold")
     assert (d.answer, d.source, d.why) == ("hold", "rule", "nokey")
+
+
+def test_the_key_comes_from_secrets_env(monkeypatch):
+    monkeypatch.delenv("TYPESAFE_API_KEY")
+    jev.secrets_path().parent.mkdir(parents=True)
+    jev.secrets_path().write_text("# x\nHA_TOKEN=a\nTYPESAFE_API_KEY='k-1'\n")
+    assert jev._key() == "k-1"
 
 
 @pytest.mark.parametrize("exc,why", [

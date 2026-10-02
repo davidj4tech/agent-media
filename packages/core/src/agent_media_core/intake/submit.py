@@ -3354,8 +3354,84 @@ def _ringer_hold(target: Target, event: Event) -> "dict | None":
     return verdict
 
 
+def _busy_hold(target: Target, event: Event, text: str = "") -> "dict | None":
+    """`free.answer()` when David is busy and this speech should wait, else
+    None to speak it. Roadmap item 14 (free.py, §6.22).
+
+    Only speech aimed at the device that reports (the ringer's targets),
+    only below HIGH: an `urgent` say, a prompt, an interrupt-level reply
+    (HIGH) all speak. A reply already held, or from a quiet conversation,
+    is left as it is. Fails open: no report, a stale one, any error — speak.
+
+    Jev (jev.py) is asked whether it should break through anyway. In shadow
+    (the default) in the background, logged, never deciding; with
+    MEDIA_JEV_MODE=on, here, and a sure yes speaks it.
+    """
+    from ..types import Priority
+
+    if os.environ.get("MEDIA_FREE_GATE", "1") == "0":
+        return None
+    md = event.metadata or {}
+    if md.get("held") or event.priority in (Priority.HIGH, Priority.URGENT):
+        return None
+    if target.name not in _ringer_targets():
+        return None
+    try:
+        from .. import free
+        a = free.answer()
+    except Exception:  # noqa: BLE001 — fail towards sound
+        return None
+    if a["free"]:
+        return None
+    session = _source_session(md)
+    if session:
+        try:
+            from ..speak_priority import level_of
+            if level_of(session) == "quiet":
+                return None
+        except Exception:  # noqa: BLE001
+            pass
+    item = {"kind": "alert" if md.get("alert") else "reply",
+            "level": event.priority.value,
+            "thread": str(md.get("title") or md.get("kind") or ""),
+            "text": text, "busy_because": ",".join(a["why"])}
+    if _jev_breaks_through(item):
+        log.info("intake: busy (%s), but Jev says speak", ",".join(a["why"]))
+        return None
+    log.info("intake: held — David is busy (%s)", ",".join(a["why"]))
+    return a
+
+
+def _jev_breaks_through(item: dict) -> bool:
+    """Jev's say on a held item: True only when switched on and sure."""
+    try:
+        from .. import jev
+    except Exception:  # noqa: BLE001
+        return False
+    mode = jev._mode()
+    if mode == "off" or not jev._key():
+        return False
+    if mode == "shadow":
+        threading.Thread(target=jev.breaks_through, args=(item, False),
+                         daemon=True, name="jev-shadow").start()
+        return False
+    try:
+        return bool(jev.breaks_through(item, False).answer)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _hold_for_busy(event: Event) -> None:
+    """A reply held while busy: rendered and archived with a Play, like a
+    reply nobody was looking at (`held`), marked `held_why: busy` so the
+    catch-up can find it."""
+    event.metadata["held"] = True
+    event.metadata["held_why"] = "busy"
+
+
 def _record_silenced(state: StateStore, event: Event, target: Target,
-                     text: str, verdict: "dict | None" = None) -> Optional[int]:
+                     text: str, verdict: "dict | None" = None,
+                     reason: str = "ringer") -> Optional[int]:
     """Write the alert down without speaking it, and leave a trail.
 
     Not rendered. A muted pane renders because someone may unmute and replay
@@ -3370,8 +3446,11 @@ def _record_silenced(state: StateStore, event: Event, target: Target,
     behaving perfectly.
     """
     try:
-        state.log_error("intake", "alert held: device is on silent",
+        state.log_error("intake", ("alert held: device is on silent"
+                                   if reason == "ringer" else
+                                   "alert held: David is busy"),
                         extras={"kind": "alert-silenced",
+                                "reason": reason,
                                 "target": target.name,
                                 "source": event.source.value,
                                 "mode": (verdict or {}).get("mode", "unknown"),
@@ -3388,7 +3467,9 @@ def _record_silenced(state: StateStore, event: Event, target: Target,
             target=target.name,
             source=event.source.value,
             text=text,
-            extras={"silenced": "ringer", "alert": True,
+            extras={"silenced": reason, "alert": True,
+                    **({"busy_why": (verdict or {}).get("why")}
+                       if reason == "busy" else {}),
                     **{k: v for k, v in (event.metadata or {}).items()
                        if k in ("kind", "session", "pane")}},
         )
@@ -3701,6 +3782,15 @@ def _submit_event(event: Event,
     held = _ringer_hold(target, event)
     if held:
         return _record_silenced(state, event, target, text, held)
+
+    # David is busy (free.py: a call, a quiet phone, a meeting, "busy for an
+    # hour"). An alert is written down unspoken, as above; a reply is held
+    # with a Play. Both are what the catch-up will read.
+    busy = _busy_hold(target, event, text[:300])
+    if busy:
+        if (event.metadata or {}).get("alert"):
+            return _record_silenced(state, event, target, text, busy, "busy")
+        _hold_for_busy(event)
 
     # Remote-say bridge: on a headless feeder host (e.g. red5) whose rooms now
     # listen to a remote low-latency Snapcast hub, render the
@@ -5072,6 +5162,23 @@ def submit_stream(sentences,
         # is the one case where we need every word before deciding anything.
         return _record_silenced(state, event, target,
                                 " ".join(sentences), held)
+
+    # Busy, as in `_submit_event`. Only consulted when busy is possible at
+    # all; then the reply is gathered first: a held reply is never played,
+    # so there is nothing to stream, and Jev needs its words.
+    try:
+        from .. import free as _free
+        _maybe_busy = not _free.answer()["free"]
+    except Exception:  # noqa: BLE001
+        _maybe_busy = False
+    if _maybe_busy:
+        sentences = list(sentences)
+        busy = _busy_hold(target, event, " ".join(sentences)[:300])
+        if busy:
+            if (event.metadata or {}).get("alert"):
+                return _record_silenced(state, event, target,
+                                        " ".join(sentences), busy, "busy")
+            _hold_for_busy(event)
 
     # Remote-say bridge: on a headless feeder host (e.g. red5) whose rooms now
     # listen to a remote low-latency Snapcast hub, render the

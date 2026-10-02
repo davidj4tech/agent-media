@@ -155,6 +155,9 @@ device gets its token):
                   POST /phone/answer {id, decision, result?} (a device);
                   POST /phone/cancel {id} (host). Phones on
                   /sessions/events?phone=<kinds> get a `phone` frame (phone.py, §6.21)
+  POST /device/state {call, voice, quiet, meeting_until, meeting_title,
+                  manual_until} (a device) → what only the phone sees;
+                  GET /free → {free, why, since, until, age_s, held} (core free.py, §6.22)
   GET  /alerts/digests[?id=&before=n] → past digests, newest first (no bodies)
   GET  /alerts/digest?n= → one past digest with its body, and prev/next
   GET  /audio/targets  → where speech and music play, and where they could
@@ -230,6 +233,10 @@ CORS_PATHS = CORS_PATHS | ORG_PATHS
 # What the watchers report (alerts.py, §6.17). The same arrangement.
 ALERT_PATHS = frozenset({"/alerts", "/alerts/ack", "/alerts/digests", "/alerts/digest"})
 CORS_PATHS = CORS_PATHS | ALERT_PATHS
+
+# Can David be spoken to now (core free.py, §6.22). The same arrangement.
+FREE_PATHS = frozenset({"/device/state", "/free"})
+CORS_PATHS = CORS_PATHS | FREE_PATHS
 
 # Paths opened to other origins for POST (and its preflight) ONLY. `/pair` is
 # the one: `POST /pair` is how the chat bundle, served from another origin,
@@ -405,6 +412,8 @@ def dispatch(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
         return _org(h, method, path)
     if path in ALERT_PATHS and method in ("GET", "POST"):
         return _alerts(h, method, path)
+    if path in FREE_PATHS and method in ("GET", "POST"):
+        return _free(h, method, path)
     if method == "GET":
         return _get(h, path)
     if method == "POST":
@@ -1523,6 +1532,46 @@ def _alerts(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
     else:
         return False
     return True
+
+
+# --- can David be spoken to now ---------------------------------------------------
+
+def _free(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
+    """`POST /device/state` and `GET /free` (core free.py, §6.22).
+
+    Only a paired device reports: the facts are its own (a call, its ringer,
+    its calendar), filed under its id. Reading takes the app's gate, or the
+    host's own token for a tool on this host.
+    """
+    from agent_media_core import free
+
+    bearer = _bearer(h)
+    if method == "POST" and path == "/device/state":
+        device = auth.device_id(bearer)
+        if not device:
+            _json(h, 401, {"ok": False, "error": "a paired device only"})
+            return True
+        body = _read_json(h)
+        if not isinstance(body, dict):
+            _json(h, 400, {"ok": False, "error": "not JSON"})
+            return True
+        was = free.answer()["free"]
+        a = free.report(device, body)
+        if a["free"] != was:
+            print(f"free: {'free' if a['free'] else 'busy (' + ','.join(a['why']) + ')'}"
+                  f" from {device[:8]}", file=sys.stderr, flush=True)
+        _json(h, 200, {"ok": True, **a})
+        return True
+    if method == "GET" and path == "/free":
+        if not (_TOKEN_OK is not None and _TOKEN_OK(h)):
+            user, err = auth.gate(bearer)
+            if not user:
+                _json(h, err.pop("status", 401), {"ok": False, **err})
+                return True
+        a = free.answer()
+        _json(h, 200, {"ok": True, **a, "held": free.held_count(a["since"])})
+        return True
+    return False
 
 
 # --- where the audio goes ---------------------------------------------------------

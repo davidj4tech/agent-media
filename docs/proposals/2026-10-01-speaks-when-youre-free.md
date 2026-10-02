@@ -1,7 +1,12 @@
 # Proposal: Sasonica speaks when you're free (1 Oct 2026)
 
-Status: **proposed 1 Oct 2026, nothing built; meetings come from the phone's
-own calendar, not red5's khal, decided the same day** (David picked it from a list
+Status: **step 1 built 2 Oct 2026** (server: `free.py`, `POST
+/device/state`, `GET /free`, the gate in `submit`; server-contract §6.22).
+It does nothing until the app reports (step 2): no report reads free.
+Meetings come from the phone's own calendar, not red5's khal, decided
+1 Oct. `night` is not in step 1 (open question 3). The gate holds below
+HIGH priority rather than by speech level: an interrupt-level reply is HIGH
+already, and a quiet-level thread is left alone (David picked it from a list
 of new directions). Adds one "can David be spoken to now?" answer on the
 server, a device-state report from the phone, and one spoken catch-up when
 the answer turns back to yes. A new §6.x in `server-contract.md`; one more

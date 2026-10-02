@@ -5,7 +5,17 @@ agent_media_core.jev trial`, `media doctor` lines), shadow by default;
 **not yet run against Jev: red5 has no `TYPESAFE_API_KEY`**. It calls
 TypeSafe's own `/v1/systemone`, not OpenRouter: the typed questions are that
 API's, and at $0.042 per million input tokens the cost question is settled.
-Step 3 waits for item 14's gate, which does not exist yet. An addition to roadmap item 14
+Step 3 waits for item 14's gate, which does not exist yet.
+**Trial run 2 Oct with David's key:** 21 questions, p50 252 ms, none over
+340 ms. Events sensible (Focus time, 1:1, standup hold; Gym, Lunch, a
+flight light; a tentative drinks free; Bin night free at 0.66, so the
+rule would win). All ten real held replies "can wait", 0.80–0.90, as the
+rule says; of three made-up items, a site down and a door left unlocked
+break through (0.90, 0.85), a disk at 81 % waits (0.80).
+**Step 3 wired 2 Oct** with item 14's step 1: `breaks_through` is asked in
+the background for every item the gate holds (shadow); the key is read
+from `secrets.env` when the environment has none, since the speech hooks
+do not load it. An addition to roadmap item 14
 ([speaks-when-youre-free](2026-10-01-speaks-when-youre-free.md)), not a
 replacement. David asked how Sasonica might use Jev and picked this one
 first.

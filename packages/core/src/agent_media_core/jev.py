@@ -104,8 +104,27 @@ def _threshold() -> float:
         return DEFAULT_THRESHOLD
 
 
+def secrets_path() -> Path:
+    base = os.environ.get("XDG_CONFIG_HOME")
+    root = Path(base) if base else Path.home() / ".config"
+    return root / "agent-media" / "secrets.env"
+
+
 def _key() -> str:
-    return (os.environ.get("TYPESAFE_API_KEY") or "").strip()
+    """TYPESAFE_API_KEY from the environment, else from secrets.env: the
+    services load that file, but the speech hooks run in Claude Code's own
+    environment and do not."""
+    key = (os.environ.get("TYPESAFE_API_KEY") or "").strip()
+    if key:
+        return key
+    try:
+        for line in secrets_path().read_text().splitlines():
+            name, sep, value = line.strip().partition("=")
+            if sep and name.strip() == "TYPESAFE_API_KEY":
+                return value.strip().strip("'\"")
+    except OSError:
+        pass
+    return ""
 
 
 def _cap(text: Any) -> str:

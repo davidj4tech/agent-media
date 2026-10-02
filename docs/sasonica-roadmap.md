@@ -710,6 +710,10 @@ ahead.
    soft half (is this event really busy, should this break through, is
    the catch-up worth a voice), with the rule as its fallback.
    [proposals/2026-10-01-jev-for-free-now.md](proposals/2026-10-01-jev-for-free-now.md).
+   **Step 1 built 2 Oct 2026** (server side: `free.py`, `/device/state`,
+   `/free`, the gate; contract §6.22), with Jev in shadow. Next: step 2, the
+   app's report from `Holds` (call, voice, quiet); nothing is held until it
+   reports.
 
 ## Loose ends
 

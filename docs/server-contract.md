@@ -3086,6 +3086,47 @@ waits and times out rather than saying `no_phone`.
 title, at, status, device, settled_at, a photo's path, an error. No
 coordinates.
 
+### 6.22 Can David be spoken to now — device reports, gated read (built 2 Oct 2026)
+
+The phone reports what only it can see; red5 answers "free or busy, and
+why", and while busy, non-urgent speech to the phone waits. Code:
+`agent_media_core/free.py`, the gate `intake/submit.py` `_busy_hold`, the
+routes in `agent_media_server/app.py` `_free`. Pinned by
+`packages/core/tests/test_free.py` and
+`packages/server/tests/test_free_routes.py`. Proposal:
+`docs/proposals/2026-10-01-speaks-when-youre-free.md` (step 1).
+
+- `POST /device/state {call?, voice?, quiet?, meeting_until?,
+  meeting_title?, manual_until?}` — **a paired device only** (401 for
+  anything else, the host's token included). Booleans: a phone call, a voice
+  session, `RingerState.quiet()`. `*_until` are epoch seconds; a meeting
+  under way that is busy, timed and not declined; "busy for an hour".
+  `meeting_title` ≤ 120 characters. Unknown fields are dropped. Each report
+  **replaces** that device's last one. Send on every change, and every 2 min
+  while any field says busy. → the answer below.
+- `GET /free` — the app's gate, or the host's own token. → `{free, why,
+  since, until, age_s, held}`.
+
+`why` lists the reasons, in this order: `call` (call or voice), `quiet`,
+`meeting`, `manual`; any device's report can make David busy. `since`: when
+this busy spell began. `until`: the latest end among `meeting` and
+`manual`; null while a call or a quiet ringer is a reason (no end known).
+`age_s`: the freshest report's age, null with none. `held`: speech held
+since `since`.
+
+**Fails open.** A report older than 5 min counts for nothing; no report
+is free.
+
+**What waits.** Speech to the ringer's targets (`MEDIA_RINGER_TARGET`,
+default `phone,sasonica`) below HIGH priority. An alert is written down
+unspoken (history `extras.silenced = "busy"`, `busy_why`); a reply is
+rendered and archived with a Play (`extras.held`, `held_why = "busy"`), as
+an unwatched reply is. HIGH and URGENT speak (an interrupt-level thread, a
+prompt, `media say --urgent`), and a quiet-level thread is untouched.
+`MEDIA_FREE_GATE=0` turns the gate off. Jev (`jev.py`) is asked whether a
+held item should break through: logged only by default
+(`MEDIA_JEV_MODE=shadow`); with `on`, a sure yes speaks it.
+
 ## 7. `/events` (v0) — canvas-wide, not the app's stream
 
 One SSE stream for every screen. The canvas page, the wake watcher and the
