@@ -5080,6 +5080,12 @@ def _music_now_label(m: "SinkMusic") -> str:
     return f"{artist} — {title}" if artist and title else title
 
 
+#: One read of the phone's player: a good answer from Melbourne takes ~1.3 s
+#: (a ~0.42 s round trip, through the bridge), so 1.5 s let half of them
+#: time out and the Media tab read "Nothing playing" (David, 2 Oct 2026).
+_PHONE_READ_TIMEOUT_S = 3.0
+
+
 def _phone_music_props(patient: bool = False) -> Optional[dict]:
     """One batched snapshot of the phone's music mpv, or None when the phone
     backend isn't configured, isn't reachable, or has nothing loaded.
@@ -5116,7 +5122,7 @@ def _phone_music_props(patient: bool = False) -> Optional[dict]:
                 ["idle-active", "pause", "time-pos", "duration", "speed",
                  "media-title", "chapter-metadata/by-key/title", "volume",
                  "path"],
-                timeout=1.5, attempts=attempts)
+                timeout=_PHONE_READ_TIMEOUT_S, attempts=attempts)
         except (ipc.MpvIpcError, OSError):
             continue
         if props.get("idle-active") is False:

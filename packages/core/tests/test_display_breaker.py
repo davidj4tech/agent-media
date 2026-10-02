@@ -126,3 +126,28 @@ def test_display_failure_window_is_short():
     assert until - time.time() <= 6, (
         "one lost packet shut the display out for the full window — on this "
         "link that leaves the popup blank more often than not")
+
+
+def test_chatter_breaker_does_not_skip_a_display_read(monkeypatch):
+    """A policy probe's 45 s window must not blank the Media tab.
+
+    It did: the station played on Sasonica's player while every status read
+    was skipped as "endpoint slow" and fell through to idle Mopidy.
+    """
+    monkeypatch.setattr(ipc, "_get_properties_once",
+                        lambda sock, names, timeout: ({"idle-active": False}, 1))
+    ipc._record(EP, elapsed=0.01, failed=True)           # chatter fails: 20 s
+    assert ipc.display_properties(EP, ["idle-active"]) == {"idle-active": False}
+    assert _open_endpoints() == set(), "an answer closes the shared breaker"
+
+
+def test_failed_display_read_skips_only_display_reads(monkeypatch):
+    def nothing(sock, names, timeout):
+        raise OSError("unreachable")
+
+    monkeypatch.setattr(ipc, "_get_properties_once", nothing)
+    with pytest.raises(OSError):
+        ipc.display_properties(EP, ["idle-active"], attempts=1)
+    assert _open_endpoints() == {f"{EP}#display"}
+    with pytest.raises(ipc.MpvIpcError):
+        ipc.display_properties(EP, ["idle-active"], attempts=1)

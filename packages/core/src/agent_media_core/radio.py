@@ -602,7 +602,7 @@ def _liked_ids() -> set:
 
 
 def snapshot() -> dict:
-    """For the Media tab: ``{on, seed, next: [{id, title, channel, state}]}``,
+    """For the Media tab: ``{on, seed, current, next: [{id, title, channel, state}]}``,
     `state` "ready" (queued or downloaded), "fetching", or null."""
     st = read()
     if not st["on"]:
@@ -620,7 +620,10 @@ def snapshot() -> dict:
             "ready" if s["id"] in st["ready"] else None
         rows.append({**_row(s), "state": state})
     seed = st.get("seed") or {}
+    # The song on now, so the tab can name it when the player can't be read.
+    song = next((s for s in st["sent"] + [seed] if s.get("id") == cur), None) if cur else None
     return {"on": True, "seed": {"id": seed.get("id"), "title": seed.get("title") or ""},
+            "current": _row(song) if song else None,
             "kind": st.get("kind") or "mix", "note": st.get("note") or "",
             "available": available(),
             "next": rows[:_SHOWN], "more": max(0, len(rows) - _SHOWN)}

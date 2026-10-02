@@ -736,7 +736,8 @@ def get_property(sock_path: str | Path, name: str, timeout: float = 2.0,
 def get_properties(sock_path: str | Path, names: list,
                    timeout: float = 2.0, attempts: int = 1,
                    slow_s: float | None = None,
-                   breaker_s: float | None = None) -> dict:
+                   breaker_s: float | None = None,
+                   display: bool = False) -> dict:
     """Fetch several properties over ONE connection (request_id-matched).
 
     A monitor that reads playlist-pos + idle + pause + time-pos every tick would
@@ -760,8 +761,10 @@ def get_properties(sock_path: str | Path, names: list,
     that only displays something passes 0 and a short window, so neither
     ordinary bridge latency nor one lost packet shuts it out of the endpoint
     whose state it is trying to show.
+
+    ``display``: the read keeps its own breaker (see `display_properties`).
     """
-    _guard(sock_path)
+    _guard(_display_key(sock_path) if display else sock_path)
     t0 = time.monotonic()
     ok = False
     try:
@@ -781,8 +784,21 @@ def get_properties(sock_path: str | Path, names: list,
             raise last_err
         return {}
     finally:
-        _record(sock_path, time.monotonic() - t0, not ok, slow_s=slow_s,
-                breaker_s=breaker_s)
+        elapsed = time.monotonic() - t0
+        if display and not ok:
+            _record(_display_key(sock_path), elapsed, True, slow_s=slow_s,
+                    breaker_s=breaker_s)
+        else:
+            # An answer closes the shared breaker too: the endpoint is up.
+            if display:
+                _record(_display_key(sock_path), elapsed, False, slow_s=0)
+            _record(sock_path, elapsed, not ok, slow_s=slow_s,
+                    breaker_s=breaker_s)
+
+
+def _display_key(sock_path: str | Path) -> str:
+    """The breaker key of an endpoint's display reads."""
+    return f"{sock_path}#display"
 
 
 def display_properties(sock_path: str | Path, names: list,
@@ -811,10 +827,17 @@ def display_properties(sock_path: str | Path, names: list,
     `attempts` is for the caller that is not a redraw: a person who just typed
     something and is waiting for the answer can afford more rounds than a
     frame can.
+
+    Its breaker is its own. The shared one stays open for 45 s after any
+    policy probe fails, and honoured here that blanked the Media tab for the
+    whole window while Sasonica's player was audibly playing a radio song
+    (David, 2 Oct 2026: "why does it say nothing is playing?"). So a display
+    read is skipped only after a display read failed, for its own short
+    window; one that answers still closes the shared breaker.
     """
     return get_properties(sock_path, names, timeout=timeout,
                           attempts=max(1, int(attempts)),
-                          slow_s=0, breaker_s=5)
+                          slow_s=0, breaker_s=5, display=True)
 
 
 def _get_properties_once(sock_path: str | Path, names: list,

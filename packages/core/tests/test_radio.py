@@ -327,6 +327,7 @@ def test_a_dj_station_puts_its_first_pick_on_in_place_of_what_plays(dj):
     assert radio.read()["current"] == "dj000xxxxxx" and player.labels[-1] == "dj000xxxxxx"
     snap = radio.snapshot()
     assert snap["note"] == "mood 0" and [r["title"] for r in snap["next"]][:2] == ["Pick 0.1", "Pick 0.2"]
+    assert snap["current"]["id"] == "dj000xxxxxx"   # named even when the player can't be read
     radio.tick()                   # then as any station: one queued behind
     assert sent[-1] == ("dj001xxxxxx", False)
 
