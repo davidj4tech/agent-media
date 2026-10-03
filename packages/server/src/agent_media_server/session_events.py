@@ -245,7 +245,8 @@ def alerts_of(raw: str | None) -> int | None:
 def serve(h, bearer: str, *, ping_s: float = PING_DEFAULT_S,
           alerts_after: int | None = None, mic_for: str | None = None,
           phone_kinds: tuple[str, ...] | None = None, catchup: bool = False,
-          free_frame: bool = False) -> bool:
+          free_frame: bool = False, speech_device: str | None = None,
+          speech_after: int | None = None) -> bool:
     """Hold the connection and stream the session list until it goes. Auth
     is the caller's (app.py), done before this. `mic_for` is None when the
     client did not ask for `mic` frames, else the connecting device's id
@@ -256,6 +257,9 @@ def serve(h, bearer: str, *, ping_s: float = PING_DEFAULT_S,
     catchup.py), and on connecting the latest if it is under 10 min old.
     `free_frame`: a `free` frame (core free.state) on connecting and
     whenever it changes.
+    `speech_device`: this device plays speech from `speech` frames
+    (speech_frames.py, `?speech=frames`); `speech_after` is the last frame
+    seq it applied, for one that reconnects mid-reply.
     Always True: the request was answered, however the stream ended."""
     from .app import _cors, _json
 
@@ -264,6 +268,14 @@ def serve(h, bearer: str, *, ping_s: float = PING_DEFAULT_S,
         return True
     h.close_connection = True
     phone.listening(phone_kinds, True)
+    from . import speech_frames
+    speech_token = (speech_frames.listening(speech_device, True)
+                    if speech_device is not None else None)
+    # Frames after the cursor are sent; a fresh stream starts at now, one that
+    # reconnects (`speech_after`) gets what it missed, if still young.
+    speech_cursor = speech_frames.seq()
+    if speech_after is not None and 0 < speech_after < speech_cursor:
+        speech_cursor = speech_after
     try:
         h.send_response(200)
         h.send_header("Content-Type", "text/event-stream")
@@ -334,6 +346,12 @@ def serve(h, bearer: str, *, ping_s: float = PING_DEFAULT_S,
                         seen_catchup = c["id"]
                         send("catchup", c)
                         last_sent = time.monotonic()
+                if speech_token is not None:
+                    for f in speech_frames.frames_after(speech_cursor):
+                        speech_cursor = f["seq"]
+                        if speech_frames.playing_stream(speech_token):
+                            send("speech", f)
+                            last_sent = time.monotonic()
                 if phone_kinds is not None:
                     asks = phone.open_asks(phone_kinds)
                     if asks != seen_phone:
@@ -354,6 +372,8 @@ def serve(h, bearer: str, *, ping_s: float = PING_DEFAULT_S,
         log.exception("session events: stream failed")
     finally:
         phone.listening(phone_kinds, False)
+        if speech_token is not None:
+            speech_frames.listening(speech_device, False, speech_token)
         _W.unsubscribe()
     return True
 

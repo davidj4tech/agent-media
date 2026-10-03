@@ -1,0 +1,666 @@
+"""Speech on the phone as frames down its own stream (roadmap item 15, #1).
+
+Until now the server reached the phone's player by dialling it: mpv JSON-IPC
+over the tailnet to the app's `MpvServer` on p8a:6614, through
+`media-ipc-relay` on 127.0.0.1:16614. Every caller (`sinks/speech.py`, the
+follow loop in `intake/submit.py`, `cli.py`'s keys) speaks that protocol, and
+most of the traffic is the follow loop reading eight properties a tick at
+~1.3 s a round trip.
+
+This takes the relay's port and answers the same protocol here, so no caller
+changes, but nothing dials the phone:
+
+* **What changes the player becomes a frame.** Each command is turned into
+  ops (`load`, `clear`, `stop`, `pos`, `next`, `prev`, `remove`, `seek`,
+  `pause`, `mute`, `volume`, `speed`, `meta`) and one frame per command (an
+  `am-claim-play` and the commands riding in it are one) goes down
+  `/sessions/events` to the device that asked for `?speech=frames`, woken at
+  once (`session_events.poke`). The app applies them to the same player its
+  `MpvServer` drives.
+* **What reads the player is answered here**, from `Model`: the phone's last
+  report (`POST /speech/state`), with every op since applied to it as the
+  player would apply it, and `time-pos` run on by the clock while playing.
+  A report that predates the last frame sent (its `seq` is behind) moves
+  only the playhead, so a jump just made is not undone by old news.
+* **The claim** (`am-claim`, `am-claim-play`, `user-data/am-owner`) is kept
+  here: there is one server.
+
+With no frame device connected, a connection is passed through untouched to
+`MEDIA_SPEECH_FRAMES_UPSTREAM` (p8a:6614, as the relay did), so an older app
+build keeps working. That fallback goes when the frames build has proved
+itself.
+
+    MEDIA_SPEECH_FRAMES_LISTEN=127.0.0.1:16614   (the canvas starts it)
+    MEDIA_SPEECH_FRAMES_UPSTREAM=p8a:6614         (optional fallback)
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import socket
+import threading
+import time
+from collections import deque
+from pathlib import Path
+
+log = logging.getLogger("agent-media.server.speech_frames")
+
+#: Frames kept for a stream that reconnects (`?speech_after=`), and how old.
+KEEP = 200
+REPLAY_S = 120.0
+#: Stored, not played: mpv's own metadata names (MpvServer.isStored).
+TITLE = "force-media-title"
+USER_DATA = "user-data/"
+RINGER = "user-data/agent-media/ringer"
+#: Set and ignored, as the app's MpvServer does.
+INERT = ("gapless-audio", "audio-device", "keep-open", "idle")
+
+
+class Model:
+    """The phone's player as this server believes it to be."""
+
+    def __init__(self) -> None:
+        self.entries: list[str] = []
+        self.pos = -1
+        self.paused = False
+        self.muted = False
+        self.volume = 100.0
+        self.speed = 1.0
+        self.time_pos = -1.0
+        self.duration = -1.0
+        self.idle = True
+        self.eof = False
+        self.ringer: dict | None = None
+        #: When `time_pos` was true (monotonic), to run it on while playing.
+        self.time_at = time.monotonic()
+        self.stored: dict[str, object] = {}
+
+    # --- reads ----------------------------------------------------------------
+
+    def playhead(self) -> float:
+        if self.time_pos < 0:
+            return -1.0
+        t = self.time_pos
+        if not self.paused and not self.idle:
+            t += (time.monotonic() - self.time_at) * self.speed
+        if self.duration > 0:
+            t = min(t, self.duration)
+        return t
+
+    def path(self) -> str | None:
+        return self.entries[self.pos] if 0 <= self.pos < len(self.entries) else None
+
+    # --- the player's own moves, applied as it would apply them ---------------
+
+    def _at(self, t: float) -> None:
+        self.time_pos = t
+        self.time_at = time.monotonic()
+
+    def apply(self, op: dict) -> None:
+        o = op.get("op")
+        if o == "load":
+            uri, mode = str(op.get("uri") or ""), str(op.get("mode") or "replace")
+            if mode == "replace":
+                self.entries, self.pos, self.idle, self.eof = [uri], 0, False, False
+                self.duration = -1.0
+                self._at(0.0)
+            else:
+                self.entries.append(uri)
+                if mode == "append-play" and self.idle:
+                    self.pos, self.idle, self.eof = len(self.entries) - 1, False, False
+                    self.duration = -1.0
+                    self._at(0.0)
+        elif o == "clear":
+            cur = self.path()
+            self.entries = [cur] if cur is not None else []
+            self.pos = 0 if cur is not None else -1
+        elif o == "stop":
+            self.entries, self.pos, self.idle, self.eof = [], -1, True, False
+            self.duration = -1.0
+            self._at(-1.0)
+        elif o == "pos":
+            i = int(op.get("i", -1))
+            if 0 <= i < len(self.entries):
+                self.pos, self.idle, self.eof = i, False, False
+                self.duration = -1.0
+                self._at(0.0)
+            elif i < 0:
+                self.pos, self.idle = -1, True
+                self._at(-1.0)
+        elif o in ("next", "prev"):
+            self.apply({"op": "pos", "i": self.pos + (1 if o == "next" else -1)})
+        elif o == "remove":
+            i = int(op.get("i", -1))
+            if 0 <= i < len(self.entries):
+                del self.entries[i]
+                if i < self.pos:
+                    self.pos -= 1
+                elif i == self.pos:
+                    self.pos = min(self.pos, len(self.entries) - 1)
+                    if self.pos < 0:
+                        self.idle = True
+        elif o == "seek":
+            self._at(max(0.0, float(op.get("t", 0))))
+        elif o == "pause":
+            self._at(self.playhead())
+            self.paused = bool(op.get("on"))
+        elif o == "mute":
+            self.muted = bool(op.get("on"))
+        elif o == "volume":
+            self.volume = float(op.get("v", 100))
+        elif o == "speed":
+            self._at(self.playhead())
+            self.speed = float(op.get("v", 1.0))
+        elif o == "meta":
+            self.stored[str(op.get("name"))] = op.get("value")
+
+    def report(self, r: dict, current: bool) -> None:
+        """The phone's own word. `current`: it has applied every frame sent."""
+        if current:
+            count = int(r.get("count", len(self.entries)))
+            # The phone stopped or cleared by itself: our entries end there.
+            if count < len(self.entries):
+                self.entries = self.entries[:count] if count else []
+            self.pos = int(r.get("pos", self.pos))
+            self.paused = bool(r.get("paused", self.paused))
+            self.muted = bool(r.get("muted", self.muted))
+            self.volume = float(r.get("volume", self.volume))
+            self.speed = float(r.get("speed", self.speed))
+            self.idle = bool(r.get("idle", self.idle))
+            self.eof = bool(r.get("eof", self.eof))
+        if (current or int(r.get("pos", -2)) == self.pos) and "time_pos" in r:
+            self._at(float(r["time_pos"]))
+            self.duration = float(r.get("duration", self.duration))
+        if isinstance(r.get("ringer"), dict):
+            self.ringer = r["ringer"]
+
+
+class _Hub:
+    """The frames, the model, and who is listening."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Condition()
+        self.model = Model()
+        self.frames: deque[dict] = deque(maxlen=KEEP)
+        self.seq = 0
+        #: stream id → (device id, connected at); the newest one plays.
+        self.listeners: dict[int, tuple[str, float]] = {}
+        self._next_listener = 0
+        self.reported_at = 0.0
+
+    def device(self) -> str | None:
+        with self.lock:
+            if not self.listeners:
+                return None
+            return max(self.listeners.values(), key=lambda v: v[1])[0]
+
+
+_HUB = _Hub()
+
+
+# --- what the stream and the route call -------------------------------------
+
+
+def listening(device: str, on: bool, token: int | None = None) -> int | None:
+    """A stream with `?speech=frames` opened (returns its token) or closed."""
+    with _HUB.lock:
+        if on:
+            _HUB._next_listener += 1
+            _HUB.listeners[_HUB._next_listener] = (device, time.monotonic())
+            return _HUB._next_listener
+        _HUB.listeners.pop(token, None)
+        return None
+
+
+def playing_stream(token: int | None) -> bool:
+    """Whether the stream holding `token` is the one frames go to."""
+    with _HUB.lock:
+        if token not in _HUB.listeners:
+            return False
+        newest = max(_HUB.listeners.items(), key=lambda kv: kv[1][1])[0]
+        return newest == token
+
+
+def seq() -> int:
+    with _HUB.lock:
+        return _HUB.seq
+
+
+def frames_after(cursor: int) -> list[dict]:
+    """Frames newer than `cursor` and young enough to still mean something."""
+    cutoff = time.time() - REPLAY_S
+    with _HUB.lock:
+        return [f for f in _HUB.frames if f["seq"] > cursor and f["at"] >= cutoff]
+
+
+def report(device: str, body: dict) -> tuple[bool, dict]:
+    """`POST /speech/state` from the device the frames go to."""
+    if not isinstance(body, dict):
+        return False, {"status": 400, "error": "a JSON object, please"}
+    if device != _HUB.device():
+        return False, {"status": 409, "error": "this device is not the one speech plays on"}
+    with _HUB.lock:
+        try:
+            _HUB.model.report(body, current=int(body.get("seq", -1)) >= _HUB.seq)
+        except (TypeError, ValueError):
+            return False, {"status": 400, "error": "malformed state"}
+        _HUB.reported_at = time.time()
+        _HUB.lock.notify_all()
+    _notify_observers()
+    return True, {"seq": seq()}
+
+
+def _send(ops: list[dict]) -> None:
+    """Apply `ops` here and send them to the phone as one frame."""
+    if not ops:
+        return
+    with _HUB.lock:
+        for op in ops:
+            _HUB.model.apply(op)
+        _HUB.seq += 1
+        _HUB.frames.append({"seq": _HUB.seq, "at": round(time.time(), 3), "ops": ops})
+    from . import session_events
+    session_events.poke()
+    _notify_observers()
+
+
+# --- mpv JSON-IPC, answered here --------------------------------------------
+
+_NOT_FOUND = object()
+_CLIENTS: list["_Client"] = []
+_CLIENTS_LOCK = threading.Lock()
+
+
+def _stored(name: str) -> bool:
+    return name == TITLE or name.startswith(USER_DATA)
+
+
+def _get(name: str):
+    m = _HUB.model
+    if name == RINGER and m.ringer is not None:
+        return m.ringer
+    if name == "pause":
+        return m.paused
+    if name == "mute":
+        return m.muted
+    if name == "volume":
+        return m.volume
+    if name == "speed":
+        return m.speed
+    if name == "playlist-pos":
+        return m.pos
+    if name == "playlist-count":
+        return len(m.entries)
+    if name == "playlist":
+        return [{"filename": e, **({"current": True, "playing": True} if i == m.pos else {})}
+                for i, e in enumerate(m.entries)]
+    if name == "idle-active":
+        return m.idle
+    if name == "eof-reached":
+        return m.eof
+    if name in ("path", "filename"):
+        p = m.path()
+        return _NOT_FOUND if p is None else p
+    if name == "time-pos":
+        t = m.playhead()
+        return _NOT_FOUND if t < 0 else t
+    if name == "duration":
+        return _NOT_FOUND if m.duration < 0 else m.duration
+    if name == "media-title":
+        if TITLE in m.stored:
+            return m.stored[TITLE]
+        p = m.path()
+        return _NOT_FOUND if p is None else p.rsplit("/", 1)[-1]
+    if _stored(name) or name in INERT:
+        v = m.stored.get(name)
+        return _NOT_FOUND if v is None else v
+    return _NOT_FOUND
+
+
+def _set_ops(name: str, value) -> list[dict] | None:
+    """The ops a `set_property` is, or None for no such property."""
+    if name == "pause":
+        return [{"op": "pause", "on": _bool(value)}]
+    if name == "mute":
+        return [{"op": "mute", "on": _bool(value)}]
+    if name == "volume":
+        return [{"op": "volume", "v": _num(value, 100)}]
+    if name == "speed":
+        return [{"op": "speed", "v": _num(value, 1.0)}]
+    if name == "playlist-pos":
+        return [{"op": "pos", "i": int(_num(value, -1))}]
+    if _stored(name):
+        return [{"op": "meta", "name": name, "value": value}]
+    if name in INERT:
+        _HUB.model.stored[name] = value
+        return []
+    return None
+
+
+def _bool(v) -> bool:
+    if isinstance(v, str):
+        return v in ("yes", "true", "1")
+    return bool(v)
+
+
+def _num(v, default: float) -> float:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def _seek_target(argv: list) -> float | None:
+    if len(argv) < 2:
+        return None
+    try:
+        value = float(argv[1])
+    except (TypeError, ValueError):
+        return None
+    mode = (str(argv[2]) if len(argv) > 2 and argv[2] else "relative").split("+")[0]
+    m = _HUB.model
+    pos, dur = max(0.0, m.playhead()), m.duration
+    if mode == "relative":
+        return pos + value
+    if mode == "absolute":
+        return value
+    if dur < 0:
+        return None
+    if mode == "absolute-percent":
+        return dur * value / 100.0
+    if mode == "relative-percent":
+        return pos + dur * value / 100.0
+    return None
+
+
+def _claim(key: str, mine, now: float):
+    """MpvServer.claim: take `key` unless someone else's deadline is ahead."""
+    if not _stored(key) or not isinstance(mine, dict):
+        return None
+    cur = _HUB.model.stored.get(key)
+    if isinstance(cur, dict):
+        owner = str(cur.get("owner") or "")
+        if owner and owner != str(mine.get("owner") or "") \
+                and _num(cur.get("deadline"), 0) > now:
+            return cur
+    _HUB.model.stored[key] = mine
+    return mine
+
+
+def _dispatch(argv: list, ops: list[dict]) -> tuple[bool, object]:
+    """One command: `(ok, data or error)`, with its ops added to `ops`."""
+    verb = str(argv[0])
+    m = _HUB.model
+    if verb == "loadfile":
+        ops.append({"op": "load", "uri": str(argv[1]),
+                    "mode": str(argv[2]) if len(argv) > 2 else "replace"})
+        return True, None
+    if verb == "stop" or verb in ("quit", "quit-watch-later"):
+        ops.append({"op": "stop"})
+        return True, None
+    if verb == "playlist-clear":
+        ops.append({"op": "clear"})
+        return True, None
+    if verb == "playlist-next":
+        ops.append({"op": "next"})
+        return True, None
+    if verb == "playlist-prev":
+        ops.append({"op": "prev"})
+        return True, None
+    if verb == "playlist-remove":
+        at = argv[1] if len(argv) > 1 else None
+        i = m.pos if at == "current" else int(_num(at, -1))
+        if not 0 <= i < len(m.entries):
+            return False, "invalid parameter"
+        ops.append({"op": "remove", "i": i})
+        return True, None
+    if verb in ("get_property", "get_property_string"):
+        v = _get(str(argv[1]))
+        if v is _NOT_FOUND:
+            return False, "property not found"
+        if verb == "get_property_string":
+            v = ("yes" if v else "no") if isinstance(v, bool) else (
+                v if isinstance(v, str) else json.dumps(v))
+        return True, v
+    if verb in ("set_property", "set_property_string"):
+        name = str(argv[1])
+        got = _set_ops(name, argv[2] if len(argv) > 2 else None)
+        if got is None:
+            return False, "property not found"
+        ops.extend(got)
+        return True, None
+    if verb == "seek":
+        t = _seek_target(argv)
+        if t is None:
+            return False, "invalid parameter"
+        ops.append({"op": "seek", "t": t})
+        return True, None
+    if verb == "cycle":
+        name = str(argv[1])
+        v = _get(name)
+        if not isinstance(v, bool):
+            return False, "property not found"
+        ops.extend(_set_ops(name, not v) or [])
+        return True, None
+    if verb in ("am-claim", "am-claim-play"):
+        mine = argv[2] if len(argv) > 2 else None
+        with _HUB.lock:
+            held = _claim(str(argv[1]), mine, _num(argv[3], 0) if len(argv) > 3 else 0)
+        if held is None:
+            return False, "invalid parameter"
+        if held is mine and verb == "am-claim-play" and len(argv) > 4 \
+                and isinstance(argv[4], list):
+            for sub in argv[4]:
+                if isinstance(sub, list) and sub and sub[0] != "am-claim":
+                    try:
+                        _dispatch(sub, ops)
+                    except Exception:  # noqa: BLE001 — one bad command, not the reply
+                        pass
+        return True, held
+    if verb == "client_name":
+        return True, "sasonica"
+    return False, "invalid parameter"
+
+
+class _Client:
+    """One caller's connection, answered here."""
+
+    def __init__(self, sock: socket.socket) -> None:
+        self.sock = sock
+        self.out_lock = threading.Lock()
+        self.observed: dict[str, object] = {}
+        self.last_sent: dict[str, str] = {}
+
+    def send(self, msg: dict) -> None:
+        try:
+            with self.out_lock:
+                self.sock.sendall((json.dumps(msg, separators=(",", ":")) + "\n").encode())
+        except OSError:
+            pass
+
+    def notify(self, name: str) -> None:
+        oid = self.observed.get(name)
+        if oid is None:
+            return
+        with _HUB.lock:
+            v = _get(name)
+        enc = "" if v is _NOT_FOUND else json.dumps(v)
+        if self.last_sent.get(name) == enc:
+            return
+        self.last_sent[name] = enc
+        ev = {"event": "property-change", "id": oid, "name": name}
+        if v is not _NOT_FOUND:
+            ev["data"] = v
+        self.send(ev)
+
+    def handle(self, line: str) -> None:
+        try:
+            req = json.loads(line)
+        except ValueError:
+            self.send({"error": "invalid parameter"})
+            return
+        rid = req.get("request_id") if isinstance(req, dict) else None
+        cmd = req.get("command") if isinstance(req, dict) else None
+        if not isinstance(cmd, list) or not cmd:
+            self.send(_answer(rid, False, "invalid parameter"))
+            return
+        verb = str(cmd[0])
+        if verb.startswith("observe_property") and len(cmd) > 2:
+            self.observed[str(cmd[2])] = cmd[1]
+            self.send(_answer(rid, True, None))
+            self.notify(str(cmd[2]))
+            return
+        if verb == "unobserve_property" and len(cmd) > 1:
+            for k in [k for k, v in self.observed.items() if v == cmd[1]]:
+                self.observed.pop(k, None)
+                self.last_sent.pop(k, None)
+            self.send(_answer(rid, True, None))
+            return
+        ops: list[dict] = []
+        try:
+            with _HUB.lock:
+                ok, data = _dispatch(cmd, ops)
+        except Exception:  # noqa: BLE001 — one malformed command, not the connection
+            ok, data = False, "invalid parameter"
+        # The frame first: a caller that has its answer may count on the
+        # phone being told already (MpvServer answers after the player acted).
+        _send(ops)
+        self.send(_answer(rid, ok, data))
+
+    def serve(self) -> None:
+        with _CLIENTS_LOCK:
+            _CLIENTS.append(self)
+        buf = b""
+        try:
+            while True:
+                chunk = self.sock.recv(65536)
+                if not chunk:
+                    return
+                buf += chunk
+                while b"\n" in buf:
+                    line, buf = buf.split(b"\n", 1)
+                    if line.strip():
+                        self.handle(line.decode("utf-8", "replace"))
+        except OSError:
+            return
+        finally:
+            with _CLIENTS_LOCK:
+                if self in _CLIENTS:
+                    _CLIENTS.remove(self)
+            try:
+                self.sock.close()
+            except OSError:
+                pass
+
+
+def _answer(rid, ok: bool, data) -> dict:
+    msg: dict = {}
+    if ok and data is not None:
+        msg["data"] = data
+    msg["error"] = "success" if ok else str(data)
+    if rid is not None:
+        msg["request_id"] = rid
+    return msg
+
+
+def _notify_observers() -> None:
+    with _CLIENTS_LOCK:
+        clients = list(_CLIENTS)
+    for c in clients:
+        for name in list(c.observed):
+            c.notify(name)
+
+
+# --- the listener -------------------------------------------------------------
+
+
+def _pipe(a: socket.socket, b: socket.socket) -> None:
+    try:
+        while True:
+            data = a.recv(65536)
+            if not data:
+                break
+            b.sendall(data)
+    except OSError:
+        pass
+    finally:
+        for s in (a, b):
+            try:
+                s.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+
+def _passthrough(client: socket.socket, upstream: tuple[str, int]) -> None:
+    """No frame device: the relay's old job, bytes to the phone's own port."""
+    try:
+        far = socket.create_connection(upstream, timeout=5)
+        far.settimeout(None)
+    except OSError:
+        client.close()
+        return
+    threading.Thread(target=_pipe, args=(far, client), daemon=True).start()
+    _pipe(client, far)
+    for s in (client, far):
+        try:
+            s.close()
+        except OSError:
+            pass
+
+
+def _hostport(s: str) -> tuple[str, int]:
+    host, _, port = s.rpartition(":")
+    return host or "127.0.0.1", int(port)
+
+
+def _publish_rtt(port: int) -> None:
+    """Where `_mpv_ipc` sizes its breaker for a loopback relay: answers here
+    are local, so the far side's round trip is ours, ~0."""
+    try:
+        from agent_media_core.entrypoints.ipc_relay import rtt_path
+        p: Path = rtt_path(port)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({"rtt_s": 0.005, "frames": True}))
+    except OSError:
+        pass
+
+
+def start(listen: str | None = None, upstream: str | None = None) -> socket.socket | None:
+    """Listen for callers (`MEDIA_SPEECH_FRAMES_LISTEN`); None when unset."""
+    listen = listen or os.environ.get("MEDIA_SPEECH_FRAMES_LISTEN", "")
+    if not listen:
+        return None
+    up = upstream if upstream is not None else os.environ.get("MEDIA_SPEECH_FRAMES_UPSTREAM", "")
+    far = _hostport(up) if up else None
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(_hostport(listen))
+    srv.listen(32)
+    _publish_rtt(srv.getsockname()[1])
+
+    def loop() -> None:
+        while True:
+            try:
+                c, _ = srv.accept()
+            except OSError:
+                return
+            if _HUB.device() is not None:
+                threading.Thread(target=_Client(c).serve, daemon=True).start()
+            elif far is not None:
+                threading.Thread(target=_passthrough, args=(c, far), daemon=True).start()
+            else:
+                c.close()
+
+    threading.Thread(target=loop, name="speech-frames", daemon=True).start()
+    print(f"speech frames on {listen}" + (f" (else through to {up})" if up else ""),
+          flush=True)
+    return srv
+
+
+def _reset_for_tests() -> None:
+    global _HUB
+    _HUB = _Hub()
+    with _CLIENTS_LOCK:
+        _CLIENTS.clear()

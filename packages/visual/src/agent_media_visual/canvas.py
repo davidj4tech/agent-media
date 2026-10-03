@@ -2118,6 +2118,10 @@ def main() -> None:
     from agent_media_server import session_events as _session_events
     _catchup.on_made(_session_events.poke)
     _catchup.start(_phone._title_of)
+    # Speech on the phone as frames down its own stream (roadmap item 15):
+    # answers the relay's port when MEDIA_SPEECH_FRAMES_LISTEN is set.
+    from agent_media_server import speech_frames as _speech_frames
+    _speech_frames.start()
     if args.public:
         host, _, port = args.public.rpartition(":")
         pub = ThreadingHTTPServer((host or "127.0.0.1", int(port)), PublicHandler)
