@@ -1276,14 +1276,30 @@ def last_reply(path: str, harness: str = "claude") -> dict | None:
             b.settle()
     except OSError:
         return None
-    m = b.messages[-1] if b.messages else None
+    return _reply_in(b.messages, st.st_mtime)
+
+
+def last_reply_opencode(session: str) -> dict | None:
+    """`last_reply` for an opencode session, which keeps a database rather
+    than a file: the whole session is read (as `_opencode_page` does), and
+    `at` is its newest part's change (`file_state`)."""
+    from agent_media_core import harnesses
+
+    if not harnesses.is_opencode(session):
+        return None
+    st = file_state(session)
+    return _reply_in(_opencode_messages(session) or [], st[2] if st else 0.0)
+
+
+def _reply_in(msgs: list[dict], mtime: float) -> dict | None:
+    m = msgs[-1] if msgs else None
     if not m or m["role"] != "assistant" or m["turn"]["running"]:
         return None
     text = next((p["text"] for p in reversed(m["parts"])
                  if p.get("type") == "text" and (p.get("text") or "").strip()), "")
     if not text:
         return None
-    return {"at": round(max(st.st_mtime, m["at"] or 0.0), 3),
+    return {"at": round(max(mtime, m["at"] or 0.0), 3),
             "text": _one_line(display_text(text), REPLY_PREVIEW)}
 
 

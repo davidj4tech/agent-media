@@ -296,3 +296,33 @@ def test_replies_are_threads_that_end_on_a_reply(server, shelf, signed_in, machi
     _transcript(SID, [_asked("hi", 1), _said("All done.", 2), _asked("more", 3)])
     res, obj = call(server, "GET", "/dashboard", headers=AUTH)
     assert obj["replies"] == []
+
+
+def test_replies_from_opencode_and_hermes(monkeypatch):
+    """No transcript file: opencode's reply comes from its database (stubbed
+    here), Hermes's from its newest spoken line — not an alert."""
+    import time as _t
+
+    from agent_media_core.state import store
+    from agent_media_server import transcript
+
+    now = _t.time()
+    oc, hm = "ses_0123456789abcdefABCDEFGHIJ", "20261003_101010_abcdef"
+    monkeypatch.setattr(transcript, "file_state", lambda s: (0, 4, now - 60) if s == oc else None)
+    monkeypatch.setattr(transcript, "last_reply_opencode",
+                        lambda s: {"at": now - 60, "text": "opencode says hi"})
+
+    class Store:
+        def recent_history(self, sink=None, limit=20):
+            return [{"started_at": now - 5, "text": "Hermes is waiting",
+                     "extras": {"source_session": hm, "kind": "notif"}},
+                    {"started_at": now - 30, "text": "Hermes [[visual: x]] answered.",
+                     "extras": {"source_session": hm}},
+                    {"started_at": now - 90, "text": "older", "extras": {"source_session": hm}}]
+    monkeypatch.setattr(store, "StateStore", Store)
+    dashboard._reset_for_tests()
+    rows = dashboard._replies([{"session": oc, "title": "oc"}, {"session": hm, "title": "hm"}], set())
+    assert [(r["session"], r["text"]) for r in rows] == [(hm, "Hermes answered."),
+                                                         (oc, "opencode says hi")]
+    assert dashboard._replies([{"session": hm, "title": "hm"}], {hm}) == []
+    dashboard._reset_for_tests()

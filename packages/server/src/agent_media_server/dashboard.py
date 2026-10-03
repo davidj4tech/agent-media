@@ -50,6 +50,11 @@ REPLIES_WINDOW_S = 3 * 86400
 REPLIES_ROWS = 30
 #: A thread with no transcript found is looked for again after this long.
 REPLY_PATH_MISS_S = 60.0
+#: Hermes keeps no transcript a reader here knows: its replies are its spoken
+#: lines, the newest of each session from one scan of this many speech rows,
+#: kept this long.
+HERMES_ROWS = 600
+HERMES_TTL_S = 15.0
 #: The machine part: subprocesses and a log read, none of which changes fast.
 HOSTS_TTL_S = 15.0
 #: The reaper log is read from its end, this far back at most.
@@ -66,6 +71,7 @@ _TRANSCRIPTS: dict[str, Path | None] = {}
 _REPLY_PATHS: dict[str, tuple[str, str, float]] = {}
 #: `{path: ((ino, size, mtime), last_reply)}` — read again only when it changes.
 _REPLIES: dict[str, tuple[tuple, dict | None]] = {}
+_HERMES: tuple[float, dict[str, dict]] = (0.0, {})
 
 #: Indirections, so the tests fake the machine without patching the stdlib.
 _run = subprocess.run
@@ -86,7 +92,8 @@ _SPEECH_KEYS = ("live", "speaking", "paused", "session", "title", "sentence", "t
 
 
 def _reset_for_tests() -> None:
-    global _INDEX, _HOSTS, _SPEECH
+    global _INDEX, _HOSTS, _SPEECH, _HERMES
+    _HERMES = (0.0, {})
     _INDEX = (0.0, [])
     _HOSTS = (0.0, None)
     _SPEECH = (0.0, None)
@@ -178,18 +185,72 @@ def _reply_path(session: str) -> tuple[str, str]:
     return harness, path
 
 
-def _replies(index: list[dict], busy: set[str]) -> list[dict]:
-    """Threads whose transcript ends on a reply (`transcript.last_reply`),
-    newest first: Home's Unread replies, which the app keeps to the ones
-    that came after it last had the thread open. Archived threads and the
-    ones working or on a dialog (`busy`) are left out."""
+def _hermes_said() -> dict[str, dict]:
+    """`{session: {"at", "text"}}`: each Hermes session's newest spoken
+    reply (alerts left out, a question kept, as `session_feed.turns` does),
+    from one scan of the speech history shared by every Hermes thread."""
+    global _HERMES
+    at, said = _HERMES
+    if at and time.monotonic() - at < HERMES_TTL_S:
+        return said
+    from agent_media_core import harnesses
+    from agent_media_core.state.store import StateStore
+
     from . import transcript
 
-    found: list[tuple[os.stat_result, dict, str, str]] = []
+    said = {}
+    try:
+        rows = StateStore().recent_history(sink="speech", limit=HERMES_ROWS)
+    except Exception as e:  # noqa: BLE001 — Home without Hermes replies, not a 500
+        print(f"dashboard: hermes replies: {e}", file=sys.stderr)
+        rows = []
+    for row in rows:    # newest first
+        ex = row.get("extras")
+        sid = str(ex.get("source_session") or "") if isinstance(ex, dict) else ""
+        if not sid or sid in said or not harnesses.is_hermes(sid):
+            continue
+        if ex.get("kind") == "notif" and not isinstance(ex.get("ask"), list):
+            continue
+        text = str(row.get("text") or "").strip()
+        if text and row.get("started_at"):
+            said[sid] = {"at": round(float(row["started_at"]), 3),
+                         "text": transcript._one_line(transcript.display_text(text),
+                                                      transcript.REPLY_PREVIEW)}
+    _HERMES = (time.monotonic(), said)
+    return said
+
+
+def _replies(index: list[dict], busy: set[str]) -> list[dict]:
+    """Threads that end on a reply, newest first: Home's Unread replies, which
+    the app keeps to the ones that came after it last had the thread open.
+    Archived threads and the ones working or on a dialog (`busy`) are left
+    out. Claude Code, Codex and pi: the end of the transcript
+    (`transcript.last_reply`); opencode: its database
+    (`transcript.last_reply_opencode`); Hermes: its newest spoken line."""
+    from agent_media_core import harnesses
+
+    from . import transcript
+
+    # (when it last changed, row, cache key, change marker, how to read it)
+    found: list[tuple[float, dict, str, tuple, object]] = []
+    hermes: dict[str, dict] | None = None
     cut = time.time() - REPLIES_WINDOW_S
     for r in index:
         sid = str(r.get("session") or "")
         if not sid or r.get("archived") or sid in busy:
+            continue
+        if harnesses.is_hermes(sid):
+            if hermes is None:
+                hermes = _hermes_said()
+            said = hermes.get(sid)
+            if said and said["at"] >= cut:
+                found.append((said["at"], r, "", (), said))
+            continue
+        if harnesses.is_opencode(sid):
+            st = transcript.file_state(sid)
+            if st and st[2] >= cut:
+                found.append((st[2], r, f"opencode:{sid}", st,
+                              lambda sid=sid: transcript.last_reply_opencode(sid)))
             continue
         harness, path = _reply_path(sid)
         if not path:
@@ -200,18 +261,21 @@ def _replies(index: list[dict], busy: set[str]) -> list[dict]:
             _REPLY_PATHS.pop(sid, None)
             continue
         if st.st_mtime >= cut:
-            found.append((st, r, harness, path))
-    found.sort(key=lambda x: -x[0].st_mtime)
+            found.append((st.st_mtime, r, path, (st.st_ino, st.st_size, st.st_mtime),
+                          lambda path=path, harness=harness: transcript.last_reply(path, harness)))
+    found.sort(key=lambda x: -x[0])
     found = found[:REPLIES_ROWS]
-    for gone in set(_REPLIES) - {path for _st, _r, _h, path in found}:
+    for gone in set(_REPLIES) - {key for _at, _r, key, _m, _f in found if key}:
         del _REPLIES[gone]
     rows = []
-    for st, r, harness, path in found:
-        key = (st.st_ino, st.st_size, st.st_mtime)
-        got = _REPLIES.get(path)
-        if got is None or got[0] != key:
-            got = _REPLIES[path] = (key, transcript.last_reply(path, harness))
-        reply = got[1]
+    for _at, r, key, marker, read in found:
+        if not key:
+            reply = read    # Hermes: already the reply
+        else:
+            got = _REPLIES.get(key)
+            if got is None or got[0] != marker:
+                got = _REPLIES[key] = (marker, read())
+            reply = got[1]
         if reply:
             rows.append({"session": str(r.get("session")), "title": str(r.get("title") or ""),
                          "at": reply["at"], "text": reply["text"], "live": bool(r.get("live")),

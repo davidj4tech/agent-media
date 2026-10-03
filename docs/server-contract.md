@@ -2365,7 +2365,10 @@ machines are. Code: `agent_media_server/dashboard.py`. Pinned by
   finished — and `text` its last words, markers out, on one line (240
   chars). The server keeps no read state: the app shows the ones newer
   than when that device last had the thread open. Claude Code, Codex and pi
-  (opencode and Hermes have no transcript file and are not listed).
+  from the transcript; opencode from its database (`at` its newest part's
+  change); Hermes, which has no reader here, from its newest spoken line
+  (alerts left out; one scan of the last 600 speech rows, kept 15 s) — so
+  a Hermes reply that was never spoken is not listed.
 - `project`, `cwd` (22 Sep 2026) on every `recent`, `working`, `replies` and
   `needs_you` row: as on `/targets` (§6.1), `null` when unknown.
 - `places`: `/targets.places`. `agents`: every harness (five since opencode, 24 Sep 2026), `present` =
