@@ -26,12 +26,13 @@ changes, but nothing dials the phone:
   here: there is one server.
 
 With no frame device connected, a connection is passed through untouched to
-`MEDIA_SPEECH_FRAMES_UPSTREAM` (p8a:6614, as the relay did), so an older app
-build keeps working. That fallback goes when the frames build has proved
+`MEDIA_SPEECH_FRAMES_UPSTREAM` — the relay, whose spares stay warm — so an
+older app build keeps working at the speed it had. That fallback goes when the frames build has proved
 itself.
 
-    MEDIA_SPEECH_FRAMES_LISTEN=127.0.0.1:16614   (the canvas starts it)
-    MEDIA_SPEECH_FRAMES_UPSTREAM=p8a:6614         (optional fallback)
+    MEDIA_SPEECH_FRAMES_LISTEN=127.0.0.1:16624    (the canvas starts it)
+    MEDIA_SPEECH_FRAMES_UPSTREAM=127.0.0.1:16614  (the relay: fallback, warm)
+    MEDIA_SPEECH_SOCKET_SASONICA=tcp://127.0.0.1:16624  (the switch)
 """
 
 from __future__ import annotations
@@ -615,14 +616,20 @@ def _hostport(s: str) -> tuple[str, int]:
     return host or "127.0.0.1", int(port)
 
 
-def _publish_rtt(port: int) -> None:
-    """Where `_mpv_ipc` sizes its breaker for a loopback relay: answers here
-    are local, so the far side's round trip is ours, ~0."""
+def _publish_rtt(port: int, upstream: tuple[str, int] | None, frames: bool) -> None:
+    """Where `_mpv_ipc` sizes its breaker for a loopback relay. Answered here,
+    the round trip is ~0; passed through to the relay, it is the relay's."""
     try:
         from agent_media_core.entrypoints.ipc_relay import rtt_path
+        rtt = 0.005
+        if not frames and upstream and upstream[0] in ("127.0.0.1", "localhost"):
+            try:
+                rtt = float(json.loads(rtt_path(upstream[1]).read_text())["rtt_s"])
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
         p: Path = rtt_path(port)
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps({"rtt_s": 0.005, "frames": True}))
+        p.write_text(json.dumps({"rtt_s": rtt, "frames": frames}))
     except OSError:
         pass
 
@@ -638,15 +645,21 @@ def start(listen: str | None = None, upstream: str | None = None) -> socket.sock
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind(_hostport(listen))
     srv.listen(32)
-    _publish_rtt(srv.getsockname()[1])
+    port = srv.getsockname()[1]
+    _publish_rtt(port, far, False)
 
     def loop() -> None:
+        mode = None
         while True:
             try:
                 c, _ = srv.accept()
             except OSError:
                 return
-            if _HUB.device() is not None:
+            frames = _HUB.device() is not None
+            if frames != mode:
+                mode = frames
+                _publish_rtt(port, far, frames)
+            if frames:
                 threading.Thread(target=_Client(c).serve, daemon=True).start()
             elif far is not None:
                 threading.Thread(target=_passthrough, args=(c, far), daemon=True).start()
