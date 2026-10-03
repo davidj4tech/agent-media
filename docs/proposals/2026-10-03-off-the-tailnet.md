@@ -167,8 +167,16 @@ five services that read it were restarted while speech was idle. Still to
 measure: start-of-speech against `docs/speech-latency-notes.md`, and
 follow-along on a long reply.
 
-Music (#2) takes the same endpoint later on its own port, under a `music`
-frame.
+**Music (#2), live 3 Oct.** The same module, now one hub per player channel
+(`CHANNELS`: speech, music). Music has its own port (16625, passing through
+to p8a:6615), `music` frames on `?music=frames`, and `POST /music/state`.
+App: `SpeechFrames.SPEECH` / `.MUSIC` (sasonica-app 867cd8c, build 1157).
+`MEDIA_MUSIC_SASONICA_ENDPOINT=tcp://127.0.0.1:16625` since 3 Oct.
+**Still on the tailnet:** `sinks/music_sasonica.py` fetches a YouTube track
+on the phone over `ssh p8a` (play-local `--fetch-only`, `ffprobe` for
+chapters). The candidate fix is the phone downloading from red5 over the
+tunnel (the `abs` route, at the tunnel's speed rather than the tailnet's
+~8 KB/s).
 
 **The cost to watch:** the relay exists to hide per-call latency on speech
 (#1). A frame on an open stream should be no slower than a warm socket,

@@ -766,7 +766,9 @@ ahead.
    its public address. **Speech as frames, live 3 Oct** (agent-media
    speech_frames.py, sasonica-app cac6e3d, build 1154): red5 no longer
    dials p8a for speech; a test line played, then the switch
-   (`MEDIA_SPEECH_SOCKET_SASONICA=tcp://127.0.0.1:16624`). Next: the phone dialling out (speech 6614 first, after deleting
+   (`MEDIA_SPEECH_SOCKET_SASONICA=tcp://127.0.0.1:16624`). **Music as frames
+   live 3 Oct** (build 1157, port 16625); its YouTube fetch still goes over
+   `ssh p8a`. Next: the phone dialling out (speech 6614 first, after deleting
    the per-reply `ssh p8a` probe).
 
 ## Loose ends
