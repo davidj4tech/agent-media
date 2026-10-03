@@ -181,9 +181,13 @@ class Model:
 class _Hub:
     """The frames, the model, and who is listening."""
 
-    def __init__(self) -> None:
+    def __init__(self, channel: str) -> None:
+        self.channel = channel
         self.lock = threading.Condition()
         self.model = Model()
+        #: Callers connected to this channel's port, for their observations.
+        self.clients: list["_Client"] = []
+        self.clients_lock = threading.Lock()
         self.frames: deque[dict] = deque(maxlen=KEEP)
         self.seq = 0
         #: stream id → (device id, connected at); the newest one plays.
@@ -198,88 +202,94 @@ class _Hub:
             return max(self.listeners.values(), key=lambda v: v[1])[0]
 
 
-_HUB = _Hub()
+#: One per player on the phone: speech (6614's) and music (6615's).
+CHANNELS = ("speech", "music")
+_HUBS: dict[str, _Hub] = {c: _Hub(c) for c in CHANNELS}
 
 
 # --- what the stream and the route call -------------------------------------
 
 
-def listening(device: str, on: bool, token: int | None = None) -> int | None:
+def listening(device: str, on: bool, token: int | None = None,
+              channel: str = "speech") -> int | None:
     """A stream with `?speech=frames` opened (returns its token) or closed."""
-    with _HUB.lock:
+    hub = _HUBS[channel]
+    with hub.lock:
         if on:
-            _HUB._next_listener += 1
-            _HUB.listeners[_HUB._next_listener] = (device, time.monotonic())
-            return _HUB._next_listener
-        _HUB.listeners.pop(token, None)
+            hub._next_listener += 1
+            hub.listeners[hub._next_listener] = (device, time.monotonic())
+            return hub._next_listener
+        hub.listeners.pop(token, None)
         return None
 
 
-def playing_stream(token: int | None) -> bool:
+def playing_stream(token: int | None, channel: str = "speech") -> bool:
     """Whether the stream holding `token` is the one frames go to."""
-    with _HUB.lock:
-        if token not in _HUB.listeners:
+    hub = _HUBS[channel]
+    with hub.lock:
+        if token not in hub.listeners:
             return False
-        newest = max(_HUB.listeners.items(), key=lambda kv: kv[1][1])[0]
+        newest = max(hub.listeners.items(), key=lambda kv: kv[1][1])[0]
         return newest == token
 
 
-def seq() -> int:
-    with _HUB.lock:
-        return _HUB.seq
+def seq(channel: str = "speech") -> int:
+    hub = _HUBS[channel]
+    with hub.lock:
+        return hub.seq
 
 
-def frames_after(cursor: int) -> list[dict]:
+def frames_after(cursor: int, channel: str = "speech") -> list[dict]:
     """Frames newer than `cursor` and young enough to still mean something."""
+    hub = _HUBS[channel]
     cutoff = time.time() - REPLAY_S
-    with _HUB.lock:
-        return [f for f in _HUB.frames if f["seq"] > cursor and f["at"] >= cutoff]
+    with hub.lock:
+        return [f for f in hub.frames if f["seq"] > cursor and f["at"] >= cutoff]
 
 
-def report(device: str, body: dict) -> tuple[bool, dict]:
+def report(device: str, body: dict, channel: str = "speech") -> tuple[bool, dict]:
     """`POST /speech/state` from the device the frames go to."""
+    hub = _HUBS[channel]
     if not isinstance(body, dict):
         return False, {"status": 400, "error": "a JSON object, please"}
-    if device != _HUB.device():
-        return False, {"status": 409, "error": "this device is not the one speech plays on"}
-    with _HUB.lock:
+    if device != hub.device():
+        return False, {"status": 409, "error": f"this device is not the one {channel} plays on"}
+    with hub.lock:
         try:
-            _HUB.model.report(body, current=int(body.get("seq", -1)) >= _HUB.seq)
+            hub.model.report(body, current=int(body.get("seq", -1)) >= hub.seq)
         except (TypeError, ValueError):
             return False, {"status": 400, "error": "malformed state"}
-        _HUB.reported_at = time.time()
-        _HUB.lock.notify_all()
-    _notify_observers()
-    return True, {"seq": seq()}
+        hub.reported_at = time.time()
+        hub.lock.notify_all()
+    _notify_observers(hub)
+    return True, {"seq": seq(channel)}
 
 
-def _send(ops: list[dict]) -> None:
+def _send(ops: list[dict], hub: "_Hub") -> None:
     """Apply `ops` here and send them to the phone as one frame."""
     if not ops:
         return
-    with _HUB.lock:
+    with hub.lock:
         for op in ops:
-            _HUB.model.apply(op)
-        _HUB.seq += 1
-        _HUB.frames.append({"seq": _HUB.seq, "at": round(time.time(), 3), "ops": ops})
+            hub.model.apply(op)
+        hub.seq += 1
+        hub.frames.append({"seq": hub.seq, "at": round(time.time(), 3), "ops": ops})
     from . import session_events
     session_events.poke()
-    _notify_observers()
+    _notify_observers(hub)
 
 
 # --- mpv JSON-IPC, answered here --------------------------------------------
 
 _NOT_FOUND = object()
-_CLIENTS: list["_Client"] = []
-_CLIENTS_LOCK = threading.Lock()
 
 
 def _stored(name: str) -> bool:
     return name == TITLE or name.startswith(USER_DATA)
 
 
-def _get(name: str):
-    m = _HUB.model
+def _get(name: str, hub: "_Hub"):
+    m = hub.model
     if name == RINGER and m.ringer is not None:
         return m.ringer
     if name == "pause":
@@ -320,7 +330,7 @@ def _get(name: str):
     return _NOT_FOUND
 
 
-def _set_ops(name: str, value) -> list[dict] | None:
+def _set_ops(name: str, value, hub: "_Hub") -> list[dict] | None:
     """The ops a `set_property` is, or None for no such property."""
     if name == "pause":
         return [{"op": "pause", "on": _bool(value)}]
@@ -335,7 +345,7 @@ def _set_ops(name: str, value) -> list[dict] | None:
     if _stored(name):
         return [{"op": "meta", "name": name, "value": value}]
     if name in INERT:
-        _HUB.model.stored[name] = value
+        hub.model.stored[name] = value
         return []
     return None
 
@@ -353,7 +363,7 @@ def _num(v, default: float) -> float:
         return default
 
 
-def _seek_target(argv: list) -> float | None:
+def _seek_target(argv: list, hub: "_Hub") -> float | None:
     if len(argv) < 2:
         return None
     try:
@@ -361,7 +371,7 @@ def _seek_target(argv: list) -> float | None:
     except (TypeError, ValueError):
         return None
     mode = (str(argv[2]) if len(argv) > 2 and argv[2] else "relative").split("+")[0]
-    m = _HUB.model
+    m = hub.model
     pos, dur = max(0.0, m.playhead()), m.duration
     if mode == "relative":
         return pos + value
@@ -376,24 +386,24 @@ def _seek_target(argv: list) -> float | None:
     return None
 
 
-def _claim(key: str, mine, now: float):
+def _claim(key: str, mine, now: float, hub: "_Hub"):
     """MpvServer.claim: take `key` unless someone else's deadline is ahead."""
     if not _stored(key) or not isinstance(mine, dict):
         return None
-    cur = _HUB.model.stored.get(key)
+    cur = hub.model.stored.get(key)
     if isinstance(cur, dict):
         owner = str(cur.get("owner") or "")
         if owner and owner != str(mine.get("owner") or "") \
                 and _num(cur.get("deadline"), 0) > now:
             return cur
-    _HUB.model.stored[key] = mine
+    hub.model.stored[key] = mine
     return mine
 
 
-def _dispatch(argv: list, ops: list[dict]) -> tuple[bool, object]:
+def _dispatch(argv: list, ops: list[dict], hub: "_Hub") -> tuple[bool, object]:
     """One command: `(ok, data or error)`, with its ops added to `ops`."""
     verb = str(argv[0])
-    m = _HUB.model
+    m = hub.model
     if verb == "loadfile":
         ops.append({"op": "load", "uri": str(argv[1]),
                     "mode": str(argv[2]) if len(argv) > 2 else "replace"})
@@ -418,7 +428,7 @@ def _dispatch(argv: list, ops: list[dict]) -> tuple[bool, object]:
         ops.append({"op": "remove", "i": i})
         return True, None
     if verb in ("get_property", "get_property_string"):
-        v = _get(str(argv[1]))
+        v = _get(str(argv[1]), hub)
         if v is _NOT_FOUND:
             return False, "property not found"
         if verb == "get_property_string":
@@ -427,28 +437,28 @@ def _dispatch(argv: list, ops: list[dict]) -> tuple[bool, object]:
         return True, v
     if verb in ("set_property", "set_property_string"):
         name = str(argv[1])
-        got = _set_ops(name, argv[2] if len(argv) > 2 else None)
+        got = _set_ops(name, argv[2] if len(argv) > 2 else None, hub)
         if got is None:
             return False, "property not found"
         ops.extend(got)
         return True, None
     if verb == "seek":
-        t = _seek_target(argv)
+        t = _seek_target(argv, hub)
         if t is None:
             return False, "invalid parameter"
         ops.append({"op": "seek", "t": t})
         return True, None
     if verb == "cycle":
         name = str(argv[1])
-        v = _get(name)
+        v = _get(name, hub)
         if not isinstance(v, bool):
             return False, "property not found"
-        ops.extend(_set_ops(name, not v) or [])
+        ops.extend(_set_ops(name, not v, hub) or [])
         return True, None
     if verb in ("am-claim", "am-claim-play"):
         mine = argv[2] if len(argv) > 2 else None
-        with _HUB.lock:
-            held = _claim(str(argv[1]), mine, _num(argv[3], 0) if len(argv) > 3 else 0)
+        with hub.lock:
+            held = _claim(str(argv[1]), mine, _num(argv[3], 0) if len(argv) > 3 else 0, hub)
         if held is None:
             return False, "invalid parameter"
         if held is mine and verb == "am-claim-play" and len(argv) > 4 \
@@ -456,7 +466,7 @@ def _dispatch(argv: list, ops: list[dict]) -> tuple[bool, object]:
             for sub in argv[4]:
                 if isinstance(sub, list) and sub and sub[0] != "am-claim":
                     try:
-                        _dispatch(sub, ops)
+                        _dispatch(sub, ops, hub)
                     except Exception:  # noqa: BLE001 — one bad command, not the reply
                         pass
         return True, held
@@ -468,8 +478,9 @@ def _dispatch(argv: list, ops: list[dict]) -> tuple[bool, object]:
 class _Client:
     """One caller's connection, answered here."""
 
-    def __init__(self, sock: socket.socket) -> None:
+    def __init__(self, sock: socket.socket, hub: "_Hub") -> None:
         self.sock = sock
+        self.hub = hub
         self.out_lock = threading.Lock()
         self.observed: dict[str, object] = {}
         self.last_sent: dict[str, str] = {}
@@ -485,8 +496,8 @@ class _Client:
         oid = self.observed.get(name)
         if oid is None:
             return
-        with _HUB.lock:
-            v = _get(name)
+        with self.hub.lock:
+            v = _get(name, self.hub)
         enc = "" if v is _NOT_FOUND else json.dumps(v)
         if self.last_sent.get(name) == enc:
             return
@@ -521,18 +532,18 @@ class _Client:
             return
         ops: list[dict] = []
         try:
-            with _HUB.lock:
-                ok, data = _dispatch(cmd, ops)
+            with self.hub.lock:
+                ok, data = _dispatch(cmd, ops, self.hub)
         except Exception:  # noqa: BLE001 — one malformed command, not the connection
             ok, data = False, "invalid parameter"
         # The frame first: a caller that has its answer may count on the
         # phone being told already (MpvServer answers after the player acted).
-        _send(ops)
+        _send(ops, self.hub)
         self.send(_answer(rid, ok, data))
 
     def serve(self) -> None:
-        with _CLIENTS_LOCK:
-            _CLIENTS.append(self)
+        with self.hub.clients_lock:
+            self.hub.clients.append(self)
         buf = b""
         try:
             while True:
@@ -547,9 +558,9 @@ class _Client:
         except OSError:
             return
         finally:
-            with _CLIENTS_LOCK:
-                if self in _CLIENTS:
-                    _CLIENTS.remove(self)
+            with self.hub.clients_lock:
+                if self in self.hub.clients:
+                    self.hub.clients.remove(self)
             try:
                 self.sock.close()
             except OSError:
@@ -566,9 +577,9 @@ def _answer(rid, ok: bool, data) -> dict:
     return msg
 
 
-def _notify_observers() -> None:
-    with _CLIENTS_LOCK:
-        clients = list(_CLIENTS)
+def _notify_observers(hub: "_Hub") -> None:
+    with hub.clients_lock:
+        clients = list(hub.clients)
     for c in clients:
         for name in list(c.observed):
             c.notify(name)
@@ -637,12 +648,16 @@ def _publish_rtt(port: int, upstream: tuple[str, int] | None, frames: bool) -> N
         pass
 
 
-def start(listen: str | None = None, upstream: str | None = None) -> socket.socket | None:
-    """Listen for callers (`MEDIA_SPEECH_FRAMES_LISTEN`); None when unset."""
-    listen = listen or os.environ.get("MEDIA_SPEECH_FRAMES_LISTEN", "")
+def start(listen: str | None = None, upstream: str | None = None,
+          channel: str = "speech") -> socket.socket | None:
+    """Listen for `channel`'s callers (`MEDIA_SPEECH_FRAMES_LISTEN`,
+    `MEDIA_MUSIC_FRAMES_LISTEN`); None when unset."""
+    hub = _HUBS[channel]
+    key = f"MEDIA_{channel.upper()}_FRAMES"
+    listen = listen or os.environ.get(f"{key}_LISTEN", "")
     if not listen:
         return None
-    up = upstream if upstream is not None else os.environ.get("MEDIA_SPEECH_FRAMES_UPSTREAM", "")
+    up = upstream if upstream is not None else os.environ.get(f"{key}_UPSTREAM", "")
     far = _hostport(up) if up else None
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -658,25 +673,23 @@ def start(listen: str | None = None, upstream: str | None = None) -> socket.sock
                 c, _ = srv.accept()
             except OSError:
                 return
-            frames = _HUB.device() is not None
+            frames = hub.device() is not None
             if frames != mode:
                 mode = frames
                 _publish_rtt(port, far, frames)
             if frames:
-                threading.Thread(target=_Client(c).serve, daemon=True).start()
+                threading.Thread(target=_Client(c, hub).serve, daemon=True).start()
             elif far is not None:
                 threading.Thread(target=_passthrough, args=(c, far), daemon=True).start()
             else:
                 c.close()
 
-    threading.Thread(target=loop, name="speech-frames", daemon=True).start()
-    print(f"speech frames on {listen}" + (f" (else through to {up})" if up else ""),
+    threading.Thread(target=loop, name=f"{channel}-frames", daemon=True).start()
+    print(f"{channel} frames on {listen}" + (f" (else through to {up})" if up else ""),
           flush=True)
     return srv
 
 
 def _reset_for_tests() -> None:
-    global _HUB
-    _HUB = _Hub()
-    with _CLIENTS_LOCK:
-        _CLIENTS.clear()
+    for c in CHANNELS:
+        _HUBS[c] = _Hub(c)

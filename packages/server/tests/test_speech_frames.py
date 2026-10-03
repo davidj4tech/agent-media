@@ -205,7 +205,7 @@ def test_frames_go_down_the_devices_stream_at_once(server, screen, endpoint, mon
     st = Stream(server, "/sessions/events?ping=0.3&speech=frames", pixel)
     try:
         assert st.event()[0] == "sessions"
-        assert _wait(lambda: speech_frames._HUB.device() == dev)
+        assert _wait(lambda: speech_frames._HUBS["speech"].device() == dev)
         monkeypatch.setattr(session_events, "POLL_S", 30.0)
         ipc = Ipc(endpoint)
         t0 = time.monotonic()
@@ -221,7 +221,7 @@ def test_frames_go_down_the_devices_stream_at_once(server, screen, endpoint, mon
         ipc.close()
     finally:
         st.close()
-    assert _wait(lambda: speech_frames._HUB.device() is None)
+    assert _wait(lambda: speech_frames._HUBS["speech"].device() is None)
 
 
 def test_a_reconnecting_stream_gets_what_it_missed(server, screen, endpoint):
@@ -240,3 +240,32 @@ def test_a_reconnecting_stream_gets_what_it_missed(server, screen, endpoint):
 
 def test_state_needs_a_device(server, screen):
     assert call(server, "POST", "/speech/state", {"seq": 0}, AUTH)[0].status == 401
+
+
+def test_music_is_its_own_channel(server, screen, monkeypatch):
+    """The music player's frames go out as `music`, its reads are its own,
+    and its state comes back to /music/state."""
+    srv = speech_frames.start("127.0.0.1:0", upstream="", channel="music")
+    pixel, dev = _device("Pixel 8a")
+    st = Stream(server, "/sessions/events?ping=0.3&music=frames", pixel)
+    try:
+        assert st.event()[0] == "sessions"
+        assert _wait(lambda: speech_frames._HUBS["music"].device() == dev)
+        assert speech_frames._HUBS["speech"].device() is None
+        ipc = Ipc(srv.getsockname())
+        ipc("loadfile", "http://localhost:6616/mix.webm", "replace")
+        ipc("set_property", "user-data/agent-media/art", "https://x/art.jpg")
+        f = st.next("music", 2.0)
+        assert f["ops"][0]["uri"] == "http://localhost:6616/mix.webm"
+        assert speech_frames.frames_after(0, "speech") == []
+        r = call(server, "POST", "/music/state",
+                 {"seq": speech_frames.seq("music"), "pos": 0, "count": 1,
+                  "time_pos": 61.0, "duration": 3600.0}, pixel)
+        assert r[0].status == 200
+        assert ipc("get_property", "time-pos")["data"] >= 61.0
+        # Not the speech player's report.
+        assert call(server, "POST", "/speech/state", {"seq": 0}, pixel)[0].status == 409
+        ipc.close()
+    finally:
+        st.close()
+        srv.close()

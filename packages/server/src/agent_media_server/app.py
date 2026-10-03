@@ -214,7 +214,7 @@ CORS_PATHS = frozenset({
     "/sessions/events", "/search",
     "/mic/ask", "/mic/cancel",
     "/phone/ask", "/phone/answer", "/phone/cancel",
-    "/speech/state",
+    "/speech/state", "/music/state",
 })
 
 # Where the audio goes (audio.py). Its own set, joined here, so the block
@@ -783,10 +783,14 @@ def _session_events(h: BaseHTTPRequestHandler, query: str) -> None:
     # (speech_frames.py, roadmap item 15); `speech_after` resumes a reply.
     speech_dev = (auth.device_id(bearer) or None) if (
         qs.get("speech") or [""])[0] == "frames" else None
-    try:
-        speech_after = int((qs.get("speech_after") or [""])[0])
-    except ValueError:
-        speech_after = None
+    music_dev = (auth.device_id(bearer) or None) if (
+        qs.get("music") or [""])[0] == "frames" else None
+
+    def _after(k: str) -> int | None:
+        try:
+            return int((qs.get(k) or [""])[0])
+        except ValueError:
+            return None
     session_events.serve(h, bearer, ping_s=session_events.ping_of(
                              (qs.get("ping") or [""])[0],
                              proxied=bool(h.headers.get("CF-Connecting-IP")
@@ -796,7 +800,8 @@ def _session_events(h: BaseHTTPRequestHandler, query: str) -> None:
                          mic_for=auth.device_id(bearer) if wants_mic else None,
                          phone_kinds=phone.kinds_of(qs["phone"][0] if "phone" in qs else None),
                          catchup=wants_catchup, free_frame=wants_free,
-                         speech_device=speech_dev, speech_after=speech_after)
+                         speech_device=speech_dev, speech_after=_after("speech_after"),
+                         music_device=music_dev, music_after=_after("music_after"))
 
 
 def _thread_agents(h: BaseHTTPRequestHandler, session: str, agent_id: str | None,
@@ -1294,17 +1299,18 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
                   f"{a['session'][:8] if a['session'] else 'a new chat'}",
                   file=sys.stderr, flush=True)
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
-    elif path == "/speech/state":
-        # The phone's player, reported back while it plays speech from
-        # frames (speech_frames.py, roadmap item 15): on every change and
-        # every couple of seconds while playing. Only a paired device.
+    elif path in ("/speech/state", "/music/state"):
+        # The phone's players, reported back while they play from frames
+        # (speech_frames.py, roadmap item 15): on every change and every
+        # couple of seconds while playing. Only a paired device.
         from . import speech_frames
 
         dev = auth.device_id(_bearer(h))
         if not dev:
             _json(h, 401, {"ok": False, "error": "a paired device only"})
             return True
-        ok, detail = speech_frames.report(dev, _read_json(h))
+        ok, detail = speech_frames.report(dev, _read_json(h),
+                                          channel=path.split("/")[1])
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path in ("/phone/ask", "/phone/answer", "/phone/cancel"):
         # The phone as an agent's eyes and hands (server-contract.md §6.21,
