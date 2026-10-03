@@ -160,6 +160,13 @@ JSON-IPC to the callers, but owns the player state itself:
   it. The app advertises `speech=frames` on its
   stream, so the endpoint knows a device can take frames.
 
+**Live 3 Oct.** Server: ee8f975, cf69e0a, 89626df. App: cac6e3d (build
+1154). A test line played through 16624: the phone reported pos 0 to idle
+over about 4 s. Then `MEDIA_SPEECH_SOCKET_SASONICA` moved to 16624, and the
+five services that read it were restarted while speech was idle. Still to
+measure: start-of-speech against `docs/speech-latency-notes.md`, and
+follow-along on a long reply.
+
 Music (#2) takes the same endpoint later on its own port, under a `music`
 frame.
 

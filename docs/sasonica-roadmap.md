@@ -763,7 +763,10 @@ ahead.
    and a 60 s ping cap for tunnelled streams. **Step 4 done 3 Oct**: p8a on
    `https://red5.sasonica.com` (Settings → Advanced → Server address, its
    own section since sasonica-app 47b3811; same device token), seen from
-   its public address. Next: the phone dialling out (speech 6614 first, after deleting
+   its public address. **Speech as frames, live 3 Oct** (agent-media
+   speech_frames.py, sasonica-app cac6e3d, build 1154): red5 no longer
+   dials p8a for speech; a test line played, then the switch
+   (`MEDIA_SPEECH_SOCKET_SASONICA=tcp://127.0.0.1:16624`). Next: the phone dialling out (speech 6614 first, after deleting
    the per-reply `ssh p8a` probe).
 
 ## Loose ends
