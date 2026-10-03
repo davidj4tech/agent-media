@@ -578,6 +578,8 @@ def _notify_observers() -> None:
 
 
 def _pipe(a: socket.socket, b: socket.socket) -> None:
+    """`a`'s bytes to `b` until `a` is done sending; then `b` is told so
+    (a half-close), and the answer still comes back the other way."""
     try:
         while True:
             data = a.recv(65536)
@@ -587,11 +589,10 @@ def _pipe(a: socket.socket, b: socket.socket) -> None:
     except OSError:
         pass
     finally:
-        for s in (a, b):
-            try:
-                s.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
+        try:
+            b.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
 
 
 def _passthrough(client: socket.socket, upstream: tuple[str, int]) -> None:
@@ -602,8 +603,10 @@ def _passthrough(client: socket.socket, upstream: tuple[str, int]) -> None:
     except OSError:
         client.close()
         return
-    threading.Thread(target=_pipe, args=(far, client), daemon=True).start()
+    back = threading.Thread(target=_pipe, args=(far, client), daemon=True)
+    back.start()
     _pipe(client, far)
+    back.join(timeout=30)
     for s in (client, far):
         try:
             s.close()

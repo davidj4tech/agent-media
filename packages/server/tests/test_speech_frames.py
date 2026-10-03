@@ -172,7 +172,7 @@ def test_observers_hear_a_report(endpoint):
 def test_no_frame_device_passes_through_to_the_phone():
     far = socket.socket()
     far.bind(("127.0.0.1", 0))
-    far.listen(1)
+    far.listen(2)
 
     def echo():
         c, _ = far.accept()
@@ -184,6 +184,14 @@ def test_no_frame_device_passes_through_to_the_phone():
     try:
         ipc = Ipc(srv.getsockname())
         assert ipc("client_name").get("far") is True
+        ipc.close()
+        # A caller that half-closes (nc, a one-shot script) still gets its answer.
+        threading.Thread(target=echo, daemon=True).start()
+        c = socket.create_connection(srv.getsockname(), timeout=5)
+        c.sendall(b'{"command": ["client_name"], "request_id": 1}\n')
+        c.shutdown(socket.SHUT_WR)
+        assert b'"far": true' in c.recv(1024)
+        c.close()
     finally:
         srv.close()
         far.close()
