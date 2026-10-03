@@ -1327,7 +1327,8 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         elif not (_TOKEN_OK is not None and _TOKEN_OK(h)):
             ok, detail = False, {"status": 401, "error": "unauthorized"}
         elif path == "/phone/ask":
-            ok, detail = phone.ask(body.get("kind"), body.get("why"), body.get("session"))
+            ok, detail = phone.ask(body.get("kind"), body.get("why"), body.get("session"),
+                                   body.get("params"))
             if ok:
                 a = detail["ask"]
                 print(f"phone: ask {a['id']} {a['kind']} for "

@@ -318,7 +318,8 @@ def converse(text: str,
 
 
 @mcp.tool()
-def phone_ask(why: str, kind: str = "photo", timeout_s: float = 300.0) -> dict:
+def phone_ask(why: str, kind: str = "photo", until: str = "",
+              timeout_s: float = 300.0) -> dict:
     """Ask David's phone for something only it has, and wait for his answer.
 
     `kind="photo"`: David gets a notification with your `why`, and if he
@@ -327,22 +328,32 @@ def phone_ask(why: str, kind: str = "photo", timeout_s: float = 300.0) -> dict:
     something in the room — a device's lights, a label, a screen — not for
     anything you can find out another way.
 
+    `kind="dnd"`: the phone goes to Do Not Disturb (priority only: alarms
+    and starred contacts still come through) until `until`, then back to
+    what it was — unless David changed it by hand meanwhile. `until` is a
+    time like "15:30" (the next one) or minutes like "+90"; at most 12 hours.
+    Use it when he asks for quiet until something ends (a meeting on his
+    calendar, a nap), never on your own initiative.
+
     Every ask needs his yes. Ask only for what the task needs, say why in one
     plain sentence ("show me the router's lights, to see whether the WAN
     light is on"), and if he says no, do not ask again for the same thing.
 
     Args:
         why: One sentence, shown to David as-is.
-        kind: "photo" (location and Do Not Disturb are to come).
-        timeout_s: How long to wait (the phone gives up after 5 minutes).
+        kind: "photo" or "dnd" (location is to come).
+        until: For "dnd": when the quiet ends.
+        timeout_s: How long to wait (the phone gives up after 5 minutes for
+            a photo, 2 for the others).
 
-    Returns {"status": "ok", "result": {"path", "width", "height"}} — or
-    status "denied", "timeout", "no_phone" (no phone connected that can),
-    "failed" (with "error"), "gone" or "error".
+    Returns {"status": "ok", "result": ...} — a photo's {"path", "width",
+    "height"}, a dnd's {"on": true, "until"} — or status "denied",
+    "timeout", "no_phone" (no phone connected that can), "failed" (with
+    "error"), "gone" or "error".
     """
     from . import phone_ask as _phone
 
-    return _phone.ask(kind, why, timeout_s)
+    return _phone.ask(kind, why, timeout_s, until=until)
 
 
 def _await_quiet(target: Target, max_wait_s: float = 120.0) -> None:

@@ -10,7 +10,7 @@ app, which does it (a photo: the camera, then `/upload`) and answers
 the outcome. Every ask needs a yes; nothing is standing. David, 1 Oct 2026
 (docs/proposals/2026-10-01-the-phone-as-eyes-and-hands.md).
 
-    ask(kind, why, session)  → an open ask, or `no_phone` at once when no
+    ask(kind, why, session, params) → an open ask, or `no_phone` at once when no
                                phone that can do it is listening
     wait(id, wait_s)         → its status, once settled or after wait_s
     answer(id, decision, result, bearer) → a paired device's allow / deny
@@ -46,6 +46,9 @@ KINDS = ("photo", "location", "dnd")
 TTL_S = {"photo": 300, "location": 120, "dnd": 120}
 #: A settled ask stays readable this long.
 KEEP_S = 120
+#: How far ahead a `dnd` may run: a phone left quiet by mistake for a day
+#: would miss everything.
+DND_MAX_S = 12 * 3600
 #: Longest `why` kept, and longest long-poll.
 WHY_MAX = 200
 WAIT_MAX_S = 60.0
@@ -68,7 +71,7 @@ def _audit_path() -> Path:
 
 def _audit(a: dict) -> None:
     line = {k: a.get(k) for k in ("id", "kind", "why", "session", "title", "at",
-                                  "status", "device", "settled_at")}
+                                  "until", "status", "device", "settled_at")}
     res = a.get("result") or {}
     if a["kind"] == "photo" and res.get("path"):
         line["path"] = res["path"]
@@ -123,13 +126,29 @@ def _title_of(session: str) -> str | None:
 def _public(a: dict) -> dict:
     """An ask as the frame and the tool see it."""
     return {k: a[k] for k in ("id", "kind", "why", "session", "title", "at", "expires",
-                              "status", "result", "error") if a.get(k) is not None}
+                              "until", "status", "result", "error") if a.get(k) is not None}
 
 
-def ask(kind, why, session=None) -> tuple[bool, dict]:
-    """`POST /phone/ask {kind, why, session?}` — the caller is the host
-    (app.py checks the token). One open ask per session: a second replaces
-    the first. No phone listening for `kind`: settled `no_phone` at once."""
+def _until(params, now: float) -> tuple[float | None, str]:
+    """A `dnd` ask's end: `params.until`, epoch seconds, in the next
+    DND_MAX_S. (None, why not) when missing or out of range."""
+    raw = params.get("until") if isinstance(params, dict) else None
+    try:
+        until = float(raw)
+    except (TypeError, ValueError):
+        return None, "dnd needs params.until, epoch seconds"
+    if until != until or until <= now + 60:
+        return None, "until must be at least a minute from now"
+    if until > now + DND_MAX_S:
+        return None, "until is at most 12 hours from now"
+    return round(until, 3), ""
+
+
+def ask(kind, why, session=None, params=None) -> tuple[bool, dict]:
+    """`POST /phone/ask {kind, why, session?, params?}` — the caller is the
+    host (app.py checks the token). One open ask per session: a second
+    replaces the first. No phone listening for `kind`: settled `no_phone` at
+    once. `dnd` takes `params.until` (epoch seconds), carried as `until`."""
     if kind not in KINDS:
         return False, {"status": 400, "error": f"kind is one of {', '.join(KINDS)}"}
     why = " ".join(str(why or "").split())[:WHY_MAX]
@@ -143,6 +162,11 @@ def ask(kind, why, session=None) -> tuple[bool, dict]:
     rec = {"id": secrets.token_hex(4), "kind": kind, "why": why, "session": session,
            "title": _title_of(session) if session else None, "at": round(now, 3),
            "expires": round(now + TTL_S[kind], 3), "status": "open"}
+    if kind == "dnd":
+        until, err = _until(params, now)
+        if until is None:
+            return False, {"status": 400, "error": err}
+        rec["until"] = until
     global _VERSION
     with _COND:
         _prune(now)
@@ -207,6 +231,8 @@ def answer(ask_id, decision, result, bearer: str) -> tuple[bool, dict]:
             res = result if isinstance(result, dict) else {}
             if a["kind"] == "photo" and not str(res.get("path") or ""):
                 _settle(a, "failed", device=device, error="no photo came back")
+            elif a["kind"] == "dnd" and res.get("on") is not True:
+                _settle(a, "failed", device=device, error="the phone did not go quiet")
             else:
                 _settle(a, "ok", device=device, result=res)
         out = _public(a)

@@ -3065,14 +3065,16 @@ Pinned by `packages/server/tests/test_phone.py`; the frame by
 `test_session_events.py`. Proposal:
 `docs/proposals/2026-10-01-the-phone-as-eyes-and-hands.md`.
 
-- `POST /phone/ask {kind, why, session?}` — **the host's own token only**
+- `POST /phone/ask {kind, why, session?, params?}` — **the host's own token only**
   (`X-Auth-Token` or `Authorization: Bearer`, `~/.amux/auth_token`), never
   a device's: an agent asks, a phone does not. `kind`: `photo` | `location`
   | `dnd`; `why`: one sentence, shown as-is, ≤ 200 characters, 400 when
   empty; `session` names the thread (the tool finds its own). → `{ask}`.
   When no stream that can do `kind` is connected, the ask is settled
   `no_phone` at once. One open ask per session: a second one settles the
-  first `cancelled`.
+  first `cancelled`. `dnd` (3 Oct 2026) needs `params.until`, epoch seconds,
+  at least a minute and at most 12 hours ahead (else 400); the ask carries
+  it as `until`.
 - `GET /phone/ask?id=&wait=<s>` — host token. Long-polls up to `wait`
   (≤ 60 s) for the ask to settle; → `{ask}`, 404 when unknown (a restart).
 - `POST /phone/answer {id, decision: "allow"|"deny", result?}` — a paired
@@ -3086,7 +3088,10 @@ error?}`. `status`: `open` → `ok` | `denied` | `failed` | `timeout` |
 `cancelled` | `no_phone`. Open for 5 min (photo) or 2 min (the others);
 kept 2 min after settling for the tool's last poll. A photo's `result` is
 `{path, width, height}`: the phone uploads it first (§6.18) and answers with
-the path the upload returned.
+the path the upload returned. A dnd's is `{on: true, until}` (allowed
+without `on: true` is `failed`): the phone set Do Not Disturb to priority
+only, and puts back what it was at `until` — unless it was changed by hand
+in between.
 
 **The `phone` frame.** `GET /sessions/events?phone=photo[,location,dnd]`
 (§6.13) says what this phone can be asked for (unknown kinds dropped) —

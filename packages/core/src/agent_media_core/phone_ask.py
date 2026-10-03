@@ -7,7 +7,8 @@ or the time runs out. Used by the `phone_ask` MCP tool. David, 1 Oct 2026
 (docs/proposals/2026-10-01-the-phone-as-eyes-and-hands.md).
 
 Statuses: `ok` (with `result`: a photo's `{path, width, height}`, a file
-under ~/shared/ the agent reads with its own tools), `denied`, `timeout`,
+under ~/shared/ the agent reads with its own tools; a dnd's `{on, until}`),
+`denied`, `timeout`,
 `no_phone` (no phone that can do it is connected — said at once), `failed`
 (with `error`), `cancelled`, `gone` (the server restarted), `error` (the
 server could not be reached).
@@ -85,6 +86,40 @@ def _call(method: str, path: str, body: dict | None = None,
             return e.code, {}
 
 
+def until_epoch(until: str, now: float | None = None) -> float | None:
+    """When a `dnd` ends, as epoch seconds: "15:30" (this host's local time,
+    the next one), "+90" or "90m" (minutes from now), "2h", or an ISO time.
+    None when it cannot be read."""
+    import datetime as dt
+    import re
+
+    raw = str(until or "").strip().lower()
+    now = time.time() if now is None else now
+    m = re.fullmatch(r"\+?(\d+(?:\.\d+)?)\s*(m|min|mins|minutes|h|hr|hrs|hours)?", raw)
+    if m:
+        n = float(m.group(1))
+        return now + n * (3600 if (m.group(2) or "m").startswith("h") else 60)
+    m = re.fullmatch(r"(\d{1,2})[:.](\d{2})\s*(am|pm)?", raw)
+    if m:
+        hh, mm = int(m.group(1)), int(m.group(2))
+        if m.group(3) == "pm" and hh < 12:
+            hh += 12
+        elif m.group(3) == "am" and hh == 12:
+            hh = 0
+        if hh > 23 or mm > 59:
+            return None
+        base = dt.datetime.fromtimestamp(now)
+        at = base.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        if at.timestamp() <= now:
+            at += dt.timedelta(days=1)
+        return at.timestamp()
+    try:
+        at = dt.datetime.fromisoformat(str(until).strip())
+    except ValueError:
+        return None
+    return at.timestamp()
+
+
 def _outcome(a: dict) -> dict:
     out = {"status": a.get("status")}
     for k in ("result", "error"):
@@ -94,13 +129,19 @@ def _outcome(a: dict) -> dict:
 
 
 def ask(kind: str, why: str, timeout_s: float = 300.0,
-        session: str | None = None) -> dict:
+        session: str | None = None, until: str = "") -> dict:
     """Ask, then wait up to `timeout_s` (the ask's own time on the phone is
-    the server's: 5 min for a photo). `session` defaults to the caller's."""
+    the server's: 5 min for a photo, 2 for the others). `session` defaults
+    to the caller's. A `dnd` needs `until` (until_epoch's forms)."""
+    body = {"kind": kind, "why": why, "session": session or session_of_caller()}
+    if kind == "dnd":
+        at = until_epoch(until)
+        if at is None:
+            return {"status": "error",
+                    "error": "until: a time like 15:30, or minutes like +90"}
+        body["params"] = {"until": at}
     try:
-        code, obj = _call("POST", "/phone/ask",
-                          {"kind": kind, "why": why,
-                           "session": session or session_of_caller()})
+        code, obj = _call("POST", "/phone/ask", body)
         if code != 200:
             return {"status": "error", "error": obj.get("error") or f"HTTP {code}"}
         a = obj["ask"]

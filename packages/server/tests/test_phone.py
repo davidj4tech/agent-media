@@ -186,3 +186,78 @@ def test_the_tool_without_a_phone_says_so_at_once(server, host, monkeypatch):
     t0 = time.monotonic()
     assert phone_ask.ask("photo", "x") == {"status": "no_phone"}
     assert time.monotonic() - t0 < 2
+
+
+# --- Do Not Disturb until a time -----------------------------------------------------
+
+@pytest.fixture()
+def quiet_listening():
+    phone.listening(("dnd",), True)
+    yield
+    phone.listening(("dnd",), False)
+
+
+def test_a_dnd_ask_carries_its_end(server, host, pixel, quiet_listening, tmp_path):
+    until = time.time() + 3600
+    res, obj = call(server, "POST", "/phone/ask",
+                    {"kind": "dnd", "why": "quiet for the meeting", "params": {"until": until}}, host)
+    assert res.status == 200, obj
+    a = obj["ask"]
+    assert a["until"] == pytest.approx(until) and a["expires"] == pytest.approx(a["at"] + 120)
+    assert phone.open_asks(("dnd",)) == [a]
+    call(server, "POST", "/phone/answer",
+         {"id": a["id"], "decision": "allow", "result": {"on": True, "until": until}}, pixel)
+    got = phone.wait(a["id"])[1]["ask"]
+    assert got["status"] == "ok" and got["result"]["on"] is True
+    assert _audit(tmp_path)[-1]["until"] == pytest.approx(until)
+
+
+def test_allowed_but_not_quiet_is_failed(server, host, pixel, quiet_listening):
+    _, obj = call(server, "POST", "/phone/ask",
+                  {"kind": "dnd", "why": "q", "params": {"until": time.time() + 600}}, host)
+    call(server, "POST", "/phone/answer", {"id": obj["ask"]["id"], "decision": "allow",
+                                           "result": {"on": False}}, pixel)
+    assert phone.wait(obj["ask"]["id"])[1]["ask"]["status"] == "failed"
+
+
+@pytest.mark.parametrize("params", [None, {}, {"until": "soon"}, {"until": 0},
+                                    {"until": "NOW+30"}, "late"])
+def test_a_dnd_without_a_good_end_is_400(server, host, quiet_listening, params):
+    body = {"kind": "dnd", "why": "q"}
+    if params is not None:
+        body["params"] = params
+    assert call(server, "POST", "/phone/ask", body, host)[0].status == 400
+
+
+def test_a_dnd_runs_at_most_twelve_hours(server, host, quiet_listening):
+    now = time.time()
+    body = {"kind": "dnd", "why": "q", "params": {"until": now + 13 * 3600}}
+    assert call(server, "POST", "/phone/ask", body, host)[0].status == 400
+    body["params"]["until"] = now + 30
+    assert call(server, "POST", "/phone/ask", body, host)[0].status == 400
+
+
+def test_the_tool_reads_a_time_or_minutes(server, host, pixel, quiet_listening, monkeypatch):
+    from agent_media_core import phone_ask
+
+    monkeypatch.setattr(phone_ask, "_base", lambda: "http://%s:%d" % server)
+    monkeypatch.setattr(phone_ask, "session_of_caller", lambda: None)
+    assert phone_ask.ask("dnd", "q", until="whenever")["status"] == "error"
+
+    def phone_answers():
+        for _ in range(50):
+            asks = phone.open_asks(("dnd",))
+            if asks:
+                call(server, "POST", "/phone/answer",
+                     {"id": asks[0]["id"], "decision": "allow",
+                      "result": {"on": True, "until": asks[0]["until"]}}, pixel)
+                return
+            time.sleep(0.05)
+
+    t = threading.Thread(target=phone_answers)
+    t.start()
+    t0 = time.time()
+    got = phone_ask.ask("dnd", "quiet for a nap", until="+90", timeout_s=10)
+    t.join(5)
+    assert got["status"] == "ok"
+    assert got["result"]["until"] == pytest.approx(t0 + 90 * 60, abs=5)
