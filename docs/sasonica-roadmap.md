@@ -345,6 +345,13 @@ into one "Other assistants ▾" chip with a sheet (one alone keeps its chip; New
 chat instead stays a chip; opening it stops the send countdown). android-next
 `581892e9`, `fa6937dd`, installed on p8a.
 
+A home-screen widget (David, 3 Oct 2026): **Ask** opens a new chat already
+listening (`/new?listen=1`), and one line shows Needs you · title, Working ·
+title, All quiet, or Not connected. It opens the one waiting thread, or Home.
+`AskWidget.java` has no stream of its own: NotifyService hands it each
+`sessions` frame and marks it offline when the stream drops. sasonica-app
+`301ddef`; in the app at the next CI build. Not yet seen on p8a's home screen.
+
 ## In flight
 
 **Sasonica's own speech player.** Media3 (David, 23 Sep 2026: the reason
