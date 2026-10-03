@@ -112,6 +112,57 @@ Dev-only (doctor, audiobook-fetch, companion deploy) and legacy paths
 or go with their apps. One literal phone IP: the ABS quadlet's whitelist
 (`deploy/quadlet/audiobookshelf.container:33`).
 
+**#3 done 3 Oct:** `MEDIA_ANDROID_PAUSE_HOSTS=p8a` is commented out in
+`~/.config/agent-media.env` (confirmed: `ssh p8a curl 127.0.0.1:8774/state`
+answers, so every probe ended in "companion"). The code stays for other
+Android hosts.
+
+### Speech as native frames (#1; David, 3 Oct 2026: frames, not a reverse pipe)
+
+The server side speaks mpv JSON-IPC to the phone from about 40 call sites
+(`sinks/speech.py`, the follow loop in `intake/submit.py`, `cli.py`'s
+transport). The phone's `MpvServer` implements the subset they use. Most of
+the traffic is the follow loop's 8-property snapshot, polled every tick at
+about 1.3 s a round trip.
+
+**Shape.** The callers stay as they are. A **frame endpoint** in the canvas
+process (`speech_frames.py`, on 127.0.0.1:16624) passes through to the relay
+on 16614 while no frame device is connected. It speaks mpv
+JSON-IPC to the callers, but owns the player state itself:
+
+- **Commands become frames.** A `speech` frame goes down `/sessions/events`
+  to the paired device that plays speech, pushed with `poke()`, not the 3 s
+  tick. The set:
+  - `play {reply, sentences:[{id,text,voice,fallback}], start, title, priority}`:
+    replaces claim + audio-device + gapless + stop + clear + load + start.
+  - `append {reply, sentences, final}`
+  - `ctl {reply, op: pause|resume|stop|goto|seek|speed|volume|mute}`
+  - `meta {reply, text|speaking|priority}`: the user-data the app's Holds
+    read.
+  - `cue {name}`
+- **Reads are answered locally**, from the last state the phone reported,
+  with commands applied optimistically (a `playlist-pos` set reads back at
+  once). The follow loop's snapshot then costs nothing on the link.
+- **The claim/owner lease** (`am-claim-play`, `user-data/am-owner`) is kept
+  in the endpoint, because there is one server now.
+- **State comes back:** `POST /speech/state {reply, state, i, time_pos,
+  duration, count, speed, mute, volume, ringer, at}`. The app sends it on
+  every transition (item change, pause, end, error, stop at the phone) and
+  as a heartbeat about every 2 s while playing. It also carries the
+  ringer, which `read_ringer` asks for.
+- **The app:** NotifyService hands each `speech` frame to SpeechService. It
+  feeds the frame to the same playlist/Media3Speech code MpvServer drives,
+  so playback, TtsClip rendering, ClipCache warming and focus do not change.
+  MpvServer stays as the fallback until the frame build has proved itself.
+- **Switch:** `MEDIA_SPEECH_FRAMES_LISTEN=127.0.0.1:16624` and
+  `MEDIA_SPEECH_FRAMES_UPSTREAM=127.0.0.1:16614` start it.
+  `MEDIA_SPEECH_SOCKET_SASONICA=tcp://127.0.0.1:16624` points the callers at
+  it. The app advertises `speech=frames` on its
+  stream, so the endpoint knows a device can take frames.
+
+Music (#2) takes the same endpoint later on its own port, under a `music`
+frame.
+
 **The cost to watch:** the relay exists to hide per-call latency on speech
 (#1). A frame on an open stream should be no slower than a warm socket,
 but measure start-of-speech before and after; `docs/speech-latency-notes.md`
