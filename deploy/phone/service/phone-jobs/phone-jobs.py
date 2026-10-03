@@ -34,6 +34,9 @@ TOKEN_FILE = Path.home() / ".config" / "agent-media" / "phone-jobs.token"
 #: The server pings every 30 s; silence for this long is a dead stream.
 READ_TIMEOUT_S = 90
 MAX_OUT = 1 << 20
+#: Cloudflare turns away Python's own "Python-urllib/x.y" (error 1010), so
+#: the worker names itself.
+UA = "sasonica-phone-jobs/1"
 
 
 def _server() -> str:
@@ -51,7 +54,7 @@ def _token() -> str:
 
 
 def _post(path: str, body: dict, token: str = "") -> dict:
-    headers = {"Content-Type": "application/json"}
+    headers = {"Content-Type": "application/json", "User-Agent": UA}
     if token:
         headers["Authorization"] = "Bearer " + token
     req = urllib.request.Request(_server() + path, data=json.dumps(body).encode(),
@@ -89,7 +92,8 @@ def _run(job: dict, token: str) -> None:
 
 def _stream(token: str) -> None:
     req = urllib.request.Request(_server() + "/jobs/events", headers={
-        "Authorization": "Bearer " + token, "Accept": "text/event-stream"})
+        "Authorization": "Bearer " + token, "Accept": "text/event-stream",
+        "User-Agent": UA})
     with urllib.request.urlopen(req, timeout=READ_TIMEOUT_S) as r:
         print(f"connected to {_server()}", flush=True)
         event, data = "", []
