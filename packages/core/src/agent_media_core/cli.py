@@ -6121,6 +6121,9 @@ def cmd_music(a) -> int:
         if not a.uri:
             print("media music play: a URI is required", file=sys.stderr)
             return 2
+        if getattr(a, "where", "") == "handoff":
+            print("media music play: --where handoff is for 'radio dj'", file=sys.stderr)
+            return 2
         if not a.add:
             # Something else put on is the end of a radio station.
             from . import radio
@@ -8935,9 +8938,11 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="for 'bookmark': named register (e.g. 1, 2) for overlapping ranges")
     s.add_argument("--title", default="", help=argparse.SUPPRESS)
     s.add_argument("--where", type=target_name,
-                   choices=("default", "auto", "local", "rooms", "phone", "abs", "sasonica"),
+                   choices=("default", "auto", "local", "rooms", "phone", "abs", "sasonica", "handoff"),
                    default="default",
-                   help="for 'play': where to play — 'phone' downloads on the "
+                   help="for 'radio dj': 'handoff' is the listener's own music app "
+                        "(the Sasonica app's hand-off player). "
+                        "For 'play': where to play — 'phone' downloads on the "
                         "phone (residential IP, dodges 403, offline) and plays "
                         "locally; 'rooms'/'local' use Mopidy; 'auto' picks phone "
                         "when it's the only listener (replaces play-music)")
