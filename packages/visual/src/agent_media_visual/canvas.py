@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -49,6 +50,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Optional
@@ -434,7 +436,36 @@ def _authorized(handler: "Handler") -> bool:
         return False  # no token configured → the input surface stays closed
     got = (handler.headers.get("X-Auth-Token")
            or (handler.headers.get("Authorization") or "").removeprefix("Bearer").strip())
-    return got == token
+    return bool(got) and hmac.compare_digest(got, token)
+
+
+# Failed tokens on the desk routes, per source address: a public route (a
+# proxy or tunnel in front, contract §19) must not be a place to guess the
+# amux token. Only the desk routes count — the app routes ask `_authorized`
+# before a device token, so a phone's every request would be a "failure".
+# Behind a tunnel every caller shares the tunnel's address, so a lockout
+# there locks the desk out for all; the token's entropy is the real guard.
+DESK_MAX_FAILURES = 10
+DESK_FAIL_WINDOW_S = 600.0
+_DESK_FAILS: dict[str, deque] = {}
+_DESK_LOCK = threading.Lock()
+
+
+def _desk_authorized(handler: "Handler") -> bool:
+    """`_authorized`, refused outright once a source has used up its failures."""
+    ip = handler.client_address[0] if handler.client_address else ""
+    now = time.time()
+    with _DESK_LOCK:
+        q = _DESK_FAILS.setdefault(ip, deque())
+        while q and now - q[0] > DESK_FAIL_WINDOW_S:
+            q.popleft()
+        if len(q) >= DESK_MAX_FAILURES:
+            return False
+    if _authorized(handler):
+        return True
+    with _DESK_LOCK:
+        _DESK_FAILS.setdefault(ip, deque()).append(now)
+    return False
 
 
 # --- one-time pairing: install the token into a device's localStorage ----------
@@ -1827,7 +1858,7 @@ class Handler(BaseHTTPRequestHandler):
         # otherwise a drive-by page can speak, play audio, spoof screens, or
         # drive media (CSRF). Read-only GET endpoints stay open by design.
         if path in ("/show", "/ctl", "/say", "/play"):
-            if not _authorized(self):
+            if not _desk_authorized(self):
                 print(f"ctl: 401 unauthorized for {path} "
                       f"from {self.client_address[0]}", file=sys.stderr)
                 self._json(401, {"error": "unauthorized"})
@@ -1845,7 +1876,7 @@ class Handler(BaseHTTPRequestHandler):
             blank = body.get("blank")
             blank = None if blank is None else bool(blank)
             explicit = str(body.get("screen") or "")
-            if explicit and _authorized(self):
+            if explicit and _desk_authorized(self):
                 _viewer_seen(explicit, focused, blank)
             else:
                 _viewer_seen(_screen_from_ip(self.client_address[0]),
@@ -1854,7 +1885,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/ctl":
             self._ctl()
         elif path == "/input":
-            if not _authorized(self):
+            if not _desk_authorized(self):
                 self._json(401, {"error": "unauthorized"})
                 return
             body = self._read_json() or {}

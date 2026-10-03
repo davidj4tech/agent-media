@@ -34,6 +34,36 @@ def test_env_token_wins(monkeypatch):
     assert canvas._authorized(_Req({"X-Auth-Token": "envtok"})) is True
 
 
+def test_desk_routes_lock_out_a_guessing_source(monkeypatch):
+    monkeypatch.setenv("AMUX_AUTH_TOKEN", "envtok")
+    monkeypatch.setattr(canvas, "_DESK_FAILS", {})
+
+    def req(token, ip="203.0.113.9"):
+        r = _Req({"X-Auth-Token": token})
+        r.client_address = (ip, 0)
+        return r
+
+    for _ in range(canvas.DESK_MAX_FAILURES):
+        assert canvas._desk_authorized(req("guess")) is False
+    # Locked out: even the right token is refused from that source for now,
+    # while another source and the app routes' plain check are untouched.
+    assert canvas._desk_authorized(req("envtok")) is False
+    assert canvas._desk_authorized(req("envtok", ip="198.51.100.2")) is True
+    assert canvas._authorized(req("envtok")) is True
+
+
+def test_desk_failures_age_out(monkeypatch):
+    monkeypatch.setenv("AMUX_AUTH_TOKEN", "envtok")
+    monkeypatch.setattr(canvas, "_DESK_FAILS", {})
+    r = _Req({"X-Auth-Token": "guess"})
+    r.client_address = ("203.0.113.9", 0)
+    for _ in range(canvas.DESK_MAX_FAILURES):
+        canvas._desk_authorized(r)
+    later = time.time() + canvas.DESK_FAIL_WINDOW_S + 1
+    monkeypatch.setattr(canvas.time, "time", lambda: later)
+    r.headers = {"X-Auth-Token": "envtok"}
+    assert canvas._desk_authorized(r) is True
+
 def _viewer(age_s=0.0, focused=True, blur_age_s=None):
     return {"ts": time.time() - age_s, "focused": focused,
             "blur_ts": time.time() - (blur_age_s or 0.0)}

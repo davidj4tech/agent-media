@@ -726,6 +726,17 @@ ahead.
    me up), the "Holding 2 for later" card (Catch me up / Speak as it comes
    / Later; `free` frame, `POST /free`). Night: the ringer only (David,
    2 Oct). Item 14 is done; Jev stays in shadow until its log is reviewed.
+15. **Off the tailnet** (David, 3 Oct 2026: "move away from the
+   dependencies on tailscale for sasonica"). The phone reaches the server
+   through a Cloudflare Tunnel to an app-routes-only listener. Everything
+   red5 opens into the phone (speech on 6614, music on 6615, ssh paths)
+   moves onto the phone's own stream. Long term, a `sasonica.com` lookup
+   (then maybe a relay) so other users never need a Cloudflare account.
+   [proposals/2026-10-03-off-the-tailnet.md](proposals/2026-10-03-off-the-tailnet.md).
+   **Step 1 built 3 Oct**: the desk-route hardening §19 asked for
+   (constant-time token compare, a 10-failure lockout per source).
+   Next: the public listener, then cloudflared on red5 (needs David's
+   `cloudflared tunnel login`).
 
 ## Loose ends
 
