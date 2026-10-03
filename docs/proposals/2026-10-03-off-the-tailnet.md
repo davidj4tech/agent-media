@@ -52,16 +52,26 @@ and the lookup can come later without changing the server's routes.
    `/ctl`, `/say`, `/play`, `/input` and an explicit `/seen` screen get 10
    failures per source per 10 min. The app routes are not limited, because
    they ask the amux check before the device token.
-2. **A public listener.** The canvas gets a second bind (`--public
-   127.0.0.1:<port>`) that answers app routes only: `cors_path()`, `POST`
-   for `CORS_POST_PATHS`, and `/threads/<id>/…`. Everything else is a 404.
+2. **Done 3 Oct: a public listener.** The canvas has a second bind
+   (`--public HOST:PORT` / `MEDIA_VISUAL_PUBLIC`; on red5 `127.0.0.1:8789`
+   via the unit drop-in `public.conf`). `PublicHandler` answers
+   `app.dispatch` (every app route and nothing else), `/img/` pictures and
+   `/healthz`. Everything else is a 404. It takes the caller from
+   `CF-Connecting-IP` / `X-Forwarded-For`, believed only from a loopback
+   peer, so rate limits and `last_ip` see the phone. It was tested through a
+   quick tunnel: app routes at 0.1–0.2 s, and the desk page, `/peek` and
+   `GET /pair` came back 404. Found on the way, and fixed on both listeners:
+   `GET /img/pair-code` served the pairing code that unlocks the amux token
+   (and `last-clip.json` and the scene lists), because the spool holds them
+   too. `/img/` now serves picture suffixes only.
    That means no `GET /pair` (it hands out the amux token), no `/peek` (a
    pane's conversation, unauthenticated), no `/speech`, `/agents` or
    `/events`. cloudflared points at this listener only. The allowlist lives
    in code, not in a tunnel config that would drift.
-   Open: does the app load `/img/<name>` or clip URLs on `:8780`? Each one it
-   does is either added to the public set or moved onto the stream.
-3. **cloudflared on red5.** A user unit, a named tunnel, and a DNS CNAME.
+   The app loads `/img/<name>` (public, above). Clip URLs on `:8780` are not
+   needed under `RENDER_SASONICA=device`, which sends `tts:` text, not audio.
+3. **cloudflared on red5.** Installed 3 Oct (`~/.local/bin/cloudflared`,
+   2026.9.3, from Cloudflare's GitHub releases). Still to come: a user unit, a named tunnel, and a DNS CNAME.
    Needs `cloudflared tunnel login` once (David, in a browser) or a token
    with Cloudflare Tunnel: Edit plus DNS: Edit. The existing install-token
    has neither.

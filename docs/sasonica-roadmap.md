@@ -735,8 +735,10 @@ ahead.
    [proposals/2026-10-03-off-the-tailnet.md](proposals/2026-10-03-off-the-tailnet.md).
    **Step 1 built 3 Oct**: the desk-route hardening §19 asked for
    (constant-time token compare, a 10-failure lockout per source).
-   Next: the public listener, then cloudflared on red5 (needs David's
-   `cloudflared tunnel login`).
+   **Step 2 built 3 Oct**: the app-routes-only listener (`--public`,
+   127.0.0.1:8789 on red5), tested through a quick tunnel; `/img/` no longer
+   serves the spool's `pair-code`. Next: a named tunnel on red5 (needs
+   David's `cloudflared tunnel login`).
 
 ## Loose ends
 

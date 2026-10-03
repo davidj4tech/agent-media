@@ -68,6 +68,9 @@ from .state import spool_dir
 log = logging.getLogger("agent-media.visual.canvas")
 
 DEFAULT_PORT = 8781
+
+# What GET /img/ will serve out of the spool (`Handler._image`).
+IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".svg")
 MAX_SSE_CLIENTS = 64        # held-open /events streams before we shed load (#137)
 
 
@@ -1770,7 +1773,10 @@ class Handler(BaseHTTPRequestHandler):
     def _image(self, name: str, query: str = "") -> None:
         name = os.path.basename(name)  # no traversal
         f = spool_dir() / name
-        if not f.is_file():
+        # Pictures only: the spool also holds `pair-code` (which unlocks the
+        # amux token at /pair), `last-clip.json` and the scene lists, and this
+        # route needs no credential.
+        if not name.lower().endswith(IMAGE_SUFFIXES) or not f.is_file():
             self._send(404, b"no such image\n", "text/plain")
             return
         if self._wants_viewer(query):
@@ -2015,6 +2021,58 @@ _app.register(
     token_ok=lambda handler: _authorized(handler))
 
 
+
+class PublicHandler(Handler):
+    """The listener a tunnel or proxy points at (`--public`, contract §19):
+    the app's routes, its pictures and `/healthz`, and nothing else.
+
+    No canvas page, no `GET /pair` (it hands out the amux token), no desk
+    routes, and none of the open reads (`/peek`, `/speech`, `/agents`,
+    `/events`). The list is `app.dispatch` itself, so a new app route is
+    public the day it lands and a desk route never is.
+
+    Bind it to loopback with the tunnel on the same host: the caller's own
+    address then comes from `CF-Connecting-IP` (cloudflared) or
+    `X-Forwarded-For` (a proxy), which only a loopback peer is believed on,
+    so rate limits and a device's `last_ip` see the phone, not the tunnel.
+    """
+
+    def _caller(self) -> None:
+        peer = self.client_address[0] if self.client_address else ""
+        if peer not in ("127.0.0.1", "::1"):
+            return
+        fwd = (self.headers.get("CF-Connecting-IP")
+               or (self.headers.get("X-Forwarded-For") or "").split(",")[0]).strip()
+        if fwd:
+            self.client_address = (fwd, self.client_address[1])
+
+    def do_OPTIONS(self) -> None:  # noqa: N802
+        self._caller()
+        super().do_OPTIONS()
+
+    def do_GET(self) -> None:  # noqa: N802
+        self._caller()
+        path, _, query = self.path.partition("?")
+        if path == "/healthz":
+            self._send(200, b"ok\n", "text/plain")
+        elif path.startswith("/img/"):
+            self._image(path[len("/img/"):], query)
+        elif not _app.dispatch(self, "GET", path):
+            self._send(404, b"not found\n", "text/plain")
+
+    def do_POST(self) -> None:  # noqa: N802
+        self._caller()
+        path = self.path.split("?", 1)[0]
+        try:
+            clen = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            clen = 0
+        if clen > _app.body_limit(path):
+            self._send(413, b"request body too large\n", "text/plain")
+        elif not _app.dispatch(self, "POST", path):
+            self._send(404, b"not found\n", "text/plain")
+
+
 def main() -> None:
     from agent_media_core.intake._env import load_env_file
     load_env_file("visual-canvas")
@@ -2027,6 +2085,10 @@ def main() -> None:
     ap.add_argument("--port", type=int,
                     default=int(os.environ.get("MEDIA_VISUAL_PORT") or DEFAULT_PORT))
     ap.add_argument("--bind", default=os.environ.get("MEDIA_VISUAL_BIND") or "0.0.0.0")
+    ap.add_argument("--public", metavar="HOST:PORT",
+                    default=os.environ.get("MEDIA_VISUAL_PUBLIC") or "",
+                    help="also serve the app routes only (PublicHandler) here, "
+                         "for a tunnel or proxy; e.g. 127.0.0.1:8789")
     args = ap.parse_args()
     _last_clip_load()      # a restart should not empty the transcript
     srv = ThreadingHTTPServer((args.bind, args.port), Handler)
@@ -2048,6 +2110,12 @@ def main() -> None:
     from agent_media_server import session_events as _session_events
     _catchup.on_made(_session_events.poke)
     _catchup.start(_phone._title_of)
+    if args.public:
+        host, _, port = args.public.rpartition(":")
+        pub = ThreadingHTTPServer((host or "127.0.0.1", int(port)), PublicHandler)
+        pub.daemon_threads = True
+        threading.Thread(target=pub.serve_forever, daemon=True).start()
+        print(f"app routes only on http://{host or '127.0.0.1'}:{port}/")
     print(f"canvas on http://{args.bind}:{args.port}/  spool={spool_dir()}")
     srv.serve_forever()
 
