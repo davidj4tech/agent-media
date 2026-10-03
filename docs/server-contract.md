@@ -2362,8 +2362,9 @@ machines are. Code: `agent_media_server/dashboard.py`. Pinned by
   left out; of the rest, the 30 written to most recently in the last 3 days
   are asked (`transcript.last_reply`, the file's last 256 KB, read again only
   when it changes). `at` is the transcript's mtime — when the reply
-  finished — and `text` its last words, markers out, on one line (240
-  chars). The server keeps no read state: the app shows the ones newer
+  finished — and `text` its last words as plain words on one line (240
+  chars): markers out, Markdown read as speech reads it (a table as
+  "Option: Keep, Cost: 0.", links and code as their words). The server keeps no read state: the app shows the ones newer
   than when that device last had the thread open. Claude Code, Codex and pi
   from the transcript; opencode from its database (`at` its newest part's
   change); Hermes, which has no reader here, from its newest spoken line

@@ -214,8 +214,7 @@ def _hermes_said() -> dict[str, dict]:
         text = str(row.get("text") or "").strip()
         if text and row.get("started_at"):
             said[sid] = {"at": round(float(row["started_at"]), 3),
-                         "text": transcript._one_line(transcript.display_text(text),
-                                                      transcript.REPLY_PREVIEW)}
+                         "text": transcript.reply_preview(text)}
     _HERMES = (time.monotonic(), said)
     return said
 

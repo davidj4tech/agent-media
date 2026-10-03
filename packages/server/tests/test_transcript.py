@@ -641,3 +641,10 @@ def test_last_reply_reads_only_the_end(script, monkeypatch):
     script.text("Short answer.")
     script.end_turn()
     assert T.last_reply(str(script.path))["text"] == "Short answer."
+
+
+def test_last_reply_preview_is_plain_words(script):
+    script.prompt("options?")
+    script.text("Three **options**.\n\n| Option | Cost |\n|---|---|\n| Keep | 0 |\n\nSee [the docs](https://example.com/x).")
+    script.end_turn()
+    assert T.last_reply(str(script.path))["text"] == "Three options. Option: Keep, Cost: 0. See the docs."

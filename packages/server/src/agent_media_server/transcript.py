@@ -1255,10 +1255,10 @@ def last_reply(path: str, harness: str = "claude") -> dict | None:
     assistant message with words, its turn over — else None: a prompt not
     answered yet, a turn still running, a turn that ended on a step with no
     words, nothing readable. `at` is the file's mtime (when the reply
-    finished, not when it began); `text` its last words, markers out, cut to
-    one line. Reads only the file's end (`REPLY_TAIL`), with a builder of
-    its own: Home asks this of many threads, and the thread cache (`_read`)
-    keeps the few being read."""
+    finished, not when it began); `text` its last words as one line of plain
+    words (`reply_preview`). Reads only the file's end (`REPLY_TAIL`), with a
+    builder of its own: Home asks this of many threads, and the thread cache
+    (`_read`) keeps the few being read."""
     reader = READERS.get(harness) or READERS["claude"]
     b = reader.build(False)
     try:
@@ -1299,8 +1299,17 @@ def _reply_in(msgs: list[dict], mtime: float) -> dict | None:
                  if p.get("type") == "text" and (p.get("text") or "").strip()), "")
     if not text:
         return None
-    return {"at": round(max(mtime, m["at"] or 0.0), 3),
-            "text": _one_line(display_text(text), REPLY_PREVIEW)}
+    return {"at": round(max(mtime, m["at"] or 0.0), 3), "text": reply_preview(text)}
+
+
+def reply_preview(text: str) -> str:
+    """A reply as one line of plain words for a preview: markers out, and
+    the Markdown read the way speech reads it (a table as "Option: Keep,
+    Cost: 0.", code and links as their words — `strip_markdown`, never an
+    LLM), cut to `REPLY_PREVIEW`."""
+    from agent_media_core.intake._text import strip_markdown
+
+    return _one_line(strip_markdown(display_text(text)), REPLY_PREVIEW)
 
 
 # --- joining speech ---------------------------------------------------------------
