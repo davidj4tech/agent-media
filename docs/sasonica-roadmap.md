@@ -350,7 +350,12 @@ listening (`/new?listen=1`), and one line shows Needs you · title, Working ·
 title, All quiet, or Not connected. It opens the one waiting thread, or Home.
 `AskWidget.java` has no stream of its own: NotifyService hands it each
 `sessions` frame and marks it offline when the stream drops. sasonica-app
-`301ddef`; in the app at the next CI build. Not yet seen on p8a's home screen.
+`301ddef`, four cells wide since `e708dc9` (p8a's 1.5 font scale cut the line).
+Then four sizes, each its own picker entry (David, 3 Oct 2026, `43523eb`):
+a 1×1 Ask button tinted by state, the 4×1, a 4×2 Sessions list (three rows,
+needs you first), and a 4×3 Last reply. That one fetches the newest six
+messages from `/conversation/log` when a thread goes working → waiting.
+Not yet seen on p8a's home screen.
 
 ## In flight
 
