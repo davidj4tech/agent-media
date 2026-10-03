@@ -172,11 +172,17 @@ follow-along on a long reply.
 to p8a:6615), `music` frames on `?music=frames`, and `POST /music/state`.
 App: `SpeechFrames.SPEECH` / `.MUSIC` (sasonica-app 867cd8c, build 1157).
 `MEDIA_MUSIC_SASONICA_ENDPOINT=tcp://127.0.0.1:16625` since 3 Oct.
-**Still on the tailnet:** `sinks/music_sasonica.py` fetches a YouTube track
-on the phone over `ssh p8a` (play-local `--fetch-only`, `ffprobe` for
-chapters). The candidate fix is the phone downloading from red5 over the
-tunnel (the `abs` route, at the tunnel's speed rather than the tailnet's
-~8 KB/s).
+**The Termux work, live 3 Oct (David: the YouTube download must stay on
+the phone; red5's data-centre address is blocked; a Termux worker, not the
+app).** `phone_jobs.py` + `agent_media_core.phone_run` + the
+`deploy/phone/service/phone-jobs` worker (paired as "p8a Termux jobs",
+`d_8694155241ee`; copied into `$PREFIX/var/service`, as music-files is).
+`MEDIA_PHONE_JOBS=1` sends every `music_local.phone_argv` command there:
+cached?, fetch, title, chapters, the radio's mix and search. A job takes
+about 0.6–0.8 s, as a warm ssh did. The worker sends its own User-Agent,
+because Cloudflare refuses `Python-urllib` (error 1010). Left on ssh: the
+`abs` fallback's raw `ssh` in `music_fetch.py`, and the stdin seeding of the
+Termux player. Both are fallbacks only.
 
 **The cost to watch:** the relay exists to hide per-call latency on speech
 (#1). A frame on an open stream should be no slower than a warm socket,
