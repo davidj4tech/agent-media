@@ -1244,6 +1244,49 @@ def file_state(session: str) -> tuple[int, int, float] | None:
     return st.st_ino, st.st_size, st.st_mtime
 
 
+#: `last_reply` reads at most this much of a transcript's end.
+REPLY_TAIL = 256 * 1024
+#: A reply's preview, one line.
+REPLY_PREVIEW = 240
+
+
+def last_reply(path: str, harness: str = "claude") -> dict | None:
+    """`{"at", "text"}` when the transcript at `path` ends on a reply — an
+    assistant message with words, its turn over — else None: a prompt not
+    answered yet, a turn still running, a turn that ended on a step with no
+    words, nothing readable. `at` is the file's mtime (when the reply
+    finished, not when it began); `text` its last words, markers out, cut to
+    one line. Reads only the file's end (`REPLY_TAIL`), with a builder of
+    its own: Home asks this of many threads, and the thread cache (`_read`)
+    keeps the few being read."""
+    reader = READERS.get(harness) or READERS["claude"]
+    b = reader.build(False)
+    try:
+        st = os.stat(path)
+        with open(path, "rb") as fh:
+            end = _complete_end(fh, st.st_size)
+            lo = max(0, end - REPLY_TAIL)
+            if lo:
+                fh.seek(lo)
+                cut = fh.read(end - lo).find(b"\n")
+                if cut < 0:
+                    return None
+                lo += cut + 1
+            _feed_range(b, fh, lo, end, reader.wants)
+            b.settle()
+    except OSError:
+        return None
+    m = b.messages[-1] if b.messages else None
+    if not m or m["role"] != "assistant" or m["turn"]["running"]:
+        return None
+    text = next((p["text"] for p in reversed(m["parts"])
+                 if p.get("type") == "text" and (p.get("text") or "").strip()), "")
+    if not text:
+        return None
+    return {"at": round(max(st.st_mtime, m["at"] or 0.0), 3),
+            "text": _one_line(display_text(text), REPLY_PREVIEW)}
+
+
 # --- joining speech ---------------------------------------------------------------
 
 #: The follow-along fields of a live line, as they move onto the message.

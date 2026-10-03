@@ -2315,6 +2315,8 @@ machines are. Code: `agent_media_server/dashboard.py`. Pinned by
             "queued": [{"session": "5f8c…", "title": "…", "urgent": false, "at": 1790031449.7}]},
  "recent": [{"session": "5f8c…", "title": "…", "live": true, "at": 1790053201.164, "rested": null,
              "recap": {"text": "…", "at": 1790052694.779, "source": "claude"}}],
+ "replies": [{"session": "5f8c…", "title": "…", "at": 1790053201.164, "text": "Both fixes are live…",
+              "live": true, "project": "agent-media", "cwd": "/home/ryer/projects/agent-media"}],
  "places": [{"name": "agent-media", "path": "/home/ryer/projects/agent-media", "at": 1790053383.1}],
  "agents": [{"name": "claude", "present": true}, {"name": "codex", "present": true},
             {"name": "pi", "present": true}, {"name": "hermes", "present": true}],
@@ -2354,7 +2356,17 @@ machines are. Code: `agent_media_server/dashboard.py`. Pinned by
 - `recent`: up to 8 `/targets` rows, archived ones left out, newest first by
   `at` — a shelved row's own `at`, else the transcript's mtime (a live row),
   else the recap's. `recap` and `rested` as on `/targets`.
-- `project`, `cwd` (22 Sep 2026) on every `recent`, `working` and
+- `replies` (3 Oct 2026): every thread whose transcript ends on a reply —
+  an assistant message with words, its turn over — newest first: Home's
+  Unread replies. Archived threads, and ones working or on a dialog, are
+  left out; of the rest, the 30 written to most recently in the last 3 days
+  are asked (`transcript.last_reply`, the file's last 256 KB, read again only
+  when it changes). `at` is the transcript's mtime — when the reply
+  finished — and `text` its last words, markers out, on one line (240
+  chars). The server keeps no read state: the app shows the ones newer
+  than when that device last had the thread open. Claude Code, Codex and pi
+  (opencode and Hermes have no transcript file and are not listed).
+- `project`, `cwd` (22 Sep 2026) on every `recent`, `working`, `replies` and
   `needs_you` row: as on `/targets` (§6.1), `null` when unknown.
 - `places`: `/targets.places`. `agents`: every harness (five since opencode, 24 Sep 2026), `present` =
   installed on this host (a PATH lookup only — `/harnesses` has versions and

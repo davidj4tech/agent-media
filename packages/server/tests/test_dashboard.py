@@ -9,7 +9,9 @@ Key sets are pinned exactly, as test_contract does.
 from __future__ import annotations
 
 import json
+import os
 import types
+from pathlib import Path
 
 import pytest
 
@@ -18,7 +20,7 @@ from agent_media_server import asks, dashboard, panes, reap, sessions, speech
 from test_contract import (AUTH, SID, SID2, call, keys, server, shelf,  # noqa: F401
                            signed_in, typed)
 
-TOP = {"ok", "at", "needs_you", "working", "speech", "recent", "places", "agents", "hosts", "digests", "alerts", "signins"}
+TOP = {"ok", "at", "needs_you", "working", "speech", "recent", "replies", "places", "agents", "hosts", "digests", "alerts", "signins"}
 HOST = {"name", "role", "local", "online", "last_seen", "sessions", "mem_used_mb",
         "mem_total_mb", "mem_available_mb", "sessions_mem_mb", "tight", "reaper",
         "shell", "sessiond"}
@@ -258,3 +260,39 @@ def test_open_alerts_are_on_home_worst_first(monkeypatch):
     assert rows[1]["acked_at"] == 1.6
     monkeypatch.setattr(alerts, "listing", lambda open_only=False: (_ for _ in ()).throw(OSError("no db")))
     assert dashboard._alerts() == []
+
+
+def _transcript(session: str, records: list[dict]) -> None:
+    """A Claude Code transcript under the conftest's throwaway config dir
+    (compact JSON: the reader looks for `"type":"assistant"` before parsing)."""
+    d = Path(os.environ["CLAUDE_CONFIG_DIR"]) / "projects" / "-w"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{session}.jsonl").write_text("".join(json.dumps(r, separators=(",", ":")) + "\n" for r in records))
+
+
+def _said(text: str, n: int) -> dict:
+    return {"type": "assistant", "uuid": f"a{n}", "timestamp": "2026-10-03T01:00:00Z",
+            "message": {"id": f"m{n}", "role": "assistant", "stop_reason": "end_turn",
+                        "content": [{"type": "text", "text": text}]}}
+
+
+def _asked(text: str, n: int) -> dict:
+    return {"type": "user", "uuid": f"u{n}", "timestamp": "2026-10-03T00:59:00Z",
+            "message": {"role": "user", "content": text}}
+
+
+def test_replies_are_threads_that_end_on_a_reply(server, shelf, signed_in, machine, monkeypatch):
+    # SID ends on a reply; SID2 (live) is working, so it is left out even
+    # though its transcript ends on one too.
+    _transcript(SID, [_asked("hi", 1), _said("All done.", 2)])
+    _transcript(SID2, [_asked("go", 1), _said("Started.", 2)])
+    res, obj = call(server, "GET", "/dashboard", headers=AUTH)
+    assert res.status == 200, obj
+    assert [r["session"] for r in obj["replies"]] == [SID]
+    r = obj["replies"][0]
+    assert keys(r) == {"session", "title", "at", "text", "live", "project", "cwd"}
+    assert r["text"] == "All done." and r["title"] == "Sasonica music" and r["live"] is False
+    # A new prompt: no longer a reply waiting to be read.
+    _transcript(SID, [_asked("hi", 1), _said("All done.", 2), _asked("more", 3)])
+    res, obj = call(server, "GET", "/dashboard", headers=AUTH)
+    assert obj["replies"] == []

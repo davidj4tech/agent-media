@@ -13,6 +13,8 @@ costs about what `/sessions/state` does:
   pane) or the headless driver's pending request — only for rows the sweep
   says are on a dialog;
 * what a working turn is doing: the activity file its hooks append to;
+* which threads end on a reply: the end of each recent transcript, read again
+  only when the file changes (`_replies`);
 * the speech bar's `/speech/now`, cut down, over the last speech snapshot
   read (`_speech_state`: a snapshot costs a `media` subprocess);
 * the machines: `/proc/meminfo`, the reaper's log, `systemctl --user
@@ -42,6 +44,12 @@ from . import alerts, auth, sessions, speech
 INDEX_TTL_S = 4.0
 #: Rows in `recent`.
 RECENT_ROWS = 8
+#: `replies`: threads written to in this long, at most this many of them
+#: (newest first), are asked whether they end on a reply.
+REPLIES_WINDOW_S = 3 * 86400
+REPLIES_ROWS = 30
+#: A thread with no transcript found is looked for again after this long.
+REPLY_PATH_MISS_S = 60.0
 #: The machine part: subprocesses and a log read, none of which changes fast.
 HOSTS_TTL_S = 15.0
 #: The reaper log is read from its end, this far back at most.
@@ -54,6 +62,10 @@ _INDEX: tuple[float, list] = (0.0, [])
 _HOSTS: tuple[float, object] = (0.0, None)
 #: `{session: path | None}` — transcript lookups are a glob each.
 _TRANSCRIPTS: dict[str, Path | None] = {}
+#: `{session: (harness, path)}`, or `("", "")` and when it was missed.
+_REPLY_PATHS: dict[str, tuple[str, str, float]] = {}
+#: `{path: ((ino, size, mtime), last_reply)}` — read again only when it changes.
+_REPLIES: dict[str, tuple[tuple, dict | None]] = {}
 
 #: Indirections, so the tests fake the machine without patching the stdlib.
 _run = subprocess.run
@@ -80,6 +92,8 @@ def _reset_for_tests() -> None:
     _SPEECH = (0.0, None)
     _SPEECH_BUSY.clear()
     _TRANSCRIPTS.clear()
+    _REPLY_PATHS.clear()
+    _REPLIES.clear()
 
 
 def _index() -> list[dict]:
@@ -151,6 +165,58 @@ def _recent(index: list[dict]) -> list[dict]:
                      "cwd": r.get("cwd")})
     rows.sort(key=lambda x: -(x["at"] or 0))
     return rows[:RECENT_ROWS]
+
+
+def _reply_path(session: str) -> tuple[str, str]:
+    known = _REPLY_PATHS.get(session)
+    if known and (known[1] or time.monotonic() - known[2] < REPLY_PATH_MISS_S):
+        return known[0], known[1]
+    from . import transcript
+
+    harness, path = transcript.transcript_of(session)
+    _REPLY_PATHS[session] = (harness, path, time.monotonic())
+    return harness, path
+
+
+def _replies(index: list[dict], busy: set[str]) -> list[dict]:
+    """Threads whose transcript ends on a reply (`transcript.last_reply`),
+    newest first: Home's Unread replies, which the app keeps to the ones
+    that came after it last had the thread open. Archived threads and the
+    ones working or on a dialog (`busy`) are left out."""
+    from . import transcript
+
+    found: list[tuple[os.stat_result, dict, str, str]] = []
+    cut = time.time() - REPLIES_WINDOW_S
+    for r in index:
+        sid = str(r.get("session") or "")
+        if not sid or r.get("archived") or sid in busy:
+            continue
+        harness, path = _reply_path(sid)
+        if not path:
+            continue
+        try:
+            st = os.stat(path)
+        except OSError:
+            _REPLY_PATHS.pop(sid, None)
+            continue
+        if st.st_mtime >= cut:
+            found.append((st, r, harness, path))
+    found.sort(key=lambda x: -x[0].st_mtime)
+    found = found[:REPLIES_ROWS]
+    for gone in set(_REPLIES) - {path for _st, _r, _h, path in found}:
+        del _REPLIES[gone]
+    rows = []
+    for st, r, harness, path in found:
+        key = (st.st_ino, st.st_size, st.st_mtime)
+        got = _REPLIES.get(path)
+        if got is None or got[0] != key:
+            got = _REPLIES[path] = (key, transcript.last_reply(path, harness))
+        reply = got[1]
+        if reply:
+            rows.append({"session": str(r.get("session")), "title": str(r.get("title") or ""),
+                         "at": reply["at"], "text": reply["text"], "live": bool(r.get("live")),
+                         "project": r.get("project"), "cwd": r.get("cwd")})
+    return rows
 
 
 def _read_speech() -> dict:
@@ -376,7 +442,10 @@ def build(bearer: str) -> dict:
     return {"at": round(time.time(), 3), "needs_you": needs, "working": working,
             "speech": {"now": {k: now.get(k) for k in _SPEECH_KEYS},
                        "queued": list(now.get("queued") or [])},
-            "recent": _recent(index), "places": sessions.places(),
+            "recent": _recent(index),
+            "replies": _replies(index, {str(r["session"]) for r in rows
+                                        if r["state"] in ("working", "approval")}),
+            "places": sessions.places(),
             "agents": agents, "hosts": hosts, "digests": _digests(), "alerts": _alerts(),
             "signins": _signins()}
 

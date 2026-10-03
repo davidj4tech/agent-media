@@ -357,6 +357,15 @@ needs you first), and a 4×3 Last reply. That one fetches the newest six
 messages from `/conversation/log` when a thread goes working → waiting.
 Not yet seen on p8a's home screen.
 
+Home's **Unread replies** (David, 3 Oct 2026): right under Needs you, every
+thread that ends on a reply newer than this device last had it open, with
+its last words — replies that landed while the app was shut included.
+`/dashboard` gained `replies` (§6.11: `transcript.last_reply` reads each
+recent transcript's end, again only when it changes; ~0.1 s cold on red5's
+192 threads). Read state stays on the device (`lib/arrivals.ts` "seen"); a
+thread never opened there counts as read up to its first look. Opening one,
+or Mark all read, clears it.
+
 ## In flight
 
 **Sasonica's own speech player.** Media3 (David, 23 Sep 2026: the reason

@@ -608,3 +608,36 @@ def test_messages_are_opt_in_on_the_polled_log(server, monkeypatch):
     res, obj = call(server, "GET", f"/conversation/log?session={SID}", headers=AUTH)
     if res.status == 200:
         assert obj["messages"] == [] and obj["older"] is False
+
+
+# --- last_reply (Home's Unread replies) -------------------------------------------
+
+def test_last_reply_is_the_finished_answer(script):
+    script.prompt("hello")
+    script.text("Done. [[visual: a box]] It works.\nSecond line.")
+    script.end_turn()
+    got = T.last_reply(str(script.path))
+    assert got["text"] == "Done. It works. Second line."
+    assert got["at"] == round(os.stat(script.path).st_mtime, 3)
+
+
+def test_no_last_reply_while_a_prompt_waits_or_a_turn_runs(script):
+    script.prompt("hello")
+    assert T.last_reply(str(script.path)) is None
+    script.text("Looking.", stop="tool_use")
+    script.tool("Bash", {"command": "ls"}, "t1")
+    assert T.last_reply(str(script.path)) is None
+    script.result("t1", "a\nb")
+    script.text("Two files.")
+    script.end_turn()
+    assert T.last_reply(str(script.path))["text"] == "Two files."
+    script.prompt("and now?")
+    assert T.last_reply(str(script.path)) is None
+
+
+def test_last_reply_reads_only_the_end(script, monkeypatch):
+    monkeypatch.setattr(T, "REPLY_TAIL", 1500)
+    script.prompt("x" * 5000)
+    script.text("Short answer.")
+    script.end_turn()
+    assert T.last_reply(str(script.path))["text"] == "Short answer."
