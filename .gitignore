@@ -24,3 +24,6 @@ packages/core/uv.lock
 # Local credentials (an API key was left here once — never commit one).
 abs.env
 *.env
+
+# Kerykeion geonames cache (transit charts)
+/cache/

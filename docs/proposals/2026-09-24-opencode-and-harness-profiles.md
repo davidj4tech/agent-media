@@ -229,7 +229,7 @@ David asked (24 Sep 2026) whether this overlaps `agent-personas` enough to
 rename that repo `agent-profiles`. Proposed answer: no — they are two
 layers, and the rename would make one word mean both.
 
-- **A persona** (`~/projects/agent-personas`) is *who the agent is*: role,
+- **A persona** (`~/agent-personas`) is *who the agent is*: role,
   tone, voice, relationship — Sam. It is content, harness-neutral, rendered
   into a harness by `agent-persona-render`.
 - **A profile** (this proposal) is *a slot a harness runs in*: a config dir,
