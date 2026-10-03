@@ -84,7 +84,10 @@ and the lookup can come later without changing the server's routes.
      through a tunnel or proxy (`CF-Connecting-IP` / `X-Forwarded-For`).
      Cloudflare cuts a connection after 100 s idle, and the phone's
      background stream asks for 120.
-4. **Move p8a** to the https name. Re-pairing is not needed: it is the same
+4. **Done 3 Oct: p8a moved** to the https name. The device's `last_ip` is
+   now its public address (via `CF-Connecting-IP`). cloudflared logs `ERR …
+   canceled by remote` each time the app closes a thread stream; that is
+   noise, not a fault. Re-pairing is not needed: it is the same
    server, so the device token holds. Settings → Advanced → Server address
    → `https://red5.sasonica.com` → Save. Keep the tailnet pairing as a second
    device until the tunnel has carried a few days of use.

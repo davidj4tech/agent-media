@@ -760,8 +760,10 @@ ahead.
    127.0.0.1:8789 on red5), tested through a quick tunnel; `/img/` no longer
    serves the spool's `pair-code`. **Step 3 built 3 Oct**: the named tunnel
    `https://red5.sasonica.com` (`sasonica-tunnel.service`), `pair --server`,
-   and a 60 s ping cap for tunnelled streams. Next: p8a moved to the https
-   address, then the phone dialling out (speech 6614 first, after deleting
+   and a 60 s ping cap for tunnelled streams. **Step 4 done 3 Oct**: p8a on
+   `https://red5.sasonica.com` (Settings → Advanced → Server address, its
+   own section since sasonica-app 47b3811; same device token), seen from
+   its public address. Next: the phone dialling out (speech 6614 first, after deleting
    the per-reply `ssh p8a` probe).
 
 ## Loose ends
