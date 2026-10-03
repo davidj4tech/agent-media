@@ -39,6 +39,7 @@ import os
 import shlex
 import socket
 import subprocess
+import sys
 from typing import Optional
 
 from ..types import Target
@@ -133,6 +134,10 @@ def phone_argv(command: str) -> list:
     """
     if fetch_is_local():
         return ["sh", "-c", 'cd "$HOME" && ' + command]
+    if os.environ.get("MEDIA_PHONE_JOBS", "") == "1":
+        # The phone's Termux worker, dialled out to the canvas, runs it
+        # (agent_media_core.phone_run; roadmap item 15): no ssh, no tailnet.
+        return [sys.executable, "-m", "agent_media_core.phone_run", command]
     return ["ssh", *_SSH_OPTS, ssh_host(), command]
 
 

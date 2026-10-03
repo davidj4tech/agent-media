@@ -282,7 +282,11 @@ MAX_BODY = 64 * 1024
 def body_limit(path: str) -> int:
     """The largest body `path` takes: MAX_BODY, except a shared file
     (/upload), which is streamed to disk after the bearer is checked."""
-    return uploads.max_bytes() if path == "/upload" else MAX_BODY
+    if path == "/upload":
+        return uploads.max_bytes()
+    # A Termux job's output (phone_jobs.py): up to 1 MiB each of out and
+    # err, which JSON may escape to several times that.
+    return 8 * MAX_BODY * 16 if path == "/jobs/result" else MAX_BODY
 
 _SPEECH_NOW_SEEN: set[str] = set()
 
@@ -456,6 +460,13 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
         # notifier. Answers the request however it ends.
         _session_events(h, query)
         return True
+    if path == "/jobs/events":
+        # The phone's Termux worker, dialled out (phone_jobs.py, roadmap
+        # item 15): the jobs red5 used to run over `ssh p8a`. Only the one
+        # device named by MEDIA_PHONE_JOBS_DEVICE.
+        from . import phone_jobs
+
+        return phone_jobs.serve(h, auth.device_id(_bearer(h)))
     if path == "/phone/ask":
         # An agent's tool waiting on the phone's answer (§6.21): the host's
         # token, a long poll of up to a minute.
@@ -1298,6 +1309,11 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
             print(f"mic: {a['device']!r} asks {a['id']} for "
                   f"{a['session'][:8] if a['session'] else 'a new chat'}",
                   file=sys.stderr, flush=True)
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    elif path == "/jobs/result":
+        from . import phone_jobs
+
+        ok, detail = phone_jobs.result(auth.device_id(_bearer(h)), _read_json(h))
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path in ("/speech/state", "/music/state"):
         # The phone's players, reported back while they play from frames

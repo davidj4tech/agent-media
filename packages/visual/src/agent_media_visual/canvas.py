@@ -1906,6 +1906,17 @@ class Handler(BaseHTTPRequestHandler):
             ok, detail = send_input(str(body.get("text") or ""),
                                     str(body.get("target") or "speaker"))
             self._json(200 if ok else 400, {"ok": ok, "detail": detail})
+        elif path == "/jobs/run":
+            # A command for the phone's Termux, carried by its worker
+            # (agent_media_server.phone_jobs; core phone_run is the caller):
+            # the host's token, and never on the public listener.
+            if not _desk_authorized(self):
+                self._json(401, {"error": "unauthorized"})
+                return
+            from agent_media_server import phone_jobs
+            body = self._read_json() or {}
+            self._json(200, phone_jobs.run(str(body.get("cmd") or ""),
+                                           body.get("timeout") or phone_jobs.DEFAULT_TIMEOUT_S))
         elif path == "/play":
             # Replay a pane's last spoken clip — open like /agents (plays audio,
             # never injects keystrokes).

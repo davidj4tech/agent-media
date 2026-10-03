@@ -1,0 +1,15 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# The phone's Termux, taking the jobs red5 used to run over `ssh p8a`
+# (agent-media roadmap item 15): it dials out to red5 through the tunnel, so
+# nothing has to reach in. The script lives beside this file, so installing
+# is copying (or linking) this directory into $PREFIX/var/service.
+# Needs MEDIA_PHONE_JOBS_SERVER (https://red5.sasonica.com) and
+# MEDIA_PHONE_JOBS_TOKEN (a device token: media-visual-canvas pair --device
+# "p8a Termux jobs", redeemed with phone-jobs.py --pair <code>).
+exec 2>&1
+export HOME=/data/data/com.termux/files/home
+export PREFIX=/data/data/com.termux/files/usr
+export PATH="$HOME/bin:$HOME/.local/bin:$PREFIX/bin:$PATH"
+[ -f "$HOME/.config/agent-media.env" ] && . "$HOME/.config/agent-media.env"
+export MEDIA_PHONE_JOBS_SERVER MEDIA_PHONE_JOBS_TOKEN
+exec python3 ./phone-jobs.py
