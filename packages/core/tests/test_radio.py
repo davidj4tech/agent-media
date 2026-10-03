@@ -42,8 +42,11 @@ class Player:
 @pytest.fixture(autouse=True)
 def _youtube_on(monkeypatch):
     """The YouTube path is off unless a server turns it on; these are about
-    a server that has."""
+    a server that has. No hand-off player unless a test sets one: a test that
+    loads the machine's own config (cli) would otherwise bring red5's in."""
     monkeypatch.setenv("MEDIA_RADIO_YOUTUBE", "1")
+    for key in ("MEDIA_RADIO_HANDOFF_ENDPOINT", "MEDIA_RADIO_HANDOFF_APP", "MEDIA_RADIO_PLAYER"):
+        monkeypatch.delenv(key, raising=False)
 
 
 @pytest.fixture()
@@ -498,6 +501,9 @@ def test_the_hand_off_player_asks_by_name(monkeypatch):
     ep, verb, uri, mode = sent[0]
     assert (ep, verb, mode) == ("tcp://phone:6617", "loadfile", "append-play")
     assert uri == "handoff/5igDtWadYms?q=Eagles+-+Take+It+Easy&artist=Eagles&title=Take+It+Easy"
+    # A song found on YouTube carries its id for YouTube Music's link.
+    p.send({"id": "5igDtWadYms", "q": "Eagles - Take It Easy", "yt": True})
+    assert sent[-1][2].endswith("&yt=5igDtWadYms")
     assert radio_io.vid_of(uri) == "5igDtWadYms"
     assert p.prefetch({"id": "x"}) is True and p.personal is False
 

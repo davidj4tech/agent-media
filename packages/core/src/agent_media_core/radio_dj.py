@@ -181,7 +181,10 @@ def picks(st: dict, n: int = PICKS) -> tuple[list[dict], str]:
     lines, note = ask(st, n)
     player = radio_io.PLAYERS.get(st.get("where") or "", radio_io.PhonePlayer)
     # Each song carries the DJ's line (q): what the hand-off player asks for.
-    songs = search(lines) if getattr(player, "personal", False) else by_name(lines)
+    # Where the YouTube path is on, the lines are found there even for the
+    # hand-off player, whose YouTube Music can then be asked by link.
+    songs = search(lines) if getattr(player, "personal", False) or radio_io.youtube_on() \
+        else by_name(lines)
     log.info("radio-dj: %d of %d found (%s)", len(songs), len(lines), note)
     return songs, note
 

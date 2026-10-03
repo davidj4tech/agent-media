@@ -77,7 +77,7 @@ def parse(text: str) -> list[dict]:
             dur = None
         song = {"id": parts[0], "title": parts[1].strip(),
                 "channel": (parts[2].strip() if len(parts) > 2 and parts[2] != "NA" else ""),
-                "dur": dur}
+                "dur": dur, "yt": True}
         if len(parts) > 4 and parts[4].strip() not in ("", "NA"):
             song["q"] = parts[4].strip()
         out.append(song)
@@ -319,6 +319,9 @@ class HandoffPlayer:
         app = (os.environ.get("MEDIA_RADIO_HANDOFF_APP") or "").strip()
         if app:
             fields["app"] = app
+        if song.get("yt"):
+            # A real YouTube id: YouTube Music can be asked by link.
+            fields["yt"] = song["id"]
         return f"handoff/{song['id']}?" + urllib.parse.urlencode(fields)
 
     def send(self, song: dict, replace: bool = False) -> bool:
