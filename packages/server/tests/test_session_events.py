@@ -186,6 +186,9 @@ def test_ping_is_clamped():
     assert session_events.ping_of("1") == session_events.PING_MIN_S
     assert session_events.ping_of("120") == 120.0
     assert session_events.ping_of("9999") == session_events.PING_MAX_S
+    # Through a tunnel: under Cloudflare's 100 s idle cut.
+    assert session_events.ping_of("120", proxied=True) == session_events.PING_PROXIED_MAX_S
+    assert session_events.ping_of("30", proxied=True) == 30.0
 
 
 def test_rows_carry_three_fields_in_a_stable_order():

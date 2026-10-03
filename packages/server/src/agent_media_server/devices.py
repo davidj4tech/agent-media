@@ -423,7 +423,7 @@ def _reset_for_tests() -> None:
 
 # --- the CLI ----------------------------------------------------------------------
 
-def links(code: str, host: str, port: int) -> tuple[str, str]:
+def links(code: str, host: str, port: int, server: str = "") -> tuple[str, str]:
     """`(app link, browser link)` for a device pairing code.
 
     The app reads `server` and `code` out of the first. The second is for a
@@ -431,10 +431,13 @@ def links(code: str, host: str, port: int) -> tuple[str, str]:
     host — and is NOT the canvas's amux page: `&device=1` is only a label for
     the reader, and `GET /pair` will refuse this code, because it looks in a
     different store.
+
+    `server`, when given, is the whole base instead (`https://red5.sasonica.com`,
+    a tunnel or proxy in front: contract §19), and `host`/`port` are unused.
     """
     from urllib.parse import quote
 
-    base = f"http://{host}:{port}"
+    base = server.rstrip("/") if server else f"http://{host}:{port}"
     return (f"sasonica://pair?server={quote(base, safe='')}&code={code}",
             f"{base}/pair?c={code}&device=1")
 

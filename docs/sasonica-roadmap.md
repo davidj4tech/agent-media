@@ -737,8 +737,11 @@ ahead.
    (constant-time token compare, a 10-failure lockout per source).
    **Step 2 built 3 Oct**: the app-routes-only listener (`--public`,
    127.0.0.1:8789 on red5), tested through a quick tunnel; `/img/` no longer
-   serves the spool's `pair-code`. Next: a named tunnel on red5 (needs
-   David's `cloudflared tunnel login`).
+   serves the spool's `pair-code`. **Step 3 built 3 Oct**: the named tunnel
+   `https://red5.sasonica.com` (`sasonica-tunnel.service`), `pair --server`,
+   and a 60 s ping cap for tunnelled streams. Next: p8a moved to the https
+   address, then the phone dialling out (speech 6614 first, after deleting
+   the per-reply `ssh p8a` probe).
 
 ## Loose ends
 

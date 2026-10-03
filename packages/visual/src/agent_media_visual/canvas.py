@@ -578,6 +578,11 @@ def _cmd_pair(argv: list[str]) -> int:
                          "machine's tailnet IP, else its hostname)")
     ap.add_argument("--port", type=int,
                     default=int(os.environ.get("MEDIA_VISUAL_PORT") or DEFAULT_PORT))
+    ap.add_argument("--server", metavar="URL",
+                    default=os.environ.get("MEDIA_VISUAL_PAIR_SERVER") or "",
+                    help="with --device: the whole base URL the app should use, for a "
+                         "tunnel or proxy in front (e.g. https://red5.sasonica.com); "
+                         "--host and --port are then unused")
     ap.add_argument("--device", metavar="NAME",
                     help="pair the Sasonica app instead: mint a device pairing code "
                          "for a device called NAME (server-contract.md §9). Without "
@@ -591,7 +596,8 @@ def _cmd_pair(argv: list[str]) -> int:
         args.host = _pair_host()
 
     if args.device is not None:
-        return _cmd_pair_device(args.device, args.host, args.port, enrol=args.enrol)
+        return _cmd_pair_device(args.device, args.host, args.port, enrol=args.enrol,
+                                server=args.server)
 
     if not _amux_token():
         print("no amux token on this host (~/.amux/auth_token) — nothing to pair.",
@@ -610,7 +616,8 @@ def _cmd_pair(argv: list[str]) -> int:
     return 0
 
 
-def _cmd_pair_device(name: str, host: str, port: int, enrol: bool = False) -> int:
+def _cmd_pair_device(name: str, host: str, port: int, enrol: bool = False,
+                     server: str = "") -> int:
     """`pair --device NAME`: a code the app trades for a device token at
     `POST /pair`. The code lives in the server package's own store
     (agent_media_server.devices), NOT the spool's `pair-code` above — the two
@@ -623,7 +630,7 @@ def _cmd_pair_device(name: str, host: str, port: int, enrol: bool = False) -> in
         print("--device needs a name, e.g. --device \"Pixel 8a\"", file=sys.stderr)
         return 2
     code, _expires = _devices.mint_code(name, enrol=enrol)
-    app_link, web_link = _devices.links(code, host, port)
+    app_link, web_link = _devices.links(code, host, port, server)
     # The app link first, on its own: it is what gets copied into the app's
     # pairing screen, and the http form below it was being copied instead.
     print(f"\n  Pair {name!r} with Sasonica (valid {_devices.pair_ttl() // 60} min, "
@@ -632,7 +639,8 @@ def _cmd_pair_device(name: str, host: str, port: int, enrol: bool = False) -> in
     print(_qr(app_link))
     # The http form is for the person at the terminal (the host and code, in
     # a shape they recognise); opened in a browser it is refused, on purpose.
-    print(f"\n  server {host}:{port} · code {code}\n  (for reference only: {web_link})\n")
+    print(f"\n  server {server or f'{host}:{port}'} · code {code}\n"
+          f"  (for reference only: {web_link})\n")
     if enrol:
         print("  This one may pair other devices from the app.\n")
     return 0

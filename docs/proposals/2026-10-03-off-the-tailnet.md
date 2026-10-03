@@ -70,12 +70,23 @@ and the lookup can come later without changing the server's routes.
    in code, not in a tunnel config that would drift.
    The app loads `/img/<name>` (public, above). Clip URLs on `:8780` are not
    needed under `RENDER_SASONICA=device`, which sends `tts:` text, not audio.
-3. **cloudflared on red5.** Installed 3 Oct (`~/.local/bin/cloudflared`,
-   2026.9.3, from Cloudflare's GitHub releases). Still to come: a user unit, a named tunnel, and a DNS CNAME.
-   Needs `cloudflared tunnel login` once (David, in a browser) or a token
-   with Cloudflare Tunnel: Edit plus DNS: Edit. The existing install-token
-   has neither.
-4. **Re-pair p8a** to the https name. Keep the tailnet pairing as a second
+3. **Done 3 Oct: cloudflared on red5.** `~/.local/bin/cloudflared`
+   (2026.9.3, from Cloudflare's GitHub releases). Named tunnel
+   `sasonica-red5` (`9518053b-…`), set up by David's `cloudflared tunnel
+   login` on sasonica.com. `~/.cloudflared/config.yml` sends
+   `red5.sasonica.com` to 127.0.0.1:8789 and everything else to a 404. The
+   user unit is `sasonica-tunnel.service` (linger is on). Over it, the app's
+   routes answer in 0.06–0.09 s. Two fixes it needed:
+   - `pair --device NAME --server https://red5.sasonica.com`
+     (`MEDIA_VISUAL_PAIR_SERVER`). A link used to always be
+     `http://host:port`.
+   - `/sessions/events` caps `?ping=` at 60 s when the request came
+     through a tunnel or proxy (`CF-Connecting-IP` / `X-Forwarded-For`).
+     Cloudflare cuts a connection after 100 s idle, and the phone's
+     background stream asks for 120.
+4. **Move p8a** to the https name. Re-pairing is not needed: it is the same
+   server, so the device token holds. Settings → Advanced → Server address
+   → `https://red5.sasonica.com` → Save. Keep the tailnet pairing as a second
    device until the tunnel has carried a few days of use.
 
 ## Server → phone: the phone dials out

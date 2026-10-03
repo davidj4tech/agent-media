@@ -778,7 +778,10 @@ def _session_events(h: BaseHTTPRequestHandler, query: str) -> None:
     wants_catchup = (qs.get("catchup") or [""])[0] in ("1", "true")
     # `?free=1`: a `free` frame whenever busy, its reasons or the held count change.
     wants_free = (qs.get("free") or [""])[0] in ("1", "true")
-    session_events.serve(h, bearer, ping_s=session_events.ping_of((qs.get("ping") or [""])[0]),
+    session_events.serve(h, bearer, ping_s=session_events.ping_of(
+                             (qs.get("ping") or [""])[0],
+                             proxied=bool(h.headers.get("CF-Connecting-IP")
+                                          or h.headers.get("X-Forwarded-For"))),
                          alerts_after=session_events.alerts_of(
                              qs["alerts"][0] if "alerts" in qs else None),
                          mic_for=auth.device_id(bearer) if wants_mic else None,

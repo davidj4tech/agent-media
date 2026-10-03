@@ -66,6 +66,10 @@ POLL_S = 3.0
 PING_MIN_S = 15.0
 PING_MAX_S = 300.0
 PING_DEFAULT_S = 15.0
+#: The most a stream through a tunnel or proxy may go silent: Cloudflare
+#: closes a connection after 100 s with nothing on it, and the phone's
+#: background stream asks for 120 (contract §19).
+PING_PROXIED_MAX_S = 60.0
 #: The bearer is asked again this often.
 AUTH_RECHECK_S = 300.0
 #: A catch-up older than this is not sent to a phone that connects after it.
@@ -211,15 +215,16 @@ def poke() -> None:
         w.cond.notify_all()
 
 
-def ping_of(raw: str) -> float:
-    """`?ping=` in seconds, clamped; the default when absent or not a number."""
+def ping_of(raw: str, proxied: bool = False) -> float:
+    """`?ping=` in seconds, clamped; the default when absent or not a number.
+    `proxied` (a tunnel or proxy in front) caps it at `PING_PROXIED_MAX_S`."""
     try:
         v = float(raw)
     except (TypeError, ValueError):
         return PING_DEFAULT_S
     if v != v:  # NaN
         return PING_DEFAULT_S
-    return min(PING_MAX_S, max(PING_MIN_S, v))
+    return min(PING_PROXIED_MAX_S if proxied else PING_MAX_S, max(PING_MIN_S, v))
 
 
 #: `alerts_of("")`: a first connection, which is handed only the head.

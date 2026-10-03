@@ -523,3 +523,16 @@ def test_pair_device_cli_grants_nothing_by_default(capsys, monkeypatch):
     assert "may pair other devices" not in out
     got = devices.redeem(out.split("code ")[1].split()[0], "", "10.0.0.3")
     assert got["enrol"] is False
+
+
+def test_links_carry_a_whole_server_when_given():
+    # A tunnel or proxy in front (contract §19): the app link names the
+    # public https base, not the canvas's own host and port.
+    from urllib.parse import parse_qs, urlsplit
+
+    app_link, web_link = devices.links("abcd1234", "100.1.2.3", 8781,
+                                       "https://red5.example.com/")
+    assert parse_qs(urlsplit(app_link).query)["server"] == ["https://red5.example.com"]
+    assert web_link == "https://red5.example.com/pair?c=abcd1234&device=1"
+    plain, _ = devices.links("abcd1234", "100.1.2.3", 8781)
+    assert parse_qs(urlsplit(plain).query)["server"] == ["http://100.1.2.3:8781"]
