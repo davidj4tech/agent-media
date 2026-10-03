@@ -105,12 +105,28 @@ def test_a_local_player_is_still_asked(rig, monkeypatch, tmp_path):
     assert not json.loads(_arg(argv, "--offsets") or "[]")
 
 
-def test_a_phone_voiced_reply_is_timed_as_heard(rig, monkeypatch):
-    """The phone voices these itself, so their lengths are estimates, and
-    heard they run longer (the gap while it makes the next one included):
-    summed bare, the bold ran ahead a little more each sentence."""
+def test_an_old_phone_voiced_reply_is_timed_as_heard(rig, monkeypatch):
+    """Estimated before the 29 Sep refit (0.2 s + len/15), these ran longer
+    heard (the gap while it makes the next one included): summed bare, the
+    bold ran ahead a little more each sentence."""
     monkeypatch.setattr(cli, "_socket_for", lambda t: "tcp://127.0.0.1:16614")
-    cli._replay_row(_row(engine="device"))
+    row = _row(engine="device")
+    row["started_at"] = cli._DEVICE_ESTIMATE_REFIT_AT - 3600
+    cli._replay_row(row)
     offs = rig["rows"][-1]["extras"]["clip_offsets_s"]
     want = [0.0, 0.972 * 1.0 + 0.943, 0.972 * 3.0 + 2 * 0.943]
     assert offs == pytest.approx(want)
+
+
+@pytest.mark.parametrize("started_at", [None, "after"])
+def test_a_phone_voiced_reply_since_the_refit_is_summed_bare(rig, monkeypatch,
+                                                             started_at):
+    """Since 53b372b the estimate is already start to start (1.2 s +
+    len/15.7). Rescaling it as well counted the gap twice, and a 29-sentence
+    replay's bold ended ~25 s behind the voice (David, 1 Oct 2026)."""
+    monkeypatch.setattr(cli, "_socket_for", lambda t: "tcp://127.0.0.1:16614")
+    row = _row(engine="device")
+    if started_at:
+        row["started_at"] = cli._DEVICE_ESTIMATE_REFIT_AT + 3600
+    cli._replay_row(row)
+    assert rig["rows"][-1]["extras"]["clip_offsets_s"] == [0.0, 1.0, 3.0]

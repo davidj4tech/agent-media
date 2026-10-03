@@ -3606,19 +3606,26 @@ def _replay_audio_missing(row: dict, clip_uris: list, target: Target) -> str:
 
 
 #: A sentence the phone voices itself (engine "device") has only an estimated
-#: length, and heard it runs longer: 841 sentences with measured starts
-#: (28 Sep 2026) fit start-to-start = 0.972 × estimate + 0.943 s, the gap
-#: while the phone makes the next one included. Summing bare estimates put a
-#: replay's bold ~0.8 s further ahead per sentence (David: "jumps to the next
-#: sentence a little too early").
+#: length. Estimated before 53b372b (29 Sep 2026, 10:39) as 0.2 s + len/15, it
+#: ran short when heard: 841 sentences with measured starts (28 Sep) fit
+#: start-to-start = 0.972 × estimate + 0.943 s. Since then the estimate is
+#: itself start-to-start (render/device.py, 1.2 s + len/15.7), so it is used
+#: as it is: rescaling it too counted the gap twice, ~0.6 s too long per
+#: sentence, and a replay's bold fell steadily behind the voice (David, 1 Oct
+#: 2026: "way behind the audio", 29 sentences). Over 79 replies since, bare
+#: estimates end a median +0.1 s off the measured starts, the rescale +5.9 s.
 _DEVICE_LENGTH_SCALE = 0.972
 _DEVICE_LENGTH_GAP_S = 0.943
+_DEVICE_ESTIMATE_REFIT_AT = 1790642358.0   # 2026-09-29 10:39 AEST (53b372b)
 
 
-def _heard_length(estimate: float, ex: dict) -> float:
-    """Start-to-start seconds of one clip: exact for rendered audio, fitted
-    for a sentence the phone voices itself."""
-    if ex.get("engine") == "device":
+def _heard_length(estimate: float, ex: dict,
+                  started_at: Optional[float] = None) -> float:
+    """Start-to-start seconds of one clip: exact for rendered audio, and the
+    estimate as it stands for a sentence the phone voices itself — fitted
+    only for a reply estimated the old way (`started_at` before the refit)."""
+    if (ex.get("engine") == "device" and started_at is not None
+            and float(started_at) < _DEVICE_ESTIMATE_REFIT_AT):
         return _DEVICE_LENGTH_SCALE * estimate + _DEVICE_LENGTH_GAP_S
     return estimate
 
@@ -3829,7 +3836,7 @@ def _push_replay(row: dict, ex: dict, clip_uris: list, clip_durations: list,
                 starts, _acc = [], 0.0
                 for d in clip_durations:
                     starts.append(_acc)
-                    _acc += _heard_length(float(d), ex)
+                    _acc += _heard_length(float(d), ex, row.get("started_at"))
             clip_offsets = [float(s) for s in starts]
             np_extras["clip_offsets_s"] = clip_offsets
             np_extras["play_started_at"] = time.time() - clip_offsets[start]
