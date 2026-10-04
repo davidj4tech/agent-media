@@ -770,6 +770,17 @@ ahead.
    live 3 Oct** (build 1157, port 16625); its YouTube fetch still goes over
    `ssh p8a`. Next: the phone dialling out (speech 6614 first, after deleting
    the per-reply `ssh p8a` probe).
+16. **The hosted relay** (David, 4 Oct 2026: the next step towards other
+   users, chosen over a sasonica.com Matrix homeserver and over hosted
+   compute — Sasonica runs the relay, the customer's own machine runs the
+   agents, so no per-account isolation is needed). **Built, not deployed
+   (sasonica-shell `1c9b785`)**: one Worker, a Durable Object per tenant
+   over the same schema and code as a self-hosted Worker; idle runners wait
+   on a hibernating WebSocket doorbell (0.3 s round trip, no idle requests,
+   under `wrangler dev`). Next: deploy as `relay.sasonica.com` on the South
+   Pen Labs account; then `sasonica install --hosted`, joining by a Sasonica
+   account sign-in (an OAuth client for the relay on cms.sasonica.com).
+   sasonica-shell [docs/hosted-relay.md](https://github.com/davidj4tech/sasonica-shell/blob/main/docs/hosted-relay.md).
 
 ## Loose ends
 
