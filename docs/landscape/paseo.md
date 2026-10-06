@@ -50,8 +50,47 @@ Same shape as ours: phone UI over a daemon on the dev box.
 - No sign of the ambient canvas, spoken-reply pacing or heard-note tracking.
 - Their relay is optional and E2E; ours is a hosted per-tenant Durable Object.
 
-## Open questions (need a real look)
+## Voice and notifications — read from the code (2026-10-06)
 
-- Barge-in and turn-taking in voice mode — the docs only say it exists.
-- How push notifications are delivered without telemetry (their own relay?).
-- Mobile UX for stacked permission/question prompts.
+Files: `packages/server/src/server/session/voice/` (`voice-turn-controller.ts`,
+`voice-session.ts`), `packages/server/src/server/push/`,
+`packages/protocol/src/agent-attention-notification.ts`.
+
+**Turn-taking.** The server runs a VAD (a Silero ONNX model ships in the repo)
+over PCM streamed from the client, plus a streaming STT session. States are
+idle / listening / capturing. `speech_started` opens a turn; `speech_stopped`
+commits the STT segment and starts a 10 s timer for the final transcript, firing
+with whatever arrived if it times out. Segments are assembled in order, with
+low-confidence flags.
+- **Filler partials ignored.** A partial that is only "uh/um/hmm/oh…" does not
+  count as speech content.
+- **Empty final = false positive.** If the final transcript is empty, nothing is
+  aborted and the session returns to idle.
+- **One STT reconnect per turn,** then it gives up for that turn.
+
+**Barge-in.** Interruption fires on the VAD's *confirmed speech start*, not on a
+transcript ("so interruption does not wait for transcription"). It aborts the
+abort-controller, cancels pending TTS playbacks, drops buffered audio segments,
+and interrupts the running voice agent. The latency is logged as
+`barge_in.llm_abort_latency`. Playback is confirmed by the client
+(`confirmAudioPlayed`), so the server knows what was actually heard.
+Our side: our barge-in and heard note already cover similar ground; the
+two ideas to compare are (a) VAD-confirmed start as the interrupt trigger
+rather than any audio energy, and (b) the filler-only filter.
+
+**Notifications.** The daemon builds an "attention" payload with a reason of
+`finished`, `error` or `permission`. The body is the assistant's last message
+with markdown stripped (links keep their text, fences/headings/lists removed)
+and truncated to 220 chars; permission requests carry kind
+(tool/plan/question/mode). Delivery is Expo push in batches of 100, and tokens
+answering `DeviceNotRegistered` are revoked. The payload carries
+serverId/workspaceId/agentId, and tapping routes straight to that agent's tab.
+So their push goes through Expo's service, not their own relay.
+Ours: the stripped, 220-char preview and the three-reason split are the
+borrowable bits for Sasonica notifications; the Expo dependency is not.
+
+## Still open
+
+- Real phone UX for stacked permission prompts (needs the app, not the code).
+- What voice mode does about echo (TTS leaking back into the VAD); not seen in
+  the files read.
