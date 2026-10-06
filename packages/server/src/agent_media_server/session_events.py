@@ -359,6 +359,12 @@ def serve(h, bearer: str, *, ping_s: float = PING_DEFAULT_S,
                         if speech_frames.playing_stream(pl[0], ch):
                             send(ch, f)
                             last_sent = time.monotonic()
+                            if any(o.get("op") in ("load", "pos")
+                                   for o in f.get("ops") or []):
+                                speech_frames.trace(
+                                    "delivered", speech_frames._HUBS[ch],
+                                    seq=f["seq"],
+                                    after_s=round(time.time() - f["at"], 2))
                 if phone_kinds is not None:
                     asks = phone.open_asks(phone_kinds)
                     if asks != seen_phone:

@@ -269,3 +269,26 @@ def test_music_is_its_own_channel(server, screen, monkeypatch):
     finally:
         st.close()
         srv.close()
+
+
+def test_a_load_is_timed_from_the_send_to_the_phones_duration(tmp_path, monkeypatch):
+    """#56: a first clip that began 10-16 s after the push, and nothing said
+    which hop it was."""
+    import agent_media_core._paths as paths
+    monkeypatch.setattr(paths, "state_dir", lambda: tmp_path)
+    hub = speech_frames._HUBS["speech"]
+    dev = _device("d-trace")
+    tok = speech_frames.listening(dev, True)
+    try:
+        speech_frames._send([{"op": "load", "uri": "tts:x", "mode": "replace"}], hub)
+        seq = hub.seq
+        ok, _ = speech_frames.report(dev, {"seq": seq, "pos": 0, "count": 1,
+                                           "time_pos": 0.1, "idle": False}, "speech")
+        assert ok
+        speech_frames.report(dev, {"seq": seq, "pos": 0, "count": 1, "time_pos": 0.5,
+                                   "duration": 4.2, "idle": False}, "speech")
+    finally:
+        speech_frames.listening(dev, False, tok)
+    ev = [json.loads(l)["event"] for l in
+          (tmp_path / "frames-timing.log").read_text().splitlines()]
+    assert ev == ["sent", "reported", "duration"]

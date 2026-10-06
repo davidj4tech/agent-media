@@ -194,12 +194,31 @@ class _Hub:
         self.listeners: dict[int, tuple[str, float]] = {}
         self._next_listener = 0
         self.reported_at = 0.0
+        #: The last load-bearing frame, for trace(): (seq, sent at, state).
+        self.traced: dict = {}
 
     def device(self) -> str | None:
         with self.lock:
             if not self.listeners:
                 return None
             return max(self.listeners.values(), key=lambda v: v[1])[0]
+
+
+def trace(event: str, hub: "_Hub", **kw) -> None:
+    """One line in state_dir/frames-timing.log: when a load was sent, when the
+    stream delivered it, when the phone first reported on it and first knew
+    how long the clip is. A reply whose first clip began 10-16 s after the
+    push (#56: replays 12939, 12950, 12957, 12960) left nothing to say which
+    hop it was."""
+    try:
+        from agent_media_core._paths import state_dir
+        path = state_dir() / "frames-timing.log"
+        line = json.dumps({"at": round(time.time(), 3), "ch": hub.channel,
+                           "event": event, **kw}, separators=(",", ":"))
+        old = path.read_text().splitlines() if path.exists() else []
+        path.write_text("\n".join((old + [line])[-300:]) + "\n")
+    except Exception:  # noqa: BLE001 — a trace is never worth a frame
+        pass
 
 
 #: One per player on the phone: speech (6614's) and music (6615's).
@@ -261,6 +280,17 @@ def report(device: str, body: dict, channel: str = "speech") -> tuple[bool, dict
             return False, {"status": 400, "error": "malformed state"}
         hub.reported_at = time.time()
         hub.lock.notify_all()
+        t = hub.traced
+        if t and not t.get("duration"):
+            now = time.time()
+            if not t.get("reported") and int(body.get("seq", -1)) >= t["seq"]:
+                t["reported"] = now
+                trace("reported", hub, seq=t["seq"], after_s=round(now - t["at"], 2),
+                      pos=body.get("pos"), time_pos=body.get("time_pos"))
+            if t.get("reported") and float(body.get("duration") or 0) > 0:
+                t["duration"] = now
+                trace("duration", hub, seq=t["seq"], after_s=round(now - t["at"], 2),
+                      duration=body.get("duration"))
     _notify_observers(hub)
     return True, {"seq": seq(channel)}
 
@@ -274,6 +304,14 @@ def _send(ops: list[dict], hub: "_Hub") -> None:
             hub.model.apply(op)
         hub.seq += 1
         hub.frames.append({"seq": hub.seq, "at": round(time.time(), 3), "ops": ops})
+        if any(o.get("op") in ("load", "pos") for o in ops):
+            hub.traced = {"seq": hub.seq, "at": time.time()}
+            newest = (max(hub.listeners.values(), key=lambda v: v[1])
+                      if hub.listeners else None)
+            trace("sent", hub, seq=hub.seq, ops=[o.get("op") for o in ops][:6],
+                  listeners=len(hub.listeners),
+                  stream_age_s=(None if newest is None
+                                else round(time.monotonic() - newest[1], 1)))
     from . import session_events
     session_events.poke()
     _notify_observers(hub)
