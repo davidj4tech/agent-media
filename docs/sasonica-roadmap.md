@@ -783,6 +783,18 @@ ahead.
    account sign-in (an OAuth client for the relay on cms.sasonica.com).
    sasonica-shell [docs/hosted-relay.md](https://github.com/davidj4tech/sasonica-shell/blob/main/docs/hosted-relay.md).
 
+17. **Background agents you can act on, and for Codex** (David, 7 Oct
+   2026, after asking whether Sasonica has what the arrow key on an empty
+   prompt opens in Claude Code and Codex). The strip and an agent's own
+   thread (§6.12, built 22 Sep) are read-only and Claude Code only. Add:
+   (a) **Stop** on a running subagent and (b) **send it a message**, as the
+   Claude Code viewer does — the server half needs a way into the live
+   session to do either (a pane's keys, or the headless session's input),
+   to be found out; (c) **Codex subagents** in the same strip, since Codex
+   now spawns and shows them too: where its rollouts record a child thread
+   and its parent (codex-cli 0.160.1 on red5) is not yet looked at; the rows
+   and log keep §6.12's shapes, so the app needs no Codex-specific code.
+
 ## Loose ends
 
 - **A reply with a figure had no follow-along at all** (David, 23 Sep 2026)
