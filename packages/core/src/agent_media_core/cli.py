@@ -4345,6 +4345,37 @@ def _replay_anchor(offsets: list, durations: list, snap: dict, base: float,
     return [round(o, 3) for o in out]
 
 
+#: Where a replay follower says what each reading of the player did to its
+#: timeline. Its stderr is /dev/null, so without this a replay whose bold
+#: trailed the voice leaves nothing to look at (#56: held replies 12869,
+#: 12872, 12907 trailed the whole way; replies played live did not).
+_ANCHOR_TRACE_KEEP = 400
+
+
+def _trace_anchor(ex: dict, snap: dict, base: float, before: list,
+                  after: Optional[list]) -> None:
+    """One line per reading: which clip, how far in, how long the player says
+    it is, and how far the timeline moved (or that the reading was refused)."""
+    try:
+        path = state_dir() / "replay-anchor.log"
+        shift = (None if not after or len(after) != len(before)
+                 else round(max(abs(b - a) for a, b in zip(before, after)), 2))
+        line = json.dumps({
+            "at": round(time.time(), 1), "history_id": ex.get("history_id"),
+            "pos": snap.get("playlist-pos"), "time_pos": snap.get("time-pos"),
+            "duration": snap.get("duration"), "speed": snap.get("speed"),
+            "idle": snap.get("idle-active"), "pause": snap.get("pause"),
+            "read_lag_s": (None if snap.get("_read_at") is None
+                           else round(time.time() - float(snap["_read_at"]), 2)),
+            "base_age_s": round(time.time() - base, 2),
+            "clips": len(before), "refused": not after, "moved_s": shift,
+        })
+        old = path.read_text().splitlines() if path.exists() else []
+        path.write_text("\n".join((old + [line])[-_ANCHOR_TRACE_KEEP:]) + "\n")
+    except Exception:  # noqa: BLE001 — a trace is never worth the replay
+        pass
+
+
 def cmd_replay_track(a) -> int:
     """Internal: follow a replay the way the live intake path follows a reply.
 
@@ -4617,6 +4648,8 @@ def cmd_replay_track(a) -> int:
                 elif not ex.get("paused_at"):
                     fixed = _replay_anchor(timeline["offsets"], durations,
                                            snap, base, seen)
+                    _trace_anchor(row.get("extras") or {}, snap, base,
+                                  timeline["offsets"], fixed)
                     if not fixed:
                         return
                     timeline["offsets"] = fixed

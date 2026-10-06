@@ -274,3 +274,19 @@ def test_a_pause_at_the_player_freezes_the_row(store, monkeypatch):
     store.set_now_playing("speech", uri="x", started_at=time.time(),
                           target="phone", extras={})   # take it back: the follow ends
     t.join(timeout=5)
+
+
+def test_each_reading_leaves_a_trace(tmp_path, monkeypatch):
+    """#56: a replay whose bold trailed left nothing to look at."""
+    monkeypatch.setattr(cli, "state_dir", lambda: tmp_path)
+    snap = {"playlist-pos": 1, "time-pos": 0.5, "duration": 4.0, "speed": 1.0,
+            "idle-active": False, "pause": False, "_read_at": time.time()}
+    cli._trace_anchor({"history_id": 12907}, snap, time.time() - 5.0,
+                      [0.0, 2.0, 4.0], [0.0, 2.5, 6.5])
+    cli._trace_anchor({"history_id": 12907}, snap, time.time() - 5.0,
+                      [0.0, 2.0, 4.0], None)
+    lines = [cli.json.loads(l) for l in
+             (tmp_path / "replay-anchor.log").read_text().splitlines()]
+    assert [l["refused"] for l in lines] == [False, True]
+    assert lines[0]["moved_s"] == 2.5 and lines[0]["history_id"] == 12907
+    assert lines[0]["duration"] == 4.0
