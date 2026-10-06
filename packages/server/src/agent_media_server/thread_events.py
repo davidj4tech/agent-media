@@ -321,7 +321,7 @@ class Watcher:
         now = {"working": env.get("working"), "approval": env.get("approval"),
                "suggestion": {"text": env.get("suggestion") or ""},
                "state": st, "pending": {"pending": bool(env.get("pending"))},
-               "recap": env.get("recap"),
+               "recap": env.get("recap"), "context": env.get("context"),
                "agents": agent_counts(self.session, st["session_live"])}
         for name, value in now.items():
             self._update(name, value, emit)

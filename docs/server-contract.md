@@ -523,7 +523,8 @@ newest page, as without it. Other harnesses' threads find their line ids
  "working": null,
  "approval": null,
  "suggestion": "",
- "recap": null}
+ "recap": null,
+ "context": {"used": 66597, "window": 200000}}
 ```
 
 **Envelope**
@@ -552,6 +553,14 @@ newest page, as without it. Other harnesses' threads find their line ids
   app shows one card, and listing them all would add a list to every poll
   for no reader. Its `at` says where it falls among the lines if the app
   wants to place the card rather than pin it to the top.
+- `context` (7 Oct 2026): how full the session's context is, in tokens,
+  `{"used", "window"}`, or `null` (no reply yet, or not a Claude Code
+  session). `used` is the newest reply's input (`input_tokens` +
+  `cache_creation_input_tokens` + `cache_read_input_tokens`), so it is as
+  of the last reply and drops after a /compact. `window` is what Claude
+  Code's status line last reported for the session
+  (`<state_dir>/context-window/<session>.json`), else 200 000, or 1 000 000
+  once `used` is past 200 000.
 
 **A line**
 
@@ -3589,6 +3598,7 @@ increasing `id`, and `retry: 2000` first.
 | `state` | `{"state": "working" \| "waiting" \| "approval" \| "ended", "session_live": bool, "live": bool (deprecated alias), "pane"}` | the session changes state; `ended` when its pane goes |
 | `pending` | `{"pending": bool}` | it changes — the log's rule: a live session whose last message is the listener's, the turn working (a step running, or a headless session `working`), or the last line the listener's. Set from the transcript as soon as a prompt lands; cleared by the 1 s / 3 s re-read |
 | `recap` | `{"text", "at", "source"}` or `null` | a newer recap is written |
+| `context` | `{"used", "window"}` or `null` (7 Oct 2026) | a reply changes it (checked on the 1 s / 3 s re-read) |
 | `agents` | `{"running", "total"}` — the thread's background agents (§6.12) | an agent starts, ends or resumes (checked on the 1 s / 3 s re-read) |
 | `ping` | `{}` | 15 s of silence |
 
@@ -3695,7 +3705,7 @@ cached sweep rather than watching every pane itself.
   and are not streamed.
 - `live` names its message by `id` (and still carries `at`), and is `null`
   when speech stops.
-- A `recap` event was added.
+- A `recap` event was added, and a `context` event (7 Oct 2026).
 - The transcript is watched at 0.3 s (plus a 0.2 s settle) rather than
   re-read at 1 s / 3 s; the 1 s / 3 s re-read covers the rest.
 - 404's words are `"no such session"`, and a session with a manifest but no

@@ -276,7 +276,7 @@ def test_conversation_log_shape(server, shelf, signed_in, monkeypatch):
     # 22 Sep 2026, deliberately (§6.2.2): the thread as its transcript has
     # it, the newest first page of it, and whether there is more before.
     assert keys(obj) == {"ok", "session", "lines", "messages", "older", "pending",
-                         "working", "approval", "suggestion", "recap"}
+                         "working", "approval", "suggestion", "recap", "context"}
     assert obj["pending"] is False and obj["working"] is None and obj["approval"] is None
     assert obj["recap"] is None
     # No transcript in the rig, so the messages are the lines, reshaped.

@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 from typing import Callable
 
-from . import auth, auth_abs, driver, recaps, send, sessions, transcript
+from . import auth, auth_abs, context, driver, recaps, send, sessions, transcript
 
 log = logging.getLogger("agent-media.server.threads")
 
@@ -454,7 +454,9 @@ def _envelope(session: str, lines: list, *, limit: int = MESSAGES_LIMIT,
     recap = recaps.recap_for(session)
     out = {"session": session, "lines": lines, "messages": messages, "older": older,
            "pending": pending, "working": working, "approval": approval,
-           "suggestion": suggestion, "recap": recap}
+           "suggestion": suggestion, "recap": recap,
+           # How full its context is, for the line under the title.
+           "context": context.context_for(session)}
     if around:
         out["around"] = {"id": around, **jump}
         out["newer"] = jump["newer"]

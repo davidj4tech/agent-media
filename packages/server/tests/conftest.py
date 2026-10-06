@@ -59,9 +59,10 @@ def _clean_media_env(monkeypatch, tmp_path, request):
     monkeypatch.setenv("PI_CODING_AGENT_DIR", str(tmp_path / "pi"))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
-    from agent_media_server import recaps
+    from agent_media_server import context, recaps
 
     recaps._reset_for_tests()
+    context._reset_for_tests()
     # The same for the messages read out of those transcripts, and no thread
     # stream's watcher left running from another test.
     from agent_media_server import thread_events, transcript
