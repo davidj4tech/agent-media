@@ -19,6 +19,10 @@ Each entry: repo or URL, then what we care about in it.
   questions as notifications.
 - amantus-ai/vibetunnel — terminal sessions in the browser; how it proxies a
   PTY and what the mobile experience does.
+- getpaseo/paseo — one app for Claude Code, Codex, OpenCode and others over a
+  self-hosted daemon; voice mode (hidden agent session, local Parakeet/Kokoro),
+  E2E relay, timeline sync and catch-up, pairing and permissions. Deep dive:
+  docs/landscape/paseo.md.
 - Anthropic's own Claude Code on web / mobile / remote control — changelog
   items that overlap Sasonica (remote sessions, notifications, voice).
 
