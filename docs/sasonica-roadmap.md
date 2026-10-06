@@ -794,6 +794,18 @@ ahead.
    now spawns and shows them too: where its rollouts record a child thread
    and its parent (codex-cli 0.160.1 on red5) is not yet looked at; the rows
    and log keep §6.12's shapes, so the app needs no Codex-specific code.
+   **(a) and (b) built 7 Oct** (agent-media `913389a`, §6.12a; sasonica-app
+   `f1c99c5`): Stop in an agent's page header while it runs, a message line
+   at its foot. Headless Stop is `stop_task`; a pane's Stop and every
+   message are asked of the main agent (TaskStop, SendMessage). **(c)
+   researched 7 Oct**: a spawned child is its own rollout whose
+   `session_meta` has `session_id` = the root thread and
+   `source.subagent.thread_spawn {parent_thread_id, depth, agent_nickname,
+   agent_role}`; the parent's `spawn_agent` call returns `{agent_id}`, and
+   ends arrive as `<subagent_notification>` user messages. Stop and message
+   for Codex go through the main agent too (`close_agent`, `send_input`):
+   the children live inside the TUI. Waiting on a real child rollout to
+   build against (red5's Codex login had expired).
 
 ## Loose ends
 
