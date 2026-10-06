@@ -425,3 +425,78 @@ def test_project_of_follows_the_layout(monkeypatch):
     assert sessions.project_of(f"{home}/agent-media") == "agent-media"
     assert sessions.project_of("/srv/site") == "site"
     assert sessions.project_of("") is None
+
+
+# --- stop and message (§6.12a) --------------------------------------------------------
+
+
+class FakeDriver:
+    def __init__(self, kind, state="working"):
+        self.kind, self._state, self.sent, self.stopped = kind, state, [], []
+
+    def state(self, session):
+        return {"state": self._state, "live": self._state != "ended", "pane": None}
+
+    def send(self, session, body, text, *, quote=""):
+        self.sent.append(body)
+        return True, {"queued": self._state == "working"}
+
+    def stop_task(self, session, task_id):
+        self.stopped.append(task_id)
+        return True, {"stopped": True, "why": None}
+
+
+def _act(monkeypatch, th, kind, state="working"):
+    from agent_media_server import driver
+
+    monkeypatch.setattr(sessions, "live_sessions", lambda: {SID: "%7"})
+    drv = FakeDriver(kind, state)
+    monkeypatch.setattr(driver, "for_session", lambda s: drv)
+    a = th.spawn("a0000000050", "toolu_A", "Build the app")
+    a.prompt("Do it.")
+    a.tool("Bash", {"command": "make", "description": "Build"}, "s1")
+    b = th.spawn("a0000000051", "toolu_B", "Done one")
+    b.prompt("Do it.")
+    th.main.t = b.t + 1
+    th.main.prompt(note("a0000000051", "toolu_B", "completed"))
+    return drv
+
+
+def test_stop_headless_is_stop_task_and_only_for_a_running_agent(server, shelf, signed_in,
+                                                                  th, monkeypatch):
+    drv = _act(monkeypatch, th, "headless")
+    res, obj = call(server, "POST", f"/threads/{SID}/agents/a0000000050/stop", headers=AUTH)
+    assert res.status == 200 and obj["via"] == "stop_task", obj
+    assert drv.stopped == ["a0000000050"] and drv.sent == []
+    res, obj = call(server, "POST", f"/threads/{SID}/agents/a0000000051/stop", headers=AUTH)
+    assert res.status == 409 and "not running (done)" in obj["error"]
+    # stop_task says success for any id, so an unknown one never reaches it.
+    res, obj = call(server, "POST", f"/threads/{SID}/agents/a0000000099/stop", headers=AUTH)
+    assert res.status == 404 and drv.stopped == ["a0000000050"]
+
+
+def test_stop_in_a_pane_asks_the_main_agent(server, shelf, signed_in, th, monkeypatch):
+    drv = _act(monkeypatch, th, "pane", state="waiting")
+    res, obj = call(server, "POST", f"/threads/{SID}/agents/a0000000050/stop", headers=AUTH)
+    assert res.status == 200 and obj["via"] == "message", obj
+    assert drv.sent == ["Please stop your background agent a0000000050 (“Build the app”) "
+                        "with TaskStop. I stopped it from the phone; nothing else needs doing."]
+
+
+def test_message_is_passed_on_by_the_main_agent(server, shelf, signed_in, th, monkeypatch):
+    drv = _act(monkeypatch, th, "headless")
+    res, obj = call(server, "POST", f"/threads/{SID}/agents/a0000000051/message",
+                    {"text": "  also  check the\nlogs "}, headers=AUTH)
+    assert res.status == 200 and obj["via"] == "message" and obj["queued"] is True, obj
+    assert drv.sent == ["Please pass this to your background agent a0000000051 (“Done one”) "
+                        "with SendMessage, word for word, then carry on: also check the logs"]
+    res, obj = call(server, "POST", f"/threads/{SID}/agents/a0000000051/message",
+                    {"text": " "}, headers=AUTH)
+    assert res.status == 400
+
+
+def test_nothing_is_typed_into_a_question(server, shelf, signed_in, th, monkeypatch):
+    drv = _act(monkeypatch, th, "pane", state="approval")
+    res, obj = call(server, "POST", f"/threads/{SID}/agents/a0000000050/message",
+                    {"text": "hi"}, headers=AUTH)
+    assert res.status == 409 and "question" in obj["error"] and drv.sent == []

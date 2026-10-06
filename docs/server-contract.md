@@ -2520,6 +2520,40 @@ file once warm).
 Clients: the chat app's thread header strip ("3 running · 12 done") and its
 read-only agent view.
 
+
+### 6.12a Acting on a background agent — gated (built 7 Oct 2026)
+
+Stop one subagent, or send it a message, from the agents strip — what
+Claude Code's own agent viewer offers (David, 7 Oct 2026; roadmap item 17).
+Code: `agent_media_server/agent_actions.py`; pinned by
+`packages/server/tests/test_agents.py` and `test_headless.py`. Both answer
+`{"ok": true, "session", "agent": <§6.12 row>, "via"}`; refusals are 400
+`"not a session id"`, 404 `"no such agent"` (not one of the thread's rows),
+409 as below.
+
+#### `POST /threads/{session}/agents/{id}/stop`
+
+- 409 unless the row is `running`. Claude Code's `stop_task` answers success
+  for an id it has never heard of (measured 7 Oct 2026, 2.1.289), so the row
+  is the check.
+- **Headless** (`via: "stop_task"`): the `stop_task` control request through
+  sessiond (op `stop_task {session, task_id}`), the one the TaskStop tool
+  uses. The thread's turn goes on; the agent's `killed` notification turns
+  its row `stopped` on a later read. 409 when the session is not live.
+- **A pane** (`via: "message"`): there are only keys, so the main agent is
+  asked in the thread to stop it with TaskStop, as for a message below.
+
+#### `POST /threads/{session}/agents/{id}/message {"text"}`
+
+`via: "message"`, `queued`: the main agent is sent, as the listener's turn,
+"Please pass this to your background agent <id> (“<description>”) with
+SendMessage, word for word, then carry on: <text>". Claude Code refuses the
+`send_task_message` control request headless (2.1.289), and a pane has only
+keys. The words show in the thread and wait behind a running turn
+(`queued`). Any status: SendMessage resumes a finished agent from its
+transcript. `text` is whitespace-collapsed, 1–4000 characters (else 400).
+409 when the thread is not running, or is stopped on a question (the words
+would be typed into its dialog).
 ### 6.13 The session list as a stream — gated (built 22 Sep 2026)
 
 #### `GET /sessions/events[?ping=<s>][&alerts=<n>][&mic=1][&phone=<kinds>]` — gated (`auth.may_control_speech`, like `/sessions/state`)

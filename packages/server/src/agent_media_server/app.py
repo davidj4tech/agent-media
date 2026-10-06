@@ -81,6 +81,10 @@ device gets its token):
   POST /session/retract {"session", "id"?, "text"?} → take back your last
                   message: interrupt the turn and its queue, mark the message,
                   and the next one says so (retract.py, §6.19)
+  POST /threads/{session}/agents/{id}/stop → stop one background agent
+                  (stop_task headless, else asked of the main agent)
+  POST /threads/{session}/agents/{id}/message {"text"} → the main agent
+                  passes it on with SendMessage (agent_actions.py, §6.12a)
   POST /session/archive {"session", "archived": true|false} → file the
                   thread under Archived, or take it back out (a flag this
                   server keeps; see archive.py). Ends nothing
@@ -261,13 +265,16 @@ THREAD_EVENTS = re.compile(r"/threads/([^/]+)/events")
 # A thread's background agents (§6.12), and one agent's own log.
 THREAD_AGENTS = re.compile(r"/threads/([^/]+)/agents")
 AGENT_LOG = re.compile(r"/threads/([^/]+)/agents/([^/]+)/log")
+# Stopping one, or sending it a message (§6.12a, agent_actions.py).
+AGENT_ACT = re.compile(r"/threads/([^/]+)/agents/([^/]+)/(stop|message)")
 
 
 def cors_path(path: str) -> bool:
     """Whether `path` is an app route a browser on another origin may reach
     (any method): `CORS_PATHS`, a thread's event stream, or its agents."""
     return path in CORS_PATHS or any(r.fullmatch(path)
-                                     for r in (THREAD_EVENTS, THREAD_AGENTS, AGENT_LOG))
+                                     for r in (THREAD_EVENTS, THREAD_AGENTS, AGENT_LOG,
+                                                        AGENT_ACT))
 
 
 # Long enough that a chat page's polling is not preceded by a preflight every
@@ -1352,6 +1359,22 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
                       file=sys.stderr, flush=True)
         else:
             ok, detail = phone.cancel(body.get("id"))
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    elif AGENT_ACT.fullmatch(path):
+        # Stop one background agent, or send it a message, from the agents
+        # strip (§6.12a, agent_actions.py).
+        from . import agent_actions
+
+        m = AGENT_ACT.fullmatch(path)
+        session, agent_id, act = m.group(1), m.group(2), m.group(3)
+        if act == "stop":
+            ok, detail = agent_actions.agent_stop(session, agent_id, _bearer(h))
+        else:
+            body = _read_json(h) or {}
+            ok, detail = agent_actions.agent_message(session, agent_id,
+                                                     str(body.get("text") or ""), _bearer(h))
+        print(f"agents: {act} {agent_id[:12]} in {session[:8]} → "
+              f"{detail.get('via') if ok else detail.get('error')}", file=sys.stderr, flush=True)
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path == "/session/retract":
         # Tapping your own latest message in the app, then Cancel or Edit

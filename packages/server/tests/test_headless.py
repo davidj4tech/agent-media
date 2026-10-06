@@ -239,6 +239,19 @@ def test_interrupt_when_idle_or_on_an_approval_does_nothing(host):
     assert state(host, sid2) == "approval"
 
 
+def test_stop_task_stops_one_agent_and_leaves_the_turn_running(host):
+    # 7 Oct 2026: the agents strip's Stop — `stop_task`, not an interrupt.
+    sid = start(host, "slow: 20")
+    wait_for(lambda: any(e.get("subtype") == "task_started" for e in host.sup.sessions[sid].events))
+    ok, d = driver.headless_driver().stop_task(sid, "a1b2c3d4e5")
+    assert ok and d["stopped"] is True, d
+    assert json.loads(Path(str(host.log) + ".tasks").read_text()) == {"stop_task": "a1b2c3d4e5"}
+    assert state(host, sid) == "working"
+    driver.headless_driver().close(sid)
+    ok, d = driver.headless_driver().stop_task(sid, "a1b2c3d4e5")
+    assert ok and d["stopped"] is False and d["why"] == "not live"
+
+
 # --- approvals ----------------------------------------------------------------------
 
 def test_a_tool_request_is_a_structured_approval_and_allow_runs_it(host):

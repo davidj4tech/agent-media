@@ -168,6 +168,13 @@ class Fake:
             emit({"type": "control_response",
                   "response": {"subtype": "success", "request_id": rid,
                                "response": {"mode": self.mode}}})
+        elif sub == "stop_task":
+            # Like 2.1.289: success whatever the id. The tests read which.
+            if os.environ.get("FAKE_CLAUDE_LOG"):
+                with open(os.environ["FAKE_CLAUDE_LOG"] + ".tasks", "a") as f:
+                    f.write(json.dumps({"stop_task": req.get("task_id")}) + "\n")
+            emit({"type": "control_response",
+                  "response": {"subtype": "success", "request_id": rid, "response": {}}})
         elif sub == "initialize":
             emit({"type": "control_response",
                   "response": {"subtype": "success", "request_id": rid,

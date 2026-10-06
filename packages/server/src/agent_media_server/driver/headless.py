@@ -377,6 +377,15 @@ class HeadlessDriver:
                       "state": contract_state(r), "pane": None,
                       "receipt": r.get("receipt")}
 
+    def stop_task(self, session, task_id):
+        """Stop one background agent (`stop_task`, sessiond.py) — the turn
+        goes on. `{"stopped": bool, "why"}`."""
+        r = call("stop_task", session=session, task_id=task_id, timeout=15.0)
+        if not r.get("ok"):
+            return _failed(r, stopped=False)
+        return True, {"stopped": bool(r.get("stopped")), "why": r.get("why"),
+                      "state": contract_state(r)}
+
     def answer(self, session, request):
         """Answer a pending request. Structured — `request_id` + `decision`
         ("allow" | "deny") + `answers` for a question + `message` for a deny —

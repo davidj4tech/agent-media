@@ -993,6 +993,31 @@ class Supervisor:
             return {"session": session, "interrupted": True, "why": None,
                     "receipt": receipt, **self._brief(s)}
 
+    def stop_task(self, session: str, task_id: str) -> dict:
+        """Stop one background task of the session — a subagent, by its id —
+        with the `stop_task` control request, the one Claude Code's TaskStop
+        tool and its own agent viewer use. The turn goes on: the CLI answers
+        between steps (as for `configure`), and the agent is told by the
+        `killed` notification it writes. It does not check the id exists
+        (measured 7 Oct 2026, 2.1.289: a made-up id answers success), so
+        the caller checks it first (agent_actions.py)."""
+        if self._agent(session) == "opencode":
+            raise Refused("an opencode session has no background agents", "unsupported")
+        with self.lock:
+            s = self._get(session)
+            if not s.running:
+                return {"session": session, "stopped": False, "why": "not live",
+                        **self._brief(s)}
+            rid = "req_" + uuid.uuid4().hex[:12]
+            self._write(s, {"type": "control_request", "request_id": rid,
+                            "request": {"subtype": "stop_task", "task_id": task_id}})
+            self.cond.wait_for(lambda: rid in s.responses or not s.live, RECEIPT_S)
+            answer = s.responses.pop(rid, None) or {}
+            if answer.get("subtype") == "error":
+                raise Refused(str(answer.get("error") or "the session refused it"), "refused")
+            return {"session": session, "stopped": bool(answer), "why": None if answer
+                    else "no answer", **self._brief(s)}
+
     def answer(self, session: str, request_id: str, response: dict) -> dict:
         with self.lock:
             s = self._get(session)
@@ -1362,6 +1387,8 @@ class Supervisor:
                 return {"ok": True, **self.resume(sid)}
             if op == "interrupt":
                 return {"ok": True, **self.interrupt(sid, bool(req.get("cancel_queued")))}
+            if op == "stop_task":
+                return {"ok": True, **self.stop_task(sid, str(req.get("task_id") or ""))}
             if op == "answer":
                 resp = req.get("response")
                 if not isinstance(resp, dict):
