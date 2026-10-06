@@ -290,3 +290,63 @@ def test_each_reading_leaves_a_trace(tmp_path, monkeypatch):
     assert [l["refused"] for l in lines] == [False, True]
     assert lines[0]["moved_s"] == 2.5 and lines[0]["history_id"] == 12907
     assert lines[0]["duration"] == 4.0
+
+
+def test_a_position_a_clip_behind_is_not_believed_once():
+    """12939, pos 18 at 0.2 s straight after 7.9 s: the next clip had begun
+    and the position had not caught up; every clip after it moved 9 s."""
+    seen: dict = {}
+    off = [0.0, 2.0, 4.0]
+    base = 100.0
+    assert cli._replay_anchor(off, [2.0] * 3, {
+        "playlist-pos": 1, "time-pos": 1.8, "_read_at": base + 3.8}, base, seen)
+    behind = {"playlist-pos": 1, "time-pos": 0.2, "_read_at": base + 4.2}
+    assert cli._replay_anchor(off, [2.0] * 3, behind, base, seen) is None
+    # Said again, it is a seek and it counts.
+    assert cli._replay_anchor(off, [2.0] * 3, dict(behind, **{"_read_at": base + 4.6}),
+                              base, seen)
+
+
+def _track_readings(monkeypatch, readings, offsets=(0.0, 5.0, 10.0), durs=(5.0, 5.0, 5.0)):
+    rows: list = []
+    orig = StateStore.set_now_playing
+
+    def spy(self, sink, **kw):
+        rows.append(dict(kw.get("extras") or {}))
+        return orig(self, sink, **kw)
+
+    monkeypatch.setattr(StateStore, "set_now_playing", spy)
+    monkeypatch.setattr(cli, "_REPLAY_ALIVE_EVERY_S", 0.05)
+    monkeypatch.setattr(cli, "_REPLAY_FAST_EVERY_S", 0.01)
+    it = iter(readings)
+    last = [readings[-1]]
+
+    def read(target):
+        last[0] = next(it, last[0])
+        return dict(last[0], **{"_read_at": time.time()})
+
+    monkeypatch.setattr(cli, "_replay_read_player", read)
+    cli.cmd_replay_track(argparse.Namespace(
+        sentences=cli.json.dumps(SENTS), offsets=cli.json.dumps(list(offsets)),
+        pane="", durations=cli.json.dumps(list(durs))))
+    return rows
+
+
+def test_the_clock_waits_while_the_phone_has_not_started(store, monkeypatch):
+    """12939: 15 s of bold running ahead of silence, the phone still fetching
+    the first clip. Loaded and not playing holds the clip's start at now."""
+    rows = _track_readings(monkeypatch, [
+        {"idle-active": False, "pause": False, "playlist-pos": 0}] * 3
+        + [{"idle-active": True}])
+    held = [r["play_started_at"] for r in rows if "play_started_at" in r]
+    assert held and all(abs(h - time.time()) < 5.0 for h in held)
+
+
+def test_the_sentence_is_the_clip_the_player_is_on(store, monkeypatch):
+    """The clock says sentence 0 (offsets put clip 1 at 50 s); the player is
+    on clip 2: that is the sentence."""
+    rows = _track_readings(monkeypatch, [
+        {"idle-active": False, "pause": False, "playlist-pos": 2,
+         "time-pos": 1.0, "duration": 5.0},
+        {"idle-active": True}], offsets=(0.0, 50.0, 100.0))
+    assert any(r.get("current_sentence_idx") == 2 for r in rows)

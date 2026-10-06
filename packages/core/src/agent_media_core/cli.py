@@ -4268,6 +4268,9 @@ def _mirror_clock(state, owns, sentences: list, offsets: list,
 #: How often a replay followed on the clock reads its player, in seconds;
 #: the first read is one interval in. The live lane reads without a pause.
 _REPLAY_ALIVE_EVERY_S = 1.5
+#: …and how often when a read is cheap (the frames lane answers from this
+#: host: 0 ms on 12939), so a sentence is at most this stale.
+_REPLAY_FAST_EVERY_S = 0.4
 
 
 def _replay_read_player(target: Target) -> dict:
@@ -4315,6 +4318,18 @@ def _replay_anchor(offsets: list, durations: list, snap: dict, base: float,
             or not isinstance(tp, (int, float)) or read_at is None):
         return None
     speed = max(0.1, float(snap.get("speed") or 1.0))
+    # The same clip, earlier in itself than a moment ago: the next clip began
+    # and the position has not caught up (12939, 4 Oct: pos 18 at 0.2 s after
+    # 7.9 s, which re-dated every clip after it 9 s late for one reading and
+    # 9 s early for the next). Not believed once; a second reading that says
+    # the same is a seek, and is.
+    last = seen.get("last")
+    seen["last"] = (p, float(tp))
+    if (last and last[0] == p and float(tp) + 0.05 < last[1]
+            and not seen.get("doubted")):
+        seen["doubted"] = True
+        return None
+    seen["doubted"] = False
     at = float(read_at) - base - float(tp) / speed
     orig = seen.setdefault("orig", list(offsets))
     if not (len(offsets) == len(durations) > 1):
@@ -4645,6 +4660,18 @@ def cmd_replay_track(a) -> int:
                     base += read_at - float(ex.pop("paused_at"))
                     ex.pop("paused_by", None)
                     ex["play_started_at"] = base
+                elif (not ex.get("paused_at") and not snap.get("idle-active")
+                      and isinstance(snap.get("playlist-pos"), int)
+                      and 0 <= snap["playlist-pos"] < len(timeline["offsets"])
+                      and not isinstance(snap.get("time-pos"), (int, float))):
+                    # Loaded, not yet playing: the phone is fetching or
+                    # voicing the clip. The clock ran on from the push — 15 s
+                    # of bold ahead of silence on 12939 — so hold it where the
+                    # clip begins until the first position arrives.
+                    ex["play_started_at"] = read_at - float(
+                        timeline["offsets"][snap["playlist-pos"]])
+                    _trace_anchor(row.get("extras") or {}, snap, base,
+                                  timeline["offsets"], None)
                 elif not ex.get("paused_at"):
                     fixed = _replay_anchor(timeline["offsets"], durations,
                                            snap, base, seen)
@@ -4653,6 +4680,8 @@ def cmd_replay_track(a) -> int:
                     if not fixed:
                         return
                     timeline["offsets"] = fixed
+                    timeline["player"] = (int(snap["playlist-pos"]),
+                                          float(snap["_read_at"]))
                     ex["clip_offsets_s"] = fixed
                 else:
                     return
@@ -4667,18 +4696,27 @@ def cmd_replay_track(a) -> int:
 
         def _watch_player() -> None:
             target = _active_speech_target()
-            idle_reads = 0
-            while not done.wait(_REPLAY_ALIVE_EVERY_S):
+            idle_since = None
+            wait = _REPLAY_ALIVE_EVERY_S
+            while not done.wait(wait):
+                cost = time.time()
                 snap = _replay_read_player(target)
+                # A read that is cheap (the player answered from this host)
+                # is asked for often: the sentence follows the player's clip,
+                # so how stale it can be is how often this asks.
+                cost = time.time() - cost
+                wait = min(_REPLAY_ALIVE_EVERY_S,
+                           max(_REPLAY_FAST_EVERY_S, 4 * cost))
                 said = _player_says_idle(snap)
                 if said is None:
                     continue
                 if not said:
                     _correct(snap)
-                # Twice running, a few seconds apart: one idle answer can be
-                # a clip being fetched.
-                idle_reads = idle_reads + 1 if said else 0
-                if idle_reads >= 2:
+                # Idle for as long as two slow reads would span: one idle
+                # answer can be a clip being fetched.
+                idle_since = (idle_since or time.time()) if said else None
+                if (idle_since is not None
+                        and time.time() - idle_since >= _REPLAY_ALIVE_EVERY_S):
                     gone.set()
                     return
 
@@ -4725,6 +4763,15 @@ def cmd_replay_track(a) -> int:
                     idx = i
                 else:
                     break
+            # A clip per sentence, and the player just said which clip it is
+            # on: that is the sentence, whatever the guessed lengths say
+            # (they were 3-4 s short on four clips of 12939, and the bold
+            # changed sentence that early or late).
+            heard_on = timeline.get("player")
+            if (heard_on and len(offsets) == len(durations) > 1
+                    and time.time() - heard_on[1] < 2 * _REPLAY_ALIVE_EVERY_S
+                    and 0 <= heard_on[0] < len(offsets)):
+                idx = heard_on[0]
             if _read_check(idx):
                 return 0
             if idx != last:
