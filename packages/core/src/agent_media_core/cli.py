@@ -4384,6 +4384,13 @@ def _trace_anchor(ex: dict, snap: dict, base: float, before: list,
                            else round(time.time() - float(snap["_read_at"]), 2)),
             "base_age_s": round(time.time() - base, 2),
             "clips": len(before), "refused": not after, "moved_s": shift,
+            # The bold's idea of this clip's start minus where it really
+            # began: positive, the bold was behind the voice; negative, ahead.
+            "late_s": (round(before[snap["playlist-pos"]]
+                             - after[snap["playlist-pos"]], 2)
+                       if after and len(after) == len(before)
+                       and isinstance(snap.get("playlist-pos"), int)
+                       and 0 <= snap["playlist-pos"] < len(before) else None),
         })
         old = path.read_text().splitlines() if path.exists() else []
         path.write_text("\n".join((old + [line])[-_ANCHOR_TRACE_KEEP:]) + "\n")
@@ -4663,11 +4670,16 @@ def cmd_replay_track(a) -> int:
                 elif (not ex.get("paused_at") and not snap.get("idle-active")
                       and isinstance(snap.get("playlist-pos"), int)
                       and 0 <= snap["playlist-pos"] < len(timeline["offsets"])
-                      and not isinstance(snap.get("time-pos"), (int, float))):
+                      and not (isinstance(snap.get("duration"), (int, float))
+                               and snap["duration"] > 0)):
                     # Loaded, not yet playing: the phone is fetching or
                     # voicing the clip. The clock ran on from the push — 15 s
-                    # of bold ahead of silence on 12939 — so hold it where the
-                    # clip begins until the first position arrives.
+                    # of bold ahead of silence on 12939 and 16 s on 12950 —
+                    # so hold it where the clip begins until the phone says
+                    # how long the clip is. A `time-pos` without a `duration`
+                    # is not its word: the frames lane runs it on from the
+                    # load (2.2 s into a clip nothing was playing), and
+                    # anchoring to that put the bold where the model guessed.
                     ex["play_started_at"] = read_at - float(
                         timeline["offsets"][snap["playlist-pos"]])
                     _trace_anchor(row.get("extras") or {}, snap, base,

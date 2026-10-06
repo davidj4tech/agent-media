@@ -240,7 +240,7 @@ def test_the_row_takes_the_correction(store, monkeypatch):
     # Read once, just begun: the clip began at the reading, a moment after
     # the push.
     reading = {"idle-active": False, "pause": False, "playlist-pos": 0,
-               "time-pos": 0.0, "_read_at": time.time() + 0.1}
+               "time-pos": 0.0, "duration": 0.2, "_read_at": time.time() + 0.1}
     monkeypatch.setattr(cli, "_replay_read_player", lambda target: dict(reading))
     cli.cmd_replay_track(argparse.Namespace(
         sentences=cli.json.dumps(SENTS), offsets=cli.json.dumps([0.0, 0.2, 0.4]),
@@ -350,3 +350,14 @@ def test_the_sentence_is_the_clip_the_player_is_on(store, monkeypatch):
          "time-pos": 1.0, "duration": 5.0},
         {"idle-active": True}], offsets=(0.0, 50.0, 100.0))
     assert any(r.get("current_sentence_idx") == 2 for r in rows)
+
+
+def test_a_position_without_a_duration_is_not_the_phones_word(store, monkeypatch):
+    """12950: tp 2.2 s into a clip nothing was playing (the frames model runs
+    it on from the load), duration unknown for 16 s. Held, not anchored."""
+    rows = _track_readings(monkeypatch, [
+        {"idle-active": False, "pause": False, "playlist-pos": 0,
+         "time-pos": 2.2}] * 3 + [{"idle-active": True}])
+    assert {tuple(r["clip_offsets_s"]) for r in rows if r.get("clip_offsets_s")} \
+        == {(0.0, 0.15, 0.3)}      # the fixture's seed row, never re-dated
+    assert any("play_started_at" in r for r in rows)
