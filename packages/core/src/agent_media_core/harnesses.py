@@ -1227,7 +1227,100 @@ def auth_state(harness: str, timeout: float = 15.0, env: dict | None = None) -> 
     if harness == OPENCODE:
         return _opencode_auth(out)
     line = " ".join(out.split())[:200]
-    return ("in" if done.returncode == 0 and "logged in" in out.lower() else "out"), line
+    if not (done.returncode == 0 and "logged in" in out.lower()):
+        return "out", line
+    if harness == CODEX and _codex_login_dead(exe, env, timeout):
+        return "out", "signed in, but the login has expired — sign in again"
+    return "in", line
+
+
+def _codex_token_expired(codex_dir: Path, now: float | None = None) -> bool:
+    """Whether the ChatGPT access token in `auth.json` is past its `exp`.
+
+    False when there is none to read (an API key, no file, a token that is
+    not a JWT): only an expired token needs the refresh that can fail.
+    """
+    import base64
+    import time
+
+    try:
+        data = json.loads((codex_dir / "auth.json").read_text())
+        tok = str(((data.get("tokens") or {}).get("access_token")) or "")
+        body = tok.split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
+        return float(claims["exp"]) <= (time.time() if now is None else now)
+    except (OSError, ValueError, AttributeError, IndexError, KeyError, TypeError):
+        return False
+
+
+def _codex_login_dead(exe: str, env: dict | None, timeout: float) -> bool:
+    """`codex login status` only reads `auth.json`: it says "Logged in" for
+    a login OpenAI has since refused (David, 7 Oct 2026 — the refresh token
+    "was already used", every request a 401, Settings still saying signed
+    in). When the access token has expired, have Codex refresh it the way it
+    would before a turn — the app server's `account/read` with
+    `refreshToken` — and believe the answer: no account means signed out.
+    Codex writes a successful refresh back itself. Anything that goes wrong
+    asking is not taken as signed out.
+    """
+    import subprocess
+
+    home = Path((env or {}).get("CODEX_HOME") or _codex_dir()).expanduser()
+    if not _codex_token_expired(home):
+        return False
+    lines = [
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+         "params": {"clientInfo": {"name": "agent-media", "version": "0"}}},
+        {"jsonrpc": "2.0", "method": "initialized"},
+        {"jsonrpc": "2.0", "id": 2, "method": "account/read",
+         "params": {"refreshToken": True}},
+    ]
+    try:
+        proc = subprocess.Popen([exe, "app-server"], stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                text=True, env={**os.environ, **env} if env else None)
+    except OSError:
+        return False
+    try:
+        proc.stdin.write("".join(json.dumps(m) + "\n" for m in lines))
+        proc.stdin.flush()
+        return _codex_account_answer(proc.stdout, timeout) is None
+    except _NoAnswer:
+        return False
+    except (OSError, ValueError):
+        return False
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+class _NoAnswer(Exception):
+    pass
+
+
+def _codex_account_answer(stream, timeout: float):
+    """The `account` of the app server's answer to request 2 (None when it
+    has none), read off `stream` within `timeout`; `_NoAnswer` otherwise."""
+    import threading
+
+    found: list = []
+
+    def read():
+        for raw in stream:
+            try:
+                msg = json.loads(raw)
+            except ValueError:
+                continue
+            if isinstance(msg, dict) and msg.get("id") == 2:
+                found.append(msg)
+                return
+
+    t = threading.Thread(target=read, daemon=True)
+    t.start()
+    t.join(timeout)
+    if not found or "result" not in found[0]:
+        raise _NoAnswer
+    return (found[0]["result"] or {}).get("account")
 
 
 def pi_default_provider(pi_dir: Path | None = None) -> str:

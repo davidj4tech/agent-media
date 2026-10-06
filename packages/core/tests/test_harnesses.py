@@ -326,3 +326,39 @@ def test_a_scripted_codex_run_is_not_a_conversation(alone, monkeypatch, tmp_path
 
     deleted.mark([CX])
     assert CX not in {r.session for r in harnesses.stored()}
+
+
+def _codex_auth(tmp_path, exp):
+    import base64
+    body = base64.urlsafe_b64encode(json.dumps({"exp": exp}).encode()).decode().rstrip("=")
+    (tmp_path / "auth.json").write_text(json.dumps(
+        {"auth_mode": "chatgpt", "tokens": {"access_token": f"h.{body}.s"}}))
+
+
+def _fake_codex(tmp_path, account):
+    """A `codex` whose `login status` says Logged in and whose app server
+    answers account/read with `account`."""
+    exe = tmp_path / "codex"
+    answer = json.dumps({"id": 2, "result": {"account": account, "requiresOpenaiAuth": True}})
+    exe.write_text("#!/bin/sh\n"
+                   "if [ \"$1\" = login ]; then echo 'Logged in using ChatGPT'; exit 0; fi\n"
+                   "read a; read b; read c\n"
+                   f"echo '{answer}'\n")
+    exe.chmod(0o755)
+    return str(exe)
+
+
+@pytest.mark.parametrize("account,want", [(None, "out"), ({"type": "chatgpt"}, "in")])
+def test_codex_says_logged_in_for_a_login_openai_refused(tmp_path, monkeypatch, account, want):
+    # 7 Oct 2026: `codex login status` read the file and said Logged in while
+    # every request was a 401; an expired token is refreshed and believed.
+    _codex_auth(tmp_path, exp=1)
+    monkeypatch.setattr(harnesses, "program", lambda name: _fake_codex(tmp_path, account))
+    state, _ = harnesses.auth_state("codex", env={"CODEX_HOME": str(tmp_path)})
+    assert state == want
+
+
+def test_a_codex_token_still_in_date_is_not_refreshed(tmp_path, monkeypatch):
+    _codex_auth(tmp_path, exp=4102444800)
+    monkeypatch.setattr(harnesses, "program", lambda name: _fake_codex(tmp_path, None))
+    assert harnesses.auth_state("codex", env={"CODEX_HOME": str(tmp_path)})[0] == "in"
