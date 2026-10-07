@@ -770,6 +770,15 @@ ahead.
    live 3 Oct** (build 1157, port 16625); its YouTube fetch still goes over
    `ssh p8a`. Next: the phone dialling out (speech 6614 first, after deleting
    the per-reply `ssh p8a` probe).
+   **For other users (David, 8 Oct 2026, "we're planning on moving off
+   tailscale anyway… work towards that")**: a stranger's install has no
+   tunnel and its pair link names a Tailscale IP the app refuses, so
+   sasonica.com/start says a computer server is "coming soon". Chosen: the
+   installer sets up a **quick tunnel** (trycloudflare, no accounts) to the
+   `--public` listener and pairs with its URL, **plus the sasonica.com
+   lookup** (a Worker keeping each install's current URL, signed by a key
+   made at install) so the app re-finds the server after a restart instead
+   of pairing again. `_pair_host` stops falling back to a bare hostname.
 16. **The hosted relay** (David, 4 Oct 2026: the next step towards other
    users, chosen over a sasonica.com Matrix homeserver and over hosted
    compute — Sasonica runs the relay, the customer's own machine runs the
@@ -782,6 +791,17 @@ ahead.
    `sasonica install --hosted`, joining by a Sasonica
    account sign-in (an OAuth client for the relay on cms.sasonica.com).
    sasonica-shell [docs/hosted-relay.md](https://github.com/davidj4tech/sasonica-shell/blob/main/docs/hosted-relay.md).
+   **Opening it (David, 8 Oct 2026, "let's get it ready for opening")**:
+   a **free beta first**, billing later. Before `RELAY_ALLOW_ACCOUNTS=*`:
+   rate limits (`/join/start`, MCP calls, runner endpoints), one machine
+   per account, retention enforced on the relay (a Durable Object alarm
+   drops rows past 30 days and dormant tenants), a per-account tenant list
+   with remove, and account deletion in Drupal removing that account's
+   tenants. Also: a terms-of-service draft for David to review, a Windows
+   end-to-end run with a second Sasonica account, publishing Google
+   sign-in (now that /privacy-policy is live), and the privacy policy's
+   "not yet open to everyone" line changed on opening. sasonica.com/start
+   and /download say Windows is "coming soon" until then.
 
 17. **Background agents you can act on, and for Codex** (David, 7 Oct
    2026, after asking whether Sasonica has what the arrow key on an empty
