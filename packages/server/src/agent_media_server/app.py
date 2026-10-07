@@ -898,9 +898,26 @@ def _pair(h: BaseHTTPRequestHandler) -> None:
     print(f"pair: paired {got['device_id']} ({got['name']!r}) from {ip}", file=sys.stderr)
     # `name` is the one the device will be known by — the name given at the
     # desk wins over the one the phone sent — so the app can say "paired as".
+    server = {"name": socket.gethostname(), "base": _base_url(h)}
+    lookup = _lookup_for(server["base"])
+    if lookup:
+        server["lookup"] = lookup
     _json(h, 200, {"ok": True, "token": got["token"], "device_id": got["device_id"],
                    "name": got["name"], "enrol": bool(got.get("enrol")),
-                   "server": {"name": socket.gethostname(), "base": _base_url(h)}})
+                   "server": server})
+
+
+def _lookup_for(base: str) -> str:
+    """The sasonica.com lookup for this server, when `base` is the quick
+    tunnel it publishes (tunnel.py): the app keeps it, and asks it for the
+    new URL after the tunnel restarts under another name. "" otherwise."""
+    from . import tunnel
+
+    try:
+        url = tunnel.current_url()
+        return tunnel.lookup_url() if url and url == base.rstrip("/") else ""
+    except Exception:  # noqa: BLE001 — pairing works without it
+        return ""
 
 
 #: How old an account's name and email may get before /me asks the issuer again.
@@ -1090,7 +1107,8 @@ def _devices_code(h: BaseHTTPRequestHandler) -> None:
     host, _, port = base.partition("://")[2].partition(":")
     # Over https (a tunnel), the whole base: http://host:8781 would be wrong.
     app_link, browser_link = devices.links(
-        code, host, int(port or 8781), server=base if base.startswith("https://") else "")
+        code, host, int(port or 8781),
+        server=base if base.startswith("https://") else "", lookup=_lookup_for(base))
     print(f"devices: {user.get('device')} minted a code for {name!r}", file=sys.stderr)
     _json(h, 200, {"ok": True, "code": code, "expires": round(expires, 3),
                    "name": name, "enrol": bool(body.get("enrol")),

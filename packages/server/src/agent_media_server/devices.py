@@ -423,7 +423,8 @@ def _reset_for_tests() -> None:
 
 # --- the CLI ----------------------------------------------------------------------
 
-def links(code: str, host: str, port: int, server: str = "") -> tuple[str, str]:
+def links(code: str, host: str, port: int, server: str = "",
+          lookup: str = "") -> tuple[str, str]:
     """`(app link, browser link)` for a device pairing code.
 
     The app reads `server` and `code` out of the first. The second is for a
@@ -434,11 +435,16 @@ def links(code: str, host: str, port: int, server: str = "") -> tuple[str, str]:
 
     `server`, when given, is the whole base instead (`https://red5.sasonica.com`,
     a tunnel or proxy in front: contract §19), and `host`/`port` are unused.
+
+    `lookup`, when given, rides along as `&lookup=`: where the app asks for
+    the server's current URL when a quick tunnel's name has changed
+    (tunnel.py; `https://sasonica.com/r/<install id>`).
     """
     from urllib.parse import quote
 
     base = server.rstrip("/") if server else f"http://{host}:{port}"
-    return (f"sasonica://pair?server={quote(base, safe='')}&code={code}",
+    extra = f"&lookup={quote(lookup, safe='')}" if lookup else ""
+    return (f"sasonica://pair?server={quote(base, safe='')}&code={code}{extra}",
             f"{base}/pair?c={code}&device=1")
 
 

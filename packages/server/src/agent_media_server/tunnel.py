@@ -1,30 +1,37 @@
-"""The quick tunnel (roadmap item 15, "for other users";
-docs/proposals/2026-10-03-off-the-tailnet.md).
+"""The quick tunnel and the sasonica.com lookup (roadmap item 15, "for other
+users"; docs/proposals/2026-10-03-off-the-tailnet.md).
 
 A stranger's install has no tailnet and no domain. `sasonica install` puts
 cloudflared in ~/.local/bin and a service that runs `media-tunnel run`:
-`cloudflared tunnel --url http://<MEDIA_VISUAL_PUBLIC>`, a quick tunnel (no
-Cloudflare account) to the app-routes-only listener. It names itself
-`https://<random>.trycloudflare.com` on stderr; that URL goes to
-`<state_dir>/tunnel.json`, which `pair --device` reads (canvas._cmd_pair), so
-the link names the tunnel, not a tailnet address.
 
-The name changes every time the tunnel restarts (a reboot, a crash), and the
-phone then has to be paired again. A sasonica.com lookup that would let the
-app find the new name is on hold pending Matrix (David, 8 Oct 2026; branch
-`lookup-hold`).
+  1. `cloudflared tunnel --url http://<MEDIA_VISUAL_PUBLIC>` — a quick tunnel
+     (no Cloudflare account) to the app-routes-only listener, which names
+     itself `https://<random>.trycloudflare.com` on stderr;
+  2. that URL goes to `<state_dir>/tunnel.json`, which `pair --device` reads
+     (canvas._cmd_pair): the link names the tunnel, not a tailnet address;
+  3. and to the lookup, `PUT https://sasonica.com/r/<install id>`, signed with
+     an Ed25519 key made on first use (`<state_dir>/install-key`, mode 600).
+     The install id is the key's hash, so nobody else can write it. The app
+     keeps the lookup URL from its pairing and asks it when the server stops
+     answering, because a quick tunnel's name changes every time it restarts.
+     Published again daily, so the entry (60 days to live) stays.
 
 Config (env):
   MEDIA_VISUAL_PUBLIC   the listener the tunnel points at (default 127.0.0.1:8789)
+  MEDIA_LOOKUP_URL      the lookup's base (default https://sasonica.com/r);
+                        `-` or MEDIA_LOOKUP=0 turns publishing off
   MEDIA_CLOUDFLARED     the cloudflared to run (default ~/.local/bin/cloudflared,
                         else PATH)
 
-    media-tunnel run            the service: cloudflared, its URL kept
+    media-tunnel run            the service: cloudflared, kept, URL published
     media-tunnel url [--wait S] the current tunnel URL (exit 1 when none)
+    media-tunnel id             the install id and its lookup URL
+    media-tunnel publish        publish the current URL now
 """
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -36,12 +43,16 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
 from agent_media_core._paths import state_dir
 
 DEFAULT_PUBLIC = "127.0.0.1:8789"
+DEFAULT_LOOKUP = "https://sasonica.com/r"
+#: How often a running tunnel publishes its URL again (the entry lives 60 days).
+REPUBLISH_S = 24 * 3600
 
 #: The cloudflared `sasonica install` fetches: Cloudflare's GitHub release,
 #: pinned, with each asset's sha256 (the release's own digests, 2026.9.3 — the
@@ -58,6 +69,61 @@ CLOUDFLARED_ASSETS = {
 _RELEASES = "https://github.com/cloudflare/cloudflared/releases/download"
 
 _URL_RE = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
+
+
+# --- the install's identity ------------------------------------------------------
+
+def key_path() -> Path:
+    return state_dir() / "install-key"
+
+
+def _b64url(b: bytes) -> str:
+    return base64.urlsafe_b64encode(b).decode().rstrip("=")
+
+
+def install_id_of(pub: bytes) -> str:
+    """base32(sha256(pub)[:16]), lower case, no padding: 26 characters. The
+    lookup Worker derives the same from the key a write carries."""
+    return base64.b32encode(hashlib.sha256(pub).digest()[:16]).decode().rstrip("=").lower()
+
+
+def identity(create: bool = True) -> tuple[bytes, bytes, str] | None:
+    """`(seed, public key, install id)`, the key made on first use."""
+    from agent_media_core._ed25519 import public_key
+
+    p = key_path()
+    try:
+        seed = bytes.fromhex(p.read_text().strip())
+    except (OSError, ValueError):
+        if not create:
+            return None
+        seed = os.urandom(32)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(seed.hex() + "\n")
+    if len(seed) != 32:
+        raise ValueError(f"{p}: not a 32-byte key")
+    pub = public_key(seed)
+    return seed, pub, install_id_of(pub)
+
+
+def lookup_base() -> str:
+    if os.environ.get("MEDIA_LOOKUP", "1") == "0":
+        return ""
+    base = os.environ.get("MEDIA_LOOKUP_URL")
+    if base is None or base == "":
+        base = DEFAULT_LOOKUP
+    return "" if base == "-" else base.rstrip("/")
+
+
+def lookup_url() -> str:
+    """Where the app can ask for this server's current URL: only while a quick
+    tunnel is what it is reached by, and publishing is on."""
+    base = lookup_base()
+    if not base or not current_url():
+        return ""
+    return f"{base}/{identity()[2]}"
 
 
 # --- the tunnel's URL --------------------------------------------------------------
@@ -103,6 +169,46 @@ def _clear_state() -> None:
             state_path().unlink()
     except (OSError, ValueError):
         pass
+
+
+# --- publishing ----------------------------------------------------------------------
+
+def publish(url: str, *, timeout: float = 15.0) -> tuple[bool, str]:
+    """PUT `url` to the lookup, signed. `(ok, what happened)`."""
+    from agent_media_core._ed25519 import sign
+
+    base = lookup_base()
+    if not base:
+        return False, "lookup off"
+    seed, pub, iid = identity()
+    body = json.dumps({"url": url, "ts": round(time.time(), 3), "pub": _b64url(pub)},
+                      separators=(",", ":")).encode()
+    req = urllib.request.Request(
+        f"{base}/{iid}", data=body, method="PUT",
+        headers={"Content-Type": "application/json",
+                 "X-Sasonica-Signature": _b64url(sign(seed, body)),
+                 # Cloudflare refuses Python-urllib's own User-Agent (error 1010).
+                 "User-Agent": "sasonica-tunnel/1"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return True, f"{r.status} {base}/{iid}"
+    except urllib.error.HTTPError as e:
+        return False, f"{e.code} {e.read(300).decode(errors='replace').strip()}"
+    except OSError as e:
+        return False, str(e)
+
+
+def _publish_until_done(url: str, stop: threading.Event) -> None:
+    """Publish, retrying with back-off while the URL is still the current one."""
+    delay = 5.0
+    while not stop.is_set():
+        ok, what = publish(url)
+        print(f"media-tunnel: lookup {'updated' if ok else 'failed'}: {what}",
+              file=sys.stderr, flush=True)
+        if ok or what == "lookup off" or what.startswith(("400", "403")):
+            return
+        stop.wait(delay)
+        delay = min(delay * 2, 300.0)
 
 
 # --- cloudflared ---------------------------------------------------------------------
@@ -181,8 +287,9 @@ def origin() -> str:
 
 
 def run() -> int:
-    """The service: cloudflared's quick tunnel, its URL written down.
+    """The service: cloudflared's quick tunnel, its URL written and published.
     Exits with cloudflared (the service manager starts it again)."""
+    identity()          # the install's key, before the URL it signs
     cf = cloudflared_path()
     if not cf:
         print("media-tunnel: no cloudflared (sasonica install fetches it)", file=sys.stderr)
@@ -197,13 +304,23 @@ def run() -> int:
     print("media-tunnel: " + " ".join(argv), file=sys.stderr, flush=True)
     child = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                              text=True, errors="replace")
+    stop = threading.Event()
+
     def _term(*_a) -> None:
-        child.terminate()     # its stderr closes, and the loop below ends
+        stop.set()
+        child.terminate()
 
     if threading.current_thread() is threading.main_thread():
         signal.signal(signal.SIGTERM, _term)
         signal.signal(signal.SIGINT, _term)
     url = ""
+
+    def _republish() -> None:
+        while not stop.wait(REPUBLISH_S):
+            if url:
+                _publish_until_done(url, stop)
+
+    threading.Thread(target=_republish, daemon=True).start()
     try:
         assert child.stderr is not None
         for line in child.stderr:
@@ -213,8 +330,11 @@ def run() -> int:
                 url = m.group(0)
                 _write_state(url)
                 print(f"media-tunnel: {url}", file=sys.stderr, flush=True)
+                threading.Thread(target=_publish_until_done, args=(url, stop),
+                                 daemon=True).start()
         return child.wait()
     finally:
+        stop.set()
         _clear_state()
         if child.poll() is None:
             child.terminate()
@@ -231,6 +351,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("run")
     u = sub.add_parser("url")
     u.add_argument("--wait", type=float, default=0.0, metavar="S")
+    sub.add_parser("id")
+    sub.add_parser("publish")
     a = ap.parse_args(argv)
     if a.cmd == "run":
         return run()
@@ -246,6 +368,19 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         print("no quick tunnel is running", file=sys.stderr)
         return 1
+    if a.cmd == "id":
+        _seed, _pub, iid = identity()
+        base = lookup_base()
+        print(iid + (f"  {base}/{iid}" if base else ""))
+        return 0
+    if a.cmd == "publish":
+        url = current_url()
+        if not url:
+            print("no quick tunnel is running", file=sys.stderr)
+            return 1
+        ok, what = publish(url)
+        print(what)
+        return 0 if ok else 1
     return 2
 
 

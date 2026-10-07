@@ -580,14 +580,15 @@ def _pair_host() -> str:
         "http to it. Run `sasonica install` again, or pass --server https://…")
 
 
-def _tunnel_url() -> str:
-    """The running quick tunnel's URL (sasonica install), or ""."""
+def _tunnel_url() -> tuple[str, str]:
+    """`(the quick tunnel's URL, its lookup URL)`, or ("", "")."""
     try:
         from agent_media_server import tunnel
 
-        return tunnel.current_url()
+        url = tunnel.current_url()
+        return (url, tunnel.lookup_url()) if url else ("", "")
     except Exception:  # noqa: BLE001 — no tunnel, then
-        return ""
+        return "", ""
 
 
 def _cmd_pair(argv: list[str]) -> int:
@@ -619,11 +620,11 @@ def _cmd_pair(argv: list[str]) -> int:
                          "(list them, mint a code, revoke one). Off by default — "
                          "the shell is the only way in until a device is given it")
     args = ap.parse_args(argv)
-    tunnelled = False
+    tunnelled, lookup = False, ""
     if args.device is not None and not args.server and not args.host:
         # A quick tunnel (sasonica install) before a tailnet address: it is
         # what reaches the phone from anywhere.
-        args.server = _tunnel_url()
+        args.server, lookup = _tunnel_url()
         tunnelled = bool(args.server)
     if not args.host and not (args.device is not None and args.server):
         try:
@@ -634,7 +635,7 @@ def _cmd_pair(argv: list[str]) -> int:
 
     if args.device is not None:
         return _cmd_pair_device(args.device, args.host, args.port, enrol=args.enrol,
-                                server=args.server, tunnelled=tunnelled)
+                                server=args.server, tunnelled=tunnelled, lookup=lookup)
 
     if not _amux_token():
         print("no amux token on this host (~/.amux/auth_token) — nothing to pair.",
@@ -654,7 +655,8 @@ def _cmd_pair(argv: list[str]) -> int:
 
 
 def _cmd_pair_device(name: str, host: str, port: int, enrol: bool = False,
-                     server: str = "", tunnelled: bool = False) -> int:
+                     server: str = "", tunnelled: bool = False,
+                     lookup: str = "") -> int:
     """`pair --device NAME`: a code the app trades for a device token at
     `POST /pair`. The code lives in the server package's own store
     (agent_media_server.devices), NOT the spool's `pair-code` above — the two
@@ -667,7 +669,7 @@ def _cmd_pair_device(name: str, host: str, port: int, enrol: bool = False,
         print("--device needs a name, e.g. --device \"Pixel 8a\"", file=sys.stderr)
         return 2
     code, _expires = _devices.mint_code(name, enrol=enrol)
-    app_link, web_link = _devices.links(code, host, port, server)
+    app_link, web_link = _devices.links(code, host, port, server, lookup)
     # The app link first, on its own: it is what gets copied into the app's
     # pairing screen, and the http form below it was being copied instead.
     print(f"\n  Pair {name!r} with Sasonica (valid {_devices.pair_ttl() // 60} min, "
@@ -678,7 +680,10 @@ def _cmd_pair_device(name: str, host: str, port: int, enrol: bool = False,
     # a shape they recognise); opened in a browser it is refused, on purpose.
     print(f"\n  server {server or f'{host}:{port}'} · code {code}\n"
           f"  (for reference only: {web_link})\n")
-    if tunnelled:
+    if lookup:
+        print(f"  The app finds this server again at {lookup} when the tunnel's\n"
+              "  address changes.\n")
+    elif tunnelled:
         print("  This address is a quick tunnel: it changes whenever the tunnel restarts\n"
               "  (a reboot, a crash). When the app can no longer reach this server, pair\n"
               "  again: `sasonica media-visual-canvas pair --device NAME`.\n")

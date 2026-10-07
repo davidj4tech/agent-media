@@ -371,11 +371,18 @@ def test_pair_device_prefers_a_running_quick_tunnel(capsys, monkeypatch):
     monkeypatch.setattr(canvas, "_qr", lambda url: "")
     monkeypatch.setattr(setup, "_tailnet_address", lambda: "100.64.0.7")
     monkeypatch.delenv("MEDIA_VISUAL_PAIR_SERVER", raising=False)
+    monkeypatch.setenv("MEDIA_LOOKUP_URL", "https://lookup.example/r")
     tunnel._write_state("https://abc-def.trycloudflare.com")   # this pid: alive
+    iid = tunnel.identity()[2]
     assert canvas._cmd_pair(["--device", "Pixel 8a"]) == 0
     out = capsys.readouterr().out
     first = next(ln for ln in out.splitlines() if "://" in ln).strip()
     assert first.startswith("sasonica://pair?server=https%3A%2F%2Fabc-def.trycloudflare.com&code=")
+    assert first.endswith(f"&lookup=https%3A%2F%2Flookup.example%2Fr%2F{iid}")
+    # With the lookup off, it says the phone must pair again.
+    monkeypatch.setenv("MEDIA_LOOKUP_URL", "-")
+    assert canvas._cmd_pair(["--device", "Pixel 8a"]) == 0
+    out = capsys.readouterr().out
     assert "quick tunnel" in out and "pair\n  again" in out
     # An explicit --server still wins.
     assert canvas._cmd_pair(["--device", "Tab", "--server", "https://red5.example"]) == 0
