@@ -39,6 +39,7 @@ import time
 import urllib.request
 from pathlib import Path
 
+from agent_media_core import procinfo
 from agent_media_core._paths import state_dir
 
 DEFAULT_PUBLIC = "127.0.0.1:8789"
@@ -66,18 +67,6 @@ def state_path() -> Path:
     return state_dir() / "tunnel.json"
 
 
-def _alive(pid: int) -> bool:
-    if os.name == "nt":
-        return True
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
-
 def current_url() -> str:
     """The running quick tunnel's URL, or "" (none, or its runner is gone)."""
     try:
@@ -85,7 +74,7 @@ def current_url() -> str:
     except (OSError, ValueError):
         return ""
     url, pid = got.get("url") or "", int(got.get("pid") or 0)
-    return url if url and pid and _alive(pid) else ""
+    return url if url and pid and procinfo.alive(pid) else ""
 
 
 def _write_state(url: str) -> None:

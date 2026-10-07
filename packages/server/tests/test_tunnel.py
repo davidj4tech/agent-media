@@ -8,7 +8,12 @@ import sys
 import threading
 import time
 
+import pytest
+
 from agent_media_server import tunnel
+
+# No quick tunnel on Windows yet (sasonica install skips it there).
+pytestmark = pytest.mark.skipif(os.name == "nt", reason="no quick tunnel on Windows yet")
 
 
 def test_run_writes_the_url_and_clears_it(monkeypatch, tmp_path):

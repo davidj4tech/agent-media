@@ -115,6 +115,10 @@ def test_a_bad_download_changes_nothing(tmp_path, monkeypatch):
 
 import argparse  # noqa: E402
 
+import pytest  # noqa: E402
+
+_no_tunnel_here = pytest.mark.skipif(os.name == "nt", reason="no quick tunnel on Windows yet")
+
 
 def _args(tmp_path, **kw):
     a = dict(no_tunnel=False, force=False, dry_run=False, bin_dir=tmp_path / "bin")
@@ -122,6 +126,7 @@ def _args(tmp_path, **kw):
     return argparse.Namespace(**a)
 
 
+@_no_tunnel_here
 def test_the_tunnel_is_skipped_where_the_phone_has_a_way_in(tmp_path, monkeypatch):
     monkeypatch.setattr(install.Path, "home", lambda: tmp_path)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
@@ -139,6 +144,7 @@ def test_the_tunnel_is_skipped_where_the_phone_has_a_way_in(tmp_path, monkeypatc
     assert "named tunnel" in install.tunnel_skip_reason(a, [])
 
 
+@_no_tunnel_here
 def test_the_tunnel_step_adds_the_public_listener_once(tmp_path, monkeypatch, capsys):
     from agent_media_server import tunnel
 

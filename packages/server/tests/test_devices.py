@@ -364,6 +364,7 @@ def test_the_link_names_the_tailnet_ip_before_the_hostname(capsys, monkeypatch):
     assert "no address the Sasonica app can reach" in capsys.readouterr().err
 
 
+@pytest.mark.skipif(os.name == "nt", reason="no quick tunnel on Windows yet")
 def test_pair_device_prefers_a_running_quick_tunnel(capsys, monkeypatch):
     from agent_media_core import setup
     from agent_media_server import tunnel
