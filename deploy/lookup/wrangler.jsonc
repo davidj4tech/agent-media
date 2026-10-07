@@ -1,0 +1,21 @@
+// sasonica.com/r/<install id> — the lookup a quick-tunnelled server publishes
+// its current URL to (src/index.ts; docs/proposals/2026-10-03-off-the-tailnet.md).
+// South Pen Labs account, on the sasonica.com zone. The route is /r/* only:
+// everything else on sasonica.com still goes through to red4's Caddy.
+//
+//     CLOUDFLARE_API_TOKEN=$SPL_CLOUDFLARE_TOKEN npx wrangler deploy
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "sasonica-lookup",
+  "main": "src/index.ts",
+  "account_id": "d255073199b24b2895921acfb9dd761f",
+  "routes": [{ "pattern": "sasonica.com/r/*", "zone_name": "sasonica.com" }],
+  "compatibility_date": "2026-07-01",
+  // An install id in a URL is not a secret worth hiding from our own logs,
+  // but there is no need to keep them: invocation logs stay off.
+  "observability": { "enabled": true, "logs": { "invocation_logs": false } },
+  "kv_namespaces": [{ "binding": "LOOKUP", "id": "c7d8a4d2defd4c55b9de790d8de41771" }],
+  // Writes per source address (on top of the per-install limits in the code).
+  "ratelimits": [{ "name": "WRITES", "namespace_id": "4815", "simple": { "limit": 20, "period": 60 } }],
+  "vars": { "ALLOW_SUFFIXES": ".trycloudflare.com" }
+}
