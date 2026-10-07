@@ -210,7 +210,11 @@ Three rules for that surface, before it exists and gets them wrong:
   sasonica.com's Drupal, which is already the accounts issuer (OIDC). Play
   Billing only if the app is sold in the Play Store, since Google requires it
   there. Both have to produce the same entitlement token.
-- Free/paid line in the app — the list above is a guess and needs your call.
+- ~~Free/paid line in the app~~ **Decided for now (David, 7 Oct 2026), to be
+  revisited later:** everything in the app is free. Paid is only what we run
+  and a fork cannot copy: the hosted relay, voices beyond `edge`, canvas
+  image generation. The supporter purchase is a thank-you and unlocks nothing.
+  The list in lane 1 is superseded until this is revisited.
 - Does the hosted tier ever make sense given that the target user already runs
   their own fleet, or is agent-media structurally a sell-once product?
 - Is any of this compatible with keeping the repo public and Apache-2.0? This
