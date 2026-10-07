@@ -226,7 +226,8 @@ sandbox until these are done:
    use it.
 3. Published privacy, terms and refund policies (Stripe and Australian
    consumer law expect them; the privacy draft is in websites, unpublished).
-4. GST: decide whether South Pen Labs registers and charges it.
+4. ~~GST~~ South Pen Labs is not registered for GST (David, 7 Oct 2026), so
+   none is charged and receipts must not call themselves tax invoices.
 
 Then: live keys (`bin/stripe-secret`), a live webhook, and the link.
 
