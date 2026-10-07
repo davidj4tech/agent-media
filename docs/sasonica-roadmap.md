@@ -797,6 +797,9 @@ ahead.
    `POST /pair` through the tunnel; after the tunnel restarted under a new
    name, the old one answered 530 and the same token worked at the new one (so
    Settings → Server address would also do, instead of pairing again). The
+   real one-liner in a Debian bookworm container (binary af70566) fetched
+   cloudflared, wrote the listener, and (no systemd there; started by hand)
+   paired a device from red5 through its tunnel. CI fix e837fba, 41d3216. The
    lookup as built (a Worker at sasonica.com/r/<id>, signed by a key made at
    install; the app re-finding its server) is parked, not deployed: agent-media
    branch `lookup-hold`, sasonica-app branch `tunnel-lookup` (1c52416, WIP;
