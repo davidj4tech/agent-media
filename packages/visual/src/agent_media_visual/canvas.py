@@ -542,15 +542,21 @@ def _qr(url: str) -> str:
         return "  (pip install qrcode for a scannable QR — or open the URL below)"
 
 
+class NoPairAddress(Exception):
+    """No address a phone can reach this server by: see _pair_host."""
+
+
 def _pair_host() -> str:
     """The host a pairing link names: MEDIA_VISUAL_PAIR_HOST, else this
-    machine's tailnet IP, else its hostname.
+    machine's tailnet IP. Never the bare hostname: raises NoPairAddress.
 
-    Not the bare hostname first: a short MagicDNS name (`red5`) resolves only
+    Not the bare hostname: a short MagicDNS name (`red5`) resolves only
     where the tailnet's DNS is in use, and Sasonica allows cleartext only
     to tailnet addresses — a link naming `red5` failed to pair with "Could not
-    reach http://red5:8781" (22 Sep 2026). The tailnet IP reaches it anywhere
-    on the tailnet.
+    reach http://red5:8781" (22 Sep 2026). A stranger's machine has no tailnet
+    at all, and a link naming its hostname failed the same way, silently
+    (8 Oct 2026): `sasonica install` gives it a quick tunnel instead, which
+    `pair --device` prefers (tunnel.current_url).
     """
     want = (os.environ.get("MEDIA_VISUAL_PAIR_HOST") or "").strip()
     if want:
@@ -559,9 +565,29 @@ def _pair_host() -> str:
         from agent_media_core.setup import _tailnet_address
 
         ip = _tailnet_address()
-    except Exception:  # noqa: BLE001 — the hostname still names it
+    except Exception:  # noqa: BLE001
         ip = ""
-    return ip or _socket.gethostname()
+    if ip:
+        return ip
+    raise NoPairAddress(
+        "no address the Sasonica app can reach this server by:\n"
+        "  - no quick tunnel is running (sasonica install sets one up; on Linux\n"
+        "    `systemctl --user status sasonica-quick-tunnel`),\n"
+        "  - this machine is not on a tailnet,\n"
+        "  - and neither --server / MEDIA_VISUAL_PAIR_SERVER (an https URL in front\n"
+        "    of the server) nor --host / MEDIA_VISUAL_PAIR_HOST is set.\n"
+        f"The hostname ({_socket.gethostname()}) is not used: the app refuses plain\n"
+        "http to it. Run `sasonica install` again, or pass --server https://…")
+
+
+def _tunnel_url() -> str:
+    """The running quick tunnel's URL (sasonica install), or ""."""
+    try:
+        from agent_media_server import tunnel
+
+        return tunnel.current_url()
+    except Exception:  # noqa: BLE001 — no tunnel, then
+        return ""
 
 
 def _cmd_pair(argv: list[str]) -> int:
@@ -575,7 +601,8 @@ def _cmd_pair(argv: list[str]) -> int:
         description="Mint a one-time pairing link (and QR) for a device.")
     ap.add_argument("--host", default=None,
                     help="host used in the URL (default: MEDIA_VISUAL_PAIR_HOST, else this "
-                         "machine's tailnet IP, else its hostname)")
+                         "machine's tailnet IP; with --device, a running quick tunnel "
+                         "comes first)")
     ap.add_argument("--port", type=int,
                     default=int(os.environ.get("MEDIA_VISUAL_PORT") or DEFAULT_PORT))
     ap.add_argument("--server", metavar="URL",
@@ -592,12 +619,22 @@ def _cmd_pair(argv: list[str]) -> int:
                          "(list them, mint a code, revoke one). Off by default — "
                          "the shell is the only way in until a device is given it")
     args = ap.parse_args(argv)
-    if not args.host:
-        args.host = _pair_host()
+    tunnelled = False
+    if args.device is not None and not args.server and not args.host:
+        # A quick tunnel (sasonica install) before a tailnet address: it is
+        # what reaches the phone from anywhere.
+        args.server = _tunnel_url()
+        tunnelled = bool(args.server)
+    if not args.host and not (args.device is not None and args.server):
+        try:
+            args.host = _pair_host()
+        except NoPairAddress as e:
+            print(f"pair: {e}", file=sys.stderr)
+            return 1
 
     if args.device is not None:
         return _cmd_pair_device(args.device, args.host, args.port, enrol=args.enrol,
-                                server=args.server)
+                                server=args.server, tunnelled=tunnelled)
 
     if not _amux_token():
         print("no amux token on this host (~/.amux/auth_token) — nothing to pair.",
@@ -617,7 +654,7 @@ def _cmd_pair(argv: list[str]) -> int:
 
 
 def _cmd_pair_device(name: str, host: str, port: int, enrol: bool = False,
-                     server: str = "") -> int:
+                     server: str = "", tunnelled: bool = False) -> int:
     """`pair --device NAME`: a code the app trades for a device token at
     `POST /pair`. The code lives in the server package's own store
     (agent_media_server.devices), NOT the spool's `pair-code` above — the two
@@ -641,6 +678,10 @@ def _cmd_pair_device(name: str, host: str, port: int, enrol: bool = False,
     # a shape they recognise); opened in a browser it is refused, on purpose.
     print(f"\n  server {server or f'{host}:{port}'} · code {code}\n"
           f"  (for reference only: {web_link})\n")
+    if tunnelled:
+        print("  This address is a quick tunnel: it changes whenever the tunnel restarts\n"
+              "  (a reboot, a crash). When the app can no longer reach this server, pair\n"
+              "  again: `sasonica media-visual-canvas pair --device NAME`.\n")
     if enrol:
         print("  This one may pair other devices from the app.\n")
     return 0

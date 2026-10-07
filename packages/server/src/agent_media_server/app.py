@@ -1088,7 +1088,9 @@ def _devices_code(h: BaseHTTPRequestHandler) -> None:
     code, expires = devices.mint_code(name, enrol=bool(body.get("enrol")))
     base = _base_url(h)
     host, _, port = base.partition("://")[2].partition(":")
-    app_link, browser_link = devices.links(code, host, int(port or 8781))
+    # Over https (a tunnel), the whole base: http://host:8781 would be wrong.
+    app_link, browser_link = devices.links(
+        code, host, int(port or 8781), server=base if base.startswith("https://") else "")
     print(f"devices: {user.get('device')} minted a code for {name!r}", file=sys.stderr)
     _json(h, 200, {"ok": True, "code": code, "expires": round(expires, 3),
                    "name": name, "enrol": bool(body.get("enrol")),

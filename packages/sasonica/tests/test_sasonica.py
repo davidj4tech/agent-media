@@ -109,3 +109,57 @@ def test_a_bad_download_changes_nothing(tmp_path, monkeypatch):
     monkeypatch.setenv("SASONICA_BINARY_BASE", rel.as_uri())
     assert update.main(["--binary", str(binary)]) == 1
     assert binary.read_bytes() == b"old" and not (tmp_path / "sasonica.new").exists()
+
+
+# --- the quick tunnel ----------------------------------------------------------
+
+import argparse  # noqa: E402
+
+
+def _args(tmp_path, **kw):
+    a = dict(no_tunnel=False, force=False, dry_run=False, bin_dir=tmp_path / "bin")
+    a.update(kw)
+    return argparse.Namespace(**a)
+
+
+def test_the_tunnel_is_skipped_where_the_phone_has_a_way_in(tmp_path, monkeypatch):
+    monkeypatch.setattr(install.Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    monkeypatch.delenv("MEDIA_VISUAL_PAIR_SERVER", raising=False)
+    a = _args(tmp_path)
+    assert install.tunnel_skip_reason(a, []) == ""
+    assert "PAIR_SERVER" in install.tunnel_skip_reason(a, ["MEDIA_VISUAL_PAIR_SERVER=https://x"])
+    assert install.tunnel_skip_reason(_args(tmp_path, no_tunnel=True), []) == "--no-tunnel"
+    units = tmp_path / ".config" / "systemd" / "user"
+    units.mkdir(parents=True)
+    (units / install.CHECKOUT_CANVAS_UNIT).write_text("")
+    assert "checkout" in install.tunnel_skip_reason(a, [])            # red5
+    (tmp_path / ".cloudflared").mkdir()
+    (tmp_path / ".cloudflared" / "config.yml").write_text("tunnel: x\n")
+    assert "named tunnel" in install.tunnel_skip_reason(a, [])
+
+
+def test_the_tunnel_step_adds_the_public_listener_once(tmp_path, monkeypatch, capsys):
+    from agent_media_server import tunnel
+
+    monkeypatch.setattr(install.Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    monkeypatch.delenv("MEDIA_VISUAL_PAIR_SERVER", raising=False)
+    monkeypatch.setattr(tunnel, "fetch_cloudflared",
+                        lambda d, dry_run=False: (str(d / "cloudflared"), "fetched"))
+    env = tmp_path / ".config" / "agent-media.env"
+    assert install._tunnel_step(_args(tmp_path), env) is True
+    assert install._tunnel_step(_args(tmp_path), env) is True
+    assert env.read_text().count("MEDIA_VISUAL_PUBLIC=127.0.0.1:8789") == 1
+    assert "pairing again" in capsys.readouterr().out
+    # No cloudflared: no tunnel service.
+    monkeypatch.setattr(tunnel, "fetch_cloudflared", lambda d, dry_run=False: ("", "no build"))
+    assert install._tunnel_step(_args(tmp_path), env) is False
+
+
+def test_the_tunnel_unit_runs_sasonica_tunnel():
+    (name, (word, what)), = install.TUNNEL_UNIT.items()
+    text = install.unit_text("/opt/sasonica", word, what, "0.0.0.0", 8781)
+    assert 'ExecStart="/opt/sasonica" tunnel\n' in text
+    assert sas.ALIASES["tunnel"] == ("media-tunnel", ["run"])
+    assert install.LABELS[name] == "com.sasonica.quick-tunnel"

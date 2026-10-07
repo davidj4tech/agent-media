@@ -8,8 +8,9 @@
 #   - Termux (Android: phone, tablet, TV box, Chromebook) → android/install.sh
 #   - Linux (x86_64, arm64) → the server as one file, from the server-latest
 #     release (deploy/binary/build.sh), put at ~/.local/bin/sasonica; then
-#     `sasonica install` (shims, config, the agents' hooks, two systemd --user
-#     services) and a pairing QR code for the app;
+#     `sasonica install` (shims, config, the agents' hooks, a quick tunnel,
+#     systemd --user services) and a pairing QR code for the app, naming the
+#     tunnel's https address;
 #   - a Mac (Apple silicon) → the same, as sasonica-macos-aarch64, with
 #     launchd agents for the services.
 #
@@ -78,8 +79,28 @@ unix() {
     echo "  sasonica media-visual-canvas pair --device \"$(hostname)\""
     return 0
   fi
+  # The quick tunnel (sasonica install, where the phone has no other way in):
+  # pair with its https address once cloudflared has named it.
+  if [ -f "$HOME/.config/systemd/user/sasonica-quick-tunnel.service" ] \
+     || [ -f "$HOME/Library/LaunchAgents/com.sasonica.quick-tunnel.plist" ]; then
+    if url=$("$bin/sasonica" media-tunnel url --wait 60); then
+      echo "The phone reaches this computer at $url (a Cloudflare quick tunnel)."
+      for _ in $(seq 1 30); do
+        if curl -fsS -m 5 "$url/healthz" >/dev/null 2>&1; then break; fi
+        sleep 2
+      done
+    else
+      echo "The quick tunnel has not started yet; when it has, pair with:"
+      echo "  sasonica media-visual-canvas pair --device \"$(hostname)\""
+      echo "(its log: journalctl --user -u sasonica-quick-tunnel, or ~/Library/Logs/sasonica)"
+      return 0
+    fi
+  fi
   echo "Scan this with Sasonica (Pair a server), or paste the link into its pairing screen:"
-  "$bin/sasonica" media-visual-canvas pair --device "$(hostname)"
+  "$bin/sasonica" media-visual-canvas pair --device "$(hostname)" || {
+    echo "Pair again once the phone can reach this computer (see above)."
+    return 0
+  }
 }
 
 case "$(uname -s 2>/dev/null)" in

@@ -357,7 +357,36 @@ def test_the_link_names_the_tailnet_ip_before_the_hostname(capsys, monkeypatch):
     first = next(ln for ln in out.splitlines() if "://" in ln)
     assert first.strip().startswith("sasonica://pair?server=http%3A%2F%2F100.64.0.7%3A8781")
     monkeypatch.setattr(setup, "_tailnet_address", lambda: "")
-    assert canvas._pair_host() == canvas._socket.gethostname()
+    # Never the bare hostname (8 Oct 2026): it fails loudly instead.
+    with pytest.raises(canvas.NoPairAddress):
+        canvas._pair_host()
+    assert canvas._cmd_pair(["--device", "Pixel 8a"]) == 1
+    assert "no address the Sasonica app can reach" in capsys.readouterr().err
+
+
+def test_pair_device_prefers_a_running_quick_tunnel(capsys, monkeypatch):
+    from agent_media_core import setup
+    from agent_media_server import tunnel
+
+    monkeypatch.setattr(canvas, "_qr", lambda url: "")
+    monkeypatch.setattr(setup, "_tailnet_address", lambda: "100.64.0.7")
+    monkeypatch.delenv("MEDIA_VISUAL_PAIR_SERVER", raising=False)
+    tunnel._write_state("https://abc-def.trycloudflare.com")   # this pid: alive
+    assert canvas._cmd_pair(["--device", "Pixel 8a"]) == 0
+    out = capsys.readouterr().out
+    first = next(ln for ln in out.splitlines() if "://" in ln).strip()
+    assert first.startswith("sasonica://pair?server=https%3A%2F%2Fabc-def.trycloudflare.com&code=")
+    assert "quick tunnel" in out and "pair\n  again" in out
+    # An explicit --server still wins.
+    assert canvas._cmd_pair(["--device", "Tab", "--server", "https://red5.example"]) == 0
+    out = capsys.readouterr().out
+    first = next(ln for ln in out.splitlines() if "://" in ln).strip()
+    assert "server=https%3A%2F%2Fred5.example&" in first and "quick tunnel" not in out
+    # A runner that is gone: back to the tailnet.
+    tunnel.state_path().write_text('{"url": "https://old.trycloudflare.com", "pid": 999999999}')
+    assert canvas._cmd_pair(["--device", "Pixel 8a"]) == 0
+    first = next(ln for ln in capsys.readouterr().out.splitlines() if "://" in ln).strip()
+    assert "100.64.0.7" in first
 
 
 def test_pair_without_device_is_unchanged(capsys, monkeypatch, tmp_path):

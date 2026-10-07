@@ -11,8 +11,16 @@ has the binary instead of a checkout:
   2. this host's config when it has none: role `origin`, headless sessions on;
   3. the agents' hooks: Claude Code's settings, opencode's plugin, for those
      installed;
-  4. two services, sasonica-canvas (`sasonica serve`) and sasonica-sessiond
-     (`sasonica sessiond`): systemd --user units on Linux, launchd agents on
+  4. a quick tunnel, so the phone reaches this computer from anywhere with no
+     tailnet and no account (roadmap item 15): cloudflared, fetched to
+     ~/.local/bin and checked against its pinned sha256, and the app-routes-
+     only listener (MEDIA_VISUAL_PUBLIC=127.0.0.1:8789). Its address changes
+     when the tunnel restarts, and the phone then pairs again. Skipped where
+     the phone already has a way in (MEDIA_VISUAL_PAIR_SERVER, a named
+     tunnel's ~/.cloudflared/config.yml, a checkout's canvas), or --no-tunnel;
+  5. the services, sasonica-canvas (`sasonica serve`), sasonica-sessiond
+     (`sasonica sessiond`) and, with the tunnel, sasonica-quick-tunnel
+     (`sasonica tunnel`): systemd --user units on Linux, launchd agents on
      a Mac (~/Library/LaunchAgents/com.sasonica.*.plist, logs in
      ~/Library/Logs/sasonica). Not when the host already runs a canvas from a
      checkout (agent-media-visual-canvas.service), unless --force.
@@ -37,6 +45,11 @@ UNITS = {
     "sasonica-canvas": ("serve", "Sasonica server: the app's API and the canvas"),
     "sasonica-sessiond": ("sessiond", "Sasonica session holder: headless agent sessions"),
 }
+#: With the quick tunnel (step 4): a third service.
+TUNNEL_UNIT = {"sasonica-quick-tunnel": ("tunnel", "Sasonica quick tunnel: the phone's way in")}
+#: Where the app-routes-only listener goes, for the tunnel (loopback only:
+#: CF-Connecting-IP is believed from a loopback peer alone).
+PUBLIC_LISTEN = "127.0.0.1:8789"
 #: A checkout's canvas unit (packages/visual/systemd): a host with it already
 #: serves 8781.
 CHECKOUT_CANVAS_UNIT = "agent-media-visual-canvas.service"
@@ -109,7 +122,7 @@ WantedBy=default.target
 
 
 #: launchd's label for each service (a Mac).
-LABELS = {name: "com.sasonica." + name.removeprefix("sasonica-") for name in UNITS}
+LABELS = {name: "com.sasonica." + name.removeprefix("sasonica-") for name in {**UNITS, **TUNNEL_UNIT}}
 
 
 def launch_agents() -> Path:
@@ -142,7 +155,7 @@ def _launchd(binary: str, a) -> int:
     domain = f"gui/{os.getuid()}"
     agents = launch_agents()
     rc = 0
-    for name, (word, _what) in UNITS.items():
+    for name, (word, _what) in a.units.items():
         label = LABELS[name]
         plist = agents / f"{label}.plist"
         print(f"  {plist}")
@@ -186,6 +199,58 @@ def _schtasks(binary: str, a) -> int:
     return rc
 
 
+def _env_value(lines: list[str], key: str) -> str:
+    for line in lines:
+        if line.startswith(key + "="):
+            return line.split("=", 1)[1].strip()
+    return ""
+
+
+def tunnel_skip_reason(a, env_lines: list[str]) -> str:
+    """Why this host gets no quick tunnel, or "" when it should have one."""
+    if a.no_tunnel:
+        return "--no-tunnel"
+    if os.environ.get("MEDIA_VISUAL_PAIR_SERVER") or _env_value(env_lines, "MEDIA_VISUAL_PAIR_SERVER"):
+        return "MEDIA_VISUAL_PAIR_SERVER is set: the phone already has a way in"
+    if (Path.home() / ".cloudflared" / "config.yml").exists():
+        return "~/.cloudflared/config.yml: this host runs its own named tunnel"
+    if (_config_home() / "systemd" / "user" / CHECKOUT_CANVAS_UNIT).exists() and not a.force:
+        return f"{CHECKOUT_CANVAS_UNIT}: a checkout install serves this host"
+    if os.name == "nt":
+        return "not on Windows yet"
+    return ""
+
+
+def _tunnel_step(a, env_file: Path) -> bool:
+    """cloudflared and the public listener; True when the tunnel service goes in."""
+    from agent_media_server import tunnel
+
+    print("== Quick tunnel")
+    lines = env_file.read_text().splitlines() if env_file.exists() else []
+    why = tunnel_skip_reason(a, lines)
+    if why:
+        print(f"  none: {why}")
+        return False
+    try:
+        path, what = tunnel.fetch_cloudflared(a.bin_dir, dry_run=a.dry_run)
+    except OSError as e:
+        path, what = "", f"download failed: {e}"
+    print(f"  cloudflared: {what}")
+    if not path:
+        print("  no tunnel: pair over your own network (--host) or run `sasonica install` again")
+        return False
+    public = _env_value(lines, "MEDIA_VISUAL_PUBLIC")
+    if not public:
+        print(f"  MEDIA_VISUAL_PUBLIC={PUBLIC_LISTEN} → {env_file}")
+        if not a.dry_run:
+            env_file.parent.mkdir(parents=True, exist_ok=True)
+            with env_file.open("a") as f:
+                f.write(f"MEDIA_VISUAL_PUBLIC={PUBLIC_LISTEN}\n")
+    print("  A quick tunnel's address changes whenever it restarts (a reboot, a crash);")
+    print("  the phone then needs pairing again.")
+    return True
+
+
 def _run(argv: list[str], *, dry_run: bool) -> int:
     print("  $ " + " ".join(argv))
     if dry_run:
@@ -203,6 +268,9 @@ def main(argv: list[str] | None = None) -> int:
                          "the phone reaches it across the network)")
     ap.add_argument("--port", type=int, default=8781)
     ap.add_argument("--no-services", action="store_true")
+    ap.add_argument("--no-tunnel", action="store_true",
+                    help="no quick tunnel: the phone reaches this computer some other "
+                         "way (a tailnet, your own tunnel or proxy)")
     ap.add_argument("--force", action="store_true",
                     help="replace commands and services a checkout install put there")
     ap.add_argument("--dry-run", action="store_true")
@@ -239,6 +307,10 @@ def main(argv: list[str] | None = None) -> int:
             with env_file.open("a") as f:
                 f.write("MEDIA_HEADLESS=1\n")
 
+    a.units = dict(UNITS)
+    if _tunnel_step(a, env_file):
+        a.units.update(TUNNEL_UNIT)
+
     print("== Agents")
     path = os.pathsep.join([str(a.bin_dir), os.environ.get("PATH", "")])
     if shutil.which("claude", path=path):
@@ -269,15 +341,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  {CHECKOUT_CANVAS_UNIT} already serves this host (a checkout install); "
               "left alone — --force installs sasonica's beside it")
         return 0
-    for name, (word, what) in UNITS.items():
+    for name, (word, what) in a.units.items():
         print(f"  {units / (name + '.service')}")
         if not a.dry_run:
             units.mkdir(parents=True, exist_ok=True)
             (units / f"{name}.service").write_text(unit_text(binary, word, what, a.bind, a.port))
     _run(["systemctl", "--user", "daemon-reload"], dry_run=a.dry_run)
-    rc = _run(["systemctl", "--user", "enable", "--now", *(f"{n}.service" for n in UNITS)],
+    rc = _run(["systemctl", "--user", "enable", "--now", *(f"{n}.service" for n in a.units)],
               dry_run=a.dry_run)
     # Restart too: after a new binary, enable --now leaves the old one running.
-    _run(["systemctl", "--user", "restart", *(f"{n}.service" for n in UNITS)], dry_run=a.dry_run)
+    _run(["systemctl", "--user", "restart", *(f"{n}.service" for n in a.units)], dry_run=a.dry_run)
     print("  (they stop at logout unless lingering is on: loginctl enable-linger)")
     return rc

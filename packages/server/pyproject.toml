@@ -12,5 +12,9 @@ requires-python = ">=3.11"
 # this package, never the other way round (docs/proposals/2026-09-21-server-package.md).
 dependencies = ["agent-media-core"]
 
+[project.scripts]
+# The quick tunnel (tunnel.py); `sasonica tunnel` runs it.
+media-tunnel = "agent_media_server.tunnel:main"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_media_server"]
