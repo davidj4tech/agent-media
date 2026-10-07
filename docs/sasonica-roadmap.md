@@ -805,6 +805,22 @@ ahead.
    branch `lookup-hold`, sasonica-app branch `tunnel-lookup` (1c52416, WIP;
    worktree ~/projects/sasonica-app-tunnel); KV namespace `sasonica-lookup`
    is kept on the South Pen Labs account.
+   **The real app paired, 8 Oct 2026** (David: the website changes "after a
+   real phone pairs"; the app in a browser accepted): the released binary
+   (2026.10.07+e8eab48) in a throwaway HOME, `install --no-services` (it
+   fetched cloudflared), listener 18789, a quick tunnel; the app's own web
+   bundle served at `http://localhost` as the APK loads it, headless Chromium
+   at 412×900. Welcome → Connect → the pasted link paired through
+   `https://…trycloudflare.com` (no CORS or mixed-content trouble); Home,
+   Threads and New chat loaded from the server (agent list: opencode, free
+   models), and a message got opencode's reply. Tunnel restarted: the old
+   name answered 530 ("Could not reach …"), Settings → Advanced → Server
+   address with the new one said "OK", the same device token, and a reply
+   came live on a thread stream open 3 min (the ping cap holds). Found and
+   fixed: the app says `sasonica pair --device`, which the binary did not
+   have (agent-media 6f77632), and a short reply with no speech keys stood
+   one letter a line (sasonica-app 6df3bb8). Screenshots
+   /tmp/playwright-mcp-headless/pairtest-*.png.
 16. **The hosted relay** (David, 4 Oct 2026: the next step towards other
    users, chosen over a sasonica.com Matrix homeserver and over hosted
    compute — Sasonica runs the relay, the customer's own machine runs the
