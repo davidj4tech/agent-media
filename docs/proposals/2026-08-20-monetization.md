@@ -203,8 +203,13 @@ Three rules for that surface, before it exists and gets them wrong:
 
 ## Open questions
 
-- Is South Pen Labs the seller of record, and is there a payment processor
-  chosen? Play Billing and a direct-purchase flow have different answers.
+- ~~Is South Pen Labs the seller of record, and is there a payment processor
+  chosen?~~ **Decided (David, 7 Oct 2026):** South Pen Labs Pty Ltd sells
+  (ABN 35 696 457 860). Stripe takes payment for everything outside the Play
+  Store, through the latest Drupal Commerce (3.x) with its Stripe gateway on
+  sasonica.com's Drupal, which is already the accounts issuer (OIDC). Play
+  Billing only if the app is sold in the Play Store, since Google requires it
+  there. Both have to produce the same entitlement token.
 - Free/paid line in the app — the list above is a guess and needs your call.
 - Does the hosted tier ever make sense given that the target user already runs
   their own fleet, or is agent-media structurally a sell-once product?
