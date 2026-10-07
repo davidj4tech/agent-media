@@ -186,7 +186,8 @@ Three rules for that surface, before it exists and gets them wrong:
 
 ## Staging
 
-1. **Now** — this document; decide the free/paid line for the app.
+1. ~~**Now** — this document; decide the free/paid line for the app.~~
+   Done 7 Oct 2026 (open questions below).
 2. ~~**Next** — `entitlements.py` plus `media licence` CLI, with a stub mint and
    a single real gate behind it. Fully testable offline; no storefront yet.~~
    **Built 2026-08-20** — see [entitlements.md](../reference/entitlements.md).
@@ -200,6 +201,12 @@ Three rules for that surface, before it exists and gets them wrong:
 4. **Then** — companion `builtin` playback (GPL clearance), then Play Billing
    into the same token.
 5. **Later, and only if the app sells** — the hosted tier.
+
+**Order chosen 7 Oct 2026 (David left it to me):** the supporter purchase on
+sasonica.com goes first. It is the smallest real sale, and it proves the
+whole chain once (Drupal Commerce, Stripe, a Sasonica account, a minted
+token) for the paid hosted relay to reuse. Needs a Stripe account for South
+Pen Labs.
 
 ## Open questions
 
@@ -215,8 +222,8 @@ Three rules for that surface, before it exists and gets them wrong:
   and a fork cannot copy: the hosted relay, voices beyond `edge`, canvas
   image generation. The supporter purchase is a thank-you and unlocks nothing.
   The list in lane 1 is superseded until this is revisited.
-- Does the hosted tier ever make sense given that the target user already runs
-  their own fleet, or is agent-media structurally a sell-once product?
-- Is any of this compatible with keeping the repo public and Apache-2.0? This
-  proposal assumes yes and confines proprietary code to the mint and to
-  optional packages.
+- ~~Does the hosted tier ever make sense~~ Answered by the tiers of 27 Sep
+  2026: yes, for people with no Cloudflare account (the hosted relay).
+- ~~Is any of this compatible with keeping the repo public and Apache-2.0?~~
+  Yes: the licence was settled on 22 Sep 2026 (Apache-2.0, South Pen Labs),
+  and what is paid is hosted, so nothing paid lives in the public code.
