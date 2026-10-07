@@ -334,7 +334,8 @@ def main(argv: list[str] | None = None) -> int:
     if shutil.which("systemctl") is None or subprocess.run(
             ["systemctl", "--user", "show-environment"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0:
-        print("  no systemd --user here: start `sasonica serve` and `sasonica sessiond` yourself")
+        print("  no systemd --user here: start `sasonica serve` and `sasonica sessiond` yourself"
+              + (", and `sasonica tunnel`" if "sasonica-quick-tunnel" in a.units else ""))
         return 0
     units = _config_home() / "systemd" / "user"
     if (units / CHECKOUT_CANVAS_UNIT).exists() and not a.force:
