@@ -978,6 +978,12 @@ def reply(item: str, text: str, bearer: str, *, quote: str = "",
     from . import driver
 
     if session:
+        from . import matrix
+
+        if matrix.room(session) is not None:
+            # A Matrix room (matrix.py): read-only until sending is built.
+            return False, {"error": "this Matrix room is read-only for now",
+                           "status": 409}
         # A session id nothing knows — not running, no transcript — is the
         # same answer an item with no session behind it gets: not there.
         # Checked here rather than left to `deliver`, because `branch` would

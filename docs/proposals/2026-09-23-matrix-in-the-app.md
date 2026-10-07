@@ -181,7 +181,15 @@ not the install.
    per-room speech gate a bridged room must be left out of.
 1. **Read-only**: Matrix rooms on `/targets`, timelines through §6.2.2,
    updates on the §11 stream. The app gets a "Messages" filter and nothing
-   else new.
+   else new. **Built 8 Oct 2026**: a room's thread id is a uuid made from
+   its room id, so the session routes take it unchanged
+   (`server-contract.md` §6.1, "Matrix rows"). The room cache is fed by the
+   step-0 loop and pages back through `/rooms/{id}/messages`; new messages
+   reach an open thread on the stream's 3 s full re-read (there is no
+   transcript to watch). The filter is the agent menu's **Matrix** (a
+   product name, so no new strings), and room rows are listed only under
+   it; an incoming message wears the "From <name>" note. `/reply` to a room
+   answers 409 until step 2.
 2. **Send**, as `@david` with its own token.
 3. **One gateway** — gmessages — registered on tuwunel. No app change; the
    proof is that pairing works from the phone.

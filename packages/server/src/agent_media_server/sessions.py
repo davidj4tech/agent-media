@@ -1362,6 +1362,10 @@ def sessions_index(*, days: float = STORE_DAYS) -> list[dict]:
     # And the conversations no pane, no driver and no shelf knows about —
     # every harness's own store (§6.16).
     out += _stored_rows(store, seen, flags, pinned, marks, days=days)
+    # And the Matrix rooms the canvas reads, as threads of their own (matrix.py).
+    from . import matrix
+
+    out += matrix.rows(flags)
     # And `speech`, its level (interrupt | auto | normal | quiet), with
     # `priority` kept for older clients: its replies are never held or muted.
     # A thread with no level of its own has the default (/speech/default).

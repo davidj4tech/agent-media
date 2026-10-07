@@ -320,6 +320,20 @@ Everything a message can be pointed at.
   process is running; an ended one has `at` (its last event) like a shelved
   row. Title: the shelf's name, else Claude's (`/rename`, then `ai-title`),
   else the first message. Pane rows never carry the four keys.
+- **Matrix rows** (8 Oct 2026, `matrix.py`; the Matrix proposal's step 1):
+  one per room on `MATRIX_ROOM_ALLOW`, last in the list, with
+  `"source": "matrix"`, `"harness": "matrix"`, `"room"` (the room id) and
+  `"drivable": false`. `session` is a uuid made from the room id (stable,
+  so every session route takes it); `title` the room's name, else its other
+  members; `recap` the last message, `{"text": "<name>: <words>", "at",
+  "source": "matrix"}`; never live, rested or pinned. `/conversation/log`
+  and the thread stream (§11) serve the room's timeline as §6.2.2
+  messages: the owner (`MATRIX_OWNER_ID`, else the first of
+  `MATRIX_CONTROL_IDS` that is not `MATRIX_SAM_ID`) is `user`, everyone
+  else `assistant` with `peer: {name}` and `sender: {id, name}`; photos,
+  voice notes and files are a one-line text part. The envelope adds
+  `room: {id, name, members}`. Read-only for now: `/reply` to a room is 409.
+  The app lists these rows only under its Matrix filter.
 
 Clients: S (`utils/sasonicaTargets.js`, drawer and ask page), on open.
 
