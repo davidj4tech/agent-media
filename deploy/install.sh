@@ -76,7 +76,7 @@ unix() {
   done
   if [ -z "$up" ]; then
     echo "The server is not answering on port 8781 yet; when it is, pair with:"
-    echo "  sasonica media-visual-canvas pair --device \"$(hostname)\""
+    echo "  sasonica pair --device \"$(hostname)\""
     return 0
   fi
   # The quick tunnel (sasonica install, where the phone has no other way in):
@@ -91,13 +91,13 @@ unix() {
       done
     else
       echo "The quick tunnel has not started yet; when it has, pair with:"
-      echo "  sasonica media-visual-canvas pair --device \"$(hostname)\""
+      echo "  sasonica pair --device \"$(hostname)\""
       echo "(its log: journalctl --user -u sasonica-quick-tunnel, or ~/Library/Logs/sasonica)"
       return 0
     fi
   fi
   echo "Scan this with Sasonica (Pair a server), or paste the link into its pairing screen:"
-  "$bin/sasonica" media-visual-canvas pair --device "$(hostname)" || {
+  "$bin/sasonica" pair --device "$(hostname)" || {
     echo "Pair again once the phone can reach this computer (see above)."
     return 0
   }

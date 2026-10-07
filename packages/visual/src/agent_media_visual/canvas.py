@@ -681,7 +681,7 @@ def _cmd_pair_device(name: str, host: str, port: int, enrol: bool = False,
     if tunnelled:
         print("  This address is a quick tunnel: it changes whenever the tunnel restarts\n"
               "  (a reboot, a crash). When the app can no longer reach this server, pair\n"
-              "  again: `sasonica media-visual-canvas pair --device NAME`.\n")
+              "  again: `sasonica pair --device NAME`.\n")
     if enrol:
         print("  This one may pair other devices from the app.\n")
     return 0

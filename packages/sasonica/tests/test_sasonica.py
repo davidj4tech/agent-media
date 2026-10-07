@@ -168,4 +168,6 @@ def test_the_tunnel_unit_runs_sasonica_tunnel():
     text = install.unit_text("/opt/sasonica", word, what, "0.0.0.0", 8781)
     assert 'ExecStart="/opt/sasonica" tunnel\n' in text
     assert sas.ALIASES["tunnel"] == ("media-tunnel", ["run"])
+    # `sasonica pair`, the command the app's pairing screen names.
+    assert sas.ALIASES["pair"] == ("media-visual-canvas", ["pair"])
     assert install.LABELS[name] == "com.sasonica.quick-tunnel"

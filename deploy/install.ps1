@@ -62,8 +62,8 @@ foreach ($i in 1..30) {
 }
 if (-not $up) {
   Write-Host 'The server is not answering on port 8781 yet; when it is, pair with:'
-  Write-Host "  sasonica media-visual-canvas pair --device `"$env:COMPUTERNAME`""
+  Write-Host "  sasonica pair --device `"$env:COMPUTERNAME`""
   return
 }
 Write-Host 'Scan this with Sasonica (Pair a server), or paste the link into its pairing screen:'
-& $exe media-visual-canvas pair --device $env:COMPUTERNAME
+& $exe pair --device $env:COMPUTERNAME

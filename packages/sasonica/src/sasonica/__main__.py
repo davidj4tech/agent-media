@@ -3,6 +3,8 @@
     sasonica serve        the canvas, which serves the app's API (media-visual-canvas)
     sasonica sessiond     the session holder for headless chats (media sessiond)
     sasonica tunnel       the quick tunnel the app reaches it through (media-tunnel run)
+    sasonica pair         a pairing link for the app (media-visual-canvas pair), as
+                          the app's pairing screen says: `sasonica pair --device NAME`
     sasonica install      shims on PATH, the two services, this host's config
     sasonica update       the newest release in place of this binary
     sasonica commands     every command it can run
@@ -32,6 +34,8 @@ ALIASES = {
     "serve": ("media-visual-canvas", []),
     "sessiond": ("media", ["sessiond"]),
     "tunnel": ("media-tunnel", ["run"]),
+    # The app's pairing screen and messages name `sasonica pair --device NAME`.
+    "pair": ("media-visual-canvas", ["pair"]),
 }
 
 
