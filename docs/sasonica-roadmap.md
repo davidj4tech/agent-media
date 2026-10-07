@@ -779,6 +779,29 @@ ahead.
    lookup** (a Worker keeping each install's current URL, signed by a key
    made at install) so the app re-finds the server after a restart instead
    of pairing again. `_pair_host` stops falling back to a bare hostname.
+   **The lookup is on hold pending Matrix (David, 8 Oct 2026)**: Sasonica's
+   own homeserver (threads as rooms, decided 29 Sep) may make it throwaway.
+   Until then the phone **pairs again whenever the quick tunnel's address
+   changes** (a reboot, a crash); the installer and `pair` say so. **Quick
+   tunnel built 8 Oct** (agent-media 21c5ead): `sasonica install` fetches
+   cloudflared 2026.9.3 (pinned sha256 per platform) to ~/.local/bin, writes
+   `MEDIA_VISUAL_PUBLIC=127.0.0.1:8789`, and adds a third service,
+   `sasonica-quick-tunnel` (`sasonica tunnel` = `media-tunnel run`, which keeps
+   the URL in `<state>/tunnel.json`). Skipped where the phone already has a
+   way in: `MEDIA_VISUAL_PAIR_SERVER`, `~/.cloudflared/config.yml`, a
+   checkout's canvas unit (red5 has all of these but the first), or
+   `--no-tunnel`. `pair --device` prefers the running tunnel; with no tunnel,
+   no tailnet and no `--server`/`--host`, it fails with what to do instead of
+   naming the hostname. install.sh waits for the tunnel's URL and pairs with
+   it. Tested on red5 with a throwaway HOME and other ports: a device paired by
+   `POST /pair` through the tunnel; after the tunnel restarted under a new
+   name, the old one answered 530 and the same token worked at the new one (so
+   Settings → Server address would also do, instead of pairing again). The
+   lookup as built (a Worker at sasonica.com/r/<id>, signed by a key made at
+   install; the app re-finding its server) is parked, not deployed: agent-media
+   branch `lookup-hold`, sasonica-app branch `tunnel-lookup` (1c52416, WIP;
+   worktree ~/projects/sasonica-app-tunnel); KV namespace `sasonica-lookup`
+   is kept on the South Pen Labs account.
 16. **The hosted relay** (David, 4 Oct 2026: the next step towards other
    users, chosen over a sasonica.com Matrix homeserver and over hosted
    compute — Sasonica runs the relay, the customer's own machine runs the
