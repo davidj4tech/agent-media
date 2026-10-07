@@ -215,6 +215,21 @@ Stripe webhook, and a perpetual `supporter` licence signed per order (key
 shop". Left: live keys and a live webhook once Stripe verifies the company,
 a link from sasonica.com, and GST if South Pen Labs registers.
 
+**Before charging — pre-launch list (David, 7 Oct 2026: "needs to be a bit
+more polished before we start charging").** Stripe already lets South Pen
+Labs take live payments (payouts wait on its review); the shop stays in
+sandbox until these are done:
+
+1. A "Support Sasonica" page on sasonica.com's Next.js front end, so buying
+   happens on the site rather than cms.sasonica.com's admin-styled checkout.
+2. A branded receipt email that carries the supporter licence and how to
+   use it.
+3. Published privacy, terms and refund policies (Stripe and Australian
+   consumer law expect them; the privacy draft is in websites, unpublished).
+4. GST: decide whether South Pen Labs registers and charges it.
+
+Then: live keys (`bin/stripe-secret`), a live webhook, and the link.
+
 ## Open questions
 
 - ~~Is South Pen Labs the seller of record, and is there a payment processor
