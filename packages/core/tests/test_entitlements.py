@@ -235,7 +235,9 @@ def test_keys_come_from_config_as_well_as_the_environment(tmp_path, monkeypatch)
 @pytest.mark.parametrize("bad", ["nothex", "aabb", ""])
 def test_an_unusable_configured_key_is_ignored_not_fatal(bad, monkeypatch):
     monkeypatch.setenv(entitlements.KEYS_ENV, f"test:{bad}")
-    assert entitlements.trusted_keys() == {}
+    # Only the bad configured key is dropped; the vendored mint keys stay.
+    assert entitlements.trusted_keys() == {
+        kid: bytes.fromhex(h) for kid, h in entitlements.VENDORED_KEYS.items()}
     assert entitlements.tier() == "free"
 
 

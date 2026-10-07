@@ -3,9 +3,10 @@
 Built 2026-08-20. Implements stage 2 of
 [the monetization proposal](../proposals/2026-08-20-monetization.md).
 
-There is **no seller of record and no mint** yet. What exists is the primitive
-every storefront will eventually write into, plus the developer-side commands
-to exercise the whole path offline.
+The seller of record is South Pen Labs, and the first mint is sasonica.com's
+shop (7 Oct 2026; key `spl1`, below). What follows is the primitive every
+storefront writes into, plus the developer-side commands to exercise the
+whole path offline.
 
 ## The shape
 
@@ -89,8 +90,11 @@ drops into `$HOME` is a private key that ends up in a backup.
 
 In order, each adding to and overriding the last:
 
-1. `entitlements.VENDORED_KEYS` — empty. Adding the production public key here
-   is the single edit that turns this on.
+1. `entitlements.VENDORED_KEYS` — `spl1`, South Pen Labs' mint on
+   sasonica.com (7 Oct 2026). A supporter purchase there signs a perpetual
+   licence: tier `supporter`, feature `supporter`, subject
+   `sasonica-order-<n>`. It unlocks nothing (the free/paid line of 7 Oct);
+   the completion page shows it for `media licence add`.
 2. `[licence.keys]` in `~/.config/agent-media/config.toml`.
 3. `MEDIA_LICENCE_KEYS="kid:hex,kid:hex"`.
 

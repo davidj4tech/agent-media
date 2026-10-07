@@ -208,6 +208,13 @@ whole chain once (Drupal Commerce, Stripe, a Sasonica account, a minted
 token) for the paid hosted relay to reuse. Needs a Stripe account for South
 Pen Labs.
 
+**Built 7 Oct 2026, sandbox:** Drupal Commerce 3 + Commerce Stripe (Payment
+Element) on sasonica.com, one "Support Sasonica" product at A$5/10/25, a
+Stripe webhook, and a perpetual `supporter` licence signed per order (key
+`spl1`, now in `VENDORED_KEYS`). Details: websites README, "Sasonica's
+shop". Left: live keys and a live webhook once Stripe verifies the company,
+a link from sasonica.com, and GST if South Pen Labs registers.
+
 ## Open questions
 
 - ~~Is South Pen Labs the seller of record, and is there a payment processor

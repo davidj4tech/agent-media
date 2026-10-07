@@ -76,11 +76,13 @@ TOKEN_PREFIX = "AM1"
 FREE_TIER = "free"
 KNOWN_TIERS = ("free", "plus", "studio")
 
-# Public keys the mint signs with, as {key_id: hex}. Empty until there is a
-# seller of record — an install with no vendored key simply has no way to be
-# anything but free tier, which is the correct behaviour for today. Adding the
-# production key here is the single edit that turns this on.
-VENDORED_KEYS: dict[str, str] = {}
+# Public keys the mint signs with, as {key_id: hex}. "spl1" is South Pen
+# Labs' mint on sasonica.com (Drupal Commerce, sasonica_shop's LicenceMinter;
+# 7 Oct 2026): it signs a perpetual "supporter" licence for each supporter
+# purchase. The private seed lives only in the site's app.env on red4.
+VENDORED_KEYS: dict[str, str] = {
+    "spl1": "ac96449d121336b7af6ab6cde3d353ee067595c5bec6d0cc756c4036c5bd766e",
+}
 
 
 # --------------------------------------------------------------------------
