@@ -840,9 +840,13 @@ ahead.
    calling `/hooks/account-deleted` (tested live). The 4 Oct test tenant
    is removed. Found: non-admin accounts could not sign in to any OAuth
    client (missing `grant simple_oauth codes`); fixed. Test account
-   `sasonica-test2` (uid 5) made, not yet allowed; the allowlist change and
-   Windows steps are in hosted-relay.md. Left for David: the Windows run,
-   Google publishing, the ToS review, the privacy-policy lines, then `*`.
+   `sasonica-test2` (uid 5) made and allowed beside David's (sasonica-shell
+   74fc418). **Windows end-to-end passed 8 Oct** on GitHub's Windows runner
+   (manual workflow `windows-hosted-e2e.yml`; red5 has no KVM): the real
+   one-liner, Join by sasonica-test2 from red5's headless browser, replace
+   on a second join, and `hostname`/`ver` through the relay over MCP
+   (runs 37701441963, 37701570159; hosted-relay.md 0858f45). Left for
+   David: Google publishing, the ToS review, the privacy-policy line, then `*`.
 
 17. **Background agents you can act on, and for Codex** (David, 7 Oct
    2026, after asking whether Sasonica has what the arrow key on an empty
