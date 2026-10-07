@@ -168,7 +168,17 @@ not the install.
 ## Order of work
 
 0. **One sync loop**, server-side; the intake keeps working (no user-visible
-   change).
+   change). **Built 8 Oct 2026** (David chose "own gateway first" over
+   hosting gateways for others): the loop is `agent_media_core.matrix`,
+   run in the canvas by `agent_media_server.matrix` with the speech intake
+   subscribed (`agent_media_intake_matrix.consumer`, which plays on its own
+   worker so a voice note never holds up sync). It keeps the intake's
+   `sync.json`, so the switch replayed nothing. On red5 the canvas reads
+   only the `MATRIX_*` keys (`~/.config/agent-media/matrix.env`, drop-in
+   `matrix.conf`) and `agent-media-intake-matrix.service` is disabled;
+   `media-intake-matrix` still runs the loop standalone on a host with no
+   canvas. `MATRIX_SPEECH_ROOMS` (default: every allowed room) is the
+   per-room speech gate a bridged room must be left out of.
 1. **Read-only**: Matrix rooms on `/targets`, timelines through §6.2.2,
    updates on the §11 stream. The app gets a "Messages" filter and nothing
    else new.

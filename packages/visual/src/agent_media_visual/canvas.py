@@ -2163,6 +2163,10 @@ def main() -> None:
     # The radio's loop (agent_media_server.radio): idle until a station is on.
     from agent_media_server import radio as _radio
     _radio.start()
+    # The one Matrix /sync loop (agent_media_server.matrix), with the speech
+    # intake reading from it; idle unless a token and a room are configured.
+    from agent_media_server import matrix as _matrix
+    _matrix.start()
     # One spoken catch-up when David is free again (agent_media_core.catchup,
     # roadmap item 14): watches free.answer(); MEDIA_CATCHUP=0 leaves it off.
     from agent_media_core import catchup as _catchup

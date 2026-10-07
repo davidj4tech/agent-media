@@ -17,86 +17,39 @@ Key differences from that script:
     Phase 6 will expose.
   - Recording / sending back to the room is dropped here. That belongs
     in capture/ (Phase 5).
+
+The `/sync` loop itself is agent_media_core.matrix, shared: on a host
+running the canvas it lives there and this package is one of its readers
+(:func:`consumer`); `media-intake-matrix` runs the loop standalone. Never
+both on one token — two loops lose each other's events.
+
+Voice notes are played only for rooms in `MATRIX_SPEECH_ROOMS` (default:
+every allowed room). Leave a bridged room out of it, or its texts are read
+aloud in the house.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import os
+import queue
 import signal
-import socket
 import sys
+import threading
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable
+
+from agent_media_core import matrix
 
 from agent_media_core.route import Coordinator
 from agent_media_core.sinks.music import SinkMusic
 from agent_media_core.sinks.speech import SinkSpeech
 from agent_media_core.state import StateStore
-from agent_media_core.types import Event, Priority, Source, Target
+from agent_media_core.types import Source, Target
 
 
 log = logging.getLogger(__name__)
-
-DEFAULT_SYNC_TIMEOUT_MS = 30000
-DEFAULT_HOMESERVER = "https://matrix.example.org"
-
-_running = True
-
-
-def _shutdown(*_: object) -> None:
-    global _running
-    _running = False
-
-
-def _state_dir() -> Path:
-    base = Path(os.environ.get("XDG_STATE_HOME",
-                               str(Path.home() / ".local" / "state")))
-    d = base / "agent-media" / "matrix"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def _save_state(path: Path, state: dict) -> None:
-    try:
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(json.dumps(state))
-        tmp.replace(path)
-    except OSError as e:
-        log.warning("matrix: state save failed: %s", e)
-
-
-def _load_state(path: Path) -> dict:
-    try:
-        return json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
-        return {"next_batch": None, "seen": []}
-
-
-def _mxc_to_http(homeserver: str, mxc: Optional[str]) -> Optional[str]:
-    if not mxc or not mxc.startswith("mxc://"):
-        return None
-    rest = mxc[len("mxc://"):]
-    if "/" not in rest:
-        return None
-    server, media_id = rest.split("/", 1)
-    return f"{homeserver}/_matrix/client/v1/media/download/{server}/{media_id}"
-
-
-def _download(url: str, token: str, dest: Path, timeout: float = 60.0) -> bool:
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            dest.write_bytes(resp.read())
-        return dest.exists() and dest.stat().st_size > 0
-    except (urllib.error.URLError, OSError) as e:
-        log.warning("matrix: download failed (%s): %s", url, e)
-        return False
 
 
 def _audio_cache_dir() -> Path:
@@ -111,11 +64,11 @@ def _handle_voice_message(*, mxc: str, homeserver: str, token: str,
                           sink: SinkSpeech, coordinator: Coordinator,
                           state: StateStore, target: Target,
                           sender: str) -> None:
-    url = _mxc_to_http(homeserver, mxc)
+    url = matrix.mxc_to_http(homeserver, mxc)
     if not url:
         return
     dest = _audio_cache_dir() / f"matrix-{int(time.time() * 1000)}.ogg"
-    if not _download(url, token, dest):
+    if not matrix.download(url, token, dest):
         return
 
     started_at = time.time()
@@ -214,103 +167,79 @@ def _process_event(ev: dict, *, room_id: str, sam_id: str,
     return False
 
 
+def _csv(value: str | None) -> set[str]:
+    return {v.strip() for v in (value or "").split(",") if v.strip()}
+
+
+def consumer(config: matrix.Config, env: dict | None = None):
+    """The speech intake as a reader of a shared sync loop.
+
+    Returns `(on_event, stop)`: `on_event(room_id, event)` only queues, so
+    the sync thread is never held up by a voice note playing; one worker
+    plays them in order. Sinks are made lazily, on the worker."""
+    env = os.environ if env is None else env
+    sam_id = env.get("MATRIX_SAM_ID", "@agent:example.org")
+    control_ids = _csv(env.get("MATRIX_CONTROL_IDS")
+                       or f"@owner:example.org,{sam_id}")
+    speech_rooms = (_csv(env.get("MATRIX_SPEECH_ROOMS"))
+                    if env.get("MATRIX_SPEECH_ROOMS") is not None
+                    else set(config.rooms))
+    q: "queue.Queue[tuple[str, dict] | None]" = queue.Queue()
+
+    def on_event(room_id: str, ev: dict) -> None:
+        if room_id in speech_rooms:
+            q.put((room_id, ev))
+
+    def work() -> None:
+        target = Target(name="local")
+        state = StateStore()
+        sink = SinkSpeech()
+        music = SinkMusic()
+        coordinator = Coordinator(state=state, music=music)
+        while True:
+            item = q.get()
+            if item is None:
+                return
+            room_id, ev = item
+            try:
+                _process_event(
+                    ev, room_id=room_id, sam_id=sam_id,
+                    control_ids=control_ids,
+                    homeserver=config.homeserver, token=config.token,
+                    sink=sink, music=music, coordinator=coordinator,
+                    state=state, target=target,
+                )
+            except Exception as e:  # noqa: BLE001
+                log.warning("matrix: event handler failed: %s", e)
+
+    threading.Thread(target=work, name="matrix-speech", daemon=True).start()
+    return on_event, (lambda: q.put(None))
+
+
+_running = True
+
+
+def _shutdown(*_: object) -> None:
+    global _running
+    _running = False
+
+
 def main() -> int:
+    """The loop standalone, for a host with no canvas to run it."""
     if os.environ.get("MEDIA_HOOK_ENABLED", "1") == "0":
         return 0
-
-    token = os.environ.get("MATRIX_ACCESS_TOKEN")
-    if not token:
-        print("matrix: MATRIX_ACCESS_TOKEN not set", file=sys.stderr)
-        return 2
-
-    homeserver = os.environ.get("MATRIX_HOMESERVER", DEFAULT_HOMESERVER).rstrip("/")
-    sam_id = os.environ.get("MATRIX_SAM_ID", "@agent:example.org")
-    control_ids = set(filter(None, (
-        os.environ.get("MATRIX_CONTROL_IDS")
-        or f"@owner:example.org,{sam_id}"
-    ).split(",")))
-    room_allow = set(filter(None, (
-        os.environ.get("MATRIX_ROOM_ALLOW", "").split(",")
-    )))
-    if not room_allow:
-        print("matrix: MATRIX_ROOM_ALLOW must list at least one room id",
+    config = matrix.Config.from_env()
+    if config is None:
+        print("matrix: MATRIX_ACCESS_TOKEN and MATRIX_ROOM_ALLOW must be set",
               file=sys.stderr)
         return 2
-
-    state_path = _state_dir() / "sync.json"
-    sync_state = _load_state(state_path)
-    seen = list(sync_state.get("seen") or [])
-
-    target = Target(name="local")
-    state = StateStore()
-    sink = SinkSpeech()
-    music = SinkMusic()
-    coordinator = Coordinator(state=state, music=music)
-
+    sync = matrix.Sync(config)
+    on_event, stop = consumer(config)
+    sync.subscribe(on_event)
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)
-
-    log.info("matrix: starting (homeserver=%s, rooms=%s)",
-             homeserver, ",".join(sorted(room_allow)))
-
-    timeout_ms = int(os.environ.get("MATRIX_SYNC_TIMEOUT_MS",
-                                    DEFAULT_SYNC_TIMEOUT_MS))
-    backoff = 1.0
-
-    while _running:
-        params = {"timeout": str(timeout_ms)}
-        if sync_state.get("next_batch"):
-            params["since"] = sync_state["next_batch"]
-        url = (f"{homeserver}/_matrix/client/v3/sync?"
-               + urllib.parse.urlencode(params))
-        req = urllib.request.Request(
-            url, headers={"Authorization": f"Bearer {token}"},
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=timeout_ms / 1000 + 30) as resp:
-                data = json.loads(resp.read())
-            backoff = 1.0
-        except (urllib.error.URLError, socket.timeout, OSError) as e:
-            log.warning("matrix: sync failed: %s; retry in %.1fs", e, backoff)
-            time.sleep(backoff)
-            backoff = min(backoff * 2, 30.0)
-            continue
-        except Exception as e:  # noqa: BLE001
-            log.exception("matrix: unexpected sync error: %s", e)
-            time.sleep(backoff)
-            backoff = min(backoff * 2, 30.0)
-            continue
-
-        sync_state["next_batch"] = data.get("next_batch")
-        rooms = (data.get("rooms") or {}).get("join") or {}
-        for room_id, room in rooms.items():
-            if room_id not in room_allow:
-                continue
-            events = ((room.get("timeline") or {}).get("events") or [])
-            for ev in events:
-                ev_id = ev.get("event_id")
-                if ev_id and ev_id in seen:
-                    continue
-                try:
-                    handled = _process_event(
-                        ev,
-                        room_id=room_id, sam_id=sam_id,
-                        control_ids=control_ids,
-                        homeserver=homeserver, token=token,
-                        sink=sink, music=music,
-                        coordinator=coordinator, state=state,
-                        target=target,
-                    )
-                except Exception as e:  # noqa: BLE001
-                    log.warning("matrix: event handler failed: %s", e)
-                    handled = False
-                if ev_id:
-                    seen.append(ev_id)
-                    if len(seen) > 100:
-                        seen = seen[-100:]
-        sync_state["seen"] = seen
-        _save_state(state_path, sync_state)
-
+    matrix.wait_forever(sync, lambda: _running)
+    stop()
     log.info("matrix: shutting down")
     return 0
 
