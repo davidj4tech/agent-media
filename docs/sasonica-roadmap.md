@@ -825,6 +825,21 @@ ahead.
    sign-in (now that /privacy-policy is live), and the privacy policy's
    "not yet open to everyone" line changed on opening. sasonica.com/start
    and /download say Windows is "coming soon" until then.
+   **Built and deployed 8 Oct 2026** (sasonica-shell `a3d7943`, `90e0bc5`,
+   docs `b0202c1`, `1206fa5`; websites `f153eab`, `29ddbf0`, ToS draft
+   `943ee08`): rate limits counted in Durable Objects (vars: 5 joins/min
+   per IP, 120 MCP calls/min per connector URL, 300 runner requests/min;
+   Cloudflare's rate-limit binding let everything through live), one
+   machine per account with a second join *replacing* the first (said
+   before the button), a daily alarm deleting rows past 30 days and
+   tenants with no runner contact for 90, `relay.sasonica.com/account`
+   (list, last seen, Remove) plus a Bearer API, and `hook_user_delete`
+   calling `/hooks/account-deleted` (tested live). The 4 Oct test tenant
+   is removed. Found: non-admin accounts could not sign in to any OAuth
+   client (missing `grant simple_oauth codes`); fixed. Test account
+   `sasonica-test2` (uid 5) made, not yet allowed; the allowlist change and
+   Windows steps are in hosted-relay.md. Left for David: the Windows run,
+   Google publishing, the ToS review, the privacy-policy lines, then `*`.
 
 17. **Background agents you can act on, and for Codex** (David, 7 Oct
    2026, after asking whether Sasonica has what the arrow key on an empty
