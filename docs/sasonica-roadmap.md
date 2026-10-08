@@ -863,7 +863,7 @@ ahead.
    on a second join, and `hostname`/`ver` through the relay over MCP
    (runs 37701441963, 37701570159; hosted-relay.md 0858f45). Google sign-in
    published 8 Oct. Terms of service published 8 Oct
-   (sasonica.com/terms-of-service). Left: David's go-ahead for `*`, with the
+   (sasonica.com/terms). Left: David's go-ahead for `*`, with the
    privacy policy's "not yet open" line and the Windows "coming soon" labels.
 
 17. **Background agents you can act on, and for Codex** (David, 7 Oct
