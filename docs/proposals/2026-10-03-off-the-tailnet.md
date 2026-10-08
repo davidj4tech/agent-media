@@ -117,15 +117,38 @@ worst first:
 | 1 | Speech: mpv JSON-IPC, `tts:` text under `RENDER_SASONICA=device` | `ipc_relay` → `p8a:6614` (3 idle spares, renewed every 45 s) | a `speech` frame down `/sessions/events`; position/state POSTed back |
 | 2 | Music on the phone, plus ducking | `tcp://p8a:6615` | a `music` frame; the app POSTs now-playing |
 | 3 | "Is the companion there?" | `ssh p8a` on **every reply** (`route/_android.py`) | delete it: the answer is always "companion", so nothing happens |
-| 4 | Book state/control (old ABS app) | ssh + `curl 127.0.0.1:8772` | the app reports; or retire it with the ABS app |
-| 5 | Notifications (converse question, missed replies) | ssh → termux-notification | a frame, as `phone` and `mic` already are |
-| 6 | Books cached on the phone | `ssh p8a find` | the app reports its cache |
+| 4 | Book state/control (old ABS app) | ssh + `curl 127.0.0.1:8772` | **done 8 Oct:** the Termux worker runs the same curl (5143153); retire with the ABS app |
+| 5 | Notifications (converse question, missed replies) | ssh → termux-notification | **done 8 Oct:** a `notes` frame (§6.23; 2bd60c3, app 44c846b) |
+| 6 | Books cached on the phone | `ssh p8a find` | **done 8 Oct:** the Termux worker runs the `find` (5143153) |
 | 7 | Radio handoff to Spotify | `tcp://p8a:6617` (unmerged `handoff` branch) | a `radio` frame |
 
 Dev-only (doctor, audiobook-fetch, companion deploy) and legacy paths
 (ABS 6613/8773, Termux bridges 6601–6603, say-http 8790) stay as they are
 or go with their apps. One literal phone IP: the ABS quadlet's whitelist
 (`deploy/quadlet/audiobookshelf.container:33`).
+
+**8 Oct: #4, #5, #6 done, and an audit of what still dials p8a.** #5:
+`POST /notes` (host token) → a `notes` frame on `/sessions/events?notes=1`
+(contract §6.23, server notes.py, sasonica-app 44c846b); the converse
+doorbell and the missed-speech note post there, and keep ssh only while no
+app has ever asked for notes (`notes-seen` stamp). Verified: a test note
+reached the shade on the Sasonica alerts channel and came down on clear.
+#4 and #6 go through the phone-jobs worker (`music_local.phone_argv`), which
+is the same `curl`/`find` run in Termux, dialled out; the live `search` found
+the phone's cached `agenda`. Found by the audit (15 min of SYNs and ssh
+processes, plus a traced duck): **every reply's music duck dialled
+p8a:8773 (old ABS player) and p8a:6601 (Termux mpv)**, both unused since
+28 Sep. `MEDIA_PHONE_PLAYER_URL_ABS` and `MEDIA_MUSIC_LOCAL_ENDPOINT` are
+commented out in `~/.config/agent-media.env` (dated, with how to revert);
+the duck's resolve went from 0.75 s to 0.01 s. Still dialling in: the
+relay's spares to p8a:6614 (a SYN every ~14 s; the speech frames' fallback),
+music frames' pass-through to p8a:6615 (only with no frame device),
+`media music now` trying `tcp://p8a:6617` (#7, refused: the handoff app is
+not built), the rooms lane's YouTube fetch (`music_fetch._phone_fetch`, raw
+ssh; last landed 30 Sep), `media doctor`, and, outside agent-media,
+`agent-sessions sync` (rsync over ssh every few minutes) and Claude's
+`browser-p8a` MCP (a standing `ssh p8a playwright-mcp-headless`).
+`media-lane` is in forced `phone` mode, so it does not probe.
 
 **#3 done 3 Oct:** `MEDIA_ANDROID_PAUSE_HOSTS=p8a` is commented out in
 `~/.config/agent-media.env` (confirmed: `ssh p8a curl 127.0.0.1:8774/state`

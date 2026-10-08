@@ -767,9 +767,17 @@ ahead.
    speech_frames.py, sasonica-app cac6e3d, build 1154): red5 no longer
    dials p8a for speech; a test line played, then the switch
    (`MEDIA_SPEECH_SOCKET_SASONICA=tcp://127.0.0.1:16624`). **Music as frames
-   live 3 Oct** (build 1157, port 16625); its YouTube fetch still goes over
-   `ssh p8a`. Next: the phone dialling out (speech 6614 first, after deleting
-   the per-reply `ssh p8a` probe).
+   live 3 Oct** (build 1157, port 16625); its YouTube work (cached?, fetch,
+   title, chapters, mixes) runs on the phone's Termux worker, dialled out,
+   since 3 Oct (`MEDIA_PHONE_JOBS=1`); only the rooms lane's fetch is still
+   `ssh p8a`. **8 Oct: notifications, books cache and book state off ssh**
+   (#5 a `notes` frame, contract §6.23, agent-media 2bd60c3, sasonica-app
+   44c846b, installed and a test note shown and taken down; #4/#6 on the
+   Termux worker, 5143153), and the per-reply music duck no longer dials
+   p8a:8773/6601 (two unused endpoints commented out in the env file).
+   Left dialling in: the 6614 relay spares (speech frames' fallback), #7
+   handoff (6617), the rooms-lane fetch, and dev tools; the proposal lists
+   them.
    **For other users (David, 8 Oct 2026, "we're planning on moving off
    tailscale anyway… work towards that")**: a stranger's install has no
    tunnel and its pair link names a Tailscale IP the app refuses, so
