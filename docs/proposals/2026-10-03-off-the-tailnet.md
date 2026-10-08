@@ -198,6 +198,12 @@ JSON-IPC to the callers, but owns the player state itself:
   it. The app advertises `speech=frames` on its
   stream, so the endpoint knows a device can take frames.
 
+**Fallback retired 9 Oct (David).** The pass-through to p8a:6614 had been
+refused since at least 6 Oct (about 950 failed connects a day) while speech
+went through frames throughout; `agent-media-speech-relay.service` is
+stopped and disabled, so nothing dials p8a for speech. Revert:
+`systemctl --user enable --now agent-media-speech-relay.service`.
+
 **Live 3 Oct.** Server: ee8f975, cf69e0a, 89626df. App: cac6e3d (build
 1154). A test line played through 16624: the phone reported pos 0 to idle
 over about 4 s. Then `MEDIA_SPEECH_SOCKET_SASONICA` moved to 16624, and the
