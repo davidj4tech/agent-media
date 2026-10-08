@@ -892,6 +892,17 @@ ahead.
    the children live inside the TUI. Waiting on a real child rollout to
    build against (red5's Codex login had expired).
 
+18. **Signed installers** (David, 8 Oct 2026: "a link that can be downloaded
+   from and ran rather than having to type an install command"; "scripts
+   now, signing later"). sasonica.com/download offers the server installers
+   as files: `Sasonica-Setup.cmd` (Windows, runs install.ps1) and a zipped
+   `Install Sasonica.command` (macOS, runs install.sh), from websites
+   `front/sasonica/installers/`. They are unsigned, so SmartScreen ("More
+   info → Run anyway") and Gatekeeper ("Open Anyway" in Privacy & Security)
+   warn once. Before a wider launch: a signed Windows `.exe` (an OV/EV code
+   signing certificate, or Azure Trusted Signing) and a notarised macOS
+   `.pkg` (Apple Developer Program, US$99/yr), built in CI.
+
 ## Loose ends
 
 - **A reply with a figure had no follow-along at all** (David, 23 Sep 2026)
