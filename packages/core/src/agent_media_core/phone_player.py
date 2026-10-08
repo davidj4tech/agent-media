@@ -8,7 +8,8 @@ exact speed, and the app can pause or move it like anything it plays.
 
 Two transports, chosen by config:
 
-* **ssh** (today): one hop to the phone's Termux, which thaws the app with a
+* **ssh** (today; the phone's Termux worker instead when ``MEDIA_PHONE_JOBS=1``,
+  roadmap item 15): one hop to the phone's Termux, which thaws the app with a
   media-button broadcast (Android freezes a background app, and a frozen
   process answers nothing) and then curls loopback. Needs sshd, ``am`` and
   ``curl`` on the phone — i.e. Termux.
@@ -176,7 +177,12 @@ def request(target: Target, route: str, params: Optional[dict] = None,
             # Thaw, then ask, in the same shell: the window is a few seconds.
             remote = (f"{THAW_CMD}; sleep 1; "
                       f"curl -s -m {int(timeout)} {shlex.quote(f'http://127.0.0.1:{port}{path}')}")
-            p = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", host, remote],
+            # The phone's Termux worker, dialled out, when MEDIA_PHONE_JOBS=1
+            # (roadmap item 15, #4); else ssh, as before.
+            from .sinks import music_local
+            argv = (music_local.phone_argv(remote) if host == music_local.ssh_host()
+                    else ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", host, remote])
+            p = subprocess.run(argv,
                                text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                timeout=timeout + 15, check=False)
             body = p.stdout.strip()

@@ -1323,9 +1323,14 @@ def search(channel: str, query: str = "") -> dict:
                     "[ -d \"$d\" ] && find \"$d\" -type f \\( " + find_expr + " \\); "
                     "done 2>/dev/null"
                 )
+                # The phone itself: its Termux worker, dialled out, when
+                # MEDIA_PHONE_JOBS=1 (roadmap item 15, #6), not an ssh in.
+                from .sinks import music_local
+                argv = (music_local.phone_argv(remote) if host == music_local.ssh_host()
+                        else ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=4", host, remote])
                 try:
                     proc = subprocess.run(
-                        ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=4", host, remote],
+                        argv,
                         text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=8,
                         check=False,
                     )

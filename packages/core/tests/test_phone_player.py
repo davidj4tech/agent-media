@@ -58,6 +58,30 @@ def test_ssh_transport_thaws_then_curls_loopback(monkeypatch):
     assert "127.0.0.1:8772/play?item=i1&t=5.0" in remote
 
 
+def test_with_the_phone_worker_it_dials_out_instead(monkeypatch):
+    """MEDIA_PHONE_JOBS=1: the same command goes to the phone's Termux worker
+    (roadmap item 15, #4), not an ssh into the phone."""
+    import sys
+
+    monkeypatch.setenv("MEDIA_PHONE_PLAYER_SSH_PHONE", "p8a")
+    monkeypatch.setenv("MEDIA_MUSIC_LOCAL_SSH", "p8a")
+    monkeypatch.setenv("MEDIA_PHONE_JOBS", "1")
+    monkeypatch.delenv("MEDIA_PHONE_PLAYER_URL", raising=False)
+    monkeypatch.delenv("MEDIA_MUSIC_LOCAL_ENDPOINT", raising=False)
+    seen = {}
+
+    class P:
+        returncode, stdout = 0, '{"source":"sasonica","item":"i1","t":5.0}'
+
+    def run(cmd, **kw):
+        seen["cmd"] = cmd
+        return P()
+    monkeypatch.setattr(phone_player.subprocess, "run", run)
+    assert phone_player.request(PHONE, "/state")["item"] == "i1"
+    assert seen["cmd"][:3] == [sys.executable, "-m", "agent_media_core.phone_run"]
+    assert "127.0.0.1:8772/state" in seen["cmd"][-1]
+
+
 def test_an_error_answer_or_dead_ssh_means_not_taken(monkeypatch):
     monkeypatch.setenv("MEDIA_PHONE_PLAYER_SSH_PHONE", "p8a")
 
