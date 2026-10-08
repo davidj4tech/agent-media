@@ -1343,3 +1343,30 @@ def test_replay_by_id_unknown_errors(monkeypatch, capsys):
                         lambda n, session=None: _hist_rows())
     assert cli.cmd_replay(_ReplayArgs(id=999)) == 1
     assert "no clip with id" in capsys.readouterr().err
+
+
+def test_skip_phone_playlist_steps_even_when_its_count_is_lost(monkeypatch, tmp_path):
+    """Sasonica reports an empty playlist moments after a reply is loaded and
+    plays it through anyway (9 Oct 2026). One clip per sentence is still a
+    playlist: ← and ⏮ set playlist-pos, never a seek inside the sentence."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    fake = _FakeIpc({"idle-active": False, "playlist-count": 0,
+                     "playlist-pos": 2})
+    monkeypatch.setattr(cli, "ipc", fake)
+    monkeypatch.setattr(cli, "_sock", lambda: "tcp://127.0.0.1:16624")
+    monkeypatch.setattr(cli, "_force_highlight_sentence", lambda s: None)
+
+    class FakeStore:
+        def get_now_playing(self, sink):
+            return {"extras": {"clip_sentences": ["a", "b", "c", "d"],
+                               "clip_paragraph_idx": [0, 1, 2, 3],
+                               "clip_durations_s": [2.0, 3.0, 2.5, 4.0],
+                               "clip_offsets_s": [0.0, 2.0, 5.0, 7.5]}}
+
+    monkeypatch.setattr(cli, "StateStore", FakeStore)
+    assert cli.cmd_skip(_skip_args("sentence", -1, -5.0)) == 0
+    assert ("set", "playlist-pos", 1) in fake.calls
+    assert not [c for c in fake.calls if c[:2] == ("command", "seek")]
+    # Set once: the count was not believed, so no read-back re-set.
+    assert [c for c in fake.calls if c[:2] == ("set", "playlist-pos")] == [
+        ("set", "playlist-pos", 1)]

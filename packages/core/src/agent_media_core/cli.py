@@ -3164,7 +3164,20 @@ def cmd_skip(a) -> int:
     if len(para_idx) != n:
         para_idx = list(range(n))  # no paragraph map → one paragraph per line
 
-    playlist = count > 1
+    # One clip per sentence is a playlist even when the player's count says
+    # otherwise. Sasonica reports an empty playlist moments after a reply is
+    # loaded and then plays it through anyway (seen 9 Oct 2026: count 0 while
+    # playlist-pos ran 0, 1, 2, 3), and judged by that count every ←/⏮ fell
+    # to the one-clip lane below — a seek inside the sentence being heard,
+    # which goes nowhere (David: "previous sentence and back to the start
+    # don't seem to be working while something is playing"). The clips are
+    # known here: more than one duration means more than one clip. Only on a
+    # tcp:// player — the lane that loads a whole reply as a playlist; the
+    # local reader loads one sentence at a time and steps by nav request.
+    multi_clip = (len(ex.get("clip_durations_s") or []) > 1
+                  and str(sock).startswith("tcp://"))
+    trust_count = count > 1
+    playlist = trust_count or multi_clip
     if playlist:
         try:
             cur = int(ipc.get_property(sock, "playlist-pos", critical=True) or 0)
@@ -3213,8 +3226,13 @@ def cmd_skip(a) -> int:
             return 1
         # Rapid presses race mpv's async entry loads: an earlier in-flight
         # jump can commit AFTER ours and clobber it (observed as a skip
-        # "bouncing back" a moment later). Verify once, best-effort.
+        # "bouncing back" a moment later). Verify once, best-effort — not when
+        # the count was not believed: a player that lost track of its list
+        # does not read back the index just set, and a second set would
+        # restart the sentence the first one started.
         try:
+            if not trust_count:
+                raise ValueError("count not believed")
             time.sleep(0.15)
             if int(ipc.get_property(sock, "playlist-pos",
                                     critical=True) or -1) != target:
