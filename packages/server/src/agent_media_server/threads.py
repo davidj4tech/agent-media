@@ -73,9 +73,11 @@ def conversation_for_session(session: str, bearer: str) -> tuple[bool, dict]:
     from . import matrix
 
     if matrix.room(session) is not None:
-        # A Matrix room: read-only until sending is built (proposal step 2).
+        # A Matrix room: `resumable` (a reply goes in) when the owner's token
+        # is set (matrix.owner_token).
         return True, {"session": session, "item": None, "scanning": False,
-                      "live": False, "pane": None, "resumable": False,
+                      "live": False, "pane": None,
+                      "resumable": bool(matrix.owner_token()),
                       "suggestion": "", "source": "matrix"}
     pane = sessions.live_sessions().get(session, "")
     live, resumable = bool(pane), sessions.session_exists(session)

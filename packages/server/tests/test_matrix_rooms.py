@@ -136,9 +136,39 @@ def test_owner_is_the_first_control_id_that_is_not_the_agent():
     assert matrix._owner({**env, "MATRIX_OWNER_ID": MEL}) == MEL
 
 
-def test_a_reply_to_a_room_is_refused_not_resumed(one_room, monkeypatch):
+def test_a_reply_without_an_owner_token_is_refused_not_resumed(one_room, monkeypatch):
     from agent_media_server import auth, send
 
+    monkeypatch.delenv("MATRIX_OWNER_TOKEN", raising=False)
     monkeypatch.setattr(auth, "gate", lambda bearer: ("david", None))
     ok, err = send.reply("", "hello", "tok", session=one_room.thread)
+    assert not ok and err["status"] == 409
+    assert matrix.rows()[0]["drivable"] is False
+
+
+def test_a_reply_is_sent_as_the_owner_and_kept_once(one_room, monkeypatch):
+    from agent_media_server import auth, send
+
+    sent = []
+
+    def put(config, path, body, token, timeout=15.0):
+        sent.append((path, body, token))
+        return {"event_id": "$mine"}
+
+    monkeypatch.setenv("MATRIX_OWNER_TOKEN", "owner-tok")
+    monkeypatch.setattr(matrix, "_put", put)
+    monkeypatch.setattr(auth, "gate", lambda bearer: ("david", None))
+    ok, detail = send.reply("", "on my way", "tok", session=one_room.thread,
+                            quote="where are you?")
+    assert ok and detail["submitted"] and detail["event_id"] == "$mine"
+    (path, body, token), = sent
+    assert token == "owner-tok" and "/rooms/%21sam%3Aryer.org/send/m.room.message/" in path
+    assert body == {"msgtype": "m.text", "body": "> where are you?\n\non my way"}
+    one_room.on_event({"type": "m.room.message", "event_id": "$mine", "sender": ME,
+                       "origin_server_ts": 1, "content": body})   # the sync's echo
+    msgs, _ = one_room.page(30)
+    assert [m["id"] for m in msgs][-1:] == ["$mine"] and len(msgs) == 3
+    assert msgs[-1]["role"] == "user" and "peer" not in msgs[-1]
+    assert matrix.rows()[0]["drivable"] is True
+    ok, err = send.reply("", "x", "tok", session=one_room.thread, mode="branch")
     assert not ok and err["status"] == 409

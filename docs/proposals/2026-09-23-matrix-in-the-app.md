@@ -190,7 +190,18 @@ not the install.
    product name, so no new strings), and room rows are listed only under
    it; an incoming message wears the "From <name>" note. `/reply` to a room
    answers 409 until step 2.
-2. **Send**, as `@david` with its own token.
+2. **Send**, as `@david` with its own token. **Built 9 Oct 2026**: David
+   ran `matrix-owner-login` on red5 (`~/.local/bin`; the password typed
+   into the terminal, never through an agent), which signed `@david` in as
+   a device of its own, "Sasonica", and put `MATRIX_OWNER_ID` and
+   `MATRIX_OWNER_TOKEN` in `~/.config/agent-media/matrix.env`. `/reply` to a
+   room is a `PUT …/send/m.room.message/{txn}` with that token; the sent
+   event goes straight into the room cache, and the sync's echo of it is
+   the same event id, kept once. Signing the "Sasonica" device out in
+   Element makes the rooms read-only again until the script is re-run.
+   Note: the speech intake still takes `pause` / `stop` / `skip` / `replay`
+   from `@david` as speech controls, so those bare words typed into the
+   `sam` room from the app work as they do from Element.
 3. **One gateway** — gmessages — registered on tuwunel. No app change; the
    proof is that pairing works from the phone.
 4. **Unread and push**: room unread counts into `/dashboard`'s "Needs you";

@@ -980,10 +980,15 @@ def reply(item: str, text: str, bearer: str, *, quote: str = "",
     if session:
         from . import matrix
 
-        if matrix.room(session) is not None:
-            # A Matrix room (matrix.py): read-only until sending is built.
-            return False, {"error": "this Matrix room is read-only for now",
-                           "status": 409}
+        room = matrix.room(session)
+        if room is not None:
+            # A Matrix room (matrix.py): sent as the owner, straight to the
+            # homeserver. None of a session's machinery applies — no pane, no
+            # speech, no branch; a quote rides in front as Markdown.
+            if mode == "branch":
+                return False, {"error": "a Matrix room cannot be branched", "status": 409}
+            body = f"> {quote.strip()}\n\n{text}" if quote.strip() else text
+            return room.send(body)
         # A session id nothing knows — not running, no transcript — is the
         # same answer an item with no session behind it gets: not there.
         # Checked here rather than left to `deliver`, because `branch` would

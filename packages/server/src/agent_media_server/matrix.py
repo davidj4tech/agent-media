@@ -67,6 +67,23 @@ def _get(config: matrix.Config, path: str, params: dict | None = None,
         return json.loads(resp.read())
 
 
+def _put(config: matrix.Config, path: str, body: dict, token: str,
+         timeout: float = 15.0) -> dict:
+    req = urllib.request.Request(
+        f"{config.homeserver}/_matrix/client/v3{path}", method="PUT",
+        data=json.dumps(body).encode(),
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read())
+
+
+def owner_token() -> str:
+    """The owner's own token (`MATRIX_OWNER_TOKEN`, its own device —
+    `matrix-owner-login`): what the app sends with. Never @sam's: a message
+    typed on the phone must arrive as David, not as the agent."""
+    return os.environ.get("MATRIX_OWNER_TOKEN") or ""
+
+
 def _q(room_id: str) -> str:
     return urllib.parse.quote(room_id, safe="")
 
@@ -152,6 +169,31 @@ class Room:
             return bool(evs)
 
     # -- events into messages --
+
+    def send(self, text: str) -> tuple[bool, dict]:
+        """Send `text` as the owner. The message is in the room's thread at
+        once; the sync's copy of it, when it comes, is the same event and is
+        kept once."""
+        token = owner_token()
+        if not token:
+            return False, {"error": "this Matrix room is read-only: no owner token "
+                                    "(run matrix-owner-login)", "status": 409}
+        content = {"msgtype": "m.text", "body": text}
+        try:
+            got = _put(self.config, f"/rooms/{_q(self.id)}/send/m.room.message/"
+                      f"{uuid.uuid4().hex}", content, token)
+        except urllib.error.HTTPError as e:
+            return False, {"error": f"the homeserver refused it ({e.code})", "status": 502}
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            return False, {"error": f"the homeserver could not be reached ({e})",
+                           "status": 502}
+        ev_id = got.get("event_id") or ""
+        if ev_id:
+            self.on_event({"type": "m.room.message", "event_id": ev_id,
+                           "sender": self.owner, "content": content,
+                           "origin_server_ts": int(time.time() * 1000)})
+        return True, {"session": self.thread, "pane": None, "submitted": True,
+                      "event_id": ev_id}
 
     def on_event(self, ev: dict) -> None:
         """An event from the sync, newest last."""
@@ -293,7 +335,7 @@ def rows(flags: set | frozenset = frozenset()) -> list[dict]:
                                   if last else None),
                         "archived": r.thread in flags, "rested": None, "pinned": False,
                         "harness": "matrix", "source": "matrix", "room": r.id,
-                        "drivable": False})
+                        "drivable": bool(owner_token())})
     return out
 
 

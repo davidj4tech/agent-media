@@ -332,8 +332,14 @@ Everything a message can be pointed at.
   `MATRIX_CONTROL_IDS` that is not `MATRIX_SAM_ID`) is `user`, everyone
   else `assistant` with `peer: {name}` and `sender: {id, name}`; photos,
   voice notes and files are a one-line text part. The envelope adds
-  `room: {id, name, members}`. Read-only for now: `/reply` to a room is 409.
-  The app lists these rows only under its Matrix filter.
+  `room: {id, name, members}`. **Sending** (9 Oct 2026): `/reply` to a
+  room sends `text` as the owner, with the owner's own token
+  (`MATRIX_OWNER_TOKEN`, made by `matrix-owner-login`; never the agent's),
+  a `quote` in front as a Markdown quote, and answers `{"session",
+  "pane": null, "submitted": true, "event_id"}`; the message is in the
+  thread at once. With no owner token it is 409, `drivable` is false and
+  `/conversation?session=` says `resumable: false`; `mode: "branch"` is
+  always 409. The app lists these rows only under its Matrix filter.
 
 Clients: S (`utils/sasonicaTargets.js`, drawer and ask page), on open.
 
