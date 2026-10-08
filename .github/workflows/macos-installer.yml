@@ -31,15 +31,24 @@ jobs:
           cd "$RUNNER_TEMP"
           set -o pipefail
           "./unpacked/Install Sasonica.command" </dev/null 2>&1 \
-            | sed -E 's/(code=)[A-Za-z0-9_-]+/\1<redacted>/g' | tee install.log
+            | tee install.full \
+            | sed -E 's/(code[= ]|[?&]c=)[A-Za-z0-9_-]+/\1<redacted>/g; /^[ ]*[█▀▄ ]+$/d'
+          # The QR holds the code too, so it is dropped from the log above.
+          grep -Eo 'https://[a-z0-9-]+\.trycloudflare\.com' install.full | tail -1 > tunnel.url
 
       - name: The server, its services and the tunnel
         run: |
           set -x
           launchctl list | grep -i sasonica || true
-          URL=$(grep -Eo 'https://[a-z0-9-]+\.trycloudflare\.com' "$RUNNER_TEMP/install.log" | tail -1)
+          URL=$(cat "$RUNNER_TEMP/tunnel.url")
           echo "tunnel: $URL"
           test -n "$URL"
-          for i in $(seq 1 30); do curl -fsS -m 5 "$URL/healthz" && break; sleep 2; done
-          curl -fsS -m 5 "$URL/healthz"
+          HOST=${URL#https://}
+          # The runner's resolver can cache a miss for a brand-new name, so ask
+          # 1.1.1.1 directly and pin curl to the answer.
+          for i in $(seq 1 30); do IP=$(dig +short @1.1.1.1 "$HOST" | grep -E '^[0-9.]+$' | head -1); [ -n "$IP" ] && break; sleep 4; done
+          echo "resolves to: ${IP:-nothing}"
+          test -n "$IP"
+          for i in $(seq 1 20); do curl -fsS -m 8 --resolve "$HOST:443:$IP" "$URL/healthz" && break; sleep 3; done
+          curl -fsS -m 8 --resolve "$HOST:443:$IP" "$URL/healthz"
           ~/.local/bin/sasonica --version || true
