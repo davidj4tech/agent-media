@@ -777,7 +777,12 @@ ahead.
    p8a:8773/6601 (two unused endpoints commented out in the env file).
    Left dialling in: the 6614 relay spares (speech frames' fallback), #7
    handoff (6617), the rooms-lane fetch, and dev tools; the proposal lists
-   them.
+   them. **9 Oct: #7 built as frames** — the radio's hand-off player is a
+   third frame channel, `handoff` (agent-media fff076f, canvas on 16626,
+   refuses at once with no device; sasonica-app `handoff` merged to main,
+   0a3ff99, no 6617 socket, reports which way of asking started each song).
+   APK install pending (CI's artifact storage is full), then
+   `MEDIA_RADIO_HANDOFF_ENDPOINT=tcp://127.0.0.1:16626`.
    **For other users (David, 8 Oct 2026, "we're planning on moving off
    tailscale anyway… work towards that")**: a stranger's install has no
    tunnel and its pair link names a Tailscale IP the app refuses, so

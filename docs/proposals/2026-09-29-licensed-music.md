@@ -137,6 +137,14 @@ the phone's yt-dlp for a listener who has switched the YouTube path on.
    (`radio_dj.by_name`), so it runs with the YouTube path off. A Mix station
    still needs YouTube to list its songs. Not yet: the Media tab's now
    playing for a hand-off song, and YouTube in the browser.
+   **3 Oct:** "it came up but nothing played" — Spotify and YouTube Music
+   ignored a plain `playFromSearch`; the app now wakes an idle app with
+   its media-button receiver and tries playFromSearch → prepareFromSearch+play
+   → the app's link → the web link, 6 s each. **9 Oct:** merged to
+   sasonica-app main and moved off port 6617 to `handoff` frames down the
+   app's stream (off-the-tailnet #7; agent-media fff076f, sasonica-app
+   0a3ff99); the app's report names the way that started each song, shown
+   by `media music radio`. Untested on the phone yet.
 4. **Settings → Music app**: which installed app plays (the ones that answer
    play-from-search), and the permission.
 5. **Spotify for David** (optional): App Remote in development mode, David

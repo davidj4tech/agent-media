@@ -120,7 +120,7 @@ worst first:
 | 4 | Book state/control (old ABS app) | ssh + `curl 127.0.0.1:8772` | **done 8 Oct:** the Termux worker runs the same curl (5143153); retire with the ABS app |
 | 5 | Notifications (converse question, missed replies) | ssh → termux-notification | **done 8 Oct:** a `notes` frame (§6.23; 2bd60c3, app 44c846b) |
 | 6 | Books cached on the phone | `ssh p8a find` | **done 8 Oct:** the Termux worker runs the `find` (5143153) |
-| 7 | Radio handoff to Spotify | `tcp://p8a:6617` (unmerged `handoff` branch) | a `radio` frame |
+| 7 | Radio handoff to Spotify | `tcp://p8a:6617` (unmerged `handoff` branch) | **built 9 Oct:** a `handoff` frame channel (`?handoff=frames`, `POST /handoff/state` with an `extra`: app, song, method, error; canvas 16626; agent-media fff076f, sasonica-app 0a3ff99 on main). Live on red5; the env's endpoint moves off 6617 once the APK is installed |
 
 Dev-only (doctor, audiobook-fetch, companion deploy) and legacy paths
 (ABS 6613/8773, Termux bridges 6601–6603, say-http 8790) stay as they are
