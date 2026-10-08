@@ -172,3 +172,39 @@ def test_a_reply_is_sent_as_the_owner_and_kept_once(one_room, monkeypatch):
     assert matrix.rows()[0]["drivable"] is True
     ok, err = send.reply("", "x", "tok", session=one_room.thread, mode="branch")
     assert not ok and err["status"] == 409
+
+
+def test_a_room_starts_quiet_once(monkeypatch):
+    from agent_media_core import speak_priority
+
+    t = matrix.thread_of(ROOM)
+    matrix._seed_quiet([t])
+    assert speak_priority.level_of(t) == "quiet"
+    speak_priority.clear_level(t)                 # David picks the default
+    matrix._seed_quiet([t])
+    assert speak_priority.level_of(t) == speak_priority.default_level()
+
+
+def test_held_speech_is_a_play_on_its_message(one_room):
+    from agent_media_core.state import StateStore
+
+    one_room.load()
+    st = StateStore()
+    rid = st.add_history(sink="speech", uri="/tmp/x.ogg", started_at=5.0,
+                         extras={"session": one_room.thread, "matrix_event": "$2",
+                                 "held": True})
+    env = matrix.envelope(one_room, limit=30)
+    by = {m["id"]: m for m in env["messages"]}
+    assert by["$1"]["spoken"] is None
+    assert by["$2"]["spoken"] == {"id": rid, "key": "", "at": 5.0, "unheard": True}
+    st.mark_heard(rid)
+    assert "unheard" not in matrix.envelope(one_room, limit=30)["messages"][1]["spoken"]
+
+
+def test_a_rooms_level_can_be_set_from_the_app(one_room, monkeypatch):
+    from agent_media_core import speak_priority
+    from agent_media_server import auth, pins
+
+    monkeypatch.setattr(auth, "gate", lambda bearer: ("david", None))
+    ok, _ = pins.session_priority(one_room.thread, None, "tok", level="auto")
+    assert ok and speak_priority.level_of(one_room.thread) == "auto"

@@ -37,7 +37,6 @@ from agent_media_core import matrix
 log = logging.getLogger("agent-media.server.matrix")
 
 _SYNC: list = [None]
-_NS = uuid.UUID("6f1d3c52-9a0e-4c1b-8f3e-5a7d2b9c4e10")
 #: Messages fetched from the homeserver per page, going back.
 PAGE = 50
 #: After a failed first read, how long before a room is asked again.
@@ -49,10 +48,7 @@ def sync() -> "matrix.Sync | None":
     return _SYNC[0]
 
 
-def thread_of(room_id: str) -> str:
-    """The thread id of a room: a uuid, stable for the room, so the session
-    routes take it as they are."""
-    return str(uuid.uuid5(_NS, room_id))
+thread_of = matrix.thread_of
 
 
 # --- the room cache -------------------------------------------------------------
@@ -296,15 +292,7 @@ class Room:
 _ROOMS: dict[str, Room] = {}       # by thread id
 
 
-def _owner(env=None) -> str:
-    """Who `user` is in a room: `MATRIX_OWNER_ID`, else the first control id
-    that is not the agent's own."""
-    env = os.environ if env is None else env
-    if env.get("MATRIX_OWNER_ID"):
-        return env["MATRIX_OWNER_ID"]
-    sam = env.get("MATRIX_SAM_ID") or ""
-    ids = [i.strip() for i in (env.get("MATRIX_CONTROL_IDS") or "").split(",")]
-    return next((i for i in ids if i and i != sam), "")
+_owner = matrix.owner_of
 
 
 def room(thread: str) -> Room | None:
@@ -339,15 +327,66 @@ def rows(flags: set | frozenset = frozenset()) -> list[dict]:
     return out
 
 
+def _join_speech(thread: str, messages: list[dict]) -> None:
+    """Each message's speech (`spoken`, §6.2.2), from the history rows the
+    intake wrote for it: held ones are `unheard` with a Play (the room's
+    level is quiet unless changed), played ones replayable."""
+    from agent_media_core.state import StateStore
+
+    try:
+        rows = StateStore().matrix_speech(thread)
+    except Exception as e:  # noqa: BLE001 — no Play is the cost, not the thread
+        log.warning("matrix %s: speech unreadable: %s", thread[:8], e)
+        return
+    for m in messages:
+        row = rows.get(m["id"])
+        if row is None:
+            continue
+        ex = row["extras"]
+        m["spoken"] = {"id": row["id"], "key": "", "at": row["started_at"],
+                       **({"unheard": True} if ex.get("held") and not ex.get("heard")
+                          else {})}
+
+
 def envelope(r: Room, *, limit: int, before: str = "") -> dict:
     """The `/conversation/log?session=` answer for a room: the §6.2.2
     messages, and nothing an agent session has (no lines, no turn)."""
     messages, older = r.page(limit, before)
+    _join_speech(r.thread, messages)
     return {"session": r.thread, "lines": [], "messages": messages, "older": older,
             "pending": False, "working": None, "approval": None, "suggestion": "",
             "recap": None, "context": None,
             "room": {"id": r.id, "name": r.title(),
                      "members": [{"id": u, "name": n} for u, n in sorted(r.members.items())]}}
+
+
+def _seed_quiet(threads: list[str]) -> None:
+    """A room starts at the quiet speech level (David, 9 Oct 2026): every
+    message is kept with a Play, nothing read out in the house. Once per
+    room (`seeded-quiet.json`), so a level chosen later — even the default,
+    which clears the room's own — is never put back."""
+    from agent_media_core import speak_priority
+
+    path = matrix.state_dir() / "seeded-quiet.json"
+    try:
+        seeded = set(json.loads(path.read_text()))
+    except (OSError, ValueError):
+        seeded = set()
+    new = [t for t in threads if t not in seeded]
+    if not new:
+        return
+    for t in new:
+        if t not in speak_priority.levels():
+            speak_priority.set_level(t, "quiet")
+    try:
+        path.write_text(json.dumps(sorted(seeded | set(new))))
+    except OSError as e:
+        log.warning("matrix: seeded list not saved: %s", e)
+
+
+def _name_of(room_id: str, user: str) -> str:
+    r = _ROOMS.get(thread_of(room_id))
+    return (r.members.get(user) or "") if r is not None else ""
 
 
 def _on_event(room_id: str, ev: dict) -> None:
@@ -371,13 +410,14 @@ def start() -> None:
         import agent_media_intake_matrix as intake
     except ImportError:
         intake = None
-    if intake is not None:
-        on_event, _stop = intake.consumer(config)
-        s.subscribe(on_event)
     owner = _owner()
     for room_id in config.rooms:
         r = Room(room_id, config, owner)
         _ROOMS[r.thread] = r
+    _seed_quiet(list(_ROOMS))
+    if intake is not None:
+        on_event, _stop = intake.consumer(config, name_of=_name_of)
+        s.subscribe(on_event)
     s.subscribe(_on_event)
     _SYNC[0] = s
     s.start()

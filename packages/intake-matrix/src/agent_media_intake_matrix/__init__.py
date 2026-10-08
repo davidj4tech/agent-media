@@ -60,18 +60,44 @@ def _audio_cache_dir() -> Path:
     return d
 
 
+def _decide(thread: str) -> str:
+    """What the room's speech level (speak_priority.py) says to do with a
+    message now: "play", "hold" (archived unplayed with a Play: quiet), or
+    "toast" (held, with the desk's toast: normal or pocket while nobody has
+    the room open). The same rule as an agent's reply (hook_claude_code)."""
+    from agent_media_core.intake import toast
+    from agent_media_core.speak_priority import HOLDS, level_of
+
+    level = level_of(thread)
+    if level == "quiet":
+        return "hold"
+    if level in HOLDS and toast.should_hold(thread):
+        return "toast"
+    return "play"
+
+
 def _handle_voice_message(*, mxc: str, homeserver: str, token: str,
                           sink: SinkSpeech, coordinator: Coordinator,
                           state: StateStore, target: Target,
-                          sender: str) -> None:
+                          sender: str, extras: dict | None = None,
+                          held: bool = False) -> None:
     url = matrix.mxc_to_http(homeserver, mxc)
     if not url:
         return
     dest = _audio_cache_dir() / f"matrix-{int(time.time() * 1000)}.ogg"
     if not matrix.download(url, token, dest):
         return
-
+    extras = {"kind": "voice-message", "sender": sender, "mxc": mxc,
+              **(extras or {})}
     started_at = time.time()
+    if held:
+        # Kept, not played: the room's Play replays this row (`replay --id`).
+        extras["held"] = True
+        state.add_history(sink="speech", uri=str(dest), started_at=started_at,
+                          ended_at=started_at, target=target.name,
+                          source=Source.MATRIX.value, extras=extras)
+        return
+
     coordinator.before_speech()
     try:
         try:
@@ -93,9 +119,24 @@ def _handle_voice_message(*, mxc: str, homeserver: str, token: str,
             sink="speech", uri=str(dest),
             started_at=started_at, ended_at=time.time(),
             target=target.name, source=Source.MATRIX.value,
-            extras={"kind": "voice-message", "sender": sender,
-                    "mxc": mxc},
+            extras=extras,
         )
+
+
+def _speak_text(text: str, *, decision: str, extras: dict,
+                state: StateStore) -> None:
+    """A room's text message through the reply path (intake/submit.py), as
+    the room's thread: rendered, and played or held as `decision` says."""
+    from agent_media_core.intake import toast
+    from agent_media_core.intake.submit import submit_event
+    from agent_media_core.types import Event
+
+    event = Event(text=text, source=Source.MATRIX, metadata=dict(extras))
+    if decision != "play":
+        event.metadata["held"] = True
+    if decision == "toast":
+        toast.remember(event)
+    submit_event(event, state=state)
 
 
 def _handle_text_command(body: str, *, music: SinkMusic, sink: SinkSpeech,
@@ -139,22 +180,45 @@ def _handle_text_command(body: str, *, music: SinkMusic, sink: SinkSpeech,
     return False
 
 
+#: A message older than this when it arrives (a room's first sync, a
+#: homeserver catching up) is not read out, held or played.
+_STALE_S = 600
+
+
 def _process_event(ev: dict, *, room_id: str, sam_id: str,
                    control_ids: Iterable[str], homeserver: str, token: str,
                    sink: SinkSpeech, music: SinkMusic,
                    coordinator: Coordinator, state: StateStore,
-                   target: Target) -> bool:
-    """Returns True if the event was handled (so caller marks it seen)."""
+                   target: Target, owner: str = "",
+                   name_of=None) -> bool:
+    """Returns True if the event was handled (so caller marks it seen).
+
+    The owner's own words are a command or nothing. Anyone else's text or
+    voice note follows the room's speech level (`_decide`): every room
+    starts quiet (agent_media_server.matrix), so by default it is kept with
+    a Play and nothing is read out in the house."""
     sender = ev.get("sender") or ""
     content = ev.get("content") or {}
     msgtype = content.get("msgtype")
+    body = (content.get("body") or "").strip()
 
-    if sender in control_ids and msgtype == "m.text":
-        body = (content.get("body") or "").strip()
-        return _handle_text_command(body, music=music, sink=sink,
-                                    state=state, target=target)
+    if sender in control_ids and msgtype == "m.text" \
+            and _handle_text_command(body, music=music, sink=sink,
+                                     state=state, target=target):
+        return True
+    if not sender or sender == owner or ev.get("type") != "m.room.message":
+        return False
+    if (content.get("m.relates_to") or {}).get("rel_type") == "m.replace":
+        return False                     # an edit: the original was handled
+    ts = (ev.get("origin_server_ts") or 0) / 1000
+    if ts and time.time() - ts > _STALE_S:
+        return False
+    thread = matrix.thread_of(room_id)
+    decision = _decide(thread)
+    extras = {"session": thread, "matrix_event": ev.get("event_id") or "",
+              "matrix_room": room_id}
 
-    if sender == sam_id and msgtype in ("m.audio", "m.voice"):
+    if msgtype in ("m.audio", "m.voice"):
         mxc = content.get("url")
         if not mxc:
             return False
@@ -162,7 +226,13 @@ def _process_event(ev: dict, *, room_id: str, sam_id: str,
             mxc=mxc, homeserver=homeserver, token=token,
             sink=sink, coordinator=coordinator,
             state=state, target=target, sender=sender,
+            extras=extras, held=decision != "play",
         )
+        return True
+    if msgtype in ("m.text", "m.notice") and body:
+        name = (name_of(room_id, sender) if name_of else "") \
+            or sender.lstrip("@").split(":")[0]
+        _speak_text(f"{name}: {body}", decision=decision, extras=extras, state=state)
         return True
     return False
 
@@ -171,14 +241,16 @@ def _csv(value: str | None) -> set[str]:
     return {v.strip() for v in (value or "").split(",") if v.strip()}
 
 
-def consumer(config: matrix.Config, env: dict | None = None):
+def consumer(config: matrix.Config, env: dict | None = None, *, name_of=None):
     """The speech intake as a reader of a shared sync loop.
 
     Returns `(on_event, stop)`: `on_event(room_id, event)` only queues, so
     the sync thread is never held up by a voice note playing; one worker
-    plays them in order. Sinks are made lazily, on the worker."""
+    plays them in order. Sinks are made lazily, on the worker. `name_of(room,
+    user)` is a member's display name, when the caller knows it."""
     env = os.environ if env is None else env
     sam_id = env.get("MATRIX_SAM_ID", "@agent:example.org")
+    owner = matrix.owner_of(env)
     control_ids = _csv(env.get("MATRIX_CONTROL_IDS")
                        or f"@owner:example.org,{sam_id}")
     speech_rooms = (_csv(env.get("MATRIX_SPEECH_ROOMS"))
@@ -207,7 +279,7 @@ def consumer(config: matrix.Config, env: dict | None = None):
                     control_ids=control_ids,
                     homeserver=config.homeserver, token=config.token,
                     sink=sink, music=music, coordinator=coordinator,
-                    state=state, target=target,
+                    state=state, target=target, owner=owner, name_of=name_of,
                 )
             except Exception as e:  # noqa: BLE001
                 log.warning("matrix: event handler failed: %s", e)

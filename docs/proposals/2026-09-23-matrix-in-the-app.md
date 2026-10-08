@@ -156,7 +156,14 @@ not the install.
 
 ### Two things that must not happen by accident
 
-- **A bridged message speaking out loud.** The intake's whole purpose is to
+- **A bridged message speaking out loud.** *Answered 9 Oct 2026 (David:
+  "default to speech priority quiet so it can be played manually"):* every
+  room starts at the quiet speech level, set once per room, and the intake
+  sends anyone else's text and voice notes through the same level rule as
+  an agent's reply — so nothing is read out in the house unless a room is
+  turned up, and every message has a Play in the app.
+  `MATRIX_SPEECH_ROOMS` remains for a room that should never be spoken at
+  all. What was here: The intake's whole purpose is to
   play what arrives through `SinkSpeech`. The day SMS lands in a room, that
   path will read texts aloud in the house. Speech must be opt-in per room,
   and off by default for anything bridged.

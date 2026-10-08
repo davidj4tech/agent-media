@@ -1103,6 +1103,26 @@ class StateStore:
                         (json.dumps(ex), int(row_id)))
         return True
 
+    def matrix_speech(self, thread: str) -> dict[str, dict]:
+        """The speech of a Matrix room's messages (the Matrix intake writes
+        `extras.session` = the room's thread, `extras.matrix_event`), newest
+        row per event: `{event_id: {"id", "started_at", "extras"}}`."""
+        with self._cursor() as cur:
+            cur.execute("SELECT id, started_at, extras FROM history "
+                        "WHERE json_extract(extras, '$.session') = ? "
+                        "AND json_extract(extras, '$.matrix_event') IS NOT NULL "
+                        "ORDER BY id", (thread,))
+            rows = cur.fetchall()
+        out: dict[str, dict] = {}
+        for rid, at, ex in rows:
+            try:
+                extras = json.loads(ex)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            out[str(extras.get("matrix_event"))] = {"id": rid, "started_at": at,
+                                                    "extras": extras}
+        return out
+
     def history_row(self, row_id: int) -> Optional[dict]:
         """One history row by its id (extras parsed), or None."""
         with self._cursor() as cur:

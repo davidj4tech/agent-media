@@ -22,6 +22,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
@@ -65,6 +66,26 @@ class Config:
             timeout_ms=int(env.get("MATRIX_SYNC_TIMEOUT_MS")
                            or DEFAULT_SYNC_TIMEOUT_MS),
         )
+
+
+_THREAD_NS = uuid.UUID("6f1d3c52-9a0e-4c1b-8f3e-5a7d2b9c4e10")
+
+
+def thread_of(room_id: str) -> str:
+    """The thread id of a room: a uuid, stable for the room, so the server's
+    session routes take it as they are and speech files under it."""
+    return str(uuid.uuid5(_THREAD_NS, room_id))
+
+
+def owner_of(env: dict | None = None) -> str:
+    """Who `user` is in a room — whose words are never read out:
+    `MATRIX_OWNER_ID`, else the first control id that is not the agent's."""
+    env = os.environ if env is None else env
+    if env.get("MATRIX_OWNER_ID"):
+        return env["MATRIX_OWNER_ID"]
+    sam = env.get("MATRIX_SAM_ID") or ""
+    ids = [i.strip() for i in (env.get("MATRIX_CONTROL_IDS") or "").split(",")]
+    return next((i for i in ids if i and i != sam), "")
 
 
 def state_dir() -> Path:

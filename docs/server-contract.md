@@ -340,6 +340,13 @@ Everything a message can be pointed at.
   thread at once. With no owner token it is 409, `drivable` is false and
   `/conversation?session=` says `resumable: false`; `mode: "branch"` is
   always 409. The app lists these rows only under its Matrix filter.
+  **Speech** (9 Oct 2026): a room has a speech level like any thread
+  (`POST /session/priority` takes its id) and **starts quiet**, once per
+  room. Anyone else's text (read as "<name>: <words>") and voice notes
+  follow it as an agent's reply does: quiet keeps them unplayed with a
+  Play, normal plays only while the room is open. A message with speech
+  has `spoken: {id, key: "", at}` (plus `unheard: true` while held), and
+  the app's Play replays it by id.
 
 Clients: S (`utils/sasonicaTargets.js`, drawer and ask page), on open.
 

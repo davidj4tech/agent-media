@@ -87,8 +87,11 @@ def session_priority(session: str, flag, bearer: str, level=None) -> tuple[bool,
     user, err = auth.gate(bearer)
     if not user:
         return False, err
+    from . import matrix
+
     if not (sessions.live_sessions().get(session) or sessions.session_exists(session)
-            or sessions._folder_for_session(session)):
+            or sessions._folder_for_session(session)
+            or matrix.room(session) is not None):     # a Matrix room's level
         return False, {"error": f"no such session {session[:8]}", "status": 404}
     try:
         if level == "default":
