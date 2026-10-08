@@ -862,8 +862,9 @@ ahead.
    one-liner, Join by sasonica-test2 from red5's headless browser, replace
    on a second join, and `hostname`/`ver` through the relay over MCP
    (runs 37701441963, 37701570159; hosted-relay.md 0858f45). Google sign-in
-   published 8 Oct. Left for David: the ToS review, then `*` (and the
-   privacy-policy line with it).
+   published 8 Oct. Terms of service published 8 Oct
+   (sasonica.com/terms-of-service). Left: David's go-ahead for `*`, with the
+   privacy policy's "not yet open" line and the Windows "coming soon" labels.
 
 17. **Background agents you can act on, and for Codex** (David, 7 Oct
    2026, after asking whether Sasonica has what the arrow key on an empty
