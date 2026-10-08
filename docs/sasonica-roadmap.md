@@ -863,8 +863,10 @@ ahead.
    on a second join, and `hostname`/`ver` through the relay over MCP
    (runs 37701441963, 37701570159; hosted-relay.md 0858f45). Google sign-in
    published 8 Oct. Terms of service published 8 Oct
-   (sasonica.com/terms). Left: David's go-ahead for `*`, with the
-   privacy policy's "not yet open" line and the Windows "coming soon" labels.
+   (sasonica.com/terms). **Opened 8 Oct 2026** (David's go-ahead):
+   `RELAY_ALLOW_ACCOUNTS=*` deployed (sasonica-shell 6af1773); the privacy
+   policy, Get started, Download and the front page give Windows the
+   one-liner.
 
 17. **Background agents you can act on, and for Codex** (David, 7 Oct
    2026, after asking whether Sasonica has what the arrow key on an empty
