@@ -292,3 +292,63 @@ def test_a_load_is_timed_from_the_send_to_the_phones_duration(tmp_path, monkeypa
     ev = [json.loads(l)["event"] for l in
           (tmp_path / "frames-timing.log").read_text().splitlines()]
     assert ev == ["sent", "reported", "duration"]
+
+
+# --- the radio's hand-off player (roadmap item 15, #7) -------------------------
+
+
+def test_handoff_with_no_device_is_refused_at_once():
+    """No phone advertises `?handoff=frames` and there is no upstream: every
+    command is answered with why, so `radio dj --where handoff` says so."""
+    srv = speech_frames.start("127.0.0.1:0", upstream="", channel="handoff")
+    try:
+        ipc = Ipc(srv.getsockname())
+        got = ipc("client_name")
+        assert got["error"].startswith("no device plays handoff")
+        assert ipc("loadfile", "handoff/x?q=A+-+B", "replace")["error"] != "success"
+        ipc.close()
+        assert speech_frames.frames_after(0, "handoff") == []
+    finally:
+        srv.close()
+
+
+def test_handoff_frames_reach_the_stream_and_its_report_is_read_back(server, screen, monkeypatch):
+    """The station's songs go down as `handoff` frames; the app's report —
+    which song, which way of asking started it — is answered here."""
+    from agent_media_core import radio_io
+
+    srv = speech_frames.start("127.0.0.1:0", upstream="", channel="handoff")
+    host, port = srv.getsockname()
+    monkeypatch.setenv("MEDIA_RADIO_HANDOFF_ENDPOINT", f"tcp://{host}:{port}")
+    monkeypatch.delenv("MEDIA_RADIO_HANDOFF_APP", raising=False)
+    pixel, dev = _device("Pixel 8a")
+    st = Stream(server, "/sessions/events?ping=0.3&handoff=frames", pixel)
+    try:
+        assert st.event()[0] == "sessions"
+        assert _wait(lambda: speech_frames._HUBS["handoff"].device() == dev)
+        assert speech_frames._HUBS["music"].device() is None
+        p = radio_io.HandoffPlayer()
+        assert p.ready() is None
+        assert p.report() is None                  # nothing said yet
+        assert p.send({"id": "5igDtWadYms", "q": "Eagles - Take It Easy"}, replace=True)
+        f = st.next("handoff", 2.0)
+        assert f["ops"][0]["op"] == "load" and f["ops"][0]["mode"] == "replace"
+        assert f["ops"][0]["uri"].startswith("handoff/5igDtWadYms?q=Eagles")
+        assert p.holds("5igDtWadYms")
+        p.pause()
+        assert st.next("handoff", 2.0)["ops"] == [{"op": "pause", "on": True}]
+        extra = {"app": "com.google.android.apps.youtube.music", "status": "playing",
+                 "song": "Eagles / Take It Easy", "method": "playFromUri (app link)",
+                 "error": "", "log": ["try 0 (playFromSearch)", "way 2 worked"]}
+        r = call(server, "POST", "/handoff/state",
+                 {"seq": speech_frames.seq("handoff"), "pos": 0, "count": 1, "paused": True,
+                  "idle": False, "time_pos": 12.0, "duration": 250.0, "extra": extra}, pixel)
+        assert r[0].status == 200
+        got = p.report()
+        assert got["method"] == "playFromUri (app link)" and got["age_s"] >= 0
+        assert p.props()["time-pos"] == 12.0
+        # Not the music player's report.
+        assert call(server, "POST", "/music/state", {"seq": 0}, pixel)[0].status == 409
+    finally:
+        st.close()
+        srv.close()

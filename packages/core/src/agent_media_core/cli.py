@@ -5970,6 +5970,19 @@ def _cmd_music_radio(m: "SinkMusic", a) -> int:
         for r in snap["next"]:
             mark = {"ready": "✓", "fetching": "…"}.get(r["state"] or "", " ")
             print(f"  {mark} {r['title']}" + (f" — {r['channel']}" if r["channel"] else ""))
+        if "handoff" in snap:
+            # The hand-off app's own word: which song, how it was asked, what failed.
+            h = snap["handoff"] or {}
+            if not h:
+                print("  hand-off: the phone has not reported yet")
+            else:
+                print(f"  hand-off: {h.get('status') or '?'} in {h.get('app') or 'no app'}"
+                      + (f" — {h['song']}" if h.get("song") else "")
+                      + (f" (started by {h['method']})" if h.get("method") else ""))
+                if h.get("error"):
+                    print(f"  hand-off error: {h['error']}")
+                for line in (h.get("log") or [])[-6:]:
+                    print(f"    {line}")
         return 0
     where = _resolve_music_where(getattr(a, "where", "") or "default")
     playing = not arg

@@ -33,6 +33,17 @@ itself.
     MEDIA_SPEECH_FRAMES_LISTEN=127.0.0.1:16624    (the canvas starts it)
     MEDIA_SPEECH_FRAMES_UPSTREAM=127.0.0.1:16614  (the relay: fallback, warm)
     MEDIA_SPEECH_SOCKET_SASONICA=tcp://127.0.0.1:16624  (the switch)
+
+A third channel, `handoff` (roadmap item 15, #7; 9 Oct 2026), is the radio's
+hand-off player — songs asked of the listener's own music app by name
+(core radio_io.HandoffPlayer, the app's HandoffMusic). Same ops, same
+`POST /handoff/state`, and the report carries an `extra` object: which app,
+which song it took for ours, which way of asking started it, what failed.
+It has no upstream: with no device advertising `?handoff=frames` a caller
+is answered "no device …" at once, not passed anywhere.
+
+    MEDIA_HANDOFF_FRAMES_LISTEN=127.0.0.1:16626
+    MEDIA_RADIO_HANDOFF_ENDPOINT=tcp://127.0.0.1:16626  (the switch)
 """
 
 from __future__ import annotations
@@ -55,6 +66,8 @@ REPLAY_S = 120.0
 TITLE = "force-media-title"
 USER_DATA = "user-data/"
 RINGER = "user-data/agent-media/ringer"
+#: The phone's own word beyond the player's (`extra` in its report), read-only.
+REPORT = "user-data/agent-media/report"
 #: Set and ignored, as the app's MpvServer does.
 INERT = ("gapless-audio", "audio-device", "keep-open", "idle")
 
@@ -74,6 +87,9 @@ class Model:
         self.idle = True
         self.eof = False
         self.ringer: dict | None = None
+        #: The report's `extra` (the hand-off player's app, song, method, error).
+        self.extra: dict = {}
+        self.extra_at = 0.0
         #: When `time_pos` was true (monotonic), to run it on while playing.
         self.time_at = time.monotonic()
         self.stored: dict[str, object] = {}
@@ -176,6 +192,9 @@ class Model:
             self.duration = float(r.get("duration", self.duration))
         if isinstance(r.get("ringer"), dict):
             self.ringer = r["ringer"]
+        if isinstance(r.get("extra"), dict):
+            self.extra = r["extra"]
+            self.extra_at = time.time()
 
 
 class _Hub:
@@ -221,8 +240,9 @@ def trace(event: str, hub: "_Hub", **kw) -> None:
         pass
 
 
-#: One per player on the phone: speech (6614's) and music (6615's).
-CHANNELS = ("speech", "music")
+#: One per player on the phone: speech (6614's), music (6615's) and the
+#: radio's hand-off player (the listener's own music app; once 6617's).
+CHANNELS = ("speech", "music", "handoff")
 _HUBS: dict[str, _Hub] = {c: _Hub(c) for c in CHANNELS}
 
 
@@ -231,7 +251,7 @@ _HUBS: dict[str, _Hub] = {c: _Hub(c) for c in CHANNELS}
 
 def listening(device: str, on: bool, token: int | None = None,
               channel: str = "speech") -> int | None:
-    """A stream with `?speech=frames` opened (returns its token) or closed."""
+    """A stream with `?<channel>=frames` opened (returns its token) or closed."""
     hub = _HUBS[channel]
     with hub.lock:
         if on:
@@ -330,6 +350,10 @@ def _get(name: str, hub: "_Hub"):
     m = hub.model
     if name == RINGER and m.ringer is not None:
         return m.ringer
+    if name == REPORT:
+        if not m.extra:
+            return _NOT_FOUND
+        return {**m.extra, "age_s": round(time.time() - m.extra_at, 1)}
     if name == "pause":
         return m.paused
     if name == "mute":
@@ -663,6 +687,37 @@ def _passthrough(client: socket.socket, upstream: tuple[str, int]) -> None:
             pass
 
 
+def _refuse(client: socket.socket, channel: str) -> None:
+    """No device and nowhere to pass it: each command answered with why, so a
+    caller says so at once rather than reading a closed socket as a hiccup."""
+    why = f"no device plays {channel}: none has ?{channel}=frames on its stream"
+    buf = b""
+    try:
+        client.settimeout(30)
+        while True:
+            chunk = client.recv(65536)
+            if not chunk:
+                return
+            buf += chunk
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                if not line.strip():
+                    continue
+                try:
+                    req = json.loads(line)
+                except ValueError:
+                    req = None
+                rid = req.get("request_id") if isinstance(req, dict) else None
+                client.sendall((json.dumps(_answer(rid, False, why)) + "\n").encode())
+    except OSError:
+        return
+    finally:
+        try:
+            client.close()
+        except OSError:
+            pass
+
+
 def _hostport(s: str) -> tuple[str, int]:
     host, _, port = s.rpartition(":")
     return host or "127.0.0.1", int(port)
@@ -689,7 +744,7 @@ def _publish_rtt(port: int, upstream: tuple[str, int] | None, frames: bool) -> N
 def start(listen: str | None = None, upstream: str | None = None,
           channel: str = "speech") -> socket.socket | None:
     """Listen for `channel`'s callers (`MEDIA_SPEECH_FRAMES_LISTEN`,
-    `MEDIA_MUSIC_FRAMES_LISTEN`); None when unset."""
+    `MEDIA_MUSIC_FRAMES_LISTEN`, `MEDIA_HANDOFF_FRAMES_LISTEN`); None when unset."""
     hub = _HUBS[channel]
     key = f"MEDIA_{channel.upper()}_FRAMES"
     listen = listen or os.environ.get(f"{key}_LISTEN", "")
@@ -720,7 +775,7 @@ def start(listen: str | None = None, upstream: str | None = None,
             elif far is not None:
                 threading.Thread(target=_passthrough, args=(c, far), daemon=True).start()
             else:
-                c.close()
+                threading.Thread(target=_refuse, args=(c, channel), daemon=True).start()
 
     threading.Thread(target=loop, name=f"{channel}-frames", daemon=True).start()
     print(f"{channel} frames on {listen}" + (f" (else through to {up})" if up else ""),

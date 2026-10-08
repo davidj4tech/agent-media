@@ -271,15 +271,23 @@ class PhonePlayer:
             self._sink().pause()
 
 
+#: The hand-off app's report, as the frames channel answers it (speech_frames.REPORT).
+HANDOFF_REPORT = "user-data/agent-media/report"
+
+
 class HandoffPlayer:
     """The listener's own music app, by Sasonica's hand-off player
-    (sasonica-app speech/HandoffMusic.java, port 6617): each song is asked of
-    Spotify, YouTube Music or whichever app the listener chose, by name,
-    under their subscription. Nothing is downloaded here or on the phone, so
-    it needs no switch (licensed-music proposal, step 3).
+    (sasonica-app speech/HandoffMusic.java): each song is asked of Spotify,
+    YouTube Music or whichever app the listener chose, by name, under their
+    subscription. Nothing is downloaded here or on the phone, so it needs no
+    switch (licensed-music proposal, step 3).
 
-    The app answers the same mpv verbs as the phone's players; a queue entry
-    is ``handoff/<id>?q=Artist - Title&artist=…&title=…``.
+    It is driven with the same mpv verbs as the phone's players; a queue
+    entry is ``handoff/<id>?q=Artist - Title&artist=…&title=…``. Since 9 Oct
+    2026 the endpoint is the server's own `handoff` frames channel
+    (agent_media_server.speech_frames, MEDIA_HANDOFF_FRAMES_LISTEN; roadmap
+    item 15, #7), which sends them down the phone's stream; it was the app's
+    port 6617 on the tailnet.
     """
 
     personal = False
@@ -298,6 +306,35 @@ class HandoffPlayer:
         if not ep:
             raise ipc.MpvIpcError("MEDIA_RADIO_HANDOFF_ENDPOINT unset")
         return ep
+
+    def ready(self) -> Optional[str]:
+        """None when a device runs the hand-off player, else why not (the
+        frames channel answers "no device plays handoff" with none on it)."""
+        from .sinks import _mpv_ipc as ipc
+
+        try:
+            ipc.command(self._ep(), "client_name", timeout=3.0, retry_errors=False)
+            return None
+        except ipc.MpvIpcError as e:
+            why = str(e).removeprefix("client_name: ")
+            if why.startswith("no device"):
+                return ("no phone has the hand-off player on: open Sasonica on it "
+                        "(a build with the hand-off frames)")
+            return f"the hand-off player did not answer: {why}"
+        except OSError as e:
+            return f"the hand-off player did not answer: {e}"
+
+    def report(self) -> Optional[dict]:
+        """The app's own word: `{app, song, method, status, error, log, age_s}`
+        (HandoffMusic.report), or None before it has said anything."""
+        from .sinks import _mpv_ipc as ipc
+
+        try:
+            got = ipc.command(self._ep(), "get_property", HANDOFF_REPORT,
+                              timeout=2.0, retry_errors=False)
+        except (ipc.MpvIpcError, OSError):
+            return None
+        return got if isinstance(got, dict) else None
 
     def props(self) -> Optional[dict]:
         from .sinks import _mpv_ipc as ipc
@@ -383,6 +420,13 @@ class HandoffPlayer:
 
 #: Players a station can run on (`_resolve_music_where` names, and `handoff`).
 PLAYERS = {"sasonica": PhonePlayer, "phone": PhonePlayer, "handoff": HandoffPlayer}
+
+
+def handoff_ready() -> Optional[str]:
+    """None when the hand-off player can take a station now, else why not."""
+    if not handoff_on():
+        return "no hand-off player here (MEDIA_RADIO_HANDOFF_ENDPOINT)"
+    return HandoffPlayer().ready()
 
 
 def handoff_on() -> bool:

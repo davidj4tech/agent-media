@@ -277,8 +277,10 @@ def start_dj(where: str) -> dict:
     if getattr(radio_io.PLAYERS[where], "personal", False) and not radio_io.youtube_on():
         # The phone's players are fed from YouTube, which is off here.
         raise ValueError(OFF_HERE)
-    if where == "handoff" and not radio_io.handoff_on():
-        raise ValueError("no hand-off player here (MEDIA_RADIO_HANDOFF_ENDPOINT)")
+    if where == "handoff":
+        why = radio_io.handoff_ready()
+        if why:
+            raise ValueError(why)
     with _station() as st:
         st.clear()
         st.update(_blank())
@@ -622,11 +624,15 @@ def snapshot() -> dict:
     seed = st.get("seed") or {}
     # The song on now, so the tab can name it when the player can't be read.
     song = next((s for s in st["sent"] + [seed] if s.get("id") == cur), None) if cur else None
-    return {"on": True, "seed": {"id": seed.get("id"), "title": seed.get("title") or ""},
+    snap = {"on": True, "seed": {"id": seed.get("id"), "title": seed.get("title") or ""},
             "current": _row(song) if song else None,
             "kind": st.get("kind") or "mix", "note": st.get("note") or "",
             "available": available(),
             "next": rows[:_SHOWN], "more": max(0, len(rows) - _SHOWN)}
+    if st.get("where") == "handoff" and radio_io.handoff_on():
+        # Which app took the song, and how it was asked (or why it was not).
+        snap["handoff"] = radio_io.HandoffPlayer().report()
+    return snap
 
 
 def _row(s: dict) -> dict:

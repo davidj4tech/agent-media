@@ -515,6 +515,7 @@ def test_a_dj_on_the_hand_off_player_needs_no_youtube(station, monkeypatch):
     player, sent, _, _ = station
     monkeypatch.delenv("MEDIA_RADIO_YOUTUBE")
     monkeypatch.setenv("MEDIA_RADIO_HANDOFF_ENDPOINT", "tcp://phone:6617")
+    monkeypatch.setattr(radio_io.HandoffPlayer, "ready", lambda self: None)
     assert radio.available() is True
     assert radio_io.default_player("sasonica") == "handoff"
     monkeypatch.setattr(radio_dj, "ask", lambda st, n=6: (["Eagles - Take It Easy", "The Band - The Weight"], "easy"))
@@ -529,6 +530,40 @@ def test_a_dj_on_the_hand_off_player_needs_no_youtube(station, monkeypatch):
     assert q["q"] == "The Band - The Weight" and q["channel"] == "The Band"
     radio.tick()
     assert radio.is_on()                        # no switch turns it off
+
+
+def test_a_dj_on_the_hand_off_player_refuses_with_no_phone_on_it(station, monkeypatch):
+    """The frames channel answers "no device plays handoff" while no phone
+    advertises it: the DJ says so at once and no station is left on (9 Oct 2026)."""
+    from agent_media_core import radio_io
+    from agent_media_core.sinks import _mpv_ipc as ipc
+
+    monkeypatch.setenv("MEDIA_RADIO_HANDOFF_ENDPOINT", "tcp://127.0.0.1:16626")
+
+    def refuse(ep, *a, **k):
+        assert k.get("retry_errors") is False
+        raise ipc.MpvIpcError(f"{a[0]}: no device plays handoff: none has ?handoff=frames on its stream")
+    monkeypatch.setattr(ipc, "command", refuse)
+    with pytest.raises(ValueError, match="no phone has the hand-off player on"):
+        radio.start_dj("handoff")
+    assert not radio.is_on()
+    assert radio_io.HandoffPlayer().report() is None
+
+
+def test_the_hand_off_report_rides_on_the_snapshot(station, monkeypatch):
+    from agent_media_core import radio_io
+    from agent_media_core.sinks import _mpv_ipc as ipc
+
+    monkeypatch.setenv("MEDIA_RADIO_HANDOFF_ENDPOINT", "tcp://127.0.0.1:16626")
+    said = {"app": "com.spotify.music", "status": "playing", "method": "prepareFromSearch+play"}
+
+    def answer(ep, verb, *a, **k):
+        if verb == "get_property" and a[0] == radio_io.HANDOFF_REPORT:
+            return said
+        return "sasonica" if verb == "client_name" else None
+    monkeypatch.setattr(ipc, "command", answer)
+    radio.start_dj("handoff")
+    assert radio.snapshot()["handoff"] == said
 
 
 def test_a_paused_song_cut_off_comes_back_paused(station):

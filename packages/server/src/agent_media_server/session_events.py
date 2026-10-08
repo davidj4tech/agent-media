@@ -256,7 +256,8 @@ def serve(h, bearer: str, *, ping_s: float = PING_DEFAULT_S,
           phone_kinds: tuple[str, ...] | None = None, catchup: bool = False,
           free_frame: bool = False, speech_device: str | None = None,
           speech_after: int | None = None, music_device: str | None = None,
-          music_after: int | None = None, want_notes: bool = False) -> bool:
+          music_after: int | None = None, handoff_device: str | None = None,
+          handoff_after: int | None = None, want_notes: bool = False) -> bool:
     """Hold the connection and stream the session list until it goes. Auth
     is the caller's (app.py), done before this. `mic_for` is None when the
     client did not ask for `mic` frames, else the connecting device's id
@@ -270,7 +271,9 @@ def serve(h, bearer: str, *, ping_s: float = PING_DEFAULT_S,
     `speech_device`: this device plays speech from `speech` frames
     (speech_frames.py, `?speech=frames`); `speech_after` is the last frame
     seq it applied, for one that reconnects mid-reply. `music_device` and
-    `music_after`: the same for its music player (`music` frames).
+    `music_after`: the same for its music player (`music` frames), and
+    `handoff_device`/`handoff_after` for the radio's hand-off player
+    (`handoff` frames: the listener's own music app).
     `want_notes`: `notes` frames (notes.py) — the notifications agents on
     this host used to put up over `ssh termux-notification`.
     Always True: the request was answered, however the stream ended."""
@@ -289,7 +292,8 @@ def serve(h, bearer: str, *, ping_s: float = PING_DEFAULT_S,
     # it missed, if still young.
     players: dict[str, list] = {}
     for ch, dev, after in (("speech", speech_device, speech_after),
-                           ("music", music_device, music_after)):
+                           ("music", music_device, music_after),
+                           ("handoff", handoff_device, handoff_after)):
         if dev is None:
             continue
         cur = speech_frames.seq(ch)
