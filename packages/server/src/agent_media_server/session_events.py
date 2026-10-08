@@ -27,6 +27,10 @@ thread's one word.
                that can take a photo, …; §6.21, phone.py): every open ask an
                agent made of the phone, of those kinds. Like `mic`: after the
                first frame if there are any, then whenever the set changes
+    notes      {"notes": [...]} — only when asked, `?notes=1` (§6.23,
+               notes.py): every open note an agent put in the phone's shade.
+               Like `phone`: after the first frame if there are any, then
+               whenever the set changes
     ping       {} after `?ping=` seconds of silence (15–300, default 15)
 
 `state` is `/sessions/state`'s (§6.1): `working` | `waiting` | `approval`.
@@ -56,7 +60,7 @@ import logging
 import threading
 import time
 
-from . import alerts, auth, mic, phone, sessions
+from . import alerts, auth, mic, notes, phone, sessions
 
 log = logging.getLogger("agent-media.server.session_events")
 
@@ -136,6 +140,7 @@ class _Watcher:
         self.alerts_head = 0
         self.mic_head = 0
         self.phone_head = 0
+        self.notes_head = 0
         self.version = 0
         self.thread: threading.Thread | None = None
 
@@ -150,13 +155,15 @@ class _Watcher:
         # Read every tick: an ask expiring is a change, noticed here (≤ POLL_S late).
         mic_head = mic.version()
         phone_head = phone.version()
+        notes_head = notes.version()
         with self.cond:
             if (rows != self.rows or head != self.alerts_head or mic_head != self.mic_head
-                    or phone_head != self.phone_head):
+                    or phone_head != self.phone_head or notes_head != self.notes_head):
                 self.rows = rows
                 self.alerts_head = head
                 self.mic_head = mic_head
                 self.phone_head = phone_head
+                self.notes_head = notes_head
                 self.version += 1
                 self.cond.notify_all()
 
@@ -200,17 +207,19 @@ _W = _Watcher()
 
 
 def poke() -> None:
-    """The asks changed (mic.py, phone.py): wake every stream now rather than
+    """The asks or notes changed (mic.py, phone.py, notes.py): wake every stream now rather than
     at the watcher's next tick, so the phone hears the TV's ask at once.
     Nothing to do with no stream open — the first subscriber reads afresh."""
     w = _W
     head = mic.version()
     phone_head = phone.version()
+    notes_head = notes.version()
     with w.cond:
         if w.rows is None:
             return
         w.mic_head = head
         w.phone_head = phone_head
+        w.notes_head = notes_head
         w.version += 1
         w.cond.notify_all()
 
@@ -247,7 +256,7 @@ def serve(h, bearer: str, *, ping_s: float = PING_DEFAULT_S,
           phone_kinds: tuple[str, ...] | None = None, catchup: bool = False,
           free_frame: bool = False, speech_device: str | None = None,
           speech_after: int | None = None, music_device: str | None = None,
-          music_after: int | None = None) -> bool:
+          music_after: int | None = None, want_notes: bool = False) -> bool:
     """Hold the connection and stream the session list until it goes. Auth
     is the caller's (app.py), done before this. `mic_for` is None when the
     client did not ask for `mic` frames, else the connecting device's id
@@ -262,6 +271,8 @@ def serve(h, bearer: str, *, ping_s: float = PING_DEFAULT_S,
     (speech_frames.py, `?speech=frames`); `speech_after` is the last frame
     seq it applied, for one that reconnects mid-reply. `music_device` and
     `music_after`: the same for its music player (`music` frames).
+    `want_notes`: `notes` frames (notes.py) — the notifications agents on
+    this host used to put up over `ssh termux-notification`.
     Always True: the request was answered, however the stream ended."""
     from .app import _cors, _json
 
@@ -270,6 +281,8 @@ def serve(h, bearer: str, *, ping_s: float = PING_DEFAULT_S,
         return True
     h.close_connection = True
     phone.listening(phone_kinds, True)
+    if want_notes:
+        notes.listening(True)
     from . import speech_frames
     # Per player channel: (token, cursor). Frames after the cursor are sent;
     # a fresh stream starts at now, one that reconnects (`*_after`) gets what
@@ -308,6 +321,7 @@ def serve(h, bearer: str, *, ping_s: float = PING_DEFAULT_S,
         # An empty set on connecting is not sent: the phone has nothing to show.
         seen_asks: list[dict] = []
         seen_phone: list[dict] = []
+        seen_notes: list[dict] = []
         from agent_media_core import catchup as _catchup
         latest = _catchup.last() if catchup else None
         # Only a recent one on connecting: the phone keeps the last id it posted.
@@ -371,6 +385,12 @@ def serve(h, bearer: str, *, ping_s: float = PING_DEFAULT_S,
                         seen_phone = asks
                         send("phone", {"asks": asks})
                         last_sent = time.monotonic()
+                if want_notes:
+                    open_notes = notes.open_notes()
+                    if open_notes != seen_notes:
+                        seen_notes = open_notes
+                        send("notes", {"notes": open_notes})
+                        last_sent = time.monotonic()
             elif time.monotonic() - last_sent >= ping_s:
                 send("ping", {})
                 last_sent = time.monotonic()
@@ -385,6 +405,8 @@ def serve(h, bearer: str, *, ping_s: float = PING_DEFAULT_S,
         log.exception("session events: stream failed")
     finally:
         phone.listening(phone_kinds, False)
+        if want_notes:
+            notes.listening(False)
         for ch, pl in players.items():
             speech_frames.listening(pl[2], False, pl[0], channel=ch)
         _W.unsubscribe()

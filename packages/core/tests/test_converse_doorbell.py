@@ -14,7 +14,23 @@ from pathlib import Path
 
 import pytest
 
+from agent_media_core import phone_notes
 from agent_media_core.capture import doorbell
+
+
+@pytest.fixture(autouse=True)
+def no_notes(monkeypatch):
+    """The canvas's note path is answered here, never by a real canvas: as
+    an app that has never shown notes, so the ssh fallback below is what
+    runs. test_ring_goes_down_the_phones_own_stream takes the other branch."""
+    posted = []
+
+    def fake(route, body, timeout):
+        posted.append((route, body))
+        return {"ok": True, "listening": 0, "seen": False}
+
+    monkeypatch.setattr(phone_notes, "_call", fake)
+    return posted
 
 
 @pytest.fixture
@@ -188,3 +204,22 @@ def test_ssh_failure_is_swallowed(monkeypatch):
     doorbell.ring("q?", 30)
     doorbell.clear()          # must not raise
     time.sleep(0.2)
+
+
+def test_ring_goes_down_the_phones_own_stream(calls, no_notes, monkeypatch):
+    """With an app that shows notes, ring and clear are canvas notes and red5
+    never dials the phone (roadmap item 15, #5)."""
+    def fake(route, body, timeout):
+        no_notes.append((route, body))
+        return {"ok": True, "listening": 1, "seen": True}
+
+    monkeypatch.setattr(phone_notes, "_call", fake)
+    doorbell.ring("ship it or hold?", 90)
+    _settle(no_notes)
+    doorbell.clear()
+    routes = [(r, b.get("id"), b.get("priority")) for r, b in no_notes]
+    assert routes == [("/notes", "converse-question", "high"),
+                      ("/notes/clear", "converse-question", None)]
+    assert "ship it or hold?" in no_notes[0][1]["text"]
+    assert no_notes[0][1]["ttl_s"] == 120
+    assert not [argv for argv, _ in calls if argv and argv[0] == "ssh"]

@@ -11,10 +11,12 @@ take it back down the moment the question is answered or expires. A stale "Sam
 is asking" is worse than none — it invites an answer to a question nobody is
 waiting for any more.
 
-Termux-only in practice (termux-notification lives on the phone, converse runs
-on red5), so this ssh's the way `_miss_notify` does, and inherits its host
-resolution — one source of truth for "the phone". Best-effort throughout: a
-doorbell that fails must never cost the conversation it was announcing.
+The notification goes down the phone's own stream (`phone_notes`, server
+notes.py; roadmap item 15), so red5 no longer dials into the phone for it.
+For an app that has never shown notes it still ssh's `termux-notification`
+the way `_miss_notify` does, and inherits its host resolution. Best-effort
+throughout: a doorbell that fails must never cost the conversation it was
+announcing.
 
 The second announcement goes to Cece, and it is hers by request: the
 notification needs David to be near his phone and the spoken question needs
@@ -138,13 +140,18 @@ def ring(question: str, timeout_s: float) -> None:
         return
     content = (f"{question.strip()} — answer within {timeout_s:.0f}s, "
                f"or ask Cece to run: media converse-reply --pending")
-    t = threading.Thread(
-        target=_ssh,
-        args=(["termux-notification", "--id", NOTIFY_ID,
-               "--title", "Sam is asking", "--content", content,
-               "--priority", "high"],),
-        daemon=True)
-    t.start()
+
+    def _ring() -> None:
+        from .. import phone_notes
+        # Gone by itself when the question expires, if nothing clears it.
+        if phone_notes.usable(phone_notes.post(NOTIFY_ID, "Sam is asking", content,
+                                               priority="high", ttl_s=timeout_s + 30)):
+            return
+        _ssh(["termux-notification", "--id", NOTIFY_ID,
+              "--title", "Sam is asking", "--content", content,
+              "--priority", "high"])
+
+    threading.Thread(target=_ring, daemon=True).start()
 
 
 def clear() -> None:
@@ -157,5 +164,8 @@ def clear() -> None:
     cheap, twenty is not.
     """
     if not _enabled():
+        return
+    from .. import phone_notes
+    if phone_notes.usable(phone_notes.clear(NOTIFY_ID, timeout=4.0)):
         return
     _ssh(["termux-notification-remove", NOTIFY_ID], timeout_s=8)

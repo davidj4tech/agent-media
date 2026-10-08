@@ -159,6 +159,10 @@ device gets its token):
                   POST /phone/answer {id, decision, result?} (a device);
                   POST /phone/cancel {id} (host). Phones on
                   /sessions/events?phone=<kinds> get a `phone` frame (phone.py, §6.21)
+  POST /notes {id, title, text, priority?, ttl_s?, keep?} (host token) → a
+                  notification in the phone's shade; POST /notes/clear {id}.
+                  Phones on /sessions/events?notes=1 get a `notes` frame
+                  (notes.py, §6.23; was ssh termux-notification)
   POST /device/state {call, voice, quiet, meeting_until, meeting_title,
                   manual_until} (a device) → what only the phone sees;
                   GET /free → {free, why, since, until, age_s, held} (core free.py, §6.22);
@@ -218,6 +222,7 @@ CORS_PATHS = frozenset({
     "/sessions/events", "/search",
     "/mic/ask", "/mic/cancel",
     "/phone/ask", "/phone/answer", "/phone/cancel",
+    "/notes", "/notes/clear",
     "/speech/state", "/music/state",
 })
 
@@ -803,6 +808,8 @@ def _session_events(h: BaseHTTPRequestHandler, query: str) -> None:
         qs.get("speech") or [""])[0] == "frames" else None
     music_dev = (auth.device_id(bearer) or None) if (
         qs.get("music") or [""])[0] == "frames" else None
+    # `?notes=1`: notifications agents here put in the phone's shade (§6.23).
+    wants_notes = (qs.get("notes") or [""])[0] in ("1", "true")
 
     def _after(k: str) -> int | None:
         try:
@@ -819,7 +826,8 @@ def _session_events(h: BaseHTTPRequestHandler, query: str) -> None:
                          phone_kinds=phone.kinds_of(qs["phone"][0] if "phone" in qs else None),
                          catchup=wants_catchup, free_frame=wants_free,
                          speech_device=speech_dev, speech_after=_after("speech_after"),
-                         music_device=music_dev, music_after=_after("music_after"))
+                         music_device=music_dev, music_after=_after("music_after"),
+                         want_notes=wants_notes)
 
 
 def _thread_agents(h: BaseHTTPRequestHandler, session: str, agent_id: str | None,
@@ -1361,6 +1369,21 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
                       file=sys.stderr, flush=True)
         else:
             ok, detail = phone.cancel(body.get("id"))
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    elif path in ("/notes", "/notes/clear"):
+        # A notification in the phone's shade (§6.23, notes.py; roadmap item
+        # 15): an agent on this host posts — the host's own token, never a
+        # device's — and it goes down the phone's own stream.
+        from . import notes
+
+        if not (_TOKEN_OK is not None and _TOKEN_OK(h)):
+            _json(h, 401, {"ok": False, "error": "unauthorized"})
+            return True
+        body = _read_json(h)
+        if path == "/notes":
+            ok, detail = notes.post(body)
+        else:
+            ok, detail = notes.clear((body or {}).get("id") if isinstance(body, dict) else "")
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif AGENT_ACT.fullmatch(path):
         # Stop one background agent, or send it a message, from the agents

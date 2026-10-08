@@ -401,3 +401,47 @@ def test_the_free_frame_follows_busy(server, screen, monkeypatch):
         assert got["free"] is False and got["why"] == ["quiet"] and got["held"] == 0
     finally:
         st.close()
+
+
+def test_a_note_reaches_a_phone_that_asked_and_comes_down(server, screen, monkeypatch, tmp_path):
+    """`?notes=1`: an agent's note is a `notes` frame at once, and a clear
+    takes it out of the set (§6.23; was `ssh p8a termux-notification`)."""
+    from agent_media_server import notes
+
+    monkeypatch.setenv("AMUX_AUTH_TOKEN", "hosttok")
+    host = {"X-Auth-Token": "hosttok"}
+    pixel, _ = _device("Pixel 8a")
+    body = {"id": "converse-question", "title": "Sam is asking", "text": "tea?",
+            "priority": "high", "ttl_s": 60}
+    # The host's own token only: not a device, not nobody.
+    assert call(server, "POST", "/notes", body)[0].status == 401
+    assert call(server, "POST", "/notes", body, pixel)[0].status == 401
+    # Before any phone asked for notes: kept, and `seen` says no app shows them yet.
+    res, obj = call(server, "POST", "/notes", body, host)
+    assert res.status == 200 and obj["listening"] == 0 and obj["seen"] is False
+    st = Stream(server, "/sessions/events?ping=0.3&notes=1", pixel)
+    try:
+        got = st.next("notes", 2.0)["notes"]
+        assert [(n["id"], n["title"], n["priority"]) for n in got] == [
+            ("converse-question", "Sam is asking", "high")]
+        assert notes.seen()
+        monkeypatch.setattr(session_events, "POLL_S", 30.0)
+        res, obj = call(server, "POST", "/notes",
+                        {"id": "speech-miss", "title": "missed speech", "text": "2 replies",
+                         "keep": True}, host)
+        assert obj["listening"] == 1 and obj["seen"] is True
+        got = st.next("notes", 2.0)["notes"]
+        assert [n["id"] for n in got] == ["converse-question", "speech-miss"]
+        assert got[1]["keep"] is True
+        assert call(server, "POST", "/notes/clear", {"id": "converse-question"}, host)[1]["cleared"]
+        assert [n["id"] for n in st.next("notes", 2.0)["notes"]] == ["speech-miss"]
+    finally:
+        st.close()
+
+
+@pytest.mark.parametrize("body", [{"id": "Bad Id", "title": "x"}, {"id": "a"},
+                                  {"id": "a", "title": "x", "priority": "urgent"},
+                                  {"id": "a", "title": "x", "ttl_s": -1}])
+def test_a_bad_note_is_400(server, monkeypatch, body):
+    monkeypatch.setenv("AMUX_AUTH_TOKEN", "hosttok")
+    assert call(server, "POST", "/notes", body, {"X-Auth-Token": "hosttok"})[0].status == 400

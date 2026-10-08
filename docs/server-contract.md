@@ -3247,6 +3247,28 @@ held (the morning agenda) in the spell joins it: `kind: digest`.
   later", Catch me up (`POST /catchup`), Speak as it comes, Later (down
   until more is held).
 
+### 6.23 Notes in the phone's shade — host posts, the stream delivers (built 8 Oct 2026)
+
+Roadmap item 15, #5 of "the phone dials out" (`notes.py`). What red5 used to
+put up with `ssh p8a termux-notification`: a `converse` question ("Sam is
+asking") and "N spoken replies didn't reach this phone".
+
+- `POST /notes {id, title, text, priority?, ttl_s?, keep?}` — the host's own
+  token only (401 for a device). `id` `[a-z0-9][a-z0-9._:-]{0,63}`; the same
+  id again replaces the note. `priority` `default` | `high`; `ttl_s` default
+  3600, at most a day; `keep`: the app leaves it in the shade when it leaves
+  the set. Answers `{ok, note, listening, seen}`: `listening` is how many
+  `notes` streams are connected now; `seen` whether any device has ever asked
+  for notes here (a stamp file), so a caller keeps its old path for an app
+  without notes and only for that. 400 for a bad field, 429 past 20 open.
+- `POST /notes/clear {id}` — the same token; `{ok, cleared, listening, seen}`.
+- `GET /sessions/events?notes=1` — a `notes` frame, `{"notes": [{id, title,
+  text, priority, keep, at, until}]}`, on connecting if any are open and
+  whenever the set changes. The app posts an id that is new or whose words
+  changed (tag `note:<id>`; `high` on the needs-you channel, else alerts),
+  and takes one down when it leaves the set unless it was `keep`. In memory:
+  a restart forgets open notes, and the producers post again.
+
 ## 7. `/events` (v0) — canvas-wide, not the app's stream
 
 One SSE stream for every screen. The canvas page, the wake watcher and the

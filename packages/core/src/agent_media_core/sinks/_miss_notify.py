@@ -4,10 +4,13 @@ A reply is lost when play_playlist can't reach the player at all (doze'd
 phone, dead bridge) — the fallback chain is exhausted and nothing sounded.
 The cruel twist: the same doze that ate the reply also blocks an immediate
 notification. So each loss is appended to a ledger and a singleton retrier
-keeps offering a compact "N spoken replies didn't reach this phone" via
-`ssh <host> termux-notification` until the phone answers (it wakes with the
-user), then clears the ledger. `--id speech-miss` makes retries replace the
-same notification instead of stacking the shade.
+keeps offering a compact "N spoken replies didn't reach this phone" until
+the phone has it (it wakes with the user), then clears the ledger. The note
+goes down the phone's own stream (`phone_notes`, server notes.py; roadmap item
+15): the canvas keeps it for a phone that is asleep, and the retrier reposts
+it each minute until a phone is listening. `ssh <host> termux-notification`
+is left only for an app that has never shown notes. `speech-miss` is the
+note's id either way, so retries replace it instead of stacking the shade.
 
 Wired into SpeechSink.play_playlist's failure path via record_miss().
 Config: MEDIA_SPEECH_MISS_SSH overrides the ssh host (default: the same
@@ -94,11 +97,18 @@ def record_miss(target_name: str = "") -> None:
 
 def _try_notify(host: str, count: int, latest: int) -> bool:
     import shlex
+    from .. import phone_notes
     when = time.strftime("%H:%M", time.localtime(latest))
     plural = "reply" if count == 1 else "replies"
     content = (f"{count} spoken {plural} didn't reach this phone "
                f"(latest {when}) — likely dozed. See the canvas/session "
                f"for what was said.")
+    # The phone's own stream first: delivered when a phone is listening; held
+    # by the canvas (and reposted by this loop) while it is not.
+    got = phone_notes.post("speech-miss", "agent-media: missed speech", content,
+                           ttl_s=GIVE_UP_S, keep=True)
+    if phone_notes.usable(got):
+        return int(got.get("listening") or 0) > 0
     # ssh re-splits the remote argv on spaces — quote it as ONE command string
     # or the multi-word title/content shatter into stray arguments.
     remote = " ".join(shlex.quote(a) for a in
