@@ -87,9 +87,9 @@ Built the same day:
   (the current one, or an emailed link), Delete account (an emailed link that
   opens a page with a button). `GET/POST /me/account` passes these to
   cms.sasonica.com's `/api/account` with the account's own access token.
-- **Social sign-in:** Google live (project `sasonica`, still in Testing:
-  publishing waits for the privacy policy, a draft at websites
-  `sites/sasonica/content/privacy-policy.md`); GitHub and Facebook modules
+- **Social sign-in:** Google live (project `sasonica`), **published 8 Oct
+  2026** (out of Testing; branding: home page sasonica.com, privacy policy
+  sasonica.com/privacy-policy, no logo so no verification, no terms link yet); GitHub and Facebook modules
   installed, each needs its OAuth app (`bin/social-secret`). A social
   sign-in fills an empty profile picture.
 - **Email:** sasonica.com sends through Cloudflare Email Sending (South Pen
@@ -861,8 +861,9 @@ ahead.
    (manual workflow `windows-hosted-e2e.yml`; red5 has no KVM): the real
    one-liner, Join by sasonica-test2 from red5's headless browser, replace
    on a second join, and `hostname`/`ver` through the relay over MCP
-   (runs 37701441963, 37701570159; hosted-relay.md 0858f45). Left for
-   David: Google publishing, the ToS review, the privacy-policy line, then `*`.
+   (runs 37701441963, 37701570159; hosted-relay.md 0858f45). Google sign-in
+   published 8 Oct. Left for David: the ToS review, then `*` (and the
+   privacy-policy line with it).
 
 17. **Background agents you can act on, and for Codex** (David, 7 Oct
    2026, after asking whether Sasonica has what the arrow key on an empty
