@@ -1,0 +1,45 @@
+# The macOS installer as a person gets it from sasonica.com/download: the zip
+# with "Install Sasonica.command", unpacked the way Finder's Archive Utility
+# does (ditto), and run (double-clicking runs it in Terminal; here bash runs
+# it with an empty stdin so its closing "press any key" returns). Manual
+# only. Gatekeeper's one-time "Open Anyway" can't be clicked here: that part
+# is a person's.
+#
+# The log is public: the pairing link's one-time code is redacted, and the
+# runner (and so the throwaway server it pairs with) goes when the job ends.
+name: macOS installer (download page)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  install:
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - name: Download and unpack, as from the download page
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -fsSLo Install-Sasonica-macOS.zip https://sasonica.com/get/Install-Sasonica-macOS.zip
+          xattr -w com.apple.quarantine "0081;$(printf %x "$(date +%s)");Safari;" Install-Sasonica-macOS.zip
+          ditto -x -k Install-Sasonica-macOS.zip unpacked
+          ls -l@ unpacked
+          test -x "unpacked/Install Sasonica.command" || { echo "not executable after unzip"; exit 1; }
+
+      - name: Run Install Sasonica.command
+        run: |
+          cd "$RUNNER_TEMP"
+          set -o pipefail
+          "./unpacked/Install Sasonica.command" </dev/null 2>&1 \
+            | sed -E 's/(code=)[A-Za-z0-9_-]+/\1<redacted>/g' | tee install.log
+
+      - name: The server, its services and the tunnel
+        run: |
+          set -x
+          launchctl list | grep -i sasonica || true
+          URL=$(grep -Eo 'https://[a-z0-9-]+\.trycloudflare\.com' "$RUNNER_TEMP/install.log" | tail -1)
+          echo "tunnel: $URL"
+          test -n "$URL"
+          for i in $(seq 1 30); do curl -fsS -m 5 "$URL/healthz" && break; sleep 2; done
+          curl -fsS -m 5 "$URL/healthz"
+          ~/.local/bin/sasonica --version || true
