@@ -902,6 +902,14 @@ ahead.
    warn once. Before a wider launch: a signed Windows `.exe` (an OV/EV code
    signing certificate, or Azure Trusted Signing) and a notarised macOS
    `.pkg` (Apple Developer Program, US$99/yr), built in CI.
+   **Tested 8 Oct on GitHub's machines**: the `.cmd` downloaded (marked as
+   from the internet) and run on windows-latest, joined by sasonica-test2,
+   `hostname`/`ver` back through the relay (sasonica-shell
+   `windows-hosted-e2e.yml`, entry=cmd, run 37716447816); the macOS zip
+   unpacked with ditto on macos-14, the `.command` run, three launchd
+   services up and `/healthz` "ok" through the quick tunnel (agent-media
+   `macos-installer.yml`, run 37716796623). Not testable there: the
+   one-time SmartScreen/Gatekeeper click.
 
 ## Loose ends
 
