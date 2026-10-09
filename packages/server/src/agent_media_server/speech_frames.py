@@ -336,8 +336,13 @@ def report(device: str, body: dict, channel: str = "speech") -> tuple[bool, dict
                       pos=body.get("pos"), time_pos=body.get("time_pos"))
             if t.get("reported") and float(body.get("duration") or 0) > 0:
                 t["duration"] = now
+                # The phone's word on the wait (sasonica-app Media3Speech.extra):
+                # how long the start waited for its clip, and how the last
+                # sentences were made — Microsoft, Google's fallback, and why.
+                x = body.get("extra")
                 trace("duration", hub, seq=t["seq"], after_s=round(now - t["at"], 2),
-                      duration=body.get("duration"))
+                      duration=body.get("duration"),
+                      **({"phone": x} if isinstance(x, dict) and x else {}))
     _notify_observers(hub)
     return True, {"seq": seq(channel)}
 

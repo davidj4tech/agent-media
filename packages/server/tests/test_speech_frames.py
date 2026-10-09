@@ -330,12 +330,14 @@ def test_a_load_is_timed_from_the_send_to_the_phones_duration(tmp_path, monkeypa
                                            "time_pos": 0.1, "idle": False}, "speech")
         assert ok
         speech_frames.report(dev, {"seq": seq, "pos": 0, "count": 1, "time_pos": 0.5,
-                                   "duration": 4.2, "idle": False}, "speech")
+                                   "duration": 4.2, "idle": False,
+                                   "extra": {"start": {"i": 0, "wait_ms": 11800}}}, "speech")
     finally:
         speech_frames.listening(dev, False, tok)
-    ev = [json.loads(l)["event"] for l in
-          (tmp_path / "frames-timing.log").read_text().splitlines()]
-    assert ev == ["sent", "reported", "duration"]
+    lines = [json.loads(l) for l in (tmp_path / "frames-timing.log").read_text().splitlines()]
+    assert [l["event"] for l in lines] == ["sent", "reported", "duration"]
+    # The phone's own account of the wait rides along (#56).
+    assert lines[-1]["phone"] == {"start": {"i": 0, "wait_ms": 11800}}
 
 
 # --- the radio's hand-off player (roadmap item 15, #7) -------------------------
