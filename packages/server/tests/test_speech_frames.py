@@ -152,6 +152,50 @@ def test_a_phone_report_wins_but_old_news_moves_only_the_playhead(endpoint):
     assert ipc("get_property", "playlist-count")["data"] == 0
 
 
+def test_a_report_that_empties_a_reply_the_phone_plays_is_undone(endpoint):
+    """9 Oct 2026: one report said count 0, pos -1, idle; the phone then
+    played the reply through, and the server's playlist stayed empty."""
+    _listening()
+    ipc = Ipc(endpoint)
+    ipc("stop")
+    ipc("playlist-clear")
+    for uri in ("tts:a", "tts:b", "tts:c"):
+        ipc("loadfile", uri, "append")
+    ipc("set_property", "playlist-pos", 0)
+    speech_frames.report("d_test", {"seq": speech_frames.seq(), "pos": -1, "count": 0,
+                                    "idle": True})
+    assert ipc("get_property", "playlist-count")["data"] == 0
+    ipc("loadfile", "tts:d", "append")      # the reply still streaming in
+    # The phone plays on, and says how many it holds.
+    speech_frames.report("d_test", {"seq": speech_frames.seq(), "pos": 1, "count": 4,
+                                    "idle": False})
+    assert ipc("get_property", "playlist-count")["data"] == 4
+    assert ipc("get_property", "path")["data"] == "tts:b"
+    # A playing index beyond a reported count is never cut away.
+    speech_frames.report("d_test", {"seq": speech_frames.seq(), "pos": 2, "count": 0,
+                                    "idle": False})
+    assert ipc("get_property", "playlist-count")["data"] == 3
+    assert ipc("get_property", "path")["data"] == "tts:c"
+    # A stop really is the end: nothing is put back after one.
+    ipc("stop")
+    speech_frames.report("d_test", {"seq": speech_frames.seq(), "pos": -1, "count": 0,
+                                    "idle": True})
+    assert ipc("get_property", "playlist-count")["data"] == 0
+
+
+def test_frame_seqs_outrun_an_earlier_run_of_the_server():
+    """The phone keeps the last seq across a restart of this server. Counted
+    from 0 again, ours fell behind it, and every report it sent looked current."""
+    hub = speech_frames._HUBS["speech"]
+    for _ in range(50):
+        speech_frames._send([{"op": "pause", "on": False}], hub)
+    before = speech_frames.seq()
+    time.sleep(0.1)     # a restart takes seconds; 50 frames are a burst
+    speech_frames._reset_for_tests()
+    speech_frames._send([{"op": "pause", "on": False}], speech_frames._HUBS["speech"])
+    assert speech_frames.seq() > before
+
+
 def test_only_the_playing_device_reports():
     _listening("d_phone")
     ok, detail = speech_frames.report("d_tv", {"seq": 0})

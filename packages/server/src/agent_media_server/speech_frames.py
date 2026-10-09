@@ -77,6 +77,9 @@ class Model:
 
     def __init__(self) -> None:
         self.entries: list[str] = []
+        #: What a report cut from `entries`, with any appends since: put back
+        #: when a later report counts or plays past the cut (see `report`).
+        self.cut: list[str] = []
         self.pos = -1
         self.paused = False
         self.muted = False
@@ -117,8 +120,13 @@ class Model:
 
     def apply(self, op: dict) -> None:
         o = op.get("op")
+        if o in ("clear", "stop", "remove") or (
+                o == "load" and str(op.get("mode") or "replace") == "replace"):
+            self.cut = []
         if o == "load":
             uri, mode = str(op.get("uri") or ""), str(op.get("mode") or "replace")
+            if self.cut and mode != "replace":
+                self.cut.append(uri)
             if mode == "replace":
                 self.entries, self.pos, self.idle, self.eof = [uri], 0, False, False
                 self.duration = -1.0
@@ -177,10 +185,24 @@ class Model:
         """The phone's own word. `current`: it has applied every frame sent."""
         if current:
             count = int(r.get("count", len(self.entries)))
+            pos = int(r.get("pos", self.pos))
+            # A phone that plays an index counts at least that many.
+            count = max(count, pos + 1)
             # The phone stopped or cleared by itself: our entries end there.
+            # Kept aside all the same: a report once emptied a reply the phone
+            # then played through (count 0 while playlist-pos ran 0,1,2,3,
+            # 9 Oct 2026), and nothing put the entries back.
             if count < len(self.entries):
-                self.entries = self.entries[:count] if count else []
-            self.pos = int(r.get("pos", self.pos))
+                if len(self.entries) > len(self.cut):
+                    self.cut = list(self.entries)
+                self.entries = self.entries[:count]
+            elif count > len(self.entries) and self.cut:
+                # The phone has them after all. (Any op but an append clears
+                # `cut`, so it is still the list the phone was sent.)
+                self.entries = self.cut[:count]
+                if count >= len(self.cut):
+                    self.cut = []
+            self.pos = pos
             self.paused = bool(r.get("paused", self.paused))
             self.muted = bool(r.get("muted", self.muted))
             self.volume = float(r.get("volume", self.volume))
@@ -208,7 +230,12 @@ class _Hub:
         self.clients: list["_Client"] = []
         self.clients_lock = threading.Lock()
         self.frames: deque[dict] = deque(maxlen=KEEP)
-        self.seq = 0
+        # Frames are numbered from now (ms), not from 0: the phone keeps the
+        # last seq it saw across a restart of this server, and a seq of its
+        # from an earlier run, ahead of ours, made every report it sent look
+        # "current" — a report built before the newest frames reached it
+        # emptied a reply it then played (9 Oct 2026).
+        self.seq = int(time.time() * 1000)
         #: stream id → (device id, connected at); the newest one plays.
         self.listeners: dict[int, tuple[str, float]] = {}
         self._next_listener = 0
