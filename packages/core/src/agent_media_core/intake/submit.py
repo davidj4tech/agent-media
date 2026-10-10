@@ -3354,6 +3354,59 @@ def _ringer_hold(target: Target, event: Event) -> "dict | None":
     return verdict
 
 
+def _gate_hold(target: Target, text: str = "") -> bool:
+    """True to hold this speech: the external speech gate said no.
+
+    ``MEDIA_SPEECH_GATE_CMD`` (unset: no gate) is a command run as
+    ``<cmd> <target>`` with the text on stdin; exit 0 speaks, anything else
+    holds. The gate owns any hold-and-release: a non-empty text it holds is
+    its to keep and say later. On red5 it is dotfiles' ``phs-treatment-guard
+    gate``: David's rule that nothing is spoken aloud during a Peninsula Hot
+    Springs treatment unless it goes to his earbuds — client health notes
+    must never be overheard (11 Oct 2026).
+
+    Unlike every other hold here this one **fails closed**: a gate that is
+    missing, crashes or times out holds. A wrongly held sentence waits in the
+    gate's queue and history; a wrongly spoken one is said in a treatment room.
+    An empty `text` asks without handing anything over (the streaming path's
+    pre-check).
+    """
+    cmd = os.environ.get("MEDIA_SPEECH_GATE_CMD", "").strip()
+    if not cmd:
+        return False
+    import shlex
+    try:
+        timeout = float(os.environ.get("MEDIA_SPEECH_GATE_TIMEOUT_S") or 40)
+    except ValueError:
+        timeout = 40.0
+    try:
+        r = subprocess.run(shlex.split(cmd) + [target.name], input=text,
+                           text=True, capture_output=True, timeout=timeout,
+                           check=False)
+    except Exception as e:  # noqa: BLE001 — fail closed
+        log.warning("intake: speech gate failed (%s) — holding", e)
+        return True
+    if r.returncode == 0:
+        return False
+    log.info("intake: held by the speech gate (rc=%s, target=%s)",
+             r.returncode, target.name)
+    return True
+
+
+def _gate_text(state: StateStore, event: Event, text: str) -> str:
+    """What the gate may keep and say later: the text, unless this event
+    would never have been played anyway (a muted pane or tmux session) —
+    then nothing, so a hold cannot turn into speech on release. A
+    ``--hold``/toast event is not gated at all (it is never played)."""
+    try:
+        pane = (event.metadata or {}).get("pane") or os.environ.get("TMUX_PANE", "")
+        if state.resolve_mute(pane, _source_place(event.metadata, pane)[0]):
+            return ""
+    except Exception:  # noqa: BLE001 — unknown mute: keep the words
+        pass
+    return text
+
+
 def _busy_hold(target: Target, event: Event, text: str = "") -> "dict | None":
     """`free.answer()` when David is busy and this speech should wait, else
     None to speak it. Roadmap item 14 (free.py, §6.22).
@@ -3449,9 +3502,9 @@ def _record_silenced(state: StateStore, event: Event, target: Target,
     behaving perfectly.
     """
     try:
-        state.log_error("intake", ("alert held: device is on silent"
-                                   if reason == "ringer" else
-                                   "alert held: David is busy"),
+        state.log_error("intake", {"ringer": "alert held: device is on silent",
+                                   "gate": "speech held by the speech gate"}
+                        .get(reason, "alert held: David is busy"),
                         extras={"kind": "alert-silenced",
                                 "reason": reason,
                                 "target": target.name,
@@ -3777,6 +3830,13 @@ def _submit_event(event: Event,
     # The listener's pick (`media speech-target`) when there is one, else the
     # env default. Resolved once, here: the reply keeps it to the end.
     target = event.target or Target(name=audio_targets.speech_default())
+
+    # The external speech gate (MEDIA_SPEECH_GATE_CMD; on red5 the
+    # PHS-treatment rule). First, before anything is rendered, and closed on
+    # failure. The gate keeps what it holds; history keeps the words.
+    if (not (event.metadata or {}).get("held")
+            and _gate_hold(target, _gate_text(state, event, text))):
+        return _record_silenced(state, event, target, text, None, "gate")
 
     # The device asked for quiet, and this is an alert nobody asked for. Held
     # before the render, not after: unlike a muted pane there is nothing to
@@ -5153,6 +5213,15 @@ def submit_stream(sentences,
     # The listener's pick (`media speech-target`) when there is one, else the
     # env default. Resolved once, here: the reply keeps it to the end.
     target = event.target or Target(name=audio_targets.speech_default())
+
+    # The speech gate, as in `_submit_event`. Asked first without the words
+    # (nothing to wait for when it says speak); on a hold the reply is gathered
+    # and handed over, and asked again — it may have changed its mind.
+    if not (event.metadata or {}).get("held") and _gate_hold(target):
+        sentences = list(sentences)
+        if _gate_hold(target, _gate_text(state, event, " ".join(sentences))):
+            return _record_silenced(state, event, target,
+                                    " ".join(sentences), None, "gate")
 
     # The device asked for quiet, and this is an alert nobody asked for. Held
     # before the render, not after: unlike a muted pane there is nothing to
