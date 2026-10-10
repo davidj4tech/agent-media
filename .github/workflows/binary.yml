@@ -54,6 +54,7 @@ jobs:
         with:
           name: sasonica-linux-${{ matrix.arch }}
           path: build/binary/sasonica-linux-${{ matrix.arch }}
+          retention-days: 14
 
   build-macos:
     # Apple silicon. No container: the launcher is compiled with the runner's
@@ -101,6 +102,7 @@ jobs:
         with:
           name: sasonica-macos-aarch64
           path: build/binary/sasonica-macos-aarch64
+          retention-days: 14
 
   build-windows:
     name: build (windows x86_64)
@@ -136,6 +138,7 @@ jobs:
         with:
           name: sasonica-windows-x86_64
           path: build/binary/sasonica-windows-x86_64.exe
+          retention-days: 14
 
   publish:
     needs: [build, build-macos, build-windows]
