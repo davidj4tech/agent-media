@@ -1,0 +1,8 @@
+[Unit]
+Description=Finish the radio hand-off once a Sasonica build is installable (deploy/radio-handoff-finish; roadmap item 15 #7)
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/projects/agent-media/.venv/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/projects/agent-media/deploy/radio-handoff-finish
+TimeoutStartSec=30min

@@ -1,0 +1,483 @@
+#!/home/ryer/projects/agent-media/.venv/bin/python
+"""Finish the radio's hand-off player once a Sasonica build is installable.
+
+Roadmap item 15 #7 (the hand-off player as `handoff` frames): sasonica-app
+0a3ff99 is on main, but from 8 Oct 2026 every Build APK run failed at
+upload-artifact (the account's Actions storage for October was used up), so
+the build with the frames never reached the phone and the env's
+MEDIA_RADIO_HANDOFF_ENDPOINT stayed on the old tcp://p8a:6617. Run every two
+hours by deploy/systemd/radio-handoff-finish.timer (David, 11 Oct 2026), it:
+
+1. reruns the latest Build APK on main once if it failed, and stops there;
+2. installs it (`agent-phone-adb sasonica RUN`) when it is green and newer
+   than the phone's, and only while nothing plays — no speech on the canvas,
+   no started audio player in the phone's `dumpsys audio`, no book playing;
+   adb not connecting is a quiet "next time" (never a question to David);
+3. once the installed build has 0a3ff99, points MEDIA_RADIO_HANDOFF_ENDPOINT
+   in ~/.config/agent-media.env at tcp://127.0.0.1:16626 (the old line kept,
+   commented, with a dated note), restarts the canvas while speech is idle
+   (never sessiond), and asks the hand-off player whether it answers — the
+   same `ready()` that `media music radio dj --where handoff` asks, so no
+   music starts;
+4. tells David once, as a note in the phone's shade (POST /notes, §6.23);
+5. records it under roadmap item 15 #7 (a commit of that hunk alone) and
+   disables its own timer.
+
+Every step is checked before it is done, so a run after any of them is safe.
+Progress lives in ~/.local/state/agent-media/radio-handoff-finish.json.
+
+    radio-handoff-finish [--dry-run]   (--dry-run: look, change nothing)
+
+Paths for tests: RHF_ENV_FILE, RHF_STATE, RHF_REPO_DIR, RHF_NO_GIT=1.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import urllib.request
+from pathlib import Path
+
+HOME = Path.home()
+REPO = "davidj4tech/sasonica-app"
+WORKFLOW = "build-apk.yml"
+PKG = "com.sasonica.app"
+FRAMES_COMMIT = "0a3ff99"
+OLD_EP = "tcp://p8a:6617"
+NEW_EP = "tcp://127.0.0.1:16626"
+KEY = "MEDIA_RADIO_HANDOFF_ENDPOINT"
+TIMER = "radio-handoff-finish.timer"
+CANVAS = "agent-media-visual-canvas.service"
+NOTE_ID = "radio-handoff-ready"
+NOTE_TEXT = "Radio hand-off ready to test: media music radio dj --where handoff"
+#: Runs after the install with the player still not answering before the
+#: note goes out anyway, asking David to open the app once.
+READY_TRIES = 3
+
+ENV_FILE = Path(os.environ.get("RHF_ENV_FILE") or HOME / ".config" / "agent-media.env")
+STATE = Path(os.environ.get("RHF_STATE")
+             or HOME / ".local" / "state" / "agent-media" / "radio-handoff-finish.json")
+REPO_DIR = Path(os.environ.get("RHF_REPO_DIR") or HOME / "projects" / "agent-media")
+ROADMAP = "docs/sasonica-roadmap.md"
+PY = str(REPO_DIR / ".venv" / "bin" / "python")
+ADB = os.environ.get("RHF_ADB") or "agent-phone-adb"
+
+DRY = "--dry-run" in sys.argv[1:] or "-n" in sys.argv[1:]
+
+
+def log(msg: str) -> None:
+    print(("[dry-run] " if DRY else "") + msg, flush=True)
+
+
+def run(cmd: list[str], timeout: float = 120, env: dict | None = None,
+        check: bool = False) -> subprocess.CompletedProcess:
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
+    if check and p.returncode != 0:
+        raise RuntimeError(f"{cmd[0]} {cmd[1] if len(cmd) > 1 else ''}: "
+                           f"{(p.stderr or p.stdout).strip()[:300]}")
+    return p
+
+
+def load_state() -> dict:
+    try:
+        return json.loads(STATE.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def save_state(st: dict) -> None:
+    if DRY:
+        return
+    STATE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = STATE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(st, indent=1, sort_keys=True))
+    tmp.replace(STATE)
+
+
+def gh_json(args: list[str]):
+    return json.loads(run(["gh", *args], check=True).stdout or "null")
+
+
+# --- CI -------------------------------------------------------------------
+
+def latest_run() -> dict | None:
+    runs = gh_json(["run", "list", "-R", REPO, "-w", WORKFLOW, "-b", "main", "-L", "1",
+                    "--json", "databaseId,number,status,conclusion,headSha,attempt"])
+    return runs[0] if runs else None
+
+
+def has_frames(sha: str) -> bool:
+    """Whether commit `sha` contains the hand-off frames (0a3ff99)."""
+    got = run(["gh", "api", f"repos/{REPO}/compare/{FRAMES_COMMIT}...{sha}",
+               "-q", ".status"])
+    return got.returncode == 0 and got.stdout.strip() in ("ahead", "identical")
+
+
+def sha_of_code(code: int) -> str | None:
+    """The commit of the build with versionCode `code` (run number + 1000)."""
+    runs = gh_json(["run", "list", "-R", REPO, "-w", WORKFLOW, "-b", "main", "-L", "60",
+                    "--json", "number,headSha"])
+    for r in runs or []:
+        if r["number"] + 1000 == code:
+            return r["headSha"]
+    return None
+
+
+# --- the phone --------------------------------------------------------------
+
+def adb_env() -> dict:
+    # One connect round, not five: a phone off adb is "next time".
+    return {**os.environ, "AGENT_PHONE_ADB_ROUNDS": "1"}
+
+
+def installed_code() -> int | None:
+    """The phone's versionCode of Sasonica, or None if adb is not up."""
+    p = run([ADB, "shell", "dumpsys", "package", PKG], timeout=180, env=adb_env())
+    m = re.search(r"versionCode=(\d+)", p.stdout)
+    return int(m.group(1)) if p.returncode == 0 and m else None
+
+
+def _get(url: str, timeout: float = 8) -> dict | None:
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            return json.loads(r.read() or b"{}")
+    except Exception:  # noqa: BLE001 — unreachable is "unknown", the caller decides
+        return None
+
+
+def canvas_url() -> str:
+    ip = ""
+    try:
+        for line in Path(f"/run/user/{os.getuid()}/tailnet-ip.env").read_text().splitlines():
+            if line.startswith("TS_IP="):
+                ip = line.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    return f"http://{ip or '127.0.0.1'}:8781"
+
+
+def speech_busy() -> str | None:
+    """Why the canvas says speech is not idle, or None when it is idle."""
+    st = _get(canvas_url() + "/speech")
+    if st is None:
+        return "the canvas did not answer /speech"
+    if st.get("speaking"):
+        return "a reply is being spoken"
+    if st.get("paused"):
+        return "a reply is paused mid-way"
+    if st.get("local_audio"):
+        return "audio is playing on red5"
+    return None
+
+
+def phone_busy() -> str | None:
+    """Why installing now would cut something the phone is playing."""
+    p = run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "p8a",
+             "curl -s -m5 127.0.0.1:8774/state; echo; curl -s -m5 127.0.0.1:8772/state"],
+            timeout=40)
+    if p.returncode != 0:
+        return "p8a did not answer over ssh"
+    lines = [ln for ln in p.stdout.splitlines() if ln.strip()]
+    if not lines or not lines[0].startswith("{"):
+        return "Sasonica's /state (8774) did not answer"
+    for ln in lines[1:]:
+        try:
+            book = json.loads(ln)
+        except ValueError:
+            continue
+        if book.get("item") and not book.get("paused", True) and not book.get("closed"):
+            return "a book is playing"
+    a = run([ADB, "shell", "dumpsys", "audio"], timeout=180, env=adb_env())
+    if a.returncode != 0:
+        return "adb is not connected"
+    if re.search(r"AudioPlaybackConfiguration .*state:started", a.stdout):
+        return "an audio player on the phone is started"
+    return speech_busy()
+
+
+# --- the env file -------------------------------------------------------------
+
+def endpoint_in_file() -> str | None:
+    for line in ENV_FILE.read_text().splitlines():
+        m = re.match(rf"\s*{KEY}=(.*)$", line)
+        if m:
+            return m.group(1).strip()
+    return None
+
+
+def switch_endpoint() -> bool:
+    """tcp://p8a:6617 → tcp://127.0.0.1:16626; True if the file changed."""
+    text = ENV_FILE.read_text()
+    if endpoint_in_file() == NEW_EP:
+        return False
+    today = dt.date.today().isoformat()
+    new, n = re.subn(
+        rf"^{KEY}=.*$",
+        lambda m: (f"# {today}: the installed Sasonica has the hand-off frames (sasonica-app "
+                   f"{FRAMES_COMMIT}), so the endpoint moved to the canvas's handoff channel\n"
+                   f"# (deploy/radio-handoff-finish). To go back: uncomment the old line, drop the\n"
+                   f"# new one, and restart the canvas.\n"
+                   f"#{m.group(0)}\n{KEY}={NEW_EP}"),
+        text, count=1, flags=re.M)
+    if not n:
+        new = text.rstrip("\n") + f"\n# {today}: deploy/radio-handoff-finish\n{KEY}={NEW_EP}\n"
+    if DRY:
+        log(f"would set {KEY}={NEW_EP} in {ENV_FILE}")
+        return True
+    tmp = ENV_FILE.with_name(ENV_FILE.name + ".rhf-tmp")
+    tmp.write_text(new)
+    os.chmod(tmp, ENV_FILE.stat().st_mode & 0o7777)
+    tmp.replace(ENV_FILE)
+    log(f"{ENV_FILE}: {KEY} {OLD_EP} -> {NEW_EP} (old line commented)")
+    return True
+
+
+def canvas_started() -> float:
+    p = run(["systemctl", "--user", "show", CANVAS, "-p", "ActiveEnterTimestamp", "--value"])
+    s = p.stdout.strip()
+    if not s:
+        return 0.0
+    p = run(["date", "-d", s, "+%s"])
+    return float(p.stdout.strip() or 0)
+
+
+def handoff_ready() -> str | None:
+    """What `media music radio dj --where handoff` would refuse with, or None.
+    A fresh process reading the env file, so it sees the file as it is now."""
+    env = {k: v for k, v in os.environ.items() if k != KEY}
+    if os.environ.get("RHF_ENV_FILE"):
+        env["MEDIA_ENV_FILE"] = str(ENV_FILE)
+    code = ("from agent_media_core.intake._env import load_env_file as l; l('cli');"
+            "from agent_media_core.radio_io import handoff_ready as r; print(r() or 'READY')")
+    p = run([PY, "-c", code], timeout=30, env=env)
+    out = (p.stdout.strip().splitlines() or [p.stderr.strip()[-200:]])[-1]
+    return None if out == "READY" else out
+
+
+# --- telling David, the roadmap, the timer ------------------------------------
+
+def notify(text: str) -> bool:
+    if DRY:
+        log(f"would post note {NOTE_ID!r}: {text}")
+        return True
+    code = ("import sys,json; from agent_media_core.intake._env import load_env_file as l; l('cli');"
+            "from agent_media_core import phone_notes as n;"
+            f"a=n.post({NOTE_ID!r}, 'Sasonica', sys.argv[1], ttl_s=86400, keep=True);"
+            "print(json.dumps(a))")
+    p = run([PY, "-c", code, text], timeout=30)
+    try:
+        ans = json.loads(p.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        ans = None
+    if ans and ans.get("seen"):
+        log(f"note posted (listening {ans.get('listening')}): {text}")
+        return True
+    log(f"the note path did not take it ({ans}); trying termux-notification over ssh")
+    p = run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "p8a",
+             "termux-notification", "--id", NOTE_ID, "-t", "Sasonica", "-c", text], timeout=40)
+    if p.returncode == 0:
+        log("notified over ssh")
+        return True
+    log("could not notify David; trying again next run")
+    return False
+
+
+ROADMAP_ANCHOR = ("   APK install pending (CI's artifact storage is full), then\n"
+                  "   `MEDIA_RADIO_HANDOFF_ENDPOINT=tcp://127.0.0.1:16626`.")
+
+
+def roadmap_text(old: str, code: int) -> str | None:
+    if "radio-handoff-finish" in old:
+        return None
+    today = dt.date.today()
+    add = (f"   **{today.day} {today.strftime('%b %Y')}: installed** (build {code}, its APK a\n"
+           "   release asset since CI's artifact storage filled) and the env's\n"
+           "   `MEDIA_RADIO_HANDOFF_ENDPOINT` moved to `tcp://127.0.0.1:16626`, the canvas\n"
+           "   restarted, by deploy/radio-handoff-finish (a timer, now off); David told to\n"
+           "   test `media music radio dj --where handoff`.")
+    if ROADMAP_ANCHOR in old:
+        return old.replace(ROADMAP_ANCHOR, ROADMAP_ANCHOR + "\n" + add, 1)
+    return None
+
+
+def record_roadmap(code: int) -> bool:
+    """Commit the roadmap hunk alone. The tree is shared with other sessions:
+    the commit is built on a scratch index from HEAD's copy of the file, and
+    the real index and working file get the same hunk only if nobody else
+    has staged that file."""
+    path = REPO_DIR / ROADMAP
+    git = ["git", "-C", str(REPO_DIR)]
+    head_text = run([*git, "show", f"HEAD:{ROADMAP}"], check=True).stdout
+    new_head = roadmap_text(head_text, code)
+    if new_head is None:
+        log("roadmap: already recorded, or the item's words moved; not touching it")
+        return True
+    if DRY or os.environ.get("RHF_NO_GIT"):
+        log(f"would record build {code} under item 15 #7 in {ROADMAP} and commit it")
+        return True
+    staged = run([*git, "diff", "--cached", "--name-only", "--", ROADMAP]).stdout.strip()
+    if staged:
+        log("roadmap: someone has it staged; leaving it for next run")
+        return False
+    p = subprocess.run([*git, "hash-object", "-w", "--stdin"], input=new_head,
+                       capture_output=True, text=True, check=True)
+    blob = p.stdout.strip()
+    idx = REPO_DIR / ".git" / "rhf-index"
+    env = {**os.environ, "GIT_INDEX_FILE": str(idx)}
+    try:
+        run([*git, "read-tree", "HEAD"], env=env, check=True)
+        run([*git, "update-index", "--cacheinfo", f"100644,{blob},{ROADMAP}"], env=env, check=True)
+        tree = run([*git, "write-tree"], env=env, check=True).stdout.strip()
+    finally:
+        idx.unlink(missing_ok=True)
+    head = run([*git, "rev-parse", "HEAD"], check=True).stdout.strip()
+    msg = (f"roadmap: item 15 #7, the hand-off build installed ({code}) and the env's "
+           "endpoint on the canvas's handoff channel (127.0.0.1:16626) — "
+           "deploy/radio-handoff-finish, which then turned its timer off (David, 11 Oct 2026)")
+    commit = run([*git, "commit-tree", tree, "-p", head, "-m", msg], check=True).stdout.strip()
+    run([*git, "update-ref", "HEAD", commit, head], check=True)
+    # The real index and the working file follow, so status shows nothing new.
+    run([*git, "update-index", "--cacheinfo", f"100644,{blob},{ROADMAP}"], check=True)
+    work = path.read_text()
+    new_work = roadmap_text(work, code)
+    if new_work is not None:
+        path.write_text(new_work)
+    log(f"roadmap recorded: {commit[:7]}")
+    return True
+
+
+def disable_timer() -> None:
+    if DRY:
+        log(f"would disable {TIMER}")
+        return
+    run(["systemctl", "--user", "disable", "--now", TIMER])
+    log(f"{TIMER} disabled: the hand-off is finished")
+
+
+# --- the steps --------------------------------------------------------------------
+
+def main() -> int:
+    st = load_state()
+    if st.get("done"):
+        log("already finished; disabling the timer if it is still on")
+        disable_timer()
+        return 0
+
+    # 1. CI
+    r = latest_run()
+    if not r:
+        log("no Build APK run on main")
+        return 0
+    code = r["number"] + 1000
+    if r["status"] != "completed":
+        log(f"Build APK run {r['databaseId']} (build {code}) is {r['status']}; next time")
+        return 0
+    if r["conclusion"] != "success":
+        reran = st.setdefault("reran", [])
+        if r["databaseId"] in reran:
+            log(f"build {code} failed again after its rerun; waiting for a new push")
+            return 0
+        if DRY:
+            log(f"would rerun the failed jobs of run {r['databaseId']} (build {code})")
+            return 0
+        p = run(["gh", "run", "rerun", str(r["databaseId"]), "-R", REPO, "--failed"])
+        log(f"build {code} was {r['conclusion']}: rerun --failed -> rc {p.returncode} "
+            f"{(p.stderr or p.stdout).strip()[:200]}")
+        reran.append(r["databaseId"])
+        save_state(st)
+        return 0
+    log(f"latest Build APK on main is green: build {code} ({r['headSha'][:7]})")
+
+    # 2. install
+    have = installed_code()
+    if have is None:
+        log("adb did not connect; next time")
+        return 0
+    log(f"phone has build {have}")
+    if have < code:
+        busy = phone_busy()
+        if busy:
+            log(f"not installing build {code} now: {busy}")
+            return 0
+        if DRY:
+            log(f"would install build {code}: {ADB} sasonica {r['databaseId']}")
+            return 0
+        p = run([ADB, "sasonica", str(r["databaseId"])], timeout=900, env=adb_env())
+        log(f"install: rc {p.returncode} {(p.stdout + p.stderr).strip()[-300:]}")
+        have = installed_code()
+        if have is None or have < code:
+            log(f"install did not take (phone has {have}); next time")
+            return 0
+        st["installed"] = have
+        save_state(st)
+
+    # 3. the switch, needing a build with the frames
+    sha = r["headSha"] if have == code else sha_of_code(have)
+    if not sha or not has_frames(sha):
+        log(f"installed build {have} ({(sha or '?')[:7]}) lacks {FRAMES_COMMIT}; waiting")
+        return 0
+    switched = switch_endpoint()
+    if switched and not DRY:
+        st["switched_at"] = time.time()
+        save_state(st)
+    switched_at = st.get("switched_at") or (time.time() if switched else 0)
+    if switched_at and canvas_started() < switched_at:
+        busy = speech_busy()
+        if not busy:
+            time.sleep(0 if DRY else 15)
+            busy = speech_busy()
+        if busy:
+            log(f"canvas restart waits: {busy}")
+            return 0
+        if DRY:
+            log(f"would restart {CANVAS} (speech idle)")
+            return 0
+        p = run(["systemctl", "--user", "restart", CANVAS])
+        log(f"restarted {CANVAS}: rc {p.returncode}")
+        time.sleep(20)          # the phone's stream reconnects
+    if DRY:
+        log("would ask the hand-off player whether it answers (no music)")
+        return 0
+    why = handoff_ready()
+    if why:
+        st["not_ready"] = st.get("not_ready", 0) + 1
+        save_state(st)
+        log(f"hand-off player not ready ({st['not_ready']}/{READY_TRIES}): {why}")
+        if st["not_ready"] < READY_TRIES:
+            return 0
+        text = ("Sasonica with the radio hand-off is installed; open the app once, then "
+                "test: media music radio dj --where handoff")
+    else:
+        log("hand-off player answers: `media music radio dj --where handoff` won't refuse")
+        text = NOTE_TEXT
+
+    # 4. tell David
+    if not st.get("notified"):
+        if not notify(text):
+            return 0
+        st["notified"] = time.time()
+        save_state(st)
+
+    # 5. roadmap, then the timer
+    if not st.get("recorded"):
+        if not record_roadmap(have):
+            return 0
+        st["recorded"] = time.time()
+        save_state(st)
+    st["done"] = time.time()
+    save_state(st)
+    disable_timer()
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except Exception as e:  # noqa: BLE001 — log it; the timer tries again
+        log(f"error: {e}")
+        sys.exit(1)
