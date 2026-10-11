@@ -30,6 +30,9 @@ class Homeserver:
             return {"joined": {ME: {"display_name": "David"},
                                SAM: {"display_name": "Sam"},
                                MEL: {"display_name": "Mel"}}}
+        if path.endswith("/state"):
+            return [{"type": "m.bridge", "content": {"protocol": {
+                "id": "gmessages-sms", "displayname": "Google Messages (SMS)"}}}]
         if path.endswith("/state/m.room.name"):
             if not self.name:
                 raise OSError("404")
@@ -113,6 +116,7 @@ def test_targets_row(one_room):
     assert row["session"] == one_room.thread and row["source"] == "matrix"
     assert row["title"] == "sam" and row["archived"] and not row["live"]
     assert row["recap"]["text"] == "Sam: hello" and row["drivable"] is False
+    assert row["network"] == {"id": "gmessages", "name": "Google Messages"}
 
 
 def test_the_log_and_the_stream_snapshot_serve_the_room(one_room):
@@ -263,3 +267,10 @@ def test_discover_takes_the_rooms_a_bridge_is_in(owner_loop, monkeypatch):
     monkeypatch.setattr(matrix, "_get", get)
     o.discover()
     assert o.config.rooms == {"!sms:ryer.org"}
+
+
+def test_a_rooms_service_is_named_from_its_bridge_state():
+    proto = {"id": "gmessages-sms", "displayname": "Google Messages (SMS)"}
+    assert matrix._network([{"type": "m.room.name"}, {"type": "m.bridge",
+                            "content": {"protocol": proto}}]) == {"id": "gmessages", "name": "Google Messages"}
+    assert matrix._network([{"type": "m.room.create"}]) is None

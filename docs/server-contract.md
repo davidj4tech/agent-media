@@ -323,7 +323,10 @@ Everything a message can be pointed at.
 - **Matrix rows** (8 Oct 2026, `matrix.py`; the Matrix proposal's step 1):
   one per room on `MATRIX_ROOM_ALLOW`, last in the list, with
   `"source": "matrix"`, `"harness": "matrix"`, `"room"` (the room id) and
-  `"drivable": false`. `session` is a uuid made from the room id (stable,
+  `"drivable": false`, and `"network"` — the service a bridge carries the
+  room for, `{"id", "name"}` from its `m.bridge` state with the variants
+  folded (`gmessages-sms`, "Google Messages (SMS)" → `gmessages`, "Google
+  Messages"), or null (11 Oct 2026; the app's Messages tab chips). `session` is a uuid made from the room id (stable,
   so every session route takes it); `title` the room's name, else its other
   members; `recap` the last message, `{"text": "<name>: <words>", "at",
   "source": "matrix"}`; never live, rested or pinned. `/conversation/log`

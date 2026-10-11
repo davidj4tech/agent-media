@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import os
 import sys
 import threading
@@ -101,6 +102,8 @@ class Room:
         self.owner = owner
         self._get = get
         self.name = ""
+        # The service a bridge carries this room for (`m.bridge`), or None.
+        self.network: dict | None = None
         self.members: dict[str, str] = {}
         self.messages: list[dict] = []
         self._by_id: dict[str, dict] = {}
@@ -129,6 +132,10 @@ class Room:
                 self.name = self._get(self.config, f"/rooms/{q}/state/m.room.name").get("name") or ""
             except (urllib.error.URLError, OSError, ValueError):
                 self.name = ""       # a room with no name: named from its members
+            try:
+                self.network = _network(self._get(self.config, f"/rooms/{q}/state"))
+            except (urllib.error.URLError, OSError, ValueError):
+                pass                 # no service named: listed with the plain rooms
             got = self._page(None)
             if got is None:
                 self._failed_at = time.monotonic()
@@ -289,6 +296,23 @@ class Room:
             return out, start > 0 or bool(self.back)
 
 
+def _network(state: list) -> dict | None:
+    """`{"id", "name"}` of the bridge that carries a room, from its `m.bridge`
+    state: one per service, so a bridge's variants are one (mautrix-gmessages'
+    `gmessages-sms` and `gmessages-rcs`, "Google Messages (SMS)", are
+    `gmessages`, "Google Messages")."""
+    if not isinstance(state, list):
+        return None
+    for ev in state:
+        if isinstance(ev, dict) and ev.get("type") in ("m.bridge", "uk.half-shot.bridge"):
+            p = (ev.get("content") or {}).get("protocol") or {}
+            pid = str(p.get("id") or "")
+            if pid:
+                name = re.sub(r"\s*\([^)]*\)\s*$", "", str(p.get("displayname") or pid))
+                return {"id": pid.split("-")[0], "name": name}
+    return None
+
+
 _ROOMS: dict[str, Room] = {}       # by thread id
 
 
@@ -323,6 +347,7 @@ def rows(flags: set | frozenset = frozenset()) -> list[dict]:
                                   if last else None),
                         "archived": r.thread in flags, "rested": None, "pinned": False,
                         "harness": "matrix", "source": "matrix", "room": r.id,
+                        "network": r.network,
                         "drivable": bool(owner_token())})
     return out
 
