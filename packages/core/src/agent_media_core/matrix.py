@@ -127,8 +127,13 @@ class Sync:
     tests and for callers that drive the loop themselves."""
 
     def __init__(self, config: Config, *, state_path: Path | None = None,
-                 fetch: Callable[[urllib.request.Request, float], dict] = _fetch_json):
+                 fetch: Callable[[urllib.request.Request, float], dict] = _fetch_json,
+                 on_invite: Callable[[str, list], None] | None = None):
+        """`config.rooms` is read on every pass, so a caller may add rooms to
+        it as it learns of them. `on_invite(room_id, invite_state_events)`
+        is told of each invitation (none are accepted here)."""
         self.config = config
+        self._on_invite = on_invite
         self.state_path = state_path or (state_dir() / "sync.json")
         self._fetch = fetch
         self._subs: list[Subscriber] = []
@@ -165,6 +170,10 @@ class Sync:
         params = {"timeout": str(c.timeout_ms)}
         if self._state["next_batch"]:
             params["since"] = self._state["next_batch"]
+        else:
+            # The first pass of a new token: where things stand, not every
+            # room's recent history.
+            params["filter"] = json.dumps({"room": {"timeline": {"limit": 1}}})
         req = urllib.request.Request(
             f"{c.homeserver}/_matrix/client/v3/sync?"
             + urllib.parse.urlencode(params),
@@ -173,6 +182,12 @@ class Sync:
         data = self._fetch(req, c.timeout_ms / 1000 + 30)
         self._state["next_batch"] = data.get("next_batch")
         seen = self._state["seen"]
+        if self._on_invite is not None:
+            for room_id, room in ((data.get("rooms") or {}).get("invite") or {}).items():
+                try:
+                    self._on_invite(room_id, (room.get("invite_state") or {}).get("events") or [])
+                except Exception as e:  # noqa: BLE001
+                    log.warning("matrix: invite handler failed: %s", e)
         joined = (data.get("rooms") or {}).get("join") or {}
         for room_id, room in joined.items():
             if room_id not in c.rooms:

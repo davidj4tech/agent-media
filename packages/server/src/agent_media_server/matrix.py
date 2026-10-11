@@ -397,6 +397,99 @@ def _on_event(room_id: str, ev: dict) -> None:
         r.on_event(ev)
 
 
+def _bridges(env=None) -> set[str]:
+    """`MATRIX_OWNER_BRIDGES`: the bridge bots (`@gmessagesbot:ryer.org`)
+    whose rooms the canvas reads as the owner."""
+    env = os.environ if env is None else env
+    return {b.strip() for b in (env.get("MATRIX_OWNER_BRIDGES") or "").split(",") if b.strip()}
+
+
+def _bridge_sender(user: str, bridges: set[str]) -> bool:
+    """A bridge's bot, or one of its puppets: `@gmessagesbot:x` puppets as
+    `@gmessages_…:x` (mautrix's naming)."""
+    if user in bridges:
+        return True
+    local, _, server = user.lstrip("@").partition(":")
+    return any(local.startswith(b.lstrip("@").split(":")[0].removesuffix("bot") + "_")
+               and server == b.partition(":")[2] for b in bridges)
+
+
+class _Owner:
+    """The owner's own loop (proposal step 3, David, 11 Oct 2026: "read as
+    me, all bridge rooms"). A bridge's portal rooms are David's — @sam is
+    not in them — and appear one per conversation, so they cannot be an
+    allow list: the canvas reads them with the owner's token and takes in
+    every room a bridge in `MATRIX_OWNER_BRIDGES` is in, accepting the
+    bridge's invitations. A room taken in starts quiet like any other."""
+
+    def __init__(self, base: matrix.Config, owner: str, bridges: set[str], intake) -> None:
+        self.config = matrix.Config(homeserver=base.homeserver, token=owner_token(),
+                                    rooms=set(), timeout_ms=base.timeout_ms)
+        self.owner = owner
+        self.bridges = bridges
+        self.lock = threading.Lock()
+        self.sync = matrix.Sync(self.config, state_path=matrix.state_dir() / "sync-owner.json",
+                                on_invite=self._invited)
+        if intake is not None:
+            on_event, _stop = intake.consumer(self.config, name_of=_name_of, commands=False)
+            self.sync.subscribe(on_event)
+        self.sync.subscribe(_on_event)
+
+    def take(self, room_id: str) -> None:
+        with self.lock:
+            if room_id in self.config.rooms or thread_of(room_id) in _ROOMS:
+                return
+            r = Room(room_id, self.config, self.owner)
+            _ROOMS[r.thread] = r
+            self.config.rooms.add(room_id)
+        _seed_quiet([r.thread])
+
+    def _invited(self, room_id: str, events: list) -> None:
+        inviter = next((e.get("sender") or "" for e in events
+                        if e.get("type") == "m.room.member"
+                        and e.get("state_key") == self.owner), "")
+        if not _bridge_sender(inviter, self.bridges):
+            return                     # not a bridge's room: left for David
+        try:
+            _post(self.config, f"/rooms/{_q(room_id)}/join", {})
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            log.warning("matrix: could not join %s: %s", room_id, e)
+            return
+        self.take(room_id)
+
+    def discover(self) -> None:
+        """The bridge rooms David is already in."""
+        try:
+            joined = _get(self.config, "/joined_rooms").get("joined_rooms") or []
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            log.warning("matrix: owner's rooms unreadable: %s", e)
+            return
+        for room_id in joined:
+            try:
+                members = _get(self.config, f"/rooms/{_q(room_id)}/joined_members")
+            except (urllib.error.URLError, OSError, ValueError):
+                continue
+            if self.bridges & set(members.get("joined") or {}):
+                self.take(room_id)
+
+    def start(self) -> None:
+        def run() -> None:
+            self.discover()
+            self.sync.start()
+            for r in list(_ROOMS.values()):
+                r.load()
+        threading.Thread(target=run, name="matrix-owner", daemon=True).start()
+
+
+def _post(config: matrix.Config, path: str, body: dict, timeout: float = 15.0) -> dict:
+    req = urllib.request.Request(
+        f"{config.homeserver}/_matrix/client/v3{path}", method="POST",
+        data=json.dumps(body).encode(),
+        headers={"Authorization": f"Bearer {config.token}", "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read())
+
+
 def start() -> None:
     if _SYNC[0] is not None or os.environ.get("MEDIA_MATRIX_SYNC", "1") == "0":
         return
@@ -424,5 +517,10 @@ def start() -> None:
     # The rooms' first read off the request path: /targets should not wait on it.
     threading.Thread(target=lambda: [r.load() for r in list(_ROOMS.values())],
                      name="matrix-rooms", daemon=True).start()
+    bridges = _bridges()
+    if bridges and owner_token():
+        _Owner(config, owner, bridges, intake).start()
     print(f"matrix: sync on for {len(config.rooms)} room(s)"
-          f"{', speech intake attached' if intake else ''}", file=sys.stderr)
+          f"{', speech intake attached' if intake else ''}"
+          f"{', and the rooms of ' + ', '.join(sorted(bridges)) if bridges and owner_token() else ''}",
+          file=sys.stderr)

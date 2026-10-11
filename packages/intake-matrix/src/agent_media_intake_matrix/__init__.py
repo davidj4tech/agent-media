@@ -241,21 +241,25 @@ def _csv(value: str | None) -> set[str]:
     return {v.strip() for v in (value or "").split(",") if v.strip()}
 
 
-def consumer(config: matrix.Config, env: dict | None = None, *, name_of=None):
+def consumer(config: matrix.Config, env: dict | None = None, *, name_of=None,
+             commands: bool = True):
     """The speech intake as a reader of a shared sync loop.
 
     Returns `(on_event, stop)`: `on_event(room_id, event)` only queues, so
     the sync thread is never held up by a voice note playing; one worker
     plays them in order. Sinks are made lazily, on the worker. `name_of(room,
-    user)` is a member's display name, when the caller knows it."""
+    user)` is a member's display name, when the caller knows it. `commands`
+    off: no word is a speech control (a bridged room, where "stop" is
+    something said to a person). With no `MATRIX_SPEECH_ROOMS`, every room
+    in `config.rooms` speaks — read each time, as rooms are added to it."""
     env = os.environ if env is None else env
     sam_id = env.get("MATRIX_SAM_ID", "@agent:example.org")
     owner = matrix.owner_of(env)
-    control_ids = _csv(env.get("MATRIX_CONTROL_IDS")
-                       or f"@owner:example.org,{sam_id}")
+    control_ids = (_csv(env.get("MATRIX_CONTROL_IDS")
+                        or f"@owner:example.org,{sam_id}") if commands else set())
     speech_rooms = (_csv(env.get("MATRIX_SPEECH_ROOMS"))
                     if env.get("MATRIX_SPEECH_ROOMS") is not None
-                    else set(config.rooms))
+                    else config.rooms)
     q: "queue.Queue[tuple[str, dict] | None]" = queue.Queue()
 
     def on_event(room_id: str, ev: dict) -> None:

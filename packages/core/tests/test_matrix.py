@@ -75,3 +75,16 @@ def test_config_needs_a_token_and_a_room():
                                 "MATRIX_ROOM_ALLOW": f" {ROOM}, ",
                                 "MATRIX_HOMESERVER": "https://hs.test/"})
     assert c.rooms == {ROOM} and c.homeserver == "https://hs.test"
+
+
+def test_invitations_are_told_and_rooms_added_later_are_read(tmp_path):
+    page = _page("b1", {ROOM: [], OTHER: ["$x"]})
+    page["rooms"]["invite"] = {"!new:ryer.org": {"invite_state": {"events": [{"type": "m.room.member"}]}}}
+    invited = []
+    s = matrix.Sync(_cfg(), state_path=tmp_path / "s.json",
+                    fetch=lambda req, t: page, on_invite=lambda r, evs: invited.append((r, len(evs))))
+    s.config.rooms.add(OTHER)
+    got = []
+    s.subscribe(lambda room, ev: got.append(room))
+    s.poll_once()
+    assert invited == [("!new:ryer.org", 1)] and got == [OTHER]

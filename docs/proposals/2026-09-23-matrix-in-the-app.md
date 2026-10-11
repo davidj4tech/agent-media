@@ -209,7 +209,23 @@ not the install.
    Note: the speech intake still takes `pause` / `stop` / `skip` / `replay`
    from `@david` as speech controls, so those bare words typed into the
    `sam` room from the app work as they do from Element.
-3. **One gateway** — gmessages — registered on tuwunel. No app change; the
+3. **One gateway** — gmessages — registered on tuwunel. **Built 11 Oct
+   2026**: mautrix-gmessages v26.09 in `~/.local/lib/mautrix-gmessages`
+   (config and SQLite in `~/.local/share/mautrix-gmessages`, user service
+   `mautrix-gmessages`), registered through tuwunel's `appservice_dir`
+   (`/etc/tuwunel/appservices/gmessages.yaml`; no admin-room command).
+   This bridge has **no QR login**, only `login google`: cookies from a
+   browser signed into the phone's Google account (on the phone: Firefox
+   private tab + Cookie-Editor's Header String, sent as `curl
+   https://messages.google.com/web/config -b <cookies>` — `-b`, because
+   the bridge's cURL parser panics on a `-H` without `": "`, and phone
+   keyboards curl the quotes), then an emoji tapped in Messages; the
+   phone's Device pairing must have account pairing on. The bridge uses the
+   browser's *first* signed-in account. Portal rooms are David's, not
+   @sam's, and one per conversation, so the canvas runs a second loop as
+   the owner (`_Owner` in `matrix.py`, `MATRIX_OWNER_BRIDGES`): it takes in
+   every room a bridge is in and accepts the bridge's invitations; each
+   starts quiet, and no word in them is a speech control. No app change; the
    proof is that pairing works from the phone.
 4. **Unread and push**: room unread counts into `/dashboard`'s "Needs you";
    real push only if a push gateway (sygnal + FCM) is worth it, which is the

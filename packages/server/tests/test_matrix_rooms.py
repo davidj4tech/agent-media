@@ -208,3 +208,58 @@ def test_a_rooms_level_can_be_set_from_the_app(one_room, monkeypatch):
     monkeypatch.setattr(auth, "gate", lambda bearer: ("david", None))
     ok, _ = pins.session_priority(one_room.thread, None, "tok", level="auto")
     assert ok and speak_priority.level_of(one_room.thread) == "auto"
+
+
+# --- the owner's loop: a bridge's rooms (David, 11 Oct 2026) ---------------
+
+BOT = "@gmessagesbot:ryer.org"
+
+
+def test_a_bridge_sender_is_its_bot_or_its_puppets():
+    b = {BOT}
+    assert matrix._bridge_sender(BOT, b)
+    assert matrix._bridge_sender("@gmessages_1.42:ryer.org", b)
+    assert not matrix._bridge_sender("@gmessages_1.42:evil.org", b)
+    assert not matrix._bridge_sender(MEL, b)
+
+
+@pytest.fixture
+def owner_loop(monkeypatch):
+    monkeypatch.setattr(matrix, "_ROOMS", {})
+    monkeypatch.setenv("MATRIX_OWNER_TOKEN", "owner-tok")
+    base = core_matrix.Config(homeserver="https://hs.test", token="sam-tok", rooms={ROOM})
+    joined = []
+    monkeypatch.setattr(matrix, "_post", lambda config, path, body, timeout=15.0:
+                        joined.append((path, config.token)) or {})
+    return matrix._Owner(base, ME, {BOT}, None), joined
+
+
+def test_a_bridges_invitation_is_accepted_and_the_room_taken_in(owner_loop):
+    from agent_media_core import speak_priority
+
+    o, joined = owner_loop
+    invite = [{"type": "m.room.member", "state_key": ME, "sender": "@gmessages_1.9:ryer.org"}]
+    o._invited("!sms:ryer.org", invite)
+    assert joined == [("/rooms/%21sms%3Aryer.org/join", "owner-tok")]
+    r = matrix._ROOMS[matrix.thread_of("!sms:ryer.org")]
+    assert r.config.token == "owner-tok" and "!sms:ryer.org" in o.config.rooms
+    assert speak_priority.level_of(r.thread) == "quiet"
+
+
+def test_anyone_elses_invitation_is_left_alone(owner_loop):
+    o, joined = owner_loop
+    o._invited("!x:ryer.org", [{"type": "m.room.member", "state_key": ME, "sender": MEL}])
+    assert joined == [] and not o.config.rooms
+
+
+def test_discover_takes_the_rooms_a_bridge_is_in(owner_loop, monkeypatch):
+    o, _ = owner_loop
+
+    def get(config, path, params=None, timeout=10.0):
+        if path == "/joined_rooms":
+            return {"joined_rooms": ["!sms:ryer.org", "!family:ryer.org"]}
+        return {"joined": {ME: {}, BOT: {}} if "sms" in path else {ME: {}, MEL: {}}}
+
+    monkeypatch.setattr(matrix, "_get", get)
+    o.discover()
+    assert o.config.rooms == {"!sms:ryer.org"}
