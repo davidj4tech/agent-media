@@ -247,7 +247,7 @@ class _Hub:
         with self.lock:
             if not self.listeners:
                 return None
-            return max(self.listeners.values(), key=lambda v: v[1])[0]
+            return self.listeners[_newest(self.listeners)][0]
 
 
 def trace(event: str, hub: "_Hub", **kw) -> None:
@@ -276,6 +276,16 @@ _HUBS: dict[str, _Hub] = {c: _Hub(c) for c in CHANNELS}
 # --- what the stream and the route call -------------------------------------
 
 
+def _newest(listeners: dict) -> int:
+    """The token of the stream opened last. By token, which only goes up, not
+    by its `time.monotonic()`: on Windows that clock moves in ~15.6 ms ticks,
+    two streams opened within one tick tied, and max() kept the OLDER — so a
+    phone reconnecting got none of its frames, which went to a stream that
+    was already gone (the Windows CI flake in
+    test_a_reconnecting_stream_gets_what_it_missed, about one run in two)."""
+    return max(listeners)
+
+
 def listening(device: str, on: bool, token: int | None = None,
               channel: str = "speech") -> int | None:
     """A stream with `?<channel>=frames` opened (returns its token) or closed."""
@@ -295,8 +305,7 @@ def playing_stream(token: int | None, channel: str = "speech") -> bool:
     with hub.lock:
         if token not in hub.listeners:
             return False
-        newest = max(hub.listeners.items(), key=lambda kv: kv[1][1])[0]
-        return newest == token
+        return _newest(hub.listeners) == token
 
 
 def seq(channel: str = "speech") -> int:
@@ -358,7 +367,7 @@ def _send(ops: list[dict], hub: "_Hub") -> None:
         hub.frames.append({"seq": hub.seq, "at": round(time.time(), 3), "ops": ops})
         if any(o.get("op") in ("load", "pos") for o in ops):
             hub.traced = {"seq": hub.seq, "at": time.time()}
-            newest = (max(hub.listeners.values(), key=lambda v: v[1])
+            newest = (hub.listeners[_newest(hub.listeners)]
                       if hub.listeners else None)
             trace("sent", hub, seq=hub.seq, ops=[o.get("op") for o in ops][:6],
                   listeners=len(hub.listeners),

@@ -398,3 +398,35 @@ def test_handoff_frames_reach_the_stream_and_its_report_is_read_back(server, scr
     finally:
         st.close()
         srv.close()
+
+
+class _CoarseClock:
+    """`time` as speech_frames sees it on Windows: monotonic in coarse ticks
+    (~15.6 ms there; a whole second here, so a tie is certain)."""
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+    @staticmethod
+    def monotonic():
+        return float(int(time.monotonic()))
+
+
+def test_the_newest_stream_wins_a_tie_on_a_coarse_clock(monkeypatch):
+    monkeypatch.setattr(speech_frames, "time", _CoarseClock())
+    old = speech_frames.listening("someone", True)
+    new = speech_frames.listening("Pixel 8a", True)
+    try:
+        assert speech_frames.playing_stream(new) and not speech_frames.playing_stream(old)
+        assert speech_frames._HUBS["speech"].device() == "Pixel 8a"
+    finally:
+        speech_frames.listening("someone", False, old)
+        speech_frames.listening("Pixel 8a", False, new)
+
+
+def test_a_reconnect_on_a_coarse_clock_still_gets_what_it_missed(server, screen,
+                                                                 endpoint, monkeypatch):
+    """The Windows CI flake, made certain: the reconnecting stream opened in
+    the same clock tick as the listener before it."""
+    monkeypatch.setattr(speech_frames, "time", _CoarseClock())
+    test_a_reconnecting_stream_gets_what_it_missed(server, screen, endpoint)
