@@ -35,7 +35,7 @@ def test_paths_are_unchanged_off_windows(tmp_path):
 
 def test_a_path_maps_to_one_pipe_per_user_and_folder(monkeypatch, tmp_path):
     monkeypatch.setattr(ipc, "_use_pipes", lambda: True)
-    monkeypatch.setattr(ipc.getpass, "getuser", lambda: "Da vid")
+    monkeypatch.setattr(ipc, "_pipe_user", lambda: "Da vid")
     a = ipc.endpoint_name(tmp_path / "sink-speech.sock")
     assert a.startswith("\\\\.\\pipe\\agent-media-Da_vid-sink-speech-")
     assert a == ipc.endpoint_name(str(tmp_path / "sink-speech.sock"))
@@ -43,6 +43,18 @@ def test_a_path_maps_to_one_pipe_per_user_and_folder(monkeypatch, tmp_path):
     assert ipc.endpoint_name("tcp://h:1") == "tcp://h:1"
     assert ipc.endpoint_name("\\\\.\\pipe\\mine") == "\\\\.\\pipe\\mine"
     assert ipc.endpoint_name("//./pipe/mine") == "//./pipe/mine"
+
+
+def test_the_pipe_user_is_windows_own_name(monkeypatch):
+    """Git Bash may set USER/LOGNAME to something else; the logon task and
+    the picker must still name the same pipe."""
+    monkeypatch.setenv("USERNAME", "ann")
+    monkeypatch.setenv("USER", "msys-ann")
+    monkeypatch.setenv("LOGNAME", "msys-ann")
+    monkeypatch.setattr(ipc.os, "name", "nt")
+    assert ipc._pipe_user() == "ann"
+    monkeypatch.setattr(ipc.os, "name", "posix")
+    assert ipc._pipe_user() == "msys-ann"
 
 
 def test_endpoint_exists(monkeypatch, tmp_path):

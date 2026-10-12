@@ -177,15 +177,25 @@ def _is_pipe(endpoint: str | Path) -> bool:
     return str(endpoint).startswith(_PIPE_PREFIXES)
 
 
+def _pipe_user() -> str:
+    """The account name in a pipe's name. On Windows, USERNAME — what a
+    logon task, PowerShell and Git Bash all agree on; getpass.getuser() reads
+    LOGNAME and USER first, which MSYS/Git Bash may set to something else, and
+    the speech task and the picker would then name different pipes."""
+    if os.name == "nt" and os.environ.get("USERNAME"):
+        return os.environ["USERNAME"]
+    try:
+        return getpass.getuser()
+    except Exception:  # noqa: BLE001
+        return "user"
+
+
 def pipe_name_for(path: str | Path) -> str:
     """The named pipe standing in for socket `path`: one per user and path,
     readable (`sink-speech`) and distinct per state folder (the hash)."""
     p = Path(str(path))
     stem = p.name[:-5] if p.name.endswith(".sock") else p.name
-    try:
-        user = getpass.getuser()
-    except Exception:  # noqa: BLE001
-        user = "user"
+    user = _pipe_user()
     user = re.sub(r"[^A-Za-z0-9_.-]", "_", user) or "user"
     h = hashlib.sha1(str(p.parent).encode("utf-8", "replace")).hexdigest()[:8]
     return f"\\\\.\\pipe\\agent-media-{user}-{stem}-{h}"
