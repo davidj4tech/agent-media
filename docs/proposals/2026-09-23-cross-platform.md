@@ -258,29 +258,75 @@ Failures (winrt missing, no desktop session, an operation past 2 s) leave
 players alone and log once. A manager that could not be had is asked for
 again after 60 s.
 
-**Tested on red5 only.** `core/tests/test_audio_backend.py` covers selection,
-the stub, Linux through mocked playerctl, mpv's device list, and the Windows
-backend against a fake session manager (the real import failing on Linux is
-the "winrt missing" case). `test_audio_seam_callers.py` covers the callers.
-Core and server suites: the same failures before and after (all of them
-already there on main).
+**Tested on red5 and on Windows CI.** On red5, `core/tests/test_audio_backend.py`
+covers selection, the stub, Linux through mocked playerctl, mpv's device list,
+and the Windows backend against a fake session manager. `test_audio_seam_callers.py`
+covers the callers. Core and server suites show the same failures before and
+after, all of them already present on main. CI's `pytest (core, Windows)` job
+installs core with its win32 dependencies and gates on the audio and mpv-IPC
+tests. Proved there (CI run 38208476555, binary run 38208064935, 12 Oct):
 
-**Unverified until a Windows CI run or a real machine** (hpo is offline):
-- that the winrt wheels install into the PyApp build and import from the .exe;
-- that `request_async` and `try_pause_async` work from the canvas's Task
-  Scheduler logon task under `conhost --headless` (the media controls need
-  the user's interactive session), and from worker threads (pywinrt's MTA);
-- the app id mpv's own `--media-controls` session carries (assumed to
-  contain `mpv`);
-- whether Edge, Chrome and Spotify honour pause and play sent this way;
-- the format of mpv's WASAPI device list on Windows.
+- **winrt imports and works, from pip and from the .exe.**
+  `sasonica-windows-x86_64.exe media-audio --json` answers
+  `"backend": "windows"` and `"winrt": "ok (0 media sessions)"`. The
+  projection loads from inside PyApp, and `request_async` hands out a session
+  manager in the runner's session. The zipped .exe artifact grew by 0.57 MB
+  (50.00 to 50.58 MB).
+- **mpv over a named pipe.** A real mpv 0.41 (choco) started with
+  `--input-ipc-server=<endpoint_name(path)>` is driven through
+  `get_property`, `set_property`, `get_properties` and `quit`. A Python pipe
+  server is driven the same way, and `endpoint_exists` sees a pipe appear and
+  go.
+- **The rooms-hub tests are Linux by nature.** The speech-targets,
+  audio-targets and `media-setup server` tests now pin the linux backend. The
+  unix-socket fake-mpv tests skip where there is no `AF_UNIX`. On a Mac or
+  Windows the picker no longer offers `rooms`, which those hosts cannot play.
 
-**What still keeps Windows from speaking locally** is not audio-backend work
-and is left for its own step. mpv's JSON IPC (`sinks/_mpv_ipc.py`) connects
-over `AF_UNIX`, which Python on Windows does not have (mpv there serves a
-named pipe, `\\.\pipe\…`). The speech broker is started by a runit/systemd
-`sink-speech` service that has no Windows twin. Until both exist, a Windows
-server speaks through the phone, as the Mac does.
+The rest of core runs on Windows as a report, not a gate. 109 of 2596 tests
+fail there for reasons outside the audio work, and they should be fixed where
+they live:
+
+- `os.killpg` in `media replay`'s follower (about 20 tests): a real Windows
+  crash.
+- `AF_UNIX` in the converse rendezvous and input claim (18).
+- strftime's `%-d` in the agenda (12).
+- `call_guard` and `_android` (20): phone-side code that shells out to `sh`.
+- The docs walker's hidden-file and path rules (9).
+- POSIX file modes (`0o600`, `0o700`).
+- `$HOME/...` hook paths written with backslashes.
+- Two timing tests on Windows' coarse clock.
+
+**Still unverified until a real Windows desktop** (hpo is offline). A CI
+runner cannot settle these:
+
+- The runner has no audio endpoints, so mpv lists only `auto` and `openal`.
+  The shape of a `wasapi/{…}` line, and the description matching, are still
+  inferred from mpv's source.
+- The canvas's Task Scheduler logon task under `conhost --headless` is not
+  exercised. CI runs the binary from the job's own session.
+- The app id mpv's `--media-controls` session carries is still assumed to
+  contain `mpv`.
+- Whether Edge, Chrome and Spotify obey pause and play sent this way. The
+  runner has no media sessions at all.
+
+**A Windows speech player: not built, David's call.** Pipes are the channel;
+what is missing is a player to listen on one. The Linux binary installs no
+`sink-speech` service either: every binary install speaks through the phone.
+mpv is not in the binary. The options:
+
+1. **Opt-in.** `sasonica install --local-speech` adds a third logon task,
+   `Sasonica\speech`, that runs mpv (the user's own, via winget) on the speech
+   pipe. A small Python launcher would replace the shell `run` script's argv on
+   hosts without runit or systemd. The phone stays the default.
+2. **Local by default when mpv is found.** The same task, installed whenever
+   `mpv` is on PATH. Speech then moves off the phone for anyone who happens to
+   have mpv.
+3. **Bundle mpv.** The .exe or the installer carries mpv, about 30–40 MB more,
+   and mpv is GPL. Local speech then works out of the box.
+
+Each option also faces the limit the canvas and sessiond tasks already have:
+`schtasks /Create` cannot ask for restart-on-failure, which would need a task
+XML.
 
 ## What this costs if we never do it
 
