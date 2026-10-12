@@ -147,7 +147,9 @@ pairing QR). What it took:
 * **`sasonica install`** writes a `.cmd` shim beside each sh one (Git Bash,
   where Claude Code runs hooks, finds the sh one) and two Task Scheduler
   logon tasks (`Sasonica\canvas`, `Sasonica\sessiond`) run under
-  `conhost --headless`, so no console window opens. `sasonica update` renames
+  `conhost --headless`, so no console window opens. Since 12 Oct 2026 they
+  are registered from task XML, restarting when they fail, and `sasonica
+  update` upgrades older ones in place. `sasonica update` renames
   the running .exe aside to put the new one in.
 * **orphans** are ended by the pid each record kept, and only while it is
   still an agent's program (`tasklist`): no other process's environment can

@@ -364,9 +364,18 @@ CI proves the pieces (runs 38210589150 and 38212541123, binary run
   and mpv's command line, and `install --local-speech` dry-runs to the winget
   hint, since that runner has no mpv.
 
-**Canvas and sessiond should follow** onto the same XML, to get
-restart-on-failure. They are still registered with `/SC ONLOGON` and were
-left alone in this step.
+**Canvas and sessiond followed** (12 Oct 2026). They are now registered from
+the same task XML through shared `task_xml` and `register_task`, so they too
+restart when they fail and have no time limit. An install made before this
+upgrades either way:
+
+- `sasonica install` replaces the old task (`/F`).
+- `sasonica update` first re-registers an old `/SC ONLOGON` task from XML,
+  keeping the exact command it ran, which it reads back with
+  `schtasks /Query /XML`.
+
+On Windows CI, the real Task Scheduler takes an old-style task, upgrades it in
+place, and accepts a service's XML as made.
 
 ## What this costs if we never do it
 
