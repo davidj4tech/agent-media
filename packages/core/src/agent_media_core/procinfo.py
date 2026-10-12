@@ -19,6 +19,7 @@ import os
 import re
 import subprocess
 from pathlib import Path
+from typing import Optional
 
 PROC = Path("/proc")
 _ENV_WORD = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
@@ -163,3 +164,31 @@ def cwd(pid: int) -> str:
         if line.startswith("n"):
             return os.path.realpath(line[1:])
     return ""
+
+
+def kill_group(pid: int, sig: Optional[int] = None,
+               expect_image: Optional[str] = None) -> None:
+    """End a process started with `start_new_session=True` and what it started.
+
+    POSIX: `os.killpg(pid, sig)` (SIGTERM by default) — exactly that call, so
+    its exceptions (ProcessLookupError, PermissionError) reach the caller as
+    before. Windows has no process groups or signals: `taskkill /T /F` ends
+    the process and its tree. A pid read back from a file may by now belong to
+    something else, so with `expect_image` ("python.exe") a process whose
+    executable is not that is left alone, and ProcessLookupError raised as if
+    it had gone.
+    """
+    if os.name != "nt":
+        import signal
+        os.killpg(pid, signal.SIGTERM if sig is None else sig)
+        return
+    pid = int(pid)
+    if not alive(pid):
+        raise ProcessLookupError(pid)
+    if expect_image and image(pid) != expect_image.lower():
+        raise ProcessLookupError(pid)
+    r = subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                       capture_output=True, text=True, timeout=15)
+    if r.returncode != 0:
+        raise ProcessLookupError(pid) if not alive(pid) else PermissionError(
+            r.stderr.strip() or f"taskkill /PID {pid} failed")

@@ -3665,10 +3665,16 @@ def _stop_replay_trackers() -> None:
     holding the playback token and writing the old clip's sentences over the
     new one. Done before anything else touches the player or the row."""
     import signal as _signal
+
+    from . import procinfo
     try:
-        os.killpg(int(_replay_track_pidfile().read_text().strip()),
-                  _signal.SIGTERM)
-    except (OSError, ValueError, ProcessLookupError, PermissionError):
+        # os.killpg on Linux and a Mac; on Windows the follower's process tree,
+        # and only while the pid is still a Python like the one that started it.
+        procinfo.kill_group(int(_replay_track_pidfile().read_text().strip()),
+                            _signal.SIGTERM,
+                            expect_image=os.path.basename(sys.executable))
+    except (OSError, ValueError, ProcessLookupError, PermissionError,
+            subprocess.SubprocessError):
         pass
 
 
@@ -3903,7 +3909,11 @@ def _push_replay(row: dict, ex: dict, clip_uris: list, clip_durations: list,
         # The playback token goes with it: the follower is what lasts as long
         # as the replay, so it is what holds the token (see
         # _SpeechPlaybackLock's politeness rules).
-        lock_fd = replay_lock.fileno if replay_lock is not None else None
+        # Not on Windows: its file locks belong to the process that took them,
+        # and Popen cannot pass a descriptor there (pass_fds), so the token
+        # stays with this command and is released when it returns.
+        lock_fd = (replay_lock.fileno
+                   if replay_lock is not None and os.name != "nt" else None)
         _trk = subprocess.Popen(
             [sys.executable, "-m", "agent_media_core.cli",
              "replay-track",
@@ -3919,7 +3929,7 @@ def _push_replay(row: dict, ex: dict, clip_uris: list, clip_durations: list,
             stderr=subprocess.DEVNULL,
             pass_fds=(lock_fd,) if lock_fd is not None else (),
         )
-        if replay_lock is not None:
+        if replay_lock is not None and os.name != "nt":
             # Close our copy WITHOUT unlocking: flock belongs to the open file
             # description the follower now shares, and an unlock from here
             # would release it for the follower too.
