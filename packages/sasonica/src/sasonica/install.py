@@ -23,7 +23,13 @@ has the binary instead of a checkout:
      (`sasonica tunnel`): systemd --user units on Linux, launchd agents on
      a Mac (~/Library/LaunchAgents/com.sasonica.*.plist, logs in
      ~/Library/Logs/sasonica). Not when the host already runs a canvas from a
-     checkout (agent-media-visual-canvas.service), unless --force.
+     checkout (agent-media-visual-canvas.service), unless --force;
+  6. with --local-speech, on Windows: a speech player on this computer, the
+     logon task Sasonica\\speech running your own mpv (`sasonica
+     media-sink-speech`) on the speech pipe, restarted when it fails. Speech
+     still goes to the phone until you pick "This computer" in the app.
+     `--local-speech off` removes it. Without mpv on PATH it says how to get
+     it (winget) and leaves the rest of the install alone.
 
 Safe to run again, and run again after replacing the binary: shims point at
 the binary's path, not at a version.
@@ -199,6 +205,122 @@ def _schtasks(binary: str, a) -> int:
     return rc
 
 
+#: The opt-in speech player's task (Windows, --local-speech).
+SPEECH_TASK = "Sasonica\\speech"
+
+
+def _task_user() -> str:
+    dom, user = os.environ.get("USERDOMAIN", ""), os.environ.get("USERNAME", "")
+    return f"{dom}\\{user}" if dom else user
+
+
+def speech_task_xml(binary: str, user: str) -> str:
+    """Task Scheduler XML for the speech player: at this user's logon, in
+    their session, under `conhost --headless`; restarted every minute when it
+    fails (up to 999 times), never stopped for running long or on battery.
+    `schtasks /Create /SC ONLOGON` cannot say the restart part, hence XML."""
+    from xml.sax.saxutils import escape
+
+    args = escape(f'--headless "{binary}" media-sink-speech')
+    u = escape(user)
+    return f"""<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Sasonica speech player: mpv on the speech pipe (sasonica install --local-speech)</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>{u}</UserId>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>{u}</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>999</Count>
+    </RestartOnFailure>
+    <Enabled>true</Enabled>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>conhost.exe</Command>
+      <Arguments>{args}</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"""
+
+
+def _windows() -> bool:
+    return os.name == "nt"
+
+
+def _local_speech(binary: str, a) -> int:
+    """--local-speech [on|off]: the speech player's logon task, added or removed.
+    Never fails the install: what went wrong is said, and 0 returned."""
+    print("== Local speech")
+    if not _windows():
+        print("  Windows only: Linux and the phone run the sink-speech service "
+              "(media-setup); a Mac speaks through the phone")
+        return 0
+    from agent_media_core.entrypoints import sink_speech
+    from agent_media_core.sinks import _mpv_ipc as ipc
+
+    pipe = ipc.endpoint_name(sink_speech.socket_path())
+    if a.local_speech == "off":
+        _run(["schtasks", "/End", "/TN", SPEECH_TASK], dry_run=a.dry_run)
+        _run(["schtasks", "/Delete", "/F", "/TN", SPEECH_TASK], dry_run=a.dry_run)
+        if not a.dry_run and ipc.endpoint_exists(pipe):
+            try:
+                ipc.command(pipe, "quit", timeout=3)
+                print(f"  asked the player on {pipe} to quit")
+            except (OSError, ipc.MpvIpcError) as e:
+                print(f"  the player on {pipe} did not answer ({e}); it stops at logoff")
+        print("  removed: speech goes where the app says (the phone by default)")
+        return 0
+    mpv = sink_speech.find_mpv()
+    if not mpv:
+        print("  mpv is not on PATH, and local speech needs it. Install it with:")
+        print(f"      {sink_speech.WINGET_HINT}")
+        print("  (or set MEDIA_MPV_BIN to an mpv.exe), then run "
+              "`sasonica install --local-speech` again. Nothing else is affected.")
+        return 0
+    print(f"  mpv: {mpv}")
+    print(f"  task {SPEECH_TASK}: `sasonica media-sink-speech` on {pipe}")
+    xml = speech_task_xml(binary, _task_user())
+    if a.dry_run:
+        print("  $ schtasks /Create /F /TN " + SPEECH_TASK + " /XML <task.xml>")
+        print(xml)
+        return 0
+    import tempfile
+    fd, path = tempfile.mkstemp(suffix=".xml")
+    os.close(fd)
+    try:
+        Path(path).write_text(xml, encoding="utf-16")
+        rc = _run(["schtasks", "/Create", "/F", "/TN", SPEECH_TASK, "/XML", path],
+                  dry_run=False)
+    finally:
+        Path(path).unlink(missing_ok=True)
+    if rc:
+        print("  the task was not created; the rest of the install stands")
+        return 0
+    _run(["schtasks", "/End", "/TN", SPEECH_TASK], dry_run=False)
+    _run(["schtasks", "/Run", "/TN", SPEECH_TASK], dry_run=False)
+    print('  (it starts at logon; pick "This computer" for speech in the app to use it)')
+    return 0
+
+
 def _env_value(lines: list[str], key: str) -> str:
     for line in lines:
         if line.startswith(key + "="):
@@ -273,6 +395,11 @@ def main(argv: list[str] | None = None) -> int:
                          "way (a tailnet, your own tunnel or proxy)")
     ap.add_argument("--force", action="store_true",
                     help="replace commands and services a checkout install put there")
+    ap.add_argument("--local-speech", nargs="?", const="on", choices=("on", "off"),
+                    help="Windows: also run a speech player on this computer "
+                         "(your own mpv, started at logon); `off` removes it. "
+                         "Speech still goes to the phone until you choose this "
+                         "computer in the app")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args(argv)
     # Its lines in order with the commands it runs, when piped (curl | bash).
@@ -321,6 +448,9 @@ def main(argv: list[str] | None = None) -> int:
         _run([*me, "media-setup", "profile", "--only", "opencode"], dry_run=a.dry_run)
     else:
         print("  opencode: not installed")
+
+    if a.local_speech:
+        _local_speech(binary, a)
 
     if a.no_services:
         return 0

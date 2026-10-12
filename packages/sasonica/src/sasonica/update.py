@@ -149,6 +149,12 @@ def _restart_tasks(force_sessiond: bool) -> None:
               "you run `sasonica update --restart-sessiond` (that ends them)")
     else:
         tasks.append(TASKS["sasonica-sessiond"])
+    # The opt-in speech player runs from the binary too. Its mpv is not the
+    # binary's and keeps playing: the new launcher finds it on the pipe.
+    from sasonica.install import SPEECH_TASK
+    if subprocess.run(["schtasks", "/Query", "/TN", SPEECH_TASK],
+                      capture_output=True).returncode == 0:
+        tasks.append(SPEECH_TASK)
     for task in tasks:
         subprocess.run(["schtasks", "/End", "/TN", task], capture_output=True)
         subprocess.run(["schtasks", "/Run", "/TN", task], capture_output=True)
