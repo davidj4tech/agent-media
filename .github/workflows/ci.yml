@@ -130,3 +130,32 @@ jobs:
 
       - name: Run tests
         run: pytest -q -p no:cacheprovider packages/server/tests packages/sasonica/tests
+
+  core-windows:
+    # Core on Windows, the platform the audio seam's windows backend is for
+    # (docs/proposals/2026-09-23-cross-platform.md, "Audio seam"). Installing
+    # core here pulls its win32-only dependencies (the winrt-* projections),
+    # so the backend's real import is exercised, not a fake.
+    name: pytest (core, Windows)
+    runs-on: windows-latest
+    timeout-minutes: 40
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install core (+ server and visual, which some of its tests read) + pytest
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e packages/core -e packages/server -e packages/visual
+          pip install pytest
+          python -c "import winrt.windows.media.control as m; print('winrt', m.__name__)"
+
+      - name: Run tests
+        working-directory: packages/core
+        run: pytest -q -rs -p no:cacheprovider
