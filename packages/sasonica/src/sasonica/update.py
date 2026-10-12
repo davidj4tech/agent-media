@@ -139,8 +139,13 @@ def _live_chats() -> int:
 
 
 def _restart_tasks(force_sessiond: bool) -> None:
-    """Windows's two logon tasks (install.TASKS), ended and run again."""
-    from sasonica.install import TASKS
+    """Windows's two logon tasks (install.TASKS), ended and run again. Tasks
+    an older install registered with /SC ONLOGON are first re-registered from
+    task XML (restart on failure), running what they ran."""
+    from sasonica.install import TASKS, UNITS, upgrade_task
+
+    for name, (_word, what) in UNITS.items():
+        upgrade_task(TASKS[name], what)
 
     tasks = [TASKS["sasonica-canvas"]]
     live = _live_chats()

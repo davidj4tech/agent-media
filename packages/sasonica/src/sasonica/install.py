@@ -22,7 +22,9 @@ has the binary instead of a checkout:
      (`sasonica sessiond`) and, with the tunnel, sasonica-quick-tunnel
      (`sasonica tunnel`): systemd --user units on Linux, launchd agents on
      a Mac (~/Library/LaunchAgents/com.sasonica.*.plist, logs in
-     ~/Library/Logs/sasonica). Not when the host already runs a canvas from a
+     ~/Library/Logs/sasonica), logon tasks on Windows (Task Scheduler →
+     Sasonica, registered from task XML so they restart when they fail; an
+     older install's tasks are replaced). Not when the host already runs a canvas from a
      checkout (agent-media-visual-canvas.service), unless --force;
   6. with --local-speech, on Windows: a speech player on this computer, the
      logon task Sasonica\\speech running your own mpv (`sasonica
@@ -182,27 +184,16 @@ def _launchd(binary: str, a) -> int:
 TASKS = {name: "Sasonica\\" + name.removeprefix("sasonica-") for name in UNITS}
 
 
-def task_command(binary: str, word: str, bind: str, port: int) -> str:
-    """What a logon task runs: the binary under `conhost --headless`, so no
-    console window opens at login (Windows 10 1809 and later)."""
+def task_args(binary: str, word: str, bind: str = "0.0.0.0", port: int = 8781) -> str:
+    """conhost's arguments for a logon task: the binary under `--headless`, so
+    no console window opens at login (Windows 10 1809 and later)."""
     args = f" --bind {bind} --port {port}" if word == "serve" else ""
-    return f'conhost.exe --headless "{binary}" {word}{args}'
+    return f'--headless "{binary}" {word}{args}'
 
 
-def _schtasks(binary: str, a) -> int:
-    """The two services as Task Scheduler tasks that start at logon, replaced
-    if they are there (/F), then started now."""
-    rc = 0
-    for name, (word, _what) in UNITS.items():
-        task = TASKS[name]
-        print(f"  task {task}")
-        rc = _run(["schtasks", "/Create", "/F", "/SC", "ONLOGON", "/RL", "LIMITED",
-                   "/TN", task, "/TR", task_command(binary, word, a.bind, a.port)],
-                  dry_run=a.dry_run) or rc
-        _run(["schtasks", "/End", "/TN", task], dry_run=a.dry_run)
-        rc = _run(["schtasks", "/Run", "/TN", task], dry_run=a.dry_run) or rc
-    print("  (they start at logon; Task Scheduler → Sasonica)")
-    return rc
+def task_command(binary: str, word: str, bind: str, port: int) -> str:
+    """The whole command line a service's logon task runs."""
+    return "conhost.exe " + task_args(binary, word, bind, port)
 
 
 #: The opt-in speech player's task (Windows, --local-speech).
@@ -214,19 +205,18 @@ def _task_user() -> str:
     return f"{dom}\\{user}" if dom else user
 
 
-def speech_task_xml(binary: str, user: str) -> str:
-    """Task Scheduler XML for the speech player: at this user's logon, in
-    their session, under `conhost --headless`; restarted every minute when it
-    fails (up to 999 times), never stopped for running long or on battery.
+def task_xml(arguments: str, user: str, description: str) -> str:
+    """Task Scheduler XML for one of Sasonica's tasks: at this user's logon,
+    in their session, `conhost.exe <arguments>`; restarted every minute when
+    it fails (up to 999 times), never stopped for running long or on battery.
     `schtasks /Create /SC ONLOGON` cannot say the restart part, hence XML."""
     from xml.sax.saxutils import escape
 
-    args = escape(f'--headless "{binary}" media-sink-speech')
-    u = escape(user)
+    args, u, d = escape(arguments), escape(user), escape(description)
     return f"""<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Description>Sasonica speech player: mpv on the speech pipe (sasonica install --local-speech)</Description>
+    <Description>{d}</Description>
   </RegistrationInfo>
   <Triggers>
     <LogonTrigger>
@@ -260,6 +250,77 @@ def speech_task_xml(binary: str, user: str) -> str:
   </Actions>
 </Task>
 """
+
+
+def speech_task_xml(binary: str, user: str) -> str:
+    """The speech player's task (--local-speech)."""
+    return task_xml(task_args(binary, "media-sink-speech"), user,
+                    "Sasonica speech player: mpv on the speech pipe "
+                    "(sasonica install --local-speech)")
+
+
+def register_task(name: str, xml: str, *, dry_run: bool) -> int:
+    """`schtasks /Create /F /XML`: the task made, or replaced whatever has the
+    name — an older `/SC ONLOGON` registration included. schtasks' status."""
+    if dry_run:
+        print(f"  $ schtasks /Create /F /TN {name} /XML <task.xml>")
+        print(xml)
+        return 0
+    import tempfile
+    fd, path = tempfile.mkstemp(suffix=".xml")
+    os.close(fd)
+    try:
+        Path(path).write_text(xml, encoding="utf-16")
+        return _run(["schtasks", "/Create", "/F", "/TN", name, "/XML", path],
+                    dry_run=False)
+    finally:
+        Path(path).unlink(missing_ok=True)
+
+
+def _task_definition(name: str) -> str:
+    """A registered task's XML as Task Scheduler gives it back, or ""."""
+    try:
+        r = subprocess.run(["schtasks", "/Query", "/TN", name, "/XML"],
+                           capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return r.stdout if r.returncode == 0 else ""
+
+
+def upgrade_task(name: str, description: str) -> bool:
+    """Re-register a task made before task XML (`/SC ONLOGON`, no restart on
+    failure) from XML, keeping exactly what it runs. True when it did; a task
+    that is missing, already XML-made, or not conhost's, is left alone."""
+    import re
+    from xml.sax.saxutils import unescape
+
+    xml = _task_definition(name)
+    if not xml or re.search(r"<RestartOnFailure[\s/>]", xml):
+        return False
+    cmd = re.search(r"<Command>(.*?)</Command>", xml, re.S)
+    args = re.search(r"<Arguments>(.*?)</Arguments>", xml, re.S)
+    if not cmd or not args or cmd.group(1).strip().lower() != "conhost.exe":
+        return False
+    print(f"  task {name}: re-registered from task XML (restart on failure)")
+    return register_task(name, task_xml(unescape(args.group(1).strip()), _task_user(),
+                                        description), dry_run=False) == 0
+
+
+def _schtasks(binary: str, a) -> int:
+    """The two services as Task Scheduler tasks that start at logon, registered
+    from task XML (restarted when they fail), replacing whatever had the name
+    — an install made before task XML included — then started now."""
+    rc = 0
+    for name, (word, what) in UNITS.items():
+        task = TASKS[name]
+        print(f"  task {task}")
+        rc = register_task(task, task_xml(task_args(binary, word, a.bind, a.port),
+                                          _task_user(), what),
+                           dry_run=a.dry_run) or rc
+        _run(["schtasks", "/End", "/TN", task], dry_run=a.dry_run)
+        rc = _run(["schtasks", "/Run", "/TN", task], dry_run=a.dry_run) or rc
+    print("  (they start at logon and restart when they fail; Task Scheduler → Sasonica)")
+    return rc
 
 
 def _windows() -> bool:
@@ -298,20 +359,10 @@ def _local_speech(binary: str, a) -> int:
         return 0
     print(f"  mpv: {mpv}")
     print(f"  task {SPEECH_TASK}: `sasonica media-sink-speech` on {pipe}")
-    xml = speech_task_xml(binary, _task_user())
+    rc = register_task(SPEECH_TASK, speech_task_xml(binary, _task_user()),
+                       dry_run=a.dry_run)
     if a.dry_run:
-        print("  $ schtasks /Create /F /TN " + SPEECH_TASK + " /XML <task.xml>")
-        print(xml)
         return 0
-    import tempfile
-    fd, path = tempfile.mkstemp(suffix=".xml")
-    os.close(fd)
-    try:
-        Path(path).write_text(xml, encoding="utf-16")
-        rc = _run(["schtasks", "/Create", "/F", "/TN", SPEECH_TASK, "/XML", path],
-                  dry_run=False)
-    finally:
-        Path(path).unlink(missing_ok=True)
     if rc:
         print("  the task was not created; the rest of the install stands")
         return 0
