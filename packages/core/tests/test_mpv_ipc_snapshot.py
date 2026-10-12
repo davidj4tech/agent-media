@@ -12,7 +12,14 @@ import socket
 import threading
 import time
 
+import pytest
+
 from agent_media_core.sinks import _mpv_ipc as ipc
+
+pytestmark = pytest.mark.skipif(
+    not hasattr(socket, "AF_UNIX"),
+    reason="the fake mpv is a unix-socket server; on Windows the pipe "
+           "transport is covered by test_mpv_ipc_pipes.py")
 
 
 def _fake_mpv(sock_path, available):

@@ -1,6 +1,7 @@
 """Tests for 1C target-aware speech routing (sinks/speech)."""
 
 import importlib
+from pathlib import Path
 
 import pytest
 
@@ -13,7 +14,12 @@ def _clean_env(monkeypatch):
     for k in list(__import__("os").environ):
         if k.startswith("MEDIA_SPEECH_") or k == "MEDIA_ROOMS_SINK":
             monkeypatch.delenv(k, raising=False)
+    # These are a Linux rooms hub's targets wherever the tests run.
+    from agent_media_core import audio_backend
+    monkeypatch.setenv("MEDIA_AUDIO_BACKEND", "linux")
+    audio_backend.reset()
     yield
+    audio_backend.reset()
 
 
 def test_local_uses_broker_default():
@@ -59,7 +65,7 @@ def test_socket_shared_by_default(monkeypatch):
 
 def test_per_target_socket_override(monkeypatch):
     monkeypatch.setenv("MEDIA_SPEECH_SOCKET_ROOMS", "/run/rooms.sock")
-    assert str(speech._socket_for(Target("rooms"))) == "/run/rooms.sock"
+    assert str(speech._socket_for(Target("rooms"))) == str(Path("/run/rooms.sock"))
 
 
 def test_play_sets_audio_device_then_loadfile(monkeypatch):

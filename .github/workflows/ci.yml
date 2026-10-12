@@ -156,6 +156,35 @@ jobs:
           pip install pytest
           python -c "import winrt.windows.media.control as m; print('winrt', m.__name__)"
 
-      - name: Run tests
+      - name: mpv (the pipe tests drive a real one)
+        run: |
+          choco install mpv --no-progress -y
+          mpv --version
+        continue-on-error: true
+
+      - name: What the audio seam sees here
+        run: |
+          mpv --no-config --audio-device=help
+          media-audio --json
+        continue-on-error: true
+
+      # Gating: the audio seam, mpv's control channel and the speech targets
+      # they feed — what has been made to work on Windows.
+      - name: Run the audio and mpv-IPC tests
         working-directory: packages/core
-        run: pytest -q -rs -p no:cacheprovider
+        run: >-
+          pytest -q -rs -p no:cacheprovider
+          tests/test_audio_backend.py tests/test_audio_seam_callers.py
+          tests/test_mpv_ipc_pipes.py tests/test_mpv_ipc_snapshot.py
+          tests/test_refusal_is_reported.py tests/test_speech_targets.py
+          tests/test_audio_targets.py tests/test_setup.py
+
+      # Not gating, yet: the rest of core has never run on Windows, and ~120
+      # tests fail there for reasons outside the audio work (os.killpg in
+      # replay, AF_UNIX in the converse rendezvous, strftime's %-d, POSIX
+      # modes and paths). Run and reported so the count is visible; listed in
+      # docs/proposals/2026-09-23-cross-platform.md.
+      - name: Run all of core's tests (report only)
+        working-directory: packages/core
+        continue-on-error: true
+        run: pytest -q -rfs -p no:cacheprovider

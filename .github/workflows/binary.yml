@@ -133,6 +133,11 @@ jobs:
           grep -q "listening on 127.0.0.1:" sessiond.log
           "$b" install --dry-run --no-services
           kill %1 %2 || true
+          # The audio seam's windows backend, from inside the .exe: chosen,
+          # and its winrt projection (a win32-only dependency) importable.
+          "$b" media-audio --json | tee audio.json
+          grep -q '"backend": "windows"' audio.json
+          ! grep -q '"winrt": "not importable' audio.json
 
       - uses: actions/upload-artifact@v4
         with:

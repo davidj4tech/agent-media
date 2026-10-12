@@ -30,7 +30,16 @@ def test_merge_env_defaults_dry_run_no_write(tmp_path):
     assert not p.exists()
 
 
+def _linux_audio(monkeypatch):
+    """`media-setup server` wires PulseAudio null sinks: a Linux host's audio,
+    wherever the tests run (on Windows it is skipped — test_audio_seam_callers)."""
+    from agent_media_core import audio_backend
+    monkeypatch.setenv("MEDIA_AUDIO_BACKEND", "linux")
+    monkeypatch.setattr(audio_backend, "_backend", None)   # chosen afresh, restored after
+
+
 def test_server_refuses_non_systemd(monkeypatch):
+    _linux_audio(monkeypatch)
     # Termux/runit hosts stay snapclients (and keep the openal AO default) —
     # the server role must not touch them.
     monkeypatch.setattr(setup, "_service_backend", lambda *a, **k: "runit")
@@ -39,6 +48,7 @@ def test_server_refuses_non_systemd(monkeypatch):
 
 
 def test_server_dry_run_systemd(tmp_path, monkeypatch, capsys):
+    _linux_audio(monkeypatch)
     monkeypatch.setattr(setup, "_service_backend", lambda *a, **k: "systemd")
     monkeypatch.setattr(setup, "systemd_user_dir", lambda: tmp_path / "user")
     monkeypatch.setattr(setup, "_agent_media_env_path", lambda: tmp_path / "am.env")

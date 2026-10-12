@@ -30,6 +30,16 @@ def plain_host(monkeypatch, tmp_path):
     # Local brokers resolve to a socket under the state dir; point it at an
     # empty one so "is the player running" never looks at the real socket.
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    # A Linux rooms hub on every platform the tests run on: `rooms` is a
+    # PulseAudio sink and a local broker a socket file (audio_backend and
+    # _mpv_ipc would otherwise answer for Windows or a Mac).
+    from agent_media_core import audio_backend
+    from agent_media_core.sinks import _mpv_ipc
+    monkeypatch.setenv("MEDIA_AUDIO_BACKEND", "linux")
+    monkeypatch.setattr(_mpv_ipc, "_use_pipes", lambda: False)
+    audio_backend.reset()
+    yield
+    audio_backend.reset()
 
 
 def _phone_bridge(monkeypatch):
