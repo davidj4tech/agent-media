@@ -215,6 +215,73 @@ daemon follow later.
 5. **Windows only if herdr is there**, and even then the Shell stays the way
    a Windows box joins without a daemon.
 
+## Audio seam (built 12 Oct 2026)
+
+Step 3. `agent_media_core/audio_backend/` is the one place the host's audio
+system is asked about; `backend()` picks a backend once per process
+(`MEDIA_AUDIO_BACKEND=linux|windows|none` forces one):
+
+| what callers need | call | linux | windows | anything else |
+|---|---|---|---|---|
+| pause other players for speech, resume what we paused | `playing_players()`, `pause_players()`, `resume_players()` | MPRIS through `route/_mpris.py`, unchanged | the system media transport controls (WinRT) | `[]`, logged once |
+| mpv `--ao` when none is set | `default_ao()` | `pulse` | `wasapi` | mpv chooses |
+| the `rooms` feed's device | `named_sink_device(sink)` | `pulse/<sink>` | none: `rooms` reports "not configured" | none |
+| a configured device as mpv's id | `device(spec)` | as is | `wasapi/{…}` as is, else matched against mpv's device descriptions (`MEDIA_SPEECH_LOCAL_DEVICE=Headphones`) | as is |
+| null sinks + default sink (`media-setup server`) | `sink_plumbing` | yes | no: skipped with a message, exit 0 | no |
+| list devices | `output_devices()` | `mpv --audio-device=help`, parsed — the same everywhere | | |
+
+The callers: the coordinator's local pause/resume, `_device_for` in
+`sinks/speech.py` and `sinks/book.py` (a tcp:// broker's device is another
+host's and passes untouched), the book broker's `--ao`, and `cmd_server`.
+Remote MPRIS over ssh (`MEDIA_MPRIS_SSH_HOSTS`) stays in `_mpris.py`: those
+hosts are Linux whatever this one is. `MEDIA_MPRIS_PAUSE=0` still turns
+pausing off, on every backend. There is no cork to seam: policy.py names a
+`pactl` cork as a future mechanism, and nothing implements one.
+
+**Windows: WinRT in process, not PowerShell.** The media controls
+(`GlobalSystemMediaTransportControlsSessionManager`) come through the modular
+`winrt-*` 3.2 projections (runtime, Foundation, Foundation.Collections,
+Media.Control), a core dependency marked `sys_platform == 'win32'` so Linux and
+Mac installs never see it. Measured from the wheels: ~610 KB downloaded,
+~1.5 MB installed, beside a 57 MB binary that unpacks to 177 MB. Each call is
+COM in process, and the manager is fetched once and kept. The alternative,
+shelling out to PowerShell, needs no dependency but costs a cold
+`powershell.exe` start (hundreds of ms) on every pause and every resume, both
+on the speech path. It also leans on Windows PowerShell 5.1's WinRT bridge
+(PowerShell 7 dropped it), its `AsTask` await shim, and whatever language mode
+a managed machine allows. A player's name is its app id (`Spotify.exe`, `#2`
+for a second session of one app). The session objects are kept from pause to
+resume, and a session is resumed only if it is still Paused. Every mpv session
+is left alone, because a media session cannot say which mpv it is (the same
+fail-closed rule as Linux); `MEDIA_SMTC_EXCLUDE` adds app ids to that list.
+Failures (winrt missing, no desktop session, an operation past 2 s) leave
+players alone and log once. A manager that could not be had is asked for
+again after 60 s.
+
+**Tested on red5 only.** `core/tests/test_audio_backend.py` covers selection,
+the stub, Linux through mocked playerctl, mpv's device list, and the Windows
+backend against a fake session manager (the real import failing on Linux is
+the "winrt missing" case). `test_audio_seam_callers.py` covers the callers.
+Core and server suites: the same failures before and after (all of them
+already there on main).
+
+**Unverified until a Windows CI run or a real machine** (hpo is offline):
+- that the winrt wheels install into the PyApp build and import from the .exe;
+- that `request_async` and `try_pause_async` work from the canvas's Task
+  Scheduler logon task under `conhost --headless` (the media controls need
+  the user's interactive session), and from worker threads (pywinrt's MTA);
+- the app id mpv's own `--media-controls` session carries (assumed to
+  contain `mpv`);
+- whether Edge, Chrome and Spotify honour pause and play sent this way;
+- the format of mpv's WASAPI device list on Windows.
+
+**What still keeps Windows from speaking locally** is not audio-backend work
+and is left for its own step. mpv's JSON IPC (`sinks/_mpv_ipc.py`) connects
+over `AF_UNIX`, which Python on Windows does not have (mpv there serves a
+named pipe, `\\.\pipe\…`). The speech broker is started by a runit/systemd
+`sink-speech` service that has no Windows twin. Until both exist, a Windows
+server speaks through the phone, as the Mac does.
+
 ## What this costs if we never do it
 
 Little, today — everything runs on red5 and a phone. The reason to do step 1
