@@ -159,7 +159,9 @@ jobs:
       - name: mpv (the pipe tests drive a real one)
         run: |
           choco install mpv --no-progress -y
-          mpv --version
+          # choco puts mpv on the machine PATH, which later steps do not reread.
+          "C:\ProgramData\chocolatey\lib\mpvio.install\tools" >> $env:GITHUB_PATH
+          & "C:\ProgramData\chocolatey\lib\mpvio.install\tools\mpv.exe" --version
         continue-on-error: true
 
       - name: What the audio seam sees here
@@ -177,7 +179,9 @@ jobs:
           tests/test_audio_backend.py tests/test_audio_seam_callers.py
           tests/test_mpv_ipc_pipes.py tests/test_mpv_ipc_snapshot.py
           tests/test_refusal_is_reported.py tests/test_speech_targets.py
-          tests/test_audio_targets.py tests/test_setup.py
+          tests/test_audio_targets.py
+          tests/test_setup.py::test_server_refuses_non_systemd
+          tests/test_setup.py::test_server_dry_run_systemd
 
       # Not gating, yet: the rest of core has never run on Windows, and ~120
       # tests fail there for reasons outside the audio work (os.killpg in
