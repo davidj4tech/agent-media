@@ -8,14 +8,23 @@ An endpoint is normally a Unix-socket path (str/Path). It may also be a
 *remote* mpv whose IPC socket has been bridged to a TCP port (e.g. the phone's
 mpv-music exposed over Tailscale via socat). The line-delimited JSON protocol
 is identical over either transport, so every helper below works unchanged.
+
+On Windows, where Python has no AF_UNIX, a local endpoint is a named pipe
+instead (`\\\\.\\pipe\\agent-media-<user>-<name>-<hash>`, mpv's own IPC
+transport there). Callers keep passing the same socket *paths*;
+`endpoint_name()` maps one to its pipe, and whoever starts the mpv gives it
+the same name. Elsewhere it is the path, unchanged.
 """
 
 from __future__ import annotations
 
+import getpass
+import hashlib
 import itertools
 import json
 import logging
 import os
+import re
 import socket
 import threading
 import time
@@ -151,6 +160,147 @@ def _is_remote(endpoint: str | Path) -> bool:
     return str(endpoint).startswith(_TCP_PREFIX)
 
 
+# --- named pipes (Windows) -----------------------------------------------------
+
+_PIPE_PREFIXES = ("\\\\.\\pipe\\", "//./pipe/")
+_ERROR_FILE_NOT_FOUND = 2
+_ERROR_BROKEN_PIPE = 109
+_ERROR_PIPE_BUSY = 231
+
+
+def _use_pipes() -> bool:
+    """Whether a local endpoint is a named pipe here (Windows)."""
+    return os.name == "nt"
+
+
+def _is_pipe(endpoint: str | Path) -> bool:
+    return str(endpoint).startswith(_PIPE_PREFIXES)
+
+
+def pipe_name_for(path: str | Path) -> str:
+    """The named pipe standing in for socket `path`: one per user and path,
+    readable (`sink-speech`) and distinct per state folder (the hash)."""
+    p = Path(str(path))
+    stem = p.name[:-5] if p.name.endswith(".sock") else p.name
+    try:
+        user = getpass.getuser()
+    except Exception:  # noqa: BLE001
+        user = "user"
+    user = re.sub(r"[^A-Za-z0-9_.-]", "_", user) or "user"
+    h = hashlib.sha1(str(p.parent).encode("utf-8", "replace")).hexdigest()[:8]
+    return f"\\\\.\\pipe\\agent-media-{user}-{stem}-{h}"
+
+
+def endpoint_name(endpoint: str | Path) -> str:
+    """What mpv's `--input-ipc-server` and this client call `endpoint`: a
+    tcp:// address or a pipe as given; a socket path as is, or on Windows the
+    pipe that stands in for it."""
+    ep = str(endpoint)
+    if ep.startswith(_TCP_PREFIX) or _is_pipe(ep) or not _use_pipes():
+        return ep
+    return pipe_name_for(ep)
+
+
+def endpoint_exists(endpoint: str | Path) -> bool:
+    """Is a local player listening at `endpoint`? (tcp:// is not probed: True.)
+
+    A socket path: the file is there. A pipe: Windows knows its name — asked
+    without connecting, which would take one of the player's instances.
+    """
+    ep = endpoint_name(endpoint)
+    if ep.startswith(_TCP_PREFIX):
+        return True
+    if not _is_pipe(ep):
+        return Path(ep).exists()
+    return _pipe_exists(ep)
+
+
+def _pipe_exists(name: str) -> bool:  # pragma: no cover — Windows only
+    import ctypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    if k32.WaitNamedPipeW(ctypes.c_wchar_p(name), 1):
+        return True
+    return ctypes.get_last_error() != _ERROR_FILE_NOT_FOUND
+
+
+def _pipe_peek(f) -> Optional[int]:  # pragma: no cover — Windows only
+    """Bytes waiting in the pipe behind file `f`; None once the far end closed."""
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    avail = wintypes.DWORD(0)
+    ok = k32.PeekNamedPipe(wintypes.HANDLE(msvcrt.get_osfhandle(f.fileno())),
+                           None, 0, None, ctypes.byref(avail), None)
+    if not ok:
+        if ctypes.get_last_error() == _ERROR_BROKEN_PIPE:
+            return None
+        raise OSError(ctypes.get_last_error(), "PeekNamedPipe failed")
+    return int(avail.value)
+
+
+class _PipeConn:
+    """A connected named pipe with the socket calls this module makes.
+
+    A synchronous pipe handle cannot time a read out, so `recv` reads only
+    what PeekNamedPipe says is waiting and polls until its deadline — the
+    same `socket.timeout` (TimeoutError) a socket raises. Pipes are local and
+    never pooled, so MSG_PEEK and blocking modes are not needed.
+    """
+
+    _POLL_S = 0.005
+
+    def __init__(self, f, peek=None) -> None:
+        self._f = f
+        self._peek = peek or _pipe_peek
+        self._timeout: Optional[float] = None
+
+    @classmethod
+    def connect(cls, name: str, timeout: float, opener=None, peek=None) -> "_PipeConn":
+        """Open `name`, waiting out ERROR_PIPE_BUSY (every instance in use,
+        mpv about to make another) until `timeout`. No pipe: FileNotFoundError."""
+        opener = opener or (lambda n: open(n, "r+b", buffering=0))
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                return cls(opener(name), peek)
+            except OSError as e:
+                if (getattr(e, "winerror", None) != _ERROR_PIPE_BUSY
+                        or time.monotonic() >= deadline):
+                    raise
+                time.sleep(0.02)
+
+    def settimeout(self, t: Optional[float]) -> None:
+        self._timeout = t
+
+    def setblocking(self, flag: bool) -> None:
+        self._timeout = None if flag else 0.0
+
+    def sendall(self, data: bytes) -> None:
+        view = memoryview(data)
+        while view:
+            n = self._f.write(view)
+            if not n:
+                raise OSError("pipe write wrote nothing")
+            view = view[n:]
+
+    def recv(self, n: int, flags: int = 0) -> bytes:
+        deadline = (None if self._timeout is None
+                    else time.monotonic() + self._timeout)
+        while True:
+            avail = self._peek(self._f)
+            if avail is None:
+                return b""
+            if avail > 0:
+                return self._f.read(min(n, avail))
+            if deadline is not None and time.monotonic() >= deadline:
+                raise socket.timeout("timed out")
+            time.sleep(self._POLL_S)
+
+    def close(self) -> None:
+        self._f.close()
+
+
 def _guard(endpoint: str | Path, critical: bool = False) -> None:
     """Raise immediately if `endpoint` is in its cool-off window.
 
@@ -230,8 +380,11 @@ def reset_breaker(endpoint: str | Path | None = None) -> None:
 
 
 def _open(endpoint: str | Path, timeout: float) -> socket.socket:
-    """Connect to an mpv IPC endpoint (Unix path or `tcp://host:port`)."""
-    ep = str(endpoint)
+    """Connect to an mpv IPC endpoint (Unix path, named pipe or
+    `tcp://host:port`)."""
+    ep = endpoint_name(endpoint)
+    if _is_pipe(ep):
+        return _PipeConn.connect(ep, timeout)  # type: ignore[return-value]
     if ep.startswith(_TCP_PREFIX):
         hostport = ep[len(_TCP_PREFIX):]
         host, _, port = hostport.rpartition(":")

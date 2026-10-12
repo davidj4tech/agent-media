@@ -252,7 +252,10 @@ def _speech_reachability(name: str) -> tuple[bool, Optional[str]]:
         except Exception:  # noqa: BLE001
             pass
         return True, None
-    if not Path(sock).exists():
+    from .sinks import _mpv_ipc
+
+    # The socket file, or on Windows the named pipe standing in for it.
+    if not _mpv_ipc.endpoint_exists(sock):
         return False, f"no speech player running on {_host()}"
     return True, None
 
