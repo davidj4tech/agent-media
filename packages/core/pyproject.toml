@@ -15,6 +15,12 @@ dependencies = [
     "markdown-it-py>=3.0",  # code-block suppression for TTS (intake/_text.py)
     "edge-tts>=6",          # default render engine — render/ shells out to `edge-tts`;
                             # without it a fresh install renders nothing ("no TTS").
+    # Windows only: the system media transport controls, through which
+    # audio_backend/_windows.py pauses other players for speech (~1.5 MB).
+    "winrt-runtime~=3.2; sys_platform == 'win32'",
+    "winrt-Windows.Foundation~=3.2; sys_platform == 'win32'",
+    "winrt-Windows.Foundation.Collections~=3.2; sys_platform == 'win32'",
+    "winrt-Windows.Media.Control~=3.2; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
