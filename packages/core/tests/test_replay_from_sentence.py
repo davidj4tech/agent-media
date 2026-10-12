@@ -37,6 +37,9 @@ def rig(monkeypatch):
     sink = _Sink()
     rec = {"sink": sink, "rows": [], "seeks": []}
     monkeypatch.setattr(cli, "SinkSpeech", lambda: sink)
+    # A local player, whatever this host's speech target is: on red5 it is
+    # the phone's (tcp://), which follows a clock and stamps it from the top.
+    monkeypatch.setattr(cli, "_socket_for", lambda t: "/tmp/mpv-test.sock")
     monkeypatch.setattr(cli, "_replay_visual", lambda ex: None)
     monkeypatch.setattr(cli.ipc, "set_property", lambda *a, **k: None)
 
