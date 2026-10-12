@@ -556,10 +556,17 @@ def test_speech_ctl_takes_only_listener_verbs(server, shelf, signed_in, typed):
 def audio_host(monkeypatch):
     """A host with the four speech targets configured from scratch, and
     none of the real env's per-target keys. Nothing is reached: a bridge is
-    never probed, and the choice files are under the test's state dir."""
+    never probed, and the choice files are under the test's state dir.
+
+    A rooms hub, so its audio backend is Linux's whatever runs the tests: on
+    a Mac or Windows there is no `rooms` sink to name (audio_backend)."""
     import os
 
+    from agent_media_core import audio_backend
     from agent_media_server import audio
+
+    monkeypatch.setenv("MEDIA_AUDIO_BACKEND", "linux")
+    audio_backend.reset()
 
     for k in list(os.environ):
         if k.startswith(("MEDIA_SPEECH_SOCKET_", "MEDIA_SPEECH_DEVICE_",
@@ -571,6 +578,7 @@ def audio_host(monkeypatch):
     audio._reset_cache()
     yield
     audio._reset_cache()
+    audio_backend.reset()
 
 
 OPTION_KEYS = {"name", "label", "available", "why"}
