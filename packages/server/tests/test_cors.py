@@ -71,3 +71,16 @@ def test_preflight_allows_the_audio_picker(server):
 def test_other_routes_stay_same_origin(server):
     res = _request(server, "GET", "/healthz")
     assert res.getheader("Access-Control-Allow-Origin") is None
+
+
+def test_a_502_or_504_through_cloudflare_is_sent_as_one_it_passes():
+    # Cloudflare swaps an origin's 502/504 for its own page, without CORS,
+    # and the app could only say "Could not reach" (David, 13 Oct 2026).
+    from types import SimpleNamespace
+
+    from agent_media_server import app
+
+    tunnel = SimpleNamespace(headers={"Cf-Ray": "a4989d8ffbe0d388-FRA"})
+    tailnet = SimpleNamespace(headers={})
+    assert [app._status(tunnel, c) for c in (400, 409, 502, 504)] == [400, 409, 500, 503]
+    assert [app._status(tailnet, c) for c in (502, 504)] == [502, 504]

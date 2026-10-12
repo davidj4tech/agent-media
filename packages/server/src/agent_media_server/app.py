@@ -404,8 +404,21 @@ def _cors(h: BaseHTTPRequestHandler) -> None:
     h.send_header("Access-Control-Expose-Headers", "Content-Encoding")
 
 
+#: What a refusal is sent as when Cloudflare carries it. Cloudflare puts its
+#: own HTML page in place of an origin's 502 or 504, without our CORS header,
+#: so the app saw "Could not reach" instead of the reason (an unanswerable
+#: question, a reply typed but not taken). The body still says why.
+_THROUGH_CLOUDFLARE = {502: 500, 504: 503}
+
+
+def _status(h: BaseHTTPRequestHandler, code: int) -> int:
+    if code in _THROUGH_CLOUDFLARE and h.headers.get("Cf-Ray"):
+        return _THROUGH_CLOUDFLARE[code]
+    return code
+
+
 def _send(h: BaseHTTPRequestHandler, code: int, body: bytes, ctype: str) -> None:
-    h.send_response(code)
+    h.send_response(_status(h, code))
     h.send_header("Content-Type", ctype)
     h.send_header("Content-Length", str(len(body)))
     h.send_header("Cache-Control", "no-store")
@@ -453,7 +466,7 @@ def _json_z(h: BaseHTTPRequestHandler, code: int, obj: dict) -> None:
         import gzip as _gzip
 
         packed = _gzip.compress(body, 6)
-        h.send_response(code)
+        h.send_response(_status(h, code))
         h.send_header("Content-Type", "application/json")
         h.send_header("Content-Encoding", "gzip")
         h.send_header("Content-Length", str(len(packed)))

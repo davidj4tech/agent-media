@@ -64,6 +64,18 @@ def test_single_select_and_its_tick():
     assert [o["checked"] for o in d["options"]] == [False, True, False]
 
 
+def test_words_a_narrow_pane_wraps_are_read_whole():
+    # A real Claude Code in a 46-column pane: the typed words wrap onto lines
+    # indented like a description, and were read as one (David, 13 Oct 2026:
+    # every long answer was refused, and the retry would not clear the row).
+    d = asks.parse(cap("single_other_wrapped"))
+    assert d["free"]["text"] == ("It varies each trip but usually Preston to Rye, "
+                                 "and back the other way the following week")
+    assert d["cursor"] == 3 and d["options"][1] == {
+        "n": 2, "label": "Rye", "detail": "sometimes", "checked": False}
+    assert asks._same("a long wo rd", "a long word")
+
+
 def test_several_questions_show_their_tabs():
     d = asks.parse(cap("two_q2"))
     assert d["tabs"] == [{"header": "Colour", "answered": True},

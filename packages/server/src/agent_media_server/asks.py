@@ -191,6 +191,10 @@ def parse(cap: str) -> dict | None:
     # since once something is typed its label is the words. A long list
     # scrolls it off the screen.
     free = rows.pop() if rows[-1]["n"] == chat_n - 1 else None
+    if free and free["detail"]:
+        # The free-text row has no description: lines under it are its
+        # words, wrapped by a narrow pane (they sit where a description would).
+        free["label"] = (free["label"] + " " + free["detail"]).strip()
     for r in rows + ([free] if free else []):
         r.pop("indent", None)
     numbers = [r["n"] for r in rows] + ([free["n"]] if free else [])
@@ -528,10 +532,18 @@ def _free(scr: dict | None) -> dict:
     return (scr or {}).get("free") or {"n": 0, "text": "", "checked": False}
 
 
+def _same(a: str, b: str) -> bool:
+    """Whether the free-text row reads `b`. A narrow pane wraps the words,
+    and a word broken mid-way reads back with a space in it."""
+    return a.split() == b.split() or "".join(a.split()) == "".join(b.split())
+
+
 def _clear(screen: Screen, scr: dict) -> dict:
     """Empty the free-text row the cursor is on."""
     old = _free(scr)["text"]
-    for _ in old:
+    # Wrapped words read back without every space they had; a backspace
+    # too many on an empty row does nothing.
+    for _ in range(len(old) + (len(old) // 10 + 2 if old else 0)):
         screen.key("BSpace")
     if old:
         scr = _wait(screen, lambda s: bool(s) and not s["review"] and not _free(s)["text"],
@@ -576,7 +588,7 @@ def drive(screen: Screen, questions: list[dict], want: list[dict], *,
                             f"the free-text row of {q['question']!r} would not take the cursor")
                 scr = _clear(screen, scr)
                 screen.type(w["other"])
-                _wait(screen, lambda s: _at(s, questions, i) and _free(s)["text"] == w["other"],
+                _wait(screen, lambda s: _at(s, questions, i) and _same(_free(s)["text"], w["other"]),
                       f"the words did not land in {q['question']!r}")
                 screen.key("Enter")
             else:
@@ -606,7 +618,7 @@ def drive(screen: Screen, questions: list[dict], want: list[dict], *,
                         f"the free-text row of {q['question']!r} would not take the cursor")
             scr = _clear(screen, scr)
             screen.type(w["other"])
-            scr = _wait(screen, lambda s: _at(s, questions, i) and _free(s)["text"] == w["other"]
+            scr = _wait(screen, lambda s: _at(s, questions, i) and _same(_free(s)["text"], w["other"])
                         and _free(s)["checked"],
                         f"the words did not land in {q['question']!r}")
             # Tab from the free-text row goes to the Submit row; Enter there

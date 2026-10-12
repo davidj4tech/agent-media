@@ -1,0 +1,14 @@
+  1. Preston
+     the usual
+  2. Rye
+     sometimes
+❯ 3. It varies each trip but
+     usually Preston to Rye, and
+     back the other way the
+     following week
+──────────────────────────────────
+  4. Chat about this
+
+Enter to select · ↑/↓ to navigate
+· ctrl+g to edit in Vim · Esc to
+cancel
