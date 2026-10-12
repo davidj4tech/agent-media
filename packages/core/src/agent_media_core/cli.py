@@ -3616,8 +3616,11 @@ def _replay_audio_missing(row: dict, clip_uris: list, target: Target) -> str:
             return (f"that reply's audio lives on {played_on}, and speech "
                     f"now plays on {target.name}")
         return ""
+    # A path, not a URL or a far player's bare name: "/…" here, "C:\\…" on
+    # Windows too (where a cleared clip used to be sent to the player anyway).
     gone = [u for u in clip_uris
-            if str(u).startswith("/") and not os.path.isfile(str(u))]
+            if (str(u).startswith("/") or os.path.isabs(str(u)))
+            and not os.path.isfile(str(u))]
     if gone:
         return "that reply's audio is no longer on this host (cache cleared)"
     return ""

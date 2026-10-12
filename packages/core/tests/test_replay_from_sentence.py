@@ -11,6 +11,7 @@ import time
 import pytest
 
 from agent_media_core import cli
+from agent_media_core.types import Target
 
 
 class _Sink:
@@ -137,6 +138,9 @@ def test_a_jump_in_a_playlist_replay_moves_its_clock(monkeypatch):
     rows = []
     monkeypatch.setattr(cli.StateStore, "set_now_playing",
                         lambda self, sink, **kw: rows.append(kw))
+    # Resolving the target is not what is measured (0.8 s of it on a cold
+    # Windows runner landed inside the tolerance below).
+    monkeypatch.setattr(cli, "_speech_target", lambda: Target("abs"))
     ex = {"history_id": 9, "clip_durations_s": [1.0, 2.0, 3.0, 4.0],
           "clip_sentences": SENTENCES, "play_started_at": 0.0}
     cli._restamp_replay_clock({"uri": "u", "target": "abs"}, ex, 3, 4)

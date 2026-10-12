@@ -372,6 +372,10 @@ def replay_env(monkeypatch, tmp_path):
     real_popen = subprocess.Popen
 
     def fake_popen(argv, **kw):
+        if "replay-track" not in argv:
+            # Anything else the replay runs (on Windows, taskkill and tasklist
+            # stopping a prior follower) runs for real.
+            return real_popen(argv, **kw)
         # The follower, minus the following: a process that just keeps the
         # descriptor it was handed, as `replay-track` does while the replay plays.
         p = real_popen([sys.executable, "-c", "import time; time.sleep(60)"],
@@ -413,6 +417,15 @@ def test_the_token_outlives_the_replay_command(replay_env):
     _, followers, row = replay_env
     assert cli._replay_row(row) == 0
     argv, kw, follower = followers[0]
+    if sys.platform == "win32":
+        # A Windows file lock cannot be handed to another process: the
+        # command kept the token and let it go when it returned.
+        assert "--lock-fd" not in argv and not kw.get("pass_fds")
+        probe = S._SpeechPlaybackLock()
+        assert probe.take_within(1.0, rank=S._PRIO_RANK[Priority.NORMAL],
+                                 session="%1") is True
+        probe.release()
+        return
     assert "--lock-fd" in argv and kw["pass_fds"]
     # The command has returned; its follower still holds the token.
     probe = S._SpeechPlaybackLock()
