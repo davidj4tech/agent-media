@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from .. import audio_backend
 from ..render import device as device_voice
 from ..types import Target
 from . import _mpv_ipc as ipc
@@ -342,19 +343,35 @@ def _device_for(target: Target) -> Optional[str]:
          target. "" / "auto" / "default" mean "broker default".
       2. `local`  → `MEDIA_SPEECH_LOCAL_DEVICE` (default: broker default).
       3. `rooms`  → `pulse/<MEDIA_ROOMS_SINK>` (default sink name `am`),
-         i.e. the whole-house Snapcast feed.
+         i.e. the whole-house Snapcast feed — the audio backend's name for
+         the sink; a platform without named sinks (Windows) has no `rooms`.
     Unknown targets raise NotImplementedError so misroutes are loud.
+
+    A device for this host's own broker goes through the audio backend's
+    `device()` (as is on Linux; on Windows a description finds its
+    `wasapi/` id). One for a tcp:// broker belongs to that host, not this one.
     """
     override = os.environ.get(_env_key("MEDIA_SPEECH_DEVICE", target.name))
     if override is not None:
-        return None if override.lower() in ("", "auto", "default") else override
+        return (None if override.lower() in ("", "auto", "default")
+                else _local_device(override, target))
     if target.name == "local":
-        return os.environ.get("MEDIA_SPEECH_LOCAL_DEVICE") or None
+        dev = os.environ.get("MEDIA_SPEECH_LOCAL_DEVICE") or None
+        return _local_device(dev, target) if dev else None
     if target.name == "rooms":
-        return f"pulse/{os.environ.get('MEDIA_ROOMS_SINK', 'am')}"
+        dev = audio_backend.backend().named_sink_device(
+            os.environ.get('MEDIA_ROOMS_SINK', 'am'))
+        if dev is not None:
+            return dev
     raise NotImplementedError(
         f"sink-speech target {target.name!r} not configured — set "
         f"{_env_key('MEDIA_SPEECH_DEVICE', target.name)}")
+
+
+def _local_device(spec: str, target: Target) -> str:
+    if str(_socket_for(target)).startswith("tcp://"):
+        return spec
+    return audio_backend.backend().device(spec)
 
 
 #: A listener's Stop noted by mark_speech_stopped in this process and not yet

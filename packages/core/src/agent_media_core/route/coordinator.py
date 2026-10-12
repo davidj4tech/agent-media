@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from typing import Optional
 
-from .. import audio_targets, snapcast
+from .. import audio_backend, audio_targets, snapcast
 from ..sinks.book import SinkBook
 from ..sinks.music import SinkMusic
 from ..sinks.music_router import SinkMusicRouter
@@ -508,10 +508,12 @@ class Coordinator:
         if rooms_level is None:
             rooms_level = policy_for(ContentType.MUSIC).duck_level
         self._rooms_duck(rooms_level)
-        # Local MPRIS: pause browser/external players on this host.
-        if _mpris.enabled():
-            self._mpris_paused = _mpris.playing_players()
-            _mpris.pause_players(self._mpris_paused)
+        # Local players: pause browser/external players on this host (MPRIS
+        # on Linux, the system media controls on Windows — audio_backend).
+        if audio_backend.pause_enabled():
+            players = audio_backend.backend()
+            self._mpris_paused = players.playing_players()
+            players.pause_players(self._mpris_paused)
 
         # Remote MPRIS + Android media-button: wait for pre_pause_remote()
         # background work to finish, or do it synchronously if it was never
@@ -684,7 +686,7 @@ class Coordinator:
         # absent whenever this coordinator's Mopidy wasn't the one playing).
         self._rooms_unduck()
         if self._mpris_paused:
-            _mpris.resume_players(self._mpris_paused)
+            audio_backend.backend().resume_players(self._mpris_paused)
             self._mpris_paused = []
         for host, names in self._mpris_remote_paused.items():
             _mpris.resume_remote(host, names)

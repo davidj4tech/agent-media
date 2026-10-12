@@ -30,7 +30,7 @@ from typing import Optional
 from urllib.parse import quote, urlsplit, urlunsplit
 
 from .._paths import state_dir
-from .. import mopidy
+from .. import audio_backend, mopidy
 from ..types import Target
 from . import _mpv_ipc as ipc
 
@@ -394,24 +394,34 @@ def _device_for(target: Target) -> Optional[str]:
 
     The book channel follows the speech channel's routing defaults where
     possible: MEDIA_BOOK_DEVICE_<TARGET> wins, then MEDIA_SPEECH_DEVICE_<TARGET>
-    is accepted for shared logical targets such as `phone`.
+    is accepted for shared logical targets such as `phone`. Devices and sink
+    names are the audio backend's (sinks/speech.py `_device_for`).
     """
     override = (os.environ.get(_env_key("MEDIA_BOOK_DEVICE", target.name))
                 or os.environ.get(_env_key("MEDIA_SPEECH_DEVICE", target.name)))
     if override is not None:
-        return None if override.lower() in ("", "auto", "default") else override
+        return (None if override.lower() in ("", "auto", "default")
+                else _local_device(override, target))
     if target.name == "local":
         override = os.environ.get("MEDIA_BOOK_DEVICE")
         if override and override.lower() not in ("", "auto", "default"):
-            return override
+            return _local_device(override, target)
         return None
     if target.name == "rooms":
         sink = (os.environ.get("MEDIA_BOOK_ROOMS_SINK")
                 or os.environ.get("MEDIA_ROOMS_SINK") or "am")
-        return f"pulse/{sink}"
+        dev = audio_backend.backend().named_sink_device(sink)
+        if dev is not None:
+            return dev
     raise NotImplementedError(
         f"sink-book target {target.name!r} not configured — set "
         f"{_env_key('MEDIA_BOOK_DEVICE', target.name)}")
+
+
+def _local_device(spec: str, target: Target) -> str:
+    if str(_socket_for(target)).startswith("tcp://"):
+        return spec
+    return audio_backend.backend().device(spec)
 
 
 class SinkBook:
@@ -452,11 +462,14 @@ class SinkBook:
             env["PATH"] = local_bin + os.pathsep + env.get("PATH", "")
 
         client = os.environ.get("MEDIA_BOOK_AUDIO_CLIENT", "agent-media-book")
+        # The AO is the audio backend's when MEDIA_BOOK_AO is unset (pulse on
+        # Linux, wasapi on Windows); None leaves mpv to choose.
+        ao = os.environ.get("MEDIA_BOOK_AO", audio_backend.backend().default_ao())
         argv = [
             os.environ.get("MEDIA_MPV_BIN", "mpv"),
             "--idle=yes", "--no-video", "--no-terminal", "--no-config",
             f"--input-ipc-server={self._sock}",
-            f"--ao={os.environ.get('MEDIA_BOOK_AO', 'pulse')}",
+            *([f"--ao={ao}"] if ao is not None else []),
             f"--audio-client-name={client}",
             "--cache=yes",
         ]

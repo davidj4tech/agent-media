@@ -1111,6 +1111,16 @@ def _merge_env_defaults(env_path: Path, defaults, *, dry_run: bool) -> list[str]
 
 def cmd_server(args: argparse.Namespace) -> int:
     """Wire this host as a Snapcast rooms render hub (PipeWire/systemd only)."""
+    from . import audio_backend
+    audio = audio_backend.backend()
+    if not audio.sink_plumbing:
+        # Null sinks, a default sink and parec are PulseAudio/PipeWire service
+        # plumbing; a platform without them (Windows) has no rooms hub to wire,
+        # and there is nothing here to emulate. Skipped, not failed.
+        print(f"media-setup server: skipped — no null-sink plumbing on this "
+              f"platform (audio backend: {audio.name}); a rooms hub is a "
+              f"PipeWire/systemd host.", file=sys.stderr)
+        return 0
     if _service_backend(getattr(args, "backend", None) or "auto") != "systemd":
         print("media-setup server: PipeWire/systemd --user hosts only "
               "(Termux/runit hosts are snapclients, not the hub).",
