@@ -3945,11 +3945,19 @@ def cmd_replay(a) -> int:
         # Clip browser: address the row by stable history id, not a
         # traversal index — indexes shift when a new clip lands while the
         # picker is open.
+        start = getattr(a, "from_sentence", None)
         for row in _speech_history(2000):
             if row.get("id") == a.id:
-                start = getattr(a, "from_sentence", None)
                 return (_replay_row(row) if start is None
                         else _replay_row(row, from_sentence=start))
+        # Named by id, a row the traversal list leaves out is still meant:
+        # a held question (`kind: notif`) is dropped from < / >, and the
+        # thread's open handed its id here, so nothing played on open
+        # (opened-replay.log, Oct 2026: "no clip with id" for each).
+        row = StateStore().history_row(a.id)
+        if row and row.get("sink") == "speech" and row.get("source") != "listener":
+            return (_replay_row(row) if start is None
+                    else _replay_row(row, from_sentence=start))
         print(f"media replay: no clip with id {a.id}", file=sys.stderr)
         return 1
     # A thread named by the caller (the app's Replay, inside that thread):
