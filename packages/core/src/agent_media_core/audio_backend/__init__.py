@@ -97,11 +97,29 @@ class AudioBackend:
         return spec
 
 
+_NAMES = ("linux", "windows", "none")
+
+
+def _platform_default() -> str:
+    return ("windows" if sys.platform == "win32"
+            else "none" if sys.platform == "darwin"
+            else "linux")
+
+
 def _select() -> AudioBackend:
     forced = os.environ.get("MEDIA_AUDIO_BACKEND", "").strip().lower()
-    plat = forced or ("windows" if sys.platform == "win32"
-                      else "none" if sys.platform == "darwin"
-                      else "linux")
+    if forced and forced not in _NAMES:
+        # A typo must not quietly turn red5's player pausing and pulse AO off:
+        # say so, and keep what this platform would have had.
+        with _logged_lock:
+            first = "select:unknown" not in _logged
+            _logged.add("select:unknown")
+        if first:
+            log.warning("audio: MEDIA_AUDIO_BACKEND=%r is not one of %s; "
+                        "using this platform's (%s)", forced,
+                        "|".join(_NAMES), _platform_default())
+        forced = ""
+    plat = forced or _platform_default()
     if plat == "linux":
         from ._linux import LinuxBackend
         return LinuxBackend()

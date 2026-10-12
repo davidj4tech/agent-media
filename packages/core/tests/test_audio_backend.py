@@ -45,6 +45,19 @@ def test_backend_can_be_forced(monkeypatch, forced):
     assert ab.backend().name == forced
 
 
+def test_an_unknown_backend_warns_once_and_keeps_the_platforms(monkeypatch, caplog):
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("MEDIA_AUDIO_BACKEND", "pulse")
+    with caplog.at_level(logging.WARNING, logger="agent_media_core.audio_backend"):
+        assert ab.backend().name == "linux"
+        ab._backend = None
+        assert ab.backend().name == "linux"
+    assert sum("MEDIA_AUDIO_BACKEND" in r.getMessage() for r in caplog.records) == 1
+    ab.reset()
+    monkeypatch.setenv("MEDIA_AUDIO_BACKEND", "none")
+    assert ab.backend().name == "none"
+
+
 def test_backend_is_chosen_once(monkeypatch):
     monkeypatch.setenv("MEDIA_AUDIO_BACKEND", "none")
     first = ab.backend()
