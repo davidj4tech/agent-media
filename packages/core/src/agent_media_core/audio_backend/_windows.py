@@ -228,3 +228,19 @@ class WindowsBackend(AudioBackend):
         with self._lock:
             self._devices[spec] = found
         return found
+
+
+def winrt_status() -> str:
+    """"ok" when the media-control projection imports and hands out a
+    session manager, else what stopped it."""
+    try:
+        mgr = _winrt_manager()
+    except ImportError as e:
+        return f"not importable: {e}"
+    except Exception as e:  # noqa: BLE001
+        return f"imported; no session manager: {type(e).__name__}: {e}"
+    try:
+        n = len(list(mgr.get_sessions()))
+    except Exception as e:  # noqa: BLE001
+        return f"imported; sessions unreadable: {type(e).__name__}: {e}"
+    return f"ok ({n} media session{'s' if n != 1 else ''})"

@@ -276,8 +276,13 @@ def test_windows_an_op_that_never_finishes_is_skipped():
     assert b._paused == {}
 
 
-def test_windows_without_winrt_is_silent_and_logs_once(caplog):
-    """On Linux the real factory's import fails — the "winrt missing" case."""
+def _no_winrt(monkeypatch):
+    """The real factory, with its import made to fail on any platform."""
+    monkeypatch.setitem(sys.modules, "winrt.windows.media.control", None)
+
+
+def test_windows_without_winrt_is_silent_and_logs_once(monkeypatch, caplog):
+    _no_winrt(monkeypatch)
     b = WindowsBackend()
     with caplog.at_level(logging.INFO, logger="agent_media_core.audio_backend"):
         assert b.playing_players() == []
@@ -324,3 +329,38 @@ def test_windows_device_by_description(monkeypatch):
     assert b.device("HDMI") == "HDMI"           # no match: passed through
     assert b.device("HDMI") == "HDMI"
     assert len(seen) == 3                       # ...and remembered too
+
+
+# ---- media-audio -------------------------------------------------------------------
+
+def test_report_and_main(monkeypatch, capsys):
+    monkeypatch.setenv("MEDIA_AUDIO_BACKEND", "windows")
+    monkeypatch.setattr(win, "_winrt_manager",
+                        lambda: _Manager([_Session("Spotify.exe", P)]))
+    _fake_mpv(monkeypatch, _HELP_WIN)
+    monkeypatch.setattr(ab.backend(), "_factory",
+                        lambda: _Manager([_Session("Spotify.exe", P)]))
+    r = ab.report()
+    assert r["backend"] == "windows" and r["default_ao"] == "wasapi"
+    assert r["winrt"] == "ok (1 media session)"
+    assert r["devices"][1] == {"id": "wasapi/{0.0.0.00000000}.{a1}",
+                               "description": "Speakers (Realtek(R) Audio)"}
+    assert r["playing"] == ["Spotify.exe"]
+    assert ab.main([]) == 0
+    out = capsys.readouterr().out
+    assert "backend: windows" in out and "wasapi/{0.0.0.00000000}.{b2}" in out
+
+
+def test_winrt_status_without_winrt(monkeypatch):
+    _no_winrt(monkeypatch)
+    assert win.winrt_status().startswith("not importable")
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the real media controls")
+def test_winrt_is_real_on_windows():
+    """On Windows core's win32 dependencies are installed: the projection
+    must import. Whether a session manager is handed out depends on the
+    session the tests run in, so that part is reported, not asserted."""
+    status = win.winrt_status()
+    print("winrt:", status)
+    assert not status.startswith("not importable"), status

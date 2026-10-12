@@ -156,3 +156,40 @@ def output_devices(mpv: Optional[str] = None,
         if m:
             out.append((m.group(1), m.group(2)))
     return out
+
+
+def report() -> dict:
+    """What this host's audio looks like from here — for `media-audio`."""
+    b = backend()
+    out: dict = {"backend": b.name, "platform": sys.platform,
+                 "default_ao": b.default_ao(), "sink_plumbing": b.sink_plumbing}
+    if b.name == "windows":
+        from ._windows import winrt_status
+        out["winrt"] = winrt_status()
+    out["devices"] = [{"id": i, "description": d} for i, d in output_devices()]
+    out["playing"] = b.playing_players() if pause_enabled() else []
+    return out
+
+
+def main(argv: Optional[list] = None) -> int:
+    """`media-audio [--json]`: the backend, mpv's devices, what is playing."""
+    import argparse
+    import json
+
+    ap = argparse.ArgumentParser(prog="media-audio", description=main.__doc__)
+    ap.add_argument("--json", action="store_true")
+    a = ap.parse_args(argv)
+    r = report()
+    if a.json:
+        print(json.dumps(r, indent=2))
+        return 0
+    print(f"backend: {r['backend']} ({r['platform']})")
+    if "winrt" in r:
+        print(f"winrt: {r['winrt']}")
+    print(f"default ao: {r['default_ao'] or '(mpv chooses)'}")
+    print(f"null-sink plumbing: {'yes' if r['sink_plumbing'] else 'no'}")
+    print("devices:" if r["devices"] else "devices: (mpv lists none, or is not installed)")
+    for d in r["devices"]:
+        print(f"  {d['id']}  ({d['description']})")
+    print("playing: " + (", ".join(r["playing"]) or "(nothing)"))
+    return 0
