@@ -282,19 +282,31 @@ tests. Proved there (CI run 38208476555, binary run 38208064935, 12 Oct):
   unix-socket fake-mpv tests skip where there is no `AF_UNIX`. On a Mac or
   Windows the picker no longer offers `rooms`, which those hosts cannot play.
 
-The rest of core runs on Windows as a report, not a gate. 109 of 2596 tests
-fail there for reasons outside the audio work, and they should be fixed where
-they live:
+The rest of core runs on Windows as a report, not a gate. 85 of 2612 tests
+fail there for reasons outside this work (CI run 38212541123), and they should
+be fixed where they live:
 
-- `os.killpg` in `media replay`'s follower (about 20 tests): a real Windows
-  crash.
 - `AF_UNIX` in the converse rendezvous and input claim (18).
 - strftime's `%-d` in the agenda (12).
 - `call_guard` and `_android` (20): phone-side code that shells out to `sh`.
 - The docs walker's hidden-file and path rules (9).
 - POSIX file modes (`0o600`, `0o700`).
 - `$HOME/...` hook paths written with backslashes.
-- Two timing tests on Windows' coarse clock.
+- A few timing tests on a slow runner.
+
+`media replay` used to be on this list, about 20 tests, and was fixed on this
+branch. It called `os.killpg`, which Windows lacks, so every replay there died
+before it played. `procinfo.kill_group` is now exactly `os.killpg` on Linux and
+a Mac. On Windows it ends the follower's process tree with `taskkill /T`, and
+only while the pid is still a Python like ours. Two more Windows-only changes
+came with it:
+
+- A file lock cannot be handed to another process on Windows, so the replay
+  command keeps the playback token itself and releases it when it returns.
+- A cleared clip is now recognised by any absolute path (`C:\…`), not only
+  one starting with `/`.
+
+The replay tests are in the Windows gate.
 
 **Still unverified until a real Windows desktop** (hpo is offline). A CI
 runner cannot settle these:
@@ -308,25 +320,53 @@ runner cannot settle these:
   contain `mpv`.
 - Whether Edge, Chrome and Spotify obey pause and play sent this way. The
   runner has no media sessions at all.
+- Local speech actually heard: the `Sasonica\speech` task starting at a real
+  logon, mpv's wasapi output on real speakers, and a reply routed to "This
+  computer" from the app. CI registers the task XML but never logs on, and
+  its mpv plays to `--ao=null`.
+- Whether Task Scheduler's restart-on-failure fires when the launcher dies.
+  The launcher already restarts mpv itself, so this only matters if the
+  launcher crashes.
 
-**A Windows speech player: not built, David's call.** Pipes are the channel;
-what is missing is a player to listen on one. The Linux binary installs no
-`sink-speech` service either: every binary install speaks through the phone.
-mpv is not in the binary. The options:
+**A Windows speech player (built 12 Oct 2026), opt-in.** David chose option 1
+of three; the other two were "local by default when mpv is found" and
+"bundle mpv". `sasonica install --local-speech` adds a third logon task,
+`Sasonica\speech`, and `--local-speech off` ends it, deletes it and asks the
+player to quit over its pipe. Without the flag nothing changes, and speech
+still goes to the phone until the listener picks this computer in the app.
 
-1. **Opt-in.** `sasonica install --local-speech` adds a third logon task,
-   `Sasonica\speech`, that runs mpv (the user's own, via winget) on the speech
-   pipe. A small Python launcher would replace the shell `run` script's argv on
-   hosts without runit or systemd. The phone stays the default.
-2. **Local by default when mpv is found.** The same task, installed whenever
-   `mpv` is on PATH. Speech then moves off the phone for anyone who happens to
-   have mpv.
-3. **Bundle mpv.** The .exe or the installer carries mpv, about 30–40 MB more,
-   and mpv is GPL. Local speech then works out of the box.
+- **The task** is registered from task XML (`schtasks /Create /XML`) rather
+  than `/SC ONLOGON`. XML is the only way to ask for restart-on-failure
+  (every minute, up to 999 times) and for no time limit. It runs
+  `conhost.exe --headless "<binary>" media-sink-speech` in the user's own
+  interactive session.
+- **The launcher** is `media-sink-speech`
+  (`agent_media_core/entrypoints/sink_speech.py`). It builds mpv's command
+  line from the `sink-speech` run script's env keys, with the AO from the
+  audio backend (wasapi). It listens on the pipe `endpoint_name()` gives the
+  `local` target's socket path, the same name the picker checks. It restarts
+  mpv when mpv exits, backing off to a minute. If a player is already on the
+  pipe it watches that one instead of starting a second, because killing the
+  launcher does not take mpv with it on Windows. Linux and the phone keep
+  their run script; the launcher would work there but is not wired in.
+- **mpv is the user's own.** Without it on PATH (or `MEDIA_MPV_BIN`),
+  install prints `winget install --id shinchiro.mpv -e` and carries on with
+  everything else. `sasonica update` restarts the task when there is one.
 
-Each option also faces the limit the canvas and sessiond tasks already have:
-`schtasks /Create` cannot ask for restart-on-failure, which would need a task
-XML.
+CI proves the pieces (runs 38210589150 and 38212541123, binary run
+38210591312):
+
+- The runner's Task Scheduler accepts the XML. A throwaway task is created,
+  read back with its `RestartOnFailure`, and deleted.
+- The launcher starts the runner's mpv on the pipe, a client reads and sets
+  properties through it, and `quit` ends it.
+- The .exe prints the pipe (`\\.\pipe\agent-media-<user>-sink-speech-<hash>`)
+  and mpv's command line, and `install --local-speech` dry-runs to the winget
+  hint, since that runner has no mpv.
+
+**Canvas and sessiond should follow** onto the same XML, to get
+restart-on-failure. They are still registered with `/SC ONLOGON` and were
+left alone in this step.
 
 ## What this costs if we never do it
 

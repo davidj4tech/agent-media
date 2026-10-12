@@ -159,3 +159,9 @@ Windows, which fail only where Linux's do; tmux-pane and file-mode tests skip
 there. Not done: an ARM64 build, code signing (SmartScreen will warn on a
 browser download), a short sasonica.com address for install.ps1, and the
 logon tasks and hooks exercised on a real desktop.
+
+**Speaking on the Windows machine itself** (built 12 Oct 2026, opt-in):
+`sasonica install --local-speech` adds a `Sasonica\speech` logon task that
+runs the user's own mpv (`winget install --id shinchiro.mpv -e`) on the speech
+named pipe, and `--local-speech off` removes it. The phone stays the default.
+See 2026-09-23-cross-platform.md, "Audio seam".
