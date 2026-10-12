@@ -193,7 +193,7 @@ def main() -> int:
     log.info("book_observer starting")
     while not _stop:
         sock = book._sock
-        if not sock.exists():
+        if not ipc.endpoint_exists(sock):    # the socket, or Windows' pipe
             time.sleep(2.0)
             continue
         try:

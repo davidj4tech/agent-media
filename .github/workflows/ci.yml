@@ -181,7 +181,8 @@ jobs:
           tests/test_mpv_ipc_pipes.py tests/test_mpv_ipc_snapshot.py
           tests/test_refusal_is_reported.py tests/test_speech_targets.py
           tests/test_audio_targets.py tests/test_sink_speech_launcher.py
-          tests/test_procinfo_kill_group.py tests/test_replay_follow_playlist.py
+          tests/test_procinfo_kill_group.py tests/test_book_pipe.py
+          tests/test_replay_follow_playlist.py
           tests/test_replay_holds_the_token.py tests/test_replay_from_sentence.py
           tests/test_replay_card.py tests/test_remote_clip_replay.py tests/test_cli.py
           tests/test_setup.py::test_server_refuses_non_systemd

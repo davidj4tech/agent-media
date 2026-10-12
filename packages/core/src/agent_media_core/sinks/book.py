@@ -433,8 +433,11 @@ class SinkBook:
     # ---- broker lifecycle ------------------------------------------------
 
     def _running(self) -> bool:
-        """True if the broker socket answers. Never spawns."""
-        if not self._sock.exists():
+        """True if the broker socket answers. Never spawns.
+
+        The socket file, or on Windows the named pipe standing in for it
+        (_mpv_ipc.endpoint_name) — which no `Path.exists()` can see."""
+        if not ipc.endpoint_exists(self._sock):
             return False
         try:
             ipc.get_property(self._sock, "idle-active", timeout=1.0)
@@ -448,6 +451,15 @@ class SinkBook:
         if os.environ.get("MEDIA_BOOK_AUTOSPAWN", "1") == "0":
             raise ipc.MpvIpcError(
                 "sink-book broker not running and autospawn disabled")
+        endpoint = ipc.endpoint_name(self._sock)
+        pipe = endpoint != str(self._sock)
+        if pipe and ipc.endpoint_exists(endpoint):
+            # A named pipe has no stale file to clear: one that is there has a
+            # live player on it, merely slow to answer. A second mpv on the
+            # same name would only be an orphan (Windows has no session to
+            # take it down with), so wait for this one instead.
+            raise ipc.MpvIpcError(
+                f"sink-book: a player holds {endpoint} but did not answer")
         # A stale socket from a dead broker would block the new bind.
         try:
             self._sock.unlink()
@@ -468,7 +480,7 @@ class SinkBook:
         argv = [
             os.environ.get("MEDIA_MPV_BIN", "mpv"),
             "--idle=yes", "--no-video", "--no-terminal", "--no-config",
-            f"--input-ipc-server={self._sock}",
+            f"--input-ipc-server={endpoint}",
             *([f"--ao={ao}"] if ao is not None else []),
             f"--audio-client-name={client}",
             "--cache=yes",
@@ -496,9 +508,9 @@ class SinkBook:
         mpris = os.environ.get("MEDIA_BOOK_MPRIS", _MPRIS_SO)
         if mpris and Path(mpris).is_file():
             argv.append(f"--script={mpris}")
-        subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         start_new_session=True)
+        proc = subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                start_new_session=True)
         # Wait for the socket to come up (cold mpv ~0.3-1s). EOF self-heal and
         # playlist auto-advance are handled by the book event watcher in the
         # long-lived MCP server (mcp_server._autoadvance_loop), which connects
@@ -508,6 +520,10 @@ class SinkBook:
             if self._running():
                 return
             time.sleep(0.1)
+        if pipe and proc.poll() is None:
+            # Not left behind on Windows, where nothing else would end it and
+            # the next play would start another beside it.
+            proc.kill()
         raise ipc.MpvIpcError("sink-book broker did not come up in time")
 
     # ---- playback --------------------------------------------------------
