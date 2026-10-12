@@ -96,12 +96,16 @@ def test_a_playlist_starts_on_the_sentence_in_one_batch(rig):
 
 
 def test_one_clip_seeks_to_where_the_sentence_begins(rig):
+    t0 = time.time()
     assert cli._replay_row(_one_clip_row(), from_sentence=3) == 0
+    t1 = time.time()
     assert rig["sink"].calls == [("play", "remote-all.mp3")]
     assert rig["seeks"] == [6.5]
     ex = rig["rows"][-1]["extras"]
     assert ex["current_sentence_idx"] == 3
-    assert abs((time.time() - ex["play_started_at"]) - 6.5) < 0.5
+    # Set while the replay ran, 6.5 s back (not a wall-clock tolerance, which
+    # a slow Windows runner can overrun).
+    assert t0 - 6.5 - 0.05 <= ex["play_started_at"] <= t1 - 6.5 + 0.05
 
 
 def test_past_the_end_is_the_last_sentence(rig):

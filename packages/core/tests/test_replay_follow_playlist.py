@@ -71,12 +71,21 @@ def _arg(argv, flag):
     return argv[argv.index(flag) + 1]
 
 
+def _clock_set_during(t0, t1, started_at, offset):
+    """The row's clock was set while the replay ran, `offset` s back — held
+    to the call's own span, not to a wall-clock tolerance a slow Windows
+    runner overran (1.4 s once, after the stamp)."""
+    return t0 - offset - 0.05 <= started_at <= t1 - offset + 0.05
+
+
 def test_the_phone_is_followed_on_the_clock(rig, monkeypatch):
     monkeypatch.setattr(cli, "_socket_for", lambda t: "tcp://127.0.0.1:16614")
+    t0 = time.time()
     assert cli._replay_row(_row()) == 0
+    t1 = time.time()
     ex = rig["rows"][-1]["extras"]
     assert ex["clip_offsets_s"] == [0.0, 1.0, 3.0]
-    assert abs(time.time() - ex["play_started_at"]) < 0.5
+    assert _clock_set_during(t0, t1, ex["play_started_at"], 0.0)
     argv = rig["argv"]
     assert json.loads(_arg(argv, "--sentences")) == SENTENCES
     assert json.loads(_arg(argv, "--offsets")) == [0.0, 1.0, 3.0]
@@ -87,10 +96,12 @@ def test_measured_starts_win_over_summed_durations(rig, monkeypatch):
     """A reply that played before carries where each clip really began —
     the gaps between them included."""
     monkeypatch.setattr(cli, "_socket_for", lambda t: "tcp://127.0.0.1:16614")
+    t0 = time.time()
     cli._replay_row(_row(clip_starts_s=[0.0, 1.4, 3.9]), from_sentence=2)
+    t1 = time.time()
     ex = rig["rows"][-1]["extras"]
     assert ex["clip_offsets_s"] == [0.0, 1.4, 3.9]
-    assert abs((time.time() - ex["play_started_at"]) - 3.9) < 0.5
+    assert _clock_set_during(t0, t1, ex["play_started_at"], 3.9)
 
 
 def test_a_local_player_is_still_asked(rig, monkeypatch, tmp_path):
