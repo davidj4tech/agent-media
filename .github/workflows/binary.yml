@@ -138,6 +138,10 @@ jobs:
           "$b" media-audio --json | tee audio.json
           grep -q '"backend": "windows"' audio.json
           ! grep -q '"winrt": "not importable' audio.json
+          # The opt-in speech player's launcher: its pipe and mpv command line.
+          "$b" media-sink-speech --print | tee speech.txt
+          grep -q 'pipe' speech.txt
+          "$b" install --dry-run --no-services --local-speech
 
       - uses: actions/upload-artifact@v4
         with:
