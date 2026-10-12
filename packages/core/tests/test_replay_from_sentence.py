@@ -38,6 +38,9 @@ def rig(monkeypatch):
     sink = _Sink()
     rec = {"sink": sink, "rows": [], "seeks": []}
     monkeypatch.setattr(cli, "SinkSpeech", lambda: sink)
+    # A local player, whatever this host's speech target is: on red5 it is
+    # the phone's (tcp://), which follows a clock and stamps it from the top.
+    monkeypatch.setattr(cli, "_socket_for", lambda t: "/tmp/mpv-test.sock")
     monkeypatch.setattr(cli, "_replay_visual", lambda ex: None)
     monkeypatch.setattr(cli.ipc, "set_property", lambda *a, **k: None)
 
@@ -130,6 +133,26 @@ def test_the_cli_takes_the_flag(monkeypatch):
     args = cli._build_parser().parse_args(["replay", "--id", "7", "--from-sentence", "2"])
     assert args.func(args) == 0
     assert seen == {"id": 7, "at": 2}
+
+
+def test_an_id_left_out_of_the_traversal_still_plays(monkeypatch):
+    """A held question (`kind: notif`) is not in `_speech_history`, but
+    the thread's open replays it by id: it is fetched straight from history."""
+    seen = []
+    rows = {8: {"id": 8, "sink": "speech", "source": "claude-code",
+                **_playlist_row()},
+            9: {"id": 9, "sink": "speech", "source": "listener", "uri": "u"}}
+    monkeypatch.setattr(cli, "_speech_history", lambda n, **kw: [])
+    monkeypatch.setattr(cli.StateStore, "history_row",
+                        lambda self, rid: rows.get(rid))
+    monkeypatch.setattr(cli, "_replay_row",
+                        lambda row, from_sentence=None: seen.append(row["id"]) or 0)
+    args = cli._build_parser().parse_args(["replay", "--id", "8"])
+    assert args.func(args) == 0 and seen == [8]
+    for rid in ("9", "10"):    # the listener's own turn, and no row at all
+        args = cli._build_parser().parse_args(["replay", "--id", rid])
+        assert args.func(args) == 1
+    assert seen == [8]
 
 
 def test_a_jump_in_a_playlist_replay_moves_its_clock(monkeypatch):

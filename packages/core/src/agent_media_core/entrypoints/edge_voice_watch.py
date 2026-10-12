@@ -6,10 +6,13 @@ edge-tts project found it spoken, and when Microsoft changes the handshake
 every sentence quietly falls back to Google's voice. The fallback keeps the
 phone talking, which is also why nobody would notice. So, every run:
 
-1. The app's own request, made from here: the token and browser version are
-   read out of EdgeVoice.java in the app's checkout, so this tests what the
-   phone sends, not what it ought to. No audio back is `needs`.
-2. edge-tts upstream: the same two values in the project's constants.py.
+1. The app's own request, made from here: the address, token and browser
+   version are read out of EdgeVoice.java in the app's checkout, so this
+   tests what the phone sends, not what it ought to. No audio back is
+   `needs`.
+2. edge-tts upstream: the same values in the project's constants.py (the
+   host for the address: Microsoft moved synthesis to api.msedgeservices.com
+   in Oct 2026, edge-tts #491).
    When they move, Microsoft has usually just changed something — `warn`,
    while the app still works, is the early warning.
 
@@ -33,6 +36,7 @@ import re
 import subprocess
 import sys
 import time
+import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
@@ -40,6 +44,8 @@ from pathlib import Path
 ALERT_ID = "edge-voice"
 APP_REPO = Path.home() / "projects/sasonica-app"
 APP_PATH = "android/app/src/main/java/com/sasonica/app/speech/EdgeVoice.java"
+#: Synthesis's host until Oct 2026, when it began refusing it with 403s.
+LEGACY_HOST = "speech.platform.bing.com"
 UPSTREAM = "https://raw.githubusercontent.com/rany2/edge-tts/master/src/edge_tts/constants.py"
 VOICE = "en-AU-NatashaNeural"
 FIX = ("Natasha's handshake with Microsoft has moved: update TOKEN/CHROMIUM in "
@@ -62,13 +68,19 @@ def app_source(repo: Path) -> str:
 
 
 def app_constants(text: str) -> dict:
-    """TOKEN and CHROMIUM as the app has them."""
+    """TOKEN, CHROMIUM, the URL (without the per-request part) and its HOST
+    as the app has them."""
     out = {}
     for key in ("TOKEN", "CHROMIUM"):
         m = re.search(rf'static final String {key} = "([^"]+)"', text)
         if not m:
             raise ValueError(f"{key} not found in EdgeVoice.java")
         out[key] = m.group(1)
+    m = re.search(r'static final String URL =((?:\s*"[^"]*"\s*\+)+)\s*TOKEN;', text)
+    if not m:
+        raise ValueError("URL not found in EdgeVoice.java")
+    out["URL"] = "".join(re.findall(r'"([^"]*)"', m.group(1))) + out["TOKEN"]
+    out["HOST"] = urllib.parse.urlsplit(out["URL"]).hostname
     return out
 
 
@@ -81,6 +93,12 @@ def upstream_constants(text: str) -> dict:
     m = re.search(r'CHROMIUM_FULL_VERSION\s*=\s*"([^"]+)"', text)
     if m:
         out["CHROMIUM"] = m.group(1)
+    m = re.search(r'WSS_URL\s*=\s*\(?\s*f?"wss://([^"/{]*)(\{BASE_URL\})?', text)
+    base = re.search(r'BASE_URL\s*=\s*"([^"/]+)', text)
+    if m:
+        host = m.group(1) or (base.group(1) if m.group(2) and base else "")
+        if host:
+            out["HOST"] = host
     return out
 
 
@@ -95,8 +113,7 @@ async def probe(c: dict, text: str = "Checking the voice.", timeout: float = 15.
     import aiohttp
 
     major = c["CHROMIUM"].split(".", 1)[0]
-    url = ("wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1"
-           f"?TrustedClientToken={c['TOKEN']}&ConnectionId={uuid.uuid4().hex}"
+    url = (f"{c['URL']}&ConnectionId={uuid.uuid4().hex}"
            f"&Sec-MS-GEC={sec_ms_gec(c['TOKEN'], time.time())}"
            f"&Sec-MS-GEC-Version=1-{c['CHROMIUM']}")
     headers = {
@@ -144,7 +161,9 @@ def verdict(app: dict, upstream: dict | None, probed: tuple[int, str]) -> tuple[
     """(level, title, detail) for agent-alert."""
     audio, why = probed
     drift = [f"{k}: app {app[k]}, edge-tts {upstream[k]}"
-             for k in ("TOKEN", "CHROMIUM") if upstream and upstream.get(k) and upstream[k] != app[k]]
+             for k in ("TOKEN", "CHROMIUM", "HOST") if upstream and upstream.get(k) and upstream[k] != app[k]
+             # The app left the old host first (12 Oct 2026); edge-tts still on it is behind, not news.
+             and not (k == "HOST" and upstream[k] == LEGACY_HOST)]
     if why:
         detail = f"The app's request failed: {why}. Replies fall back to Google's voice."
         if drift:
