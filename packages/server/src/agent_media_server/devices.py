@@ -55,7 +55,13 @@ import secrets
 import threading
 import time
 from collections import deque
+from contextlib import contextmanager
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:  # Windows: msvcrt below
+    fcntl = None  # type: ignore[assignment]
 
 #: One lock for both files. Every handler thread that authenticates may
 #: write `last_seen`, and a pairing writes both files together; one lock is
@@ -79,6 +85,15 @@ _FAILS: dict[str, deque] = {}
 # from the CLI (another process) is seen on the very next request, because
 # the revoke changes the mtime.
 _CACHE: tuple[tuple[int, int] | None, list] = (None, [])
+
+#: How deep this process is inside `_locked()`: the file lock is taken by the
+#: outermost entry only (`_LOCK` is re-entrant, an flock on a second fd of the
+#: same file is not — it would wait on itself). Guarded by `_LOCK`.
+_DEPTH = [0]
+
+#: One token refresh at a time in this process; `refresh_lock` adds the file
+#: lock that makes it one at a time on this machine.
+_REFRESH = threading.Lock()
 
 
 def pair_ttl() -> int:
@@ -138,6 +153,68 @@ def _write(path: Path, data) -> None:
         raise
 
 
+@contextmanager
+def _flock(name: str):
+    """An exclusive lock on `<state_dir>/<name>`, held for the block, across
+    processes. The canvas is not the only writer of devices.json — the
+    `devices` and `pair` CLIs are others, and a restart can leave an old
+    process finishing a request while the new one starts — and an in-process
+    lock does nothing about them. Released when the fd closes, so a process
+    that dies holding it lets go."""
+    path = _dir() / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        if fcntl is not None:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        else:  # pragma: no cover — Windows
+            import msvcrt
+            while True:
+                try:
+                    msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+                    break
+                except OSError:
+                    continue
+        yield
+    finally:
+        os.close(fd)
+
+
+@contextmanager
+def _locked():
+    """`_LOCK`, and the devices file lock around it: what every
+    read-modify-write of devices.json (and the codes file) holds, re-reading
+    the file inside (`_load(fresh=True)`) rather than trusting a copy taken
+    before — a copy from before another writer's write, saved, puts back
+    whatever that write changed (a rotated refresh token among it)."""
+    with _LOCK:
+        if _DEPTH[0]:
+            _DEPTH[0] += 1
+            try:
+                yield
+            finally:
+                _DEPTH[0] -= 1
+            return
+        with _flock("devices.lock"):
+            _DEPTH[0] = 1
+            try:
+                yield
+            finally:
+                _DEPTH[0] = 0
+
+
+@contextmanager
+def refresh_lock():
+    """Held around every use of an account's refresh token: read it, spend it
+    at the issuer, keep the rotated one. The issuer (Drupal simple_oauth)
+    rotates the refresh token on every use and refuses the old one, so two
+    refreshes with the same token — two threads, or two processes — leave one
+    of them holding a spent token. Separate from `_locked()`, which is never
+    held across a network call."""
+    with _REFRESH, _flock("devices-refresh.lock"):
+        yield
+
+
 def _read(path: Path, default):
     try:
         data = json.loads(path.read_text())
@@ -148,8 +225,12 @@ def _read(path: Path, default):
 
 # --- the devices ------------------------------------------------------------------
 
-def _load() -> list:
-    """devices.json, through the mtime cache. Call with `_LOCK` held."""
+def _load(fresh: bool = False) -> list:
+    """devices.json, through the mtime cache — or, `fresh`, from the file
+    whatever the cache says (a write's read, under `_locked()`: an (mtime,
+    size) stamp can match across two writes of the same length inside one
+    clock tick, and a rotated token is the same length as the last). Call
+    with `_LOCK` held."""
     global _CACHE
     p = devices_path()
     try:
@@ -158,7 +239,7 @@ def _load() -> list:
     except OSError:
         _CACHE = (None, [])
         return []
-    if _CACHE[0] != stamp:
+    if fresh or _CACHE[0] != stamp:
         rows = [d for d in _read(p, []) if isinstance(d, dict) and d.get("sha256")]
         _CACHE = (stamp, rows)
     return _CACHE[1]
@@ -196,14 +277,18 @@ def lookup(token: str, ip: str = "") -> dict | None:
             return None
         now = time.time()
         if now - float(hit.get("last_seen") or 0) >= SEEN_EVERY_S:
-            fresh = [dict(d) for d in rows]
-            for d in fresh:
-                if d.get("id") == hit.get("id"):
-                    d["last_seen"] = round(now, 3)
-                    d["last_ip"] = ip or d.get("last_ip") or ""
-                    hit = d
             try:
-                _save(fresh)
+                with _locked():
+                    # Stamp the row as it is in the file NOW, not the copy
+                    # the hash was matched against: that copy may predate
+                    # another writer's change to this very row.
+                    fresh = [dict(d) for d in _load(fresh=True)]
+                    for d in fresh:
+                        if d.get("id") == hit.get("id"):
+                            d["last_seen"] = round(now, 3)
+                            d["last_ip"] = ip or d.get("last_ip") or ""
+                            hit = d
+                    _save(fresh)
             except OSError:
                 # A read-only or full disk must not turn a good token away:
                 # `last_seen` is a courtesy, the token is the credential.
@@ -220,8 +305,8 @@ def list_devices() -> list[dict]:
 def revoke(device_id: str) -> bool:
     """Forget a device. Its token answers 401 on its next request (it is then
     simply unknown, and falls through to the ABS check, which refuses it)."""
-    with _LOCK:
-        rows = _load()
+    with _locked():
+        rows = _load(fresh=True)
         keep = [d for d in rows if d.get("id") != device_id]
         if len(keep) == len(rows):
             return False
@@ -237,8 +322,8 @@ def set_enrol(device_id: str, on: bool = True) -> bool:
     the desk does this; no route does, since a device cannot grant itself
     the right (see `mint_code`). False for an unknown id.
     """
-    with _LOCK:
-        rows = _load()
+    with _locked():
+        rows = _load(fresh=True)
         hit = next((d for d in rows if d.get("id") == device_id), None)
         if hit is None:
             return False
@@ -273,7 +358,7 @@ def mint_code(name: str, enrol: bool = False) -> tuple[str, float]:
     """
     code = secrets.token_hex(4)
     expires = time.time() + pair_ttl()
-    with _LOCK:
+    with _locked():
         now = time.time()
         codes = {c: v for c, v in _read(codes_path(), {}).items()
                  if isinstance(v, dict) and float(v.get("expires") or 0) > now}
@@ -312,7 +397,7 @@ def redeem(code: str, device: str, ip: str = "") -> dict | None:
     """
     code = (code or "").strip().lower()
     now = time.time()
-    with _LOCK:
+    with _locked():
         codes = {c: v for c, v in _read(codes_path(), {}).items()
                  if isinstance(v, dict)}
         hit = None
@@ -334,7 +419,7 @@ def redeem(code: str, device: str, ip: str = "") -> dict | None:
         row = {"id": "d_" + secrets.token_hex(6), "name": name, "sha256": _hash(token),
                "created": round(now, 3), "last_seen": round(now, 3), "last_ip": ip or "",
                "enrol": bool(entry.get("enrol"))}
-        _save(list(_load()) + [row])
+        _save(list(_load(fresh=True)) + [row])
     return {"token": token, "device_id": row["id"], "name": name,
             "enrol": bool(row["enrol"])}
 
@@ -346,16 +431,20 @@ _PRIVATE = ("sha256", "rt")
 
 def refresh_token_of(device_id: str) -> tuple[str, str]:
     """`(iss, refresh token)` of an account-enrolled device, for the profile
-    refresh only; ("", "") for any other."""
+    refresh only; ("", "") for any other. Read from the file, not the cache:
+    the token about to be spent must be the latest one kept."""
     with _LOCK:
-        d = next((x for x in _load() if x.get("id") == device_id), None)
+        d = next((x for x in _load(fresh=True) if x.get("id") == device_id), None)
     return (str(d.get("iss") or ""), str(d.get("rt") or "")) if d else ("", "")
 
 
 def set_refresh_token(device_id: str, rt: str) -> bool:
-    """Keep a rotated refresh token on its device's row."""
-    with _LOCK:
-        rows = _load()
+    """Keep a rotated refresh token on its device's row — the ONLY writer of
+    `rt` after enrolment. Call it under `refresh_lock()`, straight after the
+    issuer answers, before anything else can fail: the old token is already
+    spent."""
+    with _locked():
+        rows = _load(fresh=True)
         d = next((x for x in rows if x.get("id") == device_id), None)
         if d is None or not rt:
             return False
@@ -363,16 +452,18 @@ def set_refresh_token(device_id: str, rt: str) -> bool:
     return True
 
 
-def update_profile(device_id: str, email: str, username: str, rt: str, picture: str = "") -> bool:
-    """The account's current email, username and picture, and the rotated
-    refresh token, on its device's row. A picture gone at the issuer goes here."""
-    with _LOCK:
-        rows = _load()
+def update_profile(device_id: str, email: str, username: str, picture: str = "") -> bool:
+    """The account's current email, username and picture on its device's row.
+    A picture gone at the issuer goes here. Never the refresh token: a caller
+    passing one it read earlier could put back a token a refresh had since
+    spent (`set_refresh_token` keeps it)."""
+    with _locked():
+        rows = _load(fresh=True)
         d = next((x for x in rows if x.get("id") == device_id), None)
         if d is None:
             return False
         fresh = {**d, "account": email or d.get("account", ""), "username": username or d.get("username", ""),
-                 "picture": picture, "rt": rt or d.get("rt", ""), "profile_at": round(time.time(), 3)}
+                 "picture": picture, "profile_at": round(time.time(), 3)}
         _save([fresh if x is d else x for x in rows])
     return True
 
@@ -393,8 +484,8 @@ def enrol_account(claims: dict, device: str, ip: str = "", *, enrol: bool = Fals
            "sub": str(claims.get("sub") or ""), "account": str(claims.get("email") or ""),
            "username": username, "picture": picture, "profile_at": round(now, 3),
            **({"rt": refresh_token} if refresh_token else {})}
-    with _LOCK:
-        _save(list(_load()) + [row])
+    with _locked():
+        _save(list(_load(fresh=True)) + [row])
     return {"token": token, "device_id": row["id"], "name": name, "enrol": bool(enrol),
             "username": username}
 
@@ -405,8 +496,8 @@ def revoke_account(who: str) -> int:
     who = (who or "").strip()
     if not who:
         return 0
-    with _LOCK:
-        rows = _load()
+    with _locked():
+        rows = _load(fresh=True)
         keep = [d for d in rows if not (d.get("sub") == who or
                                         (d.get("account") and d.get("account", "").lower() == who.lower()))]
         if len(keep) != len(rows):
@@ -419,6 +510,7 @@ def _reset_for_tests() -> None:
     with _LOCK:
         _FAILS.clear()
         _CACHE = (None, [])
+        _DEPTH[0] = 0
 
 
 # --- the CLI ----------------------------------------------------------------------

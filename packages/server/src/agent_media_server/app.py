@@ -934,19 +934,24 @@ def _pair(h: BaseHTTPRequestHandler) -> None:
 #: How old an account's name and email may get before /me asks the issuer again.
 PROFILE_MAX_AGE_S = 3600.0
 _REFRESHING: set[str] = set()
-#: One refresh at a time: each rotates the account's refresh token, so two
-#: at once would leave one holding a spent token.
-_TOKEN_LOCK = threading.Lock()
 #: device id → (access token, expires at): the issuer's access tokens last
 #: five minutes; the profile sheet makes several calls in that time.
 _ACCESS: dict[str, tuple[str, float]] = {}
 
 
 def _account_access(did: str, iss: str, *, fresh: bool = False) -> str:
-    """An access token for the account that enrolled this device."""
+    """An access token for the account that enrolled this device — the ONE
+    place a refresh token is spent (the profile sheet, the profile refresh
+    behind /me and the servers report all come here).
+
+    Under `devices.refresh_lock()`, which is one at a time across threads AND
+    processes: the issuer rotates the refresh token on every use, so the
+    token is read inside the lock, spent, and the rotated one written back
+    before the lock is let go — and before anything else can fail (an answer
+    with no access token still carries the new refresh token)."""
     from . import oidc
 
-    with _TOKEN_LOCK:
+    with devices.refresh_lock():
         got = _ACCESS.get(did)
         if got and not fresh and got[1] - 30 > time.time():
             return got[0]
@@ -954,7 +959,11 @@ def _account_access(did: str, iss: str, *, fresh: bool = False) -> str:
         if not rt:
             raise oidc.OidcError("sign_in_again", "this device's sign-in predates account editing")
         access, new_rt, ttl = oidc.access_token(iss, rt)
-        devices.set_refresh_token(did, new_rt)
+        if new_rt and new_rt != rt:
+            devices.set_refresh_token(did, new_rt)
+        if not access:
+            _ACCESS.pop(did, None)
+            raise oidc.OidcError("sign_in_again", "the issuer gave no access token")
         _ACCESS[did] = (access, time.time() + ttl)
         return access
 
@@ -993,8 +1002,7 @@ def _me_account(h: BaseHTTPRequestHandler, body: dict | None) -> None:
         _json(h, 502, {"ok": False, "code": "issuer_error", "error": f"the account answered {status}"})
         return
     if status == 200 and out.get("ok"):
-        _iss, rt = devices.refresh_token_of(did)
-        devices.update_profile(did, str(out.get("email") or ""), str(out.get("username") or ""), rt,
+        devices.update_profile(did, str(out.get("email") or ""), str(out.get("username") or ""),
                                oidc.picture_of(out))
     _json(h, status, out)
 
@@ -1010,20 +1018,25 @@ def _refresh_profile_soon(dev: dict) -> None:
         return
     if time.time() - float(dev.get("profile_at") or 0) < PROFILE_MAX_AGE_S:
         return
-    iss, rt = devices.refresh_token_of(did)
-    if not rt:
+    iss = str(dev.get("iss") or "")
+    if not devices.refresh_token_of(did)[1]:
         return
     _REFRESHING.add(did)
 
     def run():
         try:
-            with _TOKEN_LOCK:
-                # Read again under the lock: an account call may have rotated it.
-                _iss, rt_now = devices.refresh_token_of(did)
-                info, new_rt = oidc.profile(iss, rt_now or rt)
-                devices.update_profile(did, str(info.get("email") or ""), oidc.username_of(info), new_rt,
-                                       oidc.picture_of(info))
-        except oidc.OidcError as e:
+            # The access token through `_account_access` — the one refresh
+            # path, which keeps the rotated refresh token before userinfo is
+            # even asked — so a userinfo that fails costs nothing.
+            try:
+                info = oidc.userinfo(iss, _account_access(did, iss))
+            except oidc.OidcError as e:
+                if e.code != "unauthorized":
+                    raise
+                info = oidc.userinfo(iss, _account_access(did, iss, fresh=True))
+            devices.update_profile(did, str(info.get("email") or ""), oidc.username_of(info),
+                                   oidc.picture_of(info))
+        except (oidc.OidcError, OSError) as e:
             print(f"me: profile refresh for {did} refused: {e}", file=sys.stderr)
         finally:
             _REFRESHING.discard(did)

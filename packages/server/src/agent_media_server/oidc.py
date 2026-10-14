@@ -215,35 +215,44 @@ def exchange_code(code: str, verifier: str, redirect_uri: str, iss: str = "") ->
     return idt, str(got.get("refresh_token") or "")
 
 
-def profile(iss: str, refresh_token: str) -> tuple[dict, str]:
-    """The account as the issuer has it now — `({sub, email, name,
-    preferred_username, picture}, new refresh token)` — through the refresh token kept
-    at sign-in and the userinfo endpoint. A name or email changed at the
-    issuer shows here. Raises OidcError when the issuer will not (the account
-    signed out everywhere, or the refresh token expired)."""
+def userinfo(iss: str, access: str) -> dict:
+    """The account as the issuer has it now — `{sub, email, name,
+    preferred_username, picture}` — from the userinfo endpoint, with an
+    access token from `access_token`. A name or email changed at the issuer
+    shows here. Raises OidcError: code `unauthorized` when the issuer refused
+    the access token (worth one more try with a fresh one), `bad_id_token`
+    for anything else.
+
+    It takes an access token, not the refresh token, on purpose: spending
+    the refresh token here and then failing at userinfo would drop the
+    rotated one on the floor (14 Oct 2026, the phone signed out that way)."""
     iss = iss.rstrip("/")
-    if iss not in issuers() or not refresh_token:
-        raise OidcError("bad_id_token", "nothing to refresh with")
+    if iss not in issuers() or not access:
+        raise OidcError("bad_id_token", "nothing to ask with")
     try:
-        got = _token_request(iss, {"grant_type": "refresh_token", "refresh_token": refresh_token,
-                                   "scope": "openid email profile"})
-        access = str(got.get("access_token") or "")
         url = str(discovery(iss).get("userinfo_endpoint") or "")
         req = urllib.request.Request(url, headers={"Authorization": f"Bearer {access}",
                                                    "Accept": "application/json",
                                                    "User-Agent": "agent-media oidc"})
         with urllib.request.urlopen(req, timeout=10) as r:
             info = json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        raise OidcError("unauthorized" if e.code in (401, 403) else "bad_id_token",
+                        f"the issuer would not say who this is: {e}") from e
     except Exception as e:  # noqa: BLE001 — a refusal, never a 500
-        raise OidcError("bad_id_token", f"the issuer would not refresh: {e}") from e
-    return ({k: info.get(k) for k in ("sub", "email", "name", "preferred_username", "picture")},
-            str(got.get("refresh_token") or refresh_token))
+        raise OidcError("bad_id_token", f"the issuer would not say who this is: {e}") from e
+    if not isinstance(info, dict):
+        raise OidcError("bad_id_token", "the issuer's userinfo was not an object")
+    return {k: info.get(k) for k in ("sub", "email", "name", "preferred_username", "picture")}
 
 
 def access_token(iss: str, refresh_token: str) -> tuple[str, str, float]:
     """A fresh access token for the account — `(access, new refresh token,
     seconds it lasts)` — through the refresh token kept at sign-in. Raises
-    OidcError when the issuer will not."""
+    OidcError when the issuer will not. Once the issuer has answered, the
+    answer comes back whatever is in it — `access` may be "" — because the
+    old refresh token is spent by then and the caller must keep the new one
+    before deciding anything else."""
     iss = iss.rstrip("/")
     if iss not in issuers() or not refresh_token:
         raise OidcError("sign_in_again", "nothing to refresh with")
@@ -252,10 +261,10 @@ def access_token(iss: str, refresh_token: str) -> tuple[str, str, float]:
                                    "scope": "openid email profile"})
     except Exception as e:  # noqa: BLE001 — a refusal, never a 500
         raise OidcError("sign_in_again", f"the issuer would not refresh: {e}") from e
-    access = str(got.get("access_token") or "")
-    if not access:
-        raise OidcError("sign_in_again", "the issuer gave no access token")
-    return access, str(got.get("refresh_token") or refresh_token), float(got.get("expires_in") or 300)
+    if not isinstance(got, dict):
+        raise OidcError("sign_in_again", "the issuer's answer was not an object")
+    return (str(got.get("access_token") or ""), str(got.get("refresh_token") or refresh_token),
+            float(got.get("expires_in") or 300))
 
 
 def account_call(iss: str, access: str, body: dict | None = None) -> tuple[int, dict]:

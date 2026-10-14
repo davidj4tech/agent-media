@@ -208,7 +208,7 @@ def test_me_refreshes_an_old_profile_from_the_issuer(server, monkeypatch):
     from agent_media_server import app as app_mod
     got = devices.enrol_account({"iss": ISS, "sub": "1", "email": "old@example.com"}, "phone",
                                 refresh_token="rt-1", username="david")
-    devices.update_profile(got["device_id"], "old@example.com", "david", "rt-1")
+    app_mod._ACCESS.clear()
     # Make it old.
     rows = devices._load()
     for d in rows:
@@ -216,9 +216,10 @@ def test_me_refreshes_an_old_profile_from_the_issuer(server, monkeypatch):
             d["profile_at"] = _t.time() - 7200
     devices._save(rows)
     calls = []
-    monkeypatch.setattr(oidc, "profile", lambda iss, rt: (calls.append(rt) or
-                        ({"sub": "1", "email": "new@example.com", "preferred_username": "david2",
-                          "picture": "https://cms.sasonica.test/files/d.png"}, "rt-2")))
+    monkeypatch.setattr(oidc, "access_token", lambda iss, rt: (calls.append(rt) or ("at-1", "rt-2", 300.0)))
+    monkeypatch.setattr(oidc, "userinfo", lambda iss, access: (
+        {"sub": "1", "email": "new@example.com", "preferred_username": "david2",
+         "picture": "https://cms.sasonica.test/files/d.png"} if access == "at-1" else {}))
     monkeypatch.setattr(app_mod, "_in_background", lambda fn: fn())
     res, me = call(server, "GET", "/me", headers={"Authorization": f"Bearer {got['token']}"})
     assert res.status == 200 and me["account"] == "old@example.com", "this answer is what was there"
