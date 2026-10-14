@@ -1007,6 +1007,17 @@ ahead.
      `/app/` on its own listener (http on the LAN/tailnet), shipped with
      the server (the binary build fetches the release's web bundle).
      servers_report sends `web` = that address when no MEDIA_WEB_APP_URL.
+     **Built 14 Oct 2026**: `web_app.py` serves the bundle at `/app/`
+     (through `app.dispatch`, so the canvas, its public listener and the
+     canvas-less server all have it; serve.mjs's caching, SPA fallback,
+     gzip) from MEDIA_WEB_APP_DIR, else `web_app/` beside the module.
+     sasonica-app builds it with `SASONICA_BASE=/app/ pnpm build`
+     (build-app/client; default build unchanged), where serverBase() is the
+     page's own origin; its CI attaches `sasonica-web-*.tar.gz` to each
+     build release. `deploy/binary/build.sh` copies it in from
+     SASONICA_WEB_BUNDLE, or fetches it with SASONICA_APP_TOKEN — still to
+     do: that secret in agent-media's repo (sasonica-app is private), else
+     the binary ships without it. servers_report: `web` = `<api>/app`.
    - **When it can't be reached**: the Account page's row says why (no
      public address; LAN/tailnet only) and links sasonica.com/help/reach:
      turn on a public address first (`sasonica tunnel`, no account needed),
