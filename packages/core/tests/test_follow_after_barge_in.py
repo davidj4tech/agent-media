@@ -230,3 +230,55 @@ def test_end_of_reply_is_heard_while_the_player_is_unreadable(monkeypatch):
     monkeypatch.setattr(S, "_read_nav_request", fake_nav)
     _run(sink)
     assert sink.stops >= 1, "End of reply never reached the player"
+
+
+def _run_in(sink, session):
+    ev = Event(text=TEXT, source=Source.CLI, target=PHONE,
+               metadata={"pane": "%7", "session": session})
+    return S.submit_event(ev, state=StateStore(), sink=sink,
+                          coordinator=_Coord())
+
+
+def test_a_pause_the_hold_gives_up_keeps_its_resume(monkeypatch):
+    """Paused, then the link went: the hold ran out and the reply ended.
+
+    It ended with no `stopped_at`, which only a Stop wrote, so its message
+    lost the Resume and the thread its paused mark, though nobody had heard
+    the rest (David, 14 Oct 2026). The row now says where it was paused.
+    """
+    monkeypatch.setattr(S, "render_text", _fake_render)
+    sink = _ScriptedSink([_playing(0), _playing(1), _playing(1, pause=True), {}])
+    _run_in(sink, "sid-paused")
+
+    row = StateStore().recent_history(sink="speech", limit=1)[0]
+    stop = row["extras"]["stopped_at"]
+    assert (stop["sentence"], stop["paused"]) == (1, True)
+    assert StateStore().left_paused() == {
+        "sid-paused": {"id": row["id"], "sentence": 1}}
+
+
+def test_a_hold_that_ends_playing_leaves_no_stop(monkeypatch):
+    """Unreadable while playing is the ordinary blind hold: no stop."""
+    monkeypatch.setattr(S, "render_text", _fake_render)
+    sink = _ScriptedSink([_playing(0), _playing(1), {}])
+    _run_in(sink, "sid-playing")
+
+    row = StateStore().recent_history(sink="speech", limit=1)[0]
+    assert "stopped_at" not in row["extras"]
+    assert StateStore().left_paused() == {}
+
+
+def test_left_paused_is_the_sessions_latest_reply_only(monkeypatch):
+    """A later reply in the thread, or a replay of it, takes the mark off."""
+    monkeypatch.setattr(S, "render_text", _fake_render)
+    _run_in(_ScriptedSink([_playing(1, pause=True), {}]), "sid-a")
+    _run_in(_ScriptedSink([_playing(1, pause=True), {}]), "sid-b")
+    store = StateStore()
+    assert set(store.left_paused()) == {"sid-a", "sid-b"}
+
+    _run_in(_ScriptedSink([_playing(0), {"idle-active": True, "pause": False}]),
+            "sid-a")
+    assert set(store.left_paused()) == {"sid-b"}
+
+    store.set_stopped_at(store.left_paused()["sid-b"]["id"], None)
+    assert store.left_paused() == {}

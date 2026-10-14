@@ -3986,6 +3986,10 @@ def _submit_event(event: Event,
     # muted reply, played only when the listener asks for it.
     muted = muted or bool((event.metadata or {}).get("held"))
     muted = _unmuted_by_priority(muted, event, source_session)
+    # The sentence a reply was left paused on when the hold gave it up (the
+    # blind hold's cap, below): written to its row as a stop, so the message
+    # keeps its Resume and the thread its paused mark (14 Oct 2026).
+    left_paused_at: Optional[int] = None
     if muted:
         # Nothing will be played, so give the queue slot announced above back
         # immediately rather than making this session's next reply wait on a
@@ -4320,6 +4324,12 @@ def _submit_event(event: Event,
             stop_at = stopped_here(started_at)
             if stop_at is not None:
                 extras["stopped_at"] = {"sentence": stop_at, "at": time.time()}
+            elif left_paused_at is not None:
+                # Never resumed: the pause outlasted the hold, which is not
+                # the listener being done with it. `paused` is what the
+                # thread list reads (StateStore.left_paused).
+                extras["stopped_at"] = {"sentence": left_paused_at,
+                                        "at": time.time(), "paused": True}
         row = state.add_history(
             sink="speech",
             uri=str(first_clip),
@@ -5102,6 +5112,9 @@ def _submit_event(event: Event,
                     # not an absence of one.
                     paused_for = 0.0
                     last_tick = time.monotonic()
+                    # Whether the player last said it was paused: a hold that
+                    # runs out on a pause gave the pause up, and says where.
+                    held_paused = last_paused
                     while time.monotonic() < hard_deadline:
                         # The listener is still in charge of a reply we can no
                         # longer see. Stop, End of reply and a supersede were
@@ -5136,6 +5149,8 @@ def _submit_event(event: Event,
                         if snap and snap.get("idle-active"):
                             break
                         if snap:
+                            if "pause" in snap:
+                                held_paused = bool(snap.get("pause"))
                             pos = snap.get("playlist-pos")
                             if isinstance(pos, int) and 0 <= pos < len(clip_data):
                                 mark_i = pos
@@ -5160,6 +5175,17 @@ def _submit_event(event: Event,
                             # clock is an estimate, and an estimate that can
                             # walk backwards is worse than one that waits. A
                             # snapshot that does land still wins outright.
+                            #
+                            # Not while the player was last seen paused: the
+                            # clock would walk a held reply on, and the stop
+                            # its hold leaves (left_paused_at) would name a
+                            # sentence nobody heard.
+                            # The time still counts as paused, so a guess
+                            # after it is resumed starts from the right place.
+                            if held_paused:
+                                paused_for += waited
+                                time.sleep(0.5)
+                                continue
                             elapsed = time.monotonic() - _pl_started - paused_for
                             guess = mark_i
                             for idx, start in enumerate(offsets[:len(clip_data)]):
@@ -5181,6 +5207,12 @@ def _submit_event(event: Event,
                             paused_for += waited
                             hard_deadline += waited
                         time.sleep(0.5)
+                    else:
+                        if held_paused and 0 <= mark_i < len(clip_data):
+                            log.warning("intake: hold ran out paused at "
+                                        "sentence %d; keeping it as a stop",
+                                        mark_i + 1)
+                            left_paused_at = mark_i
             else:
                 i = 0
                 nav_jump = False  # True when this clip was reached via a popup skip

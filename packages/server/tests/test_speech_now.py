@@ -133,3 +133,26 @@ def test_nothing_shared_is_said_so(monkeypatch):
     _as(monkeypatch)
     ok, out = share.share_from_app("   ", "", "tok")
     assert not ok and out["error"] == "nothing shared"
+
+
+
+def test_a_reply_left_paused_is_listed(monkeypatch):
+    """The thread list keeps a paused mark once the hold let the pause go —
+    but not on the thread that is live again."""
+    import time
+
+    from agent_media_core.state import StateStore
+
+    _as(monkeypatch)
+    monkeypatch.setattr(sessions, "sessions_index", lambda: [])
+    monkeypatch.setattr(threads, "item_for_session", lambda s, b: (None, False))
+    monkeypatch.setattr(speech, "_LEFT_PAUSED", ([], 0.0))
+    StateStore().add_history(
+        sink="speech", uri="/a.mp3", started_at=time.time(), ended_at=None,
+        target="phone", source="hook", text="x",
+        extras={"source_session": SID,
+                "stopped_at": {"sentence": 2, "at": 0, "paused": True}})
+    _, out = speech.speech_now("tok", {"speaking": False})
+    assert out["left_paused"] == [SID]
+    _, out = speech.speech_now("tok", {"paused": True, "session": SID})
+    assert out["left_paused"] == []

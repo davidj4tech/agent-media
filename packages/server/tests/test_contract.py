@@ -475,9 +475,10 @@ def test_speech_now_quiet_shape(server, shelf, signed_in, monkeypatch):
     assert res.status == 200
     assert keys(obj) == {"ok", "live", "speaking", "paused", "sentence", "session",
                          "title", "item", "pos", "dur", "speed", "muted", "target",
-                         "replay", "queued"}
+                         "replay", "queued", "left_paused"}
     assert obj["live"] is False and obj["session"] is None
     assert obj["replay"] is False and obj["queued"] == []
+    assert obj["left_paused"] == []
 
 
 def test_speech_now_names_a_replay_and_what_waits(server, shelf, signed_in, monkeypatch):

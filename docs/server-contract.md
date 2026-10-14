@@ -845,7 +845,7 @@ written, with its steps and narration. Messages are read from the same file.
 | `role` | `"user"` or `"assistant"` |
 | `at` | epoch seconds, 3 dp, of the first record |
 | `parts` | in order, as the terminal draws them (below) |
-| `spoken` | the speech of this message, or `null` if it was not spoken (or cannot be recognised). `id` is the history row for `/speech/ctl replay-id` (`null` while it is still playing for the first time); `key` the reply's dedup key; `images`/`figure` as on lines, only when drawn; `live` only while it plays — the §6.2 live-line fields, moved here; `timeline` instead of `live` on the newest spoken turn when it is not playing (`{sentences, offsets, measured}`, §6.2); `unheard: true` on a reply held and never played (as on lines) — the app makes its play key the big one; `resume: {sentence, at_s, dur_s}` on a reply the listener interrupted (a Stop, or a reply that ended the reading) and has not heard again — `sentence` is the first not heard (clip index, what `replay-id` `sentence` takes), `at_s` the seconds into the reply it starts at, `dur_s` the reply's length; history `extras.stopped_at`, cleared when the reply is replayed; the bar's Replay resumes it too (25 Sep 2026) |
+| `spoken` | the speech of this message, or `null` if it was not spoken (or cannot be recognised). `id` is the history row for `/speech/ctl replay-id` (`null` while it is still playing for the first time); `key` the reply's dedup key; `images`/`figure` as on lines, only when drawn; `live` only while it plays — the §6.2 live-line fields, moved here; `timeline` instead of `live` on the newest spoken turn when it is not playing (`{sentences, offsets, measured}`, §6.2); `unheard: true` on a reply held and never played (as on lines) — the app makes its play key the big one; `resume: {sentence, at_s, dur_s}` on a reply the listener interrupted (a Stop, or a reply that ended the reading) and has not heard again — `sentence` is the first not heard (clip index, what `replay-id` `sentence` takes), `at_s` the seconds into the reply it starts at, `dur_s` the reply's length; history `extras.stopped_at`, cleared when the reply is replayed; also written when a paused reply outlasts the speech lock's hold (`stopped_at.paused`, the sentence it was paused on, §`/speech/now` `left_paused`, 14 Oct 2026); the bar's Replay resumes it too (25 Sep 2026) |
 | `turn.running` | the turn is still going: the last record asked for a tool, or a tool has no result yet. Always `false` when the session is not live |
 | `command` | user messages that are a slash command only: `{name, args, text}`, the line's chip (`slash.py`); settings commands are never messages |
 | `peer` | user messages another session delivered into this one (a `<cross-session-message>`): `{name}`; the text is only the message body. Not the listener's words — the app shows a small "From <name>" and never counts it as a send of its own |
@@ -1598,7 +1598,8 @@ The speech bar.
  "sentence": "…", "session": "6c73…" | null, "title": "…", "item": "li_…" | null,
  "pos": 12.0, "dur": 40.0, "speed": 1.6, "muted": false, "target": "sasonica" | null,
  "replay": false, "turn": {"at": 1790031449.7, "id": 91},
- "queued": [{"session": "5f8c…" | null, "title": "…", "urgent": false, "at": 1790031449.7}]}
+ "queued": [{"session": "5f8c…" | null, "title": "…", "urgent": false, "at": 1790031449.7}],
+ "left_paused": ["9a1e…"]}
 ```
 
 - It describes what is **heard**. A reply waiting for the voice (another
@@ -1618,6 +1619,16 @@ The speech bar.
   urgent one is listed while it waits to resume. Replies still rendering and
   replays are not listed. Read from the playback lock's waiter registry
   (`intake.submit.speech_queue`).
+- `left_paused` lists the sessions whose latest reply was paused and then
+  let go: the reply's player stayed paused past the speech lock's hold
+  (`_BLIND_PAUSE_CAP_S`, or a link that stopped answering while it was
+  paused), so it is no longer live, but it was never finished. Its row keeps
+  `extras.stopped_at` (with `paused: true`) at the sentence it was paused
+  on, so the message has its `resume` (§6.2) and the thread list can keep
+  showing it paused. A session leaves the list when the reply is replayed
+  (the stop is cleared) or the session says something newer. Only the last
+  24 hours; never the live session. Always present; `[]` when none
+  (`StateStore.left_paused`, 14 Oct 2026).
 - Who waits for whom: an ordinary reply never interrupts — not another
   session's reply, not its own session's earlier one, and not a replay. A
   replay interrupts an ordinary reply, which resumes after it (paused, if it

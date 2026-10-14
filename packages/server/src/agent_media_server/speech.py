@@ -207,6 +207,29 @@ def _queued_row(q: dict) -> dict:
             "urgent": bool(q.get("urgent")), "at": at}
 
 
+#: `(sessions, at)`: the threads whose reply was left paused, read from the
+#: store at most this often — the app polls /speech/now every couple of
+#: seconds, and the answer changes only when a reply ends or is replayed.
+_LEFT_PAUSED: tuple[list[str], float] = ([], 0.0)
+_LEFT_PAUSED_TTL_S = 5.0
+
+
+def _left_paused() -> list[str]:
+    """The sessions whose latest reply was left paused when the hold gave it
+    up (StateStore.left_paused), for the thread list's paused mark."""
+    global _LEFT_PAUSED
+    now = time.time()
+    if now - _LEFT_PAUSED[1] > _LEFT_PAUSED_TTL_S:
+        try:
+            from agent_media_core.state import StateStore
+            got = sorted(StateStore().left_paused())
+        except Exception as e:  # noqa: BLE001 — the bar matters more
+            print(f"speech/now: left_paused: {e}", file=sys.stderr)
+            got = _LEFT_PAUSED[0]
+        _LEFT_PAUSED = (got, now)
+    return list(_LEFT_PAUSED[0])
+
+
 def speech_now(bearer: str, state: dict) -> tuple[bool, dict]:
     """`/speech/now`: what is being said right now, named for a person.
 
@@ -243,6 +266,11 @@ def speech_now(bearer: str, state: dict) -> tuple[bool, dict]:
     # library item is looked up when it plays.
     out["queued"] = [_queued_row(q) for q in state.get("queued") or []
                      if isinstance(q, dict)]
+    # Threads whose reply was paused and then let go by the hold (the
+    # speech lock's cap): nothing is live, but the reply still waits on a
+    # Resume, and the thread list keeps its paused mark.
+    out["left_paused"] = [s for s in _left_paused()
+                          if not (out["live"] and s == state.get("session"))]
     session = str(state.get("session") or "")
     if out["live"] and sessions._SESSION.fullmatch(session):
         now = time.time()

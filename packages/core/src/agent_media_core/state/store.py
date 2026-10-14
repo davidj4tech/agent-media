@@ -1322,6 +1322,34 @@ class StateStore:
             rows = cur.fetchall()
         return {str(s): float(t) for s, t in rows if s and t}
 
+    def left_paused(self, within_s: float = 86400.0) -> dict[str, dict]:
+        """`{session: {"id", "sentence"}}` for the conversations whose latest
+        spoken reply was left paused — the hold gave the pause up
+        (`extras.stopped_at.paused`) and nothing of that session has been
+        said since. Replaying it clears the stop (`set_stopped_at`), and with
+        it the entry. Only the last `within_s`: a pause from yesterday is not
+        a thread waiting on a Resume."""
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT id, json_extract(extras, '$.source_session'), "
+                "json_extract(extras, '$.stopped_at') FROM history "
+                "WHERE sink = 'speech' AND started_at > ? ORDER BY started_at",
+                (time.time() - within_s,))
+            rows = cur.fetchall()
+        latest: dict[str, tuple[int, Optional[str]]] = {}
+        for rid, session, stop in rows:
+            if session:
+                latest[str(session)] = (int(rid), stop)
+        out: dict[str, dict] = {}
+        for session, (rid, stop) in latest.items():
+            try:
+                got = json.loads(stop) if stop else None
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if isinstance(got, dict) and got.get("paused"):
+                out[session] = {"id": rid, "sentence": got.get("sentence")}
+        return out
+
     # ---- errors -----------------------------------------------------------
 
     def recent_errors(self, *, component: Optional[str] = None,
