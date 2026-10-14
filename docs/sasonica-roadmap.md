@@ -1036,7 +1036,7 @@ ahead.
    `app/globals.css`), the chat, the social-preview image and the wordmark's
    mint "sonic" checked in both. Follows the device (`prefers-color-scheme`),
    with a switch only if asked for. The mark's own dark tile works on either.
-   Then the admin (Gin, mint accent since 14 Oct 2026, following the device)
+   Then the admin (Gin, mint accent and always dark since 14 Oct 2026)
    can take the light palette's green in light mode; until then the Gin
    login pages (websites `sasonica_brand/login`) stay dark.
 
