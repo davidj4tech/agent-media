@@ -14,7 +14,8 @@ is chosen by the user message's words:
   ask              an AskUserQuestion (one multi-select, one single-select)
   slow: N          a Bash call that runs N seconds without asking (like
                    `--allowedTools`), so messages sent meanwhile queue and join
-                   the turn, and an interrupt lands mid-tool
+                   the turn, and an interrupt lands mid-tool; `background_tasks`
+                   for it returns the call at once ("backgrounded")
   crash            exit 3 at once, as a process that died would
 
 It writes a small transcript to `$CLAUDE_CONFIG_DIR/projects/<cwd slug>/
@@ -99,6 +100,8 @@ class Fake:
         self.queued: list[dict] = []          # user messages that arrived mid-turn
         self.busy = False
         self.interrupted = threading.Event()
+        self.backgrounded = threading.Event()
+        self.slow_tool = ""
         self.cancel_queued = False
         self.eof = threading.Event()
         # `--model` / `--permission-mode`, then whatever set_model and
@@ -175,6 +178,15 @@ class Fake:
                     f.write(json.dumps({"stop_task": req.get("task_id")}) + "\n")
             emit({"type": "control_response",
                   "response": {"subtype": "success", "request_id": rid, "response": {}}})
+        elif sub == "background_tasks":
+            if os.environ.get("FAKE_CLAUDE_LOG"):
+                with open(os.environ["FAKE_CLAUDE_LOG"] + ".tasks", "a") as f:
+                    f.write(json.dumps({"background_tasks": req.get("tool_use_id")}) + "\n")
+            if req.get("tool_use_id") == self.slow_tool:
+                self.backgrounded.set()
+            emit({"type": "control_response",
+                  "response": {"subtype": "success", "request_id": rid,
+                               "response": {"backgrounded": True}}})
         elif sub == "initialize":
             emit({"type": "control_response",
                   "response": {"subtype": "success", "request_id": rid,
@@ -356,25 +368,33 @@ class Fake:
                "description": f"Sleep for {seconds} seconds"}
         self.assistant([{"type": "tool_use", "id": tid, "name": "Bash", "input": inp}],
                        stop="tool_use")
+        self.backgrounded.clear()
+        self.slow_tool = tid
         emit({"type": "system", "subtype": "task_started", "task_id": "t1", "tool_use_id": tid,
-              "description": inp["description"], "task_type": "local_bash"})
+              "description": inp["description"], "task_type": "local_bash",
+              "is_backgrounded": False})
         end = time.monotonic() + seconds
         while time.monotonic() < end:
-            if self.interrupted.wait(0.02) or self.eof.is_set():
+            if self.interrupted.wait(0.02) or self.eof.is_set() or self.backgrounded.is_set():
                 break
+        self.slow_tool = ""
+        backgrounded = self.backgrounded.is_set() and not self.interrupted.is_set()
         if self.interrupted.is_set():
             emit({"type": "system", "subtype": "task_notification", "task_id": "t1",
                   "tool_use_id": tid, "status": "stopped"})
             self.interrupted_turn(tid)
             self.lifecycle(msg, "cancelled")
             return
-        emit({"type": "system", "subtype": "task_notification", "task_id": "t1",
-              "tool_use_id": tid, "status": "completed"})
-        self.tool_result(tid, "(Bash completed with no output)")
+        if backgrounded:
+            self.tool_result(tid, "Command running in background with ID: t1.")
+        else:
+            emit({"type": "system", "subtype": "task_notification", "task_id": "t1",
+                  "tool_use_id": tid, "status": "completed"})
+            self.tool_result(tid, "(Bash completed with no output)")
         # Messages that arrived meanwhile join this turn at the tool boundary.
         joined = self.queued
         self.queued = []
-        words = "slept"
+        words = "backgrounded" if backgrounded else "slept"
         for m in joined:
             self.lifecycle(m, "started")
             record("user", self.text_of(m).strip())

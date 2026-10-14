@@ -27,6 +27,14 @@ What it does per session:
   `system/init` or `command_lifecycle started` → working; `control_request
   can_use_tool` → approval (kept here, since the CLI does not re-send pending
   requests to a reconnecting client); `result` → waiting;
+* **backgrounds** a blocking command a message is waiting behind, once it
+  has run `MEDIA_SESSIOND_BACKGROUND_AFTER` seconds (default 30; 0 never):
+  the `background_tasks` control request, Ctrl+B's own. A message sent
+  mid-turn joins it only at the next tool boundary, so a long foreground
+  command held it unread — on 14 Oct 2026 a ten-minute wait loop on a phone
+  whose sshd had gone kept two of David's messages queued until the CLI's
+  600 s timeout moved it to the background. Backgrounded, the call returns at
+  once, the message is read, and the agent is told when the command ends;
 * **keeps** the events (bar `stream_event`s) in memory and in
   `<state>/sessiond/<id>.events.jsonl`, trimmed, with a sequence number the
   thread stream polls (`events`), and a record per session in
@@ -66,7 +74,7 @@ Ops (request `{"op", …}` → `{"ok": true, …}` or `{"ok": false, "error",
 session_settings.py).
 
 Config (env): MEDIA_SESSIOND_SOCKET, MEDIA_SESSIOND_IDLE, MEDIA_SESSIOND_MAX,
-MEDIA_SESSIOND_MIN_FREE_MB,
+MEDIA_SESSIOND_MIN_FREE_MB, MEDIA_SESSIOND_BACKGROUND_AFTER,
 MEDIA_SESSIOND_CLOSE_GRACE, MEDIA_SESSIOND_CLAUDE (the binary; default
 `harnesses.program("claude")`), MEDIA_HEADLESS_MODEL (`--model`),
 MEDIA_HEADLESS_PERMISSIONS (`strict` | `normal`, see permissions.py),
@@ -140,6 +148,12 @@ def mem_available_mb() -> float | None:
     except (OSError, ValueError, IndexError):
         pass
     return None
+
+
+def background_after_s() -> float:
+    """How long a foreground command may hold a queued message before it is
+    backgrounded; 0 (or less) never."""
+    return _env_f("MEDIA_SESSIOND_BACKGROUND_AFTER", 30.0)
 
 
 def close_grace_s() -> float:
@@ -271,6 +285,12 @@ class Session:
         self.pending: collections.OrderedDict[str, dict] = collections.OrderedDict()
         self.lost: list[dict] = []
         self.queued: set[str] = set()
+        #: Foreground tasks running now (a blocking Bash call, a subagent):
+        #: tool_use_id → when it started; and those asked to background.
+        self.foreground: dict[str, float] = {}
+        self.backgrounded: set[str] = set()
+        self.background_rids: set[str] = set()
+        self.background_timer: threading.Timer | None = None
         self.acked: set[str] = set()
         self.responses: dict[str, dict] = {}
         self.events: collections.deque = collections.deque(maxlen=EVENTS_KEEP)
@@ -661,6 +681,17 @@ class Supervisor:
                         s.set_state("working")
                 elif state in ("completed", "cancelled"):
                     s.queued.discard(cid)
+            elif t == "system" and sub == "task_started":
+                tid = str(obj.get("tool_use_id") or "")
+                if tid and not obj.get("is_backgrounded"):
+                    s.foreground[tid] = now
+            elif t == "system" and sub == "task_notification":
+                s.foreground.pop(str(obj.get("tool_use_id") or ""), None)
+            elif t == "user":
+                content = (obj.get("message") or {}).get("content")
+                for block in content if isinstance(content, list) else ():
+                    if isinstance(block, dict) and block.get("type") == "tool_result":
+                        s.foreground.pop(str(block.get("tool_use_id") or ""), None)
             elif t == "control_request":
                 req = obj.get("request") or {}
                 rid = str(obj.get("request_id") or "")
@@ -674,9 +705,15 @@ class Supervisor:
             elif t == "control_response":
                 resp = obj.get("response") or {}
                 rid = str(resp.get("request_id") or "")
-                if rid:
+                if rid in s.background_rids:
+                    s.background_rids.discard(rid)
+                    if resp.get("subtype") == "error":
+                        log.warning("sessiond: %s background_tasks refused: %s",
+                                    s.id[:8], resp.get("error"))
+                elif rid:
                     s.responses[rid] = resp
             elif t == "result":
+                s.foreground.clear()
                 s.last_result = _result_summary(obj)
                 s.set_state("approval" if s.pending else "waiting")
                 if s.turns == 1 and not s.auto_titled and not obj.get("is_error"):
@@ -685,7 +722,49 @@ class Supervisor:
                                      name="auto-title").start()
             if (s.state, len(s.pending)) != before or t in ("result", "control_request"):
                 self._save(s)
+            if s.queued and s.foreground:
+                self._background_held(s)
             self.cond.notify_all()
+
+    def _background_held(self, s: Session) -> None:
+        """Background each foreground task a queued message has waited
+        behind for `background_after_s()` since it started; check again when
+        the youngest gets there. Under the lock."""
+        after = background_after_s()
+        if after <= 0 or not s.running or not s.queued:
+            return
+        now = time.time()
+        wait = None
+        for tid, started in list(s.foreground.items()):
+            if tid in s.backgrounded:
+                continue
+            left = started + after - now
+            if left > 0:
+                wait = left if wait is None else min(wait, left)
+                continue
+            rid = "req_" + uuid.uuid4().hex[:12]
+            try:
+                self._write(s, {"type": "control_request", "request_id": rid,
+                                "request": {"subtype": "background_tasks",
+                                            "tool_use_id": tid}})
+            except Refused:
+                return
+            s.backgrounded.add(tid)
+            s.background_rids.add(rid)
+            self._append(s, {"type": "sessiond", "subtype": "backgrounded",
+                             "tool_use_id": tid, "after_s": round(now - started, 1)})
+            log.info("sessiond: %s backgrounded %s after %.0fs, a message waiting",
+                     s.id[:8], tid, now - started)
+        if wait is not None and s.background_timer is None:
+            s.background_timer = threading.Timer(wait + 0.05, self._background_later,
+                                                 args=(s,))
+            s.background_timer.daemon = True
+            s.background_timer.start()
+
+    def _background_later(self, s: Session) -> None:
+        with self.cond:
+            s.background_timer = None
+            self._background_held(s)
 
     def _append(self, s: Session, obj: dict) -> float:
         """Count and keep one event of `s` (under the lock); its time."""
@@ -741,6 +820,7 @@ class Supervisor:
                               for p in s.pending.values())
                 s.pending.clear()
             s.queued.clear()
+            s.foreground.clear()
             s.set_state("closed" if s.closing else "parked" if s.parking else "ended")
             self._save(s)
             self.cond.notify_all()

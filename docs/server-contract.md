@@ -4161,6 +4161,15 @@ writes nothing to tmux.
   `result` → waiting. Every message carries a client uuid (the interrupt
   receipt and the lifecycle name it). Events are kept per session (in memory
   and `<id>.events.jsonl`, trimmed) with a counter the thread stream polls.
+- **A message held behind a long command.** A message sent mid-turn joins
+  it at the next tool boundary, so a foreground command (a blocking Bash
+  call, a subagent) holds it unread for as long as it runs. Once such a
+  command has run `MEDIA_SESSIOND_BACKGROUND_AFTER` seconds (30; 0 never)
+  with a message queued behind it, sessiond backgrounds it — the
+  `background_tasks` control request, Ctrl+B's own: the call returns "manually
+  backgrounded", the message is read, and the agent is told when the command
+  ends. Marked in the events as `{"type": "sessiond", "subtype":
+  "backgrounded"}`. Verified on 2.1.299, 14 Oct 2026.
 - **Parking.** Waiting for `MEDIA_SESSIOND_IDLE` (1800 s) → stdin closed,
   process gone, record `parked`; the next message resumes it with
   `--resume`. Never parked while working, on an approval, or with queued

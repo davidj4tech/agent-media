@@ -210,6 +210,38 @@ def test_state_comes_from_events_not_sends(host):
                                                   "pane": None}
 
 
+def test_a_long_command_a_message_waits_behind_is_backgrounded(host, monkeypatch):
+    # 14 Oct 2026: a ten-minute wait loop held two messages unread.
+    monkeypatch.setenv("MEDIA_SESSIOND_BACKGROUND_AFTER", "0.5")
+    sid = start(host, "slow: 20")
+    wait_for(lambda: any(e.get("subtype") == "task_started" for e in host.sup.sessions[sid].events))
+    ok, d = driver.headless_driver().send(sid, "", "reply: plum")
+    assert ok and d["queued"] is True
+    # Sent before the command had run 0.5 s: backgrounded when it has.
+    wait_for(lambda: last_text(host, sid) == "backgrounded\nplum", timeout=5)
+    tool = next(e["tool_use_id"] for e in host.sup.sessions[sid].events
+                if e.get("subtype") == "task_started")
+    assert json.loads(Path(str(host.log) + ".tasks").read_text()) == {"background_tasks": tool}
+    assert any(e.get("subtype") == "backgrounded" for e in host.sup.sessions[sid].events)
+    assert not host.sup.sessions[sid].foreground
+
+
+def test_a_long_command_nobody_waits_behind_runs_on(host, monkeypatch):
+    monkeypatch.setenv("MEDIA_SESSIOND_BACKGROUND_AFTER", "0.2")
+    sid = start(host, "slow: 1")
+    wait_for(lambda: last_text(host, sid) == "slept", timeout=5)
+    assert not Path(str(host.log) + ".tasks").exists()
+
+
+def test_backgrounding_is_off_at_zero(host, monkeypatch):
+    monkeypatch.setenv("MEDIA_SESSIOND_BACKGROUND_AFTER", "0")
+    sid = start(host, "slow: 1")
+    wait_for(lambda: any(e.get("subtype") == "task_started" for e in host.sup.sessions[sid].events))
+    driver.headless_driver().send(sid, "", "reply: plum")
+    wait_for(lambda: last_text(host, sid) == "slept\nplum", timeout=5)
+    assert not Path(str(host.log) + ".tasks").exists()
+
+
 # --- interrupt ----------------------------------------------------------------------
 
 def test_interrupt_mid_tool_has_a_receipt_and_the_next_message_runs(host):
