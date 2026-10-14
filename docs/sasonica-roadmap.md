@@ -1080,6 +1080,19 @@ ahead.
    path mentioned in a thread opens in the same reader with Listen — needs a
    read route outside the Org tree, and the reader drawing Markdown (today it
    draws Org, so a `.md` heading is skipped and a fence is plain text).
+   **Step 3 IN PROGRESS (15 Oct 2026, David: "okay, let's do it")** — plan:
+   - Server: `GET /doc/read?path=<abs>` for `.md/.txt/.org` under the doc
+     roots (`docs.doc_roots()`, ~/projects; no dot-dirs, no escaping) →
+     `{path, title, text}`, gated like /org/read. `/org/listen` takes
+     `{"doc": "<abs path>"}` instead of `path` (same render, sidecar `doc`
+     instead of `path`; GET answers `doc`). Contract §6.10, tests beside
+     test_org_listen.py.
+   - App: a `/doc?path=` page sharing the note page's Listen + follow
+     (hooks/useNoteListen.ts, taking a `{doc}` or `{path, at}` key) and a
+     line-aware Markdown body (lib/md.tsx, `data-line` per block like
+     lib/org.tsx's OrgBody); in a thread, an inline-code or linked path
+     ending .md/.org/.txt opens it (resolved against the thread's cwd).
+     Mock + test/doc.mjs; What's new line; restart red5's canvas; push.
    1. **Listen** in the reader (the whole note, or from the heading it is
       opened at): a server endpoint over `docs.render_doc` and the book
       channel, `target` the app's usual choice (phone by default). The
