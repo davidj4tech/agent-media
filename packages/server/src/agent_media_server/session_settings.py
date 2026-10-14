@@ -5,12 +5,16 @@ The reply box's bottom row carries a model chip and a plan chip. `GET
 be changed from the phone; `POST /session/settings {session, model?, plan?}`
 changes it; `/ask` takes the same two for a new chat (`send.ask`).
 
-Claude Code only: Codex, pi and Hermes answer `can: {model: false, plan:
+Claude Code only: Codex and Hermes answer `can: {model: false, plan:
 false}` and the app hides the chips. opencode has a model chip too: a new
 chat's sheet is its free models (`new_sheet`, opencode_models.py) and `/ask`
 starts it with `-m`; a running one in a pane is switched through its own
 picker (the opencode section below), a headless one sends the new model with
-its next prompt (sessiond_opencode.py). No plan mode for it.
+its next prompt (sessiond_opencode.py). No plan mode for it. So has pi: the
+sheet is what `pi --list-models` lists for the chat's harness profile
+(pi_models.py), `/ask` starts it with `--provider`/`--model`, and a running
+one is told `/model <provider/model>` (the pi section below). pi is always a
+pane — sessiond has no pi adapter — and has no plan mode.
 
 How, per driver (driver/):
 
@@ -77,6 +81,10 @@ def clean_new(agent: str, model: str, mode: str) -> tuple[str, str]:
         from agent_media_core import opencode_models
 
         return opencode_models.allowed(model), ""
+    if agent == "pi":
+        from agent_media_core import pi_models
+
+        return pi_models.allowed(model), ""
     if agent != "claude":
         return "", ""
     model = (model or "").strip().lower()
@@ -154,6 +162,8 @@ def state(session: str) -> dict:
     agent = sessions._agent_of_pane(pane) if pane else sessions.agent_of(session)
     if agent == "opencode":
         return _opencode_state(session, pane)
+    if agent == "pi":
+        return _pi_state(session, pane)
     if agent != "claude":
         return {"agent": agent, "live": bool(pane), "model": "", "model_id": "",
                 "plan": False, "driver": driver.PANE, "can": {"model": False, "plan": False}}
@@ -220,8 +230,9 @@ def default_note() -> str:
 
 def _answer(session: str, **extra) -> dict:
     st = state(session)
-    return {"session": session, "models": _opencode_sheet(st["model"]) if st["agent"] == "opencode"
-            else models(), **st, **extra}
+    sheet = (_opencode_sheet(st["model"]) if st["agent"] == "opencode"
+             else _pi_sheet(session, st["model"]) if st["agent"] == "pi" else models())
+    return {"session": session, "models": sheet, **st, **extra}
 
 
 # --- opencode ----------------------------------------------------------------
@@ -310,26 +321,121 @@ def _configure_opencode(session: str, pane: str, model: str) -> tuple[bool, dict
     return True, {"told": True}
 
 
-def new_sheet(agent: str = "claude") -> dict:
-    """A new chat's sheet: Claude Code's aliases, or opencode's free models
-    with what its "Default" runs; {} for an agent with no chip."""
+# --- pi ----------------------------------------------------------------------
+#
+# A running pi is told `/model <provider/model>`: an exact id switches it
+# there and then ("Model: <id>" above the composer, `(provider) model` in
+# the footer, a `model_change` in its session file); anything else opens its
+# picker on that search, which Escape closes. pi offers the id as an
+# autocompletion as it is typed, and the first Enter takes that, so a
+# composer still holding the command gets a second one. Measured 15 Oct
+# 2026, pi 1.2.0, in a scratch window on the venice profile. Between turns
+# only, as Claude's.
+
+
+#: How many times to look for the footer to name the model, 0.6 s apart.
+_PI_POLLS = 10
+
+
+def _pi_sheet(session: str, current: str) -> list:
+    """A running pi thread's sheet: its profile's models, and the one it is
+    on if that is not among them."""
+    from agent_media_core import harnesses, pi_models
+
+    offered, _ = pi_models.models(harnesses.profile_of(session))
+    if current and not any(m["id"] == current for m in offered):
+        provider, _, name = current.partition("/")
+        offered = [{"id": current, "label": name, "note": provider}, *offered]
+    return offered
+
+
+def _pi_state(session: str, pane: str) -> dict:
+    from agent_media_core import pi_models
+
+    from . import panes
+
+    model, at = pi_models.current(session)
+    with _LOCK:
+        chosen = _CHOSEN.get(session)
+    if chosen and chosen[1] > at:
+        model = chosen[0]
+    herdr = bool(pane) and panes.is_herdr(pane)
+    return {"agent": "pi", "live": bool(pane), "model": model, "model_id": model,
+            "plan": False, "driver": driver.PANE,
+            "can": {"model": bool(pane) and not herdr, "plan": False}}
+
+
+def _pi_footer(screen: str) -> str:
+    """The `provider/model` pi's footer names — `(venice) kimi-k3`, on its
+    last line or one of the two above it (an extension's status) — or ""."""
+    for line in [ln for ln in screen.splitlines() if ln.strip()][-3:][::-1]:
+        m = re.search(r"\(([^()\s]+)\) (\S+)", line)
+        if m:
+            return f"{m.group(1)}/{m.group(2)}"
+    return ""
+
+
+def _configure_pi(session: str, pane: str, model: str) -> tuple[bool, dict]:
+    from . import panes
+
+    if panes.is_herdr(pane):
+        return False, {"error": "a pi model is not switchable in a herdr pane yet",
+                       "status": 400}
+    command = f"/model {model}"
+    err = panes.send(pane, command)
+    if err:
+        return False, {"error": err, "status": 502}
+    time.sleep(1.2)
+    screen = panes.capture(pane, lines=12, ansi=False)
+    if _pi_footer(screen) != model and any(line.strip() == command
+                                           for line in screen.splitlines()):
+        # The autocompletion took the Enter; the command is still there.
+        panes._tmux(["send-keys", "-t", pane, "Enter"])
+    # An id it has not cached sends it to refresh its catalogs first, a
+    # second or two ("Refreshing model catalogs…").
+    for _ in range(_PI_POLLS):
+        time.sleep(0.6)
+        screen = panes.capture(pane, lines=12, ansi=False)
+        if _pi_footer(screen) == model:
+            break
+    if _pi_footer(screen) != model:
+        panes._tmux(["send-keys", "-t", pane, "Escape"])
+        return False, {"error": f"pi did not take {model}", "status": 502}
+    with _LOCK:
+        _CHOSEN[session] = (model, time.time())
+    return True, {"told": True}
+
+
+def new_sheet(agent: str = "claude", profile: str = "") -> dict:
+    """A new chat's sheet: Claude Code's aliases, opencode's free models, or
+    the models pi lists for `profile` (a harness profile, "" its default
+    one), with what its "Default" runs; {} for an agent with no chip."""
     if agent == "opencode":
         from agent_media_core import opencode_models
 
         offered, default = opencode_models.models()
         return {"models": offered, "default": opencode_models.default_note(offered, default)}
+    if agent == "pi":
+        from agent_media_core import harness_profiles, pi_models
+
+        if profile and not harness_profiles.get("pi", profile):
+            return {"models": []}
+        offered, default = pi_models.models(profile)
+        return {"models": offered, "default": pi_models.default_note(offered, default)}
     if agent != "claude":
         return {"models": []}
     return {"models": models(), "default": default_note()}
 
 
-def get(session: str, bearer: str, agent: str = "claude") -> tuple[bool, dict]:
+def get(session: str, bearer: str, agent: str = "claude",
+        profile: str = "") -> tuple[bool, dict]:
     """A thread's settings; with no session, only the sheet (a new chat's,
-    for `agent`)."""
+    for `agent` in harness profile `profile`)."""
     session = (session or "").strip()
     if not session:
         user, err = auth.gate(bearer)
-        return (True, new_sheet((agent or "claude").strip().lower())) if user else (False, err)
+        return ((True, new_sheet((agent or "claude").strip().lower(), (profile or "").strip()))
+                if user else (False, err))
     if not sessions._SESSION.fullmatch(session):
         return False, {"error": "not a session id", "status": 400}
     user, err = auth.gate(bearer)
@@ -346,11 +452,11 @@ def post(session: str, body: dict, bearer: str) -> tuple[bool, dict]:
     if not user:
         return False, err
     model = body.get("model")
-    opencode = sessions.agent_of(session) == "opencode"
-    if model is not None and opencode:
-        from agent_media_core import opencode_models
+    agent = sessions.agent_of(session)
+    if model is not None and agent in ("opencode", "pi"):
+        from agent_media_core import opencode_models, pi_models
 
-        model = opencode_models.allowed(str(model))
+        model = (opencode_models if agent == "opencode" else pi_models).allowed(str(model))
         if not model:
             return False, {"error": "model must be a provider/model id", "status": 400}
     elif model is not None:
@@ -379,8 +485,8 @@ def configure_pane(session: str, *, model: str | None = None,
     if not pane or not panes.alive(pane):
         return False, {"error": "the session is not running; resume it first", "status": 409}
     agent = sessions._agent_of_pane(pane)
-    if agent not in ("claude", "opencode"):
-        return False, {"error": "only Claude Code and opencode sessions change model here",
+    if agent not in ("claude", "opencode", "pi"):
+        return False, {"error": "only Claude Code, opencode and pi sessions change model here",
                        "status": 400}
     st = sessions.activity_of(session, pane).get("state") or "waiting"
     if st != "waiting":
@@ -391,6 +497,10 @@ def configure_pane(session: str, *, model: str | None = None,
         if mode:
             return False, {"error": "opencode has no plan mode here", "status": 400}
         return _configure_opencode(session, pane, model) if model else (True, {"told": True})
+    if agent == "pi":
+        if mode:
+            return False, {"error": "pi has no plan mode here", "status": 400}
+        return _configure_pi(session, pane, model) if model else (True, {"told": True})
     told = True
     if model is not None:
         err = panes.send(pane, f"/model {model}")

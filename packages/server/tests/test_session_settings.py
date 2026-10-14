@@ -7,6 +7,7 @@ a list of what was typed. The headless side is in test_headless.py.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -281,3 +282,165 @@ def test_an_opencode_key_is_checked_kept_and_never_echoed(monkeypatch, tmp_path)
     assert H.api_key("codex", "openrouter", key, "t")[1]["status"] == 400
     assert H.api_key("opencode", "acme", key, "t")[1]["status"] == 400
     assert H.api_key("opencode", "openrouter", "not a key", "t")[1]["status"] == 400
+
+
+PI_LISTING = """provider    model                       context  max-out  thinking  images
+gateway     claude-opus-4-8             1M       32K      yes       no
+openrouter  qwen/qwen3.8-27b            128K     32K      no        no
+venice      kimi-k3                     256K     64K      yes       no
+venice      z-ai-glm-5-3                200K     32K      yes       no
+"""
+
+
+@pytest.fixture()
+def pi_home(monkeypatch, tmp_path):
+    """A state dir with a pi profile `venice`, and the default pi dir, both
+    under tmp; `pi --list-models` answers PI_LISTING for whichever."""
+    from agent_media_core import harness_profiles, pi_models
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(tmp_path / "pi"))
+    monkeypatch.setattr(harness_profiles, "_CACHE", (-1.0, []))
+    pi_models.forget()
+    (tmp_path / "pi").mkdir()
+    (tmp_path / "pi" / "settings.json").write_text(
+        json.dumps({"defaultProvider": "gateway", "defaultModel": "claude-opus-4-8"}))
+    venice = harness_profiles.create("pi", "venice")
+    (Path(venice.dir) / "settings.json").write_text(
+        json.dumps({"defaultProvider": "venice", "defaultModel": "kimi-k3"}))
+    asked = []
+    monkeypatch.setattr(pi_models, "_list", lambda profile, timeout=60.0: asked.append(profile)
+                        or PI_LISTING)
+    yield asked
+    pi_models.forget()
+
+
+def test_pi_sheet_is_the_profiles_listing_its_own_provider_first(pi_home):
+    venice = ss.new_sheet("pi", "venice")
+    assert [m["id"] for m in venice["models"]] == [
+        "venice/kimi-k3", "venice/z-ai-glm-5-3", "gateway/claude-opus-4-8",
+        "openrouter/qwen/qwen3.8-27b"]
+    assert venice["models"][0] == {"id": "venice/kimi-k3", "label": "kimi-k3",
+                                   "note": "venice · 256K context"}
+    assert venice["default"] == "kimi-k3 · venice"
+    default = ss.new_sheet("pi")
+    assert default["models"][0]["id"] == "gateway/claude-opus-4-8"
+    assert default["default"] == "claude-opus-4-8 · gateway"
+    assert pi_home == ["venice", ""]
+    ss.new_sheet("pi", "venice")          # kept, not asked again
+    assert pi_home == ["venice", ""]
+    assert ss.new_sheet("pi", "nobody") == {"models": []}
+
+
+def test_a_new_pi_chat_takes_a_model_id_and_starts_on_it(monkeypatch):
+    from agent_media_server import send
+
+    assert ss.clean_new("pi", "venice/kimi-k3", "plan") == ("venice/kimi-k3", "")
+    assert ss.clean_new("pi", "openrouter/qwen/qwen3.8-27b", "") == (
+        "openrouter/qwen/qwen3.8-27b", "")
+    for bad in ("--help", "kimi-k3", "venice/x; rm -rf ~", "venice/$(id)", "a/-b"):
+        assert ss.clean_new("pi", bad, "") == ("", "")
+    seen = {}
+    monkeypatch.setattr(send, "_ask_pane", lambda text, **kw: seen.update(kw) or (True, {}))
+    driver.pane_driver().start(agent="pi", cwd="/x", text="hi", model="openrouter/qwen/qwen3.8-27b",
+                               profile="venice")
+    assert seen["flags"] == ["--provider", "openrouter", "--model", "qwen/qwen3.8-27b"]
+    assert seen["profile"] == "venice"
+    driver.pane_driver().start(agent="pi", cwd="/x", text="hi")
+    assert seen["flags"] == []
+
+
+PI = "0d8c988a-bc75-474e-bc1e-fd4578346893"
+
+
+@pytest.fixture()
+def pi_pane(monkeypatch, pi_home, tmp_path):
+    """A running pi on the venice profile. `/model <id>` typed with Enter:
+    pi's autocompletion takes the first Enter (the command stays in the
+    composer), the next switches it — or, for an id it does not have, opens
+    its picker. The footer's last line says `(provider) model`."""
+    from agent_media_core import harness_profiles
+
+    driver._reset_for_tests()
+    ss._CHOSEN.clear()
+    sessions_dir = Path(harness_profiles.get("pi", "venice").dir) / "sessions"
+    (sessions_dir / "--x--").mkdir(parents=True)
+    ns = type("Pane", (), {})()
+    ns.path = sessions_dir / "--x--" / f"2026-10-14T14-16-09-094Z_{PI}.jsonl"
+    ns.path.write_text(json.dumps({"type": "session", "id": PI}) + "\n" + json.dumps(
+        {"type": "model_change", "timestamp": "2026-10-14T14:16:09.269Z",
+         "provider": "venice", "modelId": "kimi-k3"}) + "\n")
+    ns.typed, ns.keys, ns.on, ns.state = [], [], "venice/kimi-k3", "waiting"
+    ns.composer, ns.picker = "", False
+    monkeypatch.setattr(auth, "gate", lambda b: ({"id": "u"}, {}))
+    monkeypatch.setattr(sessions, "live_sessions", lambda: {PI: "%11"})
+    monkeypatch.setattr(sessions, "_agent_of_pane", lambda p: "pi")
+    monkeypatch.setattr(sessions, "activity_of", lambda s, p, **k: {"state": ns.state})
+    monkeypatch.setattr(panes, "alive", lambda p: True)
+    monkeypatch.setattr(panes, "is_herdr", lambda p: False)
+
+    def send(p, t):
+        ns.typed.append(t)
+        ns.composer = t           # the Enter went to the autocompletion
+        return ""
+
+    def tmux(argv):
+        key = argv[-1]
+        ns.keys.append(key)
+        if key == "Enter" and ns.composer:
+            want = ns.composer.split(" ", 1)[1]
+            ns.composer = ""
+            if want in {"venice/kimi-k3", "venice/z-ai-glm-5-3"}:
+                ns.on = want
+            else:
+                ns.picker = True
+        elif key == "Escape":
+            ns.picker = False
+        return ""
+    monkeypatch.setattr(panes, "send", send)
+    monkeypatch.setattr(panes, "_tmux", tmux)
+
+    def capture(p, lines=40, ansi=True):
+        provider, model = ns.on.split("/", 1)
+        middle = "  No matching models\n" if ns.picker else f"─────\n{ns.composer}\n─────\n"
+        return f"{middle}/x\n0.0%/1.0M (auto)        ({provider}) {model}\n"
+    monkeypatch.setattr(panes, "capture", capture)
+    monkeypatch.setattr(ss.time, "sleep", lambda s: None)
+    return ns
+
+
+def test_a_running_pi_says_its_model_from_its_session_file(pi_pane):
+    ok, d = ss.get(PI, "t")
+    assert ok and d["agent"] == "pi" and d["model"] == "venice/kimi-k3"
+    assert d["can"] == {"model": True, "plan": False}
+    assert [m["id"] for m in d["models"]][:2] == ["venice/kimi-k3", "venice/z-ai-glm-5-3"]
+
+
+def test_pi_is_switched_with_slash_model_past_its_autocompletion(pi_pane):
+    ok, d = ss.post(PI, {"model": "venice/z-ai-glm-5-3"}, "t")
+    assert ok, d
+    assert pi_pane.typed == ["/model venice/z-ai-glm-5-3"] and pi_pane.keys == ["Enter"]
+    assert d["model"] == "venice/z-ai-glm-5-3" and d["told"]
+
+
+def test_pi_that_does_not_have_it_closes_its_picker(pi_pane):
+    ok, d = ss.post(PI, {"model": "venice/no-such-model"}, "t")
+    assert not ok and d["status"] == 502 and "did not take" in d["error"]
+    assert pi_pane.keys == ["Enter", "Escape"] and not pi_pane.picker
+    assert ss.get(PI, "t")[1]["model"] == "venice/kimi-k3"
+
+
+def test_pi_refuses_mid_turn_plan_and_strangers(pi_pane):
+    pi_pane.state = "working"
+    assert ss.post(PI, {"model": "venice/kimi-k3"}, "t")[1]["status"] == 409
+    pi_pane.state = "waiting"
+    assert ss.post(PI, {"plan": True}, "t")[1]["status"] == 400
+    assert ss.post(PI, {"model": "--help"}, "t")[1]["status"] == 400
+    assert not pi_pane.typed
+
+
+def test_pi_footer_is_read_past_an_extension_status_line():
+    assert ss._pi_footer("─\n/x\n0.0%/1.0M (auto)   (venice) kimi-k3 • medium\nspeaking\n") == \
+        "venice/kimi-k3"
+    assert ss._pi_footer("─\n/x\n(openrouter) qwen/qwen3.8-27b\n") == "openrouter/qwen/qwen3.8-27b"
+    assert ss._pi_footer("nothing here\n") == ""

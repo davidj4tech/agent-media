@@ -542,7 +542,8 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
 
         qs = parse_qs(query)
         ok, detail = session_settings.get(qs.get("session", [""])[0], _bearer(h),
-                                          agent=qs.get("agent", ["claude"])[0])
+                                          agent=qs.get("agent", ["claude"])[0],
+                                          profile=qs.get("profile", [""])[0])
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path == "/commands":
         # The slash menu for the reply box: what this session's terminal

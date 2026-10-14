@@ -41,6 +41,10 @@ class PaneDriver:
                          else f for f in flags] + ["--permission-mode", "plan"]
         elif agent == "opencode" and model:
             flags += ["-m", model]
+        elif agent == "pi" and model:
+            from agent_media_core import pi_models
+
+            flags += pi_models.start_flags(model)
         return send._ask_pane(text, agent=agent, cwd=cwd, host=host, flags=flags,
                               quote=quote, **({"profile": profile} if profile else {}))
 
