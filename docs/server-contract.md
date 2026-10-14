@@ -2208,6 +2208,49 @@ missing field or a bad date. `needs_text` false means the text may be empty.
 - It is capped at 6,000 characters.
 - 404 and 409 as for `/org/read`; 422 when nothing readable is left.
 
+#### `POST /org/listen` · `GET /org/listen` · `POST /org/listen/ctl` (15 Oct 2026)
+
+Listening to a note with follow-along (`org_listen.py`). `/org/say` reads a
+note as a reply; this plays it on the **book channel**, with no length cap,
+a place to resume from, chapters at its headings, and the paragraph being
+read known to the line.
+
+`POST /org/listen {"path", "at"?, "line"?}` — `auth.may_control_speech`,
+like `/org/say` → `{"ok", "state", "path", "at", "title", "line"}`.
+- The note (or with `at` its subtree, as `/org/read` returns it) is projected
+  as `media doc` projects a document, and rendered one clip per paragraph,
+  synthesised in parallel (`MEDIA_RENDER_JOBS`, default 6). A sidecar beside
+  the audio (`<cache>/docs/note-<hash>.json`) keeps each paragraph's
+  `{start, end, line}`. The render is cached on the text, so an edited note
+  is rendered again, and a heading on its own is a render of its own.
+- `state` is `"rendering"` while synthesis runs (it then plays by itself),
+  `"copying"` while the file goes to the phone (the book channel plays it
+  when it lands), or `"playing"`.
+- `line` (0-based in the `text` `/org/read` gave) starts at the paragraph at
+  or after it. When this note is already the one playing, that is a seek.
+  Without `line` a note resumes where it was left, or from the top once it
+  was heard to within 3 s of its end.
+- 404 and 409 as for `/org/read`; 422 when nothing readable is left; 502
+  when the book channel refused it.
+
+`GET /org/listen` — gated → `{"ok", "state", "path", "at", "title", "line",
+"pos_ms", "dur_ms"}`.
+- `state` is `"playing"` or `"paused"` when the book channel's file is a
+  render with timings (matched by name, so the phone's copy counts),
+  `"rendering"` or `"copying"` for one on its way, else `"idle"` with nothing
+  else.
+- `line` is the paragraph being read, in the same numbering as `POST`'s.
+  The reader marks the block that starts on it.
+- The book channel is asked at most once a second.
+
+`POST /org/listen/ctl {"action": "pause" | "resume" | "toggle" | "stop"}` —
+`auth.may_control_speech` → the `GET` answer, after it. 400 for anything
+else.
+
+`media doc play` renders a document the same way, so its sidecar is there
+too. It has no `path` in the Org tree, though, so a reader has nothing to
+follow.
+
 #### `POST /org/ask` — gated (`auth.gate`), like `/ask`
 
 `{"path", "at"?, "text", "agent"?}` → `/ask`'s answer for a new session

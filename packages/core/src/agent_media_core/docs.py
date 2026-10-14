@@ -375,6 +375,27 @@ class Section:
     text: str
     level: int = 1
     lines: list = field(default_factory=list)
+    #: The heading's source line (0-based), -1 for none.
+    line: int = -1
+    #: `(source line, spoken text)` per paragraph of `text`: what a reader
+    #: follows along by. Empty for sections composed rather than read.
+    paras: list = field(default_factory=list)
+
+
+def _paras(buf: list, src: list) -> list:
+    """Runs of non-blank spoken lines, each led by its first source line."""
+    out: list = []
+    run: list = []
+    for text, line in zip(buf, src):
+        if text.strip():
+            run.append((line, text.strip()))
+            continue
+        if run:
+            out.append((run[0][0], " ".join(t for _, t in run)))
+            run = []
+    if run:
+        out.append((run[0][0], " ".join(t for _, t in run)))
+    return out
 
 
 _FENCE = re.compile(r"^\s*(```|~~~)")
@@ -419,17 +440,25 @@ def speakable_sections(md: str) -> list[Section]:
     the eye takes from a block it skips anyway. Reading it aloud instead is how
     a document becomes unlistenable.
     """
-    md = _HTML_COMMENT.sub("", md)
+    # Comments are blanked, not cut, so every line keeps its number.
+    md = _HTML_COMMENT.sub(lambda m: "\n" * m.group(0).count("\n"), md)
     sections: list[Section] = []
     cur = Section(heading="", text="", level=1)
     buf: list[str] = []
+    src: list[int] = []
+
+    def add(text: str, line: int):
+        buf.append(text)
+        src.append(line)
 
     def flush():
         body = "\n".join(buf).strip()
         if body or cur.heading:
             sections.append(Section(heading=cur.heading, text=body,
-                                    level=cur.level))
+                                    level=cur.level, line=cur.line,
+                                    paras=_paras(buf, src)))
         buf.clear()
+        src.clear()
 
     lines = md.splitlines()
     i = 0
@@ -438,29 +467,35 @@ def speakable_sections(md: str) -> list[Section]:
 
         if _FENCE.match(line):                      # code block: announce it
             marker = _FENCE.match(line).group(1)
+            start = i
             n = 0
             i += 1
             while i < len(lines) and not lines[i].strip().startswith(marker):
                 n += 1
                 i += 1
             i += 1
-            buf.append(f"A code example follows, {_plural(n, 'line', 'lines')}.")
+            add("", start)
+            add(f"A code example follows, {_plural(n, 'line', 'lines')}.", start)
+            add("", start)
             continue
 
         if _TABLE_ROW.match(line):                  # table: announce it
+            start = i
             rows = 0
             while i < len(lines) and _TABLE_ROW.match(lines[i]):
                 if not re.match(r"^\s*\|[\s:|-]+\|?\s*$", lines[i]):
                     rows += 1
                 i += 1
-            buf.append(f"A table follows, {_plural(rows, 'row', 'rows')}.")
+            add("", start)
+            add(f"A table follows, {_plural(rows, 'row', 'rows')}.", start)
+            add("", start)
             continue
 
         m = _HEADING.match(line)
         if m:
             flush()
             cur = Section(heading=speak_inline(m.group(2)), text="",
-                          level=len(m.group(1)))
+                          level=len(m.group(1)), line=i)
             i += 1
             continue
 
@@ -469,8 +504,10 @@ def speakable_sections(md: str) -> list[Section]:
             continue
 
         stripped = _LIST_BULLET.sub("", line)
+        if stripped != line:                        # a list item: its own paragraph
+            add("", i)
         spoken = speak_inline(stripped)
-        buf.append(spoken)
+        add(spoken, i)
         i += 1
 
     flush()
@@ -536,6 +573,11 @@ def speakable_sections_org(src: str) -> list[Section]:
     sections: list[Section] = []
     cur = Section(heading="", text="", level=1)
     buf: list[str] = []
+    at: list[int] = []
+
+    def add(text: str, line: int):
+        buf.append(text)
+        at.append(line)
 
     def flush():
         # Blank lines are kept, then runs collapsed: a paragraph break is the
@@ -544,8 +586,10 @@ def speakable_sections_org(src: str) -> list[Section]:
         body = re.sub(r"\n{3,}", "\n\n", "\n".join(buf)).strip()
         if body or cur.heading:
             sections.append(Section(heading=cur.heading, text=body,
-                                    level=cur.level))
+                                    level=cur.level, line=cur.line,
+                                    paras=_paras(buf, at)))
         buf.clear()
+        at.clear()
 
     lines = src.splitlines()
     i = 0
@@ -556,6 +600,7 @@ def speakable_sections_org(src: str) -> list[Section]:
         if b:
             kind = b.group(1).lower()
             end = re.compile(rf"^\s*#\+end_{kind}", re.I)
+            start = i
             n = 0
             i += 1
             body: list[str] = []
@@ -565,11 +610,16 @@ def speakable_sections_org(src: str) -> list[Section]:
                 i += 1
             i += 1
             if kind in ("quote", "verse"):
-                buf.extend(speak_inline_org(x) for x in body)
+                for k, x in enumerate(body):
+                    add(speak_inline_org(x), start + 1 + k)
             elif kind == "src":
-                buf.append(f"A code example follows, {_plural(n, 'line', 'lines')}.")
+                add("", start)
+                add(f"A code example follows, {_plural(n, 'line', 'lines')}.", start)
+                add("", start)
             elif kind == "example":
-                buf.append(f"An example follows, {_plural(n, 'line', 'lines')}.")
+                add("", start)
+                add(f"An example follows, {_plural(n, 'line', 'lines')}.", start)
+                add("", start)
             continue
 
         if _ORG_DRAWER.match(line) and not _ORG_DRAWER_END.match(line):
@@ -584,19 +634,22 @@ def speakable_sections_org(src: str) -> list[Section]:
             continue
 
         if _TABLE_ROW.match(line):
+            start = i
             rows = 0
             while i < len(lines) and _TABLE_ROW.match(lines[i]):
                 if not re.match(r"^\s*\|[-+\s|]+\|?\s*$", lines[i]):
                     rows += 1
                 i += 1
-            buf.append(f"A table follows, {_plural(rows, 'row', 'rows')}.")
+            add("", start)
+            add(f"A table follows, {_plural(rows, 'row', 'rows')}.", start)
+            add("", start)
             continue
 
         h = _ORG_HEADING.match(line)
         if h:
             flush()
             cur = Section(heading=_org_heading_text(h.group(2)), text="",
-                          level=len(h.group(1)))
+                          level=len(h.group(1)), line=i)
             i += 1
             continue
 
@@ -605,11 +658,15 @@ def speakable_sections_org(src: str) -> list[Section]:
             mark = cb.group(1)
             state = "done" if mark in "xX" else ("partly done" if mark == "-"
                                                  else "to do")
-            buf.append(f"{speak_inline_org(line[cb.end():])} — {state}")
+            add("", i)
+            add(f"{speak_inline_org(line[cb.end():])} — {state}", i)
             i += 1
             continue
 
-        buf.append(speak_inline_org(_LIST_BULLET.sub("", line)))
+        item = _LIST_BULLET.sub("", line)
+        if item != line:                            # a list item: its own paragraph
+            add("", i)
+        add(speak_inline_org(item), i)
         i += 1
 
     flush()
@@ -723,7 +780,9 @@ def render_doc(path: Path, engine: Optional[str] = None,
     outdir = doc_cache_dir()
     outdir.mkdir(parents=True, exist_ok=True)
     final = outdir / f"{path.stem}-{_cache_key(path, engine, voice)}.mp3"
-    if final.exists() and final.stat().st_size > 0 and not force:
+    # A render from before the timings sidecar is made again, once.
+    if (final.exists() and final.stat().st_size > 0 and not force
+            and timings_path(final).exists()):
         return final
 
     try:
@@ -738,7 +797,8 @@ def render_doc(path: Path, engine: Optional[str] = None,
 
 def render_sections(sections: list, stem: str, engine: Optional[str] = None,
                     voice: Optional[str] = None,
-                    force: bool = True) -> Optional[Path]:
+                    force: bool = True,
+                    extra: Optional[dict] = None) -> Optional[Path]:
     """Render already-built sections (an agenda, a summary) to chaptered audio.
 
     Same pipeline as a document, minus the file: the caller has composed the
@@ -750,35 +810,93 @@ def render_sections(sections: list, stem: str, engine: Optional[str] = None,
     outdir = doc_cache_dir()
     outdir.mkdir(parents=True, exist_ok=True)
     final = outdir / f"{stem}.mp3"
-    if final.exists() and not force:
+    if final.exists() and not force and timings_path(final).exists():
         return final
     if not sections:
         return None
-    return _render_sections_to(sections, final, engine, voice)
+    return _render_sections_to(sections, final, engine, voice, extra)
+
+
+def note_stem(text: str, fmt: str, engine: Optional[str] = None,
+              voice: Optional[str] = None) -> str:
+    """The cache name of a note's render: keyed on the words themselves, so a
+    heading read on its own and an edited note are each their own."""
+    engine = engine or os.environ.get("MEDIA_RENDER_ENGINE", "edge")
+    voice = voice or os.environ.get("MEDIA_RENDER_VOICE_" + engine.upper()) or ""
+    key = hashlib.sha256(f"{fmt}|{engine}|{voice}|{text}".encode()).hexdigest()[:16]
+    return f"note-{key}"
+
+
+def timings_path(clip: Path) -> Path:
+    """The sidecar beside a render: its paragraphs' times and source lines."""
+    return clip.with_suffix(".json")
+
+
+def read_timings(clip: Path) -> Optional[dict]:
+    """`{"timings": [{start, end, line}], "chapters": [...], …}`, or None."""
+    import json
+    try:
+        got = json.loads(timings_path(clip).read_text())
+    except (OSError, ValueError):
+        return None
+    return got if isinstance(got, dict) else None
+
+
+def _pieces(sec: Section) -> list[tuple[int, str]]:
+    """What is synthesised for a section, one clip each, with its source line.
+
+    A section read from a file is a clip per paragraph, so each paragraph's
+    time in the audio is measured rather than guessed: a reader follows along
+    by them. A composed one (an agenda) has no lines, and is one clip."""
+    if not sec.paras:
+        say = ((sec.heading + ".\n\n") if sec.heading else "") + sec.text
+        return [(-1, say)] if say.strip() else []
+    out = [(sec.line, sec.heading + ".")] if sec.heading else []
+    return out + [(ln, t) for ln, t in sec.paras if t.strip()]
 
 
 def _render_sections_to(sections: list, final: Path, engine: str,
-                        voice: str) -> Optional[Path]:
+                        voice: str, extra: Optional[dict] = None) -> Optional[Path]:
+    import json
+    from concurrent.futures import ThreadPoolExecutor
     from .render import render_text
 
     outdir = final.parent
     work = outdir / f".{final.stem}.parts"
     work.mkdir(parents=True, exist_ok=True)
-    parts: list[Path] = []
-    chapters: list[tuple[str, float, float]] = []
-    clock = 0.0
+    jobs: list[tuple[int, int, str, Path]] = []        # section, line, text, file
     for n, sec in enumerate(sections):
-        say = ((sec.heading + ".\n\n") if sec.heading else "") + sec.text
-        if not say.strip():
-            continue
-        part = work / f"{n:04d}.mp3"
+        for line, say in _pieces(sec):
+            jobs.append((n, line, say, work / f"{len(jobs):05d}.mp3"))
+
+    def synth(job) -> float:
+        _n, _line, say, part = job
         ok, _err = render_text(say, part, engine=engine, voice=voice or None)
         if not ok or not part.exists() or part.stat().st_size == 0:
-            continue
-        dur = _ffprobe_duration(part)
-        parts.append(part)
-        chapters.append((sec.heading or f"Section {n + 1}", clock, clock + dur))
-        clock += dur
+            return 0.0
+        return _ffprobe_duration(part)
+
+    # Synthesis is a network round trip per clip, so they go out together.
+    workers = max(1, int(os.environ.get("MEDIA_RENDER_JOBS", "6") or 6))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        durs = list(pool.map(synth, jobs))
+
+    parts: list[Path] = []
+    chapters: list[tuple[str, float, float]] = []
+    timings: list[dict] = []
+    clock = 0.0
+    for n, sec in enumerate(sections):
+        start = clock
+        for (jn, line, _say, part), dur in zip(jobs, durs):
+            if jn != n or dur <= 0:
+                continue
+            parts.append(part)
+            if line >= 0:
+                timings.append({"start": round(clock, 3),
+                                "end": round(clock + dur, 3), "line": line})
+            clock += dur
+        if clock > start:
+            chapters.append((sec.heading or f"Section {n + 1}", start, clock))
 
     if not parts:
         return None
@@ -797,7 +915,7 @@ def _render_sections_to(sections: list, final: Path, engine: str,
     except (OSError, subprocess.SubprocessError):
         return None
     finally:
-        for p in list(parts) + [listing, meta]:
+        for p in [w for *_, w in jobs] + [listing, meta]:
             try:
                 p.unlink()
             except OSError:
@@ -806,4 +924,10 @@ def _render_sections_to(sections: list, final: Path, engine: str,
             work.rmdir()
         except OSError:
             pass
-    return final if final.exists() else None
+    if not final.exists():
+        return None
+    timings_path(final).write_text(json.dumps({
+        **(extra or {}), "duration": round(clock, 3),
+        "chapters": [{"title": t, "start": round(a, 3)} for t, a, _ in chapters],
+        "timings": timings}))
+    return final

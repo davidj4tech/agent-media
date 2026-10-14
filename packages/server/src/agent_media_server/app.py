@@ -202,7 +202,7 @@ from urllib.parse import parse_qs
 
 from . import (abs_item, archive, auth, devices, drafts, harnesses, pins, routing, send,
                sessions, share, speech, threads)
-from . import alerts, audio, music, org, org_chat, org_edit, org_setup, org_zettel, refs, uploads
+from . import alerts, audio, music, org, org_chat, org_edit, org_listen, org_setup, org_zettel, refs, uploads
 from . import web_app
 
 # The endpoints a browser on another origin may reach. Everything here
@@ -256,7 +256,8 @@ CORS_PATHS = CORS_PATHS | MUSIC_PATHS
 ORG_PATHS = frozenset({"/org", "/org/view", "/org/read", "/org/search",
                          "/org/capture", "/org/setup", "/org/say",
                          "/org/state", "/org/refile", "/org/date",
-                         "/org/priority", "/org/ask", "/org/zettel"})
+                         "/org/priority", "/org/ask", "/org/zettel",
+                         "/org/listen", "/org/listen/ctl"})
 CORS_PATHS = CORS_PATHS | ORG_PATHS
 
 # What the watchers report (alerts.py, §6.17). The same arrangement.
@@ -1922,6 +1923,23 @@ def _org(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
         except (TypeError, ValueError):
             at = 0
         ok, detail = org.say(str(body.get("path") or ""), at, bearer)
+    elif method == "GET" and path == "/org/listen":
+        ok, detail = org_listen.now(bearer)
+    elif method == "POST" and path == "/org/listen":
+        # Listening with follow-along: the note on the book channel (org_listen.py).
+        body = _read_json(h) or {}
+        try:
+            at = max(0, int(body.get("at") or 0))
+        except (TypeError, ValueError):
+            at = 0
+        try:
+            line = None if body.get("line") is None else max(0, int(body["line"]))
+        except (TypeError, ValueError):
+            line = None
+        ok, detail = org_listen.listen(str(body.get("path") or ""), at, line, bearer)
+    elif method == "POST" and path == "/org/listen/ctl":
+        body = _read_json(h) or {}
+        ok, detail = org_listen.control(str(body.get("action") or ""), bearer)
     elif method == "POST" and path == "/org/ask":
         # A chat about this item: a fresh session in the notes tree (org_chat.py).
         body = _read_json(h) or {}
