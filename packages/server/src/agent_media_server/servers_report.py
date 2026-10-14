@@ -10,9 +10,10 @@ whose devices are all gone stops being refreshed and drops off the list after
 
 Addresses: `api` is where the app reaches this server — MEDIA_PUBLIC_URL,
 else the running quick tunnel, else the address the last sign-in came in on.
-`web` is the Sasonica web app that talks to it, if one is served
-(MEDIA_WEB_APP_URL; red5's preview on :8795). MEDIA_SERVERS_REPORT=0 turns
-the reports off.
+`web` is the Sasonica web app that talks to it, if one is served:
+MEDIA_WEB_APP_URL, else `<api>/app` when this server serves the bundle itself
+(web_app.py; it is on the public listener too, so that holds for a tunnel
+address as well as a LAN one). MEDIA_SERVERS_REPORT=0 turns the reports off.
 """
 
 from __future__ import annotations
@@ -80,7 +81,15 @@ def addresses() -> dict:
             api = str(json.loads(_seen_path().read_text()).get("base") or "")
         except (OSError, ValueError):
             api = ""
-    return {"api": api.rstrip("/"), "web": os.environ.get("MEDIA_WEB_APP_URL", "").strip().rstrip("/")}
+    api = api.rstrip("/")
+    web = os.environ.get("MEDIA_WEB_APP_URL", "").strip().rstrip("/")
+    if not web and api:
+        # The web app this server serves itself (web_app.py): on every
+        # listener, so `/app` beside whichever address `api` is.
+        from . import web_app
+        if web_app.serving():
+            web = api + web_app.PREFIX
+    return {"api": api, "web": web}
 
 
 def describe() -> dict:

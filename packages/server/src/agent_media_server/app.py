@@ -10,6 +10,10 @@ Endpoints (all gated by `auth.gate`: a paired device's token, else the
 caller's Audiobookshelf bearer — see auth.py; except /pair, which is how a
 device gets its token):
 
+  GET  /app/…     → the Sasonica web app (sasonica-app built for /app/), when
+                  a bundle is present (MEDIA_WEB_APP_DIR, else the binary's
+                  own copy); no auth, client routes fall back to index.html.
+                  See web_app.py
   POST /pair      {"code", "device"} → trade a one-time pairing code (minted
                   by `media-visual-canvas pair --device NAME`) for a device
                   token. No auth; failures rate-limited per source address.
@@ -191,6 +195,7 @@ from urllib.parse import parse_qs
 from . import (abs_item, archive, auth, devices, drafts, harnesses, pins, routing, send,
                sessions, share, speech, threads)
 from . import alerts, audio, music, org, org_chat, org_edit, org_setup, org_zettel, refs, uploads
+from . import web_app
 
 # The endpoints a browser on another origin may reach. Everything here
 # carries its own credential — a paired device's token, or the caller's
@@ -437,6 +442,10 @@ def dispatch(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
     if path in FREE_PATHS and method in ("GET", "POST"):
         return _free(h, method, path)
     if method == "GET":
+        # The web app's own files (web_app.py, roadmap 21): no credential,
+        # and nothing under /app is an API route.
+        if path == web_app.PREFIX or path.startswith(web_app.PREFIX + "/"):
+            return web_app.serve(h, path)
         return _get(h, path)
     if method == "POST":
         return _post(h, path)

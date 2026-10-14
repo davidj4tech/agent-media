@@ -27,3 +27,6 @@ abs.env
 
 # Kerykeion geonames cache (transit charts)
 /cache/
+
+# The web app bundle a local binary build copies in (deploy/binary/build.sh).
+packages/server/src/agent_media_server/web_app/

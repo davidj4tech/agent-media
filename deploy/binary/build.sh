@@ -69,6 +69,37 @@ step "Packages"
   "$ROOT/packages/core" "$ROOT/packages/server" "$ROOT/packages/visual" "$ROOT/packages/sasonica"
 SITE=$WORK/dist/$SITE_REL
 echo "$VERSION" >"$SITE/sasonica/BUILD"
+
+step "Web app"
+# The Sasonica web app, served by the server at /app/ (roadmap 21,
+# agent_media_server/web_app.py reads web_app/ beside itself). It is
+# sasonica-app built for /app/; its CI attaches that build to each build-<n>
+# prerelease as sasonica-web-<n>-<sha>.tar.gz. Given as a file, directory or
+# URL in SASONICA_WEB_BUNDLE; else fetched from the newest release when a
+# token that can read sasonica-app (a private repo) is in SASONICA_APP_TOKEN.
+# Without either, the binary has no web app — everything else works.
+WEB=$SITE/agent_media_server/web_app
+rm -rf "$WEB"
+web_src=${SASONICA_WEB_BUNDLE:-}
+if [ -z "$web_src" ] && [ -n "${SASONICA_APP_TOKEN:-}" ]; then
+  web_src=$(curl -fsSL -H "Authorization: Bearer $SASONICA_APP_TOKEN" \
+      "https://api.github.com/repos/davidj4tech/sasonica-app/releases?per_page=20" |
+    "$PY" -c 'import json, sys
+for r in json.load(sys.stdin):
+    for a in r.get("assets", []):
+        if a["name"].startswith("sasonica-web-") and a["name"].endswith(".tar.gz"):
+            print(a["url"]); raise SystemExit' || true)
+fi
+if [ -d "$web_src" ]; then
+  mkdir -p "$WEB" && cp -R "$web_src"/. "$WEB"/
+elif [ -f "$web_src" ]; then
+  mkdir -p "$WEB" && tar -xzf "$web_src" -C "$WEB"
+elif [ -n "$web_src" ]; then
+  mkdir -p "$WEB"
+  auth=(); case $web_src in https://api.github.com/*) auth=(-H "Authorization: Bearer $SASONICA_APP_TOKEN" -H "Accept: application/octet-stream") ;; esac
+  curl -fsSL ${auth[@]+"${auth[@]}"} "$web_src" | tar -xz -C "$WEB"
+fi
+if [ -f "$WEB/index.html" ]; then echo "web app: $(du -sh "$WEB" | cut -f1)"; else rm -rf "$WEB"; echo "web app: none (no SASONICA_WEB_BUNDLE or SASONICA_APP_TOKEN)"; fi
 # pip wrote each console script with this build directory in its #! line.
 # Make them find the Python beside them instead, wherever it is unpacked:
 # pip's own trick for a #! too long for the kernel, a shell line Python reads
