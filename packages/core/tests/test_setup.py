@@ -621,8 +621,10 @@ def _profile_args(tmp_path, **kw):
 
 
 def _only_hook_rows(monkeypatch):
-    """Leave the services and the shell out: they touch the machine."""
-    rows = tuple(r for r in setup.PROFILE_ROWS if r[0] not in ("services", "shell"))
+    """Leave the services, the shell and the agents' plugin links out: they
+    touch the machine."""
+    rows = tuple(r for r in setup.PROFILE_ROWS
+                 if r[0] not in ("services", "shell", "opencode", "pi"))
     monkeypatch.setattr(setup, "PROFILE_ROWS", rows)
 
 
@@ -706,6 +708,28 @@ def test_status_says_what_is_missing(tmp_path, monkeypatch):
     rows = {r["name"]: r for r in setup.profile_status(args)}
     assert rows["speech"]["state"] == "ok" and rows["catchup"]["state"] == "ok"
     assert rows["speech"]["kind"] == "core" and rows["catchup"]["kind"] == "extra"
+
+
+def test_pi_extension_is_linked_into_its_extensions_dir(tmp_path, monkeypatch):
+    """pi has a row of its own on the Coding agents page, like opencode's
+    plugin: its extension linked into the directory pi loads them from."""
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(tmp_path / "pi"))
+    monkeypatch.setattr(setup.shutil, "which", lambda name: f"/usr/bin/{name}")
+    assert any(r[0] == "pi" for r in setup.PROFILE_ROWS)
+    args = _profile_args(tmp_path)
+    dest = tmp_path / "pi" / "extensions" / "agent-media-tts.ts"
+    assert setup._row_pi(args, check_only=True) == ("missing", str(dest))
+    assert setup._row_pi(args, check_only=False) == ("installed", str(dest))
+    assert dest.resolve() == setup.pi_extension_source().resolve()
+    assert setup._row_pi(args, check_only=True) == ("ok", str(dest))
+
+
+def test_pi_row_is_absent_without_pi(tmp_path, monkeypatch):
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(tmp_path / "pi"))
+    monkeypatch.setattr(setup.shutil, "which", lambda name: None)
+    state, why = setup._row_pi(_profile_args(tmp_path), check_only=False)
+    assert state == "absent" and "not installed" in why
+    assert not (tmp_path / "pi").exists()
 
 
 def test_a_managed_config_dir_is_written_to_instead(tmp_path, monkeypatch, capsys):

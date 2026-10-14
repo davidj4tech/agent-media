@@ -39,6 +39,8 @@ TEMPLATE_DIRS = (
     # opencode's plugin (setup.opencode_plugin_source): the single binary has
     # no checkout to link it from.
     ("opencode", "agent_media_core/opencode"),
+    # pi's extension (setup.pi_extension_source), for the same reason.
+    ("pi", "agent_media_core/pi"),
 )
 
 # Directory names never worth shipping: runit's live state, and the log

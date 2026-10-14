@@ -1566,6 +1566,33 @@ def _row_opencode(args, *, check_only: bool):
     return ("installed" if ok else "failed"), str(dest)
 
 
+def pi_extension_source() -> Path:
+    """The agent-media extension for pi, as this install ships it."""
+    return _data_dir("pi") / "media-tts.ts"
+
+
+def pi_extension_dest() -> Path:
+    base = os.environ.get("PI_CODING_AGENT_DIR") or str(Path.home() / ".pi" / "agent")
+    return Path(base) / "extensions" / "agent-media-tts.ts"
+
+
+def _row_pi(args, *, check_only: bool):
+    """pi's extension: like opencode, pi loads every script in its extensions
+    directory, so the extension is linked in there."""
+    if shutil.which("pi") is None:
+        return "absent", "pi is not installed here"
+    src, dest = pi_extension_source(), pi_extension_dest()
+    if not src.exists():
+        return "absent", f"no extension at {src} (not a source checkout)"
+    linked = dest.is_symlink() and dest.resolve() == src
+    if check_only:
+        return ("ok" if linked else "missing"), str(dest)
+    if linked:
+        return "ok", str(dest)
+    ok = _symlink_into(src, dest, dry_run=args.dry_run)
+    return ("installed" if ok else "failed"), str(dest)
+
+
 #: name, one line for a person, kind, and the function that checks or installs.
 PROFILE_ROWS = (
     ("speech", "the hooks that speak a reply and record the turn", "core", _row_speech),
@@ -1579,6 +1606,8 @@ PROFILE_ROWS = (
      "extra", _hook_row(_CATCHUP_HOOK, "agent-repo-catchup")),
     ("opencode", "opencode's replies spoken and its turns recorded (its plugin)",
      "extra", _row_opencode),
+    ("pi", "pi's replies spoken and its turns recorded (its extension)",
+     "extra", _row_pi),
 )
 
 
