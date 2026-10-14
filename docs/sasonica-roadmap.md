@@ -999,10 +999,17 @@ ahead.
    tailnet address (mixed content, Chrome's private-network rules), so two
    halves (David chose both, plus help):
    - **app.sasonica.com**: the sasonica-app web build, hosted once over
-     https (red4 behind Caddy, or Cloudflare Pages), for servers with a
-     public https address (named or quick tunnel). Open =
-     `https://app.sasonica.com/pairing?server=<api>`. Each server's public
-     listener must allow that origin (CORS).
+     https, for servers with a public https address (named or quick
+     tunnel). **Built 14 Oct 2026**: red4's Caddy serves
+     `/srv/sasonica/web` (SPA fallback, hashed assets a year, the rest
+     no-cache; DNS a proxied A record like sasonica.com's); websites
+     `bin/publish-web` (run by hand) builds sasonica-app's origin/main both
+     ways and publishes the root build, with `sasonica-web.tar.gz`,
+     `sasonica-web-app.tar.gz` (the `/app/` build) and `version.json` beside
+     it (websites 50ca5f8). On that host the app has no default server
+     (sasonica-app 96a097d, `hostedApp()`): welcome, then pairing, or
+     `?server=`; account sign-in goes through sasonica.com/auth back to it.
+     CORS needed nothing: the app routes already answer `*`.
    - **The server serves it too**: agent-media serves the same bundle at
      `/app/` on its own listener (http on the LAN/tailnet), shipped with
      the server (the binary build fetches the release's web bundle).
@@ -1015,15 +1022,25 @@ ahead.
      (build-app/client; default build unchanged), where serverBase() is the
      page's own origin; its CI attaches `sasonica-web-*.tar.gz` to each
      build release. `deploy/binary/build.sh` copies it in from
-     SASONICA_WEB_BUNDLE, or fetches it with SASONICA_APP_TOKEN — still to
-     do: that secret in agent-media's repo (sasonica-app is private), else
-     the binary ships without it. servers_report: `web` = `<api>/app`.
-   - **When it can't be reached**: the Account page's row says why (no
-     public address; LAN/tailnet only) and links sasonica.com/help/reach:
-     turn on a public address first (`sasonica tunnel`, no account needed),
-     Tailscale as the second way, with steps for phone and desk.
-   Order: server-served `/app/` first (fixes Wi-Fi and every install),
-   then app.sasonica.com, then the help page and row wording.
+     SASONICA_WEB_BUNDLE, else (since 14 Oct 2026, no token: David skipped
+     the secret) fetches https://app.sasonica.com/sasonica-web-app.tar.gz,
+     which is only as new as the last `bin/publish-web`.
+     servers_report: `web` = `<api>/app`.
+   - **When it can't be reached**: **built 14 Oct 2026** (websites
+     50ca5f8). The Account page asks each https server from the browser
+     (`GET <api>/enrol`, 6 s): no Sasonica answer → "Not reachable from
+     here" and a link to sasonica.com/help/reach; a plain-http LAN address
+     says it opens on its own network; 100.64/10 keeps "opens on your
+     tailnet". Open = the server's own web app when https (it matches the
+     server's version), else app.sasonica.com for a public https `api`,
+     else the server's own http one. The help page: re-run
+     `sasonica install` for the quick tunnel, `sasonica media-tunnel url`,
+     `sasonica pair --device NAME`; or Tailscale (install on both, same
+     account, `http://<100.x>:8781/app`); what "not reachable" usually
+     means. Remove left the rows (David): servers drop off after 30 days
+     unheard, and the page says so.
+   **Done 14 Oct 2026.** Left: `bin/publish-web` on a timer like
+   publish-app, if the binary should always carry main's app.
 
 22. **A light mode for sasonica.com** (David, 14 Oct 2026, from the
    admin's accent: "should we add a light mode for sasonica.com?"). The

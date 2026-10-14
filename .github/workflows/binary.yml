@@ -40,10 +40,6 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Build
-        env:
-          # Reads sasonica-app's releases for the web app bundle (build.sh
-          # "Web app"); unset, the binary is built without one.
-          SASONICA_APP_TOKEN: ${{ secrets.SASONICA_APP_TOKEN }}
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           deploy/binary/build.sh
@@ -69,10 +65,6 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Build
-        env:
-          # Reads sasonica-app's releases for the web app bundle (build.sh
-          # "Web app"); unset, the binary is built without one.
-          SASONICA_APP_TOKEN: ${{ secrets.SASONICA_APP_TOKEN }}
         run: deploy/binary/build.sh
 
       - name: Smoke test
@@ -122,10 +114,6 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Build
-        env:
-          # Reads sasonica-app's releases for the web app bundle (build.sh
-          # "Web app"); unset, the binary is built without one.
-          SASONICA_APP_TOKEN: ${{ secrets.SASONICA_APP_TOKEN }}
         run: deploy/binary/build.sh
 
       - name: Smoke test
