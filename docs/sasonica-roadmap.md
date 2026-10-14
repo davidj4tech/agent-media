@@ -1025,6 +1025,21 @@ ahead.
    Order: server-served `/app/` first (fixes Wi-Fi and every install),
    then app.sasonica.com, then the help page and row wording.
 
+22. **A light mode for sasonica.com** (David, 14 Oct 2026, from the
+   admin's accent: "should we add a light mode for sasonica.com?"). The
+   site, the app and the brand are dark-only today, and the mint
+   (`#7fd1ae`) only reads on the dark ground: on white it is about 1.7:1 for
+   links, and white button text on it worse. A light mode needs a second
+   palette, not an inversion: a deeper green for text and buttons on light
+   (the mark's `#578e77` is a start, about 3.6:1, so likely darker still),
+   light grounds and borders, then every page of front/sasonica (Next.js,
+   `app/globals.css`), the chat, the social-preview image and the wordmark's
+   mint "sonic" checked in both. Follows the device (`prefers-color-scheme`),
+   with a switch only if asked for. The mark's own dark tile works on either.
+   Then the admin (Gin, mint accent since 14 Oct 2026, following the device)
+   can take the light palette's green in light mode; until then the Gin
+   login pages (websites `sasonica_brand/login`) stay dark.
+
 ## Loose ends
 
 - **A reply with a figure had no follow-along at all** (David, 23 Sep 2026)
