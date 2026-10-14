@@ -795,6 +795,10 @@ def session_resume(session: str, bearer: str) -> tuple[bool, dict]:
     user, err = auth.gate(bearer)
     if not user:
         return False, err
+    from agent_media_core.sealed import is_sealed
+
+    if is_sealed(session):
+        return False, {"error": "this thread is sealed: unseal it first", "status": 423}
     from . import driver
 
     return driver.for_session(session).resume(session)
@@ -1066,6 +1070,10 @@ def deliver(session: str, body: str, text: str, *, quote: str = "") -> tuple[boo
     by a reply from a conversation's page and a reply the assistant button
     routed here.
     """
+    from agent_media_core.sealed import is_sealed
+
+    if is_sealed(session):
+        return False, {"error": "this thread is sealed: unseal it first", "status": 423}
     from . import driver
 
     return driver.for_session(session).send(session, body, text, quote=quote)

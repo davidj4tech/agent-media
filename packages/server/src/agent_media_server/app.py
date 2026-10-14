@@ -92,6 +92,10 @@ device gets its token):
   POST /session/archive {"session", "archived": true|false} → file the
                   thread under Archived, or take it back out (a flag this
                   server keeps; see archive.py). Ends nothing
+  POST /session/seal {"session", "sealed": true|false} → age-encrypt the
+                  thread's transcript, spoken lines, clips and shelf folder
+                  into one bundle, or put them back (seal.py). Ends a live
+                  session first; a sealed thread's content answers 423
   POST /session/pin {"session", "pinned": true|false} → keep that session
                   open against the idle reaper (pins.py, reap.py)
   POST /session/priority {"session", "level"} → that thread's speech
@@ -213,7 +217,7 @@ from . import web_app
 CORS_PATHS = frozenset({
     "/conversation", "/conversation/log", "/conversations", "/targets", "/item",
     "/reply", "/ask", "/focus", "/session/resume", "/session/close", "/draft",
-    "/session/answer", "/session/archive", "/session/pin", "/session/priority", "/session/pocket",
+    "/session/answer", "/session/archive", "/session/seal", "/session/pin", "/session/priority", "/session/pocket",
     "/session/stop",
     "/session/retract", "/session/move", "/session/settings",
     "/speech/now", "/speech/ctl", "/speech/sentences", "/speech/default", "/speech/voice",
@@ -469,9 +473,22 @@ def _options(h: BaseHTTPRequestHandler, path: str) -> bool:
     return True
 
 
+def _sealed(h: BaseHTTPRequestHandler, session: str) -> bool:
+    """Answer 423 for a sealed thread's content: there is none to read until
+    it is unsealed (seal.py). True when it answered."""
+    from agent_media_core.sealed import is_sealed
+
+    if not is_sealed(session):
+        return False
+    _json(h, 423, {"ok": False, "error": "this thread is sealed", "sealed": True})
+    return True
+
+
 def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
     query = h.path.partition("?")[2]
     events = THREAD_EVENTS.fullmatch(path)
+    if events and _sealed(h, events.group(1)):
+        return True
     if events:
         # The stream answers the request however it ends — it must never
         # fall through to the caller's 404 on a socket it already wrote to.
@@ -569,6 +586,8 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
         qs = parse_qs(query)
         session = qs.get("session", [""])[0]
         page = {"limit": qs.get("limit", [None])[0], "before": qs.get("before", [""])[0]}
+        if session and _sealed(h, session):
+            return True
         if session:
             # `around=<message id>`: the page holding that message (a jump
             # from search, §6.14). Session form only.
@@ -1462,6 +1481,19 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         body = _read_json(h) or {}
         ok, detail = archive.session_archive(str(body.get("session") or ""),
                                              body.get("archived"), _bearer(h))
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    elif path == "/session/seal":
+        # Seal or unseal a thread: its transcript, spoken lines, clips and
+        # shelf folder age-encrypted into one bundle (seal.py). A live
+        # session is ended first. Gated like /session/archive.
+        from . import seal
+
+        body = _read_json(h) or {}
+        ok, detail = seal.session_seal(str(body.get("session") or ""),
+                                       body.get("sealed"), _bearer(h))
+        if not ok:
+            print(f"seal: refused ({detail.get('error')}) for "
+                  f"{str(body.get('session'))[:8]}", file=sys.stderr, flush=True)
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path == "/session/move":
         # Move a conversation to another project: file it there, move its

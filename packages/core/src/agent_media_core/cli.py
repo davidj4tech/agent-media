@@ -8345,6 +8345,14 @@ def cmd_session_delete(a) -> int:
                       as_json=a.json)
 
 
+def cmd_session_seal(a) -> int:
+    """Seal or unseal a thread (agent_media_server.seal)."""
+    seal = _server_module("seal")
+    if seal is None:
+        return 1
+    return seal.run(a.session, unseal_=a.unseal, dry_run=a.dry_run)
+
+
 def cmd_selfcheck(a) -> int:
     """Report this host's install health as key=value lines."""
     print(SELFCHECK_SENTINEL)
@@ -9272,6 +9280,13 @@ def _build_parser() -> argparse.ArgumentParser:
     sdel.add_argument("--apply", action="store_true", help="delete")
     sdel.add_argument("--json", action="store_true")
     sdel.set_defaults(func=cmd_session_delete)
+    sseal = sub.add_parser("session-seal",
+                           help="age-encrypt a thread's transcript, spoken lines, clips and "
+                                "shelf folder into one bundle (ends a live session first)")
+    sseal.add_argument("session", metavar="SESSION")
+    sseal.add_argument("--unseal", action="store_true", help="put a sealed thread back")
+    sseal.add_argument("--dry-run", action="store_true", help="say what would be sealed")
+    sseal.set_defaults(func=cmd_session_seal)
 
     sc = sub.add_parser("selfcheck",
                         help="report this host's install health (key=value lines)")

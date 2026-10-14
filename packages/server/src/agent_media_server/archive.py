@@ -139,8 +139,11 @@ def session_archive(session: str, flag, bearer: str) -> tuple[bool, dict]:
     user, err = auth.gate(bearer)
     if not user:
         return False, err
+    from agent_media_core.sealed import is_sealed
+
+    # A sealed thread has none of these any more, and is still listed.
     if not (sessions.live_sessions().get(session) or sessions.session_exists(session)
-            or sessions._folder_for_session(session)):
+            or sessions._folder_for_session(session) or is_sealed(session)):
         return False, {"error": f"no such session {session[:8]}", "status": 404}
     try:
         set_archived(session, flag)

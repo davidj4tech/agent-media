@@ -409,9 +409,11 @@ def export_session(session: str, *, store=None) -> tuple[Optional[Path], int]:
     What has been written is what decides where the next one goes.
     """
     from .deleted import is_deleted
+    from .sealed import is_sealed
 
-    if is_deleted(session):
-        # Deleted: its folder would be rebuilt from whatever speech is left.
+    if is_deleted(session) or is_sealed(session):
+        # Deleted or sealed: its folder would be rebuilt from whatever speech
+        # is left.
         return None, 0
     turns = session_feed.turns(session, store=store)
     manifest = _read_manifest(session)

@@ -1314,6 +1314,9 @@ def sessions_index(*, days: float = STORE_DAYS) -> list[dict]:
     caps on closed rows (`SHELF_ROWS`, `HEADLESS_ENDED_ROWS`) count only the
     ones not archived.
 
+    And `sealed: true` on a sealed thread's row (`seal`), which carries no
+    title or recap: only its harness, where it was and when it was sealed.
+
     And `rested` — `{"at", "reason"}` when the idle reaper closed it, None
     otherwise and always None while live (`rest`) — and `pinned`, whether it
     is kept open against the reaper (`pins`), and `speech`, its speech level
@@ -1378,8 +1381,25 @@ def sessions_index(*, days: float = STORE_DAYS) -> list[dict]:
     # Where each thread is: its directory and the project it is filed under,
     # for the small line under the title and the list's By-project order.
     from agent_media_core.deleted import deleted
+    from agent_media_core.sealed import sealed
 
     gone = deleted()
-    if gone:
-        out = [r for r in out if r.get("session") not in gone]
-    return add_projects(out)
+    locked = sealed()
+    if gone or locked:
+        out = [r for r in out if r.get("session") not in gone and r.get("session") not in locked]
+    # A sealed thread is listed with nothing of its content: where it was and
+    # when it was sealed, so the app can offer to unseal it (seal.py).
+    return add_projects(out) + [seal_row(sid, rec, sid in flags, sid in pinned)
+                                for sid, rec in locked.items() if sid not in gone]
+
+
+def seal_row(session: str, rec: dict, archived: bool = False, pinned: bool = False) -> dict:
+    """A sealed thread's row in the list: no title, no recap."""
+    from agent_media_core.speak_priority import SPEAKS, default_level
+
+    level = default_level()
+    return {"speech": level, "speech_own": False, "priority": level in SPEAKS,
+            "session": session, "title": "", "live": False, "pane": None,
+            "at": rec.get("at"), "recap": None, "archived": archived, "rested": None,
+            "pinned": pinned, "sealed": True, "harness": rec.get("harness") or "claude",
+            "cwd": rec.get("cwd") or None, "project": rec.get("project") or None}

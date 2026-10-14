@@ -785,8 +785,9 @@ def stored(*, since: float = 0.0, limit: int = 0,
     found += _hermes_stored()
     found += _opencode_stored()
     from .deleted import deleted
+    from .sealed import sealed
 
-    gone = deleted()
+    gone = deleted().keys() | sealed().keys()
     newest: dict[str, Stored] = {}
     for row in found:
         if row.at < since or row.session in gone:
