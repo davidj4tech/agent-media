@@ -2163,6 +2163,9 @@ def main() -> None:
     # The radio's loop (agent_media_server.radio): idle until a station is on.
     from agent_media_server import radio as _radio
     _radio.start()
+    # This server on its accounts' lists at sasonica.com, daily (roadmap 20).
+    from agent_media_server import servers_report as _servers_report
+    _servers_report.start()
     # The one Matrix /sync loop (agent_media_server.matrix), with the speech
     # intake reading from it; idle unless a token and a room are configured.
     from agent_media_server import matrix as _matrix

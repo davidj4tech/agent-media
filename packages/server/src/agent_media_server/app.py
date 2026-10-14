@@ -1070,6 +1070,10 @@ def _enrol(h: BaseHTTPRequestHandler) -> None:
                                 username=oidc.username_of(claims), picture=oidc.picture_of(claims))
     print(f"enrol: {got['device_id']} ({got['name']!r}) for "
           f"{claims.get('email') or claims.get('sub')} from {ip}", file=sys.stderr)
+    if refresh_token:
+        # This server, on the account's list at sasonica.com (roadmap item 20).
+        from . import servers_report
+        servers_report.report_soon(got["device_id"], _base_url(h))
     _json(h, 200, {"ok": True, "token": got["token"], "device_id": got["device_id"],
                    "name": got["name"], "enrol": got["enrol"],
                    "account": str(claims.get("email") or ""), "username": got["username"],

@@ -40,6 +40,9 @@ def _clean_media_env(monkeypatch, tmp_path, request):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     # The alert store files TODOs in ~/org/inbox.org: never David's here.
     monkeypatch.setenv("MEDIA_ALERTS_INBOX", "0")
+    # A sign-in would tell its (stand-in) issuer about this server from a
+    # thread (servers_report.py); test_servers_report.py turns it on.
+    monkeypatch.setenv("MEDIA_SERVERS_REPORT", "0")
     # Paired devices live under that state dir too (devices.json, the pairing
     # codes); the in-process bits — the parsed-file cache and the per-address
     # pairing-failure counts — are reset so one test's refusals cannot
