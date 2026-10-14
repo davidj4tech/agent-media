@@ -924,7 +924,19 @@ ahead.
    `macos-installer.yml`, run 37716796623). Not testable there: the
    one-time SmartScreen/Gatekeeper click.
 
-19. **Account sign-in from a browser** (David, 14 Oct 2026) — the app's web
+19. **Account sign-in from a browser** (David, 14 Oct 2026) — **DONE 14 Oct
+   2026**: off the native platform the sign-in comes back to
+   `https://sasonica.com/auth` (websites `front/sasonica/app/auth`, Drupal
+   `sasonica-app`'s second redirect via `drush/accounts-setup.php`, run on
+   red4), which reads the way back from the state (`<random>~<pairing URL,
+   base64url>`) and asks "Continue to <host>?" before handing the code on —
+   no consent screen, so no silent forward (David chose the confirm). The tab
+   itself navigates; `/enrol` needed no change (it passes the app's
+   `redirect_uri` through). Plain-http pages have no `crypto.subtle`, so the
+   PKCE hash falls back to `lib/sha256.ts`. Round trip checked from red5's
+   `:8795` preview with a fake code (sasonica-app `de6467d`, `bf8181d`;
+   websites `6a0e8f9`). A real sign-in to the end is still to do by hand.
+   The original note: the app's web
    build (red5 `:8795`, or any server's) can only pair: "Sign in with a
    Sasonica account" sends the code back to `sasonica://auth`
    (sasonica-app `app/api/auth.ts` `AUTH_REDIRECT`), which only the Android
