@@ -971,6 +971,13 @@ def program(name: str) -> str:
     return shutil.which(name, path=bin_path()) or ""
 
 
+def run_env(env: dict | None = None) -> dict:
+    """The environment to run an agent in: `bin_path` as its PATH, since an
+    npm agent's `#!/usr/bin/env node` needs node on it too, and `program` may
+    have found the agent somewhere node is not (pi's ~/.local/bin link)."""
+    return {**os.environ, "PATH": bin_path(), **(env or {})}
+
+
 def installed(harness: str) -> bool:
     return bool(program(harness))
 
@@ -1210,8 +1217,7 @@ def auth_state(harness: str, timeout: float = 15.0, env: dict | None = None) -> 
     try:
         # `env`: a harness profile's directory (harness_profiles.env).
         done = subprocess.run(argv, capture_output=True, text=True,
-                              timeout=timeout, check=False,
-                              env={**os.environ, **env} if env else None)
+                              timeout=timeout, check=False, env=run_env(env))
     except (OSError, subprocess.SubprocessError):
         return "unknown", ""
     out = (done.stdout or "") + (done.stderr or "")
@@ -1278,7 +1284,7 @@ def _codex_login_dead(exe: str, env: dict | None, timeout: float) -> bool:
     try:
         proc = subprocess.Popen([exe, "app-server"], stdin=subprocess.PIPE,
                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                text=True, env={**os.environ, **env} if env else None)
+                                text=True, env=run_env(env))
     except OSError:
         return False
     try:
@@ -1391,7 +1397,10 @@ def version_of(harness: str, timeout: float = 10.0) -> str:
         return ""
     try:
         done = subprocess.run([exe, "--version"], capture_output=True, text=True,
-                              timeout=timeout, check=False)
+                              timeout=timeout, check=False, env=run_env())
     except (OSError, subprocess.SubprocessError):
+        return ""
+    if done.returncode != 0:
+        # Its error is not a version ("env: 'node': No such file or directory").
         return ""
     return " ".join((done.stdout or done.stderr or "").split())[:80]

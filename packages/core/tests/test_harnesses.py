@@ -362,3 +362,22 @@ def test_a_codex_token_still_in_date_is_not_refreshed(tmp_path, monkeypatch):
     _codex_auth(tmp_path, exp=4102444800)
     monkeypatch.setattr(harnesses, "program", lambda name: _fake_codex(tmp_path, None))
     assert harnesses.auth_state("codex", env={"CODEX_HOME": str(tmp_path)})[0] == "in"
+
+
+def test_an_npm_agent_finds_node_beside_fnm(tmp_path, monkeypatch):
+    """pi linked into ~/.local/bin, node only under fnm's default alias: the
+    canvas's systemd PATH has the first and not the second, and `env node`
+    failed — the Coding agents page showed that error as pi's version."""
+    home = tmp_path / "home"
+    local, fnm = home / ".local" / "bin", home / ".local/share/fnm/aliases/default/bin"
+    local.mkdir(parents=True)
+    fnm.mkdir(parents=True)
+    (local / "pi").write_text("#!/usr/bin/env node\n")
+    (fnm / "node").write_text("#!/bin/sh\necho 1.2.0\n")
+    for f in (local / "pi", fnm / "node"):
+        f.chmod(0o755)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("PATH", f"{local}:/usr/bin:/bin")
+    assert harnesses.version_of("pi") == "1.2.0"
+    (fnm / "node").unlink()
+    assert harnesses.version_of("pi") == "", "an error is not a version"
