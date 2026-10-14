@@ -991,6 +991,29 @@ ahead.
    should show an address at all, or only "Open" through a per-server link;
    and whether the list lives in Drupal or in a Worker beside the relay.
 
+21. **A web app for every server** (David, 14 Oct 2026: "app.sasonica.com
+   … it should at least work on the Wi-Fi network though, right? … should
+   we offer any help or advice in setting up tailscale"). Only red5 has a
+   web app today (the `:8795` preview), so Open on sasonica.com/account
+   works for red5 alone. An https page cannot call a plain-http LAN or
+   tailnet address (mixed content, Chrome's private-network rules), so two
+   halves (David chose both, plus help):
+   - **app.sasonica.com**: the sasonica-app web build, hosted once over
+     https (red4 behind Caddy, or Cloudflare Pages), for servers with a
+     public https address (named or quick tunnel). Open =
+     `https://app.sasonica.com/pairing?server=<api>`. Each server's public
+     listener must allow that origin (CORS).
+   - **The server serves it too**: agent-media serves the same bundle at
+     `/app/` on its own listener (http on the LAN/tailnet), shipped with
+     the server (the binary build fetches the release's web bundle).
+     servers_report sends `web` = that address when no MEDIA_WEB_APP_URL.
+   - **When it can't be reached**: the Account page's row says why (no
+     public address; LAN/tailnet only) and links sasonica.com/help/reach:
+     turn on a public address first (`sasonica tunnel`, no account needed),
+     Tailscale as the second way, with steps for phone and desk.
+   Order: server-served `/app/` first (fixes Wi-Fi and every install),
+   then app.sasonica.com, then the help page and row wording.
+
 ## Loose ends
 
 - **A reply with a figure had no follow-along at all** (David, 23 Sep 2026)
