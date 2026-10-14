@@ -1068,6 +1068,26 @@ ahead.
    can take the light palette's green in light mode; until then the Gin
    login pages (websites `sasonica_brand/login`) stay dark.
 
+23. **Listen to a note, with follow-along** (David, 15 Oct 2026: "how might
+   I have an MD file read to me?", then yes to a button, "nice to have
+   follow along for it too"). Today it is `media doc play <path>` or asking
+   an agent in a thread; the app's Notes reader opens `.md`/`.org`/`.txt`
+   (`GET /org/read`) and has no way to hear one.
+   1. **Listen** in the reader (the whole note, or from the heading it is
+      opened at): a server endpoint over `docs.render_doc` and the book
+      channel, `target` the app's usual choice (phone by default). The
+      cached render, chapters per heading and resume all come with it.
+   2. **Follow-along:** the reader marks the sentence being spoken and
+      scrolls with it. No forced alignment is needed (unlike the ePub
+      read-along, `proposals/2026-09-09-book-read-along.md`), because we
+      synthesise the audio ourselves: `_render_sections_to` already ffprobes
+      each section's length for the chapter marks. Rendering per paragraph
+      (or sentence) gives a timings sidecar `{start, end, line, text}`
+      beside the cached audio; the reader matches the book position against
+      it. The projection drops code fences and tables, so a timing points at
+      the source line it came from, and skipped blocks are passed over.
+      Tapping a paragraph seeks there.
+
 ## Loose ends
 
 - **A reply with a figure had no follow-along at all** (David, 23 Sep 2026)
