@@ -368,6 +368,14 @@ or Mark all read, clears it.
 
 ## In flight
 
+**New projects, worktrees and presets** (David, 15 Oct 2026). Server done
+(`1142230`, contract §6.24): `/ask` takes `new_project` (+ `repo`,
+`agents_md`, `preset`) or `worktree: {from, branch}`; `/presets` CRUD. App:
+the new-chat sheet's New project… / New worktree… rows, preset chips and a
+Settings → Presets editor, building. Open: in the default layout a
+worktree's thread is filed under its branch name (the folder's basename),
+not its project.
+
 **Sasonica's own speech player.** Media3 (David, 23 Sep 2026: the reason
 MediaPlayer was chosen — the companion had no Gradle build — is gone). Built:
 `com.sasonica.next.speech` — `MpvServer`, `Json` and `ClipCache` carried over
