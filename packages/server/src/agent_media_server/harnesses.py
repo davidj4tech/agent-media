@@ -223,7 +223,23 @@ def add_profile(agent: str, name: str, adopt: str, bearer: str) -> tuple[bool, d
         return False, {"error": str(e), "status": 400}
     except OSError as e:
         return False, {"error": f"could not make it: {e}", "status": 503}
+    if p.harness == harnesses.PI:
+        _wire_quietly("pi")
     return True, {"agent": p.harness, "profile": p.name, "dir": p.dir, "adopted": p.adopted}
+
+
+def _wire_quietly(row: str, timeout: float = 30.0) -> None:
+    """`media-setup profile --only ROW`, no window: a new pi profile is its
+    own extensions directory, and has no speech until the pi row links the
+    agent-media extension into it. Best effort; the row's Fix does the same."""
+    exe = _media_setup()
+    if not exe:
+        return
+    try:
+        subprocess.run([exe, "profile", "--only", row], capture_output=True, timeout=timeout,
+                       check=False, env={**os.environ, "PATH": harnesses.bin_path()})
+    except (OSError, subprocess.SubprocessError):
+        pass
 
 
 def remove_profile(agent: str, name: str, delete: bool, bearer: str) -> tuple[bool, dict]:

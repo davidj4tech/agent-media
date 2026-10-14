@@ -1576,21 +1576,31 @@ def pi_extension_dest() -> Path:
     return Path(base) / "extensions" / "agent-media-tts.ts"
 
 
+def pi_extension_dests() -> list[Path]:
+    """Where the extension goes: the default pi directory, then each pi
+    harness profile's — a profile is its own PI_CODING_AGENT_DIR, and pi
+    loads extensions from there alone, so a second login was silent."""
+    from agent_media_core import harness_profiles
+
+    default = pi_extension_dest().parent.parent
+    return [d / "extensions" / "agent-media-tts.ts"
+            for _name, d in harness_profiles.dirs("pi", default)]
+
+
 def _row_pi(args, *, check_only: bool):
     """pi's extension: like opencode, pi loads every script in its extensions
-    directory, so the extension is linked in there."""
+    directory, so the extension is linked in there — in every pi profile."""
     if shutil.which("pi") is None:
         return "absent", "pi is not installed here"
-    src, dest = pi_extension_source(), pi_extension_dest()
+    src, dests = pi_extension_source(), pi_extension_dests()
     if not src.exists():
         return "absent", f"no extension at {src} (not a source checkout)"
-    linked = dest.is_symlink() and dest.resolve() == src
-    if check_only:
-        return ("ok" if linked else "missing"), str(dest)
-    if linked:
-        return "ok", str(dest)
-    ok = _symlink_into(src, dest, dry_run=args.dry_run)
-    return ("installed" if ok else "failed"), str(dest)
+    unlinked = [d for d in dests if not (d.is_symlink() and d.resolve() == src)]
+    detail = str(dests[0]) + (f" (+{len(dests) - 1} profile(s))" if len(dests) > 1 else "")
+    if check_only or not unlinked:
+        return ("ok" if not unlinked else "missing"), detail
+    ok = all([_symlink_into(src, d, dry_run=args.dry_run) for d in unlinked])
+    return ("installed" if ok else "failed"), detail
 
 
 #: name, one line for a person, kind, and the function that checks or installs.

@@ -710,9 +710,19 @@ def test_status_says_what_is_missing(tmp_path, monkeypatch):
     assert rows["speech"]["kind"] == "core" and rows["catchup"]["kind"] == "extra"
 
 
+def _no_profiles(tmp_path, monkeypatch):
+    """A harness-profiles store of the test's own: the real one has a real
+    pi profile, and the pi row would link into it."""
+    from agent_media_core import harness_profiles
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(harness_profiles, "_CACHE", (-1.0, []))
+
+
 def test_pi_extension_is_linked_into_its_extensions_dir(tmp_path, monkeypatch):
     """pi has a row of its own on the Coding agents page, like opencode's
     plugin: its extension linked into the directory pi loads them from."""
+    _no_profiles(tmp_path, monkeypatch)
     monkeypatch.setenv("PI_CODING_AGENT_DIR", str(tmp_path / "pi"))
     monkeypatch.setattr(setup.shutil, "which", lambda name: f"/usr/bin/{name}")
     assert any(r[0] == "pi" for r in setup.PROFILE_ROWS)
@@ -724,7 +734,27 @@ def test_pi_extension_is_linked_into_its_extensions_dir(tmp_path, monkeypatch):
     assert setup._row_pi(args, check_only=True) == ("ok", str(dest))
 
 
+def test_pi_extension_is_linked_into_every_pi_profile(tmp_path, monkeypatch):
+    """A second pi login is its own PI_CODING_AGENT_DIR, and pi loads
+    extensions from there alone: a venice profile spoke nothing."""
+    from agent_media_core import harness_profiles
+
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(tmp_path / "pi"))
+    _no_profiles(tmp_path, monkeypatch)
+    monkeypatch.setattr(setup.shutil, "which", lambda name: f"/usr/bin/{name}")
+    args = _profile_args(tmp_path)
+    assert setup._row_pi(args, check_only=False)[0] == "installed"
+    p = harness_profiles.create("pi", "venice")
+    assert setup._row_pi(args, check_only=True)[0] == "missing"
+    assert setup._row_pi(args, check_only=False)[0] == "installed"
+    dest = setup.Path(p.dir) / "extensions" / "agent-media-tts.ts"
+    assert dest.resolve() == setup.pi_extension_source().resolve()
+    assert setup._row_pi(args, check_only=True) == (
+        "ok", f"{tmp_path / 'pi' / 'extensions' / 'agent-media-tts.ts'} (+1 profile(s))")
+
+
 def test_pi_row_is_absent_without_pi(tmp_path, monkeypatch):
+    _no_profiles(tmp_path, monkeypatch)
     monkeypatch.setenv("PI_CODING_AGENT_DIR", str(tmp_path / "pi"))
     monkeypatch.setattr(setup.shutil, "which", lambda name: None)
     state, why = setup._row_pi(_profile_args(tmp_path), check_only=False)

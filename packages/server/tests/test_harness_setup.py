@@ -433,3 +433,17 @@ def test_a_chat_in_a_profile_opens_with_its_directory(monkeypatch, profiles):
     monkeypatch.setattr(cs, "running", lambda: [])
     send.open_window("0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0", "/tmp", resume=True, host="scratch", agent="codex")
     assert f"CODEX_HOME={p.dir}" in seen[-1][-1]
+
+
+def test_a_new_pi_profile_is_wired_for_speech(monkeypatch, tmp_path):
+    """pi loads extensions from its own directory alone, so a new pi login
+    gets the pi row run for it at once; another agent's does not."""
+    from agent_media_core import harness_profiles
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(harness_profiles, "_CACHE", (-1.0, []))
+    ran = []
+    monkeypatch.setattr(agents, "_wire_quietly", lambda row: ran.append(row))
+    assert agents.add_profile("pi", "venice", "", "b")[0]
+    assert agents.add_profile("codex", "work", "", "b")[0]
+    assert ran == ["pi"]
