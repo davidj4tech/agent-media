@@ -232,6 +232,83 @@ def test_same_session_admits_in_submission_order(tmp_path, monkeypatch):
     holder.release()
 
 
+def test_session_lends_its_high_clip_rank_to_its_earlier_sibling(tmp_path, monkeypatch):
+    """The 2026-10-14 deadlock: sess-1's NORMAL reply waits ahead of its own
+    HIGH clip, and sess-2 has a reply bumped one above NORMAL by a yield. The
+    early reply deferred to sess-2, sess-2 deferred to the HIGH clip, the HIGH
+    clip waited for its earlier sibling — the token sat free and nobody spoke.
+    The early sibling now carries its session's HIGH rank and takes the token."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.delenv("MEDIA_SPEECH_SERIALIZE", raising=False)
+    monkeypatch.setenv("MEDIA_SPEECH_LOCK_TIMEOUT_S", "5")
+
+    bumped = S._SpeechPlaybackLock()
+    bumped._rank = S._PRIO_RANK[P.NORMAL] + 1
+    bumped._session = "sess-2"
+    bumped._seq = 50.0
+    bumped._register()
+
+    high = S._SpeechPlaybackLock()
+    high._rank = S._PRIO_RANK[P.HIGH]
+    high._session = "sess-1"
+    high._seq = 300.0
+    high._register()
+
+    early = S._SpeechPlaybackLock()
+    early._rank = S._PRIO_RANK[P.NORMAL]
+    early._session = "sess-1"
+    early._seq = 100.0
+
+    assert early._claim_rank() == S._PRIO_RANK[P.HIGH]
+    t0 = time.monotonic()
+    early._take()
+    assert early._fd is not None
+    assert time.monotonic() - t0 < 2    # not the 5 s give-up
+    # The other two still defer, so the queue stays ordered behind it.
+    assert bumped._preempting_rank() > bumped._claim_rank()
+    assert high._earlier_sibling_waiting() is False   # early no longer waits
+
+    early.release()
+    bumped._unregister()
+    high._unregister()
+
+
+def test_paused_holder_steps_aside_for_an_equal_waiter(tmp_path, monkeypatch):
+    """A paused reply hands the token to another session's waiting reply of
+    the SAME rank (which never preempts it) and takes it back afterwards."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.delenv("MEDIA_SPEECH_SERIALIZE", raising=False)
+    monkeypatch.setenv("MEDIA_SPEECH_LOCK_TIMEOUT_S", "5")
+
+    a = S._SpeechPlaybackLock()
+    a.acquire(P.NORMAL, session="sess-1")
+    assert a.other_session_waiting() is False
+
+    b = S._SpeechPlaybackLock()
+    spoke = []
+
+    def run_b() -> None:
+        b.acquire(P.NORMAL, session="sess-2")
+        spoke.append("b")
+        time.sleep(0.3)
+        b.release()
+
+    tb = threading.Thread(target=run_b)
+    tb.start()
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline and not a.other_session_waiting():
+        time.sleep(0.02)
+    assert a.other_session_waiting() is True
+    assert a.should_yield() is False        # equal rank: no preemption
+
+    a.step_aside()
+    spoke.append("a")
+    tb.join(timeout=3)
+    assert spoke == ["b", "a"]
+    assert a._fd is not None
+    a.release()
+
+
 def test_same_session_urgent_barges_in(tmp_path, monkeypatch):
     """URGENT is the same-session exception: it interrupts the in-progress clip
     at the next boundary, then (default) the interrupted clip resumes."""

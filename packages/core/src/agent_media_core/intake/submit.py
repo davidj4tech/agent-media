@@ -1867,6 +1867,16 @@ def _pending_ttl_s() -> float:
         return 120.0
 
 
+def _paused_hold_s() -> float:
+    """How long a paused reply keeps the token while another session waits
+    (MEDIA_SPEECH_PAUSED_HOLD_S); after that it steps aside and comes back
+    paused. 0 or less: hold for as long as it stays paused, as before."""
+    try:
+        return float(os.environ.get("MEDIA_SPEECH_PAUSED_HOLD_S", "90"))
+    except ValueError:
+        return 90.0
+
+
 def _pid_alive(pid: int) -> bool:
     """Best-effort liveness check used to reap stale waiter entries."""
     from .. import procinfo
@@ -2084,6 +2094,20 @@ class _SpeechPlaybackLock:
             if pending or self._same_session(session):
                 continue
             best = max(best, rank)
+        return best
+
+    def _claim_rank(self) -> int:
+        """My rank for cross-session contention: the highest of mine and my
+        session's other live waiters. A session's high clip waits behind its
+        earlier siblings (canonical order), so those siblings carry its rank —
+        priority inheritance. Without it the early sibling defers to a
+        middling third session, which defers to the high clip, which waits
+        for the early sibling: a cycle nobody breaks (2026-10-14: eleven
+        replies queued, none speaking, while the token sat free)."""
+        best = self._rank
+        for rank, _seq, session, pending in self._other_waiters():
+            if not pending and self._same_session(session):
+                best = max(best, rank)
         return best
 
     def _earlier_sibling_waiting(self) -> bool:
@@ -2312,7 +2336,7 @@ class _SpeechPlaybackLock:
                 # jump its session's queue). An URGENT clip defers to nobody in
                 # its own session; the strictly-earliest non-URGENT sibling never
                 # defers to a sibling either, so admission always progresses.
-                if (self._preempting_rank() > self._rank
+                if (self._preempting_rank() > self._claim_rank()
                         or (not self._is_urgent()
                             and (self._urgent_sibling_waiting()
                                  or self._earlier_sibling_waiting()))):
@@ -2380,7 +2404,7 @@ class _SpeechPlaybackLock:
                 except OSError:
                     pass
                 else:
-                    if self._preempting_rank() <= self._rank:
+                    if self._preempting_rank() <= self._claim_rank():
                         self._fd = fd
                         return True
                     try:
@@ -2433,8 +2457,52 @@ class _SpeechPlaybackLock:
         token next), so an ordinary sibling never cuts a clip short."""
         if self._fd is None:
             return False
-        return (self._preempting_rank() > self._rank
+        return (self._preempting_rank() > self._claim_rank()
                 or self._urgent_sibling_waiting())
+
+    def other_session_waiting(self) -> bool:
+        """True when a reply from another session is waiting for the token
+        (not still rendering) — someone a paused holder could let through."""
+        if self._fd is None:
+            return False
+        return any(not pending and not self._same_session(session)
+                   for _r, _s, session, pending in self._other_waiters())
+
+    def step_aside(self, wait_s: float = 3.0) -> None:
+        """Hand the token to whoever is waiting, at our own rank, then re-take
+        it. For a reply left paused: pausing used to hold the token for good,
+        so a phone that came back from a dropout paused silenced every other
+        session (2026-10-14). Unlike `yield_to_higher` there is no rank bump
+        and no fixed grace: the waiter outranks nobody, so we stay out until
+        someone has actually taken the token (or `wait_s` passes)."""
+        if self._fd is None:
+            return
+        try:
+            fcntl.flock(self._fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        try:
+            os.close(self._fd)
+        except OSError:
+            pass
+        self._fd = None
+        try:
+            probe = os.open(str(_speech_lock_path()), os.O_RDWR)
+        except OSError:
+            probe = None
+        if probe is not None:
+            deadline = time.monotonic() + wait_s
+            try:
+                while time.monotonic() < deadline:
+                    try:
+                        fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except OSError:
+                        break           # taken: the waiter is speaking
+                    fcntl.flock(probe, fcntl.LOCK_UN)
+                    time.sleep(0.1)
+            finally:
+                os.close(probe)
+        self._take()
 
     def _supersede_path(self) -> Path:
         key = hashlib.sha1(self._session.encode("utf-8")).hexdigest()
@@ -4704,6 +4772,10 @@ def _submit_event(event: Event,
                 # Whether the player was paused at the last readable tick,
                 # carried across a yield (see there).
                 last_paused = False
+                # When the player was first seen paused in the current stretch
+                # (None while playing): a reply paused past _paused_hold_s()
+                # steps aside for another session's waiting reply.
+                paused_since: Optional[float] = None
                 # Why the follow loop stopped, for the one line it logs on the
                 # way out. Every exit is a different bug when it is the wrong
                 # one, and until this was recorded the only trace a lost
@@ -4754,7 +4826,11 @@ def _submit_event(event: Event,
                     # the full playlist and jump back to where we were — reloading
                     # the whole list (not just the tail) keeps playlist-pos mapping
                     # 1:1 to the sentence index for the popup/highlight.
-                    if playback_lock.should_yield():
+                    paused_out = (paused_since is not None
+                                  and 0 < _paused_hold_s()
+                                  <= time.monotonic() - paused_since
+                                  and playback_lock.other_session_waiting())
+                    if paused_out or playback_lock.should_yield():
                         resume_i = i if 0 <= i < n else 0
                         # A reply the listener had paused comes back paused.
                         # It is now also what a replay displaces (a ▶ tapped
@@ -4767,7 +4843,13 @@ def _submit_event(event: Event,
                         sink.stop(target)
                         getattr(sink, "release_broker",
                                 lambda *a, **k: None)(target)
-                        playback_lock.yield_to_higher()
+                        if paused_out:
+                            log.warning("intake: paused >%ss with another "
+                                        "session waiting; stepping aside",
+                                        _paused_hold_s())
+                            playback_lock.step_aside()
+                        else:
+                            playback_lock.yield_to_higher()
                         _wait_and_claim_broker(sink, target)
                         try:
                             # Under the lock, so the tail cannot slip a clip in
@@ -4793,6 +4875,7 @@ def _submit_event(event: Event,
                         misses = 0
                         last_ms = -1
                         stall = 0
+                        paused_since = None     # a fresh window once back
                         remaining = max(0.0, total_duration_s - offsets[resume_i])
                         hard_deadline = time.monotonic() + remaining + 5.0
                         # Re-base the start the loop head measures from, so its
@@ -4858,6 +4941,10 @@ def _submit_event(event: Event,
                         continue
                     misses = 0
                     last_paused = bool(snap.get("pause"))
+                    if not last_paused:
+                        paused_since = None
+                    elif paused_since is None:
+                        paused_since = time.monotonic()
                     mute_watcher.poll(snap.get("mute"))  # from the same snapshot
                     if snap.get("pause"):
                         if 0 <= mark_i < n:
