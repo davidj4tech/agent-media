@@ -936,6 +936,7 @@ ahead.
    PKCE hash falls back to `lib/sha256.ts`. Round trip checked from red5's
    `:8795` preview with a fake code (sasonica-app `de6467d`, `bf8181d`;
    websites `6a0e8f9`). A real sign-in to the end is still to do by hand.
+   **Next: item 20.**
    The original note: the app's web
    build (red5 `:8795`, or any server's) can only pair: "Sign in with a
    Sasonica account" sends the code back to `sasonica://auth`
@@ -947,6 +948,35 @@ ahead.
    cms.sasonica.com OIDC client, and have `POST /enrol` accept the
    `redirect_uri` the app sent rather than assume the custom scheme. Name the
    device from the browser ("Firefox on …") as the phone's is named.
+
+20. **Sign in on sasonica.com: your account and your servers** (David,
+   14 Oct 2026: "a way to log in and see a list of servers available to
+   connect with from sasonica.com"). Today the site has no sign-in, on
+   purpose: it does not know where anyone's server is, and an account only
+   enrols devices on the server (item 19). Three parts:
+   - **Sign in / Account** in the site's header: a Sasonica account sign-in
+     (a third redirect on the `sasonica-app` client, or a confidential
+     `sasonica-site` client with a session cookie), then a page with the
+     account's name and picture and a link to cms.sasonica.com for password,
+     email and deletion (what the app's Edit profile already does).
+   - **Your servers**, on that page: each agent-media server the account has
+     a device on, with its name, when it was last seen and an **Open**
+     button to its web app (`/pairing`, which then signs in by item 19).
+     Nothing holds this list yet. Proposed: a server tells cms.sasonica.com
+     its name and the addresses it answers on when an account enrols there
+     and then daily, with that account's own access token (it already keeps
+     the refresh token for `/me`); Drupal keeps a row per (account, server)
+     and drops it after 30 days unheard; Remove on the page, and revoking the
+     last device on a server drops it too. The parked lookup (agent-media
+     `lookup-hold`, sasonica-app `tunnel-lookup`) is the same need from the
+     app's side; reuse its shape.
+   - **Hosted-relay machines** in the same list: relay.sasonica.com/account
+     already lists an account's machines (item 16); read it through its
+     Bearer API so one page shows both.
+   Open questions: a tailnet address (red5's `100.x`) only opens on the
+   tailnet, so say so beside it rather than hiding it; whether the site
+   should show an address at all, or only "Open" through a per-server link;
+   and whether the list lives in Drupal or in a Worker beside the relay.
 
 ## Loose ends
 
