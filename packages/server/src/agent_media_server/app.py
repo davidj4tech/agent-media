@@ -224,6 +224,7 @@ CORS_PATHS = frozenset({
     "/phone/ask", "/phone/answer", "/phone/cancel",
     "/notes", "/notes/clear",
     "/speech/state", "/music/state", "/handoff/state",
+    "/follow/trace",
 })
 
 # Where the audio goes (audio.py). Its own set, joined here, so the block
@@ -1452,6 +1453,12 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         if not ok:
             print(f"move: refused ({detail.get('error')}) for "
                   f"{str(body.get('session'))[:8]}", file=sys.stderr, flush=True)
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    elif path == "/follow/trace":
+        # The app's bold, move by move, beside the row (follow_trace.py).
+        from . import follow_trace
+
+        ok, detail = follow_trace.post(_read_json(h) or {}, _bearer(h))
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path == "/session/pin":
         # Keep a session open against the idle reaper (reap.py). A flag kept
