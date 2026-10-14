@@ -659,7 +659,9 @@ def _agent_unready(agent: str, profile: str = "") -> str:
 
 def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
         agent: str = "", cwd: str = "", cwd_trusted: bool = False,
-        model: str = "", mode: str = "", profile: str = "") -> tuple[bool, dict]:
+        model: str = "", mode: str = "", profile: str = "",
+        new_project: str = "", repo: str = "", agents_md: bool = False,
+        preset: str = "", worktree: dict | None = None) -> tuple[bool, dict]:
     """Start a fresh session with `text` as its first message.
 
     What the phone's assistant button does. Nothing to resume and no item yet:
@@ -677,6 +679,11 @@ def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
     ignore them.
     `cwd_trusted` is for the server's own callers (a chat about a note opens
     in the notes tree), never for a directory the phone named.
+    `new_project` makes that folder first (new_project.py: a clone of
+    `repo`, else `git init`; AGENTS.md when `agents_md`, a `preset`'s text if
+    named) and opens the chat in it: a name, not a path, so the phone still
+    chooses no directory. `worktree` (`{"from": <a place>, "branch"}`) cuts a
+    new worktree of a place and opens the chat there (contract §6.24).
     """
     text = " ".join((text or "").split())
     if not text:
@@ -702,6 +709,30 @@ def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
         return False, {"error": why, "status": 409, "agent": agent,
                        "fix": "harnesses"}
     where = (cwd or "").strip()
+    made_detail: dict = {}
+    if new_project or worktree:
+        # Signed in and the agent ready: only now is a folder worth making.
+        from . import new_project as projects_new
+
+        if (new_project and worktree) or where or project:
+            return False, {"error": "new_project, worktree, cwd and project are one each",
+                           "status": 400}
+        if new_project:
+            from . import presets
+
+            if preset and not presets.get(preset):
+                return False, {"error": f"no preset {preset!r}", "status": 404}
+            made, made_detail = projects_new.create(
+                new_project, repo=repo, agents_md=agents_md,
+                agents_text=presets.agents_md_of(preset))
+        else:
+            source = str(worktree.get("from") or "").strip()
+            if source not in {p["path"] for p in sessions.places(limit=0)}:
+                return False, {"error": f"no session has run in {source!r}", "status": 404}
+            made, made_detail = projects_new.worktree(source, str(worktree.get("branch") or ""))
+        if not made:
+            return False, made_detail
+        where, cwd_trusted = made_detail["cwd"], True
     host, cwd, flags = ask_target()
     if agent != "claude":
         flags = []          # amux's flags are claude's (--dangerously-skip-permissions)
@@ -713,7 +744,9 @@ def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
             return False, {"error": f"no session has run in {where!r}", "status": 404}
         from agent_media_core import layout
 
-        host, cwd = layout.place_host(where), where
+        # A worktree's tmux session is its project's, not its branch's.
+        host = layout.place_host(str(worktree.get("from")).rstrip("/") if worktree else where)
+        cwd = where
     elif project:
         host, cwd = sessions.project_target(project)
         if not cwd:
@@ -735,9 +768,12 @@ def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
     from . import session_settings
 
     model, mode = session_settings.clean_new(agent, model, mode)
-    return chosen.start(agent=agent, cwd=cwd, text=text, host=host,
-                        flags=flags, quote=quote, model=model, mode=mode,
-                        **({"profile": profile} if profile else {}))
+    ok, detail = chosen.start(agent=agent, cwd=cwd, text=text, host=host,
+                              flags=flags, quote=quote, model=model, mode=mode,
+                              **({"profile": profile} if profile else {}))
+    if ok and made_detail:
+        detail.update(made_detail)
+    return ok, detail
 
 
 def _ask_pane(text: str, *, agent: str, cwd: str, host: str, flags: list[str],

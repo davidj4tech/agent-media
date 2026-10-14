@@ -1123,6 +1123,11 @@ Request:
 | `agent` | `claude` \| `codex` \| `pi` \| `hermes` \| `opencode` for a fresh session (default `MEDIA_ASK_AGENT`, else claude). With `MEDIA_HEADLESS` on, `claude` and `opencode` start headless (sessiond; opencode as a session of its one shared `opencode serve`, 29 Sep 2026), the rest in a pane |
 | `project` | open a fresh session in that project's directory: a series (`p-agent-media`) on David's desk, a folder basename (`agent-media`) in the default layout (§18) |
 | `cwd` | open a fresh session in that directory — must be a `/targets` place |
+| `new_project` | a name (15 Oct 2026, §6.24): make a project folder and open the fresh session in it — implies `target: "new"`. With `repo`, `agents_md`, `preset` |
+| `repo` | with `new_project`: clone this git URL instead of `git init` (§6.24) |
+| `agents_md` | with `new_project`: `true` writes a starter `AGENTS.md` and `CLAUDE.md` → it (§6.24) |
+| `preset` | a preset's name (§6.24): its AGENTS.md text for `agents_md`. The app sends the preset's agent, profile, model and plan itself |
+| `worktree` | `{"from": <a /targets place>, "branch"}`: open the fresh session in a new git worktree of that project (§6.24) — implies `target: "new"` |
 | `model` | Claude (26 Sep 2026): `opus` \| `sonnet` \| `haiku` \| `fable` for a fresh session — `--model` in a pane, sessiond's `start` headless. opencode: a `provider/model` id from its sheet, sent with each prompt when headless. Anything else is dropped, not refused; ignored when the words land in an existing thread |
 | `plan` | Claude only: `true` starts the fresh session in plan mode (`--permission-mode plan`; a pane's `--dangerously-skip-permissions` becomes `--allow-dangerously-skip-permissions`, which would otherwise win) |
 | `level` | a fresh session's speech level (§6.4: `interrupt` \| `auto` \| `pocket` \| `normal` \| `quiet`; 14 Oct 2026), set as soon as its id is known so the first reply already speaks at it; answered as `level` (null when the id never surfaced — set it with `/session/priority` then). Anything else → 400; ignored when the words land in an existing thread |
@@ -3296,6 +3301,59 @@ asking") and "N spoken replies didn't reach this phone".
   changed (tag `note:<id>`; `high` on the needs-you channel, else alerts),
   and takes one down when it leaves the set unless it was `keep`. In memory:
   a restart forgets open notes, and the producers post again.
+
+### 6.24 New projects, worktrees and presets — gated (15 Oct 2026)
+
+A project is the folder a thread ran in (§18, `sessions.project_of`), so
+there is no project to register: a new one is a folder made by the first
+chat in it. Everything here rides on `POST /ask` (§6.3) — one call, so a
+folder never appears without the chat that asked for it — and is done only
+after the sign-in and agent checks pass. `new_project` and `worktree` each
+imply `target: "new"`; together, or with `cwd` / `project`, → 400.
+
+**New project** — `new_project: "<name>"`. The folder is
+`<MEDIA_PROJECTS_DIR, else ~/projects>/<name>`. A name is letters, digits,
+`.` `_` `-`, starts with a letter or digit, ≤ 64, not ending `.git` → else
+400; a folder already there → 409 with its `cwd` (pick it from the places).
+
+- `repo`: `git clone` it there instead of `git init`. `https://…`,
+  `ssh://…` or `user@host:path` only → else 400. A clone that fails (or
+  takes over 5 min) → 502 with git's last line, and the folder is removed.
+- `agents_md: true`: write `AGENTS.md` (a clone's own is kept) and
+  `CLAUDE.md` as a symlink to it (an existing one is kept). The text is the
+  named `preset`'s `agents_md`, else the host's template
+  (`~/.config/agent-media/agents-template.md`), else a short built-in one;
+  `{name}` becomes the project's name.
+
+Answers as `/ask` does, plus `"cwd"`: the folder.
+
+**Worktree** — `worktree: {"from": "/home/…/projects/agent-media",
+"branch": "fix-x"}`. `from` must be a `/targets` place (404) and a git repo
+(422). `git -C <from> worktree add -b <branch> <from>/.worktrees/<branch>`
+off its current HEAD; `.worktrees/` goes in the repo's `.git/info/exclude`.
+A branch name `git check-ref-format --branch` refuses → 400; the branch or
+directory already there → 409. Inside the project's folder, so the thread
+is filed under that project. Answers as `/ask`, plus `"cwd"` and `"branch"`.
+
+**Presets** — a saved way to start: which agent, login, model and plan,
+the AGENTS.md a new project gets, and the words the box starts with. Kept
+in `<state_dir>/presets.json`. "Profile" stays the harness login (§6.6).
+
+```
+GET  /presets → {"presets": [Preset…], "agents_md_default": "<the template a new project gets without a preset>"}
+POST /presets Preset → {"ok": true, "preset": Preset}       // added, or replaced by name
+POST /presets/remove {"name"} → {"ok": true} | 404
+
+Preset = {"name": "Web app",            // 1–40 characters, the key
+          "agent": "claude" | "",       // "" = the host's default agent
+          "profile": "", "model": "", "plan": false,
+          "agents_md": "",              // "" = agents_md_default
+          "prompt": ""}                 // put in the box, not sent
+```
+
+A preset naming an agent `/ask` does not know → 400. The app applies a
+preset by filling the new-chat sheet with it; the server reads one only for
+`agents_md`.
 
 ## 7. `/events` (v0) — canvas-wide, not the app's stream
 

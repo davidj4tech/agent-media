@@ -10,7 +10,7 @@ import os
 
 import pytest
 
-from agent_media_server import auth_abs, driver, panes, send, sessions
+from agent_media_server import auth_abs, driver, new_project, panes, presets, send, sessions
 
 
 @pytest.fixture
@@ -194,3 +194,128 @@ def test_davids_project_from_claude_history_when_nothing_is_shelved(tmp_path, mo
     assert [p["path"] for p in sessions.places()] == [str(proj)]
     monkeypatch.setattr(sessions, "live_sessions", lambda: {"b": "%1"})
     assert [p["path"] for p in sessions.places()] == [str(tree), str(proj)]
+
+
+def test_a_new_project_is_made_initialised_and_chatted_in(default_desk, asker, monkeypatch):
+    monkeypatch.setenv("MEDIA_PROJECTS_DIR", str(default_desk / "projects"))
+    ok, detail = send.ask("hi", "tok", new_project="drones")
+    made = default_desk / "projects" / "drones"
+    assert ok and asker == [(str(made), "sasonica", [])]
+    assert (made / ".git").is_dir() or not __import__("shutil").which("git")
+
+
+def test_a_new_project_refuses_a_name_already_there_or_not_a_name(default_desk, asker, monkeypatch):
+    monkeypatch.setenv("MEDIA_PROJECTS_DIR", str(default_desk / "projects"))
+    (default_desk / "projects" / "runlet").mkdir(parents=True)
+    ok, detail = send.ask("hi", "tok", new_project="runlet")
+    assert not ok and detail["status"] == 409
+    for bad in ("../etc", "a/b", ".hidden", " ", "x" * 65, "repo.git"):
+        ok, detail = send.ask("hi", "tok", new_project=bad)
+        assert not ok and detail["status"] == 400, bad
+    assert asker == [] and sorted(p.name for p in (default_desk / "projects").iterdir()) == ["runlet"]
+
+
+def test_a_new_project_is_not_made_for_someone_signed_out(default_desk, asker, monkeypatch):
+    monkeypatch.setenv("MEDIA_PROJECTS_DIR", str(default_desk / "projects"))
+    monkeypatch.setattr(auth_abs, "abs_identity", lambda b: (None, 401))
+    ok, _ = send.ask("hi", "bad", new_project="drones")
+    assert not ok and not (default_desk / "projects" / "drones").exists()
+
+
+needs_git = pytest.mark.skipif(not __import__("shutil").which("git"), reason="no git")
+
+
+def _git(*args):
+    import subprocess
+
+    return subprocess.run(["git", *args], check=True, capture_output=True, text=True,
+                          env={**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+                               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}).stdout
+
+
+@needs_git
+def test_a_new_project_clones_a_repo_and_keeps_its_agents_md(default_desk, asker, monkeypatch):
+    monkeypatch.setenv("MEDIA_PROJECTS_DIR", str(default_desk / "projects"))
+    src = default_desk / "src"
+    src.mkdir()
+    _git("init", "-q", str(src))
+    (src / "AGENTS.md").write_text("theirs\n")
+    _git("-C", str(src), "add", ".")
+    _git("-C", str(src), "commit", "-qm", "x")
+    # A local path is not a URL a clone may be given; a fake ssh one gets through
+    # the check, so the clone itself is redirected to the local repo.
+    ok, detail = send.ask("hi", "tok", new_project="c", repo=str(src))
+    assert not ok and detail["status"] == 400
+    real = new_project._git
+    monkeypatch.setattr(new_project, "_git", lambda *a, timeout=20: real(
+        *[str(src) if x == "git@example.com:me/c.git" else x for x in a], timeout=timeout))
+    ok, detail = send.ask("hi", "tok", new_project="c", repo="git@example.com:me/c.git", agents_md=True)
+    made = default_desk / "projects" / "c"
+    assert ok and detail["cwd"] == str(made)
+    assert (made / "AGENTS.md").read_text() == "theirs\n"
+    assert os.readlink(made / "CLAUDE.md") == "AGENTS.md"
+
+
+def test_a_failed_clone_leaves_no_folder(default_desk, asker, monkeypatch):
+    monkeypatch.setenv("MEDIA_PROJECTS_DIR", str(default_desk / "projects"))
+    def fail(*a, timeout=20):
+        (default_desk / "projects" / "c").mkdir()
+        return False, "fatal: repository not found"
+    monkeypatch.setattr(new_project, "_git", fail)
+    ok, detail = send.ask("hi", "tok", new_project="c", repo="https://example.com/c.git")
+    assert not ok and detail["status"] == 502 and "not found" in detail["error"]
+    assert not (default_desk / "projects" / "c").exists() and asker == []
+
+
+@needs_git
+def test_a_new_project_gets_its_presets_agents_md(default_desk, asker, monkeypatch, tmp_path):
+    monkeypatch.setenv("MEDIA_PROJECTS_DIR", str(default_desk / "projects"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    assert presets.put({"name": "Web app", "agent": "claude", "agents_md": "# {name}: web\n"}, "tok")[0]
+    ok, _ = send.ask("hi", "tok", new_project="shop", agents_md=True, preset="nope")
+    assert not ok and not (default_desk / "projects" / "shop").exists()
+    ok, _ = send.ask("hi", "tok", new_project="shop", agents_md=True, preset="Web app")
+    assert ok and (default_desk / "projects" / "shop" / "AGENTS.md").read_text() == "# shop: web\n"
+
+
+def test_presets_are_added_replaced_and_removed(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(auth_abs, "abs_identity", lambda b: ({"username": "d", "type": "root"}, 200))
+    assert presets.put({"name": "A", "agent": "codex", "prompt": "go"}, "tok")[0]
+    assert presets.put({"name": "A", "agent": "pi", "plan": True}, "tok")[0]
+    assert presets.put({"name": "B"}, "tok")[0]
+    assert not presets.put({"name": "C", "agent": "emacs"}, "tok")[0]
+    assert not presets.put({"name": ""}, "tok")[0]
+    ok, d = presets.listing("tok")
+    assert [(p["name"], p["agent"], p["plan"]) for p in d["presets"]] == [("A", "pi", True), ("B", "", False)]
+    assert "{name}" in d["agents_md_default"]
+    assert presets.remove("A", "tok")[0] and not presets.remove("A", "tok")[0]
+
+
+@needs_git
+def test_a_worktree_is_cut_inside_its_project_and_chatted_in(default_desk, asker, monkeypatch):
+    place = default_desk / "projects" / "runlet"
+    place.mkdir(parents=True)
+    _git("init", "-q", str(place))
+    (place / "f").write_text("x")
+    _git("-C", str(place), "add", ".")
+    _git("-C", str(place), "commit", "-qm", "x")
+    monkeypatch.setattr(sessions, "places", lambda limit=6: [
+        {"name": "runlet", "path": str(place), "at": 1.0}])
+    ok, detail = send.ask("hi", "tok", worktree={"from": str(default_desk), "branch": "x"})
+    assert not ok and detail["status"] == 404
+    ok, detail = send.ask("hi", "tok", worktree={"from": str(place), "branch": "bad..name"})
+    assert not ok and detail["status"] == 400
+    ok, detail = send.ask("hi", "tok", worktree={"from": str(place), "branch": "fix-x"})
+    tree = place / ".worktrees" / "fix-x"
+    assert ok and detail["cwd"] == str(tree) and detail["branch"] == "fix-x"
+    assert (tree / "f").exists() and asker == [(str(tree), "sasonica", [])]
+    assert "/.worktrees/" in (place / ".git" / "info" / "exclude").read_text()
+    assert _git("-C", str(place), "status", "--porcelain") == ""
+    ok, detail = send.ask("hi", "tok", worktree={"from": str(place), "branch": "fix-x"})
+    assert not ok and detail["status"] == 409
+
+
+def test_new_project_and_worktree_are_one_each(default_desk, asker):
+    ok, detail = send.ask("hi", "tok", new_project="a", worktree={"from": "/x", "branch": "b"})
+    assert not ok and detail["status"] == 400

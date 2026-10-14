@@ -118,7 +118,9 @@ def ask_routed(text: str, bearer: str, *, target: str = "", player_item: str = "
                project: str = "", agent: str = "", cwd: str = "",
                player_session: str = "", model: str = "",
                plan: bool = False, profile: str = "",
-               level: str = "") -> tuple[bool, dict]:
+               level: str = "", new_project: str = "", repo: str = "",
+               agents_md: bool = False, preset: str = "",
+               worktree: dict | None = None) -> tuple[bool, dict]:
     """The assistant button's words, sent where they belong.
 
     In order: a target the app names outright (`target`, a session uuid from
@@ -131,7 +133,9 @@ def ask_routed(text: str, bearer: str, *, target: str = "", player_item: str = "
     for the app to ask. `dry` answers where the words WOULD go and sends
     nothing: the app confirms a guess (a spoken name, the player, the last
     thread) with the listener before committing with an explicit `target`.
-    A fresh session opens in `project` when one is named, and runs `agent`
+    A fresh session opens in `project` when one is named (in a folder made
+    for it by `new_project` or `worktree`, either of which forces a fresh
+    session — see `send.ask`), and runs `agent`
     (claude, codex, pi, hermes) when one is named or spoken (see `ask`),
     on `model` and in plan mode when `plan`, and speaks at `level` (a speech
     level, `agent_media_core.speak_priority`) — a fresh session's only; words
@@ -155,7 +159,7 @@ def ask_routed(text: str, bearer: str, *, target: str = "", player_item: str = "
 
     index = sessions.sessions_index()
     session, how = "", ""
-    if target == "new":
+    if target == "new" or new_project or worktree:
         how = "asked"
     elif target:
         session, how = target, "picked"
@@ -198,7 +202,11 @@ def ask_routed(text: str, bearer: str, *, target: str = "", player_item: str = "
     if not session:
         ok, detail = send.ask(text, bearer, project=project, agent=agent, cwd=cwd,
                               model=model, mode="plan" if plan else "",
-                              **({"profile": profile} if profile else {}))
+                              **({"profile": profile} if profile else {}),
+                              **({"new_project": new_project, "repo": repo,
+                                  "agents_md": agents_md, "preset": preset}
+                                 if new_project else {}),
+                              **({"worktree": worktree} if worktree else {}))
         if ok:
             detail.update({"mode": "new", "how": how or "default", "title": "", "text": text})
             if level:

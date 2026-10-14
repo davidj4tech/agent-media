@@ -47,7 +47,11 @@ device gets its token):
                   session in the scratch tmux session — or in `project` (a
                   series name) or `cwd` (a directory from /targets), 404 if
                   neither is known. 300 + candidates when a spoken name is
-                  ambiguous.
+                  ambiguous. `new_project` (a name, with `repo`,
+                  `agents_md`, `preset`) or `worktree` ({"from", "branch"})
+                  makes the folder first (new_project.py, contract §6.24).
+  GET  /presets   → saved ways to start a chat; POST /presets {Preset} adds
+                  or replaces one, POST /presets/remove {"name"} (presets.py)
   GET  /conversations   → live sessions and recent conversations, by title
                   (the picker)
   GET  /targets   → what a message can be pointed at: those same sessions,
@@ -226,6 +230,7 @@ CORS_PATHS = frozenset({
     "/harnesses", "/harnesses/run", "/harnesses/screen",
     "/harnesses/keys", "/harnesses/apikey", "/harnesses/close", "/harnesses/logout",
     "/harnesses/updates", "/harnesses/profiles", "/harnesses/profiles/remove",
+    "/presets", "/presets/remove",
     "/setup", "/setup/run", "/shell", "/shell/signins", "/shell/signin", "/enrol", "/me", "/me/signout", "/me/account",
     "/share", "/upload", "/dashboard",
     "/sessions/events", "/search",
@@ -641,6 +646,12 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
 
         ok, detail = dashboard.dashboard(_bearer(h))
         _json_z(h, 200 if ok else detail.pop("status", 403), {"ok": ok, **detail})
+    elif path == "/presets":
+        # Saved ways to start a chat (presets.py, §6.24).
+        from . import presets
+
+        ok, detail = presets.listing(_bearer(h))
+        _json(h, 200 if ok else detail.pop("status", 403), {"ok": ok, **detail})
     elif path == "/harnesses":
         # Every harness and what each needs — is it installed, is it
         # signed in — so the app can offer the buttons that would fix it.
@@ -1338,7 +1349,12 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
             model=str(body.get("model") or ""),
             plan=body.get("plan") is True,
             profile=str(body.get("profile") or ""),
-            level=str(body.get("level") or ""))
+            level=str(body.get("level") or ""),
+            new_project=str(body.get("new_project") or ""),
+            repo=str(body.get("repo") or ""),
+            agents_md=body.get("agents_md") is True,
+            preset=str(body.get("preset") or ""),
+            worktree=body.get("worktree") if isinstance(body.get("worktree"), dict) else None)
         status = detail.pop("status", 400)
         if not ok:
             print(f"ask: refused {status} ({detail.get('error')}) "
@@ -1585,6 +1601,15 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         if not ok:
             print(f"answer: refused ({detail.get('error')}) for "
                   f"{str(body.get('session'))[:8]}", file=sys.stderr, flush=True)
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    elif path in ("/presets", "/presets/remove"):
+        from . import presets
+
+        body = _read_json(h) or {}
+        if path.endswith("remove"):
+            ok, detail = presets.remove(str(body.get("name") or ""), _bearer(h))
+        else:
+            ok, detail = presets.put(body, _bearer(h))
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path in ("/harnesses/profiles", "/harnesses/profiles/remove"):
         # Another login for an agent (a harness profile), or one taken away.
