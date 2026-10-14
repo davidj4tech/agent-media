@@ -924,6 +924,18 @@ ahead.
    `macos-installer.yml`, run 37716796623). Not testable there: the
    one-time SmartScreen/Gatekeeper click.
 
+19. **Account sign-in from a browser** (David, 14 Oct 2026) — the app's web
+   build (red5 `:8795`, or any server's) can only pair: "Sign in with a
+   Sasonica account" sends the code back to `sasonica://auth`
+   (sasonica-app `app/api/auth.ts` `AUTH_REDIRECT`), which only the Android
+   shell catches, so a browser stops after the cms.sasonica.com / Google
+   page. Off the native platform, use an `https://` redirect on the page's
+   own origin (a `/auth` route that hands the code to the same
+   `finishAccountSignIn`), register those redirect URIs with the
+   cms.sasonica.com OIDC client, and have `POST /enrol` accept the
+   `redirect_uri` the app sent rather than assume the custom scheme. Name the
+   device from the browser ("Firefox on …") as the phone's is named.
+
 ## Loose ends
 
 - **A reply with a figure had no follow-along at all** (David, 23 Sep 2026)
