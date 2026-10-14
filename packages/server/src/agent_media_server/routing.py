@@ -10,6 +10,7 @@ from __future__ import annotations
 import difflib
 import os
 import re
+import sys
 
 from . import auth, send, sessions, threads
 
@@ -95,11 +96,29 @@ def _title_of(session: str, index: list[dict] | None = None) -> str:
     return ""
 
 
+def _set_level(session: str, level: str) -> str | None:
+    """A new chat's speech level, set as soon as its id is known — before its
+    first reply, which a POST /session/priority after the fact could race.
+    Answers the level set, or None when there is no id yet or it failed
+    (the chat still started)."""
+    from agent_media_core import speak_priority
+
+    if not sessions._SESSION.fullmatch(session):
+        return None
+    try:
+        speak_priority.set_level(session, level)
+    except OSError as e:
+        print(f"ask: could not set {session[:8]}'s speech level ({e})", file=sys.stderr)
+        return None
+    return level
+
+
 def ask_routed(text: str, bearer: str, *, target: str = "", player_item: str = "",
                sticky: str = "", parse: bool = True, dry: bool = False,
                project: str = "", agent: str = "", cwd: str = "",
                player_session: str = "", model: str = "",
-               plan: bool = False, profile: str = "") -> tuple[bool, dict]:
+               plan: bool = False, profile: str = "",
+               level: str = "") -> tuple[bool, dict]:
     """The assistant button's words, sent where they belong.
 
     In order: a target the app names outright (`target`, a session uuid from
@@ -114,7 +133,8 @@ def ask_routed(text: str, bearer: str, *, target: str = "", player_item: str = "
     thread) with the listener before committing with an explicit `target`.
     A fresh session opens in `project` when one is named, and runs `agent`
     (claude, codex, pi, hermes) when one is named or spoken (see `ask`),
-    on `model` and in plan mode when `plan` — a fresh session's only; words
+    on `model` and in plan mode when `plan`, and speaks at `level` (a speech
+    level, `agent_media_core.speak_priority`) — a fresh session's only; words
     that land in an existing one leave its settings alone.
     """
     text = " ".join((text or "").split())
@@ -126,6 +146,12 @@ def ask_routed(text: str, bearer: str, *, target: str = "", player_item: str = "
     user, err = auth.gate(bearer)
     if not user:
         return False, err
+    if level:
+        from agent_media_core import speak_priority
+
+        if level not in speak_priority.LEVELS:
+            return False, {"error": "level must be interrupt, auto, pocket, normal or quiet",
+                           "status": 400}
 
     index = sessions.sessions_index()
     session, how = "", ""
@@ -175,6 +201,8 @@ def ask_routed(text: str, bearer: str, *, target: str = "", player_item: str = "
                               **({"profile": profile} if profile else {}))
         if ok:
             detail.update({"mode": "new", "how": how or "default", "title": "", "text": text})
+            if level:
+                detail["level"] = _set_level(detail.get("session") or "", level)
         return ok, detail
     ok, detail = send.deliver(session, text, text)
     if not ok:

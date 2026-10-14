@@ -1146,6 +1146,22 @@ def test_routed_ask_passes_a_directory_to_a_fresh_session(_router, monkeypatch):
     assert ok and seen["cwd"] == "/home/ryer/projects/runlet"
 
 
+def test_routed_ask_sets_a_fresh_sessions_speech_level(_router, monkeypatch, tmp_path):
+    # New chat's speech pick: set as soon as the id is known, before the
+    # first reply; words into an existing thread leave its level alone.
+    from agent_media_core import speak_priority
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    sid = "eeeeeeee-1111-2222-3333-444444444444"
+    monkeypatch.setattr(send, "ask", lambda text, bearer, **k: (True, {"session": sid}))
+    ok, d = routing.ask_routed("hi", "tok", target="new", level="quiet")
+    assert ok and d["level"] == "quiet" and speak_priority.levels()[sid] == "quiet"
+    ok, d = routing.ask_routed("hi", "tok", target="cccccccc-1111-2222-3333-444444444444", level="interrupt")
+    assert ok and "level" not in d and "cccccccc-1111-2222-3333-444444444444" not in speak_priority.levels()
+    ok, d = routing.ask_routed("hi", "tok", target="new", level="loud")
+    assert ok is False and d["status"] == 400
+
+
 def test_routed_ask_a_bare_name_switches_and_sends_nothing(_router):
     ok, d = routing.ask_routed("reply to digital assistant", "tok")
     assert ok and d["mode"] == "switched" and d["title"] == "Sasonica default digital assistant" and d["item"] == "li_9"

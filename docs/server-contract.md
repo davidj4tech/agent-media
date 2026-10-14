@@ -1125,6 +1125,7 @@ Request:
 | `cwd` | open a fresh session in that directory — must be a `/targets` place |
 | `model` | Claude (26 Sep 2026): `opus` \| `sonnet` \| `haiku` \| `fable` for a fresh session — `--model` in a pane, sessiond's `start` headless. opencode: a `provider/model` id from its sheet, sent with each prompt when headless. Anything else is dropped, not refused; ignored when the words land in an existing thread |
 | `plan` | Claude only: `true` starts the fresh session in plan mode (`--permission-mode plan`; a pane's `--dangerously-skip-permissions` becomes `--allow-dangerously-skip-permissions`, which would otherwise win) |
+| `level` | a fresh session's speech level (§6.4: `interrupt` \| `auto` \| `pocket` \| `normal` \| `quiet`; 14 Oct 2026), set as soon as its id is known so the first reply already speaks at it; answered as `level` (null when the id never surfaced — set it with `/session/priority` then). Anything else → 400; ignored when the words land in an existing thread |
 
 Routing, first match wins:
 1. `target`: a session id (`how: "picked"`), or `"new"` (`how: "asked"`).

@@ -1294,7 +1294,8 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
             cwd=str(body.get("cwd") or ""),
             model=str(body.get("model") or ""),
             plan=body.get("plan") is True,
-            profile=str(body.get("profile") or ""))
+            profile=str(body.get("profile") or ""),
+            level=str(body.get("level") or ""))
         status = detail.pop("status", 400)
         if not ok:
             print(f"ask: refused {status} ({detail.get('error')}) "
