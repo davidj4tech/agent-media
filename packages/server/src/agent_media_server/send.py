@@ -422,13 +422,14 @@ def open_window(session: str, cwd: str, *, resume: bool, host: str = "",
             return "", "no attached tmux session to open a window in"
     from agent_media_core import harnesses
 
-    # The agent's own directory goes first on PATH: pi is a node script, and
-    # a window born under systemd has no node on its PATH (fnm keeps node
-    # next to the agents it installed).
+    # The agent's own directory goes first on PATH, then `bin_path`: pi is a
+    # node script, a window born under systemd has no node on its PATH, and
+    # node is not always beside the agent (pi's ~/.local/bin link is not
+    # where fnm keeps it).
     exe = _claude_bin(agent)
     cmd = "exec env -u ANTHROPIC_API_KEY"
     if os.path.isabs(exe):
-        cmd += f" PATH={shlex.quote(os.path.dirname(exe))}:\"$PATH\""
+        cmd += f" PATH={shlex.quote(os.path.dirname(exe) + os.pathsep + harnesses.bin_path())}"
     # A harness profile: its directory, by the variable that moves it. A
     # resumed session runs in the profile it was found in.
     from agent_media_core import harness_profiles

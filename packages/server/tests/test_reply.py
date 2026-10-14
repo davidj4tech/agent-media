@@ -6,6 +6,7 @@ import os
 import pytest
 
 from agent_media_server import auth_abs, drafts, panes, routing, send, sessions, threads
+from agent_media_core import harnesses
 
 
 # --- who may type -------------------------------------------------------------
@@ -621,12 +622,13 @@ def test_open_window_targets_the_host_and_passes_flags(monkeypatch):
     monkeypatch.setattr(send, "pane_ready", lambda p, agent="claude": True)
     monkeypatch.setattr(send, "_claude_bin", lambda name="claude": "/home/ryer/.local/bin/claude")
     monkeypatch.setattr(send, "attached_session", lambda: pytest.fail("host was given"))
+    monkeypatch.setattr(harnesses, "bin_path", lambda: "/usr/bin:/fnm/bin")
     pane, err = send.open_window("", "/home/ryer/scratch", resume=False,
                                   host="amux-scratch", flags=["--dangerously-skip-permissions"])
     assert (pane, err) == ("%4", "")
     nw = next(c for c in calls if c[0] == "new-window")
     assert nw[nw.index("-t") + 1] == "amux-scratch:"
-    assert nw[-1] == ('exec env -u ANTHROPIC_API_KEY PATH=/home/ryer/.local/bin:"$PATH" '
+    assert nw[-1] == ('exec env -u ANTHROPIC_API_KEY PATH=/home/ryer/.local/bin:/usr/bin:/fnm/bin '
                       "/home/ryer/.local/bin/claude --dangerously-skip-permissions")
 
 
