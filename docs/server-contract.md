@@ -2247,9 +2247,15 @@ like `/org/say` → `{"ok", "state", "path", "at", "title", "line"}`.
 `auth.may_control_speech` → the `GET` answer, after it. 400 for anything
 else.
 
-`media doc play` renders a document the same way, so its sidecar is there
-too. It has no `path` in the Org tree, though, so a reader has nothing to
-follow.
+**A project's document** (15 Oct 2026). `GET /doc/read?path=<absolute
+path>` — gated → `{"ok", "path", "title", "text", "fmt"}` (`doc_read.py`):
+a `.md`, `.org` or `.txt` file under the projects folder (MEDIA_PROJECTS_DIR,
+else ~/projects) or a doc root (MEDIA_DOC_ROOTS). There must be no dot-dir
+on the way and no symlink out; 404 otherwise. `title` is a Markdown file's
+first `# ` heading (an Org file's `#+title:`), else the file's name, and
+`fmt` is `"org"` or `"md"`. `POST /org/listen {"doc": <that path>, "line"?}`
+listens to it as to a note, and the `GET` answers about it carry `doc` (and
+`title`) instead of `path` and `at`.
 
 #### `POST /org/ask` — gated (`auth.gate`), like `/ask`
 

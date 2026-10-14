@@ -8,6 +8,8 @@ lock screen's controls and the desk popup's, and replies pause it rather
 than talk over it. The reader asks what is playing and marks that line.
 
   POST /org/listen {"path", "at"?, "line"?} → {"state", "path", "at", "title"}
+  POST /org/listen {"doc", "line"?}         → the same with "doc" for "path": a
+                                              project's document (doc_read.py)
   GET  /org/listen                          → {"state", …, "line", "pos_ms", "dur_ms"}
   POST /org/listen/ctl {"action"}           → the GET answer, after it
 
@@ -28,7 +30,7 @@ from pathlib import Path
 
 from agent_media_core import docs
 
-from . import auth, org
+from . import auth, doc_read, org
 
 #: A render in progress, by its stem: {"path", "at", "title", "line"}.
 _JOBS: dict[str, dict] = {}
@@ -141,21 +143,39 @@ def _render_then_play(stem: str, sections: list, meta: dict) -> None:
             _JOBS.pop(stem, None)
 
 
-def listen(rel: str, at: int, line: int | None, bearer: str) -> tuple[bool, dict]:
-    """Start listening to a note (or one heading), from `line` if given.
-    Gated like the speech bar, since it makes the phone talk."""
+def _who(t: dict) -> dict:
+    """Which note or document an answer is about: `path` and `at`, or `doc`."""
+    if t.get("doc"):
+        return {"doc": t["doc"], "title": t.get("title")}
+    return {"path": t.get("path"), "at": t.get("at") or 0, "title": t.get("title")}
+
+
+def listen(rel: str, at: int, line: int | None, bearer: str,
+           doc: str = "") -> tuple[bool, dict]:
+    """Start listening to a note (or one heading), or with `doc` a project's
+    document, from `line` if given. Gated like the speech bar, since it
+    makes the phone talk."""
     ok, detail = auth.may_control_speech(bearer)
     if not ok:
         return False, detail
-    ok, got = org.read(rel, at, bearer)
-    if not ok:
-        return False, got
-    fmt = _fmt(got["path"])
+    if doc:
+        ok, got = doc_read.load(doc)
+        if not ok:
+            return False, got
+        fmt = got["fmt"]
+        meta = {"doc": got["path"], "title": got["title"]}
+    else:
+        ok, got = org.read(rel, at, bearer)
+        if not ok:
+            return False, got
+        fmt = _fmt(got["path"])
+        meta = {"path": got["path"], "at": at, "title": got["title"]}
     sections = docs.sections_for(got["text"], fmt)
     if not any(s.paras or s.heading for s in sections):
         return False, {"error": "nothing in that note to read", "status": 422}
     stem = docs.note_stem(got["text"], fmt)
-    meta = {"path": got["path"], "at": at, "title": got["title"]}
+    if doc:
+        stem = "doc-" + stem.removeprefix("note-")       # its sidecar names the doc
     clip = docs.doc_cache_dir() / f"{stem}.mp3"
     base = {**meta, "line": line}
     if clip.exists() and docs.timings_path(clip).exists():
@@ -199,19 +219,16 @@ def now(bearer: str) -> tuple[bool, dict]:
         t = docs.read_timings(clip) or {}
         pos = np.get("position_ms") or 0
         return True, {"state": "paused" if np.get("paused") else "playing",
-                      "path": t.get("path"), "at": t.get("at") or 0,
-                      "title": t.get("title") or np.get("title"),
+                      **_who({**t, "title": t.get("title") or np.get("title")}),
                       "line": _line_at(t, pos / 1000.0), "pos_ms": pos,
                       "dur_ms": np.get("duration_ms") or int((t.get("duration") or 0) * 1000)}
     with _LOCK:
         job = next(iter(_JOBS.values()), None)
     if job:
-        return True, {"state": "rendering", "path": job["path"], "at": job["at"],
-                      "title": job["title"]}
+        return True, {"state": "rendering", **_who(job)}
     staged = _staging()
-    if staged and staged.get("path"):
-        return True, {"state": "copying", "path": staged["path"],
-                      "at": staged.get("at") or 0, "title": staged.get("title")}
+    if staged and (staged.get("path") or staged.get("doc")):
+        return True, {"state": "copying", **_who(staged)}
     return True, {"state": "idle"}
 
 

@@ -202,7 +202,7 @@ from urllib.parse import parse_qs
 
 from . import (abs_item, archive, auth, devices, drafts, harnesses, pins, routing, send,
                sessions, share, speech, threads)
-from . import alerts, audio, music, org, org_chat, org_edit, org_listen, org_setup, org_zettel, refs, uploads
+from . import alerts, audio, doc_read, music, org, org_chat, org_edit, org_listen, org_setup, org_zettel, refs, uploads
 from . import web_app
 
 # The endpoints a browser on another origin may reach. Everything here
@@ -257,7 +257,7 @@ ORG_PATHS = frozenset({"/org", "/org/view", "/org/read", "/org/search",
                          "/org/capture", "/org/setup", "/org/say",
                          "/org/state", "/org/refile", "/org/date",
                          "/org/priority", "/org/ask", "/org/zettel",
-                         "/org/listen", "/org/listen/ctl"})
+                         "/org/listen", "/org/listen/ctl", "/doc/read"})
 CORS_PATHS = CORS_PATHS | ORG_PATHS
 
 # What the watchers report (alerts.py, §6.17). The same arrangement.
@@ -1923,6 +1923,9 @@ def _org(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
         except (TypeError, ValueError):
             at = 0
         ok, detail = org.say(str(body.get("path") or ""), at, bearer)
+    elif method == "GET" and path == "/doc/read":
+        # A project's document in the reader (doc_read.py).
+        ok, detail = doc_read.read(arg("path"), bearer)
     elif method == "GET" and path == "/org/listen":
         ok, detail = org_listen.now(bearer)
     elif method == "POST" and path == "/org/listen":
@@ -1936,7 +1939,8 @@ def _org(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
             line = None if body.get("line") is None else max(0, int(body["line"]))
         except (TypeError, ValueError):
             line = None
-        ok, detail = org_listen.listen(str(body.get("path") or ""), at, line, bearer)
+        ok, detail = org_listen.listen(str(body.get("path") or ""), at, line, bearer,
+                                       doc=str(body.get("doc") or ""))
     elif method == "POST" and path == "/org/listen/ctl":
         body = _read_json(h) or {}
         ok, detail = org_listen.control(str(body.get("action") or ""), bearer)

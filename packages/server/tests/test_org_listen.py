@@ -166,3 +166,32 @@ def test_nothing_playing_is_idle_and_bad_notes_refused(book, server):
     assert _call(server, "GET", "/org/listen", bearer="bad")[0] == 401
     assert _call(server, "POST", "/org/listen", {"path": "nope.org"})[0] == 404
     assert book.calls == []
+
+
+def test_a_project_document_reads_and_listens(book, server, tmp_path, monkeypatch):
+    proj = tmp_path / "projects"
+    (proj / "app" / "docs").mkdir(parents=True)
+    (proj / "app" / ".git").mkdir()
+    (proj / "app" / ".git" / "x.md").write_text("# secret\n")
+    doc = proj / "app" / "docs" / "plan.md"
+    doc.write_text("# The plan\n\nFirst part.\n\n## Then\n\nSecond part.\n")
+    (proj / "app" / "notes.py").write_text("x = 1\n")
+    monkeypatch.setenv("MEDIA_PROJECTS_DIR", str(proj))
+    monkeypatch.setenv("MEDIA_DOC_ROOTS", str(tmp_path / "nowhere"))
+
+    status, got = _call(server, "GET", "/doc/read?path=" + str(doc))
+    assert status == 200 and got["title"] == "The plan" and got["fmt"] == "md"
+    assert got["text"].startswith("# The plan")
+    for bad in (proj / "app" / ".git" / "x.md", proj / "app" / "notes.py",
+                tmp_path / "elsewhere.md", proj / "app" / "docs" / ".." / ".." / ".." / "x.md"):
+        assert _call(server, "GET", "/doc/read?path=" + str(bad))[0] == 404, bad
+    assert _call(server, "GET", "/doc/read?path=" + str(doc), bearer="bad")[0] == 401
+
+    status, got = _call(server, "POST", "/org/listen", {"doc": str(doc)})
+    assert status == 200 and got["state"] == "rendering" and got["doc"] == str(doc)
+    assert _until(lambda: book.calls)
+    assert "/doc-" in book.calls[0][1]
+    book.np["position_ms"] = 3500            # heading 0, 2, heading 4, then 6
+    _, got = _call(server, "GET", "/org/listen")
+    assert got["doc"] == str(doc) and "path" not in got and got["line"] == 6
+    assert _call(server, "POST", "/org/listen", {"doc": str(tmp_path / "x.md")})[0] == 404
