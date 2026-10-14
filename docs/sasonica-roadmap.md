@@ -951,7 +951,20 @@ ahead.
 
 20. **Sign in on sasonica.com: your account and your servers** (David,
    14 Oct 2026: "a way to log in and see a list of servers available to
-   connect with from sasonica.com"). Today the site has no sign-in, on
+   connect with from sasonica.com"). **Built and live 14 Oct 2026**:
+   sasonica.com/account (Account in the menu) signs in with the
+   `sasonica-site` client and shows the account (Edit account → cms), Your
+   servers (name, address, last seen, "opens on your tailnet" for 100.64/10,
+   **Open** → the server's web app at `/pairing?server=<api>`, Remove) and
+   hosted-relay machines. Drupal `/api/servers` in sasonica_oidc (user.data,
+   pruned after 30 days); agent-media `servers_report.py` reports on sign-in
+   and daily; red5 reports `https://red5.sasonica.com` + its `:8795` preview
+   (canvas drop-in `servers.conf`). Checked live with sasonica-test2: sign
+   in, list, Open link, Remove, sign out (websites `ca8281f`; agent-media
+   `e9082fe`; sasonica-app `5758737`). Still open: a server's web app for
+   installs other than red5 (only red5 sets MEDIA_WEB_APP_URL, so others show
+   "Open it in the app").
+   The plan as written: today the site has no sign-in, on
    purpose: it does not know where anyone's server is, and an account only
    enrols devices on the server (item 19). Three parts:
    - **Sign in / Account** in the site's header: a Sasonica account sign-in
