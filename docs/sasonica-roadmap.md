@@ -1080,7 +1080,7 @@ ahead.
    path mentioned in a thread opens in the same reader with Listen — needs a
    read route outside the Org tree, and the reader drawing Markdown (today it
    draws Org, so a `.md` heading is skipped and a fence is plain text).
-   **Step 3 IN PROGRESS (15 Oct 2026, David: "okay, let's do it")** — plan:
+   **Step 3 DONE 15 Oct 2026** (agent-media `f347b96`, sasonica-app `b4406a2`; red5's canvas restarted). As planned:
    - Server: `GET /doc/read?path=<abs>` for `.md/.txt/.org` under the doc
      roots (`docs.doc_roots()`, ~/projects; no dot-dirs, no escaping) →
      `{path, title, text}`, gated like /org/read. `/org/listen` takes
