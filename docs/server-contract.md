@@ -1125,7 +1125,7 @@ Request:
 | `cwd` | open a fresh session in that directory — must be a `/targets` place |
 | `new_project` | a name (15 Oct 2026, §6.24): make a project folder and open the fresh session in it — implies `target: "new"`. With `repo`, `agents_md`, `preset` |
 | `repo` | with `new_project`: clone this git URL instead of `git init` (§6.24) |
-| `agents_md` | with `new_project`: `true` writes a starter `AGENTS.md` and `CLAUDE.md` → it (§6.24) |
+| `agents_md` | with `new_project`: `true` writes a starter `AGENTS.md` and `CLAUDE.md` → it; `"draft"` has the first chat write it (§6.24) |
 | `preset` | a preset's name (§6.24): its AGENTS.md text for `agents_md`. The app sends the preset's agent, profile, model and plan itself |
 | `worktree` | `{"from": <a /targets place>, "branch"}`: open the fresh session in a new git worktree of that project (§6.24) — implies `target: "new"` |
 | `model` | Claude (26 Sep 2026): `opus` \| `sonnet` \| `haiku` \| `fable` for a fresh session — `--model` in a pane, sessiond's `start` headless. opencode: a `provider/model` id from its sheet, sent with each prompt when headless. Anything else is dropped, not refused; ignored when the words land in an existing thread |
@@ -3324,6 +3324,12 @@ imply `target: "new"`; together, or with `cwd` / `project`, → 400.
   named `preset`'s `agents_md`, else the host's template
   (`~/.config/agent-media/agents-template.md`), else a short built-in one;
   `{name}` becomes the project's name.
+- `agents_md: "draft"` (15 Oct 2026): the chat writes it instead. Only
+  `CLAUDE.md` → `AGENTS.md` is made, and the first message is the server's
+  fixed instruction (read the repo, write a short AGENTS.md from what is
+  there, improve one already there) followed by `text` — which may be empty.
+  Agent-neutral, where `/init` is each harness's own or missing. Meant for a
+  clone; a fresh `git init` has nothing to read.
 
 Answers as `/ask` does, plus `"cwd"`: the folder.
 

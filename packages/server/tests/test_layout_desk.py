@@ -278,6 +278,20 @@ def test_a_new_project_gets_its_presets_agents_md(default_desk, asker, monkeypat
     assert ok and (default_desk / "projects" / "shop" / "AGENTS.md").read_text() == "# shop: web\n"
 
 
+def test_a_new_project_can_have_its_first_chat_draft_agents_md(default_desk, asker, monkeypatch):
+    monkeypatch.setenv("MEDIA_PROJECTS_DIR", str(default_desk / "projects"))
+    typed = []
+    monkeypatch.setattr(send, "_send_to_pane", lambda p, t: typed.append(t) or "")
+    ok, _ = send.ask("", "tok", new_project="empty")
+    assert not ok and not (default_desk / "projects" / "empty").exists()
+    ok, _ = send.ask("", "tok", new_project="drones", agents_md="draft")
+    made = default_desk / "projects" / "drones"
+    assert ok and typed == [new_project.DRAFT_PROMPT]
+    assert not (made / "AGENTS.md").exists() and os.readlink(made / "CLAUDE.md") == "AGENTS.md"
+    ok, _ = send.ask("then add a README", "tok", new_project="rotors", agents_md="draft")
+    assert ok and typed[-1] == f"{new_project.DRAFT_PROMPT} then add a README"
+
+
 def test_presets_are_added_replaced_and_removed(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setattr(auth_abs, "abs_identity", lambda b: ({"username": "d", "type": "root"}, 200))

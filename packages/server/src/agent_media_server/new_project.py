@@ -49,6 +49,18 @@ Instructions for coding agents working in this project.
 """
 
 
+#: The opening words when AGENTS.md is to be drafted rather than templated
+#: (`agents_md: "draft"`): every harness can follow them, where `/init` is
+#: each one's own command or missing. Ahead of whatever the listener typed.
+DRAFT_PROMPT = (
+    "Before anything else, read this repository and write AGENTS.md at its root: "
+    "what the project is, its layout, how to build, run and test it, and the "
+    "conventions its code and commits follow, all taken from the code itself, not "
+    "guessed. Keep it short, for a coding agent new to the project. If AGENTS.md or "
+    "CLAUDE.md is already there, improve it rather than replace it. CLAUDE.md is a "
+    "link to AGENTS.md; leave it so. Then stop and tell me what you wrote.")
+
+
 def root() -> Path:
     return Path(os.path.expanduser(
         (os.environ.get("MEDIA_PROJECTS_DIR") or "").strip() or "~/projects"))
@@ -84,20 +96,22 @@ def _git(*args: str, timeout: float = 20) -> tuple[bool, str]:
     return r.returncode == 0, lines[-1] if lines else ""
 
 
-def _write_agents_md(path: Path, name: str, text: str) -> None:
+def _write_agents_md(path: Path, name: str, text: str, draft: bool = False) -> None:
     agents = path / "AGENTS.md"
-    if not agents.exists():
+    if not agents.exists() and not draft:
         agents.write_text((text or default_agents_md()).replace("{name}", name))
+    # Drafting, the link waits (dangling) for the agent to write AGENTS.md.
     claude = path / "CLAUDE.md"
     if not claude.exists() and not claude.is_symlink():
         claude.symlink_to("AGENTS.md")
 
 
-def create(name: str, repo: str = "", agents_md: bool = False,
+def create(name: str, repo: str = "", agents_md: bool | str = False,
            agents_text: str = "") -> tuple[bool, dict]:
     """Make `<root>/<name>`: a clone of `repo`, or a `git init`, with a starter
-    AGENTS.md when `agents_md`. `(True, {"cwd"})`, or a refusal with its
-    status."""
+    AGENTS.md when `agents_md` — or, when it is "draft", only CLAUDE.md → it,
+    for the first chat to write (DRAFT_PROMPT). `(True, {"cwd"})`, or a
+    refusal with its status."""
     name = (name or "").strip()
     repo = (repo or "").strip()
     if not NAME.fullmatch(name) or name.endswith(".git"):
@@ -130,7 +144,7 @@ def create(name: str, repo: str = "", agents_md: bool = False,
             print(f"new project: git init {path} failed ({why})", file=sys.stderr)
     if agents_md:
         try:
-            _write_agents_md(path, name, agents_text)
+            _write_agents_md(path, name, agents_text, draft=agents_md == "draft")
         except OSError as e:
             print(f"new project: AGENTS.md in {path} not written ({e})", file=sys.stderr)
     return True, {"cwd": str(path)}

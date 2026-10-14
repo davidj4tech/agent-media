@@ -660,7 +660,7 @@ def _agent_unready(agent: str, profile: str = "") -> str:
 def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
         agent: str = "", cwd: str = "", cwd_trusted: bool = False,
         model: str = "", mode: str = "", profile: str = "",
-        new_project: str = "", repo: str = "", agents_md: bool = False,
+        new_project: str = "", repo: str = "", agents_md: bool | str = False,
         preset: str = "", worktree: dict | None = None) -> tuple[bool, dict]:
     """Start a fresh session with `text` as its first message.
 
@@ -682,11 +682,14 @@ def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
     `new_project` makes that folder first (new_project.py: a clone of
     `repo`, else `git init`; AGENTS.md when `agents_md`, a `preset`'s text if
     named) and opens the chat in it: a name, not a path, so the phone still
-    chooses no directory. `worktree` (`{"from": <a place>, "branch"}`) cuts a
+    chooses no directory. `agents_md: "draft"` has the chat write AGENTS.md
+    itself: its first message is new_project.DRAFT_PROMPT, then `text`
+    (which may then be empty). `worktree` (`{"from": <a place>, "branch"}`) cuts a
     new worktree of a place and opens the chat there (contract §6.24).
     """
     text = " ".join((text or "").split())
-    if not text:
+    drafting = bool(new_project) and agents_md == "draft"
+    if not text and not drafting:
         return False, {"error": "empty message"}
     user, err = auth.gate(bearer)
     if not user:
@@ -733,6 +736,8 @@ def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
         if not made:
             return False, made_detail
         where, cwd_trusted = made_detail["cwd"], True
+        if drafting:
+            text = f"{projects_new.DRAFT_PROMPT} {text}".strip()
     host, cwd, flags = ask_target()
     if agent != "claude":
         flags = []          # amux's flags are claude's (--dangerously-skip-permissions)

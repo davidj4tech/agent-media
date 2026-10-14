@@ -372,7 +372,10 @@ or Mark all read, clears it.
 (`1142230`, contract §6.24): `/ask` takes `new_project` (+ `repo`,
 `agents_md`, `preset`) or `worktree: {from, branch}`; `/presets` CRUD. App:
 the new-chat sheet's New project… / New worktree… rows, preset chips and a
-Settings → Presets editor, building. Open: in the default layout a
+Settings → Presets editor, building. `agents_md: "draft"` (server done):
+the first chat writes AGENTS.md from the repo, the same words for every
+agent — the app's third AGENTS.md choice, "Draft from the repo", for a
+clone. Open: in the default layout a
 worktree's thread is filed under its branch name (the folder's basename),
 not its project.
 

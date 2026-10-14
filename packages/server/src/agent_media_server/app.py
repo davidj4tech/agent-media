@@ -1352,7 +1352,8 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
             level=str(body.get("level") or ""),
             new_project=str(body.get("new_project") or ""),
             repo=str(body.get("repo") or ""),
-            agents_md=body.get("agents_md") is True,
+            agents_md=(body.get("agents_md") if body.get("agents_md") in (True, "draft")
+                       else False),
             preset=str(body.get("preset") or ""),
             worktree=body.get("worktree") if isinstance(body.get("worktree"), dict) else None)
         status = detail.pop("status", 400)

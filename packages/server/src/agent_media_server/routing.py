@@ -119,7 +119,7 @@ def ask_routed(text: str, bearer: str, *, target: str = "", player_item: str = "
                player_session: str = "", model: str = "",
                plan: bool = False, profile: str = "",
                level: str = "", new_project: str = "", repo: str = "",
-               agents_md: bool = False, preset: str = "",
+               agents_md: bool | str = False, preset: str = "",
                worktree: dict | None = None) -> tuple[bool, dict]:
     """The assistant button's words, sent where they belong.
 
@@ -142,7 +142,7 @@ def ask_routed(text: str, bearer: str, *, target: str = "", player_item: str = "
     that land in an existing one leave its settings alone.
     """
     text = " ".join((text or "").split())
-    if not text:
+    if not text and not (new_project and agents_md == "draft"):   # the draft is the message
         return False, {"error": "empty message"}
     player_session = (player_session or "").strip()
     if player_session and not sessions._SESSION.fullmatch(player_session):
