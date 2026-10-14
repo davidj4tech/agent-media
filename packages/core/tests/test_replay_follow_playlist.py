@@ -141,3 +141,31 @@ def test_a_phone_voiced_reply_since_the_refit_is_summed_bare(rig, monkeypatch,
         row["started_at"] = cli._DEVICE_ESTIMATE_REFIT_AT + 3600
     cli._replay_row(row)
     assert rig["rows"][-1]["extras"]["clip_offsets_s"] == [0.0, 1.0, 3.0]
+
+
+def test_a_held_reply_is_not_heard_for_being_pushed(rig, monkeypatch):
+    """14 Oct 2026: 14231 was marked heard as its clips went to the phone,
+    which stalled part-way. Its follower marks it, at the end (--heard-id)."""
+    monkeypatch.setattr(cli, "_socket_for", lambda t: "tcp://127.0.0.1:16614")
+    monkeypatch.setenv("MEDIA_REPLAY_WAIT_S", "0")
+    marked: list = []
+    monkeypatch.setattr(cli.StateStore, "mark_heard",
+                        lambda self, rid: marked.append(rid))
+    row = dict(_row(held=True), id=14231)
+    assert cli._replay_row(row) == 0
+    assert marked == []
+    assert _arg(rig["argv"], "--heard-id") == "14231"
+    # Heard already: nothing to mark.
+    cli._replay_row(dict(_row(held=True, heard=True), id=14231))
+    assert "--heard-id" not in rig["argv"]
+
+
+def test_with_nothing_to_follow_it_pushed_is_heard(rig, monkeypatch):
+    monkeypatch.setattr(cli, "_socket_for", lambda t: "tcp://127.0.0.1:16614")
+    monkeypatch.setenv("MEDIA_REPLAY_WAIT_S", "0")
+    marked: list = []
+    monkeypatch.setattr(cli.StateStore, "mark_heard",
+                        lambda self, rid: marked.append(rid))
+    row = dict(_row(held=True, clip_durations_s=[]), id=7)
+    assert cli._replay_row(row) == 0
+    assert marked == [7] and rig["argv"] == []

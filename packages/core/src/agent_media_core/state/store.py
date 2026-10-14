@@ -1098,6 +1098,27 @@ class StateStore:
             ex.pop("stopped_at")
         else:
             ex["stopped_at"] = {"sentence": int(sentence), "at": time.time()}
+            # A held reply stopped part-way has not been heard: its Play
+            # comes back (session_feed.Turn.unheard), with the resume.
+            ex.pop("heard", None)
+        with self._cursor() as cur:
+            cur.execute("UPDATE history SET extras = ? WHERE id = ?",
+                        (json.dumps(ex), int(row_id)))
+        return True
+
+    def set_extra(self, row_id: int, key: str, value) -> bool:
+        """Set one key of a history row's extras (None removes it). True if
+        it wrote."""
+        row = self.history_row(row_id)
+        ex = (row or {}).get("extras")
+        if not isinstance(ex, dict):
+            return False
+        if value is None:
+            if key not in ex:
+                return False
+            ex.pop(key)
+        else:
+            ex[key] = value
         with self._cursor() as cur:
             cur.execute("UPDATE history SET extras = ? WHERE id = ?",
                         (json.dumps(ex), int(row_id)))

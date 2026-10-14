@@ -152,6 +152,35 @@ def test_a_held_row_is_unheard_until_marked_heard():
     assert session_feed.Turn(at=0, text="x").unheard is False
 
 
+def test_a_held_reply_stopped_part_way_is_unheard_again():
+    """A replay that stops part-way (stopped_at written) has not been heard:
+    the Play comes back, with the resume."""
+    from agent_media_core.state import StateStore
+
+    st = StateStore()
+    rid = st.add_history(sink="speech", uri="/x.mp3", started_at=time.time(),
+                         target="phone", source="claude-code", text="held",
+                         extras={"source_session": "s1", "held": True, "heard": True})
+    assert st.set_stopped_at(rid, 15) is True
+    ex = st.history_row(rid)["extras"]
+    assert not ex.get("heard") and ex["stopped_at"]["sentence"] == 15
+
+
+def test_one_extra_is_set_and_removed():
+    from agent_media_core.state import StateStore
+
+    st = StateStore()
+    rid = st.add_history(sink="speech", uri="/x.mp3", started_at=time.time(),
+                         target="phone", source="claude-code", text="held",
+                         extras={"held": True})
+    assert st.set_extra(rid, "opened_play", {"at": 1.0, "device": "p8a"}) is True
+    ex = st.history_row(rid)["extras"]
+    assert ex["opened_play"] == {"at": 1.0, "device": "p8a"} and ex["held"] is True
+    assert st.set_extra(rid, "opened_play", None) is True
+    assert "opened_play" not in st.history_row(rid)["extras"]
+    assert st.set_extra(999999, "x", 1) is False
+
+
 def test_the_feed_and_the_log_carry_unheard(tmp_path):
     from agent_media_core import book_tracks, session_feed
     from agent_media_core.state import StateStore

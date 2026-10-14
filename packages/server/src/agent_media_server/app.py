@@ -776,7 +776,11 @@ def _thread_events(h: BaseHTTPRequestHandler, session: str, query: str) -> bool:
         return True
     raw = (qs.get("limit") or [""])[0]
     limit = threads._limit(raw) if raw else None
-    return thread_events.serve(h, session, limit=limit, gzip=thread_events.accepts_gzip(h))
+    # Who opened it: a device by its name (auth._owner's "device:<name>"),
+    # else the login — what a waiting reply played on the open is noted with.
+    who = str(user.get("username") or user.get("device") or "").removeprefix("device:")
+    return thread_events.serve(h, session, limit=limit, gzip=thread_events.accepts_gzip(h),
+                               device=who)
 
 
 def _session_events(h: BaseHTTPRequestHandler, query: str) -> None:

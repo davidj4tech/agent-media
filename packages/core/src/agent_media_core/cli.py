@@ -3573,22 +3573,31 @@ def _replay_row(row: dict, from_sentence: Optional[int] = None,
     if from_sentence is not None and smap:
         start = max(0, min(int(from_sentence), len(smap) - 1))
     try:
-        rc = _push_replay(row, ex, clip_uris, clip_durations, replay_text,
-                          speech_target, pane, recorded, replay_lock,
-                          start=start, then_id=then_id)
-        if rc == 0 and ex.get("held") and row.get("id"):
-            # A held reply has now been heard: the transcript drops its
-            # big Play (session_feed.Turn.unheard).
-            try:
-                StateStore().mark_heard(int(row["id"]))
-            except Exception as e:  # noqa: BLE001 — it played; the mark is cosmetic
-                print(f"media replay: could not mark it heard ({e})", file=sys.stderr)
-        return rc
+        # A held reply is marked heard by its follower when the replay
+        # reaches its last sentence, not here: pushed is not heard. On 14 Oct
+        # 2026 held reply 14231 was marked heard the moment its clips went to
+        # the phone, which then stalled at sentence 15 of it, and the reply
+        # lost its Play though nothing had been heard (`_push_replay` marks
+        # it itself only when no follower runs).
+        return _push_replay(row, ex, clip_uris, clip_durations, replay_text,
+                            speech_target, pane, recorded, replay_lock,
+                            start=start, then_id=then_id)
     finally:
         # Handed to the follower, the descriptor is closed here and the token
         # lives on in it; otherwise this is the release.
         if replay_lock is not None:
             replay_lock.release()
+
+
+def _mark_heard(row_id: Optional[int]) -> None:
+    """A held reply has now been heard: the transcript drops its big Play
+    (session_feed.Turn.unheard). Best effort — the mark is cosmetic."""
+    if row_id is None:
+        return
+    try:
+        StateStore().mark_heard(int(row_id))
+    except Exception as e:  # noqa: BLE001
+        print(f"media replay: could not mark it heard ({e})", file=sys.stderr)
 
 
 def _replay_wait_s() -> float:
@@ -3708,6 +3717,9 @@ def _push_replay(row: dict, ex: dict, clip_uris: list, clip_durations: list,
     # Re-show the reply's visual concurrently with the (slow, bridge-bound)
     # playback push below; the thread outlives neither — the process waits.
     threading.Thread(target=_replay_visual, args=(ex,)).start()
+    # A held reply not yet heard: the row its follower marks heard at the end.
+    held_id = (int(row["id"]) if recorded and ex.get("held")
+               and not ex.get("heard") else None)
 
     sink = SinkSpeech()
     # A remote target plays clips from its clips-relay dir, which only the
@@ -3925,7 +3937,8 @@ def _push_replay(row: dict, ex: dict, clip_uris: list, clip_durations: list,
              "--pane", pane,
              "--durations", json.dumps(clip_durations)]
             + (["--lock-fd", str(lock_fd)] if lock_fd is not None else [])
-            + (["--then-id", str(then_id)] if then_id is not None else []),
+            + (["--then-id", str(then_id)] if then_id is not None else [])
+            + (["--heard-id", str(held_id)] if held_id is not None else []),
             start_new_session=True,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
@@ -3947,6 +3960,10 @@ def _push_replay(row: dict, ex: dict, clip_uris: list, clip_durations: list,
         # then self-heals the row if the tracker dies uncleanly, instead of
         # the bar freezing at its last mirrored position forever.
         np_extras["writer_pid"] = _trk.pid
+    elif held_id is not None:
+        # Nothing follows this replay to its end, so pushed is all there is
+        # to go on (a row without clip lengths).
+        _mark_heard(held_id)
     StateStore().set_now_playing(
         "speech", uri=clip_uris[0], started_at=time.time(),
         target=speech_target.name, extras=np_extras)
@@ -4487,6 +4504,9 @@ def cmd_replay_track(a) -> int:
             os.environ["TMUX"] = "x"  # fallback: truthy, tmux resolves socket
 
     state = StateStore()
+    # A held reply's row: marked heard here, once the replay reaches its last
+    # sentence — never on a Stop, a barge-in or a player that went away.
+    heard_id = getattr(a, "heard_id", None)
 
     # The playback token, when the replay took it and handed it down: held
     # for as long as this process lives, which is as long as the replay plays.
@@ -4684,6 +4704,27 @@ def cmd_replay_track(a) -> int:
         # this lane's normal weather, and reading those as the end is the
         # bug the clock replaced.
         gone = threading.Event()
+        # Whether the player ever answered, and whether it was heard playing
+        # the last sentence: what says a held reply was heard (`heard_id`).
+        answered = threading.Event()
+        reached = threading.Event()
+        last_starts = [float(o) for o in offsets]
+        per_clip = len(offsets) == len(durations) > 1
+
+        def _reached_last(snap: dict) -> bool:
+            """The player is on the last sentence with its audio loaded (a
+            `duration`): a clip whose render failed is skipped without one,
+            so a phone that ran through the rest of a reply failing each
+            sentence does not count as having said it."""
+            p, d = snap.get("playlist-pos"), snap.get("duration")
+            if (snap.get("idle-active") or not isinstance(p, int)
+                    or not isinstance(d, (int, float)) or d <= 0):
+                return False
+            if per_clip:
+                return p >= len(last_starts) - 1
+            tp = snap.get("time-pos")
+            return (p == 0 and isinstance(tp, (int, float))
+                    and tp + 0.001 >= last_starts[-1])
 
         seen: dict = {}
 
@@ -4761,7 +4802,10 @@ def cmd_replay_track(a) -> int:
                 said = _player_says_idle(snap)
                 if said is None:
                     continue
+                answered.set()
                 if not said:
+                    if _reached_last(snap):
+                        reached.set()
                     _correct(snap)
                 # Idle for as long as two slow reads would span: one idle
                 # answer can be a clip being fetched.
@@ -4778,8 +4822,11 @@ def cmd_replay_track(a) -> int:
                 # Nothing is playing it any more. Stamp where it had got to,
                 # as a Stop does, so ▶ picks up there instead of the top.
                 # On its last sentence, the player going idle is just the
-                # end: nothing to pick up.
-                if last < len(timeline["offsets"]) - 1:
+                # end: nothing to pick up — and, heard playing it, a held
+                # reply has been heard.
+                if reached.is_set():
+                    _mark_heard(heard_id)
+                elif last < len(timeline["offsets"]) - 1:
                     from .sinks.speech import mark_speech_stopped
                     mark_speech_stopped(sentence=max(last, 0), tick=False)
                 return _finish()
@@ -4807,6 +4854,16 @@ def cmd_replay_track(a) -> int:
             # within reason: a player stuck on its first clip would push the
             # end on for ever, holding the voice.
             if elapsed > total + min(30.0, max(0.0, offsets[0] - first0)) + 0.5:
+                if heard_id is not None and answered.is_set() \
+                        and not reached.is_set() \
+                        and _reached_last(_replay_read_player(
+                            _active_speech_target())):
+                    reached.set()
+                # Heard out — or, from a player that never once answered
+                # (refusals are this lane's weather), the clock is all
+                # there is to go on.
+                if reached.is_set() or not answered.is_set():
+                    _mark_heard(heard_id)
                 return _finish()
             idx = 0
             for i, off in enumerate(offsets):
@@ -4933,6 +4990,9 @@ def cmd_replay_track(a) -> int:
             try:
                 if bool(ipc.get_property(_sock(), "idle-active")):
                     _finish()
+                    if heard_id is not None and read_idx[0] is None \
+                            and _heard_out(last_snap):
+                        _mark_heard(heard_id)
                     # A question the listener answered while it played has
                     # had its answer: the reply queued behind it is not due.
                     if then_id is not None and read_idx[0] is None \
@@ -8970,6 +9030,9 @@ def _build_parser() -> argparse.ArgumentParser:
     # A history row to replay once this one has played to its end (the
     # reply after a replayed question). Not after a Stop or a barge-in.
     s.add_argument("--then-id", type=int, default=None)
+    # A held reply's row, marked heard only once the replay reaches its last
+    # sentence (not when its clips were pushed).
+    s.add_argument("--heard-id", type=int, default=None)
     s.set_defaults(func=cmd_replay_track)
 
     s = sub.add_parser("errors", help="recent errors from every component")

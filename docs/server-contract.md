@@ -606,7 +606,7 @@ newest page, as without it. Other harnesses' threads find their line ids
 | `command` | slash commands | `{"name": "review", "args": "123", "text": "/review 123"}` — the chip for a slash command typed from the box (`agent_media_core/slash.py`); `text` on the line is `command.text`. Settings commands (`/model`, …) never become lines |
 | `images` | when drawn | `["/img/…", …]` — the pictures the canvas drew for this reply, still in the spool |
 | `figure` | with `images` | `true` for a `[[visual:]]` figure, `false` for ambient art |
-| `unheard` | held replies | `true` for a reply held for the listener and never played (the desk toast, `intake/toast.py`: history `extras.held` without `extras.heard`); absent once a replay has played it, and on the line being heard (24 Sep 2026) |
+| `unheard` | held replies | `true` for a reply held for the listener and never played (the desk toast, `intake/toast.py`: history `extras.held` without `extras.heard`); absent once a replay has played it to its last sentence (not when its clips are pushed; a replay stopped part-way leaves it, with `stopped_at`, 14 Oct 2026), and on the line being heard (24 Sep 2026) |
 | `work` | agent lines | `{"seconds", "count", "steps": [...]}` — what the turn did before this reply |
 
 **The live line.** At most one line — the one being spoken now, or a

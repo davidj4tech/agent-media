@@ -359,9 +359,10 @@ _WATCHERS: dict[str, Watcher] = {}
 _LOCK = threading.Lock()
 
 
-def subscribe(session: str) -> tuple[Watcher, Subscriber] | None:
+def subscribe(session: str, device: str = "") -> tuple[Watcher, Subscriber] | None:
     """A new subscriber to `session`'s watcher (started if it is the first),
-    or None when a cap is reached."""
+    or None when a cap is reached. `device`: who opened it, for the row a
+    waiting reply is played from (`_play_waiting`)."""
     with _LOCK:
         total = sum(len(w.subs) for w in _WATCHERS.values())
         w = _WATCHERS.get(session)
@@ -382,12 +383,12 @@ def subscribe(session: str) -> tuple[Watcher, Subscriber] | None:
     if start:
         w.prime()
         w.start()
-    threading.Thread(target=_play_waiting, args=(session,), daemon=True,
+    threading.Thread(target=_play_waiting, args=(session, device), daemon=True,
                      name=f"opened:{session[:8]}").start()
     return w, sub
 
 
-def _play_waiting(session: str) -> None:
+def _play_waiting(session: str, device: str = "") -> None:
     """The thread was opened: play its newest held Normal reply that has
     never been played (core's toast.take_for_opened). Off the request thread:
     a reply still rendering is waited for.
@@ -396,7 +397,10 @@ def _play_waiting(session: str) -> None:
     verb (which gives `media replay` 25 s): pushing a many-clip reply to the
     phone is a round trip a clip, and a replay killed mid-push plays the
     clips it got that far with and then stops, before its follower (the
-    bar, the follow-along) ever starts."""
+    bar, the follow-along) ever starts.
+
+    The row keeps that it was played on an open, when and by which device
+    (`extras.opened_play`): "why did that play?" is answered by the row."""
     try:
         import subprocess
         import sys
@@ -408,6 +412,15 @@ def _play_waiting(session: str) -> None:
         if rid is None:
             return
         log.info("thread %s opened: playing its waiting reply %s", session[:8], rid)
+        try:
+            from agent_media_core.state import StateStore
+
+            StateStore().set_extra(int(rid), "opened_play", {
+                "at": round(time.time(), 1),
+                **({"device": device} if device else {})})
+        except Exception:  # noqa: BLE001 — a note is never worth the replay
+            log.exception("thread %s opened: could not note the play on %s",
+                          session[:8], rid)
         with open(state_dir() / "opened-replay.log", "ab") as err:
             subprocess.Popen([sys.executable, "-m", "agent_media_core.cli",
                               "replay", "--id", str(rid)],
@@ -499,7 +512,8 @@ class _Out:
             pass
 
 
-def serve(h, session: str, *, limit: int | None = None, gzip: bool = False) -> bool:
+def serve(h, session: str, *, limit: int | None = None, gzip: bool = False,
+          device: str = "") -> bool:
     """Hold the connection open and stream `session` to it until it goes.
 
     Runs on the handler's own thread. Auth and the session check are the
@@ -511,7 +525,7 @@ def serve(h, session: str, *, limit: int | None = None, gzip: bool = False) -> b
     client went, it fell too far behind, the snapshot failed, or a bug): a
     caller must never write a second answer onto this socket.
     """
-    got = subscribe(session)
+    got = subscribe(session, device)
     if got is None:
         from .app import _json
 

@@ -297,6 +297,31 @@ def test_a_device_token_opens_it(server, shelf, convo, monkeypatch):
     st.close()
 
 
+def test_a_reply_played_on_open_notes_it_on_its_row(monkeypatch):
+    """When and by which device a waiting reply was played on an open, kept
+    on the row (`extras.opened_play`), not in a log file."""
+    import subprocess
+
+    from agent_media_core.intake import toast
+    from agent_media_core.state import StateStore
+
+    st = StateStore()
+    rid = st.add_history(sink="speech", uri="/x.mp3", started_at=time.time(),
+                         target="sasonica", source="claude-code", text="waiting",
+                         extras={"held": True, "session": SID})
+    monkeypatch.setattr(toast, "take_for_opened", lambda s: rid if s == SID else None)
+    ran: list = []
+    monkeypatch.setattr(subprocess, "Popen", lambda argv, **kw: ran.append(argv))
+    before = time.time()
+    thread_events._play_waiting(SID, "p8a")
+    assert ran and ran[0][-2:] == ["--id", str(rid)]
+    got = st.history_row(rid)["extras"]["opened_play"]
+    assert got["device"] == "p8a" and before - 1 <= got["at"] <= time.time() + 1
+    # Opened by nobody known: just when.
+    thread_events._play_waiting(SID)
+    assert "device" not in st.history_row(rid)["extras"]["opened_play"]
+
+
 def test_preflight_and_the_token_is_never_logged(server, convo, monkeypatch, capsys):
     res, _ = call(server, "OPTIONS", f"/threads/{SID}/events")
     assert res.status == 204 and res.getheader("Access-Control-Allow-Origin") == "*"

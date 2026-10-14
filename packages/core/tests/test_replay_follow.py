@@ -361,3 +361,69 @@ def test_a_position_without_a_duration_is_not_the_phones_word(store, monkeypatch
     assert {tuple(r["clip_offsets_s"]) for r in rows if r.get("clip_offsets_s")} \
         == {(0.0, 0.15, 0.3)}      # the fixture's seed row, never re-dated
     assert any("play_started_at" in r for r in rows)
+
+
+# ── A held reply is heard when its replay reaches the end ───────────────
+# 14 Oct 2026: held reply 14231 was marked heard as soon as its clips were
+# pushed; the phone stalled at sentence 15 and the reply lost its Play.
+
+def _held_track(monkeypatch, readings, offsets=(0.0, 0.1, 0.2),
+                durs=(0.1, 0.1, 0.1)):
+    heard: list = []
+    stops: list = []
+    monkeypatch.setattr(cli, "_mark_heard", lambda rid: heard.append(rid))
+    monkeypatch.setattr("agent_media_core.sinks.speech.mark_speech_stopped",
+                        lambda sentence=None, tick=True: stops.append(sentence))
+    monkeypatch.setattr(cli, "_REPLAY_ALIVE_EVERY_S", 0.05)
+    monkeypatch.setattr(cli, "_REPLAY_FAST_EVERY_S", 0.01)
+    it = iter(readings)
+    last = [readings[-1]]
+
+    def read(target):
+        last[0] = next(it, last[0])
+        return dict(last[0], **{"_read_at": time.time()})
+
+    monkeypatch.setattr(cli, "_replay_read_player", read)
+    cli.cmd_replay_track(argparse.Namespace(
+        sentences=cli.json.dumps(SENTS), offsets=cli.json.dumps(list(offsets)),
+        pane="", durations=cli.json.dumps(list(durs)), heard_id=14231))
+    return heard, stops
+
+
+def _on(pos, duration=0.1):
+    return {"idle-active": False, "pause": False, "playlist-pos": pos,
+            "time-pos": 0.01, **({"duration": duration} if duration else {})}
+
+
+IDLE = {"idle-active": True, "pause": False, "playlist-pos": -1}
+
+
+def test_a_held_reply_played_to_its_last_sentence_is_heard(store, monkeypatch):
+    heard, stops = _held_track(monkeypatch, [_on(0), _on(1), _on(2)] * 3 + [IDLE])
+    assert heard == [14231] and stops == []
+
+
+def test_a_held_reply_that_stalled_part_way_is_not_heard(store, monkeypatch):
+    """The phone stuck on a sentence, then went idle: stopped there, still
+    unheard, so its Play (and the resume) stay."""
+    heard, stops = _held_track(
+        monkeypatch, [_on(0), _on(1)] * 2 + [IDLE], offsets=(0.0, 0.1, 30.0),
+        durs=(0.1, 0.1, 30.0))
+    assert heard == []
+    assert stops and stops[-1] >= 1
+
+
+def test_running_off_the_end_on_failed_clips_is_not_heard(store, monkeypatch):
+    """A phone whose renders fail skips each sentence: it passes the last
+    clip with no audio loaded (no duration) and ends. Not heard."""
+    heard, _ = _held_track(
+        monkeypatch, [_on(0), _on(1, None), _on(2, None), IDLE],
+        offsets=(0.0, 0.1, 30.0), durs=(0.1, 0.1, 30.0))
+    assert heard == []
+
+
+def test_a_player_that_never_answered_is_taken_at_the_clock(store, monkeypatch):
+    """Refusals throughout (the relay lane's weather): the clock running out
+    is all there is to go on, as before."""
+    heard, _ = _held_track(monkeypatch, [{}])
+    assert heard == [14231]
