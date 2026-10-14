@@ -1073,6 +1073,13 @@ ahead.
    follow along for it too"). Today it is `media doc play <path>` or asking
    an agent in a thread; the app's Notes reader opens `.md`/`.org`/`.txt`
    (`GET /org/read`) and has no way to hear one.
+   **Steps 1 and 2 DONE 15 Oct 2026** for notes (agent-media `1204f2b`,
+   sasonica-app `1fd0e02`, contract §6.10 `/org/listen`; red5's canvas
+   restarted). The play key on a note is now Listen; `/org/say` is kept but
+   unused by the app. **Next (David chose "Notes, then project docs"):** a doc
+   path mentioned in a thread opens in the same reader with Listen — needs a
+   read route outside the Org tree, and the reader drawing Markdown (today it
+   draws Org, so a `.md` heading is skipped and a fence is plain text).
    1. **Listen** in the reader (the whole note, or from the heading it is
       opened at): a server endpoint over `docs.render_doc` and the book
       channel, `target` the app's usual choice (phone by default). The
