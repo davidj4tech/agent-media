@@ -2901,13 +2901,13 @@ rows) and shown on screen, `?show=&project=&agent=`. The server is asked for
 everything regardless: the narrowing is applied to the hits, which already
 carry `project`, `harness`, `live` and `archived`.
 
-### 6.15 Move a thread to another project — gated (built 23 Sep 2026)
+### 6.15 Move a thread to another project — gated (built 23 Sep 2026; waits out a turn since 15 Oct 2026)
 
 #### `POST /session/move` — gated
 
 `{"session", "project"?, "cwd"?}` → `{"ok": true, "session", "project",
 "cwd", "restarted": bool, "pane": null | "%23", "live": bool, "folder":
-null | "…", "folder_error"?: "…"}`.
+null | "…", "folder_error"?: "…", "pending"?: true}`.
 
 A thread has no project field to set: `project` on a `/targets` row is read
 off the directory the session ran in and the shelf folder it is filed under
@@ -2942,11 +2942,15 @@ Name the destination either way: `project` (its directory is the one that
 project's newest conversation ran in, `sessions.project_target`) or `cwd`
 (any directory on this host, whose project is whatever the layout calls it).
 
-**409** `"that session is working — stop it first"`: a move restarts the
-session, and an interrupted turn loses whatever it had not written. Stop it
-(`/session/stop`) and move it then. 400 for an unknown project or a
-directory that is not there, 404 when no harness still holds the session,
-401 unpaired.
+**Mid-turn, the move waits** (15 Oct 2026; it was a 409 before). A move
+restarts the session, and an interrupted turn loses whatever it had not
+written, so a working session is left to finish: the answer is `ok: true,
+pending: true` with nothing moved yet, the move is kept in
+`<state_dir>/moves_pending.json`, and the server carries it out (all four
+steps) the moment the turn ends. A later move replaces a waiting one; a
+server restart picks waiting ones up again; one still waiting after six
+hours is dropped and logged. 400 for an unknown project or a directory that
+is not there, 404 when no harness still holds the session, 401 unpaired.
 
 **What the folder move costs.** Audiobookshelf reads a folder that moved as
 a *new* item — new id, no progress, the old one left behind (the same reason

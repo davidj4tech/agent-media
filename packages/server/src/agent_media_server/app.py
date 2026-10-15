@@ -120,8 +120,8 @@ device gets its token):
   POST /session/move {"session", "project"|"cwd"} → move a conversation to
                   another project: file it there, move its transcript and its
                   library folder, and bring a live session back in that
-                  directory, restarting it (moves.py, §6.15). Refused while
-                  it is working
+                  directory, restarting it (moves.py, §6.15). While it is
+                  working the move waits for the turn to end (`pending`)
   POST /session/answer {"session", "choice", "key"} → answer the dialog that
                   session is stopped on (a permission prompt); refused unless
                   that same question, fingerprinted by `key`, is still on its

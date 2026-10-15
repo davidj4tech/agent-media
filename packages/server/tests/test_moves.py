@@ -139,17 +139,33 @@ def test_a_live_thread_comes_back_in_the_new_directory(
                        ("open", SID2, dest, True, "p-agent-mail")]
 
 
-def test_a_working_session_is_refused(server, shelf, signed_in, claude, dest, windows):
-    # The rig's SID2 is mid-turn (`shelf` classifies every pane "working").
+@pytest.fixture()
+def waiters(monkeypatch):
+    """Record the sessions a waiter was started for, and start none: a real
+    one would outlive the test's stubs."""
+    log: list = []
+    monkeypatch.setattr(moves, "_watch", log.append)
+    return log
+
+
+def test_a_working_session_waits_for_its_turn(
+        server, shelf, signed_in, claude, dest, windows, waiters):
+    """Mid-turn, the move is kept rather than refused (15 Oct 2026).
+
+    The rig's SID2 is mid-turn (`shelf` classifies every pane "working").
+    """
     res, obj = call(server, "POST", "/session/move",
                     {"session": SID2, "project": "p-agent-mail"}, AUTH)
-    assert res.status == 409 and "working" in obj["error"]
+    assert res.status == 200 and obj["ok"] is True and obj["pending"] is True
+    assert obj["project"] == "p-agent-mail" and obj["restarted"] is False
     assert windows == []                       # its turn was left alone
-    assert moves.moved(SID2) == {}
+    assert moves.moved(SID2) == {}             # not filed yet
+    assert moves.pending(SID2)["cwd"] == dest
+    assert waiters == [SID2]
 
 
-def test_a_working_session_with_no_pane_is_refused(
-        server, shelf, signed_in, claude, dest, windows, monkeypatch):
+def test_a_working_session_with_no_pane_waits_too(
+        server, shelf, signed_in, claude, dest, windows, waiters, monkeypatch):
     """The gate is the turn, not the pane (23 Sep 2026).
 
     A headless session has no screen to read, so the check used to be
@@ -163,10 +179,62 @@ def test_a_working_session_with_no_pane_is_refused(
                         if sid == SID else None)
     res, obj = call(server, "POST", "/session/move",
                     {"session": SID, "project": "p-agent-mail"}, AUTH)
-    assert res.status == 409 and "working" in obj["error"]
+    assert res.status == 200 and obj["pending"] is True
     assert moves.moved(SID) == {}
     assert (claude / moves.encoded_dir("/home/ryer/projects/agent-media")
             / f"{SID}.jsonl").exists()
+
+
+def test_the_waiting_move_happens_when_the_turn_ends(
+        shelf, claude, dest, windows, monkeypatch):
+    moves.PENDING.put(SID2, {"project": "p-agent-mail", "cwd": dest, "at": 1e12})
+    monkeypatch.setattr(sessions, "live_sessions", lambda: {SID2: "%42"})
+    looks = iter(["working", "working", "input"])
+    monkeypatch.setattr(moves, "_busy", lambda s, p: next(looks) == "working")
+    monkeypatch.setattr(moves, "POLL_S", 0)
+    monkeypatch.setattr(moves.time, "time", lambda: 1e12)
+    moves._wait_then_move(SID2)
+    assert windows == [("close", SID2, "%42"),
+                       ("open", SID2, dest, True, "p-agent-mail")]
+    assert moves.moved(SID2)["project"] == "p-agent-mail"
+    assert moves.pending(SID2) == {}
+
+
+def test_a_later_move_replaces_the_waiting_one(
+        server, shelf, signed_in, claude, dest, windows, waiters, idle):
+    moves.PENDING.put(SID2, {"project": "p-elsewhere", "cwd": "/nowhere", "at": 1.0})
+    _res, obj = call(server, "POST", "/session/move",
+                     {"session": SID2, "project": "p-agent-mail"}, AUTH)
+    assert obj["restarted"] is True             # idle now: moved at once
+    assert moves.pending(SID2) == {}            # and the old wait is over
+
+
+def test_a_move_asked_for_while_waiting_is_the_one_carried_out(
+        shelf, claude, dest, windows, monkeypatch):
+    """The waiter takes only the row it read; one written since is read again."""
+    moves.PENDING.put(SID2, {"project": "p-old", "cwd": "/old", "at": 1e12})
+    monkeypatch.setattr(sessions, "live_sessions", lambda: {SID2: "%42"})
+    monkeypatch.setattr(moves.time, "time", lambda: 1e12)
+    monkeypatch.setattr(moves, "POLL_S", 0)
+    first = [True]
+
+    def busy(s, p):
+        if first[0]:                            # a new move lands mid-wait
+            first[0] = False
+            moves.PENDING.put(SID2, {"project": "p-agent-mail", "cwd": dest, "at": 1e12})
+            return False
+        return False
+
+    monkeypatch.setattr(moves, "_busy", busy)
+    moves._wait_then_move(SID2)
+    assert windows[-1] == ("open", SID2, dest, True, "p-agent-mail")
+
+
+def test_a_turn_that_never_ends_drops_its_move(shelf, claude, dest, windows, monkeypatch):
+    moves.PENDING.put(SID2, {"project": "p-agent-mail", "cwd": dest, "at": 0.0})
+    monkeypatch.setattr(moves, "_busy", lambda s, p: True)
+    moves._wait_then_move(SID2)
+    assert windows == [] and moves.pending(SID2) == {}
 
 
 def test_a_shelved_session_with_no_pane_still_moves(

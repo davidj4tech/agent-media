@@ -21,8 +21,12 @@ What a move does, in order:
    `--resume` in the new directory, in the tmux session the new project
    uses. Claude Code cannot change its own cwd mid-session, so this is the
    only honest way to do it: the conversation continues, the process does
-   not. A session working on something is refused — an interrupted turn
-   would lose whatever it had not written yet.
+   not. A session working on something is not interrupted — that turn
+   would lose whatever it had not written yet — so its move waits: it is
+   kept in `<state_dir>/moves_pending.json` and carried out the moment the
+   turn ends (`_wait_then_move`), and a server restart picks it up again
+   (`start`). David, 15 Oct 2026: move a thread mid-turn without having to
+   end the session first.
 
 4. **Its folder moves.** The conversation's own files are
    `<project>/<title>` under the Conversations root, so the folder is moved
@@ -43,6 +47,8 @@ import json
 import os
 import re
 import shutil
+import sys
+import threading
 import time
 from pathlib import Path
 
@@ -50,6 +56,14 @@ from . import auth, panes, sessions
 from ._jsonmap import JsonMap
 
 MOVES = JsonMap("moved.json")
+# Moves asked for mid-turn, {session: {project, cwd, at}}, until the turn ends.
+PENDING = JsonMap("moves_pending.json")
+# How often a waiting move looks at its session, and how long it waits for a
+# turn to end before it gives up (a turn that has run this long is stuck).
+POLL_S = 3.0
+WAIT_MAX_S = 6 * 3600.0
+_WAITING: set[str] = set()
+_WAITING_LOCK = threading.Lock()
 
 
 def claude_root() -> Path:
@@ -252,14 +266,28 @@ def move(session: str, project: str = "", cwd: str = "",
     if not sessions.session_exists(session):
         return False, {"error": f"session {session[:8]} has no transcript", "status": 404}
 
+    # Pane or no pane: a running turn is a running turn. It is left to
+    # finish; the move is kept and carried out once it has.
+    pane = sessions.live_sessions().get(session, "")
+    if _busy(session, pane):
+        at = round(time.time(), 3)
+        PENDING.put(session, {"project": project, "cwd": dest, "at": at})
+        _watch(session)
+        return True, {"session": session, "project": project or None, "cwd": dest,
+                      "pending": True, "restarted": False, "pane": pane or None,
+                      "live": True, "folder": None}
+    # A move asked for now replaces one still waiting.
+    PENDING.drop(session)
+    return _carry_out(session, project, dest)
+
+
+def _carry_out(session: str, project: str, dest: str) -> tuple[bool, dict]:
+    """The move itself, on a session that is not mid-turn: close a live one,
+    file it, move its transcript and folder, and reopen it in `dest`."""
     from . import send
 
     pane = sessions.live_sessions().get(session, "")
     live = bool(pane and panes.alive(pane))
-    # Pane or no pane: a running turn is a running turn.
-    if _busy(session, pane):
-        return False, {"error": "that session is working — stop it first",
-                       "pane": pane, "status": 409}
     if live:
         ok, detail = send.close_pane(session, pane)
         if not ok:
@@ -299,3 +327,64 @@ def move(session: str, project: str = "", cwd: str = "",
         return False, out
     out.update(restarted=True, pane=pane, live=True)
     return True, out
+
+
+def pending(session: str) -> dict:
+    """The move waiting on that session's turn, `{project, cwd, at}`, or {}."""
+    row = PENDING.get(session)
+    return row if isinstance(row, dict) else {}
+
+
+def _watch(session: str) -> None:
+    """One waiter per session, in the background."""
+    with _WAITING_LOCK:
+        if session in _WAITING:
+            return
+        _WAITING.add(session)
+    threading.Thread(target=_wait_then_move, args=(session,),
+                     name=f"move-{session[:8]}", daemon=True).start()
+
+
+def _wait_then_move(session: str) -> None:
+    """Wait for the turn to end, then carry out the move still asked for.
+
+    The row is read again on every look, so a later move replaces the
+    destination and a move carried out meanwhile (it dropped the row) ends
+    the wait. Auth was checked when the move was asked for.
+    """
+    try:
+        while True:
+            row = pending(session)
+            if not row:
+                return
+            if time.time() - float(row.get("at") or 0) > WAIT_MAX_S:
+                PENDING.drop(session)
+                print(f"move: {session[:8]} still working after "
+                      f"{WAIT_MAX_S / 3600:.0f}h; its move to "
+                      f"{row.get('project') or row.get('cwd')} was dropped",
+                      file=sys.stderr, flush=True)
+                return
+            pane = sessions.live_sessions().get(session, "")
+            if _busy(session, pane):
+                time.sleep(POLL_S)
+                continue
+            # Take only the row read here: one asked for since is read again.
+            if PENDING.update(lambda rows: rows.get(session) == row
+                              and rows.pop(session, None) is not None):
+                break
+        ok, detail = _carry_out(session, str(row.get("project") or ""),
+                                str(row.get("cwd") or ""))
+        print(f"move: {session[:8]} to {row.get('project') or row.get('cwd')} "
+              f"after its turn: {'done' if ok else detail.get('error')}",
+              file=sys.stderr, flush=True)
+    except Exception as e:  # a waiter must not take the server down
+        print(f"move: waiting on {session[:8]} failed: {e}", file=sys.stderr, flush=True)
+    finally:
+        with _WAITING_LOCK:
+            _WAITING.discard(session)
+
+
+def start() -> None:
+    """Pick up the moves a restart left waiting."""
+    for session in PENDING.all():
+        _watch(session)

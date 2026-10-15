@@ -2166,6 +2166,9 @@ def main() -> None:
     # This server on its accounts' lists at sasonica.com, daily (roadmap 20).
     from agent_media_server import servers_report as _servers_report
     _servers_report.start()
+    # Moves asked for mid-turn and left waiting by a restart (moves.py).
+    from agent_media_server import moves as _moves
+    _moves.start()
     # The one Matrix /sync loop (agent_media_server.matrix), with the speech
     # intake reading from it; idle unless a token and a room are configured.
     from agent_media_server import matrix as _matrix
