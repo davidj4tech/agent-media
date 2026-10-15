@@ -145,12 +145,49 @@ def project_dir(project: str = "", path: str = "") -> Path | None:
     return None
 
 
+#: A `Status:` anywhere in a document's opening lines ("…seal. Status: **proposal**").
+_STATUS_ANY = re.compile(r"\bStatus:\s*\**([^\n]+)", re.I)
+_SETTLED = re.compile(r"^(built|implemented|decided|accepted|landed|done|superseded|"
+                      r"executed|retired|shipped|live)\b|"
+                      r"\b(not doing|superseded|withdrawn|rejected|dropped)\b")
+_PARTLY = re.compile(r"\b(steps?|first version|phase)\b.*\bbuilt\b|^steps?\b")
+_OPEN = re.compile(r"^(propos|draft|plan|experiment|idea|open)|nothing built")
+
+
+def _state(kind: str, status: str) -> str:
+    """Where a proposal or decision stands, as an index groups them (PEP 0
+    style): `open` (nothing built), `partly` (some steps built) or `settled`
+    (built, decided, or closed: not doing, superseded). A proposal with no
+    status counts as open. Other kinds have none."""
+    s = status.lower().strip("* ")
+    if kind == "decisions":
+        return "settled"
+    if kind != "proposals":
+        return ""
+    if _PARTLY.search(s):
+        return "partly"
+    if _SETTLED.search(s):
+        return "settled"
+    return "open"
+
+
 def _row(p: Path, root: Path) -> dict:
     d = docs.describe(p, root)
     named = re.match(r"(\d{4}-\d{2}-\d{2})-", p.name)     # a dated name without a Date: line
-    return {"path": str(p), "title": d.title, "kind": d.kind,
-            "status": (d.status or "").strip("* "),
-            "date": d.date or (named.group(1) if named else "")}
+    status = (d.status or "").strip("* ")
+    if not status:
+        try:
+            with p.open(errors="replace") as f:
+                m = _STATUS_ANY.search(f.read(3000))
+            status = m.group(1).replace("**", "").strip(" .*") if m else ""
+        except OSError:
+            pass
+    rel = p.relative_to(root)
+    area = ("readme" if len(rel.parts) == 1 and p.name.lower() == "readme.md"
+            else "docs" if rel.parts[0] == "docs" else "elsewhere")
+    return {"path": str(p), "title": d.title, "kind": d.kind, "status": status,
+            "date": d.date or (named.group(1) if named else ""),
+            "area": area, "state": _state(d.kind, status)}
 
 
 def project_docs(project: str, path: str, bearer: str) -> tuple[bool, dict]:

@@ -442,3 +442,28 @@ def test_a_projects_documents_and_finding_one(tree, server, tmp_path, monkeypatc
     assert [h["title"] for h in hits] == ["New idea"]          # one copy, not the clone's too
     assert hits[0]["snippet"] == "The kettle sings." and hits[0]["project"] in ("app", "app-copy")
     assert [h["title"] for h in doc_read.search(["guide"])] == ["Guide"]
+
+
+def test_a_projects_documents_carry_area_and_state(tree, server, tmp_path, monkeypatch):
+    root = tmp_path / "projects" / "app"
+    (root / "docs" / "proposals").mkdir(parents=True)
+    (root / "docs" / "decisions").mkdir()
+    (root / "packages" / "core").mkdir(parents=True)
+    (root / "README.md").write_text("# App\n")
+    (root / "packages" / "core" / "README.md").write_text("# Core\n")
+    props = root / "docs" / "proposals"
+    (props / "2026-09-01-a.md").write_text("# A\n\nStatus: proposal, nothing built\n")
+    (props / "2026-09-02-b.md").write_text("# B\n\nStatus: steps 1-2 built\n")
+    (props / "2026-09-03-c.md").write_text("# C\n\nStatus: **built**, 2026-09-05\n")
+    (props / "2026-09-04-d.md").write_text("# D\n\nIntro text. Status: **proposal**, nothing built.\n")
+    (props / "2026-09-05-e.md").write_text("# E\n\nStatus: not doing. Superseded by F.\n")
+    (props / "2026-09-06-f.md").write_text("# F\n\nNo status at all.\n")
+    (root / "docs" / "decisions" / "2026-09-07-g.md").write_text("# G\n")
+    monkeypatch.setenv("MEDIA_PROJECTS_DIR", str(tmp_path / "projects"))
+    _, got = _call(server, "GET", "/docs?project=app")
+    by = {d["title"]: d for d in got["docs"]}
+    assert {t: by[t]["state"] for t in "ABCDEFG"} == {
+        "A": "open", "B": "partly", "C": "settled", "D": "open", "E": "settled",
+        "F": "open", "G": "settled"}
+    assert by["D"]["status"] == "proposal, nothing built"      # found mid-line
+    assert (by["App"]["area"], by["Core"]["area"], by["A"]["area"]) == ("readme", "elsewhere", "docs")
