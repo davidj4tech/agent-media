@@ -249,7 +249,7 @@ Everything a message can be pointed at.
     "recap": {"text": "We're making the conversation page show what Claude is doing. Next: try it on the phone.",
               "at": 1789807216.618, "source": "agent-media"},
     "archived": true, "rested": {"at": 1790001000.2, "reason": "idle-tight"}, "pinned": false}],
- "places": [{"name": "agent-media", "path": "/home/ryer/projects/agent-media", "at": 1790000000.1}]}
+ "places": [{"name": "agent-media", "path": "/home/ryer/projects/agent-media", "at": 1790000000.1, "mail": 2}]}
 ```
 
 - `sessions` is `sessions_index()`. Live sessions come first, titled from the
@@ -311,6 +311,16 @@ Everything a message can be pointed at.
 - `places`: up to 6 directories sessions have run in, newest first
   (running sessions count as "now"). These are the only directories a new
   chat may be opened in — `/ask` checks against this list (with no limit).
+  `mail` (16 Oct 2026): how many agent-mail messages are **pending** in
+  that place's mailbox — not claimed, not acknowledged. The mailbox is
+  agent-config's `agent-handoff` `mailbox_of`: a git repo's name (a
+  worktree counts as its main checkout), else the folder's name; the
+  shared `sam` mailbox is never a place's (always 0). Read from this host's
+  agent-mail SQLite (`AGENT_MAIL_DB`, else
+  `$XDG_STATE_HOME/agent-mail/mail.sqlite3`) in one query, cached 5 s
+  (`mailbox.py`). **Absent** on every place when the mailbox can't be read,
+  and from older servers: treat absent as 0. The app badges the place's
+  chip when it is above 0. `/dashboard`'s `places` carry it too.
 - **Headless rows** (`MEDIA_HEADLESS`, §17): the sessions `media-sessiond`
   holds are listed after the live pane sessions — the running ones, then up
   to 20 ended ones (parked or closed), newest first — with the same keys

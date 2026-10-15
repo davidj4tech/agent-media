@@ -20,7 +20,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import auth, auth_abs, panes, procmem, recaps
+from . import auth, auth_abs, mailbox, panes, procmem, recaps
 
 
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
@@ -838,7 +838,8 @@ def targets(bearer: str, history: str = "") -> tuple[bool, dict]:
     if not ok:
         return False, detail
     days = -1.0 if history == "all" else STORE_DAYS
-    return True, {"sessions": sessions_index(days=days), "places": places()}
+    return True, {"sessions": sessions_index(days=days),
+                  "places": mailbox.with_mail(places())}
 
 
 def _manifest_of(session: str) -> dict:

@@ -36,7 +36,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import alerts, auth, sessions, speech
+from . import alerts, auth, mailbox, sessions, speech
 
 #: `sessions_index()` is a tmux listing plus a walk of the shelf; the
 #: dashboard is polled every ~5 s, and a title or recap a few seconds old is
@@ -508,7 +508,7 @@ def build(bearer: str) -> dict:
             "recent": _recent(index),
             "replies": _replies(index, {str(r["session"]) for r in rows
                                         if r["state"] in ("working", "approval")}),
-            "places": sessions.places(),
+            "places": mailbox.with_mail(sessions.places()),
             "agents": agents, "hosts": hosts, "digests": _digests(), "alerts": _alerts(),
             "signins": _signins()}
 
